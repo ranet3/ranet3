@@ -139,7 +139,25 @@ type Table struct {
 	// node waits before falling back to its own uplink. Zero uses
 	// DefaultCaptureGrace.
 	CaptureGrace schema.Duration `yaml:"capture_grace,omitempty" json:"capture_grace,omitempty" toml:"capture_grace,omitempty"`
+
+	// mode is cap.exit, which the file writes beside cap.table and the
+	// reconciler runs with it, nil in mode off. It is unexported so the file
+	// never spells it under cap.table.
+	mode *ExitMode
 }
+
+// WithMode is t running cap.exit's mode, mode off where m is nil
+func (t Table) WithMode(m *ExitMode) Table {
+	t.mode = nil
+	if m != nil {
+		mode := *m
+		t.mode = &mode
+	}
+	return t
+}
+
+// Mode is cap.exit as t runs it, nil in mode off
+func (t Table) Mode() *ExitMode { return t.mode }
 
 // Runtime holds what the reconciler reads from outside cap.table: the device
 // the mesh actually got and the addresses this node's transport has to keep
@@ -299,6 +317,9 @@ func (t Table) Validate() error {
 	if t.CaptureGrace > 0 && t.CaptureGrace.Duration() < MinCaptureGrace {
 		return fmt.Errorf("kernel: cap.table capture_grace %s is shorter than %s, which the reconciler cannot honor: the gate is sampled once a pass and a pass reads the routing table",
 			t.CaptureGrace, MinCaptureGrace)
+	}
+	if t.mode != nil {
+		return t.mode.Validate()
 	}
 	return nil
 }
@@ -799,6 +820,10 @@ func (t Table) Normalized() Table {
 	} else {
 		t.Addresses = slices.SortedFunc(slices.Values(t.Addresses), schema.ComparePrefix)
 	}
+	if t.mode != nil {
+		mode := t.mode.Normalized()
+		t.mode = &mode
+	}
 	return t
 }
 
@@ -916,7 +941,11 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 
 // NetworkChanged wakes the loop for a pass over the host's network as Runtime.Network reads it now
 // the watch has already let the change settle, so the pass runs at once
-func (r *Reconciler) NetworkChanged() {
+// mode off derives nothing from the links, so a change of links alone wakes nothing there
+func (r *Reconciler) NetworkChanged(change NetworkChange) {
+	if r.Table().Mode() == nil && !slices.ContainsFunc(change.Families(), FamilyChange.PathMoved) {
+		return
+	}
 	select {
 	case r.network <- struct{}{}:
 	default:

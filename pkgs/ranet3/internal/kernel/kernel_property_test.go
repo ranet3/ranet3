@@ -60,6 +60,14 @@ func capabilities() hegel.Generator[Table] {
 			address := hegel.Draw(tc, assignable)
 			table.Addresses = append(table.Addresses, schema.PrefixFrom(netip.PrefixFrom(address, hegel.Draw(tc, edges(1, address.BitLen())))))
 		}
+		// cap.exit's mode, off one time in three, its forward in any order and an entry written twice among them
+		if hegel.Draw(tc, hegel.Integers(0, 2)) > 0 {
+			var mode ExitMode
+			for range hegel.Draw(tc, hegel.Integers(0, 4)) {
+				mode.Forward = append(mode.Forward, hegel.Draw(tc, hegel.SampledFrom([]string{"docker*", "eth1", "br-?"})))
+			}
+			table = table.WithMode(&mode)
+		}
 		return table
 	})
 }

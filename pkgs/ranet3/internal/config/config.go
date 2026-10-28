@@ -182,6 +182,17 @@ type Caps struct {
 	Egress  *egress.Egress `yaml:"egress,omitempty" json:"egress,omitempty" toml:"egress,omitempty"`
 	// Border drops what arrives from outside the mesh carrying a mesh source, a routing header or one of this node's SIDs
 	Border *egress.Border `yaml:"border,omitempty" json:"border,omitempty" toml:"border,omitempty"`
+	// Exit makes the mesh's default this host's default, which the reconciler of cap.table runs, see ReconcilerTable
+	Exit *kernel.ExitMode `yaml:"exit,omitempty" json:"exit,omitempty" toml:"exit,omitempty"`
+}
+
+// ReconcilerTable is cap.table with cap.exit's mode, which the reconciler runs together, nil without cap.table
+func (c *Config) ReconcilerTable() *kernel.Table {
+	if c.Cap.Table == nil {
+		return nil
+	}
+	table := c.Cap.Table.WithMode(c.Cap.Exit)
+	return &table
 }
 
 // Routes, Babel, Segments and Crypto are the capability in force, which for an
@@ -287,6 +298,11 @@ func decodeTOML(body []byte, c *Config) error {
 			return errRouteTransit
 		}
 	}
+	if exit, ok := capabilities["exit"].(map[string]any); ok {
+		if _, ok := exit["via"]; ok {
+			return errExitVia
+		}
+	}
 	metadata, err := toml.Decode(string(body), c)
 	if err != nil {
 		return err
@@ -304,15 +320,18 @@ func decodeTOML(body []byte, c *Config) error {
 // errRouteTransit refuses cap.route transit by the block that holds the setting, where the strict decode would only call the key unknown
 var errRouteTransit = errors.New("cap.route transit is refused, transit is the block cap.transit with enable = true or false")
 
-// routeTransitLine is the line a yaml document writes cap.route transit on, or 0 where it writes none or does not parse, which the strict decode then names
+// errExitVia refuses cap.exit via by name, where the strict decode would only call the key unknown
+var errExitVia = errors.New("cap.exit via names a path to one exit, which this version does not take: write cap.exit without via, which follows the mesh's default of lowest metric")
+
+// keyLine is the line a yaml document writes the key at path on, or 0 where it writes none or does not parse, which the strict decode then names
 // keys are read as the decoder reads them, through an alias and from a !!binary spelling
-func routeTransitLine(body []byte) int {
+func keyLine(body []byte, path ...string) int {
 	var document yaml.Node
 	if yaml.Unmarshal(body, &document) != nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
 		return 0
 	}
 	node, line := document.Content[0], 0
-	for _, want := range []string{"cap", "route", "transit"} {
+	for _, want := range path {
 		node = schema.Followed(node)
 		if node.Kind != yaml.MappingNode {
 			return 0
@@ -439,8 +458,11 @@ func decodesItselfTOML(t reflect.Type) bool {
 }
 
 func decodeYAML(body []byte, c *Config) error {
-	if line := routeTransitLine(body); line != 0 {
+	if line := keyLine(body, "cap", "route", "transit"); line != 0 {
 		return fmt.Errorf("line %d: %w", line, errRouteTransit)
+	}
+	if line := keyLine(body, "cap", "exit", "via"); line != 0 {
+		return fmt.Errorf("line %d: %w", line, errExitVia)
 	}
 	decoder := yaml.NewDecoder(strings.NewReader(string(body)))
 	decoder.KnownFields(true)
@@ -682,6 +704,11 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	if c.Cap.Exit != nil {
+		if err := c.Cap.Exit.Validate(); err != nil {
+			return err
+		}
+	}
 	return c.validateAcrossCapabilities()
 }
 
@@ -817,6 +844,9 @@ func (c *Config) validateAcrossCapabilities() error {
 	if err := c.validateBorder(); err != nil {
 		return err
 	}
+	if err := c.validateExit(); err != nil {
+		return err
+	}
 	if err := c.validateSteeredMTU(); err != nil {
 		return err
 	}
@@ -902,6 +932,20 @@ func (c *Config) validateBorder() error {
 				return fmt.Errorf("config: cap.egress advertise %s overlaps cap.border overlay %s, so the hosts behind this node arrive on a link outside the mesh with a mesh source and the filter drops them", advertised, overlay)
 			}
 		}
+	}
+	return nil
+}
+
+// validateExit refuses cap.exit without the reconciler whose rules make the
+// mode, and without the overlay those rules send to the mesh whatever the mode
+// and keep out of the selectors that send a source by the uplink
+func (c *Config) validateExit() error {
+	switch {
+	case c.Cap.Exit == nil:
+	case c.Cap.Table == nil:
+		return errors.New("config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of: add cap.table")
+	case c.Cap.Border == nil:
+		return errors.New("config: cap.exit is written and cap.border is absent, so the mode's rules cannot keep the overlay's sources off the uplink: add cap.border with the prefixes the mesh numbers its nodes from")
 	}
 	return nil
 }

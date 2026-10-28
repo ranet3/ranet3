@@ -187,8 +187,32 @@ func TestReconcilerRunsAPassWhenTheNetworkChanges(t *testing.T) {
 	fake.mu.Lock()
 	delete(fake.routes, ordinary)
 	fake.mu.Unlock()
-	reconciler.NetworkChanged()
+	reconciler.NetworkChanged(NetworkChange{After: NetworkState{IPv6: NetworkFamily{Default: DefaultRoute{Interface: "eth0"}}}})
 	awaitPass(t, last, "the pass the network asked for", "network", func() bool { return fake.has(ordinary) })
+}
+
+// a change of links alone wakes a pass in mode 2, whose rules follow the links, and none in mode off, whose rules read none
+// a change of the default or the addresses wakes one in either mode
+func TestReconcilerWakesForLinksAloneInModeTwoOnly(t *testing.T) {
+	bridged := NetworkState{IPv4: NetworkFamily{Links: []Link{{Name: "docker0"}}}}
+	moved := NetworkState{IPv4: NetworkFamily{Default: DefaultRoute{Interface: "eth0"}}}
+	for _, c := range []struct {
+		what  string
+		mode  *ExitMode
+		after NetworkState
+		wakes bool
+	}{
+		{"a link alone in mode off", nil, bridged, false},
+		{"a link alone in mode 2", &ExitMode{}, bridged, true},
+		{"a default in mode off", nil, moved, true},
+		{"a default in mode 2", &ExitMode{}, moved, true},
+	} {
+		reconciler, _, _ := harness(t, Table{}.WithMode(c.mode), Runtime{})
+		reconciler.NetworkChanged(NetworkChange{After: c.after})
+		if woke := len(reconciler.network) == 1; woke != c.wakes {
+			t.Errorf("%s woke a pass %v, want %v", c.what, woke, c.wakes)
+		}
+	}
 }
 
 // a pass the capture grace woke, withdrawing a capture once the sessions went quiet, is named for the grace

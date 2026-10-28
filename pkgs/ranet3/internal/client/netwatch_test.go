@@ -182,7 +182,7 @@ func TestLinkAloneWakesTheReconcilerAndProbesNoSession(t *testing.T) {
 	dialer := &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
 	c.dialers["example/gateway:1@0"] = dialer
 	wakes := make(chan struct{}, 2)
-	c.SetReconcilerNetwork(func() { wakes <- struct{}{} })
+	c.SetReconcilerNetwork(func(kernel.NetworkChange) { wakes <- struct{}{} })
 
 	network := &fakeNetwork{changes: make(chan kernel.NetworkChange, 1)}
 	c.network = network
