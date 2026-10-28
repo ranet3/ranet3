@@ -15,6 +15,28 @@ import (
 	"time"
 )
 
+// The two interfaces the reads below move between.
+const (
+	// far above the indexes a host hands out
+	// and a test that reaches the running kernel fails alike on every machine
+	uplinkIndex = 916
+	dockIndex   = 919
+)
+
+// namedDevices is the interface list these tests decide, so the two indexes
+// above name the same devices on every machine the suite runs on.
+type namedDevices struct{ Host }
+
+func (namedDevices) InterfaceName(index int) (string, error) {
+	switch index {
+	case uplinkIndex:
+		return "uplink0", nil
+	case dockIndex:
+		return "dock0", nil
+	}
+	return "", errors.New("no such interface")
+}
+
 // watchedMeshIndex stands for the tun in the reads below, an index no host hands out as uplinkIndex and dockIndex are
 const watchedMeshIndex = 923
 

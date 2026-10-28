@@ -5,7 +5,6 @@ package kernel
 
 import (
 	"context"
-	"errors"
 	"net/netip"
 	"slices"
 	"strings"
@@ -371,28 +370,14 @@ func TestReconcilerAsksToBeWokenWhenTheGraceExpires(t *testing.T) {
 	}
 }
 
-// recordingCapture is the routing a capturing route depends on, which on
-// darwin is the underlay's own default. It records what the kernel held when
-// it was asked, because the invariant is the property: a capture must not be
-// in the kernel while the underlay is uncovered.
+// recordingCapture answers which families the host holds a default of its
+// own in, as a test decides, and records what the kernel held when it was
+// asked.
 type recordingCapture struct {
-	fake    *fakeKernel
-	at      []string
-	covered Covered
-	hosts   Covered
-	err     error
-	// wants records the families each Ready was asked to cover
-	wants []Covered
-}
-
-func (c *recordingCapture) Ready(want Covered) (Covered, error) {
-	c.wants = append(c.wants, want)
-	if want == (Covered{}) {
-		c.at = append(c.at, "released with "+c.capturing())
-		return Covered{}, c.err
-	}
-	c.at = append(c.at, "asked with "+c.capturing())
-	return c.covered, c.err
+	fake  *fakeKernel
+	at    []string
+	hosts Covered
+	err   error
 }
 
 func (c *recordingCapture) HostDefaults() (Covered, error) {
@@ -407,182 +392,6 @@ func (c *recordingCapture) capturing() string {
 		return "the default installed"
 	}
 	return "no default installed"
-}
-
-// The underlay's own routing is asked about before the route that depends on
-// it reaches the kernel, and only then.
-func TestReconcileCoversTheUnderlayBeforeTheCapture(t *testing.T) {
-	live := 1
-	reconciler, table, fake := harness(t,
-		Table{CaptureGrace: schema.Duration(10 * time.Second)},
-		Runtime{Sessions: func() int { return live }})
-	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
-	clock := start
-	reconciler.now = func() time.Time { return clock }
-	table.Set(netip.Prefix{}, prefix("::/0"), nil)
-	table.Set(netip.Prefix{}, prefix("3fff:a::/36"), nil)
-
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"asked with no default installed"}
-	if !slices.Equal(capture.at, want) {
-		t.Errorf("the underlay was asked about as %v, want %v", capture.at, want)
-	}
-	if !fake.has(Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}) {
-		t.Error("a covered underlay did not let the default install")
-	}
-}
-
-// An underlay that cannot be covered stops the capture reaching the kernel at
-// all. Installing it anyway is the state every part of this arrangement exists
-// to prevent: this node's own traffic in a tun, with nothing to fall back on.
-func TestReconcileInstallsNoCaptureOverAnUncoveredUnderlay(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, err: errors.New("no default of its own")}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	table.Set(netip.Prefix{}, prefix("::/0"), nil)
-	table.Set(netip.Prefix{}, prefix("3fff:a::/36"), nil)
-
-	if err := reconciler.reconcile(); err == nil {
-		t.Fatal("a pass that could not cover the underlay reported success")
-	}
-	if fake.has(Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}) {
-		t.Error("the default installed although the underlay had nothing to fall back on")
-	}
-	// The ordinary mesh prefixes are unaffected: only what would carry this
-	// machine's own traffic is held back.
-	if !fake.has(Route{Destination: prefix("3fff:a::/36"), Metric: defaultIPv6Metric}) {
-		t.Error("an ordinary mesh prefix was held back with the capture")
-	}
-}
-
-// A node whose mesh never announces a default asks the underlay for nothing
-// of its own, so the underlay writes only for another program's capture.
-func TestReconcileLeavesTheUnderlayAloneWithoutADefault(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	table.Set(netip.Prefix{}, prefix("3fff:a::/36"), nil)
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"released with no default installed"}; !slices.Equal(capture.at, want) {
-		t.Errorf("an ordinary mesh prefix asked the underlay as %v, want %v", capture.at, want)
-	}
-}
-
-// Once the last route over a zero address is out of the table, the same pass
-// tells the underlay that nothing of the reconciler's needs it, and not
-// before: the ask ahead of the delete still finds the route installed.
-func TestReconcileReleasesTheUnderlayOnceTheCaptureGoes(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	table.Set(netip.Prefix{}, prefix("::/0"), nil)
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	table.Remove(netip.Prefix{}, prefix("::/0"))
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"asked with no default installed", "released with the default installed", "released with no default installed"}
-	if !slices.Equal(capture.at, want) {
-		t.Errorf("the underlay was asked as %v, want %v", capture.at, want)
-	}
-	asked := len(capture.at)
-	if err := reconciler.withdraw(); err != nil {
-		t.Fatal(err)
-	}
-	if got := capture.at[asked:]; !slices.Equal(got, []string{"released with no default installed"}) {
-		t.Errorf("the withdrawal told the underlay %q, want it released", got)
-	}
-}
-
-// A split internet counts as a default though it holds no zero address, and
-// the pass that takes it out once its exit retracts it asks the underlay
-// again after the delete.
-func TestReconcileAsksTheUnderlayAgainOnceASplitInternetGoes(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	table.Set(netip.Prefix{}, prefix("2000::/3"), nil)
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	table.Set(netip.Prefix{}, prefix("2000::/3"), netstack.Unreachable)
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"released with no default installed", "released with the default installed", "released with no default installed"}
-	if !slices.Equal(capture.at, want) {
-		t.Errorf("the underlay was asked as %v, want %v", capture.at, want)
-	}
-}
-
-// A pass that takes one capture out and puts another of the same family in
-// keeps the family wanted through the ask after the delete, since the capture
-// it is about to install needs the underlay as much as the one it took out.
-func TestReconcileKeepsTheUnderlayThroughASwapOfCaptures(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	table.Set(netip.Prefix{}, prefix("0.0.0.0/1"), nil)
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	table.Remove(netip.Prefix{}, prefix("0.0.0.0/1"))
-	table.Set(netip.Prefix{}, prefix("0.0.0.0/2"), nil)
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if !fake.has(Route{Destination: prefix("0.0.0.0/2")}) || fake.has(Route{Destination: prefix("0.0.0.0/1")}) {
-		t.Fatalf("the pass did not swap the captures: %v", fake.snapshot())
-	}
-	if want := []Covered{{V4: true}, {V4: true}, {V4: true}}; !slices.Equal(capture.wants, want) {
-		t.Errorf("the underlay was asked to cover %v, want IPv4 on every ask", capture.wants)
-	}
-}
-
-// 128.0.0.0/1 and 8000::/1 hold no zero address and leave a bound socket its
-// fallback: alone they ask the underlay for nothing and go in with it
-// uncovered. The lower halves hold the zero addresses and ask for both
-// families.
-func TestUpperHalfAsksTheUnderlayForNothing(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	upper := []Route{{Destination: prefix("128.0.0.0/1")}, {Destination: prefix("8000::/1"), Metric: defaultIPv6Metric}}
-	lower := []Route{{Destination: prefix("0.0.0.0/1")}, {Destination: prefix("::/1"), Metric: defaultIPv6Metric}}
-	for _, halves := range [][]Route{upper, lower} {
-		for _, route := range halves {
-			table.Set(netip.Prefix{}, route.Destination, nil)
-		}
-		if err := reconciler.reconcile(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if want := []Covered{{}, {V4: true, V6: true}}; !slices.Equal(capture.wants, want) {
-		t.Errorf("the underlay was asked to cover %v, want nothing for the upper halves alone and both families with the lower beside them", capture.wants)
-	}
-	for _, route := range upper {
-		if !fake.has(route) {
-			t.Errorf("%s was held back with the underlay uncovered: %v", route.Destination, fake.snapshot())
-		}
-	}
-	for _, route := range lower {
-		if fake.has(route) {
-			t.Errorf("%s went in with the underlay uncovered", route.Destination)
-		}
-	}
 }
 
 // A bound underlay with nothing to ask about liveness is refused at startup.
@@ -699,63 +508,5 @@ func TestCaptureGraceBelowTheFloorIsRefused(t *testing.T) {
 		if err := (Table{CaptureGrace: schema.Duration(grace)}).Validate(); err != nil {
 			t.Errorf("a grace of %s was refused: %v", grace, err)
 		}
-	}
-}
-
-// Readiness is per family, because the fallback is: a socket bound with
-// IP_BOUND_IF resolves the unspecified address of the destination's own
-// family. A host reaching IPv4 through the bound interface and IPv6 through
-// another is an ordinary dual-stack laptop, and one answer for the machine let
-// ::/0 install with nothing behind it.
-func TestCaptureIsGatedOnItsOwnFamily(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, covered: Covered{V4: true}}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
-	table.Set(netip.Prefix{}, prefix("::/0"), nil)
-
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if !fake.has(Route{Destination: prefix("0.0.0.0/0")}) {
-		t.Error("the covered family's default was held back")
-	}
-	if fake.has(Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}) {
-		t.Error("the uncovered family's default installed anyway")
-	}
-}
-
-// A capture already in the kernel has to go when its family stops being
-// covered. Gating only the install list left one exactly where it was when the
-// host's default moved to another interface, which is a dock or a wifi roam.
-func TestCaptureIsWithdrawnWhenItsFamilyStopsBeingCovered(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	table.Set(netip.Prefix{}, prefix("::/0"), nil)
-	table.Set(netip.Prefix{}, prefix("3fff:a::/36"), nil)
-
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	installed := Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}
-	if !fake.has(installed) {
-		t.Fatal("the default did not install while the underlay was covered")
-	}
-
-	// The host's default moves to another interface, so the underlay has
-	// nothing to fall back on for that family any more.
-	capture.covered = Covered{V4: true}
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if fake.has(installed) {
-		t.Error("a capture whose family lost its fallback was left in the kernel")
-	}
-	// And the ordinary mesh prefixes are untouched throughout.
-	if !fake.has(Route{Destination: prefix("3fff:a::/36"), Metric: defaultIPv6Metric}) {
-		t.Error("an ordinary mesh prefix went with the capture")
 	}
 }

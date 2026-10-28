@@ -35,12 +35,7 @@ func TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	links, err := WatchLinks(nil, device.Index)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = links.Close() })
-	host, _, err := links.Default(netip.IPv4Unspecified())
+	host, _, err := lookupDefault(runningKernel{}, device.Index, netip.IPv4Unspecified())
 	if err != nil {
 		t.Skip(err)
 	}
@@ -114,85 +109,5 @@ func TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress(t *testing.T) {
 				t.Error("the set strands a bound socket and the gate holds none of it back")
 			}
 		})
-	}
-}
-
-// And the other half of the same measurement: with the route this tool writes
-// in place, every one of those sets reaches again, which is why writing it
-// whenever the socket is bound fixes the whole class rather than one shape of
-// it.
-func TestDarwinScopedDefaultUnstrandsEverySetThatStranded(t *testing.T) {
-	requireNetTest(t)
-	mesh, _ := createUTUNWithFD(t)
-	setInterfaceUp(t, mesh)
-	device, err := net.InterfaceByName(mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	links, err := WatchLinks(nil, device.Index)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = links.Close() })
-	host, gateway, err := links.Default(netip.IPv4Unspecified())
-	if err != nil || !gateway.IsValid() {
-		t.Skipf("this host has no IPv4 default with a next hop: %v", err)
-	}
-	startWithNoScopedDefault(t, host)
-	target := netip.MustParseAddr("192.0.2.1")
-	if err := boundReach(host, target); err != nil {
-		t.Skipf("a bound socket cannot reach %s before anything is installed: %v", target, err)
-	}
-
-	opened, err := newPlatform(
-		Table{ID: DefaultTable, Proto: DefaultProtocol},
-		Runtime{Interface: mesh, BoundUnderlay: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = opened.Close() })
-	plat := opened.(*routePlatform)
-	if plat.index == host {
-		t.Skip("the test utun is the interface the host's own traffic leaves by")
-	}
-	if err := plat.AddAddr(prefix("198.51.100.1/24")); err != nil {
-		t.Fatal(err)
-	}
-
-	before := defaultRoutesOnHost(t)
-	underlay, err := NewUnderlayDefaults(nil, links, device.Index, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = underlay.Close() })
-	if err := underlay.Prepare(host); err != nil {
-		t.Fatal(err)
-	}
-	if covered, err := underlay.Ready(Covered{V4: true}); err != nil || !covered.V4 {
-		t.Fatalf("the underlay reports itself uncovered: %+v %v", covered, err)
-	}
-
-	for _, set := range [][]string{
-		{"0.0.0.0/1", "128.0.0.0/1"},
-		{"0.0.0.0/1", "192.0.2.0/24"},
-		{"0.0.0.0/24", "192.0.2.0/24"},
-		{"0.0.0.0/2", "64.0.0.0/2", "192.0.2.0/24"},
-	} {
-		t.Run(strings.Join(set, " "), func(t *testing.T) {
-			for _, one := range set {
-				route := Route{Destination: prefix(one)}
-				if err := plat.AddRoute(route); err != nil {
-					t.Skipf("%s is held by another program on this host: %v", one, err)
-				}
-				t.Cleanup(func() { _ = plat.DelRoute(route) })
-			}
-			if err := boundReach(host, target); err != nil {
-				t.Errorf("a bound socket lost %s although the underlay carries a default of its own: %v", target, err)
-			}
-		})
-	}
-	// The host's own defaults are exactly as they were.
-	if after := defaultRoutesOnHost(t); !sameDefaults(before, after) {
-		t.Errorf("the host's default routes changed over the test\nbefore: %v\nafter:  %v", before, after)
 	}
 }

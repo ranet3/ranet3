@@ -76,9 +76,40 @@ func sortedCopy(in []string) []string {
 	return out
 }
 
+// A route holding its family's zero address goes in as the members it
+// contains and nothing else: a real 0.0.0.0/1 as the seven from 1.0.0.0/8 to
+// 64.0.0.0/2, ::/2 as the six from 100::/8 to 2000::/3, and a route inside
+// 0.0.0.0/8 or ::/8 as none. Beside a plain default a zero route withholds no
+// member, since it is installed as members itself.
+func TestZeroRouteBecomesTheMembersItContains(t *testing.T) {
+	for _, test := range []struct {
+		routes []Route
+		want   []string
+	}{
+		{[]Route{{Destination: prefix("0.0.0.0/1")}}, coverOf(true, "128.0.0.0/1")},
+		{[]Route{{Destination: prefix("::/2"), Metric: defaultIPv6Metric}}, coverOf(false, "4000::/2", "8000::/1")},
+		{[]Route{{Destination: prefix("0.0.0.0/8")}}, nil},
+		{[]Route{{Destination: prefix("::/16"), Metric: defaultIPv6Metric}}, nil},
+		{[]Route{{Destination: prefix("0.0.0.0/0")}, {Destination: prefix("0.0.0.0/1")}}, coverOf(true)},
+		{[]Route{{Destination: prefix("0.0.0.0/0")}, {Destination: prefix("0.0.0.0/4")}}, coverOf(true)},
+	} {
+		t.Run(fmt.Sprint(destinations(test.routes)), func(t *testing.T) {
+			got := coverDefaults(test.routes, nil)
+			for _, r := range got {
+				if !r.Cover {
+					t.Errorf("%s is in the table and not a member", r.Destination)
+				}
+			}
+			if !slices.Equal(destinations(got), test.want) {
+				t.Errorf("the members are %v, want %v", destinations(got), test.want)
+			}
+		})
+	}
+}
+
 // A hold at the default and a source-specific default stay what they are, and
-// a table with no plain default is returned as it was.
-func TestOnlyAPlainDefaultIsCovered(t *testing.T) {
+// a table with no zero route is returned as it was.
+func TestOnlyAZeroRouteIsCovered(t *testing.T) {
 	kept := []Route{
 		{Destination: prefix("::/0"), Unreachable: true, Metric: holdMetric},
 		{Destination: prefix("::/0"), Source: prefix("2001:db8::/32"), Metric: defaultIPv6Metric},
@@ -90,7 +121,8 @@ func TestOnlyAPlainDefaultIsCovered(t *testing.T) {
 }
 
 // A member is withheld where a route installed unscoped in its family, of
-// length 1 up to the member's own, contains it, and only there.
+// length 1 up to the member's own, contains it, and only there. A route
+// holding no zero address contains a member only at the member's own key.
 func TestCoverWithholdsWhatALongerOrEqualUnscopedRouteHolds(t *testing.T) {
 	scoped := prefix("2000::/3")
 	scopes := func(r Route) bool { return !r.Cover && r.Destination == scoped }
@@ -100,14 +132,12 @@ func TestCoverWithholdsWhatALongerOrEqualUnscopedRouteHolds(t *testing.T) {
 		without []string
 		family  bool
 	}{
-		{"a lower half withholds every member it holds", Route{Destination: prefix("0.0.0.0/1")}, []string{"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5", "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2"}, true},
 		{"an upper half withholds its own member", Route{Destination: prefix("128.0.0.0/1")}, []string{"128.0.0.0/1"}, true},
 		{"a route the member's own length withholds it", Route{Destination: prefix("4000::/2")}, []string{"4000::/2"}, false},
-		{"a route between withholds the members inside it", Route{Destination: prefix("0.0.0.0/4")}, []string{"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5"}, true},
 		{"a longer route withholds nothing", Route{Destination: prefix("1.0.0.0/16")}, nil, true},
 		{"a scoped route withholds nothing", Route{Destination: scoped, Metric: defaultIPv6Metric}, nil, false},
 		{"a hold withholds nothing", Route{Destination: prefix("64.0.0.0/2"), Unreachable: true}, nil, true},
-		{"the other family withholds nothing", Route{Destination: prefix("::/1")}, nil, true},
+		{"the other family withholds nothing", Route{Destination: prefix("8000::/1")}, nil, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			defaultRoute := Route{Destination: prefix("0.0.0.0/0")}
@@ -171,8 +201,7 @@ func coverMembers(fake *fakeKernel) (v4, v6 int) {
 
 // The cover is gated as the default is: nothing before a session is live,
 // every member once one is, all of them through the grace, and none after
-// it. Its readiness is the host's own default, never the underlay's scoped
-// one, and each change of a family's cover is one event.
+// it. Each change of a family's cover is one event.
 func TestCoverIsInstalledAndWithdrawnWholeAcrossTheGate(t *testing.T) {
 	live := 0
 	bus := events.New()
@@ -218,9 +247,6 @@ func TestCoverIsInstalledAndWithdrawnWholeAcrossTheGate(t *testing.T) {
 		if got := reconciler.Stats().Cover; !slices.Equal(got, want) {
 			t.Errorf("at %s the pass reports the cover %v, want %v", step.at, got, want)
 		}
-	}
-	if slices.ContainsFunc(capture.at, func(s string) bool { return strings.HasPrefix(s, "asked") }) {
-		t.Errorf("a cover asked the underlay for its scoped default: %v", capture.at)
 	}
 	var got []string
 	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "kernel.cover" }, 0) {
@@ -443,7 +469,7 @@ func keyHarness(t *testing.T) (*Reconciler, *keyKernel, *netstack.RouteTable) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	kernel := &keyKernel{fakeKernel: fake, taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}, stuck: map[netip.Prefix]error{}, kept: map[netip.Prefix]bool{}}
 	reconciler.plat = kernel
-	reconciler.rt.Capture = &recordingCapture{fake: fake, covered: Covered{V4: true, V6: true}, hosts: Covered{V4: true, V6: true}}
+	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	return reconciler, kernel, table
 }
@@ -596,26 +622,29 @@ func TestFailedWithholdingRouteHandsItsMembersBack(t *testing.T) {
 	}
 }
 
-// A refused route that goes in while the members it withholds are still to
-// be added leaves them out, and none of them counts as desired.
+// A refused route that goes in while the member it withholds is still to be
+// added leaves it out, and the member does not count as desired.
 func TestRefusedRouteThatGoesInCountsNoMemberItWithholds(t *testing.T) {
 	reconciler, kernel, table := keyHarness(t)
-	lower := prefix("0.0.0.0/1")
-	kernel.taken[lower] = errRouteSkipped
-	table.Set(netip.Prefix{}, lower, nil)
+	withholding := prefix("64.0.0.0/2")
+	kernel.taken[withholding] = errRouteSkipped
+	table.Set(netip.Prefix{}, withholding, nil)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	delete(kernel.taken, lower)
+	delete(kernel.taken, withholding)
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 1 || !kernel.has(Route{Destination: lower}) {
-		t.Errorf("once %s goes in the kernel holds %d IPv4 members, want the upper one alone: %v", lower, v4, kernel.snapshot())
+	if held, member := heldAt(kernel.fakeKernel, withholding); !held || member {
+		t.Errorf("once %s goes in the kernel holds it %v as a member %v, want the real route: %v", withholding, held, member, kernel.snapshot())
 	}
-	if stats := reconciler.Stats(); stats.Desired != 2 || stats.Installed != 2 || stats.Skipped != 0 {
-		t.Errorf("the pass reports %d desired, %d installed and %d skipped, want 2, 2 and 0", stats.Desired, stats.Installed, stats.Skipped)
+	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 7 {
+		t.Errorf("once %s goes in the kernel holds %d IPv4 members, want the other 7", withholding, v4)
+	}
+	if stats := reconciler.Stats(); stats.Desired != 8 || stats.Installed != 8 || stats.Skipped != 0 {
+		t.Errorf("the pass reports %d desired, %d installed and %d skipped, want 8, 8 and 0", stats.Desired, stats.Installed, stats.Skipped)
 	}
 }
 
@@ -708,85 +737,6 @@ func TestRealRouteTakesItsKeyAfterARaceWithAnotherWriter(t *testing.T) {
 	}
 }
 
-// A route refused against a route of this process that is not a member, an
-// old one at its key, takes no key from the members it would withhold. When
-// the old route leaves and another program takes the key at once, a member
-// still in stays rather than leaving to be handed back in the same pass.
-func TestRouteRefusedAgainstAnOldRouteOfOursKeepsItsMembers(t *testing.T) {
-	reconciler, kernel, table := keyHarness(t)
-	lower, inside := prefix("0.0.0.0/1"), prefix("64.0.0.0/2")
-	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	old := Route{Destination: lower, Metric: 7}
-	kernel.routes[old] = true
-	kernel.failDel[old] = errors.New("no buffer space available")
-	kernel.stuck[inside] = errors.New("no buffer space available")
-	table.Set(netip.Prefix{}, lower, nil)
-	if err := reconciler.reconcile(); err == nil {
-		t.Fatal("a pass that could not delete its old route reported success")
-	}
-	if held, member := heldAt(kernel.fakeKernel, inside); !held || !member {
-		t.Fatalf("the pass with %s refused leaves %s held %v as a member %v, want the member whose delete failed", lower, inside, held, member)
-	}
-	delete(kernel.failDel, old)
-	delete(kernel.stuck, inside)
-	kernel.taken[lower] = errRouteSkipped
-	_, dels := kernel.counts()
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if _, nowDels := kernel.counts(); nowDels-dels != 1 || kernel.has(old) {
-		t.Errorf("the pass that took %s out deleted %d routes, want that one alone: %v", old, nowDels-dels, kernel.snapshot())
-	}
-	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 8 {
-		t.Errorf("the pass holds %d IPv4 members beside the refused %s, want 8", v4, lower)
-	}
-}
-
-// A withholding route refused at a key no member has, as a VPN holds
-// 0.0.0.0/1, hands its members back and they go in, since the range then
-// leaves through the mesh as the plain default's would. While it stays
-// refused the next pass tries it first and moves nothing, and once the kernel
-// takes it the members it withholds leave in that pass.
-func TestRefusedWithholdingRouteMovesNothingWhileRefused(t *testing.T) {
-	reconciler, kernel, table := keyHarness(t)
-	lower := prefix("0.0.0.0/1")
-	kernel.taken[lower] = errRouteSkipped
-	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
-	table.Set(netip.Prefix{}, lower, nil)
-	for pass := range 2 {
-		adds, dels := kernel.counts()
-		if err := reconciler.reconcile(); err != nil {
-			t.Fatal(err)
-		}
-		if v4, _ := coverMembers(kernel.fakeKernel); v4 != 8 {
-			t.Errorf("pass %d holds %d IPv4 members beside the refused %s, want 8", pass, v4, lower)
-		}
-		if stats := reconciler.Stats(); !slices.Equal(stats.Cover, []Family{FamilyIPv4}) || stats.Skipped != 1 {
-			t.Errorf("pass %d reports the cover %v with %d skipped, want IPv4 and the refused route", pass, stats.Cover, stats.Skipped)
-		}
-		if nowAdds, nowDels := kernel.counts(); pass == 1 && (nowAdds != adds || nowDels != dels) {
-			t.Errorf("a pass with %s still refused added %d and deleted %d routes", lower, nowAdds-adds, nowDels-dels)
-		}
-	}
-	delete(kernel.taken, lower)
-	adds, dels := kernel.counts()
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if v4, _ := coverMembers(kernel.fakeKernel); v4 != 1 || !kernel.has(Route{Destination: lower}) {
-		t.Errorf("once %s goes in the kernel holds %d IPv4 members, want the upper one alone: %v", lower, v4, kernel.snapshot())
-	}
-	if nowAdds, nowDels := kernel.counts(); nowAdds-adds != 1 || nowDels-dels != 7 {
-		t.Errorf("the pass that took %s added %d and deleted %d routes, want 1 and 7", lower, nowAdds-adds, nowDels-dels)
-	}
-	if stats := reconciler.Stats(); stats.Desired != 2 || stats.Installed != 2 {
-		t.Errorf("the pass reports %d desired and %d installed, want 2 and 2", stats.Desired, stats.Installed)
-	}
-}
-
 // coverPass is one pass's table, the host's own defaults and the keys other
 // programs refuse.
 type coverPass struct {
@@ -797,11 +747,11 @@ type coverPass struct {
 
 // A member a route the kernel holds after the pass withholds is not wanted,
 // so it counts neither as desired nor as skipped when a refusal at another
-// member takes its family out. The route went in this pass after a refusal
-// in the last, and the member is either one the pass would add or one an
-// earlier pass installed in that route's place.
+// member takes its family out. The route went in this pass, and the member is
+// either one the pass would add after the route's refusal in the last or one
+// an earlier pass installed at the route's key.
 func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
-	v4 := []string{"0.0.0.0/1", "128.0.0.0/1", "64.0.0.0/2", "0.0.0.0/4", "16.0.0.0/4", "1.0.0.0/16", "198.51.100.0/24"}
+	v4 := []string{"128.0.0.0/1", "64.0.0.0/2", "16.0.0.0/4", "1.0.0.0/16", "198.51.100.0/24"}
 	v6 := []string{"8000::/1", "2000::/3", "4000::/2", "2001:db8::/32"}
 	without := func(routes []string, gone ...string) []string {
 		return slices.DeleteFunc(slices.Clone(routes), func(r string) bool { return slices.Contains(gone, r) })
@@ -814,7 +764,7 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 		{
 			"IPv6 member the pass would add",
 			[]coverPass{
-				{slices.Concat(v4, []string{"::/1"}, v6), Covered{}, []string{"8000::/1"}},
+				{slices.Concat(v4, v6), Covered{}, []string{"8000::/1"}},
 				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"1.0.0.0/8", "100::/8"}},
 			},
 			5,
@@ -822,8 +772,8 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 		{
 			"IPv6 member the pass would add a pass later",
 			[]coverPass{
-				{slices.Concat(v4, []string{"::/1"}, without(v6, "8000::/1")), Covered{}, nil},
-				{slices.Concat(v4, []string{"::/1"}, v6), Covered{}, []string{"8000::/1"}},
+				{slices.Concat(v4, without(v6, "8000::/1")), Covered{}, nil},
+				{slices.Concat(v4, v6), Covered{}, []string{"8000::/1"}},
 				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"100::/8"}},
 			},
 			5,
@@ -831,7 +781,7 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 		{
 			"IPv6 member beside a member refused with its route",
 			[]coverPass{
-				{slices.Concat([]string{"::/0", "0.0.0.0/1", "::/1"}, v6), Covered{V6: true}, []string{"2000::/3", "8000::/1"}},
+				{slices.Concat([]string{"::/0"}, v6), Covered{V6: true}, []string{"2000::/3", "8000::/1"}},
 				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"8000::/1"}},
 			},
 			7,
@@ -839,27 +789,27 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 		{
 			"IPv4 member an earlier pass installed",
 			[]coverPass{
-				{[]string{"0.0.0.0/0", "0.0.0.0/4", "128.0.0.0/1"}, Covered{V4: true}, []string{"0.0.0.0/4"}},
-				{[]string{"0.0.0.0/0", "0.0.0.0/4"}, Covered{V4: true}, []string{"128.0.0.0/1"}},
+				{[]string{"0.0.0.0/0", "128.0.0.0/1"}, Covered{V4: true}, nil},
+				{[]string{"0.0.0.0/0", "64.0.0.0/2"}, Covered{V4: true}, []string{"128.0.0.0/1"}},
 			},
-			4,
+			7,
 		},
 		{
 			"IPv4 member the pass would add",
 			[]coverPass{
-				{slices.Concat(without(v4, "128.0.0.0/1"), []string{"::/1"}, v6), Covered{}, nil},
-				{slices.Concat(v4, []string{"::/1"}, v6), Covered{}, []string{"128.0.0.0/1"}},
-				{slices.Concat([]string{"0.0.0.0/0"}, without(v4, "0.0.0.0/1"), []string{"::/1"}, v6), Covered{V4: true}, []string{"32.0.0.0/3"}},
+				{slices.Concat(without(v4, "128.0.0.0/1"), v6), Covered{}, nil},
+				{slices.Concat(v4, v6), Covered{}, []string{"128.0.0.0/1"}},
+				{slices.Concat([]string{"0.0.0.0/0"}, v4, v6), Covered{V4: true}, []string{"32.0.0.0/3"}},
 			},
-			1,
+			5,
 		},
 		{
 			"IPv4 member beside a refused route that hands one back",
 			[]coverPass{
-				{slices.Concat(without(v4, "16.0.0.0/4"), []string{"::/1"}, v6), Covered{}, []string{"64.0.0.0/2"}},
-				{slices.Concat([]string{"0.0.0.0/0"}, without(v4, "0.0.0.0/1"), []string{"::/1"}, v6), Covered{V4: true}, []string{"16.0.0.0/4"}},
+				{slices.Concat(without(v4, "16.0.0.0/4"), v6), Covered{}, []string{"64.0.0.0/2"}},
+				{slices.Concat([]string{"0.0.0.0/0"}, v4, v6), Covered{V4: true}, []string{"16.0.0.0/4"}},
 			},
-			3,
+			7,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -899,28 +849,41 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 	}
 }
 
-// A route over the zero address still needs the underlay's own default,
-// beside a cover that does not.
-func TestCaptureBesideTheCoverStillAsksTheUnderlay(t *testing.T) {
+// A route holding the zero address inside 0.0.0.0/8 or ::/8 contains no
+// member, so the cover installs nothing of it: it counts as desired and
+// skipped, and is logged once while the mesh keeps announcing it. The covers
+// beside it go in whole.
+func TestZeroRouteInsideTheHoleIsSkippedAndLoggedOnce(t *testing.T) {
+	logs := captureKernelLogs(t)
 	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
+	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
-	set(prefix("0.0.0.0/0"))
-	set(prefix("::/0"))
-	set(prefix("0.0.0.0/24"))
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
+	for _, destination := range []string{"0.0.0.0/0", "::/0", "0.0.0.0/24", "::/16"} {
+		set(prefix(destination))
 	}
-	if fake.has(Route{Destination: prefix("0.0.0.0/24")}) {
-		t.Error("a route holding the zero address installed with the underlay uncovered")
+	for pass := range 2 {
+		if err := reconciler.reconcile(); err != nil {
+			t.Fatal(err)
+		}
+		if fake.has(Route{Destination: prefix("0.0.0.0/24")}) || fake.has(Route{Destination: prefix("::/16"), Metric: defaultIPv6Metric}) {
+			t.Errorf("pass %d installed a route inside the hole: %v", pass, fake.snapshot())
+		}
+		if members, _ := coverHeld(fake); members != 16 {
+			t.Errorf("pass %d leaves the cover %d members beside the routes inside the hole, want 16", pass, members)
+		}
+		stats := reconciler.Stats()
+		if stats.Desired != 18 || stats.Installed != 16 || stats.Skipped != 2 {
+			t.Errorf("pass %d reports %d desired, %d installed and %d skipped, want 18, 16 and 2", pass, stats.Desired, stats.Installed, stats.Skipped)
+		}
 	}
-	if members, _ := coverHeld(fake); members != 16 {
-		t.Errorf("the cover is %d members beside an uncovered capture, want 16", members)
+	var reported []string
+	for line := range strings.Lines(logs.String()) {
+		if strings.Contains(line, "its cover holds nothing of") {
+			reported = append(reported, line)
+		}
 	}
-	// the family of the capture alone, since the covers need nothing of it
-	if want := []Covered{{V4: true}}; !slices.Equal(capture.wants, want) {
-		t.Errorf("the underlay was asked to cover %v, want %v", capture.wants, want)
+	if len(reported) != 2 {
+		t.Errorf("two passes logged %d lines for the two routes inside the hole, want one each: %v", len(reported), reported)
 	}
 }
 
@@ -955,23 +918,18 @@ func TestScopedRouteWithholdsNoMember(t *testing.T) {
 	}
 }
 
-// A capture the platform scopes takes none of the machine's unscoped lookups:
-// a default from a source asks the underlay for nothing and goes in with the
-// underlay uncovered. The hold Babel keeps at a retracted default stays out of
-// the kernel, scoped or not.
-func TestScopedCaptureAsksTheUnderlayForNothingAndAHeldDefaultStaysOut(t *testing.T) {
+// A default from a source is no zero route the cover stands in for, and goes
+// in whole with the host holding no default of its own. The hold Babel keeps
+// at a retracted default stays out of the kernel, scoped or not.
+func TestSourcedDefaultGoesInWholeAndAHeldDefaultStaysOut(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	reconciler.plat = scopingCoveringKernel{fake}
-	capture := &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
+	reconciler.rt.Capture = &recordingCapture{fake: fake}
 	reconciler.now = func() time.Time { return start }
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), netstack.Unreachable)
 	table.Set(prefix("2001:db8:bb::/48"), prefix("::/0"), nil)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
-	}
-	if slices.ContainsFunc(capture.wants, func(want Covered) bool { return want != (Covered{}) }) {
-		t.Errorf("a scoped capture asked the underlay to cover %v", capture.wants)
 	}
 	sourced := Route{Destination: prefix("::/0"), Source: prefix("2001:db8:bb::/48"), Metric: defaultIPv6Metric}
 	if got := fake.snapshot(); !slices.Equal(got, []Route{sourced}) {

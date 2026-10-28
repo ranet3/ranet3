@@ -40,15 +40,13 @@ type Client struct {
 	privateKey    ed25519.PrivateKey
 	speaker       *babel.Speaker
 	hub           *transport.Hub
-	// closeUnderlay releases whatever the transport's underlay setting had to
-	// open, which on darwin is the route socket the binding follows. Nil on a
-	// Client built by hand in a test.
+	// closeUnderlay releases whatever the transport's underlay had to open,
+	// which on darwin is the selection and its route watcher. Nil on a Client
+	// built by hand in a test.
 	closeUnderlay func()
-	// capture holds whatever the route reconciler needs in the kernel before
-	// it hands this machine's own traffic to the mesh, nil where the platform
-	// needs nothing. It lives here rather than in main because it shares the
-	// link watcher the transport binds through, and the two have to agree
-	// about which interface the underlay is on.
+	// capture answers whether the host holds a default of its own in each
+	// family, which the route reconciler's cover waits for, nil where nothing
+	// waits. It is the transport's selection, which this client opens.
 	capture kernel.CaptureRoutes
 	// host is the machine the underlay and the route reconciler read and
 	// write, nil for the one this process is running on. It is kept so the
@@ -525,9 +523,9 @@ func borderSIDs(cfg *config.Config) []netip.Addr {
 	return sids
 }
 
-// CaptureRoutes holds the routing the reconciler needs while the mesh carries
-// this machine's own traffic, or nil where the platform needs nothing. The
-// command that builds the reconciler hands it to kernel.Config.
+// CaptureRoutes answers whether the host holds a default of its own in each
+// family, or is nil where nothing waits for one. The command that builds the
+// reconciler hands it to kernel.Runtime.
 func (c *Client) CaptureRoutes() kernel.CaptureRoutes { return c.capture }
 
 // KernelRuntime assembles what cap.table's reconciler reads from outside the

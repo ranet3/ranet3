@@ -54,7 +54,6 @@ var (
 // the reconciler's stop and table are handed to the node before the reconciler runs, as the daemon hands them over
 func startDownable(t *testing.T, host *recordedKernel, stateDir string) *daemon {
 	t.Helper()
-	redirectUnderlayState(t)
 	var d *daemon
 	retryPort(t, "bind", func() (err error) {
 		d, err = tryDownable(t, host, stateDir)
@@ -135,9 +134,8 @@ func (k *recordedKernel) meshHeld() []recordedRoute {
 	return out
 }
 
-// down on a darwin node takes its routes and its address off the mesh device, and with the capture gone the fallback of the uplink goes too
-// the fallback serves the transport's socket only while a route over :: is in the tun, and up puts the routes, the address and the fallback back
-func TestDownTakesTheMeshDeviceBareAndTheUnderlayFallbackWithIt(t *testing.T) {
+// down on a darwin node takes its routes, the cover among them, and its address off the mesh device, and up puts them back
+func TestDownTakesTheMeshDeviceBareWithTheCover(t *testing.T) {
 	d := startDownable(t, recordedHost(t), t.TempDir())
 	// the session counts as live, which a capture waits for
 	d.node.sessions.mu.Lock()
@@ -145,18 +143,18 @@ func TestDownTakesTheMeshDeviceBareAndTheUnderlayFallbackWithIt(t *testing.T) {
 	d.node.sessions.mu.Unlock()
 	holdSessions(d.node).adopt(t, d.node, "example/gateway:1@0")
 	d.announce(ordinaryPrefix)
-	d.announce(halfCapture)
+	d.announce(capturingPrefix)
 	waitForKernel(t, "the ordinary prefix and the announced address are on the mesh device", d.dressed)
-	waitForKernel(t, "the half capture draws the fallback", func() bool { return len(d.host.scopedDefaults()) != 0 })
-	fallback := d.host.scopedDefaults()
+	coverWhole := func() bool {
+		plain, _ := d.host.coverInstalled()
+		return plain == len(ipv6Cover)
+	}
+	waitForKernel(t, "the announced default is on the mesh device as its cover", coverWhole)
 
 	if _, err := d.node.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	d.waitBare(t)
-	if got := d.host.scopedDefaults(); len(got) != 0 {
-		t.Errorf("down left the fallback of the uplink as %+v with nothing in the tun needing it", got)
-	}
 
 	if _, err := d.node.Up(context.Background()); err != nil {
 		t.Fatal(err)
@@ -164,10 +162,13 @@ func TestDownTakesTheMeshDeviceBareAndTheUnderlayFallbackWithIt(t *testing.T) {
 	waitForKernel(t, "the ordinary prefix and the announced address are back on the mesh device", d.dressed)
 	// down closed the session, and the capture waits for a live one again
 	holdSessions(d.node).adopt(t, d.node, "example/gateway:1@0")
-	d.announce(halfCapture)
-	waitForKernel(t, "the fallback is back under the half capture", func() bool {
-		return slices.Equal(d.host.scopedDefaults(), fallback)
-	})
+	d.announce(capturingPrefix)
+	waitForKernel(t, "the cover is back on the mesh device", coverWhole)
+	for _, write := range d.host.writes() {
+		if write.index != meshDeviceIndex {
+			t.Errorf("the node wrote %+v, which is not on its own tun", write)
+		}
+	}
 }
 
 // a darwin node whose flag is there when it starts writes nothing to its mesh device, its reconciler stopped before its first pass
@@ -220,7 +221,6 @@ type utunNode struct {
 // its file turns link.listen on, since the loader refuses a node that neither dials nor answers
 func startUTUN(t *testing.T, stateDir string) *utunNode {
 	t.Helper()
-	redirectUnderlayState(t)
 	dir := t.TempDir()
 	keyPath, trustPath, path := filepath.Join(dir, "key.pem"), filepath.Join(dir, "registry.json"), filepath.Join(dir, "config.yaml")
 	port := freeUDPPort(t)
