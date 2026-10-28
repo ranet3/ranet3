@@ -25,6 +25,7 @@ import (
 // off refuses everything and a read path is open to whoever reached the socket
 // a root path takes a caller the socket names as uid 0 or the daemon's own user
 // --debug-access group lets every named caller onto a root path
+// a plaintext path takes a caller the socket names as uid 0 and nobody else, under root and group alike
 // a refusal names the caller's uid
 // only the two users are drawn, and each pair meets every path, mode and credential in turn
 func TestDebugAccessFollowsTheRule(t *testing.T) {
@@ -44,9 +45,15 @@ func TestDebugAccessFollowsTheRule(t *testing.T) {
 					server.ServeHTTP(answer, request)
 
 					route, registered := debugRoutes[path]
-					root := registered && route.class == classRoot
-					admitted := known && (access == DebugGroup || uid == 0 || uid == euid)
-					refused := access == DebugOff || root && !admitted
+					var refused bool
+					switch {
+					case access == DebugOff:
+						refused = true
+					case registered && route.class == classRoot:
+						refused = !known || access != DebugGroup && uid != 0 && uid != euid
+					case registered && route.class == classPlaintext:
+						refused = !known || uid != 0
+					}
 					if got := answer.Code == http.StatusForbidden; got != refused {
 						ht.Fatalf("%s under %s for uid %d (known %v) with the daemon at uid %d answered %d %q, want refused %v",
 							path, access, uid, known, euid, answer.Code, answer.Body, refused)
