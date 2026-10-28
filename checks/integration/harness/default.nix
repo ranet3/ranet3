@@ -1592,7 +1592,7 @@ testers.runNixOSTest {
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
-            gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
+            gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built|N[(]INVAL_SPI[)]'")
 
             # Closing an idle TUN read must stop promptly without SIGKILL.
             client.succeed("systemctl stop ranet3.service")
@@ -1640,7 +1640,7 @@ testers.runNixOSTest {
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
-            gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
+            gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built|N[(]INVAL_SPI[)]'")
 
             # Losing the answered SA has to be recoverable without ranet3 ever
             # dialing, so the responder accepts a second SA for a peer it already
@@ -1713,7 +1713,7 @@ testers.runNixOSTest {
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
-            gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built'")
+            gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built|N[(]INVAL_SPI[)]'")
         finally:
             print(gateway.execute("swanctl --list-sas")[1])
             print(client.execute("ranet3 sessions")[1])
@@ -1899,7 +1899,7 @@ testers.runNixOSTest {
             client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
-            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED'")
+            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED|N[(]INVAL_SPI[)]'")
         finally:
             print(gateway.execute("swanctl --list-sas")[1])
             print(gateway.execute(f"{swan_log} | grep -E '{swan_lines}'")[1])
@@ -1962,7 +1962,7 @@ testers.runNixOSTest {
 
             client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
-            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built'")
+            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|N[(]INVAL_SPI[)]'")
         finally:
             print(gateway.execute(f"{swan_log} | grep -E '{swan_lines}'")[1])
             print(client.execute("ranet3 sessions")[1])
@@ -2013,7 +2013,7 @@ testers.runNixOSTest {
             client.fail(f"{ranet3_log} | grep -F ': dialing '")
             client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
-            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED'")
+            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED|N[(]INVAL_SPI[)]'")
         finally:
             print(gateway.execute("swanctl --list-sas")[1])
             print(gateway.execute(f"{swan_log} | grep -E '{swan_lines}'")[1])
@@ -2106,7 +2106,7 @@ testers.runNixOSTest {
             client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             client.fail(f"{ranet3_log} | grep -F 'ike dropped the fragments of a message the peer left incomplete'")
-            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED'")
+            gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED|N[(]INVAL_SPI[)]'")
         finally:
             print(gateway.execute("swanctl --list-sas")[1])
             print(gateway.execute(f"{swan_log} | grep -E '{swan_lines}|fragment|splitting'")[1])
