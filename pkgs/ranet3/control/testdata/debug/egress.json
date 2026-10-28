@@ -1,0 +1,139 @@
+{
+  "enabled": true,
+  "status": {
+    "enabled": true,
+    "where": "nftables table ip and ip6 ranet3 chains limit and egress",
+    "ready": [
+      "ipv4"
+    ],
+    "unready": "the kernel does not forward ipv6",
+    "advertise": [
+      "203.0.113.0/24",
+      "2001:db8::/32"
+    ],
+    "announced": [
+      "203.0.113.0/24"
+    ],
+    "flows_per_source": 1000,
+    "refused": {
+      "ipv4": 0,
+      "ipv6": 0
+    },
+    "dropped": {
+      "ipv4": 0,
+      "ipv6": 0
+    },
+    "pass_at": "2026-10-28T19:00:00Z",
+    "installed": 5,
+    "flows": 12,
+    "bytes": 960,
+    "untranslated": 0
+  },
+  "rules": [
+    {
+      "spec": "out via ranet0 ipv4 untracked dropped",
+      "wanted": true,
+      "held": true,
+      "counter": "packets",
+      "packets": 2,
+      "bytes": 120
+    },
+    {
+      "spec": "out via ranet0 ipv4 limit 1000",
+      "wanted": true,
+      "held": true,
+      "counter": "packets",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "out via ranet0 ipv4 timeouts udp",
+      "wanted": true,
+      "held": true,
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "out via ranet0 ipv4 masquerade",
+      "wanted": true,
+      "held": true,
+      "counter": "flows",
+      "packets": 12,
+      "bytes": 960
+    },
+    {
+      "spec": "local via ranet0 ipv4 from 192.0.2.1/32 masquerade",
+      "wanted": true,
+      "held": false,
+      "counter": "flows",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "",
+      "wanted": false,
+      "held": true,
+      "counter": "packets",
+      "packets": 4,
+      "bytes": 240
+    }
+  ],
+  "families": [
+    {
+      "family": "ipv4",
+      "ready": true,
+      "forwarding": true,
+      "lookups": [
+        {
+          "source": "192.0.2.65",
+          "destination": "203.0.113.128",
+          "iif": "ranet0",
+          "reply": true,
+          "answered": true,
+          "route": {
+            "type": "unicast",
+            "nexthops": [
+              {
+                "dev": "up0"
+              },
+              {
+                "dev": "up1",
+                "dead": true,
+                "linkdown": true
+              }
+            ]
+          },
+          "reply_iif": "up0",
+          "reply_route": {
+            "type": "unicast",
+            "nexthops": [
+              {
+                "dev": "ranet0"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "family": "ipv6",
+      "ready": false,
+      "why": "the kernel does not forward ipv6",
+      "forwarding": false
+    }
+  ],
+  "rp_filter": [
+    {
+      "name": "net/ipv4/conf/all/rp_filter",
+      "value": "0"
+    },
+    {
+      "name": "net/ipv4/conf/up0/rp_filter",
+      "value": "2"
+    },
+    {
+      "name": "net/ipv4/conf/up1/rp_filter",
+      "err": "unreadable"
+    }
+  ]
+}

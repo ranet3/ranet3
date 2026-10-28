@@ -1,0 +1,17 @@
+Exit  nftables table ip and ip6 ranet3 chains limit and egress, 5 rules, 12 flows, announcing 203.0.113.0/24, withholding 2001:db8::/32 until its family is ready, egress ready for ipv4, not ready for ipv6, the kernel does not forward ipv6, last pass 2 minutes ago
+Rules
+  out via ranet0 ipv4 untracked dropped               2 packets, 120 B
+  out via ranet0 ipv4 limit 1000                      0 packets, 0 B
+  out via ranet0 ipv4 timeouts udp                    uncounted
+  out via ranet0 ipv4 masquerade                      12 flows, 960 B of their first packets
+  local via ranet0 ipv4 from 192.0.2.1/32 masquerade  not held
+  a rule with no comment                              4 packets, 240 B, not asked for
+Family ipv4, ready
+  Chains      read back as written
+  Forwarding  on
+  Lookup      203.0.113.128 from 192.0.2.65 arriving on ranet0: unicast, dev up0, dev up1 dead linkdown
+  Reply       192.0.2.65 from 203.0.113.128 arriving on up0: unicast, dev ranet0
+Family ipv6, not ready, the kernel does not forward ipv6
+  Chains      read back as written
+  Forwarding  off
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/up0/rp_filter 2, net/ipv4/conf/up1/rp_filter unreadable
