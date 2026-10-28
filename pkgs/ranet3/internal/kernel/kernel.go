@@ -1280,7 +1280,7 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], throws, h
 	if r.table.Mode() != nil && !listed {
 		return nil
 	}
-	exit, status := r.exitPass(held)
+	exit, status := r.exitPass(held, snapshot)
 	r.reportExit(status)
 	if exit.fallback {
 		exit.own = throws

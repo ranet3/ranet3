@@ -31,7 +31,9 @@ import (
 // node's own prefixes: 5405 comes ahead of 5430, so an overlay address on lo,
 // or an address in a LAN this node announces, would otherwise leave by main
 // where mode off sends it into the mesh. A selector overlapping either is left
-// out whole.
+// out whole. One that a carve-out holds whole and no entry of the mesh's table
+// inside that carve-out holds is not left out for the overlay, since the link's
+// neighbors hold its addresses.
 //
 // Under fallback = "none" (exit.fallback) mode 2 adds two more to both
 // families, so a family the tun holds no overlay address of runs mode off's
@@ -104,16 +106,19 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 
 // exitView is mode 2 as a pass derives its rules: the host's links outside the
 // mesh as the network watch reads them, the names forward expands to among them
-// (see expandForward), and each family the tun holds no overlay address of. The
-// zero value is mode off, whatever it holds beside. fallback is cap.exit
-// fallback = "none", own is this node's own prefixes the mesh's table throws,
-// which a pass reads only under it, lan is the prefixes cap.exit lan lists,
-// and unheld is the table ranet3_fallback not holding, which a pass reads only
-// under fallback.
+// (see expandForward), the carve-outs of those links, the destinations of the
+// mesh's table, and each family the tun holds no overlay address of. The zero
+// value is mode off, whatever it holds beside. fallback is cap.exit fallback =
+// "none", own is this node's own prefixes the mesh's table throws, which a
+// pass reads only under it, lan is the prefixes cap.exit lan lists, and unheld
+// is the table ranet3_fallback not holding, which a pass reads only under
+// fallback.
 type exitView struct {
 	on          bool
 	network     NetworkState
 	forwarded   []string
+	carved      []netip.Prefix
+	table       []netip.Prefix
 	unaddressed []Family
 	fallback    bool
 	own         []netip.Prefix
@@ -138,9 +143,9 @@ func thrown(desired []Route) []netip.Prefix {
 // sources is the selectors of one family's 5405 and 5435: each address of a
 // link outside the mesh as a host prefix, and each connected network shorter
 // than a host prefix and each point-to-point far end outside those networks of
-// a link forward leaves out, masked, each sorted and once. Mode off, a family
-// the tun holds no overlay address of and fallback = "none" while its table
-// does not hold have none.
+// a link forward leaves out, masked, each sorted and once, none refused. Mode
+// off, a family the tun holds no overlay address of and fallback = "none"
+// while its table does not hold have none.
 func (v exitView) sources(family Family, overlay, own []netip.Prefix) (addresses, networks []netip.Prefix) {
 	if !v.on || slices.Contains(v.unaddressed, family) || v.fallback && v.unheld {
 		return nil, nil
@@ -170,12 +175,27 @@ func (v exitView) sources(family Family, overlay, own []netip.Prefix) (addresses
 		}
 	}
 	own = familyPrefixes(family, own)
-	taken := func(prefix netip.Prefix) bool {
-		return slices.ContainsFunc(overlay, prefix.Overlaps) ||
-			// 5430 sends this node's own sources into the mesh in every mode
-			slices.ContainsFunc(own, prefix.Overlaps)
-	}
-	return slices.DeleteFunc(familyPrefixes(family, addresses), taken), slices.DeleteFunc(familyPrefixes(family, networks), taken)
+	refused := func(selector netip.Prefix) bool { return v.refused(selector, overlay, own) }
+	return slices.DeleteFunc(familyPrefixes(family, addresses), refused), slices.DeleteFunc(familyPrefixes(family, networks), refused)
+}
+
+// refused reports whether 5405 and 5435 leave a selector out: one overlapping
+// the overlay, unless the link holds it, or one overlapping this node's own
+// prefixes, whose sources 5430 sends into the mesh in every mode
+func (v exitView) refused(selector netip.Prefix, overlay, own []netip.Prefix) bool {
+	return slices.ContainsFunc(overlay, selector.Overlaps) && !v.linkHolds(selector) ||
+		slices.ContainsFunc(own, selector.Overlaps)
+}
+
+// linkHolds reports whether a carve-out holds a selector whole and no entry of
+// the mesh's table inside that carve-out does, since the link's neighbors hold
+// such a carve-out's addresses and the mesh holds the rest. An entry wider than
+// the carve-out, an exit's default among them, is the route the carve-out
+// takes the link's addresses back from, so linkHolds passes over it.
+func (v exitView) linkHolds(selector netip.Prefix) bool {
+	return slices.ContainsFunc(v.carved, func(carve netip.Prefix) bool {
+		return encloses(carve, selector) && !slices.ContainsFunc(v.table, func(entry netip.Prefix) bool { return encloses(carve, entry) && encloses(entry, selector) })
+	})
 }
 
 func schemaPrefixes(prefixes []schema.Prefix) []netip.Prefix {

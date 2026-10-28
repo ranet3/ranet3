@@ -63,19 +63,30 @@ func modeOff(id schema.TableID, overlay, own []netip.Prefix) map[Rule]bool {
 // outside the mesh, 5435 from each connected network shorter than a host
 // prefix and each point-to-point far end none of those holds of a link not
 // forwarded, 5440 for the host's own traffic and each forwarded link, and no
-// 5405 or 5435 from a source the overlay or an own prefix 5430 selects holds.
-// A family the tun holds no overlay address of keeps mode off's rules alone.
-func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkState, forwarded []string, unaddressed []Family) map[Rule]bool {
+// 5405 or 5435 from a source sharing an address with an own prefix 5430
+// selects, or with the overlay but for one a carve-out holds whole and no
+// entry of the table inside that carve-out does, an exit's default never
+// among them. A family the tun holds no overlay address of keeps mode off's
+// rules alone.
+func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkState, forwarded []string, unaddressed []Family, carved, table []netip.Prefix) map[Rule]bool {
 	out := modeOff(id, overlay, own)
-	taken := slices.Clone(overlay)
+	var taken []netip.Prefix
 	for _, prefix := range own {
 		if prefix.Bits() > 0 {
 			taken = append(taken, prefix)
 		}
 	}
-	// a network and a taken prefix share an address exactly where one holds the other's first
+	linkOwns := func(selector netip.Prefix) bool {
+		return slices.ContainsFunc(carved, func(carve netip.Prefix) bool {
+			return holds(carve, selector) && !slices.ContainsFunc(table, func(entry netip.Prefix) bool { return holds(carve, entry) && holds(entry, selector) })
+		})
+	}
+	// a network and a prefix share an address exactly where one holds the other's first
+	sharesWith := func(prefixes []netip.Prefix, network netip.Prefix) bool {
+		return slices.ContainsFunc(prefixes, func(o netip.Prefix) bool { return o.Contains(network.Addr()) || network.Contains(o.Masked().Addr()) })
+	}
 	shares := func(network netip.Prefix) bool {
-		return slices.ContainsFunc(taken, func(o netip.Prefix) bool { return o.Contains(network.Addr()) || network.Contains(o.Masked().Addr()) })
+		return sharesWith(overlay, network) && !linkOwns(network) || sharesWith(taken, network)
 	}
 	for family, links := range map[Family][]Link{FamilyIPv4: network.IPv4.Links, FamilyIPv6: network.IPv6.Links} {
 		if slices.Contains(unaddressed, family) {
@@ -116,8 +127,8 @@ func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkStat
 // to each own prefix the mesh's table throws by main, and 5450 unreachable for
 // the host's own traffic and each forwarded link, less 5405 and 5435 while the
 // table does not hold
-func modeTwoNone(id schema.TableID, overlay, own []netip.Prefix, network NetworkState, forwarded []string, unaddressed []Family, thrown []netip.Prefix, unheld bool) map[Rule]bool {
-	out := modeTwo(id, overlay, own, network, forwarded, unaddressed)
+func modeTwoNone(id schema.TableID, overlay, own []netip.Prefix, network NetworkState, forwarded []string, unaddressed []Family, carved, table, thrown []netip.Prefix, unheld bool) map[Rule]bool {
+	out := modeTwo(id, overlay, own, network, forwarded, unaddressed, carved, table)
 	if unheld {
 		maps.DeleteFunc(out, func(rule Rule, _ bool) bool { return rule.Priority == 5405 || rule.Priority == 5435 })
 	}
@@ -224,14 +235,29 @@ func TestDerivedRulesAreModeTwoWithTheLinksAndModeOffWithout(t *testing.T) {
 		none := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
 		unheld := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
 		thrown := hegel.Draw(ht, anyPrefixes())
+		var carved []netip.Prefix
+		for _, carveOut := range carveModel(network, prefixes(overlay...)) {
+			carved = append(carved, carveOut.Prefix)
+		}
+		var table []netip.Prefix
+		for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+			for range hegel.Draw(ht, pbt.Spanning(0, 2)) {
+				address := netip.MustParseAddr(exitAddresses[family][hegel.Draw(ht, pbt.Spanning(0, len(exitAddresses[family])-1))])
+				table = append(table, netip.PrefixFrom(address, exitLengths[family][hegel.Draw(ht, pbt.Spanning(0, len(exitLengths[family])-1))]).Masked())
+			}
+			// an exit's default, which holds every carve-out and leaves each to the link
+			if hegel.Draw(ht, pbt.Spanning(0, 2)) == 2 {
+				table = append(table, map[Family]netip.Prefix{FamilyIPv4: netip.MustParsePrefix("0.0.0.0/0"), FamilyIPv6: netip.MustParsePrefix("::/0")}[family])
+			}
+		}
 
-		derived := derivedRules(id, prefixes(overlay...), own, exitView{on: on, network: network, forwarded: forwarded, unaddressed: unaddressed, fallback: none, own: thrown, unheld: unheld})
+		derived := derivedRules(id, prefixes(overlay...), own, exitView{on: on, network: network, forwarded: forwarded, carved: carved, table: table, unaddressed: unaddressed, fallback: none, own: thrown, unheld: unheld})
 		want := modeOff(id, overlay, own)
 		switch {
 		case on && none:
-			want = modeTwoNone(id, overlay, own, network, forwarded, unaddressed, thrown, unheld)
+			want = modeTwoNone(id, overlay, own, network, forwarded, unaddressed, carved, table, thrown, unheld)
 		case on:
-			want = modeTwo(id, overlay, own, network, forwarded, unaddressed)
+			want = modeTwo(id, overlay, own, network, forwarded, unaddressed, carved, table)
 		}
 		got := map[Rule]bool{}
 		for i, rule := range derived {
@@ -242,8 +268,14 @@ func TestDerivedRulesAreModeTwoWithTheLinksAndModeOffWithout(t *testing.T) {
 			if rule.action == actionGoto && !slices.Contains(derived[:i], Rule{Family: rule.Family, Priority: rule.target, action: actionNop}) {
 				ht.Fatalf("%s comes ahead of the nop it lands on in %v", rule, derived)
 			}
-			if (rule.Priority == 5405 || rule.Priority == 5435) && slices.ContainsFunc(overlay, rule.From.Overlaps) {
-				ht.Fatalf("%s selects a source of the overlay %v", rule, overlay)
+			if (rule.Priority == 5405 || rule.Priority == 5435) && slices.ContainsFunc(overlay, rule.From.Overlaps) && !slices.ContainsFunc(carved, func(c netip.Prefix) bool { return holds(c, rule.From.Prefix) }) {
+				ht.Fatalf("%s selects a source of the overlay %v outside every carve-out %v", rule, overlay, carved)
+			}
+			// an entry wider than a carve-out, an exit's default among them, leaves the carve-out to the link
+			if (rule.Priority == 5405 || rule.Priority == 5435) && slices.ContainsFunc(overlay, rule.From.Overlaps) && !slices.ContainsFunc(carved, func(c netip.Prefix) bool {
+				return holds(c, rule.From.Prefix) && !slices.ContainsFunc(table, func(d netip.Prefix) bool { return holds(c, d) && holds(d, rule.From.Prefix) })
+			}) {
+				ht.Fatalf("%s selects a source of the overlay that an entry of the table %v holds inside each carve-out %v holding it", rule, table, carved)
 			}
 			if (rule.Priority == 5405 || rule.Priority == 5435) && slices.ContainsFunc(own, func(o netip.Prefix) bool { return o.Bits() > 0 && rule.From.Overlaps(o) }) {
 				ht.Fatalf("%s selects a source of this node's own %v", rule, own)
@@ -409,6 +441,45 @@ func TestModeTwoDerivesItsRulesFromTheLinks(t *testing.T) {
 		if got, want := modeTwoRules(t, c.overlay, c.own, c.view), slices.Sorted(slices.Values(c.want)); !slices.Equal(got, want) {
 			t.Errorf("mode 2 with %s derives\n%s\nwant\n%s", c.what, strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
+	}
+}
+
+// A lease as wide as the overlay is carved, so its address and its network are
+// selected for main and a service on the lease's address answers by the link,
+// whatever the exit's default the mesh's table holds in mode 2. The tun's own
+// address inside it, an entry of the table, is not, and neither is an overlay
+// address on lo, nor the lease's network once a prefix of this node's own lies
+// inside it.
+func TestModeTwoSelectsACarvedLeaseForMain(t *testing.T) {
+	p := netip.MustParsePrefix
+	overlay := prefixes(p("192.0.2.0/24"))
+	network := NetworkState{IPv4: NetworkFamily{Links: []Link{
+		{Name: "eth0", Prefixes: []netip.Prefix{p("192.0.2.10/24")}},
+		{Name: "lo", Prefixes: []netip.Prefix{p("192.0.2.200/32"), p("192.0.2.1/32")}},
+	}}}
+	reconciler, routes, _ := harness(t, Table{}.WithMode(&ExitMode{}), Runtime{Overlay: overlay, Network: func() NetworkState { return network }})
+	routes.Set(netip.Prefix{}, p("192.0.2.200/32"), netstack.Assigned)
+	routes.Set(netip.Prefix{}, p("192.0.2.1/32"), netstack.Local)
+	routes.Set(netip.Prefix{}, p("0.0.0.0/0"), learned)
+	exit, _ := reconciler.exitPass([]netip.Prefix{p("192.0.2.200/32")}, routes.Snapshot())
+	selected := func(own []netip.Prefix) map[Rule]bool {
+		out := map[Rule]bool{}
+		for _, rule := range derivedRules(DefaultTable, overlay, own, exit) {
+			if rule.Priority == priorityUplinkSource || rule.Priority == priorityLinkSource {
+				out[rule] = true
+			}
+		}
+		return out
+	}
+	address := Rule{Family: FamilyIPv4, Priority: 5405, From: schema.PrefixFrom(p("192.0.2.10/32")), IIF: "lo", Table: schema.TableMain}
+	lease := Rule{Family: FamilyIPv4, Priority: 5435, From: schema.PrefixFrom(p("192.0.2.0/24")), IIF: "lo", Table: schema.TableMain}
+	if got, want := selected(nil), map[Rule]bool{address: true, lease: true}; !maps.Equal(got, want) {
+		t.Errorf("mode 2 selects for main\n%v\nwant\n%v", slices.Collect(maps.Keys(got)), slices.Collect(maps.Keys(want)))
+	}
+	// a LAN of this node's own inside the lease, which no entry of the table holds, still leaves out the lease's
+	// network overlapping it, whose sources 5430 sends into the mesh, and not the lease's address outside it
+	if got, want := selected([]netip.Prefix{p("192.0.2.128/25")}), map[Rule]bool{address: true}; !maps.Equal(got, want) {
+		t.Errorf("mode 2 with an own prefix inside the lease selects for main\n%v\nwant\n%v", slices.Collect(maps.Keys(got)), slices.Collect(maps.Keys(want)))
 	}
 }
 
