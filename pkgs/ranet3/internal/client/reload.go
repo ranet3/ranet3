@@ -592,12 +592,11 @@ func sortedPrefixes(prefixes []netip.Prefix) []netip.Prefix {
 // read back as written and that answer changes under a running node.
 // advertised is the second set, as the caller's one read of egressAdvertised gives it
 func (c *Client) announced(cfg *config.Config, advertised []netip.Prefix) []babel.OriginatedRoute {
-	serves := c.egressServes.Load() && !c.borderHeld.Load()
 	routes := cfg.Routes().Originated()
 	for _, prefix := range advertised {
 		routes = append(routes, babel.OriginatedRoute{Destination: prefix})
 	}
-	if !serves {
+	if !c.servesEgressSIDs() {
 		return routes
 	}
 	for _, segment := range cfg.Segments().Egress() {
@@ -605,6 +604,11 @@ func (c *Client) announced(cfg *config.Config, advertised []netip.Prefix) []babe
 	}
 	return routes
 }
+
+// servesEgressSIDs is whether the egress SIDs' /128s are announced: while the
+// translator's last word says they are served and the border filter does not
+// hold them back
+func (c *Client) servesEgressSIDs() bool { return c.egressServes.Load() && !c.borderHeld.Load() }
 
 // egressAdvertised is the prefixes the exit may advertise now, and none on a
 // node with no exit. See announced.

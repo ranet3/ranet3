@@ -1,0 +1,65 @@
+{
+  "segments": [
+    {
+      "sid": "3fff:b:0:200::1",
+      "behavior": "End"
+    },
+    {
+      "sid": "3fff:b:0:200::2",
+      "behavior": "End.DT46",
+      "deliver": "mesh"
+    },
+    {
+      "sid": "3fff:b:0:200::3",
+      "behavior": "End.DT46",
+      "deliver": "egress",
+      "allow": [
+        "192.0.2.0/24",
+        "3fff:a::/32"
+      ],
+      "egress": {
+        "served": true,
+        "ready": [
+          "ipv4",
+          "ipv6"
+        ]
+      }
+    }
+  ],
+  "steering": {
+    "enabled": true,
+    "overhead": 80,
+    "policies": [
+      {
+        "from": "192.0.2.1/32",
+        "source": "3fff:b:0:100::1",
+        "path": [
+          "3fff:b:0:206::1"
+        ],
+        "overhead": 64
+      },
+      {
+        "from": "3fff:a::/48",
+        "to": "2001:db8::/32",
+        "source": "3fff:b:0:100::1",
+        "path": [
+          "3fff:b:0:206::1",
+          "3fff:b:0:406::1"
+        ],
+        "overhead": 80
+      }
+    ]
+  },
+  "counters": {
+    "forwarded": 12,
+    "delivered": 7,
+    "dropped": 2,
+    "steered": 40,
+    "unsteered": 0,
+    "unrouted": 0,
+    "answered": 1,
+    "egressed": 5,
+    "refused": 1,
+    "not_ready": 0
+  }
+}
