@@ -4,6 +4,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -350,5 +351,65 @@ func TestFifthStreamIsRefusedAmongTraces(t *testing.T) {
 	}
 	if len(src.traces) != 0 {
 		t.Error("a refused trace opened")
+	}
+}
+
+// traceLines is one record of each decision over both families, among the notes a trace writes
+func traceLines() []TraceLine {
+	at := time.Date(2026, 10, 28, 19, 30, 0, 0, time.UTC)
+	gateway, relay := "example/gateway:0@1", "example/relay:1@0"
+	a4, c4, b4 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.3"), netip.MustParseAddr("192.0.2.2")
+	a6, c6 := netip.MustParseAddr("3fff::1"), netip.MustParseAddr("3fff::3")
+	packets := []TracePacket{
+		{Arrival: "session", From: gateway, Decision: "forward", Next: relay, Source: a4, Destination: c4, Protocol: 17,
+			Transport: true, SourcePort: 40000, DestinationPort: 9000, HopLimit: 64, Length: 48},
+		{Arrival: "session", From: gateway, Decision: "forward", Next: relay, Source: a6, Destination: c6, Protocol: 6, Headers: []string{"hop-by-hop"},
+			Transport: true, SourcePort: 40000, DestinationPort: 443, TCPFlags: 0x12, HopLimit: 64, Length: 1500, Fragments: 2},
+		{Arrival: "session", From: gateway, Decision: "answer", Reason: "expired", Source: a4, Destination: c4, Protocol: 1,
+			Transport: true, ICMPType: 8, HopLimit: 1, Length: 84, Answer: "expired", Outcome: "sent"},
+		{Arrival: "session", From: gateway, Decision: "answer", Reason: "held", Source: a6, Destination: c6, Protocol: 58,
+			Transport: true, ICMPType: 128, HopLimit: 63, Length: 104, Answer: "no_route", Outcome: "withheld"},
+		{Arrival: "tun", Decision: "deliver", Source: c6, Destination: a6, Protocol: 17, HopLimit: 64, Length: 1232},
+		{Arrival: "session", From: gateway, Decision: "egress", Source: a4, Destination: netip.MustParseAddr("203.0.113.9"), Protocol: 6,
+			Transport: true, SourcePort: 40001, DestinationPort: 80, TCPFlags: 0x02, HopLimit: 63, Length: 60, Payload: []byte{0x45, 0x00, 0x00, 0x3c}},
+		{Arrival: "tun", Decision: "drop", Reason: "forged", Source: netip.MustParseAddr("198.51.100.7"), Destination: c4, Protocol: 47, HopLimit: 64, Length: 120},
+		{Arrival: "session", From: gateway, Decision: "drop", Reason: "budget", Next: relay,
+			Source: a6, Destination: c6, Protocol: 17, HopLimit: 63, Length: 1280},
+		{Arrival: "none", Decision: "drop", Reason: "martian", Source: netip.MustParseAddr("169.254.0.1"), Destination: b4, Protocol: 17, HopLimit: 64, Length: 28},
+	}
+	lines := []TraceLine{{Note: &Event{At: at, Kind: "stream.live"}}}
+	for i := range packets {
+		lines = append(lines, TraceLine{Packet: &packets[i]})
+	}
+	return append(lines,
+		TraceLine{Note: &Event{At: at, Kind: "stream.dropped", Attrs: map[string]string{"rate": "12", "queue": "0"}}},
+		TraceLine{Note: &Event{At: at, Kind: "stream.closed", Attrs: map[string]string{"reason": "the daemon is stopping"}}},
+	)
+}
+
+// a trace prints one line a record or note, and its wire form one JSON line each that reads back as it was
+func TestTraceGoldens(t *testing.T) {
+	var text, wire bytes.Buffer
+	encoder := json.NewEncoder(&wire)
+	for _, line := range traceLines() {
+		RenderTraceLine(&text, line)
+		if err := encoder.Encode(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	golden(t, "trace.txt", text.Bytes())
+	golden(t, "trace.ndjson", wire.Bytes())
+	decoder := json.NewDecoder(&wire)
+	for i, want := range traceLines() {
+		var got TraceLine
+		if err := decoder.Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		var sent, read bytes.Buffer
+		RenderTraceLine(&sent, want)
+		RenderTraceLine(&read, got)
+		if sent.String() != read.String() {
+			t.Errorf("line %d reads back as %q, sent as %q", i, read.String(), sent.String())
+		}
 	}
 }

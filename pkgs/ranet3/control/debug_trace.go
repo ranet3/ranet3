@@ -4,10 +4,13 @@
 package control
 
 import (
+	"cmp"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"maps"
 	"net/http"
@@ -16,6 +19,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // PathDebugTrace streams each packet's forwarding decision as the node makes it
@@ -307,6 +311,71 @@ func serveTrace(d *debugServer, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	feed.pour(d, w, r)
+}
+
+// tcpFlagNames names the TCP flags from the lowest bit, RFC 9293 section 3.1 and RFC 3168 section 6.1
+var tcpFlagNames = []string{"fin", "syn", "rst", "psh", "ack", "urg", "ece", "cwr"}
+
+// RenderTracePacket writes one record as one line: the decision, the protocol, source and destination, then the record's other fields by name
+func RenderTracePacket(w io.Writer, p TracePacket) {
+	protocol := strconv.Itoa(int(p.Protocol))
+	for name, number := range TraceProtocols {
+		if number == p.Protocol {
+			protocol = name
+		}
+	}
+	ported := p.Transport && (p.Protocol == 6 || p.Protocol == 17 || p.Protocol == 132)
+	endpoint := func(address netip.Addr, port uint16) string {
+		if ported {
+			return netip.AddrPortFrom(address, port).String()
+		}
+		return address.String()
+	}
+	line := []string{p.Decision, protocol, endpoint(p.Source, p.SourcePort), ">", endpoint(p.Destination, p.DestinationPort)}
+	add := func(key, value string) {
+		if value != "" {
+			line = append(line, key+"="+value)
+		}
+	}
+	add("reason", p.Reason)
+	add("arrival", p.Arrival)
+	add("from", p.From)
+	add("next", p.Next)
+	if p.Segment.IsValid() {
+		add("segment", p.Segment.String())
+	}
+	add("headers", strings.Join(p.Headers, ","))
+	if p.Transport && p.Protocol == 6 {
+		var flags []string
+		for bit, name := range tcpFlagNames {
+			if p.TCPFlags&(1<<bit) != 0 {
+				flags = append(flags, name)
+			}
+		}
+		add("tcp_flags", cmp.Or(strings.Join(flags, ","), "none"))
+	}
+	if p.Transport && (p.Protocol == 1 || p.Protocol == 58) {
+		add("icmp_type", strconv.Itoa(int(p.ICMPType)))
+		add("icmp_code", strconv.Itoa(int(p.ICMPCode)))
+	}
+	add("hop_limit", strconv.Itoa(int(p.HopLimit)))
+	add("length", strconv.Itoa(p.Length))
+	if p.Fragments != 0 {
+		add("fragments", strconv.Itoa(p.Fragments))
+	}
+	add("answer", p.Answer)
+	add("outcome", p.Outcome)
+	add("payload", hex.EncodeToString(p.Payload))
+	fmt.Fprintln(w, strings.Join(line, " "))
+}
+
+// RenderTraceLine writes a record as RenderTracePacket does and a note as RenderEvent does
+func RenderTraceLine(w io.Writer, line TraceLine) {
+	if line.Packet != nil {
+		RenderTracePacket(w, *line.Packet)
+	} else if line.Note != nil {
+		RenderEvent(w, *line.Note)
+	}
 }
 
 // Trace reads the records query selects as the node decides them, with the notes the stream writes about itself but its heartbeats
