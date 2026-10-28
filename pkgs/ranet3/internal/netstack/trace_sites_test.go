@@ -201,6 +201,11 @@ var outcomeCases = func() []outcomeCase {
 		{"an egress segment after End", transitDelivered, acted(nil, headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressWaypoint, egressExit)), with(session(TraceEgress, ""), func(r *TraceRecord) { r.Segment = egressExit })},
 		{"an egress segment refusing a source after End", transitRefused, acted(nil, headendSteered(udpPacket(stranger[6], transitNowhere[6], 100, false), egressWaypoint, egressExit)), with(session(TraceDrop, "refused"), func(r *TraceRecord) { r.Segment = egressExit })},
 		{"End", transitForwarded, acted(nil, end(64)), with(session(TraceForward, ""), func(r *TraceRecord) { r.Next, r.Segment = "next", egressNext })},
+		{"End to a peer whose budget refused it", traceBudget, acted(func(m *Mesh) {
+			closed := NewPeer("closed", func(int) (BatchSealer, error) { return benchSealer, nil }, func([][]byte) error { return nil }, nil)
+			closed.Close()
+			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), closed)
+		}, end(64)), with(session(TraceDrop, "budget"), func(r *TraceRecord) { r.Next = "closed" })},
 		{"End past the hop limit", transitExpired, acted(nil, end(1)), with(session(TraceDrop, "expired"), func(r *TraceRecord) { r.Segment = egressWaypoint })},
 	}
 }()
