@@ -173,6 +173,7 @@ testers.runNixOSTest {
     # and the same exit egressing each shape of the internet it advertises translated, a stranger's source refused
     # and an exit egressing both modes through its one tun, held not ready by each kernel lookup that fails and refusing a mesh destination at its SID
     # and a leaf's sockets of every kind sent where the derived rules and the mirror send them, beside another program's table, as an exit, and nothing left after a stop
+    # and the same leaf in exit mode beside a masqueraded bridge and a routed LAN, under each reverse path check
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -186,8 +187,9 @@ testers.runNixOSTest {
     assert "--- PASS: TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment" in out, f"mode 2 egress at a node with no egress segment did not run:\n{out}"
     assert "--- PASS: TestTUNExitEgressesBothModesThroughItsOneTun" in out, f"the egress lab did not run:\n{out}"
     assert "--- PASS: TestTUNDerivedRulesSendEachSocketWhereModeOffSays" in out, f"the derived rules' socket lab did not run:\n{out}"
+    assert "--- PASS: TestTUNExitModeSendsEachSocketWhereModeTwoSays" in out, f"the exit mode's socket lab did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 11, f"only {ran} of the client's tun round trips ran:\n{out}"
+    assert ran >= 12, f"only {ran} of the client's tun round trips ran:\n{out}"
 
     # every datagram sent with DF and the path mtu a refused one reports, against linux itself
     # and a family's socket fragmenting past the path only while a session of the family asks
