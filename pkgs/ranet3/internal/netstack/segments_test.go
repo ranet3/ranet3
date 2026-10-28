@@ -91,7 +91,7 @@ func (r *recordingPeer) nextHeaders() []byte {
 func TestBatchWithoutSegmentsIsUntouched(t *testing.T) {
 	mesh := &Mesh{Routes: NewRouteTable()}
 	batch := framed(plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::2"), "one"))
-	got, _ := mesh.applySegments(batch, DefaultMTU)
+	got, _ := mesh.applySegments(batch, DefaultMTU, nil)
 	if &got[0] != &batch[0] || len(got) != len(batch) {
 		t.Fatal("a batch with no segments configured was rebuilt")
 	}
@@ -120,7 +120,7 @@ func TestExitDeliversWhatWasInside(t *testing.T) {
 	passer := plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::2"), "not ours")
 
 	frames := framed(passer, outer)
-	left, granted := mesh.applySegments(frames, DefaultMTU)
+	left, granted := mesh.applySegments(frames, DefaultMTU, nil)
 	if len(left) != 2 {
 		t.Fatalf("the batch came back with %d packets", len(left))
 	}
@@ -163,7 +163,7 @@ func TestWaypointForwardsInsteadOfDelivering(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _ := mesh.applySegments(framed(outer), DefaultMTU)
+	got, _ := mesh.applySegments(framed(outer), DefaultMTU, nil)
 	if len(got) != 0 {
 		t.Fatalf("a forwarded packet was also delivered to the tun: %v", got)
 	}
@@ -192,7 +192,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	// Addressed to our waypoint with no routing header.
 	mesh := &Mesh{Routes: NewRouteTable()}
 	mesh.SetSegments(table)
-	if got, _ := mesh.applySegments(framed(plainV6(segAddr("2001:db8::1"), waypoint, "payload")), DefaultMTU); len(got) != 0 {
+	if got, _ := mesh.applySegments(framed(plainV6(segAddr("2001:db8::1"), waypoint, "payload")), DefaultMTU, nil); len(got) != 0 {
 		t.Fatalf("a refused segment reached the tun: %v", got)
 	}
 	if counters := mesh.SegmentCounters(); counters.Dropped != 1 {
@@ -209,7 +209,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := unrouted.applySegments(framed(outer), DefaultMTU); len(got) != 0 {
+	if got, _ := unrouted.applySegments(framed(outer), DefaultMTU, nil); len(got) != 0 {
 		t.Fatalf("a segment with nowhere to go reached the tun: %v", got)
 	}
 	if counters := unrouted.SegmentCounters(); counters.Dropped != 1 || counters.Forwarded != 0 {
@@ -238,7 +238,7 @@ func TestPacketsBeforeAndAfterASegmentKeepTheirOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	left, granted := mesh.applySegments(framed(first, second, outer, last), DefaultMTU)
+	left, granted := mesh.applySegments(framed(first, second, outer, last), DefaultMTU, nil)
 	got := unframed(left)
 	if len(got) != 4 {
 		t.Fatalf("the batch came back with %d packets", len(got))
@@ -365,7 +365,7 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 		}
 		batch = append(batch, outer)
 	}
-	if left, _ := m.applySegments(framed(batch...), DefaultMTU); len(left) != 0 {
+	if left, _ := m.applySegments(framed(batch...), DefaultMTU, nil); len(left) != 0 {
 		t.Fatalf("%d waypointed packets reached the tun", len(left))
 	}
 	if got := batches.Load(); got != 1 {
@@ -417,7 +417,7 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 	for range flood {
 		batch = append(batch, refused(segAddr("3fff:b:0:100::1")))
 	}
-	m.applySegments(framed(batch...), DefaultMTU)
+	m.applySegments(framed(batch...), DefaultMTU, nil)
 
 	// the bucket starts full with 6 and earns one back every 100 milliseconds since the mesh started
 	most := 6 + uint64(time.Since(m.segmentsStarted)/(100*time.Millisecond))
@@ -431,7 +431,7 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 	if source, node := m.ICMPWithheld(); source != flood-counters.Answered || node != 0 {
 		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want %d and 0", source, node, flood-counters.Answered)
 	}
-	m.applySegments(framed(refused(segAddr("3fff:b:0:101::1"))), DefaultMTU)
+	m.applySegments(framed(refused(segAddr("3fff:b:0:101::1"))), DefaultMTU, nil)
 	if got := m.SegmentCounters().Answered; got != counters.Answered+1 {
 		t.Errorf("a second source's refused packet after the flood was answered %d times, want once", got-counters.Answered)
 	}
@@ -466,7 +466,7 @@ func TestHopLimitRunningOutAtAWaypointIsAnsweredWithTimeExceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	outer[7] = 1
-	m.applySegments(framed(outer), DefaultMTU)
+	m.applySegments(framed(outer), DefaultMTU, nil)
 	sent := recorder.packets(t)
 	if len(sent) != 1 {
 		t.Fatalf("a segment whose hop limit ran out here sent %d packets, want its one answer", len(sent))
@@ -495,7 +495,7 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 	tooBig4 := udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, true)
 	answerTooBig := func(inner []byte) func(m *Mesh) bool {
 		return func(m *Mesh) bool {
-			answer, _ := m.answerTooBig(inner, srv6.MinimumIPv6MTU, false, netip.Addr{})
+			answer, _ := m.answerTooBig(inner, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken)
 			return answer != nil
 		}
 	}
@@ -603,12 +603,12 @@ func TestPacketsNoErrorAnswersLeaveTheLimitsUntouched(t *testing.T) {
 			m.startSegmentReports()
 			m.SetAnswerTTL(64)
 			for range stream {
-				if answer, cut := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU, false, netip.Addr{}); answer != nil || cut {
+				if answer, cut := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken); answer != nil || cut {
 					t.Fatalf("a packet no error may answer was answered %t or cut %t", answer != nil, cut)
 				}
 			}
 			untouched(t, m)
-			if answer, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU, false, netip.Addr{}); answer == nil {
+			if answer, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken); answer == nil {
 				t.Error("an answerable packet after the stream was not answered")
 			}
 		})
@@ -642,7 +642,7 @@ func TestTwoSegmentsOfThisNodeInOneListAreBothActedOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	left, _ := mesh.applySegments(framed(outer), DefaultMTU)
+	left, _ := mesh.applySegments(framed(outer), DefaultMTU, nil)
 	got := unframed(left)
 	if len(got) != 1 || !bytes.Equal(got[0], inner) {
 		t.Fatalf("the exit on this node did not deliver the inner packet: %v", got)

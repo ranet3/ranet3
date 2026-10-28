@@ -128,7 +128,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 		if _, err := srv6.End(forwarded); err != nil {
 			tb.Fatal(err)
 		}
-		if left, _ := m.applySegments(framed(outer), DefaultMTU); len(left) != 0 {
+		if left, _ := m.applySegments(framed(outer), DefaultMTU, nil); len(left) != 0 {
 			tb.Fatalf("a forwarded segment reached the tun as %d packets", len(left))
 		}
 		sent, answers, counters := next.packets(tb), sender.packets(tb), m.SegmentCounters()

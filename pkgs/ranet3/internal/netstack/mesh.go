@@ -107,6 +107,11 @@ type outboundBatch struct {
 	answers *keptAnswers
 	// free is the pool the batch goes back to once sealed, nil for a tun reader's, which goes back to outboundFree
 	free chan *outboundBatch
+	// from is the peer of the session whose packets a forward batch holds, nil for a tun reader's and for packets of no session
+	// decide sets it at every take, traced or not, since a trace that opens while decide holds the batch reads it for its budget drops, and reset leaves it
+	from *Peer
+	// tun is a tun reader's batch, whose packets were read off the tun
+	tun bool
 }
 
 // outboundShare is one peer's part of a read
@@ -313,6 +318,7 @@ func newOutboundBatch(size int) *outboundBatch {
 		shares:    make(map[*Peer]outboundShare),
 		batches:   make(map[*Peer]*peerBatch),
 		peerOrder: make([]*Peer, 0, size),
+		tun:       true,
 	}
 }
 
@@ -374,6 +380,7 @@ func (m *Mesh) outboundReader(queue tun.Queue) {
 // classify picks the peer of every packet of a read that passes the checks of what enters the mesh, and holds each packet to the largest its peer's session carries
 // a packet past that is answered, cut into fragments or dropped rather than sent, and a SYN within it has its MSS clamped to it
 func (m *Mesh) classify(b *outboundBatch) {
+	trace := m.tracer.Load()
 	var tally transitTally
 	defer m.addTally(&tally)
 	segments := m.segmentTable.Load()
@@ -384,24 +391,38 @@ func (m *Mesh) classify(b *outboundBatch) {
 		raw := b.slab[r.Offset : r.Offset+r.Size : r.Offset+r.Size]
 		src, dst, nh, ok := addrsOf(raw)
 		if !ok {
+			m.dropTransit(&tally, transitInvalid, netip.Addr{}, netip.Addr{})
+			if trace != nil {
+				trace.read(TraceDrop, transitInvalid, netip.Addr{}, raw)
+			}
 			continue
 		}
 		// the mesh routes no group and forwards no limited broadcast, RFC 1812 section 5.3.5.1
 		// and a covering unicast route, a default among them, would carry either to one peer
 		if dst.IsMulticast() || dst == packet.LimitedBroadcast {
 			tally.add(transitMulticast)
+			if trace != nil {
+				trace.read(TraceDrop, transitMulticast, netip.Addr{}, raw)
+			}
 			continue
 		}
 		// the checks judge a steered packet by the destination it was read with
 		peer, verdict, match := m.Routes.Resolve(src, dst)
 		if reason, dropped := m.edgeCheck(b.answers, segments, raw, nh, src, dst, match.Counted); dropped {
 			m.dropTransit(&tally, reason, src, dst)
+			if trace != nil {
+				trace.read(TraceDrop, reason, netip.Addr{}, raw)
+			}
 			continue
 		}
 		// a steered packet is routed by the segment it is going to rather than by the address it was read with
+		// and its record names the read's addresses and the first segment
 		sent, policy := raw, m.steerPolicy(src, dst)
 		if policy != nil {
 			if b.steered[i], ok = m.steer(b.steered[i][:0], raw, policy); !ok {
+				if trace != nil {
+					trace.read(TraceDrop, transitTooBig, policy.Path[0], raw)
+				}
 				continue
 			}
 			sent = b.steered[i]
@@ -416,10 +437,20 @@ func (m *Mesh) classify(b *outboundBatch) {
 			case policy != nil:
 				m.segmentsUnrouted.Add(1)
 				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
+				if trace != nil {
+					trace.read(TraceDrop, transitNoRoute, dst, raw)
+				}
 			case verdict == RouteLocal:
 				m.dropTransit(&tally, transitLooped, src, dst)
+				if trace != nil {
+					trace.read(TraceDrop, transitLooped, netip.Addr{}, raw)
+				}
 			default:
-				m.answerUnroutedRead(raw, verdict, match, src, dst)
+				if trace != nil {
+					trace.unroutedRead(m, raw, verdict, match, src, dst)
+				} else {
+					m.answerUnroutedRead(raw, verdict, match, src, dst, (*Mesh).takeICMPToken)
+				}
 			}
 			continue
 		}
@@ -431,10 +462,18 @@ func (m *Mesh) classify(b *outboundBatch) {
 		// a steered packet sits behind the header steering put on it, which the session carries as well
 		overhead := len(sent) - len(raw)
 		if len(sent) > share.mtu {
-			count, bytes := m.tooBig(b, sent, overhead, peer, nh, share.mtu)
+			var count, bytes int
+			if trace != nil {
+				count, bytes = trace.tooBig(m, b, raw, sent, peer, nh, share.mtu)
+			} else {
+				count, bytes, _, _ = m.tooBig(b, sent, overhead, peer, nh, share.mtu, (*Mesh).takeICMPToken)
+			}
 			share.count += count
 			share.bytes += bytes
 		} else {
+			if trace != nil {
+				trace.readSent(raw, sent, peer, false, 0, 0, TraceNoAnswer)
+			}
 			m.ClampMSS(sent[overhead:], share.mtu-overhead)
 			b.packets[i], b.peers[i], b.headers[i] = sent, peer, nh
 			share.count++
@@ -448,33 +487,43 @@ func (m *Mesh) classify(b *outboundBatch) {
 // the answer is the one unreachable gives, from dst, and goes back into the tun, the one link the packet came by, whatever src is
 // answer's reply route is a session's, and would send the answer to a host packet from an uplink address out through the mesh or nowhere
 // verdict is RouteNone or RouteHeld, since the caller has taken a read the table answers with a peer or as this node's own
-func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src, dst netip.Addr) {
+// it draws through take, and reports the kind of the answer and its fate as answerTaking does
+func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src, dst netip.Addr, take takeAnswer) (answerKind, TraceOutcome) {
 	kind := m.unreachable(verdict, match, dst)
-	if out := buildAnswer(raw, raw[0]>>4, kind, 0, dst, m.AnswerTTL(), m.allowAnswer(src)); out != nil {
-		m.writeHostPacket(out)
-		m.noteAnswered(kind)
+	out := buildAnswer(raw, raw[0]>>4, kind, 0, dst, m.AnswerTTL(), m.allowAnswer(take, src))
+	if out == nil {
+		return kind, TraceNotAnswerable
 	}
+	m.writeHostPacket(out)
+	m.noteAnswered(kind)
+	return kind, TraceSent
 }
 
 // tooBig takes a packet larger than mtu, the largest its peer's session carries, and reports how many fragments it queued for the peer and their bytes
+// and the kind of the answer it drew through take and that answer's fate as answerTaking reports it, TraceNoAnswer where the cut left no fault to answer
 // overhead is the header steering put in front of the packet
 // the packet behind it is held to mtu less that header
 // an answer goes into the tun, whichever side of it the source sits
-func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, nextHeader byte, mtu int) (int, int) {
+func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, nextHeader byte, mtu int, take takeAnswer) (int, int, answerKind, TraceOutcome) {
 	inner := raw[overhead:]
-	answer, cut := m.answerTooBig(inner, mtu-overhead, false, netip.Addr{})
+	answer, cut := m.answerTooBig(inner, mtu-overhead, false, netip.Addr{}, take)
 	if cut {
 		count, bytes, fault := b.cut.add(peer, nextHeader, raw[:overhead], inner, mtu)
-		if answer = m.answerOptions(inner, fault, false); answer != nil {
-			m.writeHostPacket(answer)
+		if fault == 0 {
+			return count, bytes, 0, TraceNoAnswer
 		}
-		return count, bytes
-	}
-	if answer != nil {
+		if answer = m.answerOptions(inner, fault, false, take); answer == nil {
+			return count, bytes, answerParameter, TraceNotAnswerable
+		}
 		m.writeHostPacket(answer)
-		m.tooBigAnswered.Add(1)
+		return count, bytes, answerParameter, TraceSent
 	}
-	return 0, 0
+	if answer == nil {
+		return 0, 0, answerTooBig, TraceNotAnswerable
+	}
+	m.writeHostPacket(answer)
+	m.tooBigAnswered.Add(1)
+	return 0, 0, answerTooBig, TraceSent
 }
 
 // TUNReadsTruncated is how many reads off the tun lost the tail of a GSO frame
@@ -579,6 +628,8 @@ func (m *Mesh) dispatchOutbound(b *outboundBatch) {
 		if share := b.shares[peer]; share.count != 0 {
 			if batch := peer.reserveBatchNow(share.count, share.bytes); batch != nil {
 				b.batches[peer] = batch
+			} else if trace := m.tracer.Load(); trace != nil {
+				trace.refused(b, peer)
 			}
 		}
 	}
@@ -673,7 +724,7 @@ func (m *Mesh) DeliverInboundBatch(frames [][]byte, mtu int, from *Peer) {
 	if len(frames) == 0 || m.dev == nil {
 		return
 	}
-	routed, granted := m.applySegments(frames, mtu)
+	routed, granted := m.applySegments(frames, mtu, from)
 	m.WriteHost(m.decide(routed, granted, from))
 }
 

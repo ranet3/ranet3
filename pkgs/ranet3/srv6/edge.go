@@ -26,7 +26,7 @@ func WalkEdge(raw []byte) (verdict EdgeVerdict, next byte, offset int) {
 		if read == maxEdgeHeaders {
 			return EdgeInvalid, next, offset
 		}
-		following, end, ok := stepExtension(raw, next, offset)
+		following, end, ok := StepExtension(raw, next, offset)
 		if !ok || end > len(raw) {
 			return EdgeInvalid, next, offset
 		}

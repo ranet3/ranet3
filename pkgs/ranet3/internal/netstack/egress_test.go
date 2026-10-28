@@ -517,12 +517,12 @@ func TestEgressBatchAllocatesOnceMoreThanADelivery(t *testing.T) {
 		return framed(frames...)
 	}
 	delivered, egressed := batch(meshExit, egressOwned[2]), batch(egressExit, segAddr("2001:db8:4860::8888"))
-	m.applySegments(egressed, DefaultMTU)
+	m.applySegments(egressed, DefaultMTU, nil)
 	if got := m.SegmentCounters().Egressed; got != inboundWriteBatchSize {
 		t.Fatalf("%d of the batch's %d packets took the egress segment, so this proves nothing", got, inboundWriteBatchSize)
 	}
-	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU) })
-	if egress := leastAllocs(func() { m.applySegments(egressed, DefaultMTU) }); egress > deliver+1 {
+	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU, nil) })
+	if egress := leastAllocs(func() { m.applySegments(egressed, DefaultMTU, nil) }); egress > deliver+1 {
 		t.Errorf("a batch of %d egress results allocated %.0f times, want at most one more than the %.0f of delivering it", inboundWriteBatchSize, egress, deliver)
 	}
 }
@@ -684,7 +684,7 @@ func TestEgressRefusalAllocatesOnceMoreThanADelivery(t *testing.T) {
 		return framed(frames...)
 	}
 	delivered := batch(tooBigSource[6], segAddr("2001:db8::5"), meshExit)
-	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU) })
+	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU, nil) })
 	for _, refusal := range []struct {
 		name   string
 		frames [][]byte
@@ -694,13 +694,13 @@ func TestEgressRefusalAllocatesOnceMoreThanADelivery(t *testing.T) {
 	} {
 		count := func() uint64 {
 			before := m.SegmentCounters().Refused
-			m.applySegments(refusal.frames, DefaultMTU)
+			m.applySegments(refusal.frames, DefaultMTU, nil)
 			return m.SegmentCounters().Refused - before
 		}
 		if got := count(); got != inboundWriteBatchSize {
 			t.Fatalf("%d of the batch's %d packets were refused %s, so this proves nothing", got, inboundWriteBatchSize, refusal.name)
 		}
-		if refuse := leastAllocs(func() { m.applySegments(refusal.frames, DefaultMTU) }); refuse > deliver+1 {
+		if refuse := leastAllocs(func() { m.applySegments(refusal.frames, DefaultMTU, nil) }); refuse > deliver+1 {
 			t.Errorf("a batch of %d egress results refused %s allocated %.0f times, want at most one more than the %.0f of delivering it", inboundWriteBatchSize, refusal.name, refuse, deliver)
 		}
 		if got := count(); got != inboundWriteBatchSize {
@@ -870,7 +870,7 @@ func TestUnknownActionIsDroppedAndReported(t *testing.T) {
 	before := plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::a"), "before")
 	unknown := plainV6(segAddr("2001:db8::1"), egressExit, "unknown")
 	after := plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::b"), "after")
-	left, _ := m.actOnSegments(framed(before, unknown, after), DefaultMTU, func(packet []byte) srv6.Result {
+	left, _ := m.actOnSegments(framed(before, unknown, after), DefaultMTU, nil, func(packet []byte) srv6.Result {
 		if bytes.Equal(packet, unknown) {
 			return srv6.Result{Action: srv6.ActionDrop + 1}
 		}

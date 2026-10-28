@@ -269,6 +269,7 @@ func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
 // it returns the frames for the tun in the order they came, filtered in place, and hands egress the ones through a prefix cap.egress advertises that counts as a default
 // the checks run in RFC 1812's order for IPv6 as for IPv4, each before any answer, so a malformed packet draws none
 func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
+	trace := m.tracer.Load()
 	transit := m.transitOn.Load()
 	var tally transitTally
 	var egressed [][]byte
@@ -278,17 +279,26 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 	out := frames[:0]
 	var b *outboundBatch
 	var egress egressCheck
+	var held traceHold
+	// drawn keeps the draw and fate of the answer a traced forward drew, which its record reads
+	var drawn answerDraw
 	for i, frame := range frames {
 		// trimmed to the length its header declares, so what follows the packet in its frame is neither forwarded nor quoted
 		raw, version := packet.Payload(frame[TUNHeadroom:])
 		if version == 0 {
 			// RFC 1812 section 5.2.2 has a router answer a truncated IPv4 packet with a parameter problem, which ip_rcv_core does not
 			m.dropTransit(&tally, transitInvalid, netip.Addr{}, netip.Addr{})
+			if trace != nil {
+				trace.session(from, TraceDrop, transitInvalid, frame[TUNHeadroom:])
+			}
 			continue
 		}
 		frame = frame[:TUNHeadroom+len(raw)]
 		src, dst := addressesOf(raw, version)
 		if linkScoped(dst) {
+			if trace != nil {
+				trace.session(from, TraceDeliver, transitDelivered, raw)
+			}
 			out = append(out, frame)
 			tally.add(transitDelivered)
 			continue
@@ -298,7 +308,15 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 			// RFC 4443 section 3.1 code 2, on the session it came from, the one link its source can be on
 			// RFC 3927 section 7 has no answer for an IPv4 link-local source
 			if version == 6 && src.IsLinkLocalUnicast() && !invalid {
-				m.answerBeyondScope(raw, from)
+				if trace != nil {
+					trace.beyondScope(m, from, raw)
+				} else {
+					m.answerBeyondScope(raw, from, (*Mesh).takeICMPToken)
+				}
+				continue
+			}
+			if trace != nil {
+				trace.session(from, TraceDrop, transitMartian, raw)
 			}
 			continue
 		}
@@ -310,6 +328,9 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 		// RFC 1812 section 5.2.2 before any processing, and the host's kernel checks what this node delivers to it
 		if verdict != RouteLocal && version == 4 && !packet.HeaderValid(raw) {
 			m.dropTransit(&tally, transitInvalid, src, dst)
+			if trace != nil {
+				trace.session(from, TraceDrop, transitInvalid, raw)
+			}
 			continue
 		}
 		switch verdict {
@@ -319,17 +340,26 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 			if match.Counted {
 				if reason, ok := m.egresses(&egress, src, dst, version, match); !ok {
 					m.dropTransit(&tally, reason, src, dst)
+					if trace != nil {
+						trace.session(from, TraceDrop, reason, raw)
+					}
 					continue
 				}
 			}
 			// a counted announcement of cap.route has no translator behind it, so only cap.egress's are handed to egress
 			if match.Counted && match.Egress {
+				if trace != nil {
+					trace.session(from, TraceEgress, transitDelivered, raw)
+				}
 				if egressed == nil {
 					egressed = make([][]byte, 0, len(frames)-i)
 				}
 				egressed = append(egressed, frame)
 				tally.add(transitDelivered)
 				continue
+			}
+			if trace != nil {
+				trace.session(from, TraceDeliver, transitDelivered, raw)
 			}
 			out = append(out, frame)
 			tally.add(transitDelivered)
@@ -340,23 +370,46 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 				reason = transitHeld
 			}
 			m.dropTransit(&tally, reason, src, dst)
-			m.answer(raw, version, m.unreachable(verdict, match, dst), 0)
+			if kind := m.unreachable(verdict, match, dst); trace != nil {
+				trace.answered(m, from, reason, kind, raw, version)
+			} else {
+				m.answer(raw, version, kind, 0)
+			}
 			continue
 		}
 		if !transit && (granted == nil || !granted[i]) {
 			m.dropTransit(&tally, transitRefused, src, dst)
-			m.answer(raw, version, answerProhibited, 0)
+			if trace != nil {
+				trace.answered(m, from, transitRefused, answerProhibited, raw, version)
+			} else {
+				m.answer(raw, version, answerProhibited, 0)
+			}
 			continue
 		}
 		// RFC 8200 section 3 and RFC 1812 section 5.3.1, before the size, so an expired packet is answered as expired
 		if hopLimit(raw, version) <= 1 {
 			m.dropTransit(&tally, transitExpired, src, dst)
-			m.answer(raw, version, answerExpired, 0)
+			if trace != nil {
+				trace.answered(m, from, transitExpired, answerExpired, raw, version)
+			} else {
+				m.answer(raw, version, answerExpired, 0)
+			}
 			continue
 		}
+		// held as it arrived, before the options are stamped, the hop limit taken down or the MSS clamped
+		// and its draw cleared, since a forward that draws no answer has none
+		// draw is nil for an untraced forward, and declared here, since one declared before the loop is a value the loop carries, which every packet pays to keep
+		var draw *answerDraw
+		if trace != nil {
+			drawn, draw = answerDraw{}, &drawn
+			trace.holdForward(&held, from, peer, raw)
+		}
 		if version == 4 && hasOptions(raw) {
-			if reason, ok := m.forwardOptions(raw); !ok {
+			if reason, ok := m.forwardOptions(raw, draw); !ok {
 				m.dropTransit(&tally, reason, src, dst)
+				if trace != nil {
+					trace.releaseOptions(&held, from, reason, drawn.fate)
+				}
 				continue
 			}
 		}
@@ -364,11 +417,16 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 			if b = m.takeForwardBatch(); b == nil {
 				return out
 			}
+			b.from = from
 		}
-		if reason := m.forwardOne(b, raw, version, peer); reason != transitForwarded {
+		reason, fragments := m.forwardOne(b, raw, version, peer, draw)
+		if reason != transitForwarded {
 			m.dropTransit(&tally, reason, src, dst)
 		} else {
 			tally.add(transitForwarded)
+		}
+		if trace != nil {
+			trace.releaseForward(&held, from, peer, reason, fragments, drawn.fate)
 		}
 		if b.n == len(b.packets) {
 			m.submitForward(b)
@@ -474,15 +532,15 @@ func (m *Mesh) egresses(check *egressCheck, source, destination netip.Addr, vers
 
 // forwardOptions processes the options of raw, an IPv4 header HeaderValid passed that carries some, as RFC 1812 sections 5.3.13.4 to 5.3.13.6 have a router forwarding it
 // Record Route and Timestamp record the IPv4 router-id, or 192.0.0.8 on a node holding none, the address errorSource answers IPv4 from
-// it reports false with the reason for a packet it drops, a source route or options RFC 791 cannot read, which are answered parameter problem
-func (m *Mesh) forwardOptions(raw []byte) (transitReason, bool) {
+// it reports false with the reason for a packet it drops, a source route, or options RFC 791 cannot read, which are answered parameter problem, the answer's fate kept in draw, nil for none
+func (m *Mesh) forwardOptions(raw []byte, draw *answerDraw) (transitReason, bool) {
 	address, _ := m.errorSource(false)
 	verdict, pointer := packet.ForwardOptions(raw, address, m.ownAddress, time.Now())
 	switch verdict {
 	case packet.OptionsSourceRouted:
 		return transitSourceRoute, false
 	case packet.OptionsMalformed:
-		m.answer(raw, 4, answerParameter, pointer)
+		m.answerForward(raw, 4, answerParameter, pointer, draw)
 		return transitInvalid, false
 	}
 	return transitForwarded, true
@@ -497,7 +555,8 @@ func (m *Mesh) ownAddress(address netip.Addr) bool {
 // forwardOne puts raw, one packet of version, into b for peer, and reports what became of it
 // a packet larger than peer's session is answered over IPv6 and with DF, quoting it as it arrived, and cut into fragments otherwise, or dropped with no answer as too big where its data from its fragment offset runs past 65535 octets, which AppendFragments refuses to cut
 // anything else has its hop limit or TTL taken down and its MSS clamped to peer's session
-func (m *Mesh) forwardOne(b *outboundBatch, raw []byte, version byte, peer *Peer) transitReason {
+// it reports the fragments it cut the packet into, and keeps the fate of the answer it sent in draw, nil for none
+func (m *Mesh) forwardOne(b *outboundBatch, raw []byte, version byte, peer *Peer, draw *answerDraw) (reason transitReason, fragments int) {
 	share, seen := b.shares[peer]
 	if !seen {
 		share.mtu = peer.MTU()
@@ -507,11 +566,11 @@ func (m *Mesh) forwardOne(b *outboundBatch, raw []byte, version byte, peer *Peer
 	if version == 4 {
 		nextHeader = esp.NextHeaderIPv4
 	}
-	reason := transitForwarded
+	reason = transitForwarded
 	switch {
 	// RFC 8200 section 4.5 lets only the source fragment, and DF is RFC 791 section 3.1's
 	case len(raw) > share.mtu && (version == 6 || raw[6]&0x40 != 0):
-		m.answer(raw, version, answerTooBig, share.mtu)
+		m.answerForward(raw, version, answerTooBig, share.mtu, draw)
 		reason = transitTooBig
 	case len(raw) > share.mtu:
 		packet.DecrementTTL(raw)
@@ -520,6 +579,7 @@ func (m *Mesh) forwardOne(b *outboundBatch, raw []byte, version byte, peer *Peer
 		if count == 0 {
 			reason = transitTooBig
 		}
+		fragments = count
 		share.count += count
 		share.bytes += bytes
 	default:
@@ -535,7 +595,7 @@ func (m *Mesh) forwardOne(b *outboundBatch, raw []byte, version byte, peer *Peer
 		share.bytes += len(raw)
 	}
 	b.shares[peer] = share
-	return reason
+	return reason, fragments
 }
 
 // takeForwardBatch is a batch to fill with forwarded packets
@@ -618,22 +678,67 @@ func buildAnswer(raw []byte, version byte, kind answerKind, value int, source ne
 	return packet.FragmentationNeeded(raw, source, ttl, value, allow)
 }
 
-// allowAnswer is the draw an answer to a packet from sender makes, on sender's bucket and the node's cap, and on the cap alone for the zero Addr
-func (m *Mesh) allowAnswer(sender netip.Addr) func() bool {
-	return func() bool { return m.takeICMPToken(sender) }
+// takeAnswer is an answer's draw on the ICMP limits for a packet from sender, false where they withhold it, as takeICMPToken draws
+// an untraced answer takes (*Mesh).takeICMPToken itself, and a traced one an answerDraw's take
+type takeAnswer func(m *Mesh, sender netip.Addr) bool
+
+// allowAnswer is the draw an answer to a packet from sender makes through take, on sender's bucket and the node's cap, and on the cap alone for the zero Addr
+func (m *Mesh) allowAnswer(take takeAnswer, sender netip.Addr) func() bool {
+	return func() bool { return take(m, sender) }
 }
 
-// answer sends the ICMP error of kind about raw, one packet of version a session delivered that this node does not forward
+// answerDraw holds what a traced answer's draw on the ICMP limits met, and for a traced forward the fate its answer met, which the forward's record reads
+type answerDraw struct {
+	withheld bool
+	fate     TraceOutcome
+}
+
+// take is takeICMPToken, noting a draw the limits withheld
+func (d *answerDraw) take(m *Mesh, sender netip.Addr) bool {
+	allowed := m.takeICMPToken(sender)
+	d.withheld = !allowed
+	return allowed
+}
+
+// met is the fate of an answer that drew through d and reported fate, which a refused draw turns from not answerable to withheld
+// a builder draws last of its checks, so one that drew and was allowed built its answer
+func (d *answerDraw) met(fate TraceOutcome) TraceOutcome {
+	if fate == TraceNotAnswerable && d.withheld {
+		return TraceWithheld
+	}
+	return fate
+}
+
+// answer sends the ICMP error of kind about raw, one packet of version a session delivered that this node does not forward, for a packet no trace records
 // value is the next hop's MTU for a too-big answer and the pointer of a parameter problem
-// it draws as allowAnswer says, once the builder finds raw a packet an error may answer and before it builds
 func (m *Mesh) answer(raw []byte, version byte, kind answerKind, value int) {
+	m.answerTaking(raw, version, kind, value, (*Mesh).takeICMPToken)
+}
+
+// answerDrawn is answer for a traced packet, drawing through draw, and reports the fate the record reads
+func (m *Mesh) answerDrawn(raw []byte, version byte, kind answerKind, value int, draw *answerDraw) TraceOutcome {
+	return draw.met(m.answerTaking(raw, version, kind, value, draw.take))
+}
+
+// answerForward is answer for a packet decide forwards, drawing through draw and keeping its fate there where a trace records the packet, draw nil otherwise
+func (m *Mesh) answerForward(raw []byte, version byte, kind answerKind, value int, draw *answerDraw) {
+	if draw == nil {
+		m.answer(raw, version, kind, value)
+		return
+	}
+	draw.fate = m.answerDrawn(raw, version, kind, value, draw)
+}
+
+// answerTaking is answer, its builder drawing through take once it finds raw a packet an error may answer and before it builds
+// it reports the answer's fate, TraceNotAnswerable where buildAnswer builds none, a draw the limits withheld among them
+func (m *Mesh) answerTaking(raw []byte, version byte, kind answerKind, value int, take takeAnswer) TraceOutcome {
 	src, dst := addressesOf(raw, version)
 	// packet too big and fragmentation needed draw under the node's cap alone, as answerTooBig's do
 	sender := src
 	if kind == answerTooBig {
 		sender = netip.Addr{}
 	}
-	allow := m.allowAnswer(sender)
+	allow := m.allowAnswer(take, sender)
 	// an answer to a packet this host or a network behind it sent goes into the tun, from the answered packet's destination
 	// the one source every reverse path check of the host takes
 	// the host drops an IPv4 packet from an address of its own, fib_validate_source
@@ -641,21 +746,29 @@ func (m *Mesh) answer(raw []byte, version byte, kind answerKind, value int) {
 	// a source only an entry counting as a default reaches is no network behind this host, and the mesh routes no answer to it
 	if _, verdict, match := m.replyRoute(src, dst); verdict == RouteLocal {
 		if match.Counted {
-			return
+			return TraceUnsent
 		}
-		if out := buildAnswer(raw, version, kind, value, dst, m.AnswerTTL(), allow); out != nil {
-			m.writeHostPacket(out)
-			m.noteAnswered(kind)
+		out := buildAnswer(raw, version, kind, value, dst, m.AnswerTTL(), allow)
+		if out == nil {
+			return TraceNotAnswerable
 		}
-		return
+		m.writeHostPacket(out)
+		m.noteAnswered(kind)
+		return TraceSent
 	}
 	source, ok := m.answerSource(version, kind, dst)
 	if !ok {
-		return
+		return TraceUnanswered
 	}
-	if out := buildAnswer(raw, version, kind, value, source, m.AnswerTTL(), allow); out != nil && m.sendAnswer(out) {
-		m.noteAnswered(kind)
+	out := buildAnswer(raw, version, kind, value, source, m.AnswerTTL(), allow)
+	switch {
+	case out == nil:
+		return TraceNotAnswerable
+	case !m.sendAnswer(out):
+		return TraceUnsent
 	}
+	m.noteAnswered(kind)
+	return TraceSent
 }
 
 // answerSource is where an answer to a packet from a session comes from, which goes back through the mesh
@@ -681,18 +794,24 @@ func (m *Mesh) noteAnswered(kind answerKind) {
 	}
 }
 
-// answerBeyondScope answers raw, an IPv6 packet from a link-local source to a wider destination, RFC 4443 section 3.1 code 2
+// answerBeyondScope answers raw, an IPv6 packet from a link-local source to a wider destination, RFC 4443 section 3.1 code 2, drawing through take, and reports the answer's fate as answerTaking does
 // it goes back on the session the packet came through, the one link its source can be on, and nowhere for a packet of no session
-func (m *Mesh) answerBeyondScope(raw []byte, from *Peer) {
+func (m *Mesh) answerBeyondScope(raw []byte, from *Peer, take takeAnswer) TraceOutcome {
 	if from == nil {
-		return
+		return TraceUnsent
 	}
 	source, ok := m.errorSource(true)
 	if !ok {
-		return
+		return TraceUnanswered
 	}
 	sender, _ := addressesOf(raw, 6)
-	if out := srv6.BeyondScope(raw, source, m.allowAnswer(sender)); out != nil && m.sendThrough(from, out, esp.NextHeaderIPv6) {
-		m.noteAnswered(answerNoRoute)
+	out := srv6.BeyondScope(raw, source, m.allowAnswer(take, sender))
+	switch {
+	case out == nil:
+		return TraceNotAnswerable
+	case !m.sendThrough(from, out, esp.NextHeaderIPv6):
+		return TraceUnsent
 	}
+	m.noteAnswered(answerBeyondScope)
+	return TraceSent
 }
