@@ -26,7 +26,8 @@ import (
 type Selection struct {
 	host Host
 	mesh int
-	// watcher reports every routing change but ranet3's own interface's and this process's writes
+	// watcher reports every routing change but those on ranet3's own interface and this process's refused writes
+	// a route this process writes on another interface is a route of the host the selection reads
 	watcher Watcher
 	// current is replaced whole by follow and loaded by every answer without a lock
 	current   atomic.Pointer[selectionSnapshot]
@@ -51,7 +52,7 @@ func OpenSelection(host Host, mesh string) (*Selection, error) {
 		return nil, err
 	}
 	// opened before the first dump, so a change between the two is read again
-	watcher, err := host.Watch(0, index, true)
+	watcher, err := host.Watch(0, index, false)
 	if err != nil {
 		return nil, err
 	}
