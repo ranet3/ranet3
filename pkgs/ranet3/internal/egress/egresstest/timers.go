@@ -124,7 +124,7 @@ func (r *rows) timerAnswered(t *testing.T) {
 func (r *rows) timerOpening(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.NoHost, openingPort)
 	began := time.Now()
-	if conn, err := r.tryDial(netip.AddrPort{}, to); err == nil {
+	if conn, err := tryDial(r.network.Leaf, netip.AddrPort{}, to, stepBudget); err == nil {
 		_ = conn.Close()
 		t.Fatalf("the leaf connected to %s, which nothing holds", to)
 	}
@@ -135,7 +135,7 @@ func (r *rows) timerOpening(t *testing.T) {
 // loses
 func (r *rows) timerUnacked(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, unackedPort)
-	leaf, server := r.connect(t, r.listen(t, to), to, netip.AddrPort{})
+	leaf, server := r.connect(t, listen(t, r.network.Server, to), to, netip.AddrPort{})
 	r.withhold(t, addrPort(leaf.LocalAddr()), addrPort(leaf.RemoteAddr()))
 	began := time.Now()
 	data := []byte("never acknowledged over " + r.family.Name)
@@ -148,7 +148,7 @@ func (r *rows) timerUnacked(t *testing.T) {
 // still go from the leaf
 func (r *rows) timerHalfClosed(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, halfClosedPort)
-	leaf, server := r.connect(t, r.listen(t, to), to, netip.AddrPort{})
+	leaf, server := r.connect(t, listen(t, r.network.Server, to), to, netip.AddrPort{})
 	began := time.Now()
 	if err := server.CloseWrite(); err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func (r *rows) timerHalfClosed(t *testing.T) {
 // connection then waits for
 func (r *rows) timerClosing(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, closingPort)
-	leaf, server := r.connect(t, r.listen(t, to), to, netip.AddrPort{})
+	leaf, server := r.connect(t, listen(t, r.network.Server, to), to, netip.AddrPort{})
 	if err := leaf.CloseWrite(); err != nil {
 		t.Fatal(err)
 	}

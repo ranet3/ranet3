@@ -5,6 +5,7 @@ package egresstest
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -71,7 +72,7 @@ func (r *rows) fromRouter(address netip.Addr) bool { return address == r.family.
 // with both port preservation and none.
 func (r *rows) serverSees(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, serverSeesPort)
-	listener := r.listen(t, to)
+	listener := listen(t, r.network.Server, to)
 	t.Run("tcp half-closed by the leaf", func(t *testing.T) { r.halfClose(t, listener, to, true) })
 	t.Run("tcp half-closed by the server", func(t *testing.T) { r.halfClose(t, listener, to, false) })
 	t.Run("tcp reset by the leaf", func(t *testing.T) { r.reset(t, listener, to, true) })
@@ -216,7 +217,7 @@ func (r *rows) closedUDP(t *testing.T) {
 func (r *rows) closedTCP(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, closedPort)
 	back := len(r.network.Back())
-	conn, err := r.tryDial(netip.AddrPort{}, to)
+	conn, err := tryDial(r.network.Leaf, netip.AddrPort{}, to, stepBudget)
 	if conn != nil {
 		_ = conn.Close()
 	}
@@ -339,7 +340,7 @@ func (r *rows) pathMTU(t *testing.T) {
 
 func (r *rows) transfer(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Transfer, pathPort)
-	listener := r.listen(t, to)
+	listener := listen(t, r.network.Server, to)
 	back := len(r.network.Back())
 	leaf, server := r.connect(t, listener, to, netip.AddrPort{})
 	deadline := time.Now().Add(transferBudget)
@@ -410,7 +411,7 @@ func (r *rows) portReuse(t *testing.T) {
 func (r *rows) reconnect(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, reconnectPort)
 	local := netip.AddrPortFrom(r.family.Leaf, leafReusePort)
-	listener := r.listen(t, to)
+	listener := listen(t, r.network.Server, to)
 	leaf, server := r.connect(t, listener, to, local)
 	if err := server.Close(); err != nil {
 		t.Fatal(err)
@@ -428,7 +429,7 @@ func (r *rows) reconnect(t *testing.T) {
 	var took time.Duration
 	for deadline := time.Now().Add(stepBudget); again == nil; {
 		began := time.Now()
-		conn, err := r.tryDial(local, to)
+		conn, err := tryDial(r.network.Leaf, local, to, stepBudget)
 		took = time.Since(began)
 		switch {
 		case err == nil:
@@ -466,7 +467,7 @@ func (r *rows) tcpPair(t *testing.T) {
 	var outside []netip.AddrPort
 	for _, server := range []netip.Addr{r.family.Server, r.family.Second} {
 		to := netip.AddrPortFrom(server, pairPort)
-		_, conn := r.connect(t, r.listen(t, to), to, local)
+		_, conn := r.connect(t, listen(t, r.network.Server, to), to, local)
 		outside = append(outside, addrPort(conn.RemoteAddr()))
 	}
 	r.oneMapping(t, "connections", outside)
@@ -590,7 +591,7 @@ func (r *rows) connect(t *testing.T, listener *net.TCPListener, to, local netip.
 
 func (r *rows) dial(t *testing.T, local, to netip.AddrPort) *net.TCPConn {
 	t.Helper()
-	conn, err := r.tryDial(local, to)
+	conn, err := tryDial(r.network.Leaf, local, to, stepBudget)
 	if err != nil {
 		t.Fatalf("connect from the leaf to %s: %v", to, err)
 	}
@@ -598,18 +599,20 @@ func (r *rows) dial(t *testing.T, local, to netip.AddrPort) *net.TCPConn {
 	return conn
 }
 
-func (r *rows) tryDial(local, to netip.AddrPort) (*net.TCPConn, error) {
-	dialer := net.Dialer{Timeout: stepBudget}
+// tryDial connects to to from local, where it is valid, in the stack in runs
+// f in, within timeout
+func tryDial(in func(func() error) error, local, to netip.AddrPort, timeout time.Duration) (*net.TCPConn, error) {
+	dialer := net.Dialer{Timeout: timeout}
 	if local.IsValid() {
 		dialer.LocalAddr, dialer.Control = net.TCPAddrFromAddrPort(local), reuse
 	}
 	var conn net.Conn
 	var err error
-	if inLeaf := r.network.Leaf(func() error {
+	if inStack := in(func() error {
 		conn, err = dialer.Dial("tcp", to.String())
 		return nil
-	}); inLeaf != nil {
-		return nil, inLeaf
+	}); inStack != nil {
+		return nil, inStack
 	}
 	if err != nil {
 		return nil, err
@@ -617,9 +620,16 @@ func (r *rows) tryDial(local, to netip.AddrPort) (*net.TCPConn, error) {
 	return conn.(*net.TCPConn), nil
 }
 
-func (r *rows) listen(t *testing.T, at netip.AddrPort) *net.TCPListener {
-	return open(t, r.network.Server, "listen at the server's "+at.String(), func() (*net.TCPListener, error) {
-		return net.ListenTCP("tcp", net.TCPAddrFromAddrPort(at))
+// listen listens at at in the stack in runs f in, sharing the port with a
+// connection's
+func listen(t *testing.T, in func(func() error) error, at netip.AddrPort) *net.TCPListener {
+	config := net.ListenConfig{Control: reuse}
+	return open(t, in, "listen at "+at.String(), func() (*net.TCPListener, error) {
+		listener, err := config.Listen(context.Background(), "tcp", at.String())
+		if err != nil {
+			return nil, err
+		}
+		return listener.(*net.TCPListener), nil
 	})
 }
 
@@ -819,7 +829,7 @@ func refusedOn(t *testing.T, conn *net.UDPConn, data []byte) bool {
 	})
 }
 
-// reuse lets the leaf's sockets share one local port, as row 5 asks of them
+// reuse lets sockets share one local port, as row 5 asks of the leaf's
 func reuse(_, _ string, c syscall.RawConn) error {
 	var err error
 	if control := c.Control(func(fd uintptr) {

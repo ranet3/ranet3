@@ -140,7 +140,7 @@ func (r *rows) connectionRefused(t *testing.T) {
 		want = syscall.EACCES
 	}
 	began := time.Now()
-	conn, err := r.tryDial(netip.AddrPortFrom(r.family.Spare, 0), to)
+	conn, err := tryDial(r.network.Leaf, netip.AddrPortFrom(r.family.Spare, 0), to, stepBudget)
 	took := time.Since(began)
 	if conn != nil {
 		_ = conn.Close()

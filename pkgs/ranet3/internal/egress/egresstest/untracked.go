@@ -40,7 +40,7 @@ func (r *rows) untracked(t *testing.T) {
 	}, translated)
 
 	to := netip.AddrPortFrom(r.family.Server, untrackedPort)
-	listener, tcp := r.listen(t, to), r.serverIP(t, syscall.IPPROTO_TCP, r.family.Server)
+	listener, tcp := listen(t, r.network.Server, to), r.serverIP(t, syscall.IPPROTO_TCP, r.family.Server)
 	mark := r.exit.handedCount()
 	leaf, server := r.connect(t, listener, to, netip.AddrPort{})
 	opened := []byte("opens the connection over " + r.family.Name)
