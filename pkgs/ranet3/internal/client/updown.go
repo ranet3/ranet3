@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/statefile"
 )
 
 // This file is down and up, the verbs that take the node off the mesh and put it back.
@@ -163,29 +164,7 @@ func syncDir(dir string) error {
 
 // writeDownFlag puts the flag in dir holding since, whole or not at all
 func writeDownFlag(dir string, since time.Time) error {
-	return replaceFile(dir, downFlag, []byte(since.Format(time.RFC3339Nano)+"\n"))
-}
-
-// replaceFile puts body in dir under name, whole or not at all
-// it is written and synced beside the name and renamed over it, so a crash leaves the file as it was or as asked
-func replaceFile(dir, name string, body []byte) error {
-	path := filepath.Join(dir, name)
-	temp := path + stateTemp
-	file, err := os.OpenFile(temp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, stateFileMode)
-	if err != nil {
-		return err
-	}
-	_, err = file.Write(body)
-	if err == nil {
-		err = file.Sync()
-	}
-	if err = errors.Join(err, file.Close()); err == nil {
-		err = os.Rename(temp, path)
-	}
-	if err != nil {
-		_ = os.Remove(temp)
-	}
-	return err
+	return statefile.WriteSynced(filepath.Join(dir, downFlag), []byte(since.Format(time.RFC3339Nano)+"\n"))
 }
 
 // readDownFlag reports whether the flag is in dir and when the node went down

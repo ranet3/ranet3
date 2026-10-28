@@ -15,8 +15,6 @@ const (
 	socketMode = 0o660
 	// dirMode lets that group reach the socket through its directory
 	dirMode = 0o750
-	// lockMode keeps the lock file to its owner, since the daemon alone takes the lock
-	lockMode = 0o600
 	// maxRequest is the largest write body the daemon reads, in bytes
 	// a request is a few short fields, so a client near this has lost track of what it sends
 	maxRequest = 64 << 10

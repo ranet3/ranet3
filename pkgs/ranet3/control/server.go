@@ -19,6 +19,8 @@ import (
 	"sync"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/statefile"
 )
 
 // MaxSocketPath is the shortest of the platform limits this tree builds for:
@@ -124,16 +126,12 @@ func MakeDirectory(dir string) error {
 // reported rather than waited for, because a second daemon on one path is a
 // configuration mistake rather than a queue to join.
 func takeOwnership(path string) (*os.File, error) {
-	lock, err := os.OpenFile(path+lockSuffix, os.O_CREATE|os.O_RDWR, lockMode)
-	if err != nil {
+	lock, err := statefile.Flock(path + lockSuffix)
+	switch {
+	case errors.Is(err, unix.EWOULDBLOCK):
+		return nil, fmt.Errorf("control: another daemon is already listening on %s, which is why it holds %s", path, path+lockSuffix)
+	case err != nil:
 		return nil, fmt.Errorf("control: %w", err)
-	}
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		lock.Close()
-		if errors.Is(err, unix.EWOULDBLOCK) {
-			return nil, fmt.Errorf("control: another daemon is already listening on %s, which is why it holds %s", path, lock.Name())
-		}
-		return nil, fmt.Errorf("control: locking %s: %w", lock.Name(), err)
 	}
 	return lock, nil
 }

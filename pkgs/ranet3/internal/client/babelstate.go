@@ -16,6 +16,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/statefile"
 )
 
 // This file is the Babel state kept beside the down flag, which spares the mesh a new speaker at every restart.
@@ -113,7 +114,7 @@ func writeBabelState(dir string, state babelState) error {
 	if err != nil {
 		return err
 	}
-	if err := replaceFile(dir, babelStateFile, append(body, '\n')); err != nil {
+	if err := statefile.WriteSynced(filepath.Join(dir, babelStateFile), append(body, '\n')); err != nil {
 		return err
 	}
 	return syncDir(dir)
