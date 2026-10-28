@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-28
+updated: 2026-10-29
 order: 110
 ---
 
@@ -215,6 +215,71 @@ changes and when it stops being taken, in the log, on the Kernel line of
 - Another program's rule wakes no pass, so a rule added between passes is
   reported by the next periodic pass, `cap.table.reconcile` later at most.
 - macOS has no policy rules and asks nothing.
+
+### Exit mode beside other programs
+
+[Exit mode](routing.md#exit-mode-on-linux) adds 5405, 5435 and 5440 to the
+second block. Each layout below was measured in network namespaces holding the
+reconciler's rules and table with `cap.exit.forward` naming a bridge, a LAN host
+behind another link it leaves out, and an internet host beyond the uplink, in
+both families and in 3 states: the mesh's defaults live, the defaults retracted,
+and after the daemon was killed with `SIGKILL`. In the last 2 the mesh's table
+holds no default, so 5440 finds none and the lookup goes on to main, as
+[limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) declares.
+After `SIGKILL` the rules stay, the tun goes with the process, and a held
+overlay destination is refused by its hold.
+
+- **Tailscale using an exit node.** Tailscale 1.104.2 writes its rules at 5210
+  to 5270 and holds in table 52 a default through its tun, with throws for the
+  loopback, the uplink's network and over IPv6 `fe80::/64`. Its rule at 5270
+  comes ahead of 5440, so in every state table 52's default takes the host's own
+  traffic, the bridge's and the LAN's into Tailscale's tun. An overlay
+  destination still reaches the mesh at 5110. Tailscale's own sockets, marked
+  `0x80000/0xff0000`, leave by main at 5210. ranet3's underlay skips 5110 to
+  5190 and then meets 5270, so it leaves by Tailscale's tun, but toward the
+  uplink's own network, which table 52 throws. This is a case ranet3 cannot
+  hold: while Tailscale uses an exit node, ranet3's sessions to a peer beyond
+  the uplink's network ride inside Tailscale's tunnel and fail with it, and the
+  host's traffic follows Tailscale's exit rather than the mesh's. Removing
+  `cap.exit` leaves the host's traffic to Tailscale's exit alone, and the
+  underlay leaves Tailscale's tunnel only while Tailscale uses no exit node, as
+  [Tailscale at its default base](#another-programs-rules) measures.
+- **A firewall restoring the conntrack mark with the full mask,**
+  `meta mark set ct mark` in a route chain at output with no save. The
+  underlay's datagram leaves the chain with mark 0 and is routed again from the
+  uplink's address with `iif lo`, which 5405 sends by main, so the underlay's
+  datagrams, UDP as IKE's and an IP protocol with no port as ESP's, reach the
+  far side by the uplink in every state and never enter ranet3's own tun.
+- **kube-proxy and Cilium.** kube-proxy's masquerade reads `0x4000` and Cilium's
+  rule at 9 reads `0x200/0xf00`, and neither reads a bit of 0x72. The underlay
+  leaves by the uplink in every state, the masquerade counts no packet of
+  ranet3's, and the host's own traffic and the bridge's follow the mode.
+- **Docker 29.9.1.** Its `DOCKER-FORWARD` chain accepts whatever enters by its
+  bridge, so with `forward` naming the bridge the bridge's IPv4 flow enters the
+  tun masqueraded to the tun's address by Docker's own
+  `oifname != "docker0" masquerade`, under either `FORWARD` policy. Docker sets
+  `ip filter`'s policy to `drop` where forwarding was off before it started, and
+  that policy drops every other forwarded IPv4 packet, a LAN's among them,
+  before it leaves, whatever the mode. A link `forward` names other than
+  Docker's bridge then needs an accept in `DOCKER-USER`, as
+  [Docker's packet filtering](https://docs.docker.com/engine/network/packet-filtering-firewalls/)
+  describes. Docker leaves `ip6 filter`'s policy at `accept` and writes no IPv6
+  masquerade, so a container's IPv6 flow enters the tun from its own address,
+  which the tun read drops unless this node announces the bridge's network.
+
+5435 selects the networks of each link `forward` leaves out, as
+[exit mode](routing.md#exit-mode-on-linux) lists, so a `fib` expression's
+reverse path check of a reply to one finds main's route, as row E2 of
+[where a lookup ends](routing.md#where-a-lookup-ends-on-linux) gives. A strict
+`fib` chain's IPv4 check finds the mesh and drops the reply to a network routed
+beyond such a link, to a network 5435 leaves out for overlapping the overlay,
+and to the hosts of a network 5435 leaves out for overlapping this node's own
+prefixes that lie outside those prefixes. The hosts inside this node's own
+prefixes reach the mesh through 5430 both ways, and their replies pass. Naming
+the link in `forward` serves only traffic the owned-source rule passes,
+masqueraded to the tun's address or announced, as
+[what forwarded traffic meets](#what-forwarded-traffic-meets) states. For the
+rest, keep the chain's IPv4 check off that traffic.
 
 ## Routes on macOS
 
@@ -460,6 +525,12 @@ line, as [metrics](metrics.md#transit-counters) lists.
 - A read toward an exit's default from a source this node does not own is
   dropped and counted `unowned_source`, the owned-source rule. Only this node's
   own traffic leaves the mesh through its exits.
+
+[Exit mode](routing.md#exit-mode-on-linux) sends what a link `cap.exit.forward`
+names forwards into the tun toward the mesh's default, so the owned-source rule
+decides it. A Docker bridge's IPv4 flows pass, masqueraded to the tun's address.
+A LAN this node announces through `cap.route` or advertises through `cap.egress`
+passes. Any other LAN's packets are dropped and counted `unowned_source`.
 
 Replies to the mesh's overlay and to subnets the mesh routes are untouched by
 the owned-source rule: an exit's egress replies, translated back by the kernel,

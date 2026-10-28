@@ -32,7 +32,8 @@ setting or skips a route instead.
 | `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                       | refused, naming the platform                                                                                                                                     |
 | Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                           | refused                                                                                                                                                          |
 | `cap.border`                                           | an nftables chain at prerouting                                                                                                                                                                                                    | refused                                                                                                                                                          |
-| Network watch                                          | rtnetlink                                                                                                                                                                                                                          | routing socket                                                                                                                                                   |
+| `cap.exit`                                             | the policy rules 5405, 5435 and 5440 of [exit mode](routing.md#exit-mode-on-linux)                                                                                                                                                 | refused at startup, naming the platform, ahead of `cap.border`                                                                                                   |
+| Network watch                                          | rtnetlink, with each link outside the mesh and its networks                                                                                                                                                                        | routing socket, with no links                                                                                                                                    |
 | Don't fragment                                         | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                                                                                                                                                                               | `IP_DONTFRAG`, `IPV6_DONTFRAG`                                                                                                                                   |
 | Route MTU a path search takes                          | the route's MTU, including a path MTU the host learned                                                                                                                                                                             | the MTU of the interface the session sends through                                                                                                               |
 | Forwarding read from                                   | `/proc/sys/net/ipv4/ip_forward`, `/proc/sys/net/ipv6/conf/all/forwarding`                                                                                                                                                          | `net.inet.ip.forwarding`, `net.inet6.ip6.forwarding`                                                                                                             |
@@ -44,8 +45,11 @@ The forwarding settings decide whether a node warns about forwarding without
 neither, since the mesh forwards it between sessions itself on every platform.
 On macOS `cap.border` is refused at startup with
 `egress: cap.border is an nftables chain, which darwin does not have, so this node cannot filter what enters the mesh from its other links`,
-and a Mac that forwards gets the warning instead. The caller's credentials
-decide who may use the debug paths beyond the read paths.
+and a Mac that forwards gets the warning instead. `cap.exit` is refused there
+first, at startup and on a reload, with
+`kernel: cap.exit is refused on darwin, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
+The caller's credentials decide who may use the debug paths beyond the read
+paths.
 
 The exit a build carries is chosen when it is built, and no setting names it. A
 Linux build carries the kernel exit, which writes what it carries into the tun
@@ -169,9 +173,9 @@ an error.
 On a platform other than Linux, macOS, iOS and Android:
 
 - `cap.table` fails the start with `kernel: unsupported on this platform`.
-- `cap.egress`, `cap.border` and `link.underlay.bind` are refused, `cap.egress`
-  and `cap.border` in words that name the platform, and the underlay sockets
-  carry no mark.
+- `cap.egress`, `cap.border`, `cap.exit` and `link.underlay.bind` are refused,
+  `cap.egress`, `cap.border` and `cap.exit` in words that name the platform, and
+  the underlay sockets carry no mark.
 - An egress segment fails the start, since it needs `cap.egress` and
   `cap.border`, which are refused.
 - The node has no network watch, so a moved host waits for each session's own
@@ -194,14 +198,15 @@ iOS and Android build the underlay sockets, the sockets connected to 1 peer, the
 path MTU search, the forwarding read and the caller credentials of macOS and
 Linux, but none of the reconciler, the network watch, `cap.egress` or
 `cap.border`. An Android build, which Go makes with the `linux` build tag, and
-an iOS build, which it makes with the `darwin` one, refuse `cap.egress` and
-`cap.border` at startup in the same words, naming `android` or `ios`.
-`cap.table` fails the start there too, and a moved host waits for each session's
-own liveness check. An iOS build opens no selection, so its underlay datagrams
-name no interface and leave by the host's own routes. A session there that sends
-from the kernel's choice of source reads its path MTU from the interface holding
-the source the kernel picks for a socket connected to the peer, and one the peer
-opened from the interface holding the address it sends from.
+an iOS build, which it makes with the `darwin` one, refuse `cap.egress`,
+`cap.border` and `cap.exit` at startup in the same words, naming `android` or
+`ios`. `cap.table` fails the start there too, and a moved host waits for each
+session's own liveness check. An iOS build opens no selection, so its underlay
+datagrams name no interface and leave by the host's own routes. A session there
+that sends from the kernel's choice of source reads its path MTU from the
+interface holding the source the kernel picks for a socket connected to the
+peer, and one the peer opened from the interface holding the address it sends
+from.
 
 ## Moving hosts
 
@@ -244,14 +249,18 @@ deadline to find a moved path. On Linux it follows the link, address and route
 notifications of rtnetlink, keeping only defaults in `main`. On macOS it follows
 the routing socket. 250 milliseconds after a notification it reads, for each
 family, the host's own default route, its interface and gateway, and the global
-unicast addresses of the interfaces that are up. The mesh's own device is left
-out of both, so the reconciler's writes to its table and to the tun never count.
-When the reading differs from the last one acted on, every session is asked to
-prove its path at once, as `ranet3 debug probe` asks it, every dialer that is
-waiting out its reconnect delay dials again, and a `network.changed` event
-records what moved. A dialer that finds its session healthy stands down as it
-does after any wake. A change the host shows nowhere, such as a captive portal
-that lets nothing through, needs `ranet3 redial --all` instead.
+unicast addresses of the interfaces that are up, and on Linux each link that is
+up with its prefixes and point-to-point far ends. The mesh's own device is left
+out of all three, so the reconciler's writes to its table and to the tun never
+count. When the default or an address differs from the reading last acted on,
+every session is asked to prove its path at once, as `ranet3 debug probe` asks
+it, and every dialer that is waiting out its reconnect delay dials again. A
+change of links alone probes no session and wakes no dialer, and wakes the
+reconciler only under [`cap.exit`](routing.md#exit-mode-on-linux). Either change
+is recorded as a `network.changed` event naming what moved. A dialer that finds
+its session healthy stands down as it does after any wake. A change the host
+shows nowhere, such as a captive portal that lets nothing through, needs
+`ranet3 redial --all` instead.
 
 ## Sockets connected to 1 peer
 

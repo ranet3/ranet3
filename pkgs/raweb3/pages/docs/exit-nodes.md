@@ -378,6 +378,13 @@ rule or another writer's route in the table does. The mesh still forwards other
 nodes' packets by every route it selects. A reload that starts announcing a
 default makes the node an exit from the next pass.
 
+[`cap.exit`](configuration-reference.md#capexit) asks the opposite, the host's
+own traffic out through another exit, so an exit refuses it by the reason it is
+one, at load and on every reload, with the message
+[the configuration reference](configuration-reference.md#capexit) quotes. The
+loader, a reload and the reconciler read one rule for what makes a node an exit,
+so a file that loads never runs the mode on one.
+
 ## What an exit carries out
 
 A packet a session delivers for a destination this node holds through a route

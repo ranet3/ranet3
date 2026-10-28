@@ -60,6 +60,7 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise` or `translate`, a class of `auto` from `0.0.0.0/0` or `::/0`, and `flows_per_source` or `sweep` written as its default are no change.                                                                                                                                                 |
 | `cap.border`, written or removed                                     | refused                                  |                                                                                                                                                                                                                                                                                                                  |
 | `cap.border.overlay`                                                 | applied                                  | The filter rewrites its chain on the pass the reload wakes, and the forwarding decision answers by the new overlay at once, every route judged again for whether it counts as a default. With `cap.table`, the reconciler's pass moves its rules at 5110 and its holds of the overlay. A new order is no change. |
+| `cap.exit`, written, removed, or `forward`                           | applied                                  | The reconciler's next pass adds or removes [exit mode's](routing.md#exit-mode-on-linux) rules, with no restart. Refused on an exit, off Linux, and where `forward` names the tun or a default's link. A new order of `forward` is no change.                                                                     |
 
 ## Sessions the trust document no longer admits
 
@@ -293,7 +294,7 @@ this end's own rekey or replacement of it.
 A reload is recorded as a `daemon.reload` event that names the file in `path`.
 Its `applied` lists the blocks the reload changed among `auth.aliases.local`,
 `auth.aliases.remote`, `cap.babel`, `cap.border`, `cap.crypto.esp.cipher`,
-`cap.crypto.ike.cipher`, `cap.crypto.ike.kex`, `cap.crypto.ike.prf`,
+`cap.crypto.ike.cipher`, `cap.crypto.ike.kex`, `cap.crypto.ike.prf`, `cap.exit`,
 `cap.route`, `cap.segment`, `cap.table`, `link.listen` and `link.mtu`, comma
 separated, such as `applied=cap.table` for one that changed the table. A reload
 that changed only the trust document or the peers dialed carries no `applied`. A

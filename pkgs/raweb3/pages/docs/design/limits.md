@@ -205,6 +205,29 @@ main's route out of the uplink, where it went before ranet3. A marked one, such
 as ranet3's own paired IPv4 socket, goes by main's route, as rows L2 and B1
 give. None of it enters the mesh.
 
+Wherever the mesh's table holds no default, traffic toward a default under
+[exit mode](../routing.md#exit-mode-on-linux), the host's own and a forwarded
+link's, leaves by main with no rule of ranet3's refusing it: before the first
+session is live, after `capture_grace`, while the mesh's defaults are retracted,
+and after the daemon is killed and the tun goes with it, whose rules stay until
+the next start, while a clean stop withdraws them. A family the tun holds no
+overlay address of, an address inside no prefix of `cap.border.overlay` counting
+for none, runs mode off's rules whatever the mesh's table holds. A lookup of
+that family ends where rows L1 to L12 of
+[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, and a
+packet they send into the tun meets the [tun read](../routing.md#transit), which
+drops it where its source is forged and carries it into the mesh otherwise. One
+from a source in this node's own prefixes, the host's or a forwarded link's,
+follows the mesh at 5430 where row L11 gives, and
+[what forwarded traffic meets](../coexistence.md#what-forwarded-traffic-meets)
+says what source a forwarded link's packet carries. `ranet3 status` names the
+family, and an overlay address on the tun, from `cap.table` or another writer,
+brings mode 2's rules back on the pass it
+[wakes](../routing.md#when-a-pass-runs). Another program's rule ahead of 5440,
+such as Tailscale's at 5270 while it uses an exit node, takes the host's traffic
+first, as [sharing a host](../coexistence.md#exit-mode-beside-other-programs)
+measures.
+
 The rule about the unspecified address follows the macOS kernel's fallback of a
 scoped lookup, which
 [the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. A

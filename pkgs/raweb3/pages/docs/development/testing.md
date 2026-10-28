@@ -229,6 +229,38 @@ unless run as root.
     give. A packet a peer delivers to the exit's LAN outside the overlay leaves
     by the uplink, one to this node's own prefix inside it goes nowhere, and a
     clean stop leaves no rule or route of protocol 155.
+  - `TestTUNExitModeSendsEachSocketWhereModeTwoSays` runs the same leaf in
+    [exit mode](../routing.md#exit-mode-on-linux) beside a container behind a
+    bridge, masqueraded as Docker does, and a LAN host it routes untranslated,
+    each in a namespace of its own, with the internet's host beyond the far
+    host. For each arm, the mesh's defaults with nothing forwarded, `forward`
+    naming the bridge, strict rp_filter on the uplink, NixOS's strict and loose
+    fib chains, the defaults retracted and an exit holding another exit's
+    halves, each run after a pass under the arm's table, the leaf's sockets, the
+    container's and the LAN host's pings, a service on the uplink's address and
+    the underlay's socket go where rows E1 to E4 give. With `forward` naming the
+    bridge and the tun holding no overlay address of one family, then of the
+    other, the leaf's unbound sockets, connected and not, and the container's
+    ping to the internet leave by the uplink in that family and enter the tun in
+    the other, and the leaf's unbound sockets, connected and not, to the mesh's
+    subnet enter the tun in both, on the rules of the very pass that took the
+    address off. With another writer's overlay addresses on the tun and
+    `cap.table` writing none, the leaf's unbound sockets, connected and not,
+    enter the tun in both families on the rules of a pass after the addresses
+    went on. That the addresses themselves wake the pass is checked by
+    `TestNetlinkFollowsAnotherWritersAddressOnTheTun` in `internal/kernel`, for
+    each family. A clean stop leaves nothing of protocol 155.
+  - `TestTUNExitModeBesideTailscale`,
+    `TestTUNExitModeBesideAConntrackMarkRestore`,
+    `TestTUNExitModeBesideKubeProxyAndCilium` and `TestTUNExitModeBesideDocker`
+    copy those programs' rules and chains into the leaf through raw netlink and
+    nftables expressions, and check where the host's own traffic, the bridge's,
+    the LAN's and the underlay's leave by in both families, with the mesh's
+    defaults live, retracted, and after a helper process holding the tun and the
+    reconciler is killed with `SIGKILL`, as
+    [sharing a host](../coexistence.md#exit-mode-beside-other-programs) states.
+    The helper is the test binary run again as `TestExitLabCrashHelper`, which
+    joins the leaf's namespace by its path and skips when run any other way.
 
 The `internal/client` tests `TestNodeGoingDownLeavesItsPeerAndItsKernelAtOnce`,
 `TestNodeRestartedWhileDownInstallsNothingUntilUp`,
