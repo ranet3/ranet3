@@ -262,6 +262,27 @@ let
   };
   # the address Tailscale's exit node holds and nothing else answers
   exitOnlyV4 = "203.0.113.1";
+  # k3s pulls nothing: its pods and its pause container run this image from the store
+  podImageName = "example.org/pod:local";
+  podImage = pkgs.dockerTools.buildLayeredImage {
+    name = "example.org/pod";
+    tag = "local";
+    contents = [
+      pkgs.busybox
+      pkgs.tini
+    ];
+    config.Entrypoint = [
+      "/bin/tini"
+      "--"
+      "/bin/sleep"
+      "inf"
+    ];
+  };
+  podContainer = name: command: {
+    inherit name command;
+    image = podImageName;
+    imagePullPolicy = "Never";
+  };
   # what each program beside ranet3 adds to the client, at its defaults
   besideClient = {
     docker = {
@@ -274,6 +295,78 @@ let
         useRoutingFeatures = "client";
       };
     };
+    k3s =
+      { config, ... }:
+      {
+        virtualisation = {
+          memorySize = 2048;
+          diskSize = 4096;
+        };
+        environment.sessionVariables.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+        services.k3s = {
+          enable = true;
+          role = "server";
+          disable = [
+            "coredns"
+            "local-storage"
+            "metrics-server"
+            "servicelb"
+            "traefik"
+          ];
+          images = [ podImage ];
+          # a server behind a ClusterIP service and a client that reaches it through the service's address
+          manifests.pods.content = [
+            {
+              apiVersion = "v1";
+              kind = "Pod";
+              metadata = {
+                name = "server";
+                labels.app = "server";
+              };
+              spec.containers = [
+                (podContainer "server" [
+                  "sh"
+                  "-c"
+                  "mkdir -p /www && echo beside > /www/index.html && exec httpd -f -p 8080 -h /www"
+                ])
+              ];
+            }
+            {
+              apiVersion = "v1";
+              kind = "Service";
+              metadata.name = "server";
+              spec = {
+                selector.app = "server";
+                ports = [
+                  {
+                    port = 80;
+                    targetPort = 8080;
+                  }
+                ];
+              };
+            }
+            {
+              apiVersion = "v1";
+              kind = "Pod";
+              metadata.name = "client";
+              spec.containers = [
+                (podContainer "client" [
+                  "sleep"
+                  "inf"
+                ])
+              ];
+            }
+          ];
+          nodeIP = config.networking.primaryIPAddress;
+          extraFlags = [
+            "--flannel-iface eth1"
+            "--pause-image ${podImageName}"
+          ];
+        };
+        # the kernel keeps the translation a flow's first packet met, so the script starts ranet3 once kube-proxy's
+        # masquerade exists, and a session dialed before it would pass the port check under any mark
+        systemd.services.ranet3.wantedBy = lib.mkForce [ ];
+      };
   };
 in
 testers.runNixOSTest {
@@ -2260,6 +2353,60 @@ testers.runNixOSTest {
               for family in ["-4", "-6"]:
                   print(client.execute(f"ip {family} rule show")[1])
                   print(client.execute(f"ip {family} route show table 52")[1])
+        '';
+
+        # k3s with kube-proxy in iptables mode and flannel: kube-proxy masquerades a packet whose mark holds its masqueradeBit 0x4000,
+        # with --random-fully, so the gateway reading the client at its own port 14000 shows the underlay's mark left that bit clear
+        k3s = ''
+          k3s_timeout = dt.timedelta(minutes=5)
+
+          def underlay_port():
+              """the gateway reads ranet3's underlay at the port it sends from, untranslated by kube-proxy"""
+              gateway.wait_until_succeeds("swanctl --list-sas | grep -q ESTABLISHED", timeout=timeout)
+              sas = gateway.succeed("swanctl --list-sas")
+              remotes = [line.strip() for line in sas.splitlines() if line.strip().startswith("remote '")]
+              assert remotes and all(line.endswith("@ ${nodes.client.networking.primaryIPAddress}[14000]") for line in remotes), (
+                  f"the gateway reads the client at another port than 14000: {remotes}")
+
+          def k3s_works():
+              """flannel's masquerade is in place, a pod reaches another through its service's address and the gateway through the tun, and the host reaches a pod by main's route"""
+              client.wait_until_succeeds("nft list chain ip nat FLANNEL-POSTRTG | grep -qi masquerade", timeout=k3s_timeout)
+              client.wait_until_succeeds("kubectl wait --for condition=Ready node --all --timeout=10s", timeout=k3s_timeout)
+              client.wait_until_succeeds("kubectl wait --for condition=Ready pod/server pod/client --timeout=10s", timeout=k3s_timeout)
+              service = client.succeed("kubectl get service server -o jsonpath='{.spec.clusterIP}'").strip()
+              client.wait_until_succeeds(f"kubectl exec client -- wget -qO- -T 2 http://{service} | grep -qx beside", timeout=timeout)
+              client.wait_until_succeeds("kubectl exec client -- ping -c 1 -W 2 ${gatewayTunnelV4}", timeout=timeout)
+              pod = client.succeed("kubectl get pod server -o jsonpath='{.status.podIP}'").strip()
+              route = client.succeed(f"ip route get {pod}")
+              assert "table" not in route and "${clientDevice}" not in route, f"the host does not reach a pod by main's route:\n{route}"
+              client.succeed(f"ping -c 1 -W 2 {pod}")
+
+          try:
+              gateway.wait_for_unit("systemd-networkd-wait-online.service")
+              gateway.wait_for_unit("strongswan-swanctl.service")
+              gateway.wait_for_unit("bird.service")
+              client.wait_for_unit("k3s.service")
+              client.wait_until_succeeds("nft list chain ip nat KUBE-POSTROUTING | grep -qi masquerade", timeout=k3s_timeout)
+              client.succeed("systemctl start ranet3.service")
+              k3s_works()
+              holds_beside()
+              underlay_port()
+
+              k3s_journal = journal_after(client, "k3s.service")
+              client.succeed("systemctl restart k3s.service")
+              client.wait_until_succeeds(f"[ \"$({k3s_journal} | grep -c 'bootstrap done')\" -ge 2 ]", timeout=k3s_timeout)
+              k3s_works()
+              holds_beside()
+              underlay_port()
+
+              restart_ranet3()
+              underlay_port()
+              k3s_works()
+          finally:
+              print(client.execute("ranet3 status")[1])
+              print(gateway.execute("swanctl --list-sas")[1])
+              print(client.execute("nft list table ip nat")[1])
+              print(client.execute("kubectl get pods -o wide")[1])
         '';
       };
     in
