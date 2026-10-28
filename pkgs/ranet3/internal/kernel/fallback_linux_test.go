@@ -6,14 +6,30 @@
 package kernel
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
+	"ranet3.com/pkgs/ranet3/schema"
+)
+
+const (
+	// fallbackRestoreBudget is how soon a pass answers another writer's change
+	// to the table, the settle window and one pass, where the periodic pass the
+	// test sets takes an hour
+	fallbackRestoreBudget = time.Second
+	// tableOwner is NFT_TABLE_F_OWNER of linux/netfilter/nf_tables.h, which
+	// x/sys does not carry
+	tableOwner = 0x2
 )
 
 // fallbackText is fallbackSample's table as nft spells it
@@ -81,10 +97,13 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// the platform's socket for the table is closed once the write returns,
-	// which deletes a table carrying the owner flag
+	// closing the platform's socket for the table deletes a table carrying the
+	// owner flag
 	if err := plat.writeFallback(fallbackSample); err != nil {
 		t.Fatalf("write the table: %v", err)
+	}
+	if err := plat.unwatchFallback(); err != nil {
+		t.Fatal(err)
 	}
 	if mine := run("list", "table", "inet", FallbackTable); mine != theirs {
 		t.Errorf("the platform's table lists as\n%s\nwhere nft's lists as\n%s", mine, theirs)
@@ -146,4 +165,156 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	if err := plat.deleteFallback(); err != nil {
 		t.Errorf("a delete with no table failed: %v", err)
 	}
+}
+
+// Another writer's flushed set and deleted rule are written back within a pass
+// of the change, where the periodic pass is an hour away. A table another
+// writer holds under its own socket, which the reconciler cannot write, takes
+// 5405 and 5435 out within a pass, and once that socket closes the
+// reconciler's next try writes the table back and puts them in again.
+func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T) {
+	const device, uplink = "ranetsw0", "ranetup0"
+	plat := rootRulePlatform(t, device)
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("another writer's changes are made through nft, which is not on the path")
+	}
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	createTUN(t, uplink)
+	link, err := conn.link(0, uplink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, link.index, unix.IFF_UP)
+	lan4, lan6 := prefix("198.51.100.10/25"), prefix("2001:db8:a::10/64")
+	for address, unspecified := range map[netip.Prefix]netip.Addr{lan4: netip.IPv4Unspecified(), lan6: netip.IPv6Unspecified()} {
+		writeBatchAddress(t, conn, link.index, address)
+		writeBatchRoute(t, conn, unix.RT_TABLE_MAIN, netip.PrefixFrom(unspecified, 0), batchHop{index: link.index})
+	}
+
+	tbl, rt := platformFor(device)
+	tbl.Reconcile = schema.Duration(time.Hour)
+	// an overlay address of each family on the tun, without which mode 2 adds no 5405 or 5435
+	tbl.Addresses = prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))
+	rt.Overlay = exitPassOverlay
+	network := NetworkState{
+		IPv4: NetworkFamily{Default: DefaultRoute{Interface: uplink}, Links: []Link{{Name: uplink, Prefixes: []netip.Prefix{lan4}}}},
+		IPv6: NetworkFamily{Default: DefaultRoute{Interface: uplink}, Links: []Link{{Name: uplink, Prefixes: []netip.Prefix{lan6}}}},
+	}
+	rt.Network = func() NetworkState { return network }
+	reconciler := newReconciler(tbl.WithMode(&ExitMode{Fallback: FallbackNone}).Normalized(), rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
+	exit, _ := reconciler.exitPass(reconciler.addresses)
+	sets, asked := reconciler.fallbackFor(exit)
+	if !asked {
+		t.Fatal("the mode does not ask for the table")
+	}
+
+	// read through sockets of the test's own, since the loop owns the platform's
+	reader, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	fault := func() string {
+		fault, err := fallbackFault(reader, sets)
+		if err != nil {
+			t.Fatalf("read the table back: %v", err)
+		}
+		return fault
+	}
+	uplinkSources := func() int {
+		replies, err := conn.execute(unix.RTM_GETRULE, unix.NLM_F_DUMP, make([]byte, sizeofFibRuleHdr))
+		if err != nil {
+			t.Fatalf("dump rules: %v", err)
+		}
+		held := 0
+		for _, reply := range replies {
+			if rule, ok := plat.decodeRule(reply); ok && (rule.Priority == priorityUplinkSource || rule.Priority == priorityLinkSource) {
+				held++
+			}
+		}
+		return held
+	}
+	// one address and one network of each family
+	const sources = 4
+	// settle waits for the table to read back as written, or not, and for
+	// held of 5405 and 5435, naming what it last read when it gives up
+	settle := func(written bool, held int) {
+		t.Helper()
+		var last string
+		var count int
+		for deadline := time.Now().Add(waitBudget); time.Now().Before(deadline); time.Sleep(waitPoll) {
+			last, count = fault(), uplinkSources()
+			if (last == "") == written && count == held {
+				return
+			}
+		}
+		t.Fatalf("the table reads back with %q and the kernel holds %d of 5405 and 5435, want written %v and %d", last, count, written, held)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reconciler.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("the reconciler stopped with %v", err)
+		}
+	})
+	settle(true, sources)
+
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command(nft, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nft %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	handle := regexp.MustCompile(`comment "counter drop" # handle (\d+)`)
+	for _, change := range []func() string{
+		func() string {
+			run("flush", "set", "inet", FallbackTable, "lan4")
+			return "a flushed set"
+		},
+		func() string {
+			found := handle.FindStringSubmatch(run("-a", "list", "chain", "inet", FallbackTable, "fallback"))
+			if found == nil {
+				t.Fatal("the chain lists no drop")
+			}
+			run("delete", "rule", "inet", FallbackTable, "fallback", "handle", found[1])
+			return "a deleted drop"
+		},
+	} {
+		what := change()
+		changed := time.Now()
+		settle(true, sources)
+		if took := time.Since(changed); took > fallbackRestoreBudget {
+			t.Errorf("after %s the table took %s to read back as written, want at most %s", what, took, fallbackRestoreBudget)
+		}
+	}
+
+	holder, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
+		Body: nftables.PutAttrBE32(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, FallbackTable), unix.NFTA_TABLE_FLAGS, tableOwner)}
+	if err := holder.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, FallbackTable), owned}); err != nil {
+		_ = holder.Close()
+		t.Fatalf("take the table under another writer's socket: %v", err)
+	}
+	changed := time.Now()
+	settle(false, 0)
+	if took := time.Since(changed); took > fallbackRestoreBudget {
+		t.Errorf("with the table held by another writer 5405 and 5435 took %s to go, want at most %s", took, fallbackRestoreBudget)
+	}
+	if err := holder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	settle(true, sources)
 }

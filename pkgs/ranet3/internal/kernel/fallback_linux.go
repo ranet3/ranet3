@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -216,12 +217,72 @@ func fallbackBatch(s fallbackSets, remake bool) ([]nftables.Request, error) {
 	return requests, nil
 }
 
-func (p *netlinkPlatform) writeFallback(s fallbackSets) error {
+// fallbackTables is the scope another writer's change wakes the reconciler in
+var fallbackTables = nftables.Scope{Name: FallbackTable, Families: []uint8{unix.NFPROTO_INET}}
+
+// fallbackWatch is the socket the table is written through and the monitor of
+// every other writer's change to it. A pass that finds the table changed
+// leaves 5405 and 5435 out until it reads back, so the change is answered at
+// once rather than at the next periodic pass.
+type fallbackWatch struct {
+	conn    *nftables.Conn
+	monitor *nftables.Monitor
+	stop    chan struct{}
+	done    chan struct{}
+}
+
+// watchFallback is the socket the table is written through, opening it with
+// its monitor at the first call
+func (p *netlinkPlatform) watchFallback() (*nftables.Conn, error) {
+	if p.fallback != nil {
+		return p.fallback.conn, nil
+	}
 	conn, err := nftables.Dial()
+	if err != nil {
+		return nil, err
+	}
+	monitor, err := nftables.OpenMonitor(conn, fallbackTables)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	w := &fallbackWatch{conn: conn, monitor: monitor, stop: make(chan struct{}), done: make(chan struct{})}
+	go w.forward(monitor.Changed(), monitor.Missed(), p.monitor.wake)
+	p.fallback = w
+	return conn, nil
+}
+
+// forward wakes the reconciler on each change the monitor reports and on each
+// it may have missed
+func (w *fallbackWatch) forward(changed, missed <-chan struct{}, wake func()) {
+	defer close(w.done)
+	for {
+		select {
+		case <-w.stop:
+			return
+		case <-changed:
+		case <-missed:
+		}
+		wake()
+	}
+}
+
+func (p *netlinkPlatform) unwatchFallback() error {
+	w := p.fallback
+	if w == nil {
+		return nil
+	}
+	p.fallback = nil
+	close(w.stop)
+	<-w.done
+	return errors.Join(w.monitor.Close(), w.conn.Close())
+}
+
+func (p *netlinkPlatform) writeFallback(s fallbackSets) error {
+	conn, err := p.watchFallback()
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 	read, err := readFallback(conn, s)
 	if err != nil {
 		return err
@@ -234,11 +295,16 @@ func (p *netlinkPlatform) writeFallback(s fallbackSets) error {
 }
 
 func (p *netlinkPlatform) readFallback(s fallbackSets) (string, error) {
-	conn, err := nftables.Dial()
+	conn, err := p.watchFallback()
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	return fallbackFault(conn, s)
+}
+
+// fallbackFault names the first way the table conn reads differs from what
+// writeFallback writes for s, empty where none does
+func fallbackFault(conn *nftables.Conn, s fallbackSets) (string, error) {
 	read, err := readFallback(conn, s)
 	if err != nil {
 		return "", err
@@ -279,14 +345,14 @@ func readFallback(conn *nftables.Conn, s fallbackSets) (nftables.Readback, error
 	return read, nil
 }
 
-// deleteFallback lists first, since deleting a table that is not there fails
-// the batch
+// deleteFallback deletes through the watch's socket, so its own delete wakes
+// nothing. It lists first, since deleting a table that is not there fails the
+// batch.
 func (p *netlinkPlatform) deleteFallback() error {
-	conn, err := nftables.Dial()
+	conn, err := p.watchFallback()
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 	tables, err := nftables.Tables(conn, FallbackTable)
 	if err != nil {
 		return err
