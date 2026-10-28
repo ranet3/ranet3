@@ -26,11 +26,15 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// refuseExitModeHere refuses cap.exit where this platform has no exit mode
+// refuseExitModeHere refuses cap.exit where this platform has no exit mode, and fallback = "none" where it has no filter
 // the start checks it ahead of every other capability's platform refusal, so a host writing cap.exit beside cap.border is told about cap.exit
+// fallback goes first, so a host asking for the switch is told the switch is missing rather than only the mode
 func refuseExitModeHere(cfg *config.Config) error {
 	if cfg.Cap.Exit == nil {
 		return nil
+	}
+	if err := kernel.RefuseFallback(*cfg.Cap.Exit); err != nil {
+		return err
 	}
 	return kernel.RefuseExitMode()
 }

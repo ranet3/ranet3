@@ -71,6 +71,10 @@ func (p *netlinkPlatform) lookups(reads []RouteRead) ([]BatchAnswer, error) {
 // RefuseExitMode is nil here, where the reconciler's policy rules carry cap.exit
 func RefuseExitMode() error { return nil }
 
+// RefuseFallback is nil here, where the table ranet3_fallback carries
+// fallback = "none"
+func RefuseFallback(ExitMode) error { return nil }
+
 // ipv4DevconfPromoteSecondaries is IPV4_DEVCONF_PROMOTE_SECONDARIES of linux/ip.h, which x/sys does not carry
 const ipv4DevconfPromoteSecondaries = 20
 

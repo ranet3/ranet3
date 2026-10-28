@@ -1289,7 +1289,7 @@ func leafConfig() Config {
 	leaf.Cap.Egress = nil
 	leaf.Cap.Segment.Local = slices.DeleteFunc(leaf.Cap.Segment.Local, func(segment srv6.Segment) bool { return segment.Deliver == srv6.DeliverEgress })
 	leaf.Cap.Route.Announce = slices.DeleteFunc(leaf.Cap.Route.Announce, func(announce schema.Announce) bool { return announce.Prefix.Bits() == 0 })
-	leaf.Cap.Exit = &kernel.ExitMode{Forward: []string{"docker0", "br-*"}}
+	leaf.Cap.Exit = &kernel.ExitMode{Forward: []string{"docker0", "br-*"}, Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp", "60000-61000/udp"}}
 	return leaf
 }
 

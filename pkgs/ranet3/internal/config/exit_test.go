@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
 // exitLeaf is a node writing cap.table, cap.border and cap.exit in each format, cap.exit's body given as each format spells it
@@ -72,8 +74,8 @@ func exitLeafBody(format, exit string) string {
 
 // cap.exit is refused with no cap.table, whose reconciler writes the mode's
 // rules, and with no cap.border, whose overlay those rules keep off the uplink,
-// in each format. via is refused by name, and fallback is a key the decoder
-// does not know.
+// in each format. via is refused by name, and fallback by its value when it is
+// neither "uplink" nor "none".
 func TestExitRefusalsReachTheLoader(t *testing.T) {
 	const (
 		noTable  = "config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of: add cap.table"
@@ -85,21 +87,21 @@ func TestExitRefusalsReachTheLoader(t *testing.T) {
 		dropTable, dropBorder func(string) string
 	}{
 		{
-			"toml", "via = [\"3fff:b:0:306::3\"]\n", "fallback = \"uplink\"\n",
+			"toml", "via = [\"3fff:b:0:306::3\"]\n", "fallback = \"lan\"\n",
 			func(body string) string { return strings.Replace(body, "[cap.table]\n", "", 1) },
 			func(body string) string {
 				return strings.Replace(body, "[cap.border]\noverlay = [\"192.0.2.0/24\", \"3fff::/20\"]\n", "", 1)
 			},
 		},
 		{
-			"yaml", `{via: ["3fff:b:0:306::3"]}`, "{fallback: uplink}",
+			"yaml", `{via: ["3fff:b:0:306::3"]}`, "{fallback: lan}",
 			func(body string) string { return strings.Replace(body, "  table: {}\n", "", 1) },
 			func(body string) string {
 				return strings.Replace(body, "  border:\n    overlay: [192.0.2.0/24, 3fff::/20]\n", "", 1)
 			},
 		},
 		{
-			"json", `{"via": ["3fff:b:0:306::3"]}`, `{"fallback": "uplink"}`,
+			"json", `{"via": ["3fff:b:0:306::3"]}`, `{"fallback": "lan"}`,
 			func(body string) string { return strings.Replace(body, `"table": {}, `, "", 1) },
 			func(body string) string {
 				return strings.Replace(body, `"border": {"overlay": ["192.0.2.0/24", "3fff::/20"]}, `, "", 1)
@@ -113,7 +115,7 @@ func TestExitRefusalsReachTheLoader(t *testing.T) {
 				"no cap.table":  {c.dropTable(body), noTable},
 				"no cap.border": {c.dropBorder(body), noBorder},
 				"via":           {exitLeafBody(c.format, c.via), via},
-				"fallback":      {exitLeafBody(c.format, c.fallback), "fallback"},
+				"fallback":      {exitLeafBody(c.format, c.fallback), `kernel: cap.exit fallback "lan" is neither "uplink" nor "none"`},
 			} {
 				if _, err := load(t, extension, refused.body); err == nil || !strings.Contains(err.Error(), refused.says) {
 					t.Errorf("%s was refused with %v, want %q", name, err, refused.says)
@@ -186,6 +188,90 @@ func TestExitForwardRefusesWhatNamesNoLink(t *testing.T) {
 	for _, entry := range []string{"abcdefghijklmno", "docker*", "br-?", "[a-c]x", "[^a]*", "lo*", `eth\0`, "veth.1"} {
 		if _, err := loadTOML(t, forward(entry)); err != nil {
 			t.Errorf("forward %q was refused: %v", entry, err)
+		}
+	}
+}
+
+// fallback and inbound read alike in each format, and the reconciler's mode
+// carries them. fallback unwritten is "uplink" and refuses nothing.
+func TestFallbackAndInboundReadAlikeInEveryFormat(t *testing.T) {
+	for format, body := range map[string]string{
+		"toml": "fallback = \"none\"\ninbound = [\"60000-61000/udp\", \"22/tcp\"]\n",
+		"yaml": `{fallback: none, inbound: [60000-61000/udp, 22/tcp]}`,
+		"json": `{"fallback": "none", "inbound": ["60000-61000/udp", "22/tcp"]}`,
+	} {
+		extension, text := exitLeaf(format, body)
+		cfg, err := load(t, extension, text)
+		if err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+		mode := cfg.ReconcilerTable().Mode()
+		if mode == nil || mode.Fallback != kernel.FallbackNone || !mode.Refuses() || !slices.Equal(mode.Inbound, []string{"60000-61000/udp", "22/tcp"}) {
+			t.Errorf("%s: cap.exit %s reaches the reconciler as %+v", format, body, mode)
+		}
+		if normal := mode.Normalized().Inbound; !slices.Equal(normal, []string{"22/tcp", "60000-61000/udp"}) {
+			t.Errorf("%s: inbound normalized to %q", format, normal)
+		}
+	}
+	cfg, err := loadTOML(t, exitLeafBody("toml", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := cfg.ReconcilerTable().Mode(); mode == nil || mode.Fallback != "" || mode.Refuses() || mode.Inbound != nil {
+		t.Errorf("cap.exit with neither key reaches the reconciler as %+v", mode)
+	}
+	cfg, err = loadTOML(t, exitLeafBody("toml", "fallback = \"uplink\"\n"))
+	if err != nil || cfg.Cap.Exit.Refuses() {
+		t.Errorf("fallback = \"uplink\" read as %+v, %v", cfg, err)
+	}
+}
+
+// fallback takes "uplink" and "none" alone. inbound is refused unless
+// fallback is "none", and an entry is refused when it is malformed, names
+// port 0, a port past 65535 or a protocol other than tcp and udp, runs
+// downward, or names the ports of an earlier entry again. Ranges that overlap
+// or touch are taken, and normalization joins them.
+func TestFallbackAndInboundRefusals(t *testing.T) {
+	inbound := func(fallback string, entries ...string) string {
+		body := "inbound = ['" + strings.Join(entries, "', '") + "']\n"
+		if fallback != "" {
+			body = "fallback = \"" + fallback + "\"\n" + body
+		}
+		return exitLeafBody("toml", body)
+	}
+	const notNone = `kernel: cap.exit inbound lists the services that answer beyond the LAN while fallback = "none" refuses the rest, and fallback is not "none": write fallback = "none" or remove inbound`
+	for name, refused := range map[string]struct{ body, says string }{
+		"fallback off its values": {exitLeafBody("toml", "fallback = \"None\"\n"), `kernel: cap.exit fallback "None" is neither "uplink" nor "none"`},
+		"fallback empty":          {exitLeafBody("toml", "fallback = \"\"\ninbound = ['22/tcp']\n"), notNone},
+		"under uplink":            {inbound("uplink", "22/tcp"), notNone},
+		"under no fallback":       {inbound("", "22/tcp"), notNone},
+		"no protocol":             {inbound("none", "22"), `kernel: cap.exit inbound "22" is not <port>/<protocol> or <first>-<last>/<protocol>`},
+		"icmp":                    {inbound("none", "8/icmp"), `kernel: cap.exit inbound "8/icmp" names the protocol "icmp", where inbound takes tcp or udp`},
+		"protocol in capitals":    {inbound("none", "22/TCP"), `kernel: cap.exit inbound "22/TCP" names the protocol "TCP", where inbound takes tcp or udp`},
+		"empty protocol":          {inbound("none", "22/"), `kernel: cap.exit inbound "22/" names the protocol "", where inbound takes tcp or udp`},
+		"port 0":                  {inbound("none", "0/udp"), `kernel: cap.exit inbound "0/udp" names port 0, which no service listens on`},
+		"range from port 0":       {inbound("none", "0-10/tcp"), `kernel: cap.exit inbound "0-10/tcp" names port 0, which no service listens on`},
+		"past 65535":              {inbound("none", "65536/tcp"), `kernel: cap.exit inbound "65536/tcp" is not <port>/<protocol> or <first>-<last>/<protocol>, each port from 1 to 65535`},
+		"no port":                 {inbound("none", "/tcp"), `kernel: cap.exit inbound "/tcp" is not <port>/<protocol> or <first>-<last>/<protocol>, each port from 1 to 65535`},
+		"open range":              {inbound("none", "22-/tcp"), `kernel: cap.exit inbound "22-/tcp" is not <port>/<protocol> or <first>-<last>/<protocol>, each port from 1 to 65535`},
+		"signed":                  {inbound("none", "+22/tcp"), `kernel: cap.exit inbound "+22/tcp" is not <port>/<protocol> or <first>-<last>/<protocol>, each port from 1 to 65535`},
+		"spaced":                  {inbound("none", "22 /tcp"), `kernel: cap.exit inbound "22 /tcp" is not <port>/<protocol> or <first>-<last>/<protocol>, each port from 1 to 65535`},
+		"a name":                  {inbound("none", "ssh/tcp"), `kernel: cap.exit inbound "ssh/tcp" is not <port>/<protocol> or <first>-<last>/<protocol>, each port from 1 to 65535`},
+		"downward":                {inbound("none", "61000-60000/udp"), `kernel: cap.exit inbound "61000-60000/udp" runs from 61000 down to 60000: write the lower port first`},
+		"twice":                   {inbound("none", "22/tcp", "53/udp", "22/tcp"), `kernel: cap.exit inbound "22/tcp" is written twice, the second time as "22/tcp"`},
+		"twice as a range":        {inbound("none", "22/tcp", "22-22/tcp"), `kernel: cap.exit inbound "22/tcp" is written twice, the second time as "22-22/tcp"`},
+	} {
+		if _, err := loadTOML(t, refused.body); err == nil || err.Error() != refused.says {
+			t.Errorf("%s was refused with %v, want %q", name, err, refused.says)
+		}
+	}
+	for _, entries := range [][]string{
+		{"1/tcp", "65535/udp", "1-65535/udp"},
+		{"22/tcp", "22/udp"},
+		{"20-30/tcp", "25/tcp", "31-40/tcp"},
+	} {
+		if _, err := loadTOML(t, inbound("none", entries...)); err != nil {
+			t.Errorf("inbound %q was refused: %v", entries, err)
 		}
 	}
 }

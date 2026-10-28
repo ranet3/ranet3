@@ -61,6 +61,41 @@ func TestReloadAddingAndRemovingCapExitHandsTheReconcilerItsMode(t *testing.T) {
 	}
 }
 
+// a reload changing fallback or inbound applies in place, handing the reconciler one table running the new mode, and inbound written in another order or split another way hands nothing
+func TestReloadChangingFallbackOrInboundHandsTheReconcilerOneTable(t *testing.T) {
+	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
+		exitLeafStart(old)
+		old.Cap.Exit = &kernel.ExitMode{}
+	})
+	next := *c.config()
+	for i, step := range []struct {
+		mode   kernel.ExitMode
+		passes int
+	}{
+		{kernel.ExitMode{Fallback: kernel.FallbackNone}, 1},
+		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp", "60000-61000/udp"}}, 2},
+		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"60000-60500/udp", "60501-61000/udp", "22/tcp"}}, 2},
+		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}}, 3},
+		{kernel.ExitMode{Fallback: kernel.FallbackUplink}, 4},
+	} {
+		next.Cap.Exit = &step.mode
+		writeConfig(t, path, &next)
+		if err := c.ReloadFrom(path); err != nil {
+			t.Fatalf("step %d: the reload to %+v was refused: %v", i, step.mode, err)
+		}
+		if len(reconciler.tables) != step.passes {
+			t.Fatalf("step %d: the reconciler was handed %d tables in all, want %d", i, len(reconciler.tables), step.passes)
+		}
+		want := step.mode.Normalized()
+		if got := reconciler.tables[len(reconciler.tables)-1].Normalized().Mode(); !reflect.DeepEqual(got, &want) {
+			t.Errorf("step %d: the reconciler runs %+v, want %+v", i, got, want)
+		}
+		if got := lastReload(t, bus)["applied"]; got != "cap.exit" && i != 2 {
+			t.Errorf("step %d: the reload was recorded as applying %q, want cap.exit", i, got)
+		}
+	}
+}
+
 // eth0 carries the host's IPv4 default and wlan0 its IPv6 one, beside a bridge
 var exitHost = kernel.NetworkState{
 	IPv4: kernel.NetworkFamily{Default: kernel.DefaultRoute{Interface: "eth0"}, Links: []kernel.Link{{Name: "docker0"}, {Name: "eth0"}, {Name: "wlan0"}}},

@@ -43,3 +43,16 @@ func TestExitModeIsRefusedHereAtTheStartAndAtReload(t *testing.T) {
 		t.Errorf("a refused reload handed the reconciler %+v", reconciler.tables)
 	}
 }
+
+// fallback = "none" is refused at the start by its own message, ahead of cap.exit's, naming the key, the value and the platform
+func TestFallbackNoneIsRefusedHereAheadOfTheExitMode(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Cap.Table = &kernel.Table{}
+	cfg.Cap.Exit = &kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}}
+	err := refuseExitModeHere(cfg)
+	for _, want := range []string{"fallback", `"none"`, runtime.GOOS} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("the start refused fallback = \"none\" with %v, which does not name %q", err, want)
+		}
+	}
+}
