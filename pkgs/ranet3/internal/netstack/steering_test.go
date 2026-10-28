@@ -19,11 +19,11 @@ import (
 // the packet correctly encapsulated and handed to the wrong peer, which
 // arrives at a node holding no such segment.
 func TestOutboundSeamRoutesBySegmentRatherThanByDestination(t *testing.T) {
-	exit := segAddr("3fff:1:69c:98d6::1")
+	exit := segAddr("3fff:b:0:206::1")
 	table, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(segPrefix("3fff:a::17/128")),
 		Via:  []schema.Addr{schema.AddrFrom(exit)},
-	}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+	}}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestOutboundSeamRoutesBySegmentRatherThanByDestination(t *testing.T) {
 	m.SetSteering(table)
 	// The two halves of the mesh: the segment goes one way, the address the
 	// packet was written to goes the other.
-	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("3fff:1:69c:98d6::1/128"), segmentPeer)
+	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("3fff:b:0:206::1/128"), segmentPeer)
 	m.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("2001:4860:4860::8888/128"), destinationPeer)
 	m.startOutboundPipeline()
 	t.Cleanup(m.Close)
@@ -64,8 +64,8 @@ func TestOutboundSeamRoutesBySegmentRatherThanByDestination(t *testing.T) {
 func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
 	table, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(segPrefix("3fff:a::17/128")),
-		Via:  []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
-	}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+		Via:  []schema.Addr{schema.MustAddr("3fff:b:0:206::1")},
+	}}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +94,8 @@ func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
 func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 	table, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(segPrefix("3fff:a::17/128")),
-		Via:  []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
-	}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+		Via:  []schema.Addr{schema.MustAddr("3fff:b:0:206::1")},
+	}}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		t.Fatal(err)
 	}

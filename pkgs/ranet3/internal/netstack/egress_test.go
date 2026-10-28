@@ -25,12 +25,12 @@ import (
 // the segments the tests below hold, an End.DT46 to the mesh, an egress segment and a waypoint
 // the allow list holds headend, the inner sources tcpPacket writes and a leaf network of the overlay, and none of the stranger addresses
 var (
-	meshExit       = segAddr("3fff:1:69c:8c6::1")
-	egressExit     = segAddr("3fff:1:69c:8c6::3")
-	egressWaypoint = segAddr("3fff:1:69c:8c6::2")
-	egressNext     = segAddr("3fff:1:69c:98d6::1")
-	egressAllow    = []netip.Prefix{segPrefix("3fff:1:69c::/48"), segPrefix("3fff:a::/32"), segPrefix("10.0.0.0/8"), segPrefix("192.0.2.64/26")}
-	headend        = segAddr("3fff:1:69c:98d0::1")
+	meshExit       = segAddr("3fff:b:0:106::1")
+	egressExit     = segAddr("3fff:b:0:106::3")
+	egressWaypoint = segAddr("3fff:b:0:106::2")
+	egressNext     = segAddr("3fff:b:0:206::1")
+	egressAllow    = []netip.Prefix{segPrefix("3fff:b::/48"), segPrefix("3fff:a::/32"), segPrefix("10.0.0.0/8"), segPrefix("192.0.2.64/26")}
+	headend        = segAddr("3fff:b:0:200::1")
 	stranger       = map[int]netip.Addr{4: segAddr("192.0.2.1"), 6: segAddr("2001:db8:bad::1")}
 	// egressOwned are egressMesh's own destinations, which the tests deliver to and never egress to
 	egressOwned = []netip.Addr{segAddr("2001:db8::a"), segAddr("2001:db8::b"), segAddr("3fff:a::2"), segAddr("3fff:a::3"), segAddr("192.0.2.70")}

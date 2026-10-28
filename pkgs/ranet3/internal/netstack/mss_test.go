@@ -136,7 +136,7 @@ func TestReaderCountsTheSYNsItClamps(t *testing.T) {
 // and a delivery for no session, as the headend's own answers are, leaves the MSS as it came
 func TestExitClampsTheMSSOfASYNToTheSessionItArrivedThrough(t *testing.T) {
 	const session, offered = 1300, 8800
-	exit := segAddr("3fff:1:69c:8c6::1")
+	exit := segAddr("3fff:b:0:106::1")
 	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}}, everySource)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestExitClampsTheMSSOfASYNToTheSessionItArrivedThrough(t *testing.T) {
 		for _, flags := range []byte{synFlag, synFlag | 0x10} {
 			for _, mtu := range []int{session, 0} {
 				inner := tcpPacket(family, 0, false, flags, binary.BigEndian.AppendUint16([]byte{optionMSS, mssLen}, offered), 0, 0)
-				outer, err := srv6.Encapsulate(inner, segAddr("3fff:1:69c:98d0::1"), []netip.Addr{exit})
+				outer, err := srv6.Encapsulate(inner, segAddr("3fff:b:0:200::1"), []netip.Addr{exit})
 				if err != nil {
 					t.Fatal(err)
 				}

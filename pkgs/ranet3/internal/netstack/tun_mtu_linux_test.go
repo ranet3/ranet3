@@ -42,11 +42,11 @@ var (
 func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 	enterEmptyNamespace(t)
 	const largest = 9000
-	exit := segAddr("3fff:1:69c:98d6::1")
+	exit := segAddr("3fff:b:0:206::1")
 	steering, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(netip.PrefixFrom(tunAddress, 32)),
 		Via:  []schema.Addr{schema.AddrFrom(exit)},
-	}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+	}}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestTUNPacketTooBigPassesAReversePathCheck(t *testing.T) {
 // and a datagram of that size crosses the waypoint whole to the exit
 func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 	const headendSession, waypointSession = 1500, 1400
-	waypoint, exit := segAddr("3fff:1:69c:8c6::2"), segAddr("3fff:1:69c:98d6::1")
+	waypoint, exit := segAddr("3fff:b:0:106::2"), segAddr("3fff:b:0:206::1")
 	for _, family := range pathFamilies {
 		for _, held := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s with a router-id %t", family.name, held), func(t *testing.T) {
@@ -442,7 +442,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 				steering, err := srv6.NewSteerTable([]srv6.Steer{{
 					From: schema.PrefixFrom(netip.PrefixFrom(family.local, family.local.BitLen())),
 					Via:  []schema.Addr{schema.AddrFrom(waypoint), schema.AddrFrom(exit)},
-				}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+				}}, schema.MustAddr("3fff:b:0:100::1"))
 				if err != nil {
 					t.Fatal(err)
 				}

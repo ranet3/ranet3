@@ -14,7 +14,7 @@ import (
 // else over IPv4 from 192.0.0.8 and over IPv6 from one of the node's SIDs
 // and over IPv6 with neither it is not sent, and counted
 func TestErrorsComeFromTheRouterIDElseTheirFallback(t *testing.T) {
-	router4, router6, sid := netip.MustParseAddr("100.64.0.1"), netip.MustParseAddr("3fff:c::1"), netip.MustParseAddr("3fff:1:69c:8c6::1")
+	router4, router6, sid := netip.MustParseAddr("100.64.0.1"), netip.MustParseAddr("3fff:c::1"), netip.MustParseAddr("3fff:b:0:106::1")
 	for _, tc := range []struct {
 		held       AnswerSources
 		v6         bool
@@ -52,15 +52,15 @@ func TestAnswerSourceIsRecordedWhenItChanges(t *testing.T) {
 		}
 		recorded = append(recorded, named)
 	}
-	router4, router6, sid := netip.MustParseAddr("100.64.0.1"), netip.MustParseAddr("3fff:c::1"), netip.MustParseAddr("3fff:1:69c:8c6::1")
+	router4, router6, sid := netip.MustParseAddr("100.64.0.1"), netip.MustParseAddr("3fff:c::1"), netip.MustParseAddr("3fff:b:0:106::1")
 	m.SetAnswerSources(AnswerSources{})
 	m.SetAnswerSources(AnswerSources{Router4: router4, SID: sid})
 	m.SetAnswerSources(AnswerSources{Router4: router4, SID: sid})
 	m.SetAnswerSources(AnswerSources{router4, router6, sid})
 	m.SetAnswerSources(AnswerSources{})
 	want := []map[string]string{
-		{"ipv4": "100.64.0.1", "sid": "3fff:1:69c:8c6::1"},
-		{"ipv4": "100.64.0.1", "ipv6": "3fff:c::1", "sid": "3fff:1:69c:8c6::1"},
+		{"ipv4": "100.64.0.1", "sid": "3fff:b:0:106::1"},
+		{"ipv4": "100.64.0.1", "ipv6": "3fff:c::1", "sid": "3fff:b:0:106::1"},
 		{},
 	}
 	if len(recorded) != len(want) {
