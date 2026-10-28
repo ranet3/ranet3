@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-package main
+package client
 
 import (
 	"net/netip"
@@ -11,6 +11,27 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
+
+// The control surface reports cap.exit's mode as the last pass ran it, each
+// forwarded link, skip and unaddressed family, and no mode at all in mode off.
+func TestExitStatusReportsThePassAndNothingInModeOff(t *testing.T) {
+	if got := kernelExit(nil); got != nil {
+		t.Errorf("mode off reports %+v, want no mode", got)
+	}
+	got := kernelExit(&kernel.ExitStatus{
+		Forwarded:   []string{"br-1", "docker0"},
+		Skipped:     []kernel.ForwardSkip{{Entry: "e*", Link: "eth0", Reason: "the link the IPv4 default leaves by"}},
+		Unaddressed: []kernel.Family{kernel.FamilyIPv6},
+	})
+	want := &control.KernelExit{
+		Forwarded:   []string{"br-1", "docker0"},
+		Skipped:     []control.KernelSkip{{Entry: "e*", Link: "eth0", Reason: "the link the IPv4 default leaves by"}},
+		Unaddressed: []string{"ipv6"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the pass's mode reports %+v, want %+v", got, want)
+	}
+}
 
 // the control surface carries the reconciler's path as each state reads it, up with the families installed and down with the SID and the table's answer, and none outside mode 3
 func TestExitPathStatusCarriesEachState(t *testing.T) {
@@ -30,7 +51,7 @@ func TestExitPathStatusCarriesEachState(t *testing.T) {
 			&control.KernelExitPath{Via: []string{"3fff:b:0:206::1", "3fff:b:0:306::3"}, Source: "3fff::2", State: "down", Down: "3fff:b:0:306::3", Verdict: "held"},
 		},
 	} {
-		if got := exitPathStatus(c.path); !reflect.DeepEqual(got, c.want) {
+		if got := kernelExitPath(c.path); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: the path reads %+v, want %+v", name, got, c.want)
 		}
 	}

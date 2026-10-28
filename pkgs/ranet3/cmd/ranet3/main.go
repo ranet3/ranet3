@@ -335,7 +335,7 @@ func runDaemon(opts options) int {
 		// a platform that has no tables at all.
 		log.Printf("tun device %s ready with %d queues, reconciling its routes into %s",
 			mesh.Name, mesh.QueueCount(), routes.Where())
-		node.SetKernelStatus(func() control.KernelStatus { return kernelStatus(routes) })
+		node.SetKernelStatus(func() control.KernelStatus { return client.KernelStatus(routes) })
 		node.SetFallbackResolvers(routes.FallbackResolvers)
 		node.SetReconcilerRules(routes.DerivedRules)
 		node.SetReconcilerLookups(func() []kernel.Lookup { return routes.Stats().Lookups })
@@ -502,73 +502,4 @@ func watchSignals(signals <-chan os.Signal, cancel context.CancelFunc, force fun
 	<-signals
 	log.Print("second signal, exiting without finishing shutdown")
 	force()
-}
-
-// kernelStatus is the reconciler as the control surface reports it: what it
-// was configured to own and what its last pass did. The configuration half
-// comes from the capability the reconciler resolved rather than from the file,
-// so the defaults it filled in are the ones reported.
-func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
-	table, stats := routes.Table(), routes.Stats()
-	return control.KernelStatus{
-		Enabled:   true,
-		Where:     routes.Where(),
-		Table:     uint32(table.ID),
-		Protocol:  table.Proto,
-		Metric:    table.Metric,
-		PassAt:    stats.At,
-		Installed: stats.Installed,
-		Skipped:   stats.Skipped,
-		Added:     stats.Added,
-		Removed:   stats.Removed,
-		Cover:     familyNames(stats.Cover),
-		Exit:      exitStatus(stats.Exit),
-		ExitPath:  exitPathStatus(stats.Path),
-		Err:       stats.Err,
-	}
-}
-
-// exitStatus is cap.exit's mode as the control surface reports it, nil in mode off
-func exitStatus(exit *kernel.ExitStatus) *control.KernelExit {
-	if exit == nil {
-		return nil
-	}
-	out := &control.KernelExit{Forwarded: exit.Forwarded, Unaddressed: familyNames(exit.Unaddressed)}
-	for _, skip := range exit.Skipped {
-		out.Skipped = append(out.Skipped, control.KernelSkip{Entry: skip.Entry, Link: skip.Link, Reason: skip.Reason})
-	}
-	if f := exit.Fallback; f != nil {
-		out.Fallback = &control.KernelFallback{State: string(f.State), Reason: f.Fault, Dropped: f.Dropped, DroppedBytes: f.DroppedBytes}
-		for _, network := range f.Captured {
-			out.Fallback.Captured = append(out.Fallback.Captured, network.String())
-		}
-		for _, network := range f.Public {
-			out.Fallback.Public = append(out.Fallback.Public, network.String())
-		}
-	}
-	return out
-}
-
-// exitPathStatus is cap.exit via's path as the control surface reports it, nil
-// outside mode 3, its counts left for the client, which holds the dataplane
-func exitPathStatus(path *kernel.PathStatus) *control.KernelExitPath {
-	if path == nil {
-		return nil
-	}
-	out := &control.KernelExitPath{Source: path.Source.String(), State: "up", Installed: familyNames(path.Installed)}
-	for _, sid := range path.Via {
-		out.Via = append(out.Via, sid.String())
-	}
-	if path.Down.IsValid() {
-		out.State, out.Down, out.Verdict = "down", path.Down.String(), path.Verdict
-	}
-	return out
-}
-
-func familyNames(families []kernel.Family) []string {
-	var names []string
-	for _, family := range families {
-		names = append(names, string(family))
-	}
-	return names
 }
