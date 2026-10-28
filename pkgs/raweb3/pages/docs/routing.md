@@ -480,7 +480,8 @@ These tables are where a lookup ends under the derived rules, and the other
 pages link here for it. They hold where `cap.table` is written and the
 reconciler is enabled, with every rule of the reconciler's last pass in place,
 no rule of another program in the policy database, and no route of another
-writer in `cap.table.id`'s table.
+writer in `cap.table.id`'s table. `ranet3 debug route` names the rule and route
+a lookup of one packet ends on, as [debugging](development/debug.md) describes.
 
 Where that does not hold, the reconciler does this:
 

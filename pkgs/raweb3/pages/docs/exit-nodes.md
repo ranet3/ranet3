@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-29
+updated: 2026-10-30
 order: 50
 ---
 
@@ -473,7 +473,9 @@ packet through an advertised prefix waits for the families ready that the node
 announces, and an egress segment's packet for the families ready, as
 [what an exit carries out](#what-an-exit-carries-out) and
 [egress segments](#egress-segments) describe. A family this node does not
-translate is not ready.
+translate is not ready. `ranet3 debug egress` shows each family's judgment
+condition by condition with the lookups the last pass read, as
+[debugging](development/debug.md) describes.
 
 The kernel's routes are read from its own route lookups, all of a pass in 1
 batch through 1 netlink socket:
@@ -638,8 +640,9 @@ not packets, and the timeout rules carry none. The limit rule's counter counts
 the packets it refused, a dropping rule's the packets it dropped, a refusing
 rule's the packets it refused, and a passing rule carries none. The ICMP drops'
 and the refusals' counts reach no field of `ranet3 status`, and
-`nft list ruleset` shows them. [Sharing a host](coexistence.md) describes how
-the tables live beside other writers.
+`ranet3 debug egress` and `nft list ruleset` show them.
+[Sharing a host](coexistence.md) describes how the tables live beside other
+writers.
 
 ## Egress segments
 
