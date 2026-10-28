@@ -1278,9 +1278,19 @@ func fullConfig() Config {
 			},
 			// covering the egress segment's allow list, which the loader asks of it
 			Border: &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.0.0/8")}},
-			Exit:   &kernel.ExitMode{Forward: []string{"docker0", "br-*"}},
 		},
 	}
+}
+
+// leafConfig is fullConfig running cap.exit, with what makes fullConfig an exit
+// taken out, since the loader refuses cap.exit on an exit
+func leafConfig() Config {
+	leaf := fullConfig()
+	leaf.Cap.Egress = nil
+	leaf.Cap.Segment.Local = slices.DeleteFunc(leaf.Cap.Segment.Local, func(segment srv6.Segment) bool { return segment.Deliver == srv6.DeliverEgress })
+	leaf.Cap.Route.Announce = slices.DeleteFunc(leaf.Cap.Route.Announce, func(announce schema.Announce) bool { return announce.Prefix.Bits() == 0 })
+	leaf.Cap.Exit = &kernel.ExitMode{Forward: []string{"docker0", "br-*"}}
+	return leaf
 }
 
 // A file an operator wrote reaches the daemon whole, whichever of the three
@@ -1290,15 +1300,18 @@ func fullConfig() Config {
 // and nothing reports.
 //
 // The case is checked against the schema before it is rendered, so a
-// capability that grows a field fails here until fullConfig writes one, rather
-// than passing a round trip that never carried it.
+// capability that grows a field fails here until fullConfig or leafConfig
+// writes one, rather than passing a round trip that never carried it. An exit
+// is refused cap.exit, so the exit's file and the leaf's carry the two halves.
 func TestEveryWrittenFieldSurvivesEachEncoder(t *testing.T) {
-	want := fullConfig()
-	if missing := unwritten(reflect.ValueOf(want), ""); len(missing) > 0 {
-		t.Fatalf("fullConfig leaves %d field(s) at zero, so no encoder below is asked to carry them: %s",
+	every := fullConfig()
+	every.Cap.Exit = leafConfig().Cap.Exit
+	if missing := unwritten(reflect.ValueOf(every), ""); len(missing) > 0 {
+		t.Fatalf("fullConfig and leafConfig leave %d field(s) at zero, so no encoder below is asked to carry them: %s",
 			len(missing), strings.Join(missing, ", "))
 	}
-	sameAfterEachEncoder(t, want)
+	sameAfterEachEncoder(t, fullConfig())
+	sameAfterEachEncoder(t, leafConfig())
 }
 
 // << names an FQDN alias and a cost.extra organization in every file, so the yaml rendering has to quote it

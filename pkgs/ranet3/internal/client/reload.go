@@ -448,18 +448,6 @@ func sameOverlay(old, next *config.Config) bool {
 	return slices.Equal(sorted(old), sorted(next))
 }
 
-// egressPrefixes lists the prefixes cap.egress advertises, whose entries the forwarding decision egresses through only while their family is ready
-func egressPrefixes(cfg *config.Config) []netip.Prefix {
-	if cfg.Egress() == nil {
-		return nil
-	}
-	out := make([]netip.Prefix, len(cfg.Egress().Advertise))
-	for i, prefix := range cfg.Egress().Advertise {
-		out[i] = prefix.Prefix
-	}
-	return out
-}
-
 func sortedAddrs(addrs []netip.Addr) []netip.Addr {
 	return slices.SortedFunc(slices.Values(addrs), netip.Addr.Compare)
 }
@@ -564,13 +552,12 @@ func sameExitMode(old, next *config.Config) bool {
 	return reflect.DeepEqual(normalize(old.Cap.Exit), normalize(next.Cap.Exit))
 }
 
-// sameExit reports that next's announcements make this node an exit exactly
-// where old's do, judged under next's overlay. The reconciler reads the
-// announcements for that alone beyond the addresses sameTable compares, so an
-// announcement that counts as no default moves nothing it holds.
+// sameExit reports that next makes this node an exit exactly where old does,
+// judged under next's overlay. The reconciler reads the announcements for that
+// alone beyond the addresses sameTable compares, so an announcement that counts
+// as no default moves nothing it holds.
 func sameExit(old, next *config.Config) bool {
-	counts := func(prefix netip.Prefix) bool { return schema.CapturesTheMachine(prefix, next.Overlay()) }
-	return slices.ContainsFunc(old.Routes().Announced(), counts) == slices.ContainsFunc(next.Routes().Announced(), counts)
+	return old.ExitReason(next.Overlay()).Is() == next.ExitReason(next.Overlay()).Is()
 }
 
 // sortedEndpoints puts the local endpoints in one order, for the same reason

@@ -271,6 +271,32 @@ func CapturesTheMachine(prefix netip.Prefix, overlay []Prefix) bool {
 	return prefix.Bits() < floor && !insideOverlay(prefix.Masked(), overlay)
 }
 
+// Exit names why a node is an exit, which withholds every route
+// CapturesTheMachine counts and never runs cap.exit: the first prefix cap.egress
+// advertises that it counts, the first cap.route announces that it counts, and
+// an egress segment of cap.segment. Its zero value is a node that is none.
+type Exit struct {
+	Advertised, Announced netip.Prefix
+	EgressSegment         bool
+}
+
+// ExitOf names why a node advertising and announcing these prefixes, holding
+// an egress segment or not, is an exit under overlay
+func ExitOf(advertised, announced []netip.Prefix, egressSegment bool, overlay []Prefix) Exit {
+	counts := func(prefix netip.Prefix) bool { return CapturesTheMachine(prefix, overlay) }
+	exit := Exit{EgressSegment: egressSegment}
+	if at := slices.IndexFunc(advertised, counts); at >= 0 {
+		exit.Advertised = advertised[at]
+	}
+	if at := slices.IndexFunc(announced, counts); at >= 0 {
+		exit.Announced = announced[at]
+	}
+	return exit
+}
+
+// Is reports a node that is an exit
+func (e Exit) Is() bool { return e.Advertised.IsValid() || e.Announced.IsValid() || e.EgressSegment }
+
 // InsideOverlay reports each address of prefix lying in some entry of the
 // overlay, the test CapturesTheMachine makes
 func InsideOverlay(prefix netip.Prefix, overlay []Prefix) bool {
