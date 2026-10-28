@@ -131,15 +131,17 @@ func benchmarkDecide(b *testing.B, m *Mesh, packets [][]byte) {
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*decideBatch), "ns/packet")
 }
 
+// benchRecordRoute is a Record Route option with room for one address, ended by End of Option List so the header's length is a multiple of 4
+var benchRecordRoute = []byte{7, 7, 4, 0, 0, 0, 0, 0}
+
 func BenchmarkDecide(b *testing.B) {
-	recordRoute := []byte{7, 7, 4, 0, 0, 0, 0}
 	for _, c := range []struct {
 		name   string
 		packet []byte
 	}{
 		{"forwarded IPv4", udpPacket(transitSender[4], transitFar[4], 100, false)},
 		{"forwarded IPv6", udpPacket(transitSender[6], transitFar[6], 100, false)},
-		{"forwarded IPv4 with Record Route", withOptions(udpPacket(transitSender[4], transitFar[4], 100, false), recordRoute)},
+		{"forwarded IPv4 with Record Route", withOptions(udpPacket(transitSender[4], transitFar[4], 100, false), benchRecordRoute)},
 		{"delivered IPv4", udpPacket(transitSender[4], transitOwn[4], 100, false)},
 		{"delivered IPv6", udpPacket(transitSender[6], transitOwn[6], 100, false)},
 	} {
@@ -269,11 +271,17 @@ func BenchmarkOptionStage(b *testing.B) {
 	}{
 		{"IHL 5 with the clock read for every header", plain, true},
 		{"IHL 5", plain, false},
-		{"Record Route", withOptions(plain, []byte{7, 7, 4, 0, 0, 0, 0}), false},
+		{"Record Route", withOptions(plain, benchRecordRoute), false},
 		{"Timestamp with addresses", withOptions(plain, []byte{68, 12, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0}), false},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			raw := make([]byte, len(c.raw))
+			copy(raw, c.raw)
+			if hasOptions(raw) {
+				if _, forwarded := m.forwardOptions(raw, nil); !forwarded {
+					b.Fatalf("the options of %x do not forward, so this measures another path", c.raw)
+				}
+			}
 			b.ReportAllocs()
 			for b.Loop() {
 				copy(raw, c.raw[:headerLen(c.raw)])
