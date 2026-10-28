@@ -148,7 +148,7 @@ func (w *NetworkWatch) run() {
 			return
 		case <-w.notify:
 		}
-		if !w.settle() {
+		if !settle(w.notify, w.stop, watchSettle) {
 			return
 		}
 		state, err := w.read()
@@ -171,15 +171,16 @@ func (w *NetworkWatch) run() {
 	}
 }
 
-// settle waits out watchSettle, taking the notifications that arrive meanwhile, and reports false once the watch is stopping
-func (w *NetworkWatch) settle() bool {
-	timer := time.NewTimer(watchSettle)
+// settle waits out delay from the first notification of a change, taking the notifications that arrive meanwhile,
+// and reports false once stop closes
+func settle(notify, stop <-chan struct{}, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	for {
 		select {
-		case <-w.stop:
+		case <-stop:
 			return false
-		case <-w.notify:
+		case <-notify:
 		case <-timer.C:
 			return true
 		}

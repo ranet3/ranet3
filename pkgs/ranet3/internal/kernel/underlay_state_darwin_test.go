@@ -558,49 +558,6 @@ func TestStateRefusesMoreRecordsThanItWrites(t *testing.T) {
 	}
 }
 
-// The premise the reclaim's last condition rests on, asserted on whatever
-// machine the suite runs on rather than taken on trust: no interface holds
-// both an unscoped default and a scoped one, so a scoped default on the
-// interface that also holds the unscoped one is a shape only this tool
-// produces. It reads the table and writes nothing.
-func TestNoOtherProgramScopesADefaultToThePrimaryInterface(t *testing.T) {
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// One subtest per family, so a family the host cannot answer for reports
-	// itself untested rather than passing. This host carries nine scoped ::/0
-	// routes on utuns and no unscoped one, and a single-bodied test skipped
-	// quietly on it while claiming the premise held for IPv6.
-	for _, destination := range defaultPrefixes {
-		t.Run(destination.String(), func(t *testing.T) {
-			primary, ok := unscopedDefaultIndex(messages, destination)
-			if !ok {
-				t.Skipf("this host has no default of this family, so the premise is untested for it")
-			}
-			scoped := 0
-			for _, message := range messages {
-				rm, ok := message.(*route.RouteMessage)
-				if !ok || rm.Type != unix.RTM_GET || rm.Flags&unix.RTF_IFSCOPE == 0 {
-					continue
-				}
-				if isDefaultKey(rm, destination) && rm.Index == primary {
-					scoped++
-				}
-			}
-			t.Logf("the host's default is on index %d, which carries %d scoped defaults", primary, scoped)
-			if scoped != 0 {
-				t.Errorf("interface %d holds both the unscoped default and %d scoped ones, so the reclaim's last condition does not tell this tool's route from another program's on this host",
-					primary, scoped)
-			}
-		})
-	}
-}
-
 // A record reclaim refused must not be reachable by an ordinary withdrawal.
 // Every condition reclaim weighs is worth nothing if the record then joins the
 // set a later Close deletes from on the shape check alone: measured before

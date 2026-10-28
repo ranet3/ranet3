@@ -666,29 +666,6 @@ func heldByKernel(messages []route.Message, held writtenDefault) bool {
 	return false
 }
 
-// dumpedPrefix is the destination one dumped route names, masked the way a
-// Route key is.
-func dumpedPrefix(rm *route.RouteMessage) (netip.Prefix, bool) {
-	if len(rm.Addrs) <= unix.RTAX_NETMASK {
-		return netip.Prefix{}, false
-	}
-	destination, ok := addressFromRouteAddr(rm.Addrs[unix.RTAX_DST])
-	if !ok {
-		return netip.Prefix{}, false
-	}
-	bits := destination.BitLen()
-	if rm.Flags&unix.RTF_HOST == 0 {
-		mask, ok := addressFromRouteAddr(rm.Addrs[unix.RTAX_NETMASK])
-		if !ok || mask.BitLen() != destination.BitLen() {
-			return netip.Prefix{}, false
-		}
-		if bits, ok = maskBits(mask); !ok {
-			return netip.Prefix{}, false
-		}
-	}
-	return canonicalPrefix(netip.PrefixFrom(destination, bits))
-}
-
 // isDefaultKey reports whether one dumped route is the default of that family,
 // which is a zero-length netmask over the unspecified address and never a host
 // route.

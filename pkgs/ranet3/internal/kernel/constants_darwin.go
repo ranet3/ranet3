@@ -19,4 +19,7 @@ const (
 	// lookupReadSize is the most one read of a routing socket returns, in bytes
 	// a routing message is a few hundred bytes, and a page cuts none of them
 	lookupReadSize = 4096
+	// selectionSettle is how long the underlay's selection waits after a routing change before it reads the table again
+	// a link coming up is several messages, and a read after the first would be redone after the last
+	selectionSettle = 250 * time.Millisecond
 )

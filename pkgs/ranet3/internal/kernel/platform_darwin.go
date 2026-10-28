@@ -353,27 +353,8 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 	if !ok || (gateway.Index != 0 && gateway.Index != p.index) {
 		return Route{}, false
 	}
-	destination, ok := addressFromRouteAddr(rm.Addrs[unix.RTAX_DST])
-	if !ok {
-		return Route{}, false
-	}
-	// a host route carries no netmask, which is the one case where the prefix
-	// length comes from the family rather than from the message.
-	bits := destination.BitLen()
-	if rm.Flags&unix.RTF_HOST == 0 {
-		mask, ok := addressFromRouteAddr(rm.Addrs[unix.RTAX_NETMASK])
-		if !ok || mask.BitLen() != destination.BitLen() {
-			return Route{}, false
-		}
-		if bits, ok = maskBits(mask); !ok {
-			return Route{}, false
-		}
-	}
-	prefix, ok := canonicalPrefix(netip.PrefixFrom(destination, bits))
-	if !ok {
-		return Route{}, false
-	}
-	if prefix == limitedBroadcast {
+	prefix, ok := dumpedPrefix(rm)
+	if !ok || prefix == limitedBroadcast {
 		return Route{}, false
 	}
 	scoped := rm.Flags&unix.RTF_IFSCOPE != 0
