@@ -119,6 +119,23 @@ since every in rule translates.
 [Protocol deviations](design/protocol-deviations.md#exit-translation) lists the
 ICMP queries this leaves unanswered.
 
+A DCCP or UDP-Lite packet the exit forwards in its flow's original direction is
+refused and counted wherever it would be translated, out of the mesh under a
+class that translates and into the mesh under `return`, since from Linux 6.17
+for DCCP and 7.1 for UDP-Lite the host's source translation
+[rewrites neither protocol's checksum](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_proto.c?id=940de590b839f71d6dc846160534bf202401b8b7#n261),
+which covers the addresses. A reply is left to cross. The refusal answers
+Destination Unreachable, administratively prohibited, code 13 over IPv4 and code
+1 over IPv6, where the kernel's reject answers at all. On a kernel before 7.1
+the host's connection tracking can give a valid UDP-Lite packet no flow, and the
+rule for a packet no flow is tracked for then takes it first, as
+[protocol deviations](design/protocol-deviations.md#exit-translation) describes.
+Under a class of `none` such a packet leaves as the host forwards it. In IPv4,
+Source Quench and Information Request and Reply are dropped and counted out of
+the mesh and into it under every class, `none` among them, ahead of every other
+rule. [Protocol deviations](design/protocol-deviations.md#exit-translation)
+gives the reasons and the packets the refusal leaves unanswered.
+
 The in rule translates to the address of its family's class from `0.0.0.0/0` or
 `::/0` where that class names one, and to this node's own mesh address where it
 is `auto` or absent. The translator picks that address once at startup, among
@@ -130,9 +147,11 @@ chosen node.
 
 This node's own traffic from one of those mesh addresses, leaving by another
 link, takes that address's class's translation through a local rule, as a leaf's
-packet from the address would. The drop of a packet no flow is tracked for meets
-only the packets the node forwards, so its own such packet leaves under the mesh
-address, as
+packet from the address would. The drop of a packet no flow is tracked for and
+the refusal of DCCP and UDP-Lite meet only the packets the node forwards, so its
+own packet no flow is tracked for leaves under the mesh address, and its own
+DCCP or UDP-Lite packet leaves translated, from Linux 6.17 for DCCP and 7.1 for
+UDP-Lite with its checksum stale, as
 [protocol deviations](design/protocol-deviations.md#exit-translation) lists. Its
 own traffic from any other address is the host's and meets no rule of the
 exit's.
@@ -565,25 +584,37 @@ translation, and for a class of `none` its binding alone. Where no class covers
 every source, the rules of `auto` for the rest follow. The in rules come next,
 for each advertised prefix a rule for each protocol attaching its timeouts, then
 its translation, and then the local rules of this node's mesh addresses. The
-limit chain holds the rules for a packet no flow is tracked for, then the
-limit's 1 rule. Down to the shortest class of `none`, each class has such a
-rule, the longest `from` first, which passes the packet under `none` and drops
-it under a class that translates, and 1 rule after them drops the rest. Under
-`return` 1 rule for each advertised prefix of the family follows, which drops
-such a packet into the mesh. The set the limit counts each source's flows in,
-`flows4` or `flows6`, carries the share as its comment, `limit 4096`. Each count
-keeps the share in force when it began, so a set read back under another share,
-as an instance stopped without withdrawing under another one leaves it, makes
-the pass delete the table and make it again.
+limit chain holds in IPv4 the 4 ICMP drops first, then the rules for a packet no
+flow is tracked for, then the limit's 1 rule, then the refusals of DCCP and of
+UDP-Lite. The ICMP drops take Source Quench and then Information Request and
+Reply, out of the mesh and then into it, from any source. Down to the shortest
+class of `none`, each class has a rule for a packet no flow is tracked for, the
+longest `from` first, which passes the packet under `none` and drops it under a
+class that translates, and 1 rule after them drops the rest. Under `return` 1
+rule for each advertised prefix of the family follows, which drops such a packet
+into the mesh. Each protocol's refusals take a packet in its flow's original
+direction and follow the same walk of the classes as the rules for a packet no
+flow is tracked for, passing under `none` and refusing under a class that
+translates and into the mesh, and come after the limit, so a pass skips no
+share. The set the limit counts each source's flows in, `flows4` or `flows6`,
+carries the share as its comment, `limit 4096`. Each count keeps the share in
+force when it began, so a set read back under another share, as an instance
+stopped without withdrawing under another one leaves it, makes the pass delete
+the table and make it again.
 
 A pass replaces the chains' rules in 1 transaction and leaves the set, its
 counts and the objects as they are. Each rule carries its identity as its
 comment, which `nft list ruleset` shows:
 
+- `out via ranet3 ipv4 icmp source quench dropped`
+- `in via ranet3 ipv4 icmp information dropped`
 - `out via ranet3 ipv6 from 3fff:a::/32 untracked passed`
 - `out via ranet3 ipv4 untracked dropped`
 - `in via ranet3 ipv4 from 198.51.100.0/24 untracked dropped`
 - `out via ranet3 ipv4 limit 4096`
+- `out via ranet3 ipv6 from 3fff:a::/32 udplite passed`
+- `out via ranet3 ipv4 dccp refused`
+- `in via ranet3 ipv4 from 198.51.100.0/24 dccp refused`
 - `out via ranet3 ipv4 from 192.0.2.128/25 timeouts udp`
 - `out via ranet3 ipv4 from 192.0.2.128/25 source 198.51.100.7`
 - `out via ranet3 ipv6 from 3fff:a::/32 untranslated`
@@ -595,9 +626,11 @@ comment, which `nft list ruleset` shows:
 A rule carries `from` unless its prefix covers every address. A nat chain is
 consulted once per connection, so the translation rules' counters count flows,
 not packets, and the timeout rules carry none. The limit rule's counter counts
-the packets it refused, a dropping rule's the packets it dropped, and a passing
-rule carries none. [Sharing a host](coexistence.md) describes how the tables
-live beside other writers.
+the packets it refused, a dropping rule's the packets it dropped, a refusing
+rule's the packets it refused, and a passing rule carries none. The ICMP drops'
+and the refusals' counts reach no field of `ranet3 status`, and
+`nft list ruleset` shows them. [Sharing a host](coexistence.md) describes how
+the tables live beside other writers.
 
 ## Egress segments
 

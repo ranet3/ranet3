@@ -310,21 +310,57 @@ host behind the exit under `return`, then sends into the mesh an extended echo
 request, a Port Unreachable about a datagram no flow carried and a segment of a
 live TCP connection 2^30 past its next sequence number. Under every class the
 leaf reads none of them, the connection carries data after the segment, and
-`Status` counts the 3 dropped. For an arm that reads the flows its backend
-tracks, the idle timers follow: a datagram the server never answers, one to UDP
-port 53, under a class that translates one the server answered and the leaf
-sends again 3 seconds on, a SYN to an address nothing holds, a connection whose
-data the leaf's path never acknowledges, one the server half closed, one closed
-each way but for the leaf's last acknowledgment, an echo and a datagram from the
-exit's own mesh address, and into the mesh under `return` a datagram, one to
-port 53, a SYN and an echo, each flow's timer held to its requirement where the
-class translates it out of the mesh and wherever it enters the mesh, and below
-it to port 53 and out of the mesh under `none`. Under a class that translates,
-filtering and hairpinning follow: a datagram to the leaf's mapping from the
-server's other port and from its other address reaches the leaf, and one from
-the leaf's second address to the leaf's mapping on the exit's address reaches
-the leaf from the second address's mapping, unless the arm declares the limit,
-where the row holds the backend to refusing each.
+`Status` counts the 3 dropped. Under a class that translates, in IPv4, the
+leaf's Source Quench quoting the server's datagram and its Information Request
+reach the server not at all, the server's Source Quench to the leaf's mapping
+reaches the leaf not at all, and an echo still crosses. Under every class the
+leaf sends a DCCP-Request and a UDP-Lite datagram, each with a checksum covering
+all of it. Under `none` the server reads each from the leaf's own address with a
+valid checksum, and its answer, a DCCP-Response or a UDP-Lite datagram, reaches
+the leaf as the server sent it, the UDP-Lite one unless the arm declares
+UDP-Lite refused with no answer. Under a class that translates the server never
+reads one whose checksum fails for the addresses it reads it from, reading it
+valid from the class's address or reading nothing while each answer about it is
+administratively prohibited from the exit: at least one arrives unless the arm
+declares IPv4 DCCP or UDP-Lite refused with no answer, and none where it does.
+For an arm that reads the flows its backend tracks, the idle timers follow: a
+datagram the server never answers, one to UDP port 53, under a class that
+translates one the server answered and the leaf sends again 3 seconds on, a SYN
+to an address nothing holds, a connection whose data the leaf's path never
+acknowledges, one the server half closed, one closed each way but for the leaf's
+last acknowledgment, an echo and a datagram from the exit's own mesh address,
+and into the mesh under `return` a datagram, one to port 53, a SYN and an echo,
+each flow's timer held to its requirement where the class translates it out of
+the mesh and wherever it enters the mesh, and below it to port 53 and out of the
+mesh under `none`. Under a class that translates, filtering and hairpinning
+follow. A datagram to the leaf's mapping from the server's other port reaches
+the leaf, unless the arm declares port dependent filtering, where neither it nor
+one from the server's other address does and the row holds the backend to
+refusing each. One from the leaf's second address to the leaf's mapping on the
+exit's address reaches the leaf from the second address's mapping, unless the
+arm declares no hairpinning, where the exit answers it Port Unreachable from the
+mapping's address. The same holds in TCP: the leaf, listening on its port,
+connects from it to the server, and a connection to its mapping from the
+server's other port reaches the leaf's listener, unless the arm declares port
+dependent filtering, where it and one from the server's other address are each
+reset and the leaf accepts nothing. A connection from the leaf's second address
+to that mapping reaches the leaf's listener from the second address's mapping,
+unless the arm declares no hairpinning, where the exit resets it from the
+mapping's address at once and the leaf accepts nothing. A simultaneous open
+follows: the leaf learns its mapping from a connection to the server, connects
+from the same port to a port of the server's whose SYN the server's side drops,
+and the server connects from that port to the mapping, so the connection opens
+both ways and carries data each way. A SYN from the server's side to the exit's
+address at a port no mapping holds is answered by nothing for 6 seconds, unless
+the arm declares it reset at once. Datagrams from port 500 of the leaf's address
+and of another overlay address reach the server from 2 endpoints at ports below
+1024, and from port 40000 from 2 endpoints at ports of 1024 or above. A datagram
+cut into 3 fragments and handed last first reaches the server whole. After the
+server's Port Unreachable through the exit, the server sends to the leaf's
+mapping from the closed port and the leaf reads it, and the leaf's socket then
+reaches the server from the same outside endpoint again. In TCP, a Time Exceeded
+from the server's side to a live connection's mapping, quoting its next segment,
+reaches the leaf, and the connection carries data each way after it.
 
 Then the suite takes the backend off with `SetEnabled` and puts it back.
 Readiness has to go false in both families and the announcement empty while the
@@ -345,16 +381,21 @@ once more on a network of its own under the arm's first class, with
 default fails it.
 
 `TestKernelExitPassesTheExitBehaviorSuite` in `internal/egress/kernel` runs the
-kernel exit's arm, which carries `auto`, an address and `none`, every protocol
-and every row. It declares port dependent filtering and no hairpinning, reads
-each flow's timer from conntrack's listing in the exit's namespace, and its
-other writer's masquerade sits at `srcnat`, made after the exit's chain at 99,
-and at `srcnat` minus 2. Its other writer deletes both its tables, and its stop
-leaves no table named `ranet3` in either family. No real backend maps the leaf's
-ports or ends its TCP yet, so the suite's own tests stand in for both: a fake
-that maps every port into a range of its own meets rows 1, 3 and 5, and a fake
-that ends the leaf's TCP and opens its own toward the server meets row 3 without
-a too-big answer of its own.
+kernel exit's arm, which carries `auto`, an address and `none` through every
+row, and carries every protocol it can translate and refuses DCCP and UDP-Lite
+under a class that translates. It declares port dependent filtering, no
+hairpinning, a reset of an unsolicited SYN at once and IPv4 DCCP refused with no
+answer, and on a kernel before 7.1 UDP-Lite refused with no answer too, its
+reply into the mesh under `none` dropped, as
+[protocol deviations](../design/protocol-deviations.md#exit-translation)
+describes. It reads each flow's timer from conntrack's listing in the exit's
+namespace, and its other writer's masquerade sits at `srcnat`, made after the
+exit's chain at 99, and at `srcnat` minus 2. Its other writer deletes both its
+tables, and its stop leaves no table named `ranet3` in either family. No real
+backend maps the leaf's ports or ends its TCP yet, so the suite's own tests
+stand in for both: a fake that maps every port into a range of its own meets
+rows 1, 3 and 5, and a fake that ends the leaf's TCP and opens its own toward
+the server meets row 3 without a too-big answer of its own.
 
 On Linux the suite builds 4 network namespaces, each new and empty and held by a
 thread of its own:
@@ -368,7 +409,8 @@ thread of its own:
 - the router, routing the exit's addresses, the leaf's overlay prefix back to
   the exit for `none`, and the server's addresses, and nothing else, with 2
   links to the server, one with an MTU of 1280
-- the server
+- the server, whose side drops each SYN without ACK to the simultaneous open's
+  port
 
 It skips without root. Run it in a namespace of its own:
 
