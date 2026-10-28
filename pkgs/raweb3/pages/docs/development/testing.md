@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-27
+updated: 2026-10-28
 order: 20
 ---
 
@@ -57,7 +57,7 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress/kernel` has 10 that write into a real packet filter. One
+- `internal/egress/kernel` has 12 that write into a real packet filter. One
   round trips the translator's tables, chains, set and timeout objects, another
   checks that the kernel tells the backend when another writer adds a rule to
   its chain, sets its table dormant or deletes it, and that its own writes tell
@@ -70,17 +70,19 @@ unless run as root.
   each holds both families not ready until the pass it wakes writes the table
   back and reads them ready. The sixth makes a table again whose timeout object
   holds other seconds than the translator writes, and the seventh rewrites the
-  chains and finds the set's counts kept. The eighth takes the address a class
-  translates to off `lo` in each family and reads that family alone not ready,
-  with the address named, until it is back. The other 2 round trip the border
-  filter's chain. One puts it back on the pass another writer wakes by deleting
-  the table, adding a rule or setting the table dormant, and leaves no table
-  behind. The other writes it back after another writer adds a rule to it, sets
-  its table dormant, turns its policy to drop, makes the chain again at another
-  priority or as a regular chain, or makes the table again with a flag nf_tables
-  will not clear in place, the last 3 by deleting and making the table again. It
-  also runs the [exit behavior suite](#the-exit-behavior-suite) against the
-  kernel exit.
+  chains and finds the set's counts kept. The eighth makes a table again whose
+  set counts under another share, and the ninth reports another writer's nat
+  chains at the translator's priority or below and not one above it. The tenth
+  takes the address a class translates to off `lo` in each family and reads that
+  family alone not ready, with the address named, until it is back. The other 2
+  round trip the border filter's chain. One puts it back on the pass another
+  writer wakes by deleting the table, adding a rule or setting the table
+  dormant, and leaves no table behind. The other writes it back after another
+  writer adds a rule to it, sets its table dormant, turns its policy to drop,
+  makes the chain again at another priority or as a regular chain, or makes the
+  table again with a flag nf_tables will not clear in place, the last 3 by
+  deleting and making the table again. It also runs the
+  [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
 - `transport` has 2 that send through a veth pair to a peer in a second
   namespace, behind a route with a locked path MTU. They check that the kernel
   refuses what the path cannot carry, segmented or single, and reports the path
@@ -314,13 +316,15 @@ port 53, under a class that translates one the server answered and the leaf
 sends again 3 seconds on, a SYN to an address nothing holds, a connection whose
 data the leaf's path never acknowledges, one the server half closed, one closed
 each way but for the leaf's last acknowledgment, an echo and a datagram from the
-exit's own mesh address, each flow's timer held to its requirement where the
-class translates, and below it to port 53 and under `none`. Under a class that
-translates, filtering and hairpinning follow: a datagram to the leaf's mapping
-from the server's other port and from its other address reaches the leaf, and
-one from the leaf's second address to the leaf's mapping on the exit's address
-reaches the leaf from the second address's mapping, unless the arm declares the
-limit, where the row holds the backend to refusing each.
+exit's own mesh address, and into the mesh under `return` a datagram, one to
+port 53, a SYN and an echo, each flow's timer held to its requirement where the
+class translates it out of the mesh and wherever it enters the mesh, and below
+it to port 53 and out of the mesh under `none`. Under a class that translates,
+filtering and hairpinning follow: a datagram to the leaf's mapping from the
+server's other port and from its other address reaches the leaf, and one from
+the leaf's second address to the leaf's mapping on the exit's address reaches
+the leaf from the second address's mapping, unless the arm declares the limit,
+where the row holds the backend to refusing each.
 
 Then the suite takes the backend off with `SetEnabled` and puts it back.
 Readiness has to go false in both families and the announcement empty while the
@@ -477,15 +481,15 @@ nix build .#checks.x86_64-linux.netlink -L
 `nix flake check -L` builds every check of the host's system. The VM tests below
 have commands of their own.
 
-| Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                                                                                                   |
-| --------------- | ------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                                                                                                  |
-| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, `staticcheck ./...`, and a build of `cmd/ranet3` that keeps its symbols, which fails where the daemon links `transport`'s network in memory or a non-test file outside it names `NewMemoryNetwork`           |
-| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, and `reuse lint` |
-| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                                                   |
-| `raweb3`        | all 3   | all 3                            | `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                            |
-| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                                                                                                                                                                             |
-| `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                                                                                                             |
+| Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                                                                                                                                                      |
+| --------------- | ------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                                                                                                                                                     |
+| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, `staticcheck ./...`, and a build of `cmd/ranet3` that keeps its symbols, which fails where the daemon links `transport`'s network in memory, `internal/bubble` or `testing`, or a non-test file, outside the network's own files, that names `NewMemoryNetwork` |
+| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, and `reuse lint`                                                    |
+| `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                                                                                                      |
+| `raweb3`        | all 3   | all 3                            | `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                                                                               |
+| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                                                                                                                                                                                                                                |
+| `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                                                                                                                                                                |
 
 The 3 systems are `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. CI
 builds through atelier, and `atelier.toml` sets what it skips. The
@@ -499,7 +503,7 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the 10 `internal/egress/kernel` tests, the exit
+names start with `TestNetlink`, the 12 `internal/egress/kernel` tests, the exit
 behavior suite and its 2 fakes, the `TestTUN` tests of `internal/netstack` and
 `internal/client`, the 3 `transport` sends, and the 4 `internal/client` tests
 above under `unshare -n`, the `internal/registry` tests whose names start with

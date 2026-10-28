@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-27
+updated: 2026-10-28
 order: 50
 ---
 
@@ -154,10 +154,10 @@ out of the LAN. A guess could change after an unrelated edit.
 A class of `none` leaves its sources' overlay addresses on their packets. That
 works only where all 3 of these hold:
 
-1. **The upstream accepts the source.** The exit's provider forwards a packet
-   only with a source the provider routes to the exit, since filtering at the
-   provider's edge drops any other, as BCP 38 asks. The exit announces a prefix
-   covering the class upstream, or holds a block its provider routes to it.
+1. **The upstream accepts the source.** The exit's upstream has to accept the
+   overlay source, which a provider filtering at its edge as BCP 38 asks drops
+   otherwise. The exit announces a prefix covering the class upstream, or holds
+   a block its provider routes to it.
 2. **Replies come back into the mesh.** No state is kept, so a reply may enter
    through any exit announcing the prefix. Each such exit routes the overlay
    into the mesh, and no stateful filter on it drops a reply whose outbound half
@@ -198,18 +198,16 @@ The daemon cannot check the second. A family whose classes name an address is
 
 ### An exit with several addresses
 
-`auto` takes the address the kernel's masquerade picks for each flow's route.
-For IPv4 that is the primary address of the link the packet leaves by that
-shares a subnet with the next hop, whatever the route's `src`. For IPv6 it is
-the address source address selection picks on that link for the destination,
-avoiding a deprecated one, which on a host using temporary addresses is the
-current temporary one. Where the uplink holds several addresses of a family, one
-source's flows can so leave under several of them at once, the "Arbitrary"
-pooling of RFC 4787, whose REQ-2 recommends "Paired", as
-[protocol deviations](design/protocol-deviations.md#exit-translation) lists.
-When an address goes, the kernel ends the connections translated to it, and a
-long flow through such an exit breaks at each rotation. A class naming an
-address pins it, and pairs every flow of its sources under it.
+`auto` takes the address the kernel's masquerade picks for each flow's route,
+for
+[IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_masquerade.c?id=940de590b839f71d6dc846160534bf202401b8b7#n54)
+and for
+[IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_masquerade.c?id=940de590b839f71d6dc846160534bf202401b8b7#n237).
+Where the uplink holds several addresses of a family, one source's flows can so
+leave under several of them at once, the "Arbitrary" pooling of RFC 4787, whose
+REQ-2 recommends "Paired", as
+[protocol deviations](design/protocol-deviations.md#exit-translation) lists. A
+class naming an address pins it, and pairs every flow of its sources under it.
 
 ### IPv6
 
@@ -224,34 +222,35 @@ overlay's, and such an exit can number the overlay from that prefix under
 
 ## Timeouts
 
-A flow the exit translates keeps timeouts of the exit's own, one a class
-translates out of the mesh and one an in rule translates into it under `return`
-alike, which its rules attach on the flow's first packet, where the host's would
-forget a quiet flow sooner than the NAT requirements allow:
+A TCP, UDP, ICMP or ICMPv6 flow the exit translates, UDP to port 53 aside, keeps
+timeouts of the exit's own, one a class translates out of the mesh and one an in
+rule translates into it under `return` alike, which its rules attach on the
+flow's first packet, where the host's would forget a quiet flow sooner than the
+NAT requirements allow:
 
-| Flow                                                                                      | Kept idle                                       |
-| ----------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| UDP, until it has an answer and a packet more than 2 seconds after its first              | 2 minutes                                       |
-| UDP, from then on                                                                         | 5 minutes                                       |
-| UDP to port 53                                                                            | the host's, 30 seconds at the kernel's defaults |
-| TCP opening, from its first SYN                                                           | 4 minutes                                       |
-| TCP established                                                                           | 5 days                                          |
-| TCP with 1 side closed, data unacknowledged, a window closed or its retransmissions spent | 2 hours 4 minutes                               |
-| TCP closing, a FIN seen each way                                                          | 4 minutes                                       |
-| TCP in TIME_WAIT                                                                          | 2 minutes                                       |
-| TCP closed by a reset after a reply                                                       | 10 seconds                                      |
-| TCP reset before any reply                                                                | none, the session ends at once                  |
-| an ICMP or ICMPv6 query                                                                   | 60 seconds                                      |
+| Flow                                                                                      | Kept idle                      |
+| ----------------------------------------------------------------------------------------- | ------------------------------ |
+| UDP, until it has an answer and a packet more than 2 seconds after its first              | 2 minutes                      |
+| UDP, from then on                                                                         | 5 minutes                      |
+| UDP to port 53                                                                            | the host's                     |
+| TCP opening, from its first SYN                                                           | 4 minutes                      |
+| TCP established                                                                           | 5 days                         |
+| TCP with 1 side closed, data unacknowledged, a window closed or its retransmissions spent | 2 hours 4 minutes              |
+| TCP closing, a FIN seen each way                                                          | 4 minutes                      |
+| TCP in TIME_WAIT                                                                          | 2 minutes                      |
+| TCP closed by a reset after a reply                                                       | 10 seconds                     |
+| TCP reset before any reply                                                                | none, the session ends at once |
+| an ICMP or ICMPv6 query                                                                   | 60 seconds                     |
 
 A connection opening is kept 4 minutes from its first SYN. A retransmitted SYN
 does not renew it, so an attempt whose SYNs go unanswered is forgotten 4 minutes
 after the first.
 
-A flow under `none`, and every connection of the host's own, keeps the host's
-timeouts. The values are fixed, and
-[protocol deviations](design/protocol-deviations.md#exit-translation) gives the
-requirement behind each. They hold for as long as the host's connection tracking
-keeps the flow, and
+A flow under `none`, and every connection of the host's own that the class of
+its mesh address does not translate, keeps the host's timeouts. The values are
+fixed, and [protocol deviations](design/protocol-deviations.md#exit-translation)
+gives the requirement behind each. They hold for as long as the host's
+connection tracking keeps the flow, and
 [what it evicts from a full table](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1663)
 is the kernel's.
 
@@ -282,15 +281,17 @@ and each address of a prefix a subnet router routes into the mesh holds its own.
   [IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/tcp_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n611)
   and for
   [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/tcp_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n511).
-  The host's rate limit on ICMP errors thins the answers to one source, and the
-  refused count counts every refused packet.
+  [The host's rate limit on ICMP errors](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/icmp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n311)
+  thins the answers to one source, and the refused count counts every refused
+  packet.
 - **What it does not count.** A TCP connection in TIME_WAIT or closed. The share
   bounds a source's open flows, and its closed ones are bounded by their
   timeouts and by how fast it closes them.
 - **A full set admits.** Each family's set, `flows4` or `flows6`, keeps a count
   for each source holding flows, up to 65535 sources. Past that a new source is
   not counted and its flows are not limited, until every flow of some source has
-  ended and the kernel collects its count.
+  ended and
+  [the kernel collects its count](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_set_hash.c?id=940de590b839f71d6dc846160534bf202401b8b7#n393).
 - **What it bounds.** The open flows a source holds through this node. A mesh
   source's flows to this node itself, to its mesh or uplink address, take
   entries in the same table and are not counted, as
@@ -417,12 +418,12 @@ table's 2 chains, its set and its timeout objects. Another chain in the table is
 neither read nor removed until the table is made again. Each pass first rewrites
 a chain that reads back otherwise, such as one missing a rule, holding another
 writer's or in a dormant table. nf_tables clears no table flag in place but
-dormant, and changes no chain's type, hook or priority, no set's comment and no
-timeout object's values, so when one of those differs the pass deletes the
-family's table, and any chain another writer put in it, then makes it again in
-the same transaction. When the table still does not read back as written, the
-host stops forwarding the family or a lookup fails, that pass retracts the
-prefix. A pass runs at least every `sweep` (30 seconds by default).
+dormant, and changes no chain's type, hook or priority, no set's key, flags or
+comment and no timeout object's values, so when one of those differs the pass
+deletes the family's table, and any chain another writer put in it, then makes
+it again in the same transaction. When the table still does not read back as
+written, the host stops forwarding the family or a lookup fails, that pass
+retracts the prefix. A pass runs at least every `sweep` (30 seconds by default).
 
 The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on,
@@ -435,13 +436,13 @@ carries the advertised and the announced counts as `ranet3_egress_prefixes`.
 
 ## Readiness
 
-A family is ready while its table reads back as written, the host forwards it,
-the host holds every address its classes name, and, where its lookups run, the
-kernel routes a translated packet of the family and its reply the way the
-translation needs. Every node with `cap.egress` judges each family it translates
-on every pass, and both modes wait for the judgment: a packet through an
-advertised prefix waits for the families ready that the node announces, and an
-egress segment's packet for the families ready, as
+A family is ready while its 2 chains, its set and its timeout objects read back
+as written, the host forwards it, the host holds every address its classes name,
+and, where its lookups run, the kernel routes a translated packet of the family
+and its reply the way the translation needs. Every node with `cap.egress` judges
+each family it translates on every pass, and both modes wait for the judgment: a
+packet through an advertised prefix waits for the families ready that the node
+announces, and an egress segment's packet for the families ready, as
 [what an exit carries out](#what-an-exit-carries-out) and
 [egress segments](#egress-segments) describe. A family this node does not
 translate is not ready.
@@ -486,9 +487,9 @@ address of a prefix the mesh routes by the tun to another node, inside
 `cap.border.overlay`, overlapping none of this node's own prefixes, taking the
 lowest base address first and then the longest prefix. A correctly configured
 exit routes its members' addresses into the tun, so a lookup from one reads the
-path a real reply takes, where a lookup to an overlay address no route of the
-mesh covers would end, where `cap.table` is written, as rows L4 and L5 of
-[where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give.
+path a real reply takes. Where `cap.table` is written, rows L4 and L5 of
+[where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give the end of a
+lookup to an overlay address no route of the mesh covers.
 
 **The read address** of a prefix is its own address for a host route, and
 otherwise the first of these that the kernel's input path takes as a unicast
@@ -685,7 +686,7 @@ table holds against its maximum, what it announces, what it withholds "until its
 family is ready", the families it is ready for and the reason the others are
 not, what the lookups skipped, any chain it shares the hook with, the time since
 the last pass and the last error, such as
-`nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, conntrack holding 9000 of 262144 entries, ...`.
+`nftables table ip and ip6 ranet3 chains forward and postrouting, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, conntrack holding 9000 of 262144 entries, ...`.
 A family not ready is named with the reason the last pass found, and a family
 the node does not translate with none. Before the first pass the line names no
 family. While the border filter holds the egress segments back, the line says

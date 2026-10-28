@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-27
+updated: 2026-10-28
 order: 90
 ---
 
@@ -21,8 +21,9 @@ not to send, inbound ESP packet and drop counters, and the
 those that failed and handed their peer back to the shared socket.
 
 It also reports 3 subsystems that run inside the daemon. The route reconciler is
-reported as routes installed and skipped, when its last pass finished and
-whether that pass failed. Segment routing is reported as what this node did for
+reported as routes installed and skipped, when its last pass finished, whether
+that pass failed and, on Linux, the overlay prefixes and endpoints another
+program's rule takes. Segment routing is reported as what this node did for
 peers (forwarded, delivered, dropped, answered, and for an egress segment
 egressed, refused and not ready) and what it did with its own traffic (steered,
 and dropped with a reason). `cap.egress` is reported as rules installed,

@@ -4,7 +4,7 @@
 title: "The border filter"
 description: "Dropping what arrives from outside the mesh carrying a mesh source, a routing header or one of this node's SIDs."
 created: 2026-10-19
-updated: 2026-10-27
+updated: 2026-10-28
 order: 55
 ---
 
@@ -43,13 +43,13 @@ leave the exit. The forwarding node drops it as `unowned_source` where its table
 routes the inner destination by a route that counts as a default, and otherwise
 the exit refuses it as an inner source the mesh routes no reply to. A forged
 allowed source the exit routes a reply to, sent to its SID through that node,
-would leave the exit translated, so the exit would relay traffic for someone who
-is not on the mesh. The filter on the node in front of the exit drops it at the
-first hop. The filter on the exit itself protects the exit's own SID from its
-own links, the host's services from a forged mesh source, and every other exit
-from a forged allowed source sent through this node. Another node's SID that
-delivers to the mesh is protected by that node, as [below](#what-it-drops)
-describes.
+would leave the exit under its class's translation, so the exit would relay
+traffic for someone who is not on the mesh. The filter on the node in front of
+the exit drops it at the first hop. The filter on the exit itself protects the
+exit's own SID from its own links, the host's services from a forged mesh
+source, and every other exit from a forged allowed source sent through this
+node. Another node's SID that delivers to the mesh is protected by that node, as
+[below](#what-it-drops) describes.
 
 The filter guards the mesh's edge on the links outside it. A packet this host's
 own kernel routes into the tun enters the mesh by the other side of that edge,
