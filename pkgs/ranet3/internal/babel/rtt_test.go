@@ -30,9 +30,8 @@ func TestCostFormula(t *testing.T) {
 // for input to the metric computation procedure (Section 3.5.2 of [RFC8966])",
 // and that procedure is the one a node runs on its own routes. Feeding the
 // penalty to the advertised rxcost instead leaves selection blind, because the
-// other end advertises its nominal cost: measured against the fleet, all
-// sixteen nodes reported 96 whether the real round trip was 10 ms or
-// 307 ms, and a node 10 ms from Paris took a 202 ms exit.
+// other end advertises its nominal cost, so a near and a far neighbor would
+// read the same cost.
 func TestRoundTripPenaltyLandsOnTheCostThisNodeComputes(t *testing.T) {
 	params := DefaultCostParams()
 	now := time.Now()

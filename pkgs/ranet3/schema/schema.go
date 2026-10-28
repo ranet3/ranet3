@@ -121,7 +121,7 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	return Scalar(value, "a duration such as 4s", d)
 }
 
-// Prefix is a CIDR prefix, "10.66.0.5/32" or "2001:db8::/48".
+// Prefix is a CIDR prefix, "203.0.113.10/32" or "2001:db8::/48".
 type Prefix struct{ netip.Prefix }
 
 // PrefixFrom carries a parsed prefix into the file's spelling of one.

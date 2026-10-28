@@ -62,8 +62,8 @@ type keyEntry struct {
 }
 
 // maxRouteKeys caps how many distinct prefixes this node will hold at once.
-// It is well above any plausible mesh: the fleet announces two prefixes from
-// sixteen nodes, and a full internet table is not something a Babel mesh
+// It is well above any plausible mesh, which announces a few prefixes from
+// each node, and a full internet table is not something a Babel mesh
 // carries. It exists so the number is ours rather than a peer's.
 const maxRouteKeys = 16384
 
