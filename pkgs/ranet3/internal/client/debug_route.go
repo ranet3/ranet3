@@ -4,6 +4,7 @@
 package client
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -16,15 +17,25 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
-// DebugRoute follows a packet from src to dst to where the kernel sends it:
-// the rule its walk took, the route it matched with each hop's marks, and for
-// an error the settings that explain it. The lookup and the
-// rule dump go through sockets of their own, and a route into the tun ends
-// the walk here.
-func (c *Client) DebugRoute(src, dst netip.Addr, iif string) (control.RouteInfo, error) {
+// DebugRoute follows a packet from src to dst to where this host sends it.
+// One of this host's own, or arriving on the link iif, meets the kernel and,
+// where its route enters the tun, the mesh's checks of a read, but for this
+// host's own packet with no source and an arrival the kernel does not
+// forward. One arriving through a session from the peer peer names meets the
+// segment it is addressed to, or the mesh's decision and, where that delivers
+// it, the kernel as a packet arriving on the tun, whose route ends the walk.
+// The lookup and the rule dump go through sockets of their own, and the
+// mesh's steps spend, count and write nothing.
+func (c *Client) DebugRoute(src, dst netip.Addr, iif, peer string) (control.RouteInfo, error) {
 	switch {
+	case iif != "" && peer != "":
+		return control.RouteInfo{}, fmt.Errorf("a packet arrives on the link %s or through a session from %s, not both", iif, peer)
+	case peer != "":
+		return c.routeFromSession(src, dst, peer)
 	// dev_valid_name's refusals, since the name becomes a path under /proc/sys
 	case iif == "." || iif == ".." || strings.ContainsAny(iif, "/: \t\n"):
 		return control.RouteInfo{}, fmt.Errorf("%q names no link", iif)
@@ -37,16 +48,110 @@ func (c *Client) DebugRoute(src, dst netip.Addr, iif string) (control.RouteInfo,
 	if iif != "" {
 		info.Arrival = control.ArrivalLink
 	}
+	info.Kernel = c.routeKernel(src, dst, iif)
+	switch k := info.Kernel; {
+	case !k.IntoTun || k.Why == control.WhyForwardingOff:
+	case !src.IsValid():
+		info.Unfollowed = "since its checks read the source the kernel picks, which its answer does not carry"
+	default:
+		info.Mesh = meshOf(c.Mesh.ExplainRead(routePacket(src, dst)), dst)
+	}
+	return info, nil
+}
+
+// routeFromSession is DebugRoute for a packet arriving through a session
+// from the peer peer names
+func (c *Client) routeFromSession(src, dst netip.Addr, peer string) (control.RouteInfo, error) {
+	if !src.IsValid() {
+		return control.RouteInfo{}, fmt.Errorf("a packet arriving through a session from %s carries a source", peer)
+	}
+	path, ok := c.sessionNamed(peer)
+	if !ok {
+		return control.RouteInfo{}, fmt.Errorf("%s names no peer this node holds a session with", peer)
+	}
+	info := control.RouteInfo{Src: src, Dst: dst, Peer: path, Arrival: control.ArrivalSession}
+	if admission, refused, ok := c.Mesh.ExplainSegment(src, dst); ok {
+		segment := &control.RouteSegment{LocalSegment: localSegment(admission.Segment, c.segmentEgress()), Overlay: admission.Overlay, Allowed: admission.Allowed}
+		if admission.Err != nil {
+			segment.Decision, segment.Reason = refused.Decision.String(), refused.Reason
+		}
+		info.Segment = segment
+		return info, nil
+	}
+	explained := c.Mesh.Explain(routePacket(src, dst))
+	info.Mesh = meshOf(explained, dst)
+	if explained.Decision == netstack.TraceDeliver {
+		info.IIF = c.Mesh.Name
+		info.Kernel = c.routeKernel(src, dst, c.Mesh.Name)
+	}
+	return info, nil
+}
+
+// sessionNamed is the path of a live session from the peer peer names, as a
+// trace names one, the first in path order where it names several: the mesh
+// decides alike for a packet from any session
+func (c *Client) sessionNamed(peer string) (string, bool) {
+	paths := c.sessions.matching(peer, false, nil)
+	if len(paths) == 0 {
+		return "", false
+	}
+	return paths[0], true
+}
+
+// routePacket is the packet debug route follows from src to dst, an ICMP
+// echo request of no data with a hop limit of routeHopLimit, unmarked and
+// with no IPv4 option or IPv6 extension header
+func routePacket(src, dst netip.Addr) []byte {
+	if dst.Is4() {
+		raw := make([]byte, 28)
+		raw[0], raw[8], raw[9] = 0x45, routeHopLimit, 1
+		binary.BigEndian.PutUint16(raw[2:], uint16(len(raw)))
+		copy(raw[12:16], src.AsSlice())
+		copy(raw[16:20], dst.AsSlice())
+		binary.BigEndian.PutUint16(raw[10:], ^uint16(packet.Sum(0, raw[:20])))
+		// RFC 792's echo request
+		raw[20] = 8
+		binary.BigEndian.PutUint16(raw[22:], ^uint16(packet.Sum(0, raw[20:])))
+		return raw
+	}
+	raw := make([]byte, 48)
+	raw[0], raw[6], raw[7] = 0x60, 58, routeHopLimit
+	binary.BigEndian.PutUint16(raw[4:], 8)
+	copy(raw[8:24], src.AsSlice())
+	copy(raw[24:40], dst.AsSlice())
+	// RFC 4443 section 4.1's echo request, its checksum over RFC 8200 section 8.1's pseudo-header too
+	raw[40] = 128
+	pseudo := packet.Sum(packet.Sum(0, raw[8:40]), []byte{0, 0, 0, 8, 0, 0, 0, 58})
+	binary.BigEndian.PutUint16(raw[42:], ^uint16(packet.Sum(pseudo, raw[40:])))
+	return raw
+}
+
+// meshOf is e, the mesh's decision for a packet to dst, on the wire
+func meshOf(e netstack.Explanation, dst netip.Addr) *control.RouteMesh {
+	m := &control.RouteMesh{Decision: e.Decision.String(), Reason: e.Reason, Answer: e.Answer, Next: e.Next, MTU: e.MTU}
+	if e.Policy != nil {
+		policy := steerPolicyOf(*e.Policy)
+		m.Policy = &policy
+	}
+	// a /0 entry always counts as a default, so a match of no bits that does not count is no entry
+	if e.Match.Bits != 0 || e.Match.Counted {
+		m.Matched, m.Counted = netip.PrefixFrom(dst, e.Match.Bits).Masked(), e.Match.Counted
+	}
+	return m
+}
+
+// routeKernel is the kernel's answer for a packet from src to dst arriving
+// on iif, or this host's own where iif is empty
+func (c *Client) routeKernel(src, dst netip.Addr, iif string) *control.RouteKernel {
 	routeGet := c.routeGet
 	if routeGet == nil {
 		routeGet = kernel.RouteGet
 	}
 	route, err := routeGet(src, dst, iif)
 	k := &control.RouteKernel{}
-	info.Kernel = k
 	if errors.Is(err, kernel.ErrUnsupported) {
 		k.Err, k.Why = err.Error(), control.WhyUnsupported
-		return info, nil
+		return k
 	}
 	k.NoSource = src.IsValid() && !kernel.RouteGetTakesSource
 	if err != nil {
@@ -92,7 +197,7 @@ func (c *Client) DebugRoute(src, dst netip.Addr, iif string) (control.RouteInfo,
 	if errors.Is(err, syscall.ENETUNREACH) && k.Rule == nil {
 		k.Why = control.WhyNoRoute
 	}
-	return info, nil
+	return k
 }
 
 // explainRoute sets what explains the kernel's answer, reading the settings

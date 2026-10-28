@@ -1,0 +1,25 @@
+{
+  "src": "192.0.2.1",
+  "dst": "192.0.2.2",
+  "iif": "ranet0",
+  "peer": "example/gateway:1@0",
+  "arrival": "session",
+  "mesh": {
+    "decision": "deliver",
+    "matched": "192.0.2.2/32"
+  },
+  "kernel": {
+    "rule": {
+      "family": "ipv4",
+      "priority": 0,
+      "action": "lookup",
+      "table": 255,
+      "protocol": 2,
+      "owned": false,
+      "wanted": false
+    },
+    "route": "192.0.2.2/32",
+    "table": 255,
+    "type": "local"
+  }
+}

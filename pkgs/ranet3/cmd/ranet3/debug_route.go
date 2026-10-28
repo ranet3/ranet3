@@ -48,7 +48,7 @@ kernel walks them ends on for that answer, as far as the answer tells.`,
 					return fmt.Errorf("--iif %s names no link on this host", iif)
 				}
 			}
-			info, err := control.Dial(r.socket).Route(cmd.Context(), src, dst, iif)
+			info, err := control.Dial(r.socket).Route(cmd.Context(), src, dst, iif, "")
 			if err != nil {
 				return err
 			}

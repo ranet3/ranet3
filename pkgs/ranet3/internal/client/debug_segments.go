@@ -14,30 +14,44 @@ import (
 // reports
 func (c *Client) DebugSegments() control.SegmentsInfo {
 	info := control.SegmentsInfo{Counters: segmentCounters(c.Mesh.SegmentCounters())}
-	ready := readyFamilies(c.Mesh.EgressReady())
-	served := c.servesEgressSIDs()
+	egress := c.segmentEgress()
 	for _, segment := range c.Mesh.Segments().Segments() {
-		local := control.LocalSegment{SID: segment.SID.Addr, Behavior: segment.Behavior.String()}
-		if segment.Behavior == srv6.BehaviorEndDT46 {
-			local.Deliver = segment.Deliver.String()
-		}
-		for _, prefix := range segment.Allow {
-			local.Allow = append(local.Allow, prefix.Prefix)
-		}
-		if segment.Deliver == srv6.DeliverEgress {
-			local.Egress = &control.SegmentEgress{Served: served, Ready: ready}
-		}
-		info.Segments = append(info.Segments, local)
+		info.Segments = append(info.Segments, localSegment(segment, egress))
 	}
 	table := c.Mesh.Steering()
 	if policies := table.Policies(); policies != nil {
 		steering := &control.Steering{Enabled: c.Mesh.SteeringEnabled(), Overhead: table.Overhead()}
 		for _, policy := range policies {
-			steering.Policies = append(steering.Policies, control.SteerPolicy{
-				From: policy.From, To: policy.To, Source: policy.Source, Path: policy.Path, Overhead: policy.Overhead(),
-			})
+			steering.Policies = append(steering.Policies, steerPolicyOf(policy))
 		}
 		info.Steering = steering
 	}
 	return info
+}
+
+// segmentEgress is an egress segment's part of the exit now: whether the
+// egress SIDs are served, and the families the mesh hands to the exit
+func (c *Client) segmentEgress() control.SegmentEgress {
+	return control.SegmentEgress{Served: c.servesEgressSIDs(), Ready: readyFamilies(c.Mesh.EgressReady())}
+}
+
+// localSegment is segment on the wire, with egress where it delivers to the
+// exit
+func localSegment(segment srv6.Segment, egress control.SegmentEgress) control.LocalSegment {
+	local := control.LocalSegment{SID: segment.SID.Addr, Behavior: segment.Behavior.String()}
+	if segment.Behavior == srv6.BehaviorEndDT46 {
+		local.Deliver = segment.Deliver.String()
+	}
+	for _, prefix := range segment.Allow {
+		local.Allow = append(local.Allow, prefix.Prefix)
+	}
+	if segment.Deliver == srv6.DeliverEgress {
+		local.Egress = &egress
+	}
+	return local
+}
+
+// steerPolicyOf is policy on the wire
+func steerPolicyOf(policy srv6.Policy) control.SteerPolicy {
+	return control.SteerPolicy{From: policy.From, To: policy.To, Source: policy.Source, Path: policy.Path, Overhead: policy.Overhead()}
 }

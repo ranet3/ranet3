@@ -1,0 +1,39 @@
+{
+  "src": "3fff::2",
+  "dst": "3fff::3",
+  "arrival": "local",
+  "mesh": {
+    "decision": "forward",
+    "next": "example/far:1@0",
+    "mtu": 1280,
+    "policy": {
+      "from": "3fff::2/128",
+      "source": "3fff:b:0:100::1",
+      "path": [
+        "3fff:1::1"
+      ],
+      "overhead": 64
+    },
+    "matched": "3fff::3/128"
+  },
+  "kernel": {
+    "rule": {
+      "family": "ipv6",
+      "priority": 5420,
+      "action": "lookup",
+      "table": 100,
+      "protocol": 155,
+      "owned": true,
+      "wanted": true
+    },
+    "route": "3fff::/20",
+    "table": 100,
+    "type": "unicast",
+    "nexthops": [
+      {
+        "dev": "ranet0"
+      }
+    ],
+    "into_tun": true
+  }
+}
