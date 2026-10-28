@@ -1,0 +1,16 @@
+@0 pass in quick on lo0 from <ranet3_overlay:2> to any no state label "accept via lo0"
+  [ Owner : nil          Priority : 0     ]
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 57939 ]
+@1 block drop in quick on ! utun250 inet from 192.0.2.0/24 to any label "drop ipv4 source 192.0.2.0/24"
+  [ Owner : nil          Priority : 0     ]
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 57939 ]
+@2 block drop in quick on ! utun250 inet6 from 3fff:10::/32 to any label "drop ipv6 source 3fff:10::/32"
+  [ Owner : nil          Priority : 0     ]
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 57939 ]
+@3 block drop out quick on utun250 from ! <ranet3_owned:3> to ! <ranet3_to:2> label "drop entry without an owned source"
+  [ Owner : nil          Priority : 0     ]
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Inserted: uid 0 pid 57939 ]

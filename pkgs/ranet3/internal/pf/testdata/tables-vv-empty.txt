@@ -1,0 +1,11 @@
+c-a-r-	ranet3_none	com.apple/ranet3-probe
+	Addresses:   0
+	Cleared:     Wed Oct 28 15:51:10 2026
+	References:  [ Anchors: 0                  Rules: 1                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]

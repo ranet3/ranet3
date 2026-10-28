@@ -25,6 +25,7 @@ path = [
   "internal/egress/kernel/testdata/**",
   "internal/kernel/testdata/**",
   "internal/packet/testdata/answers/**",
+  "internal/pf/testdata/**",
   "srv6/testdata/answers/**",
 ]
 precedence = "override"

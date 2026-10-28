@@ -1,0 +1,4 @@
+pass in quick on lo0 from <ranet3_overlay> to any no state label "accept via lo0"
+block drop in quick on ! utun250 inet from 192.0.2.0/24 to any label "drop ipv4 source 192.0.2.0/24"
+block drop in quick on ! utun250 inet6 from 3fff:10::/32 to any label "drop ipv6 source 3fff:10::/32"
+block drop out quick on utun250 from ! <ranet3_owned> to ! <ranet3_to> label "drop entry without an owned source"
