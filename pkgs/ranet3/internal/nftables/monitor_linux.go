@@ -83,7 +83,7 @@ func (m *Monitor) run() {
 			continue
 		case err != nil:
 			notify(m.missed)
-			slog.Warn("egress stopped reading nf_tables notifications", "err", err)
+			slog.Warn("stopped reading nf_tables notifications", "table", m.scope.Name, "err", err)
 			return
 		}
 		messages, err := parseMessages(buf[:n])
@@ -119,8 +119,10 @@ func (m *Monitor) Close() error {
 	return err
 }
 
-// ChangedByAnother is whether message is a change to a table of s, a chain in
-// one or a rule in one, written through a socket other than pid
+// ChangedByAnother is whether message is a change to a table of s, a chain, a
+// rule, a set or a set's elements in one, written through a socket other than
+// pid. The kernel notifies an element only from a transaction, never from a
+// set's garbage collection or a packet's dynset.
 func (s Scope) ChangedByAnother(message Message, pid uint32) bool {
 	if message.Pid == pid || message.Kind>>8 != unix.NFNL_SUBSYS_NFTABLES || len(message.Data) < SizeofNfgenmsg {
 		return false
@@ -136,6 +138,10 @@ func (s Scope) ChangedByAnother(message Message, pid uint32) bool {
 		naming = unix.NFTA_CHAIN_TABLE
 	case unix.NFT_MSG_NEWRULE, unix.NFT_MSG_DELRULE:
 		naming = unix.NFTA_RULE_TABLE
+	case unix.NFT_MSG_NEWSET, unix.NFT_MSG_DELSET:
+		naming = unix.NFTA_SET_TABLE
+	case unix.NFT_MSG_NEWSETELEM, unix.NFT_MSG_DELSETELEM:
+		naming = unix.NFTA_SET_ELEM_LIST_TABLE
 	default:
 		return false
 	}

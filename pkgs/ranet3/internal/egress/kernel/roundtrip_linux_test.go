@@ -309,7 +309,7 @@ func woken(changed <-chan struct{}) bool {
 // anotherWritersAccept is another writer's rule with no comment accepting
 // every packet, at the head of chain in this tool's table of the family proto
 func anotherWritersAccept(proto uint8, chain string) nftables.Request {
-	return anotherWritersRule(proto, chain, verdict(nftables.Accept))
+	return anotherWritersRule(proto, chain, nftables.Verdict(nftables.Accept))
 }
 
 // anotherWritersRule is another writer's rule with no comment of expressions,
@@ -363,7 +363,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = another.Close() })
 	// the ip6 one counted, which the debug read names by its chain
-	counted := anotherWritersRule(unix.NFPROTO_IPV6, ChainName, nftables.Expression("counter", nil), verdict(nftables.Accept))
+	counted := anotherWritersRule(unix.NFPROTO_IPV6, ChainName, nftables.Expression("counter", nil), nftables.Verdict(nftables.Accept))
 	if err := another.Batch([]nftables.Request{counted, anotherWritersAccept(unix.NFPROTO_IPV4, LimitChain)}); err != nil {
 		t.Fatalf("insert another writer's accept rules: %v", err)
 	}
