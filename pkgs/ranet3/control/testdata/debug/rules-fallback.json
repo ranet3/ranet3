@@ -51,7 +51,7 @@
       "bytes": 0
     },
     {
-      "spec": "ct direction reply ct protocol tcp ct original proto-dst { 22 } accept",
+      "spec": "ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept",
       "packets": 0,
       "bytes": 0
     },
@@ -87,6 +87,17 @@
     },
     {
       "name": "own6",
+      "elements": null
+    },
+    {
+      "name": "tcp_ports",
+      "elements": [
+        "22",
+        "60000-61000"
+      ]
+    },
+    {
+      "name": "udp_ports",
       "elements": null
     }
   ]

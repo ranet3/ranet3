@@ -44,8 +44,24 @@ func TestFallbackBatchKeepsItsBytes(t *testing.T) {
 	goldentest.Check(t, "./internal/kernel", "testdata/fallback.golden", out.Bytes())
 }
 
-// The debug read spells each element as nft lists it: a link's name, an
-// address, a prefix, and a range that is no prefix as its two ends
+// A table listing a hundred services of each protocol is written in one
+// transaction, each line's text within the 128 bytes of the comment the
+// readback knows it by
+func TestFallbackBatchTakesAnyNumberOfServices(t *testing.T) {
+	many := fallbackSample
+	many.tcp, many.udp = nil, nil
+	for port := uint16(1000); port < 1200; port += 2 {
+		many.tcp = append(many.tcp, Service{Protocol: "tcp", First: port, Last: port})
+		many.udp = append(many.udp, Service{Protocol: "udp", First: port, Last: port})
+	}
+	if _, err := fallbackBatch(many, false); err != nil {
+		t.Fatalf("the table of a hundred services of each protocol: %v", err)
+	}
+}
+
+// The debug read spells each element as nft lists it: a link's name, a port,
+// a range of ports, an address, a prefix, and a range that is no prefix as its
+// two ends
 func TestIntervalTextSpellsEachElementAsNftDoes(t *testing.T) {
 	named := func(name string) nftables.Set {
 		return fallbackNamed[slices.IndexFunc(fallbackNamed, func(set nftables.Set) bool { return set.Name == name })]
@@ -63,6 +79,8 @@ func TestIntervalTextSpellsEachElementAsNftDoes(t *testing.T) {
 		{"lan4", nftables.Interval{First: address("198.51.100.0"), Last: address("198.51.100.128")}, "198.51.100.0-198.51.100.128"},
 		{"lan4", nftables.Interval{First: address("198.51.100.1"), Last: address("198.51.100.2")}, "198.51.100.1-198.51.100.2"},
 		{"lan6", nftables.Interval{First: address("2001:db8:a::"), Last: address("2001:db8:a::ffff:ffff:ffff:ffff")}, "2001:db8:a::/64"},
+		{"tcp_ports", nftables.Interval{First: []byte{0, 22}, Last: []byte{0, 22}}, "22"},
+		{"udp_ports", nftables.Interval{First: []byte{0xea, 0x60}, Last: []byte{0xee, 0x48}}, "60000-61000"},
 	} {
 		if got := intervalText(named(c.set), c.interval); got != c.want {
 			t.Errorf("%s's element %x-%x reads %q, want %q", c.set, c.interval.First, c.interval.Last, got, c.want)

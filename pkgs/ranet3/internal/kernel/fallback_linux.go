@@ -41,6 +41,11 @@ var fallbackNamed = []nftables.Set{
 	{Table: FallbackTable, Name: "lan6", ID: 3, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
 	{Table: FallbackTable, Name: "own4", ID: 4, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
 	{Table: FallbackTable, Name: "own6", ID: 5, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+	// inbound's ports of each protocol, named so the line reading them is
+	// spelled the same however many inbound lists, within the comment's 128
+	// bytes. nft reads tcp and udp as keywords, so neither names a set.
+	{Table: FallbackTable, Name: "tcp_ports", ID: 6, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
+	{Table: FallbackTable, Name: "udp_ports", ID: 7, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
 }
 
 // linkLocal4 and linkLocal6 are the link-local, multicast and broadcast
@@ -62,7 +67,18 @@ func (s fallbackSets) elements() map[string][]nftables.Interval {
 		"lan6":      nftables.Prefixes(s.lan6),
 		"own4":      nftables.Prefixes(s.own4),
 		"own6":      nftables.Prefixes(s.own6),
+		"tcp_ports": ports(s.tcp),
+		"udp_ports": ports(s.udp),
 	}
+}
+
+// ports is each service's range of ports as an interval of network order keys
+func ports(services []Service) []nftables.Interval {
+	var out []nftables.Interval
+	for _, service := range services {
+		out = append(out, nftables.Interval{First: binary.BigEndian.AppendUint16(nil, service.First), Last: binary.BigEndian.AppendUint16(nil, service.Last)})
+	}
+	return out
 }
 
 // fallbackRule is one line of the chain: its text as nft lists it, the
@@ -138,21 +154,13 @@ func (s fallbackSets) rules() ([]fallbackRule, error) {
 		if len(line.services) == 0 {
 			continue
 		}
-		ports := anonymous(nftables.TypeInetService, 2, unix.NFT_SET_INTERVAL)
-		var members []nftables.Interval
-		var spelled []string
-		for _, service := range line.services {
-			members = append(members, nftables.Interval{First: binary.BigEndian.AppendUint16(nil, service.First), Last: binary.BigEndian.AppendUint16(nil, service.Last)})
-			spelled = append(spelled, strings.TrimSuffix(service.String(), "/"+service.Protocol))
-		}
 		out = append(out, fallbackRule{
-			spec: fmt.Sprintf("ct direction reply ct protocol %s ct original proto-dst { %s } accept", line.name, strings.Join(spelled, ", ")),
+			spec: fmt.Sprintf("ct direction reply ct protocol %s ct original proto-dst @%s_ports accept", line.name, line.name),
 			expressions: []([]byte){
 				nftables.CTLoad(unix.NFT_CT_DIRECTION), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{nftables.CTReply})),
 				nftables.CTLoad(unix.NFT_CT_PROTOCOL), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{line.protocol})),
-				nftables.CTLoadDirection(unix.NFT_CT_PROTO_DST, nftables.CTOriginal), nftables.Lookup(*ports, false), accept,
+				nftables.CTLoadDirection(unix.NFT_CT_PROTO_DST, nftables.CTOriginal), nftables.Lookup(named(line.name+"_ports"), false), accept,
 			},
-			anonymous: ports, members: members,
 		})
 	}
 	out = append(out, fallbackRule{spec: fallbackDrop, expressions: nftables.CountedDrop()})
@@ -376,11 +384,18 @@ func ReadFallback() (FallbackDebug, error) {
 	return out, nil
 }
 
-// intervalText is an element as nft lists it: a link's name, an address, a
-// prefix, or a range's first and last address
+// intervalText is an element as nft lists it: a link's name, a port or a
+// range of ports, an address, a prefix, or a range's first and last address
 func intervalText(set nftables.Set, interval nftables.Interval) string {
-	if set.KeyType == nftables.TypeIfname {
+	switch {
+	case set.KeyType == nftables.TypeIfname:
 		return unix.ByteSliceToString(interval.First)
+	case set.KeyType == nftables.TypeInetService && len(interval.First) == 2 && len(interval.Last) == 2:
+		first, last := binary.BigEndian.Uint16(interval.First), binary.BigEndian.Uint16(interval.Last)
+		if first == last {
+			return fmt.Sprint(first)
+		}
+		return fmt.Sprintf("%d-%d", first, last)
 	}
 	first, okFirst := netip.AddrFromSlice(interval.First)
 	last, okLast := netip.AddrFromSlice(interval.Last)

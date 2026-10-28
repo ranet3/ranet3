@@ -40,6 +40,8 @@ const fallbackText = `table inet ranet3_fallback {
 	set lan6 { type ipv6_addr; flags interval; elements = { 2001:db8:a::/64 } }
 	set own4 { type ipv4_addr; flags interval; elements = { 203.0.113.0/24 } }
 	set own6 { type ipv6_addr; flags interval; }
+	set tcp_ports { type inet_service; flags interval; elements = { 22, 2222 } }
+	set udp_ports { type inet_service; flags interval; elements = { 53, 60000-61000 } }
 	chain fallback {
 		type filter hook postrouting priority 2147483646; policy accept;
 		oifname { "lo", "ranetsw0" } accept
@@ -51,16 +53,15 @@ const fallbackText = `table inet ranet3_fallback {
 		ip6 daddr { fe80::/10, ff00::/8 } accept
 		ip daddr @own4 accept
 		ip6 daddr @own6 accept
-		ct direction reply ct protocol tcp ct original proto-dst { 22, 2222 } accept
-		ct direction reply ct protocol udp ct original proto-dst { 53, 60000-61000 } accept
+		ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept
+		ct direction reply ct protocol udp ct original proto-dst @udp_ports accept
 		counter drop
 	}
 }
 `
 
-// fallbackSample is a table of every line, on the tun ranetsw0. Each port set
-// holds two members, since nft writes a set of one as a compare and the
-// platform writes a set whatever it holds.
+// fallbackSample is a table of every line, on the tun ranetsw0, each port set
+// holding a port beside another port or a range
 var fallbackSample = fallbackSets{
 	tun: "ranetsw0", forwarded: []string{"ranetfw0"},
 	lan4: []netip.Prefix{prefix("198.51.100.0/25")}, lan6: []netip.Prefix{prefix("2001:db8:a::/64")},
@@ -156,7 +157,8 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 		t.Fatalf("the debug read finds %+v, want the table's twelve lines", debug)
 	}
 	if last := debug.Rules[11]; last.Spec != fallbackDrop || last.Packets != 1 ||
-		!reflect.DeepEqual(sets, map[string][]string{"forwarded": {"ranetfw0"}, "lan4": {"198.51.100.0/25"}, "lan6": {"2001:db8:a::/64"}, "own4": {"203.0.113.0/24"}, "own6": {}}) {
+		!reflect.DeepEqual(sets, map[string][]string{"forwarded": {"ranetfw0"}, "lan4": {"198.51.100.0/25"}, "lan6": {"2001:db8:a::/64"}, "own4": {"203.0.113.0/24"}, "own6": {},
+			"tcp_ports": {"22", "2222"}, "udp_ports": {"53", "60000-61000"}}) {
 		t.Errorf("the debug read finds %+v", debug)
 	}
 
