@@ -205,6 +205,8 @@ testers.runNixOSTest {
     # and in exit mode beside Tailscale, a conntrack mark restore, kube-proxy and Cilium, and Docker, live, retracted and after kill -9
     # and an IPv6 arrival the route view says the kernel drops exactly where the kernel counts it dropped, not forwarded
     # and each kind of destination, own and arriving, the route view naming the path the kernel takes for it
+    # and the same leaf under fallback = "none", with its defaults present and retracted: each socket, other programs' chains and rules,
+    # NAT at output, a destination changed after the tun, loopback, each CPU, the listed services and each reverse path check
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -226,6 +228,17 @@ testers.runNixOSTest {
     assert "--- PASS: TestTUNExitModeBesideDocker" in out, f"the exit mode beside Docker did not run:\n{out}"
     assert "--- PASS: TestTUNDebugRouteNamesTheIPv6DropWhereTheKernelMakesIt" in out, f"the route view's IPv6 forwarding against the kernel's did not run:\n{out}"
     assert "--- PASS: TestTUNDebugRouteNamesThePathTheKernelTakesForEachDestinationKind" in out, f"the route view against the kernel's path for each kind of destination did not run:\n{out}"
+    for name in [
+        "TestTUNKillSwitchKeepsEachSocketOffTheUplink",
+        "TestTUNKillSwitchAnswersOnlyTheListedServices",
+        "TestTUNKillSwitchHoldsUnderOtherProgramsChains",
+        "TestTUNKillSwitchHoldsUnderNATAtOutput",
+        "TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun",
+        "TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback",
+        "TestTUNKillSwitchIsTheSameOnEveryCPU",
+        "TestTUNKillSwitchKeepsReversePathChecksPassing",
+    ]:
+        assert f"--- PASS: {name}" in out, f"the kill switch's lab {name} did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 16, f"only {ran} of the client's tun round trips ran:\n{out}"
 
