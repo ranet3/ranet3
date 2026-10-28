@@ -132,11 +132,12 @@ type Runtime struct {
 	Write func(frames [][]byte)
 	// Hooks report what every exit reports. Republish is called once per pass
 	// whose announcement differs from the last. A family is ready while this
-	// node translates it, its table reads back exactly as written, the host
-	// forwards it, the host holds every address its classes translate to, and
-	// the kernel's lookups route a translated packet and its reply the way the
-	// translation needs (see judge). The SIDs are served while at least one
-	// family is ready and every family the host forwards is.
+	// node translates it, its chains, set and timeout objects read back exactly
+	// as written, the host forwards it, the host holds every address its
+	// classes translate to, and the kernel's lookups route a translated packet
+	// and its reply the way the translation needs (see judge). The SIDs are
+	// served while at least one family is ready and every family the host
+	// forwards is.
 	egress.Hooks
 }
 
