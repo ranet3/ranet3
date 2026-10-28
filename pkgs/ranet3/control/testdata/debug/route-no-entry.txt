@@ -1,0 +1,37 @@
+Packet  from 198.51.100.2 to 224.0.0.251, this host's own
+Rule    none, the route below is the kernel's own for this destination, in no table a rule looks up
+Route   224.0.0.251/32, multicast, dev up0, the kernel's own for this destination, with no table entry behind it
+Leaves  by up0, outside the mesh
+
+Packet  from no source to 0.0.0.0, this host's own
+Rule    none, the route below is the kernel's own for this destination, in no table a rule looks up
+Route   0.0.0.0/32, local, dev lo, the kernel's own for this destination, with no table entry behind it
+Leaves  nowhere, the kernel delivers it to this host
+
+Packet  from 198.51.100.9 to 255.255.255.255, arriving on up0
+Rule    none, the route below is the kernel's own for this destination, in no table a rule looks up
+Route   255.255.255.255/32, broadcast, dev lo, the kernel's own for this destination, with no table entry behind it
+Leaves  nowhere, the kernel delivers it to this host
+
+Packet    from 198.51.100.140 to 239.1.2.3, arriving on lan0
+Rule      none, the route below is the kernel's own for this destination, in no table a rule looks up
+Route     239.1.2.3/32, multicast, dev lo, the kernel's own for this destination, with no table entry behind it
+Leaves    nowhere, the kernel delivers it to this host, which joined the group on lan0
+Settings  net/ipv4/conf/all/mc_forwarding 0, net/ipv4/conf/lan0/mc_forwarding 0
+
+Packet    from 198.51.100.140 to 239.1.2.3, arriving on lan0
+Rule      none, the route below is the kernel's own for this destination, in no table a rule looks up
+Route     239.1.2.3/32, multicast, dev lo, the kernel's own for this destination, with no table entry behind it
+Leaves    by the kernel's multicast routing, which delivers it to this host as well where it joined the group on lan0
+Settings  net/ipv4/conf/all/mc_forwarding 1, net/ipv4/conf/lan0/mc_forwarding 1
+
+Packet    from 198.51.100.140 to 239.1.2.3, arriving on lan0
+Rule      none, the route below is the kernel's own for this destination, in no table a rule looks up
+Route     239.1.2.3/32, multicast, dev lo, the kernel's own for this destination, with no table entry behind it
+Leaves    nowhere, the kernel delivers it to this host where it joined the group on lan0, and forwards it by multicast routing where that is on for lan0
+Settings  net/ipv4/conf/all/mc_forwarding 1, net/ipv4/conf/lan0/mc_forwarding unreadable
+
+Packet  from 198.51.100.140 to 224.0.0.1, arriving on lan0
+Rule    none, the route below is the kernel's own for this destination, in no table a rule looks up
+Route   224.0.0.1/32, multicast, dev lo, the kernel's own for this destination, with no table entry behind it
+Leaves  nowhere, the kernel delivers it to this host, which joined the group on lan0

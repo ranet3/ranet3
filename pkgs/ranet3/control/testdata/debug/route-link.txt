@@ -1,0 +1,12 @@
+Packet  from 2001:db8:2::5 to 2001:db8:beef::10, arriving on lan0
+Kernel  EACCES, a prohibit route or the rule below
+Rule    1001 to 2001:db8:beef::/48 prohibit, protocol 99, unless a prohibit route in a table a rule ahead of it looks up ended the walk
+
+Packet  from 198.51.100.140 to 198.51.100.255, arriving on lan0
+Rule    0 all lookup local, kernel
+Route   198.51.100.255/32 in table local, broadcast, dev lan0
+Leaves  nowhere, the kernel delivers it to this host
+
+Packet  from 2001:db8:2::5 to ff0e::123, arriving on lan0
+Kernel  EMSGSIZE, which the kernel answers for a group arriving on a link in place of its route, and it delivers such a packet to this host where it joined the group on lan0, forwards it by multicast routing where that is on, and drops it otherwise
+Rule    none named, the answer carries no route

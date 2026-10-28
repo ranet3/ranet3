@@ -15,6 +15,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const routeGetTakesSource = true
+
 func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 	conn, err := dialNetlink()
 	if err != nil {

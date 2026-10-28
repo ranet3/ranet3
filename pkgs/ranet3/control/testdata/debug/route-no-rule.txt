@@ -1,0 +1,24 @@
+Packet  from 192.0.2.99 to 203.0.113.200, this host's own
+Kernel  ENETUNREACH, no route, or a source this host does not hold
+Rule    none named, the walk ends past the last rule if it ran, rather than the source check answering first
+
+Packet  from no source to 203.0.113.200, this host's own
+Kernel  ENETUNREACH, no route
+Rule    none named, the walk ends past the last rule
+
+Packet  from no source to 203.0.113.200, this host's own
+Rule    none fits the kernel's answer from table 7
+Route   0.0.0.0/0 in table 7, unicast, dev up0
+Leaves  by up0, outside the mesh
+
+Packet  from 198.51.100.99 to 203.0.113.70, this host's own
+Kernel  ENETUNREACH, the rule below, or a source this host does not hold
+Rule    1000 to 203.0.113.64/27 unreachable, protocol 99, if the walk reached it rather than a check outside the walk raising the same errno
+
+Packet  from no source to 203.0.113.200, this host's own
+Kernel  EINVAL, a source or destination the kernel refuses, or a blackhole
+Rule    none named, a blackhole route in a table some rule looks up if the walk raised this errno rather than a check outside it
+
+Packet  from no source to 2001:db8:ffff::20, this host's own
+Kernel  EINVAL, a blackhole route
+Rule    none named, a blackhole route in a table some rule looks up ends the walk with this errno

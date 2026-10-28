@@ -181,6 +181,8 @@ testers.runNixOSTest {
     # and a leaf's sockets of every kind sent where the derived rules and the mirror send them, beside another program's table, as an exit, and nothing left after a stop
     # and the same leaf in exit mode beside a masqueraded bridge and a routed LAN, under each reverse path check
     # and in exit mode beside Tailscale, a conntrack mark restore, kube-proxy and Cilium, and Docker, live, retracted and after kill -9
+    # and an IPv6 arrival the route view says the kernel drops exactly where the kernel counts it dropped, not forwarded
+    # and each kind of destination, own and arriving, the route view naming the path the kernel takes for it
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -199,6 +201,8 @@ testers.runNixOSTest {
     assert "--- PASS: TestTUNExitModeBesideAConntrackMarkRestore" in out, f"the exit mode beside a conntrack mark restore did not run:\n{out}"
     assert "--- PASS: TestTUNExitModeBesideKubeProxyAndCilium" in out, f"the exit mode beside kube-proxy and Cilium did not run:\n{out}"
     assert "--- PASS: TestTUNExitModeBesideDocker" in out, f"the exit mode beside Docker did not run:\n{out}"
+    assert "--- PASS: TestTUNDebugRouteNamesTheIPv6DropWhereTheKernelMakesIt" in out, f"the route view's IPv6 forwarding against the kernel's did not run:\n{out}"
+    assert "--- PASS: TestTUNDebugRouteNamesThePathTheKernelTakesForEachDestinationKind" in out, f"the route view against the kernel's path for each kind of destination did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 16, f"only {ran} of the client's tun round trips ran:\n{out}"
 

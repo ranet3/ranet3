@@ -1,0 +1,30 @@
+Packet    from 198.51.100.140 to 203.0.113.200, arriving on lan0
+Kernel    EHOSTUNREACH, forwarding is off on lan0
+Rule      none named, the kernel refuses the packet after its walk, whose end the answer does not carry
+Settings  net/ipv4/conf/lan0/forwarding 0
+
+Packet    from 2001:db8:2::5 to 2001:db8:ffff::10, arriving on lan0
+Rule      32766 all lookup main, kernel
+Route     ::/0 in table main, unicast, via 2001:db8:1::1 dev up0
+Leaves    nowhere, the kernel drops it after the lookup with forwarding off in all and force_forwarding not on for lan0
+Settings  net/ipv6/conf/all/forwarding 0, net/ipv6/conf/lan0/force_forwarding absent
+
+Packet    from 198.51.100.140 to 203.0.113.200, arriving on lan0
+Kernel    EHOSTUNREACH, an unreachable route
+Rule      none named, an unreachable route in a table some rule looks up if the walk raised this errno rather than forwarding off on the link
+Settings  net/ipv4/conf/lan0/forwarding unreadable
+
+Packet    from 198.51.100.140 to 203.0.113.200, arriving on lan0
+Kernel    EHOSTUNREACH, an unreachable route
+Rule      none named, an unreachable route in a table some rule looks up ends the walk with this errno
+Settings  net/ipv4/conf/lan0/forwarding 1
+
+Packet    from 198.51.100.140 to 239.1.2.3, arriving on lan0
+Kernel    EHOSTUNREACH, the route of a group arriving on lan0, which the kernel's multicast routing withholds from its answer
+Rule      none, the kernel walks no rule for this destination arriving on a link
+Settings  net/ipv4/conf/all/mc_forwarding 1
+
+Packet    from 198.51.100.140 to 239.1.2.3, arriving on lan0
+Kernel    EHOSTUNREACH, the route of a group arriving on lan0, which the kernel's multicast routing withholds from its answer, so multicast routing is on
+Rule      none, the kernel walks no rule for this destination arriving on a link
+Settings  net/ipv4/conf/all/mc_forwarding unreadable

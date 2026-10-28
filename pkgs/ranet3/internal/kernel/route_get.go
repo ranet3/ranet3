@@ -45,6 +45,10 @@ type NextHop struct {
 	LinkDown bool
 }
 
+// RouteGetTakesSource is whether RouteGet's lookup takes the src it is given,
+// as linux's does and XNU's does not
+const RouteGetTakesSource = routeGetTakesSource
+
 // RouteGet asks the kernel which route it takes for a packet from src to dst.
 // An empty iif is this host's own packet, and a device name is the input
 // lookup a packet arriving there takes. An invalid src sends none. An invalid

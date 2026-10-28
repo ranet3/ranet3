@@ -120,6 +120,11 @@ type Client struct {
 	border atomic.Pointer[borderFilter]
 	// ruleDump reads every policy rule the host holds, and nil means kernel.DumpRules
 	ruleDump func() ([]kernel.DumpedRule, error)
+	// routeGet asks the kernel for one packet's route, and nil means kernel.RouteGet
+	routeGet func(src, dst netip.Addr, iif string) (kernel.MatchedRoute, error)
+	// sysctl reads a setting by its path under /proc/sys, the empty string
+	// where it cannot, and nil means Sysctl
+	sysctl func(path string) string
 	// reconcilerRules reads the rules the route reconciler derived, supplied as kernelStatus is and nil on a node with no cap.table
 	reconcilerRules atomic.Pointer[func() []kernel.DumpedRule]
 	// reconcilerLookups reads the lookups the route reconciler's last pass whose batch answered asked, supplied as reconcilerRules is

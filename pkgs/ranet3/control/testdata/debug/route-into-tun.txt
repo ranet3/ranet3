@@ -1,0 +1,4 @@
+Packet  from no source to 203.0.113.200, this host's own
+Rule    5440 iif lo lookup 100, ranet3
+Route   128.0.0.0/1 in table 100, unicast, dev ranet0
+Leaves  into the mesh's tun
