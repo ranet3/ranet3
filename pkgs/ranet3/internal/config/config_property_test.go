@@ -372,18 +372,20 @@ func reconcilers() hegel.Generator[kernel.Table] {
 }
 
 // steering draws one cap.segment steer entry. It names its own source when
-// the block has none to lend it, and otherwise only sometimes.
+// the block has none to lend it, and otherwise only sometimes. Its to never
+// counts as a default under no overlay, and so under none the loader reads.
 func steering(inherited bool) hegel.Generator[srv6.Steer] {
 	return hegel.Composite(func(tc hegel.TestCase) srv6.Steer {
 		v6 := hegel.Draw(tc, hegel.Booleans())
+		to := hegel.Filter(prefixOf(v6, true), func(prefix schema.Prefix) bool { return !schema.CapturesTheMachine(prefix.Prefix, nil) })
 		var entry srv6.Steer
 		switch hegel.Draw(tc, hegel.Integers(0, 2)) {
 		case 0:
-			entry.To = hegel.Draw(tc, prefixOf(v6, true))
+			entry.To = hegel.Draw(tc, to)
 		case 1:
 			entry.From = hegel.Draw(tc, prefixOf(v6, true))
 		default:
-			entry.To = hegel.Draw(tc, prefixOf(v6, true))
+			entry.To = hegel.Draw(tc, to)
 			entry.From = hegel.Draw(tc, prefixOf(v6, true))
 		}
 		if !inherited || hegel.Draw(tc, hegel.Booleans()) {

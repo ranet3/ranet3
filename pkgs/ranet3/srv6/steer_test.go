@@ -98,16 +98,11 @@ func TestSteeringRefusesWhatWouldClaimItsOwnEncapsulation(t *testing.T) {
 		// A selector carrying bits below its length steers a whole prefix
 		// where one address was meant, and says nothing.
 		"host bits under a length": steering("2001:db8::1/32", "", source, exit),
-		// A zero-length selector claims every address of its family on its
-		// side, so the entry steers every packet of that family the host
-		// routes into the tun that its other selector, where it has one,
-		// takes. The "no selector" case above tests whether a selector
-		// was written rather than what it covers, so these walked past it and
-		// the table then claimed every packet probed.
-		"a zero-length source":      steering("::/0", "", source, exit),
-		"a zero-length destination": steering("2001:db8::/32", "::/0", source, exit),
-		"a zero-length v4 source":   steering("0.0.0.0/0", "", source, exit),
-		"two zero-length halves":    steering("::/0", "::/0", source, exit),
+		// A zero-length source selects what leaving it out selects. A
+		// destination counting as a default is the loader's to refuse.
+		"a zero-length source":    steering("::/0", "", source, exit),
+		"a zero-length v4 source": steering("0.0.0.0/0", "", source, exit),
+		"two zero-length halves":  steering("::/0", "::/0", source, exit),
 		// Neither the entry nor the block names an outer source, so there is
 		// nothing to send the encapsulation from.
 		"no source at all": {From: sprefix("2001:db8::/32"), Via: []schema.Addr{saddr(exit)}},

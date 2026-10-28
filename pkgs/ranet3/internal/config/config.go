@@ -894,6 +894,9 @@ func (c *Config) validateAcrossCapabilities() error {
 	if err := c.validateExit(); err != nil {
 		return err
 	}
+	if err := c.validateSteerTo(); err != nil {
+		return err
+	}
 	if err := c.validateSteeredMTU(); err != nil {
 		return err
 	}
@@ -1056,6 +1059,18 @@ func (c *Config) validateVia() error {
 
 func exitRefused(because string) error {
 	return fmt.Errorf("config: cap.exit sends this node's own traffic out through another exit, and this node is an exit (%s), whose own traffic and whose egress leave by its own uplink: remove cap.exit, or stop offering the exit", because)
+}
+
+// validateSteerTo refuses a cap.segment steer whose to counts as a default
+// under cap.border's overlay, the one predicate every other reader of a
+// default uses: steering the internet is cap.exit via's
+func (c *Config) validateSteerTo() error {
+	for _, entry := range c.Segments().Steer {
+		if entry.To.IsValid() && schema.CapturesTheMachine(entry.To.Prefix, c.Overlay()) {
+			return fmt.Errorf("config: cap.segment steer to %s counts as a default, which is cap.exit via: write the path there", entry.To)
+		}
+	}
+	return nil
 }
 
 // validateSteeredMTU refuses a link.mtu the longest cap.segment steer list takes under the 1280 bytes IPv6 requires of every link
