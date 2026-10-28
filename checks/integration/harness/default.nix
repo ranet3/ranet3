@@ -744,6 +744,7 @@ testers.runNixOSTest {
             curl
             iperf3
             iproute2
+            tcpdump
           ]
           # nft reads back what this tree wrote through netlink, and jq asks
           # the control socket a question the shell cannot.
@@ -1527,6 +1528,33 @@ testers.runNixOSTest {
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
             assert "ranet3_tun_reads_truncated_total 0" in metrics.splitlines(), metrics
             assert "ranet3_tun_frames_refused_total 0" in metrics.splitlines(), metrics
+
+            # a hop that marks the gateway's ESP CE reaches the inner flow's receiver as CE, RFC 6040 section 4.2's decapsulation
+            # strongSwan's kernel copies the inner ECT(0) to the outer header, and fq_codel behind a 1 mbit shaper on the gateway's eth1 marks it CE past its ce_threshold
+            # the inner flow goes at twice the shaper's rate, so its datagrams queue there, and a capture on the client's tun reads what ranet3 delivers
+            client.succeed("systemd-run --unit=iperf-ecn iperf3 --server --bind ${clientTunnelV4} --one-off")
+            client.wait_until_succeeds("ss -ltn | grep -qF '${clientTunnelV4}:5201'", timeout=timeout)
+            client.execute(f"timeout 120 tcpdump --immediate-mode -lnv -i {client_device} 'udp and dst port 5201' >/tmp/ecn.log 2>&1 &")
+            client.wait_until_succeeds("grep -q 'listening on' /tmp/ecn.log", timeout=timeout)
+            try:
+                gateway.succeed(
+                    "tc qdisc replace dev eth1 root handle 1: htb default 1",
+                    "tc class add dev eth1 parent 1: classid 1:1 htb rate 1mbit",
+                    "tc qdisc add dev eth1 parent 1:1 fq_codel ce_threshold 1ms",
+                )
+                # ECT(0) under the DSCP 0x2e
+                print(gateway.execute("iperf3 --client ${clientTunnelV4} --udp --bitrate 2M --length 1200 --time 2 --tos 0xba")[1])
+                client.wait_until_succeeds("grep -qF 'tos 0xbb,CE' /tmp/ecn.log", timeout=timeout)
+                print(gateway.succeed("tc -s qdisc show dev eth1"))
+            finally:
+                gateway.succeed("tc qdisc del dev eth1 root")
+                client.execute("pkill tcpdump; systemctl stop iperf-ecn.service")
+            # tcpdump prints a header's TOS whatever its checksum, so a CE written without the checksum's update would pass the wait above
+            client.fail("grep -F 'bad cksum' /tmp/ecn.log")
+            metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
+            marked = [line for line in metrics.splitlines() if line.startswith("ranet3_esp_inbound_ce_total ")]
+            assert marked and int(marked[0].split()[1]) > 0, metrics
+            assert "ranet3_esp_inbound_ecn_unused_total 0" in metrics.splitlines(), metrics
 
             if not profile:
                 # a rekey lost under load still replaces its SA before the lifetime: the gateway drops the client's IKE for 5 s while iperf runs
