@@ -8,7 +8,6 @@ package kernel
 import (
 	"errors"
 	"fmt"
-	"net"
 	"slices"
 
 	"golang.org/x/sys/unix"
@@ -18,9 +17,8 @@ import (
 
 // borderTable is the border filter's linux backend: the inet table of this
 // tool's name, holding the one filter chain at prerouting. An inet chain sees
-// both families, so every rule matching an address tests the family first:
-// unlike nft, which adds that test implicitly, the raw encoder spells it, or
-// an IPv4 rule would read bytes 12 to 15 of an IPv6 header.
+// both families, so every rule matching an address tests the family first
+// (nftables.NFProto).
 type borderTable struct {
 	conn    *nftables.Conn
 	monitor *nftables.Monitor
@@ -127,13 +125,13 @@ func newBorderRule(rule BorderRule) (nftables.Request, error) {
 		if err := nftables.DeviceName(rule.Device); err != nil {
 			return nftables.Request{}, err
 		}
-		expressions = append(nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, rule.Device), verdict(nftables.Accept))
+		expressions = append(nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, rule.Device), nftables.Verdict(nftables.Accept))
 	case BorderSource:
 		proto := uint8(unix.NFPROTO_IPV6)
 		if rule.Source.Addr().Is4() {
 			proto = unix.NFPROTO_IPV4
 		}
-		expressions = slices.Concat(nfproto(proto), nftables.SourcePrefix(rule.Source), countedDrop())
+		expressions = slices.Concat(nftables.NFProto(proto), nftables.SourcePrefix(rule.Source), nftables.CountedDrop())
 	case BorderRoutingHeader:
 		// whether any routing header is present rather than its type: the
 		// kernel's search finds only the first routing header, so a test of
@@ -146,29 +144,12 @@ func newBorderRule(rule BorderRule) (nftables.Request, error) {
 		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_OFFSET, 0)
 		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_LEN, 1)
 		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_FLAGS, unix.NFT_EXTHDR_F_PRESENT)
-		expressions = slices.Concat(nfproto(unix.NFPROTO_IPV6),
-			[][]byte{nftables.Expression("exthdr", exthdr), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{1}))}, countedDrop())
+		expressions = slices.Concat(nftables.NFProto(unix.NFPROTO_IPV6),
+			[][]byte{nftables.Expression("exthdr", exthdr), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{1}))}, nftables.CountedDrop())
 	default:
-		expressions = slices.Concat(nfproto(unix.NFPROTO_IPV6),
-			[][]byte{nftables.NetworkLoad(ipv6DestinationOffset, net.IPv6len), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(rule.Destination)))},
-			countedDrop())
+		expressions = slices.Concat(nftables.NFProto(unix.NFPROTO_IPV6),
+			[][]byte{nftables.DestinationLoad(unix.NFPROTO_IPV6), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(rule.Destination)))},
+			nftables.CountedDrop())
 	}
 	return prerouting.Rule(unix.NFPROTO_INET, rule.String(), expressions)
-}
-
-// nfproto tests the packet's family, the nf_tables family an inet chain saw it in
-func nfproto(proto uint8) [][]byte {
-	return nftables.MetaCompareValue(unix.NFT_META_NFPROTO, unix.NFT_CMP_EQ, []byte{proto})
-}
-
-func countedDrop() [][]byte {
-	return [][]byte{nftables.Expression("counter", nil), verdict(verdictDrop)}
-}
-
-// verdict ends the chain for a packet with code, NF_ACCEPT or NF_DROP
-func verdict(code uint32) []byte {
-	data := nftables.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
-	immediate := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
-	immediate = nftables.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
-	return nftables.Expression("immediate", immediate)
 }

@@ -442,9 +442,9 @@ func newRule(rule Rule) (nftables.Request, error) {
 	case passing:
 		// a class of none's packet goes on as the host forwards it, past the
 		// drops of the shorter classes after this rule
-		expressions = append(expressions, verdict(nftables.Accept))
+		expressions = append(expressions, nftables.Verdict(nftables.Accept))
 	case dropping:
-		expressions = append(expressions, verdict(verdictDrop))
+		expressions = append(expressions, nftables.Verdict(nftables.Drop))
 	case translating:
 		expressions = append(expressions, translate(rule)...)
 	case screening, admitting:
@@ -481,13 +481,13 @@ func protocolRule(rule Rule) (head, match [][]byte, action []byte) {
 	switch {
 	case rule.Drops == SourceQuench:
 		match = [][]byte{nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{4}))}
-		action = verdict(verdictDrop)
+		action = nftables.Verdict(nftables.Drop)
 	case rule.Drops == Information:
 		match = [][]byte{nftables.TransportLoad(0, 1),
 			nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_GTE, []byte{15})), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_LTE, []byte{16}))}
-		action = verdict(verdictDrop)
+		action = nftables.Verdict(nftables.Drop)
 	case rule.None:
-		action = verdict(nftables.Accept)
+		action = nftables.Verdict(nftables.Accept)
 	default:
 		// administratively prohibited, RFC 5508 section 6's code 13 in IPv4 and
 		// RFC 4443 section 3.1's code 1 in IPv6

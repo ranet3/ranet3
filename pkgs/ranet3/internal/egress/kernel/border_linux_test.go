@@ -158,10 +158,10 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 		"of another type":     {chain(TableName, BorderChain, "route", unix.NF_INET_PRE_ROUTING, rawPriority, nftables.Accept), true, true},
 		"at another hook":     {chain(TableName, BorderChain, "filter", unix.NF_INET_FORWARD, rawPriority, nftables.Accept), true, true},
 		"at another priority": {chain(TableName, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, 0, nftables.Accept), true, true},
-		"dropping by default": {chain(TableName, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, rawPriority, verdictDrop), true, false},
+		"dropping by default": {chain(TableName, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, rawPriority, nftables.Drop), true, false},
 		"a regular chain":     {nftables.Message{Data: regular}, true, true},
-		"of another name":     {chain(TableName, "extra", "route", unix.NF_INET_FORWARD, 0, verdictDrop), false, false},
-		"in another table":    {chain("other", BorderChain, "route", unix.NF_INET_FORWARD, 0, verdictDrop), false, false},
+		"of another name":     {chain(TableName, "extra", "route", unix.NF_INET_FORWARD, 0, nftables.Drop), false, false},
+		"in another table":    {chain("other", BorderChain, "route", unix.NF_INET_FORWARD, 0, nftables.Drop), false, false},
 	} {
 		fault, remake := prerouting.Fault(c.message)
 		if (fault != "") != c.fault || remake != c.remake {
@@ -253,8 +253,8 @@ func TestBorderDropsThisNodesSIDsAsDestinations(t *testing.T) {
 	}
 }
 
-// Another writer deleting or adding the filter's inet table, a chain in it or
-// a rule in it wakes the filter, a table update setting it dormant among
+// Another writer deleting or adding the filter's inet table, a chain, a rule
+// or a set in it wakes the filter, a table update setting it dormant among
 // them, and its own writes do not
 func TestAnotherWritersChangeToTheBorderWakesIt(t *testing.T) {
 	const own, other = 7, 9
@@ -275,7 +275,7 @@ func TestAnotherWritersChangeToTheBorderWakesIt(t *testing.T) {
 		"its own table":            {unix.NFT_MSG_NEWTABLE, unix.NFTA_TABLE_NAME, own, false},
 		"its own chain":            {unix.NFT_MSG_NEWCHAIN, unix.NFTA_CHAIN_TABLE, own, false},
 		"its own rule":             {unix.NFT_MSG_NEWRULE, unix.NFTA_RULE_TABLE, own, false},
-		"another writer's set":     {unix.NFT_MSG_NEWSET, unix.NFTA_SET_TABLE, other, false},
+		"another writer's set":     {unix.NFT_MSG_NEWSET, unix.NFTA_SET_TABLE, other, true},
 	} {
 		message := nftables.Message{Kind: nftables.Command(c.command), Pid: c.pid, Data: nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), c.naming, TableName)}
 		if got := borderTables.ChangedByAnother(message, own); got != c.wakes {

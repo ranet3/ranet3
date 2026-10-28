@@ -8,6 +8,7 @@
 # asserted nowhere any check ran. These are the same test binaries, run as root
 # against a real kernel.
 # internal/netstack's tun round trips run here for the same reason
+# and internal/nftables's sets and expressions beside nft's own encoding
 # and so does transport's send through a path whose mtu is locked
 # and the tun and conn packages of pkgs/wireguard
 # and internal/registry's and internal/client's tests of the endpoint resolver's mark, through a resolv.conf of their own
@@ -28,6 +29,7 @@ let
     buildPhase = ''
       go test -c -o netlink-tests ./internal/kernel/
       go test -c -o egress-tests ./internal/egress/kernel/
+      go test -c -o nftables-tests ./internal/nftables/
       go test -c -o suite-tests ./internal/egress/egresstest/
       go test -c -o netstack-tests ./internal/netstack/
       go test -c -o client-tests ./internal/client/
@@ -37,6 +39,7 @@ let
     installPhase = ''
       install -Dm755 netlink-tests "$out/bin/netlink-tests"
       install -Dm755 egress-tests "$out/bin/egress-tests"
+      install -Dm755 nftables-tests "$out/bin/nftables-tests"
       install -Dm755 suite-tests "$out/bin/suite-tests"
       install -Dm755 netstack-tests "$out/bin/netstack-tests"
       install -Dm755 client-tests "$out/bin/client-tests"
@@ -122,6 +125,17 @@ testers.runNixOSTest {
     assert "--- PASS: TestNftablesReportsTheNatChainsAtItsPriorityOrBelow" in out, f"the report of other nat chains did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 11, f"only {ran} nftables round trips ran:\n{out}"
+
+    # the encoder's sets, their elements, the lookup, ct with a direction and the set messages of the monitor, each
+    # written beside nft's own encoding of the same text, acting on loopback's datagrams, and woken by another writer
+    out = machine.succeed(
+        "${netlinkTests}/bin/nftables-tests -test.v -test.run '^TestNftables(FilterEncodesAsNftsOwn|FilterExpressionsActOnPackets|SetElementsReadBackAndWakeOnAnothersChange)$' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the encoder's round trips skipped themselves under root:\n{out}"
+    assert "--- PASS: TestNftablesFilterEncodesAsNftsOwn" in out, f"the encoding beside nft's did not run:\n{out}"
+    assert "--- PASS: TestNftablesFilterExpressionsActOnPackets" in out, f"the expressions on packets did not run:\n{out}"
+    assert "--- PASS: TestNftablesSetElementsReadBackAndWakeOnAnothersChange" in out, f"the set elements' readback and wake did not run:\n{out}"
 
     # the exit behavior suite against the kernel exit under each class: rows 1 to 5, Egress from several sessions, the
     # packets no flow is tracked for out of the mesh and into it, the idle timers read from conntrack's listing, the

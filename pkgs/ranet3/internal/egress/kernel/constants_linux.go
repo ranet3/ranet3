@@ -18,10 +18,6 @@ const (
 	// setSize is the most sources a family's set of flows holds. The set then
 	// takes no new one, and LimitChain leaves that source's flows uncounted.
 	setSize = 65535
-	// verdictDrop is NF_DROP, which a border chain drop rule ends with
-	verdictDrop = 0
-	// ipv6DestinationOffset is where the destination sits in an IPv6 header
-	ipv6DestinationOffset = 24
 	// udpDestinationOffset is where the destination port sits in a UDP header
 	udpDestinationOffset = 2
 	// timeoutObject starts the name of each timeout object, which nft lists

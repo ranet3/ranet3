@@ -46,7 +46,7 @@ func matches(t *hegel.T, expressions []byte, header []byte) bool {
 			length := binary.BigEndian.Uint32(fields[unix.NFTA_PAYLOAD_LEN])
 			register = bytes.Clone(header[offset : offset+length])
 		case "bitwise":
-			mask, xor := value(fields[unix.NFTA_BITWISE_MASK]), value(fields[unix.NFTA_BITWISE_XOR])
+			mask, xor := dataValue(fields[unix.NFTA_BITWISE_MASK]), dataValue(fields[unix.NFTA_BITWISE_XOR])
 			if len(mask) != len(register) || len(xor) != len(register) {
 				t.Fatalf("a bitwise of %d and %d bytes over a register of %d", len(mask), len(xor), len(register))
 			}
@@ -54,7 +54,7 @@ func matches(t *hegel.T, expressions []byte, header []byte) bool {
 				register[i] = register[i]&mask[i] ^ xor[i]
 			}
 		case "cmp":
-			want := value(fields[unix.NFTA_CMP_DATA])
+			want := dataValue(fields[unix.NFTA_CMP_DATA])
 			equal := len(register) >= len(want) && bytes.Equal(register[:len(want)], want)
 			switch binary.BigEndian.Uint32(fields[unix.NFTA_CMP_OP]) {
 			case unix.NFT_CMP_EQ:
@@ -73,16 +73,6 @@ func matches(t *hegel.T, expressions []byte, header []byte) bool {
 		}
 	}
 	return true
-}
-
-// value is the NFTA_DATA_VALUE an attribute nests
-func value(attribute []byte) []byte {
-	for _, inner := range Nested(attribute) {
-		if inner.Kind == unix.NFTA_DATA_VALUE {
-			return inner.Value
-		}
-	}
-	return nil
 }
 
 // A source prefix's expressions take exactly the packets whose source the

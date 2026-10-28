@@ -93,7 +93,7 @@ func runChain(t testing.TB, rules []nftables.Request, packet chainPacket) chainR
 		if !decided {
 			continue
 		}
-		if run.code != nftables.Accept && run.code != verdictDrop {
+		if run.code != nftables.Accept && run.code != nftables.Drop {
 			t.Fatalf("rule %d ends with verdict %d, neither accept nor drop", i, run.code)
 		}
 		return chainRun{rule: i, accept: run.code == nftables.Accept, counted: run.counted, translation: run.translation, timeouts: timeouts, rejected: run.rejected}
@@ -310,7 +310,7 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 				if kind := be32(t, fields[unix.NFTA_REJECT_TYPE]); kind != unix.NFT_REJECT_ICMP_UNREACH || len(fields[unix.NFTA_REJECT_ICMP_CODE]) != 1 {
 					t.Fatalf("reject of type %d with a code of %d bytes, where the interpreter models a destination unreachable", kind, len(fields[unix.NFTA_REJECT_ICMP_CODE]))
 				}
-				run.code, run.rejected = verdictDrop, fields[unix.NFTA_REJECT_ICMP_CODE][0]
+				run.code, run.rejected = nftables.Drop, fields[unix.NFTA_REJECT_ICMP_CODE][0]
 				return run, true
 			default:
 				t.Fatalf("the rule holds a %q expression, which the interpreter does not model", name)

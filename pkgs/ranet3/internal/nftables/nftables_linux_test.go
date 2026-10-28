@@ -9,6 +9,7 @@ import (
 	"cmp"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net"
 	"net/netip"
 	"os"
@@ -237,9 +238,9 @@ func TestMalformedMessageLengthIsRefused(t *testing.T) {
 	}
 }
 
-// Only another writer's deletion or addition of the owner's table, of a chain
-// in it or of a rule in it wakes the owner, a table update setting it dormant
-// among them. Its own writes reach the notification group stamped with its
+// Only another writer's deletion or addition of the owner's table, of a chain,
+// a rule, a set or a set's element in it wakes the owner, a table update
+// setting it dormant among them. Its own writes reach the notification group stamped with its
 // own socket, and another table's churn is none of its business.
 func TestOnlyAnotherWritersChangeToTheTableWakes(t *testing.T) {
 	const own, other = 7, 9
@@ -265,6 +266,12 @@ func TestOnlyAnotherWritersChangeToTheTableWakes(t *testing.T) {
 		"its own withdrawal":             {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV6, unix.NFTA_TABLE_NAME, name, own), false},
 		"its own table":                  {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, name, own), false},
 		"its own rule":                   {notification(unix.NFT_MSG_NEWRULE, unix.NFPROTO_IPV6, unix.NFTA_RULE_TABLE, name, own), false},
+		"a set added":                    {notification(unix.NFT_MSG_NEWSET, unix.NFPROTO_IPV4, unix.NFTA_SET_TABLE, name, other), true},
+		"a set deleted":                  {notification(unix.NFT_MSG_DELSET, unix.NFPROTO_IPV6, unix.NFTA_SET_TABLE, name, other), true},
+		"an element added":               {notification(unix.NFT_MSG_NEWSETELEM, unix.NFPROTO_IPV4, unix.NFTA_SET_ELEM_LIST_TABLE, name, other), true},
+		"an element deleted":             {notification(unix.NFT_MSG_DELSETELEM, unix.NFPROTO_IPV6, unix.NFTA_SET_ELEM_LIST_TABLE, name, other), true},
+		"its own refill":                 {notification(unix.NFT_MSG_NEWSETELEM, unix.NFPROTO_IPV4, unix.NFTA_SET_ELEM_LIST_TABLE, name, own), false},
+		"an element of another table":    {notification(unix.NFT_MSG_NEWSETELEM, unix.NFPROTO_IPV4, unix.NFTA_SET_ELEM_LIST_TABLE, "nat", other), false},
 		"another table deleted":          {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, "nat", other), false},
 		"a rule added to another table":  {notification(unix.NFT_MSG_NEWRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, "nat", other), false},
 		"an inet table of its name":      {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, unix.NFTA_TABLE_NAME, name, other), false},
@@ -367,5 +374,282 @@ func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	}
 	if woke(m.Changed()) || woke(m.Missed()) {
 		t.Error("a closed socket woke the owner")
+	}
+}
+
+// Each expression of the switch's chain encodes as nft 1.1.7 writes the line
+// named for it (`nft --debug=netlink -f`): a lookup by its set's name and ID,
+// with flags only when inverted, ct with a direction only for a key the kernel
+// requires one of, the mark and the destination's type the fib gives as host
+// order words.
+func TestFilterExpressionsCarryTheAttributesNftWrites(t *testing.T) {
+	forwarded := Set{Name: "forwarded", ID: 1}
+	lan4 := Set{Name: "lan4", ID: 2}
+	for _, c := range []struct {
+		name        string
+		expressions [][]byte
+		want        []string
+	}{
+		{"meta mark 0x00000072", MetaCompareValue(unix.NFT_META_MARK, unix.NFT_CMP_EQ, binary.NativeEndian.AppendUint32(nil, 0x72)), []string{
+			"meta 1=00000001 2=00000003",
+			"cmp 1=00000001 2=00000000 3{1=" + fmt.Sprintf("%x", binary.NativeEndian.AppendUint32(nil, 0x72)) + "}",
+		}},
+		{"meta iif != 0", MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_NEQ, make([]byte, 4)), []string{
+			"meta 1=00000001 2=00000004",
+			"cmp 1=00000001 2=00000001 3{1=00000000}",
+		}},
+		{"iifname != @forwarded", [][]byte{MetaLoad(unix.NFT_META_IIFNAME), Lookup(forwarded, true)}, []string{
+			"meta 1=00000001 2=00000006",
+			`lookup 1="forwarded" 2=00000001 4=00000001 5=00000001`,
+		}},
+		{"ip daddr @lan4", slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(lan4, false)}), []string{
+			"meta 1=00000001 2=0000000f",
+			"cmp 1=00000001 2=00000000 3{1=02}",
+			"payload 1=00000001 2=00000001 3=00000010 4=00000004",
+			`lookup 1="lan4" 2=00000001 4=00000002`,
+		}},
+		{"ip6 daddr", slices.Concat(NFProto(unix.NFPROTO_IPV6), [][]byte{DestinationLoad(unix.NFPROTO_IPV6)}), []string{
+			"meta 1=00000001 2=0000000f",
+			"cmp 1=00000001 2=00000000 3{1=0a}",
+			"payload 1=00000001 2=00000001 3=00000018 4=00000010",
+		}},
+		{"ct direction reply", [][]byte{CTLoad(unix.NFT_CT_DIRECTION), Expression("cmp", Compare(unix.NFT_CMP_EQ, []byte{CTReply}))}, []string{
+			"ct 1=00000001 2=00000001",
+			"cmp 1=00000001 2=00000000 3{1=01}",
+		}},
+		{"ct protocol tcp", [][]byte{CTLoad(unix.NFT_CT_PROTOCOL), Expression("cmp", Compare(unix.NFT_CMP_EQ, []byte{unix.IPPROTO_TCP}))}, []string{
+			"ct 1=00000001 2=0000000a",
+			"cmp 1=00000001 2=00000000 3{1=06}",
+		}},
+		{"ct original proto-dst", [][]byte{CTLoadDirection(unix.NFT_CT_PROTO_DST, CTOriginal)}, []string{"ct 1=00000001 2=0000000c 3=00"}},
+		{"fib daddr type local", [][]byte{FibDestinationType(), Expression("cmp", Compare(unix.NFT_CMP_EQ, binary.NativeEndian.AppendUint32(nil, unix.RTN_LOCAL)))}, []string{
+			"fib 1=00000001 2=00000003 3=00000002",
+			"cmp 1=00000001 2=00000000 3{1=" + fmt.Sprintf("%x", binary.NativeEndian.AppendUint32(nil, unix.RTN_LOCAL)) + "}",
+		}},
+		{"accept", [][]byte{Verdict(Accept)}, []string{"immediate 1=00000000 2{2{1=00000001}}"}},
+		{"counter drop", CountedDrop(), []string{"counter ", "immediate 1=00000000 2{2{1=00000000}}"}},
+	} {
+		var got []string
+		for _, expression := range c.expressions {
+			got = append(got, rendered(t, expression))
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s encodes as\n%s\nwant\n%s", c.name, strings.Join(got, "\n"), strings.Join(c.want, "\n"))
+		}
+	}
+}
+
+// dumped is an expression as a rule dump lists it, its list element and data
+// with no NLA_F_NESTED
+func dumped(name string, data []byte) []byte {
+	return PutAttr(nil, unix.NFTA_LIST_ELEM, PutAttr(PutAttrString(nil, unix.NFTA_EXPR_NAME, name), unix.NFTA_EXPR_DATA, data))
+}
+
+// dumpedLookup is a lookup of set as a dump lists it, by name alone with its flags written out
+func dumpedLookup(set string, flags uint32) []byte {
+	return dumped("lookup", PutAttrBE32(PutAttrBE32(PutAttrString(nil, unix.NFTA_LOOKUP_SET, set), unix.NFTA_LOOKUP_SREG, unix.NFT_REG_1), unix.NFTA_LOOKUP_FLAGS, flags))
+}
+
+// dumpedCompare is an equality test against value as a dump lists it
+func dumpedCompare(value []byte) []byte {
+	return dumped("cmp", PutAttr(PutAttrBE32(PutAttrBE32(nil, unix.NFTA_CMP_SREG, unix.NFT_REG_1), unix.NFTA_CMP_OP, unix.NFT_CMP_EQ), unix.NFTA_CMP_DATA, PutAttr(nil, unix.NFTA_DATA_VALUE, value)))
+}
+
+// dumpedVerdict is a verdict as a dump lists it
+func dumpedVerdict(code uint32) []byte {
+	data := PutAttr(nil, unix.NFTA_DATA_VERDICT, PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
+	return dumped("immediate", PutAttr(PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT), unix.NFTA_IMMEDIATE_DATA, data))
+}
+
+// A rule's expressions as a dump lists them read as written where the dump
+// names a lookup's set and not its ID, writes its flags at zero, numbers an
+// anonymous set, counts in a counter and nests without NLA_F_NESTED, and as a
+// fault where a lookup's inversion is dropped or added, a comparison's data or
+// a verdict differs, an expression is gone, or a lookup names another set
+func TestExpressionFaultTellsAnEditFromADumpsSpelling(t *testing.T) {
+	forwarded, lan4 := Set{Name: "forwarded", ID: 1}, Set{Name: "lan4", ID: 2}
+	mark := binary.NativeEndian.AppendUint32(nil, 0x72)
+	notForwarded := [][]byte{MetaLoad(unix.NFT_META_IIFNAME), Lookup(forwarded, true), Verdict(Accept)}
+	toTheLAN := [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(lan4, false), Verdict(Accept)}
+	marked := slices.Concat(MetaCompareValue(unix.NFT_META_MARK, unix.NFT_CMP_EQ, mark), [][]byte{Verdict(Accept)})
+	counted := PutAttr(PutAttr(nil, unix.NFTA_COUNTER_BYTES, beBytes(180)), unix.NFTA_COUNTER_PACKETS, beBytes(3))
+	for _, c := range []struct {
+		name    string
+		written [][]byte
+		held    [][]byte
+		differs bool
+	}{
+		{"the dump's spelling of an inverted lookup", notForwarded,
+			[][]byte{MetaLoad(unix.NFT_META_IIFNAME), dumpedLookup("forwarded", unix.NFT_LOOKUP_F_INV), dumpedVerdict(Accept)}, false},
+		{"the dump's spelling of a lookup with its flags at zero", toTheLAN,
+			[][]byte{DestinationLoad(unix.NFPROTO_IPV4), dumpedLookup("lan4", 0), dumpedVerdict(Accept)}, false},
+		{"an anonymous set the kernel numbered", [][]byte{MetaLoad(unix.NFT_META_OIFNAME), Lookup(Anonymous("t", 10, TypeIfname, unix.IFNAMSIZ, 0), false), Verdict(Accept)},
+			[][]byte{MetaLoad(unix.NFT_META_OIFNAME), dumpedLookup("__set3", 0), dumpedVerdict(Accept)}, false},
+		{"a counter that has counted", CountedDrop(), [][]byte{dumped("counter", counted), dumpedVerdict(Drop)}, false},
+		{"a comparison as a dump spells it", marked, [][]byte{MetaLoad(unix.NFT_META_MARK), dumpedCompare(mark), dumpedVerdict(Accept)}, false},
+		{"the inversion dropped", notForwarded, [][]byte{MetaLoad(unix.NFT_META_IIFNAME), dumpedLookup("forwarded", 0), dumpedVerdict(Accept)}, true},
+		{"an inversion added", toTheLAN, [][]byte{DestinationLoad(unix.NFPROTO_IPV4), dumpedLookup("lan4", unix.NFT_LOOKUP_F_INV), dumpedVerdict(Accept)}, true},
+		{"another comparison's data", marked, [][]byte{MetaLoad(unix.NFT_META_MARK), dumpedCompare(binary.NativeEndian.AppendUint32(nil, 0x73)), dumpedVerdict(Accept)}, true},
+		{"another verdict", marked, [][]byte{MetaLoad(unix.NFT_META_MARK), dumpedCompare(mark), dumpedVerdict(Drop)}, true},
+		{"an expression gone", notForwarded, [][]byte{dumpedLookup("forwarded", unix.NFT_LOOKUP_F_INV), dumpedVerdict(Accept)}, true},
+		{"another set looked up", toTheLAN, [][]byte{DestinationLoad(unix.NFPROTO_IPV4), dumpedLookup("lan6", 0), dumpedVerdict(Accept)}, true},
+	} {
+		fault := ExpressionFault(c.written, slices.Concat(c.held...))
+		if (fault != "") != c.differs {
+			t.Errorf("%s reads back with the fault %q, want one %v", c.name, fault, c.differs)
+		}
+	}
+}
+
+// Each interval set's elements are those nft 1.1.7 writes for the set's line,
+// as `nft --debug=netlink -f` prints them: the leading end at zero, a start
+// and the end after each interval, and an interval to the last key left open
+// with the userdata that has nft print it whole
+func TestIntervalElementsAreThoseNftWrites(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		set       Set
+		intervals []Interval
+		want      []string
+	}{
+		{
+			"ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 }",
+			Anonymous("t", 1, TypeIPv4Addr, 4, unix.NFT_SET_INTERVAL),
+			Prefixes([]netip.Prefix{netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("255.255.255.255/32")}),
+			[]string{"00000000 end", "a9fe0000", "a9ff0000 end", "e0000000", "f0000000 end", "ffffffff open"},
+		},
+		{
+			"lan4 { 198.51.100.0/24, 203.0.113.0/25, 192.0.2.128/26 }",
+			Set{Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+			Prefixes([]netip.Prefix{netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/25"), netip.MustParsePrefix("192.0.2.128/26")}),
+			[]string{"00000000 end", "c0000280", "c00002c0 end", "c6336400", "c6336500 end", "cb007100", "cb007180 end"},
+		},
+		{
+			"lan4 { 192.0.2.0/25, 192.0.2.128/25 }, touching halves written as one interval",
+			Set{Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+			Prefixes([]netip.Prefix{netip.MustParsePrefix("192.0.2.128/25"), netip.MustParsePrefix("192.0.2.0/25")}),
+			[]string{"00000000 end", "c0000200", "c0000300 end"},
+		},
+		{
+			"lan6 { 2001:db8::/33, 2001:db8:8000::/33 }, touching halves written as one interval",
+			Set{Name: "lan6", KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+			Prefixes([]netip.Prefix{netip.MustParsePrefix("2001:db8::/33"), netip.MustParsePrefix("2001:db8:8000::/33")}),
+			[]string{"00000000000000000000000000000000 end", "20010db8000000000000000000000000", "20010db9000000000000000000000000 end"},
+		},
+		{
+			"lan6 { ::/16, ff00::/8 }",
+			Set{Name: "lan6", KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+			Prefixes([]netip.Prefix{netip.MustParsePrefix("::/16"), netip.MustParsePrefix("ff00::/8")}),
+			[]string{"00000000000000000000000000000000", "00010000000000000000000000000000 end", "ff000000000000000000000000000000 open"},
+		},
+		{
+			"ct original proto-dst { 22, 60000-61000 }",
+			Anonymous("t", 3, TypeInetService, 2, unix.NFT_SET_INTERVAL),
+			[]Interval{{First: []byte{0xea, 0x60}, Last: []byte{0xee, 0x48}}, Key([]byte{0, 22})},
+			[]string{"0000 end", "0016", "0017 end", "ea60", "ee49 end"},
+		},
+	} {
+		elements, err := c.set.elements(c.intervals)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var got []string
+		for _, e := range elements {
+			text := fmt.Sprintf("%x", e.key)
+			if e.flags == unix.NFT_SET_ELEM_INTERVAL_END {
+				text += " end"
+			}
+			if slices.Equal(e.userdata, []byte{1, 4, 1, 0, 0, 0}) {
+				text += " open"
+			} else if e.userdata != nil {
+				text += fmt.Sprintf(" userdata %x", e.userdata)
+			}
+			got = append(got, text)
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s writes\n%s\nwant\n%s", c.name, strings.Join(got, "\n"), strings.Join(c.want, "\n"))
+		}
+	}
+}
+
+// Another writer's elements read back as the keys a lookup finds, handed back
+// in rbtree's descending order: two touching intervals whose end and start
+// share a key read as one, an end with no start before it holds nothing, and
+// a start with no end after it runs to the last key
+func TestElementsReadBackAsALookupFindsThem(t *testing.T) {
+	s := Set{Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
+	key := func(address string) []byte { return AddressBytes(netip.MustParseAddr(address)) }
+	var list []byte
+	for _, e := range []element{
+		{key: key("203.0.113.0")},
+		{key: key("198.51.101.0"), flags: unix.NFT_SET_ELEM_INTERVAL_END},
+		{key: key("198.51.100.0")},
+		{key: key("198.51.100.0"), flags: unix.NFT_SET_ELEM_INTERVAL_END},
+		{key: key("192.0.2.0")},
+		{key: key("0.0.0.0"), flags: unix.NFT_SET_ELEM_INTERVAL_END},
+	} {
+		list = append(list, e.encode()...)
+	}
+	dump := Message{Data: PutAttr(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, list)}
+	got := s.decodeElements([]Message{dump})
+	want := []Interval{
+		{First: key("192.0.2.0"), Last: key("198.51.100.255")},
+		{First: key("203.0.113.0"), Last: key("255.255.255.255")},
+	}
+	if s.elementFault(want, got) != "" {
+		t.Errorf("read back as %s, want %s", s.describe(got), s.describe(want))
+	}
+}
+
+// Fill refuses a key of another length than the set's and an interval in a
+// set that holds single keys, which the kernel would take as two keys or
+// refuse with an error naming neither
+func TestFillRefusesWhatTheSetCannotHold(t *testing.T) {
+	ranged := Set{Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
+	if _, err := ranged.Fill(unix.NFPROTO_INET, Prefixes([]netip.Prefix{netip.MustParsePrefix("2001:db8::/32")})); err == nil {
+		t.Error("an IPv4 set took an IPv6 interval")
+	}
+	names := Set{Name: "forwarded", KeyType: TypeIfname, KeyLen: unix.IFNAMSIZ}
+	if _, err := names.Fill(unix.NFPROTO_INET, []Interval{{First: InterfaceName("lan1"), Last: InterfaceName("lan2")}}); err == nil {
+		t.Error("a set of single names took an interval")
+	}
+	if requests, err := names.Fill(unix.NFPROTO_INET, nil); err != nil || len(requests) != 0 {
+		t.Errorf("an empty fill sent %d messages (%v), want none, since the kernel refuses a message of no elements", len(requests), err)
+	}
+}
+
+// A set too large for one message's elements attribute fills over several, each
+// attribute's length within what a netlink attribute can say, and reads back
+// whole
+func TestFillSplitsWhatOneAttributeCannotSay(t *testing.T) {
+	s := Set{Table: "t", Name: "lan6", KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL}
+	var prefixes []netip.Prefix
+	for i := range 3000 {
+		raw := netip.MustParseAddr("2001:db8::").As16()
+		binary.BigEndian.PutUint16(raw[4:], uint16(2*i))
+		prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom16(raw), 48))
+	}
+	intervals := Prefixes(prefixes)
+	if len(intervals) != 3000 {
+		t.Fatalf("3000 apart /48s are %d intervals", len(intervals))
+	}
+	requests, err := s.Fill(unix.NFPROTO_INET, intervals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) < 2 {
+		t.Fatalf("6001 elements went in %d message", len(requests))
+	}
+	var dump []Message
+	for _, request := range requests {
+		for kind, value := range (Message{Data: request.Body}).Attributes() {
+			if kind == unix.NFTA_SET_ELEM_LIST_ELEMENTS && unix.SizeofRtAttr+len(value) > math.MaxUint16 {
+				t.Errorf("an elements attribute of %d bytes", unix.SizeofRtAttr+len(value))
+			}
+		}
+		dump = append(dump, Message{Data: request.Body})
+	}
+	if fault := s.elementFault(intervals, s.decodeElements(dump)); fault != "" {
+		t.Error(fault)
 	}
 }

@@ -150,14 +150,15 @@ func (c Chain) Fault(message Message) (fault string, remake bool) {
 }
 
 // Installed is one rule as a dump read it back: the comment it was written
-// under, empty for a rule with none, the chain it was read from, and its
-// counter where Counted says it keeps one
+// under, empty for a rule with none, the chain it was read from, its counter
+// where Counted says it keeps one, and its expressions as the kernel lists them
 type Installed struct {
-	Spec    string
-	Chain   string
-	Packets uint64
-	Bytes   uint64
-	Counted bool
+	Spec        string
+	Chain       string
+	Packets     uint64
+	Bytes       uint64
+	Counted     bool
+	Expressions []byte
 }
 
 // Contents names the chains, sets and ct timeout objects one owner writes in a
@@ -167,6 +168,10 @@ type Contents struct {
 	Chains   []Chain
 	Sets     []Set
 	Timeouts []Timeout
+	// Elements holds the keys its owner fills each named set of Sets with,
+	// whole. A set it does not name, one the datapath fills, has its elements
+	// unread.
+	Elements map[string][]Interval
 }
 
 // Readback is a table and what Contents holds of it in one nf_tables family,
@@ -202,7 +207,14 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 		// nf_tables clears no flag of a table in place but dormant
 		note(fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags), flags&^unix.NFT_TABLE_F_DORMANT != 0)
 	}
-	chains, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), PutNfgenmsg(nil, proto))
+	// the kernel dumps the sets, objects and rules of the table and chain a
+	// request names alone, but the chains of every table of the family, which
+	// Chain.Fault tells apart by table and name
+	request := PutNfgenmsg(nil, proto)
+	if len(c.Chains) > 0 {
+		request = PutAttrString(request, unix.NFTA_CHAIN_TABLE, c.Chains[0].Table)
+	}
+	chains, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), request)
 	if err != nil {
 		return Readback{}, fmt.Errorf("dump chains: %w", err)
 	}
@@ -212,16 +224,36 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 		}
 	}
 	if len(c.Sets) > 0 {
-		sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), PutNfgenmsg(nil, proto))
+		sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_SET_TABLE, c.Sets[0].Table))
 		if err != nil {
 			return Readback{}, fmt.Errorf("dump sets: %w", err)
 		}
 		for _, set := range c.Sets {
-			note(readSet(set, sets))
+			found := slices.IndexFunc(sets, func(reply Message) bool {
+				held := DecodeSet(reply)
+				return held.Table == set.Table && held.Name == set.Name
+			})
+			if found < 0 {
+				note(fmt.Sprintf("its set %s is missing", set.Name), false)
+				continue
+			}
+			fault, remake := set.Fault(sets[found])
+			note(fault, remake)
+			written, filled := c.Elements[set.Name]
+			if !filled || remake {
+				continue
+			}
+			held, err := set.Elements(conn, proto)
+			if err != nil {
+				return Readback{}, err
+			}
+			if fault := set.elementFault(written, held); fault != "" {
+				note(fault, false)
+			}
 		}
 	}
 	if len(c.Timeouts) > 0 {
-		objects, err := conn.Dump(Command(unix.NFT_MSG_GETOBJ), PutNfgenmsg(nil, proto))
+		objects, err := conn.Dump(Command(unix.NFT_MSG_GETOBJ), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_OBJ_TABLE, c.Timeouts[0].Table))
 		if err != nil {
 			return Readback{}, fmt.Errorf("dump objects: %w", err)
 		}
@@ -235,20 +267,126 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 	return read, nil
 }
 
+// rules dumps each chain's rules alone, which the kernel filters by the table
+// and the chain the request names
 func (c Contents) rules(conn *Conn, proto uint8) ([]Installed, error) {
-	replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), PutNfgenmsg(nil, proto))
-	if err != nil {
-		return nil, err
-	}
 	var out []Installed
 	for _, chain := range c.Chains {
+		replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), PutAttrString(PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, chain.Table), unix.NFTA_RULE_CHAIN, chain.Name))
+		if err != nil {
+			return nil, err
+		}
 		for _, reply := range replies {
 			if table, name, spec, packets, bytes, counted := DecodeRule(reply); table == chain.Table && name == chain.Name {
-				out = append(out, Installed{Spec: spec, Chain: name, Packets: packets, Bytes: bytes, Counted: counted})
+				installed := Installed{Spec: spec, Chain: name, Packets: packets, Bytes: bytes, Counted: counted}
+				for kind, value := range reply.Attributes() {
+					if kind == unix.NFTA_RULE_EXPRESSIONS {
+						installed.Expressions = value
+					}
+				}
+				out = append(out, installed)
 			}
 		}
 	}
 	return out, nil
+}
+
+// ExpressionFault names how a rule's expressions as a dump lists them differ
+// from written, empty where they do not. A dump names a lookup's set and not
+// its ID, writes its flags where they are zero, numbers an anonymous set,
+// counts in a counter and nests without NLA_F_NESTED, none of which differs.
+// An anonymous set's elements are read apart, by the name LookupSets gives.
+func ExpressionFault(written [][]byte, held []byte) string {
+	want, got := canonical(slices.Concat(written...)), canonical(held)
+	if slices.Equal(want, got) {
+		return ""
+	}
+	return fmt.Sprintf("its expressions read back as [%s], where [%s] were written", strings.Join(got, "; "), strings.Join(want, "; "))
+}
+
+// LookupSets is the set each lookup of a dumped rule's expressions names, in order
+func LookupSets(held []byte) []string {
+	var out []string
+	for _, element := range Nested(held) {
+		name, data := expressionParts(element.Value)
+		if name != "lookup" {
+			continue
+		}
+		for _, field := range Nested(data) {
+			if field.Kind&nlaTypeMask == unix.NFTA_LOOKUP_SET {
+				out = append(out, unix.ByteSliceToString(field.Value))
+			}
+		}
+	}
+	return out
+}
+
+func expressionParts(element []byte) (name string, data []byte) {
+	for _, field := range Nested(element) {
+		switch field.Kind & nlaTypeMask {
+		case unix.NFTA_EXPR_NAME:
+			name = unix.ByteSliceToString(field.Value)
+		case unix.NFTA_EXPR_DATA:
+			data = field.Value
+		}
+	}
+	return name, data
+}
+
+// canonical renders each expression of list as its name and its attributes
+// by kind, the ones a dump spells otherwise left out or made alike
+func canonical(list []byte) []string {
+	var out []string
+	for _, element := range Nested(list) {
+		name, data := expressionParts(element.Value)
+		var fields []string
+		if name != "counter" {
+			fields = canonicalAttributes(name, data)
+		}
+		out = append(out, name+" "+strings.Join(fields, " "))
+	}
+	return out
+}
+
+func canonicalAttributes(name string, data []byte) []string {
+	var out []string
+	for _, field := range Nested(data) {
+		kind := field.Kind & nlaTypeMask
+		value := field.Value
+		switch {
+		case name == "lookup" && kind == unix.NFTA_LOOKUP_SET_ID:
+			continue
+		case name == "lookup" && kind == unix.NFTA_LOOKUP_FLAGS && len(value) == 4 && binary.BigEndian.Uint32(value) == 0:
+			continue
+		case name == "lookup" && kind == unix.NFTA_LOOKUP_SET:
+			// the kernel completes the anonymous name a rule's own set is made under
+			if value = []byte(unix.ByteSliceToString(value)); strings.HasPrefix(string(value), "__set") {
+				value = []byte("__set")
+			}
+		case nested(name, kind):
+			out = append(out, fmt.Sprintf("%d{%s}", kind, strings.Join(canonicalAttributes("data", value), " ")))
+			continue
+		}
+		out = append(out, fmt.Sprintf("%d=%x", kind, value))
+	}
+	slices.Sort(out)
+	return out
+}
+
+// nested is the attributes that hold others in the expressions written here:
+// a comparison's and an immediate's data, a mask, and a verdict within data
+func nested(name string, kind uint16) bool {
+	switch name {
+	case "cmp":
+		return kind == unix.NFTA_CMP_DATA
+	case "immediate":
+		return kind == unix.NFTA_IMMEDIATE_DATA
+	case "bitwise":
+		return kind == unix.NFTA_BITWISE_MASK || kind == unix.NFTA_BITWISE_XOR
+	case "data":
+		return kind == unix.NFTA_DATA_VERDICT
+	}
+	return false
 }
 
 // DecodeChain reads where a chain lives and how it is hooked. A chain with no
@@ -379,15 +517,26 @@ func DeviceName(name string) error {
 // IFNAMSIZ the kernel pads it to. A shorter comparison would match every
 // device whose name starts the same way.
 func MetaCompare(key uint32, op int, name string) [][]byte {
+	return MetaCompareValue(key, op, InterfaceName(name))
+}
+
+// InterfaceName is name as the kernel loads one, padded to IFNAMSIZ
+func InterfaceName(name string) []byte {
 	padded := make([]byte, unix.IFNAMSIZ)
 	copy(padded, name)
-	return MetaCompareValue(key, op, padded)
+	return padded
 }
 
 func MetaCompareValue(key uint32, op int, value []byte) [][]byte {
+	return [][]byte{MetaLoad(key), Expression("cmp", Compare(op, value))}
+}
+
+// MetaLoad loads the packet's meta key into register 1. NFT_META_MARK and
+// NFT_META_IIF load host order words, an interface name its IFNAMSIZ bytes.
+func MetaLoad(key uint32) []byte {
 	meta := PutAttrBE32(nil, unix.NFTA_META_KEY, key)
 	meta = PutAttrBE32(meta, unix.NFTA_META_DREG, unix.NFT_REG_1)
-	return [][]byte{Expression("meta", meta), Expression("cmp", Compare(op, value))}
+	return Expression("meta", meta)
 }
 
 func SourcePrefix(prefix netip.Prefix) [][]byte {
@@ -409,6 +558,25 @@ func SourceLoad(proto uint8) []byte {
 		return NetworkLoad(ipv4SourceOffset, net.IPv4len)
 	}
 	return NetworkLoad(ipv6SourceOffset, net.IPv6len)
+}
+
+// DestinationLoad loads a packet's destination address into register 1, of
+// the nf_tables family proto
+func DestinationLoad(proto uint8) []byte {
+	if proto == unix.NFPROTO_IPV4 {
+		return NetworkLoad(ipv4DestinationOffset, net.IPv4len)
+	}
+	return NetworkLoad(ipv6DestinationOffset, net.IPv6len)
+}
+
+// FibDestinationType loads the type the routing tables give a packet's
+// destination address into register 1, an RTN_ value as a host order word,
+// RTN_LOCAL for an address of the host's own
+func FibDestinationType() []byte {
+	fib := PutAttrBE32(nil, unix.NFTA_FIB_DREG, unix.NFT_REG_1)
+	fib = PutAttrBE32(fib, unix.NFTA_FIB_RESULT, unix.NFT_FIB_RESULT_ADDRTYPE)
+	fib = PutAttrBE32(fib, unix.NFTA_FIB_FLAGS, unix.NFTA_FIB_F_DADDR)
+	return Expression("fib", fib)
 }
 
 func NetworkLoad(offset, length uint32) []byte {
@@ -441,13 +609,65 @@ func Bitwise(mask []byte) []byte {
 // NFT_CT_STATUS, has a bit of mask set for NFT_CMP_NEQ, or none of them for
 // NFT_CMP_EQ. Both keys are host order words.
 func CTMatch(key, mask uint32, op int) [][]byte {
-	ct := PutAttrBE32(nil, unix.NFTA_CT_DREG, unix.NFT_REG_1)
-	ct = PutAttrBE32(ct, unix.NFTA_CT_KEY, key)
 	return [][]byte{
-		Expression("ct", ct),
+		CTLoad(key),
 		Bitwise(binary.NativeEndian.AppendUint32(nil, mask)),
 		Expression("cmp", Compare(op, make([]byte, 4))),
 	}
+}
+
+// CTLoad loads the key of the packet's connection into register 1. A packet
+// with no connection ends the rule. NFT_CT_DIRECTION and NFT_CT_PROTOCOL
+// load one byte, the direction CTOriginal or CTReply and the transport
+// protocol.
+func CTLoad(key uint32) []byte {
+	ct := PutAttrBE32(nil, unix.NFTA_CT_DREG, unix.NFT_REG_1)
+	ct = PutAttrBE32(ct, unix.NFTA_CT_KEY, key)
+	return Expression("ct", ct)
+}
+
+// CTLoadDirection loads the key of one direction of the packet's connection,
+// CTOriginal or CTReply, which the kernel requires of an address or a port
+// (nft_ct.c, nft_ct_get_init). NFT_CT_PROTO_DST loads the port in network
+// order.
+func CTLoadDirection(key uint32, direction uint8) []byte {
+	ct := PutAttrBE32(nil, unix.NFTA_CT_DREG, unix.NFT_REG_1)
+	ct = PutAttrBE32(ct, unix.NFTA_CT_KEY, key)
+	ct = PutAttr(ct, unix.NFTA_CT_DIRECTION, []byte{direction})
+	return Expression("ct", ct)
+}
+
+// Lookup goes on only while set holds the key register 1 does, or with
+// invert only while it does not. It names the set by name and ID, so it
+// finds one made earlier in its own transaction, an anonymous one among them.
+func Lookup(set Set, invert bool) []byte {
+	lookup := PutAttrString(nil, unix.NFTA_LOOKUP_SET, set.Name)
+	lookup = PutAttrBE32(lookup, unix.NFTA_LOOKUP_SREG, unix.NFT_REG_1)
+	lookup = PutAttrBE32(lookup, unix.NFTA_LOOKUP_SET_ID, set.ID)
+	if invert {
+		lookup = PutAttrBE32(lookup, unix.NFTA_LOOKUP_FLAGS, unix.NFT_LOOKUP_F_INV)
+	}
+	return Expression("lookup", lookup)
+}
+
+// Verdict ends the chain for a packet with code, Accept or Drop
+func Verdict(code uint32) []byte {
+	data := PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
+	immediate := PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
+	immediate = PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
+	return Expression("immediate", immediate)
+}
+
+// NFProto tests the packet's family, the nf_tables family an inet chain saw
+// it in. Unlike nft, which adds the test itself, the raw encoder spells it, or
+// an IPv4 match in an inet chain would read an IPv6 header's bytes.
+func NFProto(proto uint8) [][]byte {
+	return MetaCompareValue(unix.NFT_META_NFPROTO, unix.NFT_CMP_EQ, []byte{proto})
+}
+
+// CountedDrop counts the packet and drops it
+func CountedDrop() [][]byte {
+	return [][]byte{Expression("counter", nil), Verdict(Drop)}
 }
 
 // ObjectReference applies the object of objType named name to the packet
