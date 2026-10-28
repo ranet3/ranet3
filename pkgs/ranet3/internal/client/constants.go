@@ -6,8 +6,9 @@ package client
 import "time"
 
 // espDropReportInterval bounds how often refused ESP packets are said out
-// loud. The counter behind it is exact, and an operator reads that. The log
-// line only has to point at it.
+// loud, and how often a session records the ECN combinations no tunnel sends.
+// The counters behind them are exact, and an operator reads those. The log
+// line and the record only have to point at them.
 const espDropReportInterval = 10 * time.Second
 
 const (
