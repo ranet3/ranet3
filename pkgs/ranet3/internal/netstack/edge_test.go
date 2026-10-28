@@ -364,7 +364,7 @@ func TestTUNReadFromASourceUnderAnEntryOfThisNodeCountingAsADefaultIsNotOwned(t 
 // a source's answer is the route a reply to the packet takes, kept for each source and destination of a read, and the owned-source rule is judged for each packet by its own destination
 // so of one read from one source to two destinations, in either order, the packet each rule drops is dropped and the other passes
 // a route announced from a source prefix covers a source only for replies to that prefix, which an answer kept per source alone, or looked up with no source, would give both packets
-// and a host on its LAN reaches a subnet the mesh routes but not the internet through an exit's default
+// and a host on its LAN reaches a subnet the mesh routes but not the internet through an exit's default, nor through no entry along cap.exit via
 func TestTUNReadJudgesEachPacketOfASourceByItsOwnDestination(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		announced, peer := edgeMesh(t)
@@ -374,6 +374,7 @@ func TestTUNReadJudgesEachPacketOfASourceByItsOwnDestination(t *testing.T) {
 		announced.Routes.Set(from, to.Masked(), (&recordingPeer{}).peer(t, "another node"))
 		announced.Routes.Set(netip.Prefix{}, hostPrefix(transitNowhere[family]), peer)
 		leaf, leafPeer, _ := edgeLeaf(t, "0.0.0.0/0", "::/0")
+		path, pathPeer, _, _ := pathMesh(t)
 		for _, c := range []struct {
 			name            string
 			m               *Mesh
@@ -388,6 +389,11 @@ func TestTUNReadJudgesEachPacketOfASourceByItsOwnDestination(t *testing.T) {
 			},
 			{
 				"from a host on its LAN", leaf, leafPeer,
+				udpPacket(edgeLAN[family], edgeSubnetHost[family], 100, false), udpPacket(edgeLAN[family], edgeInternet[family], 100, false),
+				TransitCounters{UnownedSource: 2},
+			},
+			{
+				"from a host on its LAN toward no entry along cap.exit via", path, pathPeer,
 				udpPacket(edgeLAN[family], edgeSubnetHost[family], 100, false), udpPacket(edgeLAN[family], edgeInternet[family], 100, false),
 				TransitCounters{UnownedSource: 2},
 			},

@@ -55,9 +55,22 @@ func modelSteered(entries []steerEntry, overlay []schema.Prefix, source, destina
 	return !found || schema.CapturesTheMachine(e.destination, overlay)
 }
 
+// modelUnowned is the owned-source rule for a source outside the overlay that no entry of this node's own covers, while cap.exit via is set
+// forged where the entry a reply from destination to source prefers routes it elsewhere and counts as no default, RFC 3704 section 2.2's strict check
+// else unowned where the packet would leave the mesh through an exit: no entry covers destination, or the entry it prefers counts as a default, inside the overlay or not
+func modelUnowned(entries []steerEntry, overlay []schema.Prefix, source, destination netip.Addr) (forged, unowned bool) {
+	if reply, found := modelMatch(entries, destination, source); found && !schema.CapturesTheMachine(reply.destination, overlay) {
+		return true, false
+	}
+	e, found := modelMatch(entries, source, destination)
+	return false, !found || schema.CapturesTheMachine(e.destination, overlay)
+}
+
 // over drawn tables holding defaults, /1 halves, /2 quarters, defaults from a source prefix, mesh subnets and overlay hosts, each held or not
-// and drawn host packets from this node's own addresses to the internet, a mesh subnet and overlay addresses, in both families
-// a packet the model has the path take leaves to the waypoint encapsulated along the path from its source, and no other packet is encapsulated
+// and drawn host packets to the internet, a mesh subnet and overlay addresses, in both families
+// each from this node's overlay address, an address cap.table assigns it, a host on its LAN and a neighbor, the last two no entry of its own covers
+// a packet from its own address the model has the path take leaves to the waypoint encapsulated along the path from its source, and no other packet is encapsulated
+// a packet from another source is never encapsulated, and is counted unowned_source exactly where the model says it would leave through an exit and is not forged
 // the /1 pair and the four /2s, where a split exit would take one half only, are drawn as often as a plain default
 func TestDefaultSteerTakesExactlyWhatTheModelSends(t *testing.T) {
 	learned := [][]string{
@@ -113,12 +126,27 @@ func TestDefaultSteerTakesExactlyWhatTheModelSends(t *testing.T) {
 			if destination.Is4() {
 				family = 4
 			}
-			packets = append(packets, udpPacket(transitOwn[family], destination, 100, false))
+			for _, source := range []map[int]netip.Addr{transitOwn, edgeAssigned, edgeLAN, edgeNeighbor} {
+				packets = append(packets, udpPacket(source[family], destination, 100, false))
+			}
 		}
 		b := classifiedBatch(m, packets...)
-		steered := uint64(0)
+		steered, unowned := uint64(0), uint64(0)
 		for i, raw := range packets {
 			source, destination, _, _ := addrsOf(raw)
+			if source == edgeLAN[4] || source == edgeLAN[6] || source == edgeNeighbor[4] || source == edgeNeighbor[6] {
+				forged, dropped := modelUnowned(entries, transitOverlay, source, destination)
+				if dropped {
+					unowned++
+				}
+				if (forged || dropped) && b.peers[i] != nil {
+					ht.Fatalf("a packet from %s to %s the model drops went to %v under %v", source, destination, b.peers[i], m.Routes.Debug())
+				}
+				if b.peers[i] == waypoint || b.packets[i] != nil && !bytes.Equal(b.packets[i], raw) {
+					ht.Fatalf("a packet from %s to %s, a source this node does not own, was steered under %v", source, destination, m.Routes.Debug())
+				}
+				continue
+			}
 			if modelSteered(entries, transitOverlay, source, destination) {
 				steered++
 				if b.peers[i] != waypoint {
@@ -139,6 +167,9 @@ func TestDefaultSteerTakesExactlyWhatTheModelSends(t *testing.T) {
 		}
 		if got := m.SegmentCounters().Steered; got != steered {
 			ht.Fatalf("%d packets were counted steered, the model steers %d", got, steered)
+		}
+		if got := m.TransitCounters().UnownedSource; got != unowned {
+			ht.Fatalf("%d packets were counted unowned_source, the model drops %d", got, unowned)
 		}
 	})
 }

@@ -131,6 +131,49 @@ func TestDefaultSteerLeavesTheMeshItsOwnRoutes(t *testing.T) {
 	}
 }
 
+// along the path a read toward no entry leaves the mesh only from a source of this node's own, as one toward a default does
+// its own overlay address and one cap.table assigns it go along the path, a host on its LAN and a neighbor on a forwarded link are dropped and counted unowned_source
+// and the same sources reach a subnet the mesh routes and an overlay host, in both families
+// without the path a read from a host on its LAN toward no entry is answered as before, not counted unowned_source
+func TestDefaultSteerTakesNoReadFromASourceThisNodeDoesNotOwn(t *testing.T) {
+	for _, family := range []int{4, 6} {
+		m, peer, _, waypoint := pathMesh(t)
+		cases := []struct {
+			name        string
+			source, to  netip.Addr
+			destination *Peer
+		}{
+			{"this node's overlay address to the internet", transitOwn[family], edgeInternet[family], waypoint},
+			{"an address cap.table assigns to the internet", edgeAssigned[family], edgeInternet[family], waypoint},
+			{"a host on its LAN to the internet", edgeLAN[family], edgeInternet[family], nil},
+			{"a neighbor to the internet", edgeNeighbor[family], edgeInternet[family], nil},
+			{"a host on its LAN to a subnet the mesh routes", edgeLAN[family], edgeSubnetHost[family], peer},
+			{"a neighbor to an overlay host", edgeNeighbor[family], transitFar[family], peer},
+		}
+		var packets [][]byte
+		for _, c := range cases {
+			packets = append(packets, udpPacket(c.source, c.to, 100, false))
+		}
+		went := classifiedTo(m, packets...)
+		for i, c := range cases {
+			if went[i] != c.destination {
+				t.Errorf("IPv%d a read from %s, %s, went to %v, want %v", family, c.source, c.name, went[i], c.destination)
+			}
+		}
+		if got := m.TransitCounters(); got != (TransitCounters{UnownedSource: 2}) {
+			t.Errorf("IPv%d the read counted %+v, want 2 from an unowned source", family, got)
+		}
+		if got := m.SegmentCounters().Steered; got != 2 {
+			t.Errorf("IPv%d the read was counted steered %d times, want 2", family, got)
+		}
+
+		bare, _, _ := edgeLeaf(t)
+		if went := classifiedTo(bare, udpPacket(edgeLAN[family], edgeInternet[family], 100, false)); went[0] != nil || bare.TransitCounters().UnownedSource != 0 {
+			t.Errorf("IPv%d without the path a read from a host on its LAN toward no entry went to %v and counted %+v", family, went[0], bare.TransitCounters())
+		}
+	}
+}
+
 // a cap.segment steer entry claims a packet ahead of the path, and ranet3 down steering stops the entries and leaves the path, so the packet goes along the path then
 func TestDefaultSteerComesAfterTheEntriesAndOutlastsTheirStop(t *testing.T) {
 	m, _, _, waypoint := pathMesh(t)

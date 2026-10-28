@@ -52,7 +52,7 @@ const (
 	transitRoutingHeader
 	// transitOwnSID counts reads off the tun to a SID of this node's, which acts only on what a session delivers
 	transitOwnSID
-	// transitUnownedSource counts reads off the tun through an entry counting as a default from a source this node does not own, which would leave the mesh through an exit
+	// transitUnownedSource counts reads off the tun through an entry counting as a default, or along cap.exit via's path toward no entry, from a source this node does not own, which would leave the mesh through an exit
 	transitUnownedSource
 	// transitNested counts IPv6 reads off the tun whose carried packet carries another, past the one level the checks open
 	transitNested

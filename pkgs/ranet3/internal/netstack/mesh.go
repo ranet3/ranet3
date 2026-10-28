@@ -419,7 +419,9 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		// the checks judge a steered packet by the destination it was read with
 		peer, verdict, match := m.Routes.Resolve(src, dst)
-		if reason, dropped := m.edgeCheck(b.answers, segments, raw, nh, src, dst, match.Counted); dropped {
+		// cap.exit via's path takes a read toward no entry out of its exit as a default's takes a read toward it
+		leaves := match.Counted || (verdict == RouteNone && m.steerTable.Load().Default() != nil)
+		if reason, dropped := m.edgeCheck(b.answers, segments, raw, nh, src, dst, leaves); dropped {
 			m.dropTransit(&tally, reason, src, dst)
 			if trace != nil {
 				trace.read(TraceDrop, reason, netip.Addr{}, raw)

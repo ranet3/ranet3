@@ -76,11 +76,11 @@ func (m *Mesh) answerFor(kept *keptAnswers, source, destination netip.Addr) sour
 // edgeCheck checks raw, one packet of family the tun handed this node from source to destination, before it is steered
 // and reports true with the reason for a packet it drops
 // everything entering the mesh through this node is read off the tun, the host's own packets and what its kernel forwards from its other links alike
-// segments is this node's own SIDs, and counted is the entry the destination resolves through counting as a default
+// segments is this node's own SIDs, and leaves is the packet leaving the mesh through an exit, as classify decides it
 // an IPv4 or IPv6 packet an IPv6 one carries meets the same checks, one level deep, since another node's End.DT46 SID would deliver it into the mesh
 // and this node keeps no list of other nodes' SIDs to tell a packet to one apart
-func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, counted bool) (transitReason, bool) {
-	reason, dropped, carried, offset := m.checkPacket(kept, segments, raw, family, source, destination, counted)
+func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, leaves bool) (transitReason, bool) {
+	reason, dropped, carried, offset := m.checkPacket(kept, segments, raw, family, source, destination, leaves)
 	// no SID takes an IPv4 packet, so what one carries reaches no decapsulation
 	if dropped || carried == 0 || family != esp.NextHeaderIPv6 {
 		return reason, dropped
@@ -100,7 +100,7 @@ func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byt
 
 // checkPacket is edgeCheck's checks of one packet, leaving what it carries unread
 // and reports the family of an IPv4 or IPv6 packet it carries, 0 for none, and for an IPv6 packet where in raw the walk found it
-func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, counted bool) (reason transitReason, dropped bool, carried byte, offset int) {
+func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, leaves bool) (reason transitReason, dropped bool, carried byte, offset int) {
 	next := raw[9]
 	if family == esp.NextHeaderIPv6 {
 		var verdict srv6.EdgeVerdict
@@ -121,7 +121,7 @@ func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []b
 		return transitForged, true, 0, 0
 	}
 	// a packet leaving the mesh through an exit comes from this node, so a host's neighbor reaches no exit through it
-	if counted && !answer.owned() {
+	if leaves && !answer.owned() {
 		return transitUnownedSource, true, 0, 0
 	}
 	if next == esp.NextHeaderIPv4 || next == esp.NextHeaderIPv6 {
