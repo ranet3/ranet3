@@ -1936,7 +1936,7 @@ func TestAnswerAfterASendPastLateFromIsLate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !s.dispatch(answer, nil, &pending) || pending != nil {
+			if !s.dispatch(answer, s.mux.Endpoint(), &pending) || pending != nil {
 				t.Fatal("the answer was not taken")
 			}
 			if got := <-result; got.late != probed {

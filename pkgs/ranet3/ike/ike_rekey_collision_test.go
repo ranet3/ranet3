@@ -68,7 +68,7 @@ func testLosingLocalIKERekeyAcceptsDeleteResponse(t *testing.T) {
 	}
 	// the peer may retire the original IKE SA while the Delete of the losing candidate is outstanding, and completing that Delete must not bring the original back
 	s.removeRetainedContext(old)
-	if !s.dispatch(response, nil, &pending) {
+	if !s.dispatch(response, s.mux.Endpoint(), &pending) {
 		deleteRequest.result <- requestResult{err: fmt.Errorf("test cleanup")}
 		ended(t, s, done)
 		t.Fatal("valid Delete response for the losing local IKE SA was discarded")

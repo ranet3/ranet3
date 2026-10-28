@@ -1024,18 +1024,22 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		return false
 	}
 	outer, innerFirst, plaintext := message.outer, message.innerFirst, message.plaintext
-	if matching == nil {
-		// RFC 7296 section 2.2: "In the unlikely event that Message IDs grow too large to fit in 32 bits, the IKE SA MUST be closed or rekeyed."
-		// a request at the last Message ID leaves no next one to expect, so the IKE SA closes rather than take it
-		if nextPeerMID == maxMessageID {
-			s.mux.Close()
-			return true
-		}
-		// RFC 7296 section 2.23: "Also, dynamic address update should only be done in response to a new packet"
-		// and: "otherwise, an attacker can revert the addresses with old replayed packets."
-		if s.mux.AdoptEndpoint(source) {
-			s.emit("ike.endpoint.moved", slog.String("endpoint", source.String()))
-		}
+	// RFC 7296 section 2.2: "In the unlikely event that Message IDs grow too large to fit in 32 bits, the IKE SA MUST be closed or rekeyed."
+	// a request at the last Message ID leaves no next one to expect, so the IKE SA closes rather than take it
+	if matching == nil && nextPeerMID == maxMessageID {
+		s.mux.Close()
+		return true
+	}
+	// RFC 7296 section 2.23: "SHOULD send all packets (including retransmission packets) to the IP address and port in the validated packet, and SHOULD store this as the new address and port combination for the SA"
+	// and: "dynamic address update should only be done in response to a new packet"
+	// and: "otherwise, an attacker can revert the addresses with old replayed packets."
+	// a request is new at the Message ID the window expects, and an answer is new because it matched the one request outstanding, which the match consumes
+	packet := "request"
+	if matching != nil {
+		packet = "response"
+	}
+	if s.mux.AdoptEndpoint(source) {
+		s.emit("ike.endpoint.moved", slog.String("endpoint", source.String()), slog.String("packet", packet))
 	}
 	inner, err := decodeMessagePlaintext(innerFirst, plaintext)
 	if err != nil {

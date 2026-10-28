@@ -471,7 +471,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	}
 	outer, source := got.outer, got.source
 	// RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
-	// only an authenticated request moves where this end sends, and the decryption above authenticated this one whether or not its payloads parse
+	// only an authenticated message moves where this end sends, and the decryption above authenticated this one whether or not its payloads parse
 	s.mux.AdoptEndpoint(source)
 	inner, err := decodeMessagePlaintext(got.innerFirst, got.plaintext)
 	if err != nil {
