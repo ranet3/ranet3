@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-10-27
+updated: 2026-10-28
 order: 10
 ---
 
@@ -73,7 +73,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/egress/egresstest` | the exit behavior suite every exit backend passes, imported by test files alone                                                                |
 | `internal/events`            | the event recorder behind `debug events`                                                                                                       |
 | `internal/goldentest`        | holds a test's output to its golden file, which `-update` rewrites, imported by test files alone                                               |
-| `internal/kernel`            | the route reconciler, the host network watch, and on macOS the scoped default route a bound underlay socket can need                           |
+| `internal/kernel`            | the route reconciler, the host network watch, and on macOS the selection that names each underlay datagram's interface                         |
 | `internal/logtest`           | swaps the default logger for 1 test, imported by test files alone                                                                              |
 | `internal/netnstest`         | the network namespaces, links, addresses and routes of the Linux root tests, imported by test files and `internal/egress/egresstest`           |
 | `internal/netstack`          | moves packets between the tun and the sessions, and decides each packet a session delivers, forwarding transit between sessions                |

@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-28
+updated: 2026-10-30
 order: 100
 ---
 
@@ -16,28 +16,28 @@ setting or skips a route instead.
 
 ## At a glance
 
-|                                                        | Linux                                                                                                                                                                                                                              | macOS                                                                                                                                                    |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kernel                                                 | Linux 4.20 or later                                                                                                                                                                                                                | no minimum checked                                                                                                                                       |
-| Tun                                                    | `ranet3`, or the device `link.tun` names                                                                                                                                                                                           | `utun` for the next free unit, or `utunN`                                                                                                                |
-| Tun queues                                             | 1 per CPU the Go runtime uses, up to 256                                                                                                                                                                                           | 1                                                                                                                                                        |
-| Underlay sockets                                       | 1 per family, batched with `recvmmsg`, `UDP_GRO` and `UDP_SEGMENT`                                                                                                                                                                 | 1 per family, 1 datagram per call                                                                                                                        |
-| Sockets connected to 1 peer                            | 1 per busy address pair, up to 256, batched like the shared ones                                                                                                                                                                   | 1 per busy address pair, up to 256, 1 datagram per call                                                                                                  |
-| Keeping the underlay out of the mesh                   | [the mark 0x72](coexistence.md#the-underlays-mark) on every underlay socket where the process may set it, which ends a lookup bound to no device at row L1 or L2 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) | `link.underlay.bind`, see [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos)                                                        |
-| Route ownership                                        | the table `cap.table.id` and the protocol `cap.table.proto`                                                                                                                                                                        | the utun and the shape of the routes ranet3 installs, and with `link.underlay.bind` the scoped default it records writing                                |
-| Policy rules                                           | derived from `cap.border.overlay` and this node's own prefixes                                                                                                                                                                     | none                                                                                                                                                     |
-| An own prefix this node originates outside the overlay | a throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, row L10 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)                                               | nothing, row D2 of [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) for a socket bound to no interface and no address of the utun |
-| Hold of each overlay prefix                            | installed for each that holds no unspecified address and that the mesh can carry                                                                                                                                                   | none, since `cap.border` is refused                                                                                                                      |
-| `cap.table.metric`                                     | supported                                                                                                                                                                                                                          | ignored                                                                                                                                                  |
-| `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                       | refused, naming the platform                                                                                                                             |
-| Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                           | refused                                                                                                                                                  |
-| `cap.border`                                           | an nftables chain at prerouting                                                                                                                                                                                                    | refused                                                                                                                                                  |
-| Network watch                                          | rtnetlink                                                                                                                                                                                                                          | routing socket                                                                                                                                           |
-| Don't fragment                                         | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                                                                                                                                                                               | `IP_DONTFRAG`, `IPV6_DONTFRAG`                                                                                                                           |
-| Route MTU a path search takes                          | the route's MTU, including a path MTU the host learned                                                                                                                                                                             | the MTU of the interface the session sends through                                                                                                       |
-| Forwarding read from                                   | `/proc/sys/net/ipv4/ip_forward`, `/proc/sys/net/ipv6/conf/all/forwarding`                                                                                                                                                          | `net.inet.ip.forwarding`, `net.inet6.ip6.forwarding`                                                                                                     |
-| Control socket caller                                  | `SO_PEERCRED`                                                                                                                                                                                                                      | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                                                                                                                        |
-| Default state directory                                | `/var/lib/ranet3`                                                                                                                                                                                                                  | `/var/db/ranet3`                                                                                                                                         |
+|                                                        | Linux                                                                                                                                                                                                                              | macOS                                                                                                                                                            |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kernel                                                 | Linux 4.20 or later                                                                                                                                                                                                                | no minimum checked                                                                                                                                               |
+| Tun                                                    | `ranet3`, or the device `link.tun` names                                                                                                                                                                                           | `utun` for the next free unit, or `utunN`                                                                                                                        |
+| Tun queues                                             | 1 per CPU the Go runtime uses, up to 256                                                                                                                                                                                           | 1                                                                                                                                                                |
+| Underlay sockets                                       | 1 per family, batched with `recvmmsg`, `UDP_GRO` and `UDP_SEGMENT`                                                                                                                                                                 | 1 per family, 1 datagram per call                                                                                                                                |
+| Sockets connected to 1 peer                            | 1 per busy address pair, up to 256, batched like the shared ones                                                                                                                                                                   | 1 per busy address pair, up to 256, 1 datagram per call                                                                                                          |
+| Keeping the underlay out of the mesh                   | [the mark 0x72](coexistence.md#the-underlays-mark) on every underlay socket where the process may set it, which ends a lookup bound to no device at row L1 or L2 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) | each datagram names the interface the host's routes send it by, the utun's left out, see [the underlay's interface](routing.md#the-underlays-interface-on-macos) |
+| Route ownership                                        | the table `cap.table.id` and the protocol `cap.table.proto`                                                                                                                                                                        | the utun and the shape of the routes ranet3 installs                                                                                                             |
+| Policy rules                                           | derived from `cap.border.overlay` and this node's own prefixes                                                                                                                                                                     | none                                                                                                                                                             |
+| An own prefix this node originates outside the overlay | a throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, row L10 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)                                               | nothing, row D2 of [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) for a socket bound to no interface and no address of the utun         |
+| Hold of each overlay prefix                            | installed for each that holds no unspecified address and that the mesh can carry                                                                                                                                                   | none, since `cap.border` is refused                                                                                                                              |
+| `cap.table.metric`                                     | supported                                                                                                                                                                                                                          | ignored                                                                                                                                                          |
+| `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                       | refused, naming the platform                                                                                                                                     |
+| Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                           | refused                                                                                                                                                          |
+| `cap.border`                                           | an nftables chain at prerouting                                                                                                                                                                                                    | refused                                                                                                                                                          |
+| Network watch                                          | rtnetlink                                                                                                                                                                                                                          | routing socket                                                                                                                                                   |
+| Don't fragment                                         | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                                                                                                                                                                               | `IP_DONTFRAG`, `IPV6_DONTFRAG`                                                                                                                                   |
+| Route MTU a path search takes                          | the route's MTU, including a path MTU the host learned                                                                                                                                                                             | the MTU of the interface the session sends through                                                                                                               |
+| Forwarding read from                                   | `/proc/sys/net/ipv4/ip_forward`, `/proc/sys/net/ipv6/conf/all/forwarding`                                                                                                                                                          | `net.inet.ip.forwarding`, `net.inet6.ip6.forwarding`                                                                                                             |
+| Control socket caller                                  | `SO_PEERCRED`                                                                                                                                                                                                                      | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                                                                                                                                |
+| Default state directory                                | `/var/lib/ranet3`                                                                                                                                                                                                                  | `/var/db/ranet3`                                                                                                                                                 |
 
 The forwarding settings decide whether a node warns about forwarding without
 `cap.border`, and whether `cap.egress` advertises its prefixes. Transit needs
@@ -121,15 +121,19 @@ give ranet3 a utun no other program writes. macOS cannot replace a route. A
 route another program holds under the same key stays, and the reconciler warns
 about it once.
 
-Interface scope on macOS takes the place of the mark and the policy rules on
-Linux. Without `link.underlay.bind` it keeps the host's own traffic from being
-captured, and it keeps the ESP underlay to a literal endpoint address the trust
-document lists out of the tunnel carrying it, though not to the address an
-endpoint written as a hostname resolves to, as
-[limits](design/limits.md#the-underlay-socket) says.
+macOS has no rule to select a mark, so its underlay sockets carry none. Each
+underlay datagram names the interface the host's own routes send it by, ranet3's
+utun left out, with or without `link.underlay.bind`, as
+[the underlay's interface](routing.md#the-underlays-interface-on-macos)
+describes, so no datagram enters the utun. A datagram the selection names no
+interface for is refused.
+
+Interface scope on macOS takes the place of the policy rules on Linux. Without
+`link.underlay.bind` it keeps the host's own traffic from being captured.
 [Where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives
 each route's scope and where each lookup ends. The reconciler installs these
-routes scoped to the tun, where no unbound socket can select them:
+routes scoped to the tun, which no socket selects unless it asks for the tun by
+name:
 
 - a source-specific route
 - a retracted route, which it holds as a reject route, unless the route counts
@@ -145,39 +149,17 @@ ours". A destination holds 1 scoped route. A scoped route a pass still wants
 keeps its destination. Otherwise the pass installs the route with the most
 specific source, and skips and logs the rest once.
 
-macOS has no rule to select a mark, so its underlay sockets carry none, and
-`link.underlay.bind` keeps them out of the mesh instead. It binds the underlay
-socket to the interface the host's default route leaves by. The socket follows
-the host's default to another interface 250 milliseconds after a change. It
-stays unbound until the host has a default route, and stays where it is while
-the host briefly has none.
+With `link.underlay.bind` set, the reconciler installs a route holding its
+family's zero address as the members of the zero-free cover it contains, as
+[routing](routing.md#the-zero-free-cover-on-macos) describes. A Mac with `bind`
+set takes a mesh exit through the cover. A route that contains a literal
+endpoint address the trust document lists still stays scoped to the tun, unless
+it is a member of the cover. Unscoped and longer than the host's own route to
+that peer, it could leave ranet3's datagrams to the peer no route on the
+interface they name. With or without `bind`, the daemon writes nothing outside
+the tun.
 
-With `link.underlay.bind` set, the reconciler installs a plain `/0` as its
-zero-free cover, 8 unscoped routes per family that leave `0.0.0.0/8` and `::/8`
-to the host's own default, as [routing](routing.md#the-zero-free-cover-on-macos)
-describes. A Mac with `bind` set takes a mesh exit through the cover.
-
-The daemon gives the socket's interface a default scoped to it only while an
-unscoped route out of another interface holds that family's zero address, such
-as a real `0.0.0.0/1` the mesh installs or another program's full-tunnel route.
-For a route of the mesh's own that holds the zero address it writes the default
-in the pass that installs the route, before the route goes in. With `cap.table`
-written it withdraws the default once no such route is left, without it the
-default stays until the socket moves onto another interface or the daemon stops,
-and with only the cover installed it writes nothing outside the tun.
-`/var/run/ranet3/underlay.json` records the scoped defaults it writes, and the
-next start with `bind` set withdraws the ones an earlier run recorded that still
-match the record, as
-[sharing a host](coexistence.md#the-underlay-default-on-macos) lists.
-
-With `link.underlay.bind` set, a route that contains a literal endpoint address
-the trust document lists still stays scoped to the tun, unless it is a member of
-the cover. Unscoped, it would carry an unbound socket's ESP to that peer into
-the tunnel.
-
-`ranet3 down` takes a scoped default the daemon wrote away with the capture that
-needed it, and `ranet3 up` writes it again once a capture needs it. A
-source-specific route and a retracted one stay scoped with or without
+A source-specific route and a retracted one stay scoped with or without
 `link.underlay.bind`. Interface scope is the only way macOS expresses a source.
 An unscoped reject route at a default would answer the whole host's traffic with
 an error.
@@ -215,7 +197,11 @@ Linux, but none of the reconciler, the network watch, `cap.egress` or
 an iOS build, which it makes with the `darwin` one, refuse `cap.egress` and
 `cap.border` at startup in the same words, naming `android` or `ios`.
 `cap.table` fails the start there too, and a moved host waits for each session's
-own liveness check.
+own liveness check. An iOS build opens no selection, so its underlay datagrams
+name no interface and leave by the host's own routes. A session there that sends
+from the kernel's choice of source reads its path MTU from the interface holding
+the source the kernel picks for a socket connected to the peer, and one the peer
+opened from the interface holding the address it sends from.
 
 ## Moving hosts
 
@@ -300,8 +286,12 @@ allows a process without `CAP_NET_RAW` from 5.7. Where the kernel refuses the
 bind, such a session stays on the shared socket. An IPv6 socket names the
 interface with `IPV6_UNICAST_IF`, which like the reply's own choice prefers that
 interface only among the routes of the lowest metric. A link-local address binds
-on that interface alone. On macOS a link-local peer's socket binds on the
-interface the peer's zone names.
+on that interface alone. On macOS the socket of a session the peer opened binds
+the address the peer's latest fresh request or answer reached, and a link-local
+one also its arrival interface. Only a socket whose sends leave the source to
+the kernel binds on the interface
+[the selection](routing.md#the-underlays-interface-on-macos) names for the peer,
+from the source the route scoped to that interface picks, and moves with it.
 
 A socket connected to 1 peer closes:
 
@@ -310,7 +300,8 @@ A socket connected to 1 peer closes:
 - when the host's network changes, as [moving hosts](#moving-hosts) describes. A
   busy pair connects again at its next send, from the address its pair names
   then.
-- on macOS, when the underlay socket moves onto another interface.
+- on macOS, when the selection names another interface for the peer. The next
+  send connects a socket on that interface.
 - when a read on it fails other than for an ICMP error, or a send fails other
   than once for an ICMP error, as below, or for a refusal of its segments, as
   [path MTU](#path-mtu) describes. Its datagrams then leave the shared socket,
@@ -390,13 +381,15 @@ alike.
 On macOS every datagram leaves with `IP_DONTFRAG` or `IPV6_DONTFRAG`, but for
 those the host fragments for a session under the floor, as below. A send refused
 for its size reads the MTU of the interface it sends through, and the session's
-search takes that as its route's MTU. A socket that `link.underlay.bind` holds
-to an interface sends through it. Otherwise a session the peer opened sends
-through the interface holding the address it sends from, the one the peer's
-latest fresh request or answer reached until a send from it falls back, as
-[moving hosts](#moving-hosts) describes. Any other session, one whose send fell
-back included, sends through the interface its route leaves by. The search reads
-the same MTU when it starts, and the probes alone find a narrower hop beyond it.
+search takes that as its route's MTU. A session the peer opened sends through
+the interface holding the address it sends from, the one the peer's latest fresh
+request or answer reached until a send from it falls back, as
+[moving hosts](#moving-hosts) describes, and a link-local one through the
+interface that request or answer arrived on. Any other session, one whose send
+fell back included, sends through the interface
+[the selection](routing.md#the-underlays-interface-on-macos) names for its peer.
+The search reads the same MTU when it starts, and the probes alone find a
+narrower hop beyond it.
 
 A session on a path under the floor fragments on either platform as
 [the design's limits](design/limits.md) describe. While one does, Linux lets the

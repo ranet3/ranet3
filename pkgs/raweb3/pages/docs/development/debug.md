@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-29
+updated: 2026-10-30
 order: 30
 ---
 
@@ -140,11 +140,24 @@ These commands take flags of their own:
   [sharing a host](../coexistence.md#another-programs-rules) describes, with its
   kind, `overlay` or `underlay`, its family, the overlay prefix, the address
   asked, whether it is taken and the kernel's answer, also when the dump failed,
-  or `Lookups: none` where the dump answered and the reconciler asked none.
-  Then, on a node with `cap.border`, the border filter's chain: its table and
-  hook, when its last pass read it and whether it is ready, then each rule with
-  the packets and bytes each drop counted, any rule the chain does not hold yet,
-  and any rule it holds that the filter did not write, by its comment or as
+  or `Lookups: none` where the dump answered and the reconciler asked none. On
+  macOS, which has no policy rules, `Lookups` lists the `underlay` rows. A row
+  is one address live sessions send to, a link-local one with its zone, with the
+  interface of the pin their sends carry where that pin has one. A pin has the
+  interface its index names, or with no index, the interface holding its
+  address, and [routing](../routing.md#the-underlays-interface-on-macos) gives
+  which sends carry a pin. Sessions whose sends carry no pin, or a pin with no
+  interface, share the address's row. A row with an interface shows `dev` with
+  its name, or its index where the host has no interface of that index, and no
+  matched route. A row without one shows `dev` with the interface
+  [the selection](../routing.md#the-underlays-interface-on-macos) names and the
+  route it matched, or `no route`. No row is taken. An IPv4 datagram can ride
+  the shared socket's cached route of another interface instead, as
+  [limits](../design/limits.md#the-underlay-socket) gives. Then, on a node with
+  `cap.border`, the border filter's chain: its table and hook, when its last
+  pass read it and whether it is ready, then each rule with the packets and
+  bytes each drop counted, any rule the chain does not hold yet, and any rule it
+  holds that the filter did not write, by its comment or as
   `a rule with no comment`. The dump and the chain are each read now through a
   socket of their own, so an operator who sends a test packet reads the counters
   of that moment, and neither the reconciler's socket nor the filter's serves a
@@ -290,7 +303,7 @@ connections to the reads.
 | `border.ready`                        | the border filter's chain went ready or not ready, with `ready`                      |
 | `border.dropped`                      | a pass read a drop counter that moved, at most once per pass                         |
 | `network.changed`                     | the host's default or addresses moved, so every session was probed                   |
-| `transport.underlay.bound`            | the underlay socket moved onto another interface                                     |
+| `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                       |
 | `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable            |
 | `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment                |
 | `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why            |
@@ -308,9 +321,10 @@ connections to the reads.
 
 `egress.pass`, `egress.ready`, `egress.refused` and the 3 `border` kinds are
 recorded on Linux alone. `transport.endpoint.unsegmented` is recorded on Linux
-and Android, which build the Linux sockets. `transport.underlay.bound` is
-recorded on macOS alone, because only macOS binds the underlay socket to an
-interface. `transport.endpoint.unpinned`, `transport.pair.connected` and
+and Android, which build the Linux sockets. `transport.underlay.selected` is
+recorded on macOS alone, because only macOS names each underlay datagram's
+interface, as [routing](../routing.md#the-underlays-interface-on-macos)
+describes. `transport.endpoint.unpinned`, `transport.pair.connected` and
 `transport.pair.closed` are recorded on Linux, macOS, iOS and Android, the
 platforms that answer from the address a request reached and connect a socket to
 1 busy peer, as [platforms](../platforms.md#sockets-connected-to-1-peer)
@@ -376,7 +390,7 @@ Each kind carries these attributes:
 | `border.ready`                                | `ready`                                                                                                                                     |
 | `border.dropped`                              | `overlay_source_ipv4`, `overlay_source_ipv6`, `routing_header`, `sid_destination`, each the packets since the pass before                   |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, the same 4 for `ipv6`, `probed`, `woken`                                  |
-| `transport.underlay.bound`                    | `interface_index`                                                                                                                           |
+| `transport.underlay.selected`                 | `endpoint`, `interface`, empty where no route holds the endpoint, `interface_index`, 0 then                                                 |
 | `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                         |
 | `transport.pair.connected`                    | `local`, `remote`                                                                                                                           |
 | `transport.pair.closed`                       | `local`, `remote`, `reason`, and `err` when the reason is `failed`                                                                          |
@@ -518,9 +532,9 @@ with the SPI it names.
 A `transport.pair.connected` names in `local` the address the socket bound and
 in `remote` the peer it is connected to. The `reason` of a
 `transport.pair.closed` is `idle` for a socket that carried nothing for a whole
-sweep, `released` once the last session sending on it ended or moved, `network`
-for a change of the host's network, `underlay` for a move of the underlay socket
-onto another interface, `failed` for a send or a read on it that failed, and
+sweep, `released` once the last session sending on it ended or moved, on macOS
+to another interface the selection named among them, `network` for a change of
+the host's network, `failed` for a send or a read on it that failed, and
 `closed` when the transport closed. Neither an ICMP error an earlier datagram
 drew nor a refusal of the socket's segments counts as `failed`, as
 [platforms](../platforms.md#sockets-connected-to-1-peer) describes. Each

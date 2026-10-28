@@ -249,8 +249,10 @@ an address on it.
 - An unreachable hold. macOS has 1 forwarding table, and an unscoped hold would
   shadow every other way to its prefix.
 - A route that covers a literal endpoint address the trust document lists, but
-  for a member of the zero-free cover. Unscoped, it would carry an unbound
-  socket's ESP to that peer into the tunnel.
+  for a member of the zero-free cover. Unscoped and longer than the host's own
+  route to that peer, it could leave ranet3's datagrams to the peer no route on
+  the interface they name, as
+  [where a lookup ends](routing.md#where-a-lookup-ends-on-macos) gives.
 - A route that would carry the host's own traffic, unless `link.underlay.bind`
   is set. Such a route is one that
   [counts as a default](routing.md#routes-that-count-as-a-default).
@@ -262,15 +264,18 @@ Tailscale makes the same split on the same host. Its exit-node default is scoped
 to its utun, and its `100.64.0.0/10` is not.
 
 An unscoped `0.0.0.0/0` or `::/0` out of the utun would collide with the host's
-own default. With `bind` set, the reconciler installs a plain default as its
-zero-free cover instead, 8 unscoped routes per family that hold every address
-but `0.0.0.0/8` and `::/8`. No member holds the zero address, so a socket bound
-to the host's interface keeps its fallback, and the members stay unscoped even
-over a listed endpoint address. `64:ff9b::/96` lies in `::/8` and stays on the
-host's own route. Until exit selection exists, a Mac with `bind` set takes
-whichever `/0` Babel selects. [Routing](routing.md#the-zero-free-cover-on-macos)
-describes the cover, and [exit nodes](exit-nodes.md#what-to-advertise) why an
-exit advertises the `/0` only.
+own default. With `bind` set, the reconciler installs a route holding its
+family's zero address as the members of the zero-free cover it contains, as
+[routing](routing.md#the-zero-free-cover-on-macos) describes. Until exit
+selection exists, a Mac with `bind` set takes whichever `/0` Babel selects.
+[Exit nodes](exit-nodes.md#what-to-advertise) says why an exit advertises the
+`/0` only.
+
+ranet3 writes nothing outside its utun. Its own datagrams name the interface the
+host's routes send them by, its utun's left out, as
+[routing](routing.md#the-underlays-interface-on-macos) describes, so another
+VPN's full tunnel or a second uplink's route carries them as it carries any
+other program's traffic.
 
 What a scoped route does not give you is automatic use of an exit-announced
 address. Invisibility to an ordinary lookup is the safety property, and it
@@ -297,47 +302,6 @@ The `kernel routes reconciled` line leaves such a route out of `added`. `status`
 and the scrape count it as skipped, the scrape as
 `ranet3_kernel_routes_skipped`. A pass that moved nothing logs no
 `kernel routes reconciled` line at all.
-
-## The underlay default on macOS
-
-With `link.underlay.bind` set, ranet3 can write a default out of an interface it
-does not own, scoped to the physical interface the underlay socket is bound to.
-A socket bound with `IP_BOUND_IF` falls back to a longest-prefix match on its
-family's zero address, so an unscoped route out of another interface that holds
-that address takes the fallback away. The default is written for a family only
-while such a route is in the table. For a route of the mesh's own that holds the
-zero address ranet3 writes the default in the pass that installs the route,
-before the route goes in. Such a route is:
-
-- one the reconciler installs that is not a cover member, a real `0.0.0.0/1` or
-  a `0.0.0.0/24` out of the utun, or
-- another program's, out of an interface that is neither ranet3's utun nor the
-  underlay's, such as a full-tunnel VPN's `0.0.0.0/1`. Scoped, cloned,
-  link-layer and reject routes do not count, and neither does the host's own
-  default.
-
-The reconciler checks on every pass, and the transport before it moves the
-socket onto another interface. A route change on any interface wakes the
-reconciler, where `cap.table` runs one, and one another process makes on any
-interface but the utun wakes the transport, each after a 250 millisecond settle,
-so another program's capture strands the socket for that settle and 1 check at
-most. With `cap.table` written, the first pass that finds the last such route
-gone withdraws the default, and without it the default stays until the socket
-moves onto another interface or the daemon stops. With only the cover installed,
-nothing is written, and the host's own router selection (RFC 4861 section 6.3.6)
-stays in charge of its default. ranet3 never touches the other program's route.
-
-The ownership rules of this default are narrower than the utun's:
-
-- ranet3 deletes only a default it recorded writing.
-- Before a delete, it reads the kernel back and requires a route with the same
-  scope, interface and next hop as the record.
-- An add that answers `EEXIST` counts as use, not ownership. A scoped default
-  macOS wrote for a secondary interface is used and never withdrawn.
-- The record is kept in `/var/run/ranet3/underlay.json`. The next instance
-  withdraws what a killed instance recorded only when the route still matches
-  the record, the interface name still has the recorded index, and that
-  interface still carries the host's own default.
 
 ## Addresses and the tun
 

@@ -36,21 +36,14 @@ new file the group of the process that makes it, outside a setgid directory.
 macOS gives a new file the group of its directory, which under `/var/run` is
 `daemon`. The daemon sets the group before the mode lets that group in.
 
-On macOS, the record that `link.underlay.bind` keeps shares the default socket's
-directory, `/var/run/ranet3`. Whichever of the 2 the daemon writes first makes
-the directory.
-
 A directory that already exists keeps its group and mode. On macOS, a directory
 in the group `daemon` keeps the socket out of reach of the daemon's group. Stop
 the daemon, give the directory the daemon's group with `chgrp`, and start the
 daemon again. A reboot works as well, because it clears `/var/run` and the
 daemon makes the directory again.
-
-Removing the directory instead also removes the record of the routes
-`link.underlay.bind` wrote, and that record is the only way the daemon knows to
-withdraw them. [Running it as a service](service.md#nix-darwin) gives the
-commands for the nix-darwin job. Under the NixOS module, systemd makes
-`/run/ranet3` in the unit's group and removes it when the unit stops.
+[Running it as a service](service.md#nix-darwin) gives the commands for the
+nix-darwin job. Under the NixOS module, systemd makes `/run/ranet3` in the
+unit's group and removes it when the unit stops.
 
 ## Who owns the path
 

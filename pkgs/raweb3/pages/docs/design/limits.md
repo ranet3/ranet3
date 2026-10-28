@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-28
+updated: 2026-10-29
 order: 10
 ---
 
@@ -111,19 +111,42 @@ no device ends at row L1 or L2 of
 IPv4 reply pinned to the interface its request arrived on as row B1 gives, and
 an IPv6 one, which also names the address its request arrived at, as row L2
 gives. The head of that account says what another program's rule or another
-writer's route does. On macOS with `link.underlay.bind` they stay out of reach
-as row D4 of
+writer's route does. On macOS, with or without `link.underlay.bind`, each
+datagram names the interface the host's own routes send it by, ranet3's utun
+left out, as row D4 of
 [where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos)
-gives. On macOS without it, the reconciler scopes a route of the mesh covering a
+gives, and an answer from the address a peer reached leaves as row D5 gives. No
+datagram enters the utun. The reconciler scopes a route of the mesh covering a
 literal endpoint address the trust document lists, while an endpoint written as
 a hostname has no listed address, so a route of the mesh covering the address it
 resolves to goes in unscoped unless it is a hold, carries a source prefix or
-counts as a default, row D5. The transport binds the wildcard address, and for a
-session this node dialed it lets the kernel pick each datagram's source by
-route. On a node whose mesh address is its only global address of a family, the
-kernel picks that address. An unmarked datagram looked up from it, as on a
-socket connected from it, would end as rows L6 to L12 give, and where that is
-row L11, the ESP underlay would go into the tun that carries it.
+counts as a default. Where that route is longer than the host's own route to the
+address, and the interface the selection names holds no route of its own to it
+and not the host's default, the lookup scoped to that interface finds no route,
+and the datagrams to that endpoint are refused.
+
+On macOS an answer names the address the peer reached as its source, and the
+kernel picks the interface it leaves by
+([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)).
+Over IPv4, an answer sent on the shared socket right after a datagram that named
+the selection's interface to the same address rides the route that datagram
+cached
+([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L631)),
+until the cached route moves, and a datagram naming the selection's interface
+right after an answer rides the answer's route the same way
+([in_pcbladdr](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1610)).
+Neither enters the utun. On a Mac with 2 uplinks, where a peer has a session
+this node dialed and a session the peer opened to an address of the other
+uplink, the answer can then leave the selection's uplink with the other uplink's
+address as its source, which a reverse path check upstream of that uplink may
+drop.
+
+On Linux the transport binds the wildcard address, and for a session this node
+dialed it lets the kernel pick each datagram's source by route. On a node whose
+mesh address is its only global address of a family, the kernel picks that
+address. An unmarked datagram looked up from it, as on a socket connected from
+it, would end as rows L6 to L12 give, and where that is row L11, the ESP
+underlay would go into the tun that carries it.
 
 On Linux every underlay socket carries `SO_MARK` 0x72, a constant no key sets,
 where the process may set it, as
@@ -147,119 +170,17 @@ overlay of the mesh's own prefixes, so its query is marked where the process may
 set the mark. An IPv6 one ends by main's route out of the link its zone names,
 and an IPv4 one at row L2 by main's route for it.
 
-`link.underlay.bind` is `IP_BOUND_IF` and `IPV6_BOUND_IF`, macOS only. It binds
-the socket to the interface the host's own default route leaves by. When that
-interface changes, ranet3 moves the binding with `setsockopt` on the live
-descriptor, so a laptop crossing from Wi-Fi to a dock keeps every SA. The
-binding scopes that socket's route lookups to that interface, which on macOS is
-the only way to make a real default out of the tun safe.
-
-With `bind` set, the reconciler installs a plain `/0` as its zero-free cover, 8
-unscoped routes per family that hold every address but `0.0.0.0/8` and `::/8`,
+`link.underlay.bind` is macOS only, and decides how the reconciler installs a
+route that carries the host's own traffic. With it, a route holding its family's
+zero address goes in unscoped as the members of the zero-free cover it contains,
 as [routing](../routing.md#the-zero-free-cover-on-macos) describes. Any other
 route that carries the host's own traffic is installed unscoped too, unless it
 covers a literal endpoint address the trust document lists or carries a source
 prefix. Without `bind`, the reconciler scopes every route that counts as a
-default to the tun, as [platforms](../platforms.md#macos) describes. No unbound
-socket selects a scoped route. A node without `bind` can hold an exit-announced
-address and still cannot send its traffic through the exit.
-
-## The scoped default on macOS
-
-Binding is necessary but not sufficient on its own. `IP_BOUND_IF` does not take
-a socket out of the forwarding table: the scoped lookup still finds the most
-specific route, and where that route leaves another interface it falls back to a
-longest-prefix match on the family's zero address, which must be on the bound
-one. So while an unscoped route out of another interface holds `0.0.0.0`, such
-as a real `0.0.0.0/1` out of the tun, a bound socket answers `ENETUNREACH`
-unless the underlay's own interface carries a default scoped to it, the route
-`route -n add -net 0.0.0.0/0 <next hop> -ifscope <interface>` writes. macOS
-writes exactly that for every interface but the primary one.
-
-The zero-free cover holds no zero address, so it leaves that fallback to the
-host's own default. Its members take every other address from the host's default
-by longest prefix.
-
-ranet3 writes the scoped default, and it is the only route this tree puts out of
-an interface it does not own, so the rules around it are narrower than the
-tun's.
-
-It is written for a family only while an unscoped route out of an interface
-other than the underlay's holds that family's zero address. That is a route the
-reconciler wants that is not a cover member, or another program's route out of
-an interface that is neither the tun nor the underlay's. Scoped, cloned,
-link-layer and reject routes do not count. With only the cover installed,
-nothing is written outside the tun, and the host's own router selection
-([RFC 4861](https://www.rfc-editor.org/rfc/rfc4861) section 6.3.6) stays in
-charge of its default.
-
-The reconciler asks the underlay on every pass, and the transport asks before it
-moves the socket onto another interface. The underlay reads the table, writes a
-missing scoped default before it answers and withdraws one no family needs any
-more. A pass that deletes a capturing route that is not a cover member asks a
-second time after the deletes, so the default it no longer needs goes in the
-same pass. Under `bind` the platform watcher wakes a pass on a route change
-anywhere on the host, so another program's capture strands a bound socket for
-the 250 millisecond settle and 1 pass at most. A Mac measured 240 milliseconds
-from another program's `0.0.0.0/1` to the scoped default and 264 milliseconds
-from its removal to the withdrawal. 40 changes of a host route in a burst cost
-it 1 pass.
-
-A route the reconciler would install unscoped over a zero address is left out of
-the pass while its family has no scoped default, and so is the cover of a family
-the host has no default of its own for. Neither is installed, and a copy already
-in the kernel is withdrawn, such as after the host's default moves to another
-interface. A route over no zero address, such as a real `128.0.0.0/1`, needs
-neither. The check is per family, because a bound socket falls back only to the
-default of the destination's own family. A scoped IPv4 default does nothing for
-a `::/1` route.
-
-It is reconciled rather than remembered. The kernel drops this route on its own,
-clearing `IFF_UP` purges it and bringing the interface back up does not restore
-it, so every pass reads the table back and writes what is missing. A record
-saying it was written says nothing about whether it is there. The record is the
-claim to delete it and nothing else.
-
-It follows the host's own default: the interface it is going to is written
-before the socket moves onto it and the one it left is cleared after that, which
-leaves no moment with no usable route. When the next hop changes on the same
-interface, the old route is withdrawn before the new one is written. Only a
-route this tool recorded writing is ever withdrawn, only after a readback finds
-it still carrying `RTF_IFSCOPE`, the recorded interface and the recorded next
-hop, and a delete that is not interface-scoped cannot be encoded at all. An add
-that answers `EEXIST` is success and not ownership, so a route macOS wrote for a
-secondary interface is used and never removed. At shutdown nothing is withdrawn
-while a capture is still in the kernel, so a withdrawal that failed upstream
-cannot take the fallback away from under one.
-
-The record outlives the process. It is written to
-`/var/run/ranet3/underlay.json`, beside the control socket's lock, before the
-route is written and after it is withdrawn, so a daemon killed with `SIGKILL` is
-cleaned up by the next one rather than leaking. That is the same ownership claim
-made durable, not a weaker one: a restart withdraws a recorded route only when
-the kernel still holds one matching its destination, interface index, next hop
-and `RTF_IFSCOPE`, only when the recorded interface name still resolves to the
-recorded index, and only when that interface also carries the host's own
-unscoped default. The last clause separates ranet3's route from the system's,
-because macOS writes a scoped default for every interface except the one holding
-the unscoped default. `TestNoOtherProgramScopesADefaultToThePrimaryInterface`
-asserts that on whatever machine the suite runs on rather than taking it on
-trust. A record failing any clause is kept where nothing in the process can
-delete it, so the clauses are not undone by the next ordinary withdrawal, and
-the next start weighs them again. The file is locked before it is read, so a
-second daemon starting beside a running one reclaims nothing and overwrites
-nothing.
-
-A state file that is unreadable, truncated, not JSON or holds more than 32
-records is reported and treated as empty, because a node that will not start is
-worse than a route left behind. A missing one is treated as empty without a
-report.
-
-The last clause has 1 gap. It is a snapshot, so a host that makes another
-interface primary while ranet3's route is in place, and later makes it primary
-again, could have a restart withdraw a scoped default macOS wanted there. That
-is 1 route on 1 interface until the next link event, which macOS answers by
-rewriting it.
+default to the tun, as [platforms](../platforms.md#macos) describes. No socket
+selects a scoped route unless it asks for the tun by name, so a node without
+`bind` can hold an exit-announced address and still cannot send its traffic
+through the exit. Either way the reconciler writes nothing outside the tun.
 
 ## Routes that carry the host's own traffic
 
@@ -284,10 +205,12 @@ main's route out of the uplink, where it went before ranet3. A marked one, such
 as ranet3's own paired IPv4 socket, goes by main's route, as rows L2 and B1
 give. None of it enters the mesh.
 
-The rule about the unspecified address follows the macOS kernel. A bound
-socket's lookup falls back to the route for the unspecified address of its
-family, and needs that route on the bound interface. A route out of the tun as
-small as `0.0.0.0/24` takes that fallback away.
+The rule about the unspecified address follows the macOS kernel's fallback of a
+scoped lookup, which
+[the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. A
+route out of the tun as small as `0.0.0.0/24` would take that fallback away, so
+with `bind` such a route goes in as the zero-free cover's members it contains,
+and one inside `0.0.0.0/8` or `::/8`, which contains none, not at all.
 
 `capture_grace` has a floor of 1 second. A value above 0 and under 1 second is
 refused by name, and 0 takes the default. The hold is checked once a pass, and
@@ -297,18 +220,18 @@ is in play.
 
 A session counts as live for 20 seconds after it last received authenticated IKE
 from its peer, and for 20 to 30 seconds after its last authenticated ESP, which
-the session notices up to 10 seconds late. It counts only while the underlay
-socket is where `link.underlay` says it should be. Without that rule a laptop
-whose mesh has gone loses every network it has rather than only the mesh, and it
-cannot recover on its own, because reaching the peers needs the network the
-default just took.
+the session notices up to 10 seconds late. Without the hold a laptop whose mesh
+has gone loses every network it has rather than only the mesh, and it cannot
+recover on its own, because reaching the peers needs the network the default
+just took.
 
 On macOS an unscoped `/0` out of the tun would collide with the host's own
 default, because macOS has no route replace. With `bind` set, the reconciler
 installs it as the zero-free cover instead, and the hold judges the cover by its
 `/0`. The cover's members stay unscoped even over a literal endpoint address the
-trust document lists, because the transport's socket is bound to the underlay
-interface. An exit serving Macs advertises the `/0` only, as
+trust document lists, because each of the transport's datagrams names the
+interface the host's own routes send it by, and no member takes the fallback
+from it. An exit serving Macs advertises the `/0` only, as
 [exit nodes](../exit-nodes.md#what-to-advertise) describes.
 
 ## Source-specific routing

@@ -166,13 +166,13 @@ handshake reads an ID.
 
 ### `link.underlay`
 
-This block keeps the socket that carries IKE and ESP out of the routes the mesh
-installs on macOS. A Mac that takes an exit's default route needs it. `bind` is
-refused at startup on every platform but macOS.
+This block decides how a Mac installs an exit's default route. A Mac that takes
+an exit's default route needs `bind`. It is refused at startup on every platform
+but macOS.
 
-| Key    | Value   | Default | Meaning                                                                  |
-| ------ | ------- | ------- | ------------------------------------------------------------------------ |
-| `bind` | boolean | `false` | macOS only. Bind the socket to the interface of the host's default route |
+| Key    | Value   | Default | Meaning                                                                                        |
+| ------ | ------- | ------- | ---------------------------------------------------------------------------------------------- |
+| `bind` | boolean | `false` | macOS only. Install a route holding its family's zero address unscoped, as its zero-free cover |
 
 - On Linux the block takes no key. Every underlay socket carries the mark 0x72
   where the process may set it. A marked lookup bound to no device ends as rows
@@ -181,31 +181,23 @@ refused at startup on every platform but macOS.
   gives, and an IPv6 one, which also names the address its request arrived at,
   as row L2 gives. [Sharing a host](coexistence.md#the-underlays-mark) says what
   a process the kernel refuses the mark does.
-- `bind` sets `IP_BOUND_IF` and `IPV6_BOUND_IF`. The socket follows the default
-  route's interface as it changes.
-- With `bind`, the reconciler installs a plain `/0` that Babel selects as its
-  zero-free cover, 8 unscoped routes per family that hold every address but
-  `0.0.0.0/8` and `::/8`, so other sockets use the mesh exit. It installs a
-  family's cover only once the host has a default of its own in that family.
-  `64:ff9b::/96` lies in `::/8` and stays on the host's own route. Until exit
-  selection exists, a Mac with `bind` set takes whichever `/0` Babel selects.
+- On macOS, with or without `bind`, each underlay datagram names the interface
+  the host's own routes send it by, ranet3's utun left out, as
+  [the underlay's interface](routing.md#the-underlays-interface-on-macos)
+  describes.
+- With `bind`, the reconciler installs a route Babel selects that holds its
+  family's zero address as the members of
+  [the zero-free cover](routing.md#the-zero-free-cover-on-macos) it contains, so
+  other sockets use the mesh exit. Until exit selection exists, a Mac with
+  `bind` set takes whichever `/0` Babel selects.
 - With `bind`, any other route that carries this host's own traffic is installed
   unscoped too, except one that covers an endpoint address listed in the trust
   document, which stays scoped to the tun, and a source-specific IPv6 one,
   scoped to the tun where its source prefix holds an address of the tun and
   otherwise not installed, while a source-specific IPv4 one is never installed.
-  One installed unscoped that holds its family's zero address goes in only once
-  the socket has a route of that family to fall back on. That route is the
-  default scoped to the socket's interface, described next.
-- With `bind`, the daemon writes a default scoped to the socket's interface only
-  for a family whose zero address an unscoped route out of another interface
-  holds: a real lower half, `0.0.0.0/1` or `::/1`, or a route like `0.0.0.0/24`
-  the mesh installs, or another program's, such as a full-tunnel VPN's. For a
-  route of the mesh's own that holds the zero address it writes the default in
-  the pass that installs the route, before the route goes in. With `cap.table`
-  written it withdraws the default once no such route is left, and without it
-  the default stays until the socket moves onto another interface or the daemon
-  stops. With only the cover installed it writes nothing outside the tun.
+- Without `bind`, every route that carries this host's own traffic is scoped to
+  the tun, which no socket follows unless it asks for the tun by name. Either
+  way the daemon writes nothing outside the tun.
 
 ## `dial`
 

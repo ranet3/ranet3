@@ -49,19 +49,19 @@ An exit does not advertise the `/1` halves in place of a `/0`. A half is longer
 than any `/0`, so wherever it is installed it wins over every `/0` exit by
 longest prefix, whatever the metric, and Babel no longer chooses among exits.
 The lower half, `0.0.0.0/1` or `::/1`, also contains its family's zero address,
-so a Mac with `link.underlay.bind` set installs it unscoped only beside a
-default the daemon writes scoped to the underlay's interface, the route the
-zero-free cover does without. A node that does advertise both halves of a family
-is still listed by `ranet3 exit list`, as an exit for that family. It egresses
-as an exit does, and so does a node advertising a split such as four `/2`s,
-since each of those prefixes
-[counts as a default](routing.md#routes-that-count-as-a-default).
+so a Mac with `link.underlay.bind` set installs it as the 7 members of the
+zero-free cover it contains, which leave that address to the host's own default.
+A node that does advertise both halves of a family is still listed by
+`ranet3 exit list`, as an exit for that family. It egresses as an exit does, and
+so does a node advertising a split such as four `/2`s, since each of those
+prefixes [counts as a default](routing.md#routes-that-count-as-a-default).
 
 Until exit selection exists, a Mac with `link.underlay.bind` set takes whichever
 `/0` Babel selects, once a session has been live, and installs it as its
 zero-free cover, as [routing](routing.md#the-zero-free-cover-on-macos)
 describes. Babel, its updates and `ranet3 exit list` keep the `/0`. A Mac
-without `bind` scopes the `/0` to the tun, where no unbound socket selects it.
+without `bind` scopes the `/0` to the tun, which no socket selects unless it
+asks for the tun by name.
 
 `cap.route` may not announce a prefix `cap.egress` advertises. The daemon
 refuses that at startup and on every reload, because `cap.route` would announce
