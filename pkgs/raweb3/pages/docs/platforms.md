@@ -204,6 +204,9 @@ On a platform other than Linux, macOS, iOS and Android:
 - Datagrams leave without DF, as [path MTU](#path-mtu) below describes.
 - Answers leave from the kernel's choice of source, not the address the request
   reached.
+- The ECN field of a datagram's outer header is not read, so a CE mark a hop set
+  on the underlay is lost, as [ECN](design/protocol-deviations.md#ecn)
+  describes.
 
 iOS and Android build the underlay sockets, the sockets connected to 1 peer, the
 path MTU search, the forwarding read and the caller credentials of macOS and
