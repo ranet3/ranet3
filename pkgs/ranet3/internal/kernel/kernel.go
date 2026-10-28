@@ -707,6 +707,9 @@ type Reconciler struct {
 	// changed says the pass under way wrote a rule or an address, which the route counts do not show
 	// it belongs to the same goroutine, and the withdrawal never sets it
 	changed bool
+	// exitStatus is cap.exit's mode as the last rule pass ran it, nil in mode off, and belongs to the same goroutine
+	// a pass replaces it whole, so a Stats holding it reads one pass
+	exitStatus *ExitStatus
 }
 
 // Stats is one finished route pass. Installed counts the routes the kernel
@@ -730,7 +733,9 @@ type Stats struct {
 	// Lookups holds the lookups the last pass whose batch answered asked of
 	// the kernel to find another program's rule ahead of the mesh's
 	Lookups []Lookup
-	Err     string
+	// Exit is cap.exit's mode as the last rule pass ran it, nil in mode off
+	Exit *ExitStatus
+	Err  string
 }
 
 // Stats reports the last route pass, and the zero value before the first one
@@ -1126,7 +1131,8 @@ func (r *Reconciler) reconcile() error {
 	// kernel holding a key the diff never names again.
 	r.sampleCapture()
 	snapshot := r.src.Snapshot()
-	err := errors.Join(r.applyAddresses(), r.applyRoutes(snapshot), r.applyRules(snapshot))
+	held, listed, addressErr := r.applyAddresses()
+	err := errors.Join(addressErr, r.applyRoutes(snapshot), r.applyRules(snapshot, held, listed))
 	// a pass missing a rule or a hold would find its own fault, which err reports
 	if err == nil {
 		r.lookUp()
@@ -1181,7 +1187,7 @@ func (r *Reconciler) captureDeadline() (time.Time, bool) {
 // read as a reconciler that is keeping up.
 func (r *Reconciler) recordPass(err error, took time.Duration) {
 	stats := r.routePass
-	stats.At, stats.Lookups = time.Now(), r.lookups
+	stats.At, stats.Lookups, stats.Exit = time.Now(), r.lookups, r.exitStatus
 	if err != nil {
 		stats.Err = err.Error()
 	}
@@ -1225,12 +1231,20 @@ func (r *Reconciler) audit() {
 // installs for the same reason applyRoutes does, and it reads the kernel back
 // rather than trusting a record, so rules an earlier instance left behind are
 // adopted, and withdrawn where no longer derived, rather than duplicated. It
-// adds in the set's order, which puts each nop ahead of its goto.
-func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer]) error {
+// adds in the set's order, which puts each nop ahead of its goto. held is the
+// tun's addresses as the pass's address step left them, where listed.
+func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], held []netip.Prefix, listed bool) error {
 	if r.rules == nil {
 		return nil
 	}
-	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exitView{})
+	// mode 2 cannot tell which families the tun holds an overlay address of without the listing, so the rules stay as they are
+	// the address step's error has the pass retried
+	if r.table.Mode() != nil && !listed {
+		return nil
+	}
+	exit, status := r.exitPass(held)
+	r.reportExit(status)
+	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
 	r.derived.Store(&ruleSet)
 	actual, err := r.rules.Rules()
 	if err != nil {
@@ -1252,12 +1266,12 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer]) error {
 			removed++
 		}
 	}
-	held := make(map[Rule]bool, len(actual))
+	present := make(map[Rule]bool, len(actual))
 	for _, rule := range actual {
-		held[rule] = true
+		present[rule] = true
 	}
 	for _, rule := range ruleSet {
-		if held[rule] {
+		if present[rule] {
 			continue
 		}
 		if err := r.rules.AddRule(rule); err != nil {
@@ -1739,14 +1753,16 @@ func compareSourceSpecificity(a, b netip.Prefix) int {
 
 // applyAddresses brings the link to the configured addresses. The only ones it
 // removes are recorded in owned: an address on the link that is not configured
-// and not recorded belongs to somebody else.
-func (r *Reconciler) applyAddresses() error {
-	if len(r.addresses) == 0 && len(r.owned) == 0 {
-		return nil
+// and not recorded belongs to somebody else. It returns the link's addresses
+// as the pass leaves them, another writer's among them, and whether it listed
+// them: mode 2 reads them even where cap.table assigns nothing.
+func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err error) {
+	if len(r.addresses) == 0 && len(r.owned) == 0 && r.table.Mode() == nil {
+		return nil, false, nil
 	}
 	actual, err := r.plat.Addrs()
 	if err != nil {
-		return fmt.Errorf("list addresses: %w", err)
+		return nil, false, fmt.Errorf("list addresses: %w", err)
 	}
 	keysByLength := func(netip.Addr) bool { return false }
 	if p, ok := r.plat.(lengthKeyer); ok {
@@ -1782,6 +1798,7 @@ func (r *Reconciler) applyAddresses() error {
 		held[prefix.Addr()] = prefix
 	}
 	warned := make(map[netip.Prefix]bool, len(r.warnedAddrs))
+	var added []netip.Prefix
 	for _, prefix := range r.addresses {
 		if have[prefix] {
 			continue
@@ -1808,6 +1825,7 @@ func (r *Reconciler) applyAddresses() error {
 		}
 		slog.Info("kernel address assigned", "interface", r.rt.Interface, "address", prefix)
 		r.owned[prefix], r.changed = true, true
+		added = append(added, prefix)
 	}
 	// the rest after the adds, so a renumbered tun is never left without an IPv4 address
 	// linux flushes every IPv4 route out of a device that has none, another writer's among them
@@ -1818,7 +1836,10 @@ func (r *Reconciler) applyAddresses() error {
 		r.changed = true
 	}
 	r.warnedAddrs = warned
-	return errors.Join(errs...)
+	tun = slices.DeleteFunc(slices.Clone(actual), func(prefix netip.Prefix) bool {
+		return slices.Contains(removed, prefix) || slices.Contains(gone, prefix)
+	})
+	return append(tun, added...), true, errors.Join(errs...)
 }
 
 // withdraw removes exactly what this reconciler installed: every route and
@@ -1827,6 +1848,7 @@ func (r *Reconciler) applyAddresses() error {
 // behind go with them.
 func (r *Reconciler) withdraw() error {
 	r.report(nil)
+	r.reportExit(nil)
 	var errs []error
 	routes, err := r.plat.Routes()
 	if err != nil {

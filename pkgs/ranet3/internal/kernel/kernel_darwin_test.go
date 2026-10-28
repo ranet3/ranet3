@@ -24,7 +24,7 @@ func TestNewOnAPlatformWithoutRulesRunsNoRulePass(t *testing.T) {
 	if reconciler.rules != nil {
 		t.Fatal("darwin's platform answers for policy rules")
 	}
-	if err := reconciler.applyRules(reconciler.src.Snapshot()); err != nil || reconciler.DerivedRules() != nil {
+	if err := reconciler.applyRules(reconciler.src.Snapshot(), nil, false); err != nil || reconciler.DerivedRules() != nil {
 		t.Errorf("a rule pass on darwin answered %v and published %v", err, reconciler.DerivedRules())
 	}
 }

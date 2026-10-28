@@ -15,9 +15,11 @@ func (r *reader) netmonCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "netmon",
 		Short: "Show the host network the node watches",
-		Long: `The output covers each family's default route and addresses outside the
-mesh as the network watch last read them, and the last change it acted on.
-Each change probes every session and wakes every dialer.`,
+		Long: `The output covers each family's default route, addresses and links outside
+the mesh as the network watch last read them, and the last change it acted on.
+A change of a default or an address probes every session, wakes every dialer
+and wakes the route reconciler, and with cap.exit a change of links alone wakes
+the reconciler too.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {

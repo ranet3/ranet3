@@ -139,6 +139,18 @@ func kernelLine(k KernelStatus) string {
 			line += fmt.Sprintf(", overlay %s taken by %s", taken.Prefix, taken.Answer)
 		}
 	}
+	if e := k.Exit; e != nil {
+		line += ", exit mode"
+		if len(e.Forwarded) > 0 {
+			line += " forwarding " + strings.Join(e.Forwarded, " ")
+		}
+		for _, skip := range e.Skipped {
+			line += fmt.Sprintf(", forward %s skips %s, %s", skip.Entry, skip.Link, skip.Reason)
+		}
+		for _, family := range e.Unaddressed {
+			line += fmt.Sprintf(", no %s overlay address on the tun, so %s runs mode off's rules", familyLabel(family), familyLabel(family))
+		}
+	}
 	if k.Err != "" {
 		line += ", " + k.Err
 	}

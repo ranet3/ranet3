@@ -67,8 +67,13 @@ type fakeKernel struct {
 	failDelAddr error
 	failRules   error
 	failAddRule map[Rule]error
+	failAssign  map[netip.Prefix]error
 
 	signal chan struct{}
+	// addressNotes signals on each change of the link's addresses, the reconciler's own and another writer's, as linux's address groups do
+	// listed counts the reads of the link's addresses, one a pass in mode 2
+	addressNotes bool
+	listed       int
 	// retabled is every capability the reconciler handed over after a reload
 	retabled []Table
 	// byLength keys an IPv4 address by its length as well, as linux does
@@ -87,8 +92,32 @@ func newFakeKernel(t *testing.T) *fakeKernel {
 		failAdd:     make(map[Route]error),
 		failDel:     make(map[Route]error),
 		failAddRule: make(map[Rule]error),
+		failAssign:  make(map[netip.Prefix]error),
 		signal:      make(chan struct{}, 1),
 	}
+}
+
+// noteAddresses signals Notify where addressNotes is set, called with mu held
+func (f *fakeKernel) noteAddresses() {
+	if !f.addressNotes {
+		return
+	}
+	select {
+	case f.signal <- struct{}{}:
+	default:
+	}
+}
+
+// byHand adds address to the link, or takes it off, as another writer would
+func (f *fakeKernel) byHand(address netip.Prefix, add bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if add {
+		f.addrs[address] = true
+	} else {
+		delete(f.addrs, address)
+	}
+	f.noteAddresses()
 }
 
 func (f *fakeKernel) Routes() ([]Route, error) {
@@ -133,6 +162,7 @@ func (f *fakeKernel) DelRoute(route Route) error {
 func (f *fakeKernel) Addrs() ([]netip.Prefix, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.listed++
 	if f.failAddrs != nil {
 		return nil, f.failAddrs
 	}
@@ -151,12 +181,16 @@ func (f *fakeKernel) Addrs() ([]netip.Prefix, error) {
 func (f *fakeKernel) AddAddr(address netip.Prefix) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.failAssign[address]; err != nil {
+		return err
+	}
 	for held := range f.addrs {
 		if held.Addr() == address.Addr() && !f.keysByLength(held.Addr()) {
 			delete(f.addrs, held)
 		}
 	}
 	f.addrs[address] = true
+	f.noteAddresses()
 	return nil
 }
 
@@ -187,6 +221,7 @@ func (f *fakeKernel) DelAddr(address netip.Prefix) error {
 	if had && !holdsIPv4() {
 		f.emptied = true
 	}
+	f.noteAddresses()
 	return nil
 }
 
@@ -1055,7 +1090,7 @@ func TestAddressAnotherWriterHoldsIsLeftAlone(t *testing.T) {
 	r, _, kernel := harness(t, Table{Addresses: prefixes(wanted)})
 	kernel.addrs[prefix("2001:db8::1/64")] = true
 
-	if err := r.applyAddresses(); err != nil {
+	if _, _, err := r.applyAddresses(); err != nil {
 		t.Fatalf("applying addresses failed rather than skipping one: %v", err)
 	}
 	if r.owned[wanted] {
@@ -1071,7 +1106,7 @@ func TestAddressAnotherWriterHoldsIsLeftAlone(t *testing.T) {
 	// An address nothing else holds is still assigned and still owned.
 	free := prefix("2001:db8::2/128")
 	r.addresses = append(r.addresses, free)
-	if err := r.applyAddresses(); err != nil {
+	if _, _, err := r.applyAddresses(); err != nil {
 		t.Fatal(err)
 	}
 	if !r.owned[free] || !kernel.addrs[free] {
@@ -1089,7 +1124,7 @@ func TestWithdrawLeavesAnAddressAnotherWriterRewrote(t *testing.T) {
 	ours := prefix("2001:db8::1/128")
 	kept := prefix("2001:db8::2/128")
 	r, _, kernel := harness(t, Table{Addresses: prefixes(ours, kept)})
-	if err := r.applyAddresses(); err != nil {
+	if _, _, err := r.applyAddresses(); err != nil {
 		t.Fatal(err)
 	}
 	if !r.owned[ours] || !r.owned[kept] {
@@ -1118,7 +1153,7 @@ func TestWithdrawLeavesAnAddressAnotherWriterRewrote(t *testing.T) {
 func TestWithdrawLeavesEveryAddressWhenTheLinkWillNotReadBack(t *testing.T) {
 	ours := prefix("2001:db8::1/128")
 	r, _, kernel := harness(t, Table{Addresses: prefixes(ours)})
-	if err := r.applyAddresses(); err != nil {
+	if _, _, err := r.applyAddresses(); err != nil {
 		t.Fatal(err)
 	}
 	if !r.owned[ours] {
@@ -1149,7 +1184,7 @@ func TestAddressReportIsNotRepeatedEveryPass(t *testing.T) {
 
 	const passes = 4
 	for pass := range passes {
-		if err := r.applyAddresses(); err != nil {
+		if _, _, err := r.applyAddresses(); err != nil {
 			t.Fatalf("pass %d: %v", pass, err)
 		}
 	}

@@ -4,11 +4,39 @@
     {
       "family": "ipv4",
       "default": {
-        "interface": "en7",
-        "gateway": "10.0.0.1"
+        "interface": "eth1",
+        "gateway": "198.51.100.1"
       },
       "addresses": [
-        "10.0.0.20"
+        "198.51.100.20",
+        "198.51.100.129",
+        "203.0.113.33"
+      ],
+      "links": [
+        {
+          "name": "docker0",
+          "prefixes": [
+            "198.51.100.129/25"
+          ]
+        },
+        {
+          "name": "eth1",
+          "prefixes": [
+            "198.51.100.20/25"
+          ]
+        },
+        {
+          "name": "lo"
+        },
+        {
+          "name": "ppp0",
+          "prefixes": [
+            "203.0.113.33/32"
+          ],
+          "peers": [
+            "203.0.113.64/28"
+          ]
+        }
       ]
     },
     {
@@ -16,6 +44,20 @@
       "default": {},
       "addresses": [
         "2001:db8:7::20"
+      ],
+      "links": [
+        {
+          "name": "docker0"
+        },
+        {
+          "name": "eth1",
+          "prefixes": [
+            "2001:db8:7::20/64"
+          ]
+        },
+        {
+          "name": "lo"
+        }
       ]
     }
   ],
@@ -26,18 +68,44 @@
       {
         "family": "ipv4",
         "default_was": {
-          "interface": "en0",
-          "gateway": "192.168.1.1"
+          "interface": "wlan0",
+          "gateway": "203.0.113.1"
         },
         "default": {
-          "interface": "en7",
-          "gateway": "10.0.0.1"
+          "interface": "eth1",
+          "gateway": "198.51.100.1"
         },
         "added": [
-          "10.0.0.20"
+          "198.51.100.20"
         ],
         "removed": [
-          "192.168.1.20"
+          "203.0.113.20"
+        ],
+        "links": [
+          {
+            "name": "docker0",
+            "prefixes": [
+              "198.51.100.129/25"
+            ]
+          },
+          {
+            "name": "eth1",
+            "prefixes": [
+              "198.51.100.20/25"
+            ]
+          },
+          {
+            "name": "lo"
+          },
+          {
+            "name": "ppp0",
+            "prefixes": [
+              "203.0.113.33/32"
+            ],
+            "peers": [
+              "203.0.113.64/28"
+            ]
+          }
         ]
       },
       {
@@ -47,6 +115,20 @@
         ],
         "removed": [
           "2001:db8:1::20"
+        ],
+        "links": [
+          {
+            "name": "docker0"
+          },
+          {
+            "name": "eth1",
+            "prefixes": [
+              "2001:db8:7::20/64"
+            ]
+          },
+          {
+            "name": "lo"
+          }
         ]
       }
     ]

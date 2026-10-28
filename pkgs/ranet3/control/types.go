@@ -436,7 +436,27 @@ type KernelStatus struct {
 	// Taken is each lookup of the last pass whose batch answered that another
 	// program's rule takes, on linux alone
 	Taken []KernelTaken `json:"taken,omitempty"`
-	Err   string        `json:"err,omitempty"`
+	// Exit is cap.exit's mode as the last pass ran it, absent in mode off
+	Exit *KernelExit `json:"exit,omitempty"`
+	Err  string      `json:"err,omitempty"`
+}
+
+// KernelExit is cap.exit's mode as the reconciler's last pass ran it
+type KernelExit struct {
+	// Forwarded is each link whose forwarded traffic follows the mode
+	Forwarded []string `json:"forwarded,omitempty"`
+	// Skipped is each link a forward entry matched that the mode leaves out
+	Skipped []KernelSkip `json:"skipped,omitempty"`
+	// Unaddressed is each family the tun carries no overlay address of, which
+	// runs mode off's rules
+	Unaddressed []string `json:"unaddressed,omitempty"`
+}
+
+// KernelSkip is a link a cap.exit forward entry matched and the mode leaves out, with the reason
+type KernelSkip struct {
+	Entry  string `json:"entry"`
+	Link   string `json:"link"`
+	Reason string `json:"reason"`
 }
 
 // KernelTaken is one lookup another program's rule takes: an overlay prefix

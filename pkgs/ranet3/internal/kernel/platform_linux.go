@@ -91,7 +91,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("kernel: promote secondary addresses on %s: %w", rt.Interface, err)
 	}
-	monitor, err := newRouteMonitor(uint32(t.ID), t.Proto)
+	monitor, err := newRouteMonitor(uint32(t.ID), t.Proto, tun.index)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -447,11 +447,14 @@ type routeMonitor struct {
 	done    chan struct{}
 }
 
-func newRouteMonitor(table uint32, proto uint8) (*routeMonitor, error) {
-	// the IPv6 rule group has no RTMGRP_ name, its bit is its group number less one
-	groups := uint32(unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE | unix.RTMGRP_IPV4_RULE | 1<<(unix.RTNLGRP_IPV6_RULE-1))
-	return openMonitor("rtnetlink-monitor", groups, reconcilerWakes(table, proto))
+func newRouteMonitor(table uint32, proto uint8, tun uint32) (*routeMonitor, error) {
+	return openMonitor("rtnetlink-monitor", reconcilerGroups, reconcilerWakes(table, proto, tun))
 }
+
+// reconcilerGroups is the notification groups the reconciler's monitor joins
+// the IPv6 rule group has no RTMGRP_ name, its bit is its group number less one
+const reconcilerGroups = uint32(unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE | unix.RTMGRP_IPV4_RULE | 1<<(unix.RTNLGRP_IPV6_RULE-1) |
+	unix.RTMGRP_IPV4_IFADDR | unix.RTMGRP_IPV6_IFADDR)
 
 // openMonitor joins groups and wakes once per datagram holding a message wakesOn takes
 func openMonitor(name string, groups uint32, wakesOn func(nlMessage) bool) (*routeMonitor, error) {
@@ -513,13 +516,16 @@ func (m *routeMonitor) run() {
 
 // reconcilerWakes takes a notification touching what the reconciler owns
 // a rule is woken on only when it goes, since the pass that follows puts it back
-func reconcilerWakes(table uint32, proto uint8) func(nlMessage) bool {
+// an address is woken on only where it is the tun's, whoever wrote it, since mode 2's rules follow the tun's overlay addresses
+func reconcilerWakes(table uint32, proto uint8, tun uint32) func(nlMessage) bool {
 	return func(message nlMessage) bool {
 		switch message.Kind {
 		case unix.RTM_NEWROUTE, unix.RTM_DELROUTE:
 			return notificationTable(message) == table
 		case unix.RTM_DELRULE:
 			return ruleProtocol(message) == proto
+		case unix.RTM_NEWADDR, unix.RTM_DELADDR:
+			return len(message.Data) >= unix.SizeofIfAddrmsg && binary.NativeEndian.Uint32(message.Data[4:]) == tun
 		}
 		return false
 	}

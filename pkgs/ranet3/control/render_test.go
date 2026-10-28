@@ -379,6 +379,29 @@ func TestKernelLineNamesTheCoveredFamilies(t *testing.T) {
 	}
 }
 
+// The kernel line names exit mode with the links it forwards, each link a
+// forward entry matched and the mode leaves out with its reason, and each
+// family the tun carries no overlay address of, and says nothing of the mode
+// in mode off.
+func TestKernelLineNamesTheExitModeAndWhatItSkips(t *testing.T) {
+	status := KernelStatus{
+		Enabled: true, Where: "table 200 protocol 155", Table: 200, Protocol: 155, Installed: 4,
+		Exit: &KernelExit{
+			Forwarded: []string{"br-1", "docker0"},
+			Skipped: []KernelSkip{
+				{Entry: "e*", Link: "eth0", Reason: "the link the IPv4 default leaves by"},
+				{Entry: "ranet*", Link: "ranet0", Reason: "the mesh's own tun"},
+			},
+			Unaddressed: []string{"ipv6"},
+		},
+	}
+	golden(t, "kernel-exit.txt", []byte(kernelLine(status)+"\n"))
+	goldenJSON(t, "kernel-exit.json", status)
+	if line := kernelLine(KernelStatus{Enabled: true, Where: "table 200 protocol 155"}); strings.Contains(line, "exit") {
+		t.Errorf("the kernel line reads %q in mode off, want no exit clause", line)
+	}
+}
+
 // The egress line leads with the prefixes being announced rather than with the
 // ones configured. The two differ exactly when the capability is not working,
 // since a prefix is announced only while its family is ready, and that

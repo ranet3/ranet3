@@ -4,12 +4,17 @@
 package kernel
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
+	"net/netip"
 	"path"
 	"slices"
 	"strings"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // ExitMode is cap.exit, which makes the mesh's default of lowest metric this
@@ -111,6 +116,88 @@ func expandForward(forward []string, tun string, network NetworkState) ([]string
 		out = append(out, name)
 	}
 	return out, skipped
+}
+
+// ExitStatus is cap.exit's mode as the last rule pass ran it
+type ExitStatus struct {
+	// Forwarded is each link forward expanded to, whose forwarded traffic follows the mode
+	Forwarded []string
+	// Skipped is each link a forward entry matched that the mode leaves out
+	Skipped []ForwardSkip
+	// Unaddressed is each family the tun carries no overlay address of, which
+	// runs mode off's rules
+	Unaddressed []Family
+}
+
+// exitPass is mode 2 as the pass under way derives it, from the network as
+// the watch last read it and the tun's addresses as the pass holds them, and
+// its status, nil in mode off. A family counts as addressed by an address
+// inside an overlay entry alone, whoever wrote it.
+func (r *Reconciler) exitPass(held []netip.Prefix) (exitView, *ExitStatus) {
+	mode := r.table.Mode()
+	if mode == nil {
+		return exitView{}, nil
+	}
+	var network NetworkState
+	if r.rt.Network != nil {
+		network = r.rt.Network()
+	}
+	forwarded, skipped := expandForward(mode.Forward, r.rt.Interface, network)
+	status := &ExitStatus{Forwarded: forwarded, Skipped: skipped}
+	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+		inOverlay := func(address netip.Prefix) bool {
+			return familyOf(address.Addr()) == family && schema.InsideOverlay(netip.PrefixFrom(address.Addr(), address.Addr().BitLen()), r.rt.Overlay)
+		}
+		if !slices.ContainsFunc(held, inOverlay) {
+			status.Unaddressed = append(status.Unaddressed, family)
+		}
+	}
+	return exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed}, status
+}
+
+// reportExit records each skip and each family the tun holds no overlay
+// address of that now holds and the last pass's status did not as begun, and
+// each the last held that now does not as ended, a pass in mode off and a
+// withdrawal, whose status is nil, ending all of them, and keeps now as the last
+func (r *Reconciler) reportExit(now *ExitStatus) {
+	var was, is ExitStatus
+	if r.exitStatus != nil {
+		was = *r.exitStatus
+	}
+	if now != nil {
+		is = *now
+	}
+	for _, skip := range is.Skipped {
+		if !slices.Contains(was.Skipped, skip) {
+			r.reportSkip(slog.LevelWarn, "kernel leaves a link cap.exit forward matches out of the mode", skip, true)
+		}
+	}
+	for _, skip := range was.Skipped {
+		if !slices.Contains(is.Skipped, skip) {
+			r.reportSkip(slog.LevelInfo, "kernel no longer leaves a link cap.exit forward matched out of the mode", skip, false)
+		}
+	}
+	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+		if before, after := slices.Contains(was.Unaddressed, family), slices.Contains(is.Unaddressed, family); before != after {
+			r.reportFamily(family, before)
+		}
+	}
+	r.exitStatus = now
+}
+
+func (r *Reconciler) reportFamily(family Family, addressed bool) {
+	level, message := slog.LevelWarn, "kernel runs mode off's rules in a family, the tun holding no overlay address of it"
+	if addressed {
+		level, message = slog.LevelInfo, "kernel no longer counts a family as one the tun holds no overlay address of"
+	}
+	slog.Log(context.Background(), level, message, "family", string(family))
+	r.rt.Events.Emit("kernel.exit", "", slog.String("family", string(family)), slog.Bool("addressed", addressed))
+}
+
+func (r *Reconciler) reportSkip(level slog.Level, message string, skip ForwardSkip, skipped bool) {
+	attrs := []slog.Attr{slog.String("entry", skip.Entry), slog.String("link", skip.Link), slog.String("reason", skip.Reason)}
+	slog.LogAttrs(context.Background(), level, message, attrs...)
+	r.rt.Events.Emit("kernel.forward", "", append(attrs, slog.Bool("skipped", skipped))...)
 }
 
 // skipReason says why the mode never forwards a link's traffic, or is empty
