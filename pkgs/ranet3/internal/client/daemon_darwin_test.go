@@ -30,7 +30,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
-	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // This file runs one configuration file all the way to a running daemon and
@@ -59,8 +58,9 @@ const otherProgramIndex = 425
 // capture gate rests on.
 var (
 	capturingPrefix = netip.MustParsePrefix("::/0")
-	// halfCapture takes the machine too and is no cover member: it holds ::,
-	// so a bound underlay needs the default scoped to its interface under it
+	// halfCapture takes the machine too and holds ::, so under
+	// link.underlay.bind it goes in as the members it contains, the first
+	// seven of ipv6Cover
 	halfCapture    = netip.MustParsePrefix("::/1")
 	ordinaryPrefix = netip.MustParsePrefix("2001:db8:2::/64")
 	// ipv6Cover holds the members a bound underlay installs capturingPrefix as
@@ -73,6 +73,8 @@ var (
 	// witnessPrefix is announced beside a route the daemon should hold back,
 	// so that its arrival says a pass has run over both (see daemon.heldBack).
 	witnessPrefix = netip.MustParsePrefix("2001:db8:3::/64")
+	// laterWitness is the witness of a second held-back route in one test
+	laterWitness = netip.MustParsePrefix("2001:db8:4::/64")
 	// announcedAddress is the prefix this node originates, which
 	// assign_announced puts on the mesh device.
 	announcedAddress = netip.MustParsePrefix("2001:db8:1::1/128")
@@ -113,21 +115,9 @@ func recordedHost(t *testing.T) *recordedKernel {
 	return host
 }
 
-// redirectUnderlayState keeps the record of what this process wrote in a directory of this test's own
-func redirectUnderlayState(t *testing.T) {
-	t.Helper()
-	// The record of what this process wrote is an ownership claim over routes
-	// on a shared interface, so it goes somewhere of this test's own rather
-	// than into the runtime directory a daemon on this machine may be holding.
-	state := underlayStatePath
-	underlayStatePath = filepath.Join(t.TempDir(), "underlay.json")
-	t.Cleanup(func() { underlayStatePath = state })
-}
-
 // startDaemon builds one node and its reconciler, retrying the port
 func startDaemon(t *testing.T, bind bool, host *recordedKernel) *daemon {
 	t.Helper()
-	redirectUnderlayState(t)
 	var d *daemon
 	retryPort(t, "bind", func() (err error) {
 		d, err = tryDaemon(t, loadDaemonConfig(t, bind), host)
@@ -245,11 +235,11 @@ func (d *daemon) heldBack(t *testing.T, prefix, witness netip.Prefix) bool {
 }
 
 // A configuration that sets link.underlay.bind produces a daemon whose
-// transport socket is bound to the interface the host's own traffic leaves by,
-// whose underlay has a default scoped to that interface only while a capture
-// holds a zero address, and whose reconciler holds an announced default out of
-// the kernel until a session is live. Every one of those is a different call
-// site, and each of them was removable.
+// reconciler holds an announced default out of the kernel until a session is
+// live and then installs it unscoped as the zero-free cover, installs every
+// other route holding a zero address as the members it contains, and writes
+// nothing outside the tun. Every one of those is a different call site, and
+// each of them was removable.
 //
 // The assertions are about routes and sockets rather than about which
 // functions ran, so a rearrangement that keeps the behavior keeps the test.
@@ -293,75 +283,42 @@ func TestBoundUnderlayConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *tes
 		return plain == len(ipv6Cover)
 	})
 
-	// Unscoped, which is the whole of why the socket is bound: a route scoped
-	// to the tun is reached by nothing that did not name the tun, so this Mac
-	// would hold a mesh address and still not use a mesh exit. The default
-	// itself stays out of the kernel, and with only the cover in nothing is
-	// written outside the tun: no member holds ::, so the bound socket keeps
-	// the host's own default.
+	// Unscoped: a route scoped to the tun is reached by nothing that did not
+	// name the tun, so this Mac would hold a mesh address and still not use a
+	// mesh exit. The default itself stays out of the kernel.
 	if _, scoped := d.host.coverInstalled(); scoped != 0 {
-		t.Error("cover members were scoped to the tun although the underlay socket is bound")
+		t.Error("cover members were scoped to the tun under link.underlay.bind")
 	}
 	if plain, scoped := d.host.installed(capturingPrefix); plain || scoped {
 		t.Error("the announced default went into the kernel itself rather than as its cover")
 	}
-	if got := d.host.scopedDefaults(); len(got) != 0 {
-		t.Errorf("the cover alone scoped %+v to the underlay interface", got)
+
+	// A capture beside the default that holds :: goes in as the members it
+	// contains, which the default's cover already holds, and never whole.
+	if !d.heldBack(t, halfCapture, laterWitness) {
+		t.Error("the half capture went into the kernel whole rather than as its members")
 	}
-
-	// A capture that is no cover member holds ::, so the underlay needs a
-	// default of its own for that family: a socket bound with IP_BOUND_IF
-	// still reads the shared table.
-	d.announce(halfCapture)
-	waitForKernel(t, "the half capture draws the IPv6 default scoped to the underlay", func() bool {
-		return len(d.host.scopedDefaults()) == 1
-	})
-	for _, held := range d.host.scopedDefaults() {
-		if held.index != d.uplink || held.destination.Addr().Is4() {
-			t.Errorf("the default was scoped as %+v, want IPv6 on the uplink %d", held, d.uplink)
-		}
-		if !held.gateway.IsValid() {
-			t.Errorf("the default scoped to the underlay names no next hop: %+v", held)
-		}
+	if plain, scoped := d.host.coverInstalled(); plain != len(ipv6Cover) || scoped != 0 {
+		t.Errorf("beside the half capture the cover is %d members unscoped and %d scoped, want %d and none", plain, scoped, len(ipv6Cover))
 	}
-
-	// The members inside the half are withheld while it is in, so the kernel
-	// forwards there as the half does, and 8000::/1 stays.
-	waitForKernel(t, "the half is in and the cover inside it withheld", func() bool {
-		half, _ := d.host.installed(halfCapture)
-		plain, _ := d.host.coverInstalled()
-		upper, _ := d.host.installed(ipv6Cover[len(ipv6Cover)-1])
-		return half && plain == 1 && upper
-	})
-
-	// And the scoped default goes with the capture, while the cover comes
-	// back whole.
-	d.node.Mesh.Routes.Remove(netip.Prefix{}, halfCapture)
-	waitForKernel(t, "the scoped default goes with the half capture", func() bool {
-		return len(d.host.scopedDefaults()) == 0
-	})
-	waitForKernel(t, "the cover comes back whole", func() bool {
-		plain, _ := d.host.coverInstalled()
-		return plain == len(ipv6Cover)
-	})
-	// The host's own unscoped defaults are untouched, always. Tailscale
+	// Nothing of this daemon's is written outside the tun, and the host's own
+	// unscoped defaults are untouched, always. Tailscale
 	// shipped the opposite as #21395.
 	for _, write := range d.host.writes() {
-		if !write.add && write.index == d.uplink && !write.scoped {
-			t.Errorf("an unscoped route on the uplink was withdrawn: %+v", write)
+		if write.index != meshDeviceIndex {
+			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
 		}
 	}
 }
 
-// The same file without link.underlay.bind produces a daemon that binds
-// nothing, writes nothing on the uplink, and scopes its announced default to
-// the tun so that no ordinary socket follows it. Without the scope this node's
-// own ESP would leave through the tunnel it is carrying.
+// The same file without link.underlay.bind produces a daemon that writes
+// nothing on the uplink and scopes its announced default to the tun so that
+// no ordinary socket follows it.
 func TestUnboundUnderlayConfigurationScopesItsCaptureToTheTun(t *testing.T) {
 	d := startDaemon(t, false, recordedHost(t))
 
 	if d.node.CaptureRoutes() != nil {
-		t.Error("a node that binds nothing opened routing for a socket it does not have")
+		t.Error("a node without link.underlay.bind hands its reconciler a cover's wait")
 	}
 
 	d.live(t)
@@ -375,7 +332,7 @@ func TestUnboundUnderlayConfigurationScopesItsCaptureToTheTun(t *testing.T) {
 	}
 	for _, write := range d.host.writes() {
 		if write.index != meshDeviceIndex {
-			t.Errorf("a node that binds no socket wrote %+v, which is not on its own tun", write)
+			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
 		}
 	}
 }
@@ -416,41 +373,35 @@ func TestDaemonNamesEachUnderlayDatagramsInterfaceFromTheHostsRoutes(t *testing.
 	}
 }
 
-// A capture is held back per family, and the family it is held back for is
-// decided by what the underlay itself can fall back on rather than by what the
-// mesh is announcing. A laptop reaching IPv4 through the interface its socket
-// is bound to and IPv6 through another is ordinary, and answering "covered"
-// for the machine put an announced default in the kernel over an IPv6 underlay
-// with nothing behind it.
-func TestCaptureIsHeldBackForAFamilyTheUnderlayCannotFallBackOn(t *testing.T) {
+// A cover is held back per family, for a family the host holds no default of
+// its own in, which the daemon's selection answers from the host's routes.
+func TestCoverIsHeldBackForAFamilyTheHostHasNoDefaultIn(t *testing.T) {
 	host := recordedHost(t)
-	// The host reaches IPv6 nowhere, so nothing can be scoped to the
-	// underlay's interface for that family.
+	// The host reaches IPv6 nowhere.
 	host.v6 = kernel.RouteAnswer{}
 	d := startDaemon(t, true, host)
 
 	d.live(t)
-	// The IPv4 family is covered, so a capturing route of that family that is
-	// no cover member installs, and plain: 0.0.0.0/1 does not hold the peer
-	// endpoint.
+	// The IPv4 family has its default, so a route holding 0.0.0.0 goes in as
+	// the members it contains, 1.0.0.0/8 to 64.0.0.0/2.
 	v4capture := netip.MustParsePrefix("0.0.0.0/1")
 	d.announce(v4capture)
-	waitForKernel(t, "the IPv4 capture reaches the kernel", func() bool {
-		plain, _ := d.host.installed(v4capture)
+	waitForKernel(t, "the IPv4 capture reaches the kernel as its members", func() bool {
+		plain, _ := d.host.installed(netip.MustParsePrefix("64.0.0.0/2"))
 		return plain
 	})
+	if plain, scoped := d.host.installed(v4capture); plain || scoped {
+		t.Errorf("%s went into the kernel whole", v4capture)
+	}
 
-	// The IPv6 family is not, so the default of that family is held back,
+	// The IPv6 family has none, so the default of that family is held back,
 	// cover and all. Installing it would take this node off IPv6 entirely
 	// with no fallback.
 	if !d.heldBack(t, capturingPrefix, witnessPrefix) {
-		t.Error("an IPv6 default was installed over an underlay with no IPv6 route of its own")
+		t.Error("an IPv6 default was installed over a host with no IPv6 default of its own")
 	}
 	if plain, scoped := d.host.coverInstalled(); plain+scoped != 0 {
-		t.Error("the IPv6 cover was installed over a host with no IPv6 route of its own")
-	}
-	if got := d.host.scopedDefaults(); len(got) != 1 || !got[0].destination.Addr().Is4() {
-		t.Errorf("the underlay's own routing is %+v, want the IPv4 default alone", got)
+		t.Error("the IPv6 cover was installed over a host with no IPv6 default of its own")
 	}
 }
 
@@ -478,84 +429,38 @@ func TestPrefixCoveringAPeerEndpointIsScopedEvenWithABoundSocket(t *testing.T) {
 	}
 }
 
-// Shutdown takes down what this node opened, in the order the routing demands:
-// the underlay's own fallback outlives every route depending on it, and then
-// goes. A node that left the fallback behind leaks one scoped default per
-// start onto an interface the whole machine shares.
-func TestShutdownWithdrawsTheUnderlayRoutingAndLeavesTheMachineAsItFoundIt(t *testing.T) {
+// Shutdown takes down what this node opened: the reconciler withdraws the
+// cover, and closing the node closes the selection's route watcher. A route
+// socket or a watcher left open is one per start, for the life of the process.
+func TestShutdownLeavesTheMachineAsItFoundIt(t *testing.T) {
 	d := startDaemon(t, true, recordedHost(t))
 	d.live(t)
-	d.announce(halfCapture)
-	waitForKernel(t, "the half capture reaches the kernel", func() bool {
-		plain, _ := d.host.installed(halfCapture)
-		return plain
+	d.announce(capturingPrefix)
+	waitForKernel(t, "the cover reaches the kernel", func() bool {
+		plain, _ := d.host.coverInstalled()
+		return plain == len(ipv6Cover)
 	})
-	if len(d.host.scopedDefaults()) == 0 {
-		t.Fatal("the underlay wrote no routing, so this measures nothing")
-	}
 
-	// The command waits for the reconciler before it closes the node, so the
-	// capture is gone by the time the fallback under it is.
 	d.stop()
-	if plain, scoped := d.host.installed(halfCapture); plain || scoped {
-		t.Fatal("the reconciler left the route carrying this machine's traffic in the kernel")
+	if plain, scoped := d.host.coverInstalled(); plain+scoped != 0 {
+		t.Fatal("the reconciler left the cover carrying this machine's traffic in the kernel")
 	}
 	d.node.Close()
-	if got := d.host.scopedDefaults(); len(got) != 0 {
-		t.Errorf("shutdown left %+v scoped to an interface this node does not own", got)
-	}
-	// And nothing of this machine is still held. A route socket or a link
-	// watcher left open is one per start, for the life of the process.
 	if sockets, watchers := d.host.stillOpen(); sockets != 0 || watchers != 0 {
-		t.Errorf("shutdown left %d route sockets and %d link watchers open", sockets, watchers)
+		t.Errorf("shutdown left %d route sockets and %d route watchers open", sockets, watchers)
+	}
+	for _, write := range d.host.writes() {
+		if write.index != meshDeviceIndex {
+			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
+		}
 	}
 }
 
-// And the other order, which is the one the ordering rule exists for: a
-// withdrawal that failed upstream, or a shutdown that ran out of order, must
-// not take the fallback out from under a route that is still in the kernel.
-// Doing so leaves this node with no network at all rather than with a mesh
-// that is down.
-func TestUnderlayRoutingOutlivesACaptureStillInTheKernel(t *testing.T) {
-	d := startDaemon(t, true, recordedHost(t))
-	d.live(t)
-	d.announce(halfCapture)
-	waitForKernel(t, "the half capture reaches the kernel", func() bool {
-		plain, _ := d.host.installed(halfCapture)
-		return plain
-	})
-
-	// Closed while the capture is still installed, the state a failed
-	// withdrawal leaves behind.
-	d.node.Close()
-	if got := d.host.scopedDefaults(); len(got) == 0 {
-		t.Fatal("the underlay's own routing went while a route carrying this machine's traffic was still in the kernel")
-	}
-
-	// Which is why the record outlives the process: what this start could not
-	// take down is taken down by the next one. The reconciler withdraws the
-	// capture on its way out, and a second node on the same machine, reading
-	// the same record, reclaims what the first left.
-	d.stop()
-	_, _, closeUnderlay, err := underlayRuntime(transport.Underlay{Bind: true}, "mesh0", d.host)
-	if err != nil {
-		t.Fatalf("a second node could not open the underlay: %v", err)
-	}
-	t.Cleanup(closeUnderlay)
-	if got := d.host.scopedDefaults(); len(got) != 0 {
-		t.Errorf("the next start left %+v behind, so a node killed holding one leaks it for good", got)
-	}
-}
-
-// a start that fails after the transport prepared its interface leaves the machine as it found it
+// a start that fails after the transport opened its selection leaves the machine as it found it
 // another socket holds the port, which is how a second node on one port fails once the first half of its start has run
-// the scoped default the transport wrote for the underlay is withdrawn, and the route socket and the link watcher are closed
+// the selection's route watcher is closed, and nothing was written
 func TestFailedStartLeavesTheMachineAsItFoundIt(t *testing.T) {
 	host := recordedHost(t)
-	// another program's full tunnel, whose 0.0.0.0/1 holds the zero address,
-	// so preparing the uplink writes its default before the port refuses
-	host.hold(recordedRoute{destination: netip.MustParsePrefix("0.0.0.0/1"), index: otherProgramIndex})
-	redirectUnderlayState(t)
 
 	// the port is chosen by binding zero and giving it back, so another process can take it before this one holds it again
 	var cfg *config.Config
@@ -571,18 +476,12 @@ func TestFailedStartLeavesTheMachineAsItFoundIt(t *testing.T) {
 	if err == nil {
 		t.Fatal("a node started on a port another socket holds, so this measures nothing")
 	}
-	// the underlay wrote its default before the port refused the start, which is the state this leaves behind
-	prepared := slices.ContainsFunc(host.writes(), func(write recordedWrite) bool {
-		return write.add && write.scoped && write.index == host.uplink
-	})
-	if !prepared {
-		t.Fatalf("the start failed before the underlay wrote a default (%v), so this measures nothing", err)
-	}
-	if got := host.scopedDefaults(); len(got) != 0 {
-		t.Errorf("the failed start left %d defaults scoped to an interface this node does not own", len(got))
+	// the hub refused the port after the selection opened, which is the state this leaves behind
+	if writes := host.writes(); len(writes) != 0 {
+		t.Errorf("the failed start wrote %+v", writes)
 	}
 	if sockets, watchers := host.stillOpen(); sockets != 0 || watchers != 0 {
-		t.Errorf("the failed start left %d route sockets and %d link watchers open", sockets, watchers)
+		t.Errorf("the failed start left %d route sockets and %d route watchers open", sockets, watchers)
 	}
 }
 

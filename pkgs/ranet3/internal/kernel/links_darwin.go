@@ -17,65 +17,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Links answers which interface the host's own traffic leaves by, and says
-// when that changes. It is the read side of the same PF_ROUTE socket the
-// reconciler writes, and it exists for transport: on darwin the
-// underlay socket is kept out of the mesh's routing by being bound to that
-// interface, and nothing but the routing table knows which one it is.
-//
-// It answers one index for both families. A host whose IPv4 and IPv6 defaults
-// leave by different interfaces would have one of its two sockets on the wrong
-// one. That is a configuration nothing here produces and no laptop has, and
-// splitting the answer is the fix if one ever appears.
-type Links struct {
-	watcher Watcher
-	host    Host
-	// mesh is the tun this node carries the overlay on, which can never be
-	// the answer. Once the mesh holds routes covering the address space, an
-	// ordinary lookup for the unspecified address answers with the tun, and
-	// binding the underlay socket to that would put every datagram this node
-	// sends inside the tunnel it is supposed to be running under.
-	mesh int
-}
-
-// WatchLinks opens the notification half. mesh is the index of this node's own
-// tun, which no answer may name, and host is the machine this reads, nil for
-// the one this process is running on. The caller closes it.
-func WatchLinks(host Host, mesh int) (*Links, error) {
-	host = hostOr(host)
-	// Index zero, so a change on any interface wakes it: the route being
-	// followed moves between wifi, ethernet, a dock and a VPN of the user's
-	// own, so no one interface can be named. The mesh tun is skipped and this
-	// process's own writes are dropped, which together are the whole of the
-	// churn a peer can drive: applyRoutes writes one RTM_ADD per route and the
-	// kernel broadcasts every one, so an unfiltered watcher wakes once per
-	// route installed, each wake costing a route lookup and a socket.
-	watcher, err := host.Watch(0, mesh, true)
-	if err != nil {
-		return nil, err
-	}
-	return &Links{watcher: watcher, host: host, mesh: mesh}, nil
-}
-
-// WatchLinksOn is WatchLinks for an interface named rather than numbered.
-func WatchLinksOn(host Host, mesh string) (*Links, error) {
-	host = hostOr(host)
-	index, err := host.InterfaceIndex(mesh)
-	if err != nil {
-		return nil, err
-	}
-	return WatchLinks(host, index)
-}
-
-func (l *Links) Changed() <-chan struct{} { return l.watcher.Changed() }
-func (l *Links) Close() error             { return l.watcher.Close() }
-
-// Mesh is the interface index no answer may name.
-func (l *Links) Mesh() int { return l.mesh }
-
-// Default is the host's own default route of one family: the interface it
-// leaves by and the next hop it points at, invalid where it leaves through a
-// link instead.
+// lookupDefault is the host's own default route of one family on host, the
+// interface it leaves by and the next hop it points at, invalid where it
+// leaves through a link instead, and ErrNoDefaultRoute where only mesh, this
+// node's own tun, holds the key.
 //
 // It is an exact lookup of the one entry keyed on the unspecified address
 // rather than a longest-prefix match, because the mesh installs routes that
@@ -84,11 +29,6 @@ func (l *Links) Mesh() int { return l.mesh }
 // answers utun and the exact lookup answers the physical interface. Where
 // there is no entry at all the exact lookup falls back to a match, which is
 // why the mesh interface is rejected here too and not only there.
-func (l *Links) Default(family netip.Addr) (index int, gateway netip.Addr, err error) {
-	return lookupDefault(l.host, l.mesh, family)
-}
-
-// lookupDefault is Links.Default for any host and mesh, which the network watch asks as well
 func lookupDefault(host Host, mesh int, family netip.Addr) (index int, gateway netip.Addr, err error) {
 	answer, err := host.Lookup(family.Unmap(), zeroMaskOf(family))
 	if err != nil {
@@ -109,22 +49,6 @@ func zeroMaskOf(family netip.Addr) netip.Addr {
 		return netip.AddrFrom16([16]byte{})
 	}
 	return netip.AddrFrom4([4]byte{})
-}
-
-// DefaultInterface is the index of the interface the host's own default route
-// leaves by. IPv4 is asked first and IPv6 only if that has no answer, so a
-// dual-stacked host binds to the interface its IPv4 uses and a v6-only one
-// still binds to something.
-func (l *Links) DefaultInterface() (int, error) {
-	var errs []error
-	for _, family := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified()} {
-		index, _, err := l.Default(family)
-		if err == nil {
-			return index, nil
-		}
-		errs = append(errs, err)
-	}
-	return 0, errors.Join(append(errs, ErrNoDefaultRoute)...)
 }
 
 // lookupSeq numbers the RTM_GET requests this process makes, so a reply can be
@@ -159,7 +83,7 @@ func lookupSocket() (int, error) {
 // guess which address it was. An invalid mask sends no RTAX_NETMASK, which is
 // the longest-prefix question, while a valid one asks for that exact key, because
 // XNU turns an RTM_GET carrying a netmask into a lookup of that key alone.
-// Links.Default asks that way, since the mesh's own routes cover the key it
+// lookupDefault asks that way, since the mesh's own routes cover the key it
 // is after and a match would answer with those.
 //
 // The request is the one `route -n get` makes. The technique is tailscale's,

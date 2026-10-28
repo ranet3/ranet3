@@ -24,34 +24,19 @@ func (r *Reconciler) captures(route Route) bool {
 	return schema.CapturesTheMachine(route.Destination, r.rt.Overlay)
 }
 
-// CaptureRoutes is the routing the underlay depends on before the mesh may be
-// handed this machine's own traffic. On darwin that is a default scoped to the
-// interface the underlay socket is bound to, for each family that needs one as
-// UnderlayDefaults' needs decides. Nothing implements it on linux, where a
-// marked socket needs no route of its own.
-//
-// Ready both repairs and reports, per family. The reconciler calls it once a
-// pass, with the families of the routes it would install unscoped over a zero
-// address, and drops from that pass every such route whose own family is
-// uncovered: none is in the kernel while its family has nothing to fall back
-// on, on either edge.
-//
-// HostDefaults reports, per family, whether the host holds a default of its
-// own, and writes nothing. It is all a plain default installed as its
-// zero-free cover needs.
+// CaptureRoutes answers, per family, whether the host holds a default of its
+// own, and writes nothing. It is all a zero route installed as its zero-free
+// cover waits for. On darwin the underlay's selection implements it, and
+// nothing does on linux, where no route is installed as a cover.
 type CaptureRoutes interface {
-	Ready(want Covered) (Covered, error)
 	HostDefaults() (Covered, error)
 }
 
-// Covered is which families the underlay can fall back on.
+// Covered is which families the host holds a default of its own in.
 //
-// It is per family because the fallback is: a socket bound with IP_BOUND_IF
-// resolves the unspecified address of the destination's own family, so a
-// covered IPv4 does nothing for a socket carrying ESP to an IPv6 peer. A node
-// whose host default is IPv4 on the bound interface and IPv6 on another is an
-// ordinary dual-stack laptop, and answering "covered" for it installed ::/0
-// out of the tun with nothing behind it.
+// It is per family because the fallback is: a socket scoped to an interface
+// resolves the unspecified address of the destination's own family there, so
+// a default in IPv4 does nothing for a socket carrying ESP to an IPv6 peer.
 type Covered struct{ V4, V6 bool }
 
 // Has reports whether the family an address belongs to is covered.

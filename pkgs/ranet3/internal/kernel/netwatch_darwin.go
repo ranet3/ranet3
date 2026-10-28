@@ -11,7 +11,7 @@ import (
 	"net/netip"
 )
 
-// WatchNetwork opens the network watch over the PF_ROUTE watcher WatchLinks takes
+// WatchNetwork opens the network watch over a PF_ROUTE watcher of every interface
 // mesh names this node's tun, whose addresses and routes never signal, and is empty on a node without one
 // host is the machine it reads, nil for the one this process is running on
 func WatchNetwork(host Host, mesh string) (*NetworkWatch, error) {
@@ -23,7 +23,7 @@ func WatchNetwork(host Host, mesh string) (*NetworkWatch, error) {
 			return nil, err
 		}
 	}
-	// this process's own writes are dropped as WatchLinks drops them, the underlay's scoped defaults among them
+	// this process's own writes are dropped
 	watcher, err := host.Watch(0, index, true)
 	if err != nil {
 		return nil, err

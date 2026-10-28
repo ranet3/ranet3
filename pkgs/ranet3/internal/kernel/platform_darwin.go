@@ -185,9 +185,8 @@ func (p *routePlatform) open() error {
 	}
 	p.sock = sock
 	if p.rt.BoundUnderlay {
-		// another program's route over a zero address, on any interface,
-		// takes the bound socket's fallback away until a pass writes the
-		// underlay's scoped default, so its change wakes one
+		// the host's own default, which a cover waits for, leaves by
+		// another interface, so a change on any interface wakes a pass
 		p.watcher, err = p.host.Watch(0, 0, true)
 		return err
 	}
@@ -606,18 +605,17 @@ func (p *routePlatform) holder(destination netip.Prefix) string {
 // 100.64/10 is not.
 func (p *routePlatform) scopeRoute(r Route) bool {
 	if r.Cover {
-		// no member holds a zero address, so a bound socket falls back past
-		// it whatever it covers (TestZMeasureTheZeroFreeCoverKeepsABoundSocket)
+		// no member holds a zero address, so a socket scoped to an interface
+		// falls back past it whatever it covers
+		// (TestZMeasureTheZeroFreeCoverKeepsABoundSocket)
 		return false
 	}
 	if standsInForASource(r) || holdsAgainstTheFIB(r) {
 		return true
 	}
-	// With the underlay socket bound, a capture is not scoped: the
-	// reconciler installs a plain default as its cover, and any other route
-	// holding a zero address only once the underlay carries a default scoped
-	// to its own interface (see Reconciler.covered). coversAny stays for a
-	// route that is not a cover member.
+	// With link.underlay.bind a capture is not scoped: the reconciler
+	// installs a route holding a zero address as the cover's members (see
+	// coverDefaults). coversAny stays for a route that is not a cover member.
 	if p.rt.BoundUnderlay {
 		return coversAny(r.Destination, p.underlay)
 	}

@@ -115,23 +115,6 @@ func (k *recordedKernel) installed(destination netip.Prefix) (plain, scoped bool
 	return plain, scoped
 }
 
-// scopedDefaults is every interface-scoped default this kernel holds on an
-// interface other than the mesh, which is the underlay's own fallback.
-func (k *recordedKernel) scopedDefaults() []recordedRoute {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	var out []recordedRoute
-	for held := range k.held {
-		if held.scoped && held.index != k.mesh && held.destination.Bits() == 0 {
-			out = append(out, held)
-		}
-	}
-	slices.SortFunc(out, func(a, b recordedRoute) int {
-		return a.destination.Addr().Compare(b.destination.Addr())
-	})
-	return out
-}
-
 func (k *recordedKernel) addresses(index int) []netip.Prefix {
 	k.mu.Lock()
 	defer k.mu.Unlock()

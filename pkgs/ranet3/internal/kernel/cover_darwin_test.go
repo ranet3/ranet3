@@ -6,33 +6,14 @@
 package kernel
 
 import (
-	"context"
 	"net"
 	"net/netip"
-	"os/exec"
-	"path/filepath"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/netstack"
-	"ranet3.com/pkgs/ranet3/schema"
-)
-
-const (
-	// coverWakeBound is the settle plus one pass, with room for a loaded
-	// machine, inside which a change of another program's routes is acted on
-	coverWakeBound = 2 * time.Second
-	// coverSweep is a sweep long enough that nothing in a test waits for it
-	coverSweep = 10 * time.Minute
-	// coverBurstPasses is the most passes a burst of unrelated route changes
-	// within a second may cost
-	coverBurstPasses = 6
-	// coverBurst is how many adds and deletes the burst makes
-	coverBurst = 20
 )
 
 // heldOn is every prefix the host's table holds out of one interface, with
@@ -60,9 +41,9 @@ func heldOn(t *testing.T, index int) map[netip.Prefix]bool {
 	return out
 }
 
-// coverRig is a test utun with a reconciler on it under a bound underlay, a
-// live session, the host's defaults of both families to fall back on, and the
-// underlay socket's interface prepared the way the transport prepares it.
+// coverRig is a test utun with a reconciler on it under link.underlay.bind, a
+// live session, and the host's defaults of both families to fall back on,
+// which the underlay's selection on the tun reports.
 type coverRig struct {
 	meshIndex int
 	tun       int
@@ -71,19 +52,11 @@ type coverRig struct {
 	host6     int
 	table     *netstack.RouteTable
 	reconcile *Reconciler
-	underlay  *UnderlayDefaults
-	// passes counts the reconcile passes, each of which asks for the
-	// sessions once
-	passes atomic.Int32
 }
 
 // coverRigOptions name what one root test changes about the rig.
 type coverRigOptions struct {
 	endpoints []netip.Addr
-	// reconcile is the sweep interval, zero for the default
-	reconcile time.Duration
-	// links answers where the host's defaults leave, nil for the real ones
-	links func(*Links) defaultRoutes
 }
 
 func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
@@ -91,12 +64,7 @@ func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
 	mesh, tun := createUTUNWithFD(t)
 	setInterfaceUp(t, mesh)
 	meshIndex := interfaceIndex(t, mesh)
-	links, err := WatchLinks(nil, meshIndex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = links.Close() })
-	host4, _, err := links.Default(netip.IPv4Unspecified())
+	host4, _, err := lookupDefault(runningKernel{}, meshIndex, netip.IPv4Unspecified())
 	if err != nil {
 		t.Skipf("this host has no IPv4 default to fall back on: %v", err)
 	}
@@ -104,28 +72,20 @@ func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	startWithNoScopedDefault(t, host4)
 	host6 := hostDefault6(t, meshIndex)
-	var answers defaultRoutes = links
-	if options.links != nil {
-		answers = options.links(links)
-	}
-	underlay, err := NewUnderlayDefaults(nil, answers, meshIndex, filepath.Join(t.TempDir(), "underlay.json"))
+	selection, err := OpenSelection(nil, mesh)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = underlay.Close() })
-	if err := underlay.Prepare(host4); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { _ = selection.Close() })
 	rig := &coverRig{meshIndex: meshIndex, tun: tun, host4: host4, device4: device.Name, host6: host6,
-		table: netstack.NewRouteTable(), underlay: underlay}
-	reconciler, err := New(Table{ID: DefaultTable, Proto: DefaultProtocol, Reconcile: schema.Duration(options.reconcile)}, Runtime{
+		table: netstack.NewRouteTable()}
+	reconciler, err := New(Table{ID: DefaultTable, Proto: DefaultProtocol}, Runtime{
 		Interface:     mesh,
 		BoundUnderlay: true,
-		Sessions:      func() int { rig.passes.Add(1); return 1 },
+		Sessions:      func() int { return 1 },
 		Underlay:      func() []netip.Addr { return options.endpoints },
-		Capture:       underlay,
+		Capture:       selection,
 	}, rig.table)
 	if err != nil {
 		t.Fatal(err)
@@ -147,23 +107,11 @@ func (rig *coverRig) passByHand(t *testing.T) {
 	t.Cleanup(func() { _ = rig.reconcile.withdraw(); _ = rig.reconcile.plat.Close() })
 }
 
-// run starts the reconcile loop, which withdraws and closes when the test
-// ends.
-func (rig *coverRig) run(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = rig.reconcile.Run(ctx)
-	}()
-	t.Cleanup(func() { cancel(); <-done })
-}
-
 // The reconciler puts a plain default in as every member, unscoped though a
 // peer's endpoint lies in one, and the host's table holds no default out of
-// the tun and nothing scoped to the underlay's interface. Routes reads the
-// members back, a bound socket still reaches the endpoint through the host's
-// interface, and the withdrawal takes every member out.
+// the tun. Routes reads the members back, a bound socket still reaches the
+// endpoint through the host's interface, and the withdrawal takes every
+// member out.
 func TestDarwinReconcilerInstallsTheCoverAndReadsItBack(t *testing.T) {
 	requireNetTest(t)
 	endpoint := netip.MustParseAddr("192.0.2.1")
@@ -203,27 +151,15 @@ func TestDarwinReconcilerInstallsTheCoverAndReadsItBack(t *testing.T) {
 	if got := rig.reconcile.Stats().Cover; len(got) != 2 {
 		t.Errorf("the pass reports the cover %v, want both families", got)
 	}
-	for _, is4 := range []bool{true, false} {
-		if scopedDefaultOn(t, rig.host4, is4) {
-			t.Errorf("the cover alone left a default scoped to %s (IPv4 %v)", rig.device4, is4)
-		}
-	}
-	if written := rig.underlay.Written(); len(written) != 0 {
-		t.Errorf("the cover alone wrote %+v outside the tun", written)
-	}
 
 	if !reaches(t, rig.tun, netip.MustParseAddr("203.0.113.9"), netip.Addr{}, 0) {
 		t.Error("an unbound socket did not follow the cover into the tun")
 	}
-	device, err := net.InterfaceByIndex(rig.host4)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := boundReach(rig.host4, endpoint); err != nil {
-		t.Errorf("a socket bound to %s cannot reach the endpoint %s inside a member: %v", device.Name, endpoint, err)
+		t.Errorf("a socket bound to %s cannot reach the endpoint %s inside a member: %v", rig.device4, endpoint, err)
 	}
-	if got := scopedLookup(t, device.Name, endpoint); got != device.Name {
-		t.Errorf("the lookup scoped to %s for %s names %q", device.Name, endpoint, got)
+	if got := scopedLookup(t, rig.device4, endpoint); got != rig.device4 {
+		t.Errorf("the lookup scoped to %s for %s names %q", rig.device4, endpoint, got)
 	}
 
 	rig.table.Remove(netip.Prefix{}, prefix("0.0.0.0/0"))
@@ -237,6 +173,71 @@ func TestDarwinReconcilerInstallsTheCoverAndReadsItBack(t *testing.T) {
 			if _, ok := held[member]; ok {
 				t.Errorf("%s is still in the host's table after the default left", member)
 			}
+		}
+	}
+	if after := defaultRoutesOnHost(t); !sameDefaults(before, after) {
+		t.Errorf("the host's default routes changed over the test\nbefore: %v\nafter:  %v", before, after)
+	}
+}
+
+// A real 0.0.0.0/1 goes in as the seven members it holds, 1.0.0.0/8 to
+// 64.0.0.0/2, unscoped, and a socket scoped to the interface the host's own
+// default leaves by still reaches 192.0.2.1, which a mesh 192.0.2.0/24 beside
+// it holds: no route of the tun holds the zero address, so the scoped lookup
+// falls back on the host's default. Installed whole, 0.0.0.0/1 strands that
+// socket (TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress). The pass
+// that takes the route out takes its members out.
+func TestDarwinRealZeroRouteGoesInAsItsMembers(t *testing.T) {
+	requireNetTest(t)
+	rig := newCoverRig(t, coverRigOptions{})
+	rig.passByHand(t)
+	before := defaultRoutesOnHost(t)
+	half, beside := prefix("0.0.0.0/1"), prefix("192.0.2.0/24")
+	target := netip.MustParseAddr("192.0.2.1")
+	if err := boundReach(rig.host4, target); err != nil {
+		t.Skipf("a socket bound to %s cannot reach %s before anything is installed: %v", rig.device4, target, err)
+	}
+	rig.table.Set(netip.Prefix{}, half, nil)
+	rig.table.Set(netip.Prefix{}, beside, nil)
+	if err := rig.reconcile.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	held := heldOn(t, rig.meshIndex)
+	if _, ok := held[half]; ok {
+		t.Errorf("the host's table holds %s whole out of the tun", half)
+	}
+	for _, member := range measuredCover4[:7] {
+		if scoped, ok := held[prefix(member)]; !ok || scoped {
+			t.Errorf("the host's table holds the member %s as found %v scoped %v, want it unscoped", member, ok, scoped)
+		}
+	}
+	if _, ok := held[prefix(measuredCover4[7])]; ok {
+		t.Errorf("the host's table holds %s, which %s does not contain", measuredCover4[7], half)
+	}
+	if scoped, ok := held[beside]; !ok || scoped {
+		t.Errorf("the host's table holds %s as found %v scoped %v, want it unscoped", beside, ok, scoped)
+	}
+	if stats := rig.reconcile.Stats(); stats.Desired != 8 || stats.Installed != 8 || stats.Skipped != 0 {
+		t.Errorf("the pass reports %d desired, %d installed and %d skipped, want the 7 members and %s installed", stats.Desired, stats.Installed, stats.Skipped, beside)
+	}
+	if !reaches(t, rig.tun, target, netip.Addr{}, 0) {
+		t.Errorf("an unbound socket's datagram to %s did not follow %s into the tun", target, beside)
+	}
+	if err := boundReach(rig.host4, target); err != nil {
+		t.Errorf("a socket bound to %s lost %s beside the members of %s: %v", rig.device4, target, half, err)
+	}
+	if got := scopedLookup(t, rig.device4, target); got != rig.device4 {
+		t.Errorf("the lookup scoped to %s for %s names %q", rig.device4, target, got)
+	}
+
+	rig.table.Remove(netip.Prefix{}, half)
+	if err := rig.reconcile.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	held = heldOn(t, rig.meshIndex)
+	for _, member := range measuredCover4 {
+		if _, ok := held[prefix(member)]; ok {
+			t.Errorf("the member %s is still in the host's table after %s left", member, half)
 		}
 	}
 	if after := defaultRoutesOnHost(t); !sameDefaults(before, after) {
@@ -373,200 +374,9 @@ func TestDarwinRefusedRouteAtAMemberKeyKeepsItsWholeFamilyOut(t *testing.T) {
 	}
 }
 
-// A route of the reconciler's over the zero address, a real 0.0.0.0/1, draws
-// the default scoped to the underlay's interface, a bound socket reaches
-// through it, and the pass that takes the route out withdraws it.
-func TestDarwinOwnCaptureDrawsTheScopedDefaultUntilItGoes(t *testing.T) {
-	requireNetTest(t)
-	rig := newCoverRig(t, coverRigOptions{})
-	rig.passByHand(t)
-	before := defaultRoutesOnHost(t)
-	half := prefix("0.0.0.0/1")
-	rig.table.Set(netip.Prefix{}, half, nil)
-	if err := rig.reconcile.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if scoped, ok := heldOn(t, rig.meshIndex)[half]; !ok || scoped {
-		t.Fatalf("%s is in the tun's table as found %v scoped %v, want it unscoped", half, ok, scoped)
-	}
-	if !scopedDefaultOn(t, rig.host4, true) {
-		t.Errorf("a real %s left %s with no default scoped to it", half, rig.device4)
-	}
-	if err := boundReach(rig.host4, netip.MustParseAddr("1.2.3.4")); err != nil {
-		t.Errorf("a socket bound to %s lost 1.2.3.4 to %s: %v", rig.device4, half, err)
-	}
-	if scopedDefaultOn(t, rig.host4, false) {
-		t.Errorf("an IPv4 capture left an IPv6 default scoped to %s", rig.device4)
-	}
-
-	rig.table.Remove(netip.Prefix{}, half)
-	if err := rig.reconcile.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if scopedDefaultOn(t, rig.host4, true) {
-		t.Errorf("the pass that took %s out left the default scoped to %s", half, rig.device4)
-	}
-	if written := rig.underlay.Written(); len(written) != 0 {
-		t.Errorf("the pass that took %s out left %+v written", half, written)
-	}
-	if after := defaultRoutesOnHost(t); !sameDefaults(before, after) {
-		t.Errorf("the host's default routes changed over the test\nbefore: %v\nafter:  %v", before, after)
-	}
-}
-
-// movingLinks answers the host's IPv4 default as the test moves it, and
-// everything else as the host does.
-type movingLinks struct {
-	*Links
-	index   atomic.Int32
-	gateway netip.Addr
-}
-
-func (m *movingLinks) Default(family netip.Addr) (int, netip.Addr, error) {
-	if index := int(m.index.Load()); index != 0 && family.Is4() {
-		return index, m.gateway, nil
-	}
-	return m.Links.Default(family)
-}
-
-// A move while the scoped default is needed writes it on the interface moved
-// to before the socket goes there, and the settle after the move withdraws
-// the one left behind.
-func TestDarwinMoveCarriesTheScopedDefault(t *testing.T) {
-	requireNetTest(t)
-	moving := &movingLinks{gateway: netip.MustParseAddr("203.0.113.254")}
-	rig := newCoverRig(t, coverRigOptions{links: func(links *Links) defaultRoutes { moving.Links = links; return moving }})
-	rig.passByHand(t)
-	dock, _ := createUTUNWithFD(t)
-	setInterfaceUp(t, dock)
-	if err := testTUNPlatform(t, dock).AddAddr(prefix("203.0.113.1/24")); err != nil {
-		t.Fatal(err)
-	}
-	dockIndex := interfaceIndex(t, dock)
-
-	rig.table.Set(netip.Prefix{}, prefix("0.0.0.0/1"), nil)
-	if err := rig.reconcile.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if !scopedDefaultOn(t, rig.host4, true) {
-		t.Fatalf("the capture left %s with no default scoped to it", rig.device4)
-	}
-	moving.index.Store(int32(dockIndex))
-	if err := rig.underlay.Prepare(dockIndex); err != nil {
-		t.Skipf("this kernel takes no scoped default through %s: %v", dock, err)
-	}
-	if !scopedDefaultOn(t, dockIndex, true) {
-		t.Fatalf("the move left %s with no default scoped to it", dock)
-	}
-	if err := rig.underlay.Settle(dockIndex); err != nil {
-		t.Fatal(err)
-	}
-	if scopedDefaultOn(t, rig.host4, true) {
-		t.Errorf("the settle after the move left the default scoped to %s", rig.device4)
-	}
-	moving.index.Store(0)
-	if err := rig.underlay.Prepare(rig.host4); err != nil {
-		t.Fatal(err)
-	}
-	if err := rig.underlay.Settle(rig.host4); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// routeCommand changes the table from another process, the way another
-// program does, so the watcher does not take it for this process's own write.
-func routeCommand(t *testing.T, args ...string) {
-	t.Helper()
-	if out, err := exec.Command("route", append([]string{"-n"}, args...)...).CombinedOutput(); err != nil {
-		t.Fatalf("route %v: %v %s", args, err, out)
-	}
-}
-
-// within polls until ok holds, and reports how long that took.
-func within(t *testing.T, bound time.Duration, ok func() bool) (time.Duration, bool) {
-	t.Helper()
-	started := time.Now()
-	for time.Since(started) < bound {
-		if ok() {
-			return time.Since(started), true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return time.Since(started), ok()
-}
-
-// Another program's route over a zero address, a full-tunnel VPN's 0.0.0.0/1
-// on its own utun, draws the default scoped to the underlay's interface
-// within the settle and one pass, with the sweep far away, and its removal
-// withdraws it as fast. A route holding no zero address draws nothing, and a
-// burst of unrelated changes costs a few passes.
-func TestDarwinAnotherProgramsCaptureDrawsTheScopedDefaultWithinAPass(t *testing.T) {
-	requireNetTest(t)
-	rig := newCoverRig(t, coverRigOptions{reconcile: coverSweep})
-	other, _ := createUTUNWithFD(t)
-	setInterfaceUp(t, other)
-	if err := testTUNPlatform(t, other).AddAddr(prefix("192.0.2.1/24")); err != nil {
-		t.Fatal(err)
-	}
-	if err := testTUNPlatform(t, other).AddAddr(prefix("2001:db8:cc::1/64")); err != nil {
-		t.Fatal(err)
-	}
-	rig.run(t)
-	if _, ok := within(t, coverWakeBound, func() bool { return rig.passes.Load() > 0 }); !ok {
-		t.Fatal("the reconciler ran no first pass")
-	}
-	// the IPv6 default is scoped only where the host's own leaves by the
-	// same interface through a next hop, which a stand-in uplink has not
-	index6, gateway6, err6 := rig.underlay.links.Default(netip.IPv6Unspecified())
-	v6 := err6 == nil && gateway6.IsValid() && index6 == rig.host4
-
-	routeCommand(t, "add", "-net", "0.0.0.0/1", "-interface", other)
-	routeCommand(t, "add", "-inet6", "-net", "::/1", "-interface", other)
-	took, ok := within(t, coverWakeBound, func() bool {
-		return scopedDefaultOn(t, rig.host4, true) && (!v6 || scopedDefaultOn(t, rig.host4, false))
-	})
-	t.Logf("another program's capture drew the scoped default in %s (IPv6 checked %v)", took, v6)
-	if !ok {
-		t.Errorf("another program's 0.0.0.0/1 left %s with no default scoped to it after %s", rig.device4, took)
-	}
-	routeCommand(t, "delete", "-net", "0.0.0.0/1", "-interface", other)
-	routeCommand(t, "delete", "-inet6", "-net", "::/1", "-interface", other)
-	took, ok = within(t, coverWakeBound, func() bool {
-		return !scopedDefaultOn(t, rig.host4, true) && !scopedDefaultOn(t, rig.host4, false)
-	})
-	t.Logf("its removal withdrew the scoped default in %s", took)
-	if !ok {
-		t.Errorf("the default scoped to %s outlived another program's capture by %s", rig.device4, took)
-	}
-
-	routeCommand(t, "add", "-net", "1.0.0.0/8", "-interface", other)
-	passes := rig.passes.Load()
-	if _, ok := within(t, coverWakeBound, func() bool { return rig.passes.Load() > passes }); !ok {
-		t.Error("another program's route woke no pass")
-	}
-	if scopedDefaultOn(t, rig.host4, true) || len(rig.underlay.Written()) != 0 {
-		t.Errorf("a route holding no zero address drew %+v", rig.underlay.Written())
-	}
-	routeCommand(t, "delete", "-net", "1.0.0.0/8", "-interface", other)
-	time.Sleep(coverWakeBound)
-
-	passes = rig.passes.Load()
-	for range coverBurst {
-		routeCommand(t, "add", "-host", "192.0.2.77", "-interface", other)
-		routeCommand(t, "delete", "-host", "192.0.2.77", "-interface", other)
-	}
-	time.Sleep(coverWakeBound)
-	cost := rig.passes.Load() - passes
-	t.Logf("%d adds and deletes of a host route cost %d passes", 2*coverBurst, cost)
-	if cost > coverBurstPasses {
-		t.Errorf("%d unrelated route changes cost %d passes, want at most %d", 2*coverBurst, cost, coverBurstPasses)
-	}
-}
-
-// A default from a source is scoped to the tun, out of every unscoped lookup:
-// it goes in and draws no default scoped to the underlay's interface. The hold
-// Babel keeps at a retracted default stays out of the tun's table.
-func TestDarwinScopedCaptureDrawsNoScopedDefaultAndAHeldDefaultStaysOut(t *testing.T) {
+// A default from a source is scoped to the tun, out of every unscoped lookup.
+// The hold Babel keeps at a retracted default stays out of the tun's table.
+func TestDarwinScopedCaptureGoesInScopedAndAHeldDefaultStaysOut(t *testing.T) {
 	requireNetTest(t)
 	rig := newCoverRig(t, coverRigOptions{})
 	rig.passByHand(t)
@@ -582,22 +392,13 @@ func TestDarwinScopedCaptureDrawsNoScopedDefaultAndAHeldDefaultStaysOut(t *testi
 	if _, ok := held[prefix("0.0.0.0/0")]; ok {
 		t.Error("the tun's table holds the retracted 0.0.0.0/0")
 	}
-	for _, is4 := range []bool{true, false} {
-		if scopedDefaultOn(t, rig.host4, is4) {
-			t.Errorf("a scoped capture left a default scoped to %s (IPv4 %v)", rig.device4, is4)
-		}
-	}
-	if written := rig.underlay.Written(); len(written) != 0 {
-		t.Errorf("a scoped capture wrote %+v outside the tun", written)
-	}
 }
 
 // 128.0.0.0/1 and 8000::/1 alone hold no zero address, which leaves a bound
-// socket its fallback: both go in unscoped and nothing is written outside the
-// tun. An unbound socket follows each half into the tun, and a socket bound to
-// the host's interface still reaches an address inside it by the host's own
-// route.
-func TestDarwinUpperHalvesDrawNoScopedDefault(t *testing.T) {
+// socket its fallback: both go in unscoped. An unbound socket follows each
+// half into the tun, and a socket bound to the host's interface still reaches
+// an address inside it by the host's own route.
+func TestDarwinUpperHalvesGoInUnscoped(t *testing.T) {
 	requireNetTest(t)
 	rig := newCoverRig(t, coverRigOptions{})
 	rig.passByHand(t)
@@ -634,14 +435,6 @@ func TestDarwinUpperHalvesDrawNoScopedDefault(t *testing.T) {
 		if got := scopedLookup(t, device.Name, half.inside); got != device.Name {
 			t.Errorf("the lookup scoped to %s for %s names %q", device.Name, half.inside, got)
 		}
-	}
-	for _, is4 := range []bool{true, false} {
-		if scopedDefaultOn(t, rig.host4, is4) {
-			t.Errorf("an upper half left a default scoped to %s (IPv4 %v)", rig.device4, is4)
-		}
-	}
-	if written := rig.underlay.Written(); len(written) != 0 {
-		t.Errorf("the upper halves wrote %+v outside the tun", written)
 	}
 	if after := defaultRoutesOnHost(t); !sameDefaults(before, after) {
 		t.Errorf("the host's default routes changed over the test\nbefore: %v\nafter:  %v", before, after)

@@ -96,8 +96,6 @@ func Listen(path string) (net.Listener, error) {
 // each missing directory above it is made the same way
 // BSD hands a new directory the group of the one above it rather than the process's
 // a directory starts with no access and takes the daemon's group before its mode lets that group in
-// the control socket and the darwin underlay record share a directory
-// and whichever of the two comes first makes it here
 func MakeDirectory(dir string) error {
 	if _, err := os.Stat(dir); err == nil {
 		return nil

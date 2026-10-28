@@ -197,11 +197,11 @@ type Runtime struct {
 	// Endpoints reports the addresses the live sessions send their underlay
 	// to now. Nil reports none
 	Endpoints func() []netip.Addr
-	// Capture holds the rest of the routing a route over a zero address needs
-	// to be safe, which on darwin is a default scoped to the underlay interface.
-	// Nil where the platform needs nothing, which is everywhere but there.
-	// It is opened by whatever owns the link watcher, so it is handed here
-	// rather than written in cap.table.
+	// Capture answers whether the host holds a default of its own in each
+	// family, which a cover waits for. Nil waits for nothing, as everywhere
+	// but darwin with link.underlay.bind. It is opened by whatever owns the
+	// underlay's selection, so it is handed here rather than written in
+	// cap.table.
 	Capture CaptureRoutes
 	// Host is the machine this reconciler reads and writes, nil for the one
 	// this process is running on, as a daemon passes. A test hands
@@ -622,18 +622,19 @@ type Reconciler struct {
 	// warned holds the routes already reported as unrepresentable. It is
 	// rebuilt from each pass, so it stays bounded by the snapshot.
 	warned map[Route]bool
-	// uncovered records what the last pass found the underlay able to fall
-	// back on, so holding a capture back costs one line per transition rather
-	// than one per pass, and capturing says whether this pass left one
+	// uncovered records which families the last pass found a host default
+	// of, so holding a cover back costs one line per transition rather than
+	// one per pass, and capturing says whether this pass left a capture
 	// installed, the only state whose grace needs a wake-up of its own.
 	uncovered Covered
 	capturing bool
 	// cover is the families the last pass left covered, so a change is
 	// reported once.
 	cover []Family
-	// want is the families this pass asked the underlay to cover, kept for
-	// the second ask after the deletes.
-	want Covered
+	// memberless holds the zero routes a cover installs as nothing that the
+	// last pass reported, rebuilt each pass, so a route the mesh keeps
+	// announcing costs one log line
+	memberless map[Route]bool
 
 	// rules is the optional half of the platform, nil where it has no policy
 	// engine
@@ -696,8 +697,9 @@ type Reconciler struct {
 // holds for this reconciler once the pass has applied, and Skipped the ones it wanted
 // and did not get: one the platform cannot represent, one whose key
 // another writer or a route of this reconciler's that has not left yet
-// holds, or a cover member left out with the rest of
-// its family. A prefix the mesh has and the kernel does not
+// holds, a cover member left out with the rest of
+// its family, or a zero route inside 0.0.0.0/8 or ::/8, of which a cover
+// installs nothing. A prefix the mesh has and the kernel does not
 // is explained by Skipped or by Err and by nothing else.
 type Stats struct {
 	At        time.Time
@@ -1274,11 +1276,13 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 	unmet := func(route Route) bool { return scoped(route) || unheld[route] }
 	bare := desired
 	// After the capture grace check and the readiness check, which judge the
-	// default whole: a member holds no zero address, and CapturesTheMachine
+	// zero route whole: a member holds no zero address, and CapturesTheMachine
 	// counts one by its length outside the overlay alone, which would pass the
 	// rest while that check holds captures back.
+	var dropped []Route
 	if covering {
 		desired = coverDefaults(bare, unmet)
+		dropped = r.reportMemberless(bare)
 	}
 	wanted := map[Route]bool{}
 	for _, route := range desired {
@@ -1286,7 +1290,9 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 			wanted[route] = true
 		}
 	}
-	desiredCount := len(desired)
+	// a zero route the cover installs as nothing is desired and skipped, so
+	// Desired stays Installed plus Skipped
+	desiredCount := len(desired) + len(dropped)
 	add, del := diffRoutes(desired, actual, scopes)
 	// A route refused last pass is tried first, and a route before the members
 	// it contains, its own key's included, so while a member or a route
@@ -1304,8 +1310,7 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 	if coverErr != nil {
 		errs = append(errs, coverErr)
 	}
-	added, removed, skipped := 0, 0, 0
-	released := false
+	added, removed, skipped := 0, 0, len(dropped)
 	held := make(map[Route]bool, len(actual))
 	for _, route := range actual {
 		held[route] = true
@@ -1322,14 +1327,6 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 		} else {
 			removed++
 			delete(held, route)
-			released = released || r.captures(route) && !route.Cover
-		}
-	}
-	if released && r.rt.Capture != nil {
-		// asked again once the capture is out of the table, so the scoped
-		// default it needed goes with it rather than at the next pass
-		if _, err := r.rt.Capture.Ready(r.want); err != nil {
-			errs = append(errs, fmt.Errorf("release the underlay: %w", err))
 		}
 	}
 	heldRoutes := func() []Route { return slices.Collect(maps.Keys(held)) }
@@ -1430,73 +1427,61 @@ func (r *Reconciler) reportCover(now []Family) {
 		if was == is {
 			continue
 		}
-		slog.Info("kernel changed the cover a plain default is installed as", "family", family, "installed", is)
+		slog.Info("kernel changed the cover a zero route is installed as", "family", family, "installed", is)
 		r.rt.Events.Emit("kernel.cover", "", slog.String("family", string(family)), slog.Bool("installed", is))
 	}
 	r.cover = now
 }
 
-// covered drops every route whose family lacks the fallback the route needs,
-// and repairs that routing on the way. A socket bound with IP_BOUND_IF falls
-// back on its family's zero address, and a route the platform installs
-// unscoped over that address takes the fallback away, which is why such a
-// route needs the underlay's scoped default. A plain default the platform
-// installs as its cover needs only the host's own default of its family,
-// since no member holds a zero address.
-//
-// The underlay is asked every pass, with nothing wanted too, because another
-// program's route can need its scoped default.
+// reportMemberless returns the zero routes of desired a cover installs as
+// nothing, those inside 0.0.0.0/8, this network (RFC 1122 section 3.2.1.3),
+// or ::/8, and warns once for each while the mesh keeps announcing it.
+func (r *Reconciler) reportMemberless(desired []Route) []Route {
+	var out []Route
+	reported := make(map[Route]bool, len(r.memberless))
+	for _, route := range desired {
+		if !memberless(route) {
+			continue
+		}
+		out = append(out, route)
+		if !r.memberless[route] {
+			slog.Warn("kernel is not installing a route its cover holds nothing of",
+				"destination", route.Destination,
+				"detail", "the cover leaves 0.0.0.0/8 and ::/8 to the host, and every address of the route lies there")
+			r.refusedAnew = true
+		}
+		reported[route] = true
+	}
+	r.memberless = reported
+	return out
+}
+
+// covered drops every zero route the platform installs as its cover while the
+// host holds no default of its own in the route's family, the default a
+// socket scoped to an interface falls back on, since no member holds a zero
+// address.
 func (r *Reconciler) covered(desired []Route) ([]Route, error) {
-	if r.rt.Capture == nil {
+	if r.rt.Capture == nil || !r.covers() || !slices.ContainsFunc(desired, zeroRoute) {
 		r.uncovered = Covered{V4: true, V6: true}
 		return desired, nil
 	}
-	covering, scopes := r.covers(), r.platformScopes()
-	coverOnly := func(route Route) bool { return covering && plainDefault(route) }
-	needsUnderlay := func(route Route) bool {
-		return schema.HoldsUnspecified(route.Destination) && !coverOnly(route) && (scopes == nil || !scopes(route))
-	}
-	var want Covered
-	for _, route := range desired {
-		if needsUnderlay(route) {
-			if route.Destination.Addr().Is4() {
-				want.V4 = true
-			} else {
-				want.V6 = true
-			}
-		}
-	}
-	r.want = want
-	var host Covered
 	var errs []error
-	underlay, err := r.rt.Capture.Ready(want)
+	host, err := r.rt.Capture.HostDefaults()
 	if err != nil {
-		errs = append(errs, fmt.Errorf("cover the underlay before capturing: %w", err))
-	}
-	if slices.ContainsFunc(desired, coverOnly) {
-		var err error
-		if host, err = r.rt.Capture.HostDefaults(); err != nil {
-			errs = append(errs, fmt.Errorf("read the host's own defaults before covering: %w", err))
-		}
+		errs = append(errs, fmt.Errorf("read the host's own defaults before covering: %w", err))
 	}
 	allowed := Covered{V4: true, V6: true}
 	out := desired[:0:0]
 	for _, route := range desired {
 		address := route.Destination.Addr()
-		ready, detail := true, ""
-		switch {
-		case coverOnly(route):
-			ready, detail = host.Has(address), "the host has no default of its own for that family, so this node would lose every network it has there"
-		case needsUnderlay(route):
-			ready, detail = underlay.Has(address), "the underlay has no route of its own for that family, so this node would lose every network it has there"
-		}
-		if !ready {
+		if zeroRoute(route) && !host.Has(address) {
 			// Left out of the pass rather than counted as skipped: skipped
 			// counts what the kernel would not take, and this is the
 			// reconciler refusing to ask.
 			if r.uncovered.Has(address) {
 				slog.Warn("kernel is holding back a route that would carry this machine's own traffic",
-					"destination", route.Destination, "detail", detail)
+					"destination", route.Destination,
+					"detail", "the host has no default of its own for that family, so this node would lose every network it has there")
 			}
 			if address.Is4() {
 				allowed.V4 = false
@@ -1864,14 +1849,6 @@ func (r *Reconciler) withdraw() error {
 			errs = append(errs, fmt.Errorf("delete route %s: %w", route, err))
 		} else {
 			withdrawn++
-		}
-	}
-	if r.rt.Capture != nil {
-		// with the captures gone nothing of this reconciler's needs the
-		// underlay's scoped default, and the call leaves one only for another
-		// program's route or one of ours a delete above failed to take out
-		if _, err := r.rt.Capture.Ready(Covered{}); err != nil {
-			errs = append(errs, fmt.Errorf("release the underlay: %w", err))
 		}
 	}
 	// An address is removed only while the link still carries exactly what was

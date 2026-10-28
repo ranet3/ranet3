@@ -387,11 +387,40 @@ func TestDarwinSelectionFollowsARouteThatMoves(t *testing.T) {
 	}
 }
 
-// The premise the reclaim's last condition rests on, asserted on whatever
-// machine the suite runs on rather than taken on trust: no interface holds
-// both an unscoped default and a scoped one, so a scoped default on the
-// interface that also holds the unscoped one is a shape only this tool
-// produces. It reads the table and writes nothing.
+// defaultPrefixes are the keys of the two families' defaults
+var defaultPrefixes = []netip.Prefix{
+	netip.PrefixFrom(netip.IPv4Unspecified(), 0),
+	netip.PrefixFrom(netip.IPv6Unspecified(), 0),
+}
+
+// isDefaultKey reports whether one dumped route is the default of destination's
+// family, a zero-length netmask over the unspecified address and never a host
+// route
+func isDefaultKey(rm *route.RouteMessage, destination netip.Prefix) bool {
+	held, ok := dumpedPrefix(rm)
+	return ok && held.Bits() == 0 && held.Addr().Is4() == destination.Addr().Is4()
+}
+
+// unscopedDefaultIndex is the interface the host's own default of
+// destination's family leaves by, read from the dump, which tells the route
+// carrying no scope from the scoped ones at the same key
+func unscopedDefaultIndex(messages []route.Message, destination netip.Prefix) (int, bool) {
+	for _, message := range messages {
+		rm, ok := message.(*route.RouteMessage)
+		if !ok || rm.Type != unix.RTM_GET || rm.Flags&unix.RTF_IFSCOPE != 0 {
+			continue
+		}
+		if isDefaultKey(rm, destination) {
+			return rm.Index, true
+		}
+	}
+	return 0, false
+}
+
+// No interface holds both an unscoped default and a scoped one: macOS scopes a
+// default to each interface but the one holding the unscoped default, so a
+// send naming that interface falls back on the unscoped default. Asserted on
+// whatever machine the suite runs on. It reads the table and writes nothing.
 func TestNoOtherProgramScopesADefaultToThePrimaryInterface(t *testing.T) {
 	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
 	if err != nil {
@@ -423,8 +452,7 @@ func TestNoOtherProgramScopesADefaultToThePrimaryInterface(t *testing.T) {
 			}
 			t.Logf("the host's default is on index %d, which carries %d scoped defaults", primary, scoped)
 			if scoped != 0 {
-				t.Errorf("interface %d holds both the unscoped default and %d scoped ones, so the reclaim's last condition does not tell this tool's route from another program's on this host",
-					primary, scoped)
+				t.Errorf("interface %d holds both the unscoped default and %d scoped ones", primary, scoped)
 			}
 		})
 	}

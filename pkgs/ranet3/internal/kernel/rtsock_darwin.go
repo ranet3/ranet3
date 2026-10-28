@@ -293,9 +293,6 @@ type routeMonitor struct {
 }
 
 // newRouteMonitor watches one interface, or every interface when index is
-// zero, as a watcher for the host's own default route needs: the
-// route it follows moves between interfaces and is never on the mesh tun.
-// newRouteMonitor watches one interface, or every interface when index is
 // zero, minus the one skip names, and optionally ignores this process's own
 // writes. See routeMonitor for which caller wants which.
 func newRouteMonitor(index int, skip int, quiet bool) (*routeMonitor, error) {

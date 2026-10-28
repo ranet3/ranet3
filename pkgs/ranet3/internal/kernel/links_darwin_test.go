@@ -21,42 +21,38 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// The lookup has to name an interface this host really has, and not the
-// loopback: the use of the answer is to take the underlay socket off the
-// forwarding table and onto the link the machine reaches its peers through.
+// The lookup of the host's own default names an interface this host really
+// has, up and not the loopback, in each family the host has a default in.
 //
 // It needs no privilege and writes nothing, so it runs in the ordinary suite
-// rather than behind RANET3_DARWIN_NETTEST. A host with no default route
+// rather than behind RANET3_DARWIN_NETTEST. A family with no default route
 // is the one honest reason to skip.
 func TestDefaultInterfaceNamesALinkThisHostHas(t *testing.T) {
-	links, err := WatchLinks(nil, 0)
-	if err != nil {
-		t.Fatalf("open the link watcher: %v", err)
-	}
-	t.Cleanup(func() { _ = links.Close() })
-
-	index, err := links.DefaultInterface()
-	if errors.Is(err, ErrNoDefaultRoute) {
-		t.Skip("this host has no default route, so there is nothing to bind to")
-	}
-	if err != nil {
-		t.Fatalf("look up the default interface: %v", err)
-	}
-	device, err := net.InterfaceByIndex(index)
-	if err != nil {
-		t.Fatalf("the lookup returned index %d, which names no interface: %v", index, err)
-	}
-	t.Logf("the host's own traffic leaves by %s (index %d, flags %s)", device.Name, index, device.Flags)
-	if device.Flags&net.FlagUp == 0 {
-		t.Errorf("%s is not up, so the underlay would be bound to a dead link", device.Name)
-	}
-	if device.Flags&net.FlagLoopback != 0 {
-		t.Errorf("%s is the loopback, so nothing bound to it would reach a peer", device.Name)
+	for _, family := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified()} {
+		t.Run(family.String(), func(t *testing.T) {
+			index, _, err := lookupDefault(runningKernel{}, 0, family)
+			if errors.Is(err, ErrNoDefaultRoute) {
+				t.Skip("this host has no default route of this family")
+			}
+			if err != nil {
+				t.Fatalf("look up the default interface: %v", err)
+			}
+			device, err := net.InterfaceByIndex(index)
+			if err != nil {
+				t.Fatalf("the lookup returned index %d, which names no interface: %v", index, err)
+			}
+			t.Logf("the host's own traffic leaves by %s (index %d, flags %s)", device.Name, index, device.Flags)
+			if device.Flags&net.FlagUp == 0 {
+				t.Errorf("%s is not up", device.Name)
+			}
+			if device.Flags&net.FlagLoopback != 0 {
+				t.Errorf("%s is the loopback", device.Name)
+			}
+		})
 	}
 }
 
-// the lookup the underlay is bound through names the next hop of the default route beside its interface
-// the scoped default is written under that next hop, so a lookup that left it out leaves the underlay with no default of its own
+// the lookup of the host's default names the next hop of the default route beside its interface, which the network watch reports
 // the answer is held against the same request read raw, which carries the gateway the kernel named
 // it needs no privilege and writes nothing
 func TestLookupNamesTheNextHopOfTheDefaultRoute(t *testing.T) {

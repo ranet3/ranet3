@@ -27,8 +27,7 @@ import (
 // the netlink connection its write tests drive, and reads this never.
 type Host interface {
 	// RouteSocket opens a write side of the platform's routing socket. The
-	// reconciler and the underlay defaults take one each, so the sequence
-	// numbers of the two never interleave. The caller closes it.
+	// caller closes it.
 	RouteSocket() (RouteWriter, error)
 	// Dump reads the whole routing table back, in the wire form the platform's
 	// own parser reads. It crosses this seam encoded because deciding which of
@@ -41,10 +40,9 @@ type Host interface {
 	Addresses(index int) ([]netip.Prefix, error)
 	// Lookup asks where one destination of one family goes. An exact mask asks
 	// for that key alone rather than for a longest-prefix match. See
-	// Links.Default for why the difference decides the answer here.
+	// lookupDefault for why the difference decides the answer here.
 	Lookup(destination, mask netip.Addr) (RouteAnswer, error)
-	// InterfaceIndex resolves a device name, and InterfaceName the reverse. A
-	// record that outlives a reboot needs both, since an index is reused.
+	// InterfaceIndex resolves a device name, and InterfaceName the reverse.
 	InterfaceIndex(name string) (int, error)
 	InterfaceName(index int) (string, error)
 	// Watch reports changes to the routing of one interface, or of every

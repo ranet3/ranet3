@@ -8,6 +8,7 @@ package kernel
 import (
 	"errors"
 	"maps"
+	"math/big"
 	"net/netip"
 	"slices"
 	"testing"
@@ -88,8 +89,9 @@ func longest(routes []Route, scopes func(Route) bool, a netip.Addr) (Route, bool
 }
 
 // For every address outside the hole, the kernel's longest match with the
-// cover in is the route the longest match with the plain default would take,
-// or a member where that route is the default itself.
+// cover in is the route the longest match with the zero routes would take, or
+// a member where that route is a zero route itself. A zero route goes in as
+// members whatever the platform would scope.
 func TestCoverForwardsAsThePlainDefaultDoes(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		c := hegel.Draw(ht, coverCases())
@@ -99,7 +101,7 @@ func TestCoverForwardsAsThePlainDefaultDoes(t *testing.T) {
 				scoped[r] = true
 			}
 		}
-		scopes := func(r Route) bool { return !r.Cover && scoped[r] }
+		scopes := func(r Route) bool { return !r.Cover && !zeroRoute(r) && scoped[r] }
 		withDefault := append([]Route(nil), c.routes...)
 		if c.with4 {
 			withDefault = append(withDefault, Route{Destination: netip.MustParsePrefix("0.0.0.0/0")})
@@ -109,8 +111,8 @@ func TestCoverForwardsAsThePlainDefaultDoes(t *testing.T) {
 		}
 		covered := coverDefaults(withDefault, scopes)
 		for _, r := range covered {
-			if r.Destination.Bits() == 0 && plainDefault(r) {
-				ht.Fatalf("a plain default %s is still in the kernel's table", r.Destination)
+			if zeroRoute(r) {
+				ht.Fatalf("a zero route %s is still in the kernel's table", r.Destination)
 			}
 			if r.Cover && schema.HoldsUnspecified(r.Destination) {
 				ht.Fatalf("member %s holds its family's zero address", r.Destination)
@@ -128,9 +130,9 @@ func TestCoverForwardsAsThePlainDefaultDoes(t *testing.T) {
 			if !wantOK {
 				continue
 			}
-			if want.Destination.Bits() == 0 {
+			if zeroRoute(want) {
 				if !got.Cover {
-					ht.Fatalf("%s takes the default, and with the cover %s, which is not a member\ncover: %v", a, got.Destination, covered)
+					ht.Fatalf("%s takes the zero route %s, and with the cover %s, which is not a member\ncover: %v", a, want.Destination, got.Destination, covered)
 				}
 				continue
 			}
@@ -142,9 +144,72 @@ func TestCoverForwardsAsThePlainDefaultDoes(t *testing.T) {
 	})
 }
 
+// addressCount is how many addresses p holds
+func addressCount(p netip.Prefix) *big.Int {
+	return new(big.Int).Lsh(big.NewInt(1), uint(p.Addr().BitLen()-p.Bits()))
+}
+
+// For every route P holding its family's zero address, the cover installs it
+// as members that hold no zero address, lie within P and overlap no other, and
+// that with the hole cover exactly P: every address of P outside 0.0.0.0/8 or
+// ::/8 lies in one member, and the members hold as many addresses as P holds
+// outside the hole.
+func TestCoverMembersAreAZeroRouteLessTheHole(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		v6 := hegel.Draw(ht, hegel.Booleans())
+		zero, hole := netip.IPv4Unspecified(), netip.MustParsePrefix("0.0.0.0/8")
+		if v6 {
+			zero, hole = netip.IPv6Unspecified(), netip.MustParsePrefix("::/8")
+		}
+		p := netip.PrefixFrom(zero, hegel.Draw(ht, hegel.OneOf(pbt.Spanning(0, 10), pbt.Spanning(0, zero.BitLen()))))
+		installed := coverDefaults([]Route{{Destination: p, Metric: routeMetric(0, p, false)}}, nil)
+		total := new(big.Int)
+		for i, r := range installed {
+			if !r.Cover {
+				ht.Fatalf("%s goes in as %s, which is no member", p, r.Destination)
+			}
+			if schema.HoldsUnspecified(r.Destination) {
+				ht.Fatalf("the member %s of %s holds its family's zero address", r.Destination, p)
+			}
+			if r.Destination.Bits() < p.Bits() || !p.Contains(r.Destination.Addr()) {
+				ht.Fatalf("the member %s does not lie within %s", r.Destination, p)
+			}
+			for _, o := range installed[:i] {
+				if o.Destination.Overlaps(r.Destination) {
+					ht.Fatalf("the members %s and %s of %s overlap", o.Destination, r.Destination, p)
+				}
+			}
+			total.Add(total, addressCount(r.Destination))
+		}
+		want := addressCount(p)
+		if p.Bits() < hole.Bits() {
+			want.Sub(want, addressCount(hole))
+		} else {
+			want.SetInt64(0)
+		}
+		if total.Cmp(want) != 0 {
+			ht.Fatalf("the members of %s hold %s addresses, want %s, the addresses of %s outside %s", p, total, want, p, hole)
+		}
+		raw := hegel.Draw(ht, hegel.IPAddresses().IPv4()).AsSlice()
+		if v6 {
+			raw = hegel.Draw(ht, hegel.IPAddresses().IPv6()).AsSlice()
+		}
+		raw[0] = hegel.Draw(ht, pbt.Spanning[uint8](0, 255))
+		// the bits P fixes are all zero, and the rest are the drawn address's
+		for i := range p.Bits() {
+			raw[i/8] &^= 0x80 >> (i % 8)
+		}
+		a, _ := netip.AddrFromSlice(raw)
+		holding := slices.ContainsFunc(installed, func(r Route) bool { return r.Destination.Contains(a) })
+		if hole.Contains(a) == holding {
+			ht.Fatalf("%s within %s lies in the hole %v and in a member %v\nmembers %v", a, p, hole.Contains(a), holding, installed)
+		}
+	})
+}
+
 // unitRoutes are the routes a pass can carry beside the defaults: routes
-// that withhold members at or around their keys, routes over a zero address,
-// and routes that withhold nothing.
+// that withhold the member at their own key, routes over a zero address,
+// which go in as the members they contain, and routes that withhold nothing.
 var unitRoutes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("128.0.0.0/1"),
 	netip.MustParsePrefix("64.0.0.0/2"), netip.MustParsePrefix("0.0.0.0/4"),
@@ -156,12 +221,12 @@ var unitRoutes = []netip.Prefix{
 }
 
 // failKeys is the keys an add in a pass over routes can fail at, the
-// members' and the routes' but a default's, drawn as often as each other.
+// members' and the routes' but a zero route's, drawn as often as each other.
 func failKeys(routes []netip.Prefix) [2][]netip.Prefix {
 	var keys [2][]netip.Prefix
 	keys[0] = slices.Concat(zeroFreeCover[true], zeroFreeCover[false])
 	for _, r := range routes {
-		if r.Bits() > 0 {
+		if !schema.HoldsUnspecified(r) {
 			keys[1] = append(keys[1], r)
 		}
 	}
@@ -305,7 +370,7 @@ func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 				}
 			}
 			for _, r := range step.routes {
-				if r.Bits() == 0 && step.hosts.Has(r.Addr()) {
+				if schema.HoldsUnspecified(r) && step.hosts.Has(r.Addr()) {
 					base = append(base, Route{Destination: r, Metric: routeMetric(0, r, false)})
 				}
 			}
