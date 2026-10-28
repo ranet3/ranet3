@@ -518,21 +518,19 @@ func carriedPacket(raw []byte) (int, bool) {
 // and its strict reverse path check drops one from an address it routes out of another link, a SID or a router-id it routes elsewhere among them
 // the builder draws through take
 func (m *Mesh) answerTooBig(inner []byte, mtu int, end bool, sid netip.Addr, take takeAnswer) (answer []byte, cut bool) {
+	version := inner[0] >> 4
+	if !unfragmentable(inner, version) {
+		return nil, true
+	}
 	allow := m.allowAnswer(take, netip.Addr{})
-	switch {
-	case inner[0]>>4 == 6:
+	if version == 6 {
 		source := netip.AddrFrom16([16]byte(inner[24:40]))
 		if end {
 			source = cmp.Or(m.AnswerSources().Router6, sid)
 		}
-		answer = srv6.PacketTooBig(inner, source, mtu, allow)
-	// DF, RFC 791 section 3.1
-	case inner[6]&0x40 != 0:
-		answer = packet.FragmentationNeeded(inner, m.source4(inner, end), m.AnswerTTL(), mtu, allow)
-	default:
-		return nil, true
+		return srv6.PacketTooBig(inner, source, mtu, allow), false
 	}
-	return answer, false
+	return packet.FragmentationNeeded(inner, m.source4(inner, end), m.AnswerTTL(), mtu, allow), false
 }
 
 // answerOptions answers inner, an IPv4 packet without DF the cut refused for its option list, with parameter problem at fault
