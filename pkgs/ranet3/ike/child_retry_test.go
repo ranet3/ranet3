@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/bubble"
@@ -54,8 +55,7 @@ func dialRefusing(t *testing.T, configure func(*PeerConfig), seed func(initiator
 
 // seededStreak is a run of refusals begun at since under the IKE SA and the Child SA s holds
 func seededStreak(s *Session, since time.Time) temporaryStreak {
-	child, _ := s.childEstablishedAt()
-	return temporaryStreak{on: s.current, child: child, since: since}
+	return temporaryStreak{on: s.current, child: s.currentChildGeneration(), since: since}
 }
 
 // refuseRekeys has the responder answer every rekey with TEMPORARY_FAILURE, as it answers one that finds its own Child SA rekey running
@@ -375,6 +375,7 @@ func testPeerRekeyEndsTheTemporaryFailureRun(t *testing.T) {
 
 // a rekey a reload forced that is refused, and whose SA the peer's rekey then replaces with a listed cipher, as a peer that reloaded the same lists does, ends the run
 // since the next refusal is counted under the Child SA the peer made, and so starts a new run rather than closing the IKE SA
+// the peer's Child SA is made at the clock reading of the one it replaces
 func TestPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey(t *testing.T) {
 	bubble.Run(testPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey)(t)
 }
@@ -397,13 +398,13 @@ func testPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey(t *testing.T) {
 		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
 		refuseRekeys(initiator, responder)
 	})
+	first, _ := pair.initiator.childEstablishedAt()
 	aes128 := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{"aes128gcm"}}})
 	dialing.Store(&aes128)
 	pair.initiator.SuitesChanged()
-	for deadline := time.Now().Add(answerBudget); childRekeyLines(pair, "ike.rekey.failed") == 0; time.Sleep(recordPoll) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the forced rekey never failed, the session recorded %q", pair.dialed.recorded())
-		}
+	synctest.Wait()
+	if childRekeyLines(pair, "ike.rekey.failed") == 0 {
+		t.Fatalf("the forced rekey had not failed once the session settled, the session recorded %q", pair.dialed.recorded())
 	}
 	failed := time.Now()
 	// the peer's lists leave out the cipher as well, so its rekey makes a Child SA of a listed cipher
@@ -415,6 +416,9 @@ func testPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey(t *testing.T) {
 	pair.responder.childRekeying.Store(true)
 	if got := pair.initiator.Suite().ESP(); got != "aes128gcm" {
 		t.Fatalf("the peer's rekey made a Child SA of %s, want aes128gcm", got)
+	}
+	if made, _ := pair.initiator.childEstablishedAt(); !made.Equal(first) {
+		t.Fatalf("the peer's Child SA was made %s after the one it replaced, want at the same clock reading", made.Sub(first))
 	}
 	// past the forced rekey's retry and past the seeded run's span
 	wake := seeded.Add(spanLeft)
@@ -506,8 +510,6 @@ func testPeerRekeyEndsTheTemporaryFailureRunBeforeAReloadRekeysItsSA(t *testing.
 		seeded = time.Now()
 		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
 	})
-	// the streak tells a Child SA by when it was made, so the peer's rekey makes its SA an instant after the one it replaces
-	time.Sleep(time.Millisecond)
 	if err := pair.responder.RekeyChild(); err != nil {
 		t.Fatalf("the peer's rekey failed: %v", err)
 	}

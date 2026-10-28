@@ -97,6 +97,12 @@ func (s *Session) childEstablishedAt() (time.Time, bool) {
 	return s.childEstablished, s.Child.LocalSPI != 0
 }
 
+func (s *Session) currentChildGeneration() uint64 {
+	s.childMu.RLock()
+	defer s.childMu.RUnlock()
+	return s.childGeneration
+}
+
 func (s *Session) ikeEstablishedAt() (time.Time, bool) { return s.currentContext().established, true }
 
 // an IKE SA past its lifetime is one this end is closing
@@ -104,21 +110,21 @@ func (s *Session) ikeExpired(ctx *ikeContext) bool {
 	return s.ikeRekeyInterval > 0 && !time.Now().Before(ctx.established.Add(s.ikeRekeyInterval))
 }
 
-// temporaryStreak is a run of TEMPORARY_FAILURE refusals, with the IKE SA and the Child SA's establishment it began under
+// temporaryStreak is a run of TEMPORARY_FAILURE refusals, with the IKE SA and the Child SA generation it began under
 type temporaryStreak struct {
 	on    *ikeContext
-	child time.Time
+	child uint64
 	since time.Time
 }
 
-func (t *temporaryStreak) outlasted(on *ikeContext, child time.Time, err error, now time.Time) bool {
+func (t *temporaryStreak) outlasted(on *ikeContext, child uint64, err error, now time.Time) bool {
 	rejected, ok := errors.AsType[*rejectedError](err)
 	if !ok || rejected.notify.Type != N_TEMPORARY_FAILURE {
 		return false
 	}
 	// RFC 7296 section 2.25: "If a peer continues to receive TEMPORARY_FAILURE on the same IKE SA after several minutes, it SHOULD conclude that the state information is out of sync and close the IKE SA."
 	// the run is the IKE SA's, and a rekey completed on it ends the run whichever end started that rekey, so a refusal under another IKE SA or Child SA starts a new one
-	if t.on != on || !t.child.Equal(child) {
+	if t.on != on || t.child != child {
 		*t = temporaryStreak{on: on, child: child, since: now}
 		return false
 	}
@@ -401,8 +407,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 		if err != nil {
 			schedule.failures, schedule.lastErr = schedule.failures+1, err
-			child, _ := s.childEstablishedAt()
-			if s.temporary.outlasted(s.currentContext(), child, err, time.Now()) {
+			if s.temporary.outlasted(s.currentContext(), s.currentChildGeneration(), err, time.Now()) {
 				end(schedule, "temporary failure", fmt.Errorf("ike: the peer answered TEMPORARY_FAILURE for %s: %w", temporaryFailureSpan, err))
 				return time.Time{}, nil
 			}

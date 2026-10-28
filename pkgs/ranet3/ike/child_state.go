@@ -95,7 +95,7 @@ func (s *Session) replaceKeyedChild(child ChildSA, entry kexEntry) error {
 		}
 	}
 	old, oldEnds := s.Child, s.childEstablished.Add(s.childRekeyInterval)
-	s.Child, s.childEstablished = child, time.Now()
+	s.Child, s.childEstablished, s.childGeneration = child, time.Now(), s.childGeneration+1
 	s.childKex = keyedEntry{spi: child.LocalSPI, entry: entry}
 	if old.LocalSPI != 0 {
 		s.retiring, s.retiringEnds = old, oldEnds

@@ -171,6 +171,8 @@ type Session struct {
 	childMu          sync.RWMutex
 	Child            ChildSA
 	childEstablished time.Time
+	// childGeneration counts the Child SAs installed, which tells two apart that one clock reading cannot
+	childGeneration uint64
 	// childKex is the kex entry of the key exchanges whose secrets keyed the Child SA holding its SPI
 	childKex  keyedEntry
 	withdrawn []uint32
