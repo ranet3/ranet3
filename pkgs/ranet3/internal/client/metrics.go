@@ -214,7 +214,7 @@ func (c *Client) renderEgress(w io.Writer) {
 		fmt.Fprintf(w, "ranet3_egress_conntrack_entries %d\n", *egress.ConntrackCount)
 	}
 	if egress.ConntrackMax != nil {
-		fmt.Fprint(w, "# HELP ranet3_egress_conntrack_max The most entries the host's connection tracking table takes. A new flow past it evicts the flows conntrack has not marked assured from a few hash buckets beside its own and is dropped where they hold none, after which the kernel also evicts such flows, and those their protocol has closing, while the table stays near this.\n")
+		fmt.Fprint(w, "# HELP ranet3_egress_conntrack_max The most entries the host's connection tracking table takes, net.netfilter.nf_conntrack_max, read on each pass and never written.\n")
 		fmt.Fprint(w, "# TYPE ranet3_egress_conntrack_max gauge\n")
 		fmt.Fprintf(w, "ranet3_egress_conntrack_max %d\n", *egress.ConntrackMax)
 	}
