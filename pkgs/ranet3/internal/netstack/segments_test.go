@@ -217,6 +217,50 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	}
 }
 
+// An End whose next segment only a route counting as a default reaches drops and counts the packet as one with no route to it, since a
+// next segment through a default would leave the mesh, which no segment means, for a next segment outside the overlay and one inside,
+// and sends the same packet on where a route counting as no default, the next segment's /64, stands beside the default
+func TestEndDropsAPacketWhoseNextSegmentOnlyADefaultReaches(t *testing.T) {
+	waypoint := segAddr("3fff:b:0:106::2")
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, next := range []netip.Addr{segAddr("2001:db8:0:6::3"), segAddr("3fff:b:0:206::1")} {
+		for _, routed := range []bool{false, true} {
+			mesh := &Mesh{Routes: NewRouteTable()}
+			mesh.SetSegments(table)
+			// the overlay holds the second next segment and not the first
+			mesh.SetOverlay(transitOverlay)
+			exit, hop := &recordingPeer{}, &recordingPeer{}
+			mesh.Routes.Set(netip.Prefix{}, segPrefix("::/0"), exit.peer(t, "exit"))
+			if nextHop := hop.peer(t, "next"); routed {
+				mesh.Routes.Set(netip.Prefix{}, netip.PrefixFrom(next, 64).Masked(), nextHop)
+			}
+			outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), segAddr("3fff:b:0:100::1"), []netip.Addr{waypoint, next})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := mesh.applySegments(framed(outer), DefaultMTU, nil); len(got) != 0 {
+				t.Fatalf("toward %s, under its /64 %v, a forwarded packet reached the tun: %v", next, routed, got)
+			}
+			wantHop, wantForwarded, wantDropped := 0, uint64(0), uint64(1)
+			if routed {
+				wantHop, wantForwarded, wantDropped = 1, 1, 0
+			}
+			if got := len(exit.packets(t)); got != 0 {
+				t.Errorf("toward %s, under its /64 %v, the End sent %d packets by the default", next, routed, got)
+			}
+			if got := len(hop.packets(t)); got != wantHop {
+				t.Errorf("toward %s, under its /64 %v, the End sent %d packets by that route, want %d", next, routed, got, wantHop)
+			}
+			if counters := mesh.SegmentCounters(); counters.Forwarded != wantForwarded || counters.Dropped != wantDropped {
+				t.Errorf("toward %s, under its /64 %v, the End counted %+v", next, routed, counters)
+			}
+		}
+	}
+}
+
 // The replacement slice is built from the first packet that is ours, so the
 // ones before it have to survive in order. A batch that is all passers keeps
 // its own backing array.
@@ -269,7 +313,7 @@ func TestSteeredPacketIsRoutedByItsFirstSegment(t *testing.T) {
 	mesh.SetSteering(table)
 
 	inner := plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")
-	policy := mesh.steerPolicy(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), RoutePeer, false)
+	policy, _ := mesh.steerPolicy(mesh.Steering(), segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), false)
 	if policy == nil {
 		t.Fatal("a packet the policy names was not claimed")
 	}
@@ -288,7 +332,7 @@ func TestSteeredPacketIsRoutedByItsFirstSegment(t *testing.T) {
 	}
 
 	// A packet from another address is claimed by no policy.
-	if policy := mesh.steerPolicy(segAddr("3fff:a::18"), segAddr("2001:4860:4860::8888"), RoutePeer, false); policy != nil {
+	if policy, _ := mesh.steerPolicy(mesh.Steering(), segAddr("3fff:a::18"), segAddr("2001:4860:4860::8888"), false); policy != nil {
 		t.Errorf("a packet no policy names was claimed by %v", policy)
 	}
 }
@@ -313,7 +357,8 @@ func TestPacketThatCannotBeSteeredIsDropped(t *testing.T) {
 	inner := plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), string(make([]byte, 0xffff-8-16-40+1)))
 	original := bytes.Clone(inner)
 	side := make([]byte, 3, 64)
-	steered, ok := mesh.steer(side, inner, mesh.steerPolicy(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), RoutePeer, false))
+	policy, _ := mesh.steerPolicy(mesh.Steering(), segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), false)
+	steered, ok := mesh.steer(side, inner, policy)
 	if ok || len(steered) != len(side) || cap(steered) != cap(side) {
 		t.Fatalf("a packet that could not be encapsulated reported %v with %d bytes in its side buffer", ok, len(steered))
 	}

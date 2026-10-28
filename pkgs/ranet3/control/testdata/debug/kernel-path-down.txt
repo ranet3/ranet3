@@ -1,0 +1,1 @@
+table 200 protocol 155, 6 installed, no pass yet, exit path via 3fff:b:0:206::1 3fff:b:0:306::3 from 3fff::2 down at 3fff:b:0:306::3, no route, no steered default installed, 4210 steered, 17 unrouted

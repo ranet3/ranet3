@@ -12,3 +12,11 @@ Rule    5420 all lookup 100, ranet3
 Route   192.0.2.0/24 in table 100, unicast, dev ranet0
 Leaves  into the mesh's tun
 Mesh    answer host_unreachable, reason no_route
+
+Packet   from 3fff::2 to 2001:db8:4::5, this host's own
+Rule     5430 from 3fff::2/128 lookup 100, ranet3
+Route    ::/0 in table 100, unicast, dev ranet0
+Leaves   into the mesh's tun
+Mesh     forward to example/exit:1@0
+Steered  along cap.exit via's path, source 3fff::2, path 3fff:b:0:306::3
+Session  example/exit:1@0 carries 1280 B, 64 B of them the steering's header, so a larger packet is answered too big

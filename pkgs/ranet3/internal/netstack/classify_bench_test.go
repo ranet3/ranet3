@@ -95,10 +95,13 @@ var classifyArms = []classifyArm{
 	{"IPv4 one packet from two sources in turn", 4, 1, 2, classifyPlain, 0},
 }
 
-// oneSteeredRead is a read of one IPv6 packet a cap.segment steer policy claims
-var oneSteeredRead = classifyArm{name: "IPv6 steered one packet from one source", family: 6, count: 1, sources: 1, shape: classifySteered}
+// oneSteeredRead is a read of one IPv6 packet a cap.segment steer policy claims, and onePathRead one cap.exit via's path of one segment takes
+var (
+	oneSteeredRead = classifyArm{name: "IPv6 steered one packet from one source", family: 6, count: 1, sources: 1, shape: classifySteered}
+	onePathRead    = classifyArm{name: "IPv6 along the exit path one packet from one source", family: 6, count: 1, sources: 1, shape: classifyPath, segments: 1}
+)
 
-// classifyPathSIDs are the segments of the benchmark's cap.exit via path, a waypoint whose /64 the peer routes and then an exit, of which a path of n takes the first n
+// classifyPathSIDs are the segments of the benchmark's cap.exit via path, a waypoint whose /128 the peer routes and then an exit, of which a path of n takes the first n
 var classifyPathSIDs = []netip.Addr{segAddr("3fff:1::1"), segAddr("3fff:2::46")}
 
 // classifyRead is the read of the classify benchmark, arm's packets to one peer's destination, and the packets it holds
@@ -204,18 +207,33 @@ func TestClassifyBenchmarkReadPassesEveryCheck(t *testing.T) {
 }
 
 // a read cap.exit via's path steers allocates nothing, along a path of 1 segment or 2, since its header is written from the path as it stands
+// and nor does one it answers, with no route to the path's first segment or only another exit's default to it, beyond the interval's one report
 func TestClassifyAlongThePathAllocatesNothing(t *testing.T) {
+	allocsOf := func(m *Mesh, read *outboundBatch, count int) float64 {
+		return testing.AllocsPerRun(20, func() {
+			read.n = count
+			m.classify(read)
+			read.reset()
+		})
+	}
 	for _, arm := range classifyArms {
 		if arm.shape != classifyDefaultPath {
 			continue
 		}
 		m, read, _ := classifyRead(t, arm)
-		if allocs := testing.AllocsPerRun(20, func() {
-			read.n = arm.count
-			m.classify(read)
-			read.reset()
-		}); allocs != 0 {
+		if allocs := allocsOf(m, read, arm.count); allocs != 0 {
 			t.Errorf("%s allocated %.1f times a read", arm.name, allocs)
+		}
+	}
+	// the path's first segment's /128 gone leaves it no route where no default is learned, and only the learned default where one is
+	for _, arm := range classifyArms {
+		if arm.segments != 1 || arm.shape != classifyPath && arm.shape != classifyDefaultPath {
+			continue
+		}
+		m, read, _ := classifyRead(t, arm)
+		m.Routes.Remove(netip.Prefix{}, netip.PrefixFrom(classifyPathSIDs[0], 128))
+		if allocs := allocsOf(m, read, arm.count); allocs != 0 {
+			t.Errorf("%s with the route to its first segment gone allocated %.1f times a read", arm.name, allocs)
 		}
 	}
 }

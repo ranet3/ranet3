@@ -24,6 +24,8 @@ type Explanation struct {
 	MTU  int
 	// Policy is the policy that steers a read to the first segment of its path, the steering table's own, which a caller reads and never writes, nil for a packet none steers
 	Policy *srv6.Policy
+	// Path is Policy being cap.exit via's path rather than a cap.segment steer entry
+	Path bool
 	// Match is the entry the table matched for the packet's destination as it arrived, the zero Match where the walk ended before the table
 	Match Match
 }
@@ -117,13 +119,19 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 	}
 	peer, verdict, match := m.Routes.Resolve(src, dst)
 	e.Match = match
+	steering := m.steerTable.Load()
+	// as classify tests it
+	alongPath, leaves := false, match.Counted
+	if steering.Default() != nil {
+		alongPath, leaves = m.takesPath(steering, verdict, match, dst)
+	}
 	var kept keptAnswers
-	if reason, dropped := m.edgeCheck(&kept, m.segmentTable.Load(), raw, nextHeader, src, dst, match.Counted); dropped {
+	if reason, dropped := m.edgeCheck(&kept, m.segmentTable.Load(), raw, nextHeader, src, dst, leaves); dropped {
 		return e.decided(readSite(TraceDrop, reason))
 	}
 	site, header := readSite(TraceForward, transitForwarded), []byte(nil)
-	if policy := m.steerPolicy(src, dst, verdict, match.Counted); policy != nil {
-		e.Policy = policy
+	if policy, path := m.steerPolicy(steering, src, dst, alongPath); policy != nil {
+		e.Policy, e.Path = policy, path
 		steered, err := srv6.AppendEncapsulated(nil, raw, policy.Source, policy.Path)
 		if err != nil {
 			site = readSite(TraceDrop, transitTooBig)
@@ -131,8 +139,9 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 		}
 		header = steered[:len(steered)-len(raw)]
 		outer, first, _, _ := addrsOf(steered)
-		if peer, verdict, _ = m.Routes.Resolve(outer, first); verdict != RoutePeer {
-			return e.decided(readSite(TraceAnswer, unroutedReason(RouteNone)).answered(m.unreachable(RouteNone, Match{}, dst), TraceNoAnswer))
+		var firstMatch Match
+		if peer, verdict, firstMatch = m.Routes.Resolve(outer, first); firstUnrouted(path, verdict, firstMatch) {
+			verdict, match = RouteNone, Match{}
 		}
 	}
 	switch verdict {

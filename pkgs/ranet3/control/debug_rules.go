@@ -39,6 +39,9 @@ type RulesInfo struct {
 	// asked to find another program's rule ahead of the mesh's, and on darwin
 	// the route the underlay's selection takes toward each live endpoint
 	Lookups []RuleLookup `json:"lookups,omitempty"`
+	// Steered is mode 3's two defaults in the reconciler's table, absent
+	// outside mode 3
+	Steered *SteeredDefaults `json:"steered,omitempty"`
 	// Border is absent where no border filter runs, which every Linux node
 	// runs for its entry chain
 	Border *BorderTable `json:"border,omitempty"`
@@ -75,6 +78,23 @@ type FallbackTableRule struct {
 type FallbackTableSet struct {
 	Name     string   `json:"name"`
 	Elements []string `json:"elements"`
+}
+
+// SteeredDefaults is mode 3's two defaults in Table, each installed or not, and
+// the path's state that decides them
+type SteeredDefaults struct {
+	Table   uint32           `json:"table"`
+	State   string           `json:"state"`
+	Down    string           `json:"down,omitempty"`
+	Verdict string           `json:"verdict,omitempty"`
+	Routes  []SteeredDefault `json:"routes"`
+}
+
+// SteeredDefault is one family's steered default and whether the last pass left it installed
+type SteeredDefault struct {
+	Family    string       `json:"family"`
+	To        netip.Prefix `json:"to"`
+	Installed bool         `json:"installed"`
 }
 
 // RuleLookup is one lookup of the reconciler: unmarked, of Address inside the
@@ -230,6 +250,22 @@ func RenderRules(w io.Writer, info RulesInfo) {
 		})
 	} else if info.PolicyErr == "" {
 		fmt.Fprint(w, "Lookups: none\n")
+	}
+	if steered := info.Steered; steered != nil {
+		state := "path up"
+		if steered.State == "down" {
+			state = fmt.Sprintf("path down at %s, %s", steered.Down, steered.Verdict)
+		}
+		rows := make([][]string, 0, len(steered.Routes))
+		for _, route := range steered.Routes {
+			installed := "not installed"
+			if route.Installed {
+				installed = "installed"
+			}
+			rows = append(rows, []string{route.Family, route.To.String(), installed})
+		}
+		fmt.Fprintf(w, "Steered defaults in table %s, %s\n", schema.TableID(steered.Table), state)
+		indented(w, func(w io.Writer) { table(w, []string{"Family", "To", "State"}, rows) })
 	}
 	if info.Border != nil {
 		renderBorder(w, info.Border)

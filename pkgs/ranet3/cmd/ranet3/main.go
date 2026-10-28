@@ -523,6 +523,7 @@ func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
 		Removed:   stats.Removed,
 		Cover:     familyNames(stats.Cover),
 		Exit:      exitStatus(stats.Exit),
+		ExitPath:  exitPathStatus(stats.Path),
 		Err:       stats.Err,
 	}
 }
@@ -544,6 +545,22 @@ func exitStatus(exit *kernel.ExitStatus) *control.KernelExit {
 		for _, network := range f.Public {
 			out.Fallback.Public = append(out.Fallback.Public, network.String())
 		}
+	}
+	return out
+}
+
+// exitPathStatus is cap.exit via's path as the control surface reports it, nil
+// outside mode 3, its counts left for the client, which holds the dataplane
+func exitPathStatus(path *kernel.PathStatus) *control.KernelExitPath {
+	if path == nil {
+		return nil
+	}
+	out := &control.KernelExitPath{Source: path.Source.String(), State: "up", Installed: familyNames(path.Installed)}
+	for _, sid := range path.Via {
+		out.Via = append(out.Via, sid.String())
+	}
+	if path.Down.IsValid() {
+		out.State, out.Down, out.Verdict = "down", path.Down.String(), path.Verdict
 	}
 	return out
 }

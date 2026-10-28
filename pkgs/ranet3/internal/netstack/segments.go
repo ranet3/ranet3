@@ -50,23 +50,46 @@ func (m *Mesh) SetSteeringEnabled(on bool) { m.steerStopped.Store(!on) }
 // SteeringEnabled reports whether the policies are being acted on.
 func (m *Mesh) SteeringEnabled() bool { return !m.steerStopped.Load() }
 
-// steerPolicy is the policy that claims a read off the tun from source to destination, nil for one none claims
-// a cap.segment steer entry claims it first, then cap.exit via's path where the table answered it with verdict through an entry counting as a default or through none
-// the path never takes a destination inside the overlay, which an exit refuses as an inner destination and the kernel's holds keep off the tun
-func (m *Mesh) steerPolicy(source, destination netip.Addr, verdict Verdict, counted bool) *srv6.Policy {
-	table := m.steerTable.Load()
+// steerPolicy is the policy of table that claims a read off the tun from source to destination, nil for one none claims, and whether it is cap.exit via's path
+// a cap.segment steer entry claims it first, then cap.exit via's path where alongPath, classify's test, says the path takes it
+func (m *Mesh) steerPolicy(table *srv6.SteerTable, source, destination netip.Addr, alongPath bool) (*srv6.Policy, bool) {
 	if table == nil {
-		return nil
+		return nil, false
 	}
 	if !m.steerStopped.Load() {
 		if policy := table.Lookup(source, destination); policy != nil {
-			return policy
+			return policy, false
 		}
 	}
-	if path := table.Default(); path != nil && (counted || verdict == RouteNone) && !m.inOverlay(destination) {
-		return path
+	if alongPath {
+		return table.Default(), true
 	}
-	return nil
+	return nil, false
+}
+
+// takesPath is whether cap.exit via's path of table takes a read off the tun toward destination that resolves to verdict through match, and whether the read leaves the mesh
+// the path takes a read that resolves through an entry counting as a default or through none, toward a destination outside the overlay, since an exit refuses one inside as an inner destination
+// and a read the path takes leaves the mesh through its exit as one through an entry counting as a default does
+func (m *Mesh) takesPath(table *srv6.SteerTable, verdict Verdict, match Match, destination netip.Addr) (alongPath, leaves bool) {
+	alongPath = table.Default() != nil && (match.Counted || verdict == RouteNone) && !m.inOverlay(destination)
+	return alongPath, match.Counted || alongPath
+}
+
+// firstUnrouted is whether a steered read whose first segment resolves to verdict through match is answered as one with no route to that segment, path saying cap.exit via's path steered it
+// a first segment of this node's own is its steering's failure rather than a loop
+// and the path reaches its first segment only through the segment's own /128, since through a shorter entry a node via does not name takes the read:
+// an exit behind an entry counting as a default egresses it where the segment lies outside the overlay and answers it inside, and a node behind a subnet may hand it to its own host
+func firstUnrouted(path bool, verdict Verdict, match Match) bool {
+	return verdict != RoutePeer || path && match.Bits != 128
+}
+
+// PathCounters is the part of SegmentCounters' Steered and Unrouted cap.exit via's path took
+type PathCounters struct {
+	Steered, Unrouted uint64
+}
+
+func (m *Mesh) PathCounters() PathCounters {
+	return PathCounters{Steered: m.pathSteered.Load(), Unrouted: m.pathUnrouted.Load()}
 }
 
 // steer appends raw, encapsulated under policy, to dst, never touching raw
@@ -372,10 +395,11 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment, arrived [][]byte, fr
 			}
 			continue
 		}
-		peer, verdict, _ := m.Routes.Resolve(src, dst)
-		if verdict != RoutePeer || peer == nil {
+		// a next segment only an entry counting as a default reaches is unrouted, since the exit behind that entry would carry one outside the overlay out of the mesh
+		peer, verdict, match := m.Routes.Resolve(src, dst)
+		if verdict != RoutePeer || peer == nil || match.Counted {
 			m.segmentsDropped.Add(1)
-			m.reportSegmentDrop("no route to the next segment", "segment", segment.next)
+			m.reportSegmentDrop("no route counting as no default to the next segment", "segment", segment.next)
 			if trace != nil && arrived[i] != nil {
 				trace.segmentAt(from, TraceDrop, transitNoRoute, segment.next, arrived[i])
 			}
@@ -640,6 +664,27 @@ func (m *Mesh) reportSegmentDrop(message string, args ...any) {
 	}
 }
 
+// reportUnroutedSegment is reportSegmentDrop for a steered read firstUnrouted answered, its first segment resolving to verdict through match,
+// naming how the table answered that segment in the words the kernel's path names it in
+// the interval claimed before the segment is boxed, since a read classify answers costs no allocation
+func (m *Mesh) reportUnroutedSegment(first netip.Addr, verdict Verdict, match Match) {
+	if !m.segmentDropDue() {
+		return
+	}
+	answer := "no route"
+	switch {
+	case verdict == RouteHeld:
+		answer = "held"
+	case verdict == RouteLocal:
+		answer = "this node's own"
+	case verdict == RoutePeer && match.Counted:
+		answer = "only through a route that counts as a default"
+	case verdict == RoutePeer:
+		answer = "no route of its own"
+	}
+	slog.Warn("the first segment of a steered packet is unrouted", "interface", m.Name, "segment", first, "verdict", answer)
+}
+
 // segmentDropDue claims the interval's one segment drop report, and a caller holding it writes the line
 // a mesh built without startSegmentReports, which only a test builds, reports every drop
 // since time.Since of a zero time saturates and would hold every report after the first
@@ -670,6 +715,8 @@ type segmentCounters struct {
 	segmentsEgressed  atomic.Uint64
 	segmentsRefused   atomic.Uint64
 	segmentsNotReady  atomic.Uint64
+	// pathSteered and pathUnrouted are the part of segmentsSteered and segmentsUnrouted cap.exit via's path took
+	pathSteered, pathUnrouted atomic.Uint64
 	// icmpLimit holds back the ICMP errors past their limits, its clock nanoseconds since segmentsStarted
 	icmpLimit icmpLimit
 	// withheldBySource and withheldByNode space the reports of the answers a source's bucket and the node's cap withheld, which the limit's shards count as IcmpOutRateLimitHost and IcmpOutRateLimitGlobal count them

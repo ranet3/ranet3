@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -145,6 +146,70 @@ func TestTUNFollowsAReloadOfLinkMTUOrTheSteering(t *testing.T) {
 				t.Errorf("the tun holds %d bytes after the reload, want %d", got, move.to)
 			}
 		})
+	}
+}
+
+// status carries the counts of the reads cap.exit via's path took off the tun, in place of the reconciler's stand-in
+// and apart from the totals, which count a read a cap.segment steer entry took as well
+// one read toward the internet goes along the path and one toward the entry's prefix by the entry, each steered and finding no route to its first segment
+func TestTUNStatusCountsTheReadsThePathAloneTook(t *testing.T) {
+	netnstest.EnterEmpty(t)
+	mesh, err := netstack.NewNamed(0, "pathcount0", nil)
+	if err != nil {
+		t.Fatalf("open the mesh: %v", err)
+	}
+	t.Cleanup(mesh.Close)
+	own := netip.MustParsePrefix("192.0.2.1/32")
+	internet, entry := netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("198.51.100.0/24")
+	link, err := net.InterfaceByName(mesh.Name)
+	if err != nil {
+		t.Fatalf("look up %s: %v", mesh.Name, err)
+	}
+	netlink, err := netnstest.OpenNetlink()
+	if err != nil {
+		t.Fatalf("open netlink: %v", err)
+	}
+	defer netlink.Close()
+	if err := errors.Join(netlink.AddAddress(link.Index, own), netlink.RouteVia(link.Index, internet, netip.Addr{}), netlink.RouteVia(link.Index, entry, netip.Addr{})); err != nil {
+		t.Fatalf("route both destinations into the tun: %v", err)
+	}
+	// a read the path takes leaves the mesh, so its source is this node's own
+	mesh.Routes.Set(netip.Prefix{}, own, netstack.Local)
+	source := netip.MustParseAddr("3fff::2")
+	entries := []srv6.Steer{{To: schema.PrefixFrom(entry), Via: []schema.Addr{schema.AddrFrom(netip.MustParseAddr("3fff:b:0:206::1"))}}}
+	steering, err := srv6.NewSteerTable(entries, schema.AddrFrom(source))
+	if err == nil {
+		steering, err = steering.WithDefault(source, []netip.Addr{netip.MustParseAddr("3fff:b:0:306::3")})
+	}
+	if err != nil {
+		t.Fatalf("build the steering: %v", err)
+	}
+	mesh.SetSteering(steering)
+	c, _ := reloadFixture(t)
+	c.Mesh = mesh
+	c.SetKernelStatus(func() control.KernelStatus {
+		return control.KernelStatus{Enabled: true, Table: 200, ExitPath: &control.KernelExitPath{Via: []string{"3fff:b:0:306::3"}, State: "up", Steered: 7, Unrouted: 5}}
+	})
+	for _, to := range []netip.Prefix{internet, entry} {
+		conn, err := net.Dial("udp4", netip.AddrPortFrom(to.Addr().Next(), 9).String())
+		if err != nil {
+			t.Fatalf("dial %s: %v", to, err)
+		}
+		_, err = conn.Write([]byte("steered"))
+		_ = conn.Close()
+		if err != nil {
+			t.Fatalf("send toward %s: %v", to, err)
+		}
+	}
+	waitFor(t, convergeBudget, "both reads steered and unrouted", func() bool {
+		return mesh.SegmentCounters().Unrouted >= 2 && mesh.PathCounters().Unrouted >= 1
+	})
+	want := netstack.PathCounters{Steered: 1, Unrouted: 1}
+	if got := mesh.PathCounters(); got != want {
+		t.Fatalf("the path took %+v of the reads, want %+v", got, want)
+	}
+	if path := c.kernel().ExitPath; path == nil || path.Steered != want.Steered || path.Unrouted != want.Unrouted {
+		t.Errorf("status carries the path %+v, want its counts %+v of the %+v the mesh steered in all", path, want, mesh.SegmentCounters())
 	}
 }
 

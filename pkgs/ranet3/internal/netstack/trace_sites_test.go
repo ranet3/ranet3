@@ -196,6 +196,21 @@ var outcomeCases = func() []outcomeCase {
 		}, with(read(TraceAnswer, "no_route"), func(r *TraceRecord) {
 			r.Segment, r.Answer, r.Outcome = segAddr("3fff:1::1"), "no_route", TraceSent
 		})},
+		{"a read along the exit path", transitForwarded, func(t *testing.T) []TraceRecord {
+			m, batch, _ := classifyRead(t, onePathRead)
+			feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
+			m.classify(batch)
+			return queued(feed)
+		}, with(read(TraceForward, ""), func(r *TraceRecord) { r.Next, r.Segment = "peer", segAddr("3fff:1::1") })},
+		{"a read along the exit path with no route to its first segment", transitNoRoute, func(t *testing.T) []TraceRecord {
+			m, batch, _ := classifyRead(t, onePathRead)
+			m.Routes.Remove(netip.Prefix{}, netip.PrefixFrom(classifyPathSIDs[0], 128))
+			feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
+			m.classify(batch)
+			return queued(feed)
+		}, with(read(TraceAnswer, "no_route"), func(r *TraceRecord) {
+			r.Segment, r.Answer, r.Outcome = segAddr("3fff:1::1"), "no_route", TraceSent
+		})},
 		{"a read to a hold", transitHeld, classified(udp(4, transitOwn, transitHeldHost, 100, false)), with(read(TraceAnswer, "held"), func(r *TraceRecord) { r.Answer, r.Outcome = "host_unreachable", TraceSent })},
 		{"a read too big", transitTooBig, classified(udp(6, transitOwn, transitFar, tracedMTU+100, false)), with(read(TraceAnswer, "too_big"), func(r *TraceRecord) { r.Answer, r.Outcome = "too_big", TraceSent })},
 		{"an egress segment", transitDelivered, acted(nil, headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressExit)), with(session(TraceEgress, ""), func(r *TraceRecord) { r.Segment = egressExit })},

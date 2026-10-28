@@ -1,0 +1,16 @@
+{
+  "table": 200,
+  "state": "up",
+  "routes": [
+    {
+      "family": "ipv4",
+      "to": "0.0.0.0/0",
+      "installed": true
+    },
+    {
+      "family": "ipv6",
+      "to": "::/0",
+      "installed": true
+    }
+  ]
+}

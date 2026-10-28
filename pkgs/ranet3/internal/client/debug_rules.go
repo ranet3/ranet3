@@ -82,10 +82,12 @@ func (c *Client) DebugRules() control.RulesInfo {
 			}
 		}
 	}
+	status := c.kernel()
+	info.Steered = steeredDefaults(status)
 	if f := c.border.Load(); f != nil {
 		info.Border = borderTable((*f).Debug())
 	}
-	if exit := c.kernel().Exit; exit != nil && exit.Fallback != nil {
+	if exit := status.Exit; exit != nil && exit.Fallback != nil {
 		info.Fallback = c.fallbackTable(*exit.Fallback)
 	}
 	return info
@@ -158,6 +160,20 @@ func (c *Client) fallbackTable(state control.KernelFallback) *control.FallbackTa
 		table.Sets = append(table.Sets, control.FallbackTableSet{Name: set.Name, Elements: set.Elements})
 	}
 	return table
+}
+
+// steeredDefaults is mode 3's two defaults as the reconciler's last pass left them, nil outside mode 3
+func steeredDefaults(status control.KernelStatus) *control.SteeredDefaults {
+	path := status.ExitPath
+	if path == nil {
+		return nil
+	}
+	out := &control.SteeredDefaults{Table: status.Table, State: path.State, Down: path.Down, Verdict: path.Verdict}
+	for _, route := range []control.SteeredDefault{{Family: "ipv4", To: netip.MustParsePrefix("0.0.0.0/0")}, {Family: "ipv6", To: netip.MustParsePrefix("::/0")}} {
+		route.Installed = slices.Contains(path.Installed, route.Family)
+		out.Routes = append(out.Routes, route)
+	}
+	return out
 }
 
 func policyRule(rule kernel.DumpedRule) control.PolicyRule {

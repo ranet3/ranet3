@@ -35,9 +35,10 @@ var countingShapes = [][]mirrorEntry{
 // steeredEntries draws a table for mode 3: the mirror's entries of every kind,
 // and some of the shapes that count, each learned or held
 // this node's own SID is a /128 of this node's three times in four and swept
-// through sidEntry's kinds otherwise, and each other SID resolves to a peer
-// two times in three, sits under a learned 2000::/3, which counts, one time in
-// six, and is swept otherwise, so most paths are up or down by where via names the own SID
+// through sidEntry's kinds otherwise, and each other SID's /128 is routed seven
+// times in ten, the SID under a subnet alone one time in ten, under a learned
+// 2000::/3, which counts, one time in ten, and swept otherwise, so most paths
+// are up or down by where via names the own SID
 func steeredEntries(ht *hegel.T) []mirrorEntry {
 	entries := hegel.Draw(ht, mirrorEntries())
 	for _, shape := range pbt.Subset(ht, countingShapes, 0, len(countingShapes)) {
@@ -53,10 +54,12 @@ func steeredEntries(ht *hegel.T) []mirrorEntry {
 		entries = append(entries, sidEntry(ht, ownSID)...)
 	}
 	for _, sid := range otherSIDs {
-		switch kind := hegel.Draw(ht, hegel.Integers(0, 5)); {
-		case kind < 4:
-			entries = append(entries, sidEntry(ht, sid, 1, 4)...)
-		case kind == 4:
+		switch kind := hegel.Draw(ht, hegel.Integers(0, 9)); {
+		case kind < 7:
+			entries = append(entries, sidEntry(ht, sid, 1)...)
+		case kind == 7:
+			entries = append(entries, sidEntry(ht, sid, 4)...)
+		case kind == 8:
 			entries = append(entries, sidEntry(ht, sid, 5)...)
 		default:
 			entries = append(entries, sidEntry(ht, sid)...)
@@ -112,14 +115,14 @@ func modelResolve(entries []mirrorEntry, source, destination netip.Addr) (mirror
 	return best, found
 }
 
-// modelPathUp is every SID of via resolving to a peer through an entry that
-// counts as no default, a SID after the first being this node's own allowed
-func modelPathUp(entries []mirrorEntry, overlay []schema.Prefix, via []netip.Addr) bool {
+// modelPathUp is every SID of via resolving to a peer through its own /128, a
+// SID after the first being this node's own allowed
+func modelPathUp(entries []mirrorEntry, via []netip.Addr) bool {
 	for i, sid := range via {
 		entry, ok := modelResolve(entries, steeredSource, sid)
 		switch {
 		case ok && i > 0 && (entry.value == netstack.Local || entry.value == netstack.Assigned):
-		case !ok, entry.value != learned, schema.CapturesTheMachine(entry.destination, overlay):
+		case !ok, entry.value != learned, entry.destination != netip.PrefixFrom(sid, 128):
 			return false
 		}
 	}
@@ -191,7 +194,7 @@ func TestMirrorInModeThreeHoldsTheSteeredDefaultsAndNoRouteThatCounts(t *testing
 		want := sectionOneThree(held, overlay, carved, rt.EgressSegment, r.capture, policy)
 		if mode == "3" {
 			maps.DeleteFunc(want, func(route Route, _ bool) bool { return schema.CapturesTheMachine(route.Destination, overlay) })
-			if r.capture && modelPathUp(held, overlay, via) {
+			if r.capture && modelPathUp(held, via) {
 				for _, route := range steered() {
 					want[route] = true
 				}

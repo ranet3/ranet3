@@ -67,6 +67,40 @@ func explainSteered(t *testing.T) *Mesh {
 // explainStranded is explainBare steering the same with no route to explainSegment
 func explainStranded(t *testing.T) *Mesh { return steerOwn(t, explainBare(t)) }
 
+// pathOwn has m hold cap.exit via's path through explainSegment alone
+func pathOwn(t *testing.T, m *Mesh) *Mesh {
+	t.Helper()
+	steering, err := (*srv6.SteerTable)(nil).WithDefault(segAddr("3fff:b:0:100::1"), []netip.Addr{explainSegment})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetSteering(steering)
+	return m
+}
+
+// explainPath is explainSteered's leaf along cap.exit via's path through explainSegment in place of the steer entry, the segment's /128 routed in place of its /64
+func explainPath(t *testing.T) *Mesh {
+	m := explainLeaf(t)
+	segment := (&recordingPeer{}).peer(t, "segment")
+	segment.SetMTU(tracedMTU)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(explainSegment, 128), segment)
+	return pathOwn(t, m)
+}
+
+// explainPathStranded is explainBare along the same path with no route to explainSegment
+func explainPathStranded(t *testing.T) *Mesh { return pathOwn(t, explainBare(t)) }
+
+// explainPathOverDefault is explainLeaf along the same path, the exit's default its only route to explainSegment
+func explainPathOverDefault(t *testing.T) *Mesh { return pathOwn(t, explainLeaf(t)) }
+
+// explainPathOverSubnet is explainSteered's leaf along the same path in place of the steer entry, the segment's /64 beside the exit's default,
+// and no /128 of the segment
+func explainPathOverSubnet(t *testing.T) *Mesh {
+	m := explainLeaf(t)
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), (&recordingPeer{}).peer(t, "subnet"))
+	return pathOwn(t, m)
+}
+
 func explainedDrop(reason string, match Match) Explanation {
 	return Explanation{Decision: TraceDrop, Reason: reason, Match: match}
 }
@@ -148,6 +182,11 @@ var readCases = func() []explainCase {
 		{"a steer past the session's MTU", explainSteered, udpPacket(transitOwn[6], transitFar[6], tracedMTU-srv6.Overhead(1)+1, false), steeredTooBig},
 		{"a steer the encapsulation refuses", explainSteered, udpPacket(transitOwn[6], transitFar[6], 65535, false), Explanation{Decision: TraceDrop, Reason: "too_big", Policy: steeredBy, Match: far6}},
 		{"a steer with no route to its segment", explainStranded, udpPacket(transitOwn[6], transitFar[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: steeredBy, Match: far6}},
+		{"along the exit path", explainPath, udpPacket(transitOwn[6], edgeInternet[6], 100, false), heldTo(Explanation{Decision: TraceForward, Policy: pathBy, Path: true, Match: exit}, "segment", tracedMTU)},
+		{"along the exit path with no route to its segment", explainPathStranded, udpPacket(transitOwn[6], edgeInternet[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: pathBy, Path: true}},
+		{"along the exit path with only an exit's default to its segment", explainPathOverDefault, udpPacket(transitOwn[6], edgeInternet[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: pathBy, Path: true, Match: exit}},
+		{"along the exit path with only another node's subnet to its segment", explainPathOverSubnet, udpPacket(transitOwn[6], edgeInternet[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: pathBy, Path: true, Match: exit}},
+		{"an unowned source along the exit path", explainPathStranded, udpPacket(edgeLAN[6], edgeInternet[6], 100, false), explainedDrop("unowned_source", Match{})},
 	}
 }()
 
@@ -163,7 +202,8 @@ func TestExplainNamesEachArmOfTheDecision(t *testing.T) {
 }
 
 // steeredBy stands in a read case's want for the policy of the steering table its mesh holds, which steers the case's packet
-var steeredBy = &srv6.Policy{}
+// and pathBy for that table's cap.exit via path
+var steeredBy, pathBy = &srv6.Policy{}, &srv6.Policy{}
 
 // each arm of classify is explained with its decision, reason, answer, the session it is held to and the table's match
 // and a steered read with the steering table's policy for its addresses, which names its first segment and the bytes it puts in front
@@ -173,9 +213,12 @@ func TestExplainReadNamesEachArmOfTheChecks(t *testing.T) {
 			m := c.mesh(t)
 			got := m.ExplainRead(bytes.Clone(c.raw))
 			var policy *srv6.Policy
-			if c.want.Policy == steeredBy {
+			switch c.want.Policy {
+			case steeredBy:
 				src, dst, _ := packet.Addrs(c.raw)
 				policy = m.Steering().Lookup(src, dst)
+			case pathBy:
+				policy = m.Steering().Default()
 			}
 			if got.Policy != policy || policy != nil && (policy.Path[0] != explainSegment || policy.Overhead() != srv6.Overhead(1)) {
 				t.Errorf("steered by %v, want %v through %s", got.Policy, policy, explainSegment)

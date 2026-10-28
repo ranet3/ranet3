@@ -121,8 +121,10 @@ type RouteMesh struct {
 	Next string `json:"next,omitempty"`
 	MTU  int    `json:"mtu,omitempty"`
 	// Policy is the policy that steers a read, which sends it to the first
-	// segment of its path
-	Policy *SteerPolicy `json:"policy,omitempty"`
+	// segment of its path, and ExitPath is that policy being cap.exit via's
+	// path rather than a cap.segment steer entry
+	Policy   *SteerPolicy `json:"policy,omitempty"`
+	ExitPath bool         `json:"exit_path,omitempty"`
 	// Matched is the table's entry for the destination, absent where the walk
 	// ended before the table or no entry holds the destination, and Counted
 	// is that entry counting as a default
@@ -352,7 +354,10 @@ func meshRows(info RouteInfo, m RouteMesh) [][]string {
 		decision += " to " + m.Next
 	}
 	rows := [][]string{{"Mesh", decision}}
-	if p := m.Policy; p != nil {
+	switch p := m.Policy; {
+	case p != nil && m.ExitPath:
+		rows = append(rows, []string{"Steered", fmt.Sprintf("along cap.exit via's path, source %s, path %s", p.Source, pathText(*p))})
+	case p != nil:
 		rows = append(rows, []string{"Steered", fmt.Sprintf("by the policy %s, source %s, path %s", selectorText(*p), p.Source, pathText(*p))})
 	}
 	if m.Matched.IsValid() {

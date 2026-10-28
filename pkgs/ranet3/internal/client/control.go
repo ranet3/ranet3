@@ -192,6 +192,10 @@ func (c *Client) kernel() control.KernelStatus {
 		return control.KernelStatus{}
 	}
 	status := (*read)()
+	if status.ExitPath != nil {
+		counts := c.Mesh.PathCounters()
+		status.ExitPath.Steered, status.ExitPath.Unrouted = counts.Steered, counts.Unrouted
+	}
 	for _, lookup := range c.lookups() {
 		switch {
 		case !lookup.Taken:

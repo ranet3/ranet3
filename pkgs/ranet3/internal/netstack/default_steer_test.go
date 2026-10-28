@@ -5,10 +5,12 @@ package netstack
 
 import (
 	"bytes"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -174,7 +176,104 @@ func TestDefaultSteerTakesNoReadFromASourceThisNodeDoesNotOwn(t *testing.T) {
 	}
 }
 
-// a cap.segment steer entry claims a packet ahead of the path, and ranet3 down steering stops the entries and leaves the path, so the packet goes along the path then
+// the path never takes a read toward an overlay address, so one no entry covers from a source this node does not own does not leave the mesh
+// and is answered into the tun as without the path, host unreachable over IPv4 and no route over IPv6, never counted unowned_source
+// while the same source's read toward the internet is still dropped as unowned_source, in both families
+func TestDefaultSteerAnswersAnUnownedReadTowardAnOverlayAddressNoEntryCovers(t *testing.T) {
+	for _, family := range []int{4, 6} {
+		for _, path := range []bool{false, true} {
+			m, dev := recordingMesh(t)
+			m.SetOverlay(transitOverlay)
+			ownHosts(m, transitOwn)
+			if path {
+				m.SetSteering(pathSteering(t))
+			}
+			raw := udpPacket(edgeLAN[family], transitUnrouted[family], 100, false)
+			b, written := classifyOne(m, dev, raw)
+			if b.peers[0] != nil || len(written) != 1 {
+				t.Fatalf("IPv%d with the path %v a read from a host on its LAN to an unrouted overlay address went to %v and wrote %d packets into the tun", family, path, b.peers[0], len(written))
+			}
+			if family == 6 {
+				checkICMPv6(t, written[0], raw, transitUnrouted[6], 1, 0, 0)
+			} else {
+				checkICMPv4(t, written[0], raw, transitUnrouted[4], 3, 1, 0)
+			}
+			if got := m.TransitCounters(); got != (TransitCounters{Answered: 1}) {
+				t.Errorf("IPv%d with the path %v the read to an unrouted overlay address counted %+v, want one answered", family, path, got)
+			}
+			if !path {
+				continue
+			}
+			b, written = classifyOne(m, dev, udpPacket(edgeLAN[family], edgeInternet[family], 100, false))
+			if b.peers[0] != nil || len(written) != 0 {
+				t.Errorf("IPv%d a read from a host on its LAN to the internet went to %v and wrote %d packets into the tun", family, b.peers[0], len(written))
+			}
+			if got := m.TransitCounters(); got != (TransitCounters{Answered: 1, UnownedSource: 1}) {
+				t.Errorf("IPv%d the read to the internet counted %+v, want it dropped from an unowned source", family, got)
+			}
+			if got := m.SegmentCounters().Steered; got != 0 {
+				t.Errorf("IPv%d reads from an unowned source were steered %d times", family, got)
+			}
+		}
+	}
+}
+
+// peerID is the peer a test prints, its ID or none
+func peerID(p *Peer) string {
+	if p == nil {
+		return "none"
+	}
+	return p.ID
+}
+
+// a read is judged by the steering table in force as it begins, by the owned-source arm and by the steer alike
+// so a reload that adds the path while the read is classified, here on its first packet's drop, steers none of its later packets:
+// a read from this node's own address toward the internet is answered as with no path, and one from a host on its LAN is not
+// taken along the path the arm never judged it for
+func TestDefaultSteerJudgesAReadByTheTableItBeganWith(t *testing.T) {
+	m, _, _ := edgeLeaf(t)
+	waypoint := (&recordingPeer{}).peer(t, "waypoint")
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:7::/64"), waypoint)
+	m.events = func(kind, _ string, _ ...slog.Attr) {
+		if kind == "netstack.transit.dropped" {
+			m.SetSteering(pathSteering(t))
+		}
+	}
+	went := classifiedTo(m, udpPacket(transitSender[6], edgeInternet[6], 100, false),
+		udpPacket(transitOwn[6], edgeInternet[6], 100, false), udpPacket(edgeLAN[6], edgeInternet[6], 100, false))
+	if m.Steering().Default() == nil {
+		t.Fatal("the first packet's drop did not install the path, so this proves nothing")
+	}
+	for i, from := range []string{"this node's own address", "a host on its LAN"} {
+		if went[i+1] != nil {
+			t.Errorf("a read from %s went to %s, with the path installed after the read began", from, peerID(went[i+1]))
+		}
+	}
+	if got := m.SegmentCounters().Steered; got != 0 {
+		t.Errorf("%d packets of the read were steered, with the path installed after the read began", got)
+	}
+}
+
+// a read that began with the path keeps it to the read's end when the path goes midway, so a read from this node's own
+// address toward the internet still goes along the path
+func TestDefaultSteerKeepsThePathAReadBeganWith(t *testing.T) {
+	m, _, _, waypoint := pathMesh(t)
+	m.events = func(kind, _ string, _ ...slog.Attr) {
+		if kind == "netstack.transit.dropped" {
+			m.SetSteering(nil)
+		}
+	}
+	went := classifiedTo(m, udpPacket(transitSender[6], edgeInternet[6], 100, false), udpPacket(transitOwn[6], edgeInternet[6], 100, false))
+	if m.Steering() != nil {
+		t.Fatal("the first packet's drop did not take the path away, so this proves nothing")
+	}
+	if went[1] != waypoint {
+		t.Errorf("a read from this node's own address went to %s, with the path taken away after the read began", peerID(went[1]))
+	}
+}
+
+// a cap.segment steer entry claims a packet ahead of the path, and ranet3 disable steering stops the entries and leaves the path, so the packet goes along the path then
+// the path's own count takes the packet the path steered and not the one the entry did, which the total counts both of
 func TestDefaultSteerComesAfterTheEntriesAndOutlastsTheirStop(t *testing.T) {
 	m, _, _, waypoint := pathMesh(t)
 	entryPeer := (&recordingPeer{}).peer(t, "entry's segment")
@@ -184,12 +283,18 @@ func TestDefaultSteerComesAfterTheEntriesAndOutlastsTheirStop(t *testing.T) {
 	if went := classifiedTo(m, raw); went[0] != entryPeer {
 		t.Errorf("a packet a cap.segment steer entry claims went to %v, want the entry's first segment", went[0])
 	}
+	if got := m.PathCounters(); got != (PathCounters{}) {
+		t.Errorf("a packet the entry steered counted %+v for the path", got)
+	}
 	m.SetSteeringEnabled(false)
 	b := classifiedBatch(m, raw)
 	if b.peers[0] != waypoint {
 		t.Fatalf("with steering stopped the packet went to %v, want the path's waypoint", b.peers[0])
 	}
 	checkAlongPath(t, b.packets[0], raw)
+	if got, total := m.PathCounters(), m.SegmentCounters().Steered; got != (PathCounters{Steered: 1}) || total != 2 {
+		t.Errorf("the path counted %+v of %d steered, want one of two", got, total)
+	}
 }
 
 // a read is checked before the path takes it, so one from another node's address toward the internet is dropped as forged rather than steered
@@ -214,7 +319,7 @@ func TestDefaultSteerTakesOnlyWhatTheChecksPass(t *testing.T) {
 }
 
 // with no route to the path's first segment a host packet the path takes is answered into the tun with destination unreachable, no route, from its destination
-// and counted unrouted, in both families, whether no entry covers the segment or a hold does
+// and counted unrouted, in the totals and the path's own, in both families, whether no entry covers the segment or a hold does
 func TestDefaultSteerWithNoRouteToTheFirstSegmentIsAnswered(t *testing.T) {
 	for _, prefixes := range [][]string{nil, {"3fff:7::/64"}} {
 		for _, family := range []int{4, 6} {
@@ -238,6 +343,104 @@ func TestDefaultSteerWithNoRouteToTheFirstSegmentIsAnswered(t *testing.T) {
 			if got := m.SegmentCounters(); got.Steered != 1 || got.Unrouted != 1 {
 				t.Errorf("under %v an IPv%d packet with no route to its first segment counted %+v", prefixes, family, got)
 			}
+			if got := m.PathCounters(); got != (PathCounters{Steered: 1, Unrouted: 1}) {
+				t.Errorf("under %v an IPv%d packet with no route to its first segment counted %+v for the path", prefixes, family, got)
+			}
+		}
+	}
+}
+
+// a host packet the path takes whose first segment only another exit's default covers is answered and counted unrouted as one with no route to it
+// since that exit would egress it where the segment lies outside the overlay and answer it inside, in both families
+func TestDefaultSteerWithOnlyAnotherExitsDefaultToTheFirstSegmentIsAnswered(t *testing.T) {
+	reports := unroutedReports(t)
+	for _, segment := range []netip.Addr{segAddr("2001:db8:0:6::3"), segAddr("3fff:8::46")} {
+		for _, family := range []int{4, 6} {
+			reports.Reset()
+			m, dev := recordingMesh(t)
+			m.SetOverlay(transitOverlay)
+			ownHosts(m, transitOwn)
+			exit := (&recordingPeer{}).peer(t, "exit")
+			m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), exit)
+			m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), exit)
+			table, err := (*srv6.SteerTable)(nil).WithDefault(pathSource, []netip.Addr{segment})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.SetSteering(table)
+			raw := udpPacket(transitOwn[family], edgeInternet[family], 100, false)
+			b, written := classifyOne(m, dev, raw)
+			if b.peers[0] != nil || len(written) != 1 {
+				t.Fatalf("along %s an IPv%d packet went to %v and wrote %d packets into the tun", segment, family, peerID(b.peers[0]), len(written))
+			}
+			if family == 6 {
+				checkICMPv6(t, written[0], raw, edgeInternet[6], 1, 0, 0)
+			} else {
+				checkICMPv4(t, written[0], raw, edgeInternet[4], 3, 0, 0)
+			}
+			if got := m.PathCounters(); got != (PathCounters{Steered: 1, Unrouted: 1}) {
+				t.Errorf("along %s an IPv%d packet counted %+v for the path", segment, family, got)
+			}
+			if got := m.SegmentCounters(); got.Steered != 1 || got.Unrouted != 1 {
+				t.Errorf("along %s an IPv%d packet counted %+v", segment, family, got)
+			}
+			reportedAs(t, reports, segment, "only through a route that counts as a default")
+		}
+	}
+}
+
+// unroutedReports gathers, as text, what the log writes while t runs
+func unroutedReports(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var out bytes.Buffer
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&out, nil)))
+	return &out
+}
+
+// reportedAs checks that reports name segment as an unrouted first segment by verdict
+func reportedAs(t *testing.T, reports *bytes.Buffer, segment netip.Addr, verdict string) {
+	t.Helper()
+	for _, want := range []string{`msg="the first segment of a steered packet is unrouted"`, " segment=" + segment.String() + ` verdict="` + verdict + `"`} {
+		if !bytes.Contains(reports.Bytes(), []byte(want)) {
+			t.Errorf("the log reads %q, want it to hold %q", reports.String(), want)
+		}
+	}
+}
+
+// a host packet the path takes whose first segment only another node's subnet covers, a route counting as no default, beside another exit's default,
+// is answered and counted unrouted as one with no route to it, since the node behind the subnet and not the exit via names would take the read,
+// for a segment outside the overlay and one inside it, in both families
+func TestDefaultSteerWithOnlyAnotherNodesSubnetToTheFirstSegmentIsAnswered(t *testing.T) {
+	reports := unroutedReports(t)
+	for segment, subnet := range map[netip.Addr]string{segAddr("2001:db8:0:6::3"): "2001:db8:0:6::/64", segAddr("3fff:8::46"): "3fff:8::/64"} {
+		for _, family := range []int{4, 6} {
+			reports.Reset()
+			m, dev := recordingMesh(t)
+			m.SetOverlay(transitOverlay)
+			ownHosts(m, transitOwn)
+			exit, other := (&recordingPeer{}).peer(t, "exit"), (&recordingPeer{}).peer(t, "subnet")
+			m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), exit)
+			m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), exit)
+			m.Routes.Set(netip.Prefix{}, segPrefix(subnet), other)
+			table, err := (*srv6.SteerTable)(nil).WithDefault(pathSource, []netip.Addr{segment})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.SetSteering(table)
+			raw := udpPacket(transitOwn[family], edgeInternet[family], 100, false)
+			b, written := classifyOne(m, dev, raw)
+			if b.peers[0] != nil || len(written) != 1 {
+				t.Fatalf("along %s under %s an IPv%d packet went to %v and wrote %d packets into the tun", segment, subnet, family, peerID(b.peers[0]), len(written))
+			}
+			if family == 6 {
+				checkICMPv6(t, written[0], raw, edgeInternet[6], 1, 0, 0)
+			} else {
+				checkICMPv4(t, written[0], raw, edgeInternet[4], 3, 0, 0)
+			}
+			if got := m.PathCounters(); got != (PathCounters{Steered: 1, Unrouted: 1}) {
+				t.Errorf("along %s under %s an IPv%d packet counted %+v for the path", segment, subnet, family, got)
+			}
+			reportedAs(t, reports, segment, "no route of its own")
 		}
 	}
 }

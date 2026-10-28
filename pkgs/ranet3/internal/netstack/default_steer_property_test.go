@@ -57,13 +57,16 @@ func modelSteered(entries []steerEntry, overlay []schema.Prefix, source, destina
 
 // modelUnowned is the owned-source rule for a source outside the overlay that no entry of this node's own covers, while cap.exit via is set
 // forged where the entry a reply from destination to source prefers routes it elsewhere and counts as no default, RFC 3704 section 2.2's strict check
-// else unowned where the packet would leave the mesh through an exit: no entry covers destination, or the entry it prefers counts as a default, inside the overlay or not
+// else unowned where the packet would leave the mesh through an exit: the entry it prefers counts as a default, inside the overlay or not,
+// or no entry covers a destination outside the overlay, which the path takes
 func modelUnowned(entries []steerEntry, overlay []schema.Prefix, source, destination netip.Addr) (forged, unowned bool) {
 	if reply, found := modelMatch(entries, destination, source); found && !schema.CapturesTheMachine(reply.destination, overlay) {
 		return true, false
 	}
-	e, found := modelMatch(entries, source, destination)
-	return false, !found || schema.CapturesTheMachine(e.destination, overlay)
+	if e, found := modelMatch(entries, source, destination); found {
+		return false, schema.CapturesTheMachine(e.destination, overlay)
+	}
+	return false, !slices.ContainsFunc(overlay, func(prefix schema.Prefix) bool { return prefix.Contains(destination) })
 }
 
 // over drawn tables holding defaults, /1 halves, /2 quarters, defaults from a source prefix, mesh subnets and overlay hosts, each held or not

@@ -106,7 +106,7 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 	m.SetSteering(table)
 	source, destination := segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888")
 
-	policy := m.steerPolicy(source, destination, RoutePeer, false)
+	policy, _ := m.steerPolicy(m.Steering(), source, destination, false)
 	if policy == nil {
 		t.Fatal("the fixture policy did not claim the packet, so this proves nothing")
 	}
@@ -114,7 +114,7 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 		t.Fatal("the fixture policy could not encapsulate the packet, so this proves nothing")
 	}
 	m.SetSteeringEnabled(false)
-	if policy := m.steerPolicy(source, destination, RoutePeer, false); policy != nil {
+	if policy, _ := m.steerPolicy(m.Steering(), source, destination, false); policy != nil {
 		t.Errorf("a stopped steering claimed the packet for %v", policy)
 	}
 	if got := m.SegmentCounters().Steered; got != 1 {
@@ -124,7 +124,7 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 		t.Error("stopping unloaded the table, so nothing can report which policies were stopped")
 	}
 	m.SetSteeringEnabled(true)
-	if m.steerPolicy(source, destination, RoutePeer, false) == nil {
+	if policy, _ := m.steerPolicy(m.Steering(), source, destination, false); policy == nil {
 		t.Error("steering started again did not claim the packet")
 	}
 }

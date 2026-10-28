@@ -1,0 +1,18 @@
+{
+  "table": 200,
+  "state": "down",
+  "down": "3fff:b:0:306::3",
+  "verdict": "held",
+  "routes": [
+    {
+      "family": "ipv4",
+      "to": "0.0.0.0/0",
+      "installed": false
+    },
+    {
+      "family": "ipv6",
+      "to": "::/0",
+      "installed": false
+    }
+  ]
+}

@@ -336,10 +336,12 @@ func (t Table) Validate() error {
 // batch of changes on a channel of the reconciler's own, and one consistent
 // view per reconcile pass. Reconciling from snapshots rather than from an event
 // stream lets a missed wake-up, a restart and outside interference all converge
-// on the same state.
+// on the same state. Resolve answers a lookup as the dataplane makes it, which
+// mode 3 reads each SID of cap.exit via by.
 type RouteSource interface {
 	Changes() <-chan struct{}
 	Snapshot() []sadr.Route[*netstack.Peer]
+	Resolve(src, dst netip.Addr) (*netstack.Peer, netstack.Verdict, netstack.Match)
 }
 
 // Route is one kernel route the reconciler manages, and simultaneously the
@@ -665,9 +667,13 @@ type Reconciler struct {
 	// last pass reported, rebuilt each pass, so a route the mesh keeps
 	// announcing costs one log line
 	memberless map[Route]bool
-	// pathDown is the SID of cap.exit via the last pass found unresolved,
-	// invalid while the path stood, so a change is reported once
-	pathDown netip.Addr
+	// pathDown is the SID of cap.exit via the pass under way found unresolved,
+	// invalid while the path stands, and pathVerdict how the table answered it.
+	// pathReported is the path as the last pass reported it, so a change is
+	// reported once, nil outside mode 3
+	pathDown     netip.Addr
+	pathVerdict  string
+	pathReported *PathStatus
 
 	// rules is the optional half of the platform, nil where it has no policy
 	// engine
@@ -768,6 +774,8 @@ type Stats struct {
 	Lookups []Lookup
 	// Exit is cap.exit's mode as the last rule pass ran it, nil in mode off
 	Exit *ExitStatus
+	// Path is cap.exit via's path as this pass judged it, nil outside mode 3
+	Path *PathStatus
 	Err  string
 }
 
@@ -1514,6 +1522,7 @@ func (r *Reconciler) applyRoutes(desired []Route) error {
 		Added:     added,
 		Removed:   removed,
 		Cover:     coveredFamilies(slices.Collect(maps.Keys(held))),
+		Path:      r.pathPass(held),
 	}
 	r.reportCover(r.routePass.Cover)
 	return errors.Join(errs...)

@@ -1,0 +1,24 @@
+{
+  "enabled": true,
+  "where": "table 200 protocol 155",
+  "table": 200,
+  "protocol": 155,
+  "installed": 6,
+  "skipped": 0,
+  "added": 0,
+  "removed": 0,
+  "exit_path": {
+    "via": [
+      "3fff:b:0:206::1",
+      "3fff:b:0:306::3"
+    ],
+    "source": "3fff::2",
+    "state": "up",
+    "installed": [
+      "ipv4",
+      "ipv6"
+    ],
+    "steered": 4210,
+    "unrouted": 3
+  }
+}

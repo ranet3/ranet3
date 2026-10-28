@@ -176,6 +176,23 @@ func kernelLine(k KernelStatus) string {
 			}
 		}
 	}
+	if p := k.ExitPath; p != nil {
+		line += fmt.Sprintf(", exit path via %s from %s", strings.Join(p.Via, " "), p.Source)
+		if p.State == "down" {
+			line += fmt.Sprintf(" down at %s, %s", p.Down, p.Verdict)
+		} else {
+			line += " up"
+		}
+		installed := "no steered default installed"
+		if len(p.Installed) > 0 {
+			labels := make([]string, len(p.Installed))
+			for i, family := range p.Installed {
+				labels[i] = familyLabel(family)
+			}
+			installed = "steered defaults installed for " + strings.Join(labels, " and ")
+		}
+		line += fmt.Sprintf(", %s, %d steered, %d unrouted", installed, p.Steered, p.Unrouted)
+	}
 	if k.Err != "" {
 		line += ", " + k.Err
 	}

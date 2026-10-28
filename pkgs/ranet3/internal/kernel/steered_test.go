@@ -62,9 +62,8 @@ func host(sid netip.Addr, value *netstack.Peer) mirrorEntry {
 }
 
 // Mode 3 installs its two defaults, and no route that counts, exactly while
-// every SID of via resolves to a peer through a route that counts as no
-// default, or for a SID after the first to this node, and the mesh holds a
-// live session
+// every SID of via resolves to a peer through its own /128, or for a SID after
+// the first to this node, and the mesh holds a live session
 func TestSteeredDefaultsStandWhileEverySegmentResolves(t *testing.T) {
 	both := []mirrorEntry{host(waypointSID, learned), host(exitSID, learned)}
 	for name, c := range map[string]struct {
@@ -73,22 +72,22 @@ func TestSteeredDefaultsStandWhileEverySegmentResolves(t *testing.T) {
 		shut    bool
 		up      bool
 	}{
-		"no segment routed, no default":                     {},
-		"no segment routed, under another exit's default":   {entries: learnedDefaults()},
-		"the first segment alone":                           {entries: append(learnedDefaults(), host(waypointSID, learned))},
-		"the exit's segment alone":                          {entries: append(learnedDefaults(), host(exitSID, learned))},
-		"every segment routed":                              {entries: append(learnedDefaults(), both...), up: true},
-		"every segment routed, no default learned":          {entries: both, up: true},
-		"every segment routed, no live session":             {entries: append(learnedDefaults(), both...), shut: true},
-		"the exit's segment held":                           {entries: append(learnedDefaults(), host(waypointSID, learned), host(exitSID, netstack.Unreachable))},
-		"the exit's segment under a held 2000::/3":          {entries: []mirrorEntry{host(waypointSID, learned), {destination: prefix("2000::/3"), value: netstack.Unreachable}}},
-		"the exit's segment under a learned 3000::/4 alone": {entries: []mirrorEntry{host(waypointSID, learned), {destination: prefix("3000::/4"), value: learned}}},
-		"the waypoint's segment under an overlay subnet":    {entries: []mirrorEntry{{destination: prefix("3fff:7::/48"), value: learned}, host(exitSID, learned)}, up: true},
-		"the exit's segment through a route from the path's source": {
-			entries: []mirrorEntry{host(waypointSID, learned), {source: prefix("3fff::/48"), destination: prefix("3fff:8::/48"), value: learned}}, up: true,
+		"no segment routed, no default":                        {},
+		"no segment routed, under another exit's default":      {entries: learnedDefaults()},
+		"the first segment alone":                              {entries: append(learnedDefaults(), host(waypointSID, learned))},
+		"the exit's segment alone":                             {entries: append(learnedDefaults(), host(exitSID, learned))},
+		"every segment routed":                                 {entries: append(learnedDefaults(), both...), up: true},
+		"every segment routed, no default learned":             {entries: both, up: true},
+		"every segment routed, no live session":                {entries: append(learnedDefaults(), both...), shut: true},
+		"the exit's segment held":                              {entries: append(learnedDefaults(), host(waypointSID, learned), host(exitSID, netstack.Unreachable))},
+		"the exit's segment under a held 2000::/3":             {entries: []mirrorEntry{host(waypointSID, learned), {destination: prefix("2000::/3"), value: netstack.Unreachable}}},
+		"the exit's segment under a learned 3000::/4 alone":    {entries: []mirrorEntry{host(waypointSID, learned), {destination: prefix("3000::/4"), value: learned}}},
+		"the waypoint's segment under an overlay subnet alone": {entries: []mirrorEntry{{destination: prefix("3fff:7::/48"), value: learned}, host(exitSID, learned)}},
+		"the exit's segment through its /128 from the path's source": {
+			entries: []mirrorEntry{host(waypointSID, learned), {source: prefix("3fff::/48"), destination: netip.PrefixFrom(exitSID, 128), value: learned}}, up: true,
 		},
-		"the exit's segment through a route from another source": {
-			entries: []mirrorEntry{host(waypointSID, learned), {source: prefix("3fff:1::/48"), destination: prefix("3fff:8::/48"), value: learned}},
+		"the exit's segment through its /128 from another source": {
+			entries: []mirrorEntry{host(waypointSID, learned), {source: prefix("3fff:1::/48"), destination: netip.PrefixFrom(exitSID, 128), value: learned}},
 		},
 		"a later segment this node's own": {
 			via: []netip.Addr{waypointSID, ownSID, exitSID}, entries: append(both, host(ownSID, netstack.Local)), up: true,
@@ -123,6 +122,50 @@ func TestSteeredDefaultsStandWhileEverySegmentResolves(t *testing.T) {
 		}
 		if !fake.has(meshSubnet) {
 			t.Errorf("%s: the mesh's subnet went with the defaults", name)
+		}
+	}
+}
+
+// A SID of via that only another node's subnet covers, a route counting as no
+// default, keeps the steered defaults out, the path down at it with no route of
+// its own, since the subnet's node and not the exit via names would take the
+// host's traffic, for a SID outside the overlay and one inside, first or later.
+// The SID's /128 beside the subnet brings them in.
+func TestSteeredDefaultsStayOutWhileASegmentHasNoRouteOfItsOwn(t *testing.T) {
+	outside := addr("2001:db8:0:6::3")
+	for _, c := range []struct {
+		via    []netip.Addr
+		subnet netip.Prefix
+	}{
+		{[]netip.Addr{outside}, prefix("2001:db8:0:6::/64")},
+		{[]netip.Addr{exitSID}, prefix("3fff:8::/48")},
+		{[]netip.Addr{waypointSID, outside}, prefix("2001:db8:0:6::/64")},
+	} {
+		sid := c.via[len(c.via)-1]
+		for _, own := range []bool{false, true} {
+			reconciler, table, fake := harness(t, modeThree(c.via...), Runtime{Overlay: steeredOverlay})
+			reconciler.now = func() time.Time { return start }
+			for _, entry := range append(learnedDefaults(), host(waypointSID, learned)) {
+				table.Set(entry.source, entry.destination, entry.value)
+			}
+			table.Set(netip.Prefix{}, c.subnet, learned)
+			if own {
+				table.Set(netip.Prefix{}, netip.PrefixFrom(sid, 128), learned)
+			}
+			if err := reconciler.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			var want []Route
+			if own {
+				want = steered()
+			}
+			if got := countedHeld(fake, steeredOverlay); !slices.Equal(got, want) {
+				t.Errorf("along %v under %s, the SID's own route %v: the routes that count are %v, want %v", c.via, c.subnet, own, got, want)
+			}
+			path := reconciler.Stats().Path
+			if !own && (path.Down != sid || path.Verdict != "no route of its own") || own && path.Down.IsValid() {
+				t.Errorf("along %v under %s, the SID's own route %v: the path reads down at %v, %q", c.via, c.subnet, own, path.Down, path.Verdict)
+			}
 		}
 	}
 }

@@ -125,11 +125,46 @@ func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
 		}
 		m.SetSteering(steering)
 		m.SetSteeringEnabled(hegel.Draw(ht, hegel.Booleans()))
-		if hegel.Draw(ht, hegel.Booleans()) {
-			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), peer)
+	}
+	// cap.exit via's path, beside the entries or alone, sent from this node's own IPv6 address
+	if hegel.Draw(ht, hegel.Booleans()) {
+		steering, err := m.Steering().WithDefault(transitOwn[6], []netip.Addr{explainSegment})
+		if err != nil {
+			ht.Fatal(err)
+		}
+		m.SetSteering(steering)
+	}
+	// the steering's segment's /128 routed to a peer, the segment covered by another exit's ::/0 alone or by its /64 alone, neither of which the path reaches it through,
+	// or left to the drawn table
+	// where it is covered alone the entries stop and the internet's covers go, so the read from this node's own address explainOwnRead draws is the path's
+	if m.Steering() != nil {
+		switch kind := hegel.Draw(ht, pbt.Spanning(0, 3)); kind {
+		case 0:
+			m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(explainSegment, 128), peer)
+		case 1, 2:
+			for _, source := range append([]netip.Prefix{{}}, explainSources[6]...) {
+				for _, cover := range []string{"3fff:1::/64", "3fff::/20", "2001:db8::/32"} {
+					m.Routes.Remove(source, segPrefix(cover))
+				}
+			}
+			for _, source := range append([]netip.Prefix{{}}, explainSources[4]...) {
+				m.Routes.Remove(source, segPrefix("203.0.113.0/24"))
+			}
+			cover := "::/0"
+			if kind == 2 {
+				cover = "3fff:1::/64"
+			}
+			m.Routes.Set(netip.Prefix{}, segPrefix(cover), peer)
+			m.SetSteeringEnabled(false)
 		}
 	}
 	return m, from, openTrace(ht, m, TraceFilter{}, 0, control.TraceRateMax)
+}
+
+// explainOwnRead draws a packet from this node's own address to the internet, a read the path takes where it is drawn and the internet's covers are gone
+func explainOwnRead(ht *hegel.T) []byte {
+	family := []int{4, 6}[hegel.Draw(ht, pbt.Spanning(0, 1))]
+	return udpPacket(transitOwn[family], transitNowhere[family], 100, false)
 }
 
 // explainAddress draws an address of family, either end of ends outright or any of explainAddresses admits takes
@@ -285,9 +320,15 @@ func TestExplainSegmentNamesWhatTheSegmentRecords(t *testing.T) {
 func TestExplainReadNamesWhatTheChecksRecord(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		m, from, feed := explainMesh(ht)
-		// this node's own address and a LAN host, the internet and an overlay host, drawn outright, of sizes beside the session's MTU and beside it less the steering's overhead
-		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
-			raw := explainPacket(ht, []int{from.MTU(), from.MTU() - m.Steering().Overhead()}, [2]map[int]netip.Addr{transitOwn, edgeLAN}, [2]map[int]netip.Addr{transitNowhere, transitFar}, func(netip.Addr) bool { return true })
+		// a read from this node's own address to the internet first, then this node's own address and a LAN host, the internet and an overlay host, drawn outright,
+		// of sizes beside the session's MTU and beside it less the steering's overhead
+		for i := range hegel.Draw(ht, pbt.Spanning(1, 16)) {
+			var raw []byte
+			if i == 0 {
+				raw = explainOwnRead(ht)
+			} else {
+				raw = explainPacket(ht, []int{from.MTU(), from.MTU() - m.Steering().Overhead()}, [2]map[int]netip.Addr{transitOwn, edgeLAN}, [2]map[int]netip.Addr{transitNowhere, transitFar}, func(netip.Addr) bool { return true })
+			}
 			explained := m.ExplainRead(raw)
 			classifiedTo(m, bytes.Clone(raw))
 			if got, want := walked(explained), recorded(decisionRecord(ht, queued(feed))); got != want {

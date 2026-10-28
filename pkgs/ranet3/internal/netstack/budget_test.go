@@ -148,6 +148,9 @@ func TestReservationHoldsTheBytesItSends(t *testing.T) {
 	})
 
 	t.Run("forwarded segments", func(t *testing.T) {
+		// End sends a packet on to its destination by a route counting as no default alone
+		m.Routes.Set(netip.Prefix{}, hostPrefix(tooBigDestination[6]), peer)
+		m.Routes.Set(netip.Prefix{}, hostPrefix(thisWaypoint), peer)
 		m.forwardSegments([]forwardedSegment{
 			{raw: udpPacket(tooBigSource[6], tooBigDestination[6], 2000, false)},
 			{raw: udpPacket(tooBigSource[6], tooBigDestination[6], 1900, false)},

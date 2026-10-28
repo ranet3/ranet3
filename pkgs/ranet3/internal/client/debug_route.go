@@ -128,7 +128,7 @@ func routePacket(src, dst netip.Addr) []byte {
 
 // meshOf is e, the mesh's decision for a packet to dst, on the wire
 func meshOf(e netstack.Explanation, dst netip.Addr) *control.RouteMesh {
-	m := &control.RouteMesh{Decision: e.Decision.String(), Reason: e.Reason, Answer: e.Answer, Next: e.Next, MTU: e.MTU}
+	m := &control.RouteMesh{Decision: e.Decision.String(), Reason: e.Reason, Answer: e.Answer, Next: e.Next, MTU: e.MTU, ExitPath: e.Path}
 	if e.Policy != nil {
 		policy := steerPolicyOf(*e.Policy)
 		m.Policy = &policy

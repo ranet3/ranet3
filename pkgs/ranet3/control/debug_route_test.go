@@ -286,6 +286,15 @@ func routeFixtures() map[string][]RouteInfo {
 		Decision: "forward", Next: "example/far:1@0", MTU: 1280, Matched: netip.MustParsePrefix("3fff::3/128"),
 		Policy: &SteerPolicy{From: netip.MustParsePrefix("3fff::2/128"), Source: netip.MustParseAddr("3fff:b:0:100::1"), Path: []netip.Addr{netip.MustParseAddr("3fff:1::1")}, Overhead: 64},
 	}}
+	fromOwn := routeRule("ipv6", 5430, 100, 155, true)
+	fromOwn.From = netip.MustParsePrefix("3fff::2/128")
+	alongPath := RouteInfo{Src: netip.MustParseAddr("3fff::2"), Dst: netip.MustParseAddr("2001:db8:4::5"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
+		Rule: fromOwn, Route: netip.MustParsePrefix("::/0"), Table: 100, Type: "unicast",
+		NextHops: []RouteNextHop{{Dev: "ranet0"}}, IntoTun: true,
+	}, Mesh: &RouteMesh{
+		Decision: "forward", Next: "example/exit:1@0", MTU: 1280, ExitPath: true,
+		Policy: &SteerPolicy{Source: netip.MustParseAddr("3fff::2"), Path: []netip.Addr{netip.MustParseAddr("3fff:b:0:306::3")}, Overhead: 64},
+	}}
 	answered := RouteInfo{Src: netip.MustParseAddr("198.51.100.20"), Dst: netip.MustParseAddr("192.0.2.5"), IIF: "lan0", Arrival: ArrivalLink, Kernel: &RouteKernel{
 		Rule: routeRule("ipv4", 5420, 100, 155, true), Route: netip.MustParsePrefix("192.0.2.0/24"), Table: 100, Type: "unicast",
 		NextHops: []RouteNextHop{{Dev: "ranet0"}}, IntoTun: true,
@@ -293,7 +302,7 @@ func routeFixtures() map[string][]RouteInfo {
 	return map[string][]RouteInfo{
 		"route-session":        {session, delivered, broadcastDelivered, refusedDelivered, candidateDelivered, groupDelivered, unreachableDelivered, unsupportedDelivered, egressed, held},
 		"route-segment":        {allowed, unlisted, toMesh, stranger, waypoint},
-		"route-read":           {read, answered},
+		"route-read":           {read, answered, alongPath},
 		"route-unread":         {behind},
 		"route-own":            {own, cached, unspecified6},
 		"route-link":           {link, subnetBroadcast, group6},
@@ -321,6 +330,7 @@ func TestRouteRendersAsTheGoldenFiles(t *testing.T) {
 	goldenJSON(t, "route-session.json", routeFixtures()["route-session"][1])
 	goldenJSON(t, "route-segment.json", routeFixtures()["route-segment"][0])
 	goldenJSON(t, "route-read.json", routeFixtures()["route-read"][0])
+	goldenJSON(t, "route-exit-path.json", routeFixtures()["route-read"][2])
 }
 
 // the source and destination are of one family and carry no zone, and an

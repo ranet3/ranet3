@@ -175,6 +175,31 @@ func TestRulesRenderTheFallbackTable(t *testing.T) {
 	golden(t, "rules-fallback-unheld.txt", []byte(out.String()))
 }
 
+// in mode 3 the view lists the two steered defaults of the reconciler's table
+// after the lookups and before the border filter's table, which every Linux
+// node writes, installed while the path is up and the mesh holds a live
+// session, and withdrawn with the SID that took the path down and the table's
+// answer for it
+func TestRulesListTheSteeredDefaults(t *testing.T) {
+	info := rulesFixture()
+	routes := func(v4, v6 bool) []SteeredDefault {
+		return []SteeredDefault{
+			{Family: "ipv4", To: netip.MustParsePrefix("0.0.0.0/0"), Installed: v4},
+			{Family: "ipv6", To: netip.MustParsePrefix("::/0"), Installed: v6},
+		}
+	}
+	for name, steered := range map[string]*SteeredDefaults{
+		"rules-path-up":   {Table: 200, State: "up", Routes: routes(true, true)},
+		"rules-path-down": {Table: 200, State: "down", Down: "3fff:b:0:306::3", Verdict: "held", Routes: routes(false, false)},
+	} {
+		info.Steered = steered
+		var out strings.Builder
+		RenderRules(&out, info)
+		golden(t, name+".txt", []byte(out.String()))
+		goldenJSON(t, name+".json", info.Steered)
+	}
+}
+
 // rulesSource serves the rules view
 type rulesSource struct{ fakeSource }
 

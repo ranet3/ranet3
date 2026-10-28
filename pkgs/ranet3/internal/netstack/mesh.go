@@ -395,6 +395,8 @@ func (m *Mesh) classify(b *outboundBatch) {
 	var tally transitTally
 	defer m.addTally(&tally)
 	segments := m.segmentTable.Load()
+	// read once a read beside the segments, so the owned-source arm and the steer judge each packet by one table
+	steering := m.steerTable.Load()
 	// read once a read, so every change in force as the read begins reaches each of its packets
 	b.answers.keepFor(m.Routes.generation.Load())
 	for i := range b.n {
@@ -419,8 +421,11 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		// the checks judge a steered packet by the destination it was read with
 		peer, verdict, match := m.Routes.Resolve(src, dst)
-		// cap.exit via's path takes a read toward no entry out of its exit as a default's takes a read toward it
-		leaves := match.Counted || (verdict == RouteNone && m.steerTable.Load().Default() != nil)
+		// mode off pays the nil test alone, since takesPath is past the inliner's budget
+		alongPath, leaves := false, match.Counted
+		if steering.Default() != nil {
+			alongPath, leaves = m.takesPath(steering, verdict, match, dst)
+		}
 		if reason, dropped := m.edgeCheck(b.answers, segments, raw, nh, src, dst, leaves); dropped {
 			m.dropTransit(&tally, reason, src, dst)
 			if trace != nil {
@@ -430,31 +435,31 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		// a steered packet is routed by the segment it is going to rather than by the address it was read with
 		// and its record names the read's addresses and the first segment
-		sent, policy := raw, m.steerPolicy(src, dst, verdict, match.Counted)
-		if policy != nil {
+		sent, segment := raw, netip.Addr{}
+		if policy, path := m.steerPolicy(steering, src, dst, alongPath); policy != nil {
 			if b.steered[i], ok = m.steer(b.steered[i][:0], raw, policy); !ok {
 				if trace != nil {
 					trace.read(TraceDrop, transitTooBig, policy.Path[0], raw)
 				}
 				continue
 			}
+			if path {
+				m.pathSteered.Add(1)
+			}
 			sent = b.steered[i]
-			outer, first, next, ok := addrsOf(sent)
-			if !ok {
+			var outer, first netip.Addr
+			if outer, first, nh, ok = addrsOf(sent); !ok {
 				continue
 			}
-			// a first segment of this node's own is its steering's failure rather than a loop
-			if peer, verdict, _ = m.Routes.Resolve(outer, first); verdict != RoutePeer {
+			var firstMatch Match
+			if peer, verdict, firstMatch = m.Routes.Resolve(outer, first); firstUnrouted(path, verdict, firstMatch) {
 				m.segmentsUnrouted.Add(1)
-				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", first)
-				if trace != nil {
-					trace.unroutedRead(m, raw, RouteNone, Match{}, src, dst, first)
-				} else {
-					m.answerUnroutedRead(raw, RouteNone, Match{}, src, dst, (*Mesh).takeICMPToken)
+				if path {
+					m.pathUnrouted.Add(1)
 				}
-				continue
+				m.reportUnroutedSegment(first, verdict, firstMatch)
+				verdict, match, segment = RouteNone, Match{}, first
 			}
-			nh = next
 		}
 		if verdict != RoutePeer {
 			switch {
@@ -465,7 +470,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 				}
 			default:
 				if trace != nil {
-					trace.unroutedRead(m, raw, verdict, match, src, dst, netip.Addr{})
+					trace.unroutedRead(m, raw, verdict, match, src, dst, segment)
 				} else {
 					m.answerUnroutedRead(raw, verdict, match, src, dst, (*Mesh).takeICMPToken)
 				}

@@ -440,7 +440,10 @@ type KernelStatus struct {
 	Taken []KernelTaken `json:"taken,omitempty"`
 	// Exit is cap.exit's mode as the last pass ran it, absent in mode off
 	Exit *KernelExit `json:"exit,omitempty"`
-	Err  string      `json:"err,omitempty"`
+	// ExitPath is cap.exit via's path as the last pass judged it, absent
+	// outside mode 3
+	ExitPath *KernelExitPath `json:"exit_path,omitempty"`
+	Err      string          `json:"err,omitempty"`
 }
 
 // KernelExit is cap.exit's mode as the reconciler's last pass ran it
@@ -496,6 +499,25 @@ type KernelSkip struct {
 	Entry  string `json:"entry"`
 	Link   string `json:"link"`
 	Reason string `json:"reason"`
+}
+
+// KernelExitPath is cap.exit via's path: the SIDs in the order a packet visits
+// them, the outer source, whether every SID resolves to a peer through its own
+// /128, or for a SID after the first to this node, and the families whose
+// steered default the last pass left installed
+type KernelExitPath struct {
+	Via    []string `json:"via"`
+	Source string   `json:"source"`
+	// State is up while every SID resolves to a peer through its own /128, or
+	// for a SID after the first to this node, and down with the first SID that
+	// does not and how the mesh's table answered it
+	State     string   `json:"state"`
+	Down      string   `json:"down,omitempty"`
+	Verdict   string   `json:"verdict,omitempty"`
+	Installed []string `json:"installed,omitempty"`
+	// Steered and Unrouted are the path's part of segment_counters' totals
+	Steered  uint64 `json:"steered"`
+	Unrouted uint64 `json:"unrouted"`
 }
 
 // KernelTaken is one lookup another program's rule takes: an overlay prefix

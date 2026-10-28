@@ -436,6 +436,25 @@ func TestKernelLineNamesTheSwitchsState(t *testing.T) {
 	}
 }
 
+// The kernel line names cap.exit via's path with its outer source, whether it
+// is up or down at a SID with the table's answer, the families whose steered
+// default is installed and the path's own steered and unrouted counts, and says
+// nothing of a path outside mode 3
+func TestKernelLineNamesTheExitPath(t *testing.T) {
+	via := []string{"3fff:b:0:206::1", "3fff:b:0:306::3"}
+	for name, path := range map[string]*KernelExitPath{
+		"kernel-path-up":   {Via: via, Source: "3fff::2", State: "up", Installed: []string{"ipv4", "ipv6"}, Steered: 4210, Unrouted: 3},
+		"kernel-path-down": {Via: via, Source: "3fff::2", State: "down", Down: "3fff:b:0:306::3", Verdict: "no route", Steered: 4210, Unrouted: 17},
+	} {
+		status := KernelStatus{Enabled: true, Where: "table 200 protocol 155", Table: 200, Protocol: 155, Installed: 6, ExitPath: path}
+		golden(t, name+".txt", []byte(kernelLine(status)+"\n"))
+		goldenJSON(t, name+".json", status)
+	}
+	if line := kernelLine(KernelStatus{Enabled: true, Where: "table 200 protocol 155"}); strings.Contains(line, "path") {
+		t.Errorf("the kernel line reads %q outside mode 3, want no path clause", line)
+	}
+}
+
 // The egress line leads with the prefixes being announced rather than with the
 // ones configured. The two differ exactly when the capability is not working,
 // since a prefix is announced only while its family is ready, and that
