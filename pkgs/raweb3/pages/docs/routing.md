@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-30
+updated: 2026-10-31
 order: 45
 ---
 
@@ -475,6 +475,166 @@ packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
   [what forwarded traffic meets](coexistence.md#what-forwarded-traffic-meets)
   states, with what it leaves of a Docker bridge's flows and a LAN's.
 
+#### The kill switch on Linux
+
+With `cap.exit.fallback = "none"` the host's traffic leaves by a link outside
+the mesh only where a line of the chains below passes it while the table reads
+back as written, whether an exit is live or not, and after the daemon is killed.
+The switch covers the host's own traffic and that of the links `forward` names.
+The chain's forwarded line below passes a forwarded packet from a link outside
+`forwarded`, such as a container's or a VM's, whose destination `fib daddr type`
+does not read as local, a type the kernel takes
+[in IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58)
+and
+[in IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89).
+Two more rules close the routing side, in each family:
+
+| Priority | Rule                                                                                    | What it does                                                                                         |
+| -------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| 5445     | `to <prefix> lookup main`, for each of this node's own prefixes the mesh's table throws | the host reaches its own prefix beyond the gateway, which 5440's lookup passes on as a throw         |
+| 5450     | `iif lo unreachable`, and `iif <link> unreachable` for each link `forward` expands to   | an unmarked lookup of the host's own or a forwarded link's that no rule above answered fails at once |
+
+5450 fails a connect with `ENETUNREACH` at once while the mesh holds no default,
+where a drop after routing would leave it waiting out its retransmissions. A
+source-specific announcement's throw is left out of 5445, so the host's own
+unmarked lookup from its source the mesh's table passes on meets 5450. A family
+the tun holds no overlay address of runs [mode off's rules](#exit-mode-on-linux)
+with 5445 and 5450 beside them, so an unmarked lookup of the host's own or of a
+link `forward` names that rows L1 to L12 of
+[where a lookup ends](#where-a-lookup-ends-on-linux) send to main at 32766 meets
+5450 first, but one to this node's own prefixes, which 5445 sends to main, and
+one that a route of main longer than /0 answers at 5410 meets the chains below.
+
+The routing side leaves open a socket bound to the uplink's address, which 5405
+sends by main, one bound to the uplink's device, and a mark another program's
+rule sends to main. The table `inet ranet3_fallback` holds them to its lines,
+with two filter chains at priority 2147483646: `fallback` at `postrouting`,
+which judges the link a packet leaves by
+([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n437),
+[IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n248)),
+and `output` at `output`, which sees the packets the host sends by the link of
+their first route
+([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n120),
+[IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/output_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n116)).
+Both hold these lines, a reply line only for a protocol `inbound` lists, and
+`output` holds `fib daddr type local accept` ahead of its drop:
+
+```text
+oifname { "lo", "<tun>" } accept
+meta mark 0x00000072 accept
+meta iif != 0 iifname != @forwarded fib daddr type != local accept
+ip daddr @lan4 accept
+ip6 daddr @lan6 accept
+ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
+ip6 daddr { fe80::/10, ff00::/8 } accept
+icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
+meta iif 0 icmpv6 type packet-too-big accept
+meta iif 0 icmp type destination-unreachable icmp code 4 accept
+ip daddr @own4 accept
+ip6 daddr @own6 accept
+ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept
+ct direction reply ct protocol udp ct original proto-dst @udp_ports accept
+counter drop
+```
+
+- The priority runs ahead of conntrack's
+  [confirmation at 2147483647](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/netfilter_ipv4.h?id=940de590b839f71d6dc846160534bf202401b8b7#n43),
+  so a refused packet confirms no entry, and
+  [a drop is final](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n612)
+  whatever another chain at the same hook accepts. The host's own sender meets
+  `EPERM`.
+- `output` is there for what a kernel tunnel or IPsec sends. At postrouting a
+  packet carries as its input link the device it held before its route
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n429),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n231)),
+  the tunnel for a GRE, IPIP, SIT or WireGuard outer packet, so postrouting's
+  forwarded line meets it as a forwarded packet. At output a packet carries no
+  input link
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n120),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/output_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n116)),
+  so output's lines meet such a packet as they meet the host's own.
+- Output's `fib daddr type local accept` passes a packet whose destination
+  `fib daddr type` reads local
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89)),
+  whatever gave the packet that destination. Postrouting's lines then judge the
+  link the packet leaves by, which the reroute at output looks up again with a
+  bound socket's device
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter.c?id=940de590b839f71d6dc846160534bf202401b8b7#n49),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter.c?id=940de590b839f71d6dc846160534bf202401b8b7#n44)).
+  Which type and which link a send gets rests on the routes and rules. In the
+  labs, in both families with no rule ahead of the local table, a send that NAT
+  at output redirected to 127.0.0.1 or ::1 passed output's fib line and was
+  delivered by `lo`. A send bound to the uplink toward an address the host held
+  on another link, which the bound lookup
+  [passes over](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/fib_trie.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1413),
+  passed the fib line and met postrouting's drop as it left by the uplink. One
+  bound to the uplink that NAT at output sent to the uplink's own address left
+  by `lo` and was delivered. A GRE tunnel bound to the uplink toward an address
+  the host held on `lo` sent no outer packet out of the uplink, with the
+  defaults present, retracted and after `SIGKILL`. Where a rule keyed on the
+  source ahead of the local table routed the host's send to its own address on
+  another link out of the uplink, IPv4 read that address as local and
+  postrouting refused the send, and IPv6 read it as unicast and output's drop
+  refused it.
+- The lines pass the mesh and `lo`, ranet3's underlay by its mark 0x72 exactly,
+  a packet forwarded from a link `forward` leaves out, which keeps its routes
+  from before ranet3, toward a destination that `fib daddr type` does not read
+  as local, as above, the LAN, link-local and multicast, which carry DHCP and
+  most of discovery, neighbor and router discovery to any address at the hop
+  limit of 255, as [RFC 4890](https://www.rfc-editor.org/rfc/rfc4890) section
+  4.4.1 lists them, Packet Too Big and fragmentation needed that the host itself
+  sends, with no input link, about a packet it forwards, this node's own
+  prefixes, the replies of a flow the far side opened to a service
+  `cap.exit.inbound` lists, keyed on the connection's protocol, so its ICMP
+  error passes too, and, at output alone, a destination `fib daddr type` reads
+  local, as above. The drop takes what none of them passes.
+- `forwarded` holds `lo` and the links `forward` expands to. `lan4` and `lan6`
+  hold the LAN: the connected networks of the links `forward` names, whole, and
+  of the connected networks of every other link outside the mesh, the parts
+  inside the private ranges of
+  [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918), the unique local
+  `fc00::/7` of [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193), the
+  link-local `169.254.0.0/16` and `fe80::/10`, and the prefixes `cap.exit.lan`
+  lists. A network holding such a range counts for that range alone. A network
+  that shares an address with `cap.border.overlay` and one as short as a route
+  that [counts as a default](#routes-that-count-as-a-default) are left out
+  whole. Status names the second, and a network the ranges and `cap.exit.lan`
+  leave out in whole or in part as public. `own4` and `own6` hold the prefixes
+  5445 names, and `tcp_ports` and `udp_ports` the ranges `inbound` lists. The
+  rules and the sets come from one derivation each pass.
+
+The table carries no owner flag, so it outlives the process that wrote it:
+
+- It is written by the reconciler's first pass, which the start waits up to 10 s
+  for before it dials a session, and again by each pass whose inputs moved, in
+  one transaction with its sets. A first pass that fails, such as one that
+  cannot list the tun's addresses, is logged as
+  `kernel reconcile failed, retrying` and the start dials without the table
+  until a retry writes it. A table left by an earlier instance is taken over.
+- A clean stop, `ranet3 down` and a reload to `"uplink"` or without `cap.exit`
+  withdraw it with the rules. A start or a reload whose file asks for no switch
+  deletes one an earlier instance left.
+- After `SIGKILL` the table and the rules stay and the tun goes with the
+  process, so the chains' drop keeps taking the host's traffic that no other
+  line passes until ranet3 starts again or the operator runs
+  `nft delete table inet ranet3_fallback`. Nothing outlives a reboot, so the
+  switch holds from ranet3's start, not from boot.
+
+Each pass reads the table back, its hook, priority, lines and set elements.
+While it does not read back as written, or cannot be written, such as on a
+kernel without `nf_tables`, the reconciler leaves 5405 and 5435 out and keeps
+5445 and 5450, so an unmarked lookup from the uplink's address meets 5440, 5445
+or 5450 rather than main, but for a route of main longer than /0, which still
+wins at 5410 as in mode 2, the cost
+[limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) names. While
+the table holds, the chains' drop takes that route's traffic beyond the LAN
+unless another line passes it. Status names the switch `not holding` with the
+reason, and the services on the uplink's address answer only where 5410 or 5445
+routes the reply, or the mark 0x72 sends it past them to main, until the table
+reads back. The reconciler watches the table's notifications, so another
+writer's flush or deleted line starts a pass at once.
+
 #### Where a lookup ends on Linux
 
 These tables are where a lookup ends under the derived rules, and the other
@@ -579,6 +739,10 @@ In a family it holds none of, the rows above hold alone.
   the reply.
 - E3: the mesh's default, which 5420 skips at L11, answers here, so the host's
   own traffic from any source leaves by the exit. A throw goes on to main.
+- Under [the kill switch](#the-kill-switch-on-linux), E3's lookup goes on to
+  5445 rather than main: to one of this node's own prefixes it ends by main's
+  route there, and any other ends refused at 5450. E1 and E2 still end by main,
+  and meet the table's chains.
 
 A lookup bound to a device, such as by a socket bound with `SO_BINDTODEVICE`,
 ends by the rows above with these changes. An address of the host's own ends at
@@ -651,8 +815,10 @@ failed asks none, and it and a pass whose lookups failed keep the last answers.
   no session.
 
 `ranet3 disable reconciler` withdraws every route, address and rule the
-reconciler installed. `ranet3 enable reconciler` puts them back. Both are
-refused on a node with no `cap.table`.
+reconciler installed, 5450 among them, and deletes
+[the kill switch's](#the-kill-switch-on-linux) table, so the host's traffic
+leaves by the uplink until it is enabled again. `ranet3 enable reconciler` puts
+them back. Both are refused on a node with no `cap.table`.
 
 ### Routes that count as a default
 
@@ -977,35 +1143,56 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   `no IPv6 overlay address on the tun, so IPv6 runs mode off's rules`, as
   [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) counts the
   family and says where its traffic goes. [When a pass runs](#when-a-pass-runs)
-  lists what wakes the pass that reads the tun again.
+  lists what wakes the pass that reads the tun again. Under `fallback = "none"`
+  it names the switch's state and what the last lines of both chains have
+  dropped, summed, as `fallback none holding, 12 packets, 720 B dropped`,
+  `passing` while an exit is live, or `not holding` with the reason the table
+  does not read back. It names a connected network left out of the LAN as
+  `198.0.0.0/7 left out of the LAN as it captures the machine`, one the private
+  and link-local ranges and `cap.exit.lan` leave out in whole or in part as
+  `203.0.113.0/24 left out of the LAN as public, outside the private and link-local ranges and cap.exit lan`,
+  an endpoint name whose last lookup failed, in any state of the switch, as
+  `gateway.example.org does not resolve`, and a DNS server systemd-resolved
+  queries through one link beyond the LAN, read when status is, as
+  `DNS server 203.0.113.53 on eth0 lies beyond the LAN`.
 - `ranet3 debug netmon` lists each family's links outside the mesh with their
   networks and point-to-point far ends, which exit mode derives its rules from.
 - `ranet3 debug rules` lists every lookup the reconciler last asked, taken or
   not, with the source and interface of an underlay lookup and its answer, as
-  [debugging](development/debug.md#commands) gives.
+  [debugging](development/debug.md#commands) gives, and under
+  `fallback = "none"` the table `ranet3_fallback` as the kernel holds it now,
+  each line with the drop's count and each set's elements.
 
 `SIGUSR1` writes the mesh's routes to the log, this node's own entries as
 `via this node` and the holds as `via unreachable`.
 
-| Log line                                                                             | Level | When                                                                                 |
-| ------------------------------------------------------------------------------------ | ----- | ------------------------------------------------------------------------------------ |
-| `babel neighbor up`, `babel neighbor down`                                           | info  | a neighbor comes up or goes down                                                     |
-| `babel route installed`                                                              | info  | a route is selected                                                                  |
-| `babel route retracted`                                                              | info  | a route is held unreachable                                                          |
-| `kernel reconciler started`                                                          | info  | the reconciler starts, naming where it writes                                        |
-| `kernel routes reconciled`                                                           | info  | a pass added or removed a route                                                      |
-| `kernel reconciler withdrawn`                                                        | info  | shutdown or `ranet3 disable reconciler` removed the routes, addresses and rules      |
-| `kernel finds an overlay prefix answered outside the mesh's table`                   | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed             |
-| `kernel finds an overlay prefix answered through the tun or by a hold again`         | info  | an overlay prefix's lookup stopped being taken                                       |
-| `kernel finds the underlay's mark answered through the tun`                          | warn  | a send's lookup under the mark became taken, or a taken one's answer changed         |
-| `kernel finds the underlay's mark answered outside the tun again`                    | info  | a send's lookup under the mark stopped being taken                                   |
-| `kernel no longer asks a lookup it found taken`                                      | info  | a taken lookup's prefix or send left the pass, or a withdrawal ended the lookups     |
-| `kernel could not ask where its overlay and underlay lookups end`                    | warn  | the lookups failed, once until they answer again, and the last answers stay          |
-| `kernel can ask where its overlay and underlay lookups end again`                    | info  | the lookups answered after failing                                                   |
-| `kernel leaves a link cap.exit forward matches out of the mode`                      | warn  | a `forward` entry matches the tun, `lo` or a default's link, once until it no longer |
-| `kernel no longer leaves a link cap.exit forward matched out of the mode`            | info  | that link stopped being one of them, or stopped matching                             |
-| `kernel runs mode off's rules in a family, the tun holding no overlay address of it` | warn  | under `cap.exit`, the tun came to hold no overlay address of the `family`            |
-| `kernel no longer counts a family as one the tun holds no overlay address of`        | info  | the tun holds one again, `cap.exit` was removed or the reconciler withdrew           |
+| Log line                                                                                                                                                     | Level | When                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `babel neighbor up`, `babel neighbor down`                                                                                                                   | info  | a neighbor comes up or goes down                                                                                                             |
+| `babel route installed`                                                                                                                                      | info  | a route is selected                                                                                                                          |
+| `babel route retracted`                                                                                                                                      | info  | a route is held unreachable                                                                                                                  |
+| `kernel reconciler started`                                                                                                                                  | info  | the reconciler starts, naming where it writes                                                                                                |
+| `kernel routes reconciled`                                                                                                                                   | info  | a pass added or removed a route                                                                                                              |
+| `kernel reconciler withdrawn`                                                                                                                                | info  | shutdown or `ranet3 disable reconciler` removed the routes, addresses and rules                                                              |
+| `kernel finds an overlay prefix answered outside the mesh's table`                                                                                           | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed                                                                     |
+| `kernel finds an overlay prefix answered through the tun or by a hold again`                                                                                 | info  | an overlay prefix's lookup stopped being taken                                                                                               |
+| `kernel finds the underlay's mark answered through the tun`                                                                                                  | warn  | a send's lookup under the mark became taken, or a taken one's answer changed                                                                 |
+| `kernel finds the underlay's mark answered outside the tun again`                                                                                            | info  | a send's lookup under the mark stopped being taken                                                                                           |
+| `kernel no longer asks a lookup it found taken`                                                                                                              | info  | a taken lookup's prefix or send left the pass, or a withdrawal ended the lookups                                                             |
+| `kernel could not ask where its overlay and underlay lookups end`                                                                                            | warn  | the lookups failed, once until they answer again, and the last answers stay                                                                  |
+| `kernel can ask where its overlay and underlay lookups end again`                                                                                            | info  | the lookups answered after failing                                                                                                           |
+| `kernel leaves a link cap.exit forward matches out of the mode`                                                                                              | warn  | a `forward` entry matches the tun, `lo` or a default's link, once until it no longer                                                         |
+| `kernel no longer leaves a link cap.exit forward matched out of the mode`                                                                                    | info  | that link stopped being one of them, or stopped matching                                                                                     |
+| `kernel runs mode off's rules in a family, the tun holding no overlay address of it`                                                                         | warn  | under `cap.exit`, the tun came to hold no overlay address of the `family`                                                                    |
+| `kernel no longer counts a family as one the tun holds no overlay address of`                                                                                | info  | the tun holds one again, `cap.exit` was removed or the reconciler withdrew                                                                   |
+| `kernel's fallback table holds the host's traffic to the LAN while no exit is live`                                                                          | info  | the switch began holding, or holds again once the table reads back                                                                           |
+| `kernel's fallback table passes the host's traffic to the exit live through the tun`                                                                         | info  | an exit became live under the switch                                                                                                         |
+| `kernel's fallback table is no longer asked for`                                                                                                             | info  | a reload or a withdrawal ended the switch                                                                                                    |
+| `kernel's fallback table does not read back as written, so the host's own lookups from the uplink's addresses reach main only for its routes longer than /0` | warn  | the table stopped reading back, with `fault`, once for each fault until it does                                                              |
+| `kernel could not delete a fallback table an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted`              | warn  | a start or reload asking for no switch, or a start with no `cap.table`, failed to delete the table, with `err` and `fix`                     |
+| `kernel's first pass has not ended, so sessions are dialed before the fallback table is written`                                                             | warn  | under `fallback = "none"` the start waited `waited` for the reconciler's first pass and dials without it                                     |
+| `kernel could not read the DNS servers systemd-resolved queries through each link`                                                                           | warn  | status could not name the resolvers beyond the LAN, once until it can                                                                        |
+| `stopped reading nf_tables notifications`                                                                                                                    | warn  | a read of a table's notification socket failed, with `table` and `err`, after which another writer's change waits for the next periodic pass |
 
 The 2 route lines share 1 limit of 1 line per second. Each carries
 `changes_since_last`, the number of changes since the last line. A lookup's
@@ -1017,9 +1204,11 @@ send carries where it carries them, and `answer`. The events
 changed the kernel, met a newly refused route, failed or followed a reload, and
 a withdrawal only when it fails, `kernel.taken` each line that names a lookup,
 `kernel.forward` each line about a skipped link, with its `entry`, `link`,
-`reason` and `skipped`, and `kernel.exit` each line about a family the tun holds
-no overlay address of, with its `family` and `addressed`, as
-[debugging](development/debug.md#events) says.
+`reason` and `skipped`, `kernel.exit` each line about a family the tun holds no
+overlay address of, with its `family` and `addressed`, and `kernel.fallback`
+each change of the switch's state, with `state` and `was`, each `holding`,
+`passing`, `not holding` or `off`, as [debugging](development/debug.md#events)
+says.
 
 | Metric                                 | Meaning                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------ |

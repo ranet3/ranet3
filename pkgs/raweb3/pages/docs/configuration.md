@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-28
+updated: 2026-10-31
 order: 30
 ---
 
@@ -140,6 +140,21 @@ the block:
 ```toml
 [cap.exit]
 forward = ["docker0", "br-*"]     # names, or patterns as path.Match reads them
+```
+
+With `fallback = "none"` ranet3 writes
+[the kill switch](routing.md#the-kill-switch-on-linux), which holds while no
+exit is live and its table reads back as written, and stays after a crash. Its
+section lists the lines that let the host's traffic leave by a link outside the
+mesh, and the switch's reach. The LAN's line passes the private and link-local
+part of each connected network and every network of a link `forward` names, and
+`lan` adds another:
+
+```toml
+[cap.exit]
+fallback = "none"                 # "uplink" by default
+inbound = ["22/tcp", "60000-61000/udp"]
+lan = ["198.51.100.0/24"]         # a LAN at a public address
 ```
 
 ### Capabilities

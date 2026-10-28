@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-30
+updated: 2026-10-31
 order: 110
 ---
 
@@ -291,6 +291,106 @@ the link in `forward` serves only traffic the owned-source rule passes,
 masqueraded to the tun's address or announced, as
 [what forwarded traffic meets](#what-forwarded-traffic-meets) states. For the
 rest, keep the chain's IPv4 check off that traffic.
+
+### The kill switch beside other programs
+
+Under `cap.exit.fallback = "none"`
+[the kill switch](routing.md#the-kill-switch-on-linux) adds 5445 and 5450 to the
+second block and writes the table `inet ranet3_fallback`, whose chains filter at
+`output` and at `postrouting` at priority 2147483646, over the reach that page
+gives.
+
+- **A firewall's author.** A chain at 2147483647 at postrouting sees only what
+  the switch passed and can drop or count, since a filter chain
+  [routes nothing again](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_chain_filter.c?id=940de590b839f71d6dc846160534bf202401b8b7#n15)
+  and a route chain
+  [hooks output alone](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_chain_route.c?id=940de590b839f71d6dc846160534bf202401b8b7#n138).
+  At output the switch's chain reads the link of the packet's first route
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n120),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/output_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n116))
+  whatever priority a route chain or NAT there runs at. A route chain that marks
+  or rewrites a packet at output, NAT at output, and a filter chain marking at
+  `raw`, `mangle` or `filter` all run before the postrouting chain, which judges
+  the link the packet leaves by after them
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n437),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n248)).
+  Output's fib line passes a packet whose destination `fib daddr type` reads
+  local
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89)),
+  whatever gave the packet that destination, NAT at output or a route chain
+  rewriting it, and postrouting judges that packet by the link the reroute at
+  output gives it
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter.c?id=940de590b839f71d6dc846160534bf202401b8b7#n49),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter.c?id=940de590b839f71d6dc846160534bf202401b8b7#n44)).
+  The labs measured three such layouts in both families. A send beyond the LAN
+  that a route chain at output marked into a table holding a local default on
+  `lo`, its destination not read local, met output's drop. A send bound to the
+  uplink that NAT at output sent to 127.0.0.1 or ::1, or to an address the host
+  held on another link, passed output's fib line, left by the uplink and met
+  postrouting's drop. One bound to the uplink that NAT at output sent to the
+  uplink's own address left by `lo` and was delivered. A kernel tunnel's outer
+  packet meets output's lines by the link of its first route and postrouting's
+  with the tunnel as its input link, so one first routed into the tun or `lo`
+  that a route chain at output routes beyond the LAN passes output's `oifname`
+  line, and postrouting's forwarded line where the tunnel is outside `forwarded`
+  and `fib daddr type` does not read its destination local. Each is as
+  [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) declares.
+  Each of these layouts, a socket's own mark, route chains marking, overwriting
+  and clearing the mark at mangle, at 400 and at 2147483647, filter chains
+  marking at filter, at mangle and at raw, restores of the connection's mark
+  guarded and unguarded, NAT at output after the tun and to the uplink's own
+  address, was measured in both families with the mesh's defaults present,
+  retracted and after `SIGKILL`, and no packet of the host's own reached the
+  internet host by the uplink.
+- **Tailscale and other VPNs.** Tailscale marks its own sockets `0x80000`, which
+  its rule at 5210 sends to main, a kernel WireGuard with a `fwmark` marks its
+  own, and the host's own IPsec sends its ESP by the uplink. The mark line
+  passes ranet3's mark 0x72 alone, so it passes none of them. Each, and a kernel
+  tunnel's outer packet, GRE, IPIP, SIT or WireGuard, meets output with no input
+  link
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n120),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/output_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n116)),
+  so output's lines judge it as the host's own, and their drop takes one beyond
+  the LAN unless another line of [the list](routing.md#the-kill-switch-on-linux)
+  passes it. The tunnel lab, with the host opening every flow and `inbound`
+  empty, measured no outer packet of GRE in IPv4 or of WireGuard in either
+  family reaching the internet host, with the mesh's defaults present, retracted
+  and after `SIGKILL`.
+- **A firewall restoring the conntrack mark with the full mask,**
+  `meta mark set ct mark` or `CONNMARK --restore-mark` at output. It sets
+  ranet3's own IKE and ESP to mark 0, so routing sends them into the tun or to
+  5450, and the chains' drop takes what leaves by the uplink beyond the LAN
+  unless another line passes it. Under the switch ranet3 then loses its underlay
+  to each peer beyond the LAN whose packets no other line passes, and no exit
+  can be reached by it. A restore that leaves 0x72 alone keeps it: one guarded
+  on an unmarked packet, `meta mark 0 meta mark set ct mark`, or one under a
+  mask holding none of 0x72's bits,
+  `CONNMARK --restore-mark --nfmask 0xff00 --ctmask 0xff00`.
+- **kube-proxy and Cilium.** The chains' mark line passes ranet3's underlay only
+  while its mark reads 0x72 exactly, so with any other bit set on it the
+  underlay meets the other lines, and their drop beyond the LAN unless another
+  line passes it. kube-proxy's `0x4000` and Cilium's `0x200/0xf00` go on the
+  packets their rules select, which ranet3's underlay is not, so the mark line
+  passes it. A pod's traffic forwarded from a link `forward` leaves out keeps
+  its routes and passes the chain's forwarded line toward a destination
+  `fib daddr type` does not read local
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89)),
+  and one `forward` names follows the switch as the host's own.
+- **Docker.** A bridge `forward` names follows the switch as the host's own: its
+  containers' lookups meet 5410, 5440, 5445 and 5450 as the host's do, and what
+  leaves by a link outside the mesh meets the chains, where the forwarded line
+  does not pass it and the drop takes it unless another line passes it. A bridge
+  `forward` leaves out keeps the routes it had and passes the chain's forwarded
+  line whatever the state, toward a destination `fib daddr type` does not read
+  local
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89)).
+
+A reverse path check, rp_filter's strict mode or NixOS's strict and loose fib
+chains, passes under the switch as it does without it: the replies of a flow
+from a link `forward` leaves out, of a listed service and of the underlay.
 
 ## Routes on macOS
 

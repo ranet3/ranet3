@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-30
+updated: 2026-10-31
 order: 35
 ---
 
@@ -776,9 +776,51 @@ lists the rules it adds, and
 [sharing a host](coexistence.md#exit-mode-beside-other-programs) what other
 programs' rules do beside them.
 
-| Key       | Value         | Default | Meaning                                                           |
-| --------- | ------------- | ------- | ----------------------------------------------------------------- |
-| `forward` | list of names | none    | Links whose forwarded traffic follows the mode as the host's does |
+| Key        | Value                | Default    | Meaning                                                                                                    |
+| ---------- | -------------------- | ---------- | ---------------------------------------------------------------------------------------------------------- |
+| `forward`  | list of names        | none       | Links whose forwarded traffic follows the mode as the host's does                                          |
+| `fallback` | `"uplink"`, `"none"` | `"uplink"` | Where the host's traffic leaves while no exit is live. `"none"` is the kill switch                         |
+| `inbound`  | list of services     | none       | Under `"none"`, the services on the uplink's addresses that answer beyond the LAN, on flows opened to them |
+| `lan`      | list of prefixes     | none       | Under `"none"`, the parts of connected networks beyond the private and link-local ranges that count as LAN |
+
+- `fallback = "uplink"` sends the host's traffic by its own default wherever the
+  mesh's table holds none. `"none"` writes
+  [the kill switch](routing.md#the-kill-switch-on-linux), whether an exit is
+  live or not, and it stays after the daemon is killed. Its section lists the
+  lines that let the host's traffic leave by a link outside the mesh, and gives
+  the rules, the table it writes, how the kernel takes what each line reads, and
+  the switch's reach.
+- The LAN is the part of each connected network that
+  [the kill switch](routing.md#the-kill-switch-on-linux) says counts, by default
+  only the private and link-local ranges and every network of a link `forward`
+  names. A host on the LAN at a public IPv4 address or a global IPv6 address
+  beyond another link is passed by the LAN's line only once `lan` lists its
+  network, such as `lan = ["198.51.100.0/24", "2001:db8:a::/64"]`. An entry
+  takes the part of a connected network it holds and adds no destination no link
+  is connected to. The order does not matter.
+- Each `inbound` entry is `"<port>/<protocol>"` or
+  `"<first>-<last>/<protocol>"`, such as `"22/tcp"` or `"60000-61000/udp"`, with
+  the protocol `tcp` or `udp`. ICMP echo cannot be listed, so the reply lines
+  pass no echo reply, and an echo request to the uplink's address from beyond
+  the LAN goes unanswered unless another line of
+  [the list](routing.md#the-kill-switch-on-linux) passes the reply. Entries that
+  overlap or touch are joined, and the order does not matter.
+- A `fallback` other than `"uplink"` or `"none"` is refused:
+  `kernel: cap.exit fallback "<value>" is neither "uplink" nor "none"`.
+- `inbound` without `fallback = "none"` is refused:
+  `kernel: cap.exit inbound lists the services that answer beyond the LAN while fallback = "none" refuses the rest, and fallback is not "none": write fallback = "none" or remove inbound`.
+- An `inbound` entry is refused when it is malformed, names port 0 or another
+  protocol, runs downward, or is written twice under another spelling, such as
+  `kernel: cap.exit inbound "8000-7000/tcp" runs from 8000 down to 7000: write the lower port first`.
+- `lan` without `fallback = "none"` is refused:
+  `kernel: cap.exit lan lists the connected networks that count as the LAN while fallback = "none" refuses the rest, and fallback is not "none": write fallback = "none" or remove lan`.
+- A `lan` entry is refused when it is not a prefix, has bits set below its
+  length, spells IPv4 as IPv6 or is written twice, as every list of prefixes is,
+  when it overlaps `cap.border.overlay`, as
+  `config: cap.exit lan 192.0.2.128/25 overlaps cap.border overlay 192.0.2.0/24, whose destinations the mesh carries whatever the LAN holds`,
+  and when it is as short as a route that
+  [counts as a default](routing.md#routes-that-count-as-a-default), as
+  `config: cap.exit lan 0.0.0.0/1 counts as capturing the machine, so it would let the host's traffic leave by the uplink as a default does`.
 
 - The file is refused without `cap.table`, whose reconciler writes the mode's
   rules, and without `cap.border`, whose overlay keeps the mode's sources by

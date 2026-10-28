@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-30
+updated: 2026-10-31
 order: 10
 ---
 
@@ -207,17 +207,22 @@ give. None of it enters the mesh.
 
 Wherever the mesh's table holds no default, traffic toward a default under
 [exit mode](../routing.md#exit-mode-on-linux), the host's own and a forwarded
-link's, leaves by main with no rule of ranet3's refusing it: before the first
-session is live, after `capture_grace`, while the mesh's defaults are retracted,
-and after the daemon is killed and the tun goes with it, whose rules stay until
-the next start, while a clean stop withdraws them. A family the tun holds no
-overlay address of, an address inside no prefix of `cap.border.overlay` counting
-for none, runs mode off's rules whatever the mesh's table holds. A lookup of
-that family ends where rows L1 to L12 of
-[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, and a
-packet they send into the tun meets the [tun read](../routing.md#transit). One
-from a source in this node's own prefixes, the host's or a forwarded link's,
-follows the mesh at 5430 where row L11 gives, and
+link's, leaves by main under `fallback = "uplink"`, with no rule of ranet3's
+refusing it: before the first session is live, after `capture_grace`, while the
+mesh's defaults are retracted, and after the daemon is killed and the tun goes
+with it, whose rules stay until the next start, while a clean stop withdraws
+them. A family the tun holds no overlay address of, an address inside no prefix
+of `cap.border.overlay` counting for none, runs mode off's rules whatever the
+mesh's table holds, with 5445 and 5450 beside them under
+[the kill switch](../routing.md#the-kill-switch-on-linux). A lookup of that
+family ends where rows L1 to L12 of
+[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, but
+where they give main at 32766 an unmarked lookup of the host's own or of a link
+`forward` names ends at 5450 under the switch, or at 5445 to this node's own
+prefixes, and a packet they send into the tun meets the
+[tun read](../routing.md#transit). One from a source in this node's own
+prefixes, the host's or a forwarded link's, follows the mesh at 5430 where row
+L11 gives, and
 [what forwarded traffic meets](../coexistence.md#what-forwarded-traffic-meets)
 says what source a forwarded link's packet carries. `ranet3 status` names the
 family, and an overlay address on the tun, from `cap.table` or another writer,
@@ -226,6 +231,125 @@ brings mode 2's rules back on the pass it
 such as Tailscale's at 5270 while it uses an exit node, takes the host's traffic
 first, as [sharing a host](../coexistence.md#exit-mode-beside-other-programs)
 measures.
+
+[The kill switch](../routing.md#the-kill-switch-on-linux), `fallback = "none"`,
+whose section lists the lines that let that traffic leave by the uplink, has
+these costs over the reach that page gives.
+
+- The LAN is only the part of a connected network inside the private and
+  link-local ranges, as
+  [the kill switch](../routing.md#the-kill-switch-on-linux) defines it, and
+  `cap.exit.lan` adds a part outside them, but for a link `forward` names, whose
+  networks count whole. This closes the LocalNet attack of "Bypassing Tunnels:
+  Leaking VPN Client Traffic by Abusing Routing Tables" (USENIX Security 2023)
+  for public destinations, where a hostile network hands out a public prefix as
+  its own so a VPN client sends traffic to that prefix in the clear. It leaves
+  it open for the private ranges: a hostile network's on-link `10.0.0.0/8` wins
+  at 5410 over a mesh subnet inside it at 5420, and the chains pass it as LAN. A
+  host at a public IPv4 address or a global IPv6 address on a link `forward`
+  leaves out, a container's among them, is not passed by the LAN's line until
+  `cap.exit.lan` lists its network, and status names the network public. It gets
+  of the host's own packets only those another line of
+  [the list](../routing.md#the-kill-switch-on-linux) passes.
+- While the table does not read back, a route of main longer than /0, such as a
+  DHCP option 121 pair of `/1`s (TunnelVision), wins at 5410 as in mode 2 and
+  sends the host's traffic out of the uplink. While it holds, the chains' drop
+  takes that traffic beyond the LAN unless another line passes it.
+- Postrouting judges a send from a socket bound to the uplink's address or
+  device by the link it leaves by
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n437),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n248)).
+  Where that is the uplink, the send meets the lines
+  [the list](../routing.md#the-kill-switch-on-linux) gives. The socket lab
+  measured such a socket, unmarked and opening its own flows, reaching the LAN
+  and this node's own prefixes and nothing beyond, in both families with the
+  mesh's defaults present, retracted and after `SIGKILL`, with no NAT or route
+  chain at output. Where this node owns the uplink's address, an address-bound
+  socket's flows go through the exit.
+- The reply line of a port `inbound` lists passes a service's replies on flows
+  conntrack saw the far side open, and a reply beyond the LAN that no line of
+  [the list](../routing.md#the-kill-switch-on-linux) passes meets the drop. So
+  `inbound` has conntrack track every flow of the namespace, with its memory and
+  its table's limit, `nf_conntrack_max`. The reply lines cannot match a flow
+  under `notrack`, which conntrack does not track, nor an ICMP echo's reply,
+  since they read TCP and UDP alone, so those answer beyond the LAN only where
+  another line passes them.
+- A flow to a listed service open before conntrack runs in the namespace may be
+  picked up first from the host's own packet, which the reply lines then cannot
+  match, so the drop takes it beyond the LAN unless another line passes it. A
+  refused packet confirms no entry, so the far side's next segment picks the
+  flow up with the far side as its sender, and the service's replies pass again.
+  Only such a flow where the host alone sends stalls. This was measured in both
+  families. A host with a stateful firewall has conntrack running already.
+- Another VPN's underlay and the host's own IPsec leave by the uplink under
+  their own mark or none, Tailscale's `0x80000` among them, so the mark line
+  passes none of them and they meet the other lines as the host's own does, and
+  the drop beyond the LAN unless one of them passes them. So does ranet3's own
+  underlay where a firewall clears its mark at output with a full restore, so an
+  exit whose peer no other line passes cannot be reached and the switch holds
+  closed. A kernel tunnel's outer packet, GRE, IPIP, SIT or WireGuard, meets
+  output with no input link
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n120),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/output_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n116)),
+  so output's lines judge it as the host's own, as
+  [sharing a host](../coexistence.md#the-kill-switch-beside-other-programs)
+  says. An outer packet first routed into the tun or `lo` and then routed beyond
+  the LAN by another program's chain at output passes output's `oifname` line,
+  and postrouting's forwarded line, which reads the tunnel as its input link
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n429),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n231)),
+  where the tunnel is outside `forwarded` and `fib daddr type` does not read its
+  destination local, a type taken as the next item says.
+- The forwarded line passes a forwarded packet from a link outside `forwarded`
+  whose destination `fib daddr type` does not read as local, a type the kernel
+  takes
+  [in IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58)
+  and
+  [in IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89).
+  So a packet forwarded from a link `forward` leaves out toward a destination
+  the line reads as local is not passed by it and meets the other lines as the
+  host's own does.
+- The `output` chain reads the link of a packet's first route
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n120),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/output_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n116)),
+  so a packet of the host's own first routed out of a link outside the mesh and
+  steered into `lo` or the tun by a route chain at output meets output's lines
+  by that first link, and its drop unless another line passes it, as
+  [sharing a host](../coexistence.md#the-kill-switch-beside-other-programs)
+  says. A transparent proxy of the host's own traffic, a mark and a local route
+  that deliver its flows to the proxy, is the usual case: in the labs a route
+  chain at output marking a send beyond the LAN into a table holding a local
+  default on `lo` met output's drop in both families. Output's fib line passes a
+  packet whose destination `fib daddr type` reads local
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89)),
+  whatever gave the packet that destination, NAT at output or a route chain
+  rewriting it, and postrouting's lines judge the link it leaves by, which the
+  reroute at output looks up again
+  ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter.c?id=940de590b839f71d6dc846160534bf202401b8b7#n49),
+  [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter.c?id=940de590b839f71d6dc846160534bf202401b8b7#n44)).
+- A program that sets the mark 0x72 on its packets, by `SO_MARK` or a chain at
+  output or at postrouting ahead of 2147483646, passes. It needs
+  `CAP_NET_ADMIN`.
+- A packet socket, a tc or eBPF program on a link's egress, and an IPsec policy
+  found after source translation pass the chain or skip it.
+- A query systemd-resolved sends through one link to a DNS server outside the
+  LAN fails where no other line passes it, exit live or not, and status names
+  that server. An endpoint name that fails to resolve while the switch holds is
+  named too. A DHCP client's unicast renewal to a server beyond the LAN is
+  refused where no other line passes it, and falls back to its broadcast, and so
+  is a DHCPv6 client's message to a server beyond the LAN under Server Unicast,
+  which falls back to `ff02::1:2`.
+- The switch holds from ranet3's start, not from boot. A crash leaves the table
+  and the rules until ranet3 starts again or the table is deleted with
+  `nft delete table inet ranet3_fallback`.
+- A TCP connect the chain refuses waits out its retransmissions rather than
+  failing at once: an IPv6 connect bound to no address beyond the LAN while no
+  exit is live, whose second lookup passes 5450, and every connect bound to the
+  uplink's address or device. An IPv4 connect bound to no address meets 5450's
+  `ENETUNREACH` at once.
+- A source-specific announcement of this node's, D from S, gets no 5445, so the
+  host's own unmarked lookup to D the mesh's table passes on fails at 5450.
 
 The rule about the unspecified address follows the macOS kernel's fallback of a
 scoped lookup, which

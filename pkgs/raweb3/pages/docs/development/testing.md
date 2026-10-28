@@ -282,6 +282,27 @@ unless run as root.
     [sharing a host](../coexistence.md#exit-mode-beside-other-programs) states.
     The helper is the test binary run again as `TestExitLabCrashHelper`, which
     joins the leaf's namespace by its path and skips when run any other way.
+  - `TestTUNKillSwitchKeepsEachSocketOffTheUplink`,
+    `TestTUNKillSwitchAnswersOnlyTheListedServices`,
+    `TestTUNKillSwitchHoldsUnderOtherProgramsChains`,
+    `TestTUNKillSwitchHoldsUnderNATAtOutput`,
+    `TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun`,
+    `TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback`,
+    `TestTUNKillSwitchIsTheSameOnEveryCPU`,
+    `TestTUNKillSwitchKeepsReversePathChecksPassing` and
+    `TestTUNKillSwitchPassesDiscoveryAndTheHostsErrors` run the same leaf under
+    [the kill switch](../routing.md#the-kill-switch-on-linux) with the mesh's
+    defaults present, retracted, and after a helper process,
+    `TestKillSwitchLabCrashHelper`, wrote the switch and was killed with
+    `SIGKILL`. In both families, UDP, TCP and echo from every socket kind, the
+    container's and the LAN host's pings, the listed and unlisted services,
+    other programs' chains and NAT at output, neighbor and router discovery,
+    DHCP, multicast, link-local and the host's Packet Too Big and fragmentation
+    needed leave by the uplink only where the switch passes them, the far side's
+    capture and the tun's showing where each went.
+    `TestTUNKillSwitchKeepsKernelTunnelsOffTheUplink` runs in the netlink VM,
+    where `ip_gre` and `wireguard` load, and finds no GRE or WireGuard outer
+    packet of a tunnel whose network counts as the LAN leaving by the uplink.
 
 The `internal/client` tests `TestNodeGoingDownLeavesItsPeerAndItsKernelAtOnce`,
 `TestNodeRestartedWhileDownInstallsNothingUntilUp`,
