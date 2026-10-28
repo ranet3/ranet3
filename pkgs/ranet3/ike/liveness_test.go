@@ -1133,11 +1133,13 @@ func testSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
 // section 2.21.4: "The recipient MUST NOT change the state of any SAs as a result"
 // section 3.10.1: "Unrecognized error types in a request and status types in a request or response MUST be ignored, and they should be logged."
 // an INFORMATIONAL request telling this end of INVALID_SPI for the SPI its Child SA sends with and of INVALID_IKE_SPI, and carrying an error notify and a status notify of types nothing assigns, is answered empty, and the IKE SA and the Child SA stay
+// the INVALID_SPI is logged with the SPI it names
 func TestSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 	bubble.Run(testSessionChangesNothingForTheErrorNotifiesAPeerSends)(t)
 }
 
 func testSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
+	lines := recordLines(t)
 	peer := listenPeer(t)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
@@ -1189,6 +1191,9 @@ func testSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 	}
 	if mux.IsClosed() || s.Child.LocalSPI != 0x01020304 || s.Child.RemoteSPI != 0x50607080 {
 		t.Errorf("the IKE SA is closed %v and the Child SA is %08x and %08x after the notifies, want both as they were", mux.IsClosed(), s.Child.LocalSPI, s.Child.RemoteSPI)
+	}
+	if told := lines.said(slog.LevelDebug, "ike the peer received ESP on an SPI it holds no Child SA for", "spi"); len(told) != 1 || told[0].String() != "50607080" {
+		t.Errorf("the INVALID_SPI was logged with %v, want once with 50607080", told)
 	}
 }
 
