@@ -8,6 +8,7 @@ package kernel
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -21,6 +22,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 
@@ -811,48 +813,42 @@ func foreignTransaction(table string, count int) []nftables.Request {
 	return requests
 }
 
-// netlinkSockets is each netlink socket of this thread's namespace, by its
-// inode, as /proc lists it: sk Eth Pid Groups Rmem Wmem Dump Locks Drops Inode
-func netlinkSockets(t *testing.T) map[string][]string {
-	t.Helper()
-	body, err := os.ReadFile("/proc/thread-self/net/netlink")
-	if err != nil {
-		t.Fatalf("read the netlink sockets: %v", err)
-	}
-	out := map[string][]string{}
-	for line := range strings.Lines(string(body)) {
-		if fields := strings.Fields(line); len(fields) == 10 {
-			out[fields[9]] = fields
-		}
-	}
-	return out
-}
-
 // notificationSocket is the descriptor of the one NETLINK_NETFILTER socket of
 // this process that joined a group, the backend's notification socket
 func notificationSocket(t *testing.T) int {
 	t.Helper()
-	sockets := netlinkSockets(t)
 	entries, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var found []int
 	for _, entry := range entries {
-		target, err := os.Readlink("/proc/self/fd/" + entry.Name())
-		inode, ok := strings.CutPrefix(target, "socket:[")
-		if err != nil || !ok {
-			continue
-		}
-		fields := sockets[strings.TrimSuffix(inode, "]")]
-		if fields == nil || fields[1] != strconv.Itoa(unix.NETLINK_NETFILTER) || strings.Trim(fields[3], "0") == "" {
-			continue
-		}
 		fd, err := strconv.Atoi(entry.Name())
 		if err != nil {
 			t.Fatal(err)
 		}
-		found = append(found, fd)
+		// the descriptor ReadDir read through is closed by now, and one that is no socket has no domain
+		domain, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_DOMAIN)
+		if errors.Is(err, unix.EBADF) || errors.Is(err, unix.ENOTSOCK) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read the domain of descriptor %d: %v", fd, err)
+		}
+		if domain != unix.AF_NETLINK {
+			continue
+		}
+		protocol, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_PROTOCOL)
+		if err != nil {
+			t.Fatalf("read the protocol of netlink socket %d: %v", fd, err)
+		}
+		bound, err := unix.Getsockname(fd)
+		if err != nil {
+			t.Fatalf("read the address of netlink socket %d: %v", fd, err)
+		}
+		if protocol == unix.NETLINK_NETFILTER && bound.(*unix.SockaddrNetlink).Groups != 0 {
+			found = append(found, fd)
+		}
 	}
 	if len(found) != 1 {
 		t.Fatalf("found %d netfilter netlink sockets in a group, want the backend's one", len(found))
@@ -860,29 +856,20 @@ func notificationSocket(t *testing.T) int {
 	return found[0]
 }
 
-// socketDrops is how many datagrams the kernel has dropped for the netlink socket fd, and the bytes it holds queued, read from this thread's namespace
+// socketDrops is how many datagrams the kernel has dropped for the socket fd, and the bytes it holds queued
 func socketDrops(t *testing.T, fd int) (dropped, queued uint64) {
 	t.Helper()
-	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
-		t.Fatalf("stat the notification socket: %v", err)
+	var meminfo [unix.SK_MEMINFO_VARS]uint32
+	size := uint32(unsafe.Sizeof(meminfo))
+	// x/sys wraps no getsockopt that reads SO_MEMINFO's array
+	if _, _, errno := unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd), unix.SOL_SOCKET, unix.SO_MEMINFO,
+		uintptr(unsafe.Pointer(&meminfo)), uintptr(unsafe.Pointer(&size)), 0); errno != 0 {
+		t.Fatalf("read the memory of socket %d: %v", fd, errno)
 	}
-	for _, fields := range netlinkSockets(t) {
-		if fields[9] != strconv.FormatUint(st.Ino, 10) {
-			continue
-		}
-		var err error
-		queued, err = strconv.ParseUint(fields[4], 10, 64)
-		if err == nil {
-			dropped, err = strconv.ParseUint(fields[8], 10, 64)
-		}
-		if err != nil {
-			t.Fatalf("the netlink socket of inode %d reads %q: %v", st.Ino, fields, err)
-		}
-		return dropped, queued
+	if size != uint32(unsafe.Sizeof(meminfo)) {
+		t.Fatalf("the kernel wrote %d bytes of socket %d's memory, want %d", size, fd, unsafe.Sizeof(meminfo))
 	}
-	t.Fatalf("no netlink socket of inode %d is listed", st.Ino)
-	return 0, 0
+	return uint64(meminfo[unix.SK_MEMINFO_DROPS]), uint64(meminfo[unix.SK_MEMINFO_RMEM_ALLOC])
 }
 
 // Another writer's transaction too large for the notification socket's
