@@ -221,9 +221,49 @@ func (c *Config) Segments() srv6.Segments {
 }
 
 // SegmentTables is cap.segment's two tables as the dataplane runs them, every
-// local SID admitting only an outer source in cap.border's overlay
+// local SID admitting only an outer source in cap.border's overlay, and the
+// steering table holding cap.exit via's path as its default
 func (c *Config) SegmentTables() (*srv6.LocalTable, *srv6.SteerTable, error) {
-	return c.Segments().Tables(c.Overlay())
+	local, steering, err := c.Segments().Tables(c.Overlay())
+	if err != nil {
+		return nil, nil, err
+	}
+	if source, path := c.ExitPath(); len(path) != 0 {
+		if steering, err = steering.WithDefault(source, path); err != nil {
+			return nil, nil, err
+		}
+	}
+	return local, steering, nil
+}
+
+// ExitPath is cap.exit via as the dataplane steers along it, nil in modes off
+// and 2, with the outer source it is sent from: cap.segment source where
+// written, else the first IPv6 address cap.table writes inside cap.border
+// overlay, and invalid where neither gives one
+func (c *Config) ExitPath() (netip.Addr, []netip.Addr) {
+	if c.Cap.Exit == nil || len(c.Cap.Exit.Via) == 0 {
+		return netip.Addr{}, nil
+	}
+	path := make([]netip.Addr, 0, len(c.Cap.Exit.Via))
+	for _, sid := range c.Cap.Exit.Via {
+		path = append(path, sid.Addr)
+	}
+	if source := c.Segments().Source; source.IsValid() {
+		return source.Addr, path
+	}
+	if c.Cap.Table != nil {
+		for _, address := range c.Cap.Table.Addresses {
+			if address.Addr().Is6() && !address.Addr().Is4In6() && c.inOverlay(address.Addr()) {
+				return address.Addr(), path
+			}
+		}
+	}
+	return netip.Addr{}, path
+}
+
+// inOverlay reports an address inside cap.border overlay
+func (c *Config) inOverlay(address netip.Addr) bool {
+	return slices.ContainsFunc(c.Overlay(), func(prefix schema.Prefix) bool { return prefix.Contains(address) })
 }
 
 // ExitReason names why this node is an exit under overlay, as the reconciler,
@@ -316,11 +356,6 @@ func decodeTOML(body []byte, c *Config) error {
 			return errRouteTransit
 		}
 	}
-	if exit, ok := capabilities["exit"].(map[string]any); ok {
-		if _, ok := exit["via"]; ok {
-			return errExitVia
-		}
-	}
 	metadata, err := toml.Decode(string(body), c)
 	if err != nil {
 		return err
@@ -337,9 +372,6 @@ func decodeTOML(body []byte, c *Config) error {
 
 // errRouteTransit refuses cap.route transit by the block that holds the setting, where the strict decode would only call the key unknown
 var errRouteTransit = errors.New("cap.route transit is refused, transit is the block cap.transit with enable = true or false")
-
-// errExitVia refuses cap.exit via by name, where the strict decode would only call the key unknown
-var errExitVia = errors.New("cap.exit via names a path to one exit, which this version does not take: write cap.exit without via, which follows the mesh's default of lowest metric")
 
 // keyLine is the line a yaml document writes the key at path on, or 0 where it writes none or does not parse, which the strict decode then names
 // keys are read as the decoder reads them, through an alias and from a !!binary spelling
@@ -478,9 +510,6 @@ func decodesItselfTOML(t reflect.Type) bool {
 func decodeYAML(body []byte, c *Config) error {
 	if line := keyLine(body, "cap", "route", "transit"); line != 0 {
 		return fmt.Errorf("line %d: %w", line, errRouteTransit)
-	}
-	if line := keyLine(body, "cap", "exit", "via"); line != 0 {
-		return fmt.Errorf("line %d: %w", line, errExitVia)
 	}
 	decoder := yaml.NewDecoder(strings.NewReader(string(body)))
 	decoder.KnownFields(true)
@@ -985,7 +1014,7 @@ func (c *Config) validateExit() error {
 		return exitRefused(fmt.Sprintf("cap.segment local %s delivers to egress", c.Segments().Egress()[0].SID))
 	}
 	overlay := c.Overlay()
-	return schema.CheckPrefixes("config: cap.exit lan", c.Cap.Exit.LAN, func(prefix netip.Prefix) string {
+	if err := schema.CheckPrefixes("config: cap.exit lan", c.Cap.Exit.LAN, func(prefix netip.Prefix) string {
 		if at := slices.IndexFunc(overlay, func(entry schema.Prefix) bool { return entry.Overlaps(prefix) }); at >= 0 {
 			return fmt.Sprintf("overlaps cap.border overlay %s, whose destinations the mesh carries whatever the LAN holds", overlay[at])
 		}
@@ -993,7 +1022,36 @@ func (c *Config) validateExit() error {
 			return "counts as capturing the machine, so it would let the host's traffic leave by the uplink as a default does"
 		}
 		return ""
-	})
+	}); err != nil {
+		return err
+	}
+	return c.validateVia()
+}
+
+// validateVia refuses a cap.exit via whose packets no SID admits, since RFC
+// 8754 section 5.1 has a SID drop an outer source from outside the domain, and
+// a path that starts or ends at a segment of this node's own
+func (c *Config) validateVia() error {
+	via := c.Cap.Exit.Via
+	if len(via) == 0 {
+		return nil
+	}
+	if !slices.ContainsFunc(c.Overlay(), func(prefix schema.Prefix) bool { return prefix.Addr().Is6() }) {
+		return errors.New("config: cap.exit via is written and cap.border overlay holds no IPv6 prefix, so every segment refuses the path's outer source, which is always IPv6")
+	}
+	// the mesh routes no packet of this node's to its own first segment, and its own last one would make it an exit
+	for _, segment := range c.Segments().Local {
+		if segment.SID.Addr == via[0].Addr || segment.SID.Addr == via[len(via)-1].Addr {
+			return fmt.Errorf("config: cap.exit via starts or ends at %s, a segment of this node's own cap.segment local, which acts only on a packet another node sends it", segment.SID)
+		}
+	}
+	switch source, _ := c.ExitPath(); {
+	case !source.IsValid():
+		return errors.New("config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside cap.border overlay gives the path an outer source: write cap.segment source")
+	case !c.inOverlay(source):
+		return fmt.Errorf("config: cap.segment source %s lies outside cap.border overlay, so every segment of cap.exit via refuses the path's packets by their outer source", source)
+	}
+	return nil
 }
 
 func exitRefused(because string) error {

@@ -89,10 +89,13 @@ func (s Steer) policy(fallback schema.Addr) Policy {
 // SteerTable answers which policy applies to one packet. A nil table steers
 // nothing, which is every node that configures none, and Lookup works on one.
 type SteerTable struct {
-	table sadr.Table[*Policy]
+	table *sadr.Table[*Policy]
 	// policies is every entry in the order it was configured, for a
 	// diagnostic: each carries the line that describes it.
 	policies []*Policy
+	// path is cap.exit via's path, which the dataplane steers a packet along
+	// that the trie leaves and the mesh would send to a default, nil for none
+	path *Policy
 	// overhead is the largest any policy here adds, which a tunnel takes off
 	// its MTU so the dataplane is never handed a packet that will not fit
 	// once encapsulated.
@@ -106,7 +109,7 @@ func NewSteerTable(entries []Steer, source schema.Addr) (*SteerTable, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
-	out := &SteerTable{}
+	out := &SteerTable{table: new(sadr.Table[*Policy])}
 	seen := make(map[[2]netip.Prefix]bool, len(entries))
 	for _, entry := range entries {
 		from, to := entry.From.Prefix, entry.To.Prefix
@@ -202,11 +205,16 @@ func steerName(entry Steer, policy *Policy) string {
 	case entry.To.IsValid():
 		selector = "to " + entry.To.String()
 	}
-	hops := make([]string, 0, len(policy.Path))
-	for _, segment := range policy.Path {
+	return fmt.Sprintf("%s via %s", selector, joinPath(policy.Path))
+}
+
+// joinPath is a path as a diagnostic prints it, its segments in order and comma separated
+func joinPath(path []netip.Addr) string {
+	hops := make([]string, 0, len(path))
+	for _, segment := range path {
 		hops = append(hops, segment.String())
 	}
-	return fmt.Sprintf("%s via %s", selector, strings.Join(hops, ","))
+	return strings.Join(hops, ",")
 }
 
 // anyDestination is the zero-length prefix of one address family, which is
@@ -230,6 +238,32 @@ func (t *SteerTable) Lookup(source, destination netip.Addr) *Policy {
 		return nil
 	}
 	return policy
+}
+
+// WithDefault is t with path, sent from source, as its default policy, which
+// the trie never returns: the dataplane takes it for a packet the trie leaves
+// and the mesh would send to a default. t itself is left as it is, and a nil t
+// is a table holding the default alone.
+func (t *SteerTable) WithDefault(source netip.Addr, path []netip.Addr) (*SteerTable, error) {
+	if err := CheckPath(source, path); err != nil {
+		return nil, fmt.Errorf("cap.exit via: %w", err)
+	}
+	out := &SteerTable{table: new(sadr.Table[*Policy])}
+	if t != nil {
+		out.table, out.policies, out.overhead = t.table, t.policies, t.overhead
+	}
+	out.path = &Policy{Source: source, Path: slices.Clone(path)}
+	out.path.name = "default via " + joinPath(out.path.Path)
+	out.overhead = max(out.overhead, out.path.Overhead())
+	return out, nil
+}
+
+// Default is the path WithDefault set, nil for none
+func (t *SteerTable) Default() *Policy {
+	if t == nil {
+		return nil
+	}
+	return t.path
 }
 
 // Overhead is the most any entry here adds in front of a packet.
@@ -259,7 +293,7 @@ func (t *SteerTable) CheckMTU(device int) (int, error) {
 		return 0, nil
 	}
 	if device < t.LeastMTU() {
-		return 0, fmt.Errorf("srv6: cap.segment steer: the longest segment list takes %d bytes, leaving a %d byte device under the %d byte minimum IPv6 requires",
+		return 0, fmt.Errorf("srv6: the longest segment list of cap.segment steer and cap.exit via takes %d bytes, leaving a %d byte device under the %d byte minimum IPv6 requires",
 			overhead, device-overhead, MinimumIPv6MTU)
 	}
 	return device - overhead, nil

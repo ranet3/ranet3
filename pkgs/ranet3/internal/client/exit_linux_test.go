@@ -6,6 +6,7 @@
 package client
 
 import (
+	"net/netip"
 	"reflect"
 	"testing"
 
@@ -111,6 +112,56 @@ func TestReloadChangingFallbackOrInboundHandsTheReconcilerOneTable(t *testing.T)
 		if len(reconciler.tables) != 6 {
 			t.Errorf("a refused reload to %+v handed the reconciler a table, %d in all", mode, len(reconciler.tables))
 		}
+	}
+}
+
+// a reload adding, changing and removing cap.exit via applies in place: the mesh steers by default along the path written, sent from the node's overlay address
+// the reconciler is handed the path, and the tun's plan moves by the path's overhead, counting an outer IPv6 header, the fixed part of the segment routing header and 16 bytes a segment
+func TestReloadOfCapExitViaSwapsTheDefaultPolicyAndTheMTU(t *testing.T) {
+	a, b := schema.MustAddr("3fff:b:0:306::3"), schema.MustAddr("3fff:b:0:206::1")
+	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
+		exitLeafStart(old)
+		old.Cap.Table.Addresses = []schema.Prefix{schema.MustPrefix("192.0.2.2/24"), schema.MustPrefix("3fff::2/20")}
+		old.Cap.Exit = &kernel.ExitMode{}
+	})
+	segmentsOf(t, c)
+	header := func(segments int) int { return 40 + 8 + 16*segments }
+	from := 1400
+	for _, via := range [][]schema.Addr{{a}, {a, b}, {b, a}, nil} {
+		next := *c.config()
+		next.Cap.Exit = &kernel.ExitMode{Via: via}
+		plan, err := c.planTUN(c.config(), &next)
+		if err != nil {
+			t.Fatal(err)
+		}
+		to := 1400
+		if len(via) != 0 {
+			to -= header(len(via))
+		}
+		if !plan.tables || plan.from != from || plan.to != to {
+			t.Errorf("via %v: the plan rebuilds the tables %t and moves the tun from %d to %d bytes, want from %d to %d", via, plan.tables, plan.from, plan.to, from, to)
+		}
+		writeConfig(t, path, &next)
+		if err := c.ReloadFrom(path); err != nil {
+			t.Fatalf("a reload to via %v was refused: %v", via, err)
+		}
+		policy := c.Mesh.Steering().Default()
+		switch {
+		case len(via) == 0 && policy != nil:
+			t.Errorf("with via removed the mesh steers by default along %v", policy)
+		case len(via) != 0 && (policy == nil || policy.Source != netip.MustParseAddr("3fff::2") || len(policy.Path) != len(via) || policy.Path[0] != via[0].Addr):
+			t.Errorf("with via %v the mesh steers by default along %+v", via, policy)
+		}
+		if got := c.Mesh.Steering().Overhead(); got != 1400-to {
+			t.Errorf("with via %v the steering table costs %d bytes, want %d", via, got, 1400-to)
+		}
+		if got := reconciler.tables[len(reconciler.tables)-1].Mode(); got == nil || !reflect.DeepEqual(got.Via, via) {
+			t.Errorf("with via %v the reconciler was handed %+v", via, got)
+		}
+		if got := lastReload(t, bus)["applied"]; got != "cap.exit" {
+			t.Errorf("a reload to via %v was recorded as applying %q, want cap.exit", via, got)
+		}
+		from = to
 	}
 }
 

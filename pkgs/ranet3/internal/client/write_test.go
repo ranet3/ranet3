@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -141,6 +142,43 @@ func TestSubsystemRefusesWhatThisNodeDoesNotRun(t *testing.T) {
 	}
 	if got := bare.disabledSubsystems(); got != nil {
 		t.Errorf("a refused stop still recorded %v", got)
+	}
+}
+
+// steering is cap.segment steer's entries alone, so a node whose table holds cap.exit via's path and no entry refuses its stop by naming via
+// and a node holding both stops its entries and keeps the path
+func TestSteeringStopLeavesCapExitViaPath(t *testing.T) {
+	source, via := netip.MustParseAddr("3fff:b:0:100::1"), []netip.Addr{netip.MustParseAddr("3fff:b:0:206::1")}
+	pathOnly, err := (*srv6.SteerTable)(nil).WithDefault(source, via)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare := &Client{Mesh: &netstack.Mesh{}, running: startedSubsystems()}
+	bare.cfg.Store(&config.Config{})
+	bare.Mesh.SetSteering(pathOnly)
+	if _, err := bare.SetSubsystem(context.Background(), control.SubsystemSteering, false); err == nil {
+		t.Error("steering was stopped on a node holding cap.exit via's path and no steer entry")
+	} else if !strings.Contains(err.Error(), "cap.exit via") {
+		t.Errorf("the refusal reads %q, want it to name cap.exit via", err)
+	}
+	if !bare.Mesh.SteeringEnabled() || bare.disabledSubsystems() != nil {
+		t.Errorf("a refused stop left steering on %v and recorded %v", bare.Mesh.SteeringEnabled(), bare.disabledSubsystems())
+	}
+
+	c := writable(t)
+	both, err := c.Mesh.Steering().WithDefault(source, via)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Mesh.SetSteering(both)
+	if _, err := c.SetSubsystem(context.Background(), control.SubsystemSteering, false); err != nil {
+		t.Fatalf("a node holding a steer entry and cap.exit via's path refused the stop: %v", err)
+	}
+	if c.Mesh.SteeringEnabled() {
+		t.Error("steering was stopped and the mesh is still acting on its entries")
+	}
+	if got := c.Mesh.Steering().Default(); got == nil || !slices.Equal(got.Path, via) {
+		t.Errorf("the stop left the path %v, want %v", got, via)
 	}
 }
 

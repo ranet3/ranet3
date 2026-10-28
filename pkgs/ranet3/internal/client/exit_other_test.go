@@ -44,7 +44,8 @@ func TestExitModeIsRefusedHereAtTheStartAndAtReload(t *testing.T) {
 	}
 }
 
-// fallback = "none" is refused at the start by its own message, ahead of cap.exit's, naming the key, the value and the platform
+// fallback = "none" is refused at the start by its own message, ahead of cap.exit's, naming the key, the value and the platform,
+// written or unwritten in mode 3
 func TestFallbackNoneIsRefusedHereAheadOfTheExitMode(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Cap.Table = &kernel.Table{}
@@ -54,5 +55,17 @@ func TestFallbackNoneIsRefusedHereAheadOfTheExitMode(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("the start refused fallback = \"none\" with %v, which does not name %q", err, want)
 		}
+	}
+	// mode 3 with fallback unwritten asks for the switch too, and writing "uplink" leaves the mode's own refusal
+	cfg.Cap.Exit = &kernel.ExitMode{Via: []schema.Addr{schema.MustAddr("3fff:b:0:306::3")}}
+	err = refuseExitModeHere(cfg)
+	for _, want := range []string{"via", "fallback", `"none"`, `"uplink"`, runtime.GOOS} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("the start refused cap.exit via with fallback unwritten with %v, which does not name %q", err, want)
+		}
+	}
+	cfg.Cap.Exit.Fallback = kernel.FallbackUplink
+	if err := refuseExitModeHere(cfg); err == nil || strings.Contains(err.Error(), "fallback") {
+		t.Errorf("the start refused cap.exit via under fallback = \"uplink\" with %v, want the mode's own refusal", err)
 	}
 }

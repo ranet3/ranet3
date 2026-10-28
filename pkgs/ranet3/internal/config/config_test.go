@@ -1290,7 +1290,10 @@ func leafConfig() Config {
 	leaf.Cap.Segment.Local = slices.DeleteFunc(leaf.Cap.Segment.Local, func(segment srv6.Segment) bool { return segment.Deliver == srv6.DeliverEgress })
 	leaf.Cap.Route.Announce = slices.DeleteFunc(leaf.Cap.Route.Announce, func(announce schema.Announce) bool { return announce.Prefix.Bits() == 0 })
 	leaf.Cap.Exit = &kernel.ExitMode{Forward: []string{"docker0", "br-*"}, Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp", "60000-61000/udp"},
-		LAN: []schema.Prefix{schema.MustPrefix("198.51.100.0/24"), schema.MustPrefix("2001:db8:a::/64")}}
+		LAN: []schema.Prefix{schema.MustPrefix("198.51.100.0/24"), schema.MustPrefix("2001:db8:a::/64")},
+		// out of order, which a path keeps
+		Via: []schema.Addr{schema.MustAddr("3fff:b:0:306::3"), schema.MustAddr("3fff:b:0:206::1")},
+	}
 	return leaf
 }
 

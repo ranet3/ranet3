@@ -75,34 +75,33 @@ func exitLeafBody(format, exit string) string {
 
 // cap.exit is refused with no cap.table, whose reconciler writes the mode's
 // rules, and with no cap.border, whose overlay those rules keep off the uplink,
-// in each format. via is refused by name, and fallback by its value when it is
-// neither "uplink" nor "none".
+// in each format, and fallback by its value when it is neither "uplink" nor
+// "none".
 func TestExitRefusalsReachTheLoader(t *testing.T) {
 	const (
 		noTable  = "config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of: add cap.table"
 		noBorder = "config: cap.exit is written and cap.border is absent, so the mode's rules cannot keep the overlay's sources off the uplink: add cap.border with the prefixes the mesh numbers its nodes from"
-		via      = "cap.exit via names a path to one exit, which this version does not take: write cap.exit without via, which follows the mesh's default of lowest metric"
 	)
 	for _, c := range []struct {
-		format, via, fallback string
+		format, fallback      string
 		dropTable, dropBorder func(string) string
 	}{
 		{
-			"toml", "via = [\"3fff:b:0:306::3\"]\n", "fallback = \"lan\"\n",
+			"toml", "fallback = \"lan\"\n",
 			func(body string) string { return strings.Replace(body, "[cap.table]\n", "", 1) },
 			func(body string) string {
 				return strings.Replace(body, "[cap.border]\noverlay = [\"192.0.2.0/24\", \"3fff::/20\"]\n", "", 1)
 			},
 		},
 		{
-			"yaml", `{via: ["3fff:b:0:306::3"]}`, "{fallback: lan}",
+			"yaml", "{fallback: lan}",
 			func(body string) string { return strings.Replace(body, "  table: {}\n", "", 1) },
 			func(body string) string {
 				return strings.Replace(body, "  border:\n    overlay: [192.0.2.0/24, 3fff::/20]\n", "", 1)
 			},
 		},
 		{
-			"json", `{"via": ["3fff:b:0:306::3"]}`, `{"fallback": "lan"}`,
+			"json", `{"fallback": "lan"}`,
 			func(body string) string { return strings.Replace(body, `"table": {}, `, "", 1) },
 			func(body string) string {
 				return strings.Replace(body, `"border": {"overlay": ["192.0.2.0/24", "3fff::/20"]}, `, "", 1)
@@ -115,7 +114,6 @@ func TestExitRefusalsReachTheLoader(t *testing.T) {
 			for name, refused := range map[string]struct{ body, says string }{
 				"no cap.table":  {c.dropTable(body), noTable},
 				"no cap.border": {c.dropBorder(body), noBorder},
-				"via":           {exitLeafBody(c.format, c.via), via},
 				"fallback":      {exitLeafBody(c.format, c.fallback), `kernel: cap.exit fallback "lan" is neither "uplink" nor "none"`},
 			} {
 				if _, err := load(t, extension, refused.body); err == nil || !strings.Contains(err.Error(), refused.says) {

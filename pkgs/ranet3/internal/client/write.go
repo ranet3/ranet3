@@ -139,7 +139,11 @@ func (c *Client) subsystemRuns(name control.Subsystem) error {
 			return errors.New("control: this node reconciles no routes, so there is nothing to stop: it writes no cap.table block and its routes are configured outside it")
 		}
 	case control.SubsystemSteering:
-		if c.Mesh.Steering() == nil {
+		// steering is cap.segment steer's entries alone, and cap.exit via's path outlasts their stop
+		if steering := c.Mesh.Steering(); len(steering.Entries()) == 0 {
+			if steering.Default() != nil {
+				return errors.New("control: this node configures no cap.segment steer policy, so there is nothing to stop: steering leaves cap.exit via's path, which removing via turns off")
+			}
 			return errors.New("control: this node steers nothing, so there is nothing to stop: cap.segment configures no steer policy")
 		}
 	case control.SubsystemResponder:

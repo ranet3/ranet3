@@ -20,10 +20,11 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// ExitMode is cap.exit, which makes the mesh's default of lowest metric this
-// host's default, for its own traffic and for what it forwards from the links
-// Forward names. Writing the block turns it on, and the reconciler runs it as
-// part of cap.table (see Table.WithMode).
+// ExitMode is cap.exit, which makes the mesh's default this host's default,
+// for its own traffic and for what it forwards from the links Forward names:
+// the default of lowest metric, mode 2, or with Via the path it names, mode 3.
+// Writing the block turns it on, and the reconciler runs it as part of
+// cap.table (see Table.WithMode).
 type ExitMode struct {
 	// Forward is the links whose forwarded traffic follows the mode as the
 	// host's own does, each a link's name or a shell pattern as path.Match reads
@@ -31,7 +32,8 @@ type ExitMode struct {
 	// before ranet3.
 	Forward []string `yaml:"forward,omitempty" json:"forward,omitempty" toml:"forward,omitempty"`
 	// Fallback is where the host's traffic leaves while no exit is live,
-	// FallbackUplink where it is unwritten
+	// where it is unwritten FallbackUplink in mode 2 and FallbackNone in mode
+	// 3, whose path names the one exit the host's traffic may leave by
 	Fallback Fallback `yaml:"fallback,omitempty" json:"fallback,omitempty" toml:"fallback,omitempty"`
 	// Inbound is the services on the uplink's addresses whose replies the
 	// table's reply lines pass while fallback is "none", on flows conntrack saw
@@ -43,6 +45,11 @@ type ExitMode struct {
 	// of a connected network counts as the LAN while fallback is "none". It
 	// adds no destination a link outside the mesh is not connected to.
 	LAN []schema.Prefix `yaml:"lan,omitempty" json:"lan,omitempty" toml:"lan,omitempty"`
+	// Via is the path the host's traffic for the internet takes, the SIDs in
+	// the order a packet visits them, the waypoints and then an exit's egress
+	// segment. Written, the host's packets the mesh would send to a default go
+	// along it instead, to the exit it names and no other.
+	Via []schema.Addr `yaml:"via,omitempty" json:"via,omitempty" toml:"via,omitempty"`
 }
 
 // Fallback is cap.exit fallback
@@ -62,8 +69,11 @@ const (
 	FallbackNone Fallback = "none"
 )
 
-// Refuses reports that the mode asks for the kill switch, FallbackNone
-func (m ExitMode) Refuses() bool { return m.Fallback == FallbackNone }
+// Refuses reports that the mode asks for the kill switch, FallbackNone,
+// written or unwritten in mode 3
+func (m ExitMode) Refuses() bool {
+	return m.Fallback == FallbackNone || m.Fallback == "" && len(m.Via) > 0
+}
 
 // Service is a range of ports of one transport protocol, as inbound lists one
 type Service struct {
@@ -180,14 +190,30 @@ func (m ExitMode) Validate() error {
 			return errors.New("kernel: cap.exit forward lo is the loopback link, whose traffic is the host's own and follows the mode already")
 		}
 	}
+	return m.refuseViaLoop()
+}
+
+// refuseViaLoop refuses a SID written twice in via, a loop no exit needs
+// a path's length and each SID's use are srv6.CheckPath's, which the steering table runs as it takes the path
+func (m ExitMode) refuseViaLoop() error {
+	seen := make(map[netip.Addr]bool, len(m.Via))
+	for _, sid := range m.Via {
+		if seen[sid.Addr] {
+			return fmt.Errorf("kernel: cap.exit via names %s twice, which sends the packet around a loop", sid)
+		}
+		seen[sid.Addr] = true
+	}
 	return nil
 }
 
 // Normalized is the capability as the reconciler runs it, forward and lan in
 // one order and each entry once, and inbound as Services spells it, so a
 // reload over a list written in another order or split another way is no
-// change.
+// change. Via keeps its order, which is the path's.
 func (m ExitMode) Normalized() ExitMode {
+	if len(m.Via) == 0 {
+		m.Via = nil
+	}
 	m.Forward = slices.Compact(slices.Sorted(slices.Values(m.Forward)))
 	m.LAN = slices.Compact(slices.SortedFunc(slices.Values(m.LAN), schema.ComparePrefix))
 	inbound := m.Services()

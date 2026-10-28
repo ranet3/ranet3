@@ -265,7 +265,7 @@ func changedCapabilities(old, next *config.Config) []string {
 
 // tunPlan holds the changes a reload makes to the tun
 type tunPlan struct {
-	// tables is set where cap.segment changed, and segments and steering are then the tables New would build from it
+	// tables is set where cap.segment, the overlay or cap.exit via's path changed, and segments and steering are then the tables New would build
 	// steering is otherwise the table in force
 	tables   bool
 	segments *srv6.LocalTable
@@ -274,11 +274,11 @@ type tunPlan struct {
 	from, to int
 }
 
-// planTUN builds what a reload from old to next changes on the tun, nothing where cap.segment, cap.border's overlay and link.mtu stay
+// planTUN builds what a reload from old to next changes on the tun, nothing where cap.segment, cap.border's overlay, cap.exit via's path and link.mtu stay
 // a move of the device's MTU is refused on a platform that sets the MTU only at the open
 func (c *Client) planTUN(old, next *config.Config) (tunPlan, error) {
 	// the local table admits only an outer source in the overlay, so a moved overlay rebuilds it
-	plan := tunPlan{tables: !sameSegments(old, next) || !sameOverlay(old, next)}
+	plan := tunPlan{tables: !sameSegments(old, next) || !sameOverlay(old, next) || !sameExitPath(old, next)}
 	if !plan.tables && old.Link.SessionMTU() == next.Link.SessionMTU() {
 		return plan, nil
 	}
@@ -308,6 +308,13 @@ func (c *Client) planTUN(old, next *config.Config) (tunPlan, error) {
 // sameSegments compares cap.segment as the tables are built from it
 func sameSegments(old, next *config.Config) bool {
 	return reflect.DeepEqual(old.Segments().Normalized(), next.Segments().Normalized())
+}
+
+// sameExitPath compares cap.exit via's path and the outer source it is sent from, which the steering table's default is built from
+func sameExitPath(old, next *config.Config) bool {
+	oldSource, oldPath := old.ExitPath()
+	nextSource, nextPath := next.ExitPath()
+	return oldSource == nextSource && slices.Equal(oldPath, nextPath)
 }
 
 // responderRun is one acceptPeers a responder start began, with what it reports once done is closed

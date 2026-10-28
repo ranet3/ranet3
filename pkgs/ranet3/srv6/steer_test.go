@@ -199,3 +199,46 @@ func TestSteeringRefusesTwoEntriesWithOneSelector(t *testing.T) {
 		})
 	}
 }
+
+// a default policy leaves the table it was added to as it was, the trie's answers and entries alike, and the trie never returns it
+// its overhead counts in the table's where it is the longest list, a nil table takes one, and a path CheckPath refuses is refused
+func TestDefaultPolicyStandsBesideTheTrie(t *testing.T) {
+	source, exit := netip.MustParseAddr("3fff::2"), netip.MustParseAddr("3fff:b:0:306::3")
+	table, err := NewSteerTable([]Steer{steering("3fff:a::1/128", "", "3fff::2", "3fff:b:0:206::1")}, schema.Addr{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := []netip.Addr{netip.MustParseAddr("3fff:b:0:406::4"), exit}
+	with, err := table.WithDefault(source, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table.Default() != nil || table.Overhead() != Overhead(1) {
+		t.Errorf("adding a default changed the table it was added to: default %v, overhead %d", table.Default(), table.Overhead())
+	}
+	if got := with.Default(); got == nil || got.Source != source || !slices.Equal(got.Path, path) || got.String() != "default via 3fff:b:0:406::4,3fff:b:0:306::3" {
+		t.Errorf("the default is %+v", got)
+	}
+	path[0] = exit
+	if with.Default().Path[0] == exit {
+		t.Error("the default shares the caller's path")
+	}
+	if with.Overhead() != Overhead(2) || !slices.Equal(with.Entries(), table.Entries()) {
+		t.Errorf("with the default the table costs %d bytes and lists %v", with.Overhead(), with.Entries())
+	}
+	if with.Lookup(netip.MustParseAddr("3fff:a::1"), netip.MustParseAddr("2001:db8::9")) == nil || with.Lookup(source, netip.MustParseAddr("2001:db8::9")) != nil {
+		t.Error("the trie answers otherwise with the default beside it")
+	}
+	alone, err := (*SteerTable)(nil).WithDefault(source, path[1:])
+	if err != nil || alone.Default() == nil || alone.Overhead() != Overhead(1) || alone.Lookup(source, exit) != nil || len(alone.Entries()) != 0 {
+		t.Errorf("a default on no table is %+v, %v", alone, err)
+	}
+	for _, refused := range [][]netip.Addr{nil, {netip.MustParseAddr("192.0.2.1")}, make([]netip.Addr, MaxSegments+1)} {
+		if _, err := table.WithDefault(source, refused); err == nil {
+			t.Errorf("a default along %v was taken", refused)
+		}
+	}
+	if _, err := table.WithDefault(netip.MustParseAddr("192.0.2.2"), path); err == nil {
+		t.Error("a default sent from an IPv4 source was taken")
+	}
+}
