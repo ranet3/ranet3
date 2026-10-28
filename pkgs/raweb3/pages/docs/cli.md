@@ -169,6 +169,9 @@ it. [Debugging](development/debug.md) describes each command and the events.
 | `debug pmtu [peer]`                    | Show each session's path MTU                               | none                                                                  |
 | `debug probe [peer]`                   | Probe sessions now                                         | `--all`                                                               |
 | `debug rules`                          | Show the host's policy rules and the border filter's chain | none                                                                  |
+| `debug route <src> <dst>`              | Show where a packet goes                                   | `--iif`                                                               |
+| `debug egress`                         | Show the exit's rules and readiness                        | none                                                                  |
+| `debug segments`                       | Show local segments and steering                           | none                                                                  |
 | `debug runtime`                        | Show daemon runtime state                                  | none                                                                  |
 | `debug updown`                         | Show whether the node is on the mesh                       | none                                                                  |
 
@@ -185,6 +188,10 @@ it. [Debugging](development/debug.md) describes each command and the events.
   it came. `--attr` may be repeated, and every attribute must match. `--past`
   takes a duration and also matches an event recorded within it.
 - `debug pmtu` shows every session, or the sessions of 1 peer.
+- `debug route` follows this host's own packet from `src` to `dst`, or with
+  `--iif` one arriving on that link. An unspecified `src` such as `0.0.0.0` is
+  this host's own packet sent with no source. The mesh's tun is refused as
+  `--iif`.
 
 ## Other commands
 
@@ -234,8 +241,10 @@ socket:
   the recorded events
 - `--peer` of `debug events` and `debug wait`, from the peers the recorded
   events name
+- `--iif` of `debug route`, from the links of the host the command runs on, the
+  mesh's tun the daemon names left out
 
 When the daemon does not answer, completion offers nothing. A completion from
-the recorded events or from `debug pmtu` waits at most 1 second. A completion
-for `redial`, `rekey` or `debug probe` makes 2 reads, and waits up to 10 seconds
-for each.
+the recorded events, from `debug pmtu` or for `debug route` waits at most 1
+second. A completion for `redial`, `rekey` or `debug probe` makes 2 reads, and
+waits up to 10 seconds for each.

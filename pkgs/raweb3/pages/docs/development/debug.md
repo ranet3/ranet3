@@ -43,17 +43,20 @@ class:
   to the user the daemon runs as. Each such call is logged at info with the
   caller's uid and pid.
 
-The daemon serves 7 debug paths:
+The daemon serves 10 debug paths:
 
-| Path                | Class | Commands                     |
-| ------------------- | ----- | ---------------------------- |
-| `/v0/debug/events`  | read  | `debug events`, `debug wait` |
-| `/v0/debug/netmon`  | read  | `debug netmon`               |
-| `/v0/debug/pmtu`    | read  | `debug pmtu`                 |
-| `/v0/debug/probe`   | root  | `debug probe`                |
-| `/v0/debug/rules`   | read  | `debug rules`                |
-| `/v0/debug/runtime` | read  | `debug runtime`              |
-| `/v0/debug/updown`  | read  | `debug updown`               |
+| Path                 | Class | Commands                     |
+| -------------------- | ----- | ---------------------------- |
+| `/v0/debug/egress`   | read  | `debug egress`               |
+| `/v0/debug/events`   | read  | `debug events`, `debug wait` |
+| `/v0/debug/netmon`   | read  | `debug netmon`               |
+| `/v0/debug/pmtu`     | read  | `debug pmtu`                 |
+| `/v0/debug/probe`    | root  | `debug probe`                |
+| `/v0/debug/route`    | read  | `debug route`                |
+| `/v0/debug/rules`    | read  | `debug rules`                |
+| `/v0/debug/runtime`  | read  | `debug runtime`              |
+| `/v0/debug/segments` | read  | `debug segments`             |
+| `/v0/debug/updown`   | read  | `debug updown`               |
 
 Profiles are not a debug path. The daemon's `--pprof` serves them on an address
 of its own, and no class covers that address.
@@ -67,14 +70,14 @@ reaches the read class alone under `root` and `group`, and nothing under `off`.
 
 A debug request the daemon does not answer with 200 gets one of these statuses:
 
-| Status | When                                                                                                                         |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| 400    | an events query or an action body that does not parse, or an action the node refuses, such as `debug probe` while it is down |
-| 403    | the class refuses the caller, and the answer names the rule and the caller's uid or the missing credentials                  |
-| 404    | no debug path has that name, except under `off`, which answers 403                                                           |
-| 405    | a read sent with a method other than GET or HEAD, or an action sent with one other than POST                                 |
-| 501    | the server behind the socket does not implement the view, and the answer names it. The `ranet3` daemon implements every view |
-| 503    | the daemon already holds 4 streams                                                                                           |
+| Status | When                                                                                                                                                                                                                      |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | an events query, an action body or a `debug route` packet that does not parse, a link `debug route` refuses as the arrival, such as the mesh's tun, or an action the node refuses, such as `debug probe` while it is down |
+| 403    | the class refuses the caller, and the answer names the rule and the caller's uid or the missing credentials                                                                                                               |
+| 404    | no debug path has that name, except under `off`, which answers 403                                                                                                                                                        |
+| 405    | a read sent with a method other than GET or HEAD, or an action sent with one other than POST                                                                                                                              |
+| 501    | the server behind the socket does not implement the view, and the answer names it. The `ranet3` daemon implements every view                                                                                              |
+| 503    | the daemon already holds 4 streams                                                                                                                                                                                        |
 
 On a NixOS host the unit runs the daemon as root, so the root class means
 `sudo`. In an `unshare -rn` lab the caller already reads as uid 0.
@@ -99,6 +102,7 @@ These commands take flags of their own:
 | `debug events` | `--kind`         | every kind           | a kind, or the part of one before a dot, given up to 16 times |
 | `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                         |
 | `debug events` | `--since`        | every recorded event | how recent a recorded event must be                           |
+| `debug route`  | `--iif`          | none                 | the link the packet arrives on, none for this host's own      |
 | `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times      |
 | `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait     |
 | `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                         |
@@ -166,7 +170,110 @@ These commands take flags of their own:
   `a rule with no comment`. The dump and the chain are each read now through a
   socket of their own, so an operator who sends a test packet reads the counters
   of that moment, and neither the reconciler's socket nor the filter's serves a
-  reader. A platform with no policy rules says so.
+  reader. A platform with no policy rules says so. A rule carrying a selector
+  the view keeps no value of, `uidrange`, `ipproto`, `sport`, `dport`, `dscp`,
+  `flowlabel` or `tun_id`, or carrying `suppress_ifgroup`, shows that name among
+  its selectors.
+- `debug route <src> <dst> [--iif link]` follows one packet to where the kernel
+  sends it: this host's own packet, or with `--iif` one arriving on that link.
+  An unspecified `src`, such as `0.0.0.0`, is this host's own packet sent with
+  no source. The mesh's tun is refused as `--iif`, since a packet written into
+  it is this host's own. The packet is taken unmarked and well formed. The view
+  makes 1 route lookup, and a second where an IPv6 one answers a route or an
+  IPv4 one answers `EHOSTUNREACH`, through one socket, and 1 rule dump through
+  another, now, and shows the route the kernel matched with its prefix, table
+  and next hops, each marked `dead` or `linkdown` where the kernel marks it,
+  beside the type the kernel gives the packet, and where the route leaves by: a
+  link, this host, nowhere, or into the mesh's tun, where this view ends. For
+  this host's own IPv6 packet to `::`, the unspecified address, it names no path
+  the packet leaves by, and says in a line of its own, whatever the lookup
+  answers, that a socket sends such a packet to `::1` or by the route, or
+  refuses it, as its type and the platform decide, so the answer may not be the
+  packet's path (Linux's rewrite is in
+  [`udpv6_sendmsg`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/udp.c#L1459)).
+  The kernel names no rule, so the rule shown is the one a walk of the dumped
+  rules ends on for that answer, as far as the answer tells: the view walks them
+  by priority as
+  [`fib_rules_lookup`](https://github.com/torvalds/linux/blob/master/net/core/fib_rules.c)
+  does, following `goto` and `nop`, applying `invert`, and applying
+  `suppress_prefixlength` as
+  [`fib4_rule_suppress`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/fib_rules.c#L147)
+  and
+  [`fib6_rule_suppress`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/fib6_rules.c#L281)
+  read it, reading an IPv6 answer through a route the kernel cached for its
+  destination alone, a path MTU's or a redirect's, as a /128
+  ([`ip6_rt_cache_alloc`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/route.c#L1369)),
+  and matching this host's own packet as arriving on `lo`. Where no rule fits
+  the answer, it says so and names none. Where an IPv4 lookup answers
+  `EHOSTUNREACH`, the view asks again without `RTM_F_FIB_MATCH`, and a route
+  that then answers is shown as the kernel's own for the destination, with no
+  table entry behind it
+  ([`inet_rtm_getroute`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/route.c#L3319)),
+  and no rule or forwarding setting named. For an IPv4 arrival to a group or to
+  `0.0.0.0/8` the view names no rule
+  ([`ip_route_input_rcu`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/route.c#L2522),
+  [`ip_route_input_slow`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/route.c#L2291)),
+  and shows its `EINVAL` as a group this host has not joined on the link or a
+  source refused for it, or for `0.0.0.0/8` as a martian destination or source.
+  Such a group's route is shown delivered to this host, which joined the group
+  on the link, or beyond `224.0.0.0/24` taken by multicast routing where the
+  view reads the link's and `all`'s `mc_forwarding` both on, and both ways where
+  it cannot read one. Such a group's `EHOSTUNREACH` beyond `224.0.0.0/24` is
+  shown as an answer the kernel's multicast routing withholds
+  ([`rt_fill_info`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/route.c#L2978)),
+  naming no forwarding cause for it, and where the view cannot read `all`'s
+  `mc_forwarding`, as meaning multicast routing is on. An arrival whose route is
+  a broadcast one is shown delivered to this host, which `bc_forwarding` changes
+  as `ip_route_input_slow` reads it. For an IPv6 arrival to a group answered
+  with `EMSGSIZE`
+  ([`rt6_fill_node`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/route.c#L5787))
+  the view names no rule or route. It never names an `l3mdev` rule, whose table
+  the dump does not carry. A rule carrying a selector the walk does not read,
+  one of those `debug rules` names, is listed ahead of the rule shown under
+  `Unread` where every selector the walk reads holds, inverted or not, and the
+  walk took it as not taking the packet. Where a selector the walk reads fails,
+  an inverted rule is walked as matching and any other is passed over. A lookup
+  rule carrying `suppress_ifgroup`, whose table holds the answer, is listed
+  under `Unread` the same way, the walk taking it as having suppressed the
+  answer. Where the errno also has a cause outside the walk, as IPv4's `EINVAL`
+  does, and `ENETUNREACH` for this host's own IPv4 packet from a source it may
+  not hold, a rule that answers the same errno is shown as the rule the walk
+  ended on if it reached it, beside those causes. For a lookup the kernel
+  refused, the view shows the errno and, where the errno has several causes,
+  reads the settings that decide it rather than guessing: for an IPv4 `EINVAL`
+  other than one to `0.0.0.0/8` the `rp_filter` of `all` and of the link, naming
+  reverse path filtering only where the larger is 1 or 2, and for an IPv4
+  `EHOSTUNREACH` other than a group's beyond `224.0.0.0/24` the link's
+  `forwarding`, naming forwarding off only where it reads 0. For an IPv6 arrival
+  the kernel answers with a route other than a local one, the view reads the
+  `forwarding` of `all` and the link's `force_forwarding` where the kernel has
+  one,
+  [since 6.17](https://github.com/torvalds/linux/commit/f24987ef6959a7efaf79bffd265522c3df18d431),
+  and names forwarding off only where `all` reads 0 and `force_forwarding` reads
+  0 or is absent, not reading the link's own `forwarding`, after
+  [`ip6_forward`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/ip6_output.c#L521).
+  A setting it cannot read is shown unread. macOS looks up this host's own
+  packets only, with no policy rules and without the source, which its lookup
+  does not take, so its `ENETUNREACH` is no route alone. The BSDs look up none.
+- `debug egress` is the exit: its status line as `ranet3 status` gives it but
+  for the border filter's hold on the egress segments, each rule of its chains
+  with its counter read now through a socket of its own, a rule of the
+  translation's chain counting flows and the bytes of their first packets, one
+  of the forward hook's chain counting packets, and one that keeps no counter
+  shown uncounted, any rule it asks for and the chains do not hold, any they
+  hold that it did not write, counted by the chain it was read from, then each
+  family as the last pass judged it: ready or why not, its chains read back, the
+  host's forwarding, and each route lookup the pass read with its answer, the
+  reply's lookup included, as [exit nodes](../exit-nodes.md) describes the
+  readiness. Then IPv4's `rp_filter` of `all` and of each link a route of those
+  lookups leaves by, read now. The lookups are the last pass's and are not asked
+  again. A node with no `cap.egress` says so.
+- `debug segments` is each segment the node answers for, an egress segment with
+  whether its SID is announced and the families the mesh hands to the exit
+  through it, then the steering policies, on or stopped, with the overhead the
+  tun's MTU leaves room for and each policy's selector, source, path and
+  overhead, then the segment counters `ranet3 status` reports. A node with
+  neither says so.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
   packets past a session's budget and the SYNs whose MSS was clamped, both for

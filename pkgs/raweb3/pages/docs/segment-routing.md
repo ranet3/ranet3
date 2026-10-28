@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-27
+updated: 2026-10-28
 order: 60
 ---
 
@@ -345,7 +345,9 @@ refused and not ready counts once it is above 0. Refused is a packet a SID
 refused, counted among the dropped and never answered: an outer source outside
 the overlay at any SID, or at an egress segment one of the reasons below. The
 Steering line lists the entries with the steered count, and the count for each
-reason a steered packet was lost once it is above 0.
+reason a steered packet was lost once it is above 0. `ranet3 debug segments`
+shows each segment and policy field by field, as
+[debugging](development/debug.md) describes.
 
 An egress segment's packets are counted 3 ways. Egressed is a packet handed to
 the exit. Refused is a packet whose outer or inner source is outside the

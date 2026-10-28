@@ -184,28 +184,31 @@ Every path starts with `/v0`. A read answers GET and HEAD, and a verb answers
 POST. The class says who may call a path. `mode` is anyone the socket's mode
 lets in. `read` and `root` are the debug classes described above.
 
-| Path                | Method    | Class  | Request                                         | Answer                            |
-| ------------------- | --------- | ------ | ----------------------------------------------- | --------------------------------- |
-| `/v0/status`        | GET, HEAD | `mode` | none                                            | the node, a JSON object           |
-| `/v0/neighbors`     | GET, HEAD | `mode` | none                                            | Babel neighbors, a JSON list      |
-| `/v0/routes`        | GET, HEAD | `mode` | none                                            | Babel routes, a JSON list         |
-| `/v0/sessions`      | GET, HEAD | `mode` | none                                            | IKE sessions, a JSON list         |
-| `/v0/peers`         | GET, HEAD | `mode` | none                                            | dialed peers, a JSON list         |
-| `/v0/metrics`       | GET, HEAD | `mode` | none                                            | the Prometheus text format        |
-| `/v0/disable`       | POST      | `mode` | `subsystem`                                     | a result                          |
-| `/v0/enable`        | POST      | `mode` | `subsystem`                                     | a result                          |
-| `/v0/redial`        | POST      | `mode` | `peer` or `all`                                 | a result                          |
-| `/v0/rekey`         | POST      | `mode` | `peer` or `all`                                 | a result                          |
-| `/v0/reload`        | POST      | `mode` | empty body                                      | a result                          |
-| `/v0/down`          | POST      | `mode` | empty body                                      | a result                          |
-| `/v0/up`            | POST      | `mode` | empty body                                      | a result                          |
-| `/v0/debug/events`  | GET, HEAD | `read` | query `kind`, `peer`, `attr`, `since`, `follow` | events, 1 JSON object per line    |
-| `/v0/debug/pmtu`    | GET, HEAD | `read` | query `peer`                                    | path MTU view, a JSON object      |
-| `/v0/debug/runtime` | GET, HEAD | `read` | none                                            | process view, a JSON object       |
-| `/v0/debug/updown`  | GET, HEAD | `read` | none                                            | up and down view, a JSON object   |
-| `/v0/debug/netmon`  | GET, HEAD | `read` | none                                            | network watch view, a JSON object |
-| `/v0/debug/rules`   | GET, HEAD | `read` | none                                            | rules view, a JSON object         |
-| `/v0/debug/probe`   | POST      | `root` | `peer` or `all`                                 | a result                          |
+| Path                 | Method    | Class  | Request                                         | Answer                            |
+| -------------------- | --------- | ------ | ----------------------------------------------- | --------------------------------- |
+| `/v0/status`         | GET, HEAD | `mode` | none                                            | the node, a JSON object           |
+| `/v0/neighbors`      | GET, HEAD | `mode` | none                                            | Babel neighbors, a JSON list      |
+| `/v0/routes`         | GET, HEAD | `mode` | none                                            | Babel routes, a JSON list         |
+| `/v0/sessions`       | GET, HEAD | `mode` | none                                            | IKE sessions, a JSON list         |
+| `/v0/peers`          | GET, HEAD | `mode` | none                                            | dialed peers, a JSON list         |
+| `/v0/metrics`        | GET, HEAD | `mode` | none                                            | the Prometheus text format        |
+| `/v0/disable`        | POST      | `mode` | `subsystem`                                     | a result                          |
+| `/v0/enable`         | POST      | `mode` | `subsystem`                                     | a result                          |
+| `/v0/redial`         | POST      | `mode` | `peer` or `all`                                 | a result                          |
+| `/v0/rekey`          | POST      | `mode` | `peer` or `all`                                 | a result                          |
+| `/v0/reload`         | POST      | `mode` | empty body                                      | a result                          |
+| `/v0/down`           | POST      | `mode` | empty body                                      | a result                          |
+| `/v0/up`             | POST      | `mode` | empty body                                      | a result                          |
+| `/v0/debug/events`   | GET, HEAD | `read` | query `kind`, `peer`, `attr`, `since`, `follow` | events, 1 JSON object per line    |
+| `/v0/debug/pmtu`     | GET, HEAD | `read` | query `peer`                                    | path MTU view, a JSON object      |
+| `/v0/debug/runtime`  | GET, HEAD | `read` | none                                            | process view, a JSON object       |
+| `/v0/debug/updown`   | GET, HEAD | `read` | none                                            | up and down view, a JSON object   |
+| `/v0/debug/netmon`   | GET, HEAD | `read` | none                                            | network watch view, a JSON object |
+| `/v0/debug/rules`    | GET, HEAD | `read` | none                                            | rules view, a JSON object         |
+| `/v0/debug/route`    | GET, HEAD | `read` | query `src`, `dst`, `iif`                       | route view, a JSON object         |
+| `/v0/debug/egress`   | GET, HEAD | `read` | none                                            | exit view, a JSON object          |
+| `/v0/debug/segments` | GET, HEAD | `read` | none                                            | segments view, a JSON object      |
+| `/v0/debug/probe`    | POST      | `root` | `peer` or `all`                                 | a result                          |
 
 ### Requests and answers
 
