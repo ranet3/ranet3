@@ -536,19 +536,28 @@ func (m *Mesh) egresses(check *egressCheck, source, destination netip.Addr, vers
 }
 
 // forwardOptions processes the options of raw, an IPv4 header HeaderValid passed that carries some, as RFC 1812 sections 5.3.13.4 to 5.3.13.6 have a router forwarding it
-// Record Route and Timestamp record the IPv4 router-id, or 192.0.0.8 on a node holding none, the address errorSource answers IPv4 from
 // it reports false with the reason for a packet it drops, a source route, or options RFC 791 cannot read, which are answered parameter problem, the answer's fate kept in draw, nil for none
 func (m *Mesh) forwardOptions(raw []byte, draw *answerDraw) (transitReason, bool) {
+	reason, pointer, ok := m.judgeOptions(raw)
+	if reason == transitInvalid {
+		m.answerForward(raw, 4, answerParameter, pointer, draw)
+	}
+	return reason, ok
+}
+
+// judgeOptions is forwardOptions' processing of raw's options, sending nothing: the reason, false for a packet the router does not forward
+// and the pointer of the parameter problem that answers options RFC 791 cannot read, whose reason is transitInvalid
+// Record Route and Timestamp record the IPv4 router-id, or 192.0.0.8 on a node holding none, the address errorSource answers IPv4 from
+func (m *Mesh) judgeOptions(raw []byte) (transitReason, int, bool) {
 	address, _ := m.errorSource(false)
 	verdict, pointer := packet.ForwardOptions(raw, address, m.ownAddress, time.Now())
 	switch verdict {
 	case packet.OptionsSourceRouted:
-		return transitSourceRoute, false
+		return transitSourceRoute, 0, false
 	case packet.OptionsMalformed:
-		m.answerForward(raw, 4, answerParameter, pointer, draw)
-		return transitInvalid, false
+		return transitInvalid, pointer, false
 	}
-	return transitForwarded, true
+	return transitForwarded, 0, true
 }
 
 // ownAddress reports an address this node holds as a host route of its own, the prespecified address a timestamp option stamps at

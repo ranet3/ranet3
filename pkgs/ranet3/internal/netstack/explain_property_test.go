@@ -30,7 +30,7 @@ var explainAddresses = map[int][]netip.Addr{
 		transitSender[6], transitOwn[6], transitFar[6], transitHeldHost[6], transitUnrouted[6], edgeAssigned[6],
 		transitNowhere[6], transitStranger[6], edgeSubnetHost[6], edgeLAN[6],
 		segAddr("fe80::9"), segAddr("ff02::1"), segAddr("::1"), segAddr("::"), segAddr("::ffff:192.0.2.3"),
-		edgeOwnSID, edgeOtherSID,
+		edgeOwnSID, edgeOtherSID, explainSegment,
 	},
 }
 
@@ -43,7 +43,7 @@ var explainPrefixes = map[int][]netip.Prefix{
 	},
 	6: {
 		segPrefix("::/0"), segPrefix("::/1"), segPrefix("2000::/3"), segPrefix("3fff::/20"),
-		segPrefix("2001:db8::/32"), edgeSubnet[6], segPrefix("2001:db8:100::/64"), segPrefix("3fff:7::/64"),
+		segPrefix("2001:db8::/32"), edgeSubnet[6], segPrefix("2001:db8:100::/64"), segPrefix("3fff:1::/64"), segPrefix("3fff:7::/64"),
 		hostPrefix(transitSender[6]), hostPrefix(transitOwn[6]), hostPrefix(transitFar[6]), hostPrefix(transitHeldHost[6]), hostPrefix(edgeAssigned[6]),
 	},
 }
@@ -54,7 +54,15 @@ var explainSources = map[int][]netip.Prefix{
 	6: {segPrefix("3fff::/20"), segPrefix("2001:db8:100::/64")},
 }
 
-// explainMesh is a transit node's mesh, its tun recording, with a feed of every record, this node's SID, and the table and settings hegel draws
+// the steering entries the drift property draws, each through explainSegment and on to another node's SID where it draws two
+var explainSteers = []srv6.Steer{
+	{From: schema.PrefixFrom(hostPrefix(transitOwn[6]))},
+	{From: schema.PrefixFrom(hostPrefix(transitOwn[4]))},
+	{To: schema.PrefixFrom(segPrefix("2001:db8::/32"))},
+	{To: schema.PrefixFrom(segPrefix("203.0.113.0/24"))},
+}
+
+// explainMesh is a transit node's mesh, its tun recording, with a feed of every record, this node's SID, and the table, settings and steering hegel draws
 // from is the peer of the session its packets arrive through, which the table may route to as to any other
 func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
 	m, _ := startTransitMesh(nil)
@@ -103,6 +111,24 @@ func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
 		ht.Fatal(err)
 	}
 	m.SetSegments(segments)
+	if steers := pbt.Subset(ht, explainSteers, 0, len(explainSteers)); len(steers) != 0 {
+		via := []schema.Addr{schema.AddrFrom(explainSegment)}
+		if hegel.Draw(ht, hegel.Booleans()) {
+			via = append(via, schema.AddrFrom(edgeOtherSID))
+		}
+		for i := range steers {
+			steers[i].Via = via
+		}
+		steering, err := srv6.NewSteerTable(steers, schema.MustAddr("3fff:b:0:100::1"))
+		if err != nil {
+			ht.Fatal(err)
+		}
+		m.SetSteering(steering)
+		m.SetSteeringEnabled(hegel.Draw(ht, hegel.Booleans()))
+		if hegel.Draw(ht, hegel.Booleans()) {
+			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1::/64"), peer)
+		}
+	}
 	return m, from, openTrace(ht, m, TraceFilter{}, 0, control.TraceRateMax)
 }
 
@@ -164,7 +190,7 @@ func explainPacket(ht *hegel.T, limits []int, sources, destinations [2]map[int]n
 
 // recorded is the part of a record naming its packet's decision, the next peer only for a forward, whose record alone names one
 func recorded(r TraceRecord) Explanation {
-	e := Explanation{Decision: r.Decision, Reason: r.Reason, Answer: r.Answer}
+	e := Explanation{Decision: r.Decision, Reason: r.Reason, Answer: r.Answer, Segment: r.Segment}
 	if r.Decision == TraceForward {
 		e.Next = r.Next
 	}
@@ -173,7 +199,7 @@ func recorded(r TraceRecord) Explanation {
 
 // walked is the part of an Explanation a record names
 func walked(e Explanation) Explanation {
-	out := Explanation{Decision: e.Decision, Reason: e.Reason, Answer: e.Answer}
+	out := Explanation{Decision: e.Decision, Reason: e.Reason, Answer: e.Answer, Segment: e.Segment}
 	if e.Decision == TraceForward {
 		out.Next = e.Next
 	}
@@ -194,7 +220,7 @@ func decisionRecord(ht *hegel.T, records []TraceRecord) TraceRecord {
 	return decided[0]
 }
 
-// over drawn tables and settings, and drawn packets a session delivers that no segment of this node takes
+// over drawn tables, settings and steering, and drawn packets a session delivers that no segment of this node takes
 // Explain names the decision, reason, answer and next peer of the record the tracer takes when decide runs the same packet
 func TestExplainNamesWhatTheDecisionRecords(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
@@ -206,6 +232,23 @@ func TestExplainNamesWhatTheDecisionRecords(t *testing.T) {
 			m.DeliverInboundBatch(framed(bytes.Clone(raw)), from.MTU(), from)
 			if got, want := walked(explained), recorded(decisionRecord(ht, queued(feed))); got != want {
 				ht.Fatalf("Explain of %x is %+v, the record %+v", raw, got, want)
+			}
+		}
+	})
+}
+
+// over the same, and drawn packets read off the tun
+// ExplainRead names the decision, reason, answer, segment and next peer of the record the tracer takes when classify reads the same packet
+func TestExplainReadNamesWhatTheChecksRecord(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		m, from, feed := explainMesh(ht)
+		// this node's own address and a LAN host, the internet and an overlay host, drawn outright, of sizes beside the session's MTU and beside it less the steering's overhead
+		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
+			raw := explainPacket(ht, []int{from.MTU(), from.MTU() - m.Steering().Overhead()}, [2]map[int]netip.Addr{transitOwn, edgeLAN}, [2]map[int]netip.Addr{transitNowhere, transitFar}, func(netip.Addr) bool { return true })
+			explained := m.ExplainRead(raw)
+			classifiedTo(m, bytes.Clone(raw))
+			if got, want := walked(explained), recorded(decisionRecord(ht, queued(feed))); got != want {
+				ht.Fatalf("ExplainRead of %x is %+v, the record %+v", raw, got, want)
 			}
 		}
 	})
