@@ -299,9 +299,10 @@ func TestDialerRecordsFailuresAndWakes(t *testing.T) {
 	}
 }
 
-// a verb asked over the socket is recorded with the uid the socket reported and what it came to
-// a refused verb, which acted on nothing, is recorded once without a peer and with the peer as it was asked for
-func TestVerbIsRecordedWithItsCaller(t *testing.T) {
+// servedSocket serves src on a control socket until the test ends, and returns the socket's path
+// the socket sits in a directory of its own under the system's, whose short path a socket's address holds
+func servedSocket(t *testing.T, src control.Source) string {
+	t.Helper()
 	dir, err := os.MkdirTemp("", "rl")
 	if err != nil {
 		t.Fatal(err)
@@ -312,9 +313,16 @@ func TestVerbIsRecordedWithItsCaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	t.Cleanup(func() { listener.Close() })
+	go control.Serve(listener, src)
+	return socket
+}
+
+// a verb asked over the socket is recorded with the uid the socket reported and what it came to
+// a refused verb, which acted on nothing, is recorded once without a peer and with the peer as it was asked for
+func TestVerbIsRecordedWithItsCaller(t *testing.T) {
 	bus := events.New()
-	go control.Serve(listener, &Client{events: bus, dialers: make(map[string]*dialer)})
+	socket := servedSocket(t, &Client{events: bus, dialers: make(map[string]*dialer)})
 
 	if _, err := control.Dial(socket).Redial("nobody", false); err == nil {
 		t.Fatal("a redial of a peer this node does not know succeeded")
