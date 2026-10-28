@@ -619,18 +619,18 @@ initiator holds the keys before it has authenticated, and past `IKE_AUTH`, where
 anyone who captured a fragment of the request can replay it from any address.
 The origin is the peer's own address and port: in a half-open SA the one the
 `IKE_SA_INIT` came from, and past `IKE_AUTH` the session's endpoint, where the
-peer's last fresh request came from. From the origin a repeat draws the answer
-on the request whole as it came or on its fragment 1, at most 20 times in each
-exchange, the bound on the sends of 1 request that ranet3 counts. Every counted
-repeat of a peer that resends as ranet3 does is answered, the 7 sends of a
-request that the step cuts for its family's floor among them. A probe that cuts
-nothing resends a request without counting it, which lets a peer asked to probe
-its path many times in 1 exchange send more, and its repeats past the 20 draw
-nothing. From any other address and port, only the request whole as it came, or
-the whole set of its fragments from there reassembled to the request's content,
-draws the answer, which goes there. It draws it only within the bytes that
-address sent repeating the request in the exchange, each datagram counted with
-its IP header, UDP header and Non-ESP Marker. Each answer there spends its
+peer's last fresh request or answer came from. From the origin a repeat draws
+the answer on the request whole as it came or on its fragment 1, at most 20
+times in each exchange, the bound on the sends of 1 request that ranet3 counts.
+Every counted repeat of a peer that resends as ranet3 does is answered, the 7
+sends of a request that the step cuts for its family's floor among them. A probe
+that cuts nothing resends a request without counting it, which lets a peer asked
+to probe its path many times in 1 exchange send more, and its repeats past the
+20 draw nothing. From any other address and port, only the request whole as it
+came, or the whole set of its fragments from there reassembled to the request's
+content, draws the answer, which goes there. It draws it only within the bytes
+that address sent repeating the request in the exchange, each datagram counted
+with its IP header, UDP header and Non-ESP Marker. Each answer there spends its
 datagrams as that send cuts them. An answer the credit does not cover draws
 nothing, a later repeat adds to the credit, and the answer spends that address's
 credit alone and nothing of the origin's 20. The exchange keeps such a credit,
