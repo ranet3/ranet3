@@ -318,14 +318,11 @@ func TestEgressThroughTheTunWriterKeepsEachFlowOnItsLaneInOrder(t *testing.T) {
 	run(func(family int, mode3 bool) bool { return mode3 == (family == 6) })
 }
 
-// both egress hand-offs hand their batches to the exit and never to the tun, in both families
-// an egress segment's inner packets in a batch of their own, then the decision's verdicts through a prefix cap.egress advertises in another, each in the order they came
-// each counted egressed or delivered, and a family whose word is not ready dropped and counted not ready by its own mode's word, the egress segments' for mode 3 and advertisedReady for mode 2
-func TestBothEgressHandOffsReachTheExit(t *testing.T) {
+// handOffMesh is a mesh of one tun lane recording its writes, with the segments and advertised defaults the tests below use, handing both egress verdicts to exit
+func handOffMesh(t *testing.T, exit Exit) (*Mesh, *recordingDevice) {
 	dev := &recordingDevice{writes: make(chan recordedWrite, 16)}
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.setDevice(dev)
-	exit := &recordingExit{}
 	m.SetExit(exit)
 	t.Cleanup(m.Close)
 	m.SetTransit(true)
@@ -337,9 +334,12 @@ func TestBothEgressHandOffsReachTheExit(t *testing.T) {
 	}
 	m.SetEgressPrefixes(defaults)
 	routeLeaf(t, m, tooBigSource[4], tooBigSource[6])
+	return m, dev
+}
 
-	// mode 3's packets are of the families 4, 6, 4 and mode 2's of 6, 4, 6, interleaved
-	var mode3, mode2, frames [][]byte
+// handOffBatch is the packets of an egress segment and of the decision's verdicts, and the frames carrying both interleaved
+// mode 3's packets are of the families 4, 6, 4 and mode 2's of 6, 4, 6
+func handOffBatch(t *testing.T) (mode3, mode2, frames [][]byte) {
 	for i, family := range []int{4, 6, 4} {
 		other := map[int]int{4: 6, 6: 4}[family]
 		segment := flowPacket(tooBigSource[family], transitNowhere[family], uint16(40000+i), 3)
@@ -347,6 +347,16 @@ func TestBothEgressHandOffsReachTheExit(t *testing.T) {
 		mode3, mode2 = append(mode3, segment), append(mode2, decided)
 		frames = append(frames, steered(t, segment, headend, egressExit), decided)
 	}
+	return mode3, mode2, frames
+}
+
+// both egress hand-offs hand their batches to the exit and never to the tun, in both families
+// an egress segment's inner packets in a batch of their own, then the decision's verdicts through a prefix cap.egress advertises in another, each in the order they came
+// each counted egressed or delivered, and a family whose word is not ready dropped and counted not ready by its own mode's word, the egress segments' for mode 3 and advertisedReady for mode 2
+func TestBothEgressHandOffsReachTheExit(t *testing.T) {
+	exit := &recordingExit{}
+	m, dev := handOffMesh(t, exit)
+	mode3, mode2, frames := handOffBatch(t)
 	ready := func(packets [][]byte, v4, v6 bool) [][]byte {
 		var out [][]byte
 		for _, raw := range packets {
@@ -389,6 +399,46 @@ func TestBothEgressHandOffsReachTheExit(t *testing.T) {
 		if delivered, notReady := decided.Delivered-decisions.Delivered, decided.NotReady-decisions.NotReady; delivered != uint64(len(want2)) || notReady != uint64(len(mode2)-len(want2)) {
 			t.Errorf("%s the decision counted %d delivered and %d not ready, want %d and %d", c.name, delivered, notReady, len(want2), len(mode2)-len(want2))
 		}
+	}
+}
+
+// countReadingExit is a recordingExit that reads m's counters when each batch reaches it, before it keeps the batch
+type countReadingExit struct {
+	recordingExit
+	m     *Mesh
+	reads []handOffCounts
+}
+
+type handOffCounts struct{ egressed, delivered uint64 }
+
+func (e *countReadingExit) Egress(frames [][]byte) {
+	read := handOffCounts{e.m.SegmentCounters().Egressed, e.m.TransitCounters().Delivered}
+	e.mu.Lock()
+	e.reads = append(e.reads, read)
+	e.mu.Unlock()
+	e.recordingExit.Egress(frames)
+}
+
+// both egress hand-offs count a batch before the exit takes it, so a reader that has a frame at the exit finds it counted
+// the exit reads the egress segments' Egressed and the decision's Delivered as each batch reaches it, in the batch of an egress segment's inner packets and then in the batch of the decision's verdicts, each of both families
+func TestEgressHandOffsCountEachBatchBeforeTheExitTakesIt(t *testing.T) {
+	exit := &countReadingExit{}
+	m, _ := handOffMesh(t, exit)
+	exit.m = m
+	_, _, frames := handOffBatch(t)
+	m.SetEgressReady(true, true)
+	m.SetAdvertisedReady(true, true)
+	before := handOffCounts{m.SegmentCounters().Egressed, m.TransitCounters().Delivered}
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	batches := exit.taken()
+	if len(batches) != 2 || len(exit.reads) != 2 {
+		t.Fatalf("the exit took %d batches and read the counters %d times, want mode 3's and then mode 2's", len(batches), len(exit.reads))
+	}
+	if got, want := exit.reads[0].egressed-before.egressed, uint64(len(batches[0])); got != want {
+		t.Errorf("the exit found %d packets counted egressed as the batch of %d egress segment packets reached it", got, want)
+	}
+	if got, want := exit.reads[1].delivered-before.delivered, uint64(len(batches[1])); got != want {
+		t.Errorf("the exit found %d packets counted delivered as the batch of %d verdicts reached it", got, want)
 	}
 }
 
