@@ -453,7 +453,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 		switch entry.Value {
 		case netstack.Assigned:
 			sources, assigned = append(sources, destination), append(assigned, entry.Destination)
-			if unroutable(destination) == "" {
+			if unroutable(destination) == "" && !counts(destination) && !advertised[destination] {
 				own = append(own, destination)
 			}
 		case netstack.Local:
