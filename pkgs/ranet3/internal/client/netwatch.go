@@ -36,7 +36,7 @@ func openNetwork(host kernel.Host, mesh string) (networkSource, error) {
 }
 
 // followNetwork acts on each change of the host's network until ctx ends
-// the route reconciler runs a pass for every change, since the rules of cap.exit follow the links
+// the route reconciler is handed every change, since the rules of cap.exit follow the links
 // where a default or an address moved, every socket connected to one peer closes, since it keeps a source the host may have lost or the route no longer picks
 // every session is then asked to prove its path now, and every dialer comes round at once
 // a dialer that finds its session healthy stands down as it does after any wake
@@ -48,7 +48,7 @@ func (c *Client) followNetwork(ctx context.Context) {
 			return
 		case change := <-c.network.Changes():
 			if wake := c.reconcilerNetwork.Load(); wake != nil {
-				(*wake)()
+				(*wake)(change)
 			}
 			probed, woken := 0, 0
 			if slices.ContainsFunc(change.Families(), kernel.FamilyChange.PathMoved) {
@@ -65,7 +65,7 @@ func (c *Client) followNetwork(ctx context.Context) {
 }
 
 // SetReconcilerNetwork hands followNetwork the route reconciler's wake for a change of the host's network, as SetReconcilerTable hands the reload path its SetTable
-func (c *Client) SetReconcilerNetwork(wake func()) {
+func (c *Client) SetReconcilerNetwork(wake func(kernel.NetworkChange)) {
 	c.reconcilerNetwork.Store(&wake)
 }
 

@@ -18,6 +18,7 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/internal/registry"
@@ -25,8 +26,29 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
+// refuseExitModeHere refuses cap.exit where this platform has no exit mode
+// the start checks it ahead of every other capability's platform refusal, so a host writing cap.exit beside cap.border is told about cap.exit
+func refuseExitModeHere(cfg *config.Config) error {
+	if cfg.Cap.Exit == nil {
+		return nil
+	}
+	return kernel.RefuseExitMode()
+}
+
+// refuseForwardedHere refuses a cap.exit forward entry naming the tun or a link a default leaves by, as the watch reads the host now
+func refuseForwardedHere(cfg *config.Config, tun string, network networkSource) error {
+	if cfg.Cap.Exit == nil || network == nil {
+		return nil
+	}
+	state, _ := network.State()
+	return cfg.Cap.Exit.RefuseNamed(tun, state)
+}
+
 // validateRuntimeConfig is the startup check, which refuses a configuration the trust document does not support and logs a peer it only cannot dial
 func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.Index) error {
+	if err := refuseExitModeHere(cfg); err != nil {
+		return err
+	}
 	families, err := validateLocalConfig(cfg, privateKey, x)
 	if err != nil {
 		return err

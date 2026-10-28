@@ -108,6 +108,12 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err := refuseEgressAdvertisedUnconditionally(cfg); err != nil {
 		return err
 	}
+	if err := refuseExitModeHere(cfg); err != nil {
+		return err
+	}
+	if err := refuseForwardedHere(cfg, c.Mesh.Name, c.network); err != nil {
+		return err
+	}
 	old := c.config()
 	if err := reloadable(old, cfg); err != nil {
 		return err
@@ -118,8 +124,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	}
 	// the last refusal
 	// the reconciler takes a table it accepts at once
-	// with the overlay and the announcements its exit rule reads
-	if !sameTable(old, cfg) || cfg.Cap.Table != nil && (!sameOverlay(old, cfg) || !sameExit(old, cfg)) {
+	// with cap.exit's mode, and the overlay and the announcements its exit rule reads
+	if !sameTable(old, cfg) || cfg.Cap.Table != nil && (!sameOverlay(old, cfg) || !sameExit(old, cfg) || !sameExitMode(old, cfg)) {
 		if err := c.retable(old, cfg); err != nil {
 			return err
 		}
@@ -203,12 +209,14 @@ func (c *Client) retable(old, next *config.Config) error {
 		case !sameTable(old, next):
 		case !sameOverlay(old, next):
 			moved = "cap.border overlay"
+		case !sameExitMode(old, next):
+			moved = "cap.exit"
 		default:
 			moved = "cap.route announce"
 		}
 		return fmt.Errorf("config: %s changed and no reconciler is running to take it, restart to apply", moved)
 	}
-	return (*set)(*next.Cap.Table, next.Overlay(), next.Routes().Announced())
+	return (*set)(*next.ReconcilerTable(), next.Overlay(), next.Routes().Announced())
 }
 
 // changedCapabilities names each capability a reload from old to next applied in place
@@ -240,6 +248,9 @@ func changedCapabilities(old, next *config.Config) []string {
 	}
 	if !sameTable(old, next) {
 		out = append(out, "cap.table")
+	}
+	if !sameExitMode(old, next) {
+		out = append(out, "cap.exit")
 	}
 	if old.Link.Listen != next.Link.Listen {
 		out = append(out, "link.listen")
@@ -539,6 +550,18 @@ func sameTable(old, next *config.Config) bool {
 	return slices.Equal(
 		sortedPrefixes(old.Cap.Table.Assigned(old.Routes().Announced())),
 		sortedPrefixes(next.Cap.Table.Assigned(next.Routes().Announced())))
+}
+
+// sameExitMode reports that next runs cap.exit as old does, a forward list in another order being no change
+func sameExitMode(old, next *config.Config) bool {
+	normalize := func(m *kernel.ExitMode) *kernel.ExitMode {
+		if m == nil {
+			return nil
+		}
+		normalized := m.Normalized()
+		return &normalized
+	}
+	return reflect.DeepEqual(normalize(old.Cap.Exit), normalize(next.Cap.Exit))
 }
 
 // sameExit reports that next's announcements make this node an exit exactly

@@ -307,7 +307,7 @@ func runDaemon(opts options) int {
 	// The reconciler is one capability, so a deployment that configures its
 	// device externally writes no cap.table and gets none of this.
 	var reconciler sync.WaitGroup
-	if table := cfg.Cap.Table; table != nil {
+	if table := cfg.ReconcilerTable(); table != nil {
 		// The half the file could not say is the node's own to answer, so the
 		// node answers it (see client.KernelRuntime).
 		routes, err := kernel.New(*table, node.KernelRuntime(), mesh.Routes)

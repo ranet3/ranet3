@@ -1278,6 +1278,7 @@ func fullConfig() Config {
 			},
 			// covering the egress segment's allow list, which the loader asks of it
 			Border: &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.0.0/8")}},
+			Exit:   &kernel.ExitMode{Forward: []string{"docker0", "br-*"}},
 		},
 	}
 }
