@@ -17,27 +17,27 @@ import (
 const (
 	egressSegmentTOML = `
 [[cap.segment.local]]
-sid = "2a0c:b641:69c:5d26::3"
+sid = "3fff:b:0:306::3"
 behavior = "End.DT46"
 deliver = "egress"
-allow = ["23.161.104.0/24", "2602:f590::/36"]
+allow = ["203.0.113.0/24", "3fff:a::/36"]
 `
 	egressBorderTOML = `
 [cap.border]
-overlay = ["23.161.104.0/24", "2602:f590::/36"]
+overlay = ["203.0.113.0/24", "3fff:a::/36"]
 `
 	egressExitTOML = "\n[cap.egress]\n" + egressBorderTOML + egressSegmentTOML
 	egressExitYAML = `
 cap:
   egress: {}
   border:
-    overlay: [23.161.104.0/24, 2602:f590::/36]
+    overlay: [203.0.113.0/24, 3fff:a::/36]
   segment:
     local:
-      - sid: 2a0c:b641:69c:5d26::3
+      - sid: 3fff:b:0:306::3
         behavior: End.DT46
         deliver: egress
-        allow: [23.161.104.0/24, 2602:f590::/36]
+        allow: [203.0.113.0/24, 3fff:a::/36]
 `
 	egressExitJSON = `{
   "node": "example/laptop",
@@ -46,8 +46,8 @@ cap:
   "dial": {"to": ["example/gateway"]},
   "cap": {
     "egress": {},
-    "border": {"overlay": ["23.161.104.0/24", "2602:f590::/36"]},
-    "segment": {"local": [{"sid": "2a0c:b641:69c:5d26::3", "behavior": "End.DT46", "deliver": "egress", "allow": ["23.161.104.0/24", "2602:f590::/36"]}]}
+    "border": {"overlay": ["203.0.113.0/24", "3fff:a::/36"]},
+    "segment": {"local": [{"sid": "3fff:b:0:306::3", "behavior": "End.DT46", "deliver": "egress", "allow": ["203.0.113.0/24", "3fff:a::/36"]}]}
   }
 }`
 )
@@ -68,10 +68,10 @@ func egressExits() map[string]struct{ extension, text string } {
 // it out
 func TestEgressSegmentReadsAlikeInEveryFormat(t *testing.T) {
 	want := srv6.Segment{
-		SID:      schema.MustAddr("2a0c:b641:69c:5d26::3"),
+		SID:      schema.MustAddr("3fff:b:0:306::3"),
 		Behavior: srv6.BehaviorEndDT46,
 		Deliver:  srv6.DeliverEgress,
-		Allow:    []schema.Prefix{schema.MustPrefix("23.161.104.0/24"), schema.MustPrefix("2602:f590::/36")},
+		Allow:    []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3fff:a::/36")},
 	}
 	for name, body := range egressExits() {
 		t.Run(name, func(t *testing.T) {
@@ -110,19 +110,19 @@ func TestEgressSegmentIsRefusedWithoutWhatCarriesIt(t *testing.T) {
 		"json": strings.Replace(exits["json"].text, `"egress": {},`, "", 1),
 	}
 	announcing := map[string]string{
-		"toml": exits["toml"].text + "[cap.route]\nannounce = [\"2a0c:b641:69c:5d26::3/128\"]\n",
-		"yaml": strings.Replace(exits["yaml"].text, "cap:\n", "cap:\n  route:\n    announce: [2a0c:b641:69c:5d26::3/128]\n", 1),
-		"json": strings.Replace(exits["json"].text, `"cap": {`, `"cap": {"route": {"announce": ["2a0c:b641:69c:5d26::3/128"]},`, 1),
+		"toml": exits["toml"].text + "[cap.route]\nannounce = [\"3fff:b:0:306::3/128\"]\n",
+		"yaml": strings.Replace(exits["yaml"].text, "cap:\n", "cap:\n  route:\n    announce: [3fff:b:0:306::3/128]\n", 1),
+		"json": strings.Replace(exits["json"].text, `"cap": {`, `"cap": {"route": {"announce": ["3fff:b:0:306::3/128"]},`, 1),
 	}
 	for format, body := range exits {
 		for name, c := range map[string]struct{ text, says string }{
 			"no cap.egress": {
 				withoutEgress[format],
-				"cap.segment local 2a0c:b641:69c:5d26::3 delivers to egress and cap.egress is absent, so nothing translates what leaves the mesh tun",
+				"cap.segment local 3fff:b:0:306::3 delivers to egress and cap.egress is absent, so nothing translates what leaves the mesh tun",
 			},
 			"its /128 announced by cap.route": {
 				announcing[format],
-				"config: cap.route announces 2a0c:b641:69c:5d26::3/128, the egress segment's own route, which would announce it whether or not the segment is ready",
+				"config: cap.route announces 3fff:b:0:306::3/128, the egress segment's own route, which would announce it whether or not the segment is ready",
 			},
 		} {
 			t.Run(format+" "+name, func(t *testing.T) {
@@ -133,13 +133,13 @@ func TestEgressSegmentIsRefusedWithoutWhatCarriesIt(t *testing.T) {
 		}
 	}
 	exit := exits["toml"].text
-	second := exit + strings.Replace(egressSegmentTOML, "5d26::3", "5d26::4", 1) + "[cap.route]\nannounce = [\"2a0c:b641:69c:5d26::4/128\"]\n"
-	if _, err := loadTOML(t, second); err == nil || !strings.Contains(err.Error(), "config: cap.route announces 2a0c:b641:69c:5d26::4/128, the egress segment's own route") {
+	second := exit + strings.Replace(egressSegmentTOML, "306::3", "306::4", 1) + "[cap.route]\nannounce = [\"3fff:b:0:306::4/128\"]\n"
+	if _, err := loadTOML(t, second); err == nil || !strings.Contains(err.Error(), "config: cap.route announces 3fff:b:0:306::4/128, the egress segment's own route") {
 		t.Errorf("a second egress segment's /128 announced by cap.route was refused with %v", err)
 	}
 	// a covering route may be announced, and the mesh tun may take any name the platform does
 	for name, body := range map[string]string{
-		"a covering prefix announced":   exit + "[cap.route]\nannounce = [\"2a0c:b641:69c:5d20::/60\"]\n",
+		"a covering prefix announced":   exit + "[cap.route]\nannounce = [\"3fff:b:0:300::/60\"]\n",
 		"a mesh tun of 15 bytes":        strings.Replace(exit, "[link]\n", "[link]\ntun = \"fifteen-bytes-x\"\n", 1),
 		"a mesh tun the kernel numbers": strings.Replace(exit, "[link]\n", "[link]\ntun = \"ranet%d\"\n", 1),
 	} {

@@ -19,7 +19,7 @@ import (
 )
 
 // egressSIDs are the SIDs the property below gives its egress segments, in order
-var egressSIDs = []string{"2a0c:b641:69c:5d26::3", "2a0c:b641:69c:5d26::4", "2a0c:b641:69c:5d26::5"}
+var egressSIDs = []string{"3fff:b:0:306::3", "3fff:b:0:306::4", "3fff:b:0:306::5"}
 
 // egressExit is an exit with no cap.table and an egress segment at each of the first count egressSIDs
 func egressExit(count int) Config {
@@ -29,7 +29,7 @@ func egressExit(count int) Config {
 			SID:      schema.MustAddr(sid),
 			Behavior: srv6.BehaviorEndDT46,
 			Deliver:  srv6.DeliverEgress,
-			Allow:    []schema.Prefix{schema.MustPrefix("3fff:a::/32")},
+			Allow:    []schema.Prefix{schema.MustPrefix("3fff:c::/32")},
 		})
 	}
 	return Config{
@@ -39,7 +39,7 @@ func egressExit(count int) Config {
 		Dial: Dial{All: true},
 		Cap: Caps{
 			Egress:  &egress.Egress{},
-			Border:  &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}},
+			Border:  &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff:c::/30")}},
 			Segment: &srv6.Segments{Local: segments},
 		},
 	}
@@ -49,7 +49,7 @@ func egressExit(count int) Config {
 // announces none of their /128s, whatever else it announces, a covering
 // prefix included
 func TestEgressSIDsRoutesAreLeftToReadiness(t *testing.T) {
-	pool := []string{"2a0c:b641:69c:5d20::/60", "2001:db8::/32", "2a0c:b641:69c:5d26::6/128"}
+	pool := []string{"3fff:b:0:300::/60", "2001:db8::/32", "3fff:b:0:306::6/128"}
 	pbt.Check(t, func(ht *hegel.T) {
 		count := hegel.Draw(ht, pbt.Spanning(1, len(egressSIDs)))
 		c := egressExit(count)

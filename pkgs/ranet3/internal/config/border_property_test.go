@@ -88,18 +88,18 @@ func maskedTo(prefix schema.Prefix, bits int) netip.Addr {
 func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 	pool := []schema.Prefix{
 		// covering the allow list's IPv4 entry, equal to it, shorter, longer, beside it
-		schema.MustPrefix("23.161.104.0/24"), schema.MustPrefix("23.161.0.0/16"), schema.MustPrefix("23.161.104.0/25"), schema.MustPrefix("23.161.105.0/24"),
+		schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("203.0.0.0/8"), schema.MustPrefix("203.0.113.0/25"), schema.MustPrefix("198.51.100.0/24"),
 		// the same for its IPv6 entry
-		schema.MustPrefix("2602:f590::/36"), schema.MustPrefix("2602::/16"), schema.MustPrefix("2602:f590::/37"), schema.MustPrefix("2602:f591::/36"),
+		schema.MustPrefix("3fff:a::/36"), schema.MustPrefix("3fff:a::/32"), schema.MustPrefix("3fff:a::/37"), schema.MustPrefix("3fff:a:1000::/36"),
 		// overlapping no allow entry
-		schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20"),
+		schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff:c::/30"),
 		// refused by the block itself
 		schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0"), schema.MustPrefix("8.0.0.0/7"), schema.MustPrefix("2000::/11"),
 		schema.MustPrefix("10.0.0.0/8"), schema.MustPrefix("2000::/12"), schema.MustPrefix("198.18.0.1/15"), schema.MustPrefix("::ffff:198.18.0.0/111"),
 	}
 	advertised := []schema.Prefix{
 		schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0"), schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("2001:db8::/32"),
-		schema.MustPrefix("198.18.4.0/24"), schema.MustPrefix("23.0.0.0/8"), schema.MustPrefix("3fff:a::/32"), schema.MustPrefix("10.1.0.0/16"),
+		schema.MustPrefix("198.18.4.0/24"), schema.MustPrefix("203.0.0.0/8"), schema.MustPrefix("3fff:c::/32"), schema.MustPrefix("10.1.0.0/16"),
 	}
 	pbt.Check(t, func(ht *hegel.T) {
 		var border *egress.Border
@@ -108,12 +108,12 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 			// half the cases draw an overlay the block takes, covering the allow
 			// list or missing one family's entry by a longer prefix, beside an
 			// advertise list that overlaps it, is the exit default or is apart
-			v4, v6 := schema.MustPrefix("23.161.104.0/24"), schema.MustPrefix("2602:f590::/36")
+			v4, v6 := schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3fff:a::/36")
 			if hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
-				v4 = schema.MustPrefix("23.161.104.0/25")
+				v4 = schema.MustPrefix("203.0.113.0/25")
 			}
 			if hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
-				v6 = schema.MustPrefix("2602:f590::/37")
+				v6 = schema.MustPrefix("3fff:a::/37")
 			}
 			overlay := []schema.Prefix{v4, v6}
 			// the pool's entries before the ones the block refuses
@@ -126,8 +126,8 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 			advertise = slices.Clone(hegel.Draw(ht, hegel.SampledFrom([][]schema.Prefix{
 				nil,
 				{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0")},
-				{schema.MustPrefix("23.0.0.0/8")},
-				{schema.MustPrefix("2602:f590:1::/48")},
+				{schema.MustPrefix("203.0.0.0/8")},
+				{schema.MustPrefix("3fff:a:1::/48")},
 				{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("2001:db8::/32")},
 				{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("198.18.4.0/24")},
 			})))
@@ -141,18 +141,18 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 				}
 			}
 		}
-		allow := []schema.Prefix{schema.MustPrefix("23.161.104.0/24"), schema.MustPrefix("2602:f590::/36")}
-		segments := []srv6.Segment{{SID: schema.MustAddr("2a0c:b641:69c:5d26::3"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow}}
+		allow := []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3fff:a::/36")}
+		segments := []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:306::3"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow}}
 		if hegel.Draw(ht, hegel.Booleans()) {
 			// a second egress segment, whose allow list the overlay covers or
 			// misses apart from the first's
 			second := slices.Clone(hegel.Draw(ht, hegel.SampledFrom([][]schema.Prefix{
-				{schema.MustPrefix("23.161.104.128/25"), schema.MustPrefix("2602:f590:1::/48")},
-				{schema.MustPrefix("198.18.4.0/24"), schema.MustPrefix("3fff:a::/32")},
-				{schema.MustPrefix("3fff:a::/32")},
+				{schema.MustPrefix("203.0.113.128/25"), schema.MustPrefix("3fff:a:1::/48")},
+				{schema.MustPrefix("198.18.4.0/24"), schema.MustPrefix("3fff:c::/32")},
+				{schema.MustPrefix("3fff:c::/32")},
 				allow,
 			})))
-			segments = append(segments, srv6.Segment{SID: schema.MustAddr("2a0c:b641:69c:5d26::4"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: second})
+			segments = append(segments, srv6.Segment{SID: schema.MustAddr("3fff:b:0:306::4"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: second})
 			allow = slices.Concat(allow, second)
 		}
 		c := Config{

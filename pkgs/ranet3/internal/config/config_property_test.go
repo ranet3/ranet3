@@ -399,8 +399,8 @@ func steering(inherited bool) hegel.Generator[srv6.Steer] {
 // allowPool is the prefixes a drawn egress segment's allow list is taken from,
 // each a length the loader takes
 var allowPool = []schema.Prefix{
-	schema.MustPrefix("3fff:a::/32"), schema.MustPrefix("2602:f590::/36"),
-	schema.MustPrefix("23.161.104.0/24"), schema.MustPrefix("10.0.0.0/8"),
+	schema.MustPrefix("3fff:c::/32"), schema.MustPrefix("3fff:a::/36"),
+	schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("10.0.0.0/8"),
 }
 
 // segments draws cap.segment, an End.DT46 entry half the time delivering to
@@ -729,8 +729,8 @@ func exits() hegel.Generator[egress.Egress] {
 // overlayPool is the prefixes a drawn cap.border overlay is taken from, each
 // a length the loader takes, together covering every entry of allowPool
 var overlayPool = []schema.Prefix{
-	schema.MustPrefix("3fff::/20"), schema.MustPrefix("2602:f590::/36"),
-	schema.MustPrefix("23.161.104.0/24"), schema.MustPrefix("10.0.0.0/8"), schema.MustPrefix("198.18.0.0/15"),
+	schema.MustPrefix("3fff:c::/30"), schema.MustPrefix("3fff:a::/36"),
+	schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("10.0.0.0/8"), schema.MustPrefix("198.18.0.0/15"),
 }
 
 // borders draws cap.border from overlayPool, each entry once, and now and then
@@ -1082,7 +1082,7 @@ func mtuNode(mtu uint16, segments int) Config {
 		via[i] = schema.AddrFrom(netip.AddrFrom16([16]byte{0x3f, 0xff, 0, 1, 15: byte(i + 1)}))
 	}
 	c.Cap.Segment = &srv6.Segments{
-		Source: schema.MustAddr("3fff:1:69c:8c0::1"),
+		Source: schema.MustAddr("3fff:b:0:100::1"),
 		Steer:  []srv6.Steer{{From: schema.MustPrefix("3fff:a::1/128"), Via: via}},
 	}
 	return c
