@@ -763,10 +763,12 @@ func TestRekeySucceedingInsideTheSpanStartsTheStreakOver(t *testing.T) {
 			}
 		}},
 		{"proactive", func(t *testing.T, pair *refusingPair) {
-			// the streak tells a Child SA by when it was made, so the rekey makes its SA an instant after the one it replaces
-			time.Sleep(time.Millisecond)
+			first, _ := pair.initiator.childEstablishedAt()
 			if err := pair.initiator.RekeyChildProactively(); err != nil {
 				t.Fatalf("the rekey asked for failed: %v", err)
+			}
+			if made, _ := pair.initiator.childEstablishedAt(); !made.Equal(first) {
+				t.Fatalf("the rekey made its Child SA %s after the one it replaced, want at the same clock reading", made.Sub(first))
 			}
 		}},
 	} {
@@ -812,13 +814,13 @@ func TestRekeySucceedingInsideTheSpanStartsTheStreakOver(t *testing.T) {
 func TestTemporaryFailureStreakSpansOneIKESAAndChildSA(t *testing.T) {
 	first, second := &ikeContext{}, &ikeContext{}
 	start := time.Now()
-	made, remade := start.Add(-time.Hour), start.Add(-time.Minute)
+	var made, remade uint64 = 1, 2
 	temporary := &rejectedError{exchange: "Child SA negotiation", notify: Notify{Type: N_TEMPORARY_FAILURE}}
 	noProposal := &rejectedError{exchange: "Child SA negotiation", notify: Notify{Type: N_NO_PROPOSAL_CHOSEN}}
 	var streak temporaryStreak
 	for _, step := range []struct {
 		on    *ikeContext
-		child time.Time
+		child uint64
 		err   error
 		at    time.Duration
 		close bool
@@ -836,7 +838,7 @@ func TestTemporaryFailureStreakSpansOneIKESAAndChildSA(t *testing.T) {
 		{second, remade, temporary, 3*temporaryFailureSpan + 2*time.Second, true},
 	} {
 		if got := streak.outlasted(step.on, step.child, step.err, start.Add(step.at)); got != step.close {
-			t.Errorf("%v at %s on IKE SA %p and the Child SA made %s closes %v, want %v", step.err, step.at, step.on, step.child.Format(time.StampMicro), got, step.close)
+			t.Errorf("%v at %s on IKE SA %p and Child SA generation %d closes %v, want %v", step.err, step.at, step.on, step.child, got, step.close)
 		}
 	}
 }
