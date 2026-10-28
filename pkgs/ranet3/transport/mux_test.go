@@ -971,6 +971,7 @@ type fixedEndpoint struct{ addr netip.AddrPort }
 func (*fixedEndpoint) transportEndpoint()                    {}
 func (e *fixedEndpoint) String() string                      { return e.addr.String() }
 func (e *fixedEndpoint) AddrPort() netip.AddrPort            { return e.addr }
+func (e *fixedEndpoint) zone() string                        { return e.addr.Addr().Zone() }
 func (e *fixedEndpoint) sameDestination(other Endpoint) bool { return other == Endpoint(e) }
 func (e *fixedEndpoint) withoutSource() Endpoint             { return e }
 

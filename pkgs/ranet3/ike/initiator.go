@@ -1064,6 +1064,17 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	mySPI := randUint32Nonzero()
 	spiBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(spiBuf, mySPI)
+	// the responder holds the Child SA once it answers and may send on it before the answer arrives
+	// so the SPI routes to this session from the start, and never reaches the hub as unknown, until an exchange that installs no SA with it lets it go
+	if err := s.mux.RegisterESP(mySPI); err != nil {
+		return false, err
+	}
+	installed := false
+	defer func() {
+		if !installed {
+			s.mux.UnregisterESP(mySPI)
+		}
+	}()
 
 	idiBody, err := cfg.Aliases.presented(cfg.Remote)
 	if err != nil {
@@ -1189,6 +1200,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	}); err != nil {
 		return true, err
 	}
+	installed = true
 	return true, nil
 }
 

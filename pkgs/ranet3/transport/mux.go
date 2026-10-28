@@ -139,6 +139,10 @@ type Hub struct {
 	// a hub that has only just opened.
 	reported atomic.Int64
 	started  time.Time
+	// scanned is when an unknown ESP SPI last made the hub look for a mux whose destination sent it, on the clock reported reads
+	scanned atomic.Int64
+	// retired are the ESP SPIs a mux let go of, by UnregisterESP or Close, with when on the clock reported reads, under mu
+	retired map[uint32]int64
 }
 
 // spiTables maps each registered SPI to its mux, for the receive loops to demultiplex by
@@ -195,6 +199,8 @@ type Endpoint interface {
 	// AddrPort is the peer's address as this socket observed it, which NAT
 	// detection has to hash (RFC 7296 section 2.23).
 	AddrPort() netip.AddrPort
+	// zone names the interface a link-local address is on, as the bind's receive records name it, and is empty where the endpoint names none
+	zone() string
 	// sameDestination reports whether other names the same address and port and arrived with the same pin
 	// an endpoint whose sends fell back from its pin counts as one without it, except for unroutedHold after a refusal with EHOSTUNREACH
 	sameDestination(other Endpoint) bool
@@ -278,9 +284,10 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 
 func startHub(bind packetBind, fns []receiveFunc, port uint16, underlay Underlay, index int, rt Runtime) *Hub {
 	h := &Hub{bind: bind, port: port, underlay: underlay, boundTo: index, events: rt.Events,
-		muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+		muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now(), retired: make(map[uint32]int64)}
 	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
 	h.reported.Store(-int64(dropReportInterval))
+	h.scanned.Store(-int64(invalidSPIInterval))
 	for _, fn := range fns {
 		go h.receiveLoop(fn, h.readFailed)
 	}
@@ -317,7 +324,8 @@ func (h *Hub) NewMuxTo(endpoint Endpoint) (*Mux, error) {
 }
 
 func (h *Hub) newMux(endpoint Endpoint, dialed bool) (*Mux, error) {
-	m := &Mux{hub: h, endpoint: endpoint, dialed: dialed, ikeCh: make(chan Datagram, ikeQueueSize), espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
+	m := &Mux{hub: h, endpoint: endpoint, dialed: dialed, ikeCh: make(chan Datagram, ikeQueueSize), espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{}),
+		invalidSPI: make(chan uint32, 1)}
 	h.mu.Lock()
 	if h.closed.Load() {
 		h.mu.Unlock()
@@ -440,6 +448,8 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 		ikeDatagrams = ikeDatagrams[:0]
 		unclaimed = unclaimed[:0]
 		unwanted := 0
+		// a batch's first unknown ESP SPI alone reads the clock and the last look, since the hub looks at most once an interval
+		looked := false
 		// one load for the whole batch, under no lock
 		// a mux that closes after this load can still be handed this batch
 		// nobody reads that mux's queues any more, and the collector frees the batch with the mux
@@ -484,6 +494,10 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 					espBatches[m] = append(espBatches[m], raw)
 				} else {
 					unwanted++
+					if !looked {
+						looked = true
+						h.unknownSPI(spi, records[i].source)
+					}
 				}
 			}
 		}
@@ -548,6 +562,56 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 	}
 }
 
+// unknownSPI hands spi to each mux whose destination is source, unless the hub knows spi
+// RFC 7296 section 2.21.4: "A node needs to limit the rate at which it will send messages in response to unprotected messages."
+// so the hub looks at most once an interval whoever sent, which also hands each mux at most one SPI an interval
+func (h *Hub) unknownSPI(spi uint32, source netip.AddrPort) {
+	now := int64(time.Since(h.started))
+	last := h.scanned.Load()
+	if now-last < int64(invalidSPIInterval) || !h.scanned.CompareAndSwap(last, now) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.knows(spi, now) {
+		return
+	}
+	for m := range h.muxes {
+		if !sentFrom(m.currentEndpoint(), source) {
+			continue
+		}
+		select {
+		case m.invalidSPI <- spi:
+		default:
+		}
+	}
+}
+
+// sentFrom reports whether source is endpoint's address and port, unmapped, on the interface endpoint names where it names one
+// two link-local peers on two links can share one address and port
+func sentFrom(endpoint Endpoint, source netip.AddrPort) bool {
+	zone := endpoint.zone()
+	return destination(endpoint.AddrPort()) == destination(source) && (zone == "" || zone == source.Addr().Zone())
+}
+
+// destination is addr unmapped and without its zone, which Endpoint.AddrPort drops
+func destination(addr netip.AddrPort) netip.AddrPort {
+	return netip.AddrPortFrom(addr.Addr().Unmap().WithZone(""), addr.Port())
+}
+
+// knows reports whether a mux holds spi or let go of it within invalidSPIInterval before now, under h.mu
+// it reads the tables published last, since a mux may have taken spi after a receive loop loaded its batch's
+func (h *Hub) knows(spi uint32, now int64) bool {
+	h.forgetRetired(now)
+	_, retired := h.retired[spi]
+	return retired || h.tables.Load().esp[spi] != nil
+}
+
+// forgetRetired drops the SPIs let go of invalidSPIInterval or more before now, so the hub keeps what one interval lets go of, under h.mu
+func (h *Hub) forgetRetired(now int64) {
+	maps.DeleteFunc(h.retired, func(_ uint32, at int64) bool { return now-at >= int64(invalidSPIInterval) })
+}
+
 // packReceivedBatch detaches packets from receiveLoop's reusable recvmmsg
 // buffers with one allocation per peer and socket read, rather than one heap
 // allocation per datagram. Packet slice boundaries are retained so parallel
@@ -590,6 +654,8 @@ type Mux struct {
 	fragmented Endpoint
 	// pair is the address pair m last sent on, which counts what m receives too
 	pair atomic.Pointer[pair]
+	// invalidSPI holds an SPI no mux holds that ESP from m's destination carried, for the session to tell its peer of
+	invalidSPI chan uint32
 }
 
 // hasRoomForESP is consulted before packReceivedBatch copies a batch onto the
@@ -721,6 +787,7 @@ func (m *Mux) RegisterESP(spi uint32) error {
 }
 
 // UnregisterESP stops routing ESP packets for spi to m.
+// the hub keeps spi for invalidSPIInterval and hands none of the ESP that still arrives on it to InvalidSPI, since the peer sends on it until it has read the Delete
 func (m *Mux) UnregisterESP(spi uint32) {
 	m.hub.mu.Lock()
 	defer m.hub.mu.Unlock()
@@ -732,6 +799,21 @@ func (m *Mux) UnregisterESP(spi uint32) {
 	next.esp = maps.Clone(tables.esp)
 	delete(next.esp, spi)
 	m.hub.tables.Store(&next)
+	now := int64(time.Since(m.hub.started))
+	m.hub.forgetRetired(now)
+	m.hub.retired[spi] = now
+}
+
+// InvalidSPI carries an SPI that ESP from m's destination named and no mux of the hub holds, for the session to tell its peer of
+// it holds one at a time and drops what arrives while it is full, and the hub hands it at most one an interval
+func (m *Mux) InvalidSPI() <-chan uint32 { return m.invalidSPI }
+
+// KnowsSPI reports whether a mux of m's hub holds spi or let go of it within invalidSPIInterval
+// an SPI InvalidSPI carried is known by the time the session reads it where a mux took it between the hub's look and that read
+func (m *Mux) KnowsSPI(spi uint32) bool {
+	m.hub.mu.Lock()
+	defer m.hub.mu.Unlock()
+	return m.hub.knows(spi, int64(time.Since(m.hub.started)))
 }
 
 func (m *Mux) SendIKE(b []byte) error {
@@ -983,6 +1065,7 @@ func (m *Mux) doneError() error {
 }
 
 // Close unregisters this peer. It does not close the shared hub.
+// the hub keeps each ESP SPI m held as UnregisterESP keeps one, since the peer sends on it until it learns the session ended
 func (m *Mux) Close() error {
 	if m.closed.Swap(true) {
 		return nil
@@ -993,7 +1076,14 @@ func (m *Mux) Close() error {
 	next.ike = maps.Clone(tables.ike)
 	maps.DeleteFunc(next.ike, func(_ uint64, owner *Mux) bool { return owner == m })
 	next.esp = maps.Clone(tables.esp)
-	maps.DeleteFunc(next.esp, func(_ uint32, owner *Mux) bool { return owner == m })
+	now := int64(time.Since(m.hub.started))
+	m.hub.forgetRetired(now)
+	for spi, owner := range tables.esp {
+		if owner == m {
+			delete(next.esp, spi)
+			m.hub.retired[spi] = now
+		}
+	}
 	m.hub.tables.Store(&next)
 	delete(m.hub.muxes, m)
 	m.hub.mu.Unlock()

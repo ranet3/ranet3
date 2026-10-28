@@ -29,6 +29,10 @@ const (
 	// dropReportInterval is the least time between two log lines about a full receive queue
 	// the counter keeps the exact count, and the line only has to point at it
 	dropReportInterval = 10 * time.Second
+	// invalidSPIInterval is the least time between two looks for the session an unknown ESP SPI came from, between two SPIs the hub hands one mux, and how long the hub keeps an SPI a mux let go of
+	// RFC 7296 section 2.21.4 has a node limit "the rate at which it will send messages in response to unprotected messages", and at the liveness interval the hub looks at most as often as a session sends a liveness check
+	// and a peer goes on sending on an SPI this node deleted until it has read the Delete, which a report would only answer twice
+	invalidSPIInterval = 10 * time.Second
 	// socketBufferSize is the bytes asked for as each socket's send and receive buffer
 	// the most a default macOS takes, the size wireguard-go asks for, which linux grants past its mem_max sysctls only with CAP_NET_ADMIN
 	socketBufferSize = 7 << 20
