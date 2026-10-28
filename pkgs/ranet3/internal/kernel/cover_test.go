@@ -208,8 +208,6 @@ func TestCoverIsInstalledAndWithdrawnWholeAcrossTheGate(t *testing.T) {
 	reconciler, fake, set := coveringHarness(t,
 		Table{CaptureGrace: schema.Duration(10 * time.Second)},
 		Runtime{Sessions: func() int { return live }, Events: bus})
-	capture := &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
-	reconciler.rt.Capture = capture
 	clock := start
 	reconciler.now = func() time.Time { return clock }
 	set(prefix("0.0.0.0/0"))
@@ -258,23 +256,6 @@ func TestCoverIsInstalledAndWithdrawnWholeAcrossTheGate(t *testing.T) {
 	}
 }
 
-// A family whose host has no default of its own gets no cover, and the other
-// family's is unaffected.
-func TestCoverWaitsForTheHostsOwnDefaultOfItsFamily(t *testing.T) {
-	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	capture := &recordingCapture{fake: fake, hosts: Covered{V4: true}}
-	reconciler.rt.Capture = capture
-	reconciler.now = func() time.Time { return start }
-	set(prefix("0.0.0.0/0"))
-	set(prefix("::/0"))
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatal(err)
-	}
-	if v4, v6 := coverMembers(fake); v4 != 8 || v6 != 0 {
-		t.Errorf("the kernel holds %d IPv4 and %d IPv6 members, want 8 and none", v4, v6)
-	}
-}
-
 // A member the kernel refuses, as it refuses 128.0.0.0/1 while a full-tunnel
 // VPN holds that route, takes its family's whole cover out in the same pass
 // and leaves the other family's alone. A pass while it stays refused installs
@@ -283,7 +264,6 @@ func TestCoverWaitsForTheHostsOwnDefaultOfItsFamily(t *testing.T) {
 func TestRefusedMemberLeavesNoPartialCover(t *testing.T) {
 	bus := events.New()
 	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }, Events: bus})
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	refused := Route{Destination: prefix("128.0.0.0/1"), Cover: true}
 	fake.failAdd[refused] = errRouteSkipped
@@ -326,7 +306,6 @@ func TestRefusedMemberLeavesNoPartialCover(t *testing.T) {
 func TestRefusedMemberWithdrawsWhatEarlierPassesInstalled(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	reconciler.plat = coveringKernel{fake}
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true}}
 	reconciler.now = func() time.Time { return start }
 	withholding := prefix("16.0.0.0/4")
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
@@ -354,7 +333,6 @@ func TestRefusedMemberWithdrawsWhatEarlierPassesInstalled(t *testing.T) {
 // cover out the same way, and the pass reports the failure.
 func TestFailedMemberLeavesNoPartialCover(t *testing.T) {
 	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true}}
 	reconciler.now = func() time.Time { return start }
 	fake.failAdd[Route{Destination: prefix("128.0.0.0/1"), Cover: true}] = errors.New("no buffer space available")
 	set(prefix("0.0.0.0/0"))
@@ -375,7 +353,6 @@ func TestFailedMemberLeavesNoPartialCover(t *testing.T) {
 // route outside the cover stays while its family's cover goes.
 func TestCoverRefusalStaysWithinTheCover(t *testing.T) {
 	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	fake.failAdd[Route{Destination: prefix("128.0.0.0/1"), Cover: true}] = errRouteSkipped
 	fake.failAdd[Route{Destination: prefix("2001:db8::/32"), Metric: defaultIPv6Metric}] = errRouteSkipped
@@ -398,7 +375,6 @@ func TestCoverRefusalStaysWithinTheCover(t *testing.T) {
 // cover whole, and moves nothing while it stays refused.
 func TestRefusedIPv6MemberLeavesNoPartialCover(t *testing.T) {
 	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	fake.failAdd[Route{Destination: prefix("8000::/1"), Metric: defaultIPv6Metric, Cover: true}] = errRouteSkipped
 	set(prefix("0.0.0.0/0"))
@@ -469,7 +445,6 @@ func keyHarness(t *testing.T) (*Reconciler, *keyKernel, *netstack.RouteTable) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	kernel := &keyKernel{fakeKernel: fake, taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}, stuck: map[netip.Prefix]error{}, kept: map[netip.Prefix]bool{}}
 	reconciler.plat = kernel
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	return reconciler, kernel, table
 }
@@ -737,11 +712,9 @@ func TestRealRouteTakesItsKeyAfterARaceWithAnotherWriter(t *testing.T) {
 	}
 }
 
-// coverPass is one pass's table, the host's own defaults and the keys other
-// programs refuse.
+// coverPass is one pass's table and the keys other programs refuse.
 type coverPass struct {
 	routes []string
-	hosts  Covered
 	taken  []string
 }
 
@@ -764,57 +737,56 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 		{
 			"IPv6 member the pass would add",
 			[]coverPass{
-				{slices.Concat(v4, v6), Covered{}, []string{"8000::/1"}},
-				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"1.0.0.0/8", "100::/8"}},
+				{slices.Concat(v4, v6), []string{"8000::/1"}},
+				{slices.Concat([]string{"::/0"}, v4, v6), []string{"1.0.0.0/8", "100::/8"}},
 			},
 			5,
 		},
 		{
 			"IPv6 member the pass would add a pass later",
 			[]coverPass{
-				{slices.Concat(v4, without(v6, "8000::/1")), Covered{}, nil},
-				{slices.Concat(v4, v6), Covered{}, []string{"8000::/1"}},
-				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"100::/8"}},
+				{slices.Concat(v4, without(v6, "8000::/1")), nil},
+				{slices.Concat(v4, v6), []string{"8000::/1"}},
+				{slices.Concat([]string{"::/0"}, v4, v6), []string{"100::/8"}},
 			},
 			5,
 		},
 		{
 			"IPv6 member beside a member refused with its route",
 			[]coverPass{
-				{slices.Concat([]string{"::/0"}, v6), Covered{V6: true}, []string{"2000::/3", "8000::/1"}},
-				{slices.Concat([]string{"::/0"}, v4, v6), Covered{V6: true}, []string{"8000::/1"}},
+				{slices.Concat([]string{"::/0"}, v6), []string{"2000::/3", "8000::/1"}},
+				{slices.Concat([]string{"::/0"}, v4, v6), []string{"8000::/1"}},
 			},
 			7,
 		},
 		{
 			"IPv4 member an earlier pass installed",
 			[]coverPass{
-				{[]string{"0.0.0.0/0", "128.0.0.0/1"}, Covered{V4: true}, nil},
-				{[]string{"0.0.0.0/0", "64.0.0.0/2"}, Covered{V4: true}, []string{"128.0.0.0/1"}},
+				{[]string{"0.0.0.0/0", "128.0.0.0/1"}, nil},
+				{[]string{"0.0.0.0/0", "64.0.0.0/2"}, []string{"128.0.0.0/1"}},
 			},
 			7,
 		},
 		{
 			"IPv4 member the pass would add",
 			[]coverPass{
-				{slices.Concat(without(v4, "128.0.0.0/1"), v6), Covered{}, nil},
-				{slices.Concat(v4, v6), Covered{}, []string{"128.0.0.0/1"}},
-				{slices.Concat([]string{"0.0.0.0/0"}, v4, v6), Covered{V4: true}, []string{"32.0.0.0/3"}},
+				{slices.Concat(without(v4, "128.0.0.0/1"), v6), nil},
+				{slices.Concat(v4, v6), []string{"128.0.0.0/1"}},
+				{slices.Concat([]string{"0.0.0.0/0"}, v4, v6), []string{"32.0.0.0/3"}},
 			},
 			5,
 		},
 		{
 			"IPv4 member beside a refused route that hands one back",
 			[]coverPass{
-				{slices.Concat(without(v4, "16.0.0.0/4"), v6), Covered{}, []string{"64.0.0.0/2"}},
-				{slices.Concat([]string{"0.0.0.0/0"}, v4, v6), Covered{V4: true}, []string{"16.0.0.0/4"}},
+				{slices.Concat(without(v4, "16.0.0.0/4"), v6), []string{"64.0.0.0/2"}},
+				{slices.Concat([]string{"0.0.0.0/0"}, v4, v6), []string{"16.0.0.0/4"}},
 			},
 			7,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reconciler, kernel, table := keyHarness(t)
-			capture := reconciler.rt.Capture.(*recordingCapture)
 			var last []string
 			for pass, step := range test.passes {
 				for _, destination := range last {
@@ -823,7 +795,6 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 				for _, destination := range step.routes {
 					table.Set(netip.Prefix{}, prefix(destination), nil)
 				}
-				capture.hosts = step.hosts
 				kernel.taken = map[netip.Prefix]error{}
 				for _, destination := range step.taken {
 					kernel.taken[prefix(destination)] = errRouteSkipped
@@ -856,7 +827,6 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 func TestZeroRouteInsideTheHoleIsSkippedAndLoggedOnce(t *testing.T) {
 	logs := captureKernelLogs(t)
 	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	for _, destination := range []string{"0.0.0.0/0", "::/0", "0.0.0.0/24", "::/16"} {
 		set(prefix(destination))
@@ -904,7 +874,6 @@ func (scopingCoveringKernel) scopes(r Route) bool {
 func TestScopedRouteWithholdsNoMember(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	reconciler.plat = scopingCoveringKernel{fake}
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	table.Set(netip.Prefix{}, prefix("::/0"), nil)
 	table.Set(prefix("2001:db8:bb::/48"), prefix("2000::/3"), nil)
@@ -919,12 +888,11 @@ func TestScopedRouteWithholdsNoMember(t *testing.T) {
 }
 
 // A default from a source is no zero route the cover stands in for, and goes
-// in whole with the host holding no default of its own. The hold Babel keeps
+// in whole. The hold Babel keeps
 // at a retracted default stays out of the kernel, scoped or not.
 func TestSourcedDefaultGoesInWholeAndAHeldDefaultStaysOut(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	reconciler.plat = scopingCoveringKernel{fake}
-	reconciler.rt.Capture = &recordingCapture{fake: fake}
 	reconciler.now = func() time.Time { return start }
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), netstack.Unreachable)
 	table.Set(prefix("2001:db8:bb::/48"), prefix("::/0"), nil)

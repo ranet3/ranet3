@@ -4,7 +4,6 @@
 package kernel
 
 import (
-	"net/netip"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/schema"
@@ -24,34 +23,10 @@ func (r *Reconciler) captures(route Route) bool {
 	return schema.CapturesTheMachine(route.Destination, r.rt.Overlay)
 }
 
-// CaptureRoutes answers, per family, whether the host holds a default of its
-// own, and writes nothing. It is all a zero route installed as its zero-free
-// cover waits for. On darwin the underlay's selection implements it, and
-// nothing does on linux, where no route is installed as a cover.
-type CaptureRoutes interface {
-	HostDefaults() (Covered, error)
-}
-
-// Covered is which families the host holds a default of its own in.
-//
-// It is per family because the fallback is: a socket scoped to an interface
-// resolves the unspecified address of the destination's own family there, so
-// a default in IPv4 does nothing for a socket carrying ESP to an IPv6 peer.
-type Covered struct{ V4, V6 bool }
-
-// Has reports whether the family an address belongs to is covered.
-func (c Covered) Has(address netip.Addr) bool {
-	if address.Is4() {
-		return c.V4
-	}
-	return c.V6
-}
-
 // MinCaptureGrace is the shortest grace a configuration may name. The gate is
-// sampled once a reconcile pass and a pass is a route dump, an address dump
-// and, where the underlay has routing of its own, a table read and two route
-// lookups, so a grace shorter than this cannot be honored and only sets how
-// often that happens. A second is already far below the twenty a session
+// sampled once a reconcile pass and a pass is a route dump and an address
+// dump, so a grace shorter than this cannot be honored and only sets how often
+// that happens. A second is already far below the twenty a session
 // takes to stop counting as live.
 const MinCaptureGrace = time.Second
 

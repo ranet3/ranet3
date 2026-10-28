@@ -317,10 +317,6 @@ func TestBoundUnderlayConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *tes
 func TestUnboundUnderlayConfigurationScopesItsCaptureToTheTun(t *testing.T) {
 	d := startDaemon(t, false, recordedHost(t))
 
-	if d.node.CaptureRoutes() != nil {
-		t.Error("a node without link.underlay.bind hands its reconciler a cover's wait")
-	}
-
 	d.live(t)
 	d.announce(capturingPrefix)
 	waitForKernel(t, "the announced default reaches the kernel", func() bool {
@@ -373,17 +369,17 @@ func TestDaemonNamesEachUnderlayDatagramsInterfaceFromTheHostsRoutes(t *testing.
 	}
 }
 
-// A cover is held back per family, for a family the host holds no default of
-// its own in, which the daemon's selection answers from the host's routes.
-func TestCoverIsHeldBackForAFamilyTheHostHasNoDefaultIn(t *testing.T) {
+// A cover goes in whatever the host's own routes hold: a family the host has
+// no default of its own in gets its cover as the other family does, and a
+// route holding 0.0.0.0 goes in as the members it contains.
+func TestCoverGoesInForAFamilyTheHostHasNoDefaultIn(t *testing.T) {
 	host := recordedHost(t)
 	// The host reaches IPv6 nowhere.
 	host.v6 = kernel.RouteAnswer{}
 	d := startDaemon(t, true, host)
 
 	d.live(t)
-	// The IPv4 family has its default, so a route holding 0.0.0.0 goes in as
-	// the members it contains, 1.0.0.0/8 to 64.0.0.0/2.
+	// 1.0.0.0/8 to 64.0.0.0/2
 	v4capture := netip.MustParsePrefix("0.0.0.0/1")
 	d.announce(v4capture)
 	waitForKernel(t, "the IPv4 capture reaches the kernel as its members", func() bool {
@@ -394,14 +390,13 @@ func TestCoverIsHeldBackForAFamilyTheHostHasNoDefaultIn(t *testing.T) {
 		t.Errorf("%s went into the kernel whole", v4capture)
 	}
 
-	// The IPv6 family has none, so the default of that family is held back,
-	// cover and all. Installing it would take this node off IPv6 entirely
-	// with no fallback.
-	if !d.heldBack(t, capturingPrefix, witnessPrefix) {
-		t.Error("an IPv6 default was installed over a host with no IPv6 default of its own")
-	}
-	if plain, scoped := d.host.coverInstalled(); plain+scoped != 0 {
-		t.Error("the IPv6 cover was installed over a host with no IPv6 default of its own")
+	d.announce(capturingPrefix)
+	waitForKernel(t, "the IPv6 default reaches the kernel as its cover", func() bool {
+		plain, _ := d.host.coverInstalled()
+		return plain == len(ipv6Cover)
+	})
+	if plain, scoped := d.host.installed(capturingPrefix); plain || scoped {
+		t.Errorf("%s went into the kernel whole", capturingPrefix)
 	}
 }
 

@@ -42,8 +42,7 @@ func heldOn(t *testing.T, index int) map[netip.Prefix]bool {
 }
 
 // coverRig is a test utun with a reconciler on it under link.underlay.bind, a
-// live session, and the host's defaults of both families to fall back on,
-// which the underlay's selection on the tun reports.
+// live session, and the host's defaults of both families to fall back on.
 type coverRig struct {
 	meshIndex int
 	tun       int
@@ -73,11 +72,6 @@ func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
 		t.Fatal(err)
 	}
 	host6 := hostDefault6(t, meshIndex)
-	selection, err := OpenSelection(nil, mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = selection.Close() })
 	rig := &coverRig{meshIndex: meshIndex, tun: tun, host4: host4, device4: device.Name, host6: host6,
 		table: netstack.NewRouteTable()}
 	reconciler, err := New(Table{ID: DefaultTable, Proto: DefaultProtocol}, Runtime{
@@ -85,7 +79,6 @@ func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
 		BoundUnderlay: true,
 		Sessions:      func() int { return 1 },
 		Underlay:      func() []netip.Addr { return options.endpoints },
-		Capture:       selection,
 	}, rig.table)
 	if err != nil {
 		t.Fatal(err)

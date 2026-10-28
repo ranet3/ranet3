@@ -370,30 +370,6 @@ func TestReconcilerAsksToBeWokenWhenTheGraceExpires(t *testing.T) {
 	}
 }
 
-// recordingCapture answers which families the host holds a default of its
-// own in, as a test decides, and records what the kernel held when it was
-// asked.
-type recordingCapture struct {
-	fake  *fakeKernel
-	at    []string
-	hosts Covered
-	err   error
-}
-
-func (c *recordingCapture) HostDefaults() (Covered, error) {
-	c.at = append(c.at, "host asked with "+c.capturing())
-	return c.hosts, c.err
-}
-
-// capturing describes whether the kernel currently holds a route that would
-// carry this machine's own traffic.
-func (c *recordingCapture) capturing() string {
-	if slices.ContainsFunc(c.fake.snapshot(), func(r Route) bool { return schema.CapturesTheMachine(r.Destination, nil) }) {
-		return "the default installed"
-	}
-	return "no default installed"
-}
-
 // A bound underlay with nothing to ask about liveness is refused at startup.
 // The two are halves of one arrangement: the binding lets an announced
 // default install where every socket sees it, and the gate is the only thing

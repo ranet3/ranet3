@@ -38,9 +38,8 @@ import (
 // creates a host route whose gateway is the address, and the per-interface
 // broadcast and multicast entries carry RTF_BROADCAST or RTF_MULTICAST.
 // Nothing outside the mesh device is written, deleted or taken for ours. The
-// rest of the table is read only to be filtered out, to name the holder of a
-// key the kernel refused and, with link.underlay.bind, to wake a pass when a
-// route of another interface changes.
+// rest of the table is read only to be filtered out and to name the holder of
+// a key the kernel refused.
 //
 // # What the darwin FIB cannot hold
 //
@@ -184,12 +183,6 @@ func (p *routePlatform) open() error {
 		return err
 	}
 	p.sock = sock
-	if p.rt.BoundUnderlay {
-		// the host's own default, which a cover waits for, leaves by
-		// another interface, so a change on any interface wakes a pass
-		p.watcher, err = p.host.Watch(0, 0, true)
-		return err
-	}
 	p.watcher, err = p.host.Watch(p.index, 0, false)
 	return err
 }
