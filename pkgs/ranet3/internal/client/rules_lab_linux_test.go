@@ -438,14 +438,14 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 				for _, p := range arm.probes {
 					for _, protocol := range []string{"udp", "tcp", "echo"} {
 						probe++
-						fd, refused, err := rulesSend(p, protocol, probe)
+						fd, outcome, err := rulesSend(p, protocol, probe)
 						if err != nil {
 							return fmt.Errorf("%s %s to %s: %w", p.socket, protocol, p.destination, err)
 						}
 						if fd >= 0 {
 							fds = append(fds, fd)
 						}
-						all = append(all, sent{p, protocol, probe, refused})
+						all = append(all, sent{p, protocol, probe, outcome == rulesUnreachable})
 					}
 				}
 				return nil
@@ -736,9 +736,22 @@ func rulesConverged(t *testing.T, leaf *netnstest.Thread, arm rulesArm) (bool, s
 	return slices.Equal(table, want) && slices.Equal(own, wantOwn), held
 }
 
+// rulesOutcome names what a probe's send met
+type rulesOutcome string
+
+const (
+	// rulesSent is a send the kernel took
+	rulesSent rulesOutcome = "sent"
+	// rulesUnreachable is a send an unreachable route or rule refused
+	rulesUnreachable rulesOutcome = rulesOutcome(rulesRefused)
+	// rulesSwitchRefused is a send the kill switch's drop refused with EPERM
+	rulesSwitchRefused rulesOutcome = "refused by the switch"
+)
+
 // rulesSend opens the socket p names in the calling thread's namespace and sends its first packet of protocol to p's destination
-// numbered n by its source port, or by its echo identifier, and answers the socket, still open, and whether its route refused it
-func rulesSend(p rulesProbe, protocol string, n int) (int, bool, error) {
+// numbered n by its source port, or by its echo identifier, broadcast to the limited broadcast address. It answers the socket,
+// still open, and what the send met.
+func rulesSend(p rulesProbe, protocol string, n int) (int, rulesOutcome, error) {
 	family, own, uplink := unix.AF_INET6, rulesHost[6].own.Addr(), rulesHost[6].uplink.Addr()
 	unspecified := netip.IPv6Unspecified()
 	if p.destination.Is4() {
@@ -756,13 +769,18 @@ func rulesSend(p rulesProbe, protocol string, n int) (int, bool, error) {
 	}
 	fd, err := unix.Socket(family, kind|unix.SOCK_CLOEXEC, number)
 	if err != nil {
-		return -1, false, err
+		return -1, "", err
 	}
-	fail := func(err error) (int, bool, error) {
+	fail := func(err error) (int, rulesOutcome, error) {
 		_ = unix.Close(fd)
-		return -1, false, err
+		switch {
+		case errors.Is(err, unix.EHOSTUNREACH), errors.Is(err, unix.ENETUNREACH):
+			return -1, rulesUnreachable, nil
+		case errors.Is(err, unix.EPERM):
+			return -1, rulesSwitchRefused, nil
+		}
+		return -1, "", err
 	}
-	refusal := func(err error) bool { return errors.Is(err, unix.EHOSTUNREACH) || errors.Is(err, unix.ENETUNREACH) }
 	bind := unspecified
 	switch p.socket {
 	case rulesFromOverlay:
@@ -779,6 +797,11 @@ func rulesSend(p rulesProbe, protocol string, n int) (int, bool, error) {
 			return fail(err)
 		}
 	}
+	if p.destination == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_BROADCAST, 1); err != nil {
+			return fail(err)
+		}
+	}
 	port, peerPort := rulesPortBase+n, rulesDiscard
 	if protocol == "echo" {
 		port, peerPort = 0, 0
@@ -791,11 +814,8 @@ func rulesSend(p rulesProbe, protocol string, n int) (int, bool, error) {
 	connected := p.socket != rulesUnconnected || protocol == "tcp"
 	if connected {
 		switch err := unix.Connect(fd, rulesSockaddr(p.destination, peerPort)); {
-		case refusal(err):
-			_ = unix.Close(fd)
-			return -1, true, nil
 		case protocol == "tcp" && errors.Is(err, unix.EINPROGRESS):
-			return fd, false, nil
+			return fd, rulesSent, nil
 		case err != nil:
 			return fail(fmt.Errorf("connect: %w", err))
 		}
@@ -808,13 +828,10 @@ func rulesSend(p rulesProbe, protocol string, n int) (int, bool, error) {
 	if !connected {
 		send = func() error { return unix.Sendto(fd, payload, 0, rulesSockaddr(p.destination, peerPort)) }
 	}
-	if err := send(); refusal(err) {
-		_ = unix.Close(fd)
-		return -1, true, nil
-	} else if err != nil {
+	if err := send(); err != nil {
 		return fail(fmt.Errorf("send: %w", err))
 	}
-	return fd, false, nil
+	return fd, rulesSent, nil
 }
 
 // rulesEcho is an echo request numbered n carrying payload, over IPv4 with its checksum, which the kernel writes for ICMPv6

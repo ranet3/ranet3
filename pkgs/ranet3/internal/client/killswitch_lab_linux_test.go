@@ -7,10 +7,13 @@ package client
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -44,7 +47,12 @@ type switchState string
 const (
 	switchPresent   switchState = "the mesh's defaults present"
 	switchRetracted switchState = "the mesh's defaults retracted"
+	// switchCrashed is the switch a helper process wrote with the defaults present, after kill -9 of the helper took the tun with it
+	switchCrashed switchState = "after kill -9"
 )
+
+// switchStates is each state in the order a lab runs them, the crash last, since it stops the lab's own node
+var switchStates = []switchState{switchPresent, switchRetracted, switchCrashed}
 
 // switchWant is where a probe's first packet has to go
 type switchWant string
@@ -54,42 +62,33 @@ const (
 	switchTun  switchWant = "into the tun and not out of the uplink"
 	switchHeld switchWant = "neither out of the uplink nor into the tun"
 	switchKept switchWant = "not out of the uplink"
+	// switchRefused is switchHeld by a send its route refused, 5450's ENETUNREACH, where the filter's drop meets EPERM or none
+	switchRefused switchWant = "refused by its route, neither out of the uplink nor into the tun"
 )
 
-// switchSocket is how a probe's socket is opened
-type switchSocket int
-
-const (
-	switchUnbound switchSocket = iota
-	switchFromOverlay
-	switchFromUplink
-	switchOnUplink
-	switchMarked
-	switchMarkedFromOverlay
-	switchMarkedOther
-)
-
-func (s switchSocket) String() string {
-	return [...]string{
-		"unbound", "bound to the overlay address", "bound to the uplink's address", "bound to the uplink's device",
-		"carrying the underlay's mark", "carrying the underlay's mark and bound to the overlay address", "carrying the mark 0x1",
-	}[s]
+// switchProbe is the first packet of each of protocols that the socket rulesProbe opens sends to its destination, and where it has
+// to go, its rulesProbe's own verdict unused
+type switchProbe struct {
+	rulesProbe
+	want      switchWant
+	protocols []string
 }
 
-// switchProbe is one socket's first packet of each of protocols to destination, and where it has to go
-type switchProbe struct {
-	destination netip.Addr
-	socket      switchSocket
-	want        switchWant
-	protocols   []string
+// switchFrom is a probe of destination from socket carrying mark, none for 0, wanting want, of protocols or of UDP, TCP and echo
+func switchFrom(destination netip.Addr, socket rulesSocket, mark uint32, want switchWant, protocols ...string) switchProbe {
+	return switchProbe{rulesProbe{destination: destination, socket: socket, mark: mark}, want, protocols}
 }
 
 // switchRow is a probe of destination from the six sockets, unbound, from the overlay address, from the uplink's address,
 // on the uplink's device, marked, and marked from the overlay address, wanting in turn
 func switchRow(destination netip.Addr, wants ...switchWant) []switchProbe {
+	sockets := []struct {
+		socket rulesSocket
+		mark   uint32
+	}{{rulesUnbound, 0}, {rulesFromOverlay, 0}, {rulesFromUplink, 0}, {rulesOnUplink, 0}, {rulesUnbound, schema.UnderlayMark}, {rulesFromOverlay, schema.UnderlayMark}}
 	var out []switchProbe
-	for socket, want := range wants {
-		out = append(out, switchProbe{destination, switchSocket(socket), want, nil})
+	for i, want := range wants {
+		out = append(out, switchFrom(destination, sockets[i].socket, sockets[i].mark, want))
 	}
 	return out
 }
@@ -108,12 +107,15 @@ func switchAt(family int) switchAddresses {
 }
 
 // switchSocketProbes is every socket's probe of every destination in state: what the mode sends into the tun goes there while the
-// defaults are present, the LAN and the own prefix leave by the uplink from every socket, the underlay's mark leaves by it to every
-// destination, and nothing else leaves by it
+// defaults are present and while they are retracted but for the internet, and nowhere once the tun is gone, the LAN and the own
+// prefix leave by the uplink from every socket, the underlay's mark leaves by it to every destination, and nothing else leaves by it
 func switchSocketProbes(state switchState) []switchProbe {
 	out, tun, held := switchOut, switchTun, switchHeld
+	if state == switchCrashed {
+		tun = held
+	}
 	internet := tun
-	if state == switchRetracted {
+	if state != switchPresent {
 		internet = held
 	}
 	var probes []switchProbe
@@ -128,6 +130,78 @@ func switchSocketProbes(state switchState) []switchProbe {
 			switchRow(at.own, out, out, out, out, out, out))
 	}
 	return probes
+}
+
+// switchUnaddressedProbes is switchSocketProbes with the tun holding no IPv4 overlay address, so IPv4 runs mode off's rules with
+// 5445 and 5450: 5450 refuses the internet to an unbound socket and one bound to the uplink's address in every state, the mesh's
+// subnet enters the tun from both while the tun lives with no 5405 to send the second by main, the LAN and the own prefix leave by
+// the uplink, and IPv6 goes as switchSocketProbes says
+func switchUnaddressedProbes(state switchState) []switchProbe {
+	out, tun, held, refused := switchOut, switchTun, switchHeld, switchRefused
+	if state == switchCrashed {
+		tun = held
+	}
+	at := switchAt(4)
+	return slices.Concat(
+		switchRow(at.internet, refused, held, refused, held, out, out),
+		switchRow(at.peer, tun, tun, tun, held, out, out),
+		switchRow(at.held, held, held, held, held, out, out),
+		switchRow(at.subnet, tun, tun, tun, held, out, out),
+		switchRow(at.lan, out, out, out, out, out, out),
+		switchRow(at.own, out, out, out, out, out, out),
+		slices.DeleteFunc(switchSocketProbes(state), func(p switchProbe) bool { return p.destination.Is4() }))
+}
+
+// switchTableOwner is NFT_TABLE_F_OWNER of linux/netfilter/nf_tables.h, which x/sys does not carry
+const switchTableOwner = 0x2
+
+// notHolding takes the table under a socket of the test's own, owned, so the reconciler can neither write nor read it back, and
+// while the switch reads not holding sends the internet host the host's own unbound and uplink-bound probes and the forwarded
+// pings of an arm forwarding the bridge in state, the tun holding no IPv4 overlay address: 5450 refuses each in IPv4, and in
+// IPv6 5440 takes it into the tun while the defaults are present and 5450 refuses it once they are retracted. Then it lets the
+// table go and waits for the switch to read want again.
+func (lab *switchLab) notHolding(t *testing.T, state switchState, want kernel.FallbackState) {
+	t.Helper()
+	var holder *nftables.Conn
+	if err := lab.leaf.Do(func() (err error) {
+		if holder, err = nftables.Dial(); err != nil {
+			return err
+		}
+		owned := nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
+			Body: nftables.PutAttrBE32(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, kernel.FallbackTable), unix.NFTA_TABLE_FLAGS, switchTableOwner)}
+		return holder.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, kernel.FallbackTable), owned})
+	}); err != nil {
+		t.Fatalf("take the table under another writer's socket: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = holder.Close()
+		}
+	}
+	t.Cleanup(release)
+	waitFor(t, rulesSettle, "the switch to read not holding", func() bool { return lab.switchStatus() == string(kernel.FallbackNotHolding) })
+	t.Logf("with the table held by another writer the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
+	internet6 := switchTun
+	if state != switchPresent {
+		internet6 = switchRefused
+	}
+	var probes []switchProbe
+	for family, want := range map[int]switchWant{4: switchRefused, 6: internet6} {
+		internet := switchAt(family).internet
+		probes = append(probes, switchFrom(internet, rulesUnbound, 0, want), switchFrom(internet, rulesFromUplink, 0, want))
+	}
+	container6 := switchFlow{"container", exitLabHost[6].internet.Addr(), switchTun, 0}
+	if state != switchPresent {
+		container6.want = switchHeld
+	}
+	lab.exercise(t, switchArm{state: state, forward: []string{exitBridge}, unaddressed: 4, probes: probes, flows: []switchFlow{
+		{"container", exitLabHost[4].internet.Addr(), switchHeld, 0}, container6,
+		{"lan", exitLabHost[4].internet.Addr(), switchOut, exitPings}, {"lan", exitLabHost[6].internet.Addr(), switchOut, exitPings},
+	}})
+	release()
+	waitFor(t, rulesSettle, "the switch to read "+string(want)+" again", func() bool { return lab.switchStatus() == string(want) })
 }
 
 // switchFlow is a ping a host behind the leaf sends to the internet host, where it has to go and how many replies come back
@@ -145,6 +219,8 @@ type switchArm struct {
 	state   switchState
 	forward []string
 	inbound []string
+	// unaddressed is the family, 4 or 6, whose overlay address the arm takes out of cap.table and so off the tun, none where it is 0
+	unaddressed int
 	// other writes another program's chains and rules in the leaf's namespace and answers how to remove them
 	other func(t *testing.T, leaf *netnstest.Thread) func()
 	// underlayCut is an arm whose chains take the underlay's mark off ranet3's own packets, so its probes carrying it go nowhere by the uplink
@@ -203,48 +279,142 @@ func (lab *switchLab) switchStatus() string {
 	return string(exit.Fallback.State)
 }
 
-// settle installs the arm's routes and mode and waits until the leaf holds the catch-alls, the defaults the state says, and the switch
-// passing while they are present and holding while they are retracted
-func (lab *switchLab) settle(t *testing.T, arm switchArm) {
-	t.Helper()
-	d := lab.d
+// switchEntries gives d's mesh a peer inside the overlay, a subnet outside it, the defaults learned or, retracted, held unreachable,
+// and this node's own prefix, and answers the prefixes it set
+func switchEntries(d *exitDaemon, state switchState) []netip.Prefix {
 	entries := map[string]*netstack.Peer{
 		"192.0.2.5/32": d.learned, "3fff::5/128": d.learned,
 		exitLabHost[4].subnet.String(): d.learned, exitLabHost[6].subnet.String(): d.learned,
 		"0.0.0.0/0": d.learned, "::/0": d.learned,
 		switchOwn[4].String(): netstack.Local, switchOwn[6].String(): netstack.Local,
 	}
-	if arm.state == switchRetracted {
+	if state == switchRetracted {
 		entries["0.0.0.0/0"], entries["::/0"] = netstack.Unreachable, netstack.Unreachable
 	}
+	var out []netip.Prefix
 	for prefix, value := range entries {
 		d.node.Mesh.Routes.Set(netip.Prefix{}, netip.MustParsePrefix(prefix), value)
+		out = append(out, netip.MustParsePrefix(prefix))
 	}
-	t.Cleanup(func() {
-		for prefix := range entries {
-			d.node.Mesh.Routes.Remove(netip.Prefix{}, netip.MustParsePrefix(prefix))
-		}
-	})
+	return out
+}
+
+// switchMode hands d's reconciler cap.exit with fallback = "none", forward and inbound, and cap.table less its addresses of the
+// family unaddressed, 4 or 6, where it is not 0
+func switchMode(t *testing.T, d *exitDaemon, forward, inbound []string, unaddressed int) {
+	t.Helper()
 	cfg := d.node.config()
-	mode := &kernel.ExitMode{Forward: arm.forward, Fallback: kernel.FallbackNone, Inbound: arm.inbound}
-	if err := d.routes.SetTable(cfg.Cap.Table.WithMode(mode), cfg.Overlay(), nil); err != nil {
+	table := cfg.Cap.Table.WithMode(&kernel.ExitMode{Forward: forward, Fallback: kernel.FallbackNone, Inbound: inbound})
+	table.Addresses = slices.DeleteFunc(slices.Clone(table.Addresses), func(address schema.Prefix) bool {
+		return address.Addr().Is4() && unaddressed == 4 || address.Addr().Is6() && unaddressed == 6
+	})
+	if err := d.routes.SetTable(table, cfg.Overlay(), nil); err != nil {
 		t.Fatalf("hand the reconciler cap.exit with fallback none: %v", err)
 	}
+}
+
+// switchCatchAlls is the rules at 5440 for the host's own traffic and each link forward names, sorted, of both families but the
+// one unaddressed names
+func switchCatchAlls(forward []string, unaddressed int) []string {
 	var want []string
-	for _, family := range []string{"ipv4", "ipv6"} {
-		for _, link := range append([]string{"lo"}, arm.forward...) {
-			want = append(want, "5440 "+family+" iif "+link)
+	for family, name := range map[int]string{4: "ipv4", 6: "ipv6"} {
+		if family == unaddressed {
+			continue
+		}
+		for _, link := range append([]string{"lo"}, forward...) {
+			want = append(want, "5440 "+name+" iif "+link)
 		}
 	}
 	slices.Sort(want)
+	return want
+}
+
+// settle installs the arm's routes and mode and waits until the leaf holds the catch-alls, the defaults the state says, and the switch
+// passing while they are present and holding while they are retracted. After kill -9 the crash helper installs them instead.
+func (lab *switchLab) settle(t *testing.T, arm switchArm) {
+	t.Helper()
+	if arm.state == switchCrashed {
+		lab.crash(t, arm)
+		return
+	}
+	d := lab.d
+	entries := switchEntries(d, arm.state)
+	t.Cleanup(func() {
+		for _, prefix := range entries {
+			d.node.Mesh.Routes.Remove(netip.Prefix{}, prefix)
+		}
+	})
+	switchMode(t, d, arm.forward, arm.inbound, arm.unaddressed)
 	state := string(kernel.FallbackPassing)
 	if arm.state == switchRetracted {
 		state = string(kernel.FallbackHolding)
 	}
 	waitFor(t, rulesSettle, "the reconciler to install the arm's rules, its routes and the switch "+state, func() bool {
-		return slices.Equal(exitRules(t, lab.leaf, 5440), want) && exitDefaults(t, lab.leaf, arm.state == switchPresent) && lab.switchStatus() == state
+		return slices.Equal(exitRules(t, lab.leaf, 5440), switchCatchAlls(arm.forward, arm.unaddressed)) && exitDefaults(t, lab.leaf, arm.state == switchPresent) && lab.switchStatus() == state
 	})
 	t.Logf("the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
+}
+
+// switchHelperArm names, in the crash helper's environment, the arm it runs as JSON
+const switchHelperArm = "RANET3_SWITCH_LAB_ARM"
+
+// switchHelped holds the kill switch crash helper's cap.exit forward and inbound, the family it takes the tun's overlay address of,
+// and the file it writes once its switch passes
+type switchHelped struct {
+	Forward, Inbound []string
+	Unaddressed      int
+	Ready            string
+}
+
+// crash stops the lab's own node, runs the arm's node and reconciler in a helper process with the defaults present until the switch
+// passes, kills the helper with SIGKILL and waits for the tun to go with it, leaving what the helper wrote
+func (lab *switchLab) crash(t *testing.T, arm switchArm) {
+	t.Helper()
+	lab.d.stop()
+	helped := switchHelped{Forward: arm.forward, Inbound: arm.inbound, Unaddressed: arm.unaddressed, Ready: filepath.Join(t.TempDir(), "ready")}
+	encoded, err := json.Marshal(helped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kill := startExitHelper(t, lab.leaf, "TestKillSwitchLabCrashHelper", switchHelperArm+"="+string(encoded))
+	waitFor(t, rulesSettle, "the crash helper's switch to pass", func() bool {
+		_, err := os.Stat(helped.Ready)
+		return err == nil && slices.Equal(exitRules(t, lab.leaf, 5440), switchCatchAlls(arm.forward, arm.unaddressed)) && exitDefaults(t, lab.leaf, true)
+	})
+	t.Logf("the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
+	kill()
+	waitFor(t, rulesSettle, "the tun to go with the helper", func() bool { return !besideHasTun(t, lab.leaf) })
+	var held kernel.FallbackDebug
+	if err := lab.leaf.Do(func() (err error) { held, err = kernel.ReadFallback(); return err }); err != nil {
+		t.Fatalf("read the table back: %v", err)
+	}
+	if !held.Held {
+		t.Errorf("the table %s went with the helper", kernel.FallbackTable)
+	}
+}
+
+// the kill switch's crash helper, which runs the leaf's node and its reconciler in mode 2 with fallback = "none" and the mesh's defaults
+// learned, in the namespace exitHelperNamespace names and as switchHelperArm says, until it is killed
+func TestKillSwitchLabCrashHelper(t *testing.T) {
+	path, arm := os.Getenv(exitHelperNamespace), os.Getenv(switchHelperArm)
+	if path == "" || arm == "" {
+		t.Skip("the kill switch's labs run the crash helper in a process of its own")
+	}
+	var helped switchHelped
+	if err := json.Unmarshal([]byte(arm), &helped); err != nil {
+		t.Fatal(err)
+	}
+	d := startExitDaemon(t, netnstest.JoinThread(t, path))
+	switchEntries(d, switchPresent)
+	switchMode(t, d, helped.Forward, helped.Inbound, helped.Unaddressed)
+	waitFor(t, rulesSettle, "the switch to pass", func() bool {
+		exit := d.routes.Stats().Exit
+		return exit != nil && exit.Fallback != nil && exit.Fallback.State == kernel.FallbackPassing
+	})
+	if err := os.WriteFile(helped.Ready, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
 // run runs one arm: its state, its other program, then its probes, flows, replies and asks, and checks where each went
@@ -257,17 +427,22 @@ func (lab *switchLab) run(t *testing.T, arm switchArm) {
 	lab.exercise(t, arm)
 }
 
-// exercise sends the arm's probes, flows, replies and asks over the leaf as it stands, and checks where each went
+// exercise sends the arm's probes, flows, replies and asks over the leaf as it stands, and checks where each went. After kill -9, and
+// in the family the arm takes the tun's overlay address of, it leaves out the probes from a socket bound to that address, which the
+// tun no longer holds.
 func (lab *switchLab) exercise(t *testing.T, arm switchArm) {
 	t.Helper()
 	rulesDrain(lab.tunCapture)
 	rulesDrain(lab.farCapture)
+	probes := slices.DeleteFunc(slices.Clone(arm.probes), func(p switchProbe) bool {
+		return p.socket == rulesFromOverlay && (arm.state == switchCrashed || arm.unaddressed == 4 && p.destination.Is4() || arm.unaddressed == 6 && p.destination.Is6())
+	})
 
 	type sent struct {
 		probe    switchProbe
 		protocol string
 		number   int
-		outcome  string
+		outcome  rulesOutcome
 	}
 	var all []sent
 	var fds []int
@@ -283,10 +458,10 @@ func (lab *switchLab) exercise(t *testing.T, arm switchArm) {
 				return fmt.Errorf("pin to CPU %d: %w", arm.cpu, err)
 			}
 		}
-		for _, p := range arm.probes {
+		for _, p := range probes {
 			for _, protocol := range cmpProtocols(p.protocols) {
 				lab.probe++
-				fd, outcome, err := switchSend(p, protocol, lab.probe)
+				fd, outcome, err := rulesSend(p.rulesProbe, protocol, lab.probe)
 				if err != nil {
 					return fmt.Errorf("%s %s to %s: %w", p.socket, protocol, p.destination, err)
 				}
@@ -349,18 +524,18 @@ func (lab *switchLab) exercise(t *testing.T, arm switchArm) {
 	}
 	for _, s := range all {
 		inTun, onUplink, source := where(rulesKey{s.protocol, s.number})
-		if !switchMet(s.probe.want, inTun, onUplink) {
+		if !switchMet(s.probe.want, s.outcome, inTun, onUplink) {
 			pinned := ""
 			if arm.pinned {
 				pinned = fmt.Sprintf(" on CPU %d", arm.cpu)
 			}
-			t.Errorf("%s from a socket %s to %s%s was %s, into the tun %v, out of the uplink %v from %s, want %s",
-				s.protocol, s.probe.socket, s.probe.destination, pinned, s.outcome, inTun, onUplink, source, s.probe.want)
+			t.Errorf("%s from a socket %s under mark %#x to %s%s was %s, into the tun %v, out of the uplink %v from %s, want %s",
+				s.protocol, s.probe.socket, s.probe.mark, s.probe.destination, pinned, s.outcome, inTun, onUplink, source, s.probe.want)
 		}
 	}
 	for _, f := range flows {
 		inTun, onUplink, source := where(rulesKey{"echo", f.id})
-		if !switchMet(f.flow.want, inTun, onUplink) || f.received != f.flow.replies {
+		if !switchMet(f.flow.want, "", inTun, onUplink) || f.received != f.flow.replies {
 			t.Errorf("the %s's ping of %s went into the tun %v, out of the uplink %v from %s with %d replies, want %s with %d",
 				f.flow.from, f.flow.destination, inTun, onUplink, source, f.received, f.flow.want, f.flow.replies)
 		}
@@ -374,7 +549,9 @@ func (lab *switchLab) exercise(t *testing.T, arm switchArm) {
 	if len(tunOther.solicited) > 0 {
 		t.Logf("the tun carried neighbor solicitations %v", tunOther.solicited)
 	}
-	t.Logf("the switch's state reads %s", lab.switchStatus())
+	if arm.state != switchCrashed {
+		t.Logf("the switch's state reads %s", lab.switchStatus())
+	}
 }
 
 func cmpProtocols(protocols []string) []string {
@@ -384,8 +561,8 @@ func cmpProtocols(protocols []string) []string {
 	return protocols
 }
 
-// switchMet reports whether a packet seen into the tun and out of the uplink as given went where want says
-func switchMet(want switchWant, inTun, onUplink bool) bool {
+// switchMet reports whether a packet seen into the tun and out of the uplink as given, its send meeting outcome, went where want says
+func switchMet(want switchWant, outcome rulesOutcome, inTun, onUplink bool) bool {
 	switch want {
 	case switchOut:
 		return onUplink && !inTun
@@ -393,88 +570,10 @@ func switchMet(want switchWant, inTun, onUplink bool) bool {
 		return inTun && !onUplink
 	case switchHeld:
 		return !inTun && !onUplink
+	case switchRefused:
+		return !inTun && !onUplink && outcome == rulesUnreachable
 	}
 	return !onUplink
-}
-
-// switchSend opens the socket p names in the calling thread's namespace and sends its first packet of protocol to p's destination,
-// numbered n by its source port or by its echo identifier. It answers the socket, still open, and what the send met: "sent",
-// "refused by its route" for an unreachable route or rule, or "refused by the switch" for the postrouting drop's EPERM.
-func switchSend(p switchProbe, protocol string, n int) (int, string, error) {
-	family, own, uplink := unix.AF_INET6, rulesHost[6].own.Addr(), rulesHost[6].uplink.Addr()
-	unspecified := netip.IPv6Unspecified()
-	if p.destination.Is4() {
-		family, own, uplink, unspecified = unix.AF_INET, rulesHost[4].own.Addr(), rulesHost[4].uplink.Addr(), netip.IPv4Unspecified()
-	}
-	kind, number := unix.SOCK_DGRAM, 0
-	switch protocol {
-	case "tcp":
-		kind = unix.SOCK_STREAM | unix.SOCK_NONBLOCK
-	case "echo":
-		kind, number = unix.SOCK_RAW, unix.IPPROTO_ICMP
-		if family == unix.AF_INET6 {
-			number = unix.IPPROTO_ICMPV6
-		}
-	}
-	fd, err := unix.Socket(family, kind|unix.SOCK_CLOEXEC, number)
-	if err != nil {
-		return -1, "", err
-	}
-	outcome := func(err error) (int, string, error) {
-		_ = unix.Close(fd)
-		switch {
-		case errors.Is(err, unix.EHOSTUNREACH), errors.Is(err, unix.ENETUNREACH):
-			return -1, "refused by its route", nil
-		case errors.Is(err, unix.EPERM):
-			return -1, "refused by the switch", nil
-		}
-		return -1, "", err
-	}
-	bind := unspecified
-	switch p.socket {
-	case switchFromOverlay, switchMarkedFromOverlay:
-		bind = own
-	case switchFromUplink:
-		bind = uplink
-	case switchOnUplink:
-		if err := unix.BindToDevice(fd, rulesUplink); err != nil {
-			return outcome(err)
-		}
-	}
-	mark := map[switchSocket]uint32{switchMarked: schema.UnderlayMark, switchMarkedFromOverlay: schema.UnderlayMark, switchMarkedOther: 0x1}[p.socket]
-	if mark != 0 {
-		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(mark)); err != nil {
-			return outcome(err)
-		}
-	}
-	if p.destination == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
-		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_BROADCAST, 1); err != nil {
-			return outcome(err)
-		}
-	}
-	port, peerPort := rulesPortBase+n, rulesDiscard
-	if protocol == "echo" {
-		port, peerPort = 0, 0
-	}
-	if port != 0 || bind != unspecified {
-		if err := unix.Bind(fd, rulesSockaddr(bind, port)); err != nil {
-			return outcome(fmt.Errorf("bind %s port %d: %w", bind, port, err))
-		}
-	}
-	switch err := unix.Connect(fd, rulesSockaddr(p.destination, peerPort)); {
-	case protocol == "tcp" && errors.Is(err, unix.EINPROGRESS):
-		return fd, "sent", nil
-	case err != nil:
-		return outcome(err)
-	}
-	payload := []byte(fmt.Sprintf("probe %d", n))
-	if protocol == "echo" {
-		payload = rulesEcho(family == unix.AF_INET, n, payload)
-	}
-	if _, err := unix.Write(fd, payload); err != nil {
-		return outcome(err)
-	}
-	return fd, "sent", nil
 }
 
 // switchNeighbor is an address on the uplink's IPv6 network no host holds, whose neighbor solicitation the kernel sends
@@ -547,11 +646,11 @@ func switchDrain(capture int) (map[rulesKey]netip.Addr, switchSeen) {
 // uplink's device, a DHCPv6 solicit to ff02::1:2 and an echo to ff02::1 from one, and a datagram and an echo to the far end's link-local address
 func switchUsability(farLinkLocal netip.Addr) []switchProbe {
 	on := func(destination string, protocol string) switchProbe {
-		return switchProbe{netip.MustParseAddr(destination), switchOnUplink, switchOut, []string{protocol}}
+		return switchFrom(netip.MustParseAddr(destination), rulesOnUplink, 0, switchOut, protocol)
 	}
 	return []switchProbe{
 		on("255.255.255.255", "udp"), on("224.0.0.251", "udp"), on("ff02::1:2", "udp"), on("ff02::1", "echo"),
-		{farLinkLocal, switchOnUplink, switchOut, []string{"udp", "echo"}},
+		switchFrom(farLinkLocal, rulesOnUplink, 0, switchOut, "udp", "echo"),
 	}
 }
 
@@ -576,7 +675,7 @@ func farLinkLocal(t *testing.T, lab *exitLab) netip.Addr {
 
 // switchForwardedFlows is the container's and the LAN host's pings of the internet host: from a link forward leaves out
 // they leave by the uplink and are answered in every state, and from the bridge forward names they go into the tun while the
-// defaults are present and nowhere once they are retracted
+// defaults are present and nowhere once they are retracted or the tun is gone
 func switchForwardedFlows(state switchState, forwardBridge bool) []switchFlow {
 	var out []switchFlow
 	for _, family := range []int{4, 6} {
@@ -584,7 +683,7 @@ func switchForwardedFlows(state switchState, forwardBridge bool) []switchFlow {
 		container := switchFlow{"container", internet, switchOut, exitPings}
 		if forwardBridge {
 			container = switchFlow{"container", internet, switchTun, 0}
-			if state == switchRetracted {
+			if state != switchPresent {
 				container.want = switchHeld
 			}
 		}
@@ -609,13 +708,17 @@ func switchReplies(listed, underlay bool) []exitReply {
 // address, to the uplink's address or device, carrying the underlay's mark, sends UDP, TCP and echo, and only the LAN, this node's
 // own prefix beyond the gateway and the underlay's mark leave by the uplink, what mode 2 sends into the tun going there while
 // the defaults are present. Neighbor and router solicitation, DHCP, multicast and link-local pass, a forwarded link forward leaves
-// out keeps its routes and one it names follows the switch, a listed service answers and an unlisted one does not, and a clean stop
-// leaves no table or rule
+// out keeps its routes and one it names follows the switch, a listed service answers and an unlisted one does not, a clean stop
+// leaves no table or rule, and the table a node killed with SIGKILL leaves holds as it did. With the tun holding no IPv4 overlay
+// address 5450 refuses IPv4 beyond the LAN, and while another writer holds the table it still refuses what the switch would drop.
 func TestTUNKillSwitchKeepsEachSocketOffTheUplink(t *testing.T) {
 	lab := newSwitchLab(t)
 	linkLocal := farLinkLocal(t, lab.exitLab)
 	listed := []string{fmt.Sprintf("%d/udp", exitService)}
-	for _, state := range []switchState{switchPresent, switchRetracted} {
+	for _, state := range switchStates {
+		if state == switchCrashed {
+			lab.cleanStop(t)
+		}
 		t.Run(string(state)+", nothing forwarded, the service listed", func(t *testing.T) {
 			lab.run(t, switchArm{
 				state: state, inbound: listed, probes: slices.Concat(switchSocketProbes(state), switchUsability(linkLocal)), usability: true,
@@ -628,7 +731,23 @@ func TestTUNKillSwitchKeepsEachSocketOffTheUplink(t *testing.T) {
 				flows: switchForwardedFlows(state, true), replies: switchReplies(false, true),
 			})
 		})
+		t.Run(string(state)+", the tun holding no IPv4 overlay address, forward naming the bridge", func(t *testing.T) {
+			flows := switchForwardedFlows(state, true)
+			// the bridge's IPv4 ping meets 5450 in every state, since IPv4 holds no 5440 for it to follow
+			flows[0] = switchFlow{"container", exitLabHost[4].internet.Addr(), switchHeld, 0}
+			lab.run(t, switchArm{
+				state: state, forward: []string{exitBridge}, unaddressed: 4, probes: switchUnaddressedProbes(state),
+				flows: flows, replies: switchReplies(false, true),
+			})
+			if state != switchCrashed {
+				lab.notHolding(t, state, map[switchState]kernel.FallbackState{switchPresent: kernel.FallbackPassing, switchRetracted: kernel.FallbackHolding}[state])
+			}
+		})
 	}
+}
+
+// cleanStop stops the lab's own node and checks it left no table or rule
+func (lab *switchLab) cleanStop(t *testing.T) {
 	t.Run("a clean stop", func(t *testing.T) {
 		lab.d.stop()
 		var tables map[uint8]uint32
@@ -811,7 +930,7 @@ func TestTUNKillSwitchAnswersOnlyTheListedServices(t *testing.T) {
 				switchService{protocol, internet, switchUnlisted, true, "unanswered"})
 		}
 	}
-	for _, state := range []switchState{switchPresent, switchRetracted} {
+	for _, state := range switchStates {
 		t.Run(string(state), func(t *testing.T) {
 			lab.run(t, switchArm{state: state, inbound: listed, services: services})
 		})
@@ -856,6 +975,18 @@ func destinationTranslation(from, to netip.Addr) [][]byte {
 	return slices.Concat(nftables.NFProto(proto),
 		[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(from)))},
 		[][]byte{nftables.Expression("immediate", load), nftables.Expression("nat", nat)})
+}
+
+// redirection is a rule redirecting at output a packet to from to the host itself, 127.0.0.1 or ::1, keeping its port, as
+// nft's redirect writes one
+func redirection(from netip.Addr) [][]byte {
+	proto := uint8(unix.NFPROTO_IPV6)
+	if from.Is4() {
+		proto = unix.NFPROTO_IPV4
+	}
+	return slices.Concat(nftables.NFProto(proto),
+		[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(from)))},
+		[][]byte{nftables.Expression("redir", nil)})
 }
 
 // otherProgram writes chain with each rule's expressions, and where route is set the program's rule looking up main for switchOtherMark
@@ -941,22 +1072,27 @@ func switchChainProbes(underlayCut bool) []switchProbe {
 		at := switchAt(family)
 		probes = slices.Concat(probes,
 			switchRow(at.internet, kept, kept, kept, kept, marked, marked),
-			[]switchProbe{{at.internet, switchMarkedOther, kept, nil}, {at.lan, switchUnbound, switchOut, nil}, {at.lan, switchMarkedOther, switchOut, nil}})
+			[]switchProbe{switchFrom(at.internet, rulesUnbound, 0x1, kept), switchFrom(at.lan, rulesUnbound, 0, switchOut), switchFrom(at.lan, rulesUnbound, 0x1, switchOut)})
 	}
 	return probes
 }
 
-// a leaf in mode 2 with fallback = "none" under each other program's chains of the routing re-check's labs, in each state: a socket's
-// own mark 0x1 (M1), a route chain marking every unmarked packet at mangle - 5 with its rule sending the mark to main (M2), one overwriting
-// every mark at mangle + 5 (M3), one clearing every mark at mangle (M5), the same at 2147483647 (M5z), filter chains marking unmarked packets
-// at filter (M6) and at raw (M6r), and a full restore of the connection's mark at mangle (CR): no unmarked packet reaches the internet host
-// by the uplink, the LAN is reached, and the underlay's mark leaves by it wherever the chains leave the mark alone
+// a leaf in mode 2 with fallback = "none" under each other program's chains below, in each state: a socket's own mark 0x1 (M1), a
+// route chain marking every unmarked packet at mangle - 5 with its rule sending the mark to main (M2), one overwriting every mark at
+// mangle + 5 (M3), one clearing every mark at mangle (M5), the same at 400 (M5x) and at 2147483647 (M5z), filter chains marking
+// unmarked packets at filter (M6), at mangle (M6m) and at raw (M6r), and a restore of the connection's mark at mangle guarded on an
+// unmarked packet (R1), the same unguarded at mangle (CR) and at 400 (R2): no unmarked packet reaches the internet host by the uplink,
+// the LAN is reached, and the underlay's mark leaves by it wherever the chains leave the mark alone
 func TestTUNKillSwitchHoldsUnderOtherProgramsChains(t *testing.T) {
 	lab := newSwitchLab(t)
 	const mangle, raw, filter = -150, -300, 0
 	route, output := "route", uint32(unix.NF_INET_LOCAL_OUT)
 	ctMark := [][]byte{nftables.CTLoad(unix.NFT_CT_MARK), markFromRegister()}
-	for _, arm := range []switchArm{
+	arms := []switchArm{
+		{name: "M5x, a route chain clearing every mark at 400", underlayCut: true, other: otherProgram(otherChain(route, output, 400), false, setMark(0))},
+		{name: "M6m, a filter chain marking unmarked packets at mangle", other: otherProgram(otherChain("filter", output, mangle), true, slices.Concat(unmarked(), setMark(switchOtherMark)))},
+		{name: "R1, a restore of the connection's mark at mangle guarded on an unmarked packet", other: otherProgram(otherChain(route, output, mangle), false, slices.Concat(unmarked(), ctMark))},
+		{name: "R2, a full restore of the connection's mark at 400", underlayCut: true, other: otherProgram(otherChain(route, output, 400), false, ctMark)},
 		{name: "M1, a socket's own mark 0x1"},
 		{name: "M2, a route chain marking unmarked packets at mangle - 5", other: otherProgram(otherChain(route, output, mangle-5), true, slices.Concat(unmarked(), setMark(switchOtherMark)))},
 		{name: "M3, a route chain overwriting every mark at mangle + 5", underlayCut: true, other: otherProgram(otherChain(route, output, mangle+5), true, setMark(switchOtherMark))},
@@ -965,8 +1101,9 @@ func TestTUNKillSwitchHoldsUnderOtherProgramsChains(t *testing.T) {
 		{name: "M6, a filter chain marking unmarked packets at filter", other: otherProgram(otherChain("filter", output, filter), true, slices.Concat(unmarked(), setMark(switchOtherMark)))},
 		{name: "M6r, a filter chain marking unmarked packets at raw", other: otherProgram(otherChain("filter", output, raw), true, slices.Concat(unmarked(), setMark(switchOtherMark)))},
 		{name: "CR, a full restore of the connection's mark at mangle", underlayCut: true, other: otherProgram(otherChain(route, output, mangle), false, ctMark)},
-	} {
-		for _, state := range []switchState{switchPresent, switchRetracted} {
+	}
+	for _, state := range switchStates {
+		for _, arm := range arms {
 			t.Run(arm.name+", "+string(state), func(t *testing.T) {
 				arm.state, arm.probes = state, switchChainProbes(arm.underlayCut)
 				lab.run(t, arm)
@@ -984,9 +1121,9 @@ func TestTUNKillSwitchHoldsUnderNATAtOutput(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		uplink := rulesHost[family].uplink.Addr()
 		rules = append(rules, destinationTranslation(uplink, exitLabHost[family].internet.Addr()))
-		probes = append(probes, switchProbe{uplink, switchUnbound, switchKept, []string{"udp", "tcp"}}, switchProbe{uplink, switchOnUplink, switchKept, []string{"udp", "tcp"}})
+		probes = append(probes, switchFrom(uplink, rulesUnbound, 0, switchKept, "udp", "tcp"), switchFrom(uplink, rulesOnUplink, 0, switchKept, "udp", "tcp"))
 	}
-	for _, state := range []switchState{switchPresent, switchRetracted} {
+	for _, state := range switchStates {
 		t.Run(string(state), func(t *testing.T) {
 			lab.run(t, switchArm{state: state, probes: probes, other: otherProgram(otherChain("nat", unix.NF_INET_LOCAL_OUT, -100), false, rules...)})
 		})
@@ -1011,15 +1148,16 @@ func TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun(t *testing.T) {
 			nftables.MetaCompare(unix.NFT_META_OIFNAME, unix.NFT_CMP_EQ, rulesTUN), nftables.NFProto(proto),
 			[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(at.peer)))},
 			setMark(switchOtherMark)))
-		for _, socket := range []switchSocket{switchUnbound, switchFromOverlay, switchFromUplink, switchOnUplink} {
-			probes = append(probes, switchProbe{at.peer, socket, switchKept, []string{"udp", "tcp"}})
+		for _, socket := range []rulesSocket{rulesUnbound, rulesFromOverlay, rulesFromUplink, rulesOnUplink} {
+			probes = append(probes, switchFrom(at.peer, socket, 0, switchKept, "udp", "tcp"))
 		}
 	}
-	for _, arm := range []switchArm{
+	arms := []switchArm{
 		{name: "NM, NAT at output after the tun", other: otherProgram(otherChain("nat", unix.NF_INET_LOCAL_OUT, -100), false, translations...)},
 		{name: "NMm, a route chain marking a packet routed into the tun", other: otherProgram(otherChain("route", unix.NF_INET_LOCAL_OUT, -150), true, marks...)},
-	} {
-		for _, state := range []switchState{switchPresent, switchRetracted} {
+	}
+	for _, state := range switchStates {
+		for _, arm := range arms {
 			t.Run(arm.name+", "+string(state), func(t *testing.T) {
 				arm.state, arm.probes = state, probes
 				lab.run(t, arm)
@@ -1028,11 +1166,13 @@ func TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun(t *testing.T) {
 	}
 }
 
-// a leaf in mode 2 with fallback = "none", in each state: the host's own datagrams to 127.0.0.1, ::1, its uplink's addresses and its overlay
-// addresses, and one to its uplink's address translated to its overlay address at output, are delivered on the host
+// a leaf in mode 2 with fallback = "none", in each state: the host's own datagrams to 127.0.0.1, ::1, its uplink's addresses and, while
+// the tun holds them, its overlay addresses, one to its uplink's address and one to a LAN host, first routed out of the uplink,
+// redirected at output to 127.0.0.1 or ::1, and one to its uplink's address translated to its overlay address at output, are delivered
+// on the host
 func TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback(t *testing.T) {
 	lab := newSwitchLab(t)
-	for _, state := range []switchState{switchPresent, switchRetracted} {
+	for _, state := range switchStates {
 		t.Run(string(state), func(t *testing.T) {
 			lab.settle(t, switchArm{state: state})
 			check := func(arm string) {
@@ -1042,7 +1182,11 @@ func TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback(t *testing.T) {
 					if family == 4 {
 						loopback = netip.AddrFrom4([4]byte{127, 0, 0, 1})
 					}
-					for _, to := range []netip.Addr{loopback, rulesHost[family].uplink.Addr(), rulesHost[family].own.Addr()} {
+					addresses := []netip.Addr{loopback, rulesHost[family].uplink.Addr()}
+					if state != switchCrashed {
+						addresses = append(addresses, rulesHost[family].own.Addr())
+					}
+					for _, to := range addresses {
 						if err := lab.leaf.Do(func() error { return switchLoopback(to, to) }); err != nil {
 							t.Errorf("%s: a datagram to %s was not delivered on the host: %v", arm, to, err)
 						}
@@ -1050,6 +1194,28 @@ func TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback(t *testing.T) {
 				}
 			}
 			check("P, no translation")
+			var redirects [][][]byte
+			for _, family := range []int{4, 6} {
+				redirects = append(redirects, redirection(rulesHost[family].uplink.Addr()), redirection(rulesHost[family].lan.Addr()))
+			}
+			removeRedirects := otherProgram(otherChain("nat", unix.NF_INET_LOCAL_OUT, -100), false, redirects...)(t, lab.leaf)
+			for _, family := range []int{4, 6} {
+				loopback := netip.IPv6Loopback()
+				if family == 4 {
+					loopback = netip.AddrFrom4([4]byte{127, 0, 0, 1})
+				}
+				// the uplink's address is first routed into lo, and a LAN host's out of the uplink
+				for _, to := range []netip.Addr{rulesHost[family].uplink.Addr(), rulesHost[family].lan.Addr()} {
+					if err := lab.leaf.Do(func() error { return switchLoopback(loopback, to) }); err != nil {
+						t.Errorf("PR: a datagram to %s redirected to %s was not delivered on the host: %v", to, loopback, err)
+					}
+				}
+			}
+			removeRedirects()
+			if state == switchCrashed {
+				// the overlay addresses went with the tun
+				return
+			}
 			var rules [][][]byte
 			for _, family := range []int{4, 6} {
 				rules = append(rules, destinationTranslation(rulesHost[family].uplink.Addr(), rulesHost[family].own.Addr()))
@@ -1100,10 +1266,10 @@ func switchLoopback(at, to netip.Addr) error {
 // the underlay's mark
 func TestTUNKillSwitchIsTheSameOnEveryCPU(t *testing.T) {
 	lab := newSwitchLab(t)
-	for _, state := range []switchState{switchPresent, switchRetracted} {
+	for _, state := range switchStates {
 		t.Run(string(state), func(t *testing.T) {
 			internet := switchTun
-			if state == switchRetracted {
+			if state != switchPresent {
 				internet = switchHeld
 			}
 			var probes []switchProbe
@@ -1111,7 +1277,7 @@ func TestTUNKillSwitchIsTheSameOnEveryCPU(t *testing.T) {
 				at := switchAt(family)
 				probes = slices.Concat(probes,
 					switchRow(at.internet, internet, internet, switchHeld, switchHeld, switchOut, switchOut),
-					[]switchProbe{{at.lan, switchUnbound, switchOut, nil}, {at.own, switchUnbound, switchOut, nil}})
+					[]switchProbe{switchFrom(at.lan, rulesUnbound, 0, switchOut), switchFrom(at.own, rulesUnbound, 0, switchOut)})
 			}
 			for i := range probes {
 				probes[i].protocols = []string{"udp", "echo"}
@@ -1137,12 +1303,13 @@ func TestTUNKillSwitchIsTheSameOnEveryCPU(t *testing.T) {
 func TestTUNKillSwitchKeepsReversePathChecksPassing(t *testing.T) {
 	lab := newSwitchLab(t)
 	listed := []string{fmt.Sprintf("%d/udp", exitService)}
-	for _, check := range []struct {
+	checks := []struct {
 		name   string
 		strict bool
 		fib    string
-	}{{"S2 and K1, strict rp_filter on the uplink", true, ""}, {"F2, NixOS's strict fib chain", false, "strict"}, {"NixOS's loose fib chain", false, "loose"}} {
-		for _, state := range []switchState{switchPresent, switchRetracted} {
+	}{{"S2 and K1, strict rp_filter on the uplink", true, ""}, {"F2, NixOS's strict fib chain", false, "strict"}, {"NixOS's loose fib chain", false, "loose"}}
+	for _, state := range switchStates {
+		for _, check := range checks {
 			t.Run(check.name+", "+string(state), func(t *testing.T) {
 				if check.strict {
 					exitStrict(t, lab.leaf, "1")

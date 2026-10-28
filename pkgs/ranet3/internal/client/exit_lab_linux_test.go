@@ -399,14 +399,14 @@ func exitProbe(t *testing.T, lab *exitLab, captures []exitCapture, protocols []s
 		for _, p := range probes {
 			for _, protocol := range protocols {
 				lab.probe++
-				fd, refused, err := rulesSend(p, protocol, lab.probe)
+				fd, outcome, err := rulesSend(p, protocol, lab.probe)
 				if err != nil {
 					return fmt.Errorf("%s %s to %s: %w", p.socket, protocol, p.destination, err)
 				}
 				if fd >= 0 {
 					fds = append(fds, fd)
 				}
-				all = append(all, sent{p, protocol, lab.probe, refused})
+				all = append(all, sent{p, protocol, lab.probe, outcome == rulesUnreachable})
 			}
 		}
 		return nil
