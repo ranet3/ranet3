@@ -128,6 +128,33 @@ func StartThread(t testing.TB) *Thread {
 	return n
 }
 
+// JoinThread is a Thread in the network namespace at path, such as a Thread's Path in another process
+func JoinThread(t testing.TB, path string) *Thread {
+	t.Helper()
+	n := &Thread{Path: path, work: make(chan func())}
+	started := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err == nil {
+			err = unix.Setns(fd, unix.CLONE_NEWNET)
+			_ = unix.Close(fd)
+		}
+		started <- err
+		if err != nil {
+			return
+		}
+		for f := range n.work {
+			f()
+		}
+	}()
+	if err := <-started; err != nil {
+		t.Fatalf("join the network namespace at %s: %v", path, err)
+	}
+	t.Cleanup(func() { close(n.work) })
+	return n
+}
+
 // Do runs f on the namespace's thread and returns what it returned
 func (n *Thread) Do(f func() error) error {
 	done := make(chan error, 1)
