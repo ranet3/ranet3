@@ -679,6 +679,8 @@ type Session struct {
 	// Idle is how long since the peer last proved it is still there, which is
 	// what dead peer detection acts on.
 	Idle Duration `json:"idle"`
+	// InvalidSPIReports counts the INVALID_SPI notifies the session sent its peer about ESP on an SPI this node does not hold
+	InvalidSPIReports uint64 `json:"invalid_spi_reports"`
 }
 
 // Peer is one node this one dials, with its dialer's state. A responder-only

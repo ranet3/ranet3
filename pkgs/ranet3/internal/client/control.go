@@ -387,6 +387,7 @@ func (c *Client) Sessions() []control.Session {
 			StartedAt:            started,
 			Age:                  control.Duration(time.Since(started)),
 			Idle:                 control.Duration(session.session.Idle()),
+			InvalidSPIReports:    session.session.InvalidSPIReports(),
 		}
 		if endpoint := session.session.Mux().Endpoint(); endpoint != nil {
 			entry.Remote = endpoint.AddrPort().String()
