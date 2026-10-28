@@ -809,12 +809,14 @@ tun.
 
 ### ESP
 
-| Limit                                | Value                                      | Past it                                                 |
-| ------------------------------------ | ------------------------------------------ | ------------------------------------------------------- |
-| Sequence numbers                     | 32 bits, no extended sequence numbers      | An SA asks for a rekey 2^28 packets before they run out |
-| Last sequence number                 | `2^32 - 1`                                 | The SA refuses to send                                  |
-| Replaced inbound SA after its Delete | 5 seconds, and no longer than its lifetime | The SA is removed                                       |
-| Replaced inbound SA without a Delete | 30 seconds after the rekey, then 5 seconds | This end deletes the SA, which drains and is removed    |
+| Limit                                                      | Value                                                                                                                                                                                                                                                   | Past it                                                                                                                        |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Sequence numbers                                           | 32 bits, no extended sequence numbers                                                                                                                                                                                                                   | An SA asks for a rekey 2^28 packets before they run out                                                                        |
+| Last sequence number                                       | `2^32 - 1`                                                                                                                                                                                                                                              | The SA refuses to send                                                                                                         |
+| Replaced inbound SA after its Delete                       | 5 seconds, and no longer than its lifetime                                                                                                                                                                                                              | The SA is removed                                                                                                              |
+| Replaced inbound SA without a Delete                       | 30 seconds after the rekey, then 5 seconds                                                                                                                                                                                                              | This end deletes the SA, which drains and is removed                                                                           |
+| Looks for the session that ESP on an unknown SPI came from | 1 every 10 seconds for the whole node, whoever sent the ESP                                                                                                                                                                                             | Further such ESP is counted in `ranet3_receive_refused_total` alone, so a stranger's can take the look a session's peer needed |
+| SPI let go of that draws no `INVALID_SPI`                  | 10 seconds from its SA's Delete, the end of its drain or the peer's `CHILD_SA_NOT_FOUND` for it, or from the end of an exchange that installed no SA with it, or from the session's end. An SA withdrawn at its lifetime keeps its SPI until its Delete | ESP on it from the session's peer is reported at the next look                                                                 |
 
 The scheduled rekey, hourly by default, comes long before the sequence numbers
 run out. The early request covers a link fast enough to use them up within 1
@@ -825,6 +827,13 @@ used, the SA refuses to send, and the session logs
 identities, the local socket address, the peer's address and the sequence number
 the refused packet needed. Unless a rekey replaces the SA, the IKE SA is then
 deleted as at the end of a lifetime.
+
+A look that finds the session whose peer's address and port sent ESP on an SPI
+no session holds has that session send its peer 1 `INVALID_SPI` notify, unless a
+request of the session's is outstanding, as
+[protocol deviations](protocol-deviations.md#errors-outside-an-exchange)
+describes. The 10 seconds are the liveness interval, so the node looks at most
+as often as a session sends a liveness check.
 
 ### Configuration bounds
 

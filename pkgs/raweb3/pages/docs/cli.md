@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-27
+updated: 2026-10-28
 order: 75
 ---
 
@@ -106,7 +106,11 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
   it, taken on the path the request was readied or last cut on, which every send
   of it went on since, the step's own included, until a send or this read finds
   that the peer moved or that the path MTU the host reads changed, or the
-  session is asked to probe its path.
+  session is asked to probe its path. Its Invalid SPI column counts the
+  `INVALID_SPI` notifies the session sent its peer about ESP on an SPI this node
+  does not hold, as
+  [protocol deviations](design/protocol-deviations.md#errors-outside-an-exchange)
+  describes.
 - `whois` takes 1 address. It prints the longest prefix that covers the address,
   then the shorter ones it falls back to.
 - `ip` prints the host prefixes this node announces, 1 address per line.

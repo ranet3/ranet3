@@ -268,6 +268,7 @@ connections to the reads.
 | `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request or answer        |
 | `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again                  |
 | `ike.probe`                           | asked to prove its path, a session started a check or resent its request             |
+| `ike.notify.invalid_spi`              | a session told its peer of ESP on an SPI this node does not hold                     |
 | `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                          |
 | `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended                |
 | `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size           |
@@ -346,6 +347,7 @@ Each kind carries these attributes:
 | `ike.send.failed`                             | `err`                                                                                                                                       |
 | `ike.send.recovered`                          | `failed`                                                                                                                                    |
 | `ike.probe`                                   | `action`, `message_id`                                                                                                                      |
+| `ike.notify.invalid_spi`                      | `spi`                                                                                                                                       |
 | `ike.message.fragmented`                      | `exchange`, `message_id`, `fragments`, `threshold`                                                                                          |
 | `babel.neighbor.up`, `.down`                  | none                                                                                                                                        |
 | `babel.neighbor.fragmented`                   | `size`                                                                                                                                      |
@@ -494,6 +496,18 @@ exchange, the Message ID and the fragments,
 and
 `ike the peer's fragments of one message passed the reassembly limit, which ends the IKE SA`
 as a warning.
+
+An `ike.notify.invalid_spi` is recorded each time a session sends its peer an
+`INFORMATIONAL` request carrying `INVALID_SPI`, for ESP from the peer's address
+and port on an SPI this node does not hold. Its `spi` is that SPI in
+hexadecimal, as `ike.sa.expired` names SPIs. The node looks for such a session
+at most once every 10 seconds, whoever sent the ESP, and an SPI this node let go
+of in the 10 seconds before draws none, as
+[protocol deviations](../design/protocol-deviations.md#errors-outside-an-exchange)
+describes. `ranet3 sessions` counts the requests each session sent. A peer's
+`INVALID_SPI` records nothing: the session logs
+`ike the peer received ESP on an SPI it holds no Child SA for` at debug level
+with the SPI it names.
 
 A `transport.pair.connected` names in `local` the address the socket bound and
 in `remote` the peer it is connected to. The `reason` of a
