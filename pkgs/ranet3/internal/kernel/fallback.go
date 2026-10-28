@@ -180,7 +180,7 @@ func lanParts(network netip.Prefix, listed []netip.Prefix) []netip.Prefix {
 	for _, r := range slices.Concat(lanRanges, listed) {
 		r = r.Masked()
 		switch {
-		case r.Bits() <= network.Bits() && r.Contains(network.Addr()):
+		case encloses(r, network):
 			parts = append(parts, network)
 		case network.Bits() < r.Bits() && network.Contains(r.Addr()):
 			parts = append(parts, r)
@@ -189,7 +189,7 @@ func lanParts(network netip.Prefix, listed []netip.Prefix) []netip.Prefix {
 	// in this order a part comes after each part holding it
 	var out []netip.Prefix
 	for _, part := range slices.SortedFunc(slices.Values(parts), comparePrefixes) {
-		if !slices.ContainsFunc(out, func(kept netip.Prefix) bool { return kept.Bits() <= part.Bits() && kept.Contains(part.Addr()) }) {
+		if !slices.ContainsFunc(out, func(kept netip.Prefix) bool { return encloses(kept, part) }) {
 			out = append(out, part)
 		}
 	}

@@ -154,7 +154,7 @@ func (v exitView) sources(family Family, overlay, own []netip.Prefix) (addresses
 		for _, peer := range link.Peers {
 			// a far end inside a network of its own link takes that network's rule
 			inside := slices.ContainsFunc(link.Prefixes, func(prefix netip.Prefix) bool {
-				return prefix.Bits() < prefix.Addr().BitLen() && prefix.Bits() <= peer.Bits() && prefix.Contains(peer.Addr())
+				return prefix.Bits() < prefix.Addr().BitLen() && encloses(prefix, peer)
 			})
 			if !forwarded && !inside {
 				networks = append(networks, peer)
