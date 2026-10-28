@@ -103,7 +103,7 @@ func runBeside(t *testing.T, c exitBeside) {
 		t.Run(state, func(t *testing.T) {
 			if state == besideCrashed {
 				d.stop()
-				kill := startExitHelper(t, lab.leaf)
+				kill := startExitHelper(t, lab.leaf, "TestExitLabCrashHelper")
 				besideConverged(t, lab, true)
 				kill()
 				waitFor(t, rulesSettle, "the tun to go with the helper", func() bool { return !besideHasTun(t, lab.leaf) })
@@ -187,8 +187,9 @@ func besideHasTun(t *testing.T, leaf *netnstest.Thread) bool {
 	return held
 }
 
-// startExitHelper runs TestExitLabCrashHelper in a process of its own in the leaf's namespace, and answers what kills it with SIGKILL
-func startExitHelper(t *testing.T, leaf *netnstest.Thread) func() {
+// startExitHelper runs the crash helper test in a process of its own in the leaf's namespace, its environment added to by env, and
+// answers what kills it with SIGKILL
+func startExitHelper(t *testing.T, leaf *netnstest.Thread, test string, env ...string) func() {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
@@ -198,8 +199,8 @@ func startExitHelper(t *testing.T, leaf *netnstest.Thread) func() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	helper := exec.Command(executable, "-test.run=^TestExitLabCrashHelper$", "-test.v")
-	helper.Env = append(os.Environ(), exitHelperNamespace+"="+leaf.Path)
+	helper := exec.Command(executable, "-test.run=^"+test+"$", "-test.v")
+	helper.Env = slices.Concat(os.Environ(), []string{exitHelperNamespace + "=" + leaf.Path}, env)
 	helper.Stdout, helper.Stderr = log, log
 	// the helper runs until its stdin closes, which a test that fails before the kill leaves to the cleanup
 	stdin, err := helper.StdinPipe()
