@@ -212,7 +212,14 @@ type packetBind interface {
 // receiveFunc fills the vectors and reports how many datagrams it produced
 // and how many it read and could not use, which the hub counts so an operator
 // can tell a receive path that is discarding from one that is idle.
-type receiveFunc func([][]byte, []int, []Endpoint) (n, refused int, err error)
+// It fills a record for every datagram and an endpoint for every IKE datagram, which the memory and portable binds fill for every datagram.
+type receiveFunc func([][]byte, []int, []Endpoint, []receiveRecord) (n, refused int, err error)
+
+// receiveRecord holds what a receiver read about one datagram beside its bytes, as values, so filling one allocates nothing
+type receiveRecord struct {
+	// source is the address and port the datagram came from, with the zone the bind's endpoints name a link-local source's interface by
+	source netip.AddrPort
+}
 
 // Datagram is one received IKE message and the endpoint it arrived from.
 type Datagram struct {
@@ -410,7 +417,7 @@ func (h *Hub) readFailed(err error) {
 // receiveLoop demultiplexes what fn reads until it fails, and then hands failed the error
 func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 	batch := espSendBatch
-	bufs, sizes, eps := make([][]byte, batch), make([]int, batch), make([]Endpoint, batch)
+	bufs, sizes, eps, records := make([][]byte, batch), make([]int, batch), make([]Endpoint, batch), make([]receiveRecord, batch)
 	// demultiplexing records where each datagram goes and copies nothing
 	// a datagram is copied below, once its queue has room for it
 	type pendingIKE struct {
@@ -421,7 +428,7 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 	ikeDatagrams := make([]pendingIKE, 0, batch)
 	unclaimed := make([]int, 0, batch)
 	for {
-		n, refused, err := fn(bufs, sizes, eps)
+		n, refused, err := fn(bufs, sizes, eps, records)
 		if refused > 0 {
 			h.refused.Add(uint64(refused))
 		}
@@ -444,10 +451,8 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 			// case an operator needs a number for rather than a log line.
 			if len(raw) == 1 && raw[0] == natKeepaliveByte {
 				// RFC 3948 section 2.3 has the receiver ignore these. Counted
-				// all the same, on its own counter: a flood of them costs a
-				// read, a demultiplex and, coalesced by GRO,
-				// up to forty iterations per read, and an arm that reaches no
-				// Mux and raises nothing is the one gap in the accounting.
+				// all the same, on its own counter, since a flood of them costs
+				// a read and a demultiplex each.
 				h.keepalives.Add(1)
 				continue
 			}
@@ -464,8 +469,7 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 				if m := tables.ike[spi]; m != nil {
 					ikeDatagrams = append(ikeDatagrams, pendingIKE{mux: m, index: i})
 				} else if tables.listen != nil && eps[i] != nil {
-					// An SA no Mux owns yet. Only a listening hub keeps
-					// these. Otherwise they stay dropped as before.
+					// An SA no Mux owns yet, which only a listening hub keeps.
 					unclaimed = append(unclaimed, i)
 				} else {
 					unwanted++

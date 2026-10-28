@@ -1257,10 +1257,10 @@ func TestDarwinReceiverPinsIKEAlone(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			bufs, sizes, endpoints := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1)
+			bufs, sizes, endpoints, records := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)
 			for _, datagram := range [][]byte{esp, ike} {
 				endpoints[0] = &darwinEndpoint{}
-				if n, refused, err := receivers[i](bufs, sizes, endpoints); n != 1 || refused != 0 || err != nil {
+				if n, refused, err := receivers[i](bufs, sizes, endpoints, records); n != 1 || refused != 0 || err != nil {
 					t.Fatalf("a read answered %d datagrams, %d refused and %v", n, refused, err)
 				}
 				if got := bufs[0][:sizes[0]]; !bytes.Equal(got, datagram) {
@@ -1275,6 +1275,48 @@ func TestDarwinReceiverPinsIKEAlone(t *testing.T) {
 				ep, ok := endpoints[0].(*darwinEndpoint)
 				if !ok || ep.pin() == nil || ep.source != loopback || ep.index != 0 || ep.AddrPort() != netip.AddrPortFrom(at.Addr().Unmap(), at.Port()) {
 					t.Errorf("an IKE datagram from %s to %s came with %#v, want one pinned to %s", at, loopback, endpoints[0], loopback)
+				}
+			}
+		})
+	}
+}
+
+// the record of each datagram, ESP and IKE alike, holds the address and port it came from, here two peers on two ports of one address
+func TestDarwinReceiveRecordCarriesEachDatagramsSource(t *testing.T) {
+	for i, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
+		t.Run(family.network, func(t *testing.T) {
+			opened, receivers, port, err := listenPacketBind(0, 0, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = opened.Close() })
+			bind := opened.(*darwinBind)
+			if bind.v4 == nil || bind.v6 == nil {
+				t.Fatal("the bind opened one family alone")
+			}
+			if err := []*darwinSocket{bind.v4, bind.v6}[i].conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
+				t.Fatal(err)
+			}
+			loopback := netip.MustParseAddr(family.loopback)
+			var sent []netip.AddrPort
+			for _, datagram := range [][]byte{binary.BigEndian.AppendUint32(nil, pairTestSPI), markedRequest()} {
+				for range 2 {
+					peer := listenPeer(t, family.network, family.loopback)
+					if _, err := peer.WriteToUDPAddrPort(datagram, netip.AddrPortFrom(loopback, port)); err != nil {
+						t.Fatal(err)
+					}
+					at := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+					sent = append(sent, netip.AddrPortFrom(at.Addr().Unmap(), at.Port()))
+				}
+			}
+			bufs, sizes, endpoints, records := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)
+			for _, from := range sent {
+				records[0] = receiveRecord{}
+				if n, refused, err := receivers[i](bufs, sizes, endpoints, records); n != 1 || refused != 0 || err != nil {
+					t.Fatalf("a read answered %d datagrams, %d refused and %v", n, refused, err)
+				}
+				if records[0].source != from {
+					t.Errorf("a datagram from %s came with the source %v", from, records[0].source)
 				}
 			}
 		})
@@ -1359,11 +1401,11 @@ func TestDarwinReceiverDropsAnIKEDatagramWhoseControlMessageWasCut(t *testing.T)
 					t.Fatal(err)
 				}
 			}
-			bufs, sizes, endpoints := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1)
-			if n, refused, err := receivers[i](bufs, sizes, endpoints); n != 0 || refused != 1 || err != nil {
+			bufs, sizes, endpoints, records := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)
+			if n, refused, err := receivers[i](bufs, sizes, endpoints, records); n != 0 || refused != 1 || err != nil {
 				t.Fatalf("the read of an IKE datagram whose control message was cut answered %d datagrams, %d refused and %v, want it refused", n, refused, err)
 			}
-			n, refused, err := receivers[i](bufs, sizes, endpoints)
+			n, refused, err := receivers[i](bufs, sizes, endpoints, records)
 			if n != 1 || refused != 0 || err != nil || !bytes.Equal(bufs[0][:sizes[0]], esp) || endpoints[0] != nil {
 				t.Fatalf("the read after it answered %d datagrams, %d refused and %v, %x with %v, want the ESP datagram %x alone", n, refused, err, bufs[0][:sizes[0]], endpoints[0], esp)
 			}

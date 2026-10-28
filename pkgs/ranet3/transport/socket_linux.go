@@ -451,8 +451,8 @@ func (p *udpPair) Close() error {
 
 // receiver reads a full recvmmsg vector even when UDP_GRO is enabled. Each
 // message may contain many datagrams. Excess segments are returned on later
-// calls before any receive storage is reused. ESP does not need source-address
-// objects: only IKE packets retain a reply endpoint.
+// calls before any receive storage is reused. Only IKE packets retain a reply
+// endpoint.
 func (s *udpSocket) receiver(vector int) receiveFunc {
 	messages := receiveVector(vector)
 	return s.walk(messages, newUDPReader(s.raw, messages).read)
@@ -469,9 +469,12 @@ func receiveVector(vector int) []ipv4.Message {
 }
 
 // walk hands out the datagrams read leaves in messages and reads again once it has handed out the last
+// a message is one sender's, since GRO coalesces only datagrams of one source address and port, so each of its datagrams takes the source read once for it
 func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) receiveFunc {
 	var count, index, offset, segment, refused int
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
+	var source netip.AddrPort
+	var zones scopeZone
+	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
 		refused = 0
 		if index == count {
 			var err error
@@ -486,13 +489,9 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 		for index < count && n < len(bufs) {
 			m := &messages[index]
 			if offset == 0 {
-				// Counted in datagrams, the unit the counter's help text names
-				// and the third arm below already uses: one GRO
-				// buffer is up to forty of them, so counting the message would
-				// undercount by that much. A zero-length datagram is refused
-				// too: it arrived and goes nowhere, and leaving it out is
-				// the "a flood reads as silence" case on the one platform this
-				// is deployed on.
+				// Counted in datagrams, the unit the counter's help text names,
+				// since one GRO buffer holds many. A zero-length datagram is
+				// refused too, since it arrived and goes nowhere.
 				if m.Flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 || m.N == 0 {
 					refused += datagramsIn(m)
 					index++
@@ -510,17 +509,21 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 				if segment == 0 {
 					segment = m.N
 				}
+				source = netip.AddrPort{}
+				if from, ok := m.Addr.(*udpSource); ok {
+					source = from.addrPort(&zones)
+				}
 			}
 			end := min(offset+segment, m.N)
 			raw := m.Buffers[0][offset:end]
-			bufs[n], sizes[n], endpoints[n] = raw, len(raw), nil
+			bufs[n], sizes[n], endpoints[n], records[n] = raw, len(raw), nil, receiveRecord{source: source}
 			if len(raw) >= 4 && binary.BigEndian.Uint32(raw[:4]) == 0 {
 				// A datagram whose control message will not parse is counted
 				// and dropped, not returned as an error: receiveLoop fails the
 				// whole hub on an error, which closes every session on this
-				// node, and the GRO sizing two branches up already skips the
-				// same class of failure. Without the endpoint the responder
-				// cannot answer, so the datagram is of no use anyway.
+				// node, and the GRO sizing skips the same class of failure.
+				// Without the endpoint the responder cannot answer, so the
+				// datagram is of no use anyway.
 				if ep, err := s.replyEndpoint(m); err == nil {
 					endpoints[n] = ep
 				} else {

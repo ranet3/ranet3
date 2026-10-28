@@ -5,6 +5,7 @@ package transport
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"net"
 	"net/netip"
@@ -155,6 +156,42 @@ func TestMemoryMuxReadsTheLoopbackPathMTU(t *testing.T) {
 	}
 }
 
+// the record of each datagram a hub receives, ESP and IKE alike, holds the address and port it came from
+// here two senders on two ports of one address and a third on another
+func TestReceiveRecordCarriesEachDatagramsSource(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		network := NewMemoryNetwork()
+		p := network.hold(netip.Addr{})
+		b := &memoryBind{network: network, port: p}
+		defer b.Close()
+		var sent []netip.AddrPort
+		for _, address := range []string{"192.0.2.1", "192.0.2.1", "192.0.2.2"} {
+			conn, err := network.ListenUDP(net.ParseIP(address))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			esp, ike := binary.BigEndian.AppendUint32(nil, 1), withMarker(binary.BigEndian.AppendUint64(nil, 1))
+			for _, datagram := range [][]byte{esp, ike} {
+				if _, err := conn.WriteToUDP(datagram, &net.UDPAddr{IP: net.ParseIP("192.0.2.9"), Port: int(p.port)}); err != nil {
+					t.Fatal(err)
+				}
+				sent = append(sent, conn.LocalAddr().(*net.UDPAddr).AddrPort())
+			}
+		}
+		bufs, sizes, endpoints, records := make([][]byte, len(sent)), make([]int, len(sent)), make([]Endpoint, len(sent)), make([]receiveRecord, len(sent))
+		n, _, err := b.receiver(p.queues[0])(bufs, sizes, endpoints, records)
+		if err != nil || n != len(sent) {
+			t.Fatalf("the receive answered %d datagrams and %v, want the %d sent", n, err, len(sent))
+		}
+		for i, from := range sent {
+			if records[i].source != from {
+				t.Errorf("datagram %d from %s came with the source %v", i, from, records[i].source)
+			}
+		}
+	})(t)
+}
+
 // a hub's receive of one family takes what its queue holds up to the vector's length, oldest first, and nothing of the other family
 // as the kernel bind reads a batch from its socket of that family, the batch the hub hands a mux's ESP in
 func TestMemoryHubReceivesABatchOfOneFamily(t *testing.T) {
@@ -184,8 +221,8 @@ func TestMemoryHubReceivesABatchOfOneFamily(t *testing.T) {
 			{0, 4, [][]byte{{0, 2}}},
 			{1, 4, [][]byte{{1, 0}, {1, 1}}},
 		} {
-			bufs, sizes, endpoints := make([][]byte, read.vector), make([]int, read.vector), make([]Endpoint, read.vector)
-			n, _, err := b.receiver(p.queues[read.family])(bufs, sizes, endpoints)
+			bufs, sizes, endpoints, records := make([][]byte, read.vector), make([]int, read.vector), make([]Endpoint, read.vector), make([]receiveRecord, read.vector)
+			n, _, err := b.receiver(p.queues[read.family])(bufs, sizes, endpoints, records)
 			if err != nil {
 				t.Fatal(err)
 			}

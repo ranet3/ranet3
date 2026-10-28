@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"syscall"
@@ -23,8 +24,8 @@ type udpMmsg struct {
 	length uint32
 }
 
-// A source address remains in kernel format until an IKE message needs it.
-// ESP is demultiplexed by SPI and never needs a net.UDPAddr or IP allocation.
+// A source address remains in kernel format until the receiver reads it into
+// a record as a value. Only an IKE message's endpoint allocates a net.UDPAddr.
 type udpSource [unix.SizeofSockaddrInet6]byte
 
 func (*udpSource) Network() string { return "udp" }
@@ -37,19 +38,40 @@ func (s *udpSource) String() string {
 }
 
 func (s *udpSource) endpoint() (*net.UDPAddr, error) {
-	addr := &net.UDPAddr{Port: int(binary.BigEndian.Uint16(s[2:4]))}
-	switch binary.NativeEndian.Uint16(s[:2]) {
-	case unix.AF_INET:
-		addr.IP = append(net.IP(nil), s[4:8]...)
-	case unix.AF_INET6:
-		addr.IP = append(net.IP(nil), s[8:24]...)
-		if scope := binary.NativeEndian.Uint32(s[24:28]); scope != 0 {
-			addr.Zone = strconv.FormatUint(uint64(scope), 10)
-		}
-	default:
+	addr := s.addrPort(&scopeZone{})
+	if !addr.IsValid() {
 		return nil, fmt.Errorf("transport: invalid UDP source family")
 	}
-	return addr, nil
+	return net.UDPAddrFromAddrPort(addr), nil
+}
+
+// addrPort is s as a value, invalid for a family it does not know, and a scoped source's zone is its interface index, which zones names
+func (s *udpSource) addrPort(zones *scopeZone) netip.AddrPort {
+	port := binary.BigEndian.Uint16(s[2:4])
+	switch binary.NativeEndian.Uint16(s[:2]) {
+	case unix.AF_INET:
+		return netip.AddrPortFrom(netip.AddrFrom4([4]byte(s[4:8])), port)
+	case unix.AF_INET6:
+		addr := netip.AddrFrom16([16]byte(s[8:24]))
+		if scope := binary.NativeEndian.Uint32(s[24:28]); scope != 0 {
+			addr = addr.WithZone(zones.name(scope))
+		}
+		return netip.AddrPortFrom(addr, port)
+	}
+	return netip.AddrPort{}
+}
+
+// scopeZone keeps the zone it last named, so the datagrams of a link-local peer share one string rather than build one each
+type scopeZone struct {
+	scope uint32
+	zone  string
+}
+
+func (z *scopeZone) name(scope uint32) string {
+	if scope != z.scope {
+		z.scope, z.zone = scope, strconv.FormatUint(uint64(scope), 10)
+	}
+	return z.zone
 }
 
 type udpReader struct {

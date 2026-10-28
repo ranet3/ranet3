@@ -61,11 +61,12 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ fu
 		// the next read reuses the slab, and the hub copies what it keeps of a read before the next
 		slab := make([]byte, readBufferSize*size)
 		packets := make([]conn.ReceivedPacket, size)
-		receivers = append(receivers, func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
+		receivers = append(receivers, func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
 			n, err := fn(slab, packets)
 			for i := range n {
 				bufs[i], sizes[i] = packets[i].Bytes(slab), packets[i].Size
 				endpoints[i] = &portableEndpoint{packets[i].Endpoint}
+				records[i] = receiveRecord{source: packets[i].Endpoint.(*conn.StdNetEndpoint).AddrPort}
 			}
 			// This bind hands every datagram it reads straight through, so
 			// there is nothing it refuses of its own.

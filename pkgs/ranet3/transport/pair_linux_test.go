@@ -34,9 +34,9 @@ func TestPairReceiveReadsPastAnICMPReport(t *testing.T) {
 		binary.BigEndian.PutUint32(m.Buffers[0][4:], uint32(reads))
 		return 1, nil
 	}))
-	packets, sizes, endpoints := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1)
+	packets, sizes, endpoints, records := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)
 	for _, want := range []uint32{1, 3} {
-		n, _, err := receive(packets, sizes, endpoints)
+		n, _, err := receive(packets, sizes, endpoints, records)
 		if err != nil || n != 1 || binary.BigEndian.Uint32(packets[0][4:]) != want {
 			t.Fatalf("the read that should carry datagram %d answered n=%d err=%v", want, n, err)
 		}
