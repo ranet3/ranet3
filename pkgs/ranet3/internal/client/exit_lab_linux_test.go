@@ -68,11 +68,13 @@ var exitLabHost = map[int]struct{ bridge, container, lan, lanHost, internet, sub
 // with the far host holding an address of the internet and routing the LAN and the container's network back through the leaf
 type exitLab struct {
 	leaf, far, container, lan *netnstest.Thread
+	// probe and ping are the last probe number and echo identifier the lab took, so no capture reads one twice
+	probe, ping int
 }
 
 func newExitLab(t *testing.T) *exitLab {
 	t.Helper()
-	lab := &exitLab{leaf: netnstest.StartThread(t), far: netnstest.StartThread(t), container: netnstest.StartThread(t), lan: netnstest.StartThread(t)}
+	lab := &exitLab{leaf: netnstest.StartThread(t), far: netnstest.StartThread(t), container: netnstest.StartThread(t), lan: netnstest.StartThread(t), ping: exitPingBase}
 	rulesUplinkPair(t, lab.leaf, lab.far)
 	for _, side := range []struct {
 		host       *netnstest.Thread
@@ -195,17 +197,22 @@ func startExitDaemon(t *testing.T, leaf *netnstest.Thread) *exitDaemon {
 	return d
 }
 
-// mode hands the reconciler the leaf's table running cap.exit with forward, mode off where forward is nil, and the announcements,
+// mode hands the reconciler the leaf's table running cap.exit with forward, mode off where on is false, less the tun's overlay
+// address of the family unaddressed names, 4 or 6, where it is not 0, and the announcements,
 // and waits for a pass that took them, since the state a wait looks for may be the one the last table left
-func (d *exitDaemon) mode(t *testing.T, forward []string, on bool, announced []netip.Prefix) {
+func (d *exitDaemon) mode(t *testing.T, forward []string, on bool, announced []netip.Prefix, unaddressed int) {
 	t.Helper()
 	cfg := d.node.config()
 	var mode *kernel.ExitMode
 	if on {
 		mode = &kernel.ExitMode{Forward: forward}
 	}
+	table := cfg.Cap.Table.WithMode(mode)
+	table.Addresses = slices.DeleteFunc(slices.Clone(table.Addresses), func(address schema.Prefix) bool {
+		return unaddressed != 0 && address.Addr().Is4() == (unaddressed == 4)
+	})
 	before := d.reloaded()
-	if err := d.routes.SetTable(cfg.Cap.Table.WithMode(mode), cfg.Overlay(), announced); err != nil {
+	if err := d.routes.SetTable(table, cfg.Overlay(), announced); err != nil {
 		t.Fatalf("hand the reconciler cap.exit forwarding %v: %v", forward, err)
 	}
 	waitFor(t, rulesSettle, "a pass under the table the reconciler was handed", func() bool { return d.reloaded() > before })
@@ -321,12 +328,120 @@ type exitFlow struct {
 	replies     int
 }
 
+// exitReplies is how many replies a flow whose first packet went where want says gets: all of them out of the uplink, none elsewhere
+func exitReplies(want rulesVerdict) int {
+	if want == rulesOutUplink {
+		return exitPings
+	}
+	return 0
+}
+
 // exitReply is a reply that has to come back: from the leaf's service on the uplink's address to the internet host,
 // or from the internet host to the underlay's socket on the leaf, which carries the underlay's mark and the uplink's address
 type exitReply struct {
 	underlay    bool
 	destination netip.Addr
 	answered    bool
+}
+
+// exitCapture is a link the lab captures, and where a packet it sees went
+type exitCapture struct {
+	verdict rulesVerdict
+	fd      int
+}
+
+// exitProbe sends each probe from the leaf in each of protocols, pings each flow from its host and asks each reply, then reads every
+// capture: each probe and flow went where it says, a flow with the replies it says, and a container's IPv4 flow into the tun carries the
+// tun's own address, which the bridge's masquerade gives it
+func exitProbe(t *testing.T, lab *exitLab, captures []exitCapture, protocols []string, probes []rulesProbe, flows []exitFlow, replies []exitReply) {
+	t.Helper()
+	type sent struct {
+		probe    rulesProbe
+		protocol string
+		number   int
+		refused  bool
+	}
+	var all []sent
+	var fds []int
+	if err := lab.leaf.Do(func() error {
+		for _, p := range probes {
+			for _, protocol := range protocols {
+				lab.probe++
+				fd, refused, err := rulesSend(p, protocol, lab.probe)
+				if err != nil {
+					return fmt.Errorf("%s %s to %s: %w", p.socket, protocol, p.destination, err)
+				}
+				if fd >= 0 {
+					fds = append(fds, fd)
+				}
+				all = append(all, sent{p, protocol, lab.probe, refused})
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("send the probes: %v", err)
+	}
+	type pinged struct {
+		flow     exitFlow
+		id       int
+		received int
+	}
+	var pings []pinged
+	for _, flow := range flows {
+		lab.ping++
+		from := map[string]*netnstest.Thread{"container": lab.container, "lan": lab.lan}[flow.from]
+		var received int
+		if err := from.Do(func() (err error) { received, err = exitPing(flow.destination, lab.ping); return err }); err != nil {
+			t.Fatalf("ping %s from the %s: %v", flow.destination, flow.from, err)
+		}
+		pings = append(pings, pinged{flow, lab.ping, received})
+	}
+	for _, reply := range replies {
+		if got := exitAnswered(t, lab, reply); got != reply.answered {
+			what := "the leaf's service on the uplink's address answered the internet host"
+			if reply.underlay {
+				what = "the internet host answered the leaf's underlay socket"
+			}
+			t.Errorf("over %s, %s %v, want %v", familyName(reply.destination), what, got, reply.answered)
+		}
+	}
+	read := make([]map[rulesKey]netip.Addr, len(captures))
+	for i, capture := range captures {
+		read[i] = rulesDrain(capture.fd)
+	}
+	for _, fd := range fds {
+		_ = unix.Close(fd)
+	}
+	where := func(key rulesKey) (rulesVerdict, netip.Addr) {
+		got, source := rulesNowhere, netip.Addr{}
+		for i, capture := range captures {
+			if from, ok := read[i][key]; ok {
+				if got != rulesNowhere {
+					return rulesSeveral, source
+				}
+				got, source = capture.verdict, from
+			}
+		}
+		return got, source
+	}
+	for _, s := range all {
+		got, source := where(rulesKey{s.protocol, s.number})
+		if s.refused {
+			got = rulesRefused
+		}
+		if got != s.probe.want {
+			t.Errorf("%s from a socket %s under mark %#x to %s went %s from %s, want %s", s.protocol, s.probe.socket, s.probe.mark, s.probe.destination, got, source, s.probe.want)
+		}
+	}
+	for _, p := range pings {
+		got, source := where(rulesKey{"echo", p.id})
+		if got != p.flow.want || p.received != p.flow.replies {
+			t.Errorf("the %s's ping of %s went %s from %s with %d replies, want %s with %d", p.flow.from, p.flow.destination, got, source, p.received, p.flow.want, p.flow.replies)
+		}
+		if got == rulesIntoTun && p.flow.from == "container" && p.flow.destination.Is4() && source != rulesHost[4].own.Addr() {
+			t.Errorf("the container's ping entered the tun from %s, want the tun's own address %s", source, rulesHost[4].own.Addr())
+		}
+	}
 }
 
 // exitLabArm is one state of the mode 2 lab
@@ -340,7 +455,9 @@ type exitLabArm struct {
 	// strict sets rp_filter 1 on the uplink, and fib writes NixOS's reverse path chain, "strict" or "loose"
 	strict bool
 	fib    string
-	// catchAlls is the input links of the rules at 5440 the arm converges on
+	// unaddressed is the family, 4 or 6, whose overlay address the arm leaves off the tun, none where it is 0
+	unaddressed int
+	// catchAlls is the input links of the rules at 5440 the arm converges on, lo's in a family the tun holds an overlay address of
 	catchAlls []string
 	probes    []rulesProbe
 	flows     []exitFlow
@@ -353,24 +470,18 @@ func exitLabArms() []exitLabArm {
 	internet4, internet6 := exitLabHost[4].internet.Addr().String(), exitLabHost[6].internet.Addr().String()
 	modeTwo := slices.Concat(
 		rulesRow(internet4, tun, tun, up, up, up), rulesRow(internet6, tun, tun, up, up, up),
-		[]rulesProbe{{exitLabHost[4].internet.Addr(), rulesOnUplink, up}, {exitLabHost[6].internet.Addr(), rulesOnUplink, up}},
+		[]rulesProbe{{exitLabHost[4].internet.Addr(), rulesOnUplink, up, 0}, {exitLabHost[6].internet.Addr(), rulesOnUplink, up, 0}},
 		rulesRow("192.0.2.5", tun, tun, tun, up, up), rulesRow("3fff::5", tun, tun, tun, up, up),
 		rulesRow("192.0.2.77", refused, refused, refused, up, up), rulesRow("3fff::77", refused, refused, refused, up, up),
 		rulesRow("203.0.113.40", tun, tun, up, up, up), rulesRow("2001:db8:300::4", tun, tun, up, up, up),
 		rulesOut(rulesHost[4].lan.Addr().String()), rulesOut(rulesHost[6].lan.Addr().String()),
 	)
 	flows := func(container, lan rulesVerdict) []exitFlow {
-		replies := func(v rulesVerdict) int {
-			if v == up {
-				return exitPings
-			}
-			return 0
-		}
 		var out []exitFlow
 		for _, family := range []int{4, 6} {
 			out = append(out,
-				exitFlow{"container", exitLabHost[family].internet.Addr(), container, replies(container)},
-				exitFlow{"lan", exitLabHost[family].internet.Addr(), lan, replies(lan)})
+				exitFlow{"container", exitLabHost[family].internet.Addr(), container, exitReplies(container)},
+				exitFlow{"lan", exitLabHost[family].internet.Addr(), lan, exitReplies(lan)})
 		}
 		return out
 	}
@@ -378,6 +489,20 @@ func exitLabArms() []exitLabArm {
 		var out []exitReply
 		for _, family := range []int{4, 6} {
 			out = append(out, exitReply{false, exitLabHost[family].internet.Addr(), services}, exitReply{true, exitLabHost[family].internet.Addr(), underlay})
+		}
+		return out
+	}
+	// the internet host from an unbound socket, connected and not, out of the uplink in the family the tun holds no overlay address of
+	// and into the tun in the other
+	unbound := func(unaddressed int) []rulesProbe {
+		var out []rulesProbe
+		for _, family := range []int{4, 6} {
+			want := tun
+			if family == unaddressed {
+				want = up
+			}
+			internet := exitLabHost[family].internet.Addr()
+			out = append(out, rulesProbe{internet, rulesUnbound, want, 0}, rulesProbe{internet, rulesUnconnected, want, 0})
 		}
 		return out
 	}
@@ -414,13 +539,21 @@ func exitLabArms() []exitLabArm {
 		probes: slices.Concat(rulesOut(internet4), rulesOut(internet6),
 			rulesRow("192.0.2.5", tun, tun, tun, up, up), rulesRow("3fff::5", tun, tun, tun, up, up)),
 		flows: flows(up, up), replies: answered(true, true),
+	}, {
+		// with no IPv4 overlay address on the tun, 5440 takes none of the host's own IPv4 traffic, so it leaves by the uplink
+		// whether its socket connects or not, while the host's IPv6 traffic and the bridge's keep following the mode
+		name: "the tun holding no IPv4 overlay address", on: true, forward: []string{exitBridge}, unaddressed: 4, catchAlls: []string{"lo", exitBridge},
+		probes: unbound(4),
+	}, {
+		name: "the tun holding no IPv6 overlay address", on: true, forward: []string{exitBridge}, unaddressed: 6, catchAlls: []string{"lo", exitBridge},
+		probes: unbound(6),
 	}}
 }
 
 // a leaf in mode 2 beside a container behind a bridge, masqueraded as Docker does, and a LAN it routes untranslated, each in a namespace of its own
 // for each arm the reconciler installs mode 2's rules over the leaf's links as the watch reads them, and each socket of the host's own,
-// unbound, bound to the overlay address, bound to the uplink's address or device, carrying the underlay's mark, or that and bound to the overlay address,
-// sends UDP, TCP and echo where the arm says, the container's and the LAN host's pings leave by the link the arm says and are answered as it says,
+// unbound and connected or not, bound to the overlay address, bound to the uplink's address or device, carrying the underlay's mark, or that and
+// bound to the overlay address, sends UDP, TCP and echo where the arm says, a family whose overlay address an arm leaves off the tun among them, the container's and the LAN host's pings leave by the link the arm says and are answered as it says,
 // and the leaf's service on the uplink's address and its underlay's socket are answered from the internet under each reverse path check
 // and a clean stop leaves no rule or route of the reconciler's protocol
 func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
@@ -439,7 +572,6 @@ func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = unix.Close(tunCapture); _ = unix.Close(farCapture) })
 
-	probe, ping := 0, exitPingBase
 	for _, arm := range exitLabArms() {
 		t.Run(arm.name, func(t *testing.T) {
 			entries := map[string]*netstack.Peer{
@@ -474,11 +606,13 @@ func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 				reverseFib(t, lab.leaf, arm.fib == "strict")
 				t.Cleanup(func() { reverseFibRemove(t, lab.leaf) })
 			}
-			d.mode(t, arm.forward, arm.on, announced)
+			d.mode(t, arm.forward, arm.on, announced, arm.unaddressed)
 			var want []string
-			for _, family := range []string{"ipv4", "ipv6"} {
+			for _, family := range []int{4, 6} {
 				for _, link := range arm.catchAlls {
-					want = append(want, "5440 "+family+" iif "+link)
+					if family != arm.unaddressed {
+						want = append(want, fmt.Sprintf("5440 ipv%d iif %s", family, link))
+					}
 				}
 			}
 			slices.Sort(want)
@@ -490,91 +624,7 @@ func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 				t.Logf("the exit status reads %+v", *status)
 			}
 
-			type sent struct {
-				probe    rulesProbe
-				protocol string
-				number   int
-				refused  bool
-			}
-			var all []sent
-			var fds []int
-			if err := lab.leaf.Do(func() error {
-				for _, p := range arm.probes {
-					for _, protocol := range []string{"udp", "tcp", "echo"} {
-						probe++
-						fd, refused, err := rulesSend(p, protocol, probe)
-						if err != nil {
-							return fmt.Errorf("%s %s to %s: %w", p.socket, protocol, p.destination, err)
-						}
-						if fd >= 0 {
-							fds = append(fds, fd)
-						}
-						all = append(all, sent{p, protocol, probe, refused})
-					}
-				}
-				return nil
-			}); err != nil {
-				t.Fatalf("send the probes: %v", err)
-			}
-			type pinged struct {
-				flow     exitFlow
-				id       int
-				received int
-			}
-			var flows []pinged
-			for _, flow := range arm.flows {
-				ping++
-				from := map[string]*netnstest.Thread{"container": lab.container, "lan": lab.lan}[flow.from]
-				var received int
-				if err := from.Do(func() (err error) { received, err = exitPing(flow.destination, ping); return err }); err != nil {
-					t.Fatalf("ping %s from the %s: %v", flow.destination, flow.from, err)
-				}
-				flows = append(flows, pinged{flow, ping, received})
-			}
-			for _, reply := range arm.replies {
-				if got := exitAnswered(t, lab, reply); got != reply.answered {
-					what := "the leaf's service on the uplink's address answered the internet host"
-					if reply.underlay {
-						what = "the internet host answered the leaf's underlay socket"
-					}
-					t.Errorf("over %s, %s %v, want %v", familyName(reply.destination), what, got, reply.answered)
-				}
-			}
-			intoTun, outUplink := rulesDrain(tunCapture), rulesDrain(farCapture)
-			for _, fd := range fds {
-				_ = unix.Close(fd)
-			}
-			where := func(key rulesKey) (rulesVerdict, netip.Addr) {
-				tunSource, inTun := intoTun[key]
-				upSource, onUplink := outUplink[key]
-				switch {
-				case inTun && onUplink:
-					return rulesSeveral, tunSource
-				case inTun:
-					return rulesIntoTun, tunSource
-				case onUplink:
-					return rulesOutUplink, upSource
-				}
-				return rulesNowhere, netip.Addr{}
-			}
-			for _, s := range all {
-				got, source := where(rulesKey{s.protocol, s.number})
-				if s.refused {
-					got = rulesRefused
-				}
-				if got != s.probe.want {
-					t.Errorf("%s from a socket %s to %s went %s from %s, want %s", s.protocol, s.probe.socket, s.probe.destination, got, source, s.probe.want)
-				}
-			}
-			for _, f := range flows {
-				got, source := where(rulesKey{"echo", f.id})
-				if got != f.flow.want || f.received != f.flow.replies {
-					t.Errorf("the %s's ping of %s went %s from %s with %d replies, want %s with %d", f.flow.from, f.flow.destination, got, source, f.received, f.flow.want, f.flow.replies)
-				}
-				if got == rulesIntoTun && f.flow.from == "container" && f.flow.destination.Is4() && source != rulesHost[4].own.Addr() {
-					t.Errorf("the container's ping entered the tun from %s, want the tun's own address %s", source, rulesHost[4].own.Addr())
-				}
-			}
+			exitProbe(t, lab, []exitCapture{{rulesIntoTun, tunCapture}, {rulesOutUplink, farCapture}}, []string{"udp", "tcp", "echo"}, arm.probes, arm.flows, arm.replies)
 		})
 	}
 

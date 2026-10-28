@@ -71,15 +71,12 @@ const (
 	rulesFromOverlay
 	rulesFromUplink
 	rulesOnUplink
-	rulesMarked
-	rulesMarkedFromOverlay
+	// rulesUnconnected is unbound and sends a datagram to its destination with no connect, a TCP socket connecting as it must
+	rulesUnconnected
 )
 
 func (s rulesSocket) String() string {
-	return [...]string{
-		"unbound", "bound to the overlay address", "bound to the uplink's address", "bound to the uplink's device",
-		"carrying the underlay's mark", "carrying the mark and bound to the overlay address",
-	}[s]
+	return [...]string{"unbound", "bound to the overlay address", "bound to the uplink's address", "bound to the uplink's device", "unbound and unconnected"}[s]
 }
 
 // rulesHost is the leaf's addresses in one family: its own inside the overlay, its uplink's, and the far host's two
@@ -91,26 +88,28 @@ var rulesHost = map[int]struct{ own, uplink, gateway, lan netip.Prefix }{
 // rulesOverlay is the leaf's cap.border overlay
 var rulesOverlay = []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}
 
-// rulesProbe is one socket's first packet to destination, and where it has to go
+// rulesProbe is one socket's first packet to destination, and where it has to go, the socket carrying mark where it is not zero
 type rulesProbe struct {
 	destination netip.Addr
 	socket      rulesSocket
 	want        rulesVerdict
+	mark        uint32
 }
 
-// rulesRow is a probe of destination from each socket but the one bound to the uplink's device, wanting in turn
+// rulesRow is a probe of destination from each socket but the one bound to the uplink's device, wanting in turn, the unbound socket and the one
+// bound to the overlay address each also carrying the underlay's mark
 func rulesRow(destination string, unbound, overlay, uplink, marked, markedOverlay rulesVerdict) []rulesProbe {
 	to := netip.MustParseAddr(destination)
 	return []rulesProbe{
-		{to, rulesUnbound, unbound}, {to, rulesFromOverlay, overlay}, {to, rulesFromUplink, uplink},
-		{to, rulesMarked, marked}, {to, rulesMarkedFromOverlay, markedOverlay},
+		{to, rulesUnbound, unbound, 0}, {to, rulesFromOverlay, overlay, 0}, {to, rulesFromUplink, uplink, 0},
+		{to, rulesUnbound, marked, schema.UnderlayMark}, {to, rulesFromOverlay, markedOverlay, schema.UnderlayMark},
 	}
 }
 
 // rulesOut is rulesRow for a destination every socket reaches out of the uplink, the one bound to the uplink's device among them
 func rulesOut(destination string) []rulesProbe {
 	up := rulesOutUplink
-	return append(rulesRow(destination, up, up, up, up, up), rulesProbe{netip.MustParseAddr(destination), rulesOnUplink, up})
+	return append(rulesRow(destination, up, up, up, up, up), rulesProbe{netip.MustParseAddr(destination), rulesOnUplink, up, 0})
 }
 
 // rulesOnDevice is the socket bound to the uplink's device sent to a held IPv4 and a held IPv6 destination, which the holds do not refuse
@@ -118,7 +117,7 @@ func rulesOut(destination string) []rulesProbe {
 // route.c's on-link assumption, so the packet waits on a neighbor nothing answers
 // and IPv6 takes only routes through the bound device, passes the hold over and leaves by main's default, out of the uplink
 func rulesOnDevice(v4, v6 string) []rulesProbe {
-	return []rulesProbe{{netip.MustParseAddr(v4), rulesOnUplink, rulesNowhere}, {netip.MustParseAddr(v6), rulesOnUplink, rulesOutUplink}}
+	return []rulesProbe{{netip.MustParseAddr(v4), rulesOnUplink, rulesNowhere, 0}, {netip.MustParseAddr(v6), rulesOnUplink, rulesOutUplink, 0}}
 }
 
 // rulesForward is a packet a peer's session delivers, which the mesh writes into the tun for the host to forward
@@ -173,7 +172,7 @@ func rulesArms(learned *netstack.Peer) []rulesArm {
 		table: slices.Concat(peerRoutes, []string{"unicast 203.0.113.128/25", "unicast 2001:db8:300::/64", "unicast 0.0.0.0/0", "unicast ::/0"}),
 		probes: slices.Concat(reachPeers, unrouted, lan,
 			rulesRow("203.0.113.9", up, tun, up, up, up), rulesRow("2001:db8:c::9", up, tun, up, up, up),
-			[]rulesProbe{{netip.MustParseAddr("203.0.113.9"), rulesOnUplink, up}, {netip.MustParseAddr("2001:db8:c::9"), rulesOnUplink, up}},
+			[]rulesProbe{{netip.MustParseAddr("203.0.113.9"), rulesOnUplink, up, 0}, {netip.MustParseAddr("2001:db8:c::9"), rulesOnUplink, up, 0}},
 			rulesRow("203.0.113.130", tun, tun, tun, up, up), rulesRow("2001:db8:300::4", tun, tun, tun, up, up),
 			rulesOnDevice("192.0.2.77", "3fff::77")),
 	}, {
@@ -197,7 +196,7 @@ func rulesArms(learned *netstack.Peer) []rulesArm {
 		table: slices.Concat(peerRoutes, []string{"unicast 0.0.0.0/1", "unicast 128.0.0.0/1", "unicast ::/1", "unicast 8000::/1"}),
 		probes: slices.Concat(reachPeers,
 			rulesRow("203.0.113.9", up, tun, up, up, up), rulesRow("2001:db8:c::9", up, tun, up, up, up),
-			[]rulesProbe{{netip.MustParseAddr("203.0.113.9"), rulesOnUplink, up}, {netip.MustParseAddr("2001:db8:c::9"), rulesOnUplink, up}}),
+			[]rulesProbe{{netip.MustParseAddr("203.0.113.9"), rulesOnUplink, up, 0}, {netip.MustParseAddr("2001:db8:c::9"), rulesOnUplink, up, 0}}),
 	}, {
 		// a split internet counts as a default by its length too, while the mesh's subnet beside it carries every source of an unmarked socket not bound to the uplink's device
 		name: "a split internet learned",
@@ -230,7 +229,7 @@ func rulesArms(learned *netstack.Peer) []rulesArm {
 		table:   slices.Concat(peerRoutes, []string{"unicast 203.0.0.0/8", "unicast 2001::/16"}),
 		probes: slices.Concat(reachPeers, lan,
 			rulesRow("203.0.113.9", tun, tun, tun, up, up), rulesRow("2001:db8:c::9", tun, tun, tun, up, up),
-			[]rulesProbe{{netip.MustParseAddr("203.0.113.9"), rulesOnUplink, up}, {netip.MustParseAddr("2001:db8:c::9"), rulesOnUplink, up}}),
+			[]rulesProbe{{netip.MustParseAddr("203.0.113.9"), rulesOnUplink, up, 0}, {netip.MustParseAddr("2001:db8:c::9"), rulesOnUplink, up, 0}}),
 	}, {
 		// this node's own prefix inside the overlay is held, so neither a forwarded packet nor a socket of the host's takes main to it, but one carrying the underlay's mark, and over IPv6 one bound to the uplink's device
 		name:    "this node's own prefix inside the overlay",
@@ -486,7 +485,7 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 					got = rulesSeveral
 				}
 				if got != s.probe.want {
-					t.Errorf("%s from a socket %s to %s went %s from %s, want %s", s.protocol, s.probe.socket, s.probe.destination, got, source, s.probe.want)
+					t.Errorf("%s from a socket %s under mark %#x to %s went %s from %s, want %s", s.protocol, s.probe.socket, s.probe.mark, s.probe.destination, got, source, s.probe.want)
 				}
 			}
 			for _, f := range injected {
@@ -766,7 +765,7 @@ func rulesSend(p rulesProbe, protocol string, n int) (int, bool, error) {
 	refusal := func(err error) bool { return errors.Is(err, unix.EHOSTUNREACH) || errors.Is(err, unix.ENETUNREACH) }
 	bind := unspecified
 	switch p.socket {
-	case rulesFromOverlay, rulesMarkedFromOverlay:
+	case rulesFromOverlay:
 		bind = own
 	case rulesFromUplink:
 		bind = uplink
@@ -775,8 +774,8 @@ func rulesSend(p rulesProbe, protocol string, n int) (int, bool, error) {
 			return fail(err)
 		}
 	}
-	if p.socket == rulesMarked || p.socket == rulesMarkedFromOverlay {
-		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(schema.UnderlayMark)); err != nil {
+	if p.mark != 0 {
+		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(p.mark)); err != nil {
 			return fail(err)
 		}
 	}
@@ -789,20 +788,27 @@ func rulesSend(p rulesProbe, protocol string, n int) (int, bool, error) {
 			return fail(fmt.Errorf("bind %s port %d: %w", bind, port, err))
 		}
 	}
-	switch err := unix.Connect(fd, rulesSockaddr(p.destination, peerPort)); {
-	case refusal(err):
-		_ = unix.Close(fd)
-		return -1, true, nil
-	case protocol == "tcp" && errors.Is(err, unix.EINPROGRESS):
-		return fd, false, nil
-	case err != nil:
-		return fail(fmt.Errorf("connect: %w", err))
+	connected := p.socket != rulesUnconnected || protocol == "tcp"
+	if connected {
+		switch err := unix.Connect(fd, rulesSockaddr(p.destination, peerPort)); {
+		case refusal(err):
+			_ = unix.Close(fd)
+			return -1, true, nil
+		case protocol == "tcp" && errors.Is(err, unix.EINPROGRESS):
+			return fd, false, nil
+		case err != nil:
+			return fail(fmt.Errorf("connect: %w", err))
+		}
 	}
 	payload := []byte(fmt.Sprintf("probe %d", n))
 	if protocol == "echo" {
 		payload = rulesEcho(family == unix.AF_INET, n, payload)
 	}
-	if _, err := unix.Write(fd, payload); refusal(err) {
+	send := func() error { _, err := unix.Write(fd, payload); return err }
+	if !connected {
+		send = func() error { return unix.Sendto(fd, payload, 0, rulesSockaddr(p.destination, peerPort)) }
+	}
+	if err := send(); refusal(err) {
 		_ = unix.Close(fd)
 		return -1, true, nil
 	} else if err != nil {
