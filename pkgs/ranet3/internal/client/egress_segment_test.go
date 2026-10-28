@@ -39,7 +39,7 @@ func egressSegment(sid string, allow ...string) srv6.Segment {
 // list these tests write.
 func egressNode(cfg *config.Config, segments ...srv6.Segment) {
 	cfg.Cap.Egress = &egress.Egress{}
-	cfg.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")}}
+	cfg.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.113.0/24")}}
 	cfg.Cap.Segment = &srv6.Segments{Local: segments}
 }
 
@@ -61,9 +61,9 @@ func TestEgressSegmentsComeAndGoOnlyByRestart(t *testing.T) {
 		}
 		return cfg
 	}
-	first := egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32", "198.18.104.0/24")
-	moved := egressSegment("3fff:1:69c:8c6::4", "198.18.104.0/24", "3fff:a::/32")
-	waypoint := srv6.Segment{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}
+	first := egressSegment("3fff:b:0:106::3", "3fff:a::/32", "203.0.113.0/25")
+	moved := egressSegment("3fff:b:0:106::4", "203.0.113.0/25", "3fff:a::/32")
+	waypoint := srv6.Segment{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd}
 	for name, move := range map[string]struct {
 		old, next *config.Config
 		naming    string
@@ -92,7 +92,7 @@ func TestEgressSegmentsComeAndGoOnlyByRestart(t *testing.T) {
 // readiness pair as it was, and the translator's word alone originates the
 // SID's /128, which its word withdraws again once the host forwards IPv4
 func TestSIDFollowsTheTranslatorsWordWhileTheReadinessPairStays(t *testing.T) {
-	const sid = "3fff:1:69c:8c6::3"
+	const sid = "3fff:b:0:106::3"
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -148,7 +148,7 @@ func joined(t *testing.T, what string, done <-chan struct{}) {
 // moved the SID ends before the reload's own republish, so the speaker ends
 // on the moved SID
 func TestReadinessRacingAReloadEndsOnTheMovedSID(t *testing.T) {
-	const old, moved = "3fff:1:69c:8c6::3", "3fff:1:69c:8c6::4"
+	const old, moved = "3fff:b:0:106::3", "3fff:b:0:106::4"
 	c, path, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(old, "3fff:a::/32")) })
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -191,7 +191,7 @@ func TestReadinessRacingAReloadEndsOnTheMovedSID(t *testing.T) {
 // withdrew the SID ends before the withdrawal's own republish, so the SID
 // stays withdrawn
 func TestReloadRacingAWithdrawalLeavesTheSIDWithdrawn(t *testing.T) {
-	const sid = "3fff:1:69c:8c6::3"
+	const sid = "3fff:b:0:106::3"
 	c, path, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -230,7 +230,7 @@ func TestReloadRacingAWithdrawalLeavesTheSIDWithdrawn(t *testing.T) {
 // A republish that waited for another to finish publishes the configuration
 // stored while it waited, never the one it found on arrival
 func TestRepublishWaitingOnAnotherPublishesTheConfigurationStoredMeanwhile(t *testing.T) {
-	const old, moved = "3fff:1:69c:8c6::3", "3fff:1:69c:8c6::4"
+	const old, moved = "3fff:b:0:106::3", "3fff:b:0:106::4"
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(old, "3fff:a::/32")) })
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -260,9 +260,9 @@ func TestRepublishWaitingOnAnotherPublishesTheConfigurationStoredMeanwhile(t *te
 // a reload moving an egress segment to another SID moves the /128 with it,
 // and one only reordering its allow list applies nothing
 func TestReloadMovesTheOriginatedSIDWithTheSegment(t *testing.T) {
-	const old, moved = "3fff:1:69c:8c6::3", "3fff:1:69c:8c6::4"
+	const old, moved = "3fff:b:0:106::3", "3fff:b:0:106::4"
 	c, path, _, bus := reloadOf(t, func(cfg *config.Config) {
-		egressNode(cfg, egressSegment(old, "3fff:a::/32", "198.18.104.0/24"))
+		egressNode(cfg, egressSegment(old, "3fff:a::/32", "203.0.113.0/25"))
 	})
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -272,7 +272,7 @@ func TestReloadMovesTheOriginatedSIDWithTheSegment(t *testing.T) {
 	}
 
 	reordered := *c.config()
-	reordered.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{egressSegment(old, "198.18.104.0/24", "3fff:a::/32")}}
+	reordered.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{egressSegment(old, "203.0.113.0/25", "3fff:a::/32")}}
 	writeConfig(t, path, &reordered)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a reordered allow list was refused: %v", err)
@@ -282,7 +282,7 @@ func TestReloadMovesTheOriginatedSIDWithTheSegment(t *testing.T) {
 	}
 
 	next := *c.config()
-	next.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{egressSegment(moved, "3fff:a::/32", "198.18.104.0/24")}}
+	next.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{egressSegment(moved, "3fff:a::/32", "203.0.113.0/25")}}
 	writeConfig(t, path, &next)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("an egress segment moved to another SID was refused: %v", err)
@@ -295,9 +295,9 @@ func TestReloadMovesTheOriginatedSIDWithTheSegment(t *testing.T) {
 // a node with two egress segments originates both SIDs' /128 while the
 // translator says the SIDs are served, and neither once it says they are not
 func TestEveryEgressSIDIsOriginatedWhileServed(t *testing.T) {
-	const first, second = "3fff:1:69c:8c6::3", "3fff:1:69c:8c6::4"
+	const first, second = "3fff:b:0:106::3", "3fff:b:0:106::4"
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) {
-		egressNode(cfg, egressSegment(first, "3fff:a::/32"), egressSegment(second, "3fff:b::/32", "198.18.104.0/24"))
+		egressNode(cfg, egressSegment(first, "3fff:a::/32"), egressSegment(second, "3fff:c::/32", "203.0.113.0/25"))
 	})
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -314,7 +314,7 @@ func TestEveryEgressSIDIsOriginatedWhileServed(t *testing.T) {
 // a node with no egress segment originates no SID whatever the translator's
 // word, so the announcement is cap.route's alone
 func TestNodeWithNoEgressSegmentOriginatesNoSID(t *testing.T) {
-	cfg := &config.Config{Cap: config.Caps{Segment: &srv6.Segments{Local: []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}}}}
+	cfg := &config.Config{Cap: config.Caps{Segment: &srv6.Segments{Local: []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd}}}}}
 	c := &Client{}
 	c.egressServes.Store(true)
 	if routes := c.announced(cfg, c.egressAdvertised()); len(routes) != 0 {

@@ -115,7 +115,7 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 // whether link.mtu moves or the list grows by a segment
 func TestTUNFollowsAReloadOfLinkMTUOrTheSteering(t *testing.T) {
 	header := func(segments int) int { return 40 + 8 + 16*segments }
-	a, b := "3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1"
+	a, b := "3fff:b:0:206::1", "3fff:b:0:406::1"
 	for name, move := range map[string]struct {
 		old, next func(*config.Config)
 		from, to  int

@@ -40,7 +40,7 @@ func TestDeviceStartsAtLinkMTULessTheLongestSteeringList(t *testing.T) {
 				via[i] = schema.AddrFrom(netip.AddrFrom16([16]byte{0x3f, 0xff, 0, 1, 15: byte(i + 1)}))
 			}
 			cfg.Cap.Segment = &srv6.Segments{
-				Source: schema.MustAddr("3fff:1:69c:8c0::1"),
+				Source: schema.MustAddr("3fff:b:0:100::1"),
 				Steer:  []srv6.Steer{{From: schema.MustPrefix("3fff:a::1/128"), Via: via}},
 			}
 			header = 40 + 8 + 16*segments

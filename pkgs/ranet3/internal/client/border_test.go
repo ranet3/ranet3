@@ -90,7 +90,7 @@ func borderOf(prefixes ...string) *egress.Border {
 // neither family ready, whatever the translator holds, the status saying why,
 // and both come back with the chain
 func TestEgressStopsWhileTheBorderIsNotReady(t *testing.T) {
-	const sid = "3fff:1:69c:8c6::3"
+	const sid = "3fff:b:0:106::3"
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -114,7 +114,7 @@ func TestEgressStopsWhileTheBorderIsNotReady(t *testing.T) {
 // a node writing cap.border starts with the border not ready, so a translator
 // serving the SIDs before the filter's first pass originates none
 func TestEgressWaitsForTheBordersFirstPass(t *testing.T) {
-	const sid = "3fff:1:69c:8c6::3"
+	const sid = "3fff:b:0:106::3"
 	cfg, privateKey, reg := runtimeFixture(t)
 	cfg.Link.Port = freeUDPPort(t)
 	egressNode(cfg, egressSegment(sid, "3fff:a::/32"))
@@ -138,7 +138,7 @@ func TestEgressWaitsForTheBordersFirstPass(t *testing.T) {
 // border going down while the translator's republish is held, and the
 // translator withdrawing while the border's is held
 func TestRepublishRacingAFallLeavesTheSIDWithdrawn(t *testing.T) {
-	const sid = "3fff:1:69c:8c6::3"
+	const sid = "3fff:b:0:106::3"
 	for _, arm := range []struct {
 		name         string
 		held, racing func(c *Client)
@@ -202,7 +202,7 @@ func TestEgressStatusKeepsTheTranslatorsReasonBesideTheBorders(t *testing.T) {
 		t.Errorf("a node with no egress segment reads ready %v, unready %q, want the translator's word alone", got.Ready, got.Unready)
 	}
 	cfg := &config.Config{}
-	egressNode(cfg, egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32"))
+	egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32"))
 	c.cfg.Store(cfg)
 	if got := c.egress().Unready; got != reason+", and until the border filter is read back" {
 		t.Errorf("the egress status reads unready %q", got)
@@ -212,14 +212,14 @@ func TestEgressStatusKeepsTheTranslatorsReasonBesideTheBorders(t *testing.T) {
 // a reload changing the overlay or the SIDs hands the running filter both,
 // and one reordering the overlay hands it nothing
 func TestReloadMovesTheBorderInPlace(t *testing.T) {
-	const sid, moved = "3fff:1:69c:8c6::3", "3fff:1:69c:8c6::4"
+	const sid, moved = "3fff:b:0:106::3", "3fff:b:0:106::4"
 	c, path, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
 	border := &borderRecord{}
 	c.SetBorder(border)
 
 	reordered := *c.config()
-	reordered.Cap.Border = borderOf("198.18.0.0/15", "3fff::/20")
+	reordered.Cap.Border = borderOf("203.0.113.0/24", "3fff::/20")
 	writeConfig(t, path, &reordered)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a reordered overlay was refused: %v", err)
@@ -229,7 +229,7 @@ func TestReloadMovesTheBorderInPlace(t *testing.T) {
 	}
 
 	grown := *c.config()
-	grown.Cap.Border = borderOf("198.18.0.0/15", "3fff::/20", "2001:db8::/32")
+	grown.Cap.Border = borderOf("203.0.113.0/24", "3fff::/20", "2001:db8::/32")
 	writeConfig(t, path, &grown)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a grown overlay was refused: %v", err)
@@ -256,7 +256,7 @@ func TestReloadMovesTheBorderInPlace(t *testing.T) {
 // narrowing the overlay alone rebuilds the table the mesh acts on, and a SID
 // delivering to the mesh refuses a source the old overlay held
 func TestReloadMovingTheOverlayRebuildsTheLocalTable(t *testing.T) {
-	const sid, mesh = "3fff:1:69c:8c6::3", "3fff:1:69c:8c6::1"
+	const sid, mesh = "3fff:b:0:106::3", "3fff:b:0:106::1"
 	c, path, _, _ := reloadOf(t, func(cfg *config.Config) {
 		egressNode(cfg, egressSegment(sid, "3fff:a::/32"), srv6.Segment{SID: schema.MustAddr(mesh), Behavior: srv6.BehaviorEndDT46})
 	})
@@ -275,7 +275,7 @@ func TestReloadMovingTheOverlayRebuildsTheLocalTable(t *testing.T) {
 		t.Fatalf("from inside 3fff::/20 the SID returned %v (%v), want a delivery", got.Action, got.Err)
 	}
 	narrowed := *c.config()
-	narrowed.Cap.Border = borderOf("198.18.0.0/15", "3fff:a::/32")
+	narrowed.Cap.Border = borderOf("203.0.113.0/24", "3fff:a::/32")
 	writeConfig(t, path, &narrowed)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a narrowed overlay was refused: %v", err)
@@ -403,7 +403,7 @@ func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
 				if node.exit {
-					egressNode(cfg, egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32"))
+					egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32"))
 				}
 			})
 			c.Mesh = &netstack.Mesh{Name: "ranet3"}
@@ -417,10 +417,10 @@ func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 // the filter drops the SID of every local segment, whatever its behavior
 func TestBorderDropsEveryLocalSegmentsSID(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
-		egressNode(cfg, egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32"), srv6.Segment{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd})
+		egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32"), srv6.Segment{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd})
 	})
 	c.Mesh = &netstack.Mesh{Name: "ranet3"}
-	want := []netip.Addr{netip.MustParseAddr("3fff:1:69c:8c6::3"), netip.MustParseAddr("3fff:1:69c:8c6::1")}
+	want := []netip.Addr{netip.MustParseAddr("3fff:b:0:106::3"), netip.MustParseAddr("3fff:b:0:106::1")}
 	if got := c.BorderRuntime().SIDs; !slices.Equal(got, want) {
 		t.Errorf("the border drops %v, want %v", got, want)
 	}
@@ -433,7 +433,7 @@ func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
 	if status := c.Status().Border; status != nil {
 		t.Errorf("a node with no border reported %+v", status)
 	}
-	sids := []netip.Addr{netip.MustParseAddr("3fff:1:69c:8c6::3"), netip.MustParseAddr("3fff:1:69c:8c6::1")}
+	sids := []netip.Addr{netip.MustParseAddr("3fff:b:0:106::3"), netip.MustParseAddr("3fff:b:0:106::1")}
 	c.SetBorder(&borderRecord{border: *borderOf("3fff::/20", "198.18.0.0/15"), sids: sids})
 	status := c.Status().Border
 	want := control.BorderDrops{OverlaySourceIPv4: 3, RoutingHeader: 1}
@@ -482,7 +482,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	})
 	derived := []kernel.DumpedRule{
 		{Family: kernel.FamilyIPv4, Priority: 5100, FWMark: 0x72, FWMask: ^uint32(0), Action: "goto", Goto: 5190, Protocol: ownProto},
-		{Family: kernel.FamilyIPv4, Priority: 5110, To: netip.MustParsePrefix("198.18.0.0/15"), Action: "lookup", Table: uint32(kernel.DefaultTable), Protocol: ownProto},
+		{Family: kernel.FamilyIPv4, Priority: 5110, To: netip.MustParsePrefix("203.0.113.0/24"), Action: "lookup", Table: uint32(kernel.DefaultTable), Protocol: ownProto},
 		{Family: kernel.FamilyIPv4, Priority: 5190, Action: "nop", Protocol: ownProto},
 		{Family: kernel.FamilyIPv6, Priority: 5410, Action: "lookup", Table: 254, Suppress: kernel.SuppressUpTo(0), Protocol: ownProto},
 	}
@@ -493,7 +493,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		// the reconciler's protocol on a rule it did not derive
 		{Family: kernel.FamilyIPv4, Priority: 5120, IIF: "eth1", Action: "lookup", Table: 254, Protocol: ownProto},
 		// the default protocol, which a reconciler naming another does not own
-		{Family: kernel.FamilyIPv4, Priority: 5150, From: netip.MustParsePrefix("198.18.104.0/24"), Action: "lookup", Table: 254, Protocol: kernel.DefaultProtocol},
+		{Family: kernel.FamilyIPv4, Priority: 5150, From: netip.MustParsePrefix("203.0.113.0/25"), Action: "lookup", Table: 254, Protocol: kernel.DefaultProtocol},
 		{Family: kernel.FamilyIPv4, Priority: 1000, L3mdev: true, Action: "lookup", Protocol: 2},
 		{Family: kernel.FamilyIPv6, Priority: 5410, Action: "lookup", Table: 254, Protocol: 4},
 	}
