@@ -313,7 +313,7 @@ func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 		if got := slices.Compact(slices.SortedFunc(slices.Values(routes), compareRoutes)); !slices.Equal(got, []Route{route}) {
 			t.Errorf("%s: the table holds %v beside the holds, want %s", step, got, route)
 		}
-		if got, want := slices.Compact(sortedByText(rules)), sortedByText(derivedRules(DefaultTable, overlay, nil)); !slices.Equal(got, want) {
+		if got, want := slices.Compact(sortedByText(rules)), sortedByText(derivedRules(DefaultTable, overlay, nil, exitView{})); !slices.Equal(got, want) {
 			t.Errorf("%s: the rules are %v, want %v", step, got, want)
 		}
 	}

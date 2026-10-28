@@ -24,7 +24,17 @@ import (
 // the length of a route that counts as a default by its length, but never an
 // unreachable, blackhole or prohibit one.
 // routing.md's "Where a lookup ends on Linux" gives where each lookup ends.
-func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix) []Rule {
+//
+// Mode 2 (exit.on) adds 5405, 5435 and 5440. Neither 5405 nor 5435 selects a
+// source overlapping the overlay or this node's own prefixes: 5405 comes ahead
+// of 5430, so an overlay address on lo, or an address in a LAN this node
+// announces, would otherwise leave by main where mode off sends it into the
+// mesh. A selector overlapping either is left out whole. In a family the tun
+// holds no overlay address of, 5440 holds no rule, so the host's traffic and
+// the forwarded links' leave by main as they do while no exit is live: the
+// tun read drops a packet 5440 would send it from another of the host's
+// addresses, the source a masquerade to the tun then picks as well.
+func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix, exit exitView) []Rule {
 	var out []Rule
 	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
 		floor := schema.MinSubnetBits4
@@ -39,16 +49,85 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 		for _, prefix := range familyPrefixes(family, schemaPrefixes(overlay)) {
 			out = append(out, Rule{Family: family, Priority: priorityOverlay, To: schema.PrefixFrom(prefix), Table: id})
 		}
+		out = append(out, Rule{Family: family, Priority: priorityUnderlayPastMesh, FWMark: schema.UnderlayMark, action: actionGoto, target: priorityMeshEnd})
+		addresses, networks := exit.sources(family, schemaPrefixes(overlay), own)
+		for _, address := range addresses {
+			out = append(out, Rule{Family: family, Priority: priorityUplinkSource, From: schema.PrefixFrom(address), IIF: loopback, Table: schema.TableMain})
+		}
 		out = append(out,
-			Rule{Family: family, Priority: priorityUnderlayPastMesh, FWMark: schema.UnderlayMark, action: actionGoto, target: priorityMeshEnd},
 			Rule{Family: family, Priority: priorityMain, Table: schema.TableMain, suppress: SuppressUpTo(0)},
 			Rule{Family: family, Priority: priorityMesh, Table: id, suppress: SuppressUpTo(floor - 1)},
 		)
 		for _, prefix := range familyPrefixes(family, own) {
 			out = append(out, Rule{Family: family, Priority: priorityOwn, From: schema.PrefixFrom(prefix), Table: id})
 		}
+		if !exit.on {
+			continue
+		}
+		for _, network := range networks {
+			out = append(out, Rule{Family: family, Priority: priorityLinkSource, From: schema.PrefixFrom(network), IIF: loopback, Table: schema.TableMain})
+		}
+		if slices.Contains(exit.unaddressed, family) {
+			continue
+		}
+		out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: loopback, Table: id})
+		for _, link := range exit.forwarded {
+			out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: link, Table: id})
+		}
 	}
 	return out
+}
+
+// exitView is mode 2 as a pass derives its rules: the host's links outside the
+// mesh as the network watch reads them, the names forward expands to among them
+// (see expandForward), and each family the tun holds no overlay address of. The
+// zero value is mode off, whatever it holds beside.
+type exitView struct {
+	on          bool
+	network     NetworkState
+	forwarded   []string
+	unaddressed []Family
+}
+
+// sources is the selectors of one family's 5405 and 5435: each address of a
+// link outside the mesh as a host prefix, and each connected network shorter
+// than a host prefix and each point-to-point far end outside those networks of
+// a link forward leaves out, masked, each sorted and once. Mode off has none.
+func (v exitView) sources(family Family, overlay, own []netip.Prefix) (addresses, networks []netip.Prefix) {
+	if !v.on {
+		return nil, nil
+	}
+	links := v.network.IPv4.Links
+	if family == FamilyIPv6 {
+		links = v.network.IPv6.Links
+	}
+	for _, link := range links {
+		forwarded := slices.Contains(v.forwarded, link.Name)
+		for _, peer := range link.Peers {
+			// a far end inside a network of its own link takes that network's rule
+			inside := slices.ContainsFunc(link.Prefixes, func(prefix netip.Prefix) bool {
+				return prefix.Bits() < prefix.Addr().BitLen() && prefix.Bits() <= peer.Bits() && prefix.Contains(peer.Addr())
+			})
+			if !forwarded && !inside {
+				networks = append(networks, peer)
+			}
+		}
+		for _, prefix := range link.Prefixes {
+			address := prefix.Addr()
+			addresses = append(addresses, netip.PrefixFrom(address, address.BitLen()))
+			// a host prefix's network is its address, which 5405 already selects
+			if !forwarded && prefix.Bits() < address.BitLen() {
+				networks = append(networks, prefix)
+			}
+		}
+	}
+	own = familyPrefixes(family, own)
+	taken := func(prefix netip.Prefix) bool {
+		return slices.ContainsFunc(overlay, prefix.Overlaps) ||
+			// 5430 sends this node's own sources into the mesh in every mode
+			slices.ContainsFunc(own, prefix.Overlaps)
+	}
+	return slices.DeleteFunc(familyPrefixes(family, addresses), taken), slices.DeleteFunc(familyPrefixes(family, networks), taken)
 }
 
 func schemaPrefixes(prefixes []schema.Prefix) []netip.Prefix {

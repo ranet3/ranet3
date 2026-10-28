@@ -391,7 +391,7 @@ func TestRuleMessageCarriesTheGotoAndTheSuppressLength(t *testing.T) {
 func TestEveryDerivedRuleIsStoredAndDeletedAsItself(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		id := schema.TableID(hegel.Draw(ht, edges[uint32](1, math.MaxUint32)))
-		derived := derivedRules(id, prefixes(hegel.Draw(ht, anyPrefixes())...), hegel.Draw(ht, anyPrefixes()))
+		derived := derivedRules(id, prefixes(hegel.Draw(ht, anyPrefixes())...), hegel.Draw(ht, anyPrefixes()), exitView{})
 		plat, conn := writePlatform(t)
 		held := make([]kernelRule, 0, len(derived))
 		for _, rule := range derived {

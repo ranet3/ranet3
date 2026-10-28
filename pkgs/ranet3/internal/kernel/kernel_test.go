@@ -557,7 +557,7 @@ func TestReconcileCountsOnlyAppliedRoutes(t *testing.T) {
 	table.Set(netip.Prefix{}, installed.Destination, nil)
 	table.Set(netip.Prefix{}, occupied.Destination, nil)
 	// the derived rules are in place, so the one line a pass logs is the route count
-	for _, rule := range derivedRules(reconciler.table.ID, nil, nil) {
+	for _, rule := range derivedRules(reconciler.table.ID, nil, nil, exitView{}) {
 		fake.rules[rule] = true
 	}
 	for pass := range 2 {
@@ -1227,7 +1227,7 @@ func (f *fakeKernel) configuredRules(r *Reconciler) map[Rule]bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	held := maps.Clone(f.rules)
-	for _, rule := range derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(r.src.Snapshot())) {
+	for _, rule := range derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(r.src.Snapshot()), exitView{}) {
 		delete(held, rule)
 	}
 	return held
@@ -1237,7 +1237,7 @@ func (f *fakeKernel) configuredRules(r *Reconciler) map[Rule]bool {
 func (f *fakeKernel) holdsDerived(r *Reconciler) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, rule := range derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(r.src.Snapshot())) {
+	for _, rule := range derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(r.src.Snapshot()), exitView{}) {
 		if !f.rules[rule] {
 			return false
 		}
@@ -1296,7 +1296,7 @@ func TestRulePassWithdrawsWhatItDoesNotDeriveAndPublishesWhatItDoes(t *testing.T
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	derived := derivedRules(DefaultTable, overlay, nil)
+	derived := derivedRules(DefaultTable, overlay, nil, exitView{})
 	if got := fake.configuredRules(reconciler); len(got) != 0 {
 		t.Fatalf("the pass left %v beside the derived rules", slices.Collect(maps.Keys(got)))
 	}

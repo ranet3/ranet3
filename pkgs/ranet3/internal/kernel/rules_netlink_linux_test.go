@@ -151,7 +151,7 @@ func TestNetlinkPassConvergesOnTheDerivedRules(t *testing.T) {
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	want := derivedRules(DefaultTable, rt.Overlay, []netip.Prefix{prefix("3fff:1::/48"), prefix("192.0.2.0/24"), prefix("203.0.113.5/32")})
+	want := derivedRules(DefaultTable, rt.Overlay, []netip.Prefix{prefix("3fff:1::/48"), prefix("192.0.2.0/24"), prefix("203.0.113.5/32")}, exitView{})
 	got, err := plat.Rules()
 	if err != nil {
 		t.Fatalf("list rules: %v", err)
