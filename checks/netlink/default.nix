@@ -142,12 +142,16 @@ testers.runNixOSTest {
 
     # the kernel exit held not ready while the host does not hold an address its classes translate to, in a namespace of
     # its own, each family's taken off lo and put back
+    # and its debug read of a rule's counter, from two readers beside passes following one another, and across its stop
     out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady$' 2>&1"
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^(TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady|TestDebugReadsARulesCounterWithoutAPass|TestDebugReadsBesidePassesAndAnotherReader|TestDebugReadsAcrossTheExitsStop)$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the class address's readiness skipped itself under root:\n{out}"
     assert "--- PASS: TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady" in out, f"the class address's readiness did not pass:\n{out}"
+    assert "--- PASS: TestDebugReadsARulesCounterWithoutAPass" in out, f"the debug read of a rule's counter did not pass:\n{out}"
+    assert "--- PASS: TestDebugReadsBesidePassesAndAnotherReader" in out, f"the debug reads beside passes and each other did not pass:\n{out}"
+    assert "--- PASS: TestDebugReadsAcrossTheExitsStop" in out, f"the debug reads across the exit's stop did not pass:\n{out}"
 
     # the suite's own fakes of the backends no real one stands for yet, one mapping the leaf's ports and one ending its TCP
     out = machine.succeed(

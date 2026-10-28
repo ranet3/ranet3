@@ -16,48 +16,27 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
-// Lookup is one of the kernel's route lookups a pass reads, for a packet from
-// Source to Destination arriving on IIF. Reply asks for the lookup of its
-// reply as well, from Destination to Source, arriving on the device of the
-// answer's first live hop. A lookup from no source arriving on no device reads
-// the route this host itself sends to Destination by, its local route where it
-// holds the address.
-type Lookup struct {
-	Source, Destination netip.Addr
-	IIF                 string
-	Reply               bool
-}
+// Lookup, Answer, Route and Hop are a pass's route lookups as package egress
+// states them, which a debug read carries as the pass read them
+type (
+	Lookup = egress.Lookup
+	Answer = egress.Answer
+	Route  = egress.Route
+	Hop    = egress.Hop
+)
 
-// Answer is a lookup's route or its error and, for a lookup asking for its
-// reply, the device the reply's lookup arrived on, empty where none was made,
-// with that lookup's route or error
-type Answer struct {
-	Route    Route
-	Err      error
-	ReplyIIF string
-	Reply    Route
-	ReplyErr error
-}
-
-// Route is a route a lookup found, its type as ip-route(8) names it and its
-// next hops
-type Route struct {
-	Type string
-	Hops []Hop
-}
-
-// Hop is one next hop of a route, live unless the kernel marks it Dead or
-// LinkDown
-type Hop struct {
-	Device         string
-	Dead, LinkDown bool
-}
-
+// judgment is one family's readiness after a pass and what it was judged
+// from: the chains' readback, forwarding, and the family's lookups in the
+// order the batch asked them, with their answers where the batch gave each
 type judgment struct {
-	ready    bool
-	why      string
-	noMember bool
-	unread   []netip.Prefix
+	ready      bool
+	why        string
+	noMember   bool
+	unread     []netip.Prefix
+	unwritten  string
+	forwarding bool
+	lookups    []Lookup
+	answers    []Answer
 }
 
 type forwardRead struct {
@@ -87,12 +66,15 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 	families := map[uint8]familyReads{}
 	var lookups []Lookup
 	for _, family := range t.cfg.Translated(t.rt.Steered) {
+		read := judgment{unwritten: unwritten[family], forwarding: forwards[family]}
 		switch {
-		case unwritten[family] != "":
-			judged[family] = judgment{why: unwritten[family]}
+		case read.unwritten != "":
+			read.why = read.unwritten
+			judged[family] = read
 			continue
-		case !forwards[family]:
-			judged[family] = judgment{why: "the kernel does not forward " + egress.FamilyName(family)}
+		case !read.forwarding:
+			read.why = "the kernel does not forward " + egress.FamilyName(family)
+			judged[family] = read
 			continue
 		}
 		reads := familyReads{held: t.classAddresses(family), heldAt: len(lookups)}
@@ -101,7 +83,8 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 		}
 		source, ok := memberSource(members, family)
 		if !ok {
-			judged[family] = judgment{ready: true, noMember: true}
+			read.ready, read.noMember = true, true
+			judged[family] = read
 		} else {
 			reads.source, reads.first = source, len(lookups)
 			var unread []netip.Prefix
@@ -114,7 +97,8 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 				lookups = append(lookups, Lookup{Source: source, Destination: address, IIF: t.rt.Interface, Reply: len(reads.reads) == 0})
 				reads.reads = append(reads.reads, forwardRead{prefix, address})
 			}
-			judged[family] = judgment{ready: true, unread: unread}
+			read.ready, read.unread = true, unread
+			judged[family] = read
 		}
 		if len(reads.held) > 0 || len(reads.reads) > 0 {
 			families[family] = reads
@@ -126,12 +110,15 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 	answers, err := t.rt.Lookup(lookups)
 	for family, reads := range families {
 		j := judged[family]
+		held, forward := lookups[reads.heldAt:reads.heldAt+len(reads.held)], lookups[reads.first:reads.first+len(reads.reads)]
+		j.lookups = append(slices.Clone(held), forward...)
 		switch {
 		case err != nil:
 			j.why = "the route lookups failed: " + err.Error()
 		case len(answers) != len(lookups):
 			j.why = fmt.Sprintf("the route lookups answered %d of %d", len(answers), len(lookups))
 		default:
+			j.answers = append(slices.Clone(answers[reads.heldAt:reads.heldAt+len(reads.held)]), answers[reads.first:reads.first+len(reads.reads)]...)
 			j.why = t.unheld(reads.held, answers[reads.heldAt:reads.heldAt+len(reads.held)])
 			if j.why == "" && len(reads.reads) > 0 {
 				j.why = t.readsFail(reads, answers[reads.first:reads.first+len(reads.reads)])

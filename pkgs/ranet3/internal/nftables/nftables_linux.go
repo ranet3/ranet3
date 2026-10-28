@@ -150,11 +150,14 @@ func (c Chain) Fault(message Message) (fault string, remake bool) {
 }
 
 // Installed is one rule as a dump read it back: the comment it was written
-// under, empty for a rule with none, and its counter
+// under, empty for a rule with none, the chain it was read from, and its
+// counter where Counted says it keeps one
 type Installed struct {
 	Spec    string
+	Chain   string
 	Packets uint64
 	Bytes   uint64
+	Counted bool
 }
 
 // Contents names the chains, sets and ct timeout objects one owner writes in a
@@ -240,8 +243,8 @@ func (c Contents) rules(conn *Conn, proto uint8) ([]Installed, error) {
 	var out []Installed
 	for _, chain := range c.Chains {
 		for _, reply := range replies {
-			if table, name, spec, packets, bytes := DecodeRule(reply); table == chain.Table && name == chain.Name {
-				out = append(out, Installed{Spec: spec, Packets: packets, Bytes: bytes})
+			if table, name, spec, packets, bytes, counted := DecodeRule(reply); table == chain.Table && name == chain.Name {
+				out = append(out, Installed{Spec: spec, Chain: name, Packets: packets, Bytes: bytes, Counted: counted})
 			}
 		}
 	}
@@ -279,11 +282,12 @@ func DecodeChain(message Message) (table, chain, kind string, hook uint32, prior
 }
 
 // DecodeRule reads the fields a diff and a report need: where the rule lives,
-// the comment its owner wrote as its identity, and the counter. The
-// expressions are walked only far enough to find that counter, because the
-// comment already says what the rule does and re-deriving it from the
-// expressions would be a second encoder to keep in step with the first.
-func DecodeRule(message Message) (table, chain, spec string, packets, bytes uint64) {
+// the comment its owner wrote as its identity, and the counter, counted
+// where the rule keeps one. The expressions are walked only far enough to find
+// that counter, because the comment already says what the rule does and
+// re-deriving it from the expressions would be a second encoder to keep in
+// step with the first.
+func DecodeRule(message Message) (table, chain, spec string, packets, bytes uint64, counted bool) {
 	for kind, value := range message.Attributes() {
 		switch kind {
 		case unix.NFTA_RULE_TABLE:
@@ -293,10 +297,10 @@ func DecodeRule(message Message) (table, chain, spec string, packets, bytes uint
 		case unix.NFTA_RULE_USERDATA:
 			spec = comment(udataComment, value)
 		case unix.NFTA_RULE_EXPRESSIONS:
-			packets, bytes = counters(value)
+			packets, bytes, counted = counters(value)
 		}
 	}
-	return table, chain, spec, packets, bytes
+	return table, chain, spec, packets, bytes, counted
 }
 
 // comment is the comment of type kind out of the libnftnl userdata format: a
@@ -316,10 +320,10 @@ func comment(kind byte, userdata []byte) string {
 	return ""
 }
 
-// counters walks the expression list for a counter. In a nat chain the count
-// is of flows rather than of packets: such a chain is evaluated once per
-// connection, when conntrack first sees it.
-func counters(expressions []byte) (packets, bytes uint64) {
+// counters walks the expression list for a counter, counted where it finds
+// one. In a nat chain the count is of flows rather than of packets: such a
+// chain is evaluated once per connection, when conntrack first sees it.
+func counters(expressions []byte) (packets, bytes uint64, counted bool) {
 	for _, element := range Nested(expressions) {
 		if element.Kind != unix.NFTA_LIST_ELEM {
 			continue
@@ -337,6 +341,7 @@ func counters(expressions []byte) (packets, bytes uint64) {
 		if name != "counter" {
 			continue
 		}
+		counted = true
 		for _, field := range Nested(data) {
 			if len(field.Value) != 8 {
 				continue
@@ -349,7 +354,7 @@ func counters(expressions []byte) (packets, bytes uint64) {
 			}
 		}
 	}
-	return packets, bytes
+	return packets, bytes, counted
 }
 
 // userdata is the comment of type kind in the format libnftnl reads, so `nft

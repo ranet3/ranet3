@@ -191,13 +191,20 @@ func TestRequestsReadBackAsWritten(t *testing.T) {
 		packets, octets := hegel.Draw(ht, hegel.Integers[uint64](0, math.MaxUint64)), hegel.Draw(ht, hegel.Integers[uint64](0, math.MaxUint64))
 		counter := PutAttr(nil, unix.NFTA_COUNTER_BYTES, binary.BigEndian.AppendUint64(nil, octets))
 		counter = PutAttr(counter, unix.NFTA_COUNTER_PACKETS, binary.BigEndian.AppendUint64(nil, packets))
-		written, err := c.Rule(proto, spec, append(MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, name), Expression("counter", counter)))
+		expressions := MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, name)
+		counted := hegel.Draw(ht, hegel.Booleans())
+		if counted {
+			expressions = append(expressions, Expression("counter", counter))
+		} else {
+			packets, octets = 0, 0
+		}
+		written, err := c.Rule(proto, spec, expressions)
 		if err != nil {
 			ht.Fatal(err)
 		}
 		rule := framed(written)
-		if gotTable, gotName, gotSpec, gotPackets, gotBytes := DecodeRule(rule); gotTable != table || gotName != name || gotSpec != spec || gotPackets != packets || gotBytes != octets {
-			ht.Fatalf("a rule %q of %s %s with %d packets and %d bytes reads back as %q of %s %s with %d and %d", spec, table, name, packets, octets, gotSpec, gotTable, gotName, gotPackets, gotBytes)
+		if gotTable, gotName, gotSpec, gotPackets, gotBytes, gotCounted := DecodeRule(rule); gotTable != table || gotName != name || gotSpec != spec || gotPackets != packets || gotBytes != octets || gotCounted != counted {
+			ht.Fatalf("a rule %q of %s %s, counted %v with %d packets and %d bytes, reads back as %q of %s %s, counted %v with %d and %d", spec, table, name, counted, packets, octets, gotSpec, gotTable, gotName, gotCounted, gotPackets, gotBytes)
 		}
 	})
 }

@@ -150,13 +150,12 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			if got := expressionNames(t, request.Body); !slices.Equal(got, one.want) {
 				t.Errorf("encoded %q, want %q", got, one.want)
 			}
-			want := ChainName
-			if inForwardChain(one.rule) {
-				want = LimitChain
-			}
-			table, chain, spec, _, _ := nftables.DecodeRule(nftables.Message{Data: request.Body})
-			if table != TableName || chain != want {
-				t.Errorf("wrote into %s/%s, want %s/%s", table, chain, TableName, want)
+			// the chain and the counter the rule's kind says, which Debug names
+			// the counter's unit by
+			kind := one.rule.kind()
+			table, chain, spec, _, _, counted := nftables.DecodeRule(nftables.Message{Data: request.Body})
+			if table != TableName || chain != kind.chain() || counted != kind.counted() {
+				t.Errorf("wrote into %s/%s counted %v, want %s/%s counted %v", table, chain, counted, TableName, kind.chain(), kind.counted())
 			}
 			if spec != one.rule.String() {
 				t.Errorf("the rule reads back as %q, want %q, so the diff would rewrite it forever", spec, one.rule.String())
@@ -470,11 +469,6 @@ func TestInformationDropTakesTypes15And16Alone(t *testing.T) {
 	}
 }
 
-// inForwardChain is whether newRule writes rule into the forward chain
-func inForwardChain(rule Rule) bool {
-	return rule.Limit != 0 || rule.Untracked || rule.byProtocol()
-}
-
 // forwardButLimit is the IPv4 rules of tr's forward chain but the limit, whose
 // count of each source's flows runRule does not model, and their requests in
 // the chain's order
@@ -483,7 +477,7 @@ func forwardButLimit(t *testing.T, tr *Translator) ([]nftables.Request, []Rule) 
 	var requests []nftables.Request
 	var rules []Rule
 	for _, rule := range tr.desired() {
-		if rule.Family == egress.FamilyIPv4 && inForwardChain(rule) && rule.Limit == 0 {
+		if rule.Family == egress.FamilyIPv4 && rule.kind().chain() == LimitChain && rule.Limit == 0 {
 			request, err := newRule(rule)
 			if err != nil {
 				t.Fatal(err)

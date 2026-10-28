@@ -86,7 +86,7 @@ func TestRuleTakesOnlyASpecItsCommentHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a spec of %d bytes was refused: %v", len(spec), err)
 	}
-	if _, _, got, _, _ := DecodeRule(Message{Data: request.Body}); got != spec {
+	if _, _, got, _, _, _ := DecodeRule(Message{Data: request.Body}); got != spec {
 		t.Errorf("a spec of %d bytes reads back as %d bytes", len(spec), len(got))
 	}
 }
@@ -116,9 +116,12 @@ func TestCountersComeOutOfTheExpressionList(t *testing.T) {
 	counter = PutAttr(counter, unix.NFTA_COUNTER_BYTES, beBytes(4242))
 	counter = PutAttr(counter, unix.NFTA_COUNTER_PACKETS, beBytes(17))
 	expressions := slices.Concat(Expression("meta", nil), Expression("counter", counter))
-	packets, bytes := counters(expressions)
-	if packets != 17 || bytes != 4242 {
-		t.Errorf("read %d flows and %d bytes, want 17 and 4242", packets, bytes)
+	packets, bytes, counted := counters(expressions)
+	if packets != 17 || bytes != 4242 || !counted {
+		t.Errorf("read %d flows and %d bytes, counted %v, want 17 and 4242 counted", packets, bytes, counted)
+	}
+	if _, _, counted := counters(Expression("meta", nil)); counted {
+		t.Error("an expression list with no counter reads as counted")
 	}
 }
 

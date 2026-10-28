@@ -95,6 +95,94 @@ type Status struct {
 	Rules *Rules
 }
 
+// ExitDebug is an exit's detail as a debug read finds it, which a backend
+// holding rules in the host's packet filter answers beside its Status: each
+// rule with its counter read now, and each family's readiness as the last pass
+// judged it
+type ExitDebug struct {
+	Status Status
+	// Rules is each rule the backend asks for in order, then each its chains
+	// hold that it does not ask for, and ReadErr why they could not be read now
+	Rules   []RuleReading
+	ReadErr string
+	// Families is each family the backend translates
+	Families []FamilyReading
+	// RPFilter is IPv4's rp_filter on all and on each device a route of the
+	// last pass's lookups leaves by, read now
+	RPFilter []Setting
+}
+
+// RuleReading is one rule as a debug read finds it. Counter is the unit of
+// its counter: flows for a rule of the translation's chain, which meets a
+// flow's first packet alone, packets for one of the forward hook's chain, and
+// empty for a rule that keeps none.
+type RuleReading struct {
+	Spec           string
+	Wanted, Held   bool
+	Counter        string
+	Packets, Bytes uint64
+}
+
+// FamilyReading is one family's readiness condition by condition as the last
+// pass judged it: its chains read back, the host's forwarding, then each route
+// lookup the pass read for it with its answer
+type FamilyReading struct {
+	Family uint8
+	Ready  bool
+	// Why is why the family is not ready, and Unwritten why its chains do not
+	// read back as written, each empty where there is nothing to say
+	Why, Unwritten string
+	Forwarding     bool
+	// Lookups is empty where the pass read none for the family, and Answers
+	// holds each one's answer at its place, empty where the batch failed or
+	// answered short, which Why says
+	Lookups []Lookup
+	Answers []Answer
+}
+
+// Lookup is one of the kernel's route lookups a pass reads, for a packet from
+// Source to Destination arriving on IIF. Reply asks for the lookup of its
+// reply as well, from Destination to Source, arriving on the device of the
+// answer's first live hop. A lookup from no source arriving on no device reads
+// the route this host itself sends to Destination by, its local route where it
+// holds the address.
+type Lookup struct {
+	Source, Destination netip.Addr
+	IIF                 string
+	Reply               bool
+}
+
+// Answer is a lookup's route or its error and, for a lookup asking for its
+// reply, the device the reply's lookup arrived on, empty where none was made,
+// with that lookup's route or error
+type Answer struct {
+	Route    Route
+	Err      error
+	ReplyIIF string
+	Reply    Route
+	ReplyErr error
+}
+
+// Route is a route a lookup found, its type as ip-route(8) names it and its
+// next hops
+type Route struct {
+	Type string
+	Hops []Hop
+}
+
+// Hop is one next hop of a route, live unless the kernel marks it Dead or
+// LinkDown
+type Hop struct {
+	Device         string
+	Dead, LinkDown bool
+}
+
+// Setting is one sysctl by its path under /proc/sys, Value empty where it
+// could not be read
+type Setting struct {
+	Name, Value string
+}
+
 // Rules is the rules a backend installed, as its last pass read them back
 type Rules struct {
 	Installed int
