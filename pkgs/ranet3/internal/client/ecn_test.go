@@ -8,11 +8,14 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -33,6 +36,25 @@ func ecnNode(t *testing.T) *Client {
 	c := writable(t)
 	c.events = events.New()
 	return c
+}
+
+// espCounts is c's ESP counters as ranet3 status reads them, each checked against the metric that carries it
+func espCounts(t *testing.T, c *Client) control.ESPCounters {
+	t.Helper()
+	counts := c.Status().ESP
+	var scraped bytes.Buffer
+	c.Metrics(&scraped)
+	for name, value := range map[string]uint64{
+		"ranet3_esp_inbound_packets_total":    counts.InboundPackets,
+		"ranet3_esp_inbound_dropped_total":    counts.InboundDropped,
+		"ranet3_esp_inbound_ce_total":         counts.InboundCE,
+		"ranet3_esp_inbound_ecn_unused_total": counts.InboundECNUnused,
+	} {
+		if line := fmt.Sprintf("\n%s %d\n", name, value); !strings.Contains(scraped.String(), line) {
+			t.Errorf("the scrape does not read %q, which ranet3 status reads", strings.TrimSpace(line))
+		}
+	}
+	return counts
 }
 
 // newECNSession opens a session at path on c, whose SA is child's
@@ -125,8 +147,8 @@ func TestOuterCEMarksAnECTInnerPacket(t *testing.T) {
 		if left[0] != nil && packet.Sum(0, left[0][:20]) != 0xffff {
 			t.Error("the IPv4 packet's header checksum fails once it is marked")
 		}
-		if marked, delivered := c.inboundCE.Load(), c.inboundPackets.Load(); marked != 2 || delivered != 2 {
-			t.Errorf("%d packets counted marked and %d delivered, want 2 and 2", marked, delivered)
+		if counts := espCounts(t, c); counts.InboundCE != 2 || counts.InboundPackets != 2 {
+			t.Errorf("%d packets counted marked and %d delivered, want 2 and 2", counts.InboundCE, counts.InboundPackets)
 		}
 	})(t)
 }
@@ -138,8 +160,8 @@ func TestOuterCEOverNotECTIsDropped(t *testing.T) {
 		c := ecnNode(t)
 		session := newECNSession(t, c, "example/gateway:0@0", tunnelChild(1))
 		left := session.receive(t, [][]byte{ecnPacket(4, packet.NotECT, 1), ecnPacket(6, packet.NotECT, 2)}, []inboundECN{packet.CE, packet.ECT0})
-		if dropped, delivered := c.inboundDropped.Load(), c.inboundPackets.Load(); dropped != 1 || delivered != 1 {
-			t.Errorf("%d packets counted dropped and %d delivered, want 1 and 1", dropped, delivered)
+		if counts := espCounts(t, c); counts.InboundDropped != 1 || counts.InboundPackets != 1 || counts.InboundECNUnused != 2 {
+			t.Errorf("%d packets counted dropped, %d delivered and %d with an unused combination, want 1, 1 and 2", counts.InboundDropped, counts.InboundPackets, counts.InboundECNUnused)
 		}
 		if written.count(errECNDropped.Error()) != 1 {
 			t.Errorf("the drop was not reported with its reason %q", errECNDropped)
@@ -201,7 +223,7 @@ func TestUnusedECNCombinationIsRecordedOncePerInterval(t *testing.T) {
 		if got := recordsOf(); !slices.Equal(got, want) {
 			t.Errorf("an interval later the records are %+v, want %+v", got, want)
 		}
-		if got := c.inboundECNUnused.Load(); got != 7 {
+		if got := espCounts(t, c).InboundECNUnused; got != 7 {
 			t.Errorf("%d packets counted with an unused combination, want 7", got)
 		}
 		if got := written.count("ecn combination no tunnel sends"); got != 3 {

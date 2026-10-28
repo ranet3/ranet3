@@ -61,7 +61,7 @@ func RenderStatus(w io.Writer, s Status) {
 		{"Segments", segmentLine(s)},
 		{"Steering", steeringLine(s)},
 		{"Transit", transitLine(s.Transit)},
-		{"ESP", fmt.Sprintf("%d in, %d dropped, %d refused", s.ESP.InboundPackets, s.ESP.InboundDropped, s.ESP.ReceiveRefused)},
+		{"ESP", espLine(s.ESP)},
 	}
 	// under the egress line, and only on a node that writes cap.border
 	if s.Border != nil {
@@ -76,6 +76,17 @@ func RenderStatus(w io.Writer, s Status) {
 		rows = slices.Insert(rows, 1, []string{"Down", downLine(*s.Down)})
 	}
 	pairs(w, rows)
+}
+
+func espLine(e ESPCounters) string {
+	line := fmt.Sprintf("%d in, %d dropped, %d refused", e.InboundPackets, e.InboundDropped, e.ReceiveRefused)
+	if e.InboundCE > 0 {
+		line += fmt.Sprintf(", %d marked CE", e.InboundCE)
+	}
+	if e.InboundECNUnused > 0 {
+		line += fmt.Sprintf(", %d with an unused ECN combination", e.InboundECNUnused)
+	}
+	return line
 }
 
 func downLine(d Down) string {

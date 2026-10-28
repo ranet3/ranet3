@@ -1,0 +1,9 @@
+{
+  "inbound_packets": 41822931,
+  "inbound_dropped": 3,
+  "inbound_ce": 1207,
+  "inbound_ecn_unused": 2,
+  "receive_dropped": 5,
+  "receive_refused": 14,
+  "keepalives": 9
+}

@@ -582,9 +582,13 @@ type Counts struct {
 type ESPCounters struct {
 	InboundPackets uint64 `json:"inbound_packets"`
 	InboundDropped uint64 `json:"inbound_dropped"`
-	ReceiveDropped uint64 `json:"receive_dropped"`
-	ReceiveRefused uint64 `json:"receive_refused"`
-	Keepalives     uint64 `json:"keepalives"`
+	// InboundCE is the packets the decapsulation set to CE from an ECT inner field, a congested hop on the underlay having marked their datagrams
+	InboundCE uint64 `json:"inbound_ce"`
+	// InboundECNUnused is the packets whose inner and outer ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them
+	InboundECNUnused uint64 `json:"inbound_ecn_unused"`
+	ReceiveDropped   uint64 `json:"receive_dropped"`
+	ReceiveRefused   uint64 `json:"receive_refused"`
+	Keepalives       uint64 `json:"keepalives"`
 }
 
 // Originated is one prefix this node announces itself, with the source prefix

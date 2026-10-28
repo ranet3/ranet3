@@ -861,6 +861,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	// Every series needs its HELP and TYPE, or a scrape rejects the sample.
 	for _, name := range []string{
 		"ranet3_sessions", "ranet3_esp_inbound_packets_total",
+		"ranet3_esp_inbound_ce_total", "ranet3_esp_inbound_ecn_unused_total",
 		"ranet3_session_up", "ranet3_babel_neighbor_up",
 		"ranet3_babel_neighbor_cost", "ranet3_babel_routes_received",
 		"ranet3_peer_send_dropped_total", "ranet3_peer_send_delay_dropped_total", "ranet3_receive_dropped_total",
