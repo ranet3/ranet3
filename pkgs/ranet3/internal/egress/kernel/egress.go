@@ -238,11 +238,36 @@ type Rule struct {
 	// as it is, so a rule that translates would send it on under its own source.
 	Untracked bool
 	// Drops makes the rule an IPv4 Out or In rule of the limit's chain, ahead
-	// of the limit, that drops the ICMP messages of that kind from any source
-	// and under every class, RFC 5508 section 7 saying a NAT SHOULD NOT support
-	// them
+	// of the rules taking what no flow is tracked for, that drops the ICMP
+	// messages of that kind from any source and under every class, RFC 5508
+	// section 7 saying a NAT SHOULD NOT support them
 	Drops Message
+	// Protocol makes the rule an Out or In rule of the limit's chain, past the
+	// limit, that takes a packet of this protocol from From in its flow's
+	// original direction and refuses it, or passes an Out one on where None is
+	// set. nf_nat rewrites no checksum of it, which covers the addresses, so a
+	// translated one would arrive with a checksum its receiver discards. A reply
+	// is translated only where its flow's first packet was, which the rule took.
+	Protocol Protocol
 }
+
+// byProtocol is whether r is a rule of the limit's chain that takes a packet
+// by its protocol first, an ICMP drop or a protocol's refusal or pass
+func (r Rule) byProtocol() bool { return r.Drops != NoMessage || r.Protocol.Number != 0 }
+
+// Protocol is an IP protocol by its number and the name nft gives it, the zero
+// value on a rule that takes none
+type Protocol struct {
+	Number uint8
+	Name   string
+}
+
+var (
+	dccp    = Protocol{33, "dccp"}
+	udpLite = Protocol{136, "udplite"}
+	// checksummed is the protocols whose checksums cover the addresses
+	checksummed = []Protocol{dccp, udpLite}
+)
 
 // Message is the ICMP messages a rule drops, NoMessage on any rule that drops
 // none
@@ -276,6 +301,10 @@ func (r Rule) String() string {
 		action = fmt.Sprintf("limit %d", r.Limit)
 	case r.Drops != NoMessage:
 		action = r.Drops.String() + " dropped"
+	case r.Protocol.Number != 0 && r.None:
+		action = r.Protocol.Name + " passed"
+	case r.Protocol.Number != 0:
+		action = r.Protocol.Name + " refused"
 	case r.Untracked && r.None:
 		action = "untracked passed"
 	case r.Untracked:
@@ -673,7 +702,7 @@ func (t *Translator) reconcile() error {
 	refused, dropped := map[uint8]uint64{}, map[uint8]uint64{}
 	for _, rule := range held {
 		switch kind := kinds[rule.Spec]; {
-		case kind.Drops != NoMessage:
+		case kind.byProtocol():
 			// nf_tables' counters alone hold these, which no Status field reads
 		case kind.Limit != 0:
 			refused[rule.Family] += rule.Packets
@@ -801,7 +830,8 @@ func sameFamilyRules(held []Installed, desired []Rule, family uint8) bool {
 func (t *Translator) desired() []Rule {
 	var out []Rule
 	for _, family := range t.cfg.Translated(t.rt.Steered) {
-		out = append(out, t.untracked(family)...)
+		// ahead of the pass under none of what no flow is tracked for, which ends
+		// the chain
 		if family == egress.FamilyIPv4 {
 			for _, direction := range []Direction{Out, In} {
 				for _, message := range []Message{SourceQuench, Information} {
@@ -809,7 +839,12 @@ func (t *Translator) desired() []Rule {
 				}
 			}
 		}
+		out = append(out, t.perClass(family, Rule{Untracked: true})...)
 		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Limit: t.cfg.SourceLimit()})
+		// past the limit, so a pass under none skips no share
+		for _, protocol := range checksummed {
+			out = append(out, t.perClass(family, Rule{Protocol: protocol})...)
+		}
 		covered := false
 		for _, class := range t.cfg.Classes(family) {
 			covered = covered || class.From.Bits() == 0
@@ -853,12 +888,14 @@ func (t *Translator) classRules(family uint8, direction Direction, from netip.Pr
 	return append(out, translation)
 }
 
-// untracked is the rules taking a packet out of the mesh no flow is tracked
-// for, as the class of its source says: each class's in the order Classes
-// gives up to the last class of none, then one from every source, since past
-// that last class of none every class translates. A drop into the mesh from
-// each prefix an In rule translates follows, since every In rule translates.
-func (t *Translator) untracked(family uint8) []Rule {
+// perClass is the rules of kind, which takes a packet untracked or refused,
+// taking it out of the mesh as the class of its source says: each class's in
+// the order Classes gives up to the last class of none, then one from every
+// source, since past that last class of none every class translates. One into
+// the mesh from each prefix an In rule translates follows, since every In rule
+// translates.
+func (t *Translator) perClass(family uint8, kind Rule) []Rule {
+	kind.Family, kind.Interface = family, t.rt.Interface
 	classes := t.cfg.Classes(family)
 	last := -1
 	for i, class := range classes {
@@ -868,12 +905,18 @@ func (t *Translator) untracked(family uint8) []Rule {
 	}
 	var out []Rule
 	for _, class := range classes[:last+1] {
-		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, From: class.From.Prefix, None: class.To.None, Untracked: true})
+		rule := kind
+		rule.Direction, rule.From, rule.None = Out, class.From.Prefix, class.To.None
+		out = append(out, rule)
 	}
-	out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Untracked: true})
+	every := kind
+	every.Direction = Out
+	out = append(out, every)
 	for _, rule := range t.inbound(family) {
 		if rule.Timeouts == NoTimeouts {
-			out = append(out, Rule{Family: family, Direction: In, Interface: t.rt.Interface, From: rule.From, Untracked: true})
+			in := kind
+			in.Direction, in.From = In, rule.From
+			out = append(out, in)
 		}
 	}
 	return out

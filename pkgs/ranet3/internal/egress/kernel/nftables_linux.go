@@ -314,9 +314,10 @@ func delTable(family uint8) nftables.Request {
 // natPriority
 var postrouting = nftables.Chain{Table: TableName, Name: ChainName, Type: "nat", Hook: unix.NF_INET_POST_ROUTING, Priority: natPriority}
 
-// forward is the chain of the limit and of the packets no flow is tracked for,
-// at the forward hook a forwarded packet meets before the translation's, at
-// the priority of the host's own filters
+// forward is the chain of IPv4's ICMP drops, the packets no flow is tracked
+// for, the limit and the refusals of a protocol whose checksum covers the
+// addresses, in that order, at the forward hook a forwarded packet meets before
+// the translation's, at the priority of the host's own filters
 var forward = nftables.Chain{Table: TableName, Name: LimitChain, Type: "filter", Hook: unix.NF_INET_FORWARD, Priority: filterPriority}
 
 // translatorChains is a family's chains in the order desired writes their rules
@@ -343,10 +344,7 @@ func newRule(rule Rule) (nftables.Request, error) {
 	// a rule reading the flow's state reads it first, and one taking a protocol
 	// reads that first, so a packet of an established flow fails the rule at its
 	// first compare
-	var expressions [][]byte
-	if protocol := refusedProtocol(rule); protocol != 0 {
-		expressions = nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{protocol})
-	}
+	expressions, tail := protocolRule(rule)
 	if rule.Limit != 0 {
 		// Only the packet that creates a connection's entry is judged. A UDP
 		// flow nothing has answered stays in state new, and nf_conncount ends
@@ -393,8 +391,8 @@ func newRule(rule Rule) (nftables.Request, error) {
 	}
 	proto := nftFamily(rule.Family)
 	switch {
-	case rule.Drops != NoMessage:
-		return forward.Rule(proto, rule.String(), append(expressions, refusal(rule)...))
+	case rule.byProtocol():
+		return forward.Rule(proto, rule.String(), append(expressions, tail...))
 	case rule.Limit != 0:
 		// The counter counts every refusal, of which the host's rate limit on ICMP
 		// errors answers some. Code 1 is IPv6's administratively prohibited, RFC
@@ -421,25 +419,45 @@ func newRule(rule Rule) (nftables.Request, error) {
 	return postrouting.Rule(proto, rule.String(), expressions)
 }
 
-// refusedProtocol is the protocol a rule dropping what the exit does not carry
-// takes, 0 for any other rule
-func refusedProtocol(rule Rule) uint8 {
+// protocolRule is the expressions newRule puts ahead of the interfaces and the
+// prefix it matches and after them, for a rule taking a packet by its protocol
+func protocolRule(rule Rule) (head, tail [][]byte) {
+	number := rule.Protocol.Number
 	if rule.Drops != NoMessage {
-		return unix.IPPROTO_ICMP
+		number = unix.IPPROTO_ICMP
 	}
-	return 0
-}
-
-// refusal is the rest of a rule dropping what the exit does not carry: the
-// ICMP type it takes and the counted drop
-func refusal(rule Rule) [][]byte {
-	if rule.Drops == SourceQuench {
-		return [][]byte{nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{4})),
+	if number == 0 {
+		return nil, nil
+	}
+	head = nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{number})
+	if rule.Protocol.Number != 0 {
+		// the direction nf_nat binds a flow's translation in, IP_CT_DIR_ORIGINAL,
+		// in one byte. A packet no flow is tracked for has none and fails here,
+		// which the rules taking it ahead of the limit decide.
+		direction := nftables.PutAttrBE32(nil, unix.NFTA_CT_DREG, unix.NFT_REG_1)
+		direction = nftables.PutAttrBE32(direction, unix.NFTA_CT_KEY, unix.NFT_CT_DIRECTION)
+		head = append(head, nftables.Expression("ct", direction), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{0})))
+	}
+	switch {
+	case rule.Drops == SourceQuench:
+		tail = [][]byte{nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{4})),
 			nftables.Expression("counter", nil), verdict(verdictDrop)}
+	case rule.Drops == Information:
+		tail = [][]byte{nftables.TransportLoad(0, 1),
+			nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_GTE, []byte{15})), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_LTE, []byte{16})),
+			nftables.Expression("counter", nil), verdict(verdictDrop)}
+	case rule.None:
+		tail = [][]byte{verdict(nftables.Accept)}
+	default:
+		// administratively prohibited, RFC 5508 section 6's code 13 in IPv4 and
+		// RFC 4443 section 3.1's code 1 in IPv6
+		code := uint8(1)
+		if rule.Family == egress.FamilyIPv4 {
+			code = 13
+		}
+		tail = [][]byte{nftables.Expression("counter", nil), nftables.RejectUnreachable(code)}
 	}
-	return [][]byte{nftables.TransportLoad(0, 1),
-		nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_GTE, []byte{15})), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_LTE, []byte{16})),
-		nftables.Expression("counter", nil), verdict(verdictDrop)}
+	return head, tail
 }
 
 // attachTimeouts matches a timeout rule's protocol and attaches its object,

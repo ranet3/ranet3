@@ -54,13 +54,13 @@ func TestTranslatorRecordsThePassesThatDidSomething(t *testing.T) {
 		}
 		got = append(got, []string{event.Kind, event.Attrs["installed"], event.Attrs["announced"], event.Attrs["err"]})
 	}
-	// each family's drop of what no flow is tracked for, its limit, and its
-	// masquerade with its three timeout rules, and IPv4's four drops of ICMP
-	// messages
+	// each family's drop of what no flow is tracked for, its limit, its refusals
+	// of DCCP and UDP-Lite, and its masquerade with its three timeout rules, and
+	// IPv4's four drops of ICMP messages
 	want := [][]string{
-		{"egress.pass", "16", "2", ""},
-		{"egress.pass", "16", "2", ""},
-		{"egress.pass", "16", "1", ""},
+		{"egress.pass", "20", "2", ""},
+		{"egress.pass", "20", "2", ""},
+		{"egress.pass", "20", "1", ""},
 		{"egress.pass", "0", "0", "install rules: no"},
 	}
 	if !slices.EqualFunc(got, want, slices.Equal) {

@@ -100,14 +100,25 @@ func (e exit) takes() bool {
 // for one this host sent, the one it leaves by, its source, the protocol it
 // carries with that protocol's destination port, 0 for one with none, the
 // first octet of what it carries, an ICMP message's type and the high octet of
-// a source port, and whether no flow is tracked for it
+// a source port, whether no flow is tracked for it, and whether it goes its
+// flow's reply way
 type crossing struct {
 	arrival, departure string
 	source             netip.Addr
 	protocol           uint8
 	port               uint16
 	first              uint8
-	untracked          bool
+	untracked, reply   bool
+}
+
+// decision names the forward chain's first rule taking a packet by what it
+// does with the packet: an ICMP drop, a drop or a pass of what no flow is
+// tracked for, or a protocol's refusal or pass, the zero value where no rule
+// takes it
+type decision struct {
+	drops, untracked bool
+	protocol         uint8
+	passes           bool
 }
 
 // carried is each protocol, port and first octet a property sends a packet of:
@@ -146,13 +157,16 @@ func takesMessage(message Message, kind uint8) bool {
 // from elsewhere, not from this host, and leaves by the mesh device, and for
 // this node's own address what leaves by another link. A timeout rule takes
 // those of its protocol alone, UDP's but to the DNS port, a rule taking
-// what no flow is tracked for those no flow is tracked for alone, and a drop
-// the ICMP messages of its kind alone.
+// what no flow is tracked for those no flow is tracked for alone, a drop the
+// ICMP messages of its kind alone, and a refusal or its pass those of its
+// protocol alone that go their flow's original way, which a packet no flow is
+// tracked for has none of.
 func meant(rule Rule, packet crossing) bool {
 	if egress.AddressFamily(packet.source) != rule.Family || rule.From.IsValid() && !rule.From.Contains(packet.source) || rule.Untracked && !packet.untracked {
 		return false
 	}
-	if rule.Drops != NoMessage && (packet.protocol != unix.IPPROTO_ICMP || !takesMessage(rule.Drops, packet.first)) {
+	if rule.Drops != NoMessage && (packet.protocol != unix.IPPROTO_ICMP || !takesMessage(rule.Drops, packet.first)) ||
+		rule.Protocol.Number != 0 && (packet.protocol != rule.Protocol.Number || packet.untracked || packet.reply) {
 		return false
 	}
 	switch rule.Timeouts {
@@ -240,15 +254,19 @@ func translatedTimeouts(packet crossing) Timeouts {
 // advertised prefix leaves under the return source, and every other packet
 // entering the mesh, or crossing it, is taken by no rule. A packet out of the
 // mesh in a family translated meets that family's limit at the forward hook,
-// the share the capability names, and no other packet meets a limit. One no
-// flow is tracked for is dropped there exactly when it comes out of the mesh in
-// a family translated and the class of its source translates, or enters the
-// mesh where a packet is taken to leave under the return source. In IPv4
+// the share the capability names, and no other packet meets a limit. In IPv4
 // translated, a Source Quench or an Information Request or Reply out of the
-// mesh or into it is dropped under every class. Each family's forward chain
-// holds the rules taking what no flow is tracked for, the ICMP drops and the
-// limit in that order. A second pass
-// writes nothing, so the host holds the order it reads back, and only
+// mesh or into it is dropped under every class, whether or not a flow is
+// tracked for it. Past that, one no flow is tracked for is dropped exactly when
+// it comes out of the mesh in a family translated and the class of its source
+// translates, or enters the mesh where a packet is taken to leave under the
+// return source, and passed out of the mesh under none. A DCCP or UDP-Lite
+// packet of its flow's original direction is refused where it would be
+// translated, out of the mesh under a class that translates and into it under
+// return, and passed out of the mesh under none, and a reply meets neither.
+// Each family's forward chain holds the ICMP drops, the rules taking what
+// no flow is tracked for, the limit and the refusals in that order. A second
+// pass writes nothing, so the host holds the order it reads back, and only
 // advertised prefixes are announced.
 func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 	sources := []netip.Addr{
@@ -278,7 +296,7 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 		walk := func(packet crossing) (rule Rule, taken bool, attached Timeouts) {
 			for _, rule := range desired {
 				switch {
-				case !meant(rule, packet), rule.Limit != 0, rule.Untracked, rule.Drops != NoMessage:
+				case !meant(rule, packet), rule.Limit != 0, rule.Untracked, rule.byProtocol():
 				case rule.Timeouts != NoTimeouts:
 					attached = rule.Timeouts
 				default:
@@ -301,39 +319,32 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			}
 			return met
 		}
-		// drops is whether the first rule taking what no flow is tracked for a
-		// packet meets drops it, where the rest of the forward chain is passed
-		drops := func(packet crossing) bool {
+		// decides is the decision of the forward chain's first rule a packet
+		// meets, read as nf_tables reads the chain, past the limit, which takes a
+		// flow by the flows its source holds
+		decides := func(packet crossing) (Rule, decision) {
 			for _, rule := range desired {
-				if rule.Untracked && meant(rule, packet) {
-					return !rule.None
+				if (rule.Untracked || rule.byProtocol()) && meant(rule, packet) {
+					return rule, decision{drops: rule.Drops != NoMessage, untracked: rule.Untracked, protocol: rule.Protocol.Number, passes: rule.None}
 				}
 			}
-			return false
+			return Rule{}, decision{}
 		}
-		// refusal is the first rule dropping what the exit does not carry that a
-		// packet meets, where the rest of the forward chain is passed
-		refusal := func(packet crossing) (Rule, bool) {
-			for _, rule := range desired {
-				if rule.Drops != NoMessage && meant(rule, packet) {
-					return rule, true
-				}
-			}
-			return Rule{}, false
-		}
-		// in each family's forward chain the rules taking what no flow is
-		// tracked for come first, then the ICMP drops and the limit, ahead of
-		// every rule of the translation's chain
+		// in each family's forward chain the ICMP drops come first, then the
+		// rules taking what no flow is tracked for, the limit and the refusals,
+		// ahead of every rule of the translation's chain
 		rank := func(rule Rule) int {
 			switch {
-			case rule.Untracked:
-				return 0
 			case rule.Drops != NoMessage:
+				return 0
+			case rule.Untracked:
 				return 1
 			case rule.Limit != 0:
 				return 2
+			case rule.Protocol.Number != 0:
+				return 3
 			}
-			return 3
+			return 4
 		}
 		for i := 1; i < len(desired); i++ {
 			if desired[i].Family == desired[i-1].Family && rank(desired[i]) < rank(desired[i-1]) {
@@ -362,21 +373,37 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 					// it is dropped where no flow is tracked for it
 					timed, limited, dropped bool
 				}{
-					{"out of the mesh", crossing{"ranet0", "eth0", source, carry.protocol, carry.port, carry.first, false}, translated, classSource(cfg, source), true, translated,
+					{"out of the mesh", crossing{"ranet0", "eth0", source, carry.protocol, carry.port, carry.first, false, false}, translated, classSource(cfg, source), true, translated,
 						translated && !cfg.ClassOf(source).To.None},
-					{"from this node", crossing{"", "eth0", source, carry.protocol, carry.port, carry.first, false}, translated && mine, classSource(cfg, source), true, false, false},
-					{"into the mesh", crossing{"eth1", "ranet0", source, carry.protocol, carry.port, carry.first, false}, returned, inbound, false, false, returned},
-					{"from this node into the mesh", crossing{"", "ranet0", source, carry.protocol, carry.port, carry.first, false}, false, netip.Addr{}, false, false, false},
-					{"across the mesh", crossing{"ranet0", "ranet0", source, carry.protocol, carry.port, carry.first, false}, false, netip.Addr{}, false, false, false},
+					{"from this node", crossing{"", "eth0", source, carry.protocol, carry.port, carry.first, false, false}, translated && mine, classSource(cfg, source), true, false, false},
+					{"into the mesh", crossing{"eth1", "ranet0", source, carry.protocol, carry.port, carry.first, false, false}, returned, inbound, false, false, returned},
+					{"from this node into the mesh", crossing{"", "ranet0", source, carry.protocol, carry.port, carry.first, false, false}, false, netip.Addr{}, false, false, false},
+					{"across the mesh", crossing{"ranet0", "ranet0", source, carry.protocol, carry.port, carry.first, false, false}, false, netip.Addr{}, false, false, false},
 				} {
-					// an ICMP message RFC 5508 section 7 rules out is dropped out of
-					// the mesh and into it under every class, in IPv4 translated
 					forwarded := c.what == "out of the mesh" || c.what == "into the mesh"
-					message := family == egress.FamilyIPv4 && translated && forwarded && carry.protocol == unix.IPPROTO_ICMP &&
-						(carry.first == 4 || carry.first == 15 || carry.first == 16)
-					if rule, met := refusal(c.packet); message != met {
-						ht.Fatalf("%+v under %+v meets a packet %s from %s of protocol %d with first octet %d at %v (%v), want dropped %v, in %v",
-							cfg, rt, c.what, source, carry.protocol, carry.first, rule, met, message, desired)
+					outUnderNone := c.what == "out of the mesh" && translated && cfg.ClassOf(source).To.None
+					untracked, reply := c.packet, c.packet
+					untracked.untracked, reply.reply = true, true
+					for _, packet := range []crossing{c.packet, untracked, reply} {
+						var want decision
+						switch coversAddresses := carry.protocol == 33 || carry.protocol == 136; {
+						case family == egress.FamilyIPv4 && translated && forwarded && carry.protocol == unix.IPPROTO_ICMP &&
+							(carry.first == 4 || carry.first == 15 || carry.first == 16):
+							want.drops = true
+						case packet.untracked && c.dropped:
+							want.untracked = true
+						case packet.untracked && outUnderNone:
+							want.untracked, want.passes = true, true
+						case packet.untracked, packet.reply:
+						case coversAddresses && (c.what == "out of the mesh" && translated && !outUnderNone || c.what == "into the mesh" && returned):
+							want.protocol = carry.protocol
+						case coversAddresses && outUnderNone:
+							want.protocol, want.passes = carry.protocol, true
+						}
+						if rule, got := decides(packet); got != want {
+							ht.Fatalf("%+v under %+v decides a packet %s from %s of protocol %d with first octet %d, no flow tracked %v, a reply %v, by %v as %+v, want %+v, in %v",
+								cfg, rt, c.what, source, carry.protocol, carry.first, packet.untracked, packet.reply, rule, got, want, desired)
+						}
 					}
 					rule, taken, attached := walk(c.packet)
 					timeouts := NoTimeouts
@@ -397,12 +424,6 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 					}
 					if met := limits(c.packet); met != want {
 						ht.Fatalf("%+v under %+v holds a packet %s from %s to %d limits, want %d, in %v", cfg, rt, c.what, source, met, want, desired)
-					}
-					untracked := c.packet
-					untracked.untracked = true
-					if dropped := drops(untracked); dropped != c.dropped {
-						ht.Fatalf("%+v under %+v drops a packet %s from %s of protocol %d no flow is tracked for %v, want %v, in %v",
-							cfg, rt, c.what, source, carry.protocol, dropped, c.dropped, desired)
 					}
 				}
 			}

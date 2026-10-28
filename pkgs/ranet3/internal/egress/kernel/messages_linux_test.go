@@ -35,7 +35,10 @@ var golden []byte
 // node's own address, each family's limit, and the rules taking what no flow
 // is tracked for, out of the mesh a pass from a class of none and a drop from a
 // class and from every source, and into it a drop from a prefix and from
-// every source, and the ICMP drops of each message out of the mesh and into it
+// every source, the ICMP drops of each message out of the mesh and into it, and
+// the refusals of each protocol out of the mesh, a pass from a class of none, a
+// refusal from a class and from every source, and into it from a prefix and
+// from every source
 func everyTranslation() []Rule {
 	v4, v6 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")
 	return []Rule{
@@ -45,6 +48,9 @@ func everyTranslation() []Rule {
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Drops: SourceQuench},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", Drops: Information},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Limit: egress.DefaultFlowsPerSource},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/25"), None: true, Protocol: dccp},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Protocol: dccp},
+		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Protocol: udpLite},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3"},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Source: v4},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Source: v4},
@@ -60,6 +66,8 @@ func everyTranslation() []Rule {
 		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("3fff::/20"), Untracked: true},
 		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", Untracked: true},
 		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3", Limit: egress.DefaultFlowsPerSource},
+		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("3fff::/20"), Protocol: udpLite},
+		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", Protocol: dccp},
 		{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet3"},
 		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::/48"), Source: v6},
 		{Family: egress.FamilyIPv6, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("2001:db8:1::7/128")},

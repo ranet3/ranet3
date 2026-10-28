@@ -1224,13 +1224,13 @@ testers.runNixOSTest {
             print(json.dumps(status, indent=2))
             assert status["enabled"], status
             # the rules the translator writes for this configuration, which
-            # advertises without return: in each family the drop of what no flow
-            # is tracked for, in ipv4 the 4 drops of source quench and
-            # information messages, and the limit rule, then 3 timeout rules and
-            # a masquerade for the catch-all auto class, and 3 timeout rules and
-            # a masquerade for the local rule of the client's one mesh address,
-            # so a stale or doubled rule shows
-            assert status["installed"] == 24, status
+            # advertises without return: in ipv4 the 4 drops of source quench
+            # and information messages, then in each family the drop of what no
+            # flow is tracked for, the limit rule and the refusals of dccp and
+            # udp-lite, then 3 timeout rules and a masquerade for the catch-all
+            # auto class, and 3 timeout rules and a masquerade for the local rule
+            # of the client's one mesh address, so a stale or doubled rule shows
+            assert status["installed"] == 28, status
             assert sorted(status["announced"]) == sorted(status["advertise"]), status
             assert status["flows"] > 0, status
             assert not status.get("err"), status

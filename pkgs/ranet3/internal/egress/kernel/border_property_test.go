@@ -36,8 +36,11 @@ type chainPacket struct {
 	network   []byte
 	l4proto   uint8
 	transport []byte
-	// ctState is the packet's state as ct state reads it, one NF_CT_STATE_ bit
+	// ctState is the packet's state as ct state reads it, one NF_CT_STATE_ bit,
+	// and reply whether it goes its connection's reply way, as ct direction
+	// reads it
 	ctState uint32
+	reply   bool
 }
 
 // chainRun records the verdict an interpreted chain gave one packet
@@ -52,6 +55,9 @@ type chainRun struct {
 	// timeouts names the last timeout object a rule on the way attached, empty
 	// where none did
 	timeouts string
+	// rejected is the code of the destination unreachable a reject answered
+	// with, 0 where none did
+	rejected uint8
 }
 
 // translation is a nat statement's work on a packet's source: masquerade, or
@@ -68,6 +74,7 @@ type ruleRun struct {
 	counted     bool
 	translation translation
 	timeouts    string
+	rejected    uint8
 }
 
 // runChain evaluates the encoded rules in order against packet, as
@@ -89,7 +96,7 @@ func runChain(t testing.TB, rules []nftables.Request, packet chainPacket) chainR
 		if run.code != nftables.Accept && run.code != verdictDrop {
 			t.Fatalf("rule %d ends with verdict %d, neither accept nor drop", i, run.code)
 		}
-		return chainRun{rule: i, accept: run.code == nftables.Accept, counted: run.counted, translation: run.translation, timeouts: timeouts}
+		return chainRun{rule: i, accept: run.code == nftables.Accept, counted: run.counted, translation: run.translation, timeouts: timeouts, rejected: run.rejected}
 	}
 	return chainRun{rule: -1, accept: true, timeouts: timeouts}
 }
@@ -156,10 +163,24 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 				}
 			case "ct":
 				requireRegister(t, name, fields, unix.NFTA_CT_DREG)
-				if key := be32(t, fields[unix.NFTA_CT_KEY]); key != unix.NFT_CT_STATE {
-					t.Fatalf("ct loads key %d, where the interpreter models ct state", key)
+				switch key := be32(t, fields[unix.NFTA_CT_KEY]); key {
+				case unix.NFT_CT_STATE:
+					register = binary.NativeEndian.AppendUint32(nil, packet.ctState)
+				case unix.NFT_CT_DIRECTION:
+					// a packet with no connection has no direction, which ends the
+					// rule, and one with a connection loads IP_CT_DIR_ORIGINAL or
+					// IP_CT_DIR_REPLY into one byte of a register the kernel zeroes
+					// whole
+					if packet.ctState == nftables.CTStateInvalid || packet.ctState == nftables.CTStateUntracked {
+						return undecided()
+					}
+					register = []byte{0, 0, 0, 0}
+					if packet.reply {
+						register[0] = 1
+					}
+				default:
+					t.Fatalf("ct loads key %d, where the interpreter models ct state and direction", key)
 				}
-				register = binary.NativeEndian.AppendUint32(nil, packet.ctState)
 			case "payload":
 				requireRegister(t, name, fields, unix.NFTA_PAYLOAD_DREG)
 				from := packet.network
@@ -284,6 +305,13 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 					t.Fatalf("objref names an object of type %d, where the interpreter models a ct timeout's", kind)
 				}
 				run.timeouts = unix.ByteSliceToString(fields[unix.NFTA_OBJREF_IMM_NAME])
+			case "reject":
+				// the answer goes back to the source, and the packet is dropped
+				if kind := be32(t, fields[unix.NFTA_REJECT_TYPE]); kind != unix.NFT_REJECT_ICMP_UNREACH || len(fields[unix.NFTA_REJECT_ICMP_CODE]) != 1 {
+					t.Fatalf("reject of type %d with a code of %d bytes, where the interpreter models a destination unreachable", kind, len(fields[unix.NFTA_REJECT_ICMP_CODE]))
+				}
+				run.code, run.rejected = verdictDrop, fields[unix.NFTA_REJECT_ICMP_CODE][0]
+				return run, true
 			default:
 				t.Fatalf("the rule holds a %q expression, which the interpreter does not model", name)
 			}
@@ -308,6 +336,7 @@ var modeled = map[string][]uint16{
 	"masq":      {},
 	"nat":       {unix.NFTA_NAT_TYPE, unix.NFTA_NAT_FAMILY, unix.NFTA_NAT_REG_ADDR_MIN},
 	"objref":    {unix.NFTA_OBJREF_IMM_TYPE, unix.NFTA_OBJREF_IMM_NAME},
+	"reject":    {unix.NFTA_REJECT_TYPE, unix.NFTA_REJECT_ICMP_CODE},
 }
 
 func requireRegister(t testing.TB, name string, fields map[uint16][]byte, kind uint16) {
