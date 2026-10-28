@@ -136,7 +136,26 @@ const (
 	icmpNodeCost = time.Second / icmpNodeRate
 )
 
-// linePad is the padding on each side of the ICMP limit's cap and after each of its shards, 128 bytes less the 8 bytes a word is aligned to
+// the trace's bounds
+const (
+	// TraceRateMin and TraceRateMax bound the records one trace takes a second, and TraceRateDefault is a client's where it names none
+	TraceRateMin     = 1
+	TraceRateMax     = 10000
+	TraceRateDefault = 1000
+	// TracePayloadMax is the most of its packet a record carries, the largest IPv4 packet and the largest IPv6 one but a jumbogram
+	TracePayloadMax = 65535
+	// traceQueueLength is the records one client's queue holds, a tenth of a second at the top rate
+	traceQueueLength = TraceRateMax / 10
+	// traceBurst is the time's worth of records a client's rate lets through at once
+	traceBurst = time.Second
+	// traceHeaders is the most IPv6 extension headers or IPv4 options a record names, past which the walk stops
+	traceHeaders = 8
+	// maxTraceClients is the most clients one tracer holds, each a bit of a hold's words
+	maxTraceClients = 64
+)
+
+// linePad is the padding on each side of the ICMP limit's cap and the tracer, and after each of the limit's shards, 128 bytes less the 8 bytes a word is aligned to
 // 128 bytes are a cache line of Apple's M-series and the pair of 64-byte lines Intel's adjacent-line prefetcher fetches together
-// so neither shares a line with another field on any target, wherever the allocator puts the Mesh, since every draw reads the cap and writes its shard
+// so none shares a line with another field on any target, wherever the allocator puts the Mesh, since every draw reads the cap and writes its shard
+// and every batch of decide, classify and applySegments reads the tracer
 const linePad = 128 - 8
