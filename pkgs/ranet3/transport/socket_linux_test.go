@@ -285,7 +285,7 @@ func TestUDPReceiveDropsDatagramWithNoUsableSource(t *testing.T) {
 // walkAllocRuns is how many reads the allocation test averages over
 const walkAllocRuns = 100
 
-// the record of each ESP datagram a read hands out holds the source of its message, a link-local one with its interface as the zone
+// the record of each ESP datagram a read hands out holds the source and the outer ECN field of its message, a link-local source with its interface as the zone
 // and reading them allocates nothing, for link-local peers on one interface as for any other
 func TestWalkRecordsESPSourcesWithoutAllocating(t *testing.T) {
 	sources := []netip.AddrPort{
@@ -309,6 +309,7 @@ func TestWalkRecordsESPSourcesWithoutAllocating(t *testing.T) {
 			}
 			control := appendUDPSegment(m.OOB[:0], size)
 			(*unix.Cmsghdr)(unsafe.Pointer(&control[0])).Type = unix.UDP_GRO
+			control = appendTrafficClass(control, sources[i].Addr().Is6(), ecnDSCP|uint8(codepoints[i%len(codepoints)]))
 			m.NN = len(control)
 		}
 		return len(sources), nil
@@ -321,6 +322,9 @@ func TestWalkRecordsESPSourcesWithoutAllocating(t *testing.T) {
 	for i := range n {
 		if want := sources[i/segments]; records[i].source != want {
 			t.Errorf("datagram %d of a message from %s came with the source %v", i, want, records[i].source)
+		}
+		if want := codepoints[i/segments%len(codepoints)]; records[i].ecn != want {
+			t.Errorf("datagram %d of a message with the ECN field %d came with %d", i, want, records[i].ecn)
 		}
 	}
 	if allocs := testing.AllocsPerRun(walkAllocRuns, func() { _, _, _ = receive(packets, sizes, endpoints, records) }); allocs != 0 {
@@ -344,6 +348,40 @@ func putSource(s *udpSource, addr netip.AddrPort) {
 	if zone := addr.Addr().Zone(); zone != "" {
 		index, _ := strconv.ParseUint(zone, 10, 32)
 		binary.NativeEndian.PutUint32(s[24:28], uint32(index))
+	}
+}
+
+// appendTrafficClass appends the control message linux hands a socket that asked for the outer TOS or traffic class
+func appendTrafficClass(control []byte, ipv6 bool, class uint8) []byte {
+	level, kind, size := unix.IPPROTO_IP, unix.IP_TOS, 1
+	if ipv6 {
+		level, kind, size = unix.IPPROTO_IPV6, unix.IPV6_TCLASS, 4
+	}
+	start := len(control)
+	control = append(control, make([]byte, unix.CmsgSpace(size))...)
+	header := (*unix.Cmsghdr)(unsafe.Pointer(&control[start]))
+	header.Level, header.Type = int32(level), int32(kind)
+	header.SetLen(unix.CmsgLen(size))
+	if ipv6 {
+		binary.NativeEndian.PutUint32(control[start+unix.CmsgLen(0):], uint32(class))
+	} else {
+		control[start+unix.CmsgLen(0)] = class
+	}
+	return control
+}
+
+// the control buffer of each received message holds the packet info message, UDP_GRO's int and the outer TOS or traffic class of either family
+func TestControlMessageSizeHoldsEveryMessage(t *testing.T) {
+	for _, family := range []struct {
+		name        string
+		info, class int
+	}{
+		{"IPv4", unix.SizeofInet4Pktinfo, 1},
+		{"IPv6", unix.SizeofInet6Pktinfo, 4},
+	} {
+		if need := unix.CmsgSpace(family.info) + unix.CmsgSpace(4) + unix.CmsgSpace(family.class); controlMessageSize < need {
+			t.Errorf("%s needs %d bytes of control messages, a message holds %d", family.name, need, controlMessageSize)
+		}
 	}
 }
 
