@@ -16,7 +16,7 @@ lists. The table summarizes them, and the sections below give the details.
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | RFC 7296 section 2.23, RFC 9242 section 3.2                                            | IKE starts on UDP port 500 and moves to 4500 behind a NAT, in the first `IKE_INTERMEDIATE` where one runs                                                             | IKE and ESP share `link.port` from the first message                                                                                                                                                                                                                                                                                                                                                        | 1 port per node, with no transition to track                                                                                                                                                                                                                                                               |
 | RFC 7296 section 2.23                                                                  | NAT detection hashes the real source address and port                                                                                                                 | The source hash covers a random address, so it never matches                                                                                                                                                                                                                                                                                                                                                | The peer always encapsulates ESP in UDP                                                                                                                                                                                                                                                                    |
-| RFC 7296 section 2.23                                                                  | Follow any validated packet when not behind a NAT, and none behind one                                                                                                | Every session follows a fresh authenticated request, and nothing else                                                                                                                                                                                                                                                                                                                                       | A session follows a peer that moved                                                                                                                                                                                                                                                                        |
+| RFC 7296 section 2.23                                                                  | Follow any validated packet when not behind a NAT, and none behind one                                                                                                | From its established IKE SA on, every session follows a fresh authenticated request and the authenticated answer to its own request, behind a NAT too, and no ESP packet                                                                                                                                                                                                                                    | A session follows a peer that moved, and a node never learns whether it is behind a NAT. The initiator's handshake answers come before the IKE SA exists, and a dial sends to the endpoint it dials. Whether ESP follows too is not decided yet, see Endpoint updates                                      |
 | RFC 7296 section 2.11                                                                  | Answer from the address and port the request reached                                                                                                                  | The kernel's choice once that address is gone or has no route                                                                                                                                                                                                                                                                                                                                               | No answer otherwise, see Answer addresses                                                                                                                                                                                                                                                                  |
 | RFC 7296 section 2.11                                                                  | Answer from the address and port the request reached                                                                                                                  | The kernel's choice on FreeBSD and OpenBSD                                                                                                                                                                                                                                                                                                                                                                  | No source kept, see Answer addresses                                                                                                                                                                                                                                                                       |
 | RFC 7296 section 2.25.1                                                                | Complete both colliding Child SA rekeys and keep 1                                                                                                                    | The peer's rekey is answered `TEMPORARY_FAILURE`                                                                                                                                                                                                                                                                                                                                                            | 1 Child SA per session                                                                                                                                                                                                                                                                                     |
@@ -197,9 +197,10 @@ A strongSwan peer must therefore set `charon.port_nat_t` to the port the trust
 document lists for it. Otherwise it moves to port 4500 once it detects the NAT
 the mismatch reports, and nothing listens there. This profile remains usable
 when a NAT changes the observed source port: replies follow the observed source,
-and a fresh authenticated IKE request can update the stored peer endpoint. It is
-deliberately not interoperable with an otherwise generic peer expecting standard
-RFC 7296 port selection or raw ESP.
+and a fresh authenticated IKE request, or the authenticated answer to this
+node's own request, can update the stored peer endpoint. It is deliberately not
+interoperable with an otherwise generic peer expecting standard RFC 7296 port
+selection or raw ESP.
 
 ranet3 sends no NAT keepalive, which
 [RFC 3948 section 4](https://www.rfc-editor.org/rfc/rfc3948.html#section-4) asks
@@ -214,22 +215,32 @@ ignored.
 
 ## Endpoint updates
 
-Every session moves the stored peer endpoint to the address and port of a fresh
-request whose integrity protection validates, and of nothing else.
+Once its IKE SA is established, every session moves the stored peer endpoint to
+the address and port of an IKE message whose integrity protection validates and
+that is new: a request at the Message ID the session expects next, or the answer
+to the one request this node has outstanding, which the answer then settles. A
+fragmented message moves it once whole, to where the fragment that completed it
+came from. A replayed request, an answer that matches no outstanding request and
+a message that does not validate move nothing. In the handshake, the responder
+moves to where the `IKE_AUTH` request came from once it validates. The answers
+the initiator reads move nothing, since the IKE SA they set up does not exist
+yet, and a dial sends each of its requests to the endpoint it dials.
 [RFC 7296 section 2.23](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23)
 asks a host that is not behind a NAT to follow "a packet whose integrity
-protection validates", which takes in IKE responses and ESP packets as well, and
-asks a host behind a NAT not to follow at all. ranet3 departs from both. A
-response or an ESP packet from a new address moves nothing, and a fresh request
-moves the endpoint whether or not the node is behind a NAT. A node never learns
-whether it is behind one, because it does not compare the
-`NAT_DETECTION_DESTINATION_IP` it receives with its own address.
+protection validates", which takes in ESP packets as well, and asks a host
+behind a NAT not to follow at all. ranet3 departs from both. An ESP packet from
+a new address moves nothing, and whether ESP follows too is not decided yet. A
+fresh request or answer moves the endpoint whether or not the node is behind a
+NAT. A node never learns whether it is behind one, because it does not compare
+the `NAT_DETECTION_DESTINATION_IP` it receives with its own address.
 
-Behind a NAT, someone who captures a request and resends it from another address
-before the original arrives can move a session's sends to that address. The
-peer's next fresh request moves them back. The peer sends one once it has heard
-nothing from this node for its liveness interval, 10 seconds on a ranet3 peer.
-In exchange a session follows a peer that moved, whichever end dialed.
+Behind a NAT, someone who captures a request or an answer and resends it from
+another address before the original arrives can move a session's sends to that
+address, and the original then moves nothing. The peer's next fresh request
+moves them back. The peer sends one once it has heard nothing from this node for
+its liveness interval, 10 seconds on a ranet3 peer. In exchange a session
+follows a peer that moved, whichever end dialed, as soon as the peer either asks
+or answers.
 
 ## Answer addresses
 
@@ -245,11 +256,11 @@ source. Without that resend the answer would not leave at all.
 
 Each answer still tries the address first, so answers leave from it again as
 soon as the kernel takes a send from it. The session's own sends stay on the
-kernel's choice until a fresh request moves them back, as
+kernel's choice until a fresh request or answer moves them back, as
 [moving hosts](../platforms.md#moving-hosts) gives, which a peer sends once that
 traffic is lost. Where the session's ESP from the other address still reaches
-the peer, the peer has no cause to probe, and the session stays there until the
-peer's next request, such as a rekey.
+the peer, the peer has no cause to probe, and the session stays there until a
+fresh request or answer reaches the address.
 
 On FreeBSD and OpenBSD the socket keeps no source, so every answer leaves from
 the kernel's choice. Neither platform is supported beyond building.

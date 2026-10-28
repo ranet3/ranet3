@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-27
+updated: 2026-10-28
 order: 100
 ---
 
@@ -218,29 +218,31 @@ own liveness check.
 
 A node keeps its sessions when its own addresses change, as a laptop's do when
 it moves from Wi-Fi to a dock or a DHCP lease renews, and when its peer's do.
-Every session follows its peer to the address and port its latest fresh
-authenticated request came from, and answers a request from the address it
-arrived on. Beyond those answers, a session this node dialed leaves the source
-address to the kernel. Its sends leave from whatever address the host holds at
-the time. A session a peer opened sends from the address the peer's latest
-request arrived on, on Linux and macOS alike, and a request that reaches another
-of this host's addresses moves it there. Once that address has gone and the
-kernel refuses a send from it, the session sends from the kernel's choice until
-a later request moves it to the address that one arrived on. On other platforms
-but iOS and Android the kernel always chooses.
+Every session follows its peer as
+[endpoint updates](design/protocol-deviations.md#endpoint-updates) gives, and
+answers a request from the address it arrived on. Beyond those answers, a
+session this node dialed leaves the source address to the kernel. Its sends
+leave from whatever address the host holds at the time. A session a peer opened
+sends from the address the peer's latest fresh request or answer arrived on, on
+Linux and macOS alike, and one that reaches another of this host's addresses
+moves it there. Once that address has gone and the kernel refuses a send from
+it, the session sends from the kernel's choice until a later fresh request or
+answer moves it to the address that one arrived on. On other platforms but iOS
+and Android the kernel always chooses.
 
 The session falls back to the kernel's choice whenever the kernel refuses a send
 from the address with `ENETUNREACH`, `EHOSTUNREACH`, `EINVAL`, `ENODEV` or
 `EADDRNOTAVAIL`. Once a send from the kernel's choice has gone after
-`EHOSTUNREACH`, a fresh request to the address within 1 minute changes nothing,
-and the session keeps sending from the kernel's choice. The first one after that
-minute moves the session back to the address, and a send refused with
+`EHOSTUNREACH`, a fresh request or answer to the address within 1 minute changes
+nothing, and the session keeps sending from the kernel's choice. The first one
+after that minute moves the session back to the address, and a send refused with
 `EHOSTUNREACH` again falls back again, at most once every minute. After any of
-the other refusals, the next request that reaches the address moves the session
-back at once. Where the session's traffic from the other address still reaches
-the peer, the session works, and it stays there until the peer's next request,
-such as a rekey. Each answer to a request that reaches the address is sent from
-the address itself first, so answers leave from it as soon as it routes again.
+the other refusals, the next fresh request or answer that reaches the address
+moves the session back at once. Where the session's traffic from the other
+address still reaches the peer, the session works, and it stays there until a
+fresh request or answer reaches the address. Each answer to a request that
+reaches the address is sent from the address itself first, so answers leave from
+it as soon as it routes again.
 
 A session that cannot send at all, because the host has no route to the peer,
 holds while its liveness check retransmits on the usual schedule, and ends once
@@ -388,7 +390,7 @@ for its size reads the MTU of the interface it sends through, and the session's
 search takes that as its route's MTU. A socket that `link.underlay.bind` holds
 to an interface sends through it. Otherwise a session the peer opened sends
 through the interface holding the address it sends from, the one the peer's
-latest request reached until a send from it falls back, as
+latest fresh request or answer reached until a send from it falls back, as
 [moving hosts](#moving-hosts) describes. Any other session, one whose send fell
 back included, sends through the interface its route leaves by. The search reads
 the same MTU when it starts, and the probes alone find a narrower hop beyond it.
