@@ -365,10 +365,7 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 			tally.add(transitDelivered)
 			continue
 		case RouteNone, RouteHeld:
-			reason := transitNoRoute
-			if verdict == RouteHeld {
-				reason = transitHeld
-			}
+			reason := unroutedReason(verdict)
 			m.dropTransit(&tally, reason, src, dst)
 			if kind := m.unreachable(verdict, match, dst); trace != nil {
 				trace.answered(m, from, reason, kind, raw, version)
@@ -448,6 +445,14 @@ func (m *Mesh) unreachable(verdict Verdict, match Match, destination netip.Addr)
 		return answerHostUnreachable
 	}
 	return answerNoRoute
+}
+
+// unroutedReason is the reason for a packet no route reaches, verdict being RouteNone or RouteHeld
+func unroutedReason(verdict Verdict) transitReason {
+	if verdict == RouteHeld {
+		return transitHeld
+	}
+	return transitNoRoute
 }
 
 // egressCheck keeps one batch's egress lookups

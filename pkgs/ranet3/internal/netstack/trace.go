@@ -578,11 +578,7 @@ func (t *tracer) read(decision TraceDecision, reason transitReason, segment neti
 func (t *tracer) unroutedRead(m *Mesh, raw []byte, verdict Verdict, match Match, src, dst netip.Addr) {
 	var draw answerDraw
 	kind, fate := m.answerUnroutedRead(raw, verdict, match, src, dst, draw.take)
-	reason := transitNoRoute
-	if verdict == RouteHeld {
-		reason = transitHeld
-	}
-	t.record(readSite(TraceAnswer, reason).answered(kind, draw.met(fate)), raw)
+	t.record(readSite(TraceAnswer, unroutedReason(verdict)).answered(kind, draw.met(fate)), raw)
 }
 
 // tooBig takes sent, a read off the tun larger than mtu, the largest next's session carries, as m.tooBig does, and records raw, the read, as readSent says
