@@ -331,7 +331,7 @@ func startDecision(mesh *netstack.Mesh, cfg *config.Config) {
 	mesh.SetTransit(cfg.Transits())
 	mesh.SetOverlay(cfg.Overlay())
 	// a reload that changes cap.egress is refused, so the start's prefixes hold
-	mesh.SetEgressPrefixes(egressPrefixes(cfg))
+	mesh.SetEgressPrefixes(cfg.Advertised())
 }
 
 // Run is called once. It returns only after peer handshakes, IKE sessions, ESP
@@ -546,7 +546,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		Underlay:      c.Underlay,
 		Announced:     cfg.Routes().Announced(),
 		Overlay:       cfg.Overlay(),
-		Advertised:    egressPrefixes(cfg),
+		Advertised:    cfg.Advertised(),
 		EgressSegment: len(cfg.Segments().Egress()) > 0,
 		Sessions:      c.LiveSessions,
 		Endpoints:     c.liveEndpoints,

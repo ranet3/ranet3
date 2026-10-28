@@ -123,6 +123,43 @@ func TestExitRefusalsReachTheLoader(t *testing.T) {
 	}
 }
 
+// cap.exit is refused on an exit in each format, each reason a node is one by
+// its own clause of the refusal's message
+func TestExitIsRefusedOnAnExit(t *testing.T) {
+	const refusal = "config: cap.exit sends this node's own traffic out through another exit, and this node is an exit (%s), whose own traffic and whose egress leave by its own uplink: remove cap.exit, or stop offering the exit"
+	for _, c := range []struct {
+		reason, clause      string
+		toml, yaml, jsonish string
+	}{
+		{
+			"an advertised default", "cap.egress advertises 0.0.0.0/0",
+			"\n[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\n",
+			"{}\n  egress: {advertise: [0.0.0.0/0]}",
+			`{}, "egress": {"advertise": ["0.0.0.0/0"]}`,
+		},
+		{
+			"an announcement that counts as a default", "cap.route announces 2000::/3, which counts as a default",
+			"\n[cap.route]\nannounce = [\"2000::/3\"]\n",
+			"{}\n  route: {announce: [\"2000::/3\"]}",
+			`{}, "route": {"announce": ["2000::/3"]}`,
+		},
+		{
+			"an egress segment", "cap.segment local 3fff:b:0:306::3 delivers to egress",
+			"\n[cap.egress]\n[[cap.segment.local]]\nsid = \"3fff:b:0:306::3\"\nbehavior = \"End.DT46\"\ndeliver = \"egress\"\nallow = [\"192.0.2.0/24\", \"3fff:a::/36\"]\n",
+			"{}\n  egress: {}\n  segment:\n    local:\n      - {sid: \"3fff:b:0:306::3\", behavior: End.DT46, deliver: egress, allow: [192.0.2.0/24, \"3fff:a::/36\"]}",
+			`{}, "egress": {}, "segment": {"local": [{"sid": "3fff:b:0:306::3", "behavior": "End.DT46", "deliver": "egress", "allow": ["192.0.2.0/24", "3fff:a::/36"]}]}`,
+		},
+	} {
+		for format, body := range map[string]string{"toml": c.toml, "yaml": c.yaml, "json": c.jsonish} {
+			extension, text := exitLeaf(format, body)
+			want := fmt.Sprintf(refusal, c.clause)
+			if _, err := load(t, extension, text); err == nil || err.Error() != want {
+				t.Errorf("cap.exit beside %s in %s was refused with %v, want %q", c.reason, format, err, want)
+			}
+		}
+	}
+}
+
 // forward refuses an entry that can name no link, a malformed pattern with
 // path.ErrBadPattern among them, and lo by name, and takes every other pattern
 // and name, a pattern matching lo among them

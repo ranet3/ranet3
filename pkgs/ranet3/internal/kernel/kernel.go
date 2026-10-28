@@ -1608,12 +1608,9 @@ func (r *Reconciler) overlayHolds(out []Route) []Route {
 	return out
 }
 
-// exit reports whether this node is an exit: cap.egress advertises or
-// cap.route announces a prefix schema.CapturesTheMachine counts, or cap.segment
-// holds an egress segment
+// exit reports whether this node is an exit, as schema.Exit says
 func (r *Reconciler) exit() bool {
-	counts := func(prefix netip.Prefix) bool { return schema.CapturesTheMachine(prefix, r.rt.Overlay) }
-	return r.rt.EgressSegment || slices.ContainsFunc(r.rt.Advertised, counts) || slices.ContainsFunc(r.rt.Announced, counts)
+	return schema.ExitOf(r.rt.Advertised, r.rt.Announced, r.rt.EgressSegment, r.rt.Overlay).Is()
 }
 
 // limitedBroadcast is the one entry the darwin kernel installs that carries no

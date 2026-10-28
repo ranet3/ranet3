@@ -226,6 +226,24 @@ func (c *Config) SegmentTables() (*srv6.LocalTable, *srv6.SteerTable, error) {
 	return c.Segments().Tables(c.Overlay())
 }
 
+// ExitReason names why this node is an exit under overlay, as the reconciler,
+// a reload and the refusal of cap.exit all read it
+func (c *Config) ExitReason(overlay []schema.Prefix) schema.Exit {
+	return schema.ExitOf(c.Advertised(), c.Routes().Announced(), len(c.Segments().Egress()) > 0, overlay)
+}
+
+// Advertised is the prefixes cap.egress advertises, nil without the block
+func (c *Config) Advertised() []netip.Prefix {
+	if c.Cap.Egress == nil {
+		return nil
+	}
+	out := make([]netip.Prefix, len(c.Cap.Egress.Advertise))
+	for i, prefix := range c.Cap.Egress.Advertise {
+		out[i] = prefix.Prefix
+	}
+	return out
+}
+
 // Overlay is cap.border's overlay as written, nil without the block
 func (c *Config) Overlay() []schema.Prefix {
 	if c.Cap.Border == nil {
@@ -937,17 +955,30 @@ func (c *Config) validateBorder() error {
 }
 
 // validateExit refuses cap.exit without the reconciler whose rules make the
-// mode, and without the overlay those rules send to the mesh whatever the mode
-// and keep out of the selectors that send a source by the uplink
+// mode, without the overlay those rules send to the mesh whatever the mode and
+// keep out of the selectors that send a source by the uplink, and on an exit,
+// whose own traffic and egress leave by its own uplink
 func (c *Config) validateExit() error {
-	switch {
-	case c.Cap.Exit == nil:
+	if c.Cap.Exit == nil {
+		return nil
+	}
+	switch exit := c.ExitReason(c.Overlay()); {
 	case c.Cap.Table == nil:
 		return errors.New("config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of: add cap.table")
 	case c.Cap.Border == nil:
 		return errors.New("config: cap.exit is written and cap.border is absent, so the mode's rules cannot keep the overlay's sources off the uplink: add cap.border with the prefixes the mesh numbers its nodes from")
+	case exit.Advertised.IsValid():
+		return exitRefused(fmt.Sprintf("cap.egress advertises %s", exit.Advertised))
+	case exit.Announced.IsValid():
+		return exitRefused(fmt.Sprintf("cap.route announces %s, which counts as a default", exit.Announced))
+	case exit.EgressSegment:
+		return exitRefused(fmt.Sprintf("cap.segment local %s delivers to egress", c.Segments().Egress()[0].SID))
 	}
 	return nil
+}
+
+func exitRefused(because string) error {
+	return fmt.Errorf("config: cap.exit sends this node's own traffic out through another exit, and this node is an exit (%s), whose own traffic and whose egress leave by its own uplink: remove cap.exit, or stop offering the exit", because)
 }
 
 // validateSteeredMTU refuses a link.mtu the longest cap.segment steer list takes under the 1280 bytes IPv6 requires of every link
