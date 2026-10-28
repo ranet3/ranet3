@@ -120,8 +120,8 @@ type debugServer struct {
 	// euid is the daemon's own user, which the root class admits beside uid 0
 	euid uint32
 	// streams holds a place for every stream open, see stream
-	streams           chan struct{}
-	budget, heartbeat time.Duration
+	streams                 chan struct{}
+	budget, heartbeat, tick time.Duration
 }
 
 func newDebugServer(src Source) *debugServer {
@@ -130,7 +130,7 @@ func newDebugServer(src Source) *debugServer {
 		access = accessor.DebugAccess()
 	}
 	return &debugServer{src: src, access: access, euid: uint32(os.Geteuid()),
-		streams: make(chan struct{}, maxStreams), budget: streamBudget, heartbeat: streamHeartbeat}
+		streams: make(chan struct{}, maxStreams), budget: streamBudget, heartbeat: streamHeartbeat, tick: streamTick}
 }
 
 func (d *debugServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {

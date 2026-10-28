@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/netip"
 	"testing"
+
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // the clients a traced arm runs under at the default rate, one whose filter selects no packet of the arms by its prefixes, one selecting every packet
@@ -24,7 +26,7 @@ var traceClientArms = []struct {
 // traced opens a feed of filter on m at the default rate, each record carrying up to payload bytes, which a reader drains until the benchmark ends
 func traced(b *testing.B, m *Mesh, filter TraceFilter, payload int) {
 	b.Helper()
-	feed, err := m.Trace(filter, 0, TraceRateDefault)
+	feed, err := m.Trace(filter, payload, control.TraceRateDefault)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -163,7 +165,7 @@ func TestTracedDecisionCopiesNothingForAClientItLeavesOut(t *testing.T) {
 	for _, filter := range []TraceFilter{{Peer: "example/nobody"}, {Decision: TraceDeliver}, {Decision: TraceEgress}} {
 		for _, family := range []int{4, 6} {
 			var feed *TraceFeed
-			allocs := forwardedAllocs(t, family, func(m *Mesh) { feed = openTrace(t, m, filter, 64, TraceRateDefault) })
+			allocs := forwardedAllocs(t, family, func(m *Mesh) { feed = openTrace(t, m, filter, 64, control.TraceRateDefault) })
 			if allocs != 0 || feed.Counts() != (TraceCounts{}) {
 				t.Errorf("IPv%d decide under a client of %+v allocated %v a run and the feed counted %+v", family, filter, allocs, feed.Counts())
 			}
@@ -176,8 +178,8 @@ func TestTracedDecisionCopiesNothingForAClientItLeavesOut(t *testing.T) {
 		rate    int
 		records bool
 	}{
-		{"of another protocol", TraceFilter{Protocol: 6}, TraceRateDefault, false},
-		{"past its rate", TraceFilter{}, TraceRateMin, true},
+		{"of another protocol", TraceFilter{Protocol: 6}, control.TraceRateDefault, false},
+		{"past its rate", TraceFilter{}, control.TraceRateMin, true},
 	} {
 		var feed *TraceFeed
 		allocs := endForwardedAllocs(t, func(m *Mesh) { feed = openTrace(t, m, c.filter, 64, c.rate) })
@@ -190,7 +192,7 @@ func TestTracedDecisionCopiesNothingForAClientItLeavesOut(t *testing.T) {
 	}
 	m, read := classifyRead(t, 6, 1, 1, classifySteered)
 	closed := routeClosed(m, segPrefix("3fff:1::/64"))
-	openTrace(t, m, TraceFilter{Decision: TraceForward}, 64, TraceRateDefault)
+	openTrace(t, m, TraceFilter{Decision: TraceForward}, 64, control.TraceRateDefault)
 	m.classify(read)
 	trace := m.tracer.Load()
 	if allocs := leastAllocs(func() { trace.refused(read, closed) }); allocs != 0 {

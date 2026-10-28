@@ -13,6 +13,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
@@ -38,7 +39,7 @@ func tracedNode(t testing.TB) (*transitNode, *TraceFeed) {
 	for _, family := range []int{4, 6} {
 		n.m.Routes.Set(netip.Prefix{}, hostPrefix(transitClosed[family]), closed)
 	}
-	return n, openTrace(t, n.m, TraceFilter{}, TracePayloadMax, TraceRateMax)
+	return n, openTrace(t, n.m, TraceFilter{}, control.TracePayloadMax, control.TraceRateMax)
 }
 
 // deliverTraced hands n's mesh packets as the session to its from peer delivers them, and returns the records the feed took
@@ -53,7 +54,7 @@ func tracedLeaf(t testing.TB) (*Mesh, *TraceFeed) {
 	m, peer := carriedLeaf(t)
 	peer.SetMTU(tracedMTU)
 	m.SetAnswerTTL(64)
-	return m, openTrace(t, m, TraceFilter{}, 0, TraceRateMax)
+	return m, openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
 }
 
 // headendSteered is inner encapsulated at headend under path, as steered builds it outside a test
@@ -76,7 +77,7 @@ func tracedSegments(t *testing.T) (*Mesh, *TraceFeed) {
 	t.Helper()
 	m, _ := egressMesh(t)
 	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), (&recordingPeer{}).peer(t, "next"))
-	return m, openTrace(t, m, TraceFilter{}, TracePayloadMax, TraceRateMax)
+	return m, openTrace(t, m, TraceFilter{}, control.TracePayloadMax, control.TraceRateMax)
 }
 
 // closedPeer is the closed peer a tracedNode routes transitClosed to
@@ -182,14 +183,14 @@ var outcomeCases = func() []outcomeCase {
 		{"a read queued for its peer", transitForwarded, classified(udp(4, transitOwn, transitFar, 100, false)), with(read(TraceForward, ""), func(r *TraceRecord) { r.Next = "peer" })},
 		{"a read a policy steers", transitForwarded, func(t *testing.T) []TraceRecord {
 			m, batch := classifyRead(t, 6, 1, 1, classifySteered)
-			feed := openTrace(t, m, TraceFilter{}, 0, TraceRateMax)
+			feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
 			m.classify(batch)
 			return queued(feed)
 		}, with(read(TraceForward, ""), func(r *TraceRecord) { r.Next, r.Segment = "peer", segAddr("3fff:1::1") })},
 		{"a steered read with no route to its first segment", transitNoRoute, func(t *testing.T) []TraceRecord {
 			m, batch := classifyRead(t, 6, 1, 1, classifySteered)
 			m.Routes.Remove(netip.Prefix{}, segPrefix("3fff:1::/64"))
-			feed := openTrace(t, m, TraceFilter{}, 0, TraceRateMax)
+			feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
 			m.classify(batch)
 			return queued(feed)
 		}, with(read(TraceDrop, "no_route"), func(r *TraceRecord) { r.Segment = segAddr("3fff:1::1") })},
@@ -415,7 +416,7 @@ func TestTraceFiltersByThePacketItsForwardShowed(t *testing.T) {
 	arrivedAt := TraceFilter{Destinations: []netip.Prefix{hostPrefix(egressWaypoint)}}
 	t.Run("a drop after End", func(t *testing.T) {
 		m, _ := egressMesh(t)
-		feed := openTrace(t, m, arrivedAt, 0, TraceRateMax)
+		feed := openTrace(t, m, arrivedAt, 0, control.TraceRateMax)
 		m.DeliverInboundBatch(framed(headendSteered(udpPacket(stranger[6], transitNowhere[6], 100, false), egressWaypoint, egressExit)), DefaultMTU, nil)
 		if records := queued(feed); len(records) != 1 || records[0].Decision != TraceDrop || records[0].Segment != egressExit {
 			t.Errorf("the feed took %+v, want the drop %s met", records, egressExit)
@@ -424,7 +425,7 @@ func TestTraceFiltersByThePacketItsForwardShowed(t *testing.T) {
 	t.Run("End's forward to a peer whose budget refused it", func(t *testing.T) {
 		m, _ := egressMesh(t)
 		routeClosed(m, segPrefix("3fff:b:0:206::/64"))
-		feed := openTrace(t, m, arrivedAt, 0, TraceRateMax)
+		feed := openTrace(t, m, arrivedAt, 0, control.TraceRateMax)
 		m.DeliverInboundBatch(framed(headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], 100, false), egressWaypoint, egressNext)), DefaultMTU, nil)
 		records := queued(feed)
 		if len(records) != 2 || records[0].Decision != TraceForward || records[1].Decision != TraceDrop || records[1].Reason != "budget" {
@@ -439,7 +440,7 @@ func TestTraceFiltersByThePacketItsForwardShowed(t *testing.T) {
 		m.outboundJobs = make(chan *outboundBatch, 1)
 		steeredTo := segAddr("3fff:1::1")
 		routeClosed(m, segPrefix("3fff:1::/64"))
-		feed := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitFar[6])}}, 0, TraceRateMax)
+		feed := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitFar[6])}}, 0, control.TraceRateMax)
 		m.classify(read)
 		m.dispatchOutbound(read)
 		records := queued(feed)
@@ -453,7 +454,7 @@ func TestTraceFiltersByThePacketItsForwardShowed(t *testing.T) {
 	t.Run("End's forward cut into fragments to a peer whose budget refused them", func(t *testing.T) {
 		m, _ := egressMesh(t)
 		routeClosed(m, segPrefix("3fff:b:0:206::/64")).SetMTU(tracedMTU)
-		feed := openTrace(t, m, arrivedAt, 0, TraceRateMax)
+		feed := openTrace(t, m, arrivedAt, 0, control.TraceRateMax)
 		m.DeliverInboundBatch(framed(headendSteered(udpPacket(tooBigSource[4], transitNowhere[4], 2000, false), egressWaypoint, egressNext)), DefaultMTU, nil)
 		budgetDropsEachFragment(t, queued(feed))
 	})
@@ -463,7 +464,7 @@ func TestTraceFiltersByThePacketItsForwardShowed(t *testing.T) {
 		routeClosed(m, segPrefix("3fff:1::/64")).SetMTU(tracedMTU)
 		read := newOutboundBatch(1)
 		fill(read, udpPacket(segAddr("192.0.2.128"), transitFar[4], 2000, false))
-		feed := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitFar[4])}}, 0, TraceRateMax)
+		feed := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitFar[4])}}, 0, control.TraceRateMax)
 		m.classify(read)
 		m.dispatchOutbound(read)
 		budgetDropsEachFragment(t, queued(feed))
@@ -491,14 +492,14 @@ func TestTraceForwardsSpendNoRateOfAClientOfDrops(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			n := newTransitNode(t, tracedMTU)
-			feed := openTrace(t, n.m, drops, 64, TraceRateMin)
+			feed := openTrace(t, n.m, drops, 64, control.TraceRateMin)
 			check(t, feed, deliverTraced(n, feed, c.packets...))
 		})
 	}
 	t.Run("End's forward in the batch of End past the hop limit", func(t *testing.T) {
 		m, _ := egressMesh(t)
 		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), (&recordingPeer{}).peer(t, "next"))
-		feed := openTrace(t, m, drops, 64, TraceRateMin)
+		feed := openTrace(t, m, drops, 64, control.TraceRateMin)
 		end := func(hops byte) []byte {
 			return withTTL(headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], 100, false), egressWaypoint, egressNext), hops)
 		}
@@ -550,7 +551,7 @@ func TestTraceTakesTheDropsAndAnswersOfAHeldForward(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			n := newTransitNode(t, tracedMTU)
-			feed := openTrace(t, n.m, TraceFilter{Decision: c.decision}, 0, TraceRateMax)
+			feed := openTrace(t, n.m, TraceFilter{Decision: c.decision}, 0, control.TraceRateMax)
 			records := deliverTraced(n, feed, c.packet)
 			if len(records) != 1 || !reflect.DeepEqual(decisionOf(records[0]), c.want) {
 				t.Errorf("the feed took %+v, want %+v", records, c.want)

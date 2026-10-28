@@ -43,6 +43,8 @@ const (
 	streamBudget = 5 * time.Second
 	// streamHeartbeat is how often a quiet stream writes, so a reader can tell a quiet daemon from a dead one
 	streamHeartbeat = 15 * time.Second
+	// streamTick is how often a stream reports what its feed refused since it last did, as a trace's stream.dropped note
+	streamTick = time.Second
 	// streamBatch is how many events one stream flush carries at most, which bounds the time between flushes
 	streamBatch = 64
 	// maxLine is the longest stream line a client reads, in bytes, far past any event and short of a runaway
@@ -54,4 +56,17 @@ const (
 	// past it a query costs the daemon a parse and a match nobody bounds when it subscribes
 	// the match's work at an emit is bounded by the event's own attributes, since it stops at the first named one the event lacks
 	maxEventAttrs = 16
+	// maxTracePrefixes is how many prefixes a trace query may name for its sources, and as many for its destinations
+	// the filter tests each against every packet the trace sees, so the bound is on the emitters' work
+	maxTracePrefixes = 16
+)
+
+// a trace's bounds, which the daemon's tracer holds to as well
+const (
+	// TraceRateMin and TraceRateMax bound the records one trace takes a second, and TraceRateDefault is a trace's where it names none
+	TraceRateMin     = 1
+	TraceRateMax     = 10000
+	TraceRateDefault = 1000
+	// TracePayloadMax is the most of its packet a record carries, the largest IPv4 packet and the largest IPv6 one but a jumbogram
+	TracePayloadMax = 65535
 )

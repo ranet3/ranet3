@@ -298,7 +298,9 @@ func keyMaterialRoom(typ reflect.Type, seen map[reflect.Type]bool) string {
 		return keyMaterialRoom(typ.Elem(), seen)
 	case reflect.Struct:
 		for field := range typ.Fields() {
-			if !field.IsExported() {
+			// a trace's payload is the bytes of the packets it asked for, which hold none of this node's keys, and the plaintext class keeps it to uid 0
+			// it is exempt by name, so any other field of bytes still fails
+			if !field.IsExported() || typ == reflect.TypeFor[TracePacket]() && field.Name == "Payload" {
 				continue
 			}
 			if why := keyMaterialRoom(field.Type, seen); why != "" {
@@ -323,6 +325,7 @@ func TestDebugWireTypesCarryNoKeyMaterial(t *testing.T) {
 		struct{ SA *esp.ChildSA }{},
 		map[string][]struct{ Nonce [32]byte }{},
 		struct{ Attrs map[string]any }{},
+		struct{ Payload []byte }{},
 	} {
 		if keyMaterialRoom(reflect.TypeOf(bad), map[reflect.Type]bool{}) == "" {
 			t.Errorf("%T passed as a type without room for key material", bad)

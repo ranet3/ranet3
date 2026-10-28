@@ -14,11 +14,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // TraceDecision names the forwarding decision's action on one packet
+// each but TraceAny takes its name from control.TraceDecisions, in that list's order
 type TraceDecision uint8
 
 const (
@@ -32,28 +34,20 @@ const (
 	traceDecisionCount
 )
 
-var traceDecisionNames = [traceDecisionCount]string{
-	TraceAny:     "any",
-	TraceDeliver: "deliver",
-	TraceForward: "forward",
-	TraceEgress:  "egress",
-	TraceAnswer:  "answer",
-	TraceDrop:    "drop",
-}
-
 func (d TraceDecision) String() string {
-	if d < traceDecisionCount {
-		return traceDecisionNames[d]
+	switch {
+	case d == TraceAny:
+		return "any"
+	case d < traceDecisionCount:
+		return control.TraceDecisions[d-1]
 	}
 	return "decision(" + strconv.Itoa(int(d)) + ")"
 }
 
 // ParseTraceDecision is the decision name names, false for a name of none
 func ParseTraceDecision(name string) (TraceDecision, bool) {
-	if i := slices.Index(traceDecisionNames[:], name); i > 0 {
-		return TraceDecision(i), true
-	}
-	return 0, false
+	i := slices.Index(control.TraceDecisions, name)
+	return TraceDecision(i + 1), i >= 0
 }
 
 // TraceArrival is where a traced packet came from
@@ -190,13 +184,13 @@ func (f *TraceFeed) Close() {
 }
 
 // Trace opens a feed of the records filter selects, at most rate a second, each carrying up to payload bytes of its packet
-// rate lies within TraceRateMin and TraceRateMax, and payload within 0 and TracePayloadMax
+// rate lies within control.TraceRateMin and control.TraceRateMax, and payload within 0 and control.TracePayloadMax
 func (m *Mesh) Trace(filter TraceFilter, payload, rate int) (*TraceFeed, error) {
 	switch {
-	case rate < TraceRateMin || rate > TraceRateMax:
-		return nil, fmt.Errorf("netstack: trace rate %d is outside %d to %d", rate, TraceRateMin, TraceRateMax)
-	case payload < 0 || payload > TracePayloadMax:
-		return nil, fmt.Errorf("netstack: trace payload %d is outside 0 to %d", payload, TracePayloadMax)
+	case rate < control.TraceRateMin || rate > control.TraceRateMax:
+		return nil, fmt.Errorf("netstack: trace rate %d is outside %d to %d", rate, control.TraceRateMin, control.TraceRateMax)
+	case payload < 0 || payload > control.TracePayloadMax:
+		return nil, fmt.Errorf("netstack: trace payload %d is outside 0 to %d", payload, control.TracePayloadMax)
 	case filter.Decision >= traceDecisionCount:
 		return nil, fmt.Errorf("netstack: trace decision %d names none", filter.Decision)
 	}
