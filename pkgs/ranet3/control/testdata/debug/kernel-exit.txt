@@ -1,0 +1,1 @@
+table 200 protocol 155, 4 installed, no pass yet, exit mode forwarding br-1 docker0, forward e* skips eth0, the link the IPv4 default leaves by, forward ranet* skips ranet0, the mesh's own tun, no IPv6 overlay address on the tun, so IPv6 runs mode off's rules

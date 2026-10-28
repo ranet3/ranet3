@@ -13,23 +13,28 @@ import (
 	"time"
 )
 
-// netmonFixture is a laptop that moved from wifi to a dock three minutes ago
+// netmonFixture is a laptop that moved from wifi to a dock three minutes ago, beside a container bridge and a point-to-point link
 func netmonFixture() NetmonInfo {
-	dock := NetmonDefault{Interface: "en7", Gateway: netip.MustParseAddr("10.0.0.1")}
-	wifi := NetmonDefault{Interface: "en0", Gateway: netip.MustParseAddr("192.168.1.1")}
+	dock := NetmonDefault{Interface: "eth1", Gateway: netip.MustParseAddr("198.51.100.1")}
+	wifi := NetmonDefault{Interface: "wlan0", Gateway: netip.MustParseAddr("203.0.113.1")}
+	links4 := []NetmonLink{
+		{Name: "docker0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.129/25")}}, {Name: "eth1", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.20/25")}}, {Name: "lo"},
+		{Name: "ppp0", Prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.33/32")}, Peers: []netip.Prefix{netip.MustParsePrefix("203.0.113.64/28")}},
+	}
+	links6 := []NetmonLink{{Name: "docker0"}, {Name: "eth1", Prefixes: []netip.Prefix{netip.MustParsePrefix("2001:db8:7::20/64")}}, {Name: "lo"}}
 	return NetmonInfo{
 		Watching: true,
 		Families: []NetmonFamily{
-			{Family: "ipv4", Default: dock, Addresses: []netip.Addr{netip.MustParseAddr("10.0.0.20")}},
-			{Family: "ipv6", Addresses: []netip.Addr{netip.MustParseAddr("2001:db8:7::20")}},
+			{Family: "ipv4", Default: dock, Addresses: []netip.Addr{netip.MustParseAddr("198.51.100.20"), netip.MustParseAddr("198.51.100.129"), netip.MustParseAddr("203.0.113.33")}, Links: links4},
+			{Family: "ipv6", Addresses: []netip.Addr{netip.MustParseAddr("2001:db8:7::20")}, Links: links6},
 		},
 		LastChange: &NetmonChange{
 			At:  time.Date(2026, 10, 8, 9, 14, 2, 0, time.UTC),
 			Ago: Duration(3*time.Minute + 4*time.Second),
 			Families: []NetmonFamilyChange{
 				{Family: "ipv4", DefaultWas: &wifi, Default: &dock,
-					Added: []netip.Addr{netip.MustParseAddr("10.0.0.20")}, Removed: []netip.Addr{netip.MustParseAddr("192.168.1.20")}},
-				{Family: "ipv6", Added: []netip.Addr{netip.MustParseAddr("2001:db8:7::20")}, Removed: []netip.Addr{netip.MustParseAddr("2001:db8:1::20")}},
+					Added: []netip.Addr{netip.MustParseAddr("198.51.100.20")}, Removed: []netip.Addr{netip.MustParseAddr("203.0.113.20")}, Links: links4},
+				{Family: "ipv6", Added: []netip.Addr{netip.MustParseAddr("2001:db8:7::20")}, Removed: []netip.Addr{netip.MustParseAddr("2001:db8:1::20")}, Links: links6},
 			},
 		},
 	}
@@ -71,7 +76,7 @@ func (s *netmonSource) DebugProbe(_ context.Context, peer string, all bool) (Res
 // the netmon view is a snapshot without key material, so a caller the root class refuses still reads it
 func TestNetmonIsReadByACallerTheRootClassRefuses(t *testing.T) {
 	server := injected(t, &netmonSource{}, Caller{UID: 4242})
-	if status, body := get(t, server.Client(), server.URL+PathDebugNetmon); status != http.StatusOK || !strings.Contains(body, `"en7"`) {
+	if status, body := get(t, server.Client(), server.URL+PathDebugNetmon); status != http.StatusOK || !strings.Contains(body, `"eth1"`) {
 		t.Errorf("uid 4242 asking for the netmon view was answered %d %q", status, body)
 	}
 	if refused := post(t, server.URL+PathDebugNetmon, ""); refused.StatusCode != http.StatusMethodNotAllowed {

@@ -1,0 +1,31 @@
+{
+  "enabled": true,
+  "where": "table 200 protocol 155",
+  "table": 200,
+  "protocol": 155,
+  "installed": 4,
+  "skipped": 0,
+  "added": 0,
+  "removed": 0,
+  "exit": {
+    "forwarded": [
+      "br-1",
+      "docker0"
+    ],
+    "skipped": [
+      {
+        "entry": "e*",
+        "link": "eth0",
+        "reason": "the link the IPv4 default leaves by"
+      },
+      {
+        "entry": "ranet*",
+        "link": "ranet0",
+        "reason": "the mesh's own tun"
+      }
+    ],
+    "unaddressed": [
+      "ipv6"
+    ]
+  }
+}

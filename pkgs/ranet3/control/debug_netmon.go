@@ -53,9 +53,19 @@ type NetmonFamily struct {
 	Family    string        `json:"family"`
 	Default   NetmonDefault `json:"default"`
 	Addresses []netip.Addr  `json:"addresses"`
+	// Links is each up interface with its addresses of the family under their lengths, empty on darwin
+	Links []NetmonLink `json:"links,omitempty"`
 }
 
-// NetmonChange is one change the watch signaled, which probed every session and woke every dialer
+// NetmonLink is one up interface outside the mesh with its addresses of one family under their lengths
+type NetmonLink struct {
+	Name     string         `json:"name"`
+	Prefixes []netip.Prefix `json:"prefixes,omitempty"`
+	// Peers is the far end of each point-to-point address
+	Peers []netip.Prefix `json:"peers,omitempty"`
+}
+
+// NetmonChange is one change the watch signaled, which a move of a default or an address answers by probing every session and waking every dialer
 type NetmonChange struct {
 	At time.Time `json:"at"`
 	// Ago is how long before the answer it happened
@@ -71,12 +81,14 @@ type NetmonFamilyChange struct {
 	Default    *NetmonDefault `json:"default,omitempty"`
 	Added      []netip.Addr   `json:"added,omitempty"`
 	Removed    []netip.Addr   `json:"removed,omitempty"`
+	// Links is the family's links after the change, present where a link came, went or moved a prefix or a far end
+	Links []NetmonLink `json:"links,omitempty"`
 }
 
 // Netmon reads the host's network as the daemon's watch last read it
 func (c *Client) Netmon() (NetmonInfo, error) { return read[NetmonInfo](c, PathDebugNetmon) }
 
-// RenderNetmon writes each family's default and addresses, then the last change by what moved
+// RenderNetmon writes each family's default, addresses and links, then the last change by what moved
 func RenderNetmon(w io.Writer, info NetmonInfo) {
 	if !info.Watching {
 		pairs(w, [][]string{{"Watching", "no, this platform has no network watch"}})
@@ -88,6 +100,9 @@ func RenderNetmon(w io.Writer, info NetmonInfo) {
 		rows = append(rows,
 			[]string{name + " default", family.Default.String()},
 			[]string{name + " addresses", addressText(family.Addresses)})
+		if len(family.Links) > 0 {
+			rows = append(rows, []string{name + " links", linkText(family.Links)})
+		}
 	}
 	if info.LastChange == nil {
 		rows = append(rows, []string{"Changed", "not since the watch started"})
@@ -107,8 +122,27 @@ func RenderNetmon(w io.Writer, info NetmonInfo) {
 		if len(family.Removed) > 0 {
 			rows = append(rows, []string{name + " removed", addressText(family.Removed)})
 		}
+		if len(family.Links) > 0 {
+			rows = append(rows, []string{name + " links", "now " + linkText(family.Links)})
+		}
 	}
 	pairs(w, rows)
+}
+
+// linkText spells each link as its name, its prefixes and its far ends, the links apart by a comma
+func linkText(links []NetmonLink) string {
+	text := make([]string, 0, len(links))
+	for _, link := range links {
+		words := []string{link.Name}
+		for _, prefix := range link.Prefixes {
+			words = append(words, prefix.String())
+		}
+		for _, peer := range link.Peers {
+			words = append(words, "far end", peer.String())
+		}
+		text = append(text, strings.Join(words, " "))
+	}
+	return strings.Join(text, ", ")
 }
 
 // familyLabel cases a family name as the acronym it is

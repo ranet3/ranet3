@@ -503,12 +503,25 @@ func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
 		Skipped:   stats.Skipped,
 		Added:     stats.Added,
 		Removed:   stats.Removed,
-		Cover:     coverNames(stats.Cover),
+		Cover:     familyNames(stats.Cover),
+		Exit:      exitStatus(stats.Exit),
 		Err:       stats.Err,
 	}
 }
 
-func coverNames(families []kernel.Family) []string {
+// exitStatus is cap.exit's mode as the control surface reports it, nil in mode off
+func exitStatus(exit *kernel.ExitStatus) *control.KernelExit {
+	if exit == nil {
+		return nil
+	}
+	out := &control.KernelExit{Forwarded: exit.Forwarded, Unaddressed: familyNames(exit.Unaddressed)}
+	for _, skip := range exit.Skipped {
+		out.Skipped = append(out.Skipped, control.KernelSkip{Entry: skip.Entry, Link: skip.Link, Reason: skip.Reason})
+	}
+	return out
+}
+
+func familyNames(families []kernel.Family) []string {
 	var names []string
 	for _, family := range families {
 		names = append(names, string(family))

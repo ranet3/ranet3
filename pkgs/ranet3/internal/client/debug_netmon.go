@@ -17,8 +17,8 @@ func (c *Client) DebugNetmon() control.NetmonInfo {
 	}
 	current, last := c.network.State()
 	info := control.NetmonInfo{Watching: true, Families: []control.NetmonFamily{
-		{Family: string(kernel.FamilyIPv4), Default: netmonDefault(current.IPv4.Default), Addresses: current.IPv4.Addresses},
-		{Family: string(kernel.FamilyIPv6), Default: netmonDefault(current.IPv6.Default), Addresses: current.IPv6.Addresses},
+		{Family: string(kernel.FamilyIPv4), Default: netmonDefault(current.IPv4.Default), Addresses: current.IPv4.Addresses, Links: netmonLinks(current.IPv4.Links)},
+		{Family: string(kernel.FamilyIPv6), Default: netmonDefault(current.IPv6.Default), Addresses: current.IPv6.Addresses, Links: netmonLinks(current.IPv6.Links)},
 	}}
 	if last.At.IsZero() {
 		return info
@@ -30,6 +30,9 @@ func (c *Client) DebugNetmon() control.NetmonInfo {
 			was, now := netmonDefault(family.DefaultBefore), netmonDefault(family.DefaultAfter)
 			moved.DefaultWas, moved.Default = &was, &now
 		}
+		if family.LinksMoved() {
+			moved.Links = netmonLinks(family.LinksAfter)
+		}
 		change.Families = append(change.Families, moved)
 	}
 	info.LastChange = change
@@ -38,4 +41,12 @@ func (c *Client) DebugNetmon() control.NetmonInfo {
 
 func netmonDefault(route kernel.DefaultRoute) control.NetmonDefault {
 	return control.NetmonDefault{Interface: route.Interface, Gateway: route.Gateway}
+}
+
+func netmonLinks(links []kernel.Link) []control.NetmonLink {
+	var out []control.NetmonLink
+	for _, link := range links {
+		out = append(out, control.NetmonLink{Name: link.Name, Prefixes: link.Prefixes, Peers: link.Peers})
+	}
+	return out
 }

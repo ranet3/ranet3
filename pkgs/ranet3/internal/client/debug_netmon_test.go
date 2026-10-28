@@ -50,6 +50,21 @@ func TestNetmonViewReportsTheWatchAndItsLastChange(t *testing.T) {
 	if time.Duration(info.LastChange.Ago) < time.Minute {
 		t.Errorf("a change a minute old reads as %s ago", time.Duration(info.LastChange.Ago))
 	}
+
+	// a bridge and a point-to-point link coming up move the links alone, which the view names with their prefixes and far ends
+	bridge := kernel.Link{Name: "docker0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.129/25")}}
+	ppp := kernel.Link{Name: "ppp0", Prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.33/32")}, Peers: []netip.Prefix{netip.MustParsePrefix("203.0.113.64/28")}}
+	before = after
+	after.IPv4.Links = []kernel.Link{bridge, ppp}
+	network.current, network.last = after, kernel.NetworkChange{At: time.Now(), Before: before, After: after}
+	info = c.DebugNetmon()
+	if got := info.Families[0].Links; len(got) != 2 || got[0].Name != "docker0" || !slices.Equal(got[0].Prefixes, bridge.Prefixes) ||
+		got[1].Name != "ppp0" || !slices.Equal(got[1].Prefixes, ppp.Prefixes) || !slices.Equal(got[1].Peers, ppp.Peers) {
+		t.Errorf("the IPv4 links read %+v, want docker0 with %v and ppp0 with %v far end %v", got, bridge.Prefixes, ppp.Prefixes, ppp.Peers)
+	}
+	if info.LastChange == nil || len(info.LastChange.Families) != 1 || len(info.LastChange.Families[0].Links) != 2 || info.LastChange.Families[0].Default != nil {
+		t.Errorf("a bridge coming up reports %+v, want the IPv4 links alone", info.LastChange)
+	}
 }
 
 // a probe reaches the sessions it names and no other, and is recorded as a verb under each
