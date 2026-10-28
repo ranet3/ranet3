@@ -973,7 +973,7 @@ func requireEmptyRuleset(t *testing.T, be backend) {
 // enterThrowawayNamespace moves this thread into a network namespace of its
 // own and refuses to continue if it did not move, the same pair of guards
 // internal/kernel's netlink test takes.
-func enterThrowawayNamespace(t *testing.T) {
+func enterThrowawayNamespace(t testing.TB) {
 	t.Helper()
 	runtime.LockOSThread()
 	before := namespaceID(t)
@@ -985,7 +985,7 @@ func enterThrowawayNamespace(t *testing.T) {
 	}
 }
 
-func namespaceID(t *testing.T) uint64 {
+func namespaceID(t testing.TB) uint64 {
 	t.Helper()
 	var st unix.Stat_t
 	if err := unix.Stat("/proc/thread-self/ns/net", &st); err != nil {
