@@ -648,8 +648,9 @@ var walkListed = []netip.Prefix{
 	netip.MustParsePrefix("203.0.113.128/26"), netip.MustParsePrefix("203.0.113.96/27"),
 }
 
-// Linux's rule walk over the derived rules under fallback = "none", composed
-// with the chain the table writes run as nf_tables runs it, lets out by a link
+// Linux's rule walk over the derived rules under fallback = "none", in mode 2
+// and in mode 3, composed with the chain the table writes run as nf_tables runs
+// it, lets out by a link
 // outside the mesh only what carvedOut names, of every drawn packet of the
 // host's own, its destination typed local or not, and forwarded from
 // a link forward names, with the defaults present, retracted and with the tun

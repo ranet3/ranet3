@@ -290,7 +290,16 @@ type interpreted struct {
 	kernel                 fib
 	desired                []Route
 	mode                   exitView
+	// via is mode 3, and pathUp its path resolving while the mesh holds a live session, which installs the steered defaults
+	via, pathUp bool
 }
+
+// interpretedSID is the exit's segment a drawn node in mode 3 names in via, and
+// interpretedSource the path's outer source it is resolved from
+var (
+	interpretedSID    = netip.MustParseAddr("3fff:8::46")
+	interpretedSource = netip.MustParseAddr("3fff::1")
+)
 
 // exitInputs names each input that turns a node into an exit, drawn outright
 // beside none: an egress segment, a prefix that counts which cap.egress
@@ -366,10 +375,21 @@ func drawInterpretedIn(t *testing.T, ht *hegel.T, mode func(*hegel.T, []schema.P
 	}
 	gate := hegel.Draw(ht, hegel.WeightedBooleans(0.75))
 	host, drawn := drawHost(ht), mode(ht, overlay)
+	// mode 3 three times in four that mode 2's rules are drawn, its exit's segment's /128 learned most of the time and its
+	// path down otherwise, the segment then most of the time under a learned subnet alone, which is no route of its own
+	var via []netip.Addr
+	if drawn.on && hegel.Draw(ht, hegel.WeightedBooleans(0.75)) {
+		via = []netip.Addr{interpretedSID}
+		if hegel.Draw(ht, hegel.WeightedBooleans(0.8)) {
+			entries = append(entries, mirrorEntry{destination: netip.PrefixFrom(interpretedSID, interpretedSID.BitLen()), value: learned})
+		} else if hegel.Draw(ht, hegel.WeightedBooleans(0.8)) {
+			entries = append(entries, mirrorEntry{destination: netip.PrefixFrom(interpretedSID, 48).Masked(), value: learned})
+		}
+	}
 	return func(unaddressed []Family) interpreted {
 		m := drawn
 		m.unaddressed = unaddressed
-		return interpret(t, overlay, entries, advertised, egressSegment, gate, host, m)
+		return interpret(t, overlay, entries, advertised, egressSegment, gate, host, m, via)
 	}
 }
 
@@ -438,8 +458,9 @@ func drawExitMode(ht *hegel.T, overlay []schema.Prefix) exitView {
 // cap.route, holds an egress segment where egressSegment says, whose capture
 // gate is open where gate says, and which runs mode, whose links but lo's hold
 // their connected networks in main, under fallback = "none" with the own
-// prefixes the mirror throws as a pass reads them
-func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, advertised map[netip.Prefix]bool, egressSegment, gate bool, host fib, mode exitView) interpreted {
+// prefixes the mirror throws as a pass reads them, and mode 3 along via where
+// it names a SID
+func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, advertised map[netip.Prefix]bool, egressSegment, gate bool, host fib, mode exitView, via []netip.Addr) interpreted {
 	routes := netstack.NewRouteTable()
 	routes.SetOverlay(overlay)
 	for _, entry := range entries {
@@ -476,7 +497,19 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 		}
 	}
 	exit := rt.EgressSegment || slices.ContainsFunc(rt.Advertised, counts) || slices.ContainsFunc(rt.Announced, counts)
-	reconciler := newReconciler(Table{}.Normalized(), rt, nil, routes, newFakeKernel(t))
+	table := Table{}.Normalized()
+	// the path is up while every SID resolves to a peer from the path's source through its own /128, and the mesh holds a live session
+	pathUp := len(via) > 0 && gate
+	if len(via) > 0 {
+		mode := &ExitMode{}
+		for _, sid := range via {
+			mode.Via = append(mode.Via, schema.AddrFrom(sid))
+			_, verdict, match := routes.Resolve(interpretedSource, sid)
+			pathUp = pathUp && verdict == netstack.RoutePeer && match.Bits == 128
+		}
+		table = Table{}.WithMode(mode).WithPathSource(interpretedSource).Normalized()
+	}
+	reconciler := newReconciler(table, rt, nil, routes, newFakeKernel(t))
 	reconciler.capture = gate
 	snapshot := routes.Snapshot()
 	desired := reconciler.desired(snapshot, reconciler.readNetwork())
@@ -506,7 +539,8 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	host.tables = tables
 	kernel := fib{rules: slices.Concat(host.rules, derivedRules(DefaultTable, overlay, reconciler.ownPrefixes(snapshot), mode)), tables: tables}
 	slices.SortStableFunc(kernel.rules, func(a, b Rule) int { return cmp.Compare(a.Priority, b.Priority) })
-	return interpreted{routes: routes, rt: rt, gate: gate, exit: exit, own: own, sources: sources, assigned: assigned, host: host, kernel: kernel, desired: desired, mode: mode}
+	return interpreted{routes: routes, rt: rt, gate: gate, exit: exit, own: own, sources: sources, assigned: assigned, host: host, kernel: kernel, desired: desired, mode: mode,
+		via: len(via) > 0, pathUp: pathUp}
 }
 
 // links is every link of v's network, both families'
@@ -844,7 +878,8 @@ func (h interpreted) expected(p fibPacket) string {
 		}
 		return h.pastOwn(p, landing, past)
 	}
-	installed := h.gate && !h.exit
+	// mode 3 installs no route that counts, the steered defaults standing in their place while its path is up
+	installed := h.gate && !h.exit && !h.via
 	switch {
 	case verdict == netstack.RoutePeer && (mesh && !match.Counted || own && (!match.Counted || installed)):
 		return tunDevice
@@ -854,7 +889,11 @@ func (h interpreted) expected(p fibPacket) string {
 		if _, under, _ := h.withoutCountedHolds().Resolve(p.source, p.destination); under == netstack.RoutePeer {
 			return tunDevice
 		}
+	case own && h.pathUp && (verdict == netstack.RouteNone || match.Counted):
+		// 5430 meets the steered default of p's family where the table holds no route but one that counts
+		return tunDevice
 	}
+	// 5440 meets the steered default through the mirror in pastOwn
 	return h.pastOwn(p, landing, past)
 }
 
@@ -876,19 +915,28 @@ func (h interpreted) withoutCountedHolds() *netstack.RouteTable {
 // beside a host's own tables, another program's lookups ahead of, between and
 // past ranet3's blocks and its goto ahead of them, sends every packet lookedUp
 // keeps where routing.md's tables say, on an exit by each of its inputs and on
-// a node that is none, in mode off and in mode 2 under each fallback, the last
-// with the tun holding an overlay address of each family and holding none of
-// either in turn
+// a node that is none, in mode off, in mode 2 and in mode 3 under each
+// fallback, the last two with the tun holding an overlay address of each family
+// and holding none of either in turn, mode 3's mirror holding no route that
+// counts but the two steered defaults while its path is up
 func TestRuleWalkSendsEveryPacketWhereTheRulesSay(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		build := drawInterpreted(t, ht)
 		packets := build(nil).packets(ht)
 		for _, unaddressed := range [][]Family{nil, {FamilyIPv4}, {FamilyIPv6}} {
 			h := build(unaddressed)
+			if h.via {
+				for _, route := range h.desired {
+					steered := h.pathUp && route.Destination.Bits() == 0 && !route.Source.IsValid() && !route.Throw && !route.Unreachable
+					if schema.CapturesTheMachine(route.Destination, h.rt.Overlay) && !steered {
+						ht.Fatalf("mode 3's mirror holds %+v, which counts as a default, with the path up %v\nthe mirror:\n%v", route, h.pathUp, h.desired)
+					}
+				}
+			}
 			for _, p := range packets {
 				if got, want := h.kernel.walk(p), h.expected(p); got != want {
-					ht.Fatalf("%s went to %s, want %s\nranet3's table:\n%s\nexit %v, gate %v, own %v, mode 2 %v forwarding %v over %v, unaddressed %v\nthe mirror:\n%v\nthe rules:\n%s",
-						p, got, want, strings.Join(h.routes.Debug(), "\n"), h.exit, h.gate, h.own, h.mode.on, h.mode.forwarded, h.mode.links(), h.mode.unaddressed, h.desired, rulesText(h.kernel.rules))
+					ht.Fatalf("%s went to %s, want %s\nranet3's table:\n%s\nexit %v, gate %v, own %v, mode 2 %v forwarding %v over %v, unaddressed %v, mode 3 %v with the path up %v\nthe mirror:\n%v\nthe rules:\n%s",
+						p, got, want, strings.Join(h.routes.Debug(), "\n"), h.exit, h.gate, h.own, h.mode.on, h.mode.forwarded, h.mode.links(), h.mode.unaddressed, h.via, h.pathUp, h.desired, rulesText(h.kernel.rules))
 				}
 			}
 		}
@@ -956,6 +1004,18 @@ func TestRuleWalkNamedCases(t *testing.T) {
 		from("203.0.113.65", "203.0.113.9"): tunDevice, from("203.0.113.65", "203.0.113.200"): tunDevice,
 		from("2001:db8:50::1", "2001:db8:300::9"): tunDevice, from("2001:db8:50::1", "2001:db8:c::1"): tunDevice,
 	}
+	// mode 3's lookups with its path up, the internet host 203.0.113.40 lying in no network of the fixture's, which either fallback answers alike
+	modeThreeUp := map[fibPacket]string{
+		// the host's own to the internet from a source it does not own, at 5440
+		from("192.0.2.77", "203.0.113.40"): tunDevice, from("3fff::77", "2001:db8:c::1"): tunDevice,
+		// a forwarded packet from an overlay source of this node's own, at 5430, where the LAN's reaches no rule of ranet3's
+		arriving("eth1", from("192.0.2.5", "203.0.113.40")): tunDevice, arriving("eth1", from("203.0.113.66", "203.0.113.40")): "eth0",
+		// a LAN destination at 5410, and a mesh subnet at 5420
+		from("192.0.2.5", "203.0.113.66"): "eth1", from("192.0.2.5", "203.0.113.10"): tunDevice,
+		from("3fff::77", "2001:db8:50::2"): "eth1", from("3fff::77", "2001:db8:300::1"): tunDevice,
+		// the bridge forward names, at 5440
+		arriving("br-1a", from("203.0.113.130", "203.0.113.40")): tunDevice,
+	}
 	for name, c := range map[string]struct {
 		entries []mirrorEntry
 		// advertised is the LANs cap.egress advertises
@@ -965,8 +1025,73 @@ func TestRuleWalkNamedCases(t *testing.T) {
 		overlay       []schema.Prefix
 		mode          exitView
 		egressSegment bool
-		packets       map[fibPacket]string
+		// via runs mode 3 along it where it is set
+		via     []netip.Addr
+		packets map[fibPacket]string
 	}{
+		"mode 3 under fallback = \"uplink\" with its path up, the exits' learned defaults withheld and the steered defaults in their place": {
+			entries: append(slices.Clone(defaultsAndSubnets), learnedAt("3fff:8::46/128"), at(netstack.Local, "192.0.2.0/26")),
+			mode:    forwarding,
+			via:     []netip.Addr{interpretedSID},
+			packets: modeThreeUp,
+		},
+		"mode 3 under fallback = \"none\" with its path up, the exits' learned defaults withheld and the steered defaults in their place": {
+			entries: append(slices.Clone(defaultsAndSubnets), learnedAt("3fff:8::46/128"), at(netstack.Local, "192.0.2.0/26")),
+			mode:    refusing,
+			via:     []netip.Addr{interpretedSID},
+			packets: modeThreeUp,
+		},
+		"mode 3 under fallback = \"uplink\" with its path up and the tun holding no IPv4 overlay address, which runs mode off's IPv4 rules": {
+			entries: append(slices.Clone(defaultsAndSubnets), learnedAt("3fff:8::46/128"), at(netstack.Local, "192.0.2.0/26")),
+			mode:    exitView{on: true, network: forwarding.network, forwarded: forwarding.forwarded, unaddressed: []Family{FamilyIPv4}},
+			via:     []netip.Addr{interpretedSID},
+			packets: map[fibPacket]string{
+				// the host's own and the bridge's IPv4 to the internet by main, and toward a mesh subnet from the uplink's address into the tun at 5420
+				from("0.0.0.0", "203.0.113.40"): "eth0", from("198.51.100.10", "203.0.113.40"): "eth0",
+				arriving("br-1a", from("203.0.113.130", "203.0.113.40")): "eth0",
+				from("198.51.100.10", "203.0.113.10"):                    tunDevice,
+				// a source of this node's own meets the steered IPv4 default at 5430
+				from("192.0.2.5", "203.0.113.40"): tunDevice, arriving("eth1", from("192.0.2.5", "203.0.113.40")): tunDevice,
+				// IPv6 keeps 5440
+				from("3fff::77", "2001:db8:c::1"): tunDevice, arriving("br-1a", from("2001:db8:17::2", "2001:db8:c::1")): tunDevice,
+			},
+		},
+		"mode 3 under fallback = \"none\" with its path up and the tun holding no IPv4 overlay address, which runs mode off's IPv4 rules with 5445 and 5450": {
+			entries: append(slices.Clone(defaultsAndSubnets), learnedAt("3fff:8::46/128"), at(netstack.Local, "192.0.2.0/26")),
+			mode:    exitView{on: true, network: forwarding.network, forwarded: forwarding.forwarded, unaddressed: []Family{FamilyIPv4}, fallback: true},
+			via:     []netip.Addr{interpretedSID},
+			packets: map[fibPacket]string{
+				// 5450 for the host's own and the bridge's IPv4 to the internet, with no 5440 to take them to the steered default
+				from("0.0.0.0", "203.0.113.40"): "unreachable", from("198.51.100.10", "203.0.113.40"): "unreachable",
+				arriving("br-1a", from("203.0.113.130", "203.0.113.40")): "unreachable",
+				from("198.51.100.10", "203.0.113.10"):                    tunDevice,
+				// a source of this node's own meets the steered IPv4 default at 5430
+				from("192.0.2.5", "203.0.113.40"): tunDevice, arriving("eth1", from("192.0.2.5", "203.0.113.40")): tunDevice,
+				// IPv6 keeps 5440
+				from("3fff::77", "2001:db8:c::1"): tunDevice, arriving("br-1a", from("2001:db8:17::2", "2001:db8:c::1")): tunDevice,
+			},
+		},
+		"mode 3 under fallback = \"uplink\" with its path down, the steered defaults withheld as every route that counts is": {
+			entries: append(slices.Clone(defaultsAndSubnets), at(netstack.Local, "192.0.2.0/26")),
+			mode:    forwarding,
+			via:     []netip.Addr{interpretedSID},
+			packets: map[fibPacket]string{
+				from("192.0.2.77", "203.0.113.40"): "eth0", from("3fff::77", "2001:db8:c::1"): "eth0",
+				arriving("eth1", from("192.0.2.5", "203.0.113.40")): "eth0",
+				from("192.0.2.5", "203.0.113.10"):                   tunDevice,
+			},
+		},
+		"mode 3 under fallback = \"none\" with its path down, the steered defaults withheld and the host's own refused at 5450": {
+			entries: append(slices.Clone(defaultsAndSubnets), at(netstack.Local, "192.0.2.0/26")),
+			mode:    refusing,
+			via:     []netip.Addr{interpretedSID},
+			packets: map[fibPacket]string{
+				from("192.0.2.77", "203.0.113.40"): "unreachable", from("3fff::77", "2001:db8:c::1"): "unreachable",
+				arriving("br-1a", from("203.0.113.130", "203.0.113.40")): "unreachable",
+				arriving("eth1", from("192.0.2.5", "203.0.113.40")):      "eth0",
+				from("192.0.2.5", "203.0.113.10"):                        tunDevice,
+			},
+		},
 		"mode 2's lookups from the links' addresses and networks, the host's own and arriving on a link": {
 			entries: defaultsAndSubnets,
 			mode:    forwarding,
@@ -1166,7 +1291,12 @@ func TestRuleWalkNamedCases(t *testing.T) {
 		if c.overlay != nil {
 			border = c.overlay
 		}
-		h := interpret(t, border, c.entries, c.advertised, c.egressSegment, true, plainHost(c.tailnet), c.mode)
+		h := interpret(t, border, c.entries, c.advertised, c.egressSegment, true, plainHost(c.tailnet), c.mode, c.via)
+		if counted := slices.DeleteFunc(slices.Clone(h.desired), func(route Route) bool {
+			return !schema.CapturesTheMachine(route.Destination, border) || h.pathUp && route.Destination.Bits() == 0
+		}); h.via && len(counted) > 0 {
+			t.Errorf("%s: mode 3's mirror holds %v, which count as defaults", name, counted)
+		}
 		for p, want := range c.packets {
 			if got := h.kernel.walk(p); got != want {
 				t.Errorf("%s: %s went to %s, want %s\nthe mirror:\n%v", name, p, got, want, h.desired)
