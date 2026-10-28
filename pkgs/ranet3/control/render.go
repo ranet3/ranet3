@@ -531,9 +531,10 @@ func RenderSessions(w io.Writer, sessions []Session) {
 			esp,
 			shortDuration(time.Duration(s.Age)),
 			shortDuration(time.Duration(s.Idle)),
+			strconv.FormatUint(s.InvalidSPIReports, 10),
 		})
 	}
-	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "IKE", "Fragments", "ESP", "Age", "Idle"}, rows)
+	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "IKE", "Fragments", "ESP", "Age", "Idle", "Invalid SPI"}, rows)
 }
 
 // fragments is the path's threshold, the largest IP datagram this end cuts a new IKE message to fit, or no where its ends did not both say they support RFC 7383 fragmentation

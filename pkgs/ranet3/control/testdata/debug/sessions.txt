@@ -1,4 +1,4 @@
-Path                 Peer             Remote               End        State  SPI in/out         IKE                               Fragments  ESP                        Age      Idle
-example/gateway:0@0  example/gateway  192.0.2.7:13000      initiator  up     c0ffee01/0badf00d  aes256gcm/sha384/x25519           no         aes128gcm                  1h30m0s  1.2s
-example/exit:1@0     example/exit     [2001:db8::1]:13000  responder  down   00000001/00000002  -                                 no         -                          1s       1s
-example/relay:0@0    example/relay    198.51.100.4:13000   responder  up     5eed0001/5eed0002  aes256gcm/sha384/x25519+mlkem768  1280       aes256gcm/x25519+mlkem768  10m0s    300ms
+Path                 Peer             Remote               End        State  SPI in/out         IKE                               Fragments  ESP                        Age      Idle   Invalid SPI
+example/gateway:0@0  example/gateway  192.0.2.7:13000      initiator  up     c0ffee01/0badf00d  aes256gcm/sha384/x25519           no         aes128gcm                  1h30m0s  1.2s   2
+example/exit:1@0     example/exit     [2001:db8::1]:13000  responder  down   00000001/00000002  -                                 no         -                          1s       1s     0
+example/relay:0@0    example/relay    198.51.100.4:13000   responder  up     5eed0001/5eed0002  aes256gcm/sha384/x25519+mlkem768  1280       aes256gcm/x25519+mlkem768  10m0s    300ms  0

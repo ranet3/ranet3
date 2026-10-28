@@ -85,8 +85,9 @@ This is Babel's table and not the routing table of the kernel.`,
 				return emit(w, asJSON, routes, func() { control.RenderRoutes(w, routes) })
 			}),
 		r.command("sessions", "Show IKE sessions", `Each row is a live IKE SA with its SPIs, the transforms of the IKE SA
-and of its Child SA by their cap.crypto names, its age and how long
-since the peer last answered.`,
+and of its Child SA by their cap.crypto names, its age, how long
+since the peer last answered and the INVALID_SPI notifies it sent the
+peer.`,
 			func(c *control.Client, w io.Writer, asJSON bool) error {
 				sessions, err := c.Sessions()
 				if err != nil {

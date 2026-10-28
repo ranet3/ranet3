@@ -14,7 +14,8 @@
     "esp_cipher": "aes128gcm",
     "started_at": "2026-10-04T12:20:01Z",
     "age": "1h30m0s",
-    "idle": "1.2s"
+    "idle": "1.2s",
+    "invalid_spi_reports": 2
   },
   {
     "path": "example/exit:1@0",
@@ -27,7 +28,8 @@
     "ike_fragments": false,
     "started_at": "2026-10-04T13:50:01Z",
     "age": "1s",
-    "idle": "1s"
+    "idle": "1s",
+    "invalid_spi_reports": 0
   },
   {
     "path": "example/relay:0@0",
@@ -46,6 +48,7 @@
     "esp_kex": "x25519+mlkem768",
     "started_at": "2026-10-04T13:40:01Z",
     "age": "10m0s",
-    "idle": "300ms"
+    "idle": "300ms",
+    "invalid_spi_reports": 0
   }
 ]
