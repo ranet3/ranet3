@@ -458,12 +458,13 @@ type KernelTaken struct {
 //
 // Advertise and Announced are separate fields because they disagree exactly
 // when something is wrong. A prefix is announced only while its family's
-// translation chain reads back as written, the kernel forwards the family and
-// its route lookups, where they run, find a translated packet and its reply
-// leaving by the devices the translation needs, so a configured prefix missing
-// from Announced is this node declining to attract traffic it would have to
-// drop, and it is the line to read when a customer's exit node has stopped
-// being selected.
+// chains, set and timeout objects read back as written, the kernel forwards the
+// family, the host holds every address its classes translate to and its route
+// lookups, where they run, find a translated packet and its reply leaving by
+// the devices the translation needs, so a configured prefix missing from
+// Announced is this node declining to attract traffic it would have to drop,
+// and it is the line to read when a customer's exit node has stopped being
+// selected.
 type EgressStatus struct {
 	Enabled bool `json:"enabled"`
 	// Where names the tables this node owns, as the backend spells them.
