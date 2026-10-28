@@ -1883,12 +1883,13 @@ func TestRepeatedDialFailuresAreSpacedThroughAChangingReason(t *testing.T) {
 
 // A dialer that keeps failing says so once rather than every reconnect delay,
 // since a registry with peers whose names do not resolve would otherwise fill
-// the log. The reason a resolver gives carries the
-// ephemeral source port of its query, so it is not the same string twice: this
-// runs where that is true, which is any host whose resolver refuses.
+// the log. RFC 7686 keeps .onion names out of DNS, and Go's own resolver
+// refuses a rooted one without a query, where an unrooted one would still be
+// asked under each search domain, so on linux the failure comes at once
+// whatever the host's nameserver does.
 func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
-	unresolvable := "gateway.invalid"
+	unresolvable := "gateway.onion."
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
