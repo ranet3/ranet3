@@ -126,7 +126,7 @@ func fallbackFixture() *FallbackTable {
 			{Spec: "ip6 daddr { fe80::/10, ff00::/8 } accept"},
 			{Spec: "ip daddr @own4 accept"},
 			{Spec: "ip6 daddr @own6 accept"},
-			{Spec: "ct direction reply ct protocol tcp ct original proto-dst { 22 } accept"},
+			{Spec: "ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept"},
 			{Spec: "counter drop", Packets: 12, Bytes: 720},
 		},
 		Sets: []FallbackTableSet{
@@ -135,6 +135,8 @@ func fallbackFixture() *FallbackTable {
 			{Name: "lan6", Elements: []string{"2001:db8:a::/64"}},
 			{Name: "own4", Elements: []string{"203.0.113.0/26"}},
 			{Name: "own6"},
+			{Name: "tcp_ports", Elements: []string{"22", "60000-61000"}},
+			{Name: "udp_ports"},
 		},
 	}
 }
