@@ -1338,7 +1338,7 @@ func TestDarwinPinKeepsTheBoundScope(t *testing.T) {
 		{reached: "fe80::7", ipv6: true, index: 7},
 	} {
 		reached := netip.MustParseAddr(test.reached)
-		ep, err := (&darwinSocket{ipv6: test.ipv6}).replyEndpoint(from, receivedControl(test.ipv6, reached, 7), 0)
+		ep, err := (&darwinSocket{ipv6: test.ipv6}).replyEndpoint(from, receivedControl(test.ipv6, reached, 7))
 		if err != nil {
 			t.Fatalf("a request that reached %s on interface 7: %v", reached, err)
 		}
@@ -1350,64 +1350,76 @@ func TestDarwinPinKeepsTheBoundScope(t *testing.T) {
 	}
 }
 
-// an IKE datagram whose control message was cut short or names no destination gets no endpoint, since its answer could not name the address it reached
+// an IKE datagram whose control message names no destination gets no endpoint, since its answer could not name the address it reached
 func TestDarwinReceiverRefusesAnIKEDatagramWithoutItsDestination(t *testing.T) {
 	from := netip.MustParseAddrPort("198.51.100.1:4500")
-	for _, test := range []struct {
-		name    string
-		control []byte
-		flags   int
-	}{
-		{"a control message the kernel cut short", receivedControl(false, netip.MustParseAddr("192.0.2.7"), 0), unix.MSG_CTRUNC},
-		{"no control message", nil, 0},
-	} {
-		if ep, err := (&darwinSocket{}).replyEndpoint(from, test.control, test.flags); err == nil {
-			t.Errorf("%s gave the endpoint %v, want a refusal", test.name, ep)
-		}
+	if ep, err := (&darwinSocket{}).replyEndpoint(from, nil); err == nil {
+		t.Errorf("no control message gave the endpoint %v, want a refusal", ep)
 	}
 }
 
-// the receiver counts an IKE datagram whose control message the kernel cut short as refused and drops it, and hands on the ESP datagram after it
+// the receiver counts a datagram whose control message the kernel cut short as refused and drops it, IKE and ESP alike, and hands on the datagram after them
 // SO_TIMESTAMP cuts it in both families: ip_savecontrol and ip6_savecontrol_v4 queue the timestamp ahead of the packet info, which copyout_control then cuts and flags MSG_CTRUNC
-func TestDarwinReceiverDropsAnIKEDatagramWhoseControlMessageWasCut(t *testing.T) {
-	for i, family := range []struct {
-		network, loopback string
+// SO_TIMESTAMP_MONOTONIC's 8 octets leave the IPv4 packet info whole and less of the buffer than a message header for the TOS, so the control data parses and only MSG_CTRUNC says the outer ECN field is unknown
+func TestDarwinReceiverDropsADatagramWhoseControlMessageWasCut(t *testing.T) {
+	for _, family := range []struct {
+		name, network, loopback string
+		ipv6                    bool
+		option                  int
 	}{
-		{"udp4", "127.0.0.1"},
-		{"udp6", "::1"},
+		{"udp4", "udp4", "127.0.0.1", false, unix.SO_TIMESTAMP},
+		{"udp6", "udp6", "::1", true, unix.SO_TIMESTAMP},
+		{"udp4 monotonic", "udp4", "127.0.0.1", false, unix.SO_TIMESTAMP_MONOTONIC},
 	} {
-		t.Run(family.network, func(t *testing.T) {
+		t.Run(family.name, func(t *testing.T) {
 			opened, receivers, port, err := listenPacketBind(0, 0, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = opened.Close() })
 			bind := opened.(*darwinBind)
+			i := 0
+			if family.ipv6 {
+				i = 1
+			}
 			socket := []*darwinSocket{bind.v4, bind.v6}[i]
 			if socket == nil {
 				t.Skipf("the bind opened no %s socket", family.network)
 			}
-			var setErr error
-			if err := socket.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_TIMESTAMP, 1) }); err != nil || setErr != nil {
-				t.Fatalf("ask for a timestamp: %v, %v", err, setErr)
+			timestamp := func(on int) {
+				t.Helper()
+				var setErr error
+				if err := socket.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, family.option, on) }); err != nil || setErr != nil {
+					t.Fatalf("set the timestamp option %#x to %d: %v, %v", family.option, on, err, setErr)
+				}
 			}
 			if err := socket.conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
 				t.Fatal(err)
 			}
 			peer := listenPeer(t, family.network, family.loopback)
+			to := netip.AddrPortFrom(netip.MustParseAddr(family.loopback), port)
 			esp := binary.BigEndian.AppendUint32(nil, pairTestSPI)
+			after := binary.BigEndian.AppendUint32(nil, pairTestSPI+1)
+			// the kernel builds a datagram's control message as it queues it, so the two sent while timestamps are on carry one and the third does not
+			timestamp(1)
 			for _, datagram := range [][]byte{markedRequest(), esp} {
-				if _, err := peer.WriteToUDPAddrPort(datagram, netip.AddrPortFrom(netip.MustParseAddr(family.loopback), port)); err != nil {
+				if _, err := peer.WriteToUDPAddrPort(datagram, to); err != nil {
 					t.Fatal(err)
 				}
 			}
 			bufs, sizes, endpoints, records := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)
-			if n, refused, err := receivers[i](bufs, sizes, endpoints, records); n != 0 || refused != 1 || err != nil {
-				t.Fatalf("the read of an IKE datagram whose control message was cut answered %d datagrams, %d refused and %v, want it refused", n, refused, err)
+			for _, what := range []string{"an IKE datagram", "an ESP datagram"} {
+				if n, refused, err := receivers[i](bufs, sizes, endpoints, records); n != 0 || refused != 1 || err != nil {
+					t.Fatalf("the read of %s whose control message was cut answered %d datagrams, %d refused and %v, want it refused", what, n, refused, err)
+				}
+			}
+			timestamp(0)
+			if _, err := peer.WriteToUDPAddrPort(after, to); err != nil {
+				t.Fatal(err)
 			}
 			n, refused, err := receivers[i](bufs, sizes, endpoints, records)
-			if n != 1 || refused != 0 || err != nil || !bytes.Equal(bufs[0][:sizes[0]], esp) || endpoints[0] != nil {
-				t.Fatalf("the read after it answered %d datagrams, %d refused and %v, %x with %v, want the ESP datagram %x alone", n, refused, err, bufs[0][:sizes[0]], endpoints[0], esp)
+			if n != 1 || refused != 0 || err != nil || !bytes.Equal(bufs[0][:sizes[0]], after) || endpoints[0] != nil {
+				t.Fatalf("the read after them answered %d datagrams, %d refused and %v, %x with %v, want the ESP datagram %x alone", n, refused, err, bufs[0][:sizes[0]], endpoints[0], after)
 			}
 		})
 	}

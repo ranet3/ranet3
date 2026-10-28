@@ -58,6 +58,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
 const (
@@ -225,6 +227,8 @@ type receiveFunc func([][]byte, []int, []Endpoint, []receiveRecord) (n, refused 
 type receiveRecord struct {
 	// source is the address and port the datagram came from, with the zone the bind's endpoints name a link-local source's interface by
 	source netip.AddrPort
+	// ecn is the ECN field of the datagram's outer IP header, Not-ECT where the receiver reads none
+	ecn packet.ECN
 }
 
 // Datagram is one received IKE message and the endpoint it arrived from.

@@ -14,7 +14,7 @@ const unsegmentedFor = 600 * time.Second
 
 const (
 	// controlMessageSize is the bytes of control messages one datagram carries in or out
-	// a packet info message of either family fits with UDP_GRO or UDP_SEGMENT beside it
+	// a packet info message of either family fits with UDP_GRO or UDP_SEGMENT and the outer TOS or traffic class beside it
 	controlMessageSize = 128
 	// gsoMaxSegments is the most datagrams one UDP_SEGMENT message carries
 	// linux took 64 until 6.9 raised UDP_MAX_SEGMENTS to 128, and an older kernel refuses more

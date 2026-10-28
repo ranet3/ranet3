@@ -26,6 +26,8 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
 // This backend exists for what the portable one cannot offer. The first is
@@ -140,11 +142,14 @@ type darwinSocket struct {
 }
 
 // newDarwinSocket readies conn for reads that carry the destination address and interface a reply endpoint is built from
+// and the outer TOS or traffic class, whose ECN field a tunnel egress must read (RFC 7296 section 2.24)
 func newDarwinSocket(conn *net.UDPConn, ipv6Socket bool) (*darwinSocket, error) {
 	socket := &darwinSocket{conn: conn, ipv6: ipv6Socket}
 	var err error
+	level, option := unix.IPPROTO_IP, unix.IP_RECVTOS
 	if ipv6Socket {
 		err = ipv6.NewPacketConn(conn).SetControlMessage(ipv6.FlagDst|ipv6.FlagInterface, true)
+		level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVTCLASS
 	} else {
 		err = ipv4.NewPacketConn(conn).SetControlMessage(ipv4.FlagDst|ipv4.FlagInterface, true)
 	}
@@ -153,6 +158,13 @@ func newDarwinSocket(conn *net.UDPConn, ipv6Socket bool) (*darwinSocket, error) 
 	}
 	if socket.raw, err = conn.SyscallConn(); err != nil {
 		return nil, err
+	}
+	var setErr error
+	if err := socket.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, 1) }); err != nil {
+		return nil, err
+	}
+	if setErr != nil {
+		return nil, setErr
 	}
 	return socket, nil
 }
@@ -673,18 +685,25 @@ func (b *darwinBind) dontFragment(endpoint Endpoint) bool {
 // an endpoint, which the hub reads for nothing else.
 func (s *darwinSocket) receiver() receiveFunc {
 	buf := make([]byte, readBufferSize)
-	// one packet info message, the only one these sockets ask for, of the larger family
-	oob := make([]byte, unix.CmsgSpace(unix.SizeofInet6Pktinfo))
+	oob := make([]byte, controlMessageSize)
 	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
 		n, oobn, flags, from, err := s.conn.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
 			return 0, 0, err
 		}
-		bufs[0], sizes[0], endpoints[0], records[0] = buf[:n], n, nil, receiveRecord{source: from}
+		// a datagram whose control message was cut or will not parse has no known outer ECN field, and an IKE one no address to be answered from
+		// so it is counted as refused and dropped, since recording Not-ECT would discard a congestion mark
+		// returning an error instead would end the hub
+		if flags&unix.MSG_CTRUNC != 0 {
+			return 0, 1, nil
+		}
+		ecn, err := outerECN(oob[:oobn])
+		if err != nil {
+			return 0, 1, nil
+		}
+		bufs[0], sizes[0], endpoints[0], records[0] = buf[:n], n, nil, receiveRecord{source: from, ecn: ecn}
 		if n >= nonESPMarkerLen && binary.BigEndian.Uint32(buf) == 0 {
-			// an IKE datagram with no endpoint has no address to be answered from, so it is counted as refused and dropped
-			// returning the error instead would end the hub
-			ep, err := s.replyEndpoint(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), oob[:oobn], flags)
+			ep, err := s.replyEndpoint(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), oob[:oobn])
 			if err != nil {
 				return 0, 1, nil
 			}
@@ -694,12 +713,27 @@ func (s *darwinSocket) receiver() receiveFunc {
 	}
 }
 
-// replyEndpoint is the endpoint of from, answered from the address the datagram reached and by the interface it arrived on where that address is link-local
-// it refuses a datagram whose control message was truncated or names no destination
-func (s *darwinSocket) replyEndpoint(from netip.AddrPort, control []byte, flags int) (*darwinEndpoint, error) {
-	if flags&unix.MSG_CTRUNC != 0 {
-		return nil, errors.New("transport: a datagram arrived with its control message truncated")
+// darwin hands the IPv4 TOS as one octet under IP_RECVTOS and the IPv6 traffic class as an int under IPV6_TCLASS
+func outerECN(control []byte) (packet.ECN, error) {
+	for len(control) >= unix.CmsgLen(0) {
+		header, data, rest, err := unix.ParseOneSocketControlMessage(control)
+		if err != nil {
+			return packet.NotECT, err
+		}
+		switch {
+		case header.Level == unix.IPPROTO_IP && header.Type == unix.IP_RECVTOS && len(data) >= 1:
+			return packet.ECNOfTrafficClass(data[0]), nil
+		case header.Level == unix.IPPROTO_IPV6 && header.Type == unix.IPV6_TCLASS && len(data) >= 4:
+			return packet.ECNOfTrafficClass(uint8(binary.NativeEndian.Uint32(data))), nil
+		}
+		control = rest
 	}
+	return packet.NotECT, nil
+}
+
+// replyEndpoint is the endpoint of from, answered from the address the datagram reached and by the interface it arrived on where that address is link-local
+// it refuses a datagram whose control message names no destination
+func (s *darwinSocket) replyEndpoint(from netip.AddrPort, control []byte) (*darwinEndpoint, error) {
 	var dst net.IP
 	var index int
 	if s.ipv6 {

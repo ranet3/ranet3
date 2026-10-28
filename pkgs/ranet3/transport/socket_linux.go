@@ -24,6 +24,7 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -260,13 +261,16 @@ func socketControl(ipv6 bool, fwmark uint32, buffer int, reusePort bool) func(st
 }
 
 // newUDPSocket readies conn for batched reads and writes, with the control messages a reply endpoint is built from
+// and the outer TOS or traffic class, whose ECN field a tunnel egress must read (RFC 7296 section 2.24)
 func newUDPSocket(conn *net.UDPConn, v6 bool) (*udpSocket, error) {
 	socket := &udpSocket{conn: conn, ipv6: v6}
 	socket.send.New = func() any { return newUDPSendBatch() }
 	var err error
+	level, option := unix.IPPROTO_IP, unix.IP_RECVTOS
 	if v6 {
 		p := ipv6.NewPacketConn(conn)
 		socket.pc, err = p, p.SetControlMessage(ipv6.FlagDst|ipv6.FlagInterface, true)
+		level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVTCLASS
 	} else {
 		p := ipv4.NewPacketConn(conn)
 		socket.pc, err = p, p.SetControlMessage(ipv4.FlagDst|ipv4.FlagInterface, true)
@@ -276,6 +280,13 @@ func newUDPSocket(conn *net.UDPConn, v6 bool) (*udpSocket, error) {
 	}
 	if socket.raw, err = conn.SyscallConn(); err != nil {
 		return nil, err
+	}
+	var setErr error
+	if err := socket.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, 1) }); err != nil {
+		return nil, err
+	}
+	if setErr != nil {
+		return nil, setErr
 	}
 	return socket, nil
 }
@@ -472,9 +483,11 @@ func receiveVector(vector int) []ipv4.Message {
 
 // walk hands out the datagrams read leaves in messages and reads again once it has handed out the last
 // a message is one sender's, since GRO coalesces only datagrams of one source address and port, so each of its datagrams takes the source read once for it
+// and it carries one outer ECN field, since GRO flushes a flow on any difference of TOS or traffic class, so each of its datagrams takes the field read once for it too
 func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) receiveFunc {
 	var count, index, offset, segment, refused int
 	var source netip.AddrPort
+	var ecn packet.ECN
 	var zones scopeZone
 	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
 		refused = 0
@@ -500,7 +513,7 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 					continue
 				}
 				var err error
-				segment, err = udpGROSize(m.OOB[:m.NN])
+				segment, ecn, err = parseReceived(m.OOB[:m.NN])
 				if err != nil {
 					// The segment size itself would not parse, so this
 					// is the one arm that cannot do better than one.
@@ -518,7 +531,7 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 			}
 			end := min(offset+segment, m.N)
 			raw := m.Buffers[0][offset:end]
-			bufs[n], sizes[n], endpoints[n], records[n] = raw, len(raw), nil, receiveRecord{source: source}
+			bufs[n], sizes[n], endpoints[n], records[n] = raw, len(raw), nil, receiveRecord{source: source, ecn: ecn}
 			if len(raw) >= 4 && binary.BigEndian.Uint32(raw[:4]) == 0 {
 				// A datagram whose control message will not parse is counted
 				// and dropped, not returned as an error: receiveLoop fails the
@@ -556,7 +569,7 @@ func datagramsIn(m *ipv4.Message) int {
 	if m.N == 0 {
 		return 1
 	}
-	segment, err := udpGROSize(m.OOB[:m.NN])
+	segment, _, err := parseReceived(m.OOB[:m.NN])
 	if err != nil || segment <= 0 {
 		return 1
 	}
@@ -588,21 +601,28 @@ func (s *udpSocket) replyEndpoint(m *ipv4.Message) (*udpEndpoint, error) {
 	return pinnedEndpoint(addr, cm.Dst, cm.IfIndex, false), nil
 }
 
-func udpGROSize(control []byte) (int, error) {
+// linux hands the IPv4 TOS as one octet and the IPv6 traffic class as an int
+func parseReceived(control []byte) (int, packet.ECN, error) {
+	segment, ecn := 0, packet.NotECT
 	for len(control) >= unix.CmsgLen(0) {
 		header, data, rest, err := unix.ParseOneSocketControlMessage(control)
 		if err != nil {
-			return 0, err
+			return 0, packet.NotECT, err
 		}
-		if header.Level == unix.IPPROTO_UDP && header.Type == unix.UDP_GRO {
+		switch {
+		case header.Level == unix.IPPROTO_UDP && header.Type == unix.UDP_GRO:
 			if len(data) < 2 {
-				return 0, errors.New("transport: short UDP_GRO control message")
+				return 0, packet.NotECT, errors.New("transport: short UDP_GRO control message")
 			}
-			return int(binary.NativeEndian.Uint16(data)), nil
+			segment = int(binary.NativeEndian.Uint16(data))
+		case header.Level == unix.IPPROTO_IP && header.Type == unix.IP_TOS && len(data) >= 1:
+			ecn = packet.ECNOfTrafficClass(data[0])
+		case header.Level == unix.IPPROTO_IPV6 && header.Type == unix.IPV6_TCLASS && len(data) >= 4:
+			ecn = packet.ECNOfTrafficClass(uint8(binary.NativeEndian.Uint32(data)))
 		}
 		control = rest
 	}
-	return 0, nil
+	return segment, ecn, nil
 }
 
 type udpSendBatch struct {

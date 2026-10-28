@@ -53,7 +53,7 @@ func TestDarwinRepliesNameTheAddressTheRequestReached(t *testing.T) {
 		fragments := ipv6 && hegel.Draw(ht, hegel.Booleans())
 		socket := &darwinSocket{ipv6: ipv6}
 		arrived := func(at netip.Addr, on int) *darwinEndpoint {
-			ep, err := socket.replyEndpoint(peer, receivedControl(ipv6, at, on), 0)
+			ep, err := socket.replyEndpoint(peer, receivedControl(ipv6, at, on))
 			if err != nil {
 				ht.Fatalf("a request from %s that reached %s on interface %d: %v", peer, at, on, err)
 			}

@@ -52,43 +52,14 @@ func TestReceiveRecordSourcesUnderGRO(t *testing.T) {
 			senders[i] = netip.AddrPortFrom(froms[i], uint16(listener.LocalAddr().(*net.UDPAddr).Port))
 		}
 		to := netip.AddrPortFrom(nearAddresses[family].Addr(), port)
-		messages := receiveVector(espSendBatch)
-		reader := newUDPReader(socket.raw, messages)
-		coalesced := 0
-		receive := socket.walk(messages, func() (int, error) {
-			n, err := reader.read()
-			for _, m := range messages[:n] {
-				if segment, err := udpGROSize(m.OOB[:m.NN]); err == nil && segment > 0 && segment < m.N {
-					coalesced++
-				}
+		got := make([]int, len(senders))
+		read, coalesced := groReader(t, socket, func(datagram []byte, record receiveRecord) {
+			sender := datagram[4]
+			if record.source != senders[sender] {
+				t.Fatalf("a datagram of %s came with the source %v", senders[sender], record.source)
 			}
-			return n, err
+			got[sender]++
 		})
-		bufs, sizes, endpoints, records := make([][]byte, espSendBatch), make([]int, espSendBatch), make([]Endpoint, espSendBatch), make([]receiveRecord, espSendBatch)
-		got, total := make([]int, len(senders)), 0
-		// read reads until want datagrams arrived in all, or none did for arrivalBudget, and checks the record of each
-		read := func(want int) {
-			for total < want {
-				if err := socket.conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
-					t.Fatal(err)
-				}
-				n, _, err := receive(bufs, sizes, endpoints, records)
-				if errors.Is(err, os.ErrDeadlineExceeded) {
-					return
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-				for i := range n {
-					sender := bufs[i][4]
-					if records[i].source != senders[sender] {
-						t.Fatalf("a datagram of %s came with the source %v", senders[sender], records[i].source)
-					}
-					got[sender]++
-				}
-				total += n
-			}
-		}
 		// the far end drops what it sends while it resolves the near end's address, so one datagram goes first and is read before the flood
 		flood(t, listeners[0], 0, froms[0], to, 1)
 		read(1)
@@ -98,24 +69,66 @@ func TestReceiveRecordSourcesUnderGRO(t *testing.T) {
 		}
 		read(len(senders)*groFlood + 1)
 		sending.Wait()
-		t.Logf("%v: received %v of %d sent by each, %d messages of more than one datagram", to, got, groFlood, coalesced)
+		t.Logf("%v: received %v of %d sent by each, %d messages of more than one datagram", to, got, groFlood, *coalesced)
 		if slices.Contains(got, 0) {
 			t.Errorf("a sender's datagrams never arrived: %v of %d each", got, groFlood)
 		}
-		if coalesced == 0 {
+		if *coalesced == 0 {
 			t.Error("GRO coalesced no datagrams, so no read held a message of many")
 		}
 	}
 }
 
+// groReader reads socket through its walk and hands check each datagram with its record
+// read reads until want datagrams arrived in all, or none did for arrivalBudget, and coalesced counts the messages of more than one datagram
+func groReader(t *testing.T, socket *udpSocket, check func(datagram []byte, record receiveRecord)) (read func(want int), coalesced *int) {
+	messages := receiveVector(espSendBatch)
+	reader := newUDPReader(socket.raw, messages)
+	coalesced = new(int)
+	receive := socket.walk(messages, func() (int, error) {
+		n, err := reader.read()
+		for _, m := range messages[:n] {
+			if segment, _, err := parseReceived(m.OOB[:m.NN]); err == nil && segment > 0 && segment < m.N {
+				*coalesced++
+			}
+		}
+		return n, err
+	})
+	bufs, sizes, endpoints, records := make([][]byte, espSendBatch), make([]int, espSendBatch), make([]Endpoint, espSendBatch), make([]receiveRecord, espSendBatch)
+	total := 0
+	read = func(want int) {
+		t.Helper()
+		for total < want {
+			if err := socket.conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
+				t.Fatal(err)
+			}
+			n, _, err := receive(bufs, sizes, endpoints, records)
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range n {
+				check(bufs[i][:sizes[i]], records[i])
+			}
+			total += n
+		}
+	}
+	return read, coalesced
+}
+
+// sourceControl is the control message that sends a datagram from the address from
+func sourceControl(from netip.Addr) []byte {
+	if from.Is4() {
+		return (&ipv4.ControlMessage{Src: from.AsSlice()}).Marshal()
+	}
+	return (&ipv6.ControlMessage{Src: from.AsSlice()}).Marshal()
+}
+
 // flood sends count ESP-shaped datagrams carrying sender from listener to to, from the address from
 func flood(t *testing.T, listener *net.UDPConn, sender byte, from netip.Addr, to netip.AddrPort, count int) {
-	var control []byte
-	if from.Is4() {
-		control = (&ipv4.ControlMessage{Src: from.AsSlice()}).Marshal()
-	} else {
-		control = (&ipv6.ControlMessage{Src: from.AsSlice()}).Marshal()
-	}
+	control := sourceControl(from)
 	datagram := make([]byte, 64)
 	binary.BigEndian.PutUint32(datagram, pairTestSPI)
 	datagram[4] = sender
