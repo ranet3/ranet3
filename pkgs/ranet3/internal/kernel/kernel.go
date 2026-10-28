@@ -444,8 +444,9 @@ type platform interface {
 	AddAddr(netip.Prefix) error
 	DelAddr(netip.Prefix) error
 	// Notify carries one coalesced wake-up per batch of kernel notifications
-	// touching what the reconciler holds: on linux a route in its table or a
-	// deleted rule of its protocol, on darwin a route of its interface.
+	// touching what the reconciler holds: on linux a route in its table, an
+	// address of its tun, a deleted rule of its protocol or another writer's
+	// change to the table ranet3_fallback, on darwin a route of its interface.
 	Notify() <-chan struct{}
 	// retable takes the capability a reload installed, on the id and proto the platform was opened with
 	retable(Table)

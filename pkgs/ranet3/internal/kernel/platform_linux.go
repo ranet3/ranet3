@@ -53,6 +53,11 @@ type netlinkPlatform struct {
 	// prefix the record would have no exit at all.
 	occupied map[Route]bool
 	refused  map[Route]bool
+
+	// fallback writes the table ranet3_fallback and wakes Notify on another
+	// writer's change to it, from the platform's start to its Close. Only the
+	// reconcile loop touches it once the platform is built.
+	fallback *fallbackWatch
 }
 
 // each optional half is reached only through a type assertion
@@ -100,14 +105,19 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	return &netlinkPlatform{table: t, rt: rt, index: tun.index, conn: conn, monitor: monitor,
-		occupied: make(map[Route]bool), refused: make(map[Route]bool)}, nil
+	p := &netlinkPlatform{table: t, rt: rt, index: tun.index, conn: conn, monitor: monitor,
+		occupied: make(map[Route]bool), refused: make(map[Route]bool)}
+	// opened on this thread, so the table goes in the namespace the rules go
+	// in, and a kernel refusing it is answered at the first pass that asks
+	// for the table, which opens it again and reports the error
+	_, _ = p.watchFallback()
+	return p, nil
 }
 
 func (p *netlinkPlatform) Notify() <-chan struct{} { return p.monitor.signal }
 
 func (p *netlinkPlatform) Close() error {
-	return errors.Join(p.monitor.Close(), p.conn.Close())
+	return errors.Join(p.unwatchFallback(), p.monitor.Close(), p.conn.Close())
 }
 
 func (p *netlinkPlatform) Routes() ([]Route, error) {
