@@ -318,36 +318,42 @@ func TestCongestedPeerDoesNotStallOthers(t *testing.T) {
 	m.outboundWorkerWG.Add(2)
 	go m.outboundWorker()
 	go m.outboundWorker()
-	dispatched := make(chan struct{})
+	var dispatches sync.WaitGroup
 	// the transport lets go first, so a dispatch that waited on it can finish before the queue closes
 	t.Cleanup(func() {
 		close(release)
-		<-dispatched
+		dispatches.Wait()
 		m.Close()
 		stuck.Close()
 		healthy.Close()
 	})
 
-	go func() {
-		defer close(dispatched)
-		for range reads {
-			b := &outboundBatch{shares: map[*Peer]outboundShare{stuck: {count: perRead, bytes: perRead * size}, healthy: {count: perRead, bytes: perRead * size}},
-				batches: make(map[*Peer]*peerBatch), peerOrder: []*Peer{stuck, healthy}}
-			for i := range 2 * perRead {
-				b.packets = append(b.packets, []byte{byte(i)})
-				b.headers = append(b.headers, 0)
-				b.peers = append(b.peers, []*Peer{stuck, healthy}[i%2])
-			}
-			b.n = len(b.packets)
-			m.dispatchOutbound(b)
+	// the dispatches share one deliveryTimeout, since a reader held a moment at each refusal is held for their sum
+	left := deliveryTimeout
+	// the other peer's budget, as the stuck peer's, refuses a read once the reads its sender has not drained fill it
+	for r := range int64(reads) {
+		b := &outboundBatch{shares: map[*Peer]outboundShare{stuck: {count: perRead, bytes: perRead * size}, healthy: {count: perRead, bytes: perRead * size}},
+			batches: make(map[*Peer]*peerBatch), peerOrder: []*Peer{stuck, healthy}}
+		for i := range 2 * perRead {
+			b.packets = append(b.packets, []byte{byte(i)})
+			b.headers = append(b.headers, 0)
+			b.peers = append(b.peers, []*Peer{stuck, healthy}[i%2])
 		}
-	}()
-	select {
-	case <-dispatched:
-	case <-time.After(deliveryTimeout):
-		t.Fatal("the congested peer held up the reader that feeds the other peer")
+		b.n = len(b.packets)
+		dispatched := make(chan struct{})
+		start := time.Now()
+		dispatches.Go(func() {
+			defer close(dispatched)
+			m.dispatchOutbound(b)
+		})
+		select {
+		case <-dispatched:
+		case <-time.After(left):
+			t.Fatalf("the congested peer held up the reader that feeds the other peer at read %d", r)
+		}
+		left -= time.Since(start)
+		waitUntil(t, "the peer that was not congested to send every packet it was given", func() bool { return transmitted.Load() >= (r+1)*perRead })
 	}
-	waitUntil(t, "the peer that was not congested to send every packet it was given", func() bool { return transmitted.Load() >= reads*perRead })
 	if got := returned.Load(); got != 0 {
 		t.Fatalf("the stuck transport returned %d times, so this proves nothing", got)
 	}
