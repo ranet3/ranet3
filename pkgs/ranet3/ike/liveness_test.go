@@ -256,13 +256,15 @@ func TestMessageIDExhaustionCannotWrap(t *testing.T) {
 	}))
 
 	t.Run("peer request", bubble.Run(func(t *testing.T) {
-		mux, _ := lifecycleMuxes(t)
+		mux, elsewhere := lifecycleMuxes(t)
+		configured := mux.Endpoint().String()
 		suite := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128}
 		ctx := &ikeContext{
 			suite: suite, spiI: 1, spiR: 2, sker: make([]byte, 20),
 			nextPeerMID: maxMessageID,
 		}
-		s := &Session{mux: mux, current: ctx}
+		moves := &recorder{}
+		s := &Session{mux: mux, current: ctx, events: moves.record}
 		request, err := EncryptMessage(suite, ctx.sker, Header{
 			SPIInitiator: 1, SPIResponder: 2, ExchangeType: INFORMATIONAL,
 			MessageID: maxMessageID,
@@ -271,7 +273,7 @@ func TestMessageIDExhaustionCannotWrap(t *testing.T) {
 			t.Fatal(err)
 		}
 		var pending *pendingRequest
-		if !s.dispatch(request, nil, &pending) {
+		if !s.dispatch(request, elsewhere.Endpoint(), &pending) {
 			t.Fatal("exhausting peer request was not authenticated")
 		}
 		if ctx.nextPeerMID != maxMessageID {
@@ -279,6 +281,9 @@ func TestMessageIDExhaustionCannotWrap(t *testing.T) {
 		}
 		if !mux.IsClosed() {
 			t.Fatal("IKE SA remained open at peer Message ID exhaustion")
+		}
+		if got := recordedMoves(moves); len(got) != 0 || mux.Endpoint().String() != configured {
+			t.Errorf("the closing request moved the session to %s and recorded the moves %q, want %s and none", mux.Endpoint(), got, configured)
 		}
 	}))
 }
@@ -335,18 +340,6 @@ func testReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 	}
 
 	dst := muxLoopback(mux)
-	readIKE := func(peer *transport.MemoryConn) []byte {
-		t.Helper()
-		buf := make([]byte, 2048)
-		if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			t.Fatal(err)
-		}
-		n, _, err := peer.ReadFromUDP(buf)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return append([]byte(nil), buf[4:n]...)
-	}
 	dispatchFrom := func(peer *transport.MemoryConn, request []byte) bool {
 		t.Helper()
 		if _, err := peer.WriteToUDP(withNonESPMarker(request), dst); err != nil {
@@ -372,21 +365,21 @@ func testReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 	if !dispatchFrom(configured, request) {
 		t.Fatal("fresh request was not reported as peer activity")
 	}
-	response := readIKE(configured)
-	if got := recordedKind(moves, "ike.endpoint.moved"); got != 0 {
-		t.Errorf("a request from where the session already sends recorded %d moves", got)
+	response := readFrom(t, configured)
+	if got := recordedMoves(moves); len(got) != 0 {
+		t.Errorf("a request from where the session already sends recorded the moves %q", got)
 	}
 
 	if dispatchFrom(rebound, request) {
 		t.Fatal("replayed request was reported as fresh peer activity")
 	}
-	if replayResponse := readIKE(rebound); !bytes.Equal(replayResponse, response) {
+	if replayResponse := readFrom(t, rebound); !bytes.Equal(replayResponse, response) {
 		t.Fatal("replayed request did not receive the cached response")
 	}
 	if err := mux.SendIKE([]byte("probe")); err != nil {
 		t.Fatal(err)
 	}
-	if got := readIKE(configured); string(got) != "probe" {
+	if got := readFrom(t, configured); string(got) != "probe" {
 		t.Fatalf("packet after replay = %q, want configured endpoint", got)
 	}
 
@@ -402,15 +395,226 @@ func testReplayedRequestDoesNotRefreshOrAdoptEndpoint(t *testing.T) {
 	if !dispatchFrom(rebound, freshRequest) {
 		t.Fatal("fresh request from rebound endpoint was not reported as peer activity")
 	}
-	_ = readIKE(rebound)
+	_ = readFrom(t, rebound)
 	if err := mux.SendIKE([]byte("future")); err != nil {
 		t.Fatal(err)
 	}
-	if got := readIKE(rebound); string(got) != "future" {
+	if got := readFrom(t, rebound); string(got) != "future" {
 		t.Fatalf("packet after fresh request = %q, want rebound endpoint", got)
 	}
-	if got := recordedKind(moves, "ike.endpoint.moved"); got != 1 {
-		t.Errorf("the session recorded %d moves, want the one a fresh request from a new endpoint made", got)
+	if got, want := recordedMoves(moves), []string{movedTo(rebound, "request")}; !slices.Equal(got, want) {
+		t.Errorf("the session recorded the moves %q, want %q, the one a fresh request from a new endpoint made", got, want)
+	}
+}
+
+// recordedMoves is the attributes of each ike.endpoint.moved r recorded
+func recordedMoves(r *recorder) []string {
+	var moves []string
+	for _, line := range r.recorded() {
+		if fields := strings.Fields(line); fields[0] == "ike.endpoint.moved" {
+			moves = append(moves, strings.Join(fields[2:], " "))
+		}
+	}
+	return moves
+}
+
+// movedTo is the attributes of a move to peer that a packet of the kind made
+func movedTo(peer *transport.MemoryConn, packet string) string {
+	return "endpoint=" + peer.LocalAddr().String() + " packet=" + packet
+}
+
+// answeredSession is a session on the network in memory that sends to configured and asks its peer, who answers from wherever a test says
+type answeredSession struct {
+	s          *Session
+	ctx        *ikeContext
+	configured *transport.MemoryConn
+	moves      *recorder
+	pending    *pendingRequest
+}
+
+func newAnsweredSession(t *testing.T) *answeredSession {
+	t.Helper()
+	configured := listenPeer(t)
+	ctx := testContext()
+	mux := acceptedMux(t, configured, ctx.spiI)
+	t.Cleanup(func() { mux.Close() })
+	if err := mux.RegisterIKE(ctx.spiI); err != nil {
+		t.Fatal(err)
+	}
+	moves := &recorder{}
+	return &answeredSession{s: &Session{mux: mux, current: ctx, fragments: true, events: moves.record}, ctx: ctx, configured: configured, moves: moves}
+}
+
+// ask starts a liveness check, which configured reads
+func (a *answeredSession) ask(t *testing.T) {
+	t.Helper()
+	pending, err := a.s.startRequest(&localRequest{exchange: INFORMATIONAL, context: a.ctx, dpd: true, result: make(chan requestResult, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.pending = pending
+	readFrom(t, a.configured)
+}
+
+// answer is the peer's empty answer at mid
+func (a *answeredSession) answer(t *testing.T, mid uint32) []byte {
+	t.Helper()
+	raw, err := EncryptMessage(a.ctx.suite, a.ctx.sker, a.answerHeader(mid), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func (a *answeredSession) answerHeader(mid uint32) Header {
+	return Header{SPIInitiator: a.ctx.spiI, SPIResponder: a.ctx.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: mid}
+}
+
+// arrive hands dispatch raw as it came from peer, and reports whether dispatch took it as a fresh message
+func (a *answeredSession) arrive(t *testing.T, peer *transport.MemoryConn, raw []byte) bool {
+	t.Helper()
+	if _, err := peer.WriteToUDP(withNonESPMarker(raw), muxLoopback(a.s.mux)); err != nil {
+		t.Fatal(err)
+	}
+	got, source, err := a.s.mux.RecvIKEFromUntil(time.Now().Add(answerBudget))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a.s.dispatch(got, source, &a.pending)
+}
+
+// sendsTo fails the test unless the session's next send reaches peer
+func (a *answeredSession) sendsTo(t *testing.T, peer *transport.MemoryConn) {
+	t.Helper()
+	if err := a.s.mux.SendIKE([]byte("next")); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFrom(t, peer); string(got) != "next" {
+		t.Fatalf("%s read %q, want the session's next send", peer.LocalAddr(), got)
+	}
+}
+
+// readFrom is the IKE message peer reads next
+func readFrom(t *testing.T, peer *transport.MemoryConn) []byte {
+	t.Helper()
+	buf := make([]byte, 65536)
+	if err := peer.SetReadDeadline(time.Now().Add(answerBudget)); err != nil {
+		t.Fatal(err)
+	}
+	n, _, err := peer.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("%s read nothing: %v", peer.LocalAddr(), err)
+	}
+	return slices.Clone(buf[NonESPMarkerLen:n])
+}
+
+// RFC 7296 section 2.23: "SHOULD send all packets (including retransmission packets) to the IP address and port in the validated packet"
+// the authenticated answer to this end's own request is such a packet, and moves the session as a fresh request does
+func TestAnswerFromANewAddressMovesTheSession(t *testing.T) {
+	bubble.Run(testAnswerFromANewAddressMovesTheSession)(t)
+}
+
+func testAnswerFromANewAddressMovesTheSession(t *testing.T) {
+	a := newAnsweredSession(t)
+	rebound := listenPeer(t)
+	a.ask(t)
+	if !a.arrive(t, rebound, a.answer(t, a.pending.msgID)) || a.pending != nil {
+		t.Fatal("the answer to the liveness check was not taken")
+	}
+	a.sendsTo(t, rebound)
+	if got, want := recordedMoves(a.moves), []string{movedTo(rebound, "response")}; !slices.Equal(got, want) {
+		t.Errorf("the session recorded the moves %q, want %q", got, want)
+	}
+}
+
+// a retained or colliding IKE SA shares the session's mux with the current one, so the authenticated answer to this end's own request on it moves the session as one on the current IKE SA does
+func TestAnswerOnARetainedIKESAMovesTheSession(t *testing.T) {
+	for name, retain := range map[string]func(*Session, *ikeContext){
+		"old":       func(s *Session, ctx *ikeContext) { s.old = ctx },
+		"collision": func(s *Session, ctx *ikeContext) { s.collision = ctx },
+	} {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			a := newAnsweredSession(t)
+			rebound := listenPeer(t)
+			retained := testContext()
+			retained.spiI, retained.spiR = 0x2122232425262728, 0x3132333435363738
+			if err := a.s.mux.RegisterIKE(retained.spiI); err != nil {
+				t.Fatal(err)
+			}
+			retain(a.s, retained)
+			a.ctx = retained
+			a.ask(t)
+			if !a.arrive(t, rebound, a.answer(t, a.pending.msgID)) || a.pending != nil {
+				t.Fatal("the answer on the retained IKE SA was not taken")
+			}
+			a.sendsTo(t, rebound)
+			if got, want := recordedMoves(a.moves), []string{movedTo(rebound, "response")}; !slices.Equal(got, want) {
+				t.Errorf("the session recorded the moves %q, want %q", got, want)
+			}
+		}))
+	}
+}
+
+// RFC 7296 section 2.23: "dynamic address update should only be done in response to a new packet"
+// an answer is new only as the match for the one request outstanding, so an answer again after the match, one that does not authenticate and one at another Message ID move nothing
+func TestAnswerToNothingMovesNothing(t *testing.T) {
+	for name, stale := range map[string]func(*testing.T, *answeredSession) []byte{
+		"answer again after its request cleared": func(t *testing.T, a *answeredSession) []byte {
+			answer := a.answer(t, a.pending.msgID)
+			if !a.arrive(t, a.configured, answer) || a.pending != nil {
+				t.Fatal("the answer to the liveness check was not taken")
+			}
+			return answer
+		},
+		"answer with a flipped ICV": func(t *testing.T, a *answeredSession) []byte {
+			forged := a.answer(t, a.pending.msgID)
+			forged[len(forged)-1] ^= 1
+			return forged
+		},
+		"answer at another Message ID": func(t *testing.T, a *answeredSession) []byte {
+			return a.answer(t, a.pending.msgID+1)
+		},
+	} {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			a := newAnsweredSession(t)
+			elsewhere := listenPeer(t)
+			a.ask(t)
+			if a.arrive(t, elsewhere, stale(t, a)) {
+				t.Error("dispatch took the answer as a fresh message")
+			}
+			a.sendsTo(t, a.configured)
+			if got := recordedMoves(a.moves); len(got) != 0 {
+				t.Errorf("the session recorded the moves %q, want none", got)
+			}
+		}))
+	}
+}
+
+// a fragmented answer authenticates only whole, so it moves the session once it completes, to where the fragment that completed it came from
+func TestFragmentedAnswerMovesOnceWhole(t *testing.T) {
+	bubble.Run(testFragmentedAnswerMovesOnceWhole)(t)
+}
+
+func testFragmentedAnswerMovesOnceWhole(t *testing.T) {
+	a := newAnsweredSession(t)
+	between, rebound := listenPeer(t), listenPeer(t)
+	a.ask(t)
+	cut := cutInto(t, a.ctx.suite, a.ctx.sker, a.answerHeader(a.pending.msgID), []RawPayload{bulkyStatus(2000)}, 839)
+	if len(cut) != 3 {
+		t.Fatalf("the answer went in %d fragments, want 3", len(cut))
+	}
+	for i, from := range []*transport.MemoryConn{a.configured, between} {
+		if a.arrive(t, from, cut[i]) || a.pending == nil {
+			t.Fatalf("fragment %d of 3 completed the answer", i+1)
+		}
+		a.sendsTo(t, a.configured)
+	}
+	if !a.arrive(t, rebound, cut[2]) || a.pending != nil {
+		t.Fatal("the last fragment did not complete the answer")
+	}
+	a.sendsTo(t, rebound)
+	if got, want := recordedMoves(a.moves), []string{movedTo(rebound, "response")}; !slices.Equal(got, want) {
+		t.Errorf("the session recorded the moves %q, want %q", got, want)
 	}
 }
 
@@ -543,8 +747,8 @@ func TestDialedSessionFollowsItsPeerFromTheKernelsSource(t *testing.T) {
 	if got, from := read(); got != "next" || !from.IP.Equal(net.IPv4(127, 0, 0, 1)) {
 		t.Errorf("the peer read %q from %s where it moved, want the next request from the kernel's choice of 127.0.0.1", got, from)
 	}
-	if got := recordedKind(moves, "ike.endpoint.moved"); got != 1 {
-		t.Errorf("the session recorded %d moves, want one", got)
+	if got := recordedMoves(moves); len(got) != 1 {
+		t.Errorf("the session recorded the moves %q, want one", got)
 	}
 }
 

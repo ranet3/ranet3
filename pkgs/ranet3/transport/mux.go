@@ -743,7 +743,7 @@ func (m *Mux) currentEndpoint() Endpoint {
 }
 
 // AdoptEndpoint moves this mux to endpoint unless the two are the same destination, and reports whether it moved
-// IKE calls it only with the source of a fresh authenticated request, as RFC 7296 section 2.23 asks
+// IKE calls it with the source of a fresh request or of an answer to its own request, once either authenticated
 // a mux NewMux made takes the address and port alone and leaves the source to the kernel
 // so a session this node dialed sends from whatever address this host holds now
 func (m *Mux) AdoptEndpoint(endpoint Endpoint) bool {
