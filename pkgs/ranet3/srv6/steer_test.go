@@ -141,6 +141,40 @@ func TestSteeringEntryInheritsTheBlockSource(t *testing.T) {
 	}
 }
 
+// Each policy keeps the selector its entry wrote, a half it left out as the
+// zero prefix, and the policies and the entries list them in the order they
+// were written, each table its own, the one a reload swaps in included
+func TestSteeringPoliciesKeepTheirSelectorsInTheOrderWritten(t *testing.T) {
+	const source = "3fff:b:0:100::1"
+	written := []Steer{
+		steering("", "203.0.113.0/24", source, "3fff:b:0:206::1"),
+		steering("2001:db8::/32", "", source, "3fff:b:0:206::1", "3fff:b:0:406::1"),
+		steering("192.0.2.1/32", "198.51.100.0/24", source, "3fff:b:0:406::1"),
+	}
+	for name, entries := range map[string][]Steer{"as written": written, "as a reload rewrites them": {written[2], written[0]}} {
+		t.Run(name, func(t *testing.T) {
+			table, err := NewSteerTable(entries, schema.Addr{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			policies, lines := table.Policies(), table.Entries()
+			if len(policies) != len(entries) || len(lines) != len(entries) {
+				t.Fatalf("%d entries read back as %d policies and %d lines", len(entries), len(policies), len(lines))
+			}
+			for i, entry := range entries {
+				policy := policies[i]
+				if policy.From != entry.From.Prefix || policy.To != entry.To.Prefix || policy.String() != lines[i] {
+					t.Errorf("entry %d, %s, reads back as from %v to %v, %q", i, lines[i], policy.From, policy.To, policy.String())
+				}
+			}
+			policies[0].Path[0] = addr("3fff:ffff::1")
+			if again := table.Policies(); again[0].Path[0] == policies[0].Path[0] {
+				t.Error("a policy handed out shares its path with the table")
+			}
+		})
+	}
+}
+
 // Two entries selecting the same packets are a configuration whose halves
 // disagree, and the trie keeps one of them while a diagnostic prints both. The
 // local segment table and the rule list both refuse the same shape.
