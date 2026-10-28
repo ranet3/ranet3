@@ -173,6 +173,9 @@ func (f *TraceFeed) Counts() TraceCounts {
 	return TraceCounts{Recorded: f.c.recorded.Load(), RefusedRate: f.c.refusedRate.Load(), RefusedQueue: f.c.refusedQueue.Load()}
 }
 
+// Payload is how many bytes of its packet a record of the feed carries at most
+func (f *TraceFeed) Payload() int { return f.c.payload }
+
 // Close takes the feed off the mesh, and is safe to call more than once
 func (f *TraceFeed) Close() {
 	f.m.traceMu.Lock()

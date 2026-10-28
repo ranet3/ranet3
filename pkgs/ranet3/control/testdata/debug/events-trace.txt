@@ -1,0 +1,4 @@
+2026-10-21T01:00:00.000Z control.trace.started filter="dst=192.0.2.3/32 dst=3fff::3/128 decision=forward peer=example/gateway" payload=64 rate=1000
+2026-10-21T01:00:00.000Z control.trace.started filter=all payload=0 rate=1
+2026-10-21T01:00:00.000Z control.trace.ended reason="the reader left" recorded=0 refused_queue=0 refused_rate=0
+2026-10-21T01:00:00.000Z control.trace.ended reason="the daemon is stopping" recorded=0 refused_queue=0 refused_rate=0
