@@ -795,8 +795,9 @@ func (p *routePlatform) where(Table) string { return "interface " + p.rt.Interfa
 // retable takes the metric a dump mirrors from the capability a reload installed
 func (p *routePlatform) retable(t Table) { p.table = t }
 
-// covers is a bound underlay: a plain default out of the tun unscoped meets
-// EEXIST beside the host's own, and scoped it carries nothing unbound.
+// covers is link.underlay.bind: a plain default out of the tun unscoped meets
+// EEXIST beside the host's own, and scoped it carries no socket that does not
+// ask for the tun by name.
 func (p *routePlatform) covers() bool { return p.rt.BoundUnderlay }
 
 // scopes is scopeRoute as the diff reads it.

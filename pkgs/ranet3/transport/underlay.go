@@ -64,8 +64,8 @@ type Selection interface {
 // refuse reports why this platform cannot apply u, or nil. A setting that
 // means nothing here is refused by name rather than accepted and ignored.
 func (u Underlay) refuse() error {
-	if u.Bind && !bindsSockets {
-		return errors.New("binding the underlay socket to an interface is a darwin facility and is set on no other platform")
+	if u.Bind && !takesBind {
+		return errors.New("link.underlay.bind decides how macOS installs an exit's default and is set on no other platform")
 	}
 	return nil
 }
