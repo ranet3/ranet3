@@ -139,15 +139,22 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 // granted marks those frames among the ones returned, nil where there are none, since configuring the segment grants what arrives on it transit
 // mtu is the largest packet the session the batch came through carries
 // a SYN an End.DT46 delivers or egresses has its MSS clamped to it here, since the session's clamp saw only the outer header
-func (m *Mesh) applySegments(frames [][]byte, mtu int) (routed [][]byte, granted []bool) {
+// from is the peer of that session, nil for packets of no session
+func (m *Mesh) applySegments(frames [][]byte, mtu int, from *Peer) (routed [][]byte, granted []bool) {
 	table := m.segmentTable.Load()
 	if table == nil {
 		return frames, nil
 	}
-	return m.actOnSegments(frames, mtu, func(packet []byte) srv6.Result { return actLocally(table, packet) })
+	act := func(packet []byte) srv6.Result { return actLocally(table, packet) }
+	if trace := m.tracer.Load(); trace != nil {
+		return trace.actOnSegments(m, frames, mtu, from, act)
+	}
+	return m.actOnSegments(frames, mtu, nil, act)
 }
 
-func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Result) ([][]byte, []bool) {
+// actOnSegments is applySegments over act, which acts on each packet as the segment table does, records holding what a trace records each packet with, nil for none
+// an End.DT46's inner packet that goes on to the decision is the decision's to record
+func (m *Mesh) actOnSegments(frames [][]byte, mtu int, records *segmentRecords, act func([]byte) srv6.Result) ([][]byte, []bool) {
 	var routed, egress [][]byte
 	var granted []bool
 	take := func(i int) {
@@ -194,12 +201,18 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 				if m.refuseEgress() {
 					slog.Warn("an egress segment refused an inner packet no router forwards", "interface", m.Name, "source", source, "destination", destination)
 				}
+				if records != nil {
+					records.acted(TraceDrop, transitRefused, packet, result.Inner)
+				}
 				continue
 			}
 			answer := m.pairAnswer(&check, source, destination, true)
 			if !answer.routed {
 				if m.refuseEgress() {
 					slog.Warn("an egress segment refused an inner source the mesh routes no reply to", "interface", m.Name, "source", source)
+				}
+				if records != nil {
+					records.acted(TraceDrop, transitRefused, packet, result.Inner)
 				}
 				continue
 			}
@@ -211,12 +224,21 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 				if m.refuseEgress() {
 					slog.Warn("an egress segment refused an inner destination the mesh routes or its overlay holds", "interface", m.Name, "destination", destination)
 				}
+				if records != nil {
+					records.acted(TraceDrop, transitRefused, packet, result.Inner)
+				}
 				continue
 			}
 			// a packet written while its family's translation is missing leaves the uplink untranslated
 			if !m.readyFor(&check, result.Family, false) {
 				m.segmentsNotReady.Add(1)
+				if records != nil {
+					records.acted(TraceDrop, transitNotReady, packet, result.Inner)
+				}
 				continue
+			}
+			if records != nil {
+				records.acted(TraceEgress, transitDelivered, packet, result.Inner)
 			}
 			m.ClampMSS(result.Inner, mtu)
 			if egress == nil {
@@ -226,17 +248,27 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, act func([]byte) srv6.Res
 		case srv6.ActionForward:
 			take(i)
 			forward = append(forward, forwardedSegment{raw: packet, next: result.Next, sid: result.SID})
+			if records != nil {
+				records.forwarded(len(forward)-1, len(frames))
+			}
 		case srv6.ActionDrop:
 			take(i)
 			m.noteSegmentDrop(result.Err)
 			m.answerRefused(packet, result.Err)
+			if records != nil {
+				records.acted(TraceDrop, segmentReason(result.Err), packet, records.arrived)
+			}
 		default:
 			take(i)
 			m.segmentsDropped.Add(1)
 			m.reportSegmentDrop("a segment's result names an action this node does not act on", "action", result.Action)
+			if records != nil {
+				records.acted(TraceDrop, transitInvalid, packet, records.arrived)
+			}
 		}
 	}
-	m.forwardSegments(forward)
+	arrivals, from, trace := records.forwarding()
+	m.forwardSegments(forward, arrivals, from, trace)
 	if len(egress) != 0 {
 		m.segmentsEgressed.Add(uint64(len(egress)))
 		m.egress(egress)
@@ -307,7 +339,10 @@ type forwardedSegment struct {
 // this node must not be able to spend the allowance this node's own routing
 // protocol needs. A peer whose budget has no room for its share drops it and
 // counts it, the way a full egress queue drops.
-func (m *Mesh) forwardSegments(segments []forwardedSegment) {
+//
+// from is the peer of the session the segments came through, and trace records what each met, nil for none.
+// arrived holds each segment's packet as it arrived, which its records carry, nil for one the tracer's arrive did not copy, and is nil where trace is.
+func (m *Mesh) forwardSegments(segments []forwardedSegment, arrived [][]byte, from *Peer, trace *tracer) {
 	if len(segments) == 0 {
 		return
 	}
@@ -315,19 +350,26 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 	// for its packets.
 	counts := make(map[*Peer]outboundShare)
 	order := make([]*Peer, 0, 4)
-	// cut holds the fragments of the segments too large for their next sessions
+	// cut holds the fragments of the segments too large for their next sessions, and cutArrived the packet each was cut from as it arrived
 	var cut fragmentList
+	var cutArrived [][]byte
 	for i := range segments {
 		segment := &segments[i]
 		src, dst, nextHeader, ok := addrsOf(segment.raw)
 		if !ok {
 			m.noteSegmentDrop(errNotIP)
+			if trace != nil && arrived[i] != nil {
+				trace.segmentAt(from, TraceDrop, transitInvalid, netip.Addr{}, arrived[i])
+			}
 			continue
 		}
 		peer, verdict, _ := m.Routes.Resolve(src, dst)
 		if verdict != RoutePeer || peer == nil {
 			m.segmentsDropped.Add(1)
 			m.reportSegmentDrop("no route to the next segment", "segment", segment.next)
+			if trace != nil && arrived[i] != nil {
+				trace.segmentAt(from, TraceDrop, transitNoRoute, segment.next, arrived[i])
+			}
 			continue
 		}
 		share, seen := counts[peer]
@@ -335,14 +377,24 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 			share.mtu = peer.MTU()
 			order = append(order, peer)
 		}
-		if len(segment.raw) > share.mtu {
+		fragments, tooBig := 0, len(segment.raw) > share.mtu
+		if tooBig {
 			count, bytes := m.segmentTooBig(&cut, segment, peer, nextHeader, share.mtu)
 			share.count += count
 			share.bytes += bytes
+			fragments = count
+			if trace != nil {
+				for range count {
+					cutArrived = append(cutArrived, arrived[i])
+				}
+			}
 		} else {
 			share.count++
 			share.bytes += len(segment.raw)
 			segment.peer, segment.nextHeader = peer, nextHeader
+		}
+		if trace != nil && arrived[i] != nil {
+			trace.end(from, peer, segment.next, tooBig, fragments, arrived[i])
 		}
 		counts[peer] = share
 	}
@@ -355,6 +407,9 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment) {
 		batch := peer.reserveBatchNow(share.count, share.bytes)
 		if batch == nil {
 			m.segmentsDropped.Add(uint64(share.count))
+			if trace != nil {
+				trace.refusedSegments(segments, arrived, &cut, cutArrived, from, peer)
+			}
 			continue
 		}
 		batches[peer] = batch
@@ -419,12 +474,13 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 	var fragment bool
 	if offset, ok := carriedPacket(segment.raw); ok {
 		inner := segment.raw[offset:]
-		if answer, fragment = m.answerTooBig(inner, mtu-offset, true, segment.sid); fragment {
+		// a record of End's forward names no answer, so the draw is the limits' own
+		if answer, fragment = m.answerTooBig(inner, mtu-offset, true, segment.sid, (*Mesh).takeICMPToken); fragment {
 			count, bytes, fault := cut.add(peer, nextHeader, segment.raw[:offset], inner, mtu)
 			if count != 0 {
 				return count, bytes
 			}
-			answer = m.answerOptions(inner, fault, true)
+			answer = m.answerOptions(inner, fault, true, (*Mesh).takeICMPToken)
 		}
 	}
 	m.segmentsDropped.Add(1)
@@ -460,8 +516,9 @@ func carriedPacket(raw []byte) (int, bool) {
 // a tun read is answered from its destination, the one source every check of the sending host takes
 // the host drops a packet arriving from one of its own addresses, under nftables' fib in either family and over IPv4 by fib_validate_source unless accept_local is set
 // and its strict reverse path check drops one from an address it routes out of another link, a SID or a router-id it routes elsewhere among them
-func (m *Mesh) answerTooBig(inner []byte, mtu int, end bool, sid netip.Addr) (answer []byte, cut bool) {
-	allow := func() bool { return m.takeICMPToken(netip.Addr{}) }
+// the builder draws through take
+func (m *Mesh) answerTooBig(inner []byte, mtu int, end bool, sid netip.Addr, take takeAnswer) (answer []byte, cut bool) {
+	allow := m.allowAnswer(take, netip.Addr{})
 	switch {
 	case inner[0]>>4 == 6:
 		source := netip.AddrFrom16([16]byte(inner[24:40]))
@@ -482,12 +539,13 @@ func (m *Mesh) answerTooBig(inner []byte, mtu int, end bool, sid netip.Addr) (an
 // the octet at fault RFC 1812 section 4.3.3.5 has the answer name, under the bucket of inner's source and the node's cap
 // and from the address answerTooBig's fragmentation needed would come from
 // a fault of 0 is a packet refused for anything else, which goes unanswered
-func (m *Mesh) answerOptions(inner []byte, fault int, end bool) []byte {
+// the builder draws through take
+func (m *Mesh) answerOptions(inner []byte, fault int, end bool, take takeAnswer) []byte {
 	if fault == 0 {
 		return nil
 	}
 	sender := netip.AddrFrom4([4]byte(inner[12:16]))
-	return packet.ParameterProblem(inner, m.source4(inner, end), m.AnswerTTL(), fault, func() bool { return m.takeICMPToken(sender) })
+	return packet.ParameterProblem(inner, m.source4(inner, end), m.AnswerTTL(), fault, m.allowAnswer(take, sender))
 }
 
 // source4 is the address an answer to inner, an IPv4 packet, comes from, which answerTooBig says

@@ -360,7 +360,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 		family := []int{4, 6}[i%2]
 		batch[i] = steeredThrough(t, udpPacket(tooBigSource[family], tooBigDestination[family], DefaultMTU, true), after)
 	}
-	if left, _ := m.applySegments(framed(batch...), DefaultMTU); len(left) != 0 {
+	if left, _ := m.applySegments(framed(batch...), DefaultMTU, nil); len(left) != 0 {
 		t.Fatalf("%d segments reached the tun", len(left))
 	}
 	answers := sender.packets(t)
@@ -423,7 +423,7 @@ func TestTooBigAnswerCountsOnlyOnceQueued(t *testing.T) {
 			session, _ := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 			m, _ := waypointOf(t, after, session)
 			test.back(t, m)
-			m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)), DefaultMTU)
+			m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)), DefaultMTU, nil)
 			if got, counters := m.TooBigAnswered(), m.SegmentCounters(); got != 0 || counters.Answered != 0 || counters.Dropped != 1 {
 				t.Errorf("the waypoint counted %d answers sent and %+v for a segment whose answer had nowhere to go", got, counters)
 			}
@@ -473,7 +473,7 @@ func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *
 		}
 		outer[40] = c.next
 		// no room past its end, so a read past the tail fails rather than finds spare capacity
-		if left, _ := m.applySegments(framed(outer), DefaultMTU); len(left) != 0 {
+		if left, _ := m.applySegments(framed(outer), DefaultMTU, nil); len(left) != 0 {
 			t.Fatalf("%d segments reached the tun", len(left))
 		}
 		if answers, forwarded := sender.packets(t), sent.packets(t); len(answers) != 0 || len(forwarded) != 0 {
@@ -541,8 +541,8 @@ func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 		peer, places := reservingPeer(t)
 		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
 		m, sender := waypointOf(t, after, peer)
-		m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)), DefaultMTU)
-		m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, 100, false), after)), DefaultMTU)
+		m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)), DefaultMTU, nil)
+		m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, 100, false), after)), DefaultMTU, nil)
 		if got := places(); !slices.Equal(got, []int{1}) {
 			t.Errorf("the peer was asked for places %v, want one for the one segment it carries", got)
 		}
@@ -580,7 +580,7 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
 		peer.Close()
 		m, _ := waypointOf(t, after, peer)
-		m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)), DefaultMTU)
+		m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)), DefaultMTU, nil)
 		if counters := m.SegmentCounters(); counters.Dropped != 2 || counters.Forwarded != 0 {
 			t.Errorf("the waypoint counted %+v, want the segment's two fragments dropped", counters)
 		}
@@ -733,7 +733,7 @@ func TestPacketsPastTheirSessionWithABadChecksumAreDropped(t *testing.T) {
 		session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 		m, sender := waypointOf(t, after, session)
 		m.SetAnswerSources(holding(map[int]bool{4: true}))
-		m.applySegments(framed(steeredThrough(t, inner, after)), DefaultMTU)
+		m.applySegments(framed(steeredThrough(t, inner, after)), DefaultMTU, nil)
 		if sent, answers, counters := next.packets(t), sender.packets(t), m.SegmentCounters(); len(sent) != 0 || len(answers) != 0 || counters.Dropped != 1 || counters.Answered != 0 {
 			t.Errorf("the segment went on as %d packets with %d answers, counted %+v", len(sent), len(answers), counters)
 		}
@@ -757,7 +757,7 @@ func TestPacketsPastTheirSessionWithOptionsThatDoNotFrameAreAnswered(t *testing.
 			session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 			m, sender := waypointOf(t, after, session)
 			m.SetAnswerSources(holding(held))
-			m.applySegments(framed(steeredThrough(t, misframed, after)), DefaultMTU)
+			m.applySegments(framed(steeredThrough(t, misframed, after)), DefaultMTU, nil)
 			sent, answers, counters := next.packets(t), sender.packets(t), m.SegmentCounters()
 			if len(sent) != 0 || len(answers) != 1 || counters.Dropped != 1 || counters.Answered != 1 || m.TooBigAnswered() != 0 {
 				t.Fatalf("the segment went on as %d packets with %d answers, counted %+v and %d answers about its size", len(sent), len(answers), counters, m.TooBigAnswered())
@@ -824,7 +824,7 @@ func TestICMPv4AnswersCarryTheTTLTheMeshHolds(t *testing.T) {
 			session, _ := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 			waypoint, sender := waypointOf(t, after, session)
 			waypoint.SetAnswerTTL(ttl)
-			waypoint.applySegments(framed(steeredThrough(t, inner, after)), DefaultMTU)
+			waypoint.applySegments(framed(steeredThrough(t, inner, after)), DefaultMTU, nil)
 			answers = append(answers, sender.packets(t)...)
 			want := 2
 			if ttl == 0 {

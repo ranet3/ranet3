@@ -268,6 +268,8 @@ func TestTraceRecordReadsThePacketsFields(t *testing.T) {
 		{"IPv6 behind hop-by-hop and a first fragment", ipv6With(udp6, []byte{0, 44}, 0), TraceRecord{Protocol: 17, Headers: []string{"hop-by-hop", "fragment"}, Transport: true, SourcePort: 4000, DestinationPort: 5000, HopLimit: 64, Length: 136}},
 		{"IPv6 behind a later fragment", ipv6With(udp6, []byte{44}, 10), TraceRecord{Protocol: 17, Headers: []string{"fragment"}, HopLimit: 64, Length: 128}},
 		{"IPv6 behind destination options cut short", ipv6With(udp6, []byte{60}, 0)[:44], TraceRecord{Protocol: 60, HopLimit: 64, Length: 44}},
+		{"IPv6 behind destination options cut before their length", ipv6With(udp6, []byte{60}, 0)[:41], TraceRecord{Protocol: 60, HopLimit: 64, Length: 41}},
+		{"IPv6 behind a fragment header cut short", ipv6With(udp6, []byte{44}, 0)[:44], TraceRecord{Protocol: 44, HopLimit: 64, Length: 44}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := traceMesh(t)

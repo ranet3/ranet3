@@ -579,7 +579,7 @@ func TestWaypointDropsASegmentTheTableAnswersHeldOrLocal(t *testing.T) {
 		m, _ := waypointOf(t, after, session)
 		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), session)
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(after, 128), value)
-		left, _ := m.applySegments(framed(steeredThrough(t, udpPacket(tooBigSource[6], tooBigDestination[6], 200, false), after)), DefaultMTU)
+		left, _ := m.applySegments(framed(steeredThrough(t, udpPacket(tooBigSource[6], tooBigDestination[6], 200, false), after)), DefaultMTU, nil)
 		if len(left) != 0 {
 			t.Fatalf("a segment whose next one is %s reached the tun", value.ID)
 		}
@@ -602,7 +602,7 @@ func TestAnswerGoesNowhereTheTableAnswersHeldOrLocal(t *testing.T) {
 		m, sender := waypointOf(t, after, session)
 		m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), sender.sender)
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, 128), value)
-		m.applySegments(framed(steeredThrough(t, udpPacket(source, tooBigDestination[6], DefaultMTU, false), after)), DefaultMTU)
+		m.applySegments(framed(steeredThrough(t, udpPacket(source, tooBigDestination[6], DefaultMTU, false), after)), DefaultMTU, nil)
 		if answers := sender.packets(t); len(answers) != 0 {
 			t.Errorf("an answer to a source that is %s went back by the covering route", value.ID)
 		}

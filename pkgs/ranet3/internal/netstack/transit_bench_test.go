@@ -214,13 +214,13 @@ func BenchmarkApplySegmentsEgress(b *testing.B) {
 				packets[i] = steered(b, udpPacket(tooBigSource[c.family], destination, 100, false), headend, egressExit)
 			}
 			frames := framed(packets...)
-			m.applySegments(frames, DefaultMTU)
+			m.applySegments(frames, DefaultMTU, nil)
 			if got := m.SegmentCounters().Egressed; got != inboundWriteBatchSize {
 				b.Fatalf("%d of the batch's %d packets took the egress segment, so this measures another path", got, inboundWriteBatchSize)
 			}
 			b.ReportAllocs()
 			for b.Loop() {
-				m.applySegments(frames, DefaultMTU)
+				m.applySegments(frames, DefaultMTU, nil)
 			}
 			b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N*inboundWriteBatchSize), "ns/packet")
 		})
@@ -247,7 +247,7 @@ func BenchmarkSegmentsEgressed(b *testing.B) {
 			frames := framed(batch...)
 			b.ReportAllocs()
 			for b.Loop() {
-				m.applySegments(frames, DefaultMTU)
+				m.applySegments(frames, DefaultMTU, nil)
 			}
 			if got, want := m.SegmentCounters().Egressed, uint64(b.N*decideBatch); got != want {
 				b.Fatalf("%d packets took the egress segment, want each of the %d handed it", got, want)
@@ -281,7 +281,7 @@ func BenchmarkOptionStage(b *testing.B) {
 					address, _ := m.errorSource(false)
 					packet.ForwardOptions(raw, address, m.ownAddress, time.Now())
 				} else if hasOptions(raw) {
-					m.forwardOptions(raw)
+					m.forwardOptions(raw, nil)
 				}
 			}
 		})

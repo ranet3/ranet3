@@ -416,18 +416,18 @@ func findRouting(raw []byte) (int, error) {
 			return 0, ErrNotSegmentRouted
 		}
 		var ok bool
-		if next, offset, ok = stepExtension(raw, next, offset); !ok || offset > len(raw) {
+		if next, offset, ok = StepExtension(raw, next, offset); !ok || offset > len(raw) {
 			return 0, ErrNotSegmentRouted
 		}
 	}
 	return 0, fmt.Errorf("%w: more extension headers than this node walks", ErrHeaderInvalid)
 }
 
-// stepExtension reads the extension header of type kind at offset, RFC 8200
+// StepExtension reads the extension header of type kind at offset, RFC 8200
 // section 4, for the header that follows it and where that one starts. It
 // reads only the octets that say so, and reports false when the packet ends
 // before them, so the start it gives may lie past the packet's end.
-func stepExtension(raw []byte, kind byte, offset int) (next byte, end int, ok bool) {
+func StepExtension(raw []byte, kind byte, offset int) (next byte, end int, ok bool) {
 	if len(raw) < offset+2 {
 		return 0, 0, false
 	}

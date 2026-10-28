@@ -167,7 +167,7 @@ func carriesUnanswerable(offending []byte) bool {
 			return false
 		}
 		var ok bool
-		if next, offset, ok = stepExtension(offending, next, offset); !ok {
+		if next, offset, ok = StepExtension(offending, next, offset); !ok {
 			return false
 		}
 	}
