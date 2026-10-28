@@ -37,6 +37,9 @@ var (
 	// unreachable in IPv4 as RFC 6888 REQ-11 asks and administratively
 	// prohibited in IPv6, RFC 4443 section 3.1's code 1
 	pastTheLimit = message{3, 1, 1, 1}
+	// destination unreachable for a packet refused by administration, RFC 1812
+	// section 5.2.7.1's code 13 and RFC 4443 section 3.1's code 1
+	prohibited = message{3, 13, 1, 1}
 	// time exceeded in transit, RFC 792's and RFC 4443 section 3.3's
 	hopExceeded = message{11, 0, 3, 0}
 )

@@ -33,6 +33,17 @@ func deviceNames() hegel.Generator[string] {
 // IP_CT_RELATED and IP_CT_NEW, and NF_CT_STATE_UNTRACKED_BIT
 var ctStates = []uint32{nftables.CTStateInvalid, 1 << 1, 1 << 2, nftables.CTStateNew, nftables.CTStateUntracked}
 
+// ctReplies is each state a packet going its connection's reply way reads,
+// established and related
+var ctReplies = []uint32{1 << 1, 1 << 2}
+
+// tracking is a packet's state as ct state reads it and whether it goes its
+// connection's reply way
+type tracking struct {
+	state uint32
+	reply bool
+}
+
 // Every rule of each direction, translation and timeouts, and every rule taking
 // what no flow is tracked for out of the mesh or into it, encodes to
 // expressions that, run as nf_tables runs them, take exactly the packets the
@@ -41,13 +52,18 @@ var ctStates = []uint32{nftables.CTStateInvalid, 1 << 1, 1 << 2, nftables.CTStat
 // each counted, for a timeout rule its object attached with no count and the
 // chain going on past it, and for a packet no flow is tracked for a counted
 // drop, or under none a pass with no count. An IPv4 drop takes the ICMP types
-// of its message in any state with a counted drop. The packets arrive on and leave by the mesh device, two
-// devices whose names start like it, a drawn link whose name often shares a
-// prefix with it, another link and this host itself, from sources on either
-// side of each edge of the rule's From and one drawn anywhere in its family,
-// carrying each protocol and first octet carried names, in a state ct state
-// reads, each of them for a rule taking what no flow is tracked for or a
-// drop. A rule is refused exactly when its name is too long for a device.
+// of its message in any state and either way with a counted drop, and a
+// refusal its protocol in its flow's original direction with a counted reject
+// of code 13 in IPv4 and 1 in IPv6, or under none a pass with no count, and
+// neither a reply nor a packet no flow is tracked for. The packets arrive on
+// and leave by the mesh device, two devices whose names start like it, a drawn
+// link whose name often shares a prefix with it, another link and this host
+// itself, from sources on either side of each edge of the rule's From and one
+// drawn anywhere in its family, carrying each protocol and first octet carried
+// names, in a state ct state reads, each of them and the reply way of an
+// established and a related flow for a rule taking what no flow is tracked
+// for, a drop or a refusal. A rule is refused exactly when its name is too long
+// for a device.
 func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		rule := Rule{
@@ -61,7 +77,7 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 		if rule.Family == egress.FamilyIPv6 {
 			addresses, bits, destination = unmappedIPv6(), 128, netip.MustParseAddr("2001:db8:ffff::9")
 		}
-		switch hegel.Draw(ht, pbt.Spanning(0, 5)) {
+		switch hegel.Draw(ht, pbt.Spanning(0, 6)) {
 		case 1:
 			rule.Source = hegel.Draw(ht, addresses)
 		case 2:
@@ -76,13 +92,24 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 			// the drops are IPv4's alone
 			rule.Family, rule.Direction = egress.FamilyIPv4, hegel.Draw(ht, hegel.SampledFrom([]Direction{Out, In}))
 			rule.Drops = Message(hegel.Draw(ht, pbt.Spanning(uint8(SourceQuench), uint8(Information))))
+		case 6:
+			// only an Out refusal passes under none
+			rule.Direction = hegel.Draw(ht, hegel.SampledFrom([]Direction{Out, In}))
+			rule.Protocol = hegel.Draw(ht, hegel.SampledFrom(checksummed))
+			rule.None = rule.Direction == Out && hegel.Draw(ht, hegel.Booleans())
 		}
 		if rule.Family == egress.FamilyIPv4 {
 			addresses, bits, destination = hegel.IPAddresses().IPv4(), 32, netip.MustParseAddr("203.0.113.9")
 		}
-		states := []uint32{hegel.Draw(ht, hegel.SampledFrom(ctStates))}
-		if rule.Untracked || rule.Drops != NoMessage {
-			states = ctStates
+		states := []tracking{{hegel.Draw(ht, hegel.SampledFrom(ctStates)), false}}
+		if rule.Untracked || rule.byProtocol() {
+			states = nil
+			for _, state := range ctStates {
+				states = append(states, tracking{state, false})
+			}
+			for _, state := range ctReplies {
+				states = append(states, tracking{state, true})
+			}
 		}
 		if hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
 			rule.From = netip.PrefixFrom(hegel.Draw(ht, addresses), hegel.Draw(ht, pbt.Spanning(1, bits))).Masked()
@@ -108,11 +135,11 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 				for _, source := range sources {
 					for _, carry := range carried {
 						for _, state := range states {
-							untracked := state == nftables.CTStateInvalid || state == nftables.CTStateUntracked
-							packet := crossing{arrival, departure, source, carry.protocol, carry.port, carry.first, untracked}
+							untracked := state.state == nftables.CTStateInvalid || state.state == nftables.CTStateUntracked
+							packet := crossing{arrival, departure, source, carry.protocol, carry.port, carry.first, untracked, state.reply}
 							wire := drawnPacket{iif: arrival, source: source, destination: destination}.carrying(carry.protocol, carry.port)
 							wire.transport[0] = carry.first
-							wire.oif, wire.ctState = departure, state
+							wire.oif, wire.ctState, wire.reply = departure, state.state, state.reply
 							run := runChain(ht, []nftables.Request{request}, wire)
 							want := chainRun{rule: -1, accept: true}
 							switch {
@@ -123,13 +150,21 @@ func TestEncodedRuleTakesThePacketsItIsMeantFor(t *testing.T) {
 								want = chainRun{accept: rule.None, counted: !rule.None}
 							case rule.Drops != NoMessage:
 								want = chainRun{counted: true}
+							case rule.Protocol.Number != 0 && rule.None:
+								want = chainRun{accept: true}
+							case rule.Protocol.Number != 0:
+								// administratively prohibited, RFC 1812's code 13 and RFC 4443's code 1
+								want = chainRun{counted: true, rejected: 1}
+								if rule.Family == egress.FamilyIPv4 {
+									want.rejected = 13
+								}
 							default:
 								want = chainRun{accept: true, counted: true,
 									translation: translation{masquerade: !rule.None && !rule.Source.IsValid(), to: leavesUnder(rule, packet)}}
 							}
 							if run != want {
-								ht.Fatalf("%s runs a packet from %s of protocol %d to port %d with first octet %d arriving on %q and leaving by %q in ct state %#x as %+v, want %+v",
-									rule, source, carry.protocol, carry.port, carry.first, arrival, departure, state, run, want)
+								ht.Fatalf("%s runs a packet from %s of protocol %d to port %d with first octet %d arriving on %q and leaving by %q in ct state %#x, a reply %v, as %+v, want %+v",
+									rule, source, carry.protocol, carry.port, carry.first, arrival, departure, state.state, state.reply, run, want)
 							}
 						}
 					}

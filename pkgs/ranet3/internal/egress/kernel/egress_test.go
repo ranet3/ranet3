@@ -163,25 +163,27 @@ func (f *fakeBackend) specs() []string {
 	return out
 }
 
-// translations is specs without the timeout rules and the limit's chain's, the
-// drops among them, for a test of what each rule translates to.
+// translations is specs without the timeout rules, the limit's chain's, the
+// drops and the refusals, for a test of what each rule translates to.
 // TestClassesAreWrittenLongestFromFirst holds where the others go.
 func (f *fakeBackend) translations() []string {
 	return slices.DeleteFunc(f.specs(), func(spec string) bool {
-		return strings.Contains(spec, " timeouts ") || strings.Contains(spec, " limit ") || strings.Contains(spec, " untracked ") || refusing(spec)
+		return strings.Contains(spec, " timeouts ") || strings.Contains(spec, " limit ") || dropsRefusesOrPasses(spec)
 	})
 }
 
-// refusing is whether the rule spelled spec ends in a drop: an ICMP drop, or a
-// rule taking what no flow is tracked for
-func refusing(spec string) bool {
-	return strings.HasSuffix(spec, " dropped")
+// dropsRefusesOrPasses is whether the rule spelled spec ends in a drop, a
+// refusal or a pass: an ICMP drop, a refusal of a protocol or its pass under
+// none, or a rule taking what no flow is tracked for
+func dropsRefusesOrPasses(spec string) bool {
+	return strings.HasSuffix(spec, " dropped") || strings.HasSuffix(spec, " refused") || strings.HasSuffix(spec, " passed")
 }
 
 // uncounted is whether newRule writes the rule spelled spec with no counter: a
 // timeout rule, and one passing a class of none's packet no flow is tracked for
+// or of a protocol refused under the other classes
 func uncounted(spec string) bool {
-	return strings.Contains(spec, " timeouts ") || strings.HasSuffix(spec, " untracked passed")
+	return strings.Contains(spec, " timeouts ") || strings.HasSuffix(spec, " passed")
 }
 
 // translator builds one around a fake backend, bypassing New so that a test
@@ -281,12 +283,14 @@ func TestConfiguredSourceReplacesTheHostsOwnChoice(t *testing.T) {
 	}
 }
 
-// Each family's rules open with those taking a packet out of the mesh no flow
-// is tracked for, which drop it under a class that translates and pass it
-// under none, a rule for each class up to the last of none, the longest From
-// first, then one from every source, in IPv4 the drops of Source Quench and
-// Information Request and Reply out of the mesh and into it, and the limit on
-// each source's flows, which no class changes. Each class's rules come together, the longest From first
+// Each family's rules open, in IPv4, with the drops of Source Quench and
+// Information Request and Reply out of the mesh and into it, then those taking
+// a packet out of the mesh no flow is tracked for, which drop it under a class
+// that translates and pass it under none, a rule for each class up to the last
+// of none, the longest From first, then one from every source, the limit on
+// each source's flows, which no class changes, and for DCCP and then UDP-Lite
+// the same walk of the classes as for what no flow is tracked for, refusing
+// under a class that translates and passing under none. Each class's rules come together, the longest From first
 // since the first translation ends the chain. A class that translates attaches
 // the exit's timeouts first, by a rule for UDP, for TCP and for the family's
 // ICMP, keyed as its translation is, and a class of none binds its sources to
@@ -312,14 +316,20 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{
-		"out via ranet0 ipv4 from 192.0.2.128/25 untracked dropped",
-		"out via ranet0 ipv4 from 192.0.2.0/24 untracked passed",
-		"out via ranet0 ipv4 untracked dropped",
 		"out via ranet0 ipv4 icmp source quench dropped",
 		"out via ranet0 ipv4 icmp information dropped",
 		"in via ranet0 ipv4 icmp source quench dropped",
 		"in via ranet0 ipv4 icmp information dropped",
+		"out via ranet0 ipv4 from 192.0.2.128/25 untracked dropped",
+		"out via ranet0 ipv4 from 192.0.2.0/24 untracked passed",
+		"out via ranet0 ipv4 untracked dropped",
 		"out via ranet0 ipv4 limit 4096",
+		"out via ranet0 ipv4 from 192.0.2.128/25 dccp refused",
+		"out via ranet0 ipv4 from 192.0.2.0/24 dccp passed",
+		"out via ranet0 ipv4 dccp refused",
+		"out via ranet0 ipv4 from 192.0.2.128/25 udplite refused",
+		"out via ranet0 ipv4 from 192.0.2.0/24 udplite passed",
+		"out via ranet0 ipv4 udplite refused",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts udp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts tcp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts icmp",
@@ -336,6 +346,8 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 		"local via ranet0 ipv4 from 192.0.2.200/32 masquerade",
 		"out via ranet0 ipv6 untracked dropped",
 		"out via ranet0 ipv6 limit 4096",
+		"out via ranet0 ipv6 dccp refused",
+		"out via ranet0 ipv6 udplite refused",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts udp",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts tcp",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts icmpv6",
@@ -464,7 +476,7 @@ func TestReturnDirectionAttachesTheExitsTimeouts(t *testing.T) {
 		"in via ranet0 ipv6 from 2001:db8:1::/48 source 3fff::2",
 	}
 	inbound := slices.DeleteFunc(be.specs(), func(spec string) bool {
-		return !strings.HasPrefix(spec, "in ") || strings.Contains(spec, " untracked ") || refusing(spec)
+		return !strings.HasPrefix(spec, "in ") || dropsRefusesOrPasses(spec)
 	})
 	if !slices.Equal(inbound, want) {
 		t.Errorf("installed the In rules %q, want %q", inbound, want)
@@ -1065,9 +1077,10 @@ func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 		// three and the own address under none, in ip6 the catch-all, the return
 		// and the own address, each with its three timeout rules, each rule but a
 		// timeout rule and the pass, which have no counter, read back with the
-		// three flows the fake host counts. In ip the four ICMP drops add 4 rules
-		// whose counts reach no field.
-		Rules: &egress.Rules{Installed: 33, Flows: 15, Untranslated: 6, ConntrackCount: &count, ConntrackMax: &most, Conflicts: be.conflicts},
+		// three flows the fake host counts. The counts of ip's ICMP drops and of
+		// each family's refusals of DCCP and UDP-Lite, ip's pass of none's among
+		// them, reach no field.
+		Rules: &egress.Rules{Installed: 43, Flows: 15, Untranslated: 6, ConntrackCount: &count, ConntrackMax: &most, Conflicts: be.conflicts},
 	}
 	if got := tr.Status(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Status is\n%+v\nwant\n%+v", got, want)

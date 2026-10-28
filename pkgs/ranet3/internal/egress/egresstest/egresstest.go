@@ -156,6 +156,15 @@ const (
 	// the exit's, where RFC 4787 REQ-9 and RFC 5382 REQ-8 have the exit carry
 	// it to the leaf that holds the mapping
 	NoHairpinning
+	// UnansweredIPv4DCCP refuses an IPv4 DCCP packet it cannot translate with
+	// no answer, where RFC 5508 REQ-8 has a NAT answer a flow it cannot set up
+	// with an ICMP destination unreachable of code 13
+	UnansweredIPv4DCCP
+	// UnansweredUDPLite refuses a UDP-Lite packet it cannot translate with no
+	// answer and drops the reply into the mesh to one it carries under none,
+	// in either family, where RFC 5508 REQ-8 has a NAT answer the first as for
+	// UnansweredIPv4DCCP
+	UnansweredUDPLite
 )
 
 func (l Limit) String() string {
@@ -164,6 +173,10 @@ func (l Limit) String() string {
 		return "port dependent filtering"
 	case NoHairpinning:
 		return "no hairpinning"
+	case UnansweredIPv4DCCP:
+		return "unanswered ipv4 dccp"
+	case UnansweredUDPLite:
+		return "unanswered udp-lite"
 	}
 	return fmt.Sprintf("limit %d", int(l))
 }
@@ -173,12 +186,12 @@ func (l Limit) String() string {
 type Declared struct{ Reason, Row string }
 
 // Arm is a backend as the suite runs it. The suite holds every arm to all
-// six rows in both families, to carrying every protocol, to carrying no ICMP
-// message RFC 5508 rules out, to Egress from several sessions at once, to
-// filtering and hairpinning as RFC 4787 asks or as its arm declares it does
-// instead, to a withdrawal and a restore by SetEnabled, and to the share of
-// flows its capability names, and an arm that reads its flows to the idle
-// timers it keeps them to.
+// six rows in both families, to carrying every protocol it can translate and
+// refusing those it cannot, to carrying no ICMP message RFC 5508 rules out, to
+// Egress from several sessions at once, to filtering and hairpinning as RFC
+// 4787 asks or as its arm declares it does instead, to a withdrawal and a
+// restore by SetEnabled, and to the share of flows its capability names, and
+// an arm that reads its flows to the idle timers it keeps them to.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class
@@ -255,6 +268,7 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 					if class != None && !v6 {
 						t.Run("icmp a nat does not carry", r.icmpNotCarried)
 					}
+					t.Run("protocols whose checksum covers the addresses", r.checksummed)
 					if arm.Flows != nil {
 						t.Run("idle timers", r.timers)
 					}

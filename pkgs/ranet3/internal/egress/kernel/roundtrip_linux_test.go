@@ -73,8 +73,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	tr := newTranslator(cfg, rt, be)
 	desired := tr.desired()
-	if len(desired) != 42 {
-		t.Fatalf("the configuration asks for %d rules, want three taking what no flow is tracked for out of the mesh device and three into it, ip's four ICMP drops, a limit in each family, four out of the mesh device, three in and two from this node's own addresses, with twenty-one timeout rules", len(desired))
+	if len(desired) != 54 {
+		t.Fatalf("the configuration asks for %d rules, want 54", len(desired))
 	}
 	if err := be.Apply(desired, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(desired), err)
@@ -135,8 +135,14 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	for _, rule := range withOther {
 		got = append(got, rule.Spec)
 	}
-	// behind the ip limit's chain, which reads back first, holding nine rules
-	if !slices.Equal(got, slices.Insert(slices.Clone(want), 9, "")) {
+	// behind the ip forward chain, which reads back first
+	forwardRules := 0
+	for _, rule := range desired {
+		if rule.Family == egress.FamilyIPv4 && inForwardChain(rule) {
+			forwardRules++
+		}
+	}
+	if !slices.Equal(got, slices.Insert(slices.Clone(want), forwardRules, "")) {
 		t.Errorf("with another writer's uncommented rule at the head of the ip chain the readback holds %q, want it ahead of the ip translation's rules in %q", got, want)
 	}
 	if v4, v6 := sameFamilyRules(withOther, desired, egress.FamilyIPv4), sameFamilyRules(withOther, desired, egress.FamilyIPv6); v4 || !v6 {

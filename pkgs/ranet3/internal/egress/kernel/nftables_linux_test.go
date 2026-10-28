@@ -46,7 +46,8 @@ func expressionNames(t *testing.T, body []byte) []string {
 // counter and the translation, or for a timeout rule its protocol and its
 // object, and for the limit's rule the connection's state and status first and
 // the count, the counter and the answer last, in the limit's chain, as are the
-// ICMP drops, which take their protocol first
+// ICMP drops and the refusals, which take their protocol first, and a refusal
+// then its flow's direction
 func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	for _, one := range []struct {
 		name string
@@ -129,6 +130,17 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			Rule{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet0", Drops: Information},
 			[]string{"meta", "cmp", "meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "cmp", "cmp", "counter", "immediate"},
 		},
+		{
+			"the refusal of dccp out of the mesh from a class",
+			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("192.0.2.128/25"), Protocol: dccp},
+			// The protocol and the flow's original direction first.
+			[]string{"meta", "cmp", "ct", "cmp", "meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "counter", "reject"},
+		},
+		{
+			"the pass of udp-lite from a class of none",
+			Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("3fff::/20"), None: true, Protocol: udpLite},
+			[]string{"meta", "cmp", "ct", "cmp", "meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "immediate"},
+		},
 	} {
 		t.Run(one.name, func(t *testing.T) {
 			request, err := newRule(one.rule)
@@ -139,7 +151,7 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 				t.Errorf("encoded %q, want %q", got, one.want)
 			}
 			want := ChainName
-			if one.rule.Limit != 0 || one.rule.Untracked || one.rule.Drops != NoMessage {
+			if inForwardChain(one.rule) {
 				want = LimitChain
 			}
 			table, chain, spec, _, _ := nftables.DecodeRule(nftables.Message{Data: request.Body})
@@ -256,7 +268,7 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 }
 
 // the longest spec of each direction a translator writes, from a /128 to an address under the longest device name and the longest IPv6 spelling, fits nft's comment limit
-// and so do its longest timeout rule's, its limit rule's, at the largest limit a capability names, its rules' taking what no flow is tracked for and its ICMP drops', so no configuration reaches the refusal of a longer one, which nft -f would not load back
+// and so do its longest timeout rule's, its limit rule's, at the largest limit a capability names, its rules' taking what no flow is tracked for, its ICMP drops' and its refusals', so no configuration reaches the refusal of a longer one, which nft -f would not load back
 func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 	address := netip.MustParseAddr("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")
 	device := strings.Repeat("r", unix.IFNAMSIZ-1)
@@ -278,8 +290,14 @@ func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 			t.Errorf("the longest rule taking what no flow is tracked for was refused: %v", err)
 		}
 	}
-	if _, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: device, Drops: SourceQuench}); err != nil {
-		t.Errorf("the longest drop was refused: %v", err)
+	for _, rule := range []Rule{
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: device, Drops: SourceQuench},
+		{Family: egress.FamilyIPv6, Direction: Out, Interface: device, From: netip.PrefixFrom(address, 128), Protocol: udpLite},
+		{Family: egress.FamilyIPv6, Direction: Out, Interface: device, From: netip.PrefixFrom(address, 128), None: true, Protocol: udpLite},
+	} {
+		if _, err := newRule(rule); err != nil {
+			t.Errorf("the longest drop or refusal was refused: %v", err)
+		}
 	}
 	if _, err := flowSet(egress.FamilyIPv6, egress.MaxFlowsPerSource).Create(unix.NFPROTO_IPV6); err != nil {
 		t.Errorf("the set of the largest limit was refused: %v", err)
@@ -425,17 +443,7 @@ func TestInformationDropTakesTypes15And16Alone(t *testing.T) {
 		cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24"),
 			Translate: []egress.Class{{From: schema.MustPrefix("192.0.2.0/24"), To: to}}}
 		tr := translator(t, cfg, Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.200")}}, &fakeBackend{})
-		var requests []nftables.Request
-		var rules []Rule
-		for _, rule := range tr.desired() {
-			if rule.Family == egress.FamilyIPv4 && (rule.Untracked || rule.Drops != NoMessage) {
-				request, err := newRule(rule)
-				if err != nil {
-					t.Fatal(err)
-				}
-				requests, rules = append(requests, request), append(rules, rule)
-			}
-		}
+		requests, rules := forwardButLimit(t, tr)
 		for _, way := range []struct {
 			direction           Direction
 			iif, oif            string
@@ -448,11 +456,7 @@ func TestInformationDropTakesTypes15And16Alone(t *testing.T) {
 				packet := drawnPacket{iif: way.iif, source: netip.MustParseAddr(way.source), destination: netip.MustParseAddr(way.destination)}.carrying(unix.IPPROTO_ICMP, 0)
 				packet.transport[0] = kind
 				packet.oif, packet.ctState = way.oif, nftables.CTStateNew
-				run := runChain(t, requests, packet)
-				by := ""
-				if run.rule >= 0 {
-					by, run.rule = rules[run.rule].String(), 0
-				}
+				by, run := runBy(t, requests, rules, packet)
 				want, wantBy := chainRun{rule: -1, accept: true}, ""
 				if kind == 15 || kind == 16 {
 					want = chainRun{counted: true}
@@ -464,6 +468,42 @@ func TestInformationDropTakesTypes15And16Alone(t *testing.T) {
 			}
 		}
 	}
+}
+
+// inForwardChain is whether newRule writes rule into the forward chain
+func inForwardChain(rule Rule) bool {
+	return rule.Limit != 0 || rule.Untracked || rule.byProtocol()
+}
+
+// forwardButLimit is the IPv4 rules of tr's forward chain but the limit, which
+// takes a flow's first packet alone, and their requests in the chain's order
+func forwardButLimit(t *testing.T, tr *Translator) ([]nftables.Request, []Rule) {
+	t.Helper()
+	var requests []nftables.Request
+	var rules []Rule
+	for _, rule := range tr.desired() {
+		if rule.Family == egress.FamilyIPv4 && inForwardChain(rule) && rule.Limit == 0 {
+			request, err := newRule(rule)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests, rules = append(requests, request), append(rules, rule)
+		}
+	}
+	return requests, rules
+}
+
+// runBy runs packet through requests and names the rule of rules it met,
+// empty for the policy, with the run's rule set to 0 where it met one
+func runBy(t *testing.T, requests []nftables.Request, rules []Rule, packet chainPacket) (string, chainRun) {
+	t.Helper()
+	run := runChain(t, requests, packet)
+	if run.rule < 0 {
+		return "", run
+	}
+	by := rules[run.rule].String()
+	run.rule = 0
+	return by, run
 }
 
 // An empty advertise list is an exit serving only steered traffic, which only
@@ -500,6 +540,63 @@ func TestNewRefusesAnUnresolvableReturnBeforeOpeningTheBackend(t *testing.T) {
 			_, err := New(cfg, Runtime{Interface: "ranet0", Forwarding: func() (bool, bool) { return true, true }})
 			if err == nil || !strings.Contains(err.Error(), "in cap.egress translate as the to of the class from 0.0.0.0/0") {
 				t.Fatalf("New returned %v, want a refusal naming the field that settles it", err)
+			}
+		})
+	}
+}
+
+// The forward chain but the limit, which takes a flow's first packet alone,
+// decides a DCCP or UDP-Lite packet by its flow. A flow's first packet out of
+// the mesh is refused from a source the exit translates and passed from one
+// under none. A packet no flow is tracked for meets the rules taking it, which
+// drop it or pass it under none in place of a refusal. A reply goes on to the
+// translation its flow's first packet was given, into the mesh to a source
+// under none and out of it from a leaf behind a subnet router.
+func TestForwardChainTakesAChecksummedProtocolByItsFlow(t *testing.T) {
+	const established, related = 1 << 1, 1 << 2
+	returned := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24"),
+		Translate: []egress.Class{{From: schema.MustPrefix("192.0.2.0/25"), To: egress.Translation{None: true}}}}
+	routed := egress.Egress{Advertise: prefixes(t, "198.51.100.0/24")}
+	for _, c := range []struct {
+		name                string
+		cfg                 egress.Egress
+		iif, oif            string
+		source, destination string
+		state               uint32
+		reply               bool
+		// by is the rule the packet meets with %s for the protocol, empty for the
+		// policy
+		by   string
+		want chainRun
+	}{
+		{"a first packet from a translated source", returned, "ranet0", "eth0", "192.0.2.200", "203.0.113.9", nftables.CTStateNew, false,
+			"out via ranet0 ipv4 %s refused", chainRun{counted: true, rejected: 13}},
+		{"a first packet from a source under none", returned, "ranet0", "eth0", "192.0.2.5", "203.0.113.9", nftables.CTStateNew, false,
+			"out via ranet0 ipv4 from 192.0.2.0/25 %s passed", chainRun{accept: true}},
+		{"a first packet into the mesh under return", returned, "eth1", "ranet0", "198.51.100.9", "192.0.2.5", nftables.CTStateNew, false,
+			"in via ranet0 ipv4 from 198.51.100.0/24 %s refused", chainRun{counted: true, rejected: 13}},
+		{"no flow from a translated source", returned, "ranet0", "eth0", "192.0.2.200", "203.0.113.9", nftables.CTStateInvalid, false,
+			"out via ranet0 ipv4 untracked dropped", chainRun{counted: true}},
+		{"no flow from a source under none", returned, "ranet0", "eth0", "192.0.2.5", "203.0.113.9", nftables.CTStateUntracked, false,
+			"out via ranet0 ipv4 from 192.0.2.0/25 untracked passed", chainRun{accept: true}},
+		{"a reply into the mesh to a source under none", returned, "eth1", "ranet0", "198.51.100.9", "192.0.2.5", established, true,
+			"", chainRun{rule: -1, accept: true}},
+		{"a related reply into the mesh to a source under none", returned, "eth1", "ranet0", "198.51.100.9", "192.0.2.5", related, true,
+			"", chainRun{rule: -1, accept: true}},
+		{"a leaf's reply out to a host behind a subnet router", routed, "ranet0", "eth1", "192.0.2.5", "198.51.100.9", established, true,
+			"", chainRun{rule: -1, accept: true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			tr := translator(t, c.cfg, Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.200")}}, &fakeBackend{})
+			requests, rules := forwardButLimit(t, tr)
+			for _, protocol := range checksummed {
+				packet := drawnPacket{iif: c.iif, source: netip.MustParseAddr(c.source), destination: netip.MustParseAddr(c.destination)}.carrying(protocol.Number, 0)
+				packet.oif, packet.ctState, packet.reply = c.oif, c.state, c.reply
+				by, run := runBy(t, requests, rules, packet)
+				want := strings.ReplaceAll(c.by, "%s", protocol.Name)
+				if by != want || run != c.want {
+					t.Errorf("%s meets %q as %+v, want %q as %+v", protocol.Name, by, run, want, c.want)
+				}
 			}
 		})
 	}

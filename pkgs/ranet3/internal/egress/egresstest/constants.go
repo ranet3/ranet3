@@ -126,10 +126,13 @@ const (
 	leafUnmatchedPort   = 40801
 
 	// the server's port the quench's mapping is opened toward, the identifiers
-	// of the information request and the echo after it, and the leaf's port of
-	// the mapping
-	quenchPort     = 10300
-	informationID  = 10301
-	quenchEchoID   = 10302
-	leafQuenchPort = 40710
+	// of the information request and the echo after it, the leaf's port of the
+	// mapping, and the ends of the DCCP and UDP-Lite packets
+	quenchPort      = 10300
+	informationID   = 10301
+	quenchEchoID    = 10302
+	checksummedPort = 10303
+	leafQuenchPort  = 40710
+	leafDCCPPort    = 40711
+	leafUDPLitePort = 40712
 )
