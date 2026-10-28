@@ -110,6 +110,26 @@ func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkStat
 	return out
 }
 
+// modeTwoNone is mode 2 with the two rules fallback = "none" adds, rule by
+// rule for each family, one the tun holds no overlay address of included: 5445
+// to each own prefix the mesh's table throws by main, and 5450 unreachable for
+// the host's own traffic and each forwarded link
+func modeTwoNone(id schema.TableID, overlay, own []netip.Prefix, network NetworkState, forwarded []string, unaddressed []Family, thrown []netip.Prefix) map[Rule]bool {
+	out := modeTwo(id, overlay, own, network, forwarded, unaddressed)
+	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+		out[Rule{Family: family, Priority: 5450, IIF: "lo", action: actionUnreachable}] = true
+		for _, name := range forwarded {
+			out[Rule{Family: family, Priority: 5450, IIF: name, action: actionUnreachable}] = true
+		}
+	}
+	for _, prefix := range thrown {
+		if prefix.Bits() > 0 {
+			out[Rule{Family: familyOf(prefix.Addr()), Priority: 5445, To: schema.PrefixFrom(prefix.Masked()), Table: 254}] = true
+		}
+	}
+	return out
+}
+
 // exitAddresses are the addresses a drawn link holds per family: the overlay's
 // among them, as on lo, so the filter is drawn often
 var exitAddresses = map[Family][]string{
@@ -162,9 +182,10 @@ func drawnExitLinks(tc hegel.TestCase, family Family) []Link {
 
 // The derivation installs exactly mode 2's rules for every table, overlay, set
 // of own prefixes, links, forwarded links and families the tun holds no overlay
-// address of, each once with each nop ahead of its goto, and exactly mode off's
-// when the mode is off, whatever the links. No 5405 or 5435 selects a source
-// the overlay or an own prefix holds.
+// address of, with fallback = "none"'s two more for every set of thrown
+// prefixes, each once with each nop ahead of its goto, and exactly mode off's
+// when the mode is off, whatever the links and the fallback. No 5405 or 5435
+// selects a source the overlay or an own prefix holds.
 func TestDerivedRulesAreModeTwoWithTheLinksAndModeOffWithout(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		id := schema.TableID(hegel.Draw(ht, edges[uint32](1, math.MaxUint32)))
@@ -194,10 +215,15 @@ func TestDerivedRulesAreModeTwoWithTheLinksAndModeOffWithout(t *testing.T) {
 			}
 		}
 		on := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
+		none := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
+		thrown := hegel.Draw(ht, anyPrefixes())
 
-		derived := derivedRules(id, prefixes(overlay...), own, exitView{on: on, network: network, forwarded: forwarded, unaddressed: unaddressed})
+		derived := derivedRules(id, prefixes(overlay...), own, exitView{on: on, network: network, forwarded: forwarded, unaddressed: unaddressed, fallback: none, own: thrown})
 		want := modeOff(id, overlay, own)
-		if on {
+		switch {
+		case on && none:
+			want = modeTwoNone(id, overlay, own, network, forwarded, unaddressed, thrown)
+		case on:
 			want = modeTwo(id, overlay, own, network, forwarded, unaddressed)
 		}
 		got := map[Rule]bool{}
@@ -218,12 +244,12 @@ func TestDerivedRulesAreModeTwoWithTheLinksAndModeOffWithout(t *testing.T) {
 		}
 		for rule := range want {
 			if !got[rule] {
-				ht.Fatalf("mode on %v holds %s and the derivation does not, in %v", on, rule, derived)
+				ht.Fatalf("mode on %v, none %v holds %s and the derivation does not, in %v", on, none, rule, derived)
 			}
 		}
 		for rule := range got {
 			if !want[rule] {
-				ht.Fatalf("the derivation in mode on %v holds %s, which the mode does not", on, rule)
+				ht.Fatalf("the derivation in mode on %v, none %v holds %s, which the mode does not", on, none, rule)
 			}
 		}
 	})

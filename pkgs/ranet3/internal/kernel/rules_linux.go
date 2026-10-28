@@ -49,6 +49,8 @@ func (a ruleAction) frAction() uint8 {
 		return unix.FR_ACT_GOTO
 	case actionNop:
 		return unix.FR_ACT_NOP
+	case actionUnreachable:
+		return unix.FR_ACT_UNREACHABLE
 	}
 	return unix.FR_ACT_TO_TBL
 }
@@ -148,10 +150,10 @@ func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
 		invert: held.Invert, oif: held.OIF, l3mdev: held.L3mdev,
 	}
 	// Only the actions this file writes, each in the shape it writes it. A
-	// rule that blackholes is not one of ours however it is marked, and
-	// deleting it on the strength of a protocol byte alone would be taking
-	// somebody's word for what it does. The kernel dumps FRA_TABLE 0 for a
-	// goto and a nop.
+	// rule that blackholes or prohibits is not one of ours however it is
+	// marked, and deleting it on the strength of a protocol byte alone would be
+	// taking somebody's word for what it does. The kernel dumps FRA_TABLE 0 for
+	// a goto, a nop and an unreachable.
 	switch {
 	case held.Action == actionLookup.String() && held.Table != 0 && held.Goto == 0:
 		rule.action, rule.Table = actionLookup, schema.TableID(held.Table)
@@ -159,6 +161,8 @@ func (p *netlinkPlatform) decodeRule(message nlMessage) (Rule, bool) {
 		rule.action, rule.target = actionGoto, held.Goto
 	case held.Action == actionNop.String() && held.Table == 0 && held.Goto == 0:
 		rule.action = actionNop
+	case held.Action == actionUnreachable.String() && held.Table == 0 && held.Goto == 0:
+		rule.action = actionUnreachable
 	default:
 		return Rule{}, false
 	}

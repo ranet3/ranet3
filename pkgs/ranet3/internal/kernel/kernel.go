@@ -458,9 +458,10 @@ type platform interface {
 // them are two entries, but for a goto's target, the invert flag and an exact
 // mark's mask spelled as all ones, which the kernel does not tell apart.
 //
-// A rule this reconciler owns looks up a table, jumps to a later priority or
-// does nothing, so no rule of its own refuses an address, only an unreachable,
-// blackhole or prohibit route of a table it looks up.
+// A rule this reconciler owns looks up a table, jumps to a later priority,
+// does nothing or, under cap.exit fallback = "none", fails the lookup as
+// unreachable. No other rule of its own refuses an address, only an
+// unreachable, blackhole or prohibit route of a table it looks up.
 type Rule struct {
 	// action is the rule's FR_ACT, a lookup in Table at its zero value
 	action ruleAction
@@ -505,6 +506,9 @@ const (
 	actionGoto
 	// actionNop is FR_ACT_NOP, a rule a goto lands on.
 	actionNop
+	// actionUnreachable is FR_ACT_UNREACHABLE, which fails the lookup with
+	// ENETUNREACH.
+	actionUnreachable
 )
 
 // String is the action as `ip rule` spells it
@@ -514,6 +518,8 @@ func (a ruleAction) String() string {
 		return "goto"
 	case actionNop:
 		return "nop"
+	case actionUnreachable:
+		return "unreachable"
 	}
 	return "lookup"
 }
@@ -577,7 +583,7 @@ func (r Rule) String() string {
 	switch r.action {
 	case actionGoto:
 		parts = append(parts, fmt.Sprintf("%s %d", r.action, r.target))
-	case actionNop:
+	case actionNop, actionUnreachable:
 		parts = append(parts, r.action.String())
 	default:
 		parts = append(parts, r.action.String()+" "+r.Table.String())
@@ -1244,6 +1250,9 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], held []ne
 	}
 	exit, status := r.exitPass(held)
 	r.reportExit(status)
+	if exit.fallback {
+		exit.own = r.thrown(snapshot)
+	}
 	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
 	r.derived.Store(&ruleSet)
 	actual, err := r.rules.Rules()

@@ -141,7 +141,7 @@ func actionName(action uint8) string {
 	case unix.FR_ACT_BLACKHOLE:
 		return "blackhole"
 	case unix.FR_ACT_UNREACHABLE:
-		return "unreachable"
+		return actionUnreachable.String()
 	case unix.FR_ACT_PROHIBIT:
 		return "prohibit"
 	}
