@@ -191,14 +191,14 @@ func (b *memoryBind) dontFragment(Endpoint) bool    { return true }
 
 // receiver takes every datagram q holds up to the vector's length, as the kernel bind reads a batch from its socket of one family
 func (b *memoryBind) receiver(q *memoryQueue) receiveFunc {
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
+	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
 		for {
 			taken, held := b.network.take(b.port, q, len(bufs))
 			if !held {
 				return 0, 0, net.ErrClosed
 			}
 			for i, d := range taken {
-				bufs[i], sizes[i], endpoints[i] = d.data, len(d.data), newMemoryEndpoint(d.source)
+				bufs[i], sizes[i], endpoints[i], records[i] = d.data, len(d.data), newMemoryEndpoint(d.source), receiveRecord{source: d.source}
 			}
 			if len(taken) > 0 {
 				return len(taken), 0, nil

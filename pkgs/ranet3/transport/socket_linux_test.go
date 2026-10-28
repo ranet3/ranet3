@@ -9,7 +9,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 	"unsafe"
@@ -55,9 +57,9 @@ func TestUDPReceivePreservesGROOverflowAndFullBatchReads(t *testing.T) {
 		}
 		return 4, nil
 	})
-	packets, sizes, endpoints := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128)
+	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 	for batch := range 2 {
-		n, _, err := receive(packets, sizes, endpoints)
+		n, _, err := receive(packets, sizes, endpoints, records)
 		if err != nil || n != 128 || reads != 1 {
 			t.Fatalf("batch %d: n=%d err=%v reads=%d", batch, n, err, reads)
 		}
@@ -150,8 +152,8 @@ func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
 		messages[2].NN = len(control)
 		return 3, nil
 	})
-	packets, sizes, endpoints := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128)
-	n, refused, err := receive(packets, sizes, endpoints)
+	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
+	n, refused, err := receive(packets, sizes, endpoints, records)
 	if err != nil || n != 3 {
 		t.Fatalf("receive: n=%d err=%v, want three intact GRO segments", n, err)
 	}
@@ -212,10 +214,10 @@ func TestUDPKernelGSORoundTrip(t *testing.T) {
 			if err := sender.Send(packets, ep); err != nil {
 				t.Fatal(err)
 			}
-			bufs, sizes, endpoints := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128)
+			bufs, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 			seen := 0
 			for seen < count {
-				n, _, err := receivers[index](bufs, sizes, endpoints)
+				n, _, err := receivers[index](bufs, sizes, endpoints, records)
 				if err != nil {
 					t.Fatalf("received %d/%d packets: %v", seen, count, err)
 				}
@@ -259,8 +261,8 @@ func TestUDPReceiveDropsDatagramWithNoUsableSource(t *testing.T) {
 		}
 		return 3, nil
 	})
-	packets, sizes, endpoints := make([][]byte, 8), make([]int, 8), make([]Endpoint, 8)
-	n, refused, err := receive(packets, sizes, endpoints)
+	packets, sizes, endpoints, records := make([][]byte, 8), make([]int, 8), make([]Endpoint, 8), make([]receiveRecord, 8)
+	n, refused, err := receive(packets, sizes, endpoints, records)
 	if err != nil {
 		t.Fatalf("one unparseable control message failed the whole receive: %v", err)
 	}
@@ -280,6 +282,71 @@ func TestUDPReceiveDropsDatagramWithNoUsableSource(t *testing.T) {
 	}
 }
 
+// walkAllocRuns is how many reads the allocation test averages over
+const walkAllocRuns = 100
+
+// the record of each ESP datagram a read hands out holds the source of its message, a link-local one with its interface as the zone
+// and reading them allocates nothing, for link-local peers on one interface as for any other
+func TestWalkRecordsESPSourcesWithoutAllocating(t *testing.T) {
+	sources := []netip.AddrPort{
+		netip.MustParseAddrPort("192.0.2.1:4500"),
+		netip.MustParseAddrPort("192.0.2.1:4501"),
+		netip.MustParseAddrPort("[2001:db8::1]:4500"),
+		netip.MustParseAddrPort("[fe80::1%300]:4500"),
+		netip.MustParseAddrPort("[fe80::2%300]:4500"),
+	}
+	const segments, size = 8, 16
+	kernel := make([]udpSource, len(sources))
+	for i, source := range sources {
+		putSource(&kernel[i], source)
+	}
+	receive := scriptedReceiver(&udpSocket{}, func(messages []ipv4.Message) (int, error) {
+		for i := range sources {
+			m := &messages[i]
+			m.N, m.Flags, m.Addr = segments*size, 0, &kernel[i]
+			for j := range segments {
+				binary.BigEndian.PutUint32(m.Buffers[0][j*size:], pairTestSPI)
+			}
+			control := appendUDPSegment(m.OOB[:0], size)
+			(*unix.Cmsghdr)(unsafe.Pointer(&control[0])).Type = unix.UDP_GRO
+			m.NN = len(control)
+		}
+		return len(sources), nil
+	})
+	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
+	n, _, err := receive(packets, sizes, endpoints, records)
+	if err != nil || n != segments*len(sources) {
+		t.Fatalf("receive: n=%d err=%v, want %d datagrams", n, err, segments*len(sources))
+	}
+	for i := range n {
+		if want := sources[i/segments]; records[i].source != want {
+			t.Errorf("datagram %d of a message from %s came with the source %v", i, want, records[i].source)
+		}
+	}
+	if allocs := testing.AllocsPerRun(walkAllocRuns, func() { _, _, _ = receive(packets, sizes, endpoints, records) }); allocs != 0 {
+		t.Errorf("a read of %d ESP datagrams allocated %v times", n, allocs)
+	}
+}
+
+// putSource writes addr into s as recvmmsg leaves a sender's address, its zone the interface index of a scoped one
+func putSource(s *udpSource, addr netip.AddrPort) {
+	clear(s[:])
+	binary.BigEndian.PutUint16(s[2:4], addr.Port())
+	if addr.Addr().Is4() {
+		binary.NativeEndian.PutUint16(s[:2], unix.AF_INET)
+		ip := addr.Addr().As4()
+		copy(s[4:8], ip[:])
+		return
+	}
+	binary.NativeEndian.PutUint16(s[:2], unix.AF_INET6)
+	ip := addr.Addr().As16()
+	copy(s[8:24], ip[:])
+	if zone := addr.Addr().Zone(); zone != "" {
+		index, _ := strconv.ParseUint(zone, 10, 32)
+		binary.NativeEndian.PutUint32(s[24:28], uint32(index))
+	}
+}
+
 // One GRO buffer is up to forty datagrams, and the counter says datagrams.
 // Counting the message instead undercounts a truncated coalesced read by that
 // much, from an arm adjacent to one that counts them individually.
@@ -293,8 +360,8 @@ func TestTruncatedGROReadIsCountedInDatagrams(t *testing.T) {
 		m.NN = len(control)
 		return 1, nil
 	})
-	packets, sizes, endpoints := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128)
-	n, refused, err := receive(packets, sizes, endpoints)
+	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
+	n, refused, err := receive(packets, sizes, endpoints, records)
 	if err != nil || n != 0 {
 		t.Fatalf("receive: n=%d err=%v, want the whole truncated read discarded", n, err)
 	}

@@ -70,7 +70,7 @@ func BenchmarkUDPReceiveVector(b *testing.B) {
 		packets[i] = storage[i*size : (i+1)*size]
 		packets[i][0] = 1 // ESP, so no saved reply endpoint
 	}
-	bufs, sizes, endpoints := make([][]byte, espSendBatch), make([]int, espSendBatch), make([]Endpoint, espSendBatch)
+	bufs, sizes, endpoints, records := make([][]byte, espSendBatch), make([]int, espSendBatch), make([]Endpoint, espSendBatch), make([]receiveRecord, espSendBatch)
 	b.SetBytes(espSendBatch * size)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -79,7 +79,7 @@ func BenchmarkUDPReceiveVector(b *testing.B) {
 			b.Fatal(err)
 		}
 		for received := 0; received < len(packets); {
-			n, _, err := receive(bufs, sizes, endpoints)
+			n, _, err := receive(bufs, sizes, endpoints, records)
 			if err != nil {
 				b.Fatal(err)
 			}

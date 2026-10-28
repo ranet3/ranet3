@@ -46,7 +46,7 @@ func TestReceiveLoopsReadTablesThatRegistrationsReplace(t *testing.T) {
 	for range 2 {
 		left := churnBatches
 		loops.Go(func() {
-			hub.receiveLoop(func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
+			hub.receiveLoop(func(bufs [][]byte, sizes []int, endpoints []Endpoint, _ []receiveRecord) (int, int, error) {
 				if left == 0 {
 					return 0, 0, errors.New("the churn is over")
 				}

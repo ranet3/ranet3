@@ -15,9 +15,9 @@ import (
 // retryICMP reads on past the error a connected socket reports for an ICMP error an earlier datagram drew
 // a peer that restarted or a hop that refused one datagram leaves the socket working
 func retryICMP(fn receiveFunc) receiveFunc {
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
+	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
 		for {
-			n, refused, err := fn(bufs, sizes, endpoints)
+			n, refused, err := fn(bufs, sizes, endpoints, records)
 			if err == nil || !icmpReported(err) {
 				return n, refused, err
 			}

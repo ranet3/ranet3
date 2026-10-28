@@ -673,12 +673,12 @@ func (s *darwinSocket) receiver() receiveFunc {
 	buf := make([]byte, readBufferSize)
 	// one packet info message, the only one these sockets ask for, of the larger family
 	oob := make([]byte, unix.CmsgSpace(unix.SizeofInet6Pktinfo))
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint) (int, int, error) {
+	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
 		n, oobn, flags, from, err := s.conn.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
 			return 0, 0, err
 		}
-		bufs[0], sizes[0], endpoints[0] = buf[:n], n, nil
+		bufs[0], sizes[0], endpoints[0], records[0] = buf[:n], n, nil, receiveRecord{source: from}
 		if n >= nonESPMarkerLen && binary.BigEndian.Uint32(buf) == 0 {
 			// an IKE datagram with no endpoint has no address to be answered from, so it is counted as refused and dropped
 			// returning the error instead would end the hub

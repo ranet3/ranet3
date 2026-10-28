@@ -226,7 +226,7 @@ func newFakePairSocket(refuse error, keeps bool) *fakePairSocket {
 	return &fakePairSocket{refuse: refuse, keeps: keeps, fails: make(chan error, 1), closed: make(chan struct{})}
 }
 
-func (s *fakePairSocket) receive([][]byte, []int, []Endpoint) (int, int, error) {
+func (s *fakePairSocket) receive([][]byte, []int, []Endpoint, []receiveRecord) (int, int, error) {
 	select {
 	case <-s.closed:
 		return 0, 0, net.ErrClosed
@@ -513,7 +513,7 @@ func TestPairSocketGoesPastAPortUnreachable(t *testing.T) {
 			if err := conn.SetReadDeadline(time.Now().Add(pairQuiet)); err != nil {
 				t.Fatal(err)
 			}
-			if _, _, err := receive(make([][]byte, 1), make([]int, 1), make([]Endpoint, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
+			if _, _, err := receive(make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
 				t.Fatalf("a read after a port unreachable answered %v, want it to read on until its deadline", err)
 			}
 		})
@@ -554,14 +554,14 @@ func icmpReportsHold(t *testing.T, reported, others []unix.Errno) {
 	for _, errno := range slices.Concat(reported, others) {
 		past := slices.Contains(reported, errno)
 		reads := 0
-		receive := retryICMP(func([][]byte, []int, []Endpoint) (int, int, error) {
+		receive := retryICMP(func([][]byte, []int, []Endpoint, []receiveRecord) (int, int, error) {
 			reads++
 			if reads == 1 {
 				return 0, 0, os.NewSyscallError("recvmsg", errno)
 			}
 			return 1, 0, nil
 		})
-		n, _, err := receive(make([][]byte, 1), make([]int, 1), make([]Endpoint, 1))
+		n, _, err := receive(make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1))
 		if read := n == 1 && err == nil; read != past || (!past && !errors.Is(err, errno)) {
 			t.Errorf("a read that failed with %s answered %d datagrams and %v, want it read past %v", unix.ErrnoName(errno), n, err, past)
 		}

@@ -941,7 +941,7 @@ func TestWhatTheReceiverRefusedReachesTheCounter(t *testing.T) {
 	calls := 0
 	go func() {
 		defer close(done)
-		h.receiveLoop(func([][]byte, []int, []Endpoint) (int, int, error) {
+		h.receiveLoop(func([][]byte, []int, []Endpoint, []receiveRecord) (int, int, error) {
 			calls++
 			if calls == 1 {
 				return 0, 3, nil
