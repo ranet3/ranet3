@@ -237,6 +237,33 @@ type Rule struct {
 	// it, or passes an Out one on where None is set. nf_nat leaves such a packet
 	// as it is, so a rule that translates would send it on under its own source.
 	Untracked bool
+	// Drops makes the rule an IPv4 Out or In rule of the limit's chain, ahead
+	// of the limit, that drops the ICMP messages of that kind from any source
+	// and under every class, RFC 5508 section 7 saying a NAT SHOULD NOT support
+	// them
+	Drops Message
+}
+
+// Message is the ICMP messages a rule drops, NoMessage on any rule that drops
+// none
+type Message uint8
+
+const (
+	NoMessage Message = iota
+	// SourceQuench is type 4
+	SourceQuench
+	// Information is types 15 and 16, the request and the reply
+	Information
+)
+
+func (m Message) String() string {
+	switch m {
+	case SourceQuench:
+		return "icmp source quench"
+	case Information:
+		return "icmp information"
+	}
+	return ""
 }
 
 // String is the rule as an operator reads it in `nft list ruleset` and as the
@@ -247,6 +274,8 @@ func (r Rule) String() string {
 	switch {
 	case r.Limit != 0:
 		action = fmt.Sprintf("limit %d", r.Limit)
+	case r.Drops != NoMessage:
+		action = r.Drops.String() + " dropped"
 	case r.Untracked && r.None:
 		action = "untracked passed"
 	case r.Untracked:
@@ -644,6 +673,8 @@ func (t *Translator) reconcile() error {
 	refused, dropped := map[uint8]uint64{}, map[uint8]uint64{}
 	for _, rule := range held {
 		switch kind := kinds[rule.Spec]; {
+		case kind.Drops != NoMessage:
+			// nf_tables' counters alone hold these, which no Status field reads
 		case kind.Limit != 0:
 			refused[rule.Family] += rule.Packets
 		case kind.Untracked:
@@ -771,6 +802,13 @@ func (t *Translator) desired() []Rule {
 	var out []Rule
 	for _, family := range t.cfg.Translated(t.rt.Steered) {
 		out = append(out, t.untracked(family)...)
+		if family == egress.FamilyIPv4 {
+			for _, direction := range []Direction{Out, In} {
+				for _, message := range []Message{SourceQuench, Information} {
+					out = append(out, Rule{Family: family, Direction: direction, Interface: t.rt.Interface, Drops: message})
+				}
+			}
+		}
 		out = append(out, Rule{Family: family, Direction: Out, Interface: t.rt.Interface, Limit: t.cfg.SourceLimit()})
 		covered := false
 		for _, class := range t.cfg.Classes(family) {

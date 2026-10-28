@@ -340,9 +340,13 @@ func newRule(rule Rule) (nftables.Request, error) {
 	if err := nftables.DeviceName(rule.Interface); err != nil {
 		return nftables.Request{}, err
 	}
-	// a rule reading the flow's state reads it first, so a packet of an
-	// established flow fails the rule at its first compare
+	// a rule reading the flow's state reads it first, and one taking a protocol
+	// reads that first, so a packet of an established flow fails the rule at its
+	// first compare
 	var expressions [][]byte
+	if protocol := refusedProtocol(rule); protocol != 0 {
+		expressions = nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{protocol})
+	}
 	if rule.Limit != 0 {
 		// Only the packet that creates a connection's entry is judged. A UDP
 		// flow nothing has answered stays in state new, and nf_conncount ends
@@ -389,6 +393,8 @@ func newRule(rule Rule) (nftables.Request, error) {
 	}
 	proto := nftFamily(rule.Family)
 	switch {
+	case rule.Drops != NoMessage:
+		return forward.Rule(proto, rule.String(), append(expressions, refusal(rule)...))
 	case rule.Limit != 0:
 		// The counter counts every refusal, of which the host's rate limit on ICMP
 		// errors answers some. Code 1 is IPv6's administratively prohibited, RFC
@@ -413,6 +419,27 @@ func newRule(rule Rule) (nftables.Request, error) {
 	expressions = append(expressions, nftables.Expression("counter", nil))
 	expressions = append(expressions, translate(rule)...)
 	return postrouting.Rule(proto, rule.String(), expressions)
+}
+
+// refusedProtocol is the protocol a rule dropping what the exit does not carry
+// takes, 0 for any other rule
+func refusedProtocol(rule Rule) uint8 {
+	if rule.Drops != NoMessage {
+		return unix.IPPROTO_ICMP
+	}
+	return 0
+}
+
+// refusal is the rest of a rule dropping what the exit does not carry: the
+// ICMP type it takes and the counted drop
+func refusal(rule Rule) [][]byte {
+	if rule.Drops == SourceQuench {
+		return [][]byte{nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{4})),
+			nftables.Expression("counter", nil), verdict(verdictDrop)}
+	}
+	return [][]byte{nftables.TransportLoad(0, 1),
+		nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_GTE, []byte{15})), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_LTE, []byte{16})),
+		nftables.Expression("counter", nil), verdict(verdictDrop)}
 }
 
 // attachTimeouts matches a timeout rule's protocol and attaches its object,

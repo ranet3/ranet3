@@ -173,11 +173,12 @@ func (l Limit) String() string {
 type Declared struct{ Reason, Row string }
 
 // Arm is a backend as the suite runs it. The suite holds every arm to all
-// six rows in both families, to carrying every protocol, to Egress from
-// several sessions at once, to filtering and hairpinning as RFC 4787 asks or
-// as its arm declares it does instead, to a withdrawal and a restore by
-// SetEnabled, and to the share of flows its capability names, and an arm that
-// reads its flows to the idle timers it keeps them to.
+// six rows in both families, to carrying every protocol, to carrying no ICMP
+// message RFC 5508 rules out, to Egress from several sessions at once, to
+// filtering and hairpinning as RFC 4787 asks or as its arm declares it does
+// instead, to a withdrawal and a restore by SetEnabled, and to the share of
+// flows its capability names, and an arm that reads its flows to the idle
+// timers it keeps them to.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class
@@ -251,6 +252,9 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 					t.Run("egress from several sessions at once", r.sessions)
 					t.Run("packets no flow is tracked for", r.untracked)
 					t.Run("packets into the mesh no flow is tracked for", r.untrackedInto)
+					if class != None && !v6 {
+						t.Run("icmp a nat does not carry", r.icmpNotCarried)
+					}
 					if arm.Flows != nil {
 						t.Run("idle timers", r.timers)
 					}

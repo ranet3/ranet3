@@ -193,7 +193,15 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 					t.Fatalf("cmp of %d bytes against a %d byte register", len(want), len(register))
 				}
 				equal := bytes.Equal(register[:len(want)], want)
-				switch be32(t, fields[unix.NFTA_CMP_OP]) {
+				switch order := bytes.Compare(register[:len(want)], want); be32(t, fields[unix.NFTA_CMP_OP]) {
+				case unix.NFT_CMP_GTE:
+					if order < 0 {
+						return undecided()
+					}
+				case unix.NFT_CMP_LTE:
+					if order > 0 {
+						return undecided()
+					}
 				case unix.NFT_CMP_EQ:
 					if !equal {
 						return undecided()
