@@ -58,6 +58,14 @@ func (h *selectionHost) InterfaceIndex(name string) (int, error) {
 	return 0, errors.New("no such interface")
 }
 
+// InterfaceName names the uplink alone
+func (h *selectionHost) InterfaceName(index int) (string, error) {
+	if index == selectionUplink {
+		return "en0", nil
+	}
+	return "", errors.New("no such interface")
+}
+
 func (h *selectionHost) Dump() ([]byte, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -181,6 +189,34 @@ func TestDarwinSelectionFollowsTheWatcher(t *testing.T) {
 	host.set(nil, selectionEntry(selectionUplink, 0, "203.0.113.0/24"))
 	if !waitSelection(func() bool { return answers(selectionUplink, 3) }) {
 		t.Errorf("the dump works again with the route back on interface %d, and %s does not select it at generation 3", selectionUplink, target)
+	}
+}
+
+// Route answers the route Interface takes and its interface's name, the index
+// where the host names none, the zone's interface with no route for a
+// link-local destination, and false where no route holds the destination
+func TestDarwinSelectionRouteIsTheRouteItSelects(t *testing.T) {
+	host := newSelectionHost(t,
+		dumpEntry{index: selectionUplink, flags: unix.RTF_UP | unix.RTF_GATEWAY, dst: prefix("0.0.0.0/0"), gateway: routeAddr(netip.MustParseAddr("198.51.100.1"))},
+		selectionEntry(selectionOther, 0, "203.0.113.0/24"),
+		selectionEntry(selectMesh, 0, "203.0.113.0/25"),
+	)
+	selection := openTestSelection(t, host, selectionMeshName)
+	for _, test := range []struct {
+		address string
+		prefix  netip.Prefix
+		device  string
+		ok      bool
+	}{
+		{"192.0.2.1", prefix("0.0.0.0/0"), "en0", true},
+		{"203.0.113.9", prefix("203.0.113.0/24"), "3", true},
+		{"fe80::9%2", netip.Prefix{}, "en0", true},
+		{"2001:db8::9", netip.Prefix{}, "", false},
+	} {
+		got, device, ok := selection.Route(netip.MustParseAddr(test.address))
+		if got != test.prefix || device != test.device || ok != test.ok {
+			t.Errorf("%s takes %s by %q, %v, want %s by %q, %v", test.address, got, device, ok, test.prefix, test.device, test.ok)
+		}
 	}
 }
 

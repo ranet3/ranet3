@@ -76,10 +76,26 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	golden(t, "rules.txt", []byte(out.String()))
 	goldenJSON(t, "rules.json", info)
 
-	// darwin has no policy rules and refuses cap.border
+	// darwin has no policy rules and refuses cap.border, and lists the
+	// interface each live session's datagrams name, or the one holding their
+	// pin: the route the selection matched, one address no route holds, a pin
+	// of a session the peer opened, and a link-local zone's
 	out.Reset()
-	RenderRules(&out, RulesInfo{PolicyErr: "this platform has no policy rules"})
+	darwin := RulesInfo{
+		Policy:    []PolicyRule{},
+		PolicyErr: "this platform has no policy rules",
+		Missing:   []PolicyRule{},
+		Lookups: []RuleLookup{
+			{Lookup: "underlay", Family: "ipv4", Prefix: netip.MustParsePrefix("198.51.100.0/24"), Address: netip.MustParseAddr("198.51.100.77"), Answer: "dev en0"},
+			{Lookup: "underlay", Family: "ipv4", Address: netip.MustParseAddr("203.0.113.10"), Answer: "dev en1"},
+			{Lookup: "underlay", Family: "ipv4", Address: netip.MustParseAddr("203.0.113.70"), Answer: "no route"},
+			{Lookup: "underlay", Family: "ipv6", Prefix: netip.MustParsePrefix("::/0"), Address: netip.MustParseAddr("2001:db8:400::7"), Answer: "dev en0"},
+			{Lookup: "underlay", Family: "ipv6", Address: netip.MustParseAddr("fe80::9%en0"), Answer: "dev en0"},
+		},
+	}
+	RenderRules(&out, darwin)
 	golden(t, "rules-darwin.txt", []byte(out.String()))
+	goldenJSON(t, "rules-darwin.json", darwin)
 
 	// a pass that asked nothing, and a dump that failed beside the lookups
 	out.Reset()

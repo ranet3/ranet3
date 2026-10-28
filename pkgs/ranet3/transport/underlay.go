@@ -23,10 +23,31 @@ type Underlay struct {
 type Runtime struct {
 	// Selection names the interface of every underlay datagram on darwin, and nil names none
 	Selection Selection
-	// Events records, on linux, each fallback a send to a peer took,
-	// and each socket connected to one peer that opens or closes
-	// nil records nothing
+	// Events records each fallback a send to a peer took, each socket
+	// connected to one peer that opens or closes, and on darwin each interface
+	// the selection names for an endpoint. Nil records nothing.
 	Events func(kind string, attrs ...slog.Attr)
+}
+
+// UnderlayPath is the interface darwin's datagrams to one endpoint name, or the one holding their pin
+type UnderlayPath struct {
+	// Address is the endpoint's, its zone kept, which the selection answers the interface for
+	Address netip.Addr
+	// Pin is the interface holding the endpoint's pin, empty where the selection names it
+	Pin string
+}
+
+// underlayPather is a bind that names the interface of each datagram, darwin's
+type underlayPather interface {
+	underlayPath(Endpoint) (UnderlayPath, bool)
+}
+
+// SendsBy is the interface the hub's datagrams to endpoint name, or the one holding their pin, false on a hub that names no interface
+func (h *Hub) SendsBy(endpoint Endpoint) (UnderlayPath, bool) {
+	if bind, ok := h.bind.(underlayPather); ok {
+		return bind.underlayPath(endpoint)
+	}
+	return UnderlayPath{}, false
 }
 
 // Selection answers which interface the host's own routes send a datagram by,

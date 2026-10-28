@@ -367,6 +367,13 @@ func TestDaemonNamesEachUnderlayDatagramsInterfaceFromTheHostsRoutes(t *testing.
 	if n, _, err := listener.ReadFromUDP(buf); err == nil {
 		t.Errorf("the listener behind lo0 read %q, a datagram that named no interface", buf[:n])
 	}
+	// the rules view reads the route the same selection takes
+	if d.node.underlayRoutes == nil {
+		t.Fatal("the daemon hands its rules view no selection")
+	}
+	if prefix, _, ok := d.node.underlayRoutes.Route(netip.MustParseAddr("127.0.0.1")); !ok || prefix != netip.MustParsePrefix("127.0.0.0/8") {
+		t.Errorf("the rules view reads 127.0.0.1 by %s, %v, want 127.0.0.0/8", prefix, ok)
+	}
 }
 
 // A cover goes in whatever the host's own routes hold: a family the host has

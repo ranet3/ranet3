@@ -83,6 +83,20 @@ func (s *Selection) Interface(addr netip.Addr) (int, uint64) {
 // Generation names the snapshot the answers come from, and moves on when a dump finds the candidate routes changed
 func (s *Selection) Generation() uint64 { return s.current.Load().generation }
 
+// Route is the route Interface answers addr from and the name of its interface, or the index where the host names none
+// a link-local destination's zone answers with its interface and no route, and false is no route at all
+func (s *Selection) Route(addr netip.Addr) (netip.Prefix, string, bool) {
+	r, ok := selectRoute(s.current.Load().routes, s.mesh, addr, s.zoneIndex(addr.Zone()))
+	if !ok {
+		return netip.Prefix{}, "", false
+	}
+	name, err := s.host.InterfaceName(r.index)
+	if err != nil {
+		name = strconv.Itoa(r.index)
+	}
+	return r.destination, name, true
+}
+
 // zoneIndex is the interface a zone names, by index or by name, zero for none or one the host does not have
 func (s *Selection) zoneIndex(zone string) int {
 	if zone == "" {

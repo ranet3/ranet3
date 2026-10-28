@@ -1,1 +1,8 @@
 Policy rules: this platform has no policy rules
+Lookups
+  Lookup    Family  Prefix           Address          Taken  Answer
+  underlay  ipv4    198.51.100.0/24  198.51.100.77    no     dev en0
+  underlay  ipv4    -                203.0.113.10     no     dev en1
+  underlay  ipv4    -                203.0.113.70     no     no route
+  underlay  ipv6    ::/0             2001:db8:400::7  no     dev en0
+  underlay  ipv6    -                fe80::9%en0      no     dev en0

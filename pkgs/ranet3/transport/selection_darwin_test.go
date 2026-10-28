@@ -9,9 +9,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os/exec"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -196,6 +198,80 @@ func TestDarwinSelectedControlIsBuiltOncePerGeneration(t *testing.T) {
 				t.Errorf("the socket released its route at generation %d, want 2", released)
 			}
 		})
+	}
+}
+
+// an endpoint's selection is recorded when it is first resolved and each time it names another interface,
+// with an empty name and index zero where it names none, and a new generation naming the same interface records nothing
+func TestDarwinSelectionIsRecordedOncePerChange(t *testing.T) {
+	loopback, err := net.InterfaceByName("lo0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range loopbackFamilies {
+		t.Run(family.network, func(t *testing.T) {
+			selection := newTestSelection(loopback.Index)
+			log := &eventLog{}
+			hub, err := NewHub(":0", Underlay{}, Runtime{Selection: selection, Events: log.record})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = hub.Close() })
+			peer := listenPeer(t, family.network, family.loopback)
+			ep, err := hub.bind.ParseEndpoint(peer.LocalAddr().(*net.UDPAddr).AddrPort().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// a send the selection names no interface for is refused, and its answer is recorded all the same
+			_ = hub.bind.Send([][]byte{[]byte("selected")}, ep)
+			for _, index := range []int{loopback.Index, loopback.Index, 0, 0, loopback.Index} {
+				selection.move(index)
+				_ = hub.bind.Send([][]byte{[]byte("selected")}, ep)
+			}
+			named := fmt.Sprintf("transport.underlay.selected endpoint=%s interface=lo0 interface_index=%d", ep, loopback.Index)
+			unnamed := fmt.Sprintf("transport.underlay.selected endpoint=%s interface= interface_index=0", ep)
+			if got, want := log.recorded(), []string{named, unnamed, named}; !slices.Equal(got, want) {
+				t.Errorf("six generations naming lo0, lo0, lo0, nothing, nothing and lo0 recorded %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// the path a hub gives for an endpoint keeps a link-local endpoint's zone for the selection to answer, names the interface
+// holding a pin, a link-local pin's arrival interface or the one holding the pin's address, and leaves a pin no interface
+// holds to the selection, as the sends do, and a hub with no selection gives none
+func TestDarwinUnderlayPathIsWhereTheDatagramsLeave(t *testing.T) {
+	loopback, err := net.InterfaceByName("lo0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := selectedHub(t, newTestSelection(loopback.Index))
+	zoned, err := hub.bind.ParseEndpoint("[fe80::9%lo0]:4500")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, linkLocal := netip.MustParseAddrPort("198.51.100.9:4500"), netip.MustParseAddrPort("[fe80::9%lo0]:4500")
+	for _, test := range []struct {
+		name     string
+		endpoint Endpoint
+		want     UnderlayPath
+	}{
+		{"a link-local endpoint", zoned, UnderlayPath{Address: linkLocal.Addr()}},
+		{"a pin lo0 holds", pinnedEndpoint(peer, netip.MustParseAddr("127.0.0.1"), 0), UnderlayPath{Address: peer.Addr(), Pin: "lo0"}},
+		{"a link-local pin", pinnedEndpoint(linkLocal, netip.MustParseAddr("fe80::1"), loopback.Index), UnderlayPath{Address: linkLocal.Addr(), Pin: "lo0"}},
+		{"a pin no interface holds", pinnedEndpoint(peer, netip.MustParseAddr("198.51.100.77"), 0), UnderlayPath{Address: peer.Addr()}},
+	} {
+		if got, ok := hub.SendsBy(test.endpoint); !ok || got != test.want {
+			t.Errorf("%s leaves by %+v, %v, want %+v", test.name, got, ok, test.want)
+		}
+	}
+	unselected, err := NewHub(":0", Underlay{}, Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unselected.Close() })
+	if got, ok := unselected.SendsBy(zoned); ok {
+		t.Errorf("a hub with no selection gives the path %+v", got)
 	}
 }
 
