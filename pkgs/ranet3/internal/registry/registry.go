@@ -273,7 +273,7 @@ func resolverNetwork(family string) string {
 
 // Dialable reports whether this endpoint could ever be reached, deciding it
 // without a resolver, so that a dialer is never started for one no attempt can
-// fix. On the community registry 94 of 139 peers carry no address at all, and
+// fix. On a community registry most peers carry no address at all, and
 // among the rest are an empty string and an address written as a prefix.
 //
 // A name is taken on trust, because only a resolver can answer for one and its
