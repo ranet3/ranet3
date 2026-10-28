@@ -18,20 +18,32 @@ type Explanation struct {
 	Reason string
 	// Answer names the ICMP error the packet is answered with, as TraceRecord.Answer does
 	Answer string
-	// Next is the ID of the peer whose session the packet is held to, for a forward and for an answer or a drop about its size, empty for any other
-	// MTU is the largest packet that session carries, and Overhead the bytes a policy puts in front of the packet, which the session carries as well
-	Next          string
-	MTU, Overhead int
-	// Segment is the first segment of a packet a policy steers
-	Segment netip.Addr
+	// Next is the ID of the peer whose session the packet is held to, for a forward, and for an answer or a drop about its size past that session, empty for any other
+	// MTU is the largest packet that session carries, the bytes Policy puts in front of the packet among them
+	Next string
+	MTU  int
+	// Policy is the policy that steers a read to the first segment of its path, the steering table's own, which a caller reads and never writes, nil for a packet none steers
+	Policy *srv6.Policy
 	// Match is the entry the table matched for the packet's destination as it arrived, the zero Match where the walk ended before the table
 	Match Match
 }
 
-// Explain names decide's action on raw, one packet a session delivers that no segment of this node takes
+// ExplainSegment names what the segment of this node at dst asks of src, the outer source of a packet a session delivers, before the decision sees it, false where no segment of this node is at dst
+// the Explanation is the drop of a source it refuses, as its record names it, and zero for one it admits
+// End then acts on the next segment, and End.DT46 on the inner packet, which an egress segment checks against its allow list and one delivering to the mesh hands to the decision whatever cap.transit says
+func (m *Mesh) ExplainSegment(src, dst netip.Addr) (srv6.Admission, Explanation, bool) {
+	admission, ok := m.segmentTable.Load().Admit(dst, src)
+	var e Explanation
+	if ok && admission.Err != nil {
+		e = e.decided(segmentSite(nil, TraceDrop, segmentReason(admission.Err), dst))
+	}
+	return admission, e, ok
+}
+
+// Explain names decide's action on raw, one packet a session delivers to no SID of this node
 // it calls decide's checks in decide's order, on the table, the overlay, cap.transit and the readiness as they are now
 // and spends no ICMP token, moves no counter, takes no forward batch, writes nothing and leaves raw as it is
-// a packet an End.DT46 of this node delivers to the mesh goes on whatever cap.transit says, which Explain does not ask
+// a packet to a SID of this node meets ExplainSegment's segment instead, so raw is never the inner packet an End.DT46 grants transit to, and a forward here needs cap.transit
 func (m *Mesh) Explain(raw []byte) Explanation {
 	var e Explanation
 	raw, version := packet.Payload(raw)
@@ -111,15 +123,14 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 	}
 	site, header := readSite(TraceForward, transitForwarded), []byte(nil)
 	if policy := m.steerPolicy(src, dst); policy != nil {
+		e.Policy = policy
 		steered, err := srv6.AppendEncapsulated(nil, raw, policy.Source, policy.Path)
 		if err != nil {
 			site = readSite(TraceDrop, transitTooBig)
-			site.segment = policy.Path[0]
 			return e.decided(site)
 		}
 		header = steered[:len(steered)-len(raw)]
 		src, dst, _, _ = addrsOf(steered)
-		site.segment = dst
 		if peer, verdict, _ = m.Routes.Resolve(src, dst); verdict != RoutePeer {
 			site.decision, site.reason = TraceDrop, transitNoRoute
 			return e.decided(site)
@@ -137,7 +148,7 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 // sized is e for raw held to the session to peer behind header, the bytes a policy put in front of it, as forwardOne and tooBig hold it
 // site is the packet's forward, which a packet past that session's MTU meets as IPv4 without DF cut into fragments, or answered otherwise
 func (e Explanation) sized(site traceSite, raw, header []byte, peer *Peer) Explanation {
-	e.Next, e.MTU, e.Overhead = peer.ID, peer.MTU(), len(header)
+	e.Next, e.MTU = peer.ID, peer.MTU()
 	switch {
 	case len(header)+len(raw) <= e.MTU:
 	case unfragmentable(raw, raw[0]>>4):
@@ -159,6 +170,6 @@ func (e Explanation) sized(site traceSite, raw, header []byte, peer *Peer) Expla
 func (e Explanation) decided(site traceSite) Explanation {
 	var h traceHold
 	r := h.build(&site, 0)
-	e.Decision, e.Reason, e.Answer, e.Segment = r.Decision, r.Reason, r.Answer, r.Segment
+	e.Decision, e.Reason, e.Answer = r.Decision, r.Reason, r.Answer
 	return e
 }
