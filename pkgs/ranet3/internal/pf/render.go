@@ -181,10 +181,8 @@ func (r Rule) check() error {
 	if err := r.From.check(r.Family); err != nil {
 		return err
 	}
-	// PF_RULE_LABEL_SIZE less its terminator, bsd/net/pfvar.h, which pfctl
-	// refuses past as "rule label too long (max 63 chars)"
-	if r.Label == "" || len(r.Label) > 63 {
-		return fmt.Errorf("a label of %d bytes, where pf holds 1 to 63", len(r.Label))
+	if r.Label == "" || len(r.Label) > LabelMax {
+		return fmt.Errorf("a label of %d bytes, where pf holds 1 to %d", len(r.Label), LabelMax)
 	}
 	// pfctl expands $if, $srcaddr, $nr and the other label macros of
 	// pf.conf(5) when it parses a label
