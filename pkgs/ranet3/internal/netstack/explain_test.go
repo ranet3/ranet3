@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -119,7 +120,7 @@ var sessionCases = func() []explainCase {
 var readCases = func() []explainCase {
 	far4, far6 := Match{Bits: 32}, Match{Bits: 128}
 	exit := Match{Counted: true}
-	steered := heldTo(Explanation{Decision: TraceForward, Segment: explainSegment, Overhead: srv6.Overhead(1), Match: far6}, "segment", tracedMTU)
+	steered := heldTo(Explanation{Decision: TraceForward, Policy: steeredBy, Match: far6}, "segment", tracedMTU)
 	steeredTooBig := steered
 	steeredTooBig.Decision, steeredTooBig.Reason, steeredTooBig.Answer = TraceAnswer, "too_big", "too_big"
 	// an IPv4 read past its session's MTU without DF whose header fails its checksum, which the cut refuses with no octet at fault
@@ -145,8 +146,8 @@ var readCases = func() []explainCase {
 		{"IPv6 too big", explainLeaf, udpPacket(transitOwn[6], transitFar[6], tracedMTU+1, false), heldTo(explainedAnswer("too_big", "too_big", far6), "peer", tracedMTU)},
 		{"a steer", explainSteered, udpPacket(transitOwn[6], transitFar[6], 100, false), steered},
 		{"a steer past the session's MTU", explainSteered, udpPacket(transitOwn[6], transitFar[6], tracedMTU-srv6.Overhead(1)+1, false), steeredTooBig},
-		{"a steer the encapsulation refuses", explainSteered, udpPacket(transitOwn[6], transitFar[6], 65535, false), Explanation{Decision: TraceDrop, Reason: "too_big", Segment: explainSegment, Match: far6}},
-		{"a steer with no route to its segment", explainStranded, udpPacket(transitOwn[6], transitFar[6], 100, false), Explanation{Decision: TraceDrop, Reason: "no_route", Segment: explainSegment, Match: far6}},
+		{"a steer the encapsulation refuses", explainSteered, udpPacket(transitOwn[6], transitFar[6], 65535, false), Explanation{Decision: TraceDrop, Reason: "too_big", Policy: steeredBy, Match: far6}},
+		{"a steer with no route to its segment", explainStranded, udpPacket(transitOwn[6], transitFar[6], 100, false), Explanation{Decision: TraceDrop, Reason: "no_route", Policy: steeredBy, Match: far6}},
 	}
 }()
 
@@ -161,14 +162,95 @@ func TestExplainNamesEachArmOfTheDecision(t *testing.T) {
 	}
 }
 
-// each arm of classify is explained with its decision, reason, answer, the session and segment it is held to and the table's match
+// steeredBy stands in a read case's want for the policy of the steering table its mesh holds, which steers the case's packet
+var steeredBy = &srv6.Policy{}
+
+// each arm of classify is explained with its decision, reason, answer, the session it is held to and the table's match
+// and a steered read with the steering table's policy for its addresses, which names its first segment and the bytes it puts in front
 func TestExplainReadNamesEachArmOfTheChecks(t *testing.T) {
 	for _, c := range readCases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := c.mesh(t).ExplainRead(bytes.Clone(c.raw)); got != c.want {
+			m := c.mesh(t)
+			got := m.ExplainRead(bytes.Clone(c.raw))
+			var policy *srv6.Policy
+			if c.want.Policy == steeredBy {
+				src, dst, _ := packet.Addrs(c.raw)
+				policy = m.Steering().Lookup(src, dst)
+			}
+			if got.Policy != policy || policy != nil && (policy.Path[0] != explainSegment || policy.Overhead() != srv6.Overhead(1)) {
+				t.Errorf("steered by %v, want %v through %s", got.Policy, policy, explainSegment)
+			}
+			if got.Policy = c.want.Policy; got != c.want {
 				t.Errorf("got %+v, want %+v", got, c.want)
 			}
 		})
+	}
+}
+
+// the segments ExplainSegment's cases are addressed to: an End, an End.DT46 delivering to the mesh, and one delivering to egress what transitSender alone sends
+var explainEnd, explainDT46, explainEgress = segAddr("3fff:5::10"), transitSID, segAddr("3fff:5::20")
+
+// explainListed is an address outside the overlay that the egress segment's allow list holds
+var explainListed = segAddr("2001:db8:77::7")
+
+// explainSegments is a tracedNode holding those three segments, ready to egress either family through them
+func explainSegments(t *testing.T) (*transitNode, *TraceFeed) {
+	t.Helper()
+	n, feed := tracedNode(t)
+	table, err := srv6.NewLocalTable([]srv6.Segment{
+		{SID: schema.AddrFrom(explainEnd), Behavior: srv6.BehaviorEnd},
+		{SID: schema.AddrFrom(explainDT46), Behavior: srv6.BehaviorEndDT46},
+		{SID: schema.AddrFrom(explainEgress), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: []schema.Prefix{schema.PrefixFrom(hostPrefix(transitSender[6])), schema.PrefixFrom(hostPrefix(explainListed))}},
+	}, transitOverlay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n.m.SetSegments(table)
+	n.m.SetEgressReady(true, true)
+	return n, feed
+}
+
+// segmentCase is a source of a packet to the segment of explainSegments at sid, whether the overlay and the allow list admit it, and what ExplainSegment says of it
+type segmentCase struct {
+	name             string
+	src, sid         netip.Addr
+	overlay, allowed bool
+	want             Explanation
+}
+
+// segmentCases are a source for each answer a segment gives, the overlay asked first
+var segmentCases = func() []segmentCase {
+	refused := Explanation{Decision: TraceDrop, Reason: "refused"}
+	return []segmentCase{
+		{"End from the overlay", transitSender[6], explainEnd, true, false, Explanation{}},
+		{"End from outside the overlay", transitStranger[6], explainEnd, false, false, refused},
+		{"End.DT46 to the mesh from the overlay", transitFar[6], explainDT46, true, false, Explanation{}},
+		{"End.DT46 to the mesh from outside the overlay", transitStranger[6], explainDT46, false, false, refused},
+		{"egress from its allow list", transitSender[6], explainEgress, true, true, Explanation{}},
+		{"egress from the overlay outside its allow list", transitFar[6], explainEgress, true, false, refused},
+		{"egress from outside the overlay", transitStranger[6], explainEgress, false, false, refused},
+		{"egress from its allow list outside the overlay", explainListed, explainEgress, false, false, refused},
+	}
+}()
+
+// each segment admits the overlay's sources, and an egress segment those of its allow list among them alone
+// and a refusal is named as the segment's drop
+func TestExplainSegmentNamesWhatTheSegmentAsks(t *testing.T) {
+	for _, c := range segmentCases {
+		t.Run(c.name, func(t *testing.T) {
+			n, _ := explainSegments(t)
+			admission, got, ok := n.m.ExplainSegment(c.src, c.sid)
+			if !ok || admission.Segment.SID.Addr != c.sid || admission.Overlay != c.overlay || admission.Allowed != c.allowed {
+				t.Errorf("the segment at %s answers %+v, %v", c.sid, admission, ok)
+			}
+			if got != c.want {
+				t.Errorf("got %+v, want %+v", got, c.want)
+			}
+		})
+	}
+	n, _ := explainSegments(t)
+	if admission, _, ok := n.m.ExplainSegment(transitSender[6], transitFar[6]); ok {
+		t.Errorf("an address no segment is at answers %+v", admission)
 	}
 }
 
@@ -179,7 +261,7 @@ var explainCases = []struct {
 }{{(*Mesh).Explain, sessionCases}, {(*Mesh).ExplainRead, readCases}}
 
 // the walk spends no ICMP token, moves no counter, the answers sent among them, writes nothing to the tun, records nothing and leaves the packet as it was
-// over more of each case than one source's bucket holds
+// over more of each case than one source's bucket holds, and the segment's step does the same over each of its cases
 func TestExplainSpendsAndChangesNothing(t *testing.T) {
 	for _, set := range explainCases {
 		for _, c := range set.cases {
@@ -193,24 +275,39 @@ func TestExplainSpendsAndChangesNothing(t *testing.T) {
 				if !bytes.Equal(raw, c.raw) {
 					t.Errorf("the walk rewrote the packet to %x", raw)
 				}
-				if got := m.TransitCounters(); got != (TransitCounters{}) {
-					t.Errorf("the walk counted %+v", got)
-				}
-				if got := m.SegmentCounters(); got != (SegmentCounters{}) {
-					t.Errorf("the walk counted %+v", got)
-				}
-				if bySource, byNode := m.ICMPWithheld(); bySource+byNode != 0 || m.TooBigAnswered() != 0 || m.MSSClamped() != 0 {
-					t.Errorf("the walk withheld %d and %d answers, answered %d about a size and clamped %d", bySource, byNode, m.TooBigAnswered(), m.MSSClamped())
-				}
-				if records := queued(feed); len(records) != 0 {
-					t.Errorf("the walk was traced as %+v", records)
-				}
-				if dev, ok := m.dev.(*scriptedDevice); ok {
-					if writes := tunWrites(&dev.recordingDevice); len(writes) != 0 {
-						t.Errorf("the walk wrote %d batches to the tun", len(writes))
-					}
-				}
+				spentNothing(t, m, feed)
 			})
+		}
+	}
+	for _, c := range segmentCases {
+		t.Run(c.name, func(t *testing.T) {
+			n, feed := explainSegments(t)
+			for range icmpSourceBurst + 1 {
+				n.m.ExplainSegment(c.src, c.sid)
+			}
+			spentNothing(t, n.m, feed)
+		})
+	}
+}
+
+// spentNothing fails t where m counted, withheld or sent an answer, clamped, wrote to its tun or recorded on feed
+func spentNothing(t *testing.T, m *Mesh, feed *TraceFeed) {
+	t.Helper()
+	if got := m.TransitCounters(); got != (TransitCounters{}) {
+		t.Errorf("the walk counted %+v", got)
+	}
+	if got := m.SegmentCounters(); got != (SegmentCounters{}) {
+		t.Errorf("the walk counted %+v", got)
+	}
+	if bySource, byNode := m.ICMPWithheld(); bySource+byNode != 0 || m.TooBigAnswered() != 0 || m.MSSClamped() != 0 {
+		t.Errorf("the walk withheld %d and %d answers, answered %d about a size and clamped %d", bySource, byNode, m.TooBigAnswered(), m.MSSClamped())
+	}
+	if records := queued(feed); len(records) != 0 {
+		t.Errorf("the walk was traced as %+v", records)
+	}
+	if dev, ok := m.dev.(*scriptedDevice); ok {
+		if writes := tunWrites(&dev.recordingDevice); len(writes) != 0 {
+			t.Errorf("the walk wrote %d batches to the tun", len(writes))
 		}
 	}
 }

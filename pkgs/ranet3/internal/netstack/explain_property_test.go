@@ -188,22 +188,33 @@ func explainPacket(ht *hegel.T, limits []int, sources, destinations [2]map[int]n
 	return raw
 }
 
-// recorded is the part of a record naming its packet's decision, the next peer only for a forward, whose record alone names one
-func recorded(r TraceRecord) Explanation {
-	e := Explanation{Decision: r.Decision, Reason: r.Reason, Answer: r.Answer, Segment: r.Segment}
-	if r.Decision == TraceForward {
-		e.Next = r.Next
-	}
-	return e
+// named is the part of a record naming its packet's decision: its decision, reason and answer, the segment it was steered to or refused at
+// and the next peer only for a forward, whose record alone names one
+type named struct {
+	Decision             TraceDecision
+	Reason, Answer, Next string
+	Segment              netip.Addr
 }
 
-// walked is the part of an Explanation a record names
-func walked(e Explanation) Explanation {
-	out := Explanation{Decision: e.Decision, Reason: e.Reason, Answer: e.Answer, Segment: e.Segment}
-	if e.Decision == TraceForward {
-		out.Next = e.Next
+// recorded is the part of r naming its packet's decision
+func recorded(r TraceRecord) named {
+	n := named{Decision: r.Decision, Reason: r.Reason, Answer: r.Answer, Segment: r.Segment}
+	if r.Decision == TraceForward {
+		n.Next = r.Next
 	}
-	return out
+	return n
+}
+
+// walked is the part of a record e names, a steered read's segment the first of its policy's path
+func walked(e Explanation) named {
+	n := named{Decision: e.Decision, Reason: e.Reason, Answer: e.Answer}
+	if e.Policy != nil {
+		n.Segment = e.Policy.Path[0]
+	}
+	if e.Decision == TraceForward {
+		n.Next = e.Next
+	}
+	return n
 }
 
 // decisionRecord is the one record of a packet's decision among records, the budget's refusal of a forward left out
@@ -235,6 +246,38 @@ func TestExplainNamesWhatTheDecisionRecords(t *testing.T) {
 			}
 		}
 	})
+}
+
+// for each segment and each kind of outer source, ExplainSegment names the drop the tracer records when the segment acts on a packet of that source
+// and for a source it admits the segment records no drop of its own
+// each packet carries one from transitSender to transitNowhere, which each segment passes on, so the outer source alone decides a refusal
+func TestExplainSegmentNamesWhatTheSegmentRecords(t *testing.T) {
+	for _, sid := range []netip.Addr{explainEnd, explainDT46, explainEgress} {
+		for _, source := range []netip.Addr{transitSender[6], transitFar[6], transitStranger[6]} {
+			n, feed := explainSegments(t)
+			path := []netip.Addr{sid}
+			if sid == explainEnd {
+				path = append(path, transitFar[6])
+			}
+			outer, err := srv6.Encapsulate(udpPacket(transitSender[6], transitNowhere[6], 100, false), source, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, explained, _ := n.m.ExplainSegment(source, sid)
+			records := deliverTraced(n, feed, outer)
+			if len(records) != 1 {
+				t.Fatalf("a packet from %s to %s drew %d records: %+v", source, sid, len(records), records)
+			}
+			refusal := walked(explained)
+			refusal.Segment = sid
+			switch r := records[0]; {
+			case explained.Decision == TraceDrop && recorded(r) != refusal:
+				t.Errorf("ExplainSegment of %s at %s is %+v, the record %+v", source, sid, explained, r)
+			case explained.Decision != TraceDrop && r.Decision == TraceDrop && r.Segment == sid:
+				t.Errorf("ExplainSegment admits %s at %s, which the segment dropped as %+v", source, sid, r)
+			}
+		}
+	}
 }
 
 // over the same, and drawn packets read off the tun

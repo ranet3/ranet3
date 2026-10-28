@@ -263,6 +263,41 @@ func (t *LocalTable) admits(source netip.Addr) bool {
 	return false
 }
 
+// refuses is the refusal of source, a packet's outer source, at segment, nil for one it admits
+// every SID asks the overlay first, and an egress segment then its allow list
+func (t *LocalTable) refuses(segment *Segment, source netip.Addr) error {
+	switch {
+	case !t.admits(source):
+		return errOutsideOverlay
+	case segment.Deliver == DeliverEgress && !segment.allows(source):
+		return ErrSourceRefused
+	}
+	return nil
+}
+
+// Admission is the segment at a packet's destination and its answer to the packet's outer source, which Handle asks before it reads anything else
+type Admission struct {
+	Segment Segment
+	// Overlay is the source lying in the overlay, which every SID asks first
+	// Allowed is it lying in an egress segment's allow list, which only such a segment asks, of a source Overlay admits
+	Overlay, Allowed bool
+	// Err is the refusal Handle drops the packet with, nil for a source both admit
+	Err error
+}
+
+// Admit is the admission of source, an outer source, at the segment at sid, as Handle's refusal answers it, false where the table holds no sid
+func (t *LocalTable) Admit(sid, source netip.Addr) (Admission, bool) {
+	if t == nil {
+		return Admission{}, false
+	}
+	segment, ours := t.entries[sid]
+	if !ours {
+		return Admission{}, false
+	}
+	err := t.refuses(&segment, source)
+	return Admission{Segment: segment, Overlay: err != errOutsideOverlay, Allowed: segment.Deliver == DeliverEgress && err == nil, Err: err}, true
+}
+
 // Action tells the caller how to treat a packet Handle has looked at.
 type Action uint8
 
@@ -303,8 +338,8 @@ type Result struct {
 // holds, which is the common case and costs one map lookup on the IPv6
 // packets alone. Only a packet this node is the current segment of is parsed
 // any further, so a peer cannot make this node do work by sending it segment
-// routing headers addressed elsewhere. One from an outer source outside the
-// overlay is refused before that, so it is never answered.
+// routing headers addressed elsewhere. One from an outer source the segment
+// does not admit is refused before that, so it is never answered.
 //
 // The packet is rewritten in place for a waypoint, as the RFC's own
 // pseudocode does, which keeps a forwarded packet off a second buffer.
@@ -318,8 +353,8 @@ func (t *LocalTable) Handle(raw []byte) Result {
 		return Result{Action: ActionPass}
 	}
 	source := netip.AddrFrom16([16]byte(raw[8:24]))
-	if !t.admits(source) {
-		return Result{Action: ActionDrop, Err: errOutsideOverlay}
+	if err := t.refuses(&segment, source); err != nil {
+		return Result{Action: ActionDrop, Err: err}
 	}
 	switch segment.Behavior {
 	case BehaviorEnd:
@@ -329,12 +364,7 @@ func (t *LocalTable) Handle(raw []byte) Result {
 		}
 		return Result{Action: ActionForward, Next: next, SID: destination}
 	case BehaviorEndDT46:
-		// the outer source is checked before anything is parsed, so an unlisted
-		// sender is never answered with an ICMP error about its header
 		egress := segment.Deliver == DeliverEgress
-		if egress && !segment.allows(source) {
-			return Result{Action: ActionDrop, Err: ErrSourceRefused}
-		}
 		inner, family, err := Decap(raw)
 		if err != nil {
 			return Result{Action: ActionDrop, Err: err}
