@@ -573,11 +573,11 @@ func TestReadSendsNothingTheTableAnswersHeldOrLocal(t *testing.T) {
 // A waypoint drops a segment whose next segment the table answers held or
 // this node's, rather than forwarding it by a covering route.
 func TestWaypointDropsASegmentTheTableAnswersHeldOrLocal(t *testing.T) {
-	after := segAddr("3fff:1:69c:98d6::1")
+	after := segAddr("3fff:b:0:206::1")
 	for _, value := range []*Peer{Unreachable, Local, Assigned} {
 		session, next := sessionOf(t, DefaultMTU)
 		m, _ := waypointOf(t, after, session)
-		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:1:69c:98d6::/64"), session)
+		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), session)
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(after, 128), value)
 		left, _ := m.applySegments(framed(steeredThrough(t, udpPacket(tooBigSource[6], tooBigDestination[6], 200, false), after)), DefaultMTU)
 		if len(left) != 0 {
@@ -595,7 +595,7 @@ func TestWaypointDropsASegmentTheTableAnswersHeldOrLocal(t *testing.T) {
 // An answer to a source the table answers held or this node's goes to no peer,
 // though a covering route leads back to the node that sent the segment.
 func TestAnswerGoesNowhereTheTableAnswersHeldOrLocal(t *testing.T) {
-	after := segAddr("3fff:1:69c:98d6::1")
+	after := segAddr("3fff:b:0:206::1")
 	source := tooBigSource[6]
 	for _, value := range []*Peer{Unreachable, Local, Assigned} {
 		session, _ := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))

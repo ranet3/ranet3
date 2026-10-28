@@ -36,7 +36,7 @@ func steerBothFrom(tb testing.TB, segments int) *srv6.SteerTable {
 	table, err := srv6.NewSteerTable([]srv6.Steer{
 		{From: schema.PrefixFrom(netip.PrefixFrom(tooBigSource[4], 32)), Via: via},
 		{From: schema.PrefixFrom(netip.PrefixFrom(tooBigSource[6], 128)), Via: via},
-	}, schema.MustAddr("3fff:1:69c:8c0::1"))
+	}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -255,8 +255,8 @@ func checkFragments(tb testing.TB, sent [][]byte, header, inner []byte, mtu int)
 
 // the segments a waypoint test sends a packet through, this node's End first, from the address the packet was steered from
 var (
-	thisWaypoint = segAddr("3fff:1:69c:8c6::2")
-	steeredFrom  = segAddr("3fff:1:69c:8c0::1")
+	thisWaypoint = segAddr("3fff:b:0:106::2")
+	steeredFrom  = segAddr("3fff:b:0:100::1")
 )
 
 // waypointOf is a mesh acting on thisWaypoint, which sends what goes on to after through session
@@ -350,7 +350,7 @@ func emptyBuckets(tb testing.TB, m *Mesh) {
 // and each answer goes to the source of the packet the segment carries rather than to the node that steered it
 func TestSegmentsPastTheirNextSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 	const flood, left = 64, 10
-	after := segAddr("3fff:1:69c:98d6::1")
+	after := segAddr("3fff:b:0:206::1")
 	session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 	m, sender := waypointOf(t, after, session)
 	emptyBuckets(t, m)
@@ -397,7 +397,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 // an answer to a segment past its next session counts as sent once the session back to the source of the packet it carries has queued it
 // a waypoint with no route back, or whose session back has a full budget or has closed, builds an answer that goes nowhere and counts none
 func TestTooBigAnswerCountsOnlyOnceQueued(t *testing.T) {
-	after := segAddr("3fff:1:69c:98d6::1")
+	after := segAddr("3fff:b:0:206::1")
 	source, destination := tooBigSource[6], tooBigDestination[6]
 	for _, test := range []struct {
 		name string
@@ -437,7 +437,7 @@ func TestTooBigAnswerCountsOnlyOnceQueued(t *testing.T) {
 // and so is a tail that is no whole IP packet behind a header naming either family or hop-by-hop
 // shorter than an IPv4 or an IPv6 header, or claiming a length it does not have, where reading it as a packet runs past its end
 func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *testing.T) {
-	after := segAddr("3fff:1:69c:98d6::1")
+	after := segAddr("3fff:b:0:206::1")
 	// next is the routing header's next header, RFC 8754 section 2, and behind what follows the routing header
 	// a segment steered with a whole packet carries it, and any other is steered with an IPv6 one of which only behind is left
 	type carried struct {
@@ -537,7 +537,7 @@ func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 		}
 	})
 	t.Run("forwarded segments", func(t *testing.T) {
-		after := segAddr("3fff:1:69c:98d6::1")
+		after := segAddr("3fff:b:0:206::1")
 		peer, places := reservingPeer(t)
 		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
 		m, sender := waypointOf(t, after, peer)
@@ -575,7 +575,7 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 		m.Close()
 	})
 	t.Run("forwarded segment", func(t *testing.T) {
-		after := segAddr("3fff:1:69c:98d6::1")
+		after := segAddr("3fff:b:0:206::1")
 		peer, _ := reservingPeer(t)
 		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
 		peer.Close()

@@ -94,7 +94,7 @@ func classifyRead(tb testing.TB, family, count, sources int, shape classifyShape
 	}
 	m.Routes.Set(netip.Prefix{}, owned, Local)
 	if shape == classifySteered {
-		steering, err := srv6.NewSteerTable([]srv6.Steer{{From: schema.PrefixFrom(owned), Via: []schema.Addr{schema.MustAddr("3fff:1::1")}}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+		steering, err := srv6.NewSteerTable([]srv6.Steer{{From: schema.PrefixFrom(owned), Via: []schema.Addr{schema.MustAddr("3fff:1::1")}}}, schema.MustAddr("3fff:b:0:100::1"))
 		if err != nil {
 			tb.Fatal(err)
 		}

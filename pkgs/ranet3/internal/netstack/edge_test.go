@@ -516,7 +516,7 @@ func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 		}
 
 		steered, _ := edgeMesh(t)
-		steering, err := srv6.NewSteerTable([]srv6.Steer{{From: schema.PrefixFrom(hostPrefix(transitOwn[family])), Via: []schema.Addr{schema.AddrFrom(edgeOwnSID)}}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+		steering, err := srv6.NewSteerTable([]srv6.Steer{{From: schema.PrefixFrom(hostPrefix(transitOwn[family])), Via: []schema.Addr{schema.AddrFrom(edgeOwnSID)}}}, schema.MustAddr("3fff:b:0:100::1"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -544,7 +544,7 @@ func TestTUNReadIsCheckedBeforeItIsSteered(t *testing.T) {
 		for _, source := range []netip.Addr{transitOwn[family], transitSender[family], edgeLAN[family]} {
 			steers = append(steers, srv6.Steer{From: schema.PrefixFrom(hostPrefix(source)), Via: []schema.Addr{schema.MustAddr("3fff:1::1")}})
 		}
-		steering, err := srv6.NewSteerTable(steers, schema.MustAddr("3fff:1:69c:8c0::1"))
+		steering, err := srv6.NewSteerTable(steers, schema.MustAddr("3fff:b:0:100::1"))
 		if err != nil {
 			t.Fatal(err)
 		}

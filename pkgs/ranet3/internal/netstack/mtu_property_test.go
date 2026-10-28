@@ -29,7 +29,7 @@ func steerThrough(tb testing.TB, segments int) *srv6.SteerTable {
 	table, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(segPrefix("3fff:a::1/128")),
 		Via:  via,
-	}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+	}}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		tb.Fatal(err)
 	}
