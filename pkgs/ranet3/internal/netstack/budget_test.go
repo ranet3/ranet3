@@ -418,7 +418,10 @@ func TestQueueHoldsEverythingTheBudgetsAdmit(t *testing.T) {
 	}
 
 	unblock()
-	waitUntil(t, "the peer to transmit every packet it queued", func() bool { return transmitted.Load() == int64(queued) })
+	// the batches waited from the fill on, so a drain longer than codelInterval sheds their head packets
+	waitUntil(t, "the peer to transmit every packet it queued or shed it for its delay", func() bool {
+		return transmitted.Load()+int64(peer.DelayDropped()) == int64(queued)
+	})
 	waitForBudget(t, peer)
 }
 
