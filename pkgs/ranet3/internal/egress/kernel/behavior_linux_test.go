@@ -25,6 +25,10 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
+// noTranslationPerEndpoint is why the kernel exit neither filters by address
+// alone nor hairpins
+const noTranslationPerEndpoint = "an external endpoint can name several leaves at once, and a map entry keeps the value it was made with, so no destination translation per endpoint holds"
+
 // the kernel exit meets rows 1 to 6 of the exit behavior suite in both
 // families, translating to its uplink's address under auto and to an address
 // of its own under the address class, and leaving the leaf's own address under
@@ -32,8 +36,6 @@ import (
 // under a class that translates, holding each source to the share of flows
 // its capability names, the default or another, with no total of its own
 // beside conntrack's table
-// it declares that it filters by address and port, does not hairpin and
-// refuses IPv4 DCCP with no answer, and UDP-Lite too on a kernel before 7.1
 // its stop leaves no table of its name in either family
 // another writer's deletion of its tables is the change it is held to notice
 // another writer's masquerade is a nat chain at srcnat made after the exit's, or one below the exit's
@@ -43,12 +45,16 @@ func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 		Classes: []egresstest.Class{egresstest.Auto, egresstest.Address, egresstest.None},
 		Limits: udpLiteBefore71(t, map[egresstest.Limit]egresstest.Declared{
 			egresstest.PortDependentFiltering: {
-				Reason: "conntrack admits only the replies of a tracked flow, and wider filtering needs a destination translation per mapping, which no nf_tables statement makes",
-				Row:    "RFC 4787 section 5, RFC 5382 section 4.3",
+				Reason: noTranslationPerEndpoint,
+				Row:    "RFC 4787 section 5, RFC 5382 section 4.3, RFC 6888 section 3 (REQ-7)",
 			},
 			egresstest.NoHairpinning: {
-				Reason: "a hairpin needs a destination translation per mapping, which no nf_tables statement makes, and leaves reach each other over the mesh at their overlay addresses",
+				Reason: noTranslationPerEndpoint,
 				Row:    "RFC 4787 section 6, RFC 5382 section 7.2, RFC 5508 section 5",
+			},
+			egresstest.ResetsUnsolicitedSYN: {
+				Reason: "the exit leaves the host's answer to a SYN as the host gives it, since a rule dropping a SYN no socket takes would silence the host's own closed ports too",
+				Row:    "RFC 5382 section 4.3 (REQ-4), RFC 5382 section 4.2 (REQ-2a)",
 			},
 			egresstest.UnansweredIPv4DCCP: {
 				Reason: "the kernel's reject answers a DCCP packet only where it verifies its checksum, and it verifies an IPv4 one without the pseudo-header the checksum covers",

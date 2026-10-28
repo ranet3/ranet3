@@ -6,6 +6,7 @@
 package egresstest
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
@@ -18,6 +19,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
 // plan is the Linux network's prefixes in one family
@@ -122,6 +124,7 @@ func Namespaces(t testing.TB) Network {
 		{"route the router", n.router, n.routeRouter},
 		{"route the server", n.server, n.routeServer},
 		{"route the leaf", n.leaf, n.routeLeaf},
+		{"have the server drop a bare SYN to the simultaneous open's port", n.server, dropBareSYN},
 	} {
 		if err := step.where.Do(func() error {
 			netlink, err := netnstest.OpenNetlink()
@@ -438,6 +441,39 @@ func via(netlink netnstest.Netlink, name string, to netip.Prefix, gateway netip.
 // which would hold back or drop the first packets of a flow.
 func atOnce(netnstest.Netlink) error {
 	return os.WriteFile("/proc/sys/net/ipv6/conf/default/accept_dad", []byte("0\n"), 0o644)
+}
+
+// nfDrop is NF_DROP, the verdict that ends a packet
+const nfDrop = 0
+
+// dropBareSYN has the server drop each SYN without ACK to simultaneousPort,
+// in a table of its own at the input hook
+func dropBareSYN(netnstest.Netlink) error {
+	conn, err := nftables.Dial()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	input := nftables.Chain{Table: "suite", Name: "input", Type: "filter", Hook: unix.NF_INET_LOCAL_IN}
+	drop := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
+	drop = nftables.PutAttr(drop, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED,
+		nftables.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, nfDrop)))
+	rule, err := input.Rule(unix.NFPROTO_INET, "a bare syn to the simultaneous open's port dropped", slices.Concat(
+		nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{unix.IPPROTO_TCP}),
+		[][]byte{
+			nftables.TransportLoad(2, 2),
+			nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, binary.BigEndian.AppendUint16(nil, simultaneousPort))),
+			// SYN and ACK, the bits 0x02 and 0x10 of octet 13, RFC 9293 section 3.1
+			nftables.TransportLoad(13, 1),
+			nftables.Bitwise([]byte{0x12}),
+			nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{0x02})),
+			nftables.Expression("immediate", drop),
+		},
+	))
+	if err != nil {
+		return err
+	}
+	return conn.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_INET, "suite"), input.Create(unix.NFPROTO_INET), rule})
 }
 
 // forward turns forwarding on in both families

@@ -135,4 +135,43 @@ const (
 	leafQuenchPort  = 40710
 	leafDCCPPort    = 40711
 	leafUDPLitePort = 40712
+
+	// the ports of the rows TCP and the mappings' further requirements take:
+	// the server's a TCP mapping is opened toward, the other it connects to the
+	// mapping from, the exit's port no mapping holds, the server's of the port
+	// ranges, the fragments and the errors, the server's a simultaneous open
+	// learns its mapping at and opens from, and the leaf's ports of each, the
+	// low and high source ports of the port ranges among them
+	hairpinTCPPort          = 10204
+	filteringTCPPort        = 10205
+	filteringOtherTCPPort   = 10206
+	unsolicitedPort         = 10207
+	rangesPort              = 10208
+	fragmentsPort           = 10209
+	keepsPort               = 10210
+	keepsClosedPort         = 10211
+	keepsTCPPort            = 10212
+	simultaneousMappingPort = 10213
+	simultaneousPort        = 10214
+	leafHairpinTCPPort      = 40702
+	leafFilteringTCPPort    = 40703
+	leafFragmentsPort       = 40704
+	leafKeepsPort           = 40705
+	leafKeepsTCPPort        = 40706
+	leafSimultaneousPort    = 40707
+	spareHairpinTCPPort     = 40903
+	// a port below 1024 and one above, RFC 4787 REQ-3a's two ranges
+	lowRangePort  = 500
+	highRangePort = 40000
+)
+
+const (
+	// unsolicitedWait is RFC 5382 REQ-4's, for which a NAT answers no
+	// unsolicited inbound SYN
+	unsolicitedWait = 6 * time.Second
+	// fragmentSize is the size of each fragment's part of a datagram cut in
+	// three, a multiple of the 8 octets a fragment offset counts
+	fragmentSize = 48
+	// fragmentID is the identification the three fragments share
+	fragmentID = 10215
 )

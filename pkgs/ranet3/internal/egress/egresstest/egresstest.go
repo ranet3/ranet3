@@ -125,7 +125,8 @@ type Host struct {
 // Network is a leaf, an exit's host and a server beyond the exit's uplink,
 // built anew for each class so that no class meets another's state. The
 // server reads what the exit sends from any source, the leaf's own among
-// them, so a packet the exit leaves untranslated reaches it.
+// them, so a packet the exit leaves untranslated reaches it. The server's side
+// drops each SYN without ACK to simultaneousPort, the simultaneous open's.
 type Network interface {
 	// Family is the network in IPv6 where v6 is set and in IPv4 where it is not
 	Family(v6 bool) Family
@@ -165,6 +166,10 @@ const (
 	// in either family, where RFC 5508 REQ-8 has a NAT answer the first as for
 	// UnansweredIPv4DCCP
 	UnansweredUDPLite
+	// ResetsUnsolicitedSYN answers a SYN from outside to a port of the exit's
+	// that no mapping holds with a reset at once, where RFC 5382 REQ-4 has a
+	// NAT answer none for at least 6 seconds
+	ResetsUnsolicitedSYN
 )
 
 func (l Limit) String() string {
@@ -177,6 +182,8 @@ func (l Limit) String() string {
 		return "unanswered ipv4 dccp"
 	case UnansweredUDPLite:
 		return "unanswered udp-lite"
+	case ResetsUnsolicitedSYN:
+		return "resets an unsolicited syn"
 	}
 	return fmt.Sprintf("limit %d", int(l))
 }
@@ -188,10 +195,12 @@ type Declared struct{ Reason, Row string }
 // Arm is a backend as the suite runs it. The suite holds every arm to all
 // six rows in both families, to carrying every protocol it can translate and
 // refusing those it cannot, to carrying no ICMP message RFC 5508 rules out, to
-// Egress from several sessions at once, to filtering and hairpinning as RFC
-// 4787 asks or as its arm declares it does instead, to a withdrawal and a
-// restore by SetEnabled, and to the share of flows its capability names, and
-// an arm that reads its flows to the idle timers it keeps them to.
+// Egress from several sessions at once, to the mappings, port ranges,
+// fragments, errors and simultaneous open of RFC 4787 and RFC 5382, to
+// filtering, hairpinning and the unsolicited SYN as those RFCs ask or as its
+// arm declares it does instead, to a withdrawal and a restore by SetEnabled,
+// and to the share of flows its capability names, and an arm that reads its
+// flows to the idle timers it keeps them to.
 type Arm struct {
 	// Classes are the source classes the backend carries, at least one
 	Classes []Class
@@ -275,6 +284,13 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 					if class != None {
 						t.Run("filtering", r.filtering)
 						t.Run("hairpinning", r.hairpinning)
+						t.Run("tcp filtering", r.tcpFiltering)
+						t.Run("tcp hairpinning", r.tcpHairpinning)
+						t.Run("simultaneous open", r.simultaneousOpen)
+						t.Run("unsolicited syn", r.unsolicitedSYN)
+						t.Run("port ranges", r.portRanges)
+						t.Run("out of order fragments", r.fragments)
+						t.Run("a mapping surviving an error", r.errorKeepsMapping)
 					}
 					t.Run("the limit on a source's flows", r.sourceLimit)
 				})
