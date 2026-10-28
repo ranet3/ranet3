@@ -140,8 +140,7 @@ func (e Explanation) sized(site traceSite, raw, header []byte, peer *Peer) Expla
 	e.Next, e.MTU, e.Overhead = peer.ID, peer.MTU(), len(header)
 	switch {
 	case len(header)+len(raw) <= e.MTU:
-	// RFC 8200 section 4.5 lets only the source fragment, and DF is RFC 791 section 3.1's
-	case raw[0]>>4 == 6 || raw[6]&0x40 != 0:
+	case unfragmentable(raw, raw[0]>>4):
 		site = site.answered(answerTooBig, TraceNoAnswer)
 		site.reason = transitTooBig
 	default:

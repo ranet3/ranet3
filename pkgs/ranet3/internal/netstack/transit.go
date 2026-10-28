@@ -582,8 +582,7 @@ func (m *Mesh) forwardOne(b *outboundBatch, raw []byte, version byte, peer *Peer
 	}
 	reason = transitForwarded
 	switch {
-	// RFC 8200 section 4.5 lets only the source fragment, and DF is RFC 791 section 3.1's
-	case len(raw) > share.mtu && (version == 6 || raw[6]&0x40 != 0):
+	case len(raw) > share.mtu && unfragmentable(raw, version):
 		m.answerForward(raw, version, answerTooBig, share.mtu, draw)
 		reason = transitTooBig
 	case len(raw) > share.mtu:
@@ -611,6 +610,10 @@ func (m *Mesh) forwardOne(b *outboundBatch, raw []byte, version byte, peer *Peer
 	b.shares[peer] = share
 	return reason, fragments
 }
+
+// unfragmentable is raw, a packet of version, being one a router answers rather than cuts into fragments where it is too big for the next link
+// RFC 8200 section 4.5 lets only the source fragment, and DF is RFC 791 section 3.1's
+func unfragmentable(raw []byte, version byte) bool { return version == 6 || raw[6]&0x40 != 0 }
 
 // takeForwardBatch is a batch to fill with forwarded packets
 // it waits while every one is in flight, which holds back the delivery of the one session waiting, and is nil once the mesh closes
