@@ -1,0 +1,16 @@
+Packet  from 192.0.2.7 to 203.0.113.200, arriving on en0
+Kernel  this platform looks up this host's own packets only
+
+Packet  from no source to 203.0.113.200, this host's own
+Rule    this platform has no policy rules
+Route   0.0.0.0/0, unicast, via 198.51.100.1 dev en0
+Leaves  by en0, outside the mesh
+
+Packet  from 192.0.2.9 to 203.0.113.1, this host's own, looked up without its source, which this platform's lookup does not take
+Kernel  ENETUNREACH, no route
+Rule    this platform has no policy rules
+
+Packet  from no source to ::, this host's own
+Rule    this platform has no policy rules
+Route   ::/0, unicast, via 2001:db8:1::1 dev en0
+Socket  :: is the unspecified address, and a socket sends such a packet to ::1 or by the route, or refuses it, as its type and the platform decide, so the answer above may not be the packet's path

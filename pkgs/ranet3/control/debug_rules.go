@@ -70,6 +70,9 @@ type PolicyRule struct {
 	FWMark   uint32       `json:"fwmark,omitempty"`
 	FWMask   uint32       `json:"fwmask,omitempty"`
 	L3mdev   bool         `json:"l3mdev,omitempty"`
+	// Unread names each selector the rule carries whose value the dump's
+	// reading keeps no record of, as `ip rule` spells it
+	Unread []string `json:"unread,omitempty"`
 	// Invert is a rule taking every packet its selectors do not
 	Invert bool   `json:"invert,omitempty"`
 	Action string `json:"action"`
@@ -237,6 +240,7 @@ func (r PolicyRule) selects() string {
 	if r.L3mdev {
 		parts = append(parts, "l3mdev")
 	}
+	parts = append(parts, r.Unread...)
 	if len(parts) == 0 || len(parts) == 1 && r.Invert {
 		parts = append(parts, "all")
 	}

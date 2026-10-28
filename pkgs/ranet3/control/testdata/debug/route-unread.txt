@@ -1,0 +1,6 @@
+Packet  from no source to 203.0.113.200, this host's own
+Unread  300 uidrange lookup 400, protocol 4, assumed not to take the packet, since this view does not read uidrange
+Unread  310 to 203.0.113.0/24 ipproto dport goto 32766, protocol 4, assumed not to take the packet, since this view does not read ipproto or dport
+Rule    32766 all lookup main, kernel
+Route   0.0.0.0/0 in table main, unicast, via 198.51.100.1 dev up0
+Leaves  by up0, outside the mesh

@@ -1,0 +1,30 @@
+{
+  "dst": "203.0.113.200",
+  "arrival": "local",
+  "kernel": {
+    "rule": {
+      "family": "ipv4",
+      "priority": 32766,
+      "action": "lookup",
+      "table": 254,
+      "protocol": 2,
+      "owned": false,
+      "wanted": false
+    },
+    "route": "0.0.0.0/0",
+    "table": 254,
+    "type": "unicast",
+    "nexthops": [
+      {
+        "dev": "up0",
+        "gateway": "198.51.100.1"
+      },
+      {
+        "dev": "lan0",
+        "gateway": "198.51.100.129",
+        "dead": true,
+        "linkdown": true
+      }
+    ]
+  }
+}

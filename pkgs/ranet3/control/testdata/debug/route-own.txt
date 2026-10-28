@@ -1,0 +1,14 @@
+Packet  from no source to 203.0.113.200, this host's own
+Rule    32766 all lookup main, kernel
+Route   0.0.0.0/0 in table main, unicast, via 198.51.100.1 dev up0, via 198.51.100.129 dev lan0 dead linkdown
+Leaves  by up0, outside the mesh
+
+Packet  from 2001:db8:1::2 to 2001:db8:ffff::10, this host's own
+Rule    32766 all lookup main, kernel
+Route   ::/0 in table main, unicast, via 2001:db8:1::1 dev up0, through an exception cached for the destination alone
+Leaves  by up0, outside the mesh
+
+Packet  from 2001:db8:1::2 to ::, this host's own
+Rule    32766 all lookup main, kernel
+Route   ::/0 in table main, unicast, via 2001:db8:1::1 dev up0
+Socket  :: is the unspecified address, and a socket sends such a packet to ::1 or by the route, or refuses it, as its type and the platform decide, so the answer above may not be the packet's path

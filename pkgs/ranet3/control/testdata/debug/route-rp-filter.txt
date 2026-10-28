@@ -1,0 +1,28 @@
+Packet    from 203.0.113.50 to 203.0.113.200, arriving on lan0
+Kernel    EINVAL, reverse path filtering, or a martian source or a blackhole, which answer the same
+Rule      none named, the kernel refuses the packet after its walk, whose end the answer does not carry
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/lan0/rp_filter 1
+
+Packet    from 203.0.113.50 to 203.0.113.200, arriving on lan0
+Kernel    EINVAL, a martian source or a blackhole
+Rule      none named, a blackhole route in a table some rule looks up if the walk raised this errno rather than a check outside it
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/lan0/rp_filter unreadable
+
+Packet    from 203.0.113.50 to 203.0.113.200, arriving on lan0
+Kernel    EINVAL, reverse path filtering, or a martian source, a blackhole route or the rule below, which answer the same
+Rule      40000 to 203.0.113.0/24 blackhole, protocol 99, if the walk reached it rather than a check outside the walk raising the same errno, and unless a blackhole route in a table a rule ahead of it looks up ended the walk
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/lan0/rp_filter 1
+
+Packet    from 198.51.100.140 to 239.1.2.4, arriving on lan0
+Kernel    EINVAL, a group this host has not joined on lan0, or a source the kernel's checks refuse for it, reverse path filtering among them
+Rule      none, the kernel walks no rule for this destination arriving on a link
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/lan0/rp_filter 1
+
+Packet    from 198.51.100.140 to 239.1.2.4, arriving on lan0
+Kernel    EINVAL, a group this host has not joined on lan0, or a source the kernel's checks refuse for it
+Rule      none, the kernel walks no rule for this destination arriving on a link
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/lan0/rp_filter 0
+
+Packet  from 198.51.100.140 to 0.0.0.0, arriving on lan0
+Kernel  EINVAL, a martian destination or source
+Rule    none, the kernel walks no rule for this destination arriving on a link

@@ -23,6 +23,8 @@ func newPlatform(Table, Runtime) (platform, error) { return nil, ErrUnsupported 
 // WatchNetwork has no routing table to read here, for the same reason
 func WatchNetwork(Host, string) (*NetworkWatch, error) { return nil, ErrUnsupported }
 
+const routeGetTakesSource = false
+
 func routeGet(_, _ netip.Addr, _ string) (MatchedRoute, error) {
 	return MatchedRoute{}, fmt.Errorf("%w, which is %s", ErrUnsupported, runtime.GOOS)
 }

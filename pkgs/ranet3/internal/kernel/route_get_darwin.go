@@ -14,6 +14,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const routeGetTakesSource = false
+
 // XNU's lookup takes neither a source nor an input device, so src does not
 // enter it and a packet arriving on iif is refused rather than answered as
 // this host's own

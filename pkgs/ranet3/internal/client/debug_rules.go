@@ -55,19 +55,9 @@ func (c *Client) DebugRules() control.RulesInfo {
 	case err != nil:
 		info.PolicyErr = err.Error()
 	}
-	proto := uint8(kernel.DefaultProtocol)
-	if table := c.config().Cap.Table; table != nil {
-		proto = table.Normalized().Proto
-	}
-	var wanted []kernel.DumpedRule
-	if read := c.reconcilerRules.Load(); read != nil {
-		wanted = (*read)()
-	}
+	proto, wanted := c.ruleOwners()
 	for _, rule := range held {
-		policy := policyRule(rule)
-		policy.Owned = rule.Protocol == proto
-		policy.Wanted = policy.Owned && slices.Contains(wanted, rule)
-		info.Policy = append(info.Policy, policy)
+		info.Policy = append(info.Policy, policyRuleOf(rule, proto, wanted))
 	}
 	for _, lookup := range c.lookups() {
 		kind := "overlay"
@@ -147,6 +137,7 @@ func policyRule(rule kernel.DumpedRule) control.PolicyRule {
 		To: rule.To, From: rule.From, IIF: rule.IIF, OIF: rule.OIF,
 		FWMark: rule.FWMark, FWMask: rule.FWMask, L3mdev: rule.L3mdev, Invert: rule.Invert,
 		Action: rule.Action, Table: rule.Table, Goto: rule.Goto, Protocol: rule.Protocol,
+		Unread: rule.Unread.Names(),
 	}
 	if bits, ok := rule.Suppress.Bits(); ok {
 		policy.Suppress = &bits
