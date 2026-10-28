@@ -399,16 +399,21 @@ var underlayFamilies = []struct {
 	gone netip.Addr
 	// cover is the zero-free cover an exit default goes in as, holding every address but the zero one
 	cover []string
+	// unrouted is the errno darwin answers a send naming an interface that holds no route to the peer with
+	// in_pcbladdr in bsd/netinet/in_pcb.c answers ENETUNREACH, and selectroute in bsd/netinet6/in6_src.c EHOSTUNREACH
+	unrouted unix.Errno
 }{
 	{
 		name: "IPv4", peer: netip.MustParseAddr("203.0.113.9"), neighbor: netip.MustParseAddr("203.0.113.10"),
 		narrow: "203.0.113.0/25", wide: "203.0.113.0/24", gone: netip.MustParseAddr("198.51.100.77"),
-		cover: []string{"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5", "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1"},
+		cover:    []string{"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5", "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1"},
+		unrouted: unix.ENETUNREACH,
 	},
 	{
 		name: "IPv6", peer: netip.MustParseAddr("2001:db8:e::9"), neighbor: netip.MustParseAddr("2001:db8:e::a"),
 		narrow: "2001:db8:e::/64", wide: "2001:db8:e::/48", gone: netip.MustParseAddr("2001:db8:a::77"),
-		cover: []string{"100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1"},
+		cover:    []string{"100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1"},
+		unrouted: unix.EHOSTUNREACH,
 	},
 }
 
@@ -456,17 +461,8 @@ func TestDarwinUnderlayLeavesTheSelectedInterface(t *testing.T) {
 				hub := selectedHub(t, newTestSelection(u.index))
 				peer, neighbor := netip.AddrPortFrom(family.peer, underlayPort), netip.AddrPortFrom(family.neighbor, underlayPort)
 
-				shared := datagram{peer, []byte(family.name + ", " + mesh.name + ", the shared socket")}
-				ep, err := hub.bind.ParseEndpoint(peer.String())
-				if err != nil {
-					t.Fatal(err)
-				}
-				drainAll(u, m)
-				if err := hub.bind.Send([][]byte{shared.payload}, ep); err != nil {
-					t.Fatalf("the shared socket's send to %s: %v", peer, err)
-				}
-				leftBy(t, shared, u, m)
-
+				// the pinned send comes first, on a socket that has cached no route to the peer
+				// ip_output in bsd/netinet/ip_output.c checks an IPv4 source only where the socket's cached route was not yet chosen for a source under the routing table's generation
 				refused := datagram{peer, []byte(family.name + ", " + mesh.name + ", a refused pin")}
 				pinned := pinnedEndpoint(peer, family.gone, 0)
 				drainAll(u, m)
@@ -477,6 +473,19 @@ func TestDarwinUnderlayLeavesTheSelectedInterface(t *testing.T) {
 					t.Errorf("the send to %s kept the pin %s, which no interface holds", peer, family.gone)
 				}
 				leftBy(t, refused, u, m)
+
+				// to an address inside narrow no earlier send reached, so the send rides no route the socket cached for another
+				alone := netip.AddrPortFrom(family.neighbor.Next(), underlayPort)
+				shared := datagram{alone, []byte(family.name + ", " + mesh.name + ", the shared socket")}
+				ep, err := hub.bind.ParseEndpoint(alone.String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				drainAll(u, m)
+				if err := hub.bind.Send([][]byte{shared.payload}, ep); err != nil {
+					t.Fatalf("the shared socket's send to %s: %v", alone, err)
+				}
+				leftBy(t, shared, u, m)
 
 				paired := datagram{neighbor, []byte(family.name + ", " + mesh.name + ", a pair")}
 				mux := muxTo(t, hub, family.neighbor)
@@ -604,7 +613,7 @@ func TestDarwinUnderlaySendsNothingOnceItsInterfaceIsGone(t *testing.T) {
 	}
 }
 
-// a route on M longer than U's holding the peer turns down a send naming U with ENETUNREACH, and nothing reaches M
+// a route on M longer than U's holding the peer turns down a send naming U, and nothing reaches M
 // rt_lookup_common in bsd/net/route.c drops the unscoped match on another interface and finds no route scoped to U
 func TestDarwinUnderlayRefusesAPeerTheMeshShadows(t *testing.T) {
 	requireHostNet(t, "test utuns")
@@ -621,16 +630,16 @@ func TestDarwinUnderlayRefusesAPeerTheMeshShadows(t *testing.T) {
 			}
 			drainAll(u, m)
 			shared := datagram{peer, []byte(family.name + ", the shared socket, shadowed")}
-			if err := hub.bind.Send([][]byte{shared.payload}, ep); !errors.Is(err, unix.ENETUNREACH) {
-				t.Errorf("the shared socket's send to %s past a shadow on M answered %v, want ENETUNREACH", peer, err)
+			if err := hub.bind.Send([][]byte{shared.payload}, ep); !errors.Is(err, family.unrouted) {
+				t.Errorf("the shared socket's send to %s past a shadow on M answered %v, want %s", peer, err, unix.ErrnoName(family.unrouted))
 			}
 			mux := muxTo(t, hub, family.neighbor)
 			if openNow(mux).socket.Load() != nil {
 				t.Errorf("a pair to %s connected past a shadow on M", neighbor)
 			}
 			paired := datagram{neighbor, []byte(family.name + ", the mux, shadowed")}
-			if err := mux.send([][]byte{paired.payload}, mux.Endpoint()); !errors.Is(err, unix.ENETUNREACH) {
-				t.Errorf("the mux's send to %s past a shadow on M answered %v, want ENETUNREACH", neighbor, err)
+			if err := mux.send([][]byte{paired.payload}, mux.Endpoint()); !errors.Is(err, family.unrouted) {
+				t.Errorf("the mux's send to %s past a shadow on M answered %v, want %s", neighbor, err, unix.ErrnoName(family.unrouted))
 			}
 			if m.carried(tunQuiet, shared, paired) {
 				t.Errorf("a datagram to %s or %s came out of M", peer, neighbor)
