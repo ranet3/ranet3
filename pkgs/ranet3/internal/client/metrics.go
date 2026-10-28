@@ -175,11 +175,12 @@ func (c *Client) renderPathMTU(w io.Writer) {
 //
 // The advertised and announced counts are separate series rather than one
 // gauge and a label, because their difference is the alert: a prefix is
-// announced only while its family is ready, its chain reading back as written,
-// the kernel forwarding it and, where its lookups run, routing a translated
-// packet and its reply the way the translation needs, so announced below
-// advertised is this node declining to attract traffic it would drop, and no
-// peer can see that from its own end.
+// announced only while its family is ready, its chains, set and timeout
+// objects reading back as written, the kernel forwarding it, the host holding
+// every address its classes translate to and, where its lookups run, routing
+// a translated packet and its reply the way the translation needs, so
+// announced below advertised is this node declining to attract traffic it
+// would drop, and no peer can see that from its own end.
 func (c *Client) renderEgress(w io.Writer) {
 	egress := c.egress()
 	if !egress.Enabled {
