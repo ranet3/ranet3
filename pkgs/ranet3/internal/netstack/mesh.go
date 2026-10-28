@@ -79,6 +79,7 @@ type Mesh struct {
 	egressReadiness
 	answerState
 	transitState
+	traceState
 }
 
 // outboundBatch owns the TUN buffers from one read until a crypto worker has
@@ -834,6 +835,7 @@ func hashBytes(raw []byte) uint64 {
 func (m *Mesh) Close() {
 	m.closeOnce.Do(func() {
 		close(m.closed)
+		m.closeTraces()
 		if m.dev != nil {
 			_ = m.dev.Close()
 		}

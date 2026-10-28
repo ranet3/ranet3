@@ -581,6 +581,8 @@ const (
 	answerParameter
 	// answerTooBig is packet too big, RFC 4443 section 3.2, and fragmentation needed, RFC 1191 section 4, carrying the next hop's MTU
 	answerTooBig
+	// answerBeyondScope is RFC 4443 section 3.1 code 2, which answerBeyondScope sends rather than buildAnswer
+	answerBeyondScope
 )
 
 // buildAnswer is the answer of kind to raw, one packet of version, from source, nil where none is built
