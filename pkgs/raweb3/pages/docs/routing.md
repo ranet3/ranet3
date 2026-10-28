@@ -431,6 +431,49 @@ mesh routes D to this node only for packets from S, so a reply to D from outside
 S would never come back through the mesh. With no `cap.border`, no 5110 rule is
 installed.
 
+#### Exit mode on Linux
+
+With [`cap.exit`](configuration-reference.md#capexit) the reconciler adds three
+rules to each family the tun holds an overlay address of, derived on every pass
+from the links outside the mesh as the network watch last read them, and from
+the links `cap.exit.forward` expands to among them. A family the tun holds none
+of runs mode off's rules, as
+[limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) says.
+`iif lo` matches a lookup whose input link is `lo` (net/core/fib_rules.c:284-285
+at Linux `940de590`): the host's own, and the reverse path check of nftables'
+`fib` expression, which looks up from `lo` in a prerouting chain for a forwarded
+packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
+
+| Priority | Rule                                                                                                                                                      | What it does                                                                                                   |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| 5405     | `from <address> iif lo lookup main`, for each address of a link outside the mesh                                                                          | a socket bound to a link's address, the uplink's among them, leaves by main                                    |
+| 5435     | `from <network> iif lo lookup main`, for each connected network shorter than a host prefix and each point-to-point far end of a link `forward` leaves out | a `fib` expression's reverse path check of a reply main routes to such a link finds main's route, not the mesh |
+| 5440     | `iif lo lookup <table>`, and `iif <link> lookup <table>` for each link `forward` expands to                                                               | the mesh's table, every length counted, for the host's own traffic and the forwarded links'                    |
+
+- Neither 5405 nor 5435 selects a source overlapping `cap.border.overlay` or
+  this node's own prefixes, which 5430 sends into the mesh. 5405 comes ahead of
+  5430, so an overlay address on `lo` or on a dummy link, as a host checking the
+  mesh puts one there, or an address in a LAN this node announces, would
+  otherwise leave by main where mode off sends it into the mesh. A selector
+  overlapping either is left out whole.
+- 5435 reaches a reverse path check only where 5405 to 5430 did not answer it. A
+  `/32` or `/128` address is its own network, which 5405 already selects, so it
+  takes no rule at 5435. 5405 comes ahead of 5410 to 5430, so a socket bound to
+  a link's address reaches a mesh subnet by main, and 5405 alone covers a
+  forwarded link's addresses and an address whose network 5435 leaves out.
+- The tun, `lo` and the link either family's default leaves by are never
+  forwarded. A pattern matching one is skipped with the reason, and the next
+  pass takes the link once it no longer is one.
+- 5440 counts every length, so the mesh's default, which 5420 skips, answers
+  there. Where the mesh's table holds no route for the destination, the lookup
+  goes on to main at 32766, the declared limit
+  [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) lists with
+  the states it holds in.
+- A packet 5440 sends into the tun toward the mesh's default meets the
+  owned-source rule
+  [what forwarded traffic meets](coexistence.md#what-forwarded-traffic-meets)
+  states, with what it leaves of a Docker bridge's flows and a LAN's.
+
 #### Where a lookup ends on Linux
 
 These tables are where a lookup ends under the derived rules, and the other
@@ -515,6 +558,26 @@ A lookup bound to no device:
 - L11: an exit installs no route that counts, so on an exit no lookup ends
   there.
 
+With [exit mode](#exit-mode-on-linux), in a family the tun holds an overlay
+address of, these rows hold for an unmarked lookup, the host's own and a `fib`
+expression's check carrying `iif lo` and a forwarded one the link it arrived on.
+In a family it holds none of, the rows above hold alone.
+
+| Row | Lookup                                                                                                                                    | Where it ends                                                                                                   |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| E1  | the host's own, from an address of a link outside the mesh outside the overlay and this node's own prefixes, that L3 and L4 do not answer | 5405, by main's route, ahead of L6 to L11                                                                       |
+| E2  | one carrying `iif lo`, from a network 5435 selects of a link `forward` leaves out, where L12 held                                         | 5435, by main's route                                                                                           |
+| E3  | the host's own, or one arriving on a link `forward` expands to, where L12 held                                                            | 5440, into the tun by the mesh's route, refused by its hold, and on to main at 32766 where it holds neither one |
+| E4  | any other, where L12 held                                                                                                                 | main at 32766, as L12                                                                                           |
+
+- E1: the mesh's subnet, which L8 sends into the tun, leaves by main too, so a
+  service bound to the uplink's address answers by the uplink.
+- E2: the lookup is a `fib` expression's reverse path check of a reply main
+  routes to that link. Without it the check would find the tun at E3 and drop
+  the reply.
+- E3: the mesh's default, which 5420 skips at L11, answers here, so the host's
+  own traffic from any source leaves by the exit. A throw goes on to main.
+
 A lookup bound to a device, such as by a socket bound with `SO_BINDTODEVICE`,
 ends by the rows above with these changes. An address of the host's own ends at
 L1 only for a lookup bound to the device that holds it.
@@ -568,14 +631,22 @@ all 3 without error then asks the lookups
 failed asks none, and it and a pass whose lookups failed keep the last answers.
 
 - A change in the mesh, or a kernel notification, starts a pass 250 milliseconds
-  later. Changes in that window join the same pass.
+  later. Changes in that window join the same pass. On Linux the notifications
+  are a route of the mesh's table coming or going, a rule of the reconciler's
+  protocol going, and an address of the tun coming or going, another writer's
+  among them.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
-- A reload that changes `cap.table`, the addresses it assigns or
-  `cap.border.overlay`, or whose `cap.route` announcements make this node an
-  exit or stop making it one, `ranet3 enable reconciler` and
+- A reload that changes `cap.table`, the addresses it assigns,
+  `cap.border.overlay` or `cap.exit`, or whose `cap.route` announcements make
+  this node an exit or stop making it one, `ranet3 enable reconciler` and
   `ranet3 disable reconciler` start a pass too.
+- A change of a default or an address the network watch reads starts a pass.
+  With `cap.exit` a change of links alone, a link coming, going or moving a
+  prefix or a far end, starts one too, which expands `forward` again and derives
+  5405, 5435 and 5440 from the links as they are. A change of links alone probes
+  no session.
 
 `ranet3 disable reconciler` withdraws every route, address and rule the
 reconciler installed. `ranet3 enable reconciler` puts them back. Both are
@@ -884,28 +955,43 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   `overlay 192.0.2.0/24 taken by table 51820 dev wg0`, or
   `a refusal (permission denied)` in place of the table, and each live endpoint
   whose lookup under the mark is taken as
-  `the underlay's mark taken by table 200 dev ranet0 toward 203.0.113.70`.
+  `the underlay's mark taken by table 200 dev ranet0 toward 203.0.113.70`. With
+  `cap.exit` it names the links the last pass forwarded as
+  `exit mode forwarding br-1 docker0`, each link a `forward` entry matched and
+  the pass left out as
+  `forward e* skips eth0, the link the IPv4 default leaves by`, and a family the
+  tun holds no overlay address of as
+  `no IPv6 overlay address on the tun, so IPv6 runs mode off's rules`, as
+  [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) counts the
+  family and says where its traffic goes. [When a pass runs](#when-a-pass-runs)
+  lists what wakes the pass that reads the tun again.
+- `ranet3 debug netmon` lists each family's links outside the mesh with their
+  networks and point-to-point far ends, which exit mode derives its rules from.
 - `ranet3 debug rules` lists every lookup the reconciler last asked, taken or
   not, with its answer, as [debugging](development/debug.md#commands) gives.
 
 `SIGUSR1` writes the mesh's routes to the log, this node's own entries as
 `via this node` and the holds as `via unreachable`.
 
-| Log line                                                                     | Level | When                                                                                 |
-| ---------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------ |
-| `babel neighbor up`, `babel neighbor down`                                   | info  | a neighbor comes up or goes down                                                     |
-| `babel route installed`                                                      | info  | a route is selected                                                                  |
-| `babel route retracted`                                                      | info  | a route is held unreachable                                                          |
-| `kernel reconciler started`                                                  | info  | the reconciler starts, naming where it writes                                        |
-| `kernel routes reconciled`                                                   | info  | a pass added or removed a route                                                      |
-| `kernel reconciler withdrawn`                                                | info  | shutdown or `ranet3 disable reconciler` removed the routes, addresses and rules      |
-| `kernel finds an overlay prefix answered outside the mesh's table`           | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed             |
-| `kernel finds an overlay prefix answered through the tun or by a hold again` | info  | an overlay prefix's lookup stopped being taken                                       |
-| `kernel finds the underlay's mark answered through the tun`                  | warn  | an endpoint's lookup under the mark became taken, or a taken one's answer changed    |
-| `kernel finds the underlay's mark answered outside the tun again`            | info  | an endpoint's lookup under the mark stopped being taken                              |
-| `kernel no longer asks a lookup it found taken`                              | info  | a taken lookup's prefix or endpoint left the pass, or a withdrawal ended the lookups |
-| `kernel could not ask where its overlay and underlay lookups end`            | warn  | the lookups failed, once until they answer again, and the last answers stay          |
-| `kernel can ask where its overlay and underlay lookups end again`            | info  | the lookups answered after failing                                                   |
+| Log line                                                                             | Level | When                                                                                 |
+| ------------------------------------------------------------------------------------ | ----- | ------------------------------------------------------------------------------------ |
+| `babel neighbor up`, `babel neighbor down`                                           | info  | a neighbor comes up or goes down                                                     |
+| `babel route installed`                                                              | info  | a route is selected                                                                  |
+| `babel route retracted`                                                              | info  | a route is held unreachable                                                          |
+| `kernel reconciler started`                                                          | info  | the reconciler starts, naming where it writes                                        |
+| `kernel routes reconciled`                                                           | info  | a pass added or removed a route                                                      |
+| `kernel reconciler withdrawn`                                                        | info  | shutdown or `ranet3 disable reconciler` removed the routes, addresses and rules      |
+| `kernel finds an overlay prefix answered outside the mesh's table`                   | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed             |
+| `kernel finds an overlay prefix answered through the tun or by a hold again`         | info  | an overlay prefix's lookup stopped being taken                                       |
+| `kernel finds the underlay's mark answered through the tun`                          | warn  | an endpoint's lookup under the mark became taken, or a taken one's answer changed    |
+| `kernel finds the underlay's mark answered outside the tun again`                    | info  | an endpoint's lookup under the mark stopped being taken                              |
+| `kernel no longer asks a lookup it found taken`                                      | info  | a taken lookup's prefix or endpoint left the pass, or a withdrawal ended the lookups |
+| `kernel could not ask where its overlay and underlay lookups end`                    | warn  | the lookups failed, once until they answer again, and the last answers stay          |
+| `kernel can ask where its overlay and underlay lookups end again`                    | info  | the lookups answered after failing                                                   |
+| `kernel leaves a link cap.exit forward matches out of the mode`                      | warn  | a `forward` entry matches the tun, `lo` or a default's link, once until it no longer |
+| `kernel no longer leaves a link cap.exit forward matched out of the mode`            | info  | that link stopped being one of them, or stopped matching                             |
+| `kernel runs mode off's rules in a family, the tun holding no overlay address of it` | warn  | under `cap.exit`, the tun came to hold no overlay address of the `family`            |
+| `kernel no longer counts a family as one the tun holds no overlay address of`        | info  | the tun holds one again, `cap.exit` was removed or the reconciler withdrew           |
 
 The 2 route lines share 1 limit of 1 line per second. Each carries
 `changes_since_last`, the number of changes since the last line. A lookup's
@@ -914,8 +1000,11 @@ prefix or `endpoint` for the underlay, and `answer`. The events
 `babel.neighbor.up`, `babel.neighbor.down`, `babel.route.selected` and
 `babel.route.retracted` record each change. `kernel.pass` records each pass that
 changed the kernel, met a newly refused route, failed or followed a reload, and
-a withdrawal only when it fails, and `kernel.taken` each line that names a
-lookup, as [debugging](development/debug.md#events) says.
+a withdrawal only when it fails, `kernel.taken` each line that names a lookup,
+`kernel.forward` each line about a skipped link, with its `entry`, `link`,
+`reason` and `skipped`, and `kernel.exit` each line about a family the tun holds
+no overlay address of, with its `family` and `addressed`, as
+[debugging](development/debug.md#events) says.
 
 | Metric                                 | Meaning                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------ |

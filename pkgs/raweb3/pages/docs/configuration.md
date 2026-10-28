@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-27
+updated: 2026-10-28
 order: 30
 ---
 
@@ -77,8 +77,9 @@ they describe the same node.
 
 The top level says what the node **is**. Everything the node **does** lives
 under `cap`, 1 block per capability. Writing `cap.table`, `cap.segment`,
-`cap.egress` or `cap.border` turns that capability on. Writing `cap.route`,
-`cap.babel` or `cap.crypto` changes its defaults. There is no `enabled` field.
+`cap.egress`, `cap.border` or `cap.exit` turns that capability on. Writing
+`cap.route`, `cap.babel` or `cap.crypto` changes its defaults. There is no
+`enabled` field.
 
 A node that only joins the mesh writes `node`, `auth`, `link` and `dial`:
 
@@ -109,11 +110,11 @@ These keys are required:
 
 Every other key has a default. A left-out `cap.route`, `cap.babel` or
 `cap.crypto` runs its defaults. A left-out `cap.table`, `cap.segment`,
-`cap.egress`, `cap.border` or [`cap.transit`](configuration-reference.md) is
-off. A node with no `cap.babel` sends Hellos every 4 seconds and updates every
-16 seconds (RFC 8966 Appendix B). A node with no `cap.route` announces nothing
-but what `cap.egress` and an egress segment add, as
-[routing](routing.md#what-a-node-announces) describes.
+`cap.egress`, `cap.border`, `cap.exit` or
+[`cap.transit`](configuration-reference.md) is off. A node with no `cap.babel`
+sends Hellos every 4 seconds and updates every 16 seconds (RFC 8966 Appendix B).
+A node with no `cap.route` announces nothing but what `cap.egress` and an egress
+segment add, as [routing](routing.md#what-a-node-announces) describes.
 
 A node that installs the mesh's routes itself adds `cap.table`, and on Linux
 `cap.border` with the prefixes the mesh numbers its nodes from. On Linux the
@@ -130,6 +131,17 @@ addresses = ["203.0.113.10/32"]   # assigned to the tun
 overlay = ["203.0.113.0/24"]
 ```
 
+A Linux node that sends its own traffic out through the mesh's exit adds
+`cap.exit`, and names in `forward` the links whose forwarded traffic goes the
+same way, such as a container bridge. Every other link keeps the routes it had.
+[Exit mode](routing.md#exit-mode-on-linux) lists the rules, and an exit refuses
+the block:
+
+```toml
+[cap.exit]
+forward = ["docker0", "br-*"]     # names, or patterns as path.Match reads them
+```
+
 ### Capabilities
 
 | Block         | What it turns on                                                                            |
@@ -142,6 +154,7 @@ overlay = ["203.0.113.0/24"]
 | `cap.crypto`  | The transforms, the replay window and the rekey timers                                      |
 | `cap.egress`  | Source translation for an exit node or a subnet router, Linux only                          |
 | `cap.border`  | A filter for forged mesh traffic arriving from other links, Linux only                      |
+| `cap.exit`    | Exit mode: this host's own traffic and its forwarded links out by the mesh's default, Linux |
 
 [Routing](routing.md), [segment routing](segment-routing.md),
 [exit nodes](exit-nodes.md) and [the border filter](border-filter.md) describe
@@ -217,6 +230,7 @@ itself there:
 - `cap.crypto` is `ike`'s `Crypto`.
 - `cap.egress` is `internal/egress`'s `Egress`.
 - `cap.border` is `internal/egress`'s `Border`.
+- `cap.exit` is `internal/kernel`'s `ExitMode`.
 
 `internal/config` holds the node's own keys and the checks that span 2
 capabilities, such as a SID that is also an address the reconciler assigns. The

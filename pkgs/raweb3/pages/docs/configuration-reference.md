@@ -369,8 +369,8 @@ configure.
   shared with BIRD needs a metric BIRD does not use.
 - macOS has 1 forwarding table and no route protocol. It refuses at startup an
   `id` or `proto` other than the default. It ignores `metric`.
-- On Linux the reconciler derives its policy rules from `cap.border.overlay` and
-  this node's own prefixes, and no key writes a rule.
+- On Linux the reconciler derives its policy rules from `cap.border.overlay`,
+  this node's own prefixes and `cap.exit`, and no key writes a rule.
   [Routing](routing.md#policy-rules-on-linux) lists them. macOS installs none.
 - An `addresses` entry is assigned when missing and removed at shutdown or when
   a reload drops it. The reconciler removes only addresses it added. Each entry
@@ -766,6 +766,42 @@ daemon refuses it at startup on other platforms.
   entry covers is refused too.
 - The SIDs it drops are those of `cap.segment.local`, and the devices it accepts
   are derived, so neither is a key.
+
+## `cap.exit`
+
+Exit mode. Writing this block turns it on. The mesh's default of lowest metric
+becomes this host's default, for its own traffic and for what it forwards from
+the links `forward` names. Linux only. [Routing](routing.md#exit-mode-on-linux)
+lists the rules it adds, and
+[sharing a host](coexistence.md#exit-mode-beside-other-programs) what other
+programs' rules do beside them.
+
+| Key       | Value         | Default | Meaning                                                           |
+| --------- | ------------- | ------- | ----------------------------------------------------------------- |
+| `forward` | list of names | none    | Links whose forwarded traffic follows the mode as the host's does |
+
+- The file is refused without `cap.table`, whose reconciler writes the mode's
+  rules, and without `cap.border`, whose overlay keeps the mode's sources by
+  main apart from the mesh's.
+- The file is refused on an exit, with the reason it is one:
+  `config: cap.exit sends this node's own traffic out through another exit, and this node is an exit (cap.egress advertises 0.0.0.0/0), whose own traffic and whose egress leave by its own uplink: remove cap.exit, or stop offering the exit`.
+  The other reasons read
+  `cap.route announces <prefix>, which counts as a default` and
+  `cap.segment local <sid> delivers to egress`.
+  [Exit nodes](exit-nodes.md#an-exits-own-traffic) say why.
+- `via` is refused by name. This version follows the mesh's default of lowest
+  metric.
+- Each `forward` entry is a link's name or a pattern as Go's
+  [`path.Match`](https://pkg.go.dev/path#Match) reads one, such as `docker*` or
+  `br-*`. An empty entry, a malformed pattern and `lo` are refused at load. The
+  order does not matter, and an entry written twice counts once.
+- At startup and on every reload, a name that is the tun or the link either
+  family's default leaves by is refused, since that traffic never follows the
+  mode. A pattern matching one of them, or a name that becomes the uplink later,
+  is skipped at each pass and logged, as [watching it](routing.md#watching-it)
+  lists.
+- macOS, the BSDs, Android and iOS refuse the block at startup:
+  `kernel: cap.exit is refused on <platform>, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
 
 ## Daemon flags
 

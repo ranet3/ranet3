@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-28
+updated: 2026-10-29
 order: 75
 ---
 
@@ -95,6 +95,14 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
   A lookup the exit had no address to make says so, as
   `lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay`.
   `--json` carries them under `egress`, in `ready`, `unready` and `skipped`.
+- `status` on a node with `cap.exit` names, on its `Kernel` line, the links the
+  last pass forwarded, each link a `forward` entry matched and the pass left out
+  with the reason, and a family the tun holds no overlay address of, as
+  [watching it](routing.md#watching-it) shows. `--json` carries them under
+  `kernel.exit`, the families in `unaddressed`.
+- `debug netmon` lists each family's links outside the mesh with their addresses
+  and point-to-point far ends on Linux, the links
+  [exit mode](routing.md#exit-mode-on-linux) derives its rules from.
 - `sessions` names the transforms of each IKE SA and of its Child SA by their
   `cap.crypto` names. A Child SA the peer's creation or rekey keyed with key
   exchanges of its own has their kex entry after its cipher, such as
