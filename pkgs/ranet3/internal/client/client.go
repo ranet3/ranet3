@@ -44,10 +44,6 @@ type Client struct {
 	// which on darwin is the selection and its route watcher. Nil on a Client
 	// built by hand in a test.
 	closeUnderlay func()
-	// capture answers whether the host holds a default of its own in each
-	// family, which the route reconciler's cover waits for, nil where nothing
-	// waits. It is the transport's selection, which this client opens.
-	capture kernel.CaptureRoutes
 	// host is the machine the underlay and the route reconciler read and
 	// write, nil for the one this process is running on. It is kept so the
 	// reconciler this client hands the command is built against the same
@@ -261,7 +257,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		return nil, err
 	}
 	mesh.SetAnswerTTL(ttl)
-	underlay, capture, closeUnderlay, err := underlayRuntime(cfg.Link.Underlay, mesh.Name, host)
+	underlay, closeUnderlay, err := underlayRuntime(mesh.Name, host)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +290,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		Mesh: mesh, privateKey: privateKey,
-		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, capture: capture,
+		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay,
 		host:     host,
 		sessions: sessions,
 		workers:  max(1, runtime.GOMAXPROCS(0)),
@@ -523,16 +519,11 @@ func borderSIDs(cfg *config.Config) []netip.Addr {
 	return sids
 }
 
-// CaptureRoutes answers whether the host holds a default of its own in each
-// family, or is nil where nothing waits for one. The command that builds the
-// reconciler hands it to kernel.Runtime.
-func (c *Client) CaptureRoutes() kernel.CaptureRoutes { return c.capture }
-
 // KernelRuntime assembles what cap.table's reconciler reads from outside the
-// capability: the device the mesh actually got, the addresses the transport
-// has to keep reaching and the two halves of link.underlay, which only a
-// running node knows, and what other capabilities write, the prefixes
-// cap.route announces and cap.border's overlay.
+// capability: the device the mesh actually got and the addresses the
+// transport has to keep reaching, which only a running node knows, the
+// link.underlay.bind the configuration sets, and what other capabilities
+// write, the prefixes cap.route announces and cap.border's overlay.
 //
 // It is assembled here rather than in the command because most of it is this
 // client's own and the rest is the configuration it runs. The command builds
@@ -550,7 +541,6 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		Endpoints:     c.liveEndpoints,
 		// the reconciler stops hiding an announced default from every socket that did not ask for the tun by name
 		BoundUnderlay: cfg.Link.Underlay.Bind,
-		Capture:       c.CaptureRoutes(),
 		Host:          c.host,
 		Events:        c.events,
 	}

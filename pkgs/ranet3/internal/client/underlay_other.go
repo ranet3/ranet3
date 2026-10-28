@@ -10,12 +10,11 @@ import (
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// underlayRuntime has nothing to open here. linux keeps its underlay out of
-// the mesh's routing with a socket mark and a policy rule, which needs neither
-// a lookup nor a route of its own, and every other platform refuses both
-// spellings by name in transport rather than opening a socket that
-// does neither. The host is taken and ignored for the same reason: this
-// platform reads no routing table of its own here.
-func underlayRuntime(transport.Underlay, string, kernel.Host) (transport.Runtime, kernel.CaptureRoutes, func(), error) {
-	return transport.Runtime{}, nil, func() {}, nil
+// underlayRuntime opens nothing here. linux keeps its underlay out of the
+// mesh's routing with a socket mark and the policy rules that read it, which
+// need no lookup of their own, and an iOS build opens no selection, so its hub
+// names no interface. The host is taken and ignored, since nothing here reads
+// a routing table.
+func underlayRuntime(string, kernel.Host) (transport.Runtime, func(), error) {
+	return transport.Runtime{}, func() {}, nil
 }

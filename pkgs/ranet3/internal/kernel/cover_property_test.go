@@ -233,18 +233,16 @@ func failKeys(routes []netip.Prefix) [2][]netip.Prefix {
 	return keys
 }
 
-// unitStep is one pass's table, the host's own defaults, the keys other
-// programs hold, each with the error an add there meets, the keys where only
-// a route that is not a member fails, and the keys where a member's delete
-// fails.
+// unitStep is one pass's table, the keys other programs hold, each with the
+// error an add there meets, the keys where only a route that is not a member
+// fails, and the keys where a member's delete fails.
 type unitStep struct {
 	routes              []netip.Prefix
-	hosts               Covered
 	taken, flaky, stuck map[netip.Prefix]error
 }
 
 func (s unitStep) equal(o unitStep) bool {
-	return slices.Equal(s.routes, o.routes) && s.hosts == o.hosts &&
+	return slices.Equal(s.routes, o.routes) &&
 		maps.Equal(s.taken, o.taken) && maps.Equal(s.flaky, o.flaky) && maps.Equal(s.stuck, o.stuck)
 }
 
@@ -269,7 +267,6 @@ func unitSteps() hegel.Generator[unitStep] {
 				step.routes = append(step.routes, r)
 			}
 		}
-		step.hosts = Covered{V4: hegel.Draw(tc, pbt.Spanning(0, 4)) != 0, V6: hegel.Draw(tc, pbt.Spanning(0, 4)) != 0}
 		// one kind for the step's failures, so a step that only refuses is as
 		// common as either other kind
 		kind := hegel.Draw(tc, pbt.Spanning(0, 2))
@@ -317,7 +314,6 @@ func unitSteps() hegel.Generator[unitStep] {
 func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		reconciler, kernel, table := keyHarness(t)
-		capture := reconciler.rt.Capture.(*recordingCapture)
 		var last unitStep
 		for pass := range hegel.Draw(ht, pbt.Spanning(1, 5)) {
 			// the last step again, the last table with its keys free, another,
@@ -348,7 +344,7 @@ func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 			for _, r := range step.routes {
 				table.Set(netip.Prefix{}, r, nil)
 			}
-			capture.hosts, kernel.taken, kernel.flaky, kernel.stuck = step.hosts, step.taken, step.flaky, step.stuck
+			kernel.taken, kernel.flaky, kernel.stuck = step.taken, step.flaky, step.stuck
 			kernel.failed, kernel.kept = nil, map[netip.Prefix]bool{}
 			adds, dels := kernel.counts()
 			onlyRefused := step.onlyRefuses()
@@ -370,7 +366,7 @@ func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 				}
 			}
 			for _, r := range step.routes {
-				if schema.HoldsUnspecified(r) && step.hosts.Has(r.Addr()) {
+				if schema.HoldsUnspecified(r) {
 					base = append(base, Route{Destination: r, Metric: routeMetric(0, r, false)})
 				}
 			}

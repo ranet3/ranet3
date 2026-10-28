@@ -6,7 +6,6 @@
 package kernel
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -83,26 +82,6 @@ func (s *Selection) Interface(addr netip.Addr) (int, uint64) {
 
 // Generation names the snapshot the answers come from, and moves on when a dump finds the candidate routes changed
 func (s *Selection) Generation() uint64 { return s.current.Load().generation }
-
-// HostDefaults reports which families the host holds a default of its own in, out of an interface other than mesh
-// it asks the kernel for the key of each family's default, as lookupDefault does, and writes nothing
-func (s *Selection) HostDefaults() (Covered, error) {
-	var covered Covered
-	var errs []error
-	for _, family := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified()} {
-		_, _, err := lookupDefault(s.host, s.mesh, family)
-		switch {
-		case errors.Is(err, ErrNoDefaultRoute):
-		case err != nil:
-			errs = append(errs, err)
-		case family.Is4():
-			covered.V4 = true
-		default:
-			covered.V6 = true
-		}
-	}
-	return covered, errors.Join(errs...)
-}
 
 // zoneIndex is the interface a zone names, by index or by name, zero for none or one the host does not have
 func (s *Selection) zoneIndex(zone string) int {

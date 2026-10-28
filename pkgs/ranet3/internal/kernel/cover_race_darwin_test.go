@@ -119,13 +119,12 @@ func TestDarwinMemberAtAKeyFreedAfterARefusalReadsBackAsOurs(t *testing.T) {
 // the key beside the rest of the IPv4 cover, with nothing skipped and every
 // desired route installed.
 func TestDarwinRealRouteTakesItsKeyAfterARace(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
+	reconciler, table, _ := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	plat, _ := testPlatform(t, reconciler.Table(), Runtime{BoundUnderlay: true})
 	upper := prefix("128.0.0.0/1")
 	rib := newRaceRIB(t, upper)
 	plat.sock, plat.host = rib, rib
 	reconciler.plat = plat
-	reconciler.rt.Capture = &recordingCapture{fake: fake, hosts: Covered{V4: true, V6: true}}
 	reconciler.now = func() time.Time { return start }
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
 	table.Set(netip.Prefix{}, upper, nil)

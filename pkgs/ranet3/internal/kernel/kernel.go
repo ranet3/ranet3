@@ -197,12 +197,6 @@ type Runtime struct {
 	// Endpoints reports the addresses the live sessions send their underlay
 	// to now. Nil reports none
 	Endpoints func() []netip.Addr
-	// Capture answers whether the host holds a default of its own in each
-	// family, which a cover waits for. Nil waits for nothing, as everywhere
-	// but darwin with link.underlay.bind. It is opened by whatever owns the
-	// underlay's selection, so it is handed here rather than written in
-	// cap.table.
-	Capture CaptureRoutes
 	// Host is the machine this reconciler reads and writes, nil for the one
 	// this process is running on, as a daemon passes. A test hands
 	// in a recorded routing table so the path from a configuration file to a
@@ -427,8 +421,7 @@ type platform interface {
 	DelAddr(netip.Prefix) error
 	// Notify carries one coalesced wake-up per batch of kernel notifications
 	// touching what the reconciler holds: on linux a route in its table or a
-	// deleted rule of its protocol, on darwin a route of its interface, or of
-	// any interface with link.underlay.bind.
+	// deleted rule of its protocol, on darwin a route of its interface.
 	Notify() <-chan struct{}
 	// retable takes the capability a reload installed, on the id and proto the platform was opened with
 	retable(Table)
@@ -622,11 +615,8 @@ type Reconciler struct {
 	// warned holds the routes already reported as unrepresentable. It is
 	// rebuilt from each pass, so it stays bounded by the snapshot.
 	warned map[Route]bool
-	// uncovered records which families the last pass found a host default
-	// of, so holding a cover back costs one line per transition rather than
-	// one per pass, and capturing says whether this pass left a capture
-	// installed, the only state whose grace needs a wake-up of its own.
-	uncovered Covered
+	// capturing says whether this pass left a capture installed, the only
+	// state whose grace needs a wake-up of its own.
 	capturing bool
 	// cover is the families the last pass left covered, so a change is
 	// reported once.
@@ -1248,10 +1238,6 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 		return fmt.Errorf("list routes: %w", err)
 	}
 	desired := r.desired(snapshot)
-	// Before the diff, not after it: a route whose family lacks the fallback
-	// it needs leaves what this pass wants, which withdraws a copy already in
-	// the kernel as well as holding back a new one.
-	desired, coverErr := r.covered(desired)
 	// Whether this pass leaves the mesh carrying this machine's own traffic,
 	// which desired answers alone: it already holds only the capturing routes
 	// this pass may install.
@@ -1275,10 +1261,10 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 	}
 	unmet := func(route Route) bool { return scoped(route) || unheld[route] }
 	bare := desired
-	// After the capture grace check and the readiness check, which judge the
-	// zero route whole: a member holds no zero address, and CapturesTheMachine
-	// counts one by its length outside the overlay alone, which would pass the
-	// rest while that check holds captures back.
+	// After the capture grace check, which judges the zero route whole: a
+	// member holds no zero address, and CapturesTheMachine counts one by its
+	// length outside the overlay alone, which would pass the rest while that
+	// check holds captures back.
 	var dropped []Route
 	if covering {
 		desired = coverDefaults(bare, unmet)
@@ -1307,9 +1293,6 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 	})
 	broken := map[Family]bool{}
 	var errs []error
-	if coverErr != nil {
-		errs = append(errs, coverErr)
-	}
 	added, removed, skipped := 0, 0, len(dropped)
 	held := make(map[Route]bool, len(actual))
 	for _, route := range actual {
@@ -1454,46 +1437,6 @@ func (r *Reconciler) reportMemberless(desired []Route) []Route {
 	}
 	r.memberless = reported
 	return out
-}
-
-// covered drops every zero route the platform installs as its cover while the
-// host holds no default of its own in the route's family, the default a
-// socket scoped to an interface falls back on, since no member holds a zero
-// address.
-func (r *Reconciler) covered(desired []Route) ([]Route, error) {
-	if r.rt.Capture == nil || !r.covers() || !slices.ContainsFunc(desired, zeroRoute) {
-		r.uncovered = Covered{V4: true, V6: true}
-		return desired, nil
-	}
-	var errs []error
-	host, err := r.rt.Capture.HostDefaults()
-	if err != nil {
-		errs = append(errs, fmt.Errorf("read the host's own defaults before covering: %w", err))
-	}
-	allowed := Covered{V4: true, V6: true}
-	out := desired[:0:0]
-	for _, route := range desired {
-		address := route.Destination.Addr()
-		if zeroRoute(route) && !host.Has(address) {
-			// Left out of the pass rather than counted as skipped: skipped
-			// counts what the kernel would not take, and this is the
-			// reconciler refusing to ask.
-			if r.uncovered.Has(address) {
-				slog.Warn("kernel is holding back a route that would carry this machine's own traffic",
-					"destination", route.Destination,
-					"detail", "the host has no default of its own for that family, so this node would lose every network it has there")
-			}
-			if address.Is4() {
-				allowed.V4 = false
-			} else {
-				allowed.V6 = false
-			}
-			continue
-		}
-		out = append(out, route)
-	}
-	r.uncovered = allowed
-	return out, errors.Join(errs...)
 }
 
 // desired projects one forwarding table snapshot onto the routes the kernel
