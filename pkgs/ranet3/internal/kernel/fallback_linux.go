@@ -26,6 +26,9 @@ var _ switcher = (*netlinkPlatform)(nil)
 // confirms no entry
 const fallbackPriority = 2147483646
 
+// fallbackDrop is the chain's last line, whose counter status reads
+const fallbackDrop = "counter drop"
+
 // fallbackChain is the table's one chain, at postrouting, which sees the
 // device every packet leaves by after every route chain and NAT has moved it
 var fallbackChain = nftables.Chain{Table: FallbackTable, Name: "fallback", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: fallbackPriority}
@@ -152,7 +155,7 @@ func (s fallbackSets) rules() ([]fallbackRule, error) {
 			anonymous: ports, members: members,
 		})
 	}
-	out = append(out, fallbackRule{spec: "counter drop", expressions: nftables.CountedDrop()})
+	out = append(out, fallbackRule{spec: fallbackDrop, expressions: nftables.CountedDrop()})
 	return out, nil
 }
 
@@ -294,27 +297,34 @@ func (p *netlinkPlatform) writeFallback(s fallbackSets) error {
 	return conn.Batch(requests)
 }
 
-func (p *netlinkPlatform) readFallback(s fallbackSets) (string, error) {
+func (p *netlinkPlatform) readFallback(s fallbackSets) (fallbackRead, error) {
 	conn, err := p.watchFallback()
 	if err != nil {
-		return "", err
+		return fallbackRead{}, err
 	}
 	return fallbackFault(conn, s)
 }
 
-// fallbackFault names the first way the table conn reads differs from what
-// writeFallback writes for s, empty where none does
-func fallbackFault(conn *nftables.Conn, s fallbackSets) (string, error) {
+// fallbackFault reads the table conn holds against what writeFallback writes
+// for s
+func fallbackFault(conn *nftables.Conn, s fallbackSets) (fallbackRead, error) {
 	read, err := readFallback(conn, s)
 	if err != nil {
-		return "", err
+		return fallbackRead{}, err
+	}
+	var out fallbackRead
+	for _, rule := range read.Rules {
+		if rule.Spec == fallbackDrop {
+			out.dropped, out.bytes = rule.Packets, rule.Bytes
+		}
 	}
 	if read.Fault != "" {
-		return read.Fault, nil
+		out.fault = read.Fault
+		return out, nil
 	}
 	rules, err := s.rules()
 	if err != nil {
-		return "", err
+		return fallbackRead{}, err
 	}
 	var want, held []string
 	for _, rule := range rules {
@@ -324,9 +334,79 @@ func fallbackFault(conn *nftables.Conn, s fallbackSets) (string, error) {
 		held = append(held, rule.Spec)
 	}
 	if !slices.Equal(held, want) {
-		return fmt.Sprintf("its chain holds [%s], where [%s] was written", strings.Join(held, "; "), strings.Join(want, "; ")), nil
+		out.fault = fmt.Sprintf("its chain holds [%s], where [%s] was written", strings.Join(held, "; "), strings.Join(want, "; "))
 	}
-	return "", nil
+	return out, nil
+}
+
+// ReadFallback reads the table through a socket of its own, so the
+// reconciler's stays with its one user
+func ReadFallback() (FallbackDebug, error) {
+	out := FallbackDebug{Where: "nftables table inet " + FallbackTable + " chain " + fallbackChain.Name, Hook: "postrouting", Priority: fallbackPriority}
+	conn, err := nftables.Dial()
+	if err != nil {
+		return out, err
+	}
+	defer conn.Close()
+	tables, err := nftables.Tables(conn, FallbackTable)
+	if err != nil {
+		return out, err
+	}
+	if _, out.Held = tables[unix.NFPROTO_INET]; !out.Held {
+		return out, nil
+	}
+	read, err := nftables.Contents{Chains: []nftables.Chain{fallbackChain}}.Read(conn, tables, unix.NFPROTO_INET)
+	if err != nil {
+		return out, err
+	}
+	for _, rule := range read.Rules {
+		out.Rules = append(out.Rules, FallbackDebugRule{Spec: rule.Spec, Packets: rule.Packets, Bytes: rule.Bytes})
+	}
+	for _, set := range fallbackNamed {
+		held, err := set.Elements(conn, unix.NFPROTO_INET)
+		if err != nil {
+			return out, err
+		}
+		elements := []string{}
+		for _, interval := range held {
+			elements = append(elements, intervalText(set, interval))
+		}
+		out.Sets = append(out.Sets, FallbackDebugSet{Name: set.Name, Elements: elements})
+	}
+	return out, nil
+}
+
+// intervalText is an element as nft lists it: a link's name, an address, a
+// prefix, or a range's first and last address
+func intervalText(set nftables.Set, interval nftables.Interval) string {
+	if set.KeyType == nftables.TypeIfname {
+		return unix.ByteSliceToString(interval.First)
+	}
+	first, okFirst := netip.AddrFromSlice(interval.First)
+	last, okLast := netip.AddrFromSlice(interval.Last)
+	if !okFirst || !okLast {
+		return fmt.Sprintf("%x-%x", interval.First, interval.Last)
+	}
+	for bits := 0; bits <= first.BitLen(); bits++ {
+		prefix := netip.PrefixFrom(first, bits)
+		if prefix.Masked().Addr() == first && lastOf(prefix) == last {
+			if bits == first.BitLen() {
+				return first.String()
+			}
+			return prefix.String()
+		}
+	}
+	return first.String() + "-" + last.String()
+}
+
+// lastOf is the last address of prefix
+func lastOf(prefix netip.Prefix) netip.Addr {
+	raw := prefix.Addr().AsSlice()
+	for i := prefix.Bits(); i < len(raw)*8; i++ {
+		raw[i/8] |= 0x80 >> (i % 8)
+	}
+	last, _ := netip.AddrFromSlice(raw)
+	return last
 }
 
 // readFallback reads the table back, a missing one as a fault

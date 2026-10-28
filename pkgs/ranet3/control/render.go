@@ -156,6 +156,22 @@ func kernelLine(k KernelStatus) string {
 		for _, family := range e.Unaddressed {
 			line += fmt.Sprintf(", no %s overlay address on the tun, so %s runs mode off's rules", familyLabel(family), familyLabel(family))
 		}
+		if f := e.Fallback; f != nil {
+			line += ", fallback none " + f.State
+			if f.Reason != "" {
+				line += ", " + f.Reason
+			}
+			line += fmt.Sprintf(", %d packets, %d B dropped", f.Dropped, f.DroppedBytes)
+			for _, network := range f.Captured {
+				line += fmt.Sprintf(", %s left out of the LAN as it captures the machine", network)
+			}
+			for _, name := range f.Unresolved {
+				line += fmt.Sprintf(", %s does not resolve under the switch", name)
+			}
+			for _, resolver := range f.Resolvers {
+				line += fmt.Sprintf(", DNS server %s on %s lies beyond the LAN", resolver.Address, resolver.Link)
+			}
+		}
 	}
 	if k.Err != "" {
 		line += ", " + k.Err

@@ -90,6 +90,8 @@ type fakeKernel struct {
 	fallbackDeletes int
 	spoiled         string
 	failFallback    error
+	// fallbackDropped is the packets the table's last line has dropped, each of 60 bytes
+	fallbackDropped uint64
 }
 
 func (f *fakeKernel) writeFallback(s fallbackSets) error {
@@ -103,20 +105,20 @@ func (f *fakeKernel) writeFallback(s fallbackSets) error {
 	return nil
 }
 
-func (f *fakeKernel) readFallback(s fallbackSets) (string, error) {
+func (f *fakeKernel) readFallback(s fallbackSets) (fallbackRead, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
 	case f.failFallback != nil:
-		return "", f.failFallback
+		return fallbackRead{}, f.failFallback
 	case f.fallback == nil:
-		return "the table is missing", nil
+		return fallbackRead{fault: "the table is missing"}, nil
 	case f.spoiled != "":
-		return f.spoiled, nil
+		return fallbackRead{fault: f.spoiled, dropped: f.fallbackDropped}, nil
 	case !reflect.DeepEqual(*f.fallback, s):
-		return "it holds other sets", nil
+		return fallbackRead{fault: "it holds other sets", dropped: f.fallbackDropped}, nil
 	}
-	return "", nil
+	return fallbackRead{dropped: f.fallbackDropped, bytes: 60 * f.fallbackDropped}, nil
 }
 
 func (f *fakeKernel) deleteFallback() error {

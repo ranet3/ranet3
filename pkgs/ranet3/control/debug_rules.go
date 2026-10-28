@@ -41,6 +41,38 @@ type RulesInfo struct {
 	Lookups []RuleLookup `json:"lookups,omitempty"`
 	// Border is absent on a node that writes no cap.border
 	Border *BorderChain `json:"border,omitempty"`
+	// Fallback is absent on a node whose cap.exit asks for no fallback = "none"
+	Fallback *FallbackTable `json:"fallback,omitempty"`
+}
+
+// FallbackTable is the table ranet3_fallback as a debug read finds it now,
+// beside the state the reconciler's last pass gave it
+type FallbackTable struct {
+	Where    string `json:"where"`
+	Hook     string `json:"hook"`
+	Priority int    `json:"priority"`
+	State    string `json:"state"`
+	Reason   string `json:"reason,omitempty"`
+	// Held is whether the kernel holds the table at all
+	Held  bool                `json:"held"`
+	Rules []FallbackTableRule `json:"rules"`
+	Sets  []FallbackTableSet  `json:"sets"`
+	Err   string              `json:"err,omitempty"`
+}
+
+// FallbackTableRule is one line of the chain as the kernel holds it, with
+// what it counted where it counts
+type FallbackTableRule struct {
+	Spec    string `json:"spec"`
+	Packets uint64 `json:"packets"`
+	Bytes   uint64 `json:"bytes"`
+}
+
+// FallbackTableSet is one named set of the table with its elements, a range
+// that is no prefix written as its first and last address
+type FallbackTableSet struct {
+	Name     string   `json:"name"`
+	Elements []string `json:"elements"`
 }
 
 // RuleLookup is one lookup of the reconciler: unmarked, of Address inside the
@@ -180,10 +212,50 @@ func RenderRules(w io.Writer, info RulesInfo) {
 	} else if info.PolicyErr == "" {
 		fmt.Fprint(w, "Lookups: none\n")
 	}
-	if info.Border == nil {
+	if info.Border != nil {
+		renderBorder(w, info.Border)
+	}
+	if info.Fallback != nil {
+		renderFallback(w, info.Fallback)
+	}
+}
+
+// renderFallback writes the switch's table: its lines with the drop's count,
+// then each set's elements
+func renderFallback(w io.Writer, table *FallbackTable) {
+	state := table.State
+	if table.Reason != "" {
+		state += ", " + table.Reason
+	}
+	fmt.Fprintf(w, "\nFallback table, %s, %s at priority %d, %s\n", table.Where, table.Hook, table.Priority, state)
+	switch {
+	case table.Err != "":
+		fmt.Fprintf(w, "  read now: %s\n", table.Err)
+		return
+	case !table.Held:
+		fmt.Fprint(w, "  not held\n")
 		return
 	}
-	border := info.Border
+	rows := make([][]string, 0, len(table.Rules)+len(table.Sets))
+	for _, rule := range table.Rules {
+		row := []string{rule.Spec}
+		if strings.HasSuffix(rule.Spec, "drop") {
+			row = append(row, fmt.Sprintf("%d packets, %d B", rule.Packets, rule.Bytes))
+		}
+		rows = append(rows, row)
+	}
+	for _, set := range table.Sets {
+		elements := "empty"
+		if len(set.Elements) > 0 {
+			elements = strings.Join(set.Elements, ", ")
+		}
+		rows = append(rows, []string{"set " + set.Name, elements})
+	}
+	indented(w, func(w io.Writer) { pairs(w, rows) })
+}
+
+// renderBorder writes the border filter's chain with the packets each drop counted
+func renderBorder(w io.Writer, border *BorderChain) {
 	state := "ready"
 	if !border.Ready {
 		state = "not ready, " + border.Unready

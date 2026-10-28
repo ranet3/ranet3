@@ -450,6 +450,37 @@ type KernelExit struct {
 	// Unaddressed is each family the tun carries no overlay address of, which
 	// runs mode off's rules
 	Unaddressed []string `json:"unaddressed,omitempty"`
+	// Fallback is the switch cap.exit fallback = "none" asks for, absent under "uplink"
+	Fallback *KernelFallback `json:"fallback,omitempty"`
+}
+
+// KernelFallback is the table ranet3_fallback as the reconciler's last pass
+// read it back
+type KernelFallback struct {
+	// State is holding while no exit is live and the table reads back as
+	// written, passing while an exit is live, and not holding while the table
+	// does not read back as written, for the Reason given. routing.md's "The
+	// kill switch on Linux" lists the table's lines.
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+	// Dropped and DroppedBytes are the packets and bytes the chain's last line has dropped, as the last pass read them
+	Dropped      uint64 `json:"dropped"`
+	DroppedBytes uint64 `json:"dropped_bytes"`
+	// Captured is each connected network left out of the LAN, since its
+	// length counts as capturing the machine
+	Captured []string `json:"captured,omitempty"`
+	// Unresolved is each endpoint name whose last lookup failed while the switch held
+	Unresolved []string `json:"unresolved,omitempty"`
+	// Resolvers is each DNS server systemd-resolved queries through one link
+	// outside the mesh at an address outside the LAN, this node's own prefixes,
+	// loopback and link-local
+	Resolvers []KernelResolver `json:"resolvers,omitempty"`
+}
+
+// KernelResolver is a DNS server systemd-resolved queries through Link
+type KernelResolver struct {
+	Link    string `json:"link"`
+	Address string `json:"address"`
 }
 
 // KernelSkip is a link a cap.exit forward entry matched and the mode leaves out, with the reason

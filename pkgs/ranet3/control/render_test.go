@@ -405,6 +405,33 @@ func TestKernelLineNamesTheExitModeAndWhatItSkips(t *testing.T) {
 	}
 }
 
+// The kernel line names fallback = "none"'s state and what its drop counted in
+// each state, with each network the LAN leaves out, each endpoint name that
+// does not resolve and each DNS server beyond the LAN, and says nothing of the
+// switch under "uplink".
+func TestKernelLineNamesTheSwitchsState(t *testing.T) {
+	exit := func(fallback *KernelFallback) KernelStatus {
+		return KernelStatus{Enabled: true, Where: "table 200 protocol 155", Table: 200, Protocol: 155, Installed: 4, Exit: &KernelExit{Fallback: fallback}}
+	}
+	var lines strings.Builder
+	for _, fallback := range []*KernelFallback{
+		{State: "passing", Dropped: 0},
+		{State: "holding", Dropped: 12, DroppedBytes: 720,
+			Captured:   []string{"198.0.0.0/7"},
+			Unresolved: []string{"gateway.example.org"},
+			Resolvers:  []KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}},
+		{State: "not holding", Reason: "its set lan4 holds { }, where { 198.51.100.0/25 } was written", Dropped: 3, DroppedBytes: 180},
+	} {
+		lines.WriteString(kernelLine(exit(fallback)) + "\n")
+	}
+	golden(t, "kernel-fallback.txt", []byte(lines.String()))
+	goldenJSON(t, "kernel-fallback.json", exit(&KernelFallback{State: "holding", Dropped: 12, DroppedBytes: 720,
+		Captured: []string{"198.0.0.0/7"}, Unresolved: []string{"gateway.example.org"}, Resolvers: []KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}}))
+	if line := kernelLine(exit(nil)); strings.Contains(line, "fallback") {
+		t.Errorf("the kernel line reads %q under fallback uplink, want no switch clause", line)
+	}
+}
+
 // The egress line leads with the prefixes being announced rather than with the
 // ones configured. The two differ exactly when the capability is not working,
 // since a prefix is announced only while its family is ready, and that

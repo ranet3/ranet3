@@ -2165,7 +2165,7 @@ func TestResolveEndpointAnswersWithTheAddress(t *testing.T) {
 	}}}}})
 	for name, peer := range map[string]string{"pinned to a serial": "example/gateway:1", "unpinned": "example/gateway"} {
 		t.Run(name, func(t *testing.T) {
-			endpoint, resolved, err := resolveEndpoint(context.Background(), x, nil, identity.MustParse(peer), "ip4")
+			endpoint, resolved, err := resolveEndpoint(context.Background(), x, nil, identity.MustParse(peer), "ip4", &names{})
 			if err != nil {
 				t.Fatalf("resolving an endpoint carrying a literal: %v", err)
 			}
@@ -2176,6 +2176,30 @@ func TestResolveEndpointAnswersWithTheAddress(t *testing.T) {
 				t.Errorf("resolved to %s, want %s", got, address)
 			}
 		})
+	}
+}
+
+// A dial notes each endpoint name whose lookup failed, which the switch's
+// status names, and leaves a literal and a name that resolved out of it
+func TestResolveEndpointNotesEachNameThatFails(t *testing.T) {
+	literal, unresolvable := "192.0.2.7", "gateway..example.org"
+	x := trust(t, registry.Registry{{Organization: "example", Nodes: []registry.Node{
+		{CommonName: "gateway", Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Address: &unresolvable, Port: 13000}}},
+		{CommonName: "relay", Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Address: &literal, Port: 13000}}},
+	}}})
+	var failed names
+	if _, _, err := resolveEndpoint(context.Background(), x, nil, identity.MustParse("example/gateway"), "ip4", &failed); err == nil {
+		t.Fatalf("%s resolved", unresolvable)
+	}
+	if _, _, err := resolveEndpoint(context.Background(), x, nil, identity.MustParse("example/relay"), "ip4", &failed); err != nil {
+		t.Fatal(err)
+	}
+	if got := failed.list(); !slices.Equal(got, []string{unresolvable}) {
+		t.Errorf("the failed names are %v, want %v", got, []string{unresolvable})
+	}
+	failed.note(unresolvable, false)
+	if got := failed.list(); len(got) != 0 {
+		t.Errorf("after a lookup that resolved the failed names are %v, want none", got)
 	}
 }
 

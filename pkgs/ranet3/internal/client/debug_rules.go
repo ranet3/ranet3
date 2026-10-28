@@ -85,6 +85,9 @@ func (c *Client) DebugRules() control.RulesInfo {
 	if f := c.border.Load(); f != nil {
 		info.Border = borderChain((*f).Debug())
 	}
+	if exit := c.kernel().Exit; exit != nil && exit.Fallback != nil {
+		info.Fallback = c.fallbackTable(*exit.Fallback)
+	}
 	return info
 }
 
@@ -131,6 +134,30 @@ func underlayLookups(routes underlayRoutes, paths []transport.UnderlayPath) []co
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// fallbackTable is the table ranet3_fallback as a read through a socket of
+// its own finds it, beside the state the reconciler's last pass gave it
+func (c *Client) fallbackTable(state control.KernelFallback) *control.FallbackTable {
+	read := c.fallbackRead
+	if read == nil {
+		read = kernel.ReadFallback
+	}
+	debug, err := read()
+	table := &control.FallbackTable{
+		Where: debug.Where, Hook: debug.Hook, Priority: debug.Priority, State: state.State, Reason: state.Reason, Held: debug.Held,
+		Rules: []control.FallbackTableRule{}, Sets: []control.FallbackTableSet{},
+	}
+	if err != nil {
+		table.Err = err.Error()
+	}
+	for _, rule := range debug.Rules {
+		table.Rules = append(table.Rules, control.FallbackTableRule{Spec: rule.Spec, Packets: rule.Packets, Bytes: rule.Bytes})
+	}
+	for _, set := range debug.Sets {
+		table.Sets = append(table.Sets, control.FallbackTableSet{Name: set.Name, Elements: set.Elements})
+	}
+	return table
 }
 
 func policyRule(rule kernel.DumpedRule) control.PolicyRule {

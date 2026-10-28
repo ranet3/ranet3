@@ -5,10 +5,13 @@ package kernel
 
 import (
 	"errors"
+	"log/slog"
 	"net/netip"
 	"reflect"
+	"slices"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -156,5 +159,76 @@ func TestFallbackSetsLeaveOutTheOverlayAndWhatCapturesTheMachine(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("the sets read\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// The status names the switch holding while no exit is live, passing while the
+// mesh's defaults are installed, and not holding with the fault while the
+// table does not read back, each with what the drop counted, the LAN, and the
+// DNS servers resolved queries through a link that lie beyond the LAN and this
+// node's own prefixes. Each
+// change of state is one event, and a reload to "uplink" ends the switch with
+// one more and takes it out of the status.
+func TestFallbackStatusNamesEachStateOnce(t *testing.T) {
+	bus := events.New()
+	network := &hostNetwork{state: exitPassHost("docker0")}
+	resolvers := []LinkResolver{
+		{Link: "eth0", Address: netip.MustParseAddr("198.51.100.53")},
+		{Link: "eth0", Address: netip.MustParseAddr("203.0.113.53")},
+		{Link: "eth0", Address: netip.MustParseAddr("fe80::53")},
+		{Link: "ranet3", Address: netip.MustParseAddr("192.0.2.53")},
+		{Link: "eth1", Address: netip.MustParseAddr("2001:db8:f::53")},
+		{Link: "eth1", Address: netip.MustParseAddr("203.0.113.153")},
+	}
+	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone})
+	reconciler, routes, fake := harness(t, tbl, Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read, Events: bus,
+		Resolvers: func() ([]LinkResolver, error) { return resolvers, nil }})
+	routes.Set(netip.Prefix{}, prefix("203.0.113.128/25"), netstack.Local)
+	fake.fallbackDropped = 5
+	status := func(want FallbackState) *FallbackStatus {
+		t.Helper()
+		if err := reconciler.reconcile(); err != nil && want != FallbackNotHolding {
+			t.Fatal(err)
+		}
+		exit := reconciler.Stats().Exit
+		if exit == nil || exit.Fallback == nil || exit.Fallback.State != want {
+			t.Fatalf("the status names the switch as %+v, want %s", exit, want)
+		}
+		return exit.Fallback
+	}
+	holding := status(FallbackHolding)
+	beyond := []LinkResolver{resolvers[1], resolvers[4]}
+	if holding.Dropped != 5 || holding.DroppedBytes != 300 || holding.Fault != "" ||
+		!reflect.DeepEqual(holding.LAN, []netip.Prefix{prefix("198.51.100.0/24"), prefix("2001:db8:a::/64")}) || !reflect.DeepEqual(holding.Resolvers, beyond) {
+		t.Errorf("holding reads %+v, want 5 packets of 300 bytes, the LAN and the resolvers %v", holding, beyond)
+	}
+	status(FallbackHolding)
+	routes.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+	routes.Set(netip.Prefix{}, prefix("::/0"), nil)
+	status(FallbackPassing)
+	fake.spoiled = "its set lan4 holds { }"
+	if fault := status(FallbackNotHolding).Fault; fault != fake.spoiled {
+		t.Errorf("not holding names %q, want %q", fault, fake.spoiled)
+	}
+	fake.spoiled = ""
+	status(FallbackPassing)
+
+	if err := reconciler.SetTable(reconciler.table.WithMode(&ExitMode{Fallback: FallbackUplink}), exitPassOverlay, nil); err != nil {
+		t.Fatal(err)
+	}
+	reconciler.adopt()
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if exit := reconciler.Stats().Exit; exit == nil || exit.Fallback != nil {
+		t.Errorf("under uplink the status names the switch as %+v", exit)
+	}
+	var states []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "kernel.fallback" }, 0) {
+		states = append(states, event.Attrs["was"]+" to "+event.Attrs["state"])
+	}
+	want := []string{"off to holding", "holding to passing", "passing to not holding", "not holding to passing", "passing to off"}
+	if !slices.Equal(states, want) {
+		t.Errorf("the switch's events read %v, want %v", states, want)
 	}
 }

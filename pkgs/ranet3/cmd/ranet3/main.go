@@ -518,6 +518,15 @@ func exitStatus(exit *kernel.ExitStatus) *control.KernelExit {
 	for _, skip := range exit.Skipped {
 		out.Skipped = append(out.Skipped, control.KernelSkip{Entry: skip.Entry, Link: skip.Link, Reason: skip.Reason})
 	}
+	if f := exit.Fallback; f != nil {
+		out.Fallback = &control.KernelFallback{State: string(f.State), Reason: f.Fault, Dropped: f.Dropped, DroppedBytes: f.DroppedBytes}
+		for _, network := range f.Captured {
+			out.Fallback.Captured = append(out.Fallback.Captured, network.String())
+		}
+		for _, resolver := range f.Resolvers {
+			out.Fallback.Resolvers = append(out.Fallback.Resolvers, control.KernelResolver{Link: resolver.Link, Address: resolver.Address.String()})
+		}
+	}
 	return out
 }
 
