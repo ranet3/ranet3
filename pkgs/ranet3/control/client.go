@@ -63,6 +63,12 @@ func (c *Client) Path() string { return c.path }
 // the compiler checked.
 func (c *Client) Status() (Status, error) { return read[Status](c, PathStatus) }
 
+// StatusWithin is Status, ctx bounding the exchange beside the client's own
+// timeout
+func (c *Client) StatusWithin(ctx context.Context) (Status, error) {
+	return readWithin[Status](ctx, c, PathStatus)
+}
+
 func (c *Client) Neighbors() ([]Neighbor, error) { return read[[]Neighbor](c, PathNeighbors) }
 
 func (c *Client) Routes() ([]Route, error) { return read[[]Route](c, PathRoutes) }
@@ -119,8 +125,18 @@ func (c *Client) Metrics() (string, error) {
 // reading a daemon it cannot verify still should not be made to allocate
 // without limit.
 func read[T any](c *Client, path string) (T, error) {
+	return readWithin[T](context.Background(), c, path)
+}
+
+// readWithin is read, ctx bounding the exchange beside the client's own
+// timeout
+func readWithin[T any](ctx context.Context, c *Client, path string) (T, error) {
 	var out T
-	response, err := c.http.Get("http://control" + path)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://control"+path, nil)
+	if err != nil {
+		return out, fmt.Errorf("control: %w", err)
+	}
+	response, err := c.http.Do(request)
 	if err != nil {
 		return out, c.explain(err)
 	}
