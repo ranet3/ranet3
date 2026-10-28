@@ -532,7 +532,10 @@ var (
 // Local or an Assigned entry to each entry that counts as a default, the
 // lookups whose way past 5430 an exit's inputs and an advertised LAN decide,
 // which the draws seldom pair, and the same from each link's address and its
-// network, the host's own and arriving on the link, which mode 2 decides.
+// network, the host's own and arriving on the link, which mode 2 decides. It
+// adds a lookup from and into each own prefix the mirror throws under
+// fallback = "none", the host's own and arriving on each link forward names,
+// which 5445 decides.
 func (h interpreted) packets(ht *hegel.T) []fibPacket {
 	var out []fibPacket
 	inputs := []string{"", "", "eth0", "br-1a", "eth1", "ppp0", "docker0", "dummy0"}
@@ -593,6 +596,13 @@ func (h interpreted) packets(ht *hegel.T) []fibPacket {
 				if p := (fibPacket{source: addressIn(ht, source), destination: addressIn(ht, entry.Destination)}); h.lookedUp(p) {
 					out = append(out, p)
 				}
+			}
+		}
+	}
+	for _, own := range h.mode.own {
+		for _, iif := range append([]string{""}, h.mode.forwarded...) {
+			if p := (fibPacket{source: addressIn(ht, own), destination: addressIn(ht, own), iif: iif}); h.lookedUp(p) {
+				out = append(out, p)
 			}
 		}
 	}
