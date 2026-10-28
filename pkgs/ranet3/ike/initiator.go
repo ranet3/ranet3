@@ -165,6 +165,8 @@ type Session struct {
 	stepped atomic.Pointer[pathRead]
 	// probed counts the times the session was asked to probe its path, which Probe bumps off Run's goroutine
 	probed atomic.Uint64
+	// invalidSPIReports counts the INVALID_SPI notifies Run sent, which the sessions view reads off Run's goroutine
+	invalidSPIReports atomic.Uint64
 
 	childMu          sync.RWMutex
 	Child            ChildSA

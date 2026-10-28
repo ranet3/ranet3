@@ -728,6 +728,22 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			}
 			pending = probed
 			continue
+		// a report is held as a liveness check is, and dropped with a request outstanding, since the session keeps one request of its own outstanding at a time
+		// it is dropped too for an SPI a Child SA took or let go of since the hub handed it on
+		// the hub hands the session another on ESP after its interval
+		case spi := <-s.mux.InvalidSPI():
+			if pending != nil || livenessHeld() || s.mux.KnowsSPI(spi) {
+				continue
+			}
+			reported, err := s.startLiveness(invalidSPINotify(spi))
+			if err != nil {
+				s.mux.Close()
+				return err
+			}
+			s.invalidSPIReports.Add(1)
+			s.emit("ike.notify.invalid_spi", slog.String("spi", fmt.Sprintf("%08x", spi)))
+			pending = reported
+			continue
 		case <-s.rechecks:
 			resuiteDue = true
 			continue
@@ -786,9 +802,11 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	}
 }
 
-// startLiveness sends the empty INFORMATIONAL request of RFC 7296 section 2.4
-func (s *Session) startLiveness() (*pendingRequest, error) {
-	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, result: make(chan requestResult, 1), dpd: true})
+// startLiveness sends the INFORMATIONAL request of RFC 7296 section 2.4, empty or carrying inner
+// section 2.4: "Receipt of a fresh cryptographically protected message on an IKE SA or any of its Child SAs ensures liveness of the IKE SA and all of its Child SAs."
+// so a request carrying a notify is a liveness check as well, and its answer is read as one
+func (s *Session) startLiveness(inner ...RawPayload) (*pendingRequest, error) {
+	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: inner, result: make(chan requestResult, 1), dpd: true})
 	if err != nil {
 		return nil, fmt.Errorf("ike: start a liveness check: %w", err)
 	}
@@ -1148,6 +1166,7 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 				return response, fmt.Errorf("ike: peer ended the IKE SA with notify type %d", notify)
 			}
 		}
+		logInvalidSPIs(inner)
 		var deletes []Delete
 		for _, p := range inner {
 			if p.Type != PayloadD {

@@ -185,6 +185,7 @@ const (
 	N_UNSUPPORTED_CRITICAL_PAYLOAD NotifyType = 1
 	N_INVALID_MAJOR_VERSION        NotifyType = 5
 	N_INVALID_SYNTAX               NotifyType = 7
+	N_INVALID_SPI                  NotifyType = 11
 	N_AUTHENTICATION_FAILED        NotifyType = 24
 	N_NO_PROPOSAL_CHOSEN           NotifyType = 14
 	N_INVALID_KE_PAYLOAD           NotifyType = 17
