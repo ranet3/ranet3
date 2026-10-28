@@ -8,18 +8,26 @@ import (
 	"net"
 	"net/netip"
 	"testing"
+
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
 // benchDatagramSize is the size of each ESP datagram the hub benchmark hands the receive loop
 const benchDatagramSize = 1400
 
 // BenchmarkHubReceivesESP runs the hub's receive loop on the benchmark's goroutine over vectors of espSendBatch ESP datagrams from a stranger's address, one vector an op
-// on the SPI of the hub's one mux, whose queue the receive function empties before each vector as the session would, and on an SPI no mux holds, as a flood is
+// on the SPI of the hub's one mux, whose queue the receive function empties before each vector as the session would, with every outer ECN field Not-ECT, ECT(0) or CE, and on an SPI no mux holds, as a flood is
 func BenchmarkHubReceivesESP(b *testing.B) {
 	for _, bench := range []struct {
 		name string
 		spi  uint32
-	}{{"a mux's SPI", knownSPI}, {"an unknown SPI", strayedSPI}} {
+		ecn  packet.ECN
+	}{
+		{"a mux's SPI", knownSPI, packet.NotECT},
+		{"a mux's SPI under ECT(0)", knownSPI, packet.ECT0},
+		{"a mux's SPI under CE", knownSPI, packet.CE},
+		{"an unknown SPI", strayedSPI, packet.NotECT},
+	} {
 		b.Run(bench.name, func(b *testing.B) {
 			network := NewMemoryNetwork()
 			p := network.hold(netip.Addr{})
@@ -39,6 +47,9 @@ func BenchmarkHubReceivesESP(b *testing.B) {
 			receive := func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
 				select {
 				case batch := <-mux.espCh:
+					if (batch.ecn != nil) != (bench.ecn != packet.NotECT) {
+						b.Fatalf("the batch under %v holds %d outer ECN fields", bench.ecn, len(batch.ecn))
+					}
 					if packets := mux.takeESP(batch); len(packets) != espSendBatch {
 						b.Fatalf("the session took %d datagrams, want the vector of %d", len(packets), espSendBatch)
 					}
@@ -50,7 +61,7 @@ func BenchmarkHubReceivesESP(b *testing.B) {
 				}
 				vectors++
 				for i := range bufs {
-					bufs[i], sizes[i], endpoints[i], records[i] = datagram, len(datagram), nil, receiveRecord{source: source}
+					bufs[i], sizes[i], endpoints[i], records[i] = datagram, len(datagram), nil, receiveRecord{source: source, ecn: bench.ecn}
 				}
 				return len(bufs), 0, nil
 			}

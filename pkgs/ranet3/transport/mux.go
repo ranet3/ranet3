@@ -58,6 +58,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
@@ -240,9 +241,19 @@ type Datagram struct {
 type espDatagramBatch struct {
 	ticket  uint64
 	packets [][]byte
+	// ecn holds the outer ECN field of each packet, nil when every one arrived Not-ECT
+	ecn []packet.ECN
 	// bytes is this batch's charge against the queue's byte budget, kept with
 	// it so every receive path releases exactly what was reserved.
 	bytes int
+}
+
+// espChain is one mux's ESP datagrams of one read, linked from its last through receiveLoop's prev by their index in the read
+type espChain struct {
+	mux                *Mux
+	last, count, bytes int
+	// marked says a datagram of the chain arrived with an outer ECN field other than Not-ECT
+	marked bool
 }
 
 // NewHub binds the one UDP socket every session shares, on localAddr's port
@@ -436,7 +447,10 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 		mux   *Mux
 		index int
 	}
-	espBatches := make(map[*Mux][][]byte)
+	// prev holds the index of the datagram before each ESP datagram in its mux's chain
+	prev := make([]int, batch)
+	// chains holds each mux's chain of one read, and chainOf a mux's index in chains
+	chains, chainOf := make([]espChain, 0, batch), make(map[*Mux]int)
 	ikeDatagrams := make([]pendingIKE, 0, batch)
 	unclaimed := make([]int, 0, batch)
 	for {
@@ -448,7 +462,10 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 			failed(err)
 			return
 		}
-		clear(espBatches)
+		// chains and chainOf are cleared rather than only cut, so neither keeps a closed mux alive past the next read
+		clear(chains)
+		chains = chains[:0]
+		clear(chainOf)
 		ikeDatagrams = ikeDatagrams[:0]
 		unclaimed = unclaimed[:0]
 		unwanted := 0
@@ -491,11 +508,20 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 			} else {
 				spi := uint32(raw[0])<<24 | uint32(raw[1])<<16 | uint32(raw[2])<<8 | uint32(raw[3])
 				if m := tables.esp[spi]; m != nil {
-					// Keep views into the receive buffers only until this socket
-					// batch has been demultiplexed. packReceivedBatch below moves
-					// all packets for a peer into one allocation before fn is
-					// allowed to reuse the buffers.
-					espBatches[m] = append(espBatches[m], raw)
+					// A chain names datagrams of this read alone. Only the copy
+					// packReceivedBatch makes below outlives the read, so fn may
+					// reuse the buffers.
+					k, ok := chainOf[m]
+					if !ok {
+						k = len(chains)
+						chainOf[m] = k
+						chains = append(chains, espChain{mux: m})
+					}
+					c := &chains[k]
+					prev[i], c.last = c.last, i
+					c.count++
+					c.bytes += len(raw)
+					c.marked = c.marked || records[i].ecn != packet.NotECT
 				} else {
 					unwanted++
 					if !looked {
@@ -549,18 +575,15 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 				h.refused.Add(1)
 			}
 		}
-		for m, packets := range espBatches {
-			total := 0
-			for _, packet := range packets {
-				total += len(packet)
-			}
+		for _, c := range chains {
+			m := c.mux
 			if p := m.pair.Load(); p != nil {
-				h.carry(p, total)
+				h.carry(p, c.bytes)
 			}
 			// Tested before packReceivedBatch copies, so a flood is refused
 			// without allocating for it.
-			if !m.hasRoomForESP(total) || !m.dispatchESP(packReceivedBatch(packets), total) {
-				h.noteDrop(len(packets), "a peer's ESP receive queue")
+			if !m.hasRoomForESP(c.bytes) || !m.dispatchESP(packReceivedBatch(c, bufs, sizes, records, prev)) {
+				h.noteDrop(c.count, "a peer's ESP receive queue")
 			}
 		}
 	}
@@ -616,23 +639,34 @@ func (h *Hub) forgetRetired(now int64) {
 	maps.DeleteFunc(h.retired, func(_ uint32, at int64) bool { return now-at >= int64(invalidSPIInterval) })
 }
 
-// packReceivedBatch detaches packets from receiveLoop's reusable recvmmsg
-// buffers with one allocation per peer and socket read, rather than one heap
-// allocation per datagram. Packet slice boundaries are retained so parallel
-// ESP workers can authenticate the batch without any further framing work.
-func packReceivedBatch(packets [][]byte) [][]byte {
-	total := 0
-	for _, packet := range packets {
-		total += len(packet)
+// packReceivedBatch detaches a chain's packets from receiveLoop's reusable
+// recvmmsg buffers with two allocations per peer and socket read, the packet
+// slices and one block that holds their bytes, rather than one heap allocation
+// per datagram. Packet slice boundaries are retained so parallel ESP workers
+// can authenticate the batch without any further framing work. A marked
+// chain's outer ECN fields share the block, ahead of the packets so that no
+// packet's capacity reaches them.
+func packReceivedBatch(c espChain, bufs [][]byte, sizes []int, records []receiveRecord, prev []int) espDatagramBatch {
+	fields := 0
+	if c.marked {
+		fields = c.count
 	}
-	storage := make([]byte, total)
-	offset := 0
-	for i, packet := range packets {
-		n := copy(storage[offset:], packet)
-		packets[i] = storage[offset : offset+n]
-		offset += n
+	storage := make([]byte, fields+c.bytes)
+	batch := espDatagramBatch{packets: make([][]byte, c.count), bytes: c.bytes}
+	if c.marked {
+		batch.ecn = unsafe.Slice((*packet.ECN)(&storage[0]), c.count)
 	}
-	return packets
+	end := len(storage)
+	for j, i := c.count-1, c.last; j >= 0; j, i = j-1, prev[i] {
+		start := end - sizes[i]
+		batch.packets[j] = storage[start:end]
+		copy(batch.packets[j], bufs[i][:sizes[i]])
+		if c.marked {
+			batch.ecn[j] = records[i].ecn
+		}
+		end = start
+	}
+	return batch
 }
 
 // Mux is one peer's logical IKE and ESP channel on a Hub.
@@ -673,16 +707,16 @@ func (m *Mux) hasRoomForESP(bytes int) bool {
 // the ticket that fixes its order, and reports whether the queue took it. A
 // dropped batch consumes no ticket, because a hub may have separate IPv4 and
 // IPv6 receive loops and the gap would stall whichever emitter waits for it.
-func (m *Mux) dispatchESP(packets [][]byte, bytes int) bool {
+func (m *Mux) dispatchESP(batch espDatagramBatch) bool {
 	m.espDispatchMu.Lock()
 	defer m.espDispatchMu.Unlock()
-	if m.espQueued.Load()+int64(bytes) > espQueueBytes {
+	if m.espQueued.Load()+int64(batch.bytes) > espQueueBytes {
 		return false
 	}
-	batch := espDatagramBatch{ticket: m.espTicket, packets: packets, bytes: bytes}
+	batch.ticket = m.espTicket
 	select {
 	case m.espCh <- batch:
-		m.espQueued.Add(int64(bytes))
+		m.espQueued.Add(int64(batch.bytes))
 		m.espTicket++
 		return true
 	default:
@@ -987,17 +1021,19 @@ func (m *Mux) RecvESP() ([]byte, error) {
 	return b, nil
 }
 
-// RecvESPBatchConcurrent returns one complete socket-demultiplexed batch and
-// its receive-order ticket. It is safe for multiple data-plane workers to call
-// concurrently: the transport channel distributes batches, while the ticket
-// lets their independently decrypted results be emitted in original order.
-// It must not be mixed with RecvESP, RecvESPBatch, or RecvESPUntil on one Mux.
-func (m *Mux) RecvESPBatchConcurrent() (uint64, [][]byte, error) {
+// RecvESPBatchConcurrent returns one complete socket-demultiplexed batch, its
+// receive-order ticket and the outer ECN field of each of its packets, which
+// is nil when every packet arrived Not-ECT. It is safe for multiple data-plane
+// workers to call concurrently: the transport channel distributes batches,
+// while the ticket lets their independently decrypted results be emitted in
+// original order. It must not be mixed with RecvESP, RecvESPBatch, or
+// RecvESPUntil on one Mux.
+func (m *Mux) RecvESPBatchConcurrent() (uint64, [][]byte, []packet.ECN, error) {
 	select {
 	case batch := <-m.espCh:
-		return batch.ticket, m.takeESP(batch), nil
+		return batch.ticket, m.takeESP(batch), batch.ecn, nil
 	case <-m.done:
-		return 0, nil, m.doneError()
+		return 0, nil, nil, m.doneError()
 	}
 }
 

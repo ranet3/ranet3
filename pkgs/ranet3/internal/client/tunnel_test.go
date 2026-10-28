@@ -10,12 +10,16 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"golang.org/x/net/ipv4"
+
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -95,7 +99,14 @@ func TestTunnelRekeyPreservesInflightKeys(t *testing.T) {
 	}
 }
 
+// each result reaches the emit in receive order beside the outer ECN field its datagram arrived with, with one worker and with four, where the portable bind reads every field Not-ECT
+// the first datagram's batch is held in decryption until the second's is decrypted, so four workers complete out of order and the emit puts them back
 func TestReceiveESPOrderAndShutdown(t *testing.T) {
+	sent := []packet.ECN{packet.CE, packet.ECT0}
+	arrives := sent
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		arrives = []packet.ECN{packet.NotECT, packet.NotECT}
+	}
 	for _, workers := range []int{1, 4} {
 		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
 			remote, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
@@ -134,7 +145,11 @@ func TestReceiveESPOrderAndShutdown(t *testing.T) {
 				}
 				return tunnel.decryptBatch(raw, results)
 			}
-			delivered := make(chan uint32, 2)
+			type delivery struct {
+				id  uint32
+				ecn packet.ECN
+			}
+			delivered := make(chan delivery, 2)
 			done := make(chan error, 1)
 			// Joined whatever the test does. The receiver reports through t,
 			// and a t.Fatal below would otherwise finish the test with it
@@ -144,31 +159,44 @@ func TestReceiveESPOrderAndShutdown(t *testing.T) {
 			t.Cleanup(func() { _ = mux.Close(); <-finished })
 			go func() {
 				defer close(finished)
-				done <- receiveESP(mux, workers, decrypt, func(results []inboundDecrypted) {
+				done <- receiveESP(mux, workers, decrypt, func(results []inboundDecrypted, ecn []inboundECN) {
 					esp.CommitBatch(results)
-					for _, result := range results {
+					if ecn != nil && len(ecn) != len(results) {
+						t.Errorf("the emit was handed %d results and %d ECN fields", len(results), len(ecn))
+					}
+					for i, result := range results {
 						plain, _, err := result.Plaintext()
 						if err != nil {
 							t.Error(err)
 							continue
 						}
-						delivered <- binary.BigEndian.Uint32(plain[20:24])
+						field := packet.NotECT
+						if i < len(ecn) {
+							field = ecn[i]
+						}
+						delivered <- delivery{binary.BigEndian.Uint32(plain[20:24]), field}
 					}
 				})
 			}()
 			peer := remoteSA(t, child)
 			destination := &net.UDPAddr{IP: addr.IP, Port: mux.LocalAddr().(*net.UDPAddr).Port}
-			if _, err := remote.WriteToUDP(sealTestPacket(t, peer, 1), destination); err != nil {
-				t.Fatal(err)
+			sender := ipv4.NewPacketConn(remote)
+			send := func(id int) {
+				t.Helper()
+				if err := sender.SetTOS(0xb8 | int(sent[id-1])); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := remote.WriteToUDP(sealTestPacket(t, peer, uint32(id)), destination); err != nil {
+					t.Fatal(err)
+				}
 			}
+			send(1)
 			select {
 			case <-firstStarted:
 			case <-time.After(time.Second):
 				t.Fatal("first batch did not start")
 			}
-			if _, err := remote.WriteToUDP(sealTestPacket(t, peer, 2), destination); err != nil {
-				t.Fatal(err)
-			}
+			send(2)
 			if workers > 1 {
 				select {
 				case <-secondFinished:
@@ -180,11 +208,11 @@ func TestReceiveESPOrderAndShutdown(t *testing.T) {
 				}
 			}
 			close(releaseFirst)
-			for _, want := range []uint32{1, 2} {
+			for id := 1; id <= len(sent); id++ {
 				select {
 				case got := <-delivered:
-					if got != want {
-						t.Fatalf("received %d, want %d", got, want)
+					if want := (delivery{uint32(id), arrives[id-1]}); got != want {
+						t.Fatalf("received packet %d with the ECN field %v, want packet %d with %v", got.id, got.ecn, want.id, want.ecn)
 					}
 				case <-time.After(time.Second):
 					t.Fatal("packet delivery stalled")
