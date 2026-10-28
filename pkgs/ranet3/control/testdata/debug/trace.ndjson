@@ -1,0 +1,12 @@
+{"note":{"at":"2026-10-28T19:30:00Z","kind":"stream.live"}}
+{"packet":{"arrival":"session","from":"example/gateway:0@1","decision":"forward","next":"example/relay:1@0","src":"192.0.2.1","dst":"192.0.2.3","proto":17,"transport":true,"src_port":40000,"dst_port":9000,"hop_limit":64,"length":48}}
+{"packet":{"arrival":"session","from":"example/gateway:0@1","decision":"forward","next":"example/relay:1@0","src":"3fff::1","dst":"3fff::3","proto":6,"headers":["hop-by-hop"],"transport":true,"src_port":40000,"dst_port":443,"tcp_flags":18,"hop_limit":64,"length":1500,"fragments":2}}
+{"packet":{"arrival":"session","from":"example/gateway:0@1","decision":"answer","reason":"expired","src":"192.0.2.1","dst":"192.0.2.3","proto":1,"transport":true,"icmp_type":8,"hop_limit":1,"length":84,"answer":"expired","outcome":"sent"}}
+{"packet":{"arrival":"session","from":"example/gateway:0@1","decision":"answer","reason":"held","src":"3fff::1","dst":"3fff::3","proto":58,"transport":true,"icmp_type":128,"hop_limit":63,"length":104,"answer":"no_route","outcome":"withheld"}}
+{"packet":{"arrival":"tun","decision":"deliver","src":"3fff::3","dst":"3fff::1","proto":17,"hop_limit":64,"length":1232}}
+{"packet":{"arrival":"session","from":"example/gateway:0@1","decision":"egress","src":"192.0.2.1","dst":"203.0.113.9","proto":6,"transport":true,"src_port":40001,"dst_port":80,"tcp_flags":2,"hop_limit":63,"length":60,"payload":"RQAAPA=="}}
+{"packet":{"arrival":"tun","decision":"drop","reason":"forged","src":"198.51.100.7","dst":"192.0.2.3","proto":47,"hop_limit":64,"length":120}}
+{"packet":{"arrival":"session","from":"example/gateway:0@1","decision":"drop","reason":"budget","next":"example/relay:1@0","src":"3fff::1","dst":"3fff::3","proto":17,"hop_limit":63,"length":1280}}
+{"packet":{"arrival":"none","decision":"drop","reason":"martian","src":"169.254.0.1","dst":"192.0.2.2","proto":17,"hop_limit":64,"length":28}}
+{"note":{"at":"2026-10-28T19:30:00Z","kind":"stream.dropped","attrs":{"queue":"0","rate":"12"}}}
+{"note":{"at":"2026-10-28T19:30:00Z","kind":"stream.closed","attrs":{"reason":"the daemon is stopping"}}}

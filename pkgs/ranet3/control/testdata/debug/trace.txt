@@ -1,0 +1,12 @@
+2026-10-28T19:30:00.000Z stream.live
+forward udp 192.0.2.1:40000 > 192.0.2.3:9000 arrival=session from=example/gateway:0@1 next=example/relay:1@0 hop_limit=64 length=48
+forward tcp [3fff::1]:40000 > [3fff::3]:443 arrival=session from=example/gateway:0@1 next=example/relay:1@0 headers=hop-by-hop tcp_flags=syn,ack hop_limit=64 length=1500 fragments=2
+answer icmp 192.0.2.1 > 192.0.2.3 reason=expired arrival=session from=example/gateway:0@1 icmp_type=8 icmp_code=0 hop_limit=1 length=84 answer=expired outcome=sent
+answer icmpv6 3fff::1 > 3fff::3 reason=held arrival=session from=example/gateway:0@1 icmp_type=128 icmp_code=0 hop_limit=63 length=104 answer=no_route outcome=withheld
+deliver udp 3fff::3 > 3fff::1 arrival=tun hop_limit=64 length=1232
+egress tcp 192.0.2.1:40001 > 203.0.113.9:80 arrival=session from=example/gateway:0@1 tcp_flags=syn hop_limit=63 length=60 payload=4500003c
+drop gre 198.51.100.7 > 192.0.2.3 reason=forged arrival=tun hop_limit=64 length=120
+drop udp 3fff::1 > 3fff::3 reason=budget arrival=session from=example/gateway:0@1 next=example/relay:1@0 hop_limit=63 length=1280
+drop udp 169.254.0.1 > 192.0.2.2 reason=martian arrival=none hop_limit=64 length=28
+2026-10-28T19:30:00.000Z stream.dropped queue=0 rate=12
+2026-10-28T19:30:00.000Z stream.closed reason="the daemon is stopping"
