@@ -44,6 +44,10 @@ type Client struct {
 	// which on darwin is the selection and its route watcher. Nil on a Client
 	// built by hand in a test.
 	closeUnderlay func()
+	// underlayRoutes is the selection the transport names each underlay
+	// datagram's interface from, as the rules view reads it, nil where the
+	// transport selects none
+	underlayRoutes underlayRoutes
 	// host is the machine the underlay and the route reconciler read and
 	// write, nil for the one this process is running on. It is kept so the
 	// reconciler this client hands the command is built against the same
@@ -287,10 +291,11 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 	if err != nil {
 		return nil, err
 	}
+	routes, _ := underlay.Selection.(underlayRoutes)
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		Mesh: mesh, privateKey: privateKey,
-		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay,
+		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, underlayRoutes: routes,
 		host:     host,
 		sessions: sessions,
 		workers:  max(1, runtime.GOMAXPROCS(0)),

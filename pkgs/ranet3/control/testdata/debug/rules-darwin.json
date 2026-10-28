@@ -1,0 +1,44 @@
+{
+  "policy": [],
+  "policy_err": "this platform has no policy rules",
+  "missing": [],
+  "lookups": [
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "prefix": "198.51.100.0/24",
+      "address": "198.51.100.77",
+      "answer": "dev en0",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "address": "203.0.113.10",
+      "answer": "dev en1",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "address": "203.0.113.70",
+      "answer": "no route",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv6",
+      "prefix": "::/0",
+      "address": "2001:db8:400::7",
+      "answer": "dev en0",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv6",
+      "address": "fe80::9%en0",
+      "answer": "dev en0",
+      "taken": false
+    }
+  ]
+}

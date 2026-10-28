@@ -263,10 +263,11 @@ func (b *darwinBind) Close() error {
 }
 
 // selectedFor is the interface b's Selection names for ep, built once a generation and kept in ep
-// a datagram pays one atomic load and one compare while the generation holds
+// the first answer for ep and each that names another interface are recorded once, by whichever send kept it
 func (b *darwinBind) selectedFor(ep *darwinEndpoint) *selected {
-	if s := ep.selected.Load(); s != nil && s.generation == b.selection.Generation() {
-		return s
+	last := ep.selected.Load()
+	if last != nil && last.generation == b.selection.Generation() {
+		return last
 	}
 	index, generation := b.selection.Interface(ep.addr.Addr())
 	s := &selected{generation: generation, index: index}
@@ -276,8 +277,24 @@ func (b *darwinBind) selectedFor(ep *darwinEndpoint) *selected {
 		s.control = (&ipv6.ControlMessage{IfIndex: index}).Marshal()
 		s.fragmentingControl = append(slices.Clip(s.control), fragmentControl...)
 	}
-	ep.selected.Store(s)
+	if ep.selected.CompareAndSwap(last, s) && (last == nil || last.index != index) {
+		b.selectedNow(ep, index)
+	}
 	return s
+}
+
+// selectedNow records index as the interface ep's datagrams name, an empty name and zero where no route holds ep
+func (b *darwinBind) selectedNow(ep *darwinEndpoint, index int) {
+	if b.events == nil {
+		return
+	}
+	name := ""
+	if index != 0 {
+		if link, err := net.InterfaceByIndex(index); err == nil {
+			name = link.Name
+		}
+	}
+	b.events("transport.underlay.selected", slog.String("endpoint", ep.String()), slog.String("interface", name), slog.Int("interface_index", index))
 }
 
 // boundSource resolves one route the way a socket bound to index would, and answers the source it picks
@@ -551,17 +568,11 @@ func (b *darwinBind) readPathMTU(endpoint Endpoint) (int, error) {
 	return link.MTU, nil
 }
 
-// sendInterface is the interface sends to ep leave by
-// ip_output scopes the route of a send naming its source to the interface holding that source, and a link-local pin names its interface
-// a send that names no source, since ep fell back or never had one, leaves by the interface the selection names, as does one from a source no interface holds, which falls back
+// sendInterface is the interface sends to ep name, the one holding their pin, or on a hub with no selection the one the host routes them by
+// a send that names no source, since ep fell back or never had one, names the selection's interface, as does one from a source no interface holds, which falls back
 func (b *darwinBind) sendInterface(ep *darwinEndpoint) (int, error) {
-	if ep.pin() != nil && ep.index != 0 {
-		return ep.index, nil
-	}
-	if ep.pin() != nil {
-		if index, err := interfaceHolding(ep.source); err == nil {
-			return index, nil
-		}
+	if index := ep.pinInterface(); index != 0 {
+		return index, nil
 	}
 	if b.selection == nil {
 		return routedInterface(ep.addr)
@@ -572,8 +583,38 @@ func (b *darwinBind) sendInterface(ep *darwinEndpoint) (int, error) {
 	return 0, unix.ENETUNREACH
 }
 
-// routedInterface is the interface the host routes a datagram to addr through, the one holding the source a socket connected to addr takes,
-// which a hub with no selection sends by
+// pinInterface is the interface ep's pin sends by, a link-local pin's arrival interface or the one holding its address,
+// and zero where ep sends from no pin or no interface holds it
+// ip_output in bsd/netinet/ip_output.c takes a send from a source by a route of the interface holding it, unless a route the socket cached decides
+func (e *darwinEndpoint) pinInterface() int {
+	if e.pin() == nil {
+		return 0
+	}
+	if e.index != 0 {
+		return e.index
+	}
+	index, _ := interfaceHolding(e.source)
+	return index
+}
+
+// underlayPath is where sendInterface takes ep's datagrams, false where b names no interface
+func (b *darwinBind) underlayPath(endpoint Endpoint) (UnderlayPath, bool) {
+	ep, ok := endpoint.(*darwinEndpoint)
+	if !ok || b.selection == nil {
+		return UnderlayPath{}, false
+	}
+	path := UnderlayPath{Address: ep.addr.Addr()}
+	if index := ep.pinInterface(); index != 0 {
+		path.Pin = strconv.Itoa(index)
+		if link, err := net.InterfaceByIndex(index); err == nil {
+			path.Pin = link.Name
+		}
+	}
+	return path, true
+}
+
+// routedInterface is the interface the host routes a datagram to addr by, the one holding the source a socket connected to addr takes,
+// read on a hub with no selection, whose sends name no interface
 // connecting looks the route up and sends nothing
 func routedInterface(addr netip.AddrPort) (int, error) {
 	conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(addr))

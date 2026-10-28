@@ -35,8 +35,8 @@ type RulesInfo struct {
 	PolicyErr string       `json:"policy_err,omitempty"`
 	Missing   []PolicyRule `json:"missing"`
 	// Lookups is every lookup the reconciler's last pass whose batch answered
-	// asked to find another program's rule ahead of the mesh's, none on a
-	// platform with no policy rules
+	// asked to find another program's rule ahead of the mesh's, and on darwin
+	// the route the underlay's selection takes toward each live endpoint
 	Lookups []RuleLookup `json:"lookups,omitempty"`
 	// Border is absent on a node that writes no cap.border
 	Border *BorderChain `json:"border,omitempty"`
@@ -45,7 +45,10 @@ type RulesInfo struct {
 // RuleLookup is one lookup of the reconciler: unmarked, of Address inside the
 // overlay hold Prefix, or of the underlay, under its mark toward the peer
 // endpoint Address. Taken is an overlay lookup answered outside the tun and
-// its hold, or the underlay's answered through the tun
+// its hold, or the underlay's answered through the tun. On darwin an underlay
+// row is the interface a live session's datagrams to Address name, or the one
+// holding their pin, Prefix the route the selection matched, absent for a pin,
+// and never taken
 type RuleLookup struct {
 	Lookup  string       `json:"lookup"`
 	Family  string       `json:"family"`
