@@ -219,6 +219,27 @@ func TestStatusTransitLineRendersAsTheGoldenFile(t *testing.T) {
 	goldenJSON(t, "status-transit.json", every)
 }
 
+// the ESP line always names in, dropped and refused, and names the packets marked CE and those of an unused ECN combination only while each is above 0
+// and --json carries every count under esp
+func TestStatusESPLineRendersAsTheGoldenFile(t *testing.T) {
+	status := downStatus()
+	status.Down = nil
+	every := ESPCounters{InboundPackets: 41822931, InboundDropped: 3, InboundCE: 1207, InboundECNUnused: 2, ReceiveDropped: 5, ReceiveRefused: 14, Keepalives: 9}
+	var out strings.Builder
+	for _, counters := range []ESPCounters{
+		{InboundPackets: 41822931, ReceiveRefused: 14},
+		{InboundPackets: 41822931, ReceiveRefused: 14, InboundCE: 1207},
+		every,
+	} {
+		out.WriteString(espLine(counters) + "\n")
+	}
+	status.ESP = every
+	out.WriteString("\n")
+	RenderStatus(&out, status)
+	golden(t, "status-esp.txt", []byte(out.String()))
+	goldenJSON(t, "status-esp.json", every)
+}
+
 // the egress line names the families that are ready and the ones that are
 // not, with the reason for one this node translates, names neither before the
 // first pass, and says what the route lookups left out and why: a family held
