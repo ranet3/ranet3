@@ -221,9 +221,8 @@ func TestEachLocalEndpointMatchesTheTrustDocumentsEndpointOfItsSerial(t *testing
 
 // A community registry holds nodes reachable over one address family only, so
 // a v4-only host always finds peers it cannot dial. Refusing to start over
-// them leaves that host no way to run at all. A Mac with no IPv6 hit exactly
-// that against the real registry: six v6-only nodes, six fatal errors, no
-// startup. The peer is skipped and named instead, while a peer the registry
+// them leaves that host no way to run at all, with one fatal error for each
+// such peer. The peer is skipped and named instead, while a peer the registry
 // does not name stays fatal.
 func TestStartupSkipsAPeerNoLocalFamilyCanDial(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
@@ -254,8 +253,7 @@ func TestStartupSkipsAPeerNoLocalFamilyCanDial(t *testing.T) {
 // hears about a prefix from the node that originates it or not at all. Dialing
 // a few exits and relying on transit reaches those exits and nothing behind
 // them, which is why ranet dials every node in the registry and why this has
-// to as well. Measured on a leaf: sixteen peers reached five of eleven mesh
-// addresses, the whole registry reached eleven of eleven.
+// to as well.
 func TestFullMeshDialsEveryNodeTheRegistryNames(t *testing.T) {
 	cfg, _, reg := runtimeFixture(t)
 	reg[0].Nodes = append(reg[0].Nodes, registry.Node{
@@ -845,10 +843,10 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	}
 }
 
-// a node of an earlier release orders the raw names joined with /, where the text form puts ysun/butte:0 after ysun/butte2:0
-// and comparing the parts one by one, or joined with a byte below -, puts ysun/gw:0 before ysun/gw-2:0
+// a node of an earlier release orders the raw names joined with /, where the text form puts example/bravo:0 after example/bravo2:0
+// and comparing the parts one by one, or joined with a byte below -, puts example/gw:0 before example/gw-2:0
 func TestCrossingSessionsKeepTheOrderOfTheRawNames(t *testing.T) {
-	for _, pair := range [][2]string{{"ysun/butte:0", "ysun/butte2:0"}, {"ysun/gw-2:0", "ysun/gw:0"}} {
+	for _, pair := range [][2]string{{"example/bravo:0", "example/bravo2:0"}, {"example/gw-2:0", "example/gw:0"}} {
 		first, second := identity.MustParse(pair[0]), identity.MustParse(pair[1])
 		if !preferInitiator(first, second) || preferInitiator(second, first) {
 			t.Errorf("%s is preferred as the initiator over %s, so a node of an earlier release keeps the other session", pair[1], pair[0])
@@ -1273,12 +1271,12 @@ func TestReloadAcceptsDefaultWrittenOutInFull(t *testing.T) {
 	}
 	exit := []schema.Prefix{schema.MustPrefix("0.0.0.0/0")}
 	first, second := schema.MustPrefix("10.0.0.1/32"), schema.MustPrefix("10.0.0.2/32")
-	source := schema.MustAddr("3fff:1:69c:8c0::1")
-	here := srv6.Segment{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}
-	there := srv6.Segment{SID: schema.MustAddr("3fff:1:69c:8c6::2"), Behavior: srv6.BehaviorEndDT46}
+	source := schema.MustAddr("3fff:b:0:100::1")
+	here := srv6.Segment{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd}
+	there := srv6.Segment{SID: schema.MustAddr("3fff:b:0:106::2"), Behavior: srv6.BehaviorEndDT46}
 	steered := srv6.Steer{From: schema.MustPrefix("3fff:a::1/128"), Via: []schema.Addr{
-		schema.MustAddr("3fff:1:69c:98d6::1"), schema.MustAddr("3fff:1:69c:6c46::1")}}
-	elsewhere := srv6.Steer{From: schema.MustPrefix("3fff:a::2/128"), Via: []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")}}
+		schema.MustAddr("3fff:b:0:206::1"), schema.MustAddr("3fff:b:0:406::1")}}
+	elsewhere := srv6.Steer{From: schema.MustPrefix("3fff:a::2/128"), Via: []schema.Addr{schema.MustAddr("3fff:b:0:206::1")}}
 	// Spelled out in full as an operator would, one pointer per field, so the
 	// comparison has to resolve them rather than read the block as written.
 	params := base.Babel().CostEffective()
@@ -1883,9 +1881,9 @@ func TestRepeatedDialFailuresAreSpacedThroughAChangingReason(t *testing.T) {
 	}
 }
 
-// A dialer that keeps failing says so once rather than every reconnect delay.
-// Against the community registry 25 peers whose names do not resolve wrote 250
-// lines in 93 seconds, measured. The reason a resolver gives carries the
+// A dialer that keeps failing says so once rather than every reconnect delay,
+// since a registry with peers whose names do not resolve would otherwise fill
+// the log. The reason a resolver gives carries the
 // ephemeral source port of its query, so it is not the same string twice: this
 // runs where that is true, which is any host whose resolver refuses.
 func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
@@ -2080,10 +2078,10 @@ func revocations(t *testing.T, bus *events.Bus, want map[string]string, paths ..
 }
 
 // An endpoint with no address says where a node listens, not where to reach
-// it, and most of a community registry is that shape: 94 of 139 peers on the
-// live mesh, and the retry for them was 78% of the log. resolveEndpoint
-// refuses such an endpoint on every pass and nothing about it changes while
-// the process runs, so the dialer has to recognize it before the loop.
+// it, and most of a community registry is that shape, so a retry for each
+// would fill the log. resolveEndpoint refuses such an endpoint on every pass
+// and nothing about it changes while the process runs, so the dialer has to
+// recognize it before the loop.
 func TestDialerGivesUpOnAPeerWithNoAddress(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())

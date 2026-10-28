@@ -183,13 +183,13 @@ func TestAnswerSourcesAreTheRouterIDsAndTheFirstSID(t *testing.T) {
 		{
 			name: "local segments",
 			cfg: config.Config{Cap: config.Caps{
-				Route: &babel.Routes{Announce: announce("3fff:1:69c:8c6::/64")},
+				Route: &babel.Routes{Announce: announce("3fff:b:0:106::/64")},
 				Segment: &srv6.Segments{Local: []srv6.Segment{
-					{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd},
-					{SID: schema.MustAddr("3fff:1:69c:8c6::2"), Behavior: srv6.BehaviorEnd},
+					{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd},
+					{SID: schema.MustAddr("3fff:b:0:106::2"), Behavior: srv6.BehaviorEnd},
 				}},
 			}},
-			sid: "3fff:1:69c:8c6::1",
+			sid: "3fff:b:0:106::1",
 		},
 		{
 			name: "a link-local End segment an announced prefix covers ahead of a global one",
@@ -205,17 +205,17 @@ func TestAnswerSourcesAreTheRouterIDsAndTheFirstSID(t *testing.T) {
 		{
 			name: "an egress segment and segments only a default or a source-specific entry covers ahead of an End one",
 			cfg: config.Config{Cap: config.Caps{
-				Route: &babel.Routes{Announce: append(announce("3fff:1:69c:8c6::/64", "3fff:1:69c:9800::/56", "::/0"),
-					schema.Announce{Prefix: schema.MustPrefix("3fff:1:69c:aa::/64"), From: schema.MustPrefix("3fff:9::/48")},
+				Route: &babel.Routes{Announce: append(announce("3fff:b:0:106::/64", "3fff:b:0:200::/56", "::/0"),
+					schema.Announce{Prefix: schema.MustPrefix("3fff:b:0:700::/64"), From: schema.MustPrefix("3fff:9::/48")},
 				)},
 				Segment: &srv6.Segments{Local: []srv6.Segment{
-					{SID: schema.MustAddr("3fff:1:69c:98d6::1"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress},
-					{SID: schema.MustAddr("3fff:1:69c:aa::1"), Behavior: srv6.BehaviorEnd},
-					{SID: schema.MustAddr("3fff:1:69c:bb::1"), Behavior: srv6.BehaviorEnd},
-					{SID: schema.MustAddr("3fff:1:69c:8c6::2"), Behavior: srv6.BehaviorEnd},
+					{SID: schema.MustAddr("3fff:b:0:206::1"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress},
+					{SID: schema.MustAddr("3fff:b:0:700::1"), Behavior: srv6.BehaviorEnd},
+					{SID: schema.MustAddr("3fff:b:0:800::1"), Behavior: srv6.BehaviorEnd},
+					{SID: schema.MustAddr("3fff:b:0:106::2"), Behavior: srv6.BehaviorEnd},
 				}},
 			}},
-			sid: "3fff:1:69c:8c6::2",
+			sid: "3fff:b:0:106::2",
 		},
 	} {
 		sources := answerSources(&tc.cfg)
@@ -235,7 +235,7 @@ func TestAnswerSourcesAreTheRouterIDsAndTheFirstSID(t *testing.T) {
 func TestPMTUViewShowsTheRouterIDsAndTheAnswerSID(t *testing.T) {
 	c := &Client{sessions: newSessionSet(), Mesh: netstack.NewRoutesOnly()}
 	c.cfg.Store(&config.Config{})
-	held := netstack.AnswerSources{Router4: netip.MustParseAddr("100.64.0.1"), Router6: netip.MustParseAddr("3fff:c::1"), SID: netip.MustParseAddr("3fff:1:69c:8c6::1")}
+	held := netstack.AnswerSources{Router4: netip.MustParseAddr("100.64.0.1"), Router6: netip.MustParseAddr("3fff:c::1"), SID: netip.MustParseAddr("3fff:b:0:106::1")}
 	c.Mesh.SetAnswerSources(held)
 	if info := c.DebugPMTU(""); info.RouterIDv4 != held.Router4 || info.RouterIDv6 != held.Router6 || info.AnswerSID != held.SID {
 		t.Errorf("a mesh answering from %+v shows %v, %v and %v", held, info.RouterIDv4, info.RouterIDv6, info.AnswerSID)

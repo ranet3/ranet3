@@ -377,9 +377,9 @@ func steerTable(t *testing.T, segments int) *srv6.SteerTable {
 	t.Helper()
 	via := make([]schema.Addr, segments)
 	for i := range via {
-		via[i] = schema.MustAddr(fmt.Sprintf("3fff:1:69c:98d6::%d", i+1))
+		via[i] = schema.MustAddr(fmt.Sprintf("3fff:b:0:206::%d", i+1))
 	}
-	table, err := srv6.NewSteerTable([]srv6.Steer{{To: schema.MustPrefix("3fff:1::/48"), Via: via}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+	table, err := srv6.NewSteerTable([]srv6.Steer{{To: schema.MustPrefix("3fff:1::/48"), Via: via}}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		t.Fatal(err)
 	}

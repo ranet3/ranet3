@@ -70,14 +70,14 @@ func loadable(segment *srv6.Segments) *config.Config {
 // read rather than in either capability.
 func TestLocalSegmentOnOneOfThisNodesAddressesIsRefused(t *testing.T) {
 	cfg := loadable(&srv6.Segments{Local: []srv6.Segment{
-		{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46},
+		{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEndDT46},
 	}})
-	cfg.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("3fff:1:69c:8c6::1/128")}}
+	cfg.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("3fff:b:0:106::1/128")}}
 	cfg.Cap.Border = borderOf("3fff::/20")
 	if err := cfg.Validate(); err == nil {
 		t.Error("a segment on one of this node's own addresses was accepted")
 	}
-	cfg.Cap.Table.Addresses = []schema.Prefix{schema.MustPrefix("3fff:1:69c:8c6::9/128")}
+	cfg.Cap.Table.Addresses = []schema.Prefix{schema.MustPrefix("3fff:b:0:106::9/128")}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("a segment beside an unrelated address was refused: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestLocalSegmentOnOneOfThisNodesAddressesIsRefused(t *testing.T) {
 	// check covers everything the reconciler assigns rather than the addresses
 	// list alone.
 	cfg.Cap.Table.AssignAnnounced = true
-	cfg.Cap.Route = &babel.Routes{Announce: announce("3fff:1:69c:8c6::1/128")}
+	cfg.Cap.Route = &babel.Routes{Announce: announce("3fff:b:0:106::1/128")}
 	if err := cfg.Validate(); err == nil {
 		t.Error("a segment on a prefix this node assigns from cap.route was accepted")
 	}
@@ -98,16 +98,16 @@ func TestLocalSegmentOnOneOfThisNodesAddressesIsRefused(t *testing.T) {
 // both go through the file's whole validation, which also holds the list to link.mtu
 func TestSteerSelectorWithHostBitsIsRefused(t *testing.T) {
 	cfg := loadable(&srv6.Segments{
-		Source: schema.MustAddr("3fff:1:69c:8c0::1"),
+		Source: schema.MustAddr("3fff:b:0:100::1"),
 		Steer: []srv6.Steer{{
-			From: schema.MustPrefix("3fff:a::198:18:104:117/64"),
-			Via:  []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
+			From: schema.MustPrefix("3fff:a::203:0:113:10/64"),
+			Via:  []schema.Addr{schema.MustAddr("3fff:b:0:206::1")},
 		}},
 	})
 	if err := cfg.Validate(); err == nil {
 		t.Error("a selector with bits below its prefix length was accepted")
 	}
-	cfg.Cap.Segment.Steer[0].From = schema.MustPrefix("3fff:a::198:18:104:117/128")
+	cfg.Cap.Segment.Steer[0].From = schema.MustPrefix("3fff:a::203:0:113:10/128")
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("a host selector was refused: %v", err)
 	}

@@ -52,9 +52,9 @@ const (
 )
 
 var (
-	labSID     = netip.MustParseAddr("3fff:1:69c:8c6::3")
+	labSID     = netip.MustParseAddr("3fff:b:0:106::3")
 	labHeadend = netip.MustParseAddr("3fff:a::1")
-	labLeaf4   = netip.MustParseAddr("198.18.104.1")
+	labLeaf4   = netip.MustParseAddr("203.0.113.1")
 	labOutside = netip.MustParseAddr("10.9.9.9")
 	// the exit's and the far host's ends of the uplink
 	labExit4 = netip.MustParsePrefix("192.0.2.1/24")
@@ -62,7 +62,7 @@ var (
 	labExit6 = netip.MustParsePrefix("2001:db8:f::1/64")
 	labFar6  = netip.MustParsePrefix("2001:db8:f::2/64")
 	// labLeaves is the allow list, and the prefixes the to rules send into the mesh table
-	labLeaves = []string{"3fff:a::/32", "198.18.104.0/24"}
+	labLeaves = []string{"3fff:a::/32", "203.0.113.0/25"}
 	// labDefaults is the default of each family the exit of the egress lab advertises
 	labDefaults = map[int]netip.Prefix{4: netip.MustParsePrefix("0.0.0.0/0"), 6: netip.MustParsePrefix("::/0")}
 )
@@ -316,7 +316,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 
 	// the lookups read each default at its read address, 128.0.0.0 and 8000::, from the read address of the leaf's prefix of its family
 	back := map[int]netip.Prefix{4: netip.MustParsePrefix("128.0.0.0/1"), 6: netip.MustParsePrefix("8000::/1")}
-	member := map[int]netip.Prefix{4: netip.MustParsePrefix("198.18.104.128/32"), 6: netip.MustParsePrefix("3fff:a:8000::/128")}
+	member := map[int]netip.Prefix{4: netip.MustParsePrefix("203.0.113.64/32"), 6: netip.MustParsePrefix("3fff:a:8000::/128")}
 	inNetlink := func(f func(netnstest.Netlink) error) func() error {
 		return func() error {
 			netlink, err := netnstest.OpenNetlink()

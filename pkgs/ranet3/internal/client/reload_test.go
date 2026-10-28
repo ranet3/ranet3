@@ -304,7 +304,7 @@ func TestKernelRuntimeCarriesTheOverlay(t *testing.T) {
 
 // the reconciler is handed cap.egress's LANs masked, which it leaves out of this node's own prefixes, and whether an egress segment makes the node an exit
 func TestKernelRuntimeCarriesTheEgressLANsAndTheEgressSegment(t *testing.T) {
-	for _, segments := range [][]srv6.Segment{nil, {egressSegment("3fff:1:69c:8c6::3", "3fff:a::/32")}} {
+	for _, segments := range [][]srv6.Segment{nil, {egressSegment("3fff:b:0:106::3", "3fff:a::/32")}} {
 		c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
 			egressNode(cfg, segments...)
 			if len(segments) == 0 {
@@ -585,7 +585,7 @@ func TestReloadRefusesMovingTheTableByName(t *testing.T) {
 // the mesh has no device, so a move of the tun shows as the steering table it installs, a new one here
 func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
-		old.Cap.Segment = steering("3fff:1:69c:98d6::1")
+		old.Cap.Segment = steering("3fff:b:0:206::1")
 		old.Cap.Table = &kernel.Table{}
 		// the overlay the segment the reload adds needs
 		old.Cap.Border = borderOf("3fff::/20")
@@ -609,8 +609,8 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 	old := c.config()
 	next := *old
 	next.Link.MTU = 9000
-	next.Cap.Segment = steering("3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1")
-	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}
+	next.Cap.Segment = steering("3fff:b:0:206::1", "3fff:b:0:406::1")
+	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd}}
 	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
 	next.Cap.Table = &kernel.Table{Metric: 32}
 	next.Link.Listen = true
@@ -751,7 +751,7 @@ func steering(via ...string) *srv6.Segments {
 	for _, address := range via {
 		addresses = append(addresses, schema.MustAddr(address))
 	}
-	return &srv6.Segments{Source: schema.MustAddr("3fff:1:69c:8c0::1"),
+	return &srv6.Segments{Source: schema.MustAddr("3fff:b:0:100::1"),
 		Steer: []srv6.Steer{{From: schema.MustPrefix("3fff:a::1/128"), Via: addresses}}}
 }
 
@@ -787,15 +787,15 @@ func TestReloadHandsTheSpeakerAChangedCapBabel(t *testing.T) {
 // a reload installs the tables cap.segment builds, and a steering stopped over the control socket stays stopped with the new table
 func TestReloadInstallsTheSegmentTablesItBuilds(t *testing.T) {
 	c, path, _, bus := reloadOf(t, func(old *config.Config) {
-		old.Cap.Segment = steering("3fff:1:69c:98d6::1")
+		old.Cap.Segment = steering("3fff:b:0:206::1")
 		// the overlay the segment the reload adds needs
 		old.Cap.Border = borderOf("3fff::/20")
 	})
 	segmentsOf(t, c)
 	c.Mesh.SetSteeringEnabled(false)
 	next := *c.config()
-	next.Cap.Segment = steering("3fff:1:69c:6c46::1")
-	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEnd}}
+	next.Cap.Segment = steering("3fff:b:0:406::1")
+	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd}}
 	writeConfig(t, path, &next)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a steering of the same length was refused: %v", err)
@@ -820,11 +820,11 @@ func TestReloadInstallsTheSegmentTablesItBuilds(t *testing.T) {
 
 // a steering whose longest list needs another tun MTU applies in place, the device moving with it
 func TestReloadAppliesASteeringThatNeedsAnotherMTU(t *testing.T) {
-	c, path, _, bus := reloadOf(t, func(old *config.Config) { old.Cap.Segment = steering("3fff:1:69c:98d6::1") })
+	c, path, _, bus := reloadOf(t, func(old *config.Config) { old.Cap.Segment = steering("3fff:b:0:206::1") })
 	segmentsOf(t, c)
 	for _, via := range [][]string{
-		{"3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1"},
-		{"3fff:1:69c:6c46::1"},
+		{"3fff:b:0:206::1", "3fff:b:0:406::1"},
+		{"3fff:b:0:406::1"},
 	} {
 		next := *c.config()
 		next.Cap.Segment = steering(via...)
@@ -877,7 +877,7 @@ func TestReloadPlansTheTUNAtLinkMTULessTheLongestList(t *testing.T) {
 			}
 		}
 	}
-	a, b := "3fff:1:69c:98d6::1", "3fff:1:69c:6c46::1"
+	a, b := "3fff:b:0:206::1", "3fff:b:0:406::1"
 	for name, move := range map[string]struct {
 		old, next func(*config.Config)
 		from, to  int

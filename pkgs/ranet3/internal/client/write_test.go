@@ -36,8 +36,8 @@ func writable(t *testing.T) *Client {
 	t.Helper()
 	steering, err := srv6.NewSteerTable([]srv6.Steer{{
 		To:  schema.MustPrefix("3fff:1::/48"),
-		Via: []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
-	}}, schema.MustAddr("3fff:1:69c:8c0::1"))
+		Via: []schema.Addr{schema.MustAddr("3fff:b:0:206::1")},
+	}}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		t.Fatal(err)
 	}

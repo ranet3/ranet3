@@ -32,10 +32,10 @@ import (
 
 var (
 	// labForged4 and labForged6 are the far host's addresses inside the overlay, which no packet from beyond the uplink may carry into the mesh
-	labForged4 = netip.MustParsePrefix("198.18.104.200/32")
+	labForged4 = netip.MustParsePrefix("203.0.113.100/32")
 	labForged6 = netip.MustParsePrefix("3fff:a::200/128")
 	// labOwn4 and labOwn6 are the exit's own mesh addresses, inside the overlay and outside the leaves' prefixes
-	labOwn4 = netip.MustParsePrefix("198.18.105.1/32")
+	labOwn4 = netip.MustParsePrefix("203.0.113.129/32")
 	labOwn6 = netip.MustParsePrefix("3fff:b::1/128")
 )
 
@@ -92,7 +92,7 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 		from, leaf netip.Addr
 		spec       string
 	}{
-		{"IPv4", labForged4.Addr(), labLeaf4, "drop ipv4 source 198.18.0.0/15"},
+		{"IPv4", labForged4.Addr(), labLeaf4, "drop ipv4 source 203.0.113.0/24"},
 		{"IPv6", labForged6.Addr(), labHeadend, "drop ipv6 source 3fff::/20"},
 	} {
 		t.Run("a source inside the overlay over "+arm.family, func(t *testing.T) {
