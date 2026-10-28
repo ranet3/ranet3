@@ -40,25 +40,32 @@ func (s *Session) RekeyChildProactively() error {
 // a failed one holds the next exchange of every path from its end until Run has settled it, and then until the retry delay Run gave the schedule has passed
 type childRetry struct {
 	mu sync.Mutex
-	// ended holds the outcomes Run has not settled, a nil error for a success
-	ended []error
+	// ended holds the outcomes Run has not settled
+	ended []childOutcome
 	until time.Time
+}
+
+// childOutcome is how a Child SA exchange came out, a nil err for a success
+type childOutcome struct {
+	// rekeyed is the generation of the Child SA the exchange set out to replace, read as it began
+	rekeyed uint64
+	err     error
 }
 
 func (r *childRetry) held(now time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return now.Before(r.until) || slices.ContainsFunc(r.ended, func(err error) bool { return err != nil })
+	return now.Before(r.until) || slices.ContainsFunc(r.ended, func(outcome childOutcome) bool { return outcome.err != nil })
 }
 
-func (r *childRetry) end(err error) {
+func (r *childRetry) end(outcome childOutcome) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.ended = append(r.ended, err)
+	r.ended = append(r.ended, outcome)
 }
 
 // unsettled leaves the outcomes in place, so a failure among them holds until settled drops it
-func (r *childRetry) unsettled() []error {
+func (r *childRetry) unsettled() []childOutcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.ended)
@@ -113,9 +120,10 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 		}
 		return errors.New("ike: a Child SA rekey waits out the retry delay of the one that failed")
 	}
+	rekeyed := s.currentChildGeneration()
 	s.emit("ike.rekey.started", slog.String("sa", "child"))
 	defer func() {
-		s.childRetry.end(err)
+		s.childRetry.end(childOutcome{rekeyed, err})
 		s.rekeyEnded("child", err)
 	}()
 	// RFC 7296 section 2.25.2: "If a peer receives a request to create or rekey a Child SA when it is currently rekeying the IKE SA, it SHOULD reply with TEMPORARY_FAILURE."

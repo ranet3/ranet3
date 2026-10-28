@@ -63,13 +63,15 @@ type rekeySchedule struct {
 	interval    time.Duration
 	run         func() error
 	established func() (time.Time, bool)
-	timer       *time.Timer
-	deadline    time.Time
-	// countedFrom is the establishment the schedule counted its rekey from, or the time it counted from while no SA was made
-	countedFrom time.Time
-	due         bool
-	failures    uint
-	lastErr     error
+	// current is the SA the schedule rekeys
+	current  func() any
+	timer    *time.Timer
+	deadline time.Time
+	// counted is the SA an unforced rekey falling due runs on, the one current gave as the interval's delay was drawn or, for a retry, the one the failed rekey set out to replace
+	counted  any
+	due      bool
+	failures uint
+	lastErr  error
 	// forced marks a rekey the lists asked for, which runs only while they still leave out its SA
 	forced bool
 }
@@ -85,10 +87,8 @@ func (r *rekeySchedule) outlived(now time.Time) bool {
 	return ok && !now.Before(end)
 }
 
-// replaced reports that the SA is not the one the schedule counted its rekey from
 func (r *rekeySchedule) replaced() bool {
-	established, ok := r.established()
-	return ok && !established.Equal(r.countedFrom)
+	return r.current() != r.counted
 }
 
 func (s *Session) childEstablishedAt() (time.Time, bool) {
@@ -186,16 +186,16 @@ func (s *Session) rekeyDue(interval time.Duration, established time.Time) (time.
 }
 
 // an SA not yet made counts from now
-func (s *Session) scheduledDelay(r *rekeySchedule) (delay time.Duration, from time.Time, err error) {
+func (s *Session) scheduledDelay(r *rekeySchedule) (time.Duration, error) {
 	from, ok := r.established()
 	if !ok {
 		from = time.Now()
 	}
 	due, err := s.rekeyDue(r.interval, from)
 	if err != nil {
-		return 0, time.Time{}, err
+		return 0, err
 	}
-	return max(time.Until(due), 0), from, nil
+	return max(time.Until(due), 0), nil
 }
 
 // rekeyRetryDelay backs off exponentially and then spreads the result over the
@@ -226,26 +226,28 @@ func (s *Session) rekeyRetryDelay(failures uint) time.Duration {
 	return delay - jitter
 }
 
-func (s *Session) newRekeySchedule(name, sa string, interval time.Duration, run func() error, established func() (time.Time, bool)) (*rekeySchedule, error) {
+// the SA is read before the delay its establishment gives, so one a rekey installs between the two reads is one the schedule finds replaced
+func (s *Session) newRekeySchedule(name, sa string, interval time.Duration, run func() error, established func() (time.Time, bool), current func() any) (*rekeySchedule, error) {
 	if interval <= 0 {
 		return nil, nil
 	}
-	schedule := &rekeySchedule{name: name, sa: sa, interval: interval, run: run, established: established}
-	delay, from, err := s.scheduledDelay(schedule)
+	schedule := &rekeySchedule{name: name, sa: sa, interval: interval, run: run, established: established, current: current, counted: current()}
+	delay, err := s.scheduledDelay(schedule)
 	if err != nil {
 		return nil, err
 	}
-	schedule.timer, schedule.deadline, schedule.countedFrom = time.NewTimer(delay), time.Now().Add(delay), from
+	schedule.timer, schedule.deadline = time.NewTimer(delay), time.Now().Add(delay)
 	return schedule, nil
 }
 
 // retryOnly is a schedule with no interval, which falls due only for a rekey the lists force or to retry a rekey that failed
 // an SA with no interval has no lifetime
-func retryOnly(name, sa string, run func() error) *rekeySchedule {
+func retryOnly(name, sa string, run func() error, current func() any) *rekeySchedule {
 	timer := time.NewTimer(0)
 	timer.Stop()
 	return &rekeySchedule{name: name, sa: sa, run: run, timer: timer,
-		established: func() (time.Time, bool) { return time.Time{}, false }}
+		established: func() (time.Time, bool) { return time.Time{}, false },
+		current:     current}
 }
 
 func (r *rekeySchedule) poll() {
@@ -273,12 +275,13 @@ func (s *Session) rearm(schedule *rekeySchedule) error {
 		schedule.due = false
 		return nil
 	}
-	delay, from, err := s.scheduledDelay(schedule)
+	counted := schedule.current()
+	delay, err := s.scheduledDelay(schedule)
 	if err != nil {
 		return err
 	}
 	schedule.reset(delay)
-	schedule.countedFrom = from
+	schedule.counted = counted
 	return nil
 }
 
@@ -350,23 +353,25 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	var ender *pendingRequest
 	// RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 	deleted := false
-	childSchedule, err := s.newRekeySchedule("Child SA", "child", s.childRekeyInterval, s.RekeyChild, s.childEstablishedAt)
+	childCurrent := func() any { return s.currentChildGeneration() }
+	childSchedule, err := s.newRekeySchedule("Child SA", "child", s.childRekeyInterval, s.RekeyChild, s.childEstablishedAt, childCurrent)
 	if err != nil {
 		return err
 	}
 	// a failed Child SA exchange is retried on this schedule's delay whichever path started it, and the rekeys the lists force run on it
 	// so with no interval the schedule is kept to do those alone
 	if childSchedule == nil {
-		childSchedule = retryOnly("Child SA", "child", s.RekeyChild)
+		childSchedule = retryOnly("Child SA", "child", s.RekeyChild, childCurrent)
 	}
 	defer childSchedule.timer.Stop()
-	ikeSchedule, err := s.newRekeySchedule("IKE SA", "ike", s.ikeRekeyInterval, s.RekeyIKE, s.ikeEstablishedAt)
+	ikeCurrent := func() any { return s.currentContext() }
+	ikeSchedule, err := s.newRekeySchedule("IKE SA", "ike", s.ikeRekeyInterval, s.RekeyIKE, s.ikeEstablishedAt, ikeCurrent)
 	if err != nil {
 		return err
 	}
 	// a disabled interval still runs the rekeys the lists force
 	if ikeSchedule == nil {
-		ikeSchedule = retryOnly("IKE SA", "ike", s.RekeyIKE)
+		ikeSchedule = retryOnly("IKE SA", "ike", s.RekeyIKE, ikeCurrent)
 	}
 	defer ikeSchedule.timer.Stop()
 	schedules := []*rekeySchedule{childSchedule, ikeSchedule}
@@ -423,16 +428,18 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	}
 	// a rekey that ended is checked against the lists once its outcome is settled, since a check while it ran left its SA to it
 	resuiteDue := false
-	// every Child SA exchange this end starts is settled on the Child SA schedule, whichever path started it
+	// every Child SA exchange this end starts is settled on the Child SA schedule, whichever path started it, and counted from the SA it set out to replace
+	// so its unforced retry is dropped only once a rekey has replaced that SA since the exchange began
 	settleChildRekeys := func() error {
 		ended := s.childRetry.unsettled()
 		if len(ended) == 0 {
 			return nil
 		}
 		var next time.Time
-		for _, rekeyErr := range ended {
+		for _, outcome := range ended {
+			childSchedule.counted = outcome.rekeyed
 			var err error
-			if next, err = settle(childSchedule, rekeyErr); err != nil {
+			if next, err = settle(childSchedule, outcome.err); err != nil {
 				return err
 			}
 		}
