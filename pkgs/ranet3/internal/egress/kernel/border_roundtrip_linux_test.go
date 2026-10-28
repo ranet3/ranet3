@@ -6,24 +6,31 @@
 package kernel
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// What nf_tables takes of the border chain and hands back, against a real
-// kernel in a namespace this test made and proved empty: every spec in order
-// with its counter at zero, the hook and priority, nft's own reading of the
+// What nf_tables takes of the border's table and hands back, against a real
+// kernel in a namespace this test made and proved empty: every spec of both
+// chains in order with its counter at zero, each chain's hook and priority,
+// nft's own reading of the
 // expressions where nft is installed, no wake from the filter's own writes,
 // the chain put back by the pass that another writer wakes well inside a
 // sweep by deleting the table, inserting an accept at the head of the chain
@@ -48,18 +55,18 @@ func TestBorderRoundTrip(t *testing.T) {
 
 	bus := events.New()
 	rt := borderRuntime(bus)
-	rt.Inside = []string{"ranet3", "lo"}
+	rt.Tun, rt.Inside = "ranet3", []string{"ranet3", "lo"}
 	f, err := startBorderFilter(overlay(t, "198.18.0.0/15", "3fff::/20"), rt, be)
 	if err != nil {
 		t.Fatalf("start the border filter: %v", err)
 	}
-	desired := f.desired()
-	read, err := be.Rules()
+	desired, sets, _ := f.desired()
+	read, err := be.Rules(desired, sets)
 	if err != nil {
 		t.Fatal(err)
 	}
 	held := read.rules
-	if !sameBorderRules(held, desired) || read.fault != "" {
+	if read.fault != "" {
 		t.Fatalf("the kernel holds %v with the fault %q, want %v", held, read.fault, desired)
 	}
 	for _, rule := range held {
@@ -89,12 +96,15 @@ func TestBorderRoundTrip(t *testing.T) {
 			continue
 		}
 		chains++
-		if chain != BorderChain || kind != "filter" || hook != unix.NF_INET_PRE_ROUTING || priority != -300 {
-			t.Errorf("the kernel holds a %q chain %s at hook %d priority %d, want a filter chain %s at prerouting priority -300", kind, chain, hook, priority, BorderChain)
+		switch {
+		case chain == BorderChain && kind == "filter" && hook == unix.NF_INET_PRE_ROUTING && priority == -300:
+		case chain == EntryChain && kind == "filter" && hook == unix.NF_INET_POST_ROUTING && priority == 110:
+		default:
+			t.Errorf("the kernel holds a %q chain %s at hook %d priority %d, want a filter chain %s at prerouting priority -300 or %s at postrouting priority 110", kind, chain, hook, priority, BorderChain, EntryChain)
 		}
 	}
-	if chains != 1 {
-		t.Errorf("the kernel holds %d chains in table inet %s, want one", chains, TableName)
+	if chains != 2 {
+		t.Errorf("the kernel holds %d chains in table inet %s, want two", chains, TableName)
 	}
 
 	// nft decodes the expressions itself, so an encoding it cannot read back
@@ -116,6 +126,11 @@ func TestBorderRoundTrip(t *testing.T) {
 			`iifname "lo" accept comment "accept via lo"`,
 			`ip saddr 198.18.0.0/15 counter packets 0 bytes 0 drop comment "drop ipv4 source 198.18.0.0/15"`,
 			`ip6 saddr 3fff::/20 counter packets 0 bytes 0 drop comment "drop ipv6 source 3fff::/20"`,
+			`oifname != "ranet3" return comment "return via other than ranet3"`,
+			`ct direction reply return comment "return a reply"`,
+			`ip saddr @owned4 return comment "return ipv4 source @owned4"`,
+			`ip6 daddr @none6 return comment "return ipv6 to @none6"`,
+			`counter packets 0 bytes 0 drop comment "drop ipv6 entering the mesh"`,
 		} {
 			if !strings.Contains(listing, want) {
 				t.Errorf("nft does not read %s in:\n%s", want, listing)
@@ -154,7 +169,7 @@ func TestBorderRoundTrip(t *testing.T) {
 				t.Fatalf("after another writer %s the filter's readiness moved %q, want not ready and then ready", change.name, moved)
 			}
 		}
-		if read, err := be.Rules(); err != nil || read.fault != "" || !sameBorderRules(read.rules, desired) {
+		if read, err := be.Rules(desired, sets); err != nil || read.fault != "" {
 			t.Fatalf("after another writer %s the kernel holds %v with the fault %q (%v), want %v", change.name, read.rules, read.fault, err, desired)
 		}
 	}
@@ -190,8 +205,10 @@ func inetTables(t *testing.T, conn *nftables.Conn) int {
 	return 0
 }
 
-// A rule another writer puts in the border chain with no comment, the table
-// set dormant, the chain's policy turned to drop, the chain made again at
+// A rule another writer puts in the border chain with no comment, a line of
+// either chain written again doing otherwise under its own comment, a line
+// written again under another comment, the table set dormant, the chain's
+// policy turned to drop, the chain made again at
 // another priority or as a regular chain, and the table made again with a flag
 // nf_tables will not clear in place each wake the filter, read back as
 // other than the filter wrote them, and the next pass writes the table and the
@@ -234,32 +251,54 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 		t.Fatalf("start the border filter beside another inet table: %v", err)
 	}
 	t.Cleanup(func() { _ = f.finish() })
-	desired := f.desired()
+	desired, sets, _ := f.desired()
 	const foreign = `iifname "eth0" accept comment "accept via ranet3"`
+	// replace is nft's replace of the line chain holds under comment by rule
+	replace := func(chain, comment, rule string) []string {
+		listing := run("-a", "list", "chain", "inet", TableName, chain)
+		handle := regexp.MustCompile(`comment "` + regexp.QuoteMeta(comment) + `" # handle (\d+)`).FindStringSubmatch(listing)
+		if handle == nil {
+			t.Fatalf("no line of chain %s is commented %q in:\n%s", chain, comment, listing)
+		}
+		return append([]string{"replace", "rule", "inet", TableName, chain, "handle", handle[1]}, strings.Fields(rule)...)
+	}
 	for _, change := range []struct {
 		name string
 		args [][]string
+		// replaced is a line replace takes in place, as chain, comment and the rule nft writes
+		replaced [3]string
 		// nft lists gone in the table while the change stands
 		gone string
 		// remade is whether the pass deletes the table and makes it again
 		remade bool
 	}{
-		{"an uncommented accept at the head of the chain", [][]string{{"insert", "rule", "inet", TableName, BorderChain, "accept"}}, "\t\taccept\n", false},
-		{"the table set dormant", [][]string{{"add", "table", "inet", TableName, "{ flags dormant; }"}}, "flags dormant", false},
-		{"the chain's policy turned to drop", [][]string{{"chain", "inet", TableName, BorderChain, "{ policy drop; }"}}, "policy drop;", false},
+		{name: "an uncommented accept at the head of the chain", args: [][]string{{"insert", "rule", "inet", TableName, BorderChain, "accept"}}, gone: "\t\taccept\n"},
+		// a line edited under its own comment reads by its comment as written, so only its expressions tell
+		{name: "the overlay's drop made an accept under its comment", replaced: [3]string{BorderChain, "drop ipv4 source 198.18.0.0/15", `meta nfproto ipv4 accept comment "drop ipv4 source 198.18.0.0/15"`},
+			gone: `ipv4 accept comment "drop ipv4 source 198.18.0.0/15"`},
+		{name: "the reply's return made the original direction's under its comment", replaced: [3]string{EntryChain, "return a reply", `ct direction original return comment "return a reply"`},
+			gone: `ct direction original return comment "return a reply"`},
+		// as many lines as written, one under another comment
+		{name: "the overlay's drop written again under another comment", replaced: [3]string{BorderChain, "drop ipv4 source 198.18.0.0/15", `ip saddr 198.18.0.0/15 counter drop comment "another writer drops"`},
+			gone: `comment "another writer drops"`},
+		{"the table set dormant", [][]string{{"add", "table", "inet", TableName, "{ flags dormant; }"}}, [3]string{}, "flags dormant", false},
+		{"the chain's policy turned to drop", [][]string{{"chain", "inet", TableName, BorderChain, "{ policy drop; }"}}, [3]string{}, "policy drop;", false},
 		{"the chain made again at priority 0", [][]string{
 			{"delete", "chain", "inet", TableName, BorderChain},
 			{"add", "chain", "inet", TableName, BorderChain, "{ type filter hook prerouting priority 0; policy accept; }"},
-		}, "priority filter;", true},
+		}, [3]string{}, "priority filter;", true},
 		{"the chain made again as a regular chain", [][]string{
 			{"delete", "chain", "inet", TableName, BorderChain},
 			{"add", "chain", "inet", TableName, BorderChain},
-		}, "chain border {\n\t}", true},
+		}, [3]string{}, "chain border {\n\t}", true},
 		// nft's socket owns the table until nft exits, and the kernel then keeps it with the persist flag alone
 		{"the table made again to persist past its owner", [][]string{
 			{fmt.Sprintf("delete table inet %[1]s; add table inet %[1]s { flags owner, persist; }", TableName)},
-		}, "flags persist", true},
+		}, [3]string{}, "flags persist", true},
 	} {
+		if change.replaced[0] != "" {
+			change.args = [][]string{replace(change.replaced[0], change.replaced[1], change.replaced[2])}
+		}
 		for _, args := range change.args {
 			run(args...)
 		}
@@ -269,14 +308,14 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 		if !woken(be.Changed()) {
 			t.Errorf("%s: another writer's change did not wake the filter", change.name)
 		}
-		if read, err := be.Rules(); err != nil || read.fault == "" && sameBorderRules(read.rules, desired) || read.remake != change.remade {
+		if read, err := be.Rules(desired, sets); err != nil || read.fault == "" || read.remake != change.remade {
 			t.Errorf("%s: the readback finds the fault %q, remade %v, over %v (%v), want a difference, remade %v", change.name, read.fault, read.remake, read.rules, err, change.remade)
 		}
 		if err := f.reconcile(); err != nil {
 			t.Fatalf("%s: the pass failed: %v", change.name, err)
 		}
-		read, err := be.Rules()
-		if err != nil || read.fault != "" || !sameBorderRules(read.rules, desired) || !f.ready {
+		read, err := be.Rules(desired, sets)
+		if err != nil || read.fault != "" || !f.ready {
 			t.Errorf("%s: after the pass the filter reads ready %v (%q) over %v with the fault %q (%v)", change.name, f.ready, f.unready, read.rules, read.fault, err)
 		}
 		listing := run("list", "table", "inet", TableName)
@@ -304,5 +343,248 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	}
 	if listing := run("list", "table", "inet", "other"); !strings.Contains(listing, `iifname "eth0" accept comment "accept via ranet3"`) {
 		t.Errorf("the withdrawals reached another writer's table:\n%s", listing)
+	}
+}
+
+// borderCrashNamespace names, in the crash helper's environment, the network
+// namespace it writes the table in
+const borderCrashNamespace = "RANET3_BORDER_CRASH_NAMESPACE"
+
+// entrySets is sets of each kind in both families, for a table whose sets a
+// readback can find flushed
+func entrySets() egress.BorderSets {
+	return egress.BorderSets{
+		Owned: ranges("192.0.2.7/32", "2001:db8:7::/64"),
+		None:  ranges("203.0.113.0/24", "2001:db8:9::/48"),
+	}
+}
+
+// entryRuntime is a runtime on the tun ranet3 with entrySets
+func entryRuntime(bus *events.Bus) egress.BorderRuntime {
+	rt := borderRuntime(bus)
+	rt.Tun, rt.Inside, rt.Sets = "ranet3", []string{"ranet3", "lo"}, entrySets
+	return rt
+}
+
+// nftRun runs nft with args and returns what it lists
+func nftRun(t *testing.T) func(args ...string) string {
+	t.Helper()
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("another writer's changes are made through nft, which is not on the path")
+	}
+	return func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command(nft, args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nft %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+}
+
+// A set another writer flushes and a chain another writer empties each wake
+// the filter, read back as other than it wrote them, and the next pass puts
+// the elements and the rules back and reads them ready
+func TestBorderRoundTripRefillsAFlushedSet(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	run := nftRun(t)
+	be, err := newBorderBackend()
+	if err != nil {
+		t.Fatalf("open the border backend: %v", err)
+	}
+	f, err := startBorderFilter(overlay(t, "198.18.0.0/15", "3fff::/20"), entryRuntime(nil), be)
+	if err != nil {
+		t.Fatalf("start the border filter: %v", err)
+	}
+	t.Cleanup(func() { _ = f.finish() })
+	desired, sets, _ := f.desired()
+	for _, change := range []struct {
+		name string
+		args []string
+		// nft lists listed in the table once the pass put it back
+		listed string
+	}{
+		{"the set owned4 flushed", []string{"flush", "set", "inet", TableName, ownedSet + "4"}, "192.0.2.7"},
+		{"the set none6 flushed", []string{"flush", "set", "inet", TableName, noneSet + "6"}, "2001:db8:9::/48"},
+		{"the chain mesh_entry flushed", []string{"flush", "chain", "inet", TableName, EntryChain}, `comment "return a reply"`},
+	} {
+		run(change.args...)
+		if listing := run("list", "table", "inet", TableName); strings.Contains(listing, change.listed) {
+			t.Fatalf("%s: nft still lists %q in:\n%s", change.name, change.listed, listing)
+		}
+		if !woken(be.Changed()) {
+			t.Errorf("%s: another writer's change did not wake the filter", change.name)
+		}
+		if read, err := be.Rules(desired, sets); err != nil || read.fault == "" {
+			t.Errorf("%s: the readback finds the fault %q over %v (%v), want a difference", change.name, read.fault, read.rules, err)
+		}
+		if err := f.reconcile(); err != nil {
+			t.Fatalf("%s: the pass failed: %v", change.name, err)
+		}
+		if read, err := be.Rules(desired, sets); err != nil || read.fault != "" || !f.ready {
+			t.Errorf("%s: after the pass the filter reads ready %v (%q) over %v with the fault %q (%v)", change.name, f.ready, f.unready, read.rules, read.fault, err)
+		}
+		if listing := run("list", "table", "inet", TableName); !strings.Contains(listing, change.listed) {
+			t.Errorf("%s: after the pass nft does not list %q in:\n%s", change.name, change.listed, listing)
+		}
+	}
+}
+
+// A node with no cap.border holds the entry chain alone, on a host holding
+// no table as on one where a start with cap.border left its border chain,
+// which its first pass takes away
+func TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	// on a host holding no table the first start makes one
+	fresh, err := newBorderBackend()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := startBorderFilter(nil, entryRuntime(nil), fresh)
+	if err != nil {
+		t.Fatalf("start the border filter with no cap.border on a host holding no table: %v", err)
+	}
+	if err := first.finish(); err != nil {
+		t.Fatal(err)
+	}
+	earlier, err := newBorderBackend()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := startBorderFilter(overlay(t), entryRuntime(nil), earlier); err != nil {
+		t.Fatalf("start a border filter with cap.border: %v", err)
+	}
+	// the earlier start ends without its withdrawal, as a crash ends it
+	_ = earlier.Close()
+	be, err := newBorderBackend()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := startBorderFilter(nil, entryRuntime(nil), be)
+	if err != nil {
+		t.Fatalf("start the border filter with no cap.border: %v", err)
+	}
+	t.Cleanup(func() { _ = f.finish() })
+	conn, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	replies, err := conn.Dump(nftables.Command(unix.NFT_MSG_GETCHAIN), nftables.PutNfgenmsg(nil, unix.NFPROTO_INET))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var chains []string
+	for _, reply := range replies {
+		if table, chain, _, _, _ := nftables.DecodeChain(reply); table == TableName {
+			chains = append(chains, chain)
+		}
+	}
+	if !slices.Equal(chains, []string{EntryChain}) {
+		t.Errorf("table inet %s holds the chains %q, want %s alone", TableName, chains, EntryChain)
+	}
+	desired, sets, _ := f.desired()
+	if read, err := be.Rules(desired, sets); err != nil || read.fault != "" {
+		t.Errorf("the kernel holds %v with the fault %q (%v), want %v", read.rules, read.fault, err, desired)
+	}
+	if got := f.Where(); got != "nftables table inet "+TableName+" chain "+EntryChain {
+		t.Errorf("the filter says it is in %s", got)
+	}
+}
+
+// the crash helper of TestBorderRoundTripOutlivesAKilledOwner, which writes the
+// table in the namespace its environment names and waits to be killed
+func TestBorderCrashHelper(t *testing.T) {
+	path := os.Getenv(borderCrashNamespace)
+	if path == "" {
+		t.Skip("TestBorderRoundTripOutlivesAKilledOwner runs the crash helper in a process of its own")
+	}
+	runtime.LockOSThread()
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Setns(fd, unix.CLONE_NEWNET); err != nil {
+		t.Fatal(err)
+	}
+	be, err := newBorderBackend()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := startBorderFilter(overlay(t), entryRuntime(nil), be); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("written")
+	// the parent kills this process, and a parent gone before it closes stdin
+	_, _ = io.Copy(io.Discard, os.Stdin)
+}
+
+// A table whose owner is killed stays, with every rule and element as the owner
+// wrote it, and the next start adopts it without a write
+func TestBorderRoundTripOutlivesAKilledOwner(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := exec.Command(executable, "-test.run=^TestBorderCrashHelper$", "-test.v")
+	helper.Env = append(os.Environ(), fmt.Sprintf("%s=/proc/%d/task/%d/ns/net", borderCrashNamespace, os.Getpid(), unix.Gettid()))
+	stdin, err := helper.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := helper.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Start(); err != nil {
+		t.Fatalf("start the crash helper: %v", err)
+	}
+	t.Cleanup(func() { _ = stdin.Close() })
+	var written []string
+	for lines := bufio.NewScanner(stdout); !slices.Contains(written, "written") && lines.Scan(); {
+		written = append(written, lines.Text())
+	}
+	_ = helper.Process.Signal(unix.SIGKILL)
+	_ = helper.Wait()
+	if !slices.Contains(written, "written") {
+		t.Fatalf("the crash helper did not write the table:\n%s", strings.Join(written, "\n"))
+	}
+
+	conn, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if inetTables(t, conn) != 1 {
+		t.Fatalf("table inet %s went with its owner", TableName)
+	}
+	bus := events.New()
+	rt := entryRuntime(bus)
+	desired, sets, _ := newBorderFilter(overlay(t), rt, &fakeBorder{}).desired()
+	if read, err := readBorder(conn, desired, sets); err != nil || read.fault != "" {
+		t.Fatalf("after its owner was killed the kernel holds %v with the fault %q (%v), want %v", read.rules, read.fault, err, desired)
+	}
+	be, err := newBorderBackend()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := startBorderFilter(overlay(t), rt, be)
+	if err != nil {
+		t.Fatalf("start a border filter over the table a killed owner left: %v", err)
+	}
+	t.Cleanup(func() { _ = f.finish() })
+	if passes := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.pass" }, 0); len(passes) != 0 {
+		t.Errorf("the start over the table a killed owner left wrote it: %v", passes)
 	}
 }

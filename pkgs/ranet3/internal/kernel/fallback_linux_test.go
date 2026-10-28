@@ -442,7 +442,7 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	// lan lists the uplink's public networks, so lan4 holds one for the flush to take
 	mode := &ExitMode{Fallback: FallbackNone, LAN: []schema.Prefix{schema.PrefixFrom(lan4.Masked()), schema.PrefixFrom(lan6.Masked())}}
 	reconciler := newReconciler(tbl.WithMode(mode).Normalized(), rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
-	exit, _ := reconciler.exitPass(reconciler.addresses, nil)
+	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
 	sets, asked := reconciler.fallbackFor(exit)
 	if !asked {
 		t.Fatal("the mode does not ask for the table")

@@ -50,21 +50,22 @@
 //
 // An exit's allow list says which sources it carries out of the mesh, and
 // it is authorization rather than a border: a host on any link of a forwarding
-// node can send a packet with a mesh source into that node, which routes it
-// into the mesh and on to the exit as if a mesh node had sent it. cap.border
-// closes that. BorderFilter owns a second table of this tool's name, inet
-// rather than ip and ip6, holding one filter chain at prerouting and priority
-// raw, before conntrack, so a forged packet creates no connection entry. It
-// accepts whatever arrives on a device inside the mesh, the tun and lo, then
-// drops a source in the mesh's own prefixes, each drop counted.
+// node can send that node a packet with a mesh source, which chain mesh_entry
+// keeps out of the mesh on every Linux node and chain border keeps off the
+// host's own services. BorderFilter owns a second table of this tool's name,
+// inet rather than ip and ip6, on every Linux node: chain border, written only
+// under cap.border, drops a source in the overlay or a carved one arriving
+// from outside the mesh, before conntrack, and chain mesh_entry, written with
+// or without the block, lets into the tun from another device only a reply, a
+// source this node owns, an IPv6 link-local or multicast destination, or a
+// destination a none class takes. desired lists each chain's rules in order.
 //
 // It is a second owner beside Translator, with its own run goroutine, socket
 // and change monitor, and neither writes, replaces or deletes the other's
 // table. The filter keeps its table through `ranet3 down`, since it guards
 // the host's links rather than the mesh, and withdraws it last at shutdown,
-// after nothing routes into the tun. Its readiness is a condition of every
-// family the egress segments carry, so an exit whose border is down stops
-// egressing them until a pass puts it back.
+// after nothing routes into the tun. Its readiness is a report, in status and
+// the metrics, and holds back nothing the translator or a segment carries.
 package kernel
 
 import (

@@ -18,6 +18,7 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
@@ -324,15 +325,16 @@ func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies m
 	return refuse, skip
 }
 
-// warnUnbordered says so when the host forwards and the file writes no
-// cap.border. A host on any of this node's links can then hand it a packet
-// with a mesh source, which the kernel forwards into the tun and every peer
-// takes as the mesh's own.
+// warnUnbordered says so when the host forwards where no entry chain runs and
+// the file writes no cap.border. tun-checks drops a mesh source forged into the
+// tun, and the entry chain one the host forwards into it, so what is left is
+// the host's own services, which a host on any of this node's links reaches
+// under a mesh source.
 //
 // a warning rather than a refusal, since forwarding moves under a running node
 // and darwin, which forwards with no filter to offer, would otherwise not start at all
 func warnUnbordered(cfg *config.Config, forwards func() (v4, v6 bool)) {
-	if cfg.Cap.Border != nil {
+	if kernelexit.EntryRuns || cfg.Cap.Border != nil {
 		return
 	}
 	v4, v6 := forwards()
@@ -346,7 +348,7 @@ func warnUnbordered(cfg *config.Config, forwards func() (v4, v6 bool)) {
 	if len(on) == 0 {
 		return
 	}
-	log.Printf("config: this node forwards %s and holds no cap.border, so a host on any of its links can forge a mesh source through it into the mesh: add cap.border with the prefixes the mesh numbers its nodes from",
+	log.Printf("config: this node forwards %s and holds no cap.border, so a host on any of its links can reach this host's own services under a mesh source",
 		strings.Join(on, " and "))
 }
 

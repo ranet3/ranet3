@@ -109,7 +109,7 @@ func borderPassAfter(now borderStep, desired []BorderRule) (log, chain []string,
 	case now.stuck:
 		return log, chain, len(chain), false, now.fault
 	case !slices.Equal(chain, want):
-		return log, chain, len(chain), false, "its chain reads back other than it was written"
+		return log, chain, len(chain), false, "its chains read back other than they were written"
 	}
 	return log, chain, len(chain), true, ""
 }
@@ -122,12 +122,12 @@ func TestBorderReadinessFollowsWhatThePassReadBack(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		be := &fakeBorder{}
 		bus := events.New()
-		cfg := egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}}
+		cfg := &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}}
 		if hegel.Draw(ht, hegel.Booleans()) {
 			cfg.Overlay = append(cfg.Overlay, schema.MustPrefix("192.0.2.0/24"))
 		}
 		f := newBorderFilter(cfg, borderRuntime(bus), be)
-		desired := f.desired()
+		desired, _, _ := f.desired()
 		ready := false
 		for range hegel.Draw(ht, pbt.Spanning(1, 5)) {
 			now := hegel.Draw(ht, borderSteps(desired))
@@ -143,7 +143,7 @@ func TestBorderReadinessFollowsWhatThePassReadBack(t *testing.T) {
 			if got := be.entries(); !slices.Equal(got, log) {
 				ht.Fatalf("over %+v the pass went %q, want %q", now, got, log)
 			}
-			if got := be.specs(); !slices.Equal(got, chain) {
+			if got := be.allSpecs(); !slices.Equal(got, chain) {
 				ht.Fatalf("over %+v the pass left the host holding %q, want %q", now, got, chain)
 			}
 			if stats := f.Stats(); stats.Ready != wantReady || stats.Unready != unready || stats.Installed != installed {

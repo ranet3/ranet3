@@ -20,13 +20,13 @@ import (
 )
 
 // inRanges reports address lying in one of ranges
-func inRanges(ranges []Range, address netip.Addr) bool {
-	return slices.ContainsFunc(ranges, func(r Range) bool { return r.First.Compare(address) <= 0 && address.Compare(r.Last) <= 0 })
+func inRanges(ranges []egress.Range, address netip.Addr) bool {
+	return slices.ContainsFunc(ranges, func(r egress.Range) bool { return r.First.Compare(address) <= 0 && address.Compare(r.Last) <= 0 })
 }
 
 // checkRanges fails unless ranges are sorted, each of one family and first to
 // last, and none overlaps or adjoins the next, as an interval set takes them
-func checkRanges(ht *hegel.T, ranges []Range) {
+func checkRanges(ht *hegel.T, ranges []egress.Range) {
 	for i, r := range ranges {
 		if !r.First.IsValid() || r.First.BitLen() != r.Last.BitLen() || r.Last.Less(r.First) {
 			ht.Fatalf("range %d of %v runs from %s to %s", i, ranges, r.First, r.Last)
@@ -225,7 +225,7 @@ func TestRangePrefixesHoldExactlyTheRange(t *testing.T) {
 		if r.Last.Less(r.First) {
 			r.First, r.Last = r.Last, r.First
 		}
-		got := r.prefixes()
+		got := rangePrefixes(r)
 		next := r.First
 		for i, prefix := range got {
 			if prefix != prefix.Masked() || prefix.Addr() != next {

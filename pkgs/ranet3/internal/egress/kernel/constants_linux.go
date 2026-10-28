@@ -5,6 +5,10 @@
 
 package kernel
 
+// EntryRuns is whether this platform writes the entry chain, which runs on
+// every node holding a tun with cap.border written or not
+const EntryRuns = true
+
 const (
 	// natPriority is one below NF_IP_PRI_NAT_SRC, where a host's own source
 	// translation runs, so this chain runs ahead of every chain there whatever

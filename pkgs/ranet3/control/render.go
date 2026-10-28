@@ -63,7 +63,7 @@ func RenderStatus(w io.Writer, s Status) {
 		{"Transit", transitLine(s.Transit)},
 		{"ESP", espLine(s.ESP)},
 	}
-	// under the egress line, and only on a node that writes cap.border
+	// under the egress line, and only on a node that runs the border filter
 	if s.Border != nil {
 		rows = slices.Insert(rows, slices.IndexFunc(rows, func(row []string) bool { return row[0] == "Egress" })+1, []string{"Border", borderLine(*s.Border)})
 	}

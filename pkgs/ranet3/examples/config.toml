@@ -344,14 +344,16 @@ update = "16s"
 # forwarding sysctls. Omitted it is 30s.
 # sweep = "30s"
 
-# Drop what arrives from outside the mesh and only a forger sends: a source in
-# the prefixes the mesh numbers its nodes from, an IPv6 routing header of any
-# type, and a packet to one of this node's own local segments. Write it on every
-# node that forwards, or a host on any of its links can send a mesh source
-# through it to an exit. The devices inside the mesh are derived: the tun and
-# lo. A local segment needs it, with an IPv6 prefix in overlay, an egress
-# segment every allow entry inside overlay as well, and a prefix cap.egress
-# advertises, a default aside, may not overlap overlay. linux only, refused by
-# name elsewhere.
+# Drop a source in the prefixes the mesh numbers its nodes from arriving from
+# outside the mesh, which only a forger sends, but where a link's own network
+# overlaps them: there the link's neighbors keep their addresses, and a mesh
+# prefix inside that network is still dropped. The devices inside the mesh are
+# derived: the tun and lo. The entry chain, which lets into the tun only a
+# reply, an owned source, an IPv6 link-local or multicast destination or what a
+# none class takes, runs on every linux node without this block. A local
+# segment needs it, with an IPv6 prefix in overlay, an egress segment every
+# allow entry inside overlay as well, and a none class under cap.egress
+# translate. A prefix cap.egress advertises, a default aside, may not overlap
+# overlay. linux only, refused by name elsewhere.
 # [cap.border]
 # overlay = ["3fff::/20", "203.0.113.0/24"]

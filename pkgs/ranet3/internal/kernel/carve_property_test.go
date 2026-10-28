@@ -15,6 +15,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -54,7 +55,7 @@ func nearPrefix(tc hegel.TestCase, family Family) netip.Prefix {
 }
 
 // drawnCarveNetwork draws each family's links from carveLinks, each with up to
-// two prefixes
+// two prefixes and up to one point-to-point far end
 func drawnCarveNetwork(tc hegel.TestCase) NetworkState {
 	links := func(family Family) []Link {
 		var out []Link
@@ -65,6 +66,9 @@ func drawnCarveNetwork(tc hegel.TestCase) NetworkState {
 			link := Link{Name: name}
 			for range hegel.Draw(tc, pbt.Spanning(0, 2)) {
 				link.Prefixes = append(link.Prefixes, nearPrefix(tc, family))
+			}
+			if hegel.Draw(tc, pbt.Spanning(0, 1)) == 1 {
+				link.Peers = []netip.Prefix{nearPrefix(tc, family).Masked()}
 			}
 			out = append(out, link)
 		}
@@ -99,36 +103,37 @@ func holds(outer, inner netip.Prefix) bool {
 }
 
 // carveModel is 2.6's carve-outs: for each link but lo, each prefix of the
-// overlay that one of the link's networks holds whole and each such network
-// the overlay holds whole, which is every address the two share
-func carveModel(network NetworkState, overlay []schema.Prefix) []CarveOut {
-	set := map[CarveOut]bool{}
+// overlay that one of the link's networks or far ends holds whole and each such
+// network or far end the overlay holds whole, which is every address the two
+// share
+func carveModel(network NetworkState, overlay []schema.Prefix) []egress.CarveOut {
+	set := map[egress.CarveOut]bool{}
 	for _, link := range slices.Concat(network.IPv4.Links, network.IPv6.Links) {
 		if link.Name == "lo" {
 			continue
 		}
-		for _, address := range link.Prefixes {
+		for _, address := range slices.Concat(link.Prefixes, link.Peers) {
 			n := address.Masked()
 			for _, entry := range overlay {
 				o := entry.Masked()
 				if holds(n, o) {
-					set[CarveOut{Link: link.Name, Prefix: o}] = true
+					set[egress.CarveOut{Link: link.Name, Prefix: o}] = true
 				}
 				if holds(o, n) {
-					set[CarveOut{Link: link.Name, Prefix: n}] = true
+					set[egress.CarveOut{Link: link.Name, Prefix: n}] = true
 				}
 			}
 		}
 	}
-	return slices.SortedFunc(maps.Keys(set), func(a, b CarveOut) int {
+	return slices.SortedFunc(maps.Keys(set), func(a, b egress.CarveOut) int {
 		return cmp.Or(cmp.Compare(a.Link, b.Link), a.Prefix.Addr().Compare(b.Prefix.Addr()), cmp.Compare(a.Prefix.Bits(), b.Prefix.Bits()))
 	})
 }
 
-// The carve-outs are exactly 2.6's intersections of each link's networks with
-// the overlay, never on lo, sorted by link and prefix and each once, and an
-// address lies in a link's carve-out exactly when one of the link's networks
-// and the overlay both hold it
+// The carve-outs are exactly 2.6's intersections of each link's networks and
+// far ends with the overlay, never on lo, sorted by link and prefix and each
+// once, and an address lies in a link's carve-out exactly when one of the
+// link's networks or far ends and the overlay both hold it
 func TestCarveOutsAreEachLinksIntersectionWithTheOverlay(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		network, overlay := drawnCarveNetwork(ht), drawnCarveOverlay(ht)
@@ -144,8 +149,8 @@ func TestCarveOutsAreEachLinksIntersectionWithTheOverlay(t *testing.T) {
 			}
 			inOverlay := slices.ContainsFunc(overlay, func(o schema.Prefix) bool { return o.Contains(address) })
 			for _, link := range links {
-				onLink := link.Name != "lo" && slices.ContainsFunc(link.Prefixes, func(p netip.Prefix) bool { return p.Masked().Contains(address) })
-				carved := slices.ContainsFunc(got, func(c CarveOut) bool { return c.Link == link.Name && c.Prefix.Contains(address) })
+				onLink := link.Name != "lo" && slices.ContainsFunc(slices.Concat(link.Prefixes, link.Peers), func(p netip.Prefix) bool { return p.Masked().Contains(address) })
+				carved := slices.ContainsFunc(got, func(c egress.CarveOut) bool { return c.Link == link.Name && c.Prefix.Contains(address) })
 				if carved != (onLink && inOverlay) {
 					ht.Fatalf("%s carved on %s %v, on the link %v and in the overlay %v", address, link.Name, carved, onLink, inOverlay)
 				}
@@ -159,13 +164,13 @@ func TestCarveOutsAreEachLinksIntersectionWithTheOverlay(t *testing.T) {
 // alike, a source-specific entry by its destination, sorted and each once
 func TestCarvedPrefixesAreTheTablesEntriesInsideACarveOut(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
-		var carveOuts []CarveOut
+		var carveOuts []egress.CarveOut
 		for range hegel.Draw(ht, pbt.Spanning(0, 3)) {
 			family := FamilyIPv4
 			if hegel.Draw(ht, pbt.Spanning(0, 1)) == 1 {
 				family = FamilyIPv6
 			}
-			carveOuts = append(carveOuts, CarveOut{Link: carveLinks[hegel.Draw(ht, pbt.Spanning(0, len(carveLinks)-1))], Prefix: nearPrefix(ht, family).Masked()})
+			carveOuts = append(carveOuts, egress.CarveOut{Link: carveLinks[hegel.Draw(ht, pbt.Spanning(0, len(carveLinks)-1))], Prefix: nearPrefix(ht, family).Masked()})
 		}
 		routes := netstack.NewRouteTable()
 		values := []*netstack.Peer{learned, netstack.Unreachable, netstack.Local, netstack.Assigned}
@@ -183,7 +188,7 @@ func TestCarvedPrefixesAreTheTablesEntriesInsideACarveOut(t *testing.T) {
 		set := map[netip.Prefix]bool{}
 		for _, entry := range routes.Snapshot() {
 			d := entry.Destination.Masked()
-			if slices.ContainsFunc(carveOuts, func(c CarveOut) bool { return holds(c.Prefix, d) }) {
+			if slices.ContainsFunc(carveOuts, func(c egress.CarveOut) bool { return holds(c.Prefix, d) }) {
 				set[d] = true
 			}
 		}
@@ -195,7 +200,8 @@ func TestCarvedPrefixesAreTheTablesEntriesInsideACarveOut(t *testing.T) {
 }
 
 // A lease as wide as the overlay, one inside it and one around it carve the
-// lease, the overlay prefix and nothing on lo, and every entry of the table
+// lease, the overlay prefix and nothing on lo, a point-to-point uplink's
+// gateway inside the overlay carves the gateway, and every entry of the table
 // inside the lease is carved, this node's own address among them
 func TestCarveOutsOfALeaseInsideAroundAndAsWideAsTheOverlay(t *testing.T) {
 	p := netip.MustParsePrefix
@@ -208,10 +214,11 @@ func TestCarveOutsOfALeaseInsideAroundAndAsWideAsTheOverlay(t *testing.T) {
 		}},
 		IPv6: NetworkFamily{Links: []Link{
 			{Name: "eth0", Prefixes: []netip.Prefix{p("3fff::10/32")}},
+			{Name: "ppp0", Prefixes: []netip.Prefix{p("2001:db8::9/128")}, Peers: []netip.Prefix{p("3fff:0:0:9::1/128")}},
 		}},
 	}
 	got := CarveOuts(network, overlay)
-	want := []CarveOut{{"eth0", p("192.0.2.0/24")}, {"eth0", p("3fff::/48")}, {"wlan0", p("192.0.2.128/25")}}
+	want := []egress.CarveOut{{Link: "eth0", Prefix: p("192.0.2.0/24")}, {Link: "eth0", Prefix: p("3fff::/48")}, {Link: "ppp0", Prefix: p("3fff:0:0:9::1/128")}, {Link: "wlan0", Prefix: p("192.0.2.128/25")}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the carve-outs are %v, want %v", got, want)
 	}

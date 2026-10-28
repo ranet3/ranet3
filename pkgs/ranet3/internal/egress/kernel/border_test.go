@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +18,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	meshkernel "ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -40,6 +43,11 @@ type fakeBorder struct {
 	// does not delete the table first.
 	fault         string
 	remake, stuck bool
+	// sets is each set's prefixes as the last Apply or Fill left them, which a
+	// readback against other prefixes reads as a fault
+	sets borderSets
+	// failFill makes a host that will not take a set's elements
+	failFill bool
 	// counts is each rule's packet counter by spec, as a readback finds it
 	counts map[string]uint64
 	// changed stands for another writer's changes to the table, nil for none
@@ -56,32 +64,63 @@ func (f *fakeBorder) entries() []string {
 	return slices.Clone(f.log)
 }
 
-func (f *fakeBorder) readback() chainReadback {
+// readback is the table as a read finds it, its rules read by comment against
+// rules and each set against sets where each is not nil
+func (f *fakeBorder) readback(rules []BorderRule, sets borderSets) chainReadback {
 	out := slices.Clone(f.held)
 	for i := range out {
 		out[i].Packets = f.counts[out[i].Spec]
 	}
-	return chainReadback{rules: out, fault: f.fault, remake: f.fault != "" && f.remake}
+	read := chainReadback{rules: out, fault: f.fault, remake: f.fault != "" && f.remake}
+	if name := slices.Sorted(maps.Keys(sets.changed(f.sets))); sets != nil && read.fault == "" && len(name) > 0 {
+		read.fault = "its set " + name[0] + " holds other elements"
+	}
+	same := slices.EqualFunc(out, rules, func(held Installed, rule BorderRule) bool { return held.Spec == rule.String() })
+	if rules != nil && read.fault == "" && !same {
+		read.fault = "its chains read back other than they were written"
+	}
+	return read
 }
 
-func (f *fakeBorder) Rules() (chainReadback, error) {
+func (f *fakeBorder) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "rules")
 	if f.failRules {
 		return chainReadback{}, errors.New("no")
 	}
-	return f.readback(), nil
+	return f.readback(rules, sets), nil
 }
 
 func (f *fakeBorder) Read() (chainReadback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.readback(), nil
+	return f.readback(nil, nil), nil
+}
+
+// Fill logs fill and the names of the sets it fills, and refuses a move from
+// ranges a set does not hold, which a delta would apply to the wrong elements
+func (f *fakeBorder) Fill(was, sets borderSets) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.log = append(f.log, "fill "+strings.Join(slices.Sorted(maps.Keys(sets)), " "))
+	if f.failFill {
+		return errors.New("no")
+	}
+	for name := range sets {
+		if !slices.Equal(was[name], f.sets[name]) {
+			return fmt.Errorf("fill moves set %s from %v, which holds %v", name, was[name], f.sets[name])
+		}
+	}
+	if f.sets == nil {
+		f.sets = borderSets{}
+	}
+	maps.Copy(f.sets, sets)
+	return nil
 }
 
 // Apply logs remake for an apply that deletes the table first
-func (f *fakeBorder) Apply(rules []BorderRule, remake bool) error {
+func (f *fakeBorder) Apply(rules []BorderRule, sets borderSets, remake bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	entry := "apply"
@@ -100,6 +139,7 @@ func (f *fakeBorder) Apply(rules []BorderRule, remake bool) error {
 	for _, rule := range rules {
 		f.held = append(f.held, Installed{Spec: rule.String()})
 	}
+	f.sets = maps.Clone(sets)
 	if f.garble && len(f.held) != 0 {
 		last := &f.held[len(f.held)-1]
 		last.Spec = last.Spec[:len(last.Spec)-1]
@@ -125,12 +165,26 @@ func (f *fakeBorder) Missed() <-chan struct{} { return f.missed }
 
 func (f *fakeBorder) Close() error { return nil }
 
+// allSpecs is both chains' rules as held
+func (f *fakeBorder) allSpecs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, rule := range f.held {
+		out = append(out, rule.Spec)
+	}
+	return out
+}
+
+// specs is the border chain's rules as held, the entry chain's left out
 func (f *fakeBorder) specs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]string, 0, len(f.held))
 	for _, rule := range f.held {
-		out = append(out, rule.Spec)
+		if !strings.HasPrefix(rule.Spec, "return ") && !strings.HasSuffix(rule.Spec, " entering the mesh") {
+			out = append(out, rule.Spec)
+		}
 	}
 	return out
 }
@@ -146,8 +200,11 @@ func (f *fakeBorder) setCount(spec string, packets uint64) {
 
 // borderRuntime is a filter's runtime over the mesh tun and lo, recording on bus
 func borderRuntime(bus *events.Bus) egress.BorderRuntime {
-	return egress.BorderRuntime{Inside: []string{"ranet0", "lo"}, Events: bus}
+	return egress.BorderRuntime{Tun: "ranet0", Inside: []string{"ranet0", "lo"}, Events: bus}
 }
+
+// entryRules is the entry chain's rules, which follow the border chain's
+const entryRules = 10
 
 // readyMoves is each move of the filter's readiness bus recorded, in order
 func readyMoves(bus *events.Bus) []string {
@@ -159,12 +216,21 @@ func readyMoves(bus *events.Bus) []string {
 }
 
 // overlay is a valid overlay list of both families
-func overlay(t *testing.T, raw ...string) egress.Border {
+func overlay(t *testing.T, raw ...string) *egress.Border {
 	t.Helper()
 	if len(raw) == 0 {
 		raw = []string{"198.18.0.0/15", "3fff::/20"}
 	}
-	return egress.Border{Overlay: prefixes(t, raw...)}
+	return &egress.Border{Overlay: prefixes(t, raw...)}
+}
+
+// ranges is the addresses of raw's prefixes as ranges
+func ranges(raw ...string) []egress.Range {
+	prefixes := make([]netip.Prefix, 0, len(raw))
+	for _, text := range raw {
+		prefixes = append(prefixes, netip.MustParsePrefix(text))
+	}
+	return meshkernel.Ranges(prefixes)
 }
 
 // runBorder runs f until the test ends
@@ -198,7 +264,7 @@ func waitForPass(t *testing.T, bus *events.Bus, trigger string) {
 
 // The chain takes everything arriving on a device inside the mesh before it
 // drops anything, then drops by source, the list in one order whatever order
-// it was written in
+// it was written in, with no carved drop while no carve-out exists
 func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 	be := &fakeBorder{}
 	rt := borderRuntime(nil)
@@ -218,8 +284,195 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
 	}
-	if !f.Stats().Ready || f.Stats().Installed != len(want) {
-		t.Errorf("the pass reports %+v, want ready with %d rules", f.Stats(), len(want))
+	if !f.Stats().Ready || f.Stats().Installed != len(want)+entryRules {
+		t.Errorf("the pass reports %+v, want ready with %d rules", f.Stats(), len(want)+entryRules)
+	}
+}
+
+// The entry chain lets a packet leave by the tun only as a reply, toward a
+// link-local or multicast IPv6 destination, from a source this node owns or
+// toward a none class's destination, family by family, and drops the rest,
+// counted. A node with no cap.border holds the entry chain alone and its
+// table is made again whole on every rewrite, so a border chain an earlier
+// start left goes with it.
+func TestEntryChainRunsWithAndWithoutTheBorder(t *testing.T) {
+	want := []string{
+		"return via other than ranet0",
+		"return a reply",
+		"return ipv6 to fe80::/10",
+		"return ipv6 to ff00::/8",
+		"return ipv4 source @owned4",
+		"return ipv6 source @owned6",
+		"return ipv4 to @none4",
+		"return ipv6 to @none6",
+		"drop ipv4 entering the mesh",
+		"drop ipv6 entering the mesh",
+	}
+	for _, cfg := range []*egress.Border{overlay(t), nil} {
+		be := &fakeBorder{}
+		f, err := startBorderFilter(cfg, borderRuntime(nil), be)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var entry []string
+		for _, rule := range be.held {
+			if !slices.Contains(be.specs(), rule.Spec) {
+				entry = append(entry, rule.Spec)
+			}
+		}
+		if !slices.Equal(entry, want) {
+			t.Errorf("with cap.border %v the entry chain holds %q, want %q", cfg, entry, want)
+		}
+		if bordered := len(be.specs()) != 0; bordered != (cfg != nil) {
+			t.Errorf("with cap.border %v the border chain holds %q", cfg, be.specs())
+		}
+		if remade := be.entries()[1] == "remake"; remade != (cfg == nil) || !f.ready {
+			t.Errorf("with cap.border %v the start went %q", cfg, be.entries())
+		}
+	}
+}
+
+// The sets follow what the runtime derives: a pass that finds them moved
+// moves the moved ones alone, from what the table holds, and rewrites no
+// chain, a pass woken by the mesh's table that finds nothing moved reads
+// nothing, and another writer's change to a set's elements has the whole table
+// rewritten
+func TestBorderRefillsTheSetsThatMovedAlone(t *testing.T) {
+	derived := egress.BorderSets{Owned: ranges("192.0.2.1/32")}
+	rt := borderRuntime(nil)
+	rt.Sets = func() egress.BorderSets { return derived }
+	be := &fakeBorder{}
+	f, err := startBorderFilter(nil, rt, be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := be.sets[ownedSet+"4"]; !slices.Equal(got, derived.Owned) {
+		t.Fatalf("the start wrote owned4 %v, want %v", got, derived.Owned)
+	}
+	f.trigger = "routes"
+	mark := len(be.entries())
+	if err := f.reconcile(); err != nil || len(be.entries()) != mark {
+		t.Errorf("a pass that found nothing moved went %q with %v", be.entries()[mark:], err)
+	}
+	derived.Owned = append(derived.Owned, ranges("2001:db8::/48")...)
+	derived.None = ranges("203.0.113.0/24")
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := be.entries()[mark:], []string{"rules", "fill none4 owned6", "rules"}; !slices.Equal(got, want) || !f.ready {
+		t.Errorf("a pass with two sets moved went %q, ready %v, want %q", got, f.ready, want)
+	}
+	be.mu.Lock()
+	be.sets[noneSet+"4"] = nil
+	be.mu.Unlock()
+	mark = len(be.entries())
+	f.trigger = "changed"
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := be.entries()[mark:], []string{"rules", "remake", "rules"}; !slices.Equal(got, want) || !f.ready {
+		t.Errorf("a pass after another writer emptied a set went %q, ready %v, want %q", got, f.ready, want)
+	}
+}
+
+// A carve-out is accepted from its own link ahead of the overlay's drops and
+// behind the drop of the mesh's prefixes inside any carve-out of its family,
+// which a family with no carve-out leaves out, and each one coming and going
+// is reported once, at warning and at info, with an event
+func TestBorderCarveOutIsAcceptedFromItsLinkAndReportedOnce(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	bus := events.New()
+	lease := egress.CarveOut{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}
+	derived := egress.BorderSets{CarveOuts: []egress.CarveOut{lease}, Carved: ranges("198.18.0.5/32")}
+	rt := borderRuntime(bus)
+	rt.Sets = func() egress.BorderSets { return derived }
+	be := &fakeBorder{}
+	f, err := startBorderFilter(overlay(t), rt, be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"accept via ranet0",
+		"accept via lo",
+		"drop ipv4 source @carved4",
+		"accept via eth0 source 198.18.0.0/24",
+		"drop ipv4 source 198.18.0.0/15",
+		"drop ipv6 source 3fff::/20",
+	}
+	if got := be.specs(); !slices.Equal(got, want) {
+		t.Errorf("installed %q, want %q", got, want)
+	}
+	if got := be.sets[carvedSet+"4"]; !slices.Equal(got, derived.Carved) {
+		t.Errorf("carved4 holds %v, want %v", got, derived.Carved)
+	}
+	if got := f.Stats().CarveOuts; !slices.Equal(got, derived.CarveOuts) {
+		t.Errorf("the status names the carve-outs %v, want %v", got, derived.CarveOuts)
+	}
+	f.reconcile()
+	derived = egress.BorderSets{}
+	f.reconcile()
+	f.reconcile()
+	if got := be.specs(); slices.Contains(got, "drop ipv4 source @carved4") {
+		t.Errorf("with the carve-out gone the chain holds %q, its carved drop among them", got)
+	}
+	var got []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.carve" }, 0) {
+		got = append(got, event.Attrs["link"]+" "+event.Attrs["prefix"]+" "+event.Attrs["carved"])
+	}
+	if want := []string{"eth0 198.18.0.0/24 true", "eth0 198.18.0.0/24 false"}; !slices.Equal(got, want) {
+		t.Errorf("recorded border.carve %q, want %q", got, want)
+	}
+	if strings.Count(lines.String(), "level=WARN msg=\"border carves the overlay for a link that holds part of it\"") != 1 ||
+		strings.Count(lines.String(), "level=INFO msg=\"border no longer carves the overlay for a link\"") != 1 {
+		t.Errorf("the carve-out was not logged once each way:\n%s", lines.String())
+	}
+}
+
+// A change of the host's links wakes a pass well inside a sweep: a lease
+// overlapping the overlay that comes is carved, its accept and its carved drop
+// written and its mesh prefixes in the carved set, and one that goes takes
+// them with it
+func TestBorderFollowsTheHostsLinksBetweenSweeps(t *testing.T) {
+	lease := egress.BorderSets{CarveOuts: []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}, Carved: ranges("198.18.0.5/32")}
+	var mu sync.Mutex
+	derived := egress.BorderSets{}
+	network := make(chan struct{}, 1)
+	rt := borderRuntime(nil)
+	rt.Sets = func() egress.BorderSets {
+		mu.Lock()
+		defer mu.Unlock()
+		return derived
+	}
+	rt.Network = network
+	be := &fakeBorder{}
+	f, err := startBorderFilter(overlay(t), rt, be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.sweep = lateSweep
+	runBorder(t, f)
+	carved := func() bool {
+		be.mu.Lock()
+		set := slices.Clone(be.sets[carvedSet+"4"])
+		be.mu.Unlock()
+		specs := be.specs()
+		return slices.Contains(specs, "accept via eth0 source 198.18.0.0/24") && slices.Contains(specs, "drop ipv4 source @carved4") && slices.Equal(set, lease.Carved)
+	}
+	for _, step := range []struct {
+		what string
+		sets egress.BorderSets
+		want bool
+	}{{"a lease that came", lease, true}, {"a lease that went", egress.BorderSets{}, false}} {
+		mu.Lock()
+		derived = step.sets
+		mu.Unlock()
+		network <- struct{}{}
+		for deadline := time.Now().Add(passWait); carved() != step.want; time.Sleep(passPoll) {
+			if time.Now().After(deadline) {
+				t.Fatalf("after %s the chain holds %q, carved %v, want carved %v", step.what, be.specs(), carved(), step.want)
+			}
+		}
 	}
 }
 
@@ -228,12 +481,12 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 func TestBorderRefusesWhatWouldNotFilter(t *testing.T) {
 	for _, one := range []struct {
 		name string
-		cfg  egress.Border
+		cfg  *egress.Border
 		want string
 	}{
-		{"an empty overlay", egress.Border{}, "overlay is empty, so the filter would pass every forged mesh source"},
-		{"an entry that is not a prefix", egress.Border{Overlay: []schema.Prefix{{}}}, "is not a prefix"},
-		{"bits below the length", egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.1/15")}}, "has bits set below its prefix length"},
+		{"an empty overlay", &egress.Border{}, "overlay is empty, so the filter would pass every forged mesh source"},
+		{"an entry that is not a prefix", &egress.Border{Overlay: []schema.Prefix{{}}}, "is not a prefix"},
+		{"bits below the length", &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.1/15")}}, "has bits set below its prefix length"},
 		{"an IPv4 prefix written as IPv6", overlay(t, "::ffff:198.18.0.0/111"), "written as IPv6, so write it as 198.18.0.0/15"},
 		{"every IPv4 address", overlay(t, "0.0.0.0/0"), "covers every address of its family"},
 		{"every IPv6 address", overlay(t, "::/0"), "covers every address of its family"},
@@ -243,7 +496,7 @@ func TestBorderRefusesWhatWouldNotFilter(t *testing.T) {
 	} {
 		t.Run(one.name, func(t *testing.T) {
 			f := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{})
-			err := f.SetConfig(one.cfg)
+			err := f.SetConfig(*one.cfg)
 			if err == nil || !strings.Contains(err.Error(), one.want) {
 				t.Fatalf("refused with %v, want a message containing %q", err, one.want)
 			}
@@ -279,8 +532,8 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 		be   *fakeBorder
 		want string
 	}{
-		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chain border: install rules: no"},
-		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chain reads back other than it was written"},
+		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains border and mesh_entry: install rules: no"},
+		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chains read back other than they were written"},
 	} {
 		t.Run(one.name, func(t *testing.T) {
 			bus := events.New()
@@ -328,7 +581,8 @@ func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 		}
 		got = append(got, []string{event.Attrs["installed"], event.Attrs["err"]})
 	}
-	if want := [][]string{{"4", ""}, {"0", "install rules: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
+	// the two inside accepts and the overlay's two drops, with no carve-out and so no carved drop
+	if want := [][]string{{fmt.Sprint(4 + entryRules), ""}, {"0", "install rules: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("the border filter recorded %q, want %q", got, want)
 	}
 }
@@ -340,7 +594,12 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
 	bus := events.New()
 	be := &fakeBorder{}
-	f := newBorderFilter(overlay(t), borderRuntime(bus), be)
+	// an IPv4 carve-out, so the chain holds the IPv4 carved drop
+	rt := borderRuntime(bus)
+	rt.Sets = func() egress.BorderSets {
+		return egress.BorderSets{CarveOuts: []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}}
+	}
+	f := newBorderFilter(overlay(t), rt, be)
 	f.reconcile()
 	be.setCount("drop ipv4 source 198.18.0.0/15", 3)
 	f.reconcile()
@@ -484,7 +743,7 @@ func TestBorderReloadRewritesTheChainInPlace(t *testing.T) {
 	}
 	f.sweep = lateSweep
 	runBorder(t, f)
-	if err := f.SetConfig(overlay(t, "192.0.2.0/24")); err != nil {
+	if err := f.SetConfig(*overlay(t, "192.0.2.0/24")); err != nil {
 		t.Fatal(err)
 	}
 	waitForPass(t, bus, "reload")
@@ -583,7 +842,7 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	be.held = append(be.held, Installed{Spec: "drop ipv4 source 192.0.2.0/24"}, Installed{})
 	be.mu.Unlock()
 	debug := f.Debug()
-	if debug.Where != "nftables table inet ranet3 chain border" || debug.Hook != "prerouting" || debug.Priority != -300 || !debug.Ready {
+	if debug.Where != "nftables table inet ranet3 chains border and mesh_entry" || debug.Hook != "prerouting" || debug.Priority != -300 || !debug.Ready {
 		t.Errorf("the debug read reports %+v", debug)
 	}
 	var got []string
@@ -595,6 +854,16 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 		"accept via lo|accept|inside||false|0",
 		"drop ipv4 source 198.18.0.0/15|drop|overlay_source|ipv4|true|12",
 		"drop ipv6 source 3fff::/20|drop|overlay_source|ipv6|true|0",
+		"return via other than ranet0|return|outside||true|0",
+		"return a reply|return|reply||true|0",
+		"return ipv6 to fe80::/10|return|link_local|ipv6|true|0",
+		"return ipv6 to ff00::/8|return|link_local|ipv6|true|0",
+		"return ipv4 source @owned4|return|owned|ipv4|true|0",
+		"return ipv6 source @owned6|return|owned|ipv6|true|0",
+		"return ipv4 to @none4|return|none|ipv4|true|0",
+		"return ipv6 to @none6|return|none|ipv6|true|0",
+		"drop ipv4 entering the mesh|drop|mesh_entry|ipv4|true|0",
+		"drop ipv6 entering the mesh|drop|mesh_entry|ipv6|true|0",
 		"drop ipv4 source 192.0.2.0/24|drop|||true|0",
 		"a rule with no comment||||true|3",
 	}

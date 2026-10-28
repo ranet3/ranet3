@@ -154,6 +154,25 @@ func TestEveryLocalSegmentNeedsTheBorder(t *testing.T) {
 	}
 }
 
+// A class translating none loads only beside cap.border, since a learned route
+// reads alike for a node's own address and for a LAN another node advertises,
+// and only the overlay tells the entry chain's none sets which to keep. A class
+// translating auto loads without it.
+func TestNoneClassNeedsTheBorder(t *testing.T) {
+	const exit = "\n[cap.egress]\nadvertise = [\"0.0.0.0/0\", \"::/0\"]\ntranslate = [\n  { from = \"3fff:a::/36\", to = \"%s\" },\n]\n"
+	body := func(to string) string { return nodeTOML + strings.Replace(exit, "%s", to, 1) }
+	const says = "config: cap.egress translate class 3fff:a::/36 is none and cap.border is absent, so the entry chain cannot tell the mesh's node addresses from the LANs other nodes advertise, and would refuse every inbound connection to that class's hosts: add cap.border with the prefixes the mesh numbers its nodes from"
+	if _, err := loadTOML(t, body("none")); err == nil || err.Error() != says {
+		t.Errorf("a none class without cap.border was refused with %v, want %q", err, says)
+	}
+	if _, err := loadTOML(t, body("none")+"\n[cap.border]\noverlay = [\"203.0.113.0/24\", \"3fff:a::/36\"]\n"); err != nil {
+		t.Errorf("a none class beside cap.border was refused: %v", err)
+	}
+	if _, err := loadTOML(t, body("auto")); err != nil {
+		t.Errorf("an auto class without cap.border was refused: %v", err)
+	}
+}
+
 // A prefix this node advertises out of cap.egress lies outside the overlay,
 // since the hosts behind it would arrive on a link outside the mesh with a
 // mesh source and the filter would drop them, while the exit default

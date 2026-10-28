@@ -1259,12 +1259,15 @@ testers.runNixOSTest {
             # The mesh first, so a failure below is the exit rather than the tunnel.
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
-            # Only this tree's own tables exist, and only in the families it was
-            # asked for. Anything else here would be a rule written outside what
-            # the ownership rules allow.
+            # Only this tree's own tables exist: the translator's in the families
+            # it was asked for, and the border filter's inet table, which holds
+            # chain mesh_entry alone on a node with no cap.border. Anything else
+            # here would be a rule written outside what the ownership rules allow.
             client.wait_until_succeeds("nft list table ip ranet3", timeout=timeout)
             tables = sorted(t for t in client.succeed("nft list tables").splitlines() if t.strip())
-            assert tables == ["table ip ranet3", "table ip6 ranet3"], tables
+            assert tables == ["table inet ranet3", "table ip ranet3", "table ip6 ranet3"], tables
+            chains = [line.split()[1] for line in client.succeed("nft list table inet ranet3").splitlines() if line.strip().startswith("chain ")]
+            assert chains == ["mesh_entry"], f"table inet ranet3 holds the chains {chains}, where a node with no cap.border holds mesh_entry alone"
             ruleset = client.succeed("nft list ruleset")
             print(ruleset)
             for want in ["chain postrouting", "type nat hook postrouting", "masquerade",
@@ -1320,8 +1323,9 @@ testers.runNixOSTest {
                 "ranet3 status --json | jq -e '.egress.announced | length == 2'", timeout=timeout)
             gateway.wait_until_succeeds("ip -4 route show ${exitNetV4} | grep -q swan0", timeout=timeout)
 
-            # Shutdown takes the tables with it. A rule left behind would go on
-            # translating for a process that is no longer running.
+            # Shutdown takes the tables with it, the border filter's inet table
+            # among them. A rule left behind would go on translating for a
+            # process that is no longer running.
             client.succeed("systemctl stop ranet3.service")
             assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
             left = client.succeed("nft list tables").strip()
@@ -1496,7 +1500,7 @@ testers.runNixOSTest {
             client.wait_until_succeeds("ranet3 status --json | jq -e '.egress.ready | length == 2'", timeout=timeout)
             gateway.wait_until_succeeds("ping -c 1 -W 2 -I ${gatewayTunnel} ${behindV6}", timeout=timeout)
 
-            # shutdown takes the tables with it
+            # shutdown takes the tables with it, the border filter's inet table among them
             client.succeed("systemctl stop ranet3.service")
             assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
             left = client.succeed("nft list tables").strip()

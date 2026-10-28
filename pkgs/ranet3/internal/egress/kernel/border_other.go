@@ -15,4 +15,8 @@ import (
 // forged mesh sources from its other links while its status said otherwise.
 var errNoBorder = fmt.Errorf("egress: cap.border is an nftables chain, which %s does not have, so this node cannot filter what enters the mesh from its other links", runtime.GOOS)
 
+// EntryRuns is whether this platform writes the entry chain, which no
+// platform without nftables has
+const EntryRuns = false
+
 func newBorderBackend() (borderBackend, error) { return nil, errNoBorder }

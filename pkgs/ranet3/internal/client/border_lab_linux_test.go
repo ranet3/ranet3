@@ -52,7 +52,8 @@ type borderLab struct {
 }
 
 // The border in two namespaces. The exit runs a node
-// started through New with cap.table, cap.border and an egress segment, with
+// started through New with cap.table, cap.border and an egress segment whose
+// leaves' addresses are a none class, which mesh_entry lets in, with
 // the reconciler and the border built as main builds them, and an uplink of a
 // veth pair to a far host in a namespace of its own.
 //   - a packet from the far host with a source outside the overlay, to a
@@ -264,6 +265,17 @@ func startBorderLab(t *testing.T) *borderLab {
 	lab := &borderLab{exit: netnstest.StartThread(t), far: netnstest.StartThread(t)}
 	labUplink(t, lab.exit, lab.far)
 	cfg := labConfig(t)
+	// the leaves' addresses are a none class, so a packet from beyond the uplink to one passes mesh_entry, and the
+	// border or the tun read stops it
+	exit := *cfg.Cap.Egress
+	exit.Translate = slices.Clone(exit.Translate)
+	for _, prefix := range labLeafPrefixes() {
+		exit.Translate = append(exit.Translate, egress.Class{From: schema.PrefixFrom(prefix), To: egress.Translation{None: true}})
+	}
+	cfg.Cap.Egress = &exit
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("the exit's configuration with its none classes is refused: %v", err)
+	}
 	bus := events.New()
 	if err := lab.exit.Do(func() (err error) {
 		lab.node, err = New(cfg, bus)
@@ -283,7 +295,7 @@ func startBorderLab(t *testing.T) *borderLab {
 		if routes, err = kernel.New(*cfg.Cap.Table, lab.node.KernelRuntime(), lab.node.Mesh.Routes); err != nil {
 			return err
 		}
-		lab.border, err = kernelexit.NewBorderFilter(*cfg.Cap.Border, lab.node.BorderRuntime())
+		lab.border, err = kernelexit.NewBorderFilter(cfg.Cap.Border, lab.node.BorderRuntime())
 		return err
 	}); err != nil {
 		lab.node.Close()

@@ -251,31 +251,27 @@ func (s Set) Fill(proto uint8, intervals []Interval) ([]Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	var requests []Request
-	var list []byte
-	send := func() {
-		body := PutAttrBE32(s.elementList(proto), unix.NFTA_SET_ELEM_LIST_SET_ID, s.ID)
-		body = PutAttr(body, unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, list)
-		requests = append(requests, Request{Kind: Command(unix.NFT_MSG_NEWSETELEM), Flags: unix.NLM_F_CREATE, Body: body})
-		list = nil
-	}
-	for _, e := range elements {
-		encoded := e.encode()
-		if len(list) > 0 && len(list)+len(encoded) > elementsMax {
-			send()
-		}
-		list = append(list, encoded...)
-	}
-	if len(list) > 0 {
-		send()
-	}
-	return requests, nil
+	return s.lists(proto, unix.NFT_MSG_NEWSETELEM, unix.NLM_F_CREATE, elements), nil
 }
 
 // Flush names no element, which nf_tables reads as every element of the
 // named set s
 func (s Set) Flush(proto uint8) Request {
 	return Request{Kind: Command(unix.NFT_MSG_DELSETELEM), Body: s.elementList(proto)}
+}
+
+// Replace is Create, Flush and Fill of intervals in that order, the messages
+// that leave s holding intervals alone in one transaction
+func (s Set) Replace(proto uint8, intervals []Interval) ([]Request, error) {
+	made, err := s.Create(proto)
+	if err != nil {
+		return nil, err
+	}
+	filled, err := s.Fill(proto, intervals)
+	if err != nil {
+		return nil, err
+	}
+	return append([]Request{made, s.Flush(proto)}, filled...), nil
 }
 
 func (s Set) elementList(proto uint8) []byte {

@@ -867,17 +867,21 @@ func TestGeneratedConfigurationSurvivesEachEncoder(t *testing.T) {
 	})
 }
 
-// The same for a node whose only block is cap.egress, which draws its classes
-// in each spelling far more often than a whole configuration does. A to in
-// the IPv4-mapped spelling would read back unmapped, one carrying a zone
-// would be refused by the decoder, and one of two kinds at once would read
-// back as one of them, so each is a to Validate refuses.
+// The same for a node whose only block is cap.egress, with the cap.border a
+// none class loads beside, which draws its classes in each spelling far more
+// often than a whole configuration does. A to in the IPv4-mapped spelling
+// would read back unmapped, one carrying a zone would be refused by the
+// decoder, and one of two kinds at once would read back as one of them, so
+// each is a to Validate refuses.
 func TestValidatedEgressClassesReadBackFromTheirFile(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, nodes())
 		drawn.Dial.All = true
 		exit := hegel.Draw(ht, exits())
 		drawn.Cap.Egress = &exit
+		if slices.ContainsFunc(exit.Translate, func(class egress.Class) bool { return class.To.None }) {
+			drawn.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff:c::/30")}}
+		}
 		ht.Assume(drawn.Validate() == nil)
 		sameAfterEachEncoder(ht, drawn)
 	})

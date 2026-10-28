@@ -44,7 +44,7 @@ func TestCarveOutsThrowInPlaceOfTheHoldAndGiveWayToTheTable(t *testing.T) {
 		{Destination: p("3fff:0:0:7::/64"), Metric: holdMetric, Throw: true},
 		{Destination: p("3fff:0:0:8::/64"), Metric: defaultIPv6Metric},
 	}
-	got := reconciler.desired(routes.Snapshot())
+	got := reconciler.desired(routes.Snapshot(), reconciler.readNetwork())
 	slices.SortFunc(got, compareRoutes)
 	if !slices.Equal(got, want) {
 		t.Errorf("the mirror wants\n%v\nwant\n%v", got, want)
@@ -69,8 +69,9 @@ func TestFallbackPassesACarvedLeaseLessTheMeshsPrefixes(t *testing.T) {
 	routes.Set(netip.Prefix{}, p("192.0.2.128/25"), peer)
 	routes.Set(netip.Prefix{}, p("3fff::/49"), peer)
 	snapshot := routes.Snapshot()
-	exit, _ := reconciler.exitPass(reconciler.addresses, snapshot)
-	exit.own = thrown(reconciler.desired(snapshot))
+	read := reconciler.readNetwork()
+	exit, _ := reconciler.exitPass(reconciler.addresses, snapshot, read)
+	exit.own = thrown(reconciler.desired(snapshot, read))
 	var main []Rule
 	for _, rule := range derivedRules(DefaultTable, reconciler.rt.Overlay, nil, exit) {
 		if rule.Priority == priorityOwnPastMesh {

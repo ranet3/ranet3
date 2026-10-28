@@ -8,30 +8,25 @@ import (
 	"net/netip"
 	"slices"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/sadr"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// CarveOut is the part of the overlay a link outside the mesh is on, where the
-// link's own neighbors hold overlay addresses no node announces
-type CarveOut struct {
-	Link   string
-	Prefix netip.Prefix
-}
-
 // CarveOuts is each nonempty intersection of a network a link outside the mesh
-// is on with a prefix of the overlay: the network where the overlay prefix holds
-// it, and the overlay prefix where the network holds it. lo is never carved,
-// since nothing off the host reaches the host through it. Sorted by link and
-// then by prefix, each once.
-func CarveOuts(network NetworkState, overlay []schema.Prefix) []CarveOut {
-	var out []CarveOut
+// is on, or a point-to-point far end it reaches, with a prefix of the overlay:
+// the network where the overlay prefix holds it, and the overlay prefix where
+// the network holds it. A PPPoE uplink's gateway inside the overlay is carved
+// as a lease inside it is. lo is never carved, since nothing off the host reaches
+// the host through it. Sorted by link and then by prefix, each once.
+func CarveOuts(network NetworkState, overlay []schema.Prefix) []egress.CarveOut {
+	var out []egress.CarveOut
 	for _, link := range slices.Concat(network.IPv4.Links, network.IPv6.Links) {
 		if link.Name == loopback {
 			continue
 		}
-		for _, address := range link.Prefixes {
+		for _, address := range slices.Concat(link.Prefixes, link.Peers) {
 			network, ok := canonicalPrefix(address)
 			if !ok {
 				continue
@@ -45,7 +40,7 @@ func CarveOuts(network NetworkState, overlay []schema.Prefix) []CarveOut {
 				if network.Bits() > prefix.Bits() {
 					prefix = network
 				}
-				out = append(out, CarveOut{Link: link.Name, Prefix: prefix})
+				out = append(out, egress.CarveOut{Link: link.Name, Prefix: prefix})
 			}
 		}
 	}
@@ -53,7 +48,7 @@ func CarveOuts(network NetworkState, overlay []schema.Prefix) []CarveOut {
 	return slices.Compact(out)
 }
 
-func compareCarveOuts(a, b CarveOut) int {
+func compareCarveOuts(a, b egress.CarveOut) int {
 	return cmp.Or(cmp.Compare(a.Link, b.Link), comparePrefixes(a.Prefix, b.Prefix))
 }
 
@@ -61,14 +56,20 @@ func compareCarveOuts(a, b CarveOut) int {
 // inside a carve-out, masked, sorted and each once: learned, held and this
 // node's own alike, since a neighbor on the carved link holds none of them, and
 // a source-specific entry by its destination whole
-func CarvedPrefixes(carveOuts []CarveOut, snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
+func CarvedPrefixes(carveOuts []egress.CarveOut, snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
+	carved := make([]netip.Prefix, 0, len(carveOuts))
+	for _, c := range carveOuts {
+		carved = append(carved, c.Prefix)
+	}
+	return carvedOf(carved, tableDestinations(snapshot))
+}
+
+// carvedOf is each prefix of table inside a prefix of carved, sorted and each
+// once
+func carvedOf(carved, table []netip.Prefix) []netip.Prefix {
 	var out []netip.Prefix
-	for _, entry := range snapshot {
-		destination, ok := canonicalPrefix(entry.Destination)
-		if !ok {
-			continue
-		}
-		if slices.ContainsFunc(carveOuts, func(c CarveOut) bool { return encloses(c.Prefix, destination) }) {
+	for _, destination := range table {
+		if slices.ContainsFunc(carved, func(carveOut netip.Prefix) bool { return encloses(carveOut, destination) }) {
 			out = append(out, destination)
 		}
 	}
@@ -76,19 +77,41 @@ func CarvedPrefixes(carveOuts []CarveOut, snapshot []sadr.Route[*netstack.Peer])
 	return slices.Compact(out)
 }
 
+// tableDestinations is the destination of each entry of the mesh's table,
+// masked, leaving out one that is not a prefix
+func tableDestinations(snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(snapshot))
+	for _, entry := range snapshot {
+		if destination, ok := canonicalPrefix(entry.Destination); ok {
+			out = append(out, destination)
+		}
+	}
+	return out
+}
+
 // carvedLAN is the carve-outs less the mesh's prefixes inside them, as the
 // fewest prefixes: the addresses of an overlapping lease that the link's own
 // neighbors hold, its gateway and resolver among them
 func (v exitView) carvedLAN() []netip.Prefix {
-	var inside []netip.Prefix
-	for _, destination := range v.table {
-		if slices.ContainsFunc(v.carved, func(carveOut netip.Prefix) bool { return encloses(carveOut, destination) }) {
-			inside = append(inside, destination)
-		}
+	return rangePrefixes(subtract(Ranges(v.carved), Ranges(carvedOf(v.carved, v.table)))...)
+}
+
+// passNetwork is the host's network as one pass reads it, and the prefixes of
+// the carve-outs it gives, so the routes and the rules of the pass derive
+// from one reading
+type passNetwork struct {
+	network NetworkState
+	carved  []netip.Prefix
+}
+
+// readNetwork reads the host's network for one pass
+func (r *Reconciler) readNetwork() passNetwork {
+	var out passNetwork
+	if r.rt.Network != nil {
+		out.network = r.rt.Network()
 	}
-	var out []netip.Prefix
-	for _, r := range subtract(Ranges(v.carved), Ranges(inside)) {
-		out = append(out, r.prefixes()...)
+	for _, carveOut := range CarveOuts(out.network, r.rt.Overlay) {
+		out.carved = append(out.carved, carveOut.Prefix)
 	}
 	return out
 }

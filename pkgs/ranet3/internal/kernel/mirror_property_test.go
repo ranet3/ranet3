@@ -110,7 +110,8 @@ func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []ne
 
 // The mirror installs what routing.md's table says for every kind of entry,
 // on an exit and on a node that is none, with the gate open and shut, on a
-// platform with the policy rules and on one without, and each route once.
+// platform with the policy rules and on one without, and each route once,
+// half the time with a carve-out of a whole overlay prefix holding an entry.
 func TestMirrorIsSectionOneThreesTable(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		var overlay []schema.Prefix
@@ -118,6 +119,18 @@ func TestMirrorIsSectionOneThreesTable(t *testing.T) {
 			overlay = append(overlay, schema.PrefixFrom(prefix))
 		}
 		network := drawnCarveNetwork(ht)
+		// half the time a link's network equal to or around an overlay prefix, a carve-out of it whole, and a learned entry inside it
+		var inside netip.Prefix
+		if len(overlay) > 0 && hegel.Draw(ht, pbt.Spanning(0, 1)) == 1 {
+			o := overlay[hegel.Draw(ht, pbt.Spanning(0, len(overlay)-1))].Masked()
+			link := Link{Name: "br-carve", Prefixes: []netip.Prefix{netip.PrefixFrom(o.Addr(), o.Bits()-hegel.Draw(ht, pbt.Spanning(0, min(2, o.Bits()))))}}
+			if o.Addr().Is4() {
+				network.IPv4.Links = append(network.IPv4.Links, link)
+			} else {
+				network.IPv6.Links = append(network.IPv6.Links, link)
+			}
+			inside = netip.PrefixFrom(o.Addr(), min(o.Addr().BitLen(), o.Bits()+hegel.Draw(ht, pbt.Spanning(1, 8)))).Masked()
+		}
 		rt := Runtime{
 			Interface:     "ranet0",
 			Overlay:       overlay,
@@ -145,11 +158,14 @@ func TestMirrorIsSectionOneThreesTable(t *testing.T) {
 		for _, entry := range hegel.Draw(ht, mirrorEntries()) {
 			routes.Set(entry.source, entry.destination, entry.value)
 		}
+		if inside.IsValid() {
+			routes.Set(netip.Prefix{}, inside, learned)
+		}
 		var held []mirrorEntry
 		for _, entry := range routes.Snapshot() {
 			held = append(held, mirrorEntry{source: entry.Source, destination: entry.Destination, value: entry.Value})
 		}
-		got := r.desired(routes.Snapshot())
+		got := r.desired(routes.Snapshot(), r.readNetwork())
 		want := sectionOneThree(held, overlay, carved, exit, r.capture, policy)
 		set := map[Route]bool{}
 		for _, route := range got {
@@ -225,7 +241,7 @@ func TestOverlayHoldsLeaveOutTheUnroutableAndHoldEachPrefixOnce(t *testing.T) {
 		for _, entry := range c.entries {
 			table.Set(entry.source, entry.destination, entry.value)
 		}
-		if got := reconciler.desired(table.Snapshot()); !slices.Equal(got, c.want) {
+		if got := reconciler.desired(table.Snapshot(), reconciler.readNetwork()); !slices.Equal(got, c.want) {
 			t.Errorf("%s: the mirror wants %v, want %v", name, got, c.want)
 		}
 	}

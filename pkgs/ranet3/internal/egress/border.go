@@ -15,7 +15,8 @@ import (
 )
 
 // Border is the cap.border capability: this node drops what arrives on a link
-// outside the mesh carrying a mesh source. Writing the block turns it on.
+// outside the mesh carrying a mesh source. Writing the block turns it on. The
+// entry chain beside it runs without it.
 type Border struct {
 	// Overlay names the prefixes the mesh numbers its nodes from. A packet
 	// arriving from outside the mesh with a source in one of them is forged,
@@ -54,19 +55,58 @@ func (b Border) Validate() error {
 
 // BorderRuntime holds what the command resolves at startup for the filter
 type BorderRuntime struct {
-	// Inside names the devices whose traffic the filter takes whatever it
-	// carries: the mesh tun and lo
+	// Tun is the mesh's device, which the entry chain lets a packet leave by
+	// only as a reply, toward an IPv6 link-local or multicast destination, from
+	// a source this node owns or toward a destination a none class takes
+	Tun string
+	// Inside names the devices whose traffic the border chain takes whatever
+	// it carries: the mesh tun and lo
 	Inside []string
-	// Events records the passes that rewrote the chain or failed, readiness
+	// Sets derives what the table's sets hold, on each pass. Nil holds them
+	// empty.
+	Sets func() BorderSets
+	// Routes and Network wake a pass on a change of the mesh's table and of
+	// the host's links, nil for neither
+	Routes, Network <-chan struct{}
+	// Events records the passes that rewrote the table or failed, readiness
 	// moving and the drops each pass read, nil records nothing
 	Events *events.Bus
 }
 
-// BorderDrops counts the packets each family's overlay sources dropped, as the
-// chain's counters read on a pass. A rewrite of the chain starts them from
-// zero.
+// CarveOut is the part of the overlay a link outside the mesh is on, where the
+// link's own neighbors hold overlay addresses no node announces
+type CarveOut struct {
+	Link   string
+	Prefix netip.Prefix
+}
+
+// BorderSets holds the carve-outs and the ranges of the table's sets, each of
+// either family
+type BorderSets struct {
+	// CarveOuts is each carve-out of cap.border's overlay, whose sources the
+	// border chain accepts from the carve-out's own link, sorted by link and
+	// then by prefix, each once
+	CarveOuts []CarveOut
+	// Carved is the mesh's prefixes inside a carve-out, whose sources the
+	// border chain drops from every link outside the mesh
+	Carved []Range
+	// Owned is the sources this node owns, from which the entry chain lets a
+	// packet into the tun, one of the passes Tun lists
+	Owned []Range
+	// None is the destinations of an exit's none classes, toward which the
+	// entry chain lets a packet into the tun from any source, another of them
+	None []Range
+}
+
+// BorderDrops counts the packets each drop of the table took per family, as
+// the chains' counters read on a pass: a source in the overlay or in a
+// carve-out's mesh prefixes from outside the mesh, and a packet entering the
+// mesh from a source this node does not own. A rewrite of the table starts
+// them from zero.
 type BorderDrops struct {
 	Source4, Source6 uint64
+	Carved4, Carved6 uint64
+	Entry4, Entry6   uint64
 }
 
 // BorderStats is one finished pass as an operator reads it
@@ -79,7 +119,10 @@ type BorderStats struct {
 	// Dropped is the counters as the last pass read them, kept from the pass
 	// before over a listing that failed
 	Dropped BorderDrops
-	Err     string
+	// CarveOuts is the carve-outs the last pass asked for, written or not, as
+	// Ready says
+	CarveOuts []CarveOut
+	Err       string
 }
 
 // BorderReading is one rule of the chain as a debug read finds it

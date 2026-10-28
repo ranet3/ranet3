@@ -476,7 +476,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	reconciler := newReconciler(Table{}.Normalized(), rt, nil, routes, newFakeKernel(t))
 	reconciler.capture = gate
 	snapshot := routes.Snapshot()
-	desired := reconciler.desired(snapshot)
+	desired := reconciler.desired(snapshot, reconciler.readNetwork())
 	if mode.fallback {
 		mode.own = thrown(desired)
 	}

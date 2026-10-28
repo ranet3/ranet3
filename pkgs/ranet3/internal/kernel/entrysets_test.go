@@ -13,8 +13,8 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-func addressRange(first, last string) Range {
-	return Range{First: netip.MustParseAddr(first), Last: netip.MustParseAddr(last)}
+func addressRange(first, last string) egress.Range {
+	return egress.Range{First: netip.MustParseAddr(first), Last: netip.MustParseAddr(last)}
 }
 
 // An exit whose none class covers the overlay and a block upstream of it, inside
@@ -44,7 +44,7 @@ func TestNoneDestinationsOfAnExitAroundAnotherNodesLAN(t *testing.T) {
 	routes.Set(netip.Prefix{}, p("0.0.0.0/0"), peer)
 	routes.Set(netip.Prefix{}, p("203.0.112.0/26"), netstack.Local)
 	got := NoneDestinations(classes, routes.Snapshot(), overlay)
-	want := []Range{
+	want := []egress.Range{
 		addressRange("192.0.2.0", "192.0.2.255"),
 		addressRange("203.0.112.0", "203.0.112.127"),
 		addressRange("2001:db8:76::", "2001:db8:76:ffff:ffff:ffff:ffff:ffff"),
@@ -75,7 +75,7 @@ func TestOwnedSourcesJoinThisNodesOwnEntries(t *testing.T) {
 	routes.Set(netip.Prefix{}, p("198.51.101.0/24"), netstack.Unreachable)
 	routes.Set(p("3fff::/48"), p("2001:db8:5::/48"), netstack.Local)
 	got := OwnedSources(routes.Snapshot(), prefixes(p("192.0.2.0/24")))
-	want := []Range{
+	want := []egress.Range{
 		addressRange("192.0.2.0", "192.0.2.255"),
 		addressRange("2001:db8:5::", "2001:db8:5:ffff:ffff:ffff:ffff:ffff"),
 	}

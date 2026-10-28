@@ -461,7 +461,7 @@ func TestModeTwoSelectsACarvedLeaseForMain(t *testing.T) {
 	routes.Set(netip.Prefix{}, p("192.0.2.200/32"), netstack.Assigned)
 	routes.Set(netip.Prefix{}, p("192.0.2.1/32"), netstack.Local)
 	routes.Set(netip.Prefix{}, p("0.0.0.0/0"), learned)
-	exit, _ := reconciler.exitPass([]netip.Prefix{p("192.0.2.200/32")}, routes.Snapshot())
+	exit, _ := reconciler.exitPass([]netip.Prefix{p("192.0.2.200/32")}, routes.Snapshot(), reconciler.readNetwork())
 	selected := func(own []netip.Prefix) map[Rule]bool {
 		out := map[Rule]bool{}
 		for _, rule := range derivedRules(DefaultTable, overlay, own, exit) {

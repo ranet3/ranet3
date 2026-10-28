@@ -431,3 +431,26 @@ func TestBorderRoundTripsThroughEverySerialization(t *testing.T) {
 		})
 	}
 }
+
+// a range prints as nft prints an interval set's element: one address bare, a
+// prefix where one holds exactly its addresses, else its first and last address
+func TestRangeStringPrintsAsNft(t *testing.T) {
+	addr := netip.MustParseAddr
+	for _, c := range []struct {
+		r    Range
+		want string
+	}{
+		{Range{addr("192.0.2.7"), addr("192.0.2.7")}, "192.0.2.7"},
+		{Range{addr("2001:db8::7"), addr("2001:db8::7")}, "2001:db8::7"},
+		{Range{addr("0.0.0.0"), addr("0.0.0.0")}, "0.0.0.0"},
+		{Range{addr("192.0.2.6"), addr("192.0.2.7")}, "192.0.2.6/31"},
+		{Range{addr("203.0.113.0"), addr("203.0.113.63")}, "203.0.113.0/26"},
+		{Range{addr("0.0.0.0"), addr("255.255.255.255")}, "0.0.0.0/0"},
+		{Range{addr("198.51.100.7"), addr("198.51.100.9")}, "198.51.100.7-198.51.100.9"},
+		{Range{addr("2001:db8::1"), addr("2001:db8::2")}, "2001:db8::1-2001:db8::2"},
+	} {
+		if got := c.r.String(); got != c.want {
+			t.Errorf("%v through %v prints %s, want %s", c.r.First, c.r.Last, got, c.want)
+		}
+	}
+}

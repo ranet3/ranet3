@@ -168,6 +168,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	}
 	if !sameOverlay(old, cfg) {
 		c.Mesh.SetOverlay(cfg.Overlay())
+		// the pass reborder woke may have read its carve-outs from the overlay stored before, so the filter takes another reading this one
+		c.wakeBorder()
 	}
 	var tunErr error
 	switch {

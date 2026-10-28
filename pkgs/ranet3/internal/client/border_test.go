@@ -19,6 +19,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -185,6 +186,44 @@ func TestReloadMovesTheBorderInPlace(t *testing.T) {
 	}
 }
 
+// a reload growing the overlay onto a lease the host holds wakes the filter
+// once the overlay is stored, so the pass it runs reads the lease carved, where
+// the pass its SetConfig woke read the overlay stored before. The sets are read
+// at the wake itself, since a pass may run as soon as the wake is sent.
+func TestReloadOntoACarvedLeaseWakesTheBorderAfterTheOverlayIsStored(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32")) })
+	segmentsOf(t, c)
+	lease := netip.MustParsePrefix("198.18.0.10/24")
+	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange), current: kernel.NetworkState{IPv4: kernel.NetworkFamily{Links: []kernel.Link{{Name: "eth0", Prefixes: []netip.Prefix{lease}}}}}}
+	// the fixture builds the client by hand, without the wake New makes
+	c.borderNetwork = make(chan struct{}, 1)
+	c.SetBorder(&borderRecord{})
+	rt := c.BorderRuntime()
+	if carved := rt.Sets().CarveOuts; len(carved) != 0 {
+		t.Fatalf("before the reload the border carves %v, want nothing", carved)
+	}
+	var atWake [][]egress.CarveOut
+	c.borderWoken = func() { atWake = append(atWake, rt.Sets().CarveOuts) }
+	grown := *c.config()
+	grown.Cap.Border = borderOf("203.0.113.0/24", "3fff::/20", "198.18.0.0/15")
+	writeConfig(t, path, &grown)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("an overlay grown onto the lease was refused: %v", err)
+	}
+	select {
+	case <-rt.Network:
+	default:
+		t.Fatal("the reload stored an overlay holding the lease and woke the filter for no pass after it")
+	}
+	want := []egress.CarveOut{{Link: "eth0", Prefix: lease.Masked()}}
+	if len(atWake) == 0 || !slices.Equal(atWake[len(atWake)-1], want) {
+		t.Errorf("at each wake the reload sent the filter read the carve-outs %v, want the last to read %v", atWake, want)
+	}
+	if carved := rt.Sets().CarveOuts; !slices.Equal(carved, want) {
+		t.Errorf("the pass after the reload carves %v, want %v", carved, want)
+	}
+}
+
 // every local SID admits only an outer source in the overlay, so a reload
 // narrowing the overlay alone rebuilds the table the mesh acts on, and a SID
 // delivering to the mesh refuses a source the old overlay held
@@ -271,9 +310,10 @@ func TestDownKeepsTheBorder(t *testing.T) {
 	}
 }
 
-// a node whose host forwards and whose file writes no cap.border is told so
-// at every reload, naming the families, and one writing the block or on a
-// host forwarding nothing is not
+// where no entry chain runs, a node whose host forwards and whose file writes
+// no cap.border is told so at every reload, naming the families, and one
+// writing the block or on a host forwarding nothing is not. Where the entry
+// chain runs no node is told.
 func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	var lines bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
@@ -294,10 +334,13 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 			t.Errorf("a node with cap.border on a host forwarding %v %v warned:\n%s", host.v4, host.v6, lines.String())
 		}
 		warnUnbordered(&config.Config{}, forwards)
+		if kernelexit.EntryRuns {
+			host.warning = ""
+		}
 		switch got := lines.String(); {
 		case host.warning == "" && got != "":
-			t.Errorf("a node on a host forwarding nothing warned:\n%s", got)
-		case host.warning != "" && (!strings.Contains(got, host.warning) || !strings.Contains(got, "add cap.border")):
+			t.Errorf("a node on a host forwarding %v %v, or where the entry chain runs, warned:\n%s", host.v4, host.v6, got)
+		case host.warning != "" && (!strings.Contains(got, host.warning) || !strings.Contains(got, "this host's own services")):
 			t.Errorf("a node with no cap.border on a host forwarding %v %v warned %q, want it to say %q", host.v4, host.v6, got, host.warning)
 		}
 	}
@@ -313,7 +356,7 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := 0
-	if v4, v6 := forwardingEnabled(); v4 || v6 {
+	if v4, v6 := forwardingEnabled(); (v4 || v6) && !kernelexit.EntryRuns {
 		want = 1
 	}
 	if n := reloaded.count("holds no cap.border"); n != want {

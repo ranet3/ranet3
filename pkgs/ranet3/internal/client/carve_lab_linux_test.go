@@ -6,15 +6,20 @@
 package client
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"slices"
 	"sort"
+	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
@@ -38,7 +43,8 @@ var carveTable = []string{"throw 192.0.2.0/24", "throw 3fff::/20", "unicast 192.
 
 // a leaf whose uplink holds a lease as wide as the overlay in both families carves the lease out of the overlay:
 // the gateway and a neighbor on the link answer the host's echo requests, a mesh peer inside the lease stays on the tun,
-// and an overlay address no node announces inside the lease leaves by the link
+// an overlay address no node announces inside the lease leaves by the link, and the border takes the gateway's
+// datagram from the link while it drops and counts one forged from the mesh peer's source
 func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -144,6 +150,99 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 			t.Errorf("udp to %s went %s, want %s", p.destination, got, p.want)
 		}
 	}
+
+	// the border carves the lease out of the overlay's drops: the gateway's datagram from the leased link reaches the
+	// leaf's socket, and one forged from the mesh peer's source inside the lease is dropped and counted, in each family
+	var border *kernelexit.BorderFilter
+	if err := leaf.Do(func() (err error) {
+		border, err = kernelexit.NewBorderFilter(d.node.config().Cap.Border, d.node.BorderRuntime())
+		return err
+	}); err != nil {
+		t.Fatalf("start the border: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = border.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	if carved := border.Stats().CarveOuts; len(carved) != 2 {
+		t.Fatalf("the border carves %v, want the lease in each family", carved)
+	}
+	var receiver *net.UDPConn
+	if err := leaf.Do(func() (err error) {
+		receiver, err = net.ListenUDP("udp", &net.UDPAddr{Port: carvePort})
+		return err
+	}); err != nil {
+		t.Fatalf("listen on the leaf: %v", err)
+	}
+	t.Cleanup(func() { _ = receiver.Close() })
+	before := map[int]uint64{4: borderDropped(t, leaf, border, "drop ipv4 source @carved4"), 6: borderDropped(t, leaf, border, "drop ipv6 source @carved6")}
+	if err := far.Do(func() error {
+		for _, family := range []int{4, 6} {
+			lease := carveLease[family]
+			for name, source := range map[string]netip.Addr{"gateway": lease.gateway.Addr(), "forged": lease.peer.Addr()} {
+				if err := carveSend(source, lease.lease.Addr(), name+" "+source.String()); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("send to the leaf from the far side: %v", err)
+	}
+	var delivered []string
+	buf := make([]byte, 256)
+	if err := receiver.SetReadDeadline(time.Now().Add(labQuiet)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		n, _, err := receiver.ReadFromUDPAddrPort(buf)
+		if err != nil {
+			break
+		}
+		delivered = append(delivered, string(buf[:n]))
+	}
+	slices.Sort(delivered)
+	if want := []string{"gateway " + carveLease[6].gateway.Addr().String(), "gateway " + carveLease[4].gateway.Addr().String()}; !slices.Equal(delivered, slices.Sorted(slices.Values(want))) {
+		t.Errorf("the leaf's socket took %q, want the gateway's datagram in each family alone", delivered)
+	}
+	for _, family := range []int{4, 6} {
+		spec := fmt.Sprintf("drop ipv%d source @carved%d", family, family)
+		waitFor(t, rulesSettle, "the border to count the forged datagram on "+spec, func() bool { return borderDropped(t, leaf, border, spec) > before[family] })
+	}
+}
+
+// carvePort is the leaf's port the far side sends to through the carve-out
+const carvePort = 4790
+
+// carveSend sends payload over UDP from source, which the host need not hold, to destination's carvePort. A transparent
+// socket's route lookup takes any source, where one that only binds freely is refused one the host does not hold.
+func carveSend(source, destination netip.Addr, payload string) error {
+	config := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
+		var err error
+		if control := raw.Control(func(fd uintptr) {
+			if source.Is4() {
+				err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_TRANSPARENT, 1)
+			} else {
+				err = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_TRANSPARENT, 1)
+			}
+		}); control != nil {
+			return control
+		}
+		return err
+	}}
+	conn, err := config.ListenPacket(context.Background(), "udp", netip.AddrPortFrom(source, 0).String())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_, err = conn.WriteTo([]byte(payload), net.UDPAddrFromAddrPort(netip.AddrPortFrom(destination, carvePort)))
+	return err
 }
 
 // carveHeld is the routes of the reconciler's protocol in the mesh's table on the leaf, each as its kind and prefix, sorted

@@ -129,14 +129,25 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		write(c.name, requests, err)
 	}
 
-	rt := egress.BorderRuntime{Inside: []string{"ranet3", "lo"}}
-	desired := newBorderFilter(overlay(t, "192.0.2.0/24", "2001:db8:1::7/128"), rt, &fakeBorder{}).desired()
-	requests, err = borderBatch(desired, false)
+	sets := egress.BorderSets{
+		CarveOuts: []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("192.0.2.0/25")}},
+		Carved:    ranges("192.0.2.5/32"),
+		Owned:     ranges("192.0.2.200/32", "2001:db8:1::7/128"),
+		None:      ranges("203.0.113.0/24", "2001:db8:2::/48"),
+	}
+	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func() egress.BorderSets { return sets }}
+	desired, written, _ := newBorderFilter(overlay(t, "192.0.2.0/24", "2001:db8:1::7/128"), rt, &fakeBorder{}).desired()
+	requests, err = borderBatch(desired, written, false)
 	write("border", requests, err)
-	requests, err = borderBatch(desired, true)
+	requests, err = borderBatch(desired, written, true)
 	write("border remaking its table", requests, err)
-	requests, err = borderBatch(nil, false)
-	write("border with no rule", requests, err)
+	// none4 gains a range below its own and grows its own downward, and owned6 empties
+	moved := borderSets{noneSet + "4": ranges("198.51.100.0/24", "203.0.112.0/23"), ownedSet + "6": nil}
+	requests, err = fillBatch(written, moved)
+	write("border moving two sets", requests, err)
+	desired, written, _ = newBorderFilter(nil, rt, &fakeBorder{}).desired()
+	requests, err = borderBatch(desired, written, true)
+	write("entry chain with no border", requests, err)
 	write("border withdrawal", []nftables.Request{delBorderTable()}, nil)
 
 	path := filepath.Join("testdata", "messages.golden")

@@ -18,12 +18,20 @@ import (
 // accepted with no chain behind it, since a node whose status read the
 // border as written would carry forged mesh sources from its other links
 func TestBorderIsRefusedOffLinux(t *testing.T) {
-	f, err := NewBorderFilter(egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15")}}, egress.BorderRuntime{Inside: []string{"utun9", "lo0"}})
+	f, err := NewBorderFilter(&egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15")}}, egress.BorderRuntime{Tun: "utun9", Inside: []string{"utun9", "lo0"}})
 	want := "egress: cap.border is an nftables chain, which " + runtime.GOOS + " does not have"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("NewBorderFilter returned %v, want a refusal containing %q", err, want)
 	}
 	if f != nil {
 		t.Error("the refusal handed back a filter")
+	}
+}
+
+// With no cap.border there is no table to write where there is no nftables,
+// so no filter comes back and nothing is refused
+func TestNoBorderIsNoFilterOffLinux(t *testing.T) {
+	if f, err := NewBorderFilter(nil, egress.BorderRuntime{Tun: "utun9", Inside: []string{"utun9", "lo0"}}); f != nil || err != nil {
+		t.Fatalf("NewBorderFilter with no cap.border returned %v and %v, want neither", f, err)
 	}
 }

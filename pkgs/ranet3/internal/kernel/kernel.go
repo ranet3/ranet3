@@ -1168,9 +1168,11 @@ func (r *Reconciler) reconcile() error {
 	// kernel holding a key the diff never names again.
 	r.sampleCapture()
 	snapshot := r.src.Snapshot()
+	// the routes and the rules carve what one reading of the network gives
+	network := r.readNetwork()
 	held, listed, addressErr := r.applyAddresses()
-	desired := r.desired(snapshot)
-	err := errors.Join(addressErr, r.applyRoutes(desired), r.applyRules(snapshot, thrown(desired), held, listed))
+	desired := r.desired(snapshot, network)
+	err := errors.Join(addressErr, r.applyRoutes(desired), r.applyRules(snapshot, network, thrown(desired), held, listed))
 	// a pass missing a rule or a hold would find its own fault, which err reports
 	if err == nil {
 		r.lookUp()
@@ -1272,7 +1274,7 @@ func (r *Reconciler) audit() {
 // adds in the set's order, which puts each nop ahead of its goto. held is the
 // tun's addresses as the pass's address step left them, where listed, and
 // throws the own prefixes the pass's mirror throws.
-func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], throws, held []netip.Prefix, listed bool) error {
+func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], network passNetwork, throws, held []netip.Prefix, listed bool) error {
 	if r.rules == nil {
 		return nil
 	}
@@ -1281,7 +1283,7 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], throws, h
 	if r.table.Mode() != nil && !listed {
 		return nil
 	}
-	exit, status := r.exitPass(held, snapshot)
+	exit, status := r.exitPass(held, snapshot, network)
 	r.reportExit(status)
 	if exit.fallback {
 		exit.own = throws
@@ -1549,7 +1551,7 @@ func (r *Reconciler) reportMemberless(desired []Route) []Route {
 // can hold. The peer is dropped here: it says the route exists, not where it
 // goes, because the mesh picks the peer after the kernel hands over the
 // packet.
-func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
+func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network passNetwork) []Route {
 	out := make([]Route, 0, len(snapshot)+len(r.rt.Overlay))
 	warned := make(map[Route]bool, len(r.warned))
 	// the throw rows and the overlay holds stand with the policy rules that
@@ -1628,14 +1630,7 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 	}
 	r.warned = warned
 	if policy {
-		var network NetworkState
-		if r.rt.Network != nil {
-			network = r.rt.Network()
-		}
-		var carved []netip.Prefix
-		for _, carveOut := range CarveOuts(network, r.rt.Overlay) {
-			carved = append(carved, carveOut.Prefix)
-		}
+		carved := network.carved
 		out = r.carveThrows(r.overlayHolds(out, carved), carved, snapshot)
 	}
 	return out

@@ -228,7 +228,7 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 	var routes *kernel.Reconciler
 	var border *kernelexit.BorderFilter
 	if err := exit.Do(func() (err error) {
-		if border, err = kernelexit.NewBorderFilter(*cfg.Cap.Border, node.BorderRuntime()); err != nil {
+		if border, err = kernelexit.NewBorderFilter(cfg.Cap.Border, node.BorderRuntime()); err != nil {
 			return err
 		}
 		rt := node.KernelRuntime()

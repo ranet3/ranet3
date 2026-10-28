@@ -28,10 +28,12 @@ import (
 // of at least one entry, each a masked prefix of its own family no shorter
 // than the family's floor and longer than zero, none written twice, holding an
 // IPv6 prefix beside a local segment, covering every allow entry, and
-// overlapping no advertised prefix but a default
-func borderTaken(border *egress.Border, allow, advertise []schema.Prefix) bool {
+// overlapping no advertised prefix but a default. Without the block no
+// translate class is none either, since nothing but the overlay tells the
+// mesh's node addresses from the LANs the none sets leave out.
+func borderTaken(border *egress.Border, allow, advertise []schema.Prefix, none bool) bool {
 	if border == nil {
-		return len(allow) == 0
+		return len(allow) == 0 && !none
 	}
 	if len(border.Overlay) == 0 {
 		return false
@@ -79,12 +81,12 @@ func maskedTo(prefix schema.Prefix, bits int) netip.Addr {
 	return masked.Addr()
 }
 
-// An exit with one or two egress segments and cap.egress loads exactly where
-// the model takes its cap.border, drawn absent, from overlay entries on either
-// side of the allow lists' and the advertised prefixes' edges, and with each
-// entry the block refuses on its own, a node without the block refused for
-// that by name, and a configuration it takes reads back unchanged from each
-// format
+// An exit with one or two egress segments and cap.egress, or with cap.egress
+// alone, translating none for a class now and then, loads exactly where the
+// model takes its cap.border, drawn absent, from overlay entries on either side
+// of the allow lists' and the advertised prefixes' edges, and with each entry
+// the block refuses on its own, a node without the block refused for that by
+// name, and a configuration it takes reads back unchanged from each format
 func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 	pool := []schema.Prefix{
 		// covering the allow list's IPv4 entry, equal to it, shorter, longer, beside it
@@ -155,28 +157,45 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 			segments = append(segments, srv6.Segment{SID: schema.MustAddr("3fff:b:0:306::4"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: second})
 			allow = slices.Concat(allow, second)
 		}
+		// a class of the leaves' addresses translating auto or none, beside a longer one translating auto
+		translate := slices.Clone(hegel.Draw(ht, hegel.SampledFrom([][]egress.Class{
+			nil,
+			{{From: schema.MustPrefix("198.18.0.0/16"), To: egress.Translation{Auto: true}}},
+			{{From: schema.MustPrefix("198.18.0.0/16"), To: egress.Translation{None: true}}},
+			{{From: schema.MustPrefix("3fff:c::/32"), To: egress.Translation{None: true}}, {From: schema.MustPrefix("3fff:c:1::/48"), To: egress.Translation{Auto: true}}},
+		})))
 		c := Config{
 			Node: identity.MustParse("example/exit"),
 			Auth: Auth{Key: "key.pem", Trust: "trust.json"},
 			Link: Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}},
 			Dial: Dial{All: true},
 			Cap: Caps{
-				Egress:  &egress.Egress{Advertise: advertise},
+				Egress:  &egress.Egress{Advertise: advertise, Translate: translate},
 				Border:  border,
 				Table:   &kernel.Table{},
 				Segment: &srv6.Segments{Local: segments},
 			},
 		}
-		if hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)) {
-			c.Cap.Segment, c.Cap.Egress, allow, advertise = nil, nil, nil, nil
+		switch {
+		case hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)):
+			c.Cap.Segment, c.Cap.Egress, allow, advertise, translate = nil, nil, nil, nil, nil
+		case hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)):
+			// cap.egress alone, an exit advertising the defaults with no segment
+			advertise = []schema.Prefix{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0")}
+			c.Cap.Segment, c.Cap.Egress.Advertise, allow = nil, advertise, nil
 		}
+		none := slices.ContainsFunc(translate, func(class egress.Class) bool { return class.To.None })
 		err := c.Validate()
-		if want := borderTaken(border, allow, advertise); want != (err == nil) {
-			ht.Fatalf("%s beside allow %v and advertise %v loaded with %v, want taken %v", describe(border), allow, advertise, err, want)
+		if want := borderTaken(border, allow, advertise, none); want != (err == nil) {
+			ht.Fatalf("%s beside allow %v, advertise %v and translate %v loaded with %v, want taken %v", describe(border), allow, advertise, translate, err, want)
 		}
 		// refused for the absent block itself, not later for the local table it leaves unbounded
 		if border == nil && len(allow) > 0 && !strings.Contains(fmt.Sprint(err), "is written and cap.border is absent") {
 			ht.Fatalf("local segments without cap.border were refused with %v, want the absent block named", err)
+		}
+		// and a none class without it for that, by name
+		if border == nil && len(allow) == 0 && none && !strings.Contains(fmt.Sprint(err), "is none and cap.border is absent") {
+			ht.Fatalf("a none class without cap.border was refused with %v, want the class and the absent block named", err)
 		}
 		if err == nil {
 			sameAfterEachEncoder(ht, c)

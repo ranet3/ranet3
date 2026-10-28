@@ -10,10 +10,12 @@ const (
 	SizeofNfgenmsg = 4
 	// nfnetlinkV0 is NFNETLINK_V0, the only version there is
 	nfnetlinkV0 = 0
-	// Accept is NF_ACCEPT, the policy every chain written here carries, and
-	// Drop is NF_DROP
+	// Accept is NF_ACCEPT, the policy every chain written here carries, Drop
+	// is NF_DROP, and Return is NFT_RETURN as the kernel's 32 bit verdict
+	// code carries it
 	Accept = 1
 	Drop   = 0
+	Return = 0xfffffffb
 	// nlaTypeMask is NLA_TYPE_MASK, which masks NLA_F_NESTED off on the way
 	// in. libnftnl sets that flag, so it is set on the way out.
 	nlaTypeMask = 0x3fff

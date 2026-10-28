@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -204,11 +203,10 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 		}
 		out = append(out, fallbackRule{
 			spec: fmt.Sprintf("ct direction reply ct protocol %s ct original proto-dst @%s_ports accept", line.name, line.name),
-			expressions: []([]byte){
-				nftables.CTLoad(unix.NFT_CT_DIRECTION), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{nftables.CTReply})),
+			expressions: append(nftables.CTReplyMatch(),
 				nftables.CTLoad(unix.NFT_CT_PROTOCOL), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{line.protocol})),
 				nftables.CTLoadDirection(unix.NFT_CT_PROTO_DST, nftables.CTOriginal), nftables.Lookup(named(line.name+"_ports"), false), accept,
-			},
+			),
 		})
 	}
 	if fallbackChains[chain].Hook == unix.NF_INET_LOCAL_OUT {
@@ -253,15 +251,11 @@ func fallbackBatch(s fallbackSets, remake bool) ([]nftables.Request, error) {
 	requests = append(requests, nftables.NewTable(unix.NFPROTO_INET, FallbackTable))
 	elements := s.elements()
 	for _, set := range fallbackNamed {
-		made, err := set.Create(unix.NFPROTO_INET)
+		replaced, err := set.Replace(unix.NFPROTO_INET, elements[set.Name])
 		if err != nil {
 			return nil, err
 		}
-		filled, err := set.Fill(unix.NFPROTO_INET, elements[set.Name])
-		if err != nil {
-			return nil, err
-		}
-		requests = append(append(requests, made, set.Flush(unix.NFPROTO_INET)), filled...)
+		requests = append(requests, replaced...)
 	}
 	for i, chain := range fallbackChains {
 		requests = append(requests, chain.Create(unix.NFPROTO_INET), chain.Flush(unix.NFPROTO_INET))
@@ -414,40 +408,30 @@ func chainFault(conn *nftables.Conn, s fallbackSets, chain int, held []nftables.
 		return "", err
 	}
 	name := fallbackChains[chain].Name
-	held = slices.DeleteFunc(slices.Clone(held), func(rule nftables.Installed) bool { return rule.Chain != name })
-	var wantSpecs, heldSpecs []string
+	lines := make([]nftables.Line, 0, len(want))
 	for _, rule := range want {
-		wantSpecs = append(wantSpecs, rule.spec)
+		line := nftables.Line{Spec: rule.spec, Expressions: rule.expressions}
+		if rule.anonymous != nil {
+			line.Then = func(held nftables.Installed) (string, error) {
+				sets := nftables.LookupSets(held.Expressions)
+				if len(sets) != 1 {
+					return fmt.Sprintf("its chain %s's line %s looks up %v, where one set was written", name, rule.spec, sets), nil
+				}
+				set := *rule.anonymous
+				set.Name = sets[0]
+				fault, err := set.ElementFault(conn, unix.NFPROTO_INET, rule.members)
+				if err != nil {
+					return "", err
+				}
+				if fault != "" {
+					return fmt.Sprintf("its chain %s's line %s: %s", name, rule.spec, fault), nil
+				}
+				return "", nil
+			}
+		}
+		lines = append(lines, line)
 	}
-	for _, rule := range held {
-		heldSpecs = append(heldSpecs, rule.Spec)
-	}
-	if !slices.Equal(heldSpecs, wantSpecs) {
-		return fmt.Sprintf("its chain %s holds [%s], where [%s] was written", name, strings.Join(heldSpecs, "; "), strings.Join(wantSpecs, "; ")), nil
-	}
-	// a line edited under the comment it was written with reads as its comment says, so each is read by what it does
-	for i, rule := range want {
-		if fault := nftables.ExpressionFault(rule.expressions, held[i].Expressions); fault != "" {
-			return fmt.Sprintf("its chain %s's line %s: %s", name, rule.spec, fault), nil
-		}
-		if rule.anonymous == nil {
-			continue
-		}
-		sets := nftables.LookupSets(held[i].Expressions)
-		if len(sets) != 1 {
-			return fmt.Sprintf("its chain %s's line %s looks up %v, where one set was written", name, rule.spec, sets), nil
-		}
-		set := *rule.anonymous
-		set.Name = sets[0]
-		fault, err := set.ElementFault(conn, unix.NFPROTO_INET, rule.members)
-		if err != nil {
-			return "", err
-		}
-		if fault != "" {
-			return fmt.Sprintf("its chain %s's line %s: %s", name, rule.spec, fault), nil
-		}
-	}
-	return "", nil
+	return nftables.ChainFault(name, lines, held)
 }
 
 // ReadFallback reads the table through a socket of its own, so the

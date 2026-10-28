@@ -908,7 +908,8 @@ func (c *Config) validateEgressSegments(segments []srv6.Segment) error {
 // validateBorder asks cap.border to check itself where it was written, as
 // Validate asks cap.egress, then refuses what the filter and the local
 // segments cannot both mean: a segment no filter guards and no overlay
-// bounds, an overlay admitting no outer source, which is always IPv6, an
+// bounds, a none class with no overlay to keep its hosts' addresses in the
+// entry chain's sets, an overlay admitting no outer source, which is always IPv6, an
 // allow entry a forwarding node's filter would pass forged, and an advertised
 // prefix whose own hosts the filter would drop. The exit default overlaps
 // everything and is left out, since nothing behind an exit is numbered from
@@ -919,6 +920,14 @@ func (c *Config) validateBorder() error {
 	if border == nil {
 		if len(local) != 0 {
 			return fmt.Errorf("config: cap.segment local %s is written and cap.border is absent, so nothing bounds the outer sources it acts on and a forged mesh source reaches it through this node's own links: add cap.border", local[0].SID)
+		}
+		// a learned route reads the same for a node's own address as for a LAN it advertises, so only the overlay tells them apart
+		if c.Cap.Egress != nil {
+			for _, class := range c.Cap.Egress.Translate {
+				if class.To.None {
+					return fmt.Errorf("config: cap.egress translate class %s is none and cap.border is absent, so the entry chain cannot tell the mesh's node addresses from the LANs other nodes advertise, and would refuse every inbound connection to that class's hosts: add cap.border with the prefixes the mesh numbers its nodes from", class.From)
+				}
+			}
 		}
 		return nil
 	}

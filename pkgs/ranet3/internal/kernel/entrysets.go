@@ -5,7 +5,6 @@ package kernel
 
 import (
 	"net/netip"
-	"slices"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -13,17 +12,16 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// Range is the addresses of one family from First through Last, both included
-type Range struct {
-	First, Last netip.Addr
-}
+// Range is the addresses of one family from First through Last, both
+// included, as the border filter's sets take them
+type Range = egress.Range
 
 // OwnedSources is the sources this node owns, as the tun read judges a source
 // its own: every address covered by an entry of this node's own, Local or
 // Assigned, that schema.CapturesTheMachine does not count under overlay. A
 // source-specific entry covers its destination whole, since one set cannot hold
 // a source per destination and the tun read still judges the pair.
-func OwnedSources(snapshot []sadr.Route[*netstack.Peer], overlay []schema.Prefix) []Range {
+func OwnedSources(snapshot []sadr.Route[*netstack.Peer], overlay []schema.Prefix) []egress.Range {
 	var prefixes []netip.Prefix
 	for _, entry := range ownedEntries(snapshot, overlay) {
 		prefixes = append(prefixes, entry.Destination)
@@ -51,12 +49,16 @@ func ownedEntries(snapshot []sadr.Route[*netstack.Peer], overlay []schema.Prefix
 // none: each address whose class among classes, cap.egress translate, is none,
 // less every prefix outside the overlay the mesh's table holds learned or held
 // that does not count as a default under overlay, the LANs other nodes
-// advertise, which an inbound connection reaches through their own routers.
+// advertise, which an inbound connection reaches through their own routers. A
+// LAN routed for one source alone is taken out by its destination whole, since
+// the set cannot hold a source per destination.
 // A class is the longest one covering an address, as egress.Egress.ClassOf
 // takes it, so a longer class inside a none class that is not none takes its
-// addresses out. Empty where no class is none.
-func NoneDestinations(classes []egress.Class, snapshot []sadr.Route[*netstack.Peer], overlay []schema.Prefix) []Range {
-	var none []Range
+// addresses out. Empty where no class is none. Only the overlay tells a node's
+// own address from a LAN, since a route learned for either reads alike, so the
+// loader refuses a none class without cap.border.
+func NoneDestinations(classes []egress.Class, snapshot []sadr.Route[*netstack.Peer], overlay []schema.Prefix) []egress.Range {
+	var none []egress.Range
 	for _, class := range classes {
 		if !class.To.None {
 			continue
@@ -68,7 +70,7 @@ func NoneDestinations(classes []egress.Class, snapshot []sadr.Route[*netstack.Pe
 				inside = append(inside, other.From.Masked())
 			}
 		}
-		none = append(none, subtract([]Range{prefixRange(from)}, Ranges(inside))...)
+		none = append(none, subtract([]egress.Range{prefixRange(from)}, Ranges(inside))...)
 	}
 	if len(none) == 0 {
 		return nil
@@ -82,74 +84,52 @@ func NoneDestinations(classes []egress.Class, snapshot []sadr.Route[*netstack.Pe
 		learned = append(learned, destination)
 	}
 	lans := subtract(Ranges(learned), Ranges(schemaPrefixes(overlay)))
-	return subtract(union(none), lans)
+	return subtract(egress.Union(none), lans)
 }
 
 // Ranges is the addresses prefixes cover as ranges, sorted, none overlapping
 // or adjacent to another, the form an interval set holds them in
-func Ranges(prefixes []netip.Prefix) []Range {
-	ranges := make([]Range, 0, len(prefixes))
+func Ranges(prefixes []netip.Prefix) []egress.Range {
+	ranges := make([]egress.Range, 0, len(prefixes))
 	for _, prefix := range prefixes {
 		if prefix, ok := canonicalPrefix(prefix); ok {
 			ranges = append(ranges, prefixRange(prefix))
 		}
 	}
-	return union(ranges)
+	return egress.Union(ranges)
 }
 
-// prefixes is the fewest prefixes holding exactly the range's addresses
-func (r Range) prefixes() []netip.Prefix {
+// rangePrefixes is the fewest prefixes holding exactly the addresses of
+// ranges, in order
+func rangePrefixes(ranges ...egress.Range) []netip.Prefix {
 	var out []netip.Prefix
-	for first := r.First; first.IsValid() && !r.Last.Less(first); {
-		bits := first.BitLen()
-		for bits > 0 {
-			wider := netip.PrefixFrom(first, bits-1).Masked()
-			if wider.Addr() != first || r.Last.Less(prefixRange(wider).Last) {
-				break
+	for _, r := range ranges {
+		for first := r.First; first.IsValid() && !r.Last.Less(first); {
+			bits := first.BitLen()
+			for bits > 0 {
+				wider := netip.PrefixFrom(first, bits-1).Masked()
+				if wider.Addr() != first || r.Last.Less(prefixRange(wider).Last) {
+					break
+				}
+				bits--
 			}
-			bits--
+			prefix := netip.PrefixFrom(first, bits)
+			out = append(out, prefix)
+			first = prefixRange(prefix).Last.Next()
 		}
-		prefix := netip.PrefixFrom(first, bits)
-		out = append(out, prefix)
-		first = prefixRange(prefix).Last.Next()
 	}
 	return out
 }
 
 // prefixRange is a masked prefix's addresses
-func prefixRange(prefix netip.Prefix) Range {
-	last := prefix.Addr().AsSlice()
-	for bit := prefix.Bits(); bit < len(last)*8; bit++ {
-		last[bit/8] |= 0x80 >> (bit % 8)
-	}
-	address, _ := netip.AddrFromSlice(last)
-	return Range{First: prefix.Addr(), Last: address}
-}
-
-// union sorts ranges and joins each that overlaps or adjoins another
-// an IPv4 range orders before every IPv6 one, and the last address of a family adjoins nothing
-func union(ranges []Range) []Range {
-	slices.SortFunc(ranges, func(a, b Range) int { return a.First.Compare(b.First) })
-	var out []Range
-	for _, r := range ranges {
-		if n := len(out); n > 0 {
-			last := &out[n-1]
-			if next := last.Last.Next(); r.First.Compare(last.Last) <= 0 || next.IsValid() && r.First == next {
-				if last.Last.Less(r.Last) {
-					last.Last = r.Last
-				}
-				continue
-			}
-		}
-		out = append(out, r)
-	}
-	return out
+func prefixRange(prefix netip.Prefix) egress.Range {
+	return egress.Range{First: prefix.Addr(), Last: lastAddress(prefix)}
 }
 
 // subtract is the addresses of from that no range of holes holds, both sorted
-// as union leaves them
-func subtract(from, holes []Range) []Range {
-	var out []Range
+// as egress.Union leaves them
+func subtract(from, holes []egress.Range) []egress.Range {
+	var out []egress.Range
 	for _, r := range from {
 		first, done := r.First, false
 		for _, hole := range holes {
@@ -157,7 +137,7 @@ func subtract(from, holes []Range) []Range {
 				continue
 			}
 			if first.Less(hole.First) {
-				out = append(out, Range{First: first, Last: hole.First.Prev()})
+				out = append(out, egress.Range{First: first, Last: hole.First.Prev()})
 			}
 			if !hole.Last.Less(r.Last) {
 				done = true
@@ -166,7 +146,7 @@ func subtract(from, holes []Range) []Range {
 			first = hole.Last.Next()
 		}
 		if !done {
-			out = append(out, Range{First: first, Last: r.Last})
+			out = append(out, egress.Range{First: first, Last: r.Last})
 		}
 	}
 	return out

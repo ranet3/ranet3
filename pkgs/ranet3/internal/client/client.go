@@ -113,8 +113,15 @@ type Client struct {
 	translator4, translator6 bool
 	advertised4, advertised6 bool
 	// border is the border filter, handed over by the command that built it
-	// and nil on a node with no cap.border
+	// and nil where the platform runs no entry chain and cap.border is not written
 	border atomic.Pointer[borderFilter]
+	// borderNetwork carries one coalesced wake to the border filter per change
+	// of the host's network and per overlay a reload stores, either of which
+	// moves the carve-outs
+	borderNetwork chan struct{}
+	// borderWoken is called as each wake is sent, before the filter can run
+	// the pass it asks for, and nil calls nothing
+	borderWoken func()
 	// ruleDump reads every policy rule the host holds, and nil means kernel.DumpRules
 	ruleDump func() ([]kernel.DumpedRule, error)
 	// routeGet asks the kernel for one packet's route, and nil means kernel.RouteGet
@@ -319,6 +326,8 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		started: time.Now(),
 		events:  bus,
 		network: network,
+
+		borderNetwork: make(chan struct{}, 1),
 	}
 	c.sessions.events = bus
 	c.sessions.trust = liveTrust{c}
@@ -505,9 +514,38 @@ func (c *Client) BorderInside() []string {
 }
 
 // BorderRuntime hands the border filter what the node resolves at startup: the
-// devices inside the mesh and the bus
+// mesh tun, the devices inside the mesh, the bus, the sets as the mesh's table
+// and the host's network give them now, and a wake for each of those two. It
+// takes a reader of the mesh's table, so the command calls it once.
 func (c *Client) BorderRuntime() egress.BorderRuntime {
-	return egress.BorderRuntime{Inside: c.BorderInside(), Events: c.events}
+	return egress.BorderRuntime{
+		Tun:     c.Mesh.Name,
+		Inside:  c.BorderInside(),
+		Events:  c.events,
+		Sets:    c.borderSets,
+		Routes:  c.Mesh.Routes.Changes(),
+		Network: c.borderNetwork,
+	}
+}
+
+// borderSets is the border filter's sets now, which it derives on each pass
+func (c *Client) borderSets() egress.BorderSets {
+	cfg := c.config()
+	overlay := cfg.Overlay()
+	snapshot := c.Mesh.Routes.Snapshot()
+	var classes []egress.Class
+	if exit := cfg.Egress(); exit != nil {
+		classes = exit.Translate
+	}
+	sets := egress.BorderSets{
+		Owned: kernel.OwnedSources(snapshot, overlay),
+		None:  kernel.NoneDestinations(classes, snapshot, overlay),
+	}
+	if cfg.Cap.Border != nil {
+		sets.CarveOuts = kernel.CarveOuts(c.networkState(), overlay)
+		sets.Carved = kernel.Ranges(kernel.CarvedPrefixes(sets.CarveOuts, snapshot))
+	}
+	return sets
 }
 
 // KernelRuntime assembles what cap.table's reconciler reads from outside the

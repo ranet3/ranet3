@@ -267,19 +267,16 @@ type ExitStatus struct {
 	Fallback *FallbackStatus
 }
 
-// exitPass is mode 2 as the pass under way derives it, from the network as
-// the watch last read it, the tun's addresses as the pass holds them and the
+// exitPass is mode 2 as the pass under way derives it, from read, the pass's
+// reading of the network, the tun's addresses as the pass holds them and the
 // mesh's table, and its status, nil in mode off. A family counts as addressed
 // by an address inside an overlay entry alone, whoever wrote it.
-func (r *Reconciler) exitPass(held []netip.Prefix, snapshot []sadr.Route[*netstack.Peer]) (exitView, *ExitStatus) {
+func (r *Reconciler) exitPass(held []netip.Prefix, snapshot []sadr.Route[*netstack.Peer], read passNetwork) (exitView, *ExitStatus) {
 	mode := r.table.Mode()
 	if mode == nil {
 		return exitView{}, nil
 	}
-	var network NetworkState
-	if r.rt.Network != nil {
-		network = r.rt.Network()
-	}
+	network := read.network
 	forwarded, skipped := expandForward(mode.Forward, r.rt.Interface, network)
 	status := &ExitStatus{Forwarded: forwarded, Skipped: skipped}
 	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
@@ -290,15 +287,8 @@ func (r *Reconciler) exitPass(held []netip.Prefix, snapshot []sadr.Route[*netsta
 			status.Unaddressed = append(status.Unaddressed, family)
 		}
 	}
-	view := exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed, fallback: mode.Refuses(), lan: schemaPrefixes(mode.LAN)}
-	for _, carveOut := range CarveOuts(network, r.rt.Overlay) {
-		view.carved = append(view.carved, carveOut.Prefix)
-	}
-	for _, entry := range snapshot {
-		if destination, ok := canonicalPrefix(entry.Destination); ok {
-			view.table = append(view.table, destination)
-		}
-	}
+	view := exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed, fallback: mode.Refuses(), lan: schemaPrefixes(mode.LAN),
+		carved: read.carved, table: tableDestinations(snapshot)}
 	return view, status
 }
 

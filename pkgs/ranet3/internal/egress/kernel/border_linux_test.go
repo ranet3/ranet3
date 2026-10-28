@@ -17,33 +17,96 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// borderChain encodes the chain the filter asks for over cfg, the mesh tun
-// ranet3 and lo
-func borderChain(t *testing.T, cfg egress.Border) ([]BorderRule, []nftables.Request) {
+// encodedTable encodes the table the filter asks for over cfg and sets, the
+// mesh tun ranet3 and lo: its rules in order and the batch writing it
+func encodedTable(t testing.TB, cfg *egress.Border, sets egress.BorderSets) ([]BorderRule, []nftables.Request) {
 	t.Helper()
-	rt := egress.BorderRuntime{Inside: []string{"ranet3", "lo"}}
-	desired := newBorderFilter(cfg, rt, &fakeBorder{}).desired()
-	requests, err := borderBatch(desired, false)
+	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func() egress.BorderSets { return sets }}
+	rules, written, _ := newBorderFilter(cfg, rt, &fakeBorder{}).desired()
+	requests, err := borderBatch(rules, written, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return desired, requests[3:]
+	return rules, requests
+}
+
+// chainRules is the rules desired holds of one chain and the requests writing
+// them, in order
+func chainRules(desired []BorderRule, requests []nftables.Request, chain string) ([]BorderRule, []nftables.Request) {
+	var written []nftables.Request
+	for _, request := range requests {
+		if request.Kind == nftables.Command(unix.NFT_MSG_NEWRULE) {
+			written = append(written, request)
+		}
+	}
+	var rules []BorderRule
+	var out []nftables.Request
+	for i, rule := range desired {
+		if rule.Chain() == chain {
+			rules, out = append(rules, rule), append(out, written[i])
+		}
+	}
+	return rules, out
+}
+
+// borderChain encodes the border chain the filter asks for over cfg, the mesh
+// tun ranet3 and lo, and runs a packet through it
+func borderChain(t *testing.T, cfg *egress.Border) ([]BorderRule, func(drawnPacket) chainRun) {
+	t.Helper()
+	desired, requests := encodedTable(t, cfg, egress.BorderSets{})
+	rules, written := chainRules(desired, requests, BorderChain)
+	sets := encodedSets(t, requests)
+	return rules, func(p drawnPacket) chainRun {
+		wire := p.wire()
+		wire.sets = sets
+		return runChain(t, written, wire)
+	}
+}
+
+// chainRequest is the request of requests creating the chain name
+func chainRequest(t *testing.T, requests []nftables.Request, name string) nftables.Request {
+	t.Helper()
+	for _, request := range requests {
+		if _, chain, _, _, _ := nftables.DecodeChain(nftables.Message{Data: request.Body}); request.Kind == nftables.Command(unix.NFT_MSG_NEWCHAIN) && chain == name {
+			return request
+		}
+	}
+	t.Fatalf("the batch creates no chain %s", name)
+	return nftables.Request{}
 }
 
 // Each rule reaches the kernel as the expressions its comment describes, in
-// the inet table of this tool's name and the border chain, and reads back as
-// the spelling it was written under
+// the inet table of this tool's name and the chain it sits in, and reads back
+// as the spelling it was written under
 func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
-	desired, rules := borderChain(t, overlay(t, "198.18.0.0/15", "3fff::7/128"))
+	carveOut := egress.CarveOut{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}
+	desired, requests := encodedTable(t, overlay(t, "198.18.0.0/15", "3fff::7/128"), egress.BorderSets{CarveOuts: []egress.CarveOut{carveOut}})
+	_, rules := chainRules(desired, requests, BorderChain)
+	_, entries := chainRules(desired, requests, EntryChain)
+	rules = append(rules, entries...)
+	lookup := []string{"meta", "cmp", "payload", "lookup"}
 	want := [][]string{
 		{"meta", "cmp", "immediate"},
 		{"meta", "cmp", "immediate"},
+		// the carved drop of IPv4 alone, the family with a carve-out
+		append(slices.Clone(lookup), "counter", "immediate"),
+		{"meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "immediate"},
 		{"meta", "cmp", "payload", "bitwise", "cmp", "counter", "immediate"},
 		// no bitwise: a prefix as long as the address masks nothing
 		{"meta", "cmp", "payload", "cmp", "counter", "immediate"},
+		{"meta", "cmp", "immediate"},
+		{"ct", "cmp", "immediate"},
+		{"meta", "cmp", "payload", "bitwise", "cmp", "immediate"},
+		{"meta", "cmp", "payload", "bitwise", "cmp", "immediate"},
+		append(slices.Clone(lookup), "immediate"),
+		append(slices.Clone(lookup), "immediate"),
+		append(slices.Clone(lookup), "immediate"),
+		append(slices.Clone(lookup), "immediate"),
+		{"meta", "cmp", "counter", "immediate"},
+		{"meta", "cmp", "counter", "immediate"},
 	}
-	if len(rules) != len(want) {
-		t.Fatalf("encoded %d rules, want %d", len(rules), len(want))
+	if len(rules) != len(want) || len(desired) != len(want) {
+		t.Fatalf("encoded %d rules of %d, want %d", len(rules), len(desired), len(want))
 	}
 	for i, request := range rules {
 		if got := expressionNames(t, request.Body); !slices.Equal(got, want[i]) {
@@ -53,22 +116,25 @@ func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			t.Errorf("%s went to family %d, want inet", desired[i], request.Body[0])
 		}
 		table, chain, spec, _, _, _ := nftables.DecodeRule(nftables.Message{Data: request.Body})
-		if table != TableName || chain != BorderChain || spec != desired[i].String() {
+		if table != TableName || chain != desired[i].Chain() || spec != desired[i].String() {
 			t.Errorf("%s was written as %q into %s/%s", desired[i], spec, table, chain)
 		}
 	}
 }
 
-// The chain is a filter chain at prerouting at priority raw, after
-// defragmentation and before conntrack, in the inet table of this tool's
-// name, and the batch empties it by naming no handle before writing it. A
-// batch that remakes the table deletes it first, in the same transaction.
+// The border chain is a filter chain at prerouting at priority raw, after
+// defragmentation and before conntrack, and the entry chain one at
+// postrouting at srcnat + 10, after every source translation, both in the
+// inet table of this tool's name with its six interval sets, and the batch
+// empties each chain by naming no handle before writing it. A batch that
+// remakes the table deletes it first, in the same transaction.
 func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
-	requests, err := borderBatch(nil, false)
+	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
+	requests, err := borderBatch(rules, sets, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remade, err := borderBatch(nil, true)
+	remade, err := borderBatch(rules, sets, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,23 +154,41 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 			t.Errorf("a request of the batch went to family %d, want inet", request.Body[0])
 		}
 	}
-	table, chain, kind, hook, priority := nftables.DecodeChain(nftables.Message{Data: requests[1].Body})
-	if table != TableName || chain != BorderChain || kind != "filter" {
-		t.Errorf("created a %q chain %s/%s, want a filter chain %s/%s", kind, table, chain, TableName, BorderChain)
+	var made []string
+	for _, request := range requests {
+		if request.Kind == nftables.Command(unix.NFT_MSG_NEWSET) {
+			set := nftables.DecodeSet(nftables.Message{Data: request.Body})
+			if set.Flags&unix.NFT_SET_INTERVAL == 0 || set.Table != TableName {
+				t.Errorf("set %s is made in %s with flags %#x", set.Name, set.Table, set.Flags)
+			}
+			made = append(made, set.Name)
+		}
 	}
-	if hook != unix.NF_INET_PRE_ROUTING || priority != -300 {
-		t.Errorf("hooked at %d priority %d, want prerouting (%d) at raw (-300)", hook, priority, unix.NF_INET_PRE_ROUTING)
+	if want := []string{"carved4", "carved6", "owned4", "owned6", "none4", "none6"}; !slices.Equal(made, want) {
+		t.Errorf("the batch makes the sets %q, want %q", made, want)
 	}
-	if requests[2].Kind != nftables.Command(unix.NFT_MSG_DELRULE) {
-		t.Errorf("the batch's third request is kind %d, want the flush", requests[2].Kind)
-	}
-	for kind, value := range (nftables.Message{Data: requests[2].Body}).Attributes() {
-		switch kind {
-		case unix.NFTA_RULE_HANDLE:
-			t.Error("the flush names a handle, which would delete one rule rather than empty the chain")
-		case unix.NFTA_RULE_CHAIN:
-			if unix.ByteSliceToString(value) != BorderChain {
-				t.Errorf("the flush empties chain %s", value)
+	for _, want := range []struct {
+		name     string
+		hook     uint32
+		priority int32
+	}{{BorderChain, unix.NF_INET_PRE_ROUTING, -300}, {EntryChain, unix.NF_INET_POST_ROUTING, 110}} {
+		request := chainRequest(t, requests, want.name)
+		table, chain, kind, hook, priority := nftables.DecodeChain(nftables.Message{Data: request.Body})
+		if table != TableName || kind != "filter" || hook != want.hook || priority != want.priority {
+			t.Errorf("created a %q chain %s/%s at hook %d priority %d, want a filter chain %s/%s at %d priority %d", kind, table, chain, hook, priority, TableName, want.name, want.hook, want.priority)
+		}
+		next := requests[slices.IndexFunc(requests, func(r nftables.Request) bool { return slices.Equal(r.Body, request.Body) })+1]
+		if next.Kind != nftables.Command(unix.NFT_MSG_DELRULE) {
+			t.Errorf("chain %s is followed by a request of kind %d, want the flush", want.name, next.Kind)
+		}
+		for kind, value := range (nftables.Message{Data: next.Body}).Attributes() {
+			switch kind {
+			case unix.NFTA_RULE_HANDLE:
+				t.Error("the flush names a handle, which would delete one rule rather than empty the chain")
+			case unix.NFTA_RULE_CHAIN:
+				if unix.ByteSliceToString(value) != want.name {
+					t.Errorf("the flush after chain %s empties chain %s", want.name, value)
+				}
 			}
 		}
 	}
@@ -117,12 +201,15 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 // policy one nf_tables will not change in place, and a chain of another name
 // or in another table is none of the filter's business.
 func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
-	requests, err := borderBatch(nil, false)
+	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
+	requests, err := borderBatch(rules, sets, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fault, remake := prerouting.Fault(nftables.Message{Data: requests[1].Body}); fault != "" || remake {
-		t.Errorf("the chain the batch writes reads back with the fault %q, remade %v", fault, remake)
+	for _, chain := range []nftables.Chain{prerouting, entry} {
+		if fault, remake := chain.Fault(nftables.Message{Data: chainRequest(t, requests, chain.Name).Body}); fault != "" || remake {
+			t.Errorf("the chain %s the batch writes reads back with the fault %q, remade %v", chain.Name, fault, remake)
+		}
 	}
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		for _, written := range translatorChains {
@@ -170,14 +257,14 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 // address in an IPv4 overlay prefix passes, while the IPv4 packet carrying
 // that address is dropped
 func TestIPv6PacketIsNotReadAsAnIPv4Source(t *testing.T) {
-	desired, rules := borderChain(t, overlay(t, "198.18.0.0/15"))
+	desired, run := borderChain(t, overlay(t, "198.18.0.0/15"))
 	// 198.18.0.1 is c6 12 00 01
 	ipv6 := drawnPacket{iif: "eth0", source: netip.MustParseAddr("2001:db8:c612:1::1"), destination: netip.MustParseAddr("2001:db8::2")}
-	if run := runChain(t, rules, ipv6.wire()); !run.accept {
+	if run := run(ipv6); !run.accept {
 		t.Errorf("an IPv6 packet from %s was dropped by %s", ipv6.source, desired[run.rule])
 	}
 	ipv4 := drawnPacket{iif: "eth0", source: netip.MustParseAddr("198.18.0.1"), destination: netip.MustParseAddr("192.0.2.1")}
-	if run := runChain(t, rules, ipv4.wire()); run.accept {
+	if run := run(ipv4); run.accept {
 		t.Errorf("an IPv4 packet from %s passed", ipv4.source)
 	}
 }
@@ -186,13 +273,13 @@ func TestIPv6PacketIsNotReadAsAnIPv4Source(t *testing.T) {
 // beside a mesh tun named ranet3 on a router, and ranet3 compared as a prefix
 // would let ranet3a1b2 carry a forged mesh source in
 func TestBorderComparesTheWholeInterfaceName(t *testing.T) {
-	_, rules := borderChain(t, overlay(t, "198.18.0.0/15"))
+	_, run := borderChain(t, overlay(t, "198.18.0.0/15"))
 	for _, one := range []struct {
 		iif    string
 		accept bool
 	}{{"ranet3", true}, {"ranet3a1b2", false}, {"ranet", false}, {"lo", true}} {
 		packet := drawnPacket{iif: one.iif, source: netip.MustParseAddr("198.18.0.1"), destination: netip.MustParseAddr("192.0.2.1")}
-		if run := runChain(t, rules, packet.wire()); run.accept != one.accept {
+		if run := run(packet); run.accept != one.accept {
 			t.Errorf("a forged mesh source arriving on %s: accepted %v, want %v", one.iif, run.accept, one.accept)
 		}
 	}

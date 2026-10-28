@@ -209,17 +209,18 @@ func runDaemon(opts options) int {
 		return refuseToStart(err)
 	}
 
-	// cap.border is on before the reconciler routes anything into the tun,
-	// and goes only once the reconciler has withdrawn those routes and the
-	// mesh has closed, so nothing forwards into the mesh while it is gone.
+	// The table inet ranet3 is on before the reconciler routes anything into
+	// the tun, and goes only once the reconciler has withdrawn those routes and
+	// the mesh has closed, so nothing forwards into the mesh while it is gone.
 	// down leaves it running, since the kernel still forwards and the host's
-	// services still trust mesh sources.
+	// services still trust mesh sources. A platform with no entry chain builds
+	// no filter where cap.border is not written.
 	stopBorder := func() {}
-	if block := cfg.Cap.Border; block != nil {
-		border, err := kernelexit.NewBorderFilter(*block, node.BorderRuntime())
-		if err != nil {
-			return refuseToStart(err)
-		}
+	border, err := kernelexit.NewBorderFilter(cfg.Cap.Border, node.BorderRuntime())
+	if err != nil {
+		return refuseToStart(err)
+	}
+	if border != nil {
 		node.SetBorder(border)
 		borderCtx, cancelBorder := context.WithCancel(context.Background())
 		done := make(chan struct{})

@@ -14,10 +14,19 @@ const (
 	ChainName = "postrouting"
 	// LimitChain is the table's filter forward base chain beside it
 	LimitChain = "forward"
-	// BorderChain is the border filter's one chain, in the inet table of the
-	// same name, so the translator's ip and ip6 tables and the filter's table
-	// never hold each other's chains
+	// BorderChain is the border filter's chain at prerouting, in the inet
+	// table of the same name, so the translator's ip and ip6 tables and the
+	// filter's table never hold each other's chains
 	BorderChain = "border"
+	// EntryChain is the chain beside it that lets a packet into the mesh's
+	// tun only as a reply, toward an IPv6 link-local or multicast destination,
+	// from a source this node owns or toward a destination a none class takes
+	EntryChain = "mesh_entry"
+	// carvedSet, ownedSet and noneSet start the names of the table's sets,
+	// the family's digit ending each
+	carvedSet = "carved"
+	ownedSet  = "owned"
+	noneSet   = "none"
 	// minRetryInterval is the first delay after a failed pass, and it doubles up
 	// to the sweep interval, as in internal/kernel.
 	minRetryInterval = time.Second
@@ -25,4 +34,9 @@ const (
 	// at: after defragmentation at -400 and before conntrack at -200, so a
 	// forged packet creates no connection entry
 	rawPriority = -300
+	// entryPriority is NF_IP_PRI_NAT_SRC plus 10, srcnat + 10 in nft's
+	// words: every source translation at postrouting runs inside NAT's own
+	// hook at 100 whatever priority its chain names, so the entry chain reads
+	// the source a packet leaves with
+	entryPriority = 110
 )

@@ -293,8 +293,9 @@ func (c Contents) rules(conn *Conn, proto uint8) ([]Installed, error) {
 
 // ExpressionFault names how a rule's expressions as a dump lists them differ
 // from written, empty where they do not. A dump names a lookup's set and not
-// its ID, writes its flags where they are zero, numbers an anonymous set,
-// counts in a counter and nests without NLA_F_NESTED, none of which differs.
+// its ID, writes its flags where they are zero, writes a bitwise's boolean
+// operation, numbers an anonymous set, counts in a counter and nests without
+// NLA_F_NESTED, none of which differs.
 // An anonymous set's elements are read apart, by the name LookupSets gives.
 func ExpressionFault(written [][]byte, held []byte) string {
 	want, got := canonical(slices.Concat(written...)), canonical(held)
@@ -302,6 +303,47 @@ func ExpressionFault(written [][]byte, held []byte) string {
 		return ""
 	}
 	return fmt.Sprintf("its expressions read back as [%s], where [%s] were written", strings.Join(got, "; "), strings.Join(want, "; "))
+}
+
+// Line is a rule as its owner writes it: the comment it is written under, its
+// expressions, and where its owner reads more of it, such as an anonymous
+// set's elements, Then, which names how the rule held differs, empty where it
+// does not
+type Line struct {
+	Spec        string
+	Expressions [][]byte
+	Then        func(held Installed) (string, error)
+}
+
+// ChainFault names how the chain named chain holds lines other than want,
+// read from every chain's lines in held, empty where it does not: the count
+// and each comment, then line by line its expressions and its Then, so the
+// first line that differs is the one named
+func ChainFault(chain string, want []Line, held []Installed) (string, error) {
+	held = slices.DeleteFunc(slices.Clone(held), func(rule Installed) bool { return rule.Chain != chain })
+	var wantSpecs, heldSpecs []string
+	for _, rule := range want {
+		wantSpecs = append(wantSpecs, rule.Spec)
+	}
+	for _, rule := range held {
+		heldSpecs = append(heldSpecs, rule.Spec)
+	}
+	if !slices.Equal(heldSpecs, wantSpecs) {
+		return fmt.Sprintf("its chain %s holds [%s], where [%s] was written", chain, strings.Join(heldSpecs, "; "), strings.Join(wantSpecs, "; ")), nil
+	}
+	// a line edited under the comment it was written with reads as its comment says, so each is read by what it does
+	for i, rule := range want {
+		if fault := ExpressionFault(rule.Expressions, held[i].Expressions); fault != "" {
+			return fmt.Sprintf("its chain %s's line %s: %s", chain, rule.Spec, fault), nil
+		}
+		if rule.Then == nil {
+			continue
+		}
+		if fault, err := rule.Then(held[i]); fault != "" || err != nil {
+			return fault, err
+		}
+	}
+	return "", nil
 }
 
 // LookupSets is the set each lookup of a dumped rule's expressions names, in order
@@ -348,6 +390,11 @@ func canonical(list []byte) []string {
 	return out
 }
 
+// bitwiseOp is NFTA_BITWISE_OP, which a dump writes for a bitwise expression
+// written with none, and bitwiseBool its value for the mask and xor such an
+// expression takes (nft_bitwise_init, nf_tables.h)
+const bitwiseOp, bitwiseBool = 6, 0
+
 func canonicalAttributes(name string, data []byte) []string {
 	var out []string
 	for _, field := range Nested(data) {
@@ -357,6 +404,8 @@ func canonicalAttributes(name string, data []byte) []string {
 		case name == "lookup" && kind == unix.NFTA_LOOKUP_SET_ID:
 			continue
 		case name == "lookup" && kind == unix.NFTA_LOOKUP_FLAGS && len(value) == 4 && binary.BigEndian.Uint32(value) == 0:
+			continue
+		case name == "bitwise" && kind == bitwiseOp && len(value) == 4 && binary.BigEndian.Uint32(value) == bitwiseBool:
 			continue
 		case name == "lookup" && kind == unix.NFTA_LOOKUP_SET:
 			// the kernel completes the anonymous name a rule's own set is made under
@@ -540,11 +589,20 @@ func MetaLoad(key uint32) []byte {
 }
 
 func SourcePrefix(prefix netip.Prefix) [][]byte {
+	return addressPrefix(SourceLoad, prefix)
+}
+
+func DestinationPrefix(prefix netip.Prefix) [][]byte {
+	return addressPrefix(DestinationLoad, prefix)
+}
+
+// addressPrefix matches the address load reads against prefix
+func addressPrefix(load func(proto uint8) []byte, prefix netip.Prefix) [][]byte {
 	proto := uint8(unix.NFPROTO_IPV6)
 	if prefix.Addr().Is4() {
 		proto = unix.NFPROTO_IPV4
 	}
-	out := [][]byte{SourceLoad(proto)}
+	out := [][]byte{load(proto)}
 	if mask := prefixMask(prefix); prefix.Bits() < len(mask)*8 {
 		out = append(out, Bitwise(mask))
 	}
@@ -626,6 +684,12 @@ func CTLoad(key uint32) []byte {
 	return Expression("ct", ct)
 }
 
+// CTReplyMatch goes on only for a packet of its connection's reply direction,
+// nft's `ct direction reply`
+func CTReplyMatch() [][]byte {
+	return [][]byte{CTLoad(unix.NFT_CT_DIRECTION), Expression("cmp", Compare(unix.NFT_CMP_EQ, []byte{CTReply}))}
+}
+
 // CTLoadDirection loads the key of one direction of the packet's connection,
 // CTOriginal or CTReply, which the kernel requires of an address or a port
 // (nft_ct.c, nft_ct_get_init). NFT_CT_PROTO_DST loads the port in network
@@ -650,7 +714,7 @@ func Lookup(set Set, invert bool) []byte {
 	return Expression("lookup", lookup)
 }
 
-// Verdict ends the chain for a packet with code, Accept or Drop
+// Verdict ends the chain for a packet with code, Accept, Drop or Return
 func Verdict(code uint32) []byte {
 	data := PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
 	immediate := PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)

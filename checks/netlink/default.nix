@@ -125,17 +125,22 @@ testers.runNixOSTest {
     # hands back for a diff to compare against, is checked here and nowhere
     # else short of the full exit node arm.
     out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged)?$' 2>&1"
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged|RefillsAFlushedSet|HoldsTheEntryChainAloneWithNoBorder|OutlivesAKilledOwner)?$|^TestBorderPassSendsAOneLANChangeAsItsDelta$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the nftables round trips skipped themselves under root:\n{out}"
     assert "--- PASS: TestBorderRoundTrip" in out, f"the border filter's round trip did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripPutsBackWhatAnotherWriterChanged" in out, f"the border's readback of another writer's change did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripRefillsAFlushedSet" in out, f"the border's flushed set did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder" in out, f"the entry chain with no border did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripOutlivesAKilledOwner" in out, f"the border's table outliving its owner did not run:\n{out}"
+    assert "--- PASS: TestBorderPassSendsAOneLANChangeAsItsDelta" in out, f"the border's delta of one LAN did not run:\n{out}"
     assert "--- PASS: TestNftablesRemakesATableHoldingAStaleTimeout" in out, f"the stale timeout's remake did not run:\n{out}"
     assert "--- PASS: TestNftablesKeepsTheSetsCountsAcrossARewrite" in out, f"the sets' counts across a rewrite did not run:\n{out}"
     assert "--- PASS: TestNftablesRemakesATableWhoseSetCountsAnotherLimit" in out, f"the remake of a set counting another limit did not run:\n{out}"
     assert "--- PASS: TestNftablesReportsTheNatChainsAtItsPriorityOrBelow" in out, f"the report of other nat chains did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 11, f"only {ran} nftables round trips ran:\n{out}"
+    assert ran >= 15, f"only {ran} nftables round trips ran:\n{out}"
 
     # the encoder's sets, their elements, the lookup, ct with a direction and the set messages of the monitor, each
     # acting on loopback's datagrams, and woken by another writer, and a set of ten thousand intervals filled in one batch
@@ -147,6 +152,15 @@ testers.runNixOSTest {
     assert "--- PASS: TestNftablesFilterExpressionsActOnPackets" in out, f"the expressions on packets did not run:\n{out}"
     assert "--- PASS: TestNftablesSetElementsReadBackAndWakeOnAnothersChange" in out, f"the set elements' readback and wake did not run:\n{out}"
     assert "--- PASS: TestNftablesBatchFillsASetOfTenThousandIntervals" in out, f"the batch of ten thousand intervals did not run:\n{out}"
+
+    # a set moved by the intervals that differ in one transaction, two intervals joined and split again among the moves
+    out = machine.succeed(
+        "${netlinkTests}/bin/nftables-tests -test.v -test.run '^TestNftablesUpdate(MovesASetInTheKernel|JoinsTwoIntervalsAndSplitsThemInTheKernel)$' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the set's moves skipped themselves under root:\n{out}"
+    assert "--- PASS: TestNftablesUpdateMovesASetInTheKernel" in out, f"the set's move did not run:\n{out}"
+    assert "--- PASS: TestNftablesUpdateJoinsTwoIntervalsAndSplitsThemInTheKernel" in out, f"the join and split of two intervals did not run:\n{out}"
 
     # the exit behavior suite against the kernel exit under each class: rows 1 to 5, Egress from several sessions, the
     # packets no flow is tracked for out of the mesh and into it, the idle timers read from conntrack's listing, the
