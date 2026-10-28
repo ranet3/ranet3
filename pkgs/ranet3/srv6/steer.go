@@ -6,6 +6,7 @@ package srv6
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"ranet3.com/pkgs/ranet3/sadr"
@@ -25,6 +26,9 @@ import (
 // Policy is one steering decision: the outer source an encapsulation is sent
 // from, and the segments the packet visits in order.
 type Policy struct {
+	// From and To are the selector as the entry wrote it, the zero prefix for
+	// a half it left out
+	From, To netip.Prefix
 	// Source is the outer header's source address, which the fleet sets once
 	// per node with `ip sr tunsrc` and which is per policy here because
 	// nothing global decides it.
@@ -79,7 +83,7 @@ func (s Steer) policy(fallback schema.Addr) Policy {
 	for _, hop := range s.Via {
 		path = append(path, hop.Addr)
 	}
-	return Policy{Source: source.Addr, Path: path}
+	return Policy{From: s.From.Prefix, To: s.To.Prefix, Source: source.Addr, Path: path}
 }
 
 // SteerTable answers which policy applies to one packet. A nil table steers
@@ -264,7 +268,23 @@ func (t *SteerTable) CheckMTU(device int) (int, error) {
 // LeastMTU is the least MTU that carries a packet of the minimum IPv6 requires behind the longest segment list
 func (t *SteerTable) LeastMTU() int { return MinimumIPv6MTU + t.Overhead() }
 
-// Entries is the table as it was configured, for a diagnostic to print.
+// Policies is every policy in the order it was configured, each a copy, for a
+// diagnostic to print field by field
+func (t *SteerTable) Policies() []Policy {
+	if t == nil {
+		return nil
+	}
+	out := make([]Policy, 0, len(t.policies))
+	for _, policy := range t.policies {
+		copied := *policy
+		copied.Path = slices.Clone(policy.Path)
+		out = append(out, copied)
+	}
+	return out
+}
+
+// Entries is the table as it was configured, one line for each of Policies,
+// for a diagnostic to print
 func (t *SteerTable) Entries() []string {
 	if t == nil {
 		return nil

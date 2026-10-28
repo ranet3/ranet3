@@ -56,6 +56,12 @@ const (
 // dropped and counted NotReady
 func (m *Mesh) SetEgressReady(v4, v6 bool) { m.egressReady.Store(readyBits(v4, v6)) }
 
+// EgressReady is the families SetEgressReady last named ready
+func (m *Mesh) EgressReady() (v4, v6 bool) {
+	ready := m.egressReady.Load()
+	return ready&egressReady4 != 0, ready&egressReady6 != 0
+}
+
 // egressReadyFor is the bit of egressReady that family, an srv6 next header, needs
 func egressReadyFor(family uint8) uint32 {
 	if family == srv6.NextHeaderIPv4 {
