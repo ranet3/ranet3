@@ -17,6 +17,22 @@ type MatchedRoute struct {
 	Table    uint32
 	Type     string
 	NextHops []NextHop
+	// Exception is an IPv6 lookup answered through a route the kernel cached
+	// for the destination alone under Prefix's, a path MTU's or a redirect's,
+	// which it returns as a /128 (ip6_rt_cache_alloc). RouteGet reads it on
+	// linux alone, by a second lookup after the one that answers the route, so
+	// an exception made or expired between the two goes unseen by one or the
+	// other. RouteGetBatch never reads it.
+	Exception bool
+	// NoEntry is a route the kernel makes for the destination itself with no
+	// table entry behind it, such as for a multicast group, the limited
+	// broadcast or the unspecified address, which no rule's lookup found. Its
+	// Table is 0 and its Source invalid. RouteGet answers it for IPv4 on linux
+	// alone, by a second lookup without RTM_F_FIB_MATCH where the first
+	// answers EHOSTUNREACH (inet_rtm_getroute), and keeps that EHOSTUNREACH
+	// where the second refuses the packet too, so a table changed between the
+	// two goes unseen by one or the other. RouteGetBatch never asks it.
+	NoEntry bool
 }
 
 // NextHop is one way a matched route leaves, Gateway invalid where it leaves

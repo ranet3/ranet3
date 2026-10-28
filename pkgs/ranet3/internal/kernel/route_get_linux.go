@@ -30,8 +30,25 @@ func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 		arrival = link.index
 	}
 	route, indexes, err := matchedRoute(conn, src, dst, arrival, 0)
+	// under RTM_F_FIB_MATCH IPv4 answers a route of no table entry with
+	// EHOSTUNREACH, so a lookup without the flag tells it from a refusal
+	if dst.Is4() && errors.Is(err, unix.EHOSTUNREACH) {
+		made, madeIndexes, madeErr := entrylessRoute(conn, src, dst, arrival)
+		var errno unix.Errno
+		switch {
+		case madeErr == nil:
+			route, indexes, err = made, madeIndexes, nil
+		case !errors.As(madeErr, &errno):
+			return MatchedRoute{}, madeErr
+		}
+	}
 	if err != nil {
 		return MatchedRoute{}, err
+	}
+	if dst.Is6() {
+		if route.Exception, err = cachedRoute(conn, src, dst, arrival); err != nil {
+			return MatchedRoute{}, err
+		}
 	}
 	for i, index := range indexes {
 		link, err := conn.link(index, "")
@@ -48,13 +65,52 @@ func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 // carrying mark where it is nonzero. It answers each next hop's interface index
 // at its place in NextHops, whose Device it leaves empty
 func matchedRoute(c netlinkConn, src, dst netip.Addr, arrival, mark uint32) (MatchedRoute, []uint32, error) {
-	body := make([]byte, unix.SizeofRtMsg)
-	body[0] = unix.AF_INET6
 	flags := uint32(unix.RTM_F_FIB_MATCH)
 	if dst.Is4() {
 		// IPv4 answers with main for the table unless asked for the one it
 		// looked in, and IPv6 refuses the flag
-		body[0], flags = unix.AF_INET, flags|unix.RTM_F_LOOKUP_TABLE
+		flags |= unix.RTM_F_LOOKUP_TABLE
+	}
+	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, mark, flags), dst)
+	if err != nil {
+		return MatchedRoute{}, nil, err
+	}
+	return decodeMatchedRoute(reply)
+}
+
+// entrylessRoute is the kernel's lookup of an IPv4 packet without
+// RTM_F_FIB_MATCH, as NoEntry, under RTM_F_LOOKUP_TABLE, which answers the
+// table 0 where no rule's lookup found the route
+func entrylessRoute(c netlinkConn, src, dst netip.Addr, arrival uint32) (MatchedRoute, []uint32, error) {
+	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, 0, unix.RTM_F_LOOKUP_TABLE), dst)
+	if err != nil {
+		return MatchedRoute{}, nil, err
+	}
+	route, indexes, err := decodeMatchedRoute(reply)
+	// the answer's source is the packet's, which no IPv4 route selects on
+	route.Source, route.NoEntry = netip.Prefix{}, true
+	return route, indexes, err
+}
+
+// cachedRoute reports the kernel's lookup of an IPv6 packet answering a route
+// it cached for dst, which it marks RTM_F_CLONED where RTM_F_FIB_MATCH answers
+// the route the cached one hangs off
+func cachedRoute(c netlinkConn, src, dst netip.Addr, arrival uint32) (bool, error) {
+	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, 0, 0), dst)
+	if err != nil {
+		return false, err
+	}
+	return binary.NativeEndian.Uint32(reply.Data[8:])&unix.RTM_F_CLONED != 0, nil
+}
+
+// routeRequest is an RTM_GETROUTE body for a packet from src to dst arriving
+// on the device of index arrival, or this host's own for 0, carrying mark
+// where it is nonzero
+func routeRequest(src, dst netip.Addr, arrival, mark, flags uint32) []byte {
+	body := make([]byte, unix.SizeofRtMsg)
+	body[0] = unix.AF_INET6
+	if dst.Is4() {
+		body[0] = unix.AF_INET
 	}
 	body[1] = uint8(dst.BitLen())
 	if src.IsValid() {
@@ -71,17 +127,21 @@ func matchedRoute(c netlinkConn, src, dst netip.Addr, arrival, mark uint32) (Mat
 	if mark != 0 {
 		body = putAttrU32(body, unix.RTA_MARK, mark)
 	}
+	return body
+}
+
+// routeAnswer asks body and answers the route message the kernel replied with
+func routeAnswer(c netlinkConn, body []byte, dst netip.Addr) (nlMessage, error) {
 	replies, err := c.execute(unix.RTM_GETROUTE, 0, body)
 	if err != nil {
-		return MatchedRoute{}, nil, fmt.Errorf("kernel: look up the route to %s: %w", dst, err)
+		return nlMessage{}, fmt.Errorf("kernel: look up the route to %s: %w", dst, err)
 	}
 	for _, reply := range replies {
-		if reply.Kind != unix.RTM_NEWROUTE || len(reply.Data) < unix.SizeofRtMsg {
-			continue
+		if reply.Kind == unix.RTM_NEWROUTE && len(reply.Data) >= unix.SizeofRtMsg {
+			return reply, nil
 		}
-		return decodeMatchedRoute(reply)
 	}
-	return MatchedRoute{}, nil, fmt.Errorf("kernel: the route to %s was not answered", dst)
+	return nlMessage{}, fmt.Errorf("kernel: the route to %s was not answered", dst)
 }
 
 // rtaNHID is RTA_NH_ID of linux/rtnetlink.h, which x/sys does not carry

@@ -36,6 +36,12 @@ func DumpRules() ([]DumpedRule, error) {
 	return out, nil
 }
 
+// FRA_DSCP and FRA_FLOWLABEL of linux/fib_rules.h, which x/sys does not carry
+const (
+	fraDSCP      = 25
+	fraFlowlabel = 26
+)
+
 // decodeDumpedRule reads one rule of either family, whatever its owner and
 // action, and reports false for a message too short to be one
 func decodeDumpedRule(message nlMessage) (DumpedRule, bool) {
@@ -98,7 +104,27 @@ func decodeDumpedRule(message nlMessage) (DumpedRule, bool) {
 			if len(value) == 1 {
 				rule.Protocol = value[0]
 			}
+		case unix.FRA_TUN_ID:
+			rule.Unread |= SelectorTunID
+		case unix.FRA_SUPPRESS_IFGROUP:
+			rule.Unread |= SelectorSuppressIfgroup
+		case unix.FRA_UID_RANGE:
+			rule.Unread |= SelectorUIDRange
+		case unix.FRA_IP_PROTO:
+			rule.Unread |= SelectorIPProto
+		case unix.FRA_SPORT_RANGE:
+			rule.Unread |= SelectorSport
+		case unix.FRA_DPORT_RANGE:
+			rule.Unread |= SelectorDport
+		case fraDSCP:
+			rule.Unread |= SelectorDSCP
+		case fraFlowlabel:
+			rule.Unread |= SelectorFlowlabel
 		}
+	}
+	// the header's tos byte, where the kernel puts a dscp given as a tos
+	if message.Data[3] != 0 {
+		rule.Unread |= SelectorDSCP
 	}
 	return rule, true
 }
