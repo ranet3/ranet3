@@ -334,6 +334,7 @@ func runDaemon(opts options) int {
 		node.SetReconcilerRules(routes.DerivedRules)
 		node.SetReconcilerLookups(func() []kernel.Lookup { return routes.Stats().Lookups })
 		node.SetReconcilerTable(routes.SetTable)
+		node.SetReconcilerNetwork(routes.NetworkChanged)
 	} else {
 		log.Printf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",
 			mesh.Name, mesh.QueueCount())

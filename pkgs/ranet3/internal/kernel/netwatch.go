@@ -20,9 +20,27 @@ type DefaultRoute struct {
 
 // NetworkFamily holds the default and the addresses the paths of one family off this host leave by
 // Addresses holds the global unicast addresses of the up interfaces outside the mesh, sorted and each once
+// Links holds each of those interfaces by name, sorted and each once, with its global unicast addresses of the family, and is empty on darwin
 type NetworkFamily struct {
 	Default   DefaultRoute
 	Addresses []netip.Addr
+	Links     []Link
+}
+
+// Link is one up interface outside the mesh, with the addresses of one family it carries
+// each prefix is an address under the length of the network it is on, sorted and each once
+// Peers is the far end of each point-to-point address, a network main routes by the link that holds none of its addresses, sorted and each once
+type Link struct {
+	Name     string
+	Prefixes []netip.Prefix
+	Peers    []netip.Prefix
+}
+
+// sameLinks compares two link lists, each sorted as the reader gives one
+func sameLinks(a, b []Link) bool {
+	return slices.EqualFunc(a, b, func(x, y Link) bool {
+		return x.Name == y.Name && slices.Equal(x.Prefixes, y.Prefixes) && slices.Equal(x.Peers, y.Peers)
+	})
 }
 
 // NetworkState is the host's network outside the mesh
@@ -41,10 +59,20 @@ type FamilyChange struct {
 	Family                      Family
 	DefaultBefore, DefaultAfter DefaultRoute
 	Added, Removed              []netip.Addr
+	LinksBefore, LinksAfter     []Link
 }
 
 // DefaultMoved reports whether the family's default route is another one now
 func (c FamilyChange) DefaultMoved() bool { return c.DefaultBefore != c.DefaultAfter }
+
+// PathMoved reports whether the default or the addresses moved, which can break or heal a session's path
+// a link that comes or goes, or a network's length, moves none of them
+func (c FamilyChange) PathMoved() bool {
+	return c.DefaultMoved() || len(c.Added) > 0 || len(c.Removed) > 0
+}
+
+// LinksMoved reports whether a link came, went, or moved a prefix or a far end
+func (c FamilyChange) LinksMoved() bool { return !sameLinks(c.LinksBefore, c.LinksAfter) }
 
 // Families is one entry for each family where anything moved
 func (c NetworkChange) Families() []FamilyChange {
@@ -60,7 +88,7 @@ func (c NetworkChange) Families() []FamilyChange {
 
 // diffFamily walks the two sorted address lists once
 func diffFamily(family Family, before, after NetworkFamily) (FamilyChange, bool) {
-	change := FamilyChange{Family: family, DefaultBefore: before.Default, DefaultAfter: after.Default}
+	change := FamilyChange{Family: family, DefaultBefore: before.Default, DefaultAfter: after.Default, LinksBefore: before.Links, LinksAfter: after.Links}
 	old, now := before.Addresses, after.Addresses
 	for len(old) > 0 || len(now) > 0 {
 		switch {
@@ -72,7 +100,7 @@ func diffFamily(family Family, before, after NetworkFamily) (FamilyChange, bool)
 			old, now = old[1:], now[1:]
 		}
 	}
-	return change, change.DefaultMoved() || len(change.Added) > 0 || len(change.Removed) > 0
+	return change, change.PathMoved() || change.LinksMoved()
 }
 
 // addressSet sorts addresses and keeps each once, the form diffFamily walks
@@ -81,7 +109,7 @@ func addressSet(addresses []netip.Addr) []netip.Addr {
 	return slices.Compact(addresses)
 }
 
-// NetworkWatch says when the host's network outside the mesh changed in a way that can break or heal a path
+// NetworkWatch says when the host's defaults, its addresses or its links outside the mesh changed
 // a notification starts a settle window, and the state read after it is signaled only where it differs from the last one signaled
 type NetworkWatch struct {
 	notify <-chan struct{}

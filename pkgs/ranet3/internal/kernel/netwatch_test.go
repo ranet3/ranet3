@@ -164,6 +164,45 @@ func TestNetworkWatchSignalsOnlyAMovedState(t *testing.T) {
 	quiet("the rest of the burst")
 }
 
+// a link that comes up with no address, a network's length that moves under the same address, and a far end that moves under the same local
+// address each signal though the default and the addresses stay
+// the reconciler derives rules from the links, so a change holding links alone reaches the reader
+func TestNetworkWatchSignalsALinkAlone(t *testing.T) {
+	uplink := NetworkFamily{Addresses: addrs("198.51.100.10"), Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/24")}}}}
+	first := NetworkState{IPv4: uplink}
+	bridged := first
+	bridged.IPv4.Links = append(slices.Clone(uplink.Links), Link{Name: "veth1"})
+	narrowed := first
+	narrowed.IPv4.Links = []Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/25")}}}
+	pointToPoint := first
+	pointToPoint.IPv4.Links = []Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/32")}, Peers: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/28")}}}
+	farEndMoved := first
+	farEndMoved.IPv4.Links = []Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/32")}, Peers: []netip.Prefix{netip.MustParsePrefix("203.0.113.16/28")}}}
+	host := &scriptedHost{state: first}
+	notify := make(chan struct{}, 1)
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	for _, step := range []struct {
+		name  string
+		state NetworkState
+	}{{"a link with no address", bridged}, {"the link gone", first}, {"a network's length", narrowed}, {"a point-to-point far end", pointToPoint}, {"the far end alone", farEndMoved}} {
+		host.set(step.state)
+		notify <- struct{}{}
+		select {
+		case change := <-w.Changes():
+			moved := change.Families()
+			if len(moved) != 1 || moved[0].PathMoved() || !moved[0].LinksMoved() || !sameLinks(moved[0].LinksAfter, step.state.IPv4.Links) {
+				t.Errorf("%s signaled %+v", step.name, moved)
+			}
+		case <-time.After(quietWindow):
+			t.Fatalf("%s signaled nothing", step.name)
+		}
+	}
+}
+
 // a watch closes once however often it is asked, and releases what the platform opened
 func TestNetworkWatchClosesOnce(t *testing.T) {
 	released := 0

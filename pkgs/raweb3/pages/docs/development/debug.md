@@ -409,13 +409,14 @@ Each kind carries these attributes:
 and `border.pass` only when the step failed, and on a `control.verb` under a
 session the verb missed it is the reason the answer gives. The `trigger` of a
 `kernel.pass` is `start`, `sweep`, `retry`, `grace`, `disable`, `enable`,
-`reload`, `mesh` or `kernel`. The `trigger` of an `egress.pass` is `start`,
-`sweep`, `retry`, `disable`, `enable`, `changed` when another writer added,
-changed or deleted part of its tables, or `missed` when the daemon lost
-nf_tables notifications to an overflow or could not read one, whoever's tables
-they were about. The `trigger` of a `border.pass` is `start`, `sweep`, `retry`,
-`reload`, `changed` when another writer added, changed or deleted part of its
-table, or `missed` as for an `egress.pass`.
+`reload`, `network` when the network watch delivered a change, `mesh` or
+`kernel`. The `trigger` of an `egress.pass` is `start`, `sweep`, `retry`,
+`disable`, `enable`, `changed` when another writer added, changed or deleted
+part of its tables, or `missed` when the daemon lost nf_tables notifications to
+an overflow or could not read one, whoever's tables they were about. The
+`trigger` of a `border.pass` is `start`, `sweep`, `retry`, `reload`, `changed`
+when another writer added, changed or deleted part of its table, or `missed` as
+for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an

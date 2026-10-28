@@ -206,6 +206,9 @@ type Runtime struct {
 	// Events records every pass that changed the kernel, skipped a route it had not skipped before, followed a reload or failed
 	// nil records nothing
 	Events *events.Bus
+	// Network reads the host's network outside the mesh as the network watch last read it, which a pass in exit mode derives its rules from
+	// NetworkChanged wakes the loop for it, and nil reads the zero state
+	Network func() NetworkState
 }
 
 // Assigned is every address the reconciler puts on the device: the ones
@@ -659,6 +662,8 @@ type Reconciler struct {
 	// next is the capability SetTable accepted last, which reload wakes the loop to take
 	next   atomic.Pointer[accepted]
 	reload chan struct{}
+	// network carries NetworkChanged to the loop
+	network chan struct{}
 	// inForce is table as another goroutine reads it, stored whole when the loop takes a capability
 	inForce atomic.Pointer[Table]
 	// reloaded says the pass under way follows a capability the loop took, and belongs to that goroutine
@@ -821,6 +826,7 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 		now:         time.Now,
 		wake:        make(chan struct{}, 1),
 		reload:      make(chan struct{}, 1),
+		network:     make(chan struct{}, 1),
 	}
 	r.enabled.Store(true)
 	r.inForce.Store(&t)
@@ -906,6 +912,15 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	default:
 	}
 	return nil
+}
+
+// NetworkChanged wakes the loop for a pass over the host's network as Runtime.Network reads it now
+// the watch has already let the change settle, so the pass runs at once
+func (r *Reconciler) NetworkChanged() {
+	select {
+	case r.network <- struct{}{}:
+	default:
+	}
 }
 
 // adopt installs the capability SetTable accepted last, and reports whether there was one
@@ -1021,6 +1036,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			if r.adopt() {
 				ticker.Reset(r.table.Reconcile.Duration())
 			}
+		case <-r.network:
+			r.trigger = "network"
 		case <-changed:
 			r.trigger = "mesh"
 			r.settle(ctx, changed, notify)

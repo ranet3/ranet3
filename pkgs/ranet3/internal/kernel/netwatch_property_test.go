@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"maps"
 	"math"
 	"net/netip"
 	"slices"
@@ -51,6 +52,85 @@ func TestFamilyDiffAgreesWithASetModel(t *testing.T) {
 			for after := range uint8(len(defaultPool)) {
 				agreesWithSets(ht, members, before, members, after)
 			}
+		}
+	})
+}
+
+// linkPool is the links a drawn family takes a subset of, in the order the reader sorts them
+var linkPool = []string{"br-1", "docker0", "eth0", "lo"}
+
+// linkPrefixes holds the prefixes a drawn link carries, none, an address under one of two lengths, or two addresses
+var linkPrefixes = [][]netip.Prefix{
+	nil,
+	{netip.MustParsePrefix("198.51.100.7/24")},
+	{netip.MustParsePrefix("198.51.100.7/25")},
+	{netip.MustParsePrefix("198.51.100.7/24"), netip.MustParsePrefix("203.0.113.9/32")},
+}
+
+// linkPeers holds the point-to-point far ends a drawn link carries, none, one of two, or two
+var linkPeers = [][]netip.Prefix{
+	nil,
+	{netip.MustParsePrefix("203.0.113.16/28")},
+	{netip.MustParsePrefix("203.0.113.32/28")},
+	{netip.MustParsePrefix("203.0.113.16/28"), netip.MustParsePrefix("203.0.113.48/28")},
+}
+
+// drawnLink is a drawn link as the model holds it
+type drawnLink struct{ prefixes, peers []netip.Prefix }
+
+// drawnLinks is the links one byte of members, two bits a link of carried and two bits a link of peered select, with the model's map of them
+func drawnLinks(members, carried, peered uint8) ([]Link, map[string]drawnLink) {
+	model := make(map[string]drawnLink)
+	var out []Link
+	for i, name := range linkPool {
+		if members&(1<<i) == 0 {
+			continue
+		}
+		prefixes, peers := linkPrefixes[(carried>>(2*i))&3], linkPeers[(peered>>(2*i))&3]
+		model[name] = drawnLink{prefixes, peers}
+		out = append(out, Link{Name: name, Prefixes: prefixes, Peers: peers})
+	}
+	return out, model
+}
+
+// a family's links move exactly when a link came or went or carries other prefixes or other far ends, and its path exactly when its default or
+// its addresses moved
+// the diff reports a move of either, and carries the links of both sides
+// the links are drawn apart from the default and the addresses, so a link moving alone, a link's length moving alone, a far end moving alone and
+// the path moving alone are each met
+func TestFamilyDiffReportsLinksApartFromThePath(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		members := hegel.Draw(ht, pbt.Spanning[uint8](0, 1<<len(linkPool)-1))
+		flip := hegel.Draw(ht, pbt.Spanning[uint8](0, 1<<len(linkPool)-1))
+		carried := hegel.Draw(ht, pbt.Spanning[uint8](0, math.MaxUint8))
+		recarried := hegel.Draw(ht, pbt.Spanning[uint8](0, math.MaxUint8))
+		peered := hegel.Draw(ht, pbt.Spanning[uint8](0, math.MaxUint8))
+		repeered := hegel.Draw(ht, pbt.Spanning[uint8](0, math.MaxUint8))
+		addresses := hegel.Draw(ht, pbt.Spanning[uint8](0, math.MaxUint8))
+		moveAddresses := hegel.Draw(ht, pbt.Spanning[uint8](0, 1)) == 1
+		was := hegel.Draw(ht, pbt.Spanning[uint8](0, uint8(len(defaultPool)-1)))
+		is := hegel.Draw(ht, pbt.Spanning[uint8](0, uint8(len(defaultPool)-1)))
+
+		before, _ := drawnFamily(addresses, was)
+		after, _ := drawnFamily(addresses, is)
+		if moveAddresses {
+			after, _ = drawnFamily(^addresses, is)
+		}
+		var had, has map[string]drawnLink
+		before.Links, had = drawnLinks(members, carried, peered)
+		after.Links, has = drawnLinks(members^flip, recarried, repeered)
+
+		change, moved := diffFamily(FamilyIPv4, before, after)
+		linksMoved := !maps.EqualFunc(had, has, func(was, is drawnLink) bool {
+			return slices.Equal(was.prefixes, is.prefixes) && slices.Equal(was.peers, is.peers)
+		})
+		pathMoved := before.Default != after.Default || !slices.Equal(before.Addresses, after.Addresses)
+		if change.LinksMoved() != linksMoved || change.PathMoved() != pathMoved || moved != (linksMoved || pathMoved) {
+			ht.Fatalf("from %+v to %+v the diff moved %v, its links %v and its path %v, want links %v and path %v",
+				before, after, moved, change.LinksMoved(), change.PathMoved(), linksMoved, pathMoved)
+		}
+		if !sameLinks(change.LinksBefore, before.Links) || !sameLinks(change.LinksAfter, after.Links) {
+			ht.Fatalf("the diff carries the links %v to %v, want %v to %v", change.LinksBefore, change.LinksAfter, before.Links, after.Links)
 		}
 	})
 }

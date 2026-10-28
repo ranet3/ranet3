@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -97,7 +99,8 @@ func (h hostReader) read() (NetworkState, error) {
 		if err != nil && !errors.Is(err, unix.ENOENT) {
 			return NetworkState{}, fmt.Errorf("kernel: dump the main table: %w", err)
 		}
-		family.out.Addresses = upAddresses(addresses, family.af, up)
+		family.out.Links = upAddresses(addresses, family.af, up)
+		family.out.Addresses = linkAddresses(family.out.Links)
 		family.out.Default = upDefault(routes, family.af, up)
 	}
 	return state, nil
@@ -118,16 +121,19 @@ func upLinks(replies []nlMessage, mesh uint32) map[uint32]string {
 	return up
 }
 
-// upAddresses is every global unicast address of one family an address dump holds on a link in up
+// upAddresses is each link in up with every global unicast address of one family an address dump holds on it, under the length ifa_prefixlen gives,
+// apart from an IPv4 point-to-point address, held as a host with its far end's network in Peers
 // an address still proving itself unique is not one a socket can send from yet
-func upAddresses(replies []nlMessage, family uint8, up map[uint32]string) []netip.Addr {
-	var out []netip.Addr
+func upAddresses(replies []nlMessage, family uint8, up map[uint32]string) []Link {
+	held := make(map[uint32][]netip.Prefix, len(up))
+	peers := make(map[uint32][]netip.Prefix)
 	for _, reply := range replies {
 		// a kernel without one family answers its dump with the other's entries
 		if reply.Kind != unix.RTM_NEWADDR || len(reply.Data) < unix.SizeofIfAddrmsg || reply.Data[0] != family {
 			continue
 		}
-		if _, ok := up[binary.NativeEndian.Uint32(reply.Data[4:])]; !ok {
+		index := binary.NativeEndian.Uint32(reply.Data[4:])
+		if _, ok := up[index]; !ok {
 			continue
 		}
 		flags := uint32(reply.Data[2])
@@ -148,8 +154,37 @@ func upAddresses(replies []nlMessage, family uint8, up map[uint32]string) []neti
 		if !local.IsValid() {
 			local = address
 		}
-		if local.IsGlobalUnicast() && flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) == 0 {
-			out = append(out, local)
+		if !local.IsGlobalUnicast() || flags&(unix.IFA_F_TENTATIVE|unix.IFA_F_DADFAILED) != 0 {
+			continue
+		}
+		bits := int(reply.Data[1])
+		if address.IsValid() && address != local {
+			// IPv4 routes the far end's network under ifa_prefixlen and holds the local address alone, IPv6 the local address's network and the far end alone
+			peer := netip.PrefixFrom(address, address.BitLen())
+			if address.Is4() {
+				peer, bits = netip.PrefixFrom(address, bits).Masked(), local.BitLen()
+			}
+			peers[index] = append(peers[index], peer)
+		}
+		held[index] = append(held[index], netip.PrefixFrom(local, bits))
+	}
+	out := make([]Link, 0, len(up))
+	for index, name := range up {
+		prefixes, far := held[index], peers[index]
+		slices.SortFunc(prefixes, comparePrefixes)
+		slices.SortFunc(far, comparePrefixes)
+		out = append(out, Link{Name: name, Prefixes: slices.Compact(prefixes), Peers: slices.Compact(far)})
+	}
+	slices.SortFunc(out, func(a, b Link) int { return strings.Compare(a.Name, b.Name) })
+	return out
+}
+
+// linkAddresses is every address links carry, in the form diffFamily walks
+func linkAddresses(links []Link) []netip.Addr {
+	var out []netip.Addr
+	for _, link := range links {
+		for _, prefix := range link.Prefixes {
+			out = append(out, prefix.Addr())
 		}
 	}
 	return addressSet(out)
