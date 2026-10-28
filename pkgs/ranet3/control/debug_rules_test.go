@@ -110,6 +110,55 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	golden(t, "rules-undumped.txt", []byte(out.String()))
 }
 
+// fallbackFixture is the switch's table holding, its drop having counted
+// twelve packets, nothing forwarded and no own prefix of IPv6
+func fallbackFixture() *FallbackTable {
+	return &FallbackTable{
+		Where: "nftables table inet ranet3_fallback chain fallback", Hook: "postrouting", Priority: 2147483646,
+		State: "holding", Held: true,
+		Rules: []FallbackTableRule{
+			{Spec: "oifname { lo, ranet3 } accept"},
+			{Spec: "meta mark 0x00000072 accept"},
+			{Spec: "meta iif != 0 iifname != @forwarded accept"},
+			{Spec: "ip daddr @lan4 accept"},
+			{Spec: "ip6 daddr @lan6 accept"},
+			{Spec: "ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept"},
+			{Spec: "ip6 daddr { fe80::/10, ff00::/8 } accept"},
+			{Spec: "ip daddr @own4 accept"},
+			{Spec: "ip6 daddr @own6 accept"},
+			{Spec: "ct direction reply ct protocol tcp ct original proto-dst { 22 } accept"},
+			{Spec: "counter drop", Packets: 12, Bytes: 720},
+		},
+		Sets: []FallbackTableSet{
+			{Name: "forwarded"},
+			{Name: "lan4", Elements: []string{"198.51.100.0/25", "203.0.113.64-203.0.113.70"}},
+			{Name: "lan6", Elements: []string{"2001:db8:a::/64"}},
+			{Name: "own4", Elements: []string{"203.0.113.0/26"}},
+			{Name: "own6"},
+		},
+	}
+}
+
+// The switch's table renders after the border's, holding with its lines and
+// sets, not held, and unread
+func TestRulesRenderTheFallbackTable(t *testing.T) {
+	info := rulesFixture()
+	info.Fallback = fallbackFixture()
+	var out strings.Builder
+	RenderRules(&out, info)
+	golden(t, "rules-fallback.txt", []byte(out.String()))
+	goldenJSON(t, "rules-fallback.json", info.Fallback)
+
+	gone := fallbackFixture()
+	gone.State, gone.Reason, gone.Held, gone.Rules, gone.Sets = "not holding", "the table is missing", false, nil, nil
+	unread := fallbackFixture()
+	unread.Err, unread.Rules, unread.Sets = "nftables: dump tables: operation not permitted", nil, nil
+	out.Reset()
+	RenderRules(&out, RulesInfo{Policy: info.Policy[:1], Fallback: gone})
+	RenderRules(&out, RulesInfo{Policy: info.Policy[:1], Fallback: unread})
+	golden(t, "rules-fallback-unheld.txt", []byte(out.String()))
+}
+
 // rulesSource serves the rules view
 type rulesSource struct{ fakeSource }
 

@@ -1,0 +1,93 @@
+{
+  "where": "nftables table inet ranet3_fallback chain fallback",
+  "hook": "postrouting",
+  "priority": 2147483646,
+  "state": "holding",
+  "held": true,
+  "rules": [
+    {
+      "spec": "oifname { lo, ranet3 } accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "meta mark 0x00000072 accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "meta iif != 0 iifname != @forwarded accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "ip daddr @lan4 accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "ip6 daddr @lan6 accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "ip6 daddr { fe80::/10, ff00::/8 } accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "ip daddr @own4 accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "ip6 daddr @own6 accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "ct direction reply ct protocol tcp ct original proto-dst { 22 } accept",
+      "packets": 0,
+      "bytes": 0
+    },
+    {
+      "spec": "counter drop",
+      "packets": 12,
+      "bytes": 720
+    }
+  ],
+  "sets": [
+    {
+      "name": "forwarded",
+      "elements": null
+    },
+    {
+      "name": "lan4",
+      "elements": [
+        "198.51.100.0/25",
+        "203.0.113.64-203.0.113.70"
+      ]
+    },
+    {
+      "name": "lan6",
+      "elements": [
+        "2001:db8:a::/64"
+      ]
+    },
+    {
+      "name": "own4",
+      "elements": [
+        "203.0.113.0/26"
+      ]
+    },
+    {
+      "name": "own6",
+      "elements": null
+    }
+  ]
+}

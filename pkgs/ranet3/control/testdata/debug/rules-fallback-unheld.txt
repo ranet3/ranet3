@@ -1,0 +1,16 @@
+Policy rules, ipv4
+  Priority  Selects  Table  Owner
+  0         all      local  kernel
+Wanted and missing: none
+Lookups: none
+
+Fallback table, nftables table inet ranet3_fallback chain fallback, postrouting at priority 2147483646, not holding, the table is missing
+  not held
+Policy rules, ipv4
+  Priority  Selects  Table  Owner
+  0         all      local  kernel
+Wanted and missing: none
+Lookups: none
+
+Fallback table, nftables table inet ranet3_fallback chain fallback, postrouting at priority 2147483646, holding
+  read now: nftables: dump tables: operation not permitted

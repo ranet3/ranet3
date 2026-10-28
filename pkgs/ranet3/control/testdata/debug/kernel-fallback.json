@@ -1,0 +1,29 @@
+{
+  "enabled": true,
+  "where": "table 200 protocol 155",
+  "table": 200,
+  "protocol": 155,
+  "installed": 4,
+  "skipped": 0,
+  "added": 0,
+  "removed": 0,
+  "exit": {
+    "fallback": {
+      "state": "holding",
+      "dropped": 12,
+      "dropped_bytes": 720,
+      "captured": [
+        "198.0.0.0/7"
+      ],
+      "unresolved": [
+        "gateway.example.org"
+      ],
+      "resolvers": [
+        {
+          "link": "eth0",
+          "address": "203.0.113.53"
+        }
+      ]
+    }
+  }
+}

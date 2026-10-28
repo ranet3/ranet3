@@ -227,6 +227,10 @@ type Runtime struct {
 	// Network reads the host's network outside the mesh as the network watch last read it, which a pass in exit mode derives its rules from
 	// NetworkChanged wakes the loop for it, and nil reads the zero state
 	Network func() NetworkState
+	// Resolvers reads the DNS servers systemd-resolved queries through one
+	// link each, which a pass under fallback = "none" names where they lie
+	// beyond the LAN, and nil reads none
+	Resolvers func() ([]LinkResolver, error)
 }
 
 // Assigned is every address the reconciler puts on the device: the ones
@@ -723,6 +727,11 @@ type Reconciler struct {
 	// last that asked for it. Both belong to the pass's goroutine.
 	fallbackFault string
 	fallbackClear bool
+	// fallbackState is the switch's state the last pass reported, empty where
+	// none asked for it, and resolversErr the last error reading the DNS
+	// servers, both the pass's goroutine's
+	fallbackState FallbackState
+	resolversErr  string
 }
 
 // Stats is one finished route pass. Installed counts the routes the kernel
@@ -1260,9 +1269,12 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], held []ne
 	if exit.fallback {
 		exit.own = r.thrown(snapshot)
 	}
-	holding, fallbackErr := r.applyFallback(exit)
+	fallback, fallbackErr := r.applyFallback(exit)
+	if status != nil {
+		status.Fallback = fallback
+	}
 	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
-	if exit.on && exit.fallback && !holding {
+	if exit.on && exit.fallback && (fallback == nil || fallback.State == FallbackNotHolding) {
 		// without the table the host's own lookups from the uplink's addresses
 		// and networks meet 5440 and 5450 rather than main, but for a route of
 		// main longer than /0, which 5410 still takes
@@ -1927,6 +1939,7 @@ func (r *Reconciler) withdraw() error {
 			r.fallbackClear = true
 		}
 		r.reportFallback("")
+		r.reportFallbackState(nil)
 	}
 	// Every count is of something that left, so a line reporting nothing
 	// removed is a shutdown that removed nothing.

@@ -246,6 +246,8 @@ type ExitStatus struct {
 	// Unaddressed is each family the tun carries no overlay address of, which
 	// runs mode off's rules
 	Unaddressed []Family
+	// Fallback is the switch fallback = "none" asks for, nil under "uplink"
+	Fallback *FallbackStatus
 }
 
 // exitPass is mode 2 as the pass under way derives it, from the network as

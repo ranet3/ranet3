@@ -5,6 +5,8 @@
 
 package kernel
 
+import "time"
+
 // the values the netlink backend chooses, apart from constants.go because no other platform reads them
 
 const (
@@ -18,4 +20,7 @@ const (
 	// monitorReadSize is one read of the route monitor, in bytes
 	// it is larger than any notification datagram the kernel sends
 	monitorReadSize = 64 << 10
+	// resolvedWait bounds one question to systemd-resolved, which answers from
+	// its own state without a query of its own
+	resolvedWait = time.Second
 )

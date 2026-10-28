@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/netip"
 	"os/exec"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -108,8 +109,8 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	if mine := run("list", "table", "inet", FallbackTable); mine != theirs {
 		t.Errorf("the platform's table lists as\n%s\nwhere nft's lists as\n%s", mine, theirs)
 	}
-	if fault, err := plat.readFallback(fallbackSample); fault != "" || err != nil {
-		t.Errorf("the table reads back with %q (err %v)", fault, err)
+	if read, err := plat.readFallback(fallbackSample); read.fault != "" || err != nil {
+		t.Errorf("the table reads back with %q (err %v)", read.fault, err)
 	}
 
 	conn, err := dialNetlink()
@@ -139,25 +140,44 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	if err := send("198.51.100.5"); err != nil {
 		t.Errorf("a datagram to the LAN was refused: %v", err)
 	}
+	// the refused datagram is 29 bytes, its IPv4 header and UDP's and one byte
+	if read, err := plat.readFallback(fallbackSample); read.dropped != 1 || read.bytes != 29 || err != nil {
+		t.Errorf("the drop counted %d packets and %d bytes (err %v), want the one refused datagram", read.dropped, read.bytes, err)
+	}
+	debug, err := ReadFallback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets := map[string][]string{}
+	for _, set := range debug.Sets {
+		sets[set.Name] = set.Elements
+	}
+	if !debug.Held || len(debug.Rules) != 12 {
+		t.Fatalf("the debug read finds %+v, want the table's twelve lines", debug)
+	}
+	if last := debug.Rules[11]; last.Spec != fallbackDrop || last.Packets != 1 ||
+		!reflect.DeepEqual(sets, map[string][]string{"forwarded": {"ranetfw0"}, "lan4": {"198.51.100.0/25"}, "lan6": {"2001:db8:a::/64"}, "own4": {"203.0.113.0/24"}, "own6": {}}) {
+		t.Errorf("the debug read finds %+v", debug)
+	}
 
 	for _, change := range [][]string{{"flush", "set", "inet", FallbackTable, "lan4"}, {"flush", "chain", "inet", FallbackTable, "fallback"}} {
 		run(change...)
-		if fault, err := plat.readFallback(fallbackSample); fault == "" || err != nil {
-			t.Errorf("after nft %s the table reads back with %q (err %v), want a fault", strings.Join(change, " "), fault, err)
+		if read, err := plat.readFallback(fallbackSample); read.fault == "" || err != nil {
+			t.Errorf("after nft %s the table reads back with %q (err %v), want a fault", strings.Join(change, " "), read.fault, err)
 		}
 		if err := plat.writeFallback(fallbackSample); err != nil {
 			t.Fatal(err)
 		}
-		if fault, err := plat.readFallback(fallbackSample); fault != "" || err != nil {
-			t.Errorf("after nft %s and a write the table reads back with %q (err %v)", strings.Join(change, " "), fault, err)
+		if read, err := plat.readFallback(fallbackSample); read.fault != "" || err != nil {
+			t.Errorf("after nft %s and a write the table reads back with %q (err %v)", strings.Join(change, " "), read.fault, err)
 		}
 	}
 
 	if err := plat.deleteFallback(); err != nil {
 		t.Fatal(err)
 	}
-	if fault, err := plat.readFallback(fallbackSample); fault != "the table is missing" || err != nil {
-		t.Errorf("after the delete the table reads back with %q (err %v)", fault, err)
+	if read, err := plat.readFallback(fallbackSample); read.fault != "the table is missing" || err != nil {
+		t.Errorf("after the delete the table reads back with %q (err %v)", read.fault, err)
 	}
 	if err := send("192.0.2.200"); err != nil {
 		t.Errorf("with the table gone a datagram beyond the LAN was refused: %v", err)
@@ -220,11 +240,11 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	}
 	t.Cleanup(func() { _ = reader.Close() })
 	fault := func() string {
-		fault, err := fallbackFault(reader, sets)
+		read, err := fallbackFault(reader, sets)
 		if err != nil {
 			t.Fatalf("read the table back: %v", err)
 		}
-		return fault
+		return read.fault
 	}
 	uplinkSources := func() int {
 		replies, err := conn.execute(unix.RTM_GETRULE, unix.NLM_F_DUMP, make([]byte, sizeofFibRuleHdr))

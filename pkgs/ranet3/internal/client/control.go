@@ -197,6 +197,14 @@ func (c *Client) kernel() control.KernelStatus {
 			status.Taken = append(status.Taken, control.KernelTaken{Family: string(lookup.Family), Prefix: lookup.Prefix.String(), Address: lookup.Address.String(), Answer: lookup.Answer})
 		}
 	}
+	if status.Exit != nil && status.Exit.Fallback != nil {
+		// the reconciler's status reads no endpoint name, and the dialers do
+		fallback := *status.Exit.Fallback
+		fallback.Unresolved = c.unresolved.list()
+		exit := *status.Exit
+		exit.Fallback = &fallback
+		status.Exit = &exit
+	}
 	return status
 }
 

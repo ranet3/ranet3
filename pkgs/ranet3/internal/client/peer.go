@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
@@ -123,8 +125,17 @@ func (f *repeatedFailure) alreadySaid(err error) bool {
 	return true
 }
 
-// resolveEndpoint returns the address it resolved with the endpoint, since resolving a name again costs a resolver round trip
-func resolveEndpoint(ctx context.Context, x *registry.Index, overlay []schema.Prefix, peer identity.Identity, family string) (registry.Target, net.IP, error) {
+// resolveEndpoint returns the address it resolved with the endpoint, since
+// resolving a name again costs a resolver round trip, and notes in failed
+// whether each name it looked up failed
+func resolveEndpoint(ctx context.Context, x *registry.Index, overlay []schema.Prefix, peer identity.Identity, family string, failed *names) (registry.Target, net.IP, error) {
+	resolve := func(target registry.Target) (net.IP, error) {
+		address, err := target.ResolveRemote(ctx, overlay)
+		if target.Address != nil && net.ParseIP(*target.Address) == nil && ctx.Err() == nil {
+			failed.note(*target.Address, err != nil)
+		}
+		return address, err
+	}
 	targets := x.Targets(peer)
 	if peer != peer.Node() {
 		if len(targets) == 0 {
@@ -133,7 +144,7 @@ func resolveEndpoint(ctx context.Context, x *registry.Index, overlay []schema.Pr
 		if targets[0].AddressFamily != family {
 			return registry.Target{}, nil, fmt.Errorf("endpoint %s is %s, want %s", peer, targets[0].AddressFamily, family)
 		}
-		address, err := targets[0].ResolveRemote(ctx, overlay)
+		address, err := resolve(targets[0])
 		if err != nil {
 			return registry.Target{}, nil, err
 		}
@@ -143,11 +154,38 @@ func resolveEndpoint(ctx context.Context, x *registry.Index, overlay []schema.Pr
 		if target.AddressFamily != family || !target.Dialable() {
 			continue
 		}
-		if address, err := target.ResolveRemote(ctx, overlay); err == nil {
+		if address, err := resolve(target); err == nil {
 			return target, address, nil
 		}
 	}
 	return registry.Target{}, nil, fmt.Errorf("no endpoint currently resolves to an address")
+}
+
+// names is a set of endpoint names, safe for concurrent use
+type names struct {
+	mu  sync.Mutex
+	set map[string]bool
+}
+
+// note puts name in the set where in is true and takes it out where it is false
+func (n *names) note(name string, in bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !in {
+		delete(n.set, name)
+		return
+	}
+	if n.set == nil {
+		n.set = make(map[string]bool)
+	}
+	n.set[name] = true
+}
+
+// list is the set's names in order
+func (n *names) list() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return slices.Sorted(maps.Keys(n.set))
 }
 
 // connectPeer dials d once and serves the session until it ends
@@ -164,7 +202,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 	}()
 	cfg, x := c.config(), c.index()
 	crypto := cfg.Crypto()
-	ep, remoteIP, err := resolveEndpoint(ctx, x, cfg.Overlay(), d.peer, d.local.Family)
+	ep, remoteIP, err := resolveEndpoint(ctx, x, cfg.Overlay(), d.peer, d.local.Family, &c.unresolved)
 	if err != nil {
 		return err
 	}

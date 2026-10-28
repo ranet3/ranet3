@@ -129,6 +129,10 @@ type Client struct {
 	reconcilerRules atomic.Pointer[func() []kernel.DumpedRule]
 	// reconcilerLookups reads the lookups the route reconciler's last pass whose batch answered asked, supplied as reconcilerRules is
 	reconcilerLookups atomic.Pointer[func() []kernel.Lookup]
+	// fallbackRead reads the table ranet3_fallback, and nil means kernel.ReadFallback
+	fallbackRead func() (kernel.FallbackDebug, error)
+	// unresolved is each endpoint name whose last lookup failed
+	unresolved names
 
 	// running is the control socket's write path state: whether each named
 	// subsystem is acting. It is the record rather than the mechanism, since
@@ -560,6 +564,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		Host:          c.host,
 		Events:        c.events,
 		Network:       c.networkState,
+		Resolvers:     kernel.ResolvedLinkServers,
 	}
 }
 
