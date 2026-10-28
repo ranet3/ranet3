@@ -65,8 +65,11 @@ const (
 	// classRead is a snapshot without key material, or the event stream
 	// status and sessions already disclose that kind of thing to the socket's group
 	classRead debugClass = iota
-	// classRoot is profiles, goroutine dumps, logs, captures, the trust document and every action
+	// classRoot is profiles, goroutine dumps, logs, the trust document and every action
 	classRoot
+	// classPlaintext shows the packets the node handles, other nodes' traffic among them, so uid 0 alone may read it
+	// --debug-access group does not open it
+	classPlaintext
 )
 
 // debugRoute is one debug path
@@ -141,8 +144,11 @@ func (d *debugServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, why, http.StatusForbidden)
 		return
 	}
-	if route.class == classRoot {
+	switch route.class {
+	case classRoot:
 		slog.Info("control debug call", "path", r.URL.Path, "uid", caller.UID, "pid", caller.PID)
+	case classPlaintext:
+		slog.Info("control debug call", "path", r.URL.Path, "uid", caller.UID, "pid", caller.PID, "query", r.URL.RawQuery)
 	}
 	route.serve(d, w, r)
 }
@@ -161,7 +167,9 @@ func refusal(access DebugAccess, class debugClass, caller Caller, known bool, eu
 		return ""
 	case !known:
 		return "this debug path is for a caller the socket can name, and " + who
-	case access == DebugGroup || caller.UID == 0 || caller.UID == euid:
+	case class == classPlaintext && caller.UID != 0:
+		return "this debug path reads packets other nodes sent, which is for uid 0 alone under every --debug-access, and " + who
+	case class == classPlaintext || access == DebugGroup || caller.UID == 0 || caller.UID == euid:
 		return ""
 	}
 	return fmt.Sprintf("this debug path is for uid 0 or the daemon's own uid %d under --debug-access root, and %s", euid, who)

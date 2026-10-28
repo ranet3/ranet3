@@ -5,6 +5,7 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -25,20 +26,23 @@ type probeView struct {
 }
 
 type (
-	probeReader interface{ ProbeRead() probeView }
-	probeRooter interface{ ProbeRoot() probeView }
-	probeAbsent interface{ ProbeAbsent() probeView }
+	probeReader    interface{ ProbeRead() probeView }
+	probeRooter    interface{ ProbeRoot() probeView }
+	probePlaintext interface{ ProbePlaintext() probeView }
+	probeAbsent    interface{ ProbeAbsent() probeView }
 )
 
 const (
-	pathProbeRead   = PathDebug + "probe-read"
-	pathProbeRoot   = PathDebug + "probe-root"
-	pathProbeAbsent = PathDebug + "probe-absent"
+	pathProbeRead      = PathDebug + "probe-read"
+	pathProbeRoot      = PathDebug + "probe-root"
+	pathProbePlaintext = PathDebug + "probe-plaintext"
+	pathProbeAbsent    = PathDebug + "probe-absent"
 )
 
 func init() {
 	debugRead(pathProbeRead, classRead, "probe read", probeReader.ProbeRead)
 	debugRead(pathProbeRoot, classRoot, "probe root", probeRooter.ProbeRoot)
+	debugRead(pathProbePlaintext, classPlaintext, "probe plaintext", probePlaintext.ProbePlaintext)
 	debugRead(pathProbeAbsent, classRead, "probe absent", probeAbsent.ProbeAbsent)
 }
 
@@ -51,6 +55,8 @@ type debugSource struct {
 func (debugSource) ProbeRead() probeView { return probeView{Name: "read"} }
 
 func (debugSource) ProbeRoot() probeView { return probeView{Name: "root"} }
+
+func (debugSource) ProbePlaintext() probeView { return probeView{Name: "plaintext"} }
 
 func (s debugSource) DebugAccess() DebugAccess { return s.access }
 
@@ -161,6 +167,45 @@ func TestDebugRefusesTheRootClassWithoutCredentials(t *testing.T) {
 		}
 		if status, body := get(t, server.Client(), server.URL+pathProbeRead); status != http.StatusOK {
 			t.Errorf("under %s a connection without credentials was refused a read with %d %q", access, status, body)
+		}
+	}
+}
+
+// the plaintext class takes uid 0 alone under root and group, the daemon's own uid and a caller group lets onto the root class refused by their uid
+// a call it takes is logged with its query, which holds the filter and the payload length asked for
+func TestDebugPlaintextTakesUIDZeroAlone(t *testing.T) {
+	logged := &lockedBuffer{}
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(logged, nil)))
+	const euid = 4242
+	for _, access := range []DebugAccess{DebugRoot, DebugGroup} {
+		for _, c := range []struct {
+			uid      uint32
+			admitted bool
+		}{{0, true}, {euid, false}, {77, false}} {
+			request := httptest.NewRequest(http.MethodGet, pathProbePlaintext+"?dst=192.0.2.0/24&payload=64", nil)
+			request = request.WithContext(withCaller(request.Context(), Caller{UID: c.uid, PID: 99}))
+			answer := httptest.NewRecorder()
+			server := &debugServer{src: debugSource{access: access}, access: access, euid: euid}
+			server.ServeHTTP(answer, request)
+			if got := answer.Code == http.StatusOK; got != c.admitted {
+				t.Errorf("under %s uid %d of a daemon at uid %d answered %d %q, want admitted %v", access, c.uid, euid, answer.Code, answer.Body, c.admitted)
+			}
+			if !c.admitted && !strings.Contains(answer.Body.String(), fmt.Sprintf("uid %d", c.uid)) {
+				t.Errorf("the refusal of uid %d reads %q, which does not name it", c.uid, answer.Body)
+			}
+		}
+	}
+	for _, want := range []string{"path=" + pathProbePlaintext, "uid=0", "pid=99", "dst=192.0.2.0/24&payload=64"} {
+		if !strings.Contains(logged.String(), want) {
+			t.Errorf("the plaintext call logged %q, want it to carry %q", logged.String(), want)
+		}
+	}
+	for _, access := range []DebugAccess{DebugRoot, DebugGroup} {
+		answer := httptest.NewRecorder()
+		server := &debugServer{src: debugSource{access: access}, access: access, euid: euid}
+		server.ServeHTTP(answer, httptest.NewRequest(http.MethodGet, pathProbePlaintext, nil))
+		if answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "no credentials") {
+			t.Errorf("under %s a connection without credentials reached the plaintext class with %d %q", access, answer.Code, answer.Body)
 		}
 	}
 }
