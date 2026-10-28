@@ -1080,7 +1080,7 @@ func TestScheduleWithNoIntervalPutBackHoldsNothingForTheLoop(t *testing.T) {
 	s := &Session{}
 	far := time.Now().Add(time.Hour)
 	t.Run("a forced delay still running", func(t *testing.T) {
-		schedule := retryOnly("Child SA", "child", func() error { return nil })
+		schedule := retryOnly("Child SA", "child", func() error { return nil }, func() any { return s.currentChildGeneration() })
 		schedule.forced = true
 		schedule.reset(forcedRetry)
 		if err := s.rearm(schedule); err != nil {
@@ -1098,7 +1098,7 @@ func TestScheduleWithNoIntervalPutBackHoldsNothingForTheLoop(t *testing.T) {
 		}
 	})
 	t.Run("a forced delay that fell due", func(t *testing.T) {
-		schedule := retryOnly("Child SA", "child", func() error { return nil })
+		schedule := retryOnly("Child SA", "child", func() error { return nil }, func() any { return s.currentChildGeneration() })
 		schedule.forced = true
 		schedule.reset(0)
 		time.Sleep(quietPeriod)

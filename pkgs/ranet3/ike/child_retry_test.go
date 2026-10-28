@@ -230,6 +230,44 @@ func askFailing(t *testing.T, pair *refusingPair) {
 	}
 }
 
+// a schedule reads its SA before the delay that SA's establishment gives, so it finds an SA installed between the two reads replaced
+// and a rearm on the SA held counts from that SA
+func TestScheduleReadsItsSABeforeItsDelay(t *testing.T) {
+	s := &Session{rekeyJitterSource: unjittered}
+	generation, made := uint64(1), time.Now()
+	installing := false
+	// a read of the establishment while installing is set installs the next SA first, which puts the install between the schedule's two reads
+	established := func() (time.Time, bool) {
+		if installing {
+			generation, made, installing = generation+1, made.Add(time.Second), false
+		}
+		return made, true
+	}
+	current := func() any { return generation }
+	installing = true
+	schedule, err := s.newRekeySchedule("Child SA", "child", time.Hour, nil, established, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer schedule.timer.Stop()
+	if !schedule.replaced() {
+		t.Error("the schedule finds the SA installed between newRekeySchedule's two reads not replaced")
+	}
+	if err := s.rearm(schedule); err != nil {
+		t.Fatal(err)
+	}
+	if schedule.replaced() {
+		t.Error("the schedule finds the SA held replaced after a rearm on it")
+	}
+	installing = true
+	if err := s.rearm(schedule); err != nil {
+		t.Fatal(err)
+	}
+	if !schedule.replaced() {
+		t.Error("the schedule finds the SA installed between rearm's two reads not replaced")
+	}
+}
+
 // a Child SA rekey that succeeds on any path puts the schedule's next one an interval ahead of the SA it made, as a scheduled success does
 func TestChildSARekeySucceedingOnAnyPathResetsTheSchedule(t *testing.T) {
 	bubble.Run(testChildSARekeySucceedingOnAnyPathResetsTheSchedule)(t)
@@ -328,6 +366,112 @@ func testPeerRekeyDropsTheRetryOfTheSAItReplaced(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the schedule never rekeyed the SA the peer's rekey made, the session recorded %q", pair.dialed.recorded())
 		}
+	}
+}
+
+// a peer's rekey drops the retry of the SA it replaced though it makes its SA at the clock reading of that one
+func TestPeerRekeyAtTheInstantOfTheSAItReplacedDropsTheRetry(t *testing.T) {
+	bubble.Run(testPeerRekeyAtTheInstantOfTheSAItReplacedDropsTheRetry)(t)
+}
+
+func testPeerRekeyAtTheInstantOfTheSAItReplacedDropsTheRetry(t *testing.T) {
+	var allow func()
+	pair := dialRefusing(t, func(cfg *PeerConfig) {
+		cfg.ChildRekeyInterval, cfg.RekeyMargin = time.Hour, 0
+		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
+	}, func(initiator, responder *Session) {
+		initiator.rekeyJitterSource = unjittered
+		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+		allow = refuseEveryRekey(t, initiator, responder)
+	})
+	first, _ := pair.initiator.childEstablishedAt()
+	askFailing(t, pair)
+	synctest.Wait()
+	allow()
+	if err := pair.responder.RekeyChild(); err != nil {
+		t.Fatalf("the peer's rekey failed: %v", err)
+	}
+	if made, _ := pair.initiator.childEstablishedAt(); !made.Equal(first) {
+		t.Fatalf("the peer's Child SA was made %s after the one it replaced, want at the same clock reading", made.Sub(first))
+	}
+	time.Sleep(retryDelay + retryDelay/2)
+	if got := childRekeyLines(pair, "ike.rekey.started"); got != 1 {
+		t.Fatalf("%d Child SA rekeys started by %s, want the refused one alone, the session recorded %q", got, retryDelay+retryDelay/2, pair.dialed.recorded())
+	}
+}
+
+// a peer's rekey drops the retry of a refused rekey of the SA it replaced on a session with no rekey interval as on one with an interval
+// and a refused rekey of the peer's SA after the drop is retried
+func TestPeerRekeyDropsTheRetryOfTheSAItReplacedWithOrWithoutAnInterval(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		interval time.Duration
+	}{
+		{"no interval", 0},
+		{"an hour's interval", time.Hour},
+	} {
+		t.Run(tc.name, bubble.Run(func(t *testing.T) {
+			var allow func()
+			pair := dialRefusing(t, func(cfg *PeerConfig) {
+				cfg.ChildRekeyInterval, cfg.RekeyMargin = tc.interval, 0
+				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
+			}, func(initiator, responder *Session) {
+				initiator.rekeyJitterSource = unjittered
+				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+				allow = refuseEveryRekey(t, initiator, responder)
+			})
+			askFailing(t, pair)
+			allow()
+			time.Sleep(retryDelay / 2)
+			if err := pair.responder.RekeyChild(); err != nil {
+				t.Fatalf("the peer's rekey failed: %v", err)
+			}
+			time.Sleep(retryDelay)
+			if got := childRekeyLines(pair, "ike.rekey.started"); got != 1 {
+				t.Fatalf("%d Child SA rekeys started by %s, want the refused one alone, the session recorded %q", got, retryDelay+retryDelay/2, pair.dialed.recorded())
+			}
+			refuseRekeys(pair.initiator, pair.responder)
+			askFailing(t, pair)
+			allow()
+			time.Sleep(retryDelay + retryDelay/2)
+			if got := childRekeyLines(pair, "ike.rekey.completed"); got != 1 {
+				t.Fatalf("%d Child SA rekeys completed by %s after a refused rekey of the peer's SA, want its retry, the session recorded %q", got, retryDelay+retryDelay/2, pair.dialed.recorded())
+			}
+		}))
+	}
+}
+
+// a refused rekey of the SA a peer's rekey made is retried, on a session with no rekey interval as on one with an interval
+// since the retry counts from the SA its own exchange set out to replace, which no rekey has replaced since
+func TestRefusedRekeyOfThePeersSAIsRetriedWithOrWithoutAnInterval(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		interval time.Duration
+	}{
+		{"no interval", 0},
+		{"an hour's interval", time.Hour},
+	} {
+		t.Run(tc.name, bubble.Run(func(t *testing.T) {
+			pair := dialRefusing(t, func(cfg *PeerConfig) {
+				cfg.ChildRekeyInterval, cfg.RekeyMargin = tc.interval, 0
+				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
+			}, func(initiator, responder *Session) {
+				initiator.rekeyJitterSource = unjittered
+				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
+			})
+			time.Sleep(retryDelay / 2)
+			if err := pair.responder.RekeyChild(); err != nil {
+				t.Fatalf("the peer's rekey failed: %v", err)
+			}
+			time.Sleep(retryDelay / 2)
+			allow := refuseEveryRekey(t, pair.initiator, pair.responder)
+			askFailing(t, pair)
+			allow()
+			time.Sleep(retryDelay + retryDelay/2)
+			if got := childRekeyLines(pair, "ike.rekey.started"); got != 2 {
+				t.Fatalf("%d Child SA rekeys started by %s after a refused rekey of the peer's SA, want that one and its retry, the session recorded %q", got, retryDelay+retryDelay/2, pair.dialed.recorded())
+			}
+		}))
 	}
 }
 
