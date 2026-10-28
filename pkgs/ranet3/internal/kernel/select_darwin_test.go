@@ -15,7 +15,11 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/transport"
 )
+
+var _ transport.Selection = (*Selection)(nil)
 
 const (
 	// selectionWait bounds the wait for a selection to follow a change, many settles long

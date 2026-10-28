@@ -252,14 +252,6 @@ func (d *daemon) heldBack(t *testing.T, prefix, witness netip.Prefix) bool {
 func TestBoundUnderlayConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 	d := startDaemon(t, true, recordedHost(t))
 
-	// The socket is where the configuration said it should be. Nothing else
-	// in this package can tell a node that asked to bind and could not from
-	// one that never asked, and the reconciler reads exactly that distinction
-	// before it hands this machine's traffic to the mesh.
-	if !d.node.hub.UnderlayReady() {
-		t.Fatal("the transport did not bind its underlay socket, so no capture can ever install")
-	}
-
 	// An ordinary prefix installs at once: the gate holds back what would
 	// carry this machine's own traffic and nothing else.
 	d.announce(ordinaryPrefix)
@@ -364,12 +356,6 @@ func TestBoundUnderlayConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *tes
 func TestUnboundUnderlayConfigurationScopesItsCaptureToTheTun(t *testing.T) {
 	d := startDaemon(t, false, recordedHost(t))
 
-	// Nothing asked for a binding, so the hub reports ready and the socket is
-	// on no interface. The two answers together tell this apart from a node
-	// that asked to bind and could not.
-	if !d.node.hub.UnderlayReady() {
-		t.Fatal("a node that asked for no binding reports its underlay as not where it should be")
-	}
 	if d.node.CaptureRoutes() != nil {
 		t.Error("a node that binds nothing opened routing for a socket it does not have")
 	}

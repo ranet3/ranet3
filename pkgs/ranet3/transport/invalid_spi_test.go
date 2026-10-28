@@ -92,7 +92,7 @@ func scriptedHub() (*Hub, chan<- scriptedArrival) {
 		bufs[0], sizes[0], endpoints[0], records[0] = a.data, len(a.data), nil, receiveRecord{source: a.source}
 		return 1, 0, nil
 	}
-	return startHub(&memoryBind{network: network, port: p}, []receiveFunc{receive}, p.port, Underlay{}, 0, Runtime{}), arrivals
+	return startHub(&memoryBind{network: network, port: p}, []receiveFunc{receive}, p.port, Runtime{}), arrivals
 }
 
 // told answers the SPI mux's channel holds and takes it, and false where it holds none
