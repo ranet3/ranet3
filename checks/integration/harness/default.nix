@@ -260,11 +260,19 @@ let
     Destination = "${underlayAddress peer "ip4"}/32";
     MTUBytes = fragmentMTU.ip4;
   };
+  # the address Tailscale's exit node holds and nothing else answers
+  exitOnlyV4 = "203.0.113.1";
   # what each program beside ranet3 adds to the client, at its defaults
   besideClient = {
     docker = {
       virtualisation.docker.enable = true;
       virtualisation.memorySize = 1536;
+    };
+    tailscale = {
+      services.tailscale = {
+        enable = true;
+        useRoutingFeatures = "client";
+      };
     };
   };
 in
@@ -847,6 +855,41 @@ testers.runNixOSTest {
             prefixLength = 64;
           }
         ];
+      };
+    };
+  }
+  // lib.optionalAttrs (beside == "tailscale") {
+    # Tailscale's other node and its exit, and headscale, the control server it registers with
+    peer = {
+      imports = [ common ];
+      services.tailscale = {
+        enable = true;
+        useRoutingFeatures = "server";
+      };
+      services.headscale = {
+        enable = true;
+        address = "0.0.0.0";
+        settings = {
+          server_url = "http://peer:8080";
+          # the default fetches Tailscale's own DERP map
+          derp = {
+            server = {
+              enabled = true;
+              region_id = 999;
+              stun_listen_addr = "0.0.0.0:3478";
+            };
+            urls = [ ];
+          };
+          dns = {
+            magic_dns = false;
+            override_local_dns = false;
+          };
+        };
+      };
+      systemd.network.networks."05-lo" = {
+        matchConfig.Name = "lo";
+        networkConfig.ConfigureWithoutCarrier = true;
+        addresses = [ { Address = "${exitOnlyV4}/32"; } ];
       };
     };
   };
@@ -2135,6 +2178,88 @@ testers.runNixOSTest {
               print(client.execute("ranet3 status")[1])
               print(client.execute("nft list ruleset")[1])
               print(client.execute("ip -4 rule show")[1])
+        '';
+
+        # Tailscale at its default base, its rules at 5210 to 5270 between ranet3's two blocks, first with no exit node
+        # and then with peer as its exit node, whose default in table 52 meets an overlay address only after 5110 answered it
+        tailscale = ''
+          login = "--login-server http://peer:8080 --accept-dns=false"
+
+          def tailscale_rules():
+              """tailscaled has put back none of its rules another program deleted, and its 4 rules sit beside ranet3's in both families"""
+              restored = client.execute(f"{tailscaled_journal} | grep 'deleted ip rules; restoring'")[1]
+              assert not restored, f"another program deleted Tailscale's rules:\n{restored}"
+              for family in ["-4", "-6"]:
+                  rules = client.succeed(f"ip {family} rule show")
+                  for priority in ["5210", "5230", "5250", "5270"]:
+                      assert f"\n{priority}:" in rules, f"Tailscale's rule at {priority} is missing:\n{rules}"
+
+          def tailscale_works(exit_node):
+              """each node reaches the other through Tailscale, and with the exit node the client reaches the address only peer answers"""
+              for machine, other in [(client, peer_ips), (peer, client_ips)]:
+                  machine.wait_until_succeeds(f"tailscale ping -c 1 {other[0]}", timeout=timeout)
+                  for address in other:
+                      machine.wait_until_succeeds(f"ping -c 1 -W 2 {address}", timeout=timeout)
+              if exit_node:
+                  client.wait_until_succeeds("ping -c 1 -W 2 ${exitOnlyV4}", timeout=timeout)
+                  route = client.succeed("ip route get ${exitOnlyV4}")
+                  assert "dev tailscale0 table 52 " in route, f"the exit's address is not routed through Tailscale:\n{route}"
+
+          def exit_default():
+              """Tailscale's table 52 holds the exit node's default in both families"""
+              for family in ["-4", "-6"]:
+                  client.wait_until_succeeds(f"ip {family} route show table 52 | grep -q '^default dev tailscale0'", timeout=timeout)
+
+          def underlay_in_main(lookups):
+              """the underlay's marked lookups go on past 5270 and end in main, not through Tailscale's exit"""
+              underlay = [l for l in lookups if l["lookup"] == "underlay"]
+              assert all(l["answer"].startswith("table main ") and "dev tailscale0" not in l["answer"] for l in underlay), (
+                  f"the underlay's lookups do not end in main: {underlay}")
+
+          try:
+              peer.wait_for_unit("headscale.service")
+              peer.wait_for_open_port(8080)
+              for machine in [client, peer]:
+                  machine.wait_for_unit("tailscaled.service")
+              tailscaled_journal = journal_after(client, "tailscaled.service")
+              client.wait_for_unit("ranet3.service")
+
+              peer.succeed("headscale users create example")
+              user = json.loads(peer.succeed("headscale users list -o json"))[0]["id"]
+              key = json.loads(peer.succeed(f"headscale preauthkeys create --user {user} --reusable -o json"))["key"]
+              peer.succeed(f"tailscale up {login} --auth-key {key} --advertise-exit-node")
+              client.succeed(f"tailscale up {login} --auth-key {key}")
+              peer_ips = peer.succeed("tailscale ip").split()
+              client_ips = client.succeed("tailscale ip").split()
+
+              # (a) no exit node: table 52 holds Tailscale's own addresses alone
+              tailscale_works(False)
+              holds_beside()
+              tailscale_rules()
+
+              # (b) peer as the exit node, with the LAN left to main, so the underlay's marked lookup goes on past 5270
+              node = [n["id"] for n in json.loads(peer.succeed("headscale nodes list -o json")) if n["name"] == "peer"][0]
+              peer.succeed(f"headscale nodes approve-routes --identifier {node} --routes 0.0.0.0/0,::/0")
+              client.wait_until_succeeds(f"tailscale set --exit-node={peer_ips[0]} --exit-node-allow-lan-access", timeout=timeout)
+              exit_default()
+              underlay_in_main(holds_beside())
+              tailscale_works(True)
+
+              client.succeed("systemctl restart tailscaled.service")
+              exit_default()
+              underlay_in_main(holds_beside())
+              tailscale_works(True)
+              tailscale_rules()
+
+              restart_ranet3()
+              tailscale_works(True)
+              tailscale_rules()
+          finally:
+              print(client.execute("ranet3 status")[1])
+              print(client.execute("tailscale status")[1])
+              for family in ["-4", "-6"]:
+                  print(client.execute(f"ip {family} rule show")[1])
+                  print(client.execute(f"ip {family} route show table 52")[1])
         '';
       };
     in
