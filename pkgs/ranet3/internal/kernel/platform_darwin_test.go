@@ -1352,7 +1352,7 @@ func TestDarwinKeepsTheRefusalRecordThroughAnUnparseableDump(t *testing.T) {
 // rather than whichever exit sorts lower by address.
 func TestDarwinKeepsTheMoreSpecificSourceAtOneDestination(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
-	held := prefix("3fff:a::198:18:104:117/128")
+	held := prefix("3fff:a::203:0:113:10/128")
 	plat.addrs = func() ([]netip.Prefix, error) { return []netip.Prefix{held}, nil }
 
 	wide := Route{Destination: prefix("::/0"), Source: prefix("3fff:a::/36")}
@@ -1397,7 +1397,7 @@ func TestDarwinKeepsTheMoreSpecificSourceAtOneDestination(t *testing.T) {
 // first case, which on a real mesh is most of them.
 func TestDarwinNamesTheTwoSourceRefusalsApart(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
-	held := prefix("3fff:a::198:18:104:117/128")
+	held := prefix("3fff:a::203:0:113:10/128")
 	plat.addrs = func() ([]netip.Prefix, error) { return []netip.Prefix{held}, nil }
 
 	foreign := Route{Destination: prefix("::/0"), Source: prefix("3fff:a:a::/48")}

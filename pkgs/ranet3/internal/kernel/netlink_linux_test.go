@@ -269,7 +269,7 @@ func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
 
 	first, second, third := prefix("10.99.0.1/32"), prefix("10.99.0.2/32"), prefix("10.99.0.3/32")
-	before, after := []schema.Prefix{schema.MustPrefix("198.18.104.0/24")}, []schema.Prefix{schema.MustPrefix("198.18.105.0/24")}
+	before, after := []schema.Prefix{schema.MustPrefix("203.0.113.0/24")}, []schema.Prefix{schema.MustPrefix("198.51.100.0/24")}
 	mesh := netstack.NewRouteTable()
 	mesh.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
 	r, err := New(Table{Addresses: prefixes(first, second)}, Runtime{Interface: device, Overlay: before}, mesh)
@@ -659,8 +659,8 @@ func TestNetlinkRulesInNetworkNamespace(t *testing.T) {
 	}
 
 	want := []Rule{
-		{Family: FamilyIPv4, To: schema.MustPrefix("198.18.104.0/24"), Table: DefaultTable, Priority: 100},
-		{Family: FamilyIPv6, From: schema.MustPrefix("3fff:1:69c::/48"), Table: DefaultTable, Priority: 150},
+		{Family: FamilyIPv4, To: schema.MustPrefix("203.0.113.0/24"), Table: DefaultTable, Priority: 100},
+		{Family: FamilyIPv6, From: schema.MustPrefix("3fff:b::/48"), Table: DefaultTable, Priority: 150},
 		{Family: FamilyIPv4, FWMark: 0x72, Table: 254, Priority: 40},
 		{Family: FamilyIPv6, FWMark: 0x72, Table: 254, Priority: 40},
 		// one on a device that exists and one on a device that does not yet, which the kernel holds detached

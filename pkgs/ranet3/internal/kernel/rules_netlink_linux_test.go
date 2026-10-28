@@ -142,16 +142,16 @@ func TestNetlinkPassConvergesOnTheDerivedRules(t *testing.T) {
 	const device = "ranetderived0"
 	plat := &countingRules{netlinkPlatform: rootRulePlatform(t, device)}
 	tbl, rt := platformFor(device)
-	rt.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")}
+	rt.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.113.0/24")}
 	routes := netstack.NewRouteTable()
 	routes.Set(netip.Prefix{}, prefix("3fff:1::/48"), netstack.Local)
 	routes.Set(netip.Prefix{}, prefix("192.0.2.0/24"), netstack.Local)
-	routes.Set(netip.Prefix{}, prefix("198.18.104.5/32"), netstack.Assigned)
+	routes.Set(netip.Prefix{}, prefix("203.0.113.5/32"), netstack.Assigned)
 	reconciler := newReconciler(tbl.Normalized(), rt, nil, routes, plat)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	want := derivedRules(DefaultTable, rt.Overlay, []netip.Prefix{prefix("3fff:1::/48"), prefix("192.0.2.0/24"), prefix("198.18.104.5/32")})
+	want := derivedRules(DefaultTable, rt.Overlay, []netip.Prefix{prefix("3fff:1::/48"), prefix("192.0.2.0/24"), prefix("203.0.113.5/32")})
 	got, err := plat.Rules()
 	if err != nil {
 		t.Fatalf("list rules: %v", err)

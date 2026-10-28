@@ -100,10 +100,10 @@ func TestReloadMovesTheRulesWithTheOverlay(t *testing.T) {
 // one of ours given another length is replaced in the one pass, rather than taken for somebody else's
 // an address of ours a reload gave up is another writer's from then on, even put back as the reconciler first added it
 func TestReloadRemovesOnlyTheAddressesItAdded(t *testing.T) {
-	ours, renumbered := prefix("198.18.104.5/32"), prefix("198.18.104.6/32")
+	ours, renumbered := prefix("203.0.113.5/32"), prefix("203.0.113.6/32")
 	theirs := prefix("192.0.2.1/32")
 	rewritten, rewrittenAs := prefix("2001:db8::1/128"), prefix("2001:db8::1/64")
-	short, long := prefix("198.18.104.7/32"), prefix("198.18.104.7/24")
+	short, long := prefix("203.0.113.7/32"), prefix("203.0.113.7/24")
 	r, _, fake := harness(t, Table{Addresses: prefixes(ours, theirs, rewritten, short)})
 	fake.addrs[theirs] = true
 	if err := r.reconcile(); err != nil {
@@ -150,7 +150,7 @@ func TestReloadRemovesOnlyTheAddressesItAdded(t *testing.T) {
 // a platform without keysByLength keys an address by address alone, as darwin does
 // one of ours given another length there is replaced in the one pass rather than added and then deleted under its old length
 func TestReloadGivingAnAddressAnotherLengthOnAPlatformKeyingByAddressKeepsIt(t *testing.T) {
-	short, long := prefix("198.18.104.7/32"), prefix("198.18.104.7/24")
+	short, long := prefix("203.0.113.7/32"), prefix("203.0.113.7/24")
 	table := Table{Addresses: prefixes(short)}.Normalized()
 	fake := newFakeKernel(t)
 	r := newReconciler(table, Runtime{Interface: "ranet0"}, table.Assigned(nil), netstack.NewRouteTable(), struct{ platform }{fake})
@@ -220,7 +220,7 @@ func TestReloadWithdrawsTheCaptureOnTheNewGrace(t *testing.T) {
 // the loop takes the second reload only once it has finished with the first, so the kernel read after it shows whether the first installed anything
 func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T) {
 	route := prefix("10.0.0.0/8")
-	r, table, fake := harness(t, Table{Addresses: prefixes(prefix("198.18.104.5/32"))})
+	r, table, fake := harness(t, Table{Addresses: prefixes(prefix("203.0.113.5/32"))})
 	table.Set(netip.Prefix{}, route, nil)
 	<-table.Changed()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -234,7 +234,7 @@ func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T)
 	r.SetEnabled(false)
 	waitFor(t, func() bool { return len(fake.snapshot()) == 0 && len(fake.heldAddresses()) == 0 })
 
-	next := Table{Metric: 32, Addresses: prefixes(prefix("198.18.104.6/32"))}
+	next := Table{Metric: 32, Addresses: prefixes(prefix("203.0.113.6/32"))}
 	if err := r.SetTable(next, nil, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -251,14 +251,14 @@ func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T)
 
 	r.SetEnabled(true)
 	waitFor(t, func() bool {
-		return fake.has(Route{Destination: route, Metric: 32}) && slices.Equal(fake.heldAddresses(), []netip.Prefix{prefix("198.18.104.6/32")}) &&
+		return fake.has(Route{Destination: route, Metric: 32}) && slices.Equal(fake.heldAddresses(), []netip.Prefix{prefix("203.0.113.6/32")}) &&
 			fake.holdsDerived(r)
 	})
 }
 
 // a reload is refused before anything is handed to the loop, so the capability in force, the platform and the kernel stay as they were
 func TestReloadRefusesWhatTheReconcilerCannotTake(t *testing.T) {
-	start := Table{Addresses: prefixes(prefix("198.18.104.5/32"))}
+	start := Table{Addresses: prefixes(prefix("203.0.113.5/32"))}
 	for name, refused := range map[string]struct {
 		next   Table
 		naming string
@@ -384,7 +384,7 @@ func TestReloadInsideTheSettleWindowIsTaken(t *testing.T) {
 // the pass after it moves nothing and is not recorded, since the reload marked only the pass that followed it
 func TestPassTakingOffAnAddressAReloadDroppedIsRecorded(t *testing.T) {
 	bus := events.New()
-	ours := prefix("198.18.104.5/32")
+	ours := prefix("203.0.113.5/32")
 	r, _, fake := harness(t, Table{Addresses: prefixes(ours)}, Runtime{Events: bus})
 	if err := r.reconcile(); err != nil {
 		t.Fatal(err)

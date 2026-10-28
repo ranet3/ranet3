@@ -642,7 +642,7 @@ func TestReconcileReportsFailedDump(t *testing.T) {
 
 func TestApplyAddressesOnlyRemovesWhatItAdded(t *testing.T) {
 	operator := prefix("192.0.2.1/32")
-	ours := prefix("198.18.104.5/32")
+	ours := prefix("203.0.113.5/32")
 	reconciler, _, fake := harness(t, Table{Addresses: prefixes(operator, ours)})
 	fake.addrs[operator] = true
 
@@ -672,7 +672,7 @@ func TestApplyAddressesOnlyRemovesWhatItAdded(t *testing.T) {
 
 func TestRunWithdrawsOnCancel(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{
-		Addresses: prefixes(prefix("198.18.104.5/32")),
+		Addresses: prefixes(prefix("203.0.113.5/32")),
 		Reconcile: schema.Duration(10 * time.Millisecond),
 	})
 	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
@@ -1348,7 +1348,7 @@ func TestStatsCarryTheWholePassError(t *testing.T) {
 // route that cannot be installed does not stop rules
 func TestFailingStepLeavesTheLaterStepsToRun(t *testing.T) {
 	route := Route{Destination: prefix("10.0.0.0/8")}
-	reconciler, table, fake := harness(t, Table{Addresses: prefixes(prefix("198.18.104.5/32"))})
+	reconciler, table, fake := harness(t, Table{Addresses: prefixes(prefix("203.0.113.5/32"))})
 	table.Set(netip.Prefix{}, route.Destination, nil)
 	fake.failAddrs = errors.New("the link refuses the address")
 	if err := reconciler.reconcile(); err == nil {
@@ -1404,7 +1404,7 @@ func TestFailingPassDoesNotRepublishTheLastGoodCounts(t *testing.T) {
 // kernel protocol did not leave it either.
 func TestStoppedReconcilerWithdrawsAndStartsAgain(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{
-		Addresses: prefixes(prefix("198.18.104.5/32")),
+		Addresses: prefixes(prefix("203.0.113.5/32")),
 		Reconcile: schema.Duration(10 * time.Millisecond),
 	})
 	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
