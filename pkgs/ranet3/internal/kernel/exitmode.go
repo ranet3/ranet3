@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"ranet3.com/pkgs/ranet3/schema"
@@ -27,14 +28,131 @@ type ExitMode struct {
 	// one, such as docker* or br-*. A link it leaves out keeps the routes it had
 	// before ranet3.
 	Forward []string `yaml:"forward,omitempty" json:"forward,omitempty" toml:"forward,omitempty"`
+	// Fallback is where the host's traffic leaves while no exit is live,
+	// FallbackUplink where it is unwritten
+	Fallback Fallback `yaml:"fallback,omitempty" json:"fallback,omitempty" toml:"fallback,omitempty"`
+	// Inbound is the services on the uplink's addresses whose replies the
+	// table's reply lines pass while fallback is "none", on flows conntrack saw
+	// the far side open, as routing.md's "The kill switch on Linux" lists, each
+	// written "<port>/<protocol>" or "<first>-<last>/<protocol>" with the
+	// protocol tcp or udp
+	Inbound []string `yaml:"inbound,omitempty" json:"inbound,omitempty" toml:"inbound,omitempty"`
+}
+
+// Fallback is cap.exit fallback
+type Fallback string
+
+const (
+	// FallbackUplink lets the host's traffic leave by the host's own default
+	// while no exit is live
+	FallbackUplink Fallback = "uplink"
+	// FallbackNone writes the table ranet3_fallback, whose lines routing.md's
+	// "The kill switch on Linux" lists, whether an exit is live or not, and
+	// the table stays after ranet3 has crashed. While it reads back as written
+	// the host's traffic leaves by a link outside the mesh only where one of
+	// its lines passes it.
+	FallbackNone Fallback = "none"
+)
+
+// Refuses reports that the mode asks for the kill switch, FallbackNone
+func (m ExitMode) Refuses() bool { return m.Fallback == FallbackNone }
+
+// Service is a range of ports of one transport protocol, as inbound lists one
+type Service struct {
+	// Protocol is "tcp" or "udp"
+	Protocol    string
+	First, Last uint16
+}
+
+func (s Service) String() string {
+	if s.First == s.Last {
+		return fmt.Sprintf("%d/%s", s.First, s.Protocol)
+	}
+	return fmt.Sprintf("%d-%d/%s", s.First, s.Last, s.Protocol)
+}
+
+// parseService reads an inbound entry
+func parseService(entry string) (Service, error) {
+	ports, protocol, found := strings.Cut(entry, "/")
+	if !found {
+		return Service{}, fmt.Errorf("kernel: cap.exit inbound %q is not <port>/<protocol> or <first>-<last>/<protocol>", entry)
+	}
+	if protocol != "tcp" && protocol != "udp" {
+		return Service{}, fmt.Errorf("kernel: cap.exit inbound %q names the protocol %q, where inbound takes tcp or udp", entry, protocol)
+	}
+	first, last, ranged := strings.Cut(ports, "-")
+	if !ranged {
+		last = first
+	}
+	var bounds [2]uint16
+	for i, text := range []string{first, last} {
+		port, err := strconv.ParseUint(text, 10, 16)
+		if err != nil {
+			return Service{}, fmt.Errorf("kernel: cap.exit inbound %q is not <port>/<protocol> or <first>-<last>/<protocol>, each port from 1 to 65535", entry)
+		}
+		if port == 0 {
+			return Service{}, fmt.Errorf("kernel: cap.exit inbound %q names port 0, which no service listens on", entry)
+		}
+		bounds[i] = uint16(port)
+	}
+	if bounds[0] > bounds[1] {
+		return Service{}, fmt.Errorf("kernel: cap.exit inbound %q runs from %d down to %d: write the lower port first", entry, bounds[0], bounds[1])
+	}
+	return Service{Protocol: protocol, First: bounds[0], Last: bounds[1]}, nil
+}
+
+// Services is inbound's entries, tcp before udp, each protocol's ranges in
+// order with those that overlap or touch joined, of a mode Validate took
+func (m ExitMode) Services() []Service {
+	var parsed []Service
+	for _, entry := range m.Inbound {
+		if service, err := parseService(entry); err == nil {
+			parsed = append(parsed, service)
+		}
+	}
+	slices.SortFunc(parsed, func(a, b Service) int {
+		if c := strings.Compare(a.Protocol, b.Protocol); c != 0 {
+			return c
+		}
+		return int(a.First) - int(b.First)
+	})
+	var out []Service
+	for _, service := range parsed {
+		if n := len(out); n > 0 && out[n-1].Protocol == service.Protocol && int(service.First) <= int(out[n-1].Last)+1 {
+			out[n-1].Last = max(out[n-1].Last, service.Last)
+			continue
+		}
+		out = append(out, service)
+	}
+	return out
 }
 
 // loopback is the name Linux gives its loopback link, whose index every lookup of the host's own traffic carries
 const loopback = "lo"
 
 // Validate refuses a forward entry that can name no link, an empty one or a
-// malformed pattern, and lo by name, whose traffic is the host's own.
+// malformed pattern, and lo by name, whose traffic is the host's own. It
+// refuses a fallback other than "uplink" and "none", inbound unless fallback
+// is "none", and an inbound entry that is malformed, names port 0 or another
+// protocol, runs downward or is written twice.
 func (m ExitMode) Validate() error {
+	if m.Fallback != "" && m.Fallback != FallbackUplink && m.Fallback != FallbackNone {
+		return fmt.Errorf("kernel: cap.exit fallback %q is neither \"uplink\" nor \"none\"", m.Fallback)
+	}
+	if len(m.Inbound) > 0 && !m.Refuses() {
+		return errors.New("kernel: cap.exit inbound lists the services that answer beyond the LAN while fallback = \"none\" refuses the rest, and fallback is not \"none\": write fallback = \"none\" or remove inbound")
+	}
+	seen := make(map[Service]string, len(m.Inbound))
+	for _, entry := range m.Inbound {
+		service, err := parseService(entry)
+		if err != nil {
+			return err
+		}
+		if earlier, ok := seen[service]; ok {
+			return fmt.Errorf("kernel: cap.exit inbound %q is written twice, the second time as %q", earlier, entry)
+		}
+		seen[service] = entry
+	}
 	for _, entry := range m.Forward {
 		if entry == "" {
 			return errors.New("kernel: cap.exit forward holds an empty entry, which names no link")
@@ -51,14 +169,15 @@ func (m ExitMode) Validate() error {
 }
 
 // Normalized is the capability as the reconciler runs it, forward in one order
-// and each entry once, so a reload over a list written in another order is no
-// change.
+// and each entry once, and inbound as Services spells it, so a reload over a
+// list written in another order or split another way is no change.
 func (m ExitMode) Normalized() ExitMode {
-	if len(m.Forward) == 0 {
-		m.Forward = nil
-		return m
-	}
 	m.Forward = slices.Compact(slices.Sorted(slices.Values(m.Forward)))
+	inbound := m.Services()
+	m.Inbound = nil
+	for _, service := range inbound {
+		m.Inbound = append(m.Inbound, service.String())
+	}
 	return m
 }
 
