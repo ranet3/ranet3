@@ -205,7 +205,7 @@ func waitForPass(t *testing.T, bus *events.Bus, trigger string) {
 func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 	be := &fakeBorder{}
 	rt := borderRuntime(be, nil, "3fff:a::2", "3fff:a::1")
-	rt.Inside = []string{"ranet0", "lo", "gravity"}
+	rt.Inside = []string{"ranet0", "lo", "dummy0"}
 	f, err := startBorderFilter(overlay(t, "3fff::/20", "198.18.0.0/15", "192.0.2.0/24"), rt, be)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 	want := []string{
 		"accept via ranet0",
 		"accept via lo",
-		"accept via gravity",
+		"accept via dummy0",
 		"drop ipv4 source 192.0.2.0/24",
 		"drop ipv4 source 198.18.0.0/15",
 		"drop ipv6 source 3fff::/20",

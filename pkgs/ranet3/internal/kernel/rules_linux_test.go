@@ -101,8 +101,8 @@ func TestRuleMessageCarriesTheInputDevice(t *testing.T) {
 func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
 	plat, conn := writePlatform(t)
 	for name, rule := range map[string]Rule{
-		"a destination rule": {Family: FamilyIPv4, To: schema.MustPrefix("198.18.104.0/24"), Table: 200, Priority: 100},
-		"a source rule":      {Family: FamilyIPv6, From: schema.MustPrefix("3fff:1:69c::/48"), Table: 200, Priority: 150},
+		"a destination rule": {Family: FamilyIPv4, To: schema.MustPrefix("203.0.113.0/24"), Table: 200, Priority: 100},
+		"a source rule":      {Family: FamilyIPv6, From: schema.MustPrefix("3fff:b::/48"), Table: 200, Priority: 150},
 		"a mark rule":        {Family: FamilyIPv6, FWMark: 0x72, Table: 254, Priority: 40},
 		"both selectors":     {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), From: schema.MustPrefix("10.1.0.0/16"), Table: 7, Priority: 90},
 		"a device rule":      {Family: FamilyIPv4, IIF: "eth1", Table: 254, Priority: 60},

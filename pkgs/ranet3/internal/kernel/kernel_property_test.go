@@ -186,8 +186,8 @@ func reloadAddresses() hegel.Generator[[]schema.Prefix] {
 	return hegel.Composite(func(tc hegel.TestCase) []schema.Prefix {
 		var out []schema.Prefix
 		for _, lengths := range [][]netip.Prefix{
-			{prefix("198.18.104.5/32"), prefix("198.18.104.5/24")},
-			{prefix("198.18.104.6/32"), prefix("198.18.104.6/24")},
+			{prefix("203.0.113.5/32"), prefix("203.0.113.5/24")},
+			{prefix("203.0.113.6/32"), prefix("203.0.113.6/24")},
 			{prefix("2001:db8::5/128"), prefix("2001:db8::5/64")},
 		} {
 			if choice := hegel.Draw(tc, hegel.Integers(0, len(lengths))); choice < len(lengths) {
@@ -215,7 +215,7 @@ func reloads() hegel.Generator[Table] {
 
 // announcements draws what cap.route announces, a default among it, none of it an address reloadAddresses draws
 func announcements() hegel.Generator[[]netip.Prefix] {
-	return hegel.Lists(hegel.SampledFrom([]netip.Prefix{prefix("2001:db8:1::1/64"), prefix("198.18.105.1/32"), prefix("::/0")})).MaxSize(2)
+	return hegel.Lists(hegel.SampledFrom([]netip.Prefix{prefix("2001:db8:1::1/64"), prefix("198.51.100.1/32"), prefix("::/0")})).MaxSize(2)
 }
 
 // reloadHarness is a reconciler started on table over one mesh every case shares, on a link where another writer already put foreign
@@ -301,7 +301,7 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 		first := hegel.Draw(ht, reloads())
 		ht.Assume(first.Validate() == nil && meaningfulHere(first))
 		foreign := hegel.Draw(ht, hegel.Lists(hegel.SampledFrom([]netip.Prefix{
-			prefix("198.18.104.9/32"), prefix("198.18.104.6/32"), prefix("2001:db8::5/96"),
+			prefix("203.0.113.9/32"), prefix("203.0.113.6/32"), prefix("2001:db8::5/96"),
 		})).MaxSize(2))
 		byLength := hegel.Draw(ht, hegel.Booleans())
 		r, kernel := reloadHarness(t, first, hegel.Draw(ht, announcements()), foreign, byLength)
