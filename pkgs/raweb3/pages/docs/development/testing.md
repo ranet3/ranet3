@@ -440,36 +440,42 @@ set. The Mac that runs them may be on a live mesh.
 - `internal/client` has arms that put a node on a real utun.
 - `transport` has 1 that sends through a feth pair whose MTU is 1400. A datagram
   past that MTU is refused, or fragmented while a session asks. A second checks
-  that a socket connected to 1 peer from a hub bound to 1 feth binds that feth's
-  address, where the host's own route leaves by the other. 6 more check where
-  answers leave from. An answer leaves from the address its request reached, by
-  the interface holding that address. The session's path MTU reads the MTU of
-  that interface. The datagrams of a send that fit still leave from the address
-  after one is refused for its size. Once the address is gone or has no route to
-  the peer, sends leave from the kernel's choice and return to the address as
-  [moving hosts](../platforms.md#moving-hosts) describes. A send refused from
-  the address and again without it keeps the address.
+  that a socket connected to 1 peer binds the address of the feth the selection
+  names, where the host's own route leaves by the other. Others hold test utuns
+  standing in for an uplink, a second uplink and ranet3's own utun, and check
+  that every datagram leaves by the interface the selection names, past a route
+  of the stand-in, on the shared socket, after a refused pin and on a socket
+  connected to 1 peer, in both families, that it follows the selection to
+  another interface, that nothing is sent once that interface is gone, and that
+  a longer route of the stand-in holding the peer refuses the send. 6 more check
+  where answers leave from. An answer leaves from the address its request
+  reached, by the interface holding that address. The session's path MTU reads
+  the MTU of that interface. The datagrams of a send that fit still leave from
+  the address after one is refused for its size. Once the address is gone or has
+  no route to the peer, sends leave from the kernel's choice and return to the
+  address as [moving hosts](../platforms.md#moving-hosts) describes. A send
+  refused from the address and again without it keeps the address.
 - `control` has 1 that checks that the control socket and the directories the
   daemon makes for it get the daemon's group, under a parent directory that
   hands down another group, as `/var/run` does on macOS.
-- `internal/kernel` has 1 that checks the same for the directory the underlay
-  record shares with the control socket, whichever of the 2 creates it.
 
-The last 2 give a directory a group of any number, which only root may do. Each
-has an unprivileged twin that uses a second group of the running user, and skips
-where the user has no second group it can give a directory. The `control` twin
+The `control` one gives a directory a group of any number, which only root may
+do. It has an unprivileged twin that uses a second group of the running user,
+and skips where the user has no second group it can give a directory. The twin
 runs on Linux as well, where a setgid directory hands its group down. It skips
 in the Linux Nix sandbox and under `unshare -rn`.
 
 `internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
 macOS backend can be driven without either. `internal/client`'s
 `daemon_darwin_test.go` uses that to run a configuration file all the way to a
-daemon against a recorded routing table: the transport binds, the underlay
-writes the default its bound socket depends on only while a capture holds a zero
-address, and the reconciler holds an announced default out of the kernel until a
-session is live, all asserted on the routes that arrive rather than on the calls
-that made them. It needs no privilege, and the one thing it leaves with the
-running kernel is `IP_BOUND_IF` on the transport's own UDP socket.
+daemon against a recorded routing table: the transport names each datagram's
+interface from the selection over that table, nothing is written outside the
+tun, and the reconciler holds an announced default out of the kernel until a
+session is live and installs a route holding a zero address as the cover's
+members, all asserted on the routes that arrive rather than on the calls that
+made them. It needs no privilege, and the one thing it leaves with the running
+kernel is the transport's own UDP sockets, whose datagrams name the interface
+the recorded routes select.
 
 ## Property tests
 

@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-10-25
+updated: 2026-10-28
 order: 40
 ---
 
@@ -241,12 +241,11 @@ of this flake, and nothing else here needs one.
 The job runs `ranet3 daemon --config <store path> --log-level <logLevel>`, then
 `extraArgs`.
 
-The daemon creates `/var/run/ranet3` in the job's group at mode 0750. The
-control socket and the `link.underlay.bind` record share the directory, and
-whichever comes first creates it. The daemon leaves a directory that already
-exists as it is. A directory in another group keeps the control socket out of
-the job group's reach until it takes the job's group. Change its group with the
-job stopped. The commands below use the default group, `admin`:
+The daemon creates `/var/run/ranet3` in the job's group at mode 0750 for the
+control socket. The daemon leaves a directory that already exists as it is. A
+directory in another group keeps the control socket out of the job group's reach
+until it takes the job's group. Change its group with the job stopped. The
+commands below use the default group, `admin`:
 
 ```sh
 sudo launchctl bootout system/org.nixos.ranet3
@@ -255,11 +254,7 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/org.nixos.ranet3.plist
 ```
 
 A reboot does it as well, since macOS clears `/var/run` as it starts and the
-daemon makes the directory afresh. Do not remove the directory instead. It holds
-`underlay.json`, the record of the scoped defaults `link.underlay.bind` writes.
-A stop withdraws the defaults it wrote. A start withdraws the ones a killed or
-failed run left in the record. Without the record, a default an earlier run left
-behind stays on its interface.
+daemon makes the directory afresh.
 
 The daemon keeps the flag `ranet3 down` writes and `babel.json` in
 `/var/db/ranet3`, its default state directory on macOS, and makes the directory

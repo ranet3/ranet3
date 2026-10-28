@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-27
+updated: 2026-10-30
 order: 45
 ---
 
@@ -597,23 +597,21 @@ macOS refuses at startup, no route lies inside the overlay.
 The floors are `/8` and `/16` because a route shorter than either takes a share
 of a host's traffic as a default does, a split internet above all, while the
 subnets a mesh routes outside its overlay are longer. The unspecified address
-counts at any length because macOS falls back to it for a socket bound with
-`IP_BOUND_IF`, as [sharing a host](coexistence.md#the-underlay-default-on-macos)
-describes.
+counts at any length because a send on macOS that names its interface, as each
+of ranet3's underlay datagrams does, falls back to it, as
+[the zero-free cover](#the-zero-free-cover-on-macos) describes.
 
 The reconciler installs a route that counts only after a session has been live.
 It withdraws them all once no session has been live for
 `cap.table.capture_grace` (10 seconds by default, 1 second at least), and
 restores them on the first live session. On macOS with `link.underlay.bind` a
-plain `/0` goes in as its zero-free cover only once the host has a default of
-its own of that family, and another route it installs unscoped holding its
-family's zero address only once its family's fallback is in place, as
-[the zero-free cover](#the-zero-free-cover-on-macos) describes.
+route holding its family's zero address goes in as the members of the zero-free
+cover it contains, as [the zero-free cover](#the-zero-free-cover-on-macos)
+describes.
 
 A session is live for 20 seconds after the last authenticated IKE message from
 its peer, and for 20 to 30 seconds after the last authenticated ESP packet, as
-[the design's limits](design/limits.md#ike) list. No session counts as live
-while the underlay socket is not ready. The withdrawal logs
+[the design's limits](design/limits.md#ike) list. The withdrawal logs
 `kernel is withdrawing the routes that would carry this machine's own traffic`,
 and the restore logs
 `kernel is carrying this machine's own traffic over the mesh again`.
@@ -661,20 +659,21 @@ its own utun. [Sharing a host](coexistence.md) describes the rules in full.
 
 ## Linux and macOS
 
-|                                                    | Linux                                                                                                   | macOS                                                                                                                                                                            |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Table                                              | `cap.table.id`                                                                                          | the single forwarding table, `id` must stay 200                                                                                                                                  |
-| Ownership                                          | the protocol `cap.table.proto`                                                                          | the utun and the route's shape, `proto` must stay 155                                                                                                                            |
-| Metric                                             | installed                                                                                               | not stored                                                                                                                                                                       |
-| Hold                                               | `unreachable` route                                                                                     | reject route scoped to the utun                                                                                                                                                  |
-| Source-specific IPv6 route                         | installed with its source                                                                               | scoped to the utun where its source prefix holds an address of the utun, and otherwise not installed                                                                             |
-| A route covering a listed literal endpoint address | installed                                                                                               | scoped to the utun, with or without `link.underlay.bind`, but for a member of the zero-free cover                                                                                |
-| A `/0` default                                     | installed                                                                                               | scoped to the utun. With `link.underlay.bind`, installed as its zero-free cover, unscoped                                                                                        |
-| Any other route that counts as a default           | installed                                                                                               | scoped to the utun. With `link.underlay.bind`, scoped when it covers a listed endpoint address, otherwise unscoped                                                               |
-| Policy rules                                       | derived and installed                                                                                   | none                                                                                                                                                                             |
-| This node's own prefix outside the overlay         | throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source | nothing, so a lookup for it from a socket bound to no interface and no address of the utun ends as row D2 of [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) gives |
-| Hold of each overlay prefix                        | installed for each that holds no unspecified address and that the mesh can carry                        | not installed, since macOS refuses `cap.border`                                                                                                                                  |
-| `where` in the logs                                | `table 200 protocol 155`                                                                                | `interface utun6`, for example                                                                                                                                                   |
+|                                                    | Linux                                                                                                   | macOS                                                                                                                                                                                                             |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Table                                              | `cap.table.id`                                                                                          | the single forwarding table, `id` must stay 200                                                                                                                                                                   |
+| Ownership                                          | the protocol `cap.table.proto`                                                                          | the utun and the route's shape, `proto` must stay 155                                                                                                                                                             |
+| Metric                                             | installed                                                                                               | not stored                                                                                                                                                                                                        |
+| Hold                                               | `unreachable` route                                                                                     | reject route scoped to the utun                                                                                                                                                                                   |
+| Source-specific IPv6 route                         | installed with its source                                                                               | scoped to the utun where its source prefix holds an address of the utun, and otherwise not installed                                                                                                              |
+| A route covering a listed literal endpoint address | installed                                                                                               | scoped to the utun, with or without `link.underlay.bind`, but for a member of the zero-free cover                                                                                                                 |
+| A `/0` default                                     | installed                                                                                               | scoped to the utun. With `link.underlay.bind`, installed as its zero-free cover, unscoped                                                                                                                         |
+| Any other route that counts as a default           | installed                                                                                               | scoped to the utun. With `link.underlay.bind`, one holding its family's zero address as the zero-free cover's members it contains, another scoped when it covers a listed endpoint address and otherwise unscoped |
+| Policy rules                                       | derived and installed                                                                                   | none                                                                                                                                                                                                              |
+| An underlay datagram                               | marked 0x72, so its lookup ends past the mesh's routes                                                  | names the interface the host's own routes send it by, the utun's left out, as [the underlay's interface](#the-underlays-interface-on-macos) says                                                                  |
+| This node's own prefix outside the overlay         | throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source | nothing, so a lookup for it from a socket bound to no interface and no address of the utun ends as row D2 of [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) gives                                  |
+| Hold of each overlay prefix                        | installed for each that holds no unspecified address and that the mesh can carry                        | not installed, since macOS refuses `cap.border`                                                                                                                                                                   |
+| `where` in the logs                                | `table 200 protocol 155`                                                                                | `interface utun6`, for example                                                                                                                                                                                    |
 
 On both platforms a route that counts as a default, the `/0` default among them,
 goes in only once a session has been live, and never on an exit, as
@@ -699,40 +698,102 @@ counts as a default goes in only once a session has been live, and never on an
 exit, as [what it installs](#what-it-installs) says. The first row that matches
 gives how an entry of the mesh's table goes in:
 
-| Entry of the mesh's table                                                                                      | Without `link.underlay.bind` | With it                                                                                                             |
-| -------------------------------------------------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| This node's own prefix, a hold that counts, or a prefix the mesh cannot carry                                  | nothing                      | nothing                                                                                                             |
-| A source-specific IPv4 route, or a source-specific IPv6 route whose source prefix holds no address of the utun | nothing                      | nothing                                                                                                             |
-| A hold                                                                                                         | scoped to the utun           | scoped to the utun                                                                                                  |
-| A source-specific IPv6 route                                                                                   | scoped to the utun           | scoped to the utun                                                                                                  |
-| A member of the zero-free cover                                                                                |                              | unscoped, once the host has a default of its own of that family                                                     |
-| A route covering a listed endpoint address                                                                     | scoped to the utun           | scoped to the utun                                                                                                  |
-| A route that counts as a default                                                                               | scoped to the utun           | unscoped, and one holding its family's zero address only once the underlay's interface holds a default scoped to it |
-| Any other route                                                                                                | unscoped                     | unscoped                                                                                                            |
+| Entry of the mesh's table                                                                                      | Without `link.underlay.bind` | With it                                             |
+| -------------------------------------------------------------------------------------------------------------- | ---------------------------- | --------------------------------------------------- |
+| This node's own prefix, a hold that counts, or a prefix the mesh cannot carry                                  | nothing                      | nothing                                             |
+| A source-specific IPv4 route, or a source-specific IPv6 route whose source prefix holds no address of the utun | nothing                      | nothing                                             |
+| A hold                                                                                                         | scoped to the utun           | scoped to the utun                                  |
+| A source-specific IPv6 route                                                                                   | scoped to the utun           | scoped to the utun                                  |
+| A route holding its family's zero address                                                                      | scoped to the utun           | the zero-free cover's members it contains, unscoped |
+| A route at a member's destination, such as a real `128.0.0.0/1`                                                | scoped to the utun           | unscoped                                            |
+| A route covering a listed endpoint address                                                                     | scoped to the utun           | scoped to the utun                                  |
+| A route that counts as a default                                                                               | scoped to the utun           | unscoped                                            |
+| Any other route                                                                                                | unscoped                     | unscoped                                            |
 
 A destination takes one scoped route. The reconciler offers the entry with the
 most specific source first, and leaves another entry that would go in scoped at
 the same destination uninstalled, such as `::/0` beside `::/0` from a prefix of
-the utun, and logs it once. With `link.underlay.bind`, a plain `/0` goes in as
-the members of [its zero-free cover](#the-zero-free-cover-on-macos). Where a
-lookup ends:
+the utun, and logs it once. With `link.underlay.bind`, a route holding its
+family's zero address goes in as the members of
+[the zero-free cover](#the-zero-free-cover-on-macos) it contains. Where a lookup
+ends:
 
-| Row | Lookup                                                                                                                                                             | Where it ends                                                                                                                                                                                                                                       |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | a socket bound to no interface and no address of the utun                                                                                                          | the longest unscoped match, so a route of the mesh installed unscoped takes it into the utun wherever no longer route of the host's covers the destination                                                                                          |
-| D2  | a socket bound to no interface and no address of the utun, for a destination under a scoped route of the mesh, a hold among them, or inside this node's own prefix | the scoped route is passed over, or there is none, and D1 gives the end: a wider unscoped route of the mesh takes it into the utun ahead of a shorter route of the host's                                                                           |
-| D3  | a socket bound to the utun                                                                                                                                         | the routes scoped to the utun answer it too, so a hold refuses it                                                                                                                                                                                   |
-| D4  | ranet3's underlay socket with `link.underlay.bind`, bound to the underlay's interface                                                                              | the reconciler's routes leave its family's zero address to the host's default, or, once a route it installs unscoped holds that address, to the underlay's scoped default                                                                           |
-| D5  | ranet3's underlay socket without `link.underlay.bind`, bound to no interface                                                                                       | as D1 and D2: a route of the mesh covering a listed endpoint address is scoped, while an endpoint written as a hostname has no listed address, so an unscoped route of the mesh covering the address it resolves to takes its packets into the utun |
-| D6  | a socket bound to an address of the utun and to no interface                                                                                                       | a route scoped to the utun answers it, a source-specific route whose source prefix holds that address among them                                                                                                                                    |
+| Row | Lookup                                                                                                                                                             | Where it ends                                                                                                                                                                                                                                                                                    |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | a socket bound to no interface and no address of the utun                                                                                                          | the longest unscoped match, so a route of the mesh installed unscoped takes it into the utun wherever no longer route of the host's covers the destination                                                                                                                                       |
+| D2  | a socket bound to no interface and no address of the utun, for a destination under a scoped route of the mesh, a hold among them, or inside this node's own prefix | the scoped route is passed over, or there is none, and D1 gives the end: a wider unscoped route of the mesh takes it into the utun ahead of a shorter route of the host's                                                                                                                        |
+| D3  | a socket bound to the utun                                                                                                                                         | the routes scoped to the utun answer it too, so a hold refuses it                                                                                                                                                                                                                                |
+| D4  | ranet3's underlay datagram that names no source, with or without `link.underlay.bind`                                                                              | names the interface [the selection](#the-underlays-interface-on-macos) answers, never the utun, and the kernel's lookup scoped to it gives where it ends, but for the cached route [limits](design/limits.md#the-underlay-socket) gives                                                          |
+| D5  | ranet3's underlay datagram answering from the address a peer reached, with or without `link.underlay.bind`                                                         | names that address as its source, a link-local one also its arrival interface, and leaves by the interface the kernel then takes ([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)), and as D4 once the kernel refuses that address |
+| D6  | a socket bound to an address of the utun and to no interface                                                                                                       | a route scoped to the utun answers it, a source-specific route whose source prefix holds that address among them                                                                                                                                                                                 |
 
-D5's hostname endpoint is a declared limit, listed in
-[limits](design/limits.md#the-underlay-socket).
+### The underlay's interface on macOS
+
+Each of ranet3's own datagrams on macOS names its interface, as Linux's mark
+takes its lookup past the mesh's routes
+([the underlay's mark](coexistence.md#the-underlays-mark)). The interface is the
+selection's: the longest match for the destination among the host's unscoped
+routes, those out of ranet3's utun, cloned routes and multicast and broadcast
+entries left out. Another program's reject route stays a candidate. A link-local
+destination takes the interface its zone names. The daemon reads the routing
+table once at its start, reads it again 250 milliseconds after a change's first
+routing message, and again after any message that arrives later, so a datagram
+sent before that read names the interface the last read found. A table it cannot
+read at the start refuses the start, and a later read that fails keeps the last
+answers and logs
+`kernel keeps the underlay's last selection, since it could not read the routing table`
+once.
+
+A datagram that names no source carries the selection's interface in
+`IP_PKTINFO` or `IPV6_PKTINFO`
+([udp_check_pktinfo](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/udp_usrreq.c#L1580)),
+and the kernel's lookup scoped to that interface gives where it ends
+([rt_lookup_common](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/route.c#L3183)),
+but for a route the shared socket already caches, which
+[limits](design/limits.md#the-underlay-socket) gives. A socket connected to 1
+peer for a session whose sends leave the source to the kernel is bound to the
+selection's interface with `IP_BOUND_IF` or `IPV6_BOUND_IF`, and a change of
+interface opens a new one. One for a session the peer opened binds the address
+the peer's latest fresh request or answer reached, and a link-local one its
+arrival interface. Where the selection holds no route for a peer, the datagram
+is refused with `ENETUNREACH` and nothing is written, as a marked lookup ending
+in an empty `main` refuses on Linux.
+
+The shared socket's first send naming the selection's interface after a read
+that found the routes changed releases the socket's cached route, which the
+kernel keeps whatever interface a later send names
+([in_pcbladdr](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1538)),
+by setting `IP_BOUND_IF` or `IPV6_BOUND_IF` to 0
+([inp_bindif_common](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L3198)),
+and a send built under the earlier read that reaches the socket after it
+releases the route again. A datagram that names its source releases nothing.
+
+An answer to a peer names the address the peer reached as its source, and a
+link-local one also its arrival interface (RFC 7296 section 2.11). The kernel
+picks the interface it leaves by
+([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)),
+and [limits](design/limits.md#the-underlay-socket) gives the case where that is
+not the interface holding the address. Once the kernel refuses that address, the
+datagram names the selection's interface instead. The path MTU is read from the
+interface a datagram names, or for one that names its source, the interface
+holding it.
+
+The interface each endpoint's datagrams name is recorded as the
+`transport.underlay.selected` event when it is first found and each time it
+changes ([debugging](development/debug.md#events)). `ranet3 debug rules` lists
+as `underlay` rows each address live sessions send to, with the interface of the
+pin their sends carry where that pin has one
+([debugging](development/debug.md#commands)). A row with a pin's interface shows
+that interface, and the others the interface the selection names with the route
+it matched, or `no route`. An IPv4 datagram that rides the shared socket's
+cached route of another interface, and an endpoint written as a hostname, are
+declared limits, listed in [limits](design/limits.md#the-underlay-socket).
 
 ### The zero-free cover on macOS
 
-With `link.underlay.bind` set, a plain `/0` that Babel selects goes into the
-kernel as 8 routes per family that together hold every address but `0.0.0.0/8`
+With `link.underlay.bind` set, a route Babel selects that holds its family's
+zero address goes into the kernel as the members of the zero-free cover it
+contains. The members of each family together hold every address but `0.0.0.0/8`
 and `::/8`:
 
 | Family | Members                                                                                                     |
@@ -740,40 +801,44 @@ and `::/8`:
 | IPv4   | `1.0.0.0/8`, `2.0.0.0/7`, `4.0.0.0/6`, `8.0.0.0/5`, `16.0.0.0/4`, `32.0.0.0/3`, `64.0.0.0/2`, `128.0.0.0/1` |
 | IPv6   | `100::/8`, `200::/7`, `400::/6`, `800::/5`, `1000::/4`, `2000::/3`, `4000::/2`, `8000::/1`                  |
 
-An unscoped `/0` out of the utun would collide with the host's own default, and
-macOS has no route replace. No member holds its family's zero address, so a
-socket bound with `IP_BOUND_IF`, ranet3's own underlay socket among them, falls
-back to the host's own default for every destination. The members are therefore
-unscoped even where a listed endpoint address lies in one, and nothing is
-written outside the utun. That was measured on a Mac with a bound socket
-connecting inside every member. The Mac had no unscoped IPv6 default, so the
-IPv6 half was measured against a stand-in default on a test utun.
+A plain `/0` goes in as all 8, and a real `0.0.0.0/1` as the 7 from `1.0.0.0/8`
+to `64.0.0.0/2`. An unscoped `/0` out of the utun would collide with the host's
+own default, and macOS has no route replace. A send that names its interface, as
+each of ranet3's underlay datagrams does, falls back to the host's default,
+which the kernel finds by a lookup of its family's zero address
+([rt_lookup_common](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/route.c#L3390)).
+A route of the mesh holding that address would answer that lookup and leave the
+send no route. No member holds it, so the members are unscoped even where a
+listed endpoint address lies in one, and nothing is written outside the utun.
+
+A route holding its zero address inside `0.0.0.0/8` or `::/8`, such as a
+`0.0.0.0/24`, contains no member. The reconciler installs nothing of it, counts
+it as desired and skipped, and logs
+`kernel is not installing a route its cover holds nothing of` once while the
+mesh announces it.
 
 Only the kernel's table holds the cover. Babel's table, the updates it sends and
-`ranet3 exit list` keep the `/0`, so no route's prefix is replaced by a longer
+`ranet3 exit list` keep the route, so no route's prefix is replaced by a longer
 one inside the protocol (RFC 8966 Appendix C).
 
 A member is withheld while the kernel holds another route of the reconciler's,
-unscoped and in the same family, of length 1 up to the member's own, that
-contains it. The kernel then forwards every address outside the hole by the
-route Babel's longest match would, or by a member where that match is the `/0`.
-A route the kernel refuses or fails to install withholds nothing, and the
-members it would withhold are tried in its place, but for a route refused
-against this node's own member, described below. A route that another program's
-route refuses at a member's own key leaves that member refused too, which takes
-the family's cover out as described below.
+unscoped, at the member's own destination. The kernel then forwards every
+address outside the hole by the route Babel's longest match would, or by a
+member where that match holds the zero address. A route the kernel refuses or
+fails to install withholds nothing, and the member it would withhold is tried in
+its place, but for a route refused against this node's own member, described
+below. A route that another program's route refuses at a member's own key leaves
+that member refused too, which takes the family's cover out as described below.
 
 The hole, `0.0.0.0/8` and `::/8`, stays on the host's own route. `::/8` holds
 `64:ff9b::/96`, the NAT64 well-known prefix, so NAT64 traffic does not take the
 exit.
 
-The cover of a family goes in and out whole, with the `/0`. The capture gate
-judges the `/0`, so the cover waits for a live session and leaves when no
-session has been live for `capture_grace`. Its family also waits for the host's
-own default of that family, and while it waits the reconciler logs
-`kernel is holding back a route that would carry this machine's own traffic`.
-Each family's cover a pass puts in or takes out logs
-`kernel changed the cover a plain default is installed as` and records a
+The cover of a family goes in and out whole, with the route it stands in for.
+The capture gate judges that route, so the cover waits for a live session and
+leaves when no session has been live for `capture_grace`. Each family's cover a
+pass puts in or takes out logs
+`kernel changed the cover a zero route is installed as` and records a
 `kernel.cover` event, which the withdrawal of `ranet3 down` or
 `ranet3 disable reconciler` does not, as
 [debugging](development/debug.md#events) says. The Kernel line of
@@ -797,17 +862,8 @@ the skipped count last until a delete succeeds. Meanwhile the member leaves by
 the utun as the route would, and traffic is forwarded as Babel selects.
 
 Until exit selection exists, a Mac with `bind` set takes whichever `/0` Babel
-selects. A source-specific default and a real `/1` half that a node advertises
-are not covered. They are routes like any other, and a hold of a default is not
-installed at all.
-
-A route the reconciler installs unscoped that is not a member but holds a zero
-address, such as a real `0.0.0.0/1` or a `0.0.0.0/24`, needs a default scoped to
-the underlay's interface for that family before it is installed. The reconciler
-asks for it on every pass and asks again after a pass deletes such a route, so
-the scoped default is withdrawn in that same pass, once the route is out of the
-table. [Sharing a host](coexistence.md#the-underlay-default-on-macos) describes
-it.
+selects. A source-specific default is not covered. It is a route like any other,
+and a hold of a default is not installed at all.
 
 ## Watching it
 

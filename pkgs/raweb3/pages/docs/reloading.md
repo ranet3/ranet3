@@ -123,10 +123,9 @@ block, whenever they start or stop making this node an
 therefore makes the node an exit from the next pass, which withholds every route
 that counts as a default, a learned one already installed among them. A reload
 that stops making the node an exit lets the next pass install them again while a
-session is live and, on macOS with `link.underlay.bind`, one installed as the
-zero-free cover or unscoped holding its family's zero address while its family
-has the fallback [routing](routing.md#the-zero-free-cover-on-macos) and
-[sharing a host](coexistence.md#the-underlay-default-on-macos) describe.
+session is live, on macOS with `link.underlay.bind` one holding its family's
+zero address as the members of the zero-free cover it contains, as
+[routing](routing.md#the-zero-free-cover-on-macos) describes.
 
 On Linux that first pass moves every route but a hold or a throw to the new
 metric, which macOS does not store. It derives the policy rules again, as
@@ -324,11 +323,12 @@ reconciler takes a changed `cap.table` as a stopped one does and installs it at
 ## What a reload refuses
 
 Everything else is refused rather than applied, because a reload cannot reach
-it. Identity, port, tun, local endpoints and `link.underlay` each change what
-peers have already authenticated or what the dataplane is attached to. So does
-turning [`cap.transit`](configuration-reference.md) on or off, since the speaker
-reads transit as it builds each packet and keeps it for its life, and the
-forwarding decision reads it once at startup.
+it. Identity, port, tun and local endpoints each change what peers have already
+authenticated or what the dataplane is attached to. So does turning
+[`cap.transit`](configuration-reference.md) on or off, since the speaker reads
+transit as it builds each packet and keeps it for its life, and the forwarding
+decision reads it once at startup. `link.underlay` is read once, by the
+reconciler at its start.
 
 So does the private key. It is read once at startup, and the responder holds its
 own copy. A reload reads the key file only to compare it. A new key is refused
