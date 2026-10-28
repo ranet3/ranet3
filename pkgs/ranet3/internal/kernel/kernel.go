@@ -1627,27 +1627,54 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer]) []Route {
 	}
 	r.warned = warned
 	if policy {
-		out = r.overlayHolds(out)
+		var network NetworkState
+		if r.rt.Network != nil {
+			network = r.rt.Network()
+		}
+		var carved []netip.Prefix
+		for _, carveOut := range CarveOuts(network, r.rt.Overlay) {
+			carved = append(carved, carveOut.Prefix)
+		}
+		out = r.carveThrows(r.overlayHolds(out, carved), carved, snapshot)
 	}
 	return out
 }
 
 // overlayHolds adds an unreachable hold to the pass's routes, once, for each
-// prefix of the overlay that the mesh can carry and that holds no unspecified
-// address. A lookup the walk ends at the hold is refused (routing.md, where a
-// lookup ends on Linux), where without it an overlay destination no route of
-// the mesh covers would follow an exit's default into the mesh, or leave by
-// main, which on a host whose uplink shares the space carries it to a stranger
-// holding the same address.
-func (r *Reconciler) overlayHolds(out []Route) []Route {
+// prefix of the overlay that the mesh can carry, that holds no unspecified
+// address and that no carve-out equals. A lookup the walk ends at the hold is
+// refused (routing.md, where a lookup ends on Linux), where without it an
+// overlay destination no route of the mesh covers would follow an exit's
+// default into the mesh, or leave by main, which on a host whose uplink shares
+// the space carries it to a stranger holding the same address.
+func (r *Reconciler) overlayHolds(out []Route, carved []netip.Prefix) []Route {
 	for _, entry := range r.rt.Overlay {
 		destination, ok := canonicalPrefix(entry.Prefix)
-		if !ok || unroutable(destination) != "" {
+		if !ok || unroutable(destination) != "" || slices.Contains(carved, destination) {
 			continue
 		}
 		hold := Route{Destination: destination, Metric: holdMetric, Unreachable: true}
 		if !r.captures(hold) && !slices.Contains(out, hold) {
 			out = append(out, hold)
+		}
+	}
+	return out
+}
+
+// carveThrows adds a throw to the pass's routes, once, for each carve-out the
+// mesh can carry that holds no unspecified address, so a lookup inside it that
+// no route of the mesh answers goes on to the rules after the mesh's table and
+// meets main's route for the link. An entry of the mesh's table for
+// the carve-out's own prefix and every source keeps the prefix in the mesh.
+func (r *Reconciler) carveThrows(out []Route, carved []netip.Prefix, snapshot []sadr.Route[*netstack.Peer]) []Route {
+	for _, destination := range carved {
+		throw := Route{Destination: destination, Metric: holdMetric, Throw: true}
+		held := slices.ContainsFunc(snapshot, func(entry sadr.Route[*netstack.Peer]) bool {
+			prefix, ok := canonicalPrefix(entry.Destination)
+			return ok && prefix == destination && !entry.Source.IsValid()
+		})
+		if !held && unroutable(destination) == "" && !r.captures(throw) && !slices.Contains(out, throw) {
+			out = append(out, throw)
 		}
 	}
 	return out

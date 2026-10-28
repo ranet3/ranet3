@@ -61,9 +61,12 @@ func mirrorEntries() hegel.Generator[[]mirrorEntry] {
 // sectionOneThree is routing.md's table of what the reconciler installs, row
 // by row, for one table of entries: what the kernel's table holds for each,
 // and on a platform with the policy rules an unreachable hold for each overlay
-// prefix the mesh can carry that holds no unspecified address. policy is a
-// platform with the policy rules, gate the capture gate's answer.
-func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, exit, gate, policy bool) map[Route]bool {
+// prefix the mesh can carry that holds no unspecified address, and a throw for
+// each carve-out of the same kind, which takes the place of the hold of an
+// overlay prefix it equals and gives way to an entry of its own destination
+// for every source. policy is a platform with the policy rules, gate the
+// capture gate's answer.
+func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []netip.Prefix, exit, gate, policy bool) map[Route]bool {
 	out := map[Route]bool{}
 	counts := func(prefix netip.Prefix) bool { return schema.CapturesTheMachine(prefix, overlay) }
 	for _, entry := range entries {
@@ -92,8 +95,14 @@ func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, exit, gate,
 		out[route] = true
 	}
 	for _, prefix := range overlay {
-		if policy && !counts(prefix.Prefix) && unroutable(prefix.Masked()) == "" {
+		if policy && !counts(prefix.Prefix) && unroutable(prefix.Masked()) == "" && !slices.Contains(carved, prefix.Masked()) {
 			out[Route{Destination: prefix.Masked(), Metric: holdMetric, Unreachable: true}] = true
+		}
+	}
+	for _, prefix := range carved {
+		own := slices.ContainsFunc(entries, func(entry mirrorEntry) bool { return entry.destination == prefix && !entry.source.IsValid() })
+		if policy && !counts(prefix) && unroutable(prefix) == "" && !own {
+			out[Route{Destination: prefix, Metric: holdMetric, Throw: true}] = true
 		}
 	}
 	return out
@@ -108,12 +117,18 @@ func TestMirrorIsSectionOneThreesTable(t *testing.T) {
 		for _, prefix := range hegel.Draw(ht, hegel.Lists(anyNearPrefix()).MaxSize(2)) {
 			overlay = append(overlay, schema.PrefixFrom(prefix))
 		}
+		network := drawnCarveNetwork(ht)
 		rt := Runtime{
 			Interface:     "ranet0",
 			Overlay:       overlay,
 			EgressSegment: hegel.Draw(ht, hegel.Booleans()),
 			Advertised:    hegel.Draw(ht, hegel.Lists(anyNearPrefix()).MaxSize(2)),
 			Announced:     hegel.Draw(ht, hegel.Lists(anyNearPrefix()).MaxSize(2)),
+			Network:       func() NetworkState { return network },
+		}
+		var carved []netip.Prefix
+		for _, carveOut := range carveModel(network, overlay) {
+			carved = append(carved, carveOut.Prefix)
 		}
 		exit := rt.EgressSegment
 		for _, prefix := range slices.Concat(rt.Advertised, rt.Announced) {
@@ -135,7 +150,7 @@ func TestMirrorIsSectionOneThreesTable(t *testing.T) {
 			held = append(held, mirrorEntry{source: entry.Source, destination: entry.Destination, value: entry.Value})
 		}
 		got := r.desired(routes.Snapshot())
-		want := sectionOneThree(held, overlay, exit, r.capture, policy)
+		want := sectionOneThree(held, overlay, carved, exit, r.capture, policy)
 		set := map[Route]bool{}
 		for _, route := range got {
 			if set[route] {

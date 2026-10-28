@@ -76,7 +76,7 @@ func (r *Reconciler) lookUp() {
 	}
 	var asked []Lookup
 	var reads []RouteRead
-	for _, hold := range r.overlayHolds(nil) {
+	for _, hold := range r.overlayHolds(nil, nil) {
 		if !r.installed[hold] {
 			continue
 		}
