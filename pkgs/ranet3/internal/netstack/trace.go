@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
@@ -117,7 +118,7 @@ type TraceFilter struct {
 	// Protocol selects the protocol after the extension headers or options, 0 selecting all
 	Protocol uint8
 	Decision TraceDecision
-	// Peer selects a packet that arrived on that peer's session or goes to it, by its ID, empty selecting all
+	// Peer selects a packet that arrived on that peer's session or goes to it, named by its path, by org/name:serial, by org/name or by name, empty selecting all
 	Peer string
 }
 
@@ -323,7 +324,7 @@ func (c *traceClient) selects(site *traceSite) bool {
 	if c.filter.Decision != TraceAny && c.filter.Decision != site.decision {
 		return false
 	}
-	return c.filter.Peer == "" || site.from != nil && site.from.ID == c.filter.Peer || site.next != nil && site.next.ID == c.filter.Peer
+	return c.filter.Peer == "" || site.from != nil && identity.Names(site.from.ID, c.filter.Peer) || site.next != nil && identity.Names(site.next.ID, c.filter.Peer)
 }
 
 // mayTake is selects for held, a forward held before its options and forwardOne

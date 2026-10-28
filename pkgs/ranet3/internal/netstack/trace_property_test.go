@@ -7,6 +7,7 @@ package netstack
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 
 	"hegel.dev/go/hegel"
@@ -39,15 +40,9 @@ func modelWithin(prefixes []netip.Prefix, address netip.Addr) bool {
 
 // modelSelects is the filter as TraceFilter's fields describe it, for a packet of protocol from src to dst decided as site says
 func modelSelects(filter TraceFilter, src, dst netip.Addr, protocol uint8, site traceSite) bool {
-	peers := []string{}
-	for _, peer := range []*Peer{site.from, site.next} {
-		if peer != nil {
-			peers = append(peers, peer.ID)
-		}
-	}
 	peered := filter.Peer == ""
-	for _, id := range peers {
-		peered = peered || id == filter.Peer
+	for _, peer := range []*Peer{site.from, site.next} {
+		peered = peered || slices.Contains(tracePeerNames[peer], filter.Peer)
 	}
 	return modelWithin(filter.Sources, src) && modelWithin(filter.Destinations, dst) &&
 		(filter.Protocol == 0 || filter.Protocol == protocol) &&
@@ -66,7 +61,14 @@ func drawPrefixes(tc hegel.TestCase) []netip.Prefix {
 	return prefixes
 }
 
-var tracePeers = []*Peer{nil, traceGateway, traceLaptop}
+var tracePeers = []*Peer{nil, traceGateway, traceLaptop, traceSession}
+
+// tracePeerNames is every name a filter selects each peer by, written out by hand
+var tracePeerNames = map[*Peer][]string{
+	traceGateway: {"example/gateway", "gateway"},
+	traceLaptop:  {"example/my-laptop", "my-laptop"},
+	traceSession: {"example/relay:2@1", "example/relay:2", "example/relay", "relay"},
+}
 
 // over drawn clients and drawn packets of either family, each decided as a drawn site says, each client's feed takes exactly the packets its filter selects, in order, while its rate allows
 // a rate of a few a second allows the first that many, since a case runs well inside the interval one record takes to come back
@@ -87,7 +89,7 @@ func TestTraceRecordsExactlyThePacketsTheFilterSelects(t *testing.T) {
 					Destinations: drawPrefixes(ht),
 					Protocol:     hegel.Draw(ht, hegel.SampledFrom([]uint8{0, 6, 17, 58})),
 					Decision:     TraceDecision(hegel.Draw(ht, pbt.Spanning(0, int(traceDecisionCount)-1))),
-					Peer:         hegel.Draw(ht, hegel.SampledFrom([]string{"", traceGateway.ID, traceLaptop.ID, "example/other"})),
+					Peer:         hegel.Draw(ht, hegel.SampledFrom([]string{"", "example/gateway", "gateway", "my-laptop", "example/relay:2@1", "example/relay:2", "example/relay", "relay", "example/relay:3", "1", "example/other"})),
 				},
 				rate: hegel.Draw(ht, hegel.SampledFrom([]int{TraceRateMin, 2, 8, TraceRateMax})),
 			}

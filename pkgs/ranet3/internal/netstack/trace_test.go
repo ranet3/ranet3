@@ -18,6 +18,8 @@ import (
 var (
 	traceGateway = &Peer{ID: "example/gateway"}
 	traceLaptop  = &Peer{ID: "example/my-laptop"}
+	// traceSession is a peer named by its session's path, as the client names every peer it adds
+	traceSession = &Peer{ID: "example/relay:2@1"}
 )
 
 // traceMesh is a mesh with no tun, for its feeds alone
@@ -106,6 +108,12 @@ func TestTraceFilterSelectsByEachKind(t *testing.T) {
 			{"the peer it goes to", TraceFilter{Peer: traceLaptop.ID}, udp, forwardedBy(traceGateway, traceLaptop), true},
 			{"another peer", TraceFilter{Peer: "example/other"}, udp, forwardedBy(traceGateway, traceLaptop), false},
 			{"a peer for a packet of the tun", TraceFilter{Peer: traceGateway.ID}, udp, traceSite{arrival: TraceArrivedTUN, decision: TraceDrop, reason: transitForged}, false},
+			{"a session's path", TraceFilter{Peer: traceSession.ID}, udp, forwardedBy(traceSession, nil), true},
+			{"a session's peer by its identity", TraceFilter{Peer: "example/relay:2"}, udp, forwardedBy(nil, traceSession), true},
+			{"a session's peer by its node", TraceFilter{Peer: "example/relay"}, udp, forwardedBy(traceSession, nil), true},
+			{"a session's peer by its name", TraceFilter{Peer: "relay"}, udp, forwardedBy(nil, traceSession), true},
+			{"another serial of a session's peer", TraceFilter{Peer: "example/relay:3"}, udp, forwardedBy(traceSession, nil), false},
+			{"a session's local serial", TraceFilter{Peer: "1"}, udp, forwardedBy(traceSession, nil), false},
 		} {
 			t.Run(fmt.Sprintf("IPv%d %s", family, c.name), func(t *testing.T) {
 				m := traceMesh(t)
