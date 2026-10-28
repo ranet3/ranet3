@@ -122,7 +122,7 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 		return e.decided(readSite(TraceDrop, reason))
 	}
 	site, header := readSite(TraceForward, transitForwarded), []byte(nil)
-	if policy := m.steerPolicy(src, dst); policy != nil {
+	if policy := m.steerPolicy(src, dst, verdict, match.Counted); policy != nil {
 		e.Policy = policy
 		steered, err := srv6.AppendEncapsulated(nil, raw, policy.Source, policy.Path)
 		if err != nil {
@@ -130,10 +130,9 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 			return e.decided(site)
 		}
 		header = steered[:len(steered)-len(raw)]
-		src, dst, _, _ = addrsOf(steered)
-		if peer, verdict, _ = m.Routes.Resolve(src, dst); verdict != RoutePeer {
-			site.decision, site.reason = TraceDrop, transitNoRoute
-			return e.decided(site)
+		outer, first, _, _ := addrsOf(steered)
+		if peer, verdict, _ = m.Routes.Resolve(outer, first); verdict != RoutePeer {
+			return e.decided(readSite(TraceAnswer, unroutedReason(RouteNone)).answered(m.unreachable(RouteNone, Match{}, dst), TraceNoAnswer))
 		}
 	}
 	switch verdict {

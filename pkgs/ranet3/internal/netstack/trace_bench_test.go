@@ -71,7 +71,7 @@ func BenchmarkClassifyTraced(b *testing.B) {
 		}
 		for _, client := range traceClientArms {
 			b.Run(fmt.Sprintf("%s %s", arm.name, client.name), func(b *testing.B) {
-				m, read := classifyRead(b, arm.family, arm.count, arm.sources, arm.shape)
+				m, read, _ := classifyRead(b, arm)
 				traced(b, m, client.filter, client.payload)
 				inTurn := arm.count < arm.sources
 				b.ReportAllocs()
@@ -126,7 +126,7 @@ func TestUntracedDecisionAllocatesNothing(t *testing.T) {
 		if arm.shape != classifyPlain {
 			continue
 		}
-		m, read := classifyRead(t, arm.family, arm.count, arm.sources, arm.shape)
+		m, read, _ := classifyRead(t, arm)
 		if allocs := leastAllocs(func() {
 			read.n = arm.count
 			m.classify(read)
@@ -190,7 +190,7 @@ func TestTracedDecisionCopiesNothingForAClientItLeavesOut(t *testing.T) {
 			t.Errorf("the client %s recorded %d of the batches End forwarded", c.name, recorded)
 		}
 	}
-	m, read := classifyRead(t, 6, 1, 1, classifySteered)
+	m, read, _ := classifyRead(t, oneSteeredRead)
 	closed := routeClosed(m, segPrefix("3fff:1::/64"))
 	openTrace(t, m, TraceFilter{Decision: TraceForward}, 64, control.TraceRateDefault)
 	m.classify(read)

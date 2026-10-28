@@ -428,7 +428,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		// a steered packet is routed by the segment it is going to rather than by the address it was read with
 		// and its record names the read's addresses and the first segment
-		sent, policy := raw, m.steerPolicy(src, dst)
+		sent, policy := raw, m.steerPolicy(src, dst, verdict, match.Counted)
 		if policy != nil {
 			if b.steered[i], ok = m.steer(b.steered[i][:0], raw, policy); !ok {
 				if trace != nil {
@@ -437,20 +437,25 @@ func (m *Mesh) classify(b *outboundBatch) {
 				continue
 			}
 			sent = b.steered[i]
-			if src, dst, nh, ok = addrsOf(sent); !ok {
+			outer, first, next, ok := addrsOf(sent)
+			if !ok {
 				continue
 			}
-			peer, verdict, _ = m.Routes.Resolve(src, dst)
+			// a first segment of this node's own is its steering's failure rather than a loop
+			if peer, verdict, _ = m.Routes.Resolve(outer, first); verdict != RoutePeer {
+				m.segmentsUnrouted.Add(1)
+				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", first)
+				if trace != nil {
+					trace.unroutedRead(m, raw, RouteNone, Match{}, src, dst, first)
+				} else {
+					m.answerUnroutedRead(raw, RouteNone, Match{}, src, dst, (*Mesh).takeICMPToken)
+				}
+				continue
+			}
+			nh = next
 		}
 		if verdict != RoutePeer {
 			switch {
-			// a steered packet is answered at its first segment, so even this node's own there is its steering's failure rather than a loop
-			case policy != nil:
-				m.segmentsUnrouted.Add(1)
-				m.reportSegmentDrop("no route to the first segment of a steered packet", "segment", dst)
-				if trace != nil {
-					trace.read(TraceDrop, transitNoRoute, dst, raw)
-				}
 			case verdict == RouteLocal:
 				m.dropTransit(&tally, transitLooped, src, dst)
 				if trace != nil {
@@ -458,7 +463,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 				}
 			default:
 				if trace != nil {
-					trace.unroutedRead(m, raw, verdict, match, src, dst)
+					trace.unroutedRead(m, raw, verdict, match, src, dst, netip.Addr{})
 				} else {
 					m.answerUnroutedRead(raw, verdict, match, src, dst, (*Mesh).takeICMPToken)
 				}
@@ -498,6 +503,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 // the answer is the one unreachable gives, from dst, and goes back into the tun, the one link the packet came by, whatever src is
 // answer's reply route is a session's, and would send the answer to a host packet from an uplink address out through the mesh or nowhere
 // verdict is RouteNone or RouteHeld, since the caller has taken a read the table answers with a peer or as this node's own
+// a steered read whose first segment the table reaches by no route is answered as RouteNone, RFC 4443 section 3.1 having the originating node's IPv6 layer answer it
 // it draws through take, and reports the kind of the answer and its fate as answerTaking does
 func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src, dst netip.Addr, take takeAnswer) (answerKind, TraceOutcome) {
 	kind := m.unreachable(verdict, match, dst)

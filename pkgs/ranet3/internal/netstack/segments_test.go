@@ -269,7 +269,7 @@ func TestSteeredPacketIsRoutedByItsFirstSegment(t *testing.T) {
 	mesh.SetSteering(table)
 
 	inner := plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), "payload")
-	policy := mesh.steerPolicy(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"))
+	policy := mesh.steerPolicy(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), RoutePeer, false)
 	if policy == nil {
 		t.Fatal("a packet the policy names was not claimed")
 	}
@@ -288,7 +288,7 @@ func TestSteeredPacketIsRoutedByItsFirstSegment(t *testing.T) {
 	}
 
 	// A packet from another address is claimed by no policy.
-	if policy := mesh.steerPolicy(segAddr("3fff:a::18"), segAddr("2001:4860:4860::8888")); policy != nil {
+	if policy := mesh.steerPolicy(segAddr("3fff:a::18"), segAddr("2001:4860:4860::8888"), RoutePeer, false); policy != nil {
 		t.Errorf("a packet no policy names was claimed by %v", policy)
 	}
 }
@@ -313,7 +313,7 @@ func TestPacketThatCannotBeSteeredIsDropped(t *testing.T) {
 	inner := plainV6(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), string(make([]byte, 0xffff-8-16-40+1)))
 	original := bytes.Clone(inner)
 	side := make([]byte, 3, 64)
-	steered, ok := mesh.steer(side, inner, mesh.steerPolicy(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888")))
+	steered, ok := mesh.steer(side, inner, mesh.steerPolicy(segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888"), RoutePeer, false))
 	if ok || len(steered) != len(side) || cap(steered) != cap(side) {
 		t.Fatalf("a packet that could not be encapsulated reported %v with %d bytes in its side buffer", ok, len(steered))
 	}

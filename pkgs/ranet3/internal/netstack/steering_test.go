@@ -58,9 +58,9 @@ func TestOutboundSeamRoutesBySegmentRatherThanByDestination(t *testing.T) {
 }
 
 // A steered packet whose first segment the mesh cannot reach is gone at the
-// route lookup. Without a counter there the steered figure climbs while the
-// traffic disappears and nothing anywhere says so. It gets no answer in the
-// tun.
+// route lookup, counted unrouted, and answered into the tun with destination
+// unreachable, no route, from the destination it was read with, as RFC 4443
+// section 3.1 has the originating node answer it.
 func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
 	table, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(segPrefix("3fff:a::17/128")),
@@ -71,9 +71,12 @@ func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
 	}
 	m, dev := recordingMesh(t)
 	m.SetSteering(table)
-	if _, written := classifyOne(m, dev, plainV6(segAddr("3fff:a::17"), segAddr("2001:db8:c::9"), "payload")); len(written) != 0 {
-		t.Errorf("a steered packet with nowhere to go put %d packets into the tun", len(written))
+	read := udpPacket(segAddr("3fff:a::17"), segAddr("2001:db8:c::9"), 100, false)
+	_, written := classifyOne(m, dev, read)
+	if len(written) != 1 {
+		t.Fatalf("a steered packet with nowhere to go put %d packets into the tun, want its answer", len(written))
 	}
+	checkICMPv6(t, written[0], read, segAddr("2001:db8:c::9"), 1, 0, 0)
 	// Unrouted rather than Dropped: this is a packet of this node's own that
 	// its steering could not deliver, not one a peer addressed to a segment
 	// here, and status reports the two on different lines.
@@ -103,7 +106,7 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 	m.SetSteering(table)
 	source, destination := segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888")
 
-	policy := m.steerPolicy(source, destination)
+	policy := m.steerPolicy(source, destination, RoutePeer, false)
 	if policy == nil {
 		t.Fatal("the fixture policy did not claim the packet, so this proves nothing")
 	}
@@ -111,7 +114,7 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 		t.Fatal("the fixture policy could not encapsulate the packet, so this proves nothing")
 	}
 	m.SetSteeringEnabled(false)
-	if policy := m.steerPolicy(source, destination); policy != nil {
+	if policy := m.steerPolicy(source, destination, RoutePeer, false); policy != nil {
 		t.Errorf("a stopped steering claimed the packet for %v", policy)
 	}
 	if got := m.SegmentCounters().Steered; got != 1 {
@@ -121,7 +124,7 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 		t.Error("stopping unloaded the table, so nothing can report which policies were stopped")
 	}
 	m.SetSteeringEnabled(true)
-	if m.steerPolicy(source, destination) == nil {
+	if m.steerPolicy(source, destination, RoutePeer, false) == nil {
 		t.Error("steering started again did not claim the packet")
 	}
 }

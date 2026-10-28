@@ -147,7 +147,7 @@ var readCases = func() []explainCase {
 		{"a steer", explainSteered, udpPacket(transitOwn[6], transitFar[6], 100, false), steered},
 		{"a steer past the session's MTU", explainSteered, udpPacket(transitOwn[6], transitFar[6], tracedMTU-srv6.Overhead(1)+1, false), steeredTooBig},
 		{"a steer the encapsulation refuses", explainSteered, udpPacket(transitOwn[6], transitFar[6], 65535, false), Explanation{Decision: TraceDrop, Reason: "too_big", Policy: steeredBy, Match: far6}},
-		{"a steer with no route to its segment", explainStranded, udpPacket(transitOwn[6], transitFar[6], 100, false), Explanation{Decision: TraceDrop, Reason: "no_route", Policy: steeredBy, Match: far6}},
+		{"a steer with no route to its segment", explainStranded, udpPacket(transitOwn[6], transitFar[6], 100, false), Explanation{Decision: TraceAnswer, Reason: "no_route", Answer: "no_route", Policy: steeredBy, Match: far6}},
 	}
 }()
 

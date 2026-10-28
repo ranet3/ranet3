@@ -494,7 +494,7 @@ func TestTUNReadToASIDOfThisNodeIsDropped(t *testing.T) {
 
 // a read off the tun the table answers this node's own is dropped and counted looped, since the mesh could only hand it back to the tun
 // to a host route of its own, to an address cap.table assigns it and toward the internet through its own default, while one into a hold is answered and counted so
-// and a steered packet whose first segment is this node's own counts as its steering's failure, unrouted, and not as looped
+// and a steered packet whose first segment is this node's own counts as its steering's failure, unrouted and answered, and not as looped
 func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		m, _ := edgeMesh(t)
@@ -516,6 +516,7 @@ func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 		}
 
 		steered, _ := edgeMesh(t)
+		steered.SetAnswerTTL(64)
 		steering, err := srv6.NewSteerTable([]srv6.Steer{{From: schema.PrefixFrom(hostPrefix(transitOwn[family])), Via: []schema.Addr{schema.AddrFrom(edgeOwnSID)}}}, schema.MustAddr("3fff:b:0:100::1"))
 		if err != nil {
 			t.Fatal(err)
@@ -528,8 +529,8 @@ func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 		if got := steered.SegmentCounters(); got.Steered != 1 || got.Unrouted != 1 {
 			t.Errorf("IPv%d a read steered to a first segment of this node's own counted %+v, want one steered and unrouted", family, got)
 		}
-		if got := steered.TransitCounters(); got != (TransitCounters{}) {
-			t.Errorf("IPv%d a read steered to a first segment of this node's own counted %+v", family, got)
+		if got := steered.TransitCounters(); got != (TransitCounters{Answered: 1}) {
+			t.Errorf("IPv%d a read steered to a first segment of this node's own counted %+v, want only its answer", family, got)
 		}
 	}
 }

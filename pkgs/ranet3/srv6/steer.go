@@ -39,6 +39,10 @@ type Policy struct {
 	// name is the line a diagnostic prints, built once so a report costs no
 	// formatting per read.
 	name string
+	// checked is a path and source CheckPath took when the table was built,
+	// which AppendEncapsulated then trusts rather than checking again a packet at a time,
+	// so Source and Path of a policy a table built are not written after its construction
+	checked bool
 }
 
 func (p *Policy) String() string {
@@ -54,6 +58,15 @@ func (p *Policy) Overhead() int {
 		return 0
 	}
 	return Overhead(len(p.Path))
+}
+
+// AppendEncapsulated appends inner, encapsulated under p, to dst, as the package's AppendEncapsulated does
+// a policy a table built skips the path check its constructor already ran, and one written as a literal keeps it
+func (p *Policy) AppendEncapsulated(dst, inner []byte) ([]byte, error) {
+	if !p.checked {
+		return AppendEncapsulated(dst, inner, p.Source, p.Path)
+	}
+	return appendEncapsulated(dst, inner, p.Source, p.Path)
 }
 
 // Steer is one entry of the cap.segment capability, parsed straight out of the
@@ -179,6 +192,7 @@ func NewSteerTable(entries []Steer, source schema.Addr) (*SteerTable, error) {
 		}
 		seen[selector] = true
 		policy.name = steerName(entry, &policy)
+		policy.checked = true
 		stored := &policy
 		out.policies = append(out.policies, stored)
 		out.overhead = max(out.overhead, stored.Overhead())
@@ -246,7 +260,7 @@ func (t *SteerTable) WithDefault(source netip.Addr, path []netip.Addr) (*SteerTa
 	if t != nil {
 		out.table, out.policies, out.overhead = t.table, t.policies, t.overhead
 	}
-	out.path = &Policy{Source: source, Path: slices.Clone(path)}
+	out.path = &Policy{Source: source, Path: slices.Clone(path), checked: true}
 	out.path.name = "default via " + joinPath(out.path.Path)
 	out.overhead = max(out.overhead, out.path.Overhead())
 	return out, nil

@@ -211,7 +211,14 @@ func AppendEncapsulated(dst, inner []byte, source netip.Addr, path []netip.Addr)
 	if err := CheckPath(source, path); err != nil {
 		return dst, err
 	}
-	if _, err := innerNextHeader(inner); err != nil {
+	return appendEncapsulated(dst, inner, source, path)
+}
+
+// appendEncapsulated is AppendEncapsulated for a source and a path CheckPath
+// has taken, which a Policy's constructor checks once rather than a packet at a time
+func appendEncapsulated(dst, inner []byte, source netip.Addr, path []netip.Addr) ([]byte, error) {
+	innerNext, err := innerNextHeader(inner)
+	if err != nil {
 		return dst, err
 	}
 	// The outer payload length is 16 bits and counts the routing header as
@@ -223,7 +230,7 @@ func AppendEncapsulated(dst, inner []byte, source netip.Addr, path []netip.Addr)
 	overhead, start := Overhead(len(path)), len(dst)
 	dst = slices.Grow(dst, overhead+len(inner))[:start+overhead+len(inner)]
 	copy(dst[start+overhead:], inner)
-	writeOuter(dst[start:start+overhead], dst[start+overhead:], source, path)
+	writeOuter(dst[start:start+overhead], dst[start+overhead:], innerNext, source, path)
 	return dst, nil
 }
 
@@ -264,15 +271,15 @@ func Usable(address netip.Addr) bool {
 		!address.IsUnspecified() && !address.IsMulticast()
 }
 
-// writeOuter fills a header of exactly Overhead(len(path)) bytes. Its caller
-// has already checked everything, so it cannot fail and never reports.
+// writeOuter fills a header of exactly Overhead(len(path)) bytes in front of
+// inner, whose next header innerNext names. Its caller has already checked
+// everything, so it cannot fail and never reports.
 //
 // Every byte of the header is assigned rather than left as it was found:
 // AppendEncapsulated hands this the bytes an earlier packet left in a buffer
 // its caller keeps, so anything skipped here would go on the wire as a
 // fragment of that packet.
-func writeOuter(out, inner []byte, source netip.Addr, path []netip.Addr) {
-	innerNext, _ := innerNextHeader(inner)
+func writeOuter(out, inner []byte, innerNext uint8, source netip.Addr, path []netip.Addr) {
 	// __seg6_do_srh_encap copies the traffic class, the flow label and the hop
 	// limit out of an IPv6 inner packet, the behavior seg6_flowlabel 0 names
 	// and its default. Matching it keeps a packet this node steers and
@@ -282,9 +289,8 @@ func writeOuter(out, inner []byte, source netip.Addr, path []netip.Addr) {
 	if innerNext == NextHeaderIPv6 {
 		hopLimit = inner[7]
 	}
-	segments := reversed(path)
-	last := uint8(len(segments) - 1)
-	srhLen := srhFixedLen + addrLen*len(segments)
+	last := uint8(len(path) - 1)
+	srhLen := srhFixedLen + addrLen*len(path)
 
 	if innerNext == NextHeaderIPv6 {
 		// Version, traffic class and flow label together, since the inner
@@ -298,21 +304,22 @@ func writeOuter(out, inner []byte, source netip.Addr, path []netip.Addr) {
 	out[6] = nextHeaderRouting
 	out[7] = hopLimit
 	copy(out[8:], addr16(source))
-	// The outer destination is the first segment of the path, which after the
-	// reversal above is the last element and is also Segments[SegmentsLeft].
-	copy(out[24:], addr16(segments[last]))
+	// The outer destination is the first segment of the path, which the wire's
+	// list holds last, as Segments[SegmentsLeft].
+	copy(out[24:], addr16(path[0]))
 
 	srh := out[ipv6HeaderLen:]
 	srh[0] = innerNext
 	// Hdr Ext Len counts 8-octet units after the first eight octets, so a list
 	// of n segments is 2n.
-	srh[1] = uint8(2 * len(segments))
+	srh[1] = uint8(2 * len(path))
 	srh[2] = routingTypeSegment
 	srh[3] = last // Segments Left starts at the last index
 	srh[4] = last // Last Entry is that index too
 	srh[5], srh[6], srh[7] = 0, 0, 0
-	for i, segment := range segments {
-		copy(srh[srhFixedLen+addrLen*i:], addr16(segment))
+	// the wire holds the path backward, written in place so a packet allocates nothing
+	for i, segment := range path {
+		copy(srh[srhFixedLen+addrLen*(len(path)-1-i):], addr16(segment))
 	}
 }
 
@@ -538,14 +545,6 @@ func innerNextHeader(inner []byte) (uint8, error) {
 	default:
 		return 0, fmt.Errorf("srv6: the packet to encapsulate is IP version %d", version)
 	}
-}
-
-func reversed(path []netip.Addr) []netip.Addr {
-	out := make([]netip.Addr, len(path))
-	for i, segment := range path {
-		out[len(path)-1-i] = segment
-	}
-	return out
 }
 
 func addr16(address netip.Addr) []byte {

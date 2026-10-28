@@ -182,18 +182,20 @@ var outcomeCases = func() []outcomeCase {
 		{"a read to this node", transitLooped, classified(udp(4, transitOwn, edgeAssigned, 100, false)), read(TraceDrop, "looped")},
 		{"a read queued for its peer", transitForwarded, classified(udp(4, transitOwn, transitFar, 100, false)), with(read(TraceForward, ""), func(r *TraceRecord) { r.Next = "peer" })},
 		{"a read a policy steers", transitForwarded, func(t *testing.T) []TraceRecord {
-			m, batch := classifyRead(t, 6, 1, 1, classifySteered)
+			m, batch, _ := classifyRead(t, oneSteeredRead)
 			feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
 			m.classify(batch)
 			return queued(feed)
 		}, with(read(TraceForward, ""), func(r *TraceRecord) { r.Next, r.Segment = "peer", segAddr("3fff:1::1") })},
 		{"a steered read with no route to its first segment", transitNoRoute, func(t *testing.T) []TraceRecord {
-			m, batch := classifyRead(t, 6, 1, 1, classifySteered)
+			m, batch, _ := classifyRead(t, oneSteeredRead)
 			m.Routes.Remove(netip.Prefix{}, segPrefix("3fff:1::/64"))
 			feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
 			m.classify(batch)
 			return queued(feed)
-		}, with(read(TraceDrop, "no_route"), func(r *TraceRecord) { r.Segment = segAddr("3fff:1::1") })},
+		}, with(read(TraceAnswer, "no_route"), func(r *TraceRecord) {
+			r.Segment, r.Answer, r.Outcome = segAddr("3fff:1::1"), "no_route", TraceSent
+		})},
 		{"a read to a hold", transitHeld, classified(udp(4, transitOwn, transitHeldHost, 100, false)), with(read(TraceAnswer, "held"), func(r *TraceRecord) { r.Answer, r.Outcome = "host_unreachable", TraceSent })},
 		{"a read too big", transitTooBig, classified(udp(6, transitOwn, transitFar, tracedMTU+100, false)), with(read(TraceAnswer, "too_big"), func(r *TraceRecord) { r.Answer, r.Outcome = "too_big", TraceSent })},
 		{"an egress segment", transitDelivered, acted(nil, headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressExit)), with(session(TraceEgress, ""), func(r *TraceRecord) { r.Segment = egressExit })},
@@ -436,7 +438,7 @@ func TestTraceFiltersByThePacketItsForwardShowed(t *testing.T) {
 		}
 	})
 	t.Run("a read a policy steered to a peer whose budget refused it", func(t *testing.T) {
-		m, read := classifyRead(t, 6, 1, 1, classifySteered)
+		m, read, _ := classifyRead(t, oneSteeredRead)
 		m.outboundJobs = make(chan *outboundBatch, 1)
 		steeredTo := segAddr("3fff:1::1")
 		routeClosed(m, segPrefix("3fff:1::/64"))
@@ -459,7 +461,7 @@ func TestTraceFiltersByThePacketItsForwardShowed(t *testing.T) {
 		budgetDropsEachFragment(t, queued(feed))
 	})
 	t.Run("a read a policy steered cut into fragments to a peer whose budget refused them", func(t *testing.T) {
-		m, _ := classifyRead(t, 4, 1, 1, classifySteered)
+		m, _, _ := classifyRead(t, classifyArm{family: 4, count: 1, sources: 1, shape: classifySteered})
 		m.outboundJobs = make(chan *outboundBatch, 1)
 		routeClosed(m, segPrefix("3fff:1::/64")).SetMTU(tracedMTU)
 		read := newOutboundBatch(1)

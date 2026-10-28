@@ -38,26 +38,35 @@ func (m *Mesh) SetSteering(table *srv6.SteerTable) { m.steerTable.Store(table) }
 // Steering is the table currently installed.
 func (m *Mesh) Steering() *srv6.SteerTable { return m.steerTable.Load() }
 
-// SetSteeringEnabled stops or starts steering without taking the table away,
-// so a diagnostic still reports the policies that would apply and an operator
-// can see what was stopped. A packet already encapsulated is not unwound: the
-// flag decides the packets looked at after it is stored, exactly as the table
-// pointer does.
+// SetSteeringEnabled stops or starts cap.segment steer's entries without
+// taking the table away, so a diagnostic still reports the policies that would
+// apply and an operator can see what was stopped. cap.exit via's path is not
+// stopped, since a stop would send its packets to whichever exit the mesh
+// prefers, which mode 3 exists to rule out. A packet already encapsulated is
+// not unwound: the flag decides the packets looked at after it is stored,
+// exactly as the table pointer does.
 func (m *Mesh) SetSteeringEnabled(on bool) { m.steerStopped.Store(!on) }
 
 // SteeringEnabled reports whether the policies are being acted on.
 func (m *Mesh) SteeringEnabled() bool { return !m.steerStopped.Load() }
 
-// steerPolicy is the policy that claims one outbound packet, nil for one no policy claims
-// a packet no policy claims costs one trie lookup, the same lookup the forwarding table is about to do anyway
-func (m *Mesh) steerPolicy(source, destination netip.Addr) *srv6.Policy {
+// steerPolicy is the policy that claims a read off the tun from source to destination, nil for one none claims
+// a cap.segment steer entry claims it first, then cap.exit via's path where the table answered it with verdict through an entry counting as a default or through none
+// the path never takes a destination inside the overlay, which an exit refuses as an inner destination and the kernel's holds keep off the tun
+func (m *Mesh) steerPolicy(source, destination netip.Addr, verdict Verdict, counted bool) *srv6.Policy {
 	table := m.steerTable.Load()
-	// The stop is read after the table, so a node that steers nothing pays the
-	// one load it already paid and the second is on the nodes that do steer.
-	if table == nil || m.steerStopped.Load() {
+	if table == nil {
 		return nil
 	}
-	return table.Lookup(source, destination)
+	if !m.steerStopped.Load() {
+		if policy := table.Lookup(source, destination); policy != nil {
+			return policy
+		}
+	}
+	if path := table.Default(); path != nil && (counted || verdict == RouteNone) && !m.inOverlay(destination) {
+		return path
+	}
+	return nil
 }
 
 // steer appends raw, encapsulated under policy, to dst, never touching raw
@@ -70,7 +79,7 @@ func (m *Mesh) steerPolicy(source, destination netip.Addr) *srv6.Policy {
 // read, so what is left needs a packet larger than the device MTU this node
 // set, and that is a deployment to fix rather than to carry.
 func (m *Mesh) steer(dst, raw []byte, policy *srv6.Policy) ([]byte, bool) {
-	encapsulated, err := srv6.AppendEncapsulated(dst, raw, policy.Source, policy.Path)
+	encapsulated, err := policy.AppendEncapsulated(dst, raw)
 	if err != nil {
 		m.segmentsUnsteered.Add(1)
 		m.reportSegmentDrop("a packet a policy claimed could not be encapsulated", "policy", policy, "err", err)

@@ -237,3 +237,41 @@ func TestDefaultPolicyStandsBesideTheTrie(t *testing.T) {
 		t.Error("a default sent from an IPv4 source was taken")
 	}
 }
+
+// a policy a table built encapsulates as the package's AppendEncapsulated does, the entry's and the default's alike
+// one written as a literal took no constructor's check, so its own path check still refuses what CheckPath refuses
+func TestPolicyEncapsulatesAsTheFunctionDoes(t *testing.T) {
+	source := addr("3fff::2")
+	path := []netip.Addr{addr("3fff:b:0:406::4"), addr("3fff:b:0:306::3")}
+	table, err := NewSteerTable([]Steer{steering("3fff:a::1/128", "", "3fff::2", "3fff:b:0:206::1")}, schema.Addr{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err = table.WithDefault(source, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inner := range [][]byte{innerV6("steered"), innerV4("steered")} {
+		for _, built := range []*Policy{table.Lookup(addr("3fff:a::1"), addr("2001:db8::9")), table.Default()} {
+			want, err := AppendEncapsulated([]byte("front"), inner, built.Source, built.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := built.AppendEncapsulated([]byte("front"), inner)
+			if err != nil || !slices.Equal(got, want) {
+				t.Errorf("%s encapsulated %x (%v), want %x", built, got, err, want)
+			}
+		}
+	}
+	for name, literal := range map[string]Policy{
+		"no segments":     policy("3fff::2"),
+		"an IPv4 segment": {Source: source, Path: []netip.Addr{addr("192.0.2.1")}},
+		"a multicast one": policy("3fff::2", "ff02::1"),
+		"an IPv4 source":  {Source: addr("192.0.2.2"), Path: path},
+		"17 segments":     {Source: source, Path: make([]netip.Addr, MaxSegments+1)},
+	} {
+		if got, err := literal.AppendEncapsulated([]byte("front"), innerV6("refused")); err == nil || string(got) != "front" {
+			t.Errorf("a literal policy with %s encapsulated %x (%v)", name, got, err)
+		}
+	}
+}

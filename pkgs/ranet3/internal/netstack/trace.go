@@ -572,13 +572,15 @@ func (t *tracer) read(decision TraceDecision, reason transitReason, segment neti
 	t.record(site, raw)
 }
 
-// unroutedRead answers raw, a packet read off the tun, as m.answerUnroutedRead does, and records it with the answer's fate
+// unroutedRead answers raw, a packet read off the tun, as m.answerUnroutedRead does, and records it with the answer's fate, toward segment where it is valid
 //
 //go:noinline
-func (t *tracer) unroutedRead(m *Mesh, raw []byte, verdict Verdict, match Match, src, dst netip.Addr) {
+func (t *tracer) unroutedRead(m *Mesh, raw []byte, verdict Verdict, match Match, src, dst, segment netip.Addr) {
 	var draw answerDraw
 	kind, fate := m.answerUnroutedRead(raw, verdict, match, src, dst, draw.take)
-	t.record(readSite(TraceAnswer, unroutedReason(verdict)).answered(kind, draw.met(fate)), raw)
+	site := readSite(TraceAnswer, unroutedReason(verdict)).answered(kind, draw.met(fate))
+	site.segment = segment
+	t.record(site, raw)
 }
 
 // tooBig takes sent, a read off the tun larger than mtu, the largest next's session carries, as m.tooBig does, and records raw, the read, as readSent says
