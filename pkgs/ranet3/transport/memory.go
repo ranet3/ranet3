@@ -138,6 +138,7 @@ type memoryEndpoint struct{ addr netip.AddrPort }
 func (*memoryEndpoint) transportEndpoint()         {}
 func (e *memoryEndpoint) String() string           { return net.UDPAddrFromAddrPort(e.addr).String() }
 func (e *memoryEndpoint) AddrPort() netip.AddrPort { return e.addr }
+func (e *memoryEndpoint) zone() string             { return e.addr.Addr().Zone() }
 func (e *memoryEndpoint) withoutSource() Endpoint  { return e }
 
 func (e *memoryEndpoint) sameDestination(other Endpoint) bool {

@@ -75,6 +75,8 @@ func (e *udpEndpoint) AddrPort() netip.AddrPort {
 	return netip.AddrPortFrom(addr.Unmap(), uint16(e.addr.Port))
 }
 
+func (e *udpEndpoint) zone() string { return e.addr.Zone }
+
 func (e *udpEndpoint) withoutSource() Endpoint { return &udpEndpoint{addr: e.addr} }
 
 type udpBatchConn interface {

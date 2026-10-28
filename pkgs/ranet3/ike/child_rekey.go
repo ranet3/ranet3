@@ -185,6 +185,16 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	if err := s.canReplaceChild(localSPI); err != nil {
 		return err
 	}
+	// and the SPI routes to this session before the answer can, so ESP on it never reaches the hub as unknown, until an exchange that installs no SA with it lets it go
+	if err := s.mux.RegisterESP(localSPI); err != nil {
+		return err
+	}
+	installed := false
+	defer func() {
+		if !installed {
+			s.mux.UnregisterESP(localSPI)
+		}
+	}()
 	response, err := s.requestOnLocked(context, CREATE_CHILD_SA, inner)
 	if err != nil {
 		return fmt.Errorf("ike: Child SA negotiation request: %w", err)
@@ -230,6 +240,7 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	}); err != nil {
 		return orphaned(err)
 	}
+	installed = true
 	if old == nil {
 		return nil
 	}

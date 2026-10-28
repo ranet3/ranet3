@@ -35,6 +35,14 @@ func (e *portableEndpoint) AddrPort() netip.AddrPort {
 	return netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
 }
 
+func (e *portableEndpoint) zone() string {
+	addr, err := netip.ParseAddrPort(e.DstToString())
+	if err != nil {
+		return ""
+	}
+	return addr.Addr().Zone()
+}
+
 func (b *portableBind) ParseEndpoint(s string) (Endpoint, error) {
 	ep, err := b.Bind.ParseEndpoint(s)
 	return &portableEndpoint{ep}, err

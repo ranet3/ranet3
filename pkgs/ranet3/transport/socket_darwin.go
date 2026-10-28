@@ -116,6 +116,8 @@ func (e *darwinEndpoint) sameDestination(other Endpoint) bool {
 	return ok && e.addr == o.addr && bytes.Equal(e.arrival(e.control), o.arrival(o.control))
 }
 
+func (e *darwinEndpoint) zone() string { return e.addr.Addr().Zone() }
+
 func (e *darwinEndpoint) withoutSource() Endpoint { return &darwinEndpoint{addr: e.addr} }
 
 // darwinSocket is one bound UDP socket of one family. raw is retained for the
