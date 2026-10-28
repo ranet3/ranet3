@@ -74,51 +74,19 @@ type exitLab struct {
 
 func newExitLab(t *testing.T) *exitLab {
 	t.Helper()
-	lab := &exitLab{leaf: netnstest.StartThread(t), far: netnstest.StartThread(t), container: netnstest.StartThread(t), lan: netnstest.StartThread(t), ping: exitPingBase}
+	lab := &exitLab{leaf: netnstest.StartThread(t), far: netnstest.StartThread(t), ping: exitPingBase}
 	rulesUplinkPair(t, lab.leaf, lab.far)
 	for _, side := range []struct {
-		host       *netnstest.Thread
+		host       **netnstest.Thread
 		near, peer string
-		near4      netip.Prefix
-		near6      netip.Prefix
-		host4      netip.Prefix
-		host6      netip.Prefix
+		// ends is the leaf's end of each family and then the host's
+		ends [2][2]netip.Prefix
 	}{
-		{lab.container, exitBridge, exitContainer, exitLabHost[4].bridge, exitLabHost[6].bridge, exitLabHost[4].container, exitLabHost[6].container},
-		{lab.lan, exitLAN, exitLANHost, exitLabHost[4].lan, exitLabHost[6].lan, exitLabHost[4].lanHost, exitLabHost[6].lanHost},
+		{&lab.container, exitBridge, exitContainer, [2][2]netip.Prefix{{exitLabHost[4].bridge, exitLabHost[6].bridge}, {exitLabHost[4].container, exitLabHost[6].container}}},
+		{&lab.lan, exitLAN, exitLANHost, [2][2]netip.Prefix{{exitLabHost[4].lan, exitLabHost[6].lan}, {exitLabHost[4].lanHost, exitLabHost[6].lanHost}}},
 	} {
-		if err := lab.leaf.Do(func() error {
-			netlink, err := netnstest.OpenNetlink()
-			if err != nil {
-				return err
-			}
-			defer netlink.Close()
-			if err := netlink.AddVeth(side.near, side.peer, 0, side.host.Path); err != nil {
-				return fmt.Errorf("make the veth pair %s: %w", side.near, err)
-			}
-			return netlink.AddAddresses(side.near, side.near4, side.near6)
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if err := side.host.Do(func() error {
-			netlink, err := netnstest.OpenNetlink()
-			if err != nil {
-				return err
-			}
-			defer netlink.Close()
-			if err := netlink.AddAddresses(side.peer, side.host4, side.host6); err != nil {
-				return err
-			}
-			link, err := net.InterfaceByName(side.peer)
-			if err != nil {
-				return err
-			}
-			return errors.Join(
-				netlink.RouteVia(link.Index, netip.PrefixFrom(netip.IPv4Unspecified(), 0), side.near4.Addr()),
-				netlink.RouteVia(link.Index, netip.PrefixFrom(netip.IPv6Unspecified(), 0), side.near6.Addr()))
-		}); err != nil {
-			t.Fatalf("address the host behind %s: %v", side.near, err)
-		}
+		*side.host = vethHost(t, lab.leaf, side.near, side.peer, side.ends)
+		hostDefaults(t, *side.host, side.peer, side.ends[0][0].Addr(), side.ends[0][1].Addr())
 	}
 	if err := lab.far.Do(func() error {
 		netlink, err := netnstest.OpenNetlink()
@@ -144,6 +112,52 @@ func newExitLab(t *testing.T) *exitLab {
 		t.Fatalf("give the far host the internet's address and its routes back: %v", err)
 	}
 	return lab
+}
+
+// vethHost makes a veth pair from ns, near there, to a new namespace, far there, addresses each end with ends' two families, and returns the new namespace
+func vethHost(t *testing.T, ns *netnstest.Thread, near, far string, ends [2][2]netip.Prefix) *netnstest.Thread {
+	t.Helper()
+	host := netnstest.StartThread(t)
+	for side, at := range []*netnstest.Thread{ns, host} {
+		if err := at.Do(func() error {
+			netlink, err := netnstest.OpenNetlink()
+			if err != nil {
+				return err
+			}
+			defer netlink.Close()
+			if side == 0 {
+				if err := netlink.AddVeth(near, far, 0, host.Path); err != nil {
+					return fmt.Errorf("make the veth pair %s: %w", near, err)
+				}
+				return netlink.AddAddresses(near, ends[0][0], ends[0][1])
+			}
+			return netlink.AddAddresses(far, ends[1][0], ends[1][1])
+		}); err != nil {
+			t.Fatalf("join %s to %s: %v", near, far, err)
+		}
+	}
+	return host
+}
+
+// hostDefaults routes the defaults of both families out of link through the two gateways, in ns's main table
+func hostDefaults(t *testing.T, ns *netnstest.Thread, link string, gateway4, gateway6 netip.Addr) {
+	t.Helper()
+	if err := ns.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer netlink.Close()
+		index, err := net.InterfaceByName(link)
+		if err != nil {
+			return err
+		}
+		return errors.Join(
+			netlink.RouteVia(index.Index, netip.PrefixFrom(netip.IPv4Unspecified(), 0), gateway4),
+			netlink.RouteVia(index.Index, netip.PrefixFrom(netip.IPv6Unspecified(), 0), gateway6))
+	}); err != nil {
+		t.Fatalf("route the defaults out of %s: %v", link, err)
+	}
 }
 
 // exitDaemon is the leaf's node and its reconciler running over the mesh's table, with the peer every learned route goes to,

@@ -603,8 +603,8 @@ func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *even
 	return translator
 }
 
-// labTranslate runs labTranslator's exit for node until the test ends
-func labTranslate(t *testing.T, node *labNode) {
+// labTranslate runs labTranslator's exit for node until the test ends, and returns it
+func labTranslate(t *testing.T, node *labNode) *kernelexit.Translator {
 	t.Helper()
 	translator := labTranslator(t, node.ns, node.client, node.events)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -618,6 +618,7 @@ func labTranslate(t *testing.T, node *labNode) {
 		cancel()
 		runs.Wait()
 	})
+	return translator
 }
 
 // labForwardedNothing fails the test where node's kernel forwarded a packet of either family or read one from node's tun

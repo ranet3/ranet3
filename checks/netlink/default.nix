@@ -234,6 +234,9 @@ testers.runNixOSTest {
     # and the line's middle node traced by uid 0 over its control socket, a record for each forward and answer
     # and mesh_entry at a forwarding host, at a subnet router beside the kill switch, at an exit's none classes and a LAN learned
     # inside them, and in the table a killed node leaves
+    # and a leaf in mode 3 between two exits, leaving by the one via names, refused while that one's segment is gone and by its uplink under fallback = "uplink",
+    # and through a waypoint, refused while the exit behind it is gone
+    # and the leaf's status counting the reads the path alone took apart from the totals
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -278,6 +281,7 @@ testers.runNixOSTest {
         "TestTUNEntryTableOutlivesAKilledNode",
     ]:
         assert f"--- PASS: {name}" in out, f"mesh_entry's lab {name} did not run:\n{out}"
+    assert "--- PASS: TestTUNExitPathLeavesByTheNamedExitAndNoOther" in out, f"mode 3's two-exit lab did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 22, f"only {ran} of the client's tun round trips ran:\n{out}"
 
