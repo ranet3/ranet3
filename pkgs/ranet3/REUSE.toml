@@ -23,6 +23,7 @@ SPDX-License-Identifier = "MIT"
 path = [
   "control/testdata/debug/**",
   "internal/egress/kernel/testdata/**",
+  "internal/kernel/testdata/**",
   "internal/packet/testdata/answers/**",
   "srv6/testdata/answers/**",
 ]
