@@ -75,10 +75,10 @@ type switchConfig struct {
 // and fragmentation needed, this node's own prefixes, a reply of a flow the
 // far side opened to a listed service, and at output a destination the fib
 // types local pass, and everything else is dropped. The LAN is each address
-// of a connected network of a link outside the mesh that overlaps no overlay
-// prefix and does not count as capturing the machine, where the link is one
-// forward names or the address lies inside a private or link-local range or a
-// prefix lan lists.
+// outside the overlay of a connected network of a link outside the mesh that
+// does not count as capturing the machine, where the link is one forward
+// names or the address lies inside a private or link-local range or a prefix
+// lan lists.
 func switchModel(c switchConfig, p switchPacket, hook uint32) bool {
 	v6 := p.destination.Is6()
 	switch {
@@ -121,11 +121,14 @@ var switchPrivate = []netip.Prefix{
 	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("fc00::/7"),
 }
 
-// onTheLAN reports destination an address of a connected network of links that
-// overlaps no prefix of overlay and does not count as capturing the machine,
-// of a link of forwarded or inside switchPrivate or a prefix of listed
+// onTheLAN reports destination an address outside overlay of a connected
+// network of links that does not count as capturing the machine, of a link of
+// forwarded or inside switchPrivate or a prefix of listed
 func onTheLAN(links []Link, forwarded []string, listed []netip.Prefix, overlay []schema.Prefix, destination netip.Addr) bool {
 	holds := func(prefix netip.Prefix) bool { return prefix.Contains(destination) }
+	if slices.ContainsFunc(overlay, func(o schema.Prefix) bool { return holds(o.Prefix) }) {
+		return false
+	}
 	private := slices.ContainsFunc(switchPrivate, holds) || slices.ContainsFunc(listed, holds)
 	for _, link := range links {
 		if !private && !slices.Contains(forwarded, link.Name) {
@@ -133,8 +136,7 @@ func onTheLAN(links []Link, forwarded []string, listed []netip.Prefix, overlay [
 		}
 		for _, prefix := range link.Prefixes {
 			network := prefix.Masked()
-			overlaps := slices.ContainsFunc(overlay, func(o schema.Prefix) bool { return o.Overlaps(network) })
-			if !overlaps && !schema.CapturesTheMachine(network, overlay) && network.Contains(destination) {
+			if !schema.CapturesTheMachine(network, overlay) && network.Contains(destination) {
 				return true
 			}
 		}
@@ -402,23 +404,26 @@ func switchValue(attribute []byte) []byte {
 }
 
 // switchNetworks is the connected networks a drawn link may hold: public ones,
-// one inside the overlay, one overlapping it, one of each family that counts
-// as capturing the machine, private and unique local ones, and one holding a
-// private range
+// one inside the overlay, one of each family wider than an overlay prefix
+// with its gateway outside it, one of each family that counts as capturing
+// the machine, the IPv6 one holding an overlay prefix, private and unique
+// local ones, and one holding a private range
 var switchNetworks = []netip.Prefix{
 	netip.MustParsePrefix("198.51.100.10/25"), netip.MustParsePrefix("198.51.100.200/26"), netip.MustParsePrefix("203.0.113.70/31"),
 	netip.MustParsePrefix("192.0.2.9/28"), netip.MustParsePrefix("192.0.0.1/22"), netip.MustParsePrefix("198.51.100.10/7"),
 	netip.MustParsePrefix("2001:db8:a::10/64"), netip.MustParsePrefix("2001:db8:b::1/127"), netip.MustParsePrefix("3fff::9/64"),
-	netip.MustParsePrefix("3ff0::1/12"), netip.MustParsePrefix("2001:db8::1/14"),
+	netip.MustParsePrefix("3fff:3000::1/18"), netip.MustParsePrefix("3ff0::1/12"), netip.MustParsePrefix("2001:db8::1/14"),
 	netip.MustParsePrefix("10.1.2.3/16"), netip.MustParsePrefix("172.31.255.1/24"), netip.MustParsePrefix("172.1.2.3/8"),
 	netip.MustParsePrefix("fd00:1::1/64"),
 }
 
 // switchListed is the prefixes a drawn lan may list: a public network a link
-// may hold, a part of one, one holding one, and one no drawn link holds
+// may hold, a part of one, one holding one, one no drawn link holds, and a
+// part outside the overlay of a network wider than an overlay prefix
 var switchListed = []netip.Prefix{
 	netip.MustParsePrefix("198.51.100.0/25"), netip.MustParsePrefix("198.51.100.192/27"), netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("2001:db8:a::/64"), netip.MustParsePrefix("2001:db8:c::/48"), netip.MustParsePrefix("172.0.0.0/12"),
+	netip.MustParsePrefix("192.0.0.0/23"), netip.MustParsePrefix("3fff:2000::/19"),
 }
 
 // switchOwn is the own prefixes a drawn host may throw
@@ -480,18 +485,20 @@ func prefixEdges(prefix netip.Prefix) []netip.Addr {
 }
 
 // destinations is every address the drawn packets go to: each boundary of a
-// drawn network, an own prefix and each link-local, multicast and broadcast
-// range, and a host of the internet of each family
+// drawn network and the gateway past its first address, of an own prefix, an
+// overlay prefix and each link-local, multicast and broadcast range, and a
+// host of the internet of each family
 func (c switchConfig) destinations() []netip.Addr {
 	var out []netip.Addr
 	for _, links := range [][]Link{c.view.network.IPv4.Links, c.view.network.IPv6.Links} {
 		for _, link := range links {
 			for _, network := range link.Prefixes {
+				out = append(out, network.Masked().Addr().Next())
 				out = append(out, prefixEdges(network)...)
 			}
 		}
 	}
-	for _, prefix := range slices.Concat(c.view.own, c.view.lan, switchPrivate) {
+	for _, prefix := range slices.Concat(c.view.own, c.view.lan, switchPrivate, schemaPrefixes(exitPassOverlay)) {
 		out = append(out, prefixEdges(prefix)...)
 	}
 	for _, local := range append(slices.Clone(linkLocal4), linkLocal6...) {

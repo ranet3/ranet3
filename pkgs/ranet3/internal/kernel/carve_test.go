@@ -50,3 +50,79 @@ func TestCarveOutsThrowInPlaceOfTheHoldAndGiveWayToTheTable(t *testing.T) {
 		t.Errorf("the mirror wants\n%v\nwant\n%v", got, want)
 	}
 }
+
+// Under fallback = "none" a lease as wide as the overlay is looked up in main
+// past the mesh's throw, and the fallback table passes the lease less the
+// mesh's prefixes inside it, so the gateway answers and a mesh peer's address
+// never leaves by the link
+func TestFallbackPassesACarvedLeaseLessTheMeshsPrefixes(t *testing.T) {
+	p := netip.MustParsePrefix
+	network := NetworkState{
+		IPv4: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{p("192.0.2.10/24")}}}},
+		IPv6: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{p("3fff::10/48")}}}},
+	}
+	reconciler, routes, _ := harness(t, Table{}.WithMode(&ExitMode{Fallback: FallbackNone}), Runtime{
+		Overlay: prefixes(p("192.0.2.0/24"), p("3fff::/48")),
+		Network: func() NetworkState { return network },
+	})
+	peer := &netstack.Peer{ID: "example/peer"}
+	routes.Set(netip.Prefix{}, p("192.0.2.128/25"), peer)
+	routes.Set(netip.Prefix{}, p("3fff::/49"), peer)
+	snapshot := routes.Snapshot()
+	exit, _ := reconciler.exitPass(reconciler.addresses, snapshot)
+	exit.own = thrown(reconciler.desired(snapshot))
+	var main []Rule
+	for _, rule := range derivedRules(DefaultTable, reconciler.rt.Overlay, nil, exit) {
+		if rule.Priority == priorityOwnPastMesh {
+			main = append(main, rule)
+		}
+	}
+	if len(main) != 2 || main[0].To.Prefix != p("192.0.2.0/24") || main[1].To.Prefix != p("3fff::/48") {
+		t.Errorf("5445 looks main up for %v, want the two leases", main)
+	}
+	sets, asked := reconciler.fallbackFor(exit)
+	if !asked {
+		t.Fatal("the mode does not ask for the table")
+	}
+	if want := []netip.Prefix{p("192.0.2.0/25")}; !slices.Equal(sets.lan4, want) {
+		t.Errorf("lan4 holds %v, want %v", sets.lan4, want)
+	}
+	if want := []netip.Prefix{p("3fff:0:0:8000::/49")}; !slices.Equal(sets.lan6, want) {
+		t.Errorf("lan6 holds %v, want %v", sets.lan6, want)
+	}
+	if len(sets.own4) != 0 || len(sets.own6) != 0 {
+		t.Errorf("own holds %v and %v, want neither lease", sets.own4, sets.own6)
+	}
+}
+
+// Under fallback = "none" a pass installs 5445 for each carve-out the mirror
+// throws, a lease as wide as an overlay prefix in each family
+func TestFallbackPassLooksEachCarveOutUpInMain(t *testing.T) {
+	p := netip.MustParsePrefix
+	network := NetworkState{
+		IPv4: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{p("192.0.2.10/24")}}}},
+		IPv6: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{p("3fff::10/48")}}}},
+	}
+	reconciler, routes, fake := harness(t, Table{}.WithMode(&ExitMode{Fallback: FallbackNone}), Runtime{
+		Overlay: prefixes(p("192.0.2.0/24"), p("3fff::/48")),
+		Network: func() NetworkState { return network },
+	})
+	peer := &netstack.Peer{ID: "example/peer"}
+	routes.Set(netip.Prefix{}, p("192.0.2.128/25"), peer)
+	routes.Set(netip.Prefix{}, p("3fff::/49"), peer)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	var main []netip.Prefix
+	for rule := range fake.rules {
+		if rule.Priority == priorityOwnPastMesh {
+			main = append(main, rule.To.Prefix)
+		}
+	}
+	slices.SortFunc(main, comparePrefixes)
+	if want := []netip.Prefix{p("192.0.2.0/24"), p("3fff::/48")}; !slices.Equal(main, want) {
+		t.Errorf("the pass installs 5445 for %v, want each lease", main)
+	}
+}

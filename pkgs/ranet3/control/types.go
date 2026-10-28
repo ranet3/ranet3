@@ -471,9 +471,11 @@ type KernelFallback struct {
 	// Captured is each connected network left out of the LAN, since its
 	// length counts as capturing the machine
 	Captured []string `json:"captured,omitempty"`
-	// Public is each connected network left out of the LAN in whole or in
-	// part, since the part lies outside the private and link-local ranges and
-	// every prefix cap.exit lan lists
+	// Public is each connected network of a link forward does not name, or of
+	// one sharing an address with the overlay each prefix of its part outside
+	// the overlay, that the LAN leaves out in whole or in part, since the part
+	// lies outside the private and link-local ranges and every prefix cap.exit
+	// lan lists
 	Public []string `json:"public,omitempty"`
 	// Unresolved is each endpoint name whose last lookup failed, in any state of the switch
 	Unresolved []string `json:"unresolved,omitempty"`

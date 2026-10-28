@@ -97,6 +97,25 @@ func Ranges(prefixes []netip.Prefix) []Range {
 	return union(ranges)
 }
 
+// prefixes is the fewest prefixes holding exactly the range's addresses
+func (r Range) prefixes() []netip.Prefix {
+	var out []netip.Prefix
+	for first := r.First; first.IsValid() && !r.Last.Less(first); {
+		bits := first.BitLen()
+		for bits > 0 {
+			wider := netip.PrefixFrom(first, bits-1).Masked()
+			if wider.Addr() != first || r.Last.Less(prefixRange(wider).Last) {
+				break
+			}
+			bits--
+		}
+		prefix := netip.PrefixFrom(first, bits)
+		out = append(out, prefix)
+		first = prefixRange(prefix).Last.Next()
+	}
+	return out
+}
+
 // prefixRange is a masked prefix's addresses
 func prefixRange(prefix netip.Prefix) Range {
 	last := prefix.Addr().AsSlice()

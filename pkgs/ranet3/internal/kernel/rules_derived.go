@@ -38,9 +38,9 @@ import (
 // Under fallback = "none" (exit.fallback) mode 2 adds two more to both
 // families, so a family the tun holds no overlay address of runs mode off's
 // rules and these two:
-//   - 5445 looks main up to each of this node's own prefixes the mesh's table
-//     throws, which its lookups pass on, so the host reaches its own prefix
-//     beyond the gateway
+//   - 5445 looks main up to each of this node's own prefixes and each
+//     carve-out the mesh's table throws, which its lookups pass on, so the host
+//     reaches its own prefix beyond the gateway and a carved link's neighbors
 //   - 5450 fails as unreachable every unmarked lookup of the host's own
 //     traffic and of what it forwards from each link forward expands to that
 //     no rule above answered, so a connect meets ENETUNREACH at once while
@@ -109,7 +109,7 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 // (see expandForward), the carve-outs of those links, the destinations of the
 // mesh's table, and each family the tun holds no overlay address of. The zero
 // value is mode off, whatever it holds beside. fallback is cap.exit fallback =
-// "none", own is this node's own prefixes the mesh's table throws, which a
+// "none", own is the prefixes the mesh's table throws (see thrown), which a
 // pass reads only under it, lan is the prefixes cap.exit lan lists, and unheld
 // is the table ranet3_fallback not holding, which a pass reads only under
 // fallback.
@@ -128,8 +128,9 @@ type exitView struct {
 
 // thrown is the destination of each throw of the mirror's desired routes that
 // holds no source, each of this node's own prefixes outside the overlay that
-// counts as no default. A source-specific one is left out, so the host's own
-// unmarked lookup from its source the mesh's table passes on meets 5450.
+// counts as no default and each carve-out. A source-specific one is left out,
+// so the host's own unmarked lookup from its source the mesh's table passes on
+// meets 5450.
 func thrown(desired []Route) []netip.Prefix {
 	var out []netip.Prefix
 	for _, route := range desired {

@@ -201,3 +201,43 @@ func TestNoneDestinationsAreTheNoneClassLessOtherNodesLANs(t *testing.T) {
 		}
 	})
 }
+
+// A range drawn between two addresses near carveBases, each family's first
+// and last address among them, splits into masked prefixes that run from its
+// first address to its last with no gap or overlap, and no two neighbors are
+// the halves of one prefix, which leaves no fewer prefixes holding it
+func TestRangePrefixesHoldExactlyTheRange(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		family := FamilyIPv4
+		if hegel.Draw(ht, pbt.Spanning(0, 1)) == 1 {
+			family = FamilyIPv6
+		}
+		end := func() netip.Addr {
+			switch hegel.Draw(ht, pbt.Spanning(0, 2)) {
+			case 0:
+				return modelLast(netip.PrefixFrom(nearAddress(ht, family), 0).Masked())
+			case 1:
+				return netip.PrefixFrom(nearAddress(ht, family), 0).Masked().Addr()
+			}
+			return nearAddress(ht, family)
+		}
+		r := Range{First: end(), Last: end()}
+		if r.Last.Less(r.First) {
+			r.First, r.Last = r.Last, r.First
+		}
+		got := r.prefixes()
+		next := r.First
+		for i, prefix := range got {
+			if prefix != prefix.Masked() || prefix.Addr() != next {
+				ht.Fatalf("prefix %d of %v for %s to %s is %s, where the one before ended before %s", i, got, r.First, r.Last, prefix, next)
+			}
+			if i > 0 && got[i-1].Bits() == prefix.Bits() && prefix.Bits() > 0 && netip.PrefixFrom(prefix.Addr(), prefix.Bits()-1).Masked().Addr() == got[i-1].Addr() {
+				ht.Fatalf("%s and %s of %v are the halves of one prefix", got[i-1], prefix, got)
+			}
+			next = modelLast(prefix).Next()
+		}
+		if len(got) == 0 || modelLast(got[len(got)-1]) != r.Last {
+			ht.Fatalf("%v for %s to %s does not end at its last address", got, r.First, r.Last)
+		}
+	})
+}

@@ -48,9 +48,11 @@ type FallbackStatus struct {
 	// Captured is each connected network left out of the LAN, since its
 	// length counts as capturing the machine
 	Captured []netip.Prefix
-	// Public is each connected network left out of the LAN in whole or in
-	// part, since the part lies outside the private and link-local ranges and
-	// every prefix cap.exit lan lists
+	// Public is each connected network of a link forward does not name, or of
+	// one sharing an address with the overlay each prefix of its part outside
+	// the overlay, that the LAN leaves out in whole or in part, since the part
+	// lies outside the private and link-local ranges and every prefix cap.exit
+	// lan lists
 	Public []netip.Prefix
 	// tun and passed are the mesh's device and the LAN's and this node's own
 	// prefixes the table's lines pass, which FallbackResolvers reads
@@ -100,22 +102,22 @@ type fallbackSets struct {
 	// forwarded is the links forward expands to, whose forwarded traffic the
 	// forwarded line does not pass, so it meets the other lines
 	forwarded []string
-	// lan is each family's connected networks of the links forward names,
-	// whole, and parts of the connected networks of the other links outside
-	// the mesh that lie inside lanRanges or a prefix cap.exit lan lists, less
-	// the networks overlapping the overlay and those
-	// schema.CapturesTheMachine counts, with the carve-outs added
+	// lan is each family's LAN, as routing.md's "The kill switch on Linux"
+	// lists it
 	lan4, lan6 []netip.Prefix
-	// own is this node's own prefixes the mesh's table throws, as 5445 reads them
+	// own is this node's own prefixes the mesh's table throws, as 5445 reads
+	// them, less the carve-outs, which lan holds less the mesh's prefixes
+	// inside them
 	own4, own6 []netip.Prefix
 	// tcp and udp are inbound's services of each protocol, joined
 	tcp, udp []Service
 	// captured is each connected network left out of lan because it counts as
 	// capturing the machine
 	captured []netip.Prefix
-	// public is each connected network of a link forward does not name that
-	// lan leaves out whole or in part, lying outside lanRanges and the
-	// prefixes cap.exit lan lists
+	// public is each connected network of a link forward does not name, or of
+	// one sharing an address with the overlay each prefix of its part outside
+	// the overlay, that lan leaves out in whole or in part, lying outside
+	// lanRanges and the prefixes cap.exit lan lists
 	public []netip.Prefix
 }
 
@@ -127,31 +129,33 @@ var lanRanges = []netip.Prefix{
 	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("fc00::/7"),
 }
 
-// fallbackSetsOf derives the table's sets. carveOuts is each prefix the LAN
-// holds beyond the connected networks the overlay leaves out, which this
-// package passes empty.
+// fallbackSetsOf derives the table's sets. carveOuts is each prefix inside the
+// overlay the LAN holds.
 func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []Service, carveOuts []netip.Prefix) fallbackSets {
 	out := fallbackSets{tun: tun, forwarded: slices.Clone(v.forwarded)}
 	slices.Sort(out.forwarded)
-	inOverlay := schemaPrefixes(overlay)
-	overlaps := func(prefix netip.Prefix) bool { return slices.ContainsFunc(inOverlay, prefix.Overlaps) }
+	inOverlay := Ranges(schemaPrefixes(overlay))
 	var lan []netip.Prefix
 	for _, links := range [][]Link{v.network.IPv4.Links, v.network.IPv6.Links} {
 		for _, link := range links {
 			for _, prefix := range link.Prefixes {
 				network := prefix.Masked()
-				switch {
-				case overlaps(network):
-				case schema.CapturesTheMachine(network, overlay):
+				if schema.CapturesTheMachine(network, overlay) {
 					out.captured = append(out.captured, network)
-				case slices.Contains(v.forwarded, link.Name):
-					// a hostile network reaches the host by an uplink, which forward never names
-					lan = append(lan, network)
-				default:
-					parts := lanParts(network, v.lan)
-					lan = append(lan, parts...)
-					if !covers(network, parts) {
-						out.public = append(out.public, network)
+					continue
+				}
+				for _, outside := range subtract(Ranges([]netip.Prefix{network}), inOverlay) {
+					for _, part := range outside.prefixes() {
+						if slices.Contains(v.forwarded, link.Name) {
+							// a hostile network reaches the host by an uplink, which forward never names
+							lan = append(lan, part)
+							continue
+						}
+						parts := lanParts(part, v.lan)
+						lan = append(lan, parts...)
+						if !covers(part, parts) {
+							out.public = append(out.public, part)
+						}
 					}
 				}
 			}
@@ -159,7 +163,8 @@ func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []
 	}
 	lan = append(lan, carveOuts...)
 	out.lan4, out.lan6 = familyPrefixes(FamilyIPv4, lan), familyPrefixes(FamilyIPv6, lan)
-	out.own4, out.own6 = familyPrefixes(FamilyIPv4, v.own), familyPrefixes(FamilyIPv6, v.own)
+	own := slices.DeleteFunc(slices.Clone(v.own), func(prefix netip.Prefix) bool { return schema.InsideOverlay(prefix, overlay) })
+	out.own4, out.own6 = familyPrefixes(FamilyIPv4, own), familyPrefixes(FamilyIPv6, own)
 	out.captured = slices.Compact(slices.SortedFunc(slices.Values(out.captured), comparePrefixes))
 	out.public = slices.Compact(slices.SortedFunc(slices.Values(out.public), comparePrefixes))
 	for _, service := range inbound {
@@ -218,7 +223,7 @@ func (r *Reconciler) fallbackFor(exit exitView) (fallbackSets, bool) {
 	if !exit.on || !exit.fallback || mode == nil {
 		return fallbackSets{}, false
 	}
-	return exit.fallbackSetsOf(r.rt.Interface, r.rt.Overlay, mode.Services(), nil), true
+	return exit.fallbackSetsOf(r.rt.Interface, r.rt.Overlay, mode.Services(), exit.carvedLAN()), true
 }
 
 // applyFallback writes the table where the pass asks for it, rewriting it

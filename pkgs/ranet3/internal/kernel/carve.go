@@ -76,6 +76,23 @@ func CarvedPrefixes(carveOuts []CarveOut, snapshot []sadr.Route[*netstack.Peer])
 	return slices.Compact(out)
 }
 
+// carvedLAN is the carve-outs less the mesh's prefixes inside them, as the
+// fewest prefixes: the addresses of an overlapping lease that the link's own
+// neighbors hold, its gateway and resolver among them
+func (v exitView) carvedLAN() []netip.Prefix {
+	var inside []netip.Prefix
+	for _, destination := range v.table {
+		if slices.ContainsFunc(v.carved, func(carveOut netip.Prefix) bool { return encloses(carveOut, destination) }) {
+			inside = append(inside, destination)
+		}
+	}
+	var out []netip.Prefix
+	for _, r := range subtract(Ranges(v.carved), Ranges(inside)) {
+		out = append(out, r.prefixes()...)
+	}
+	return out
+}
+
 // encloses reports each address of inner lying in outer, both masked
 func encloses(outer, inner netip.Prefix) bool {
 	return outer.Bits() <= inner.Bits() && outer.Contains(inner.Addr())

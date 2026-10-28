@@ -175,27 +175,76 @@ func TestFallbackTableWhoseDeleteFailedGoesAtTheWithdrawal(t *testing.T) {
 	}
 }
 
-// The LAN is each link's connected networks, forward's links among them,
-// less one overlapping the overlay and one schema.CapturesTheMachine counts,
-// which is reported, with the carve-outs added
+// The LAN is each link's connected networks, forward's links among them, less
+// the overlay and one schema.CapturesTheMachine counts, which is reported,
+// with the carve-outs added. A lease wider than an overlay prefix keeps its
+// gateway outside it, and a public part of one is named public. A network
+// capturing the machine is named captured though it holds an overlay prefix.
 func TestFallbackSetsLeaveOutTheOverlayAndWhatCapturesTheMachine(t *testing.T) {
-	lan := []netip.Prefix{prefix("198.51.100.0/24"), prefix("203.0.113.0/25"), prefix("2001:db8:a::/64")}
-	view := exitView{on: true, fallback: true, forwarded: []string{"docker0"}, lan: lan, network: NetworkState{
-		IPv4: NetworkFamily{Links: []Link{
-			{Name: "docker0", Prefixes: []netip.Prefix{prefix("203.0.113.1/25")}},
-			{Name: "eth0", Prefixes: []netip.Prefix{prefix("198.51.100.10/24"), prefix("198.51.100.10/6"), prefix("192.0.2.7/24")}},
-		}},
-		IPv6: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{prefix("2001:db8:a::10/64"), prefix("2001:db8::10/12"), prefix("3fff::7/64")}}}},
-	}}
-	got := view.fallbackSetsOf("ranet3", exitPassOverlay, nil, []netip.Prefix{prefix("192.0.2.1/32")})
-	want := fallbackSets{
-		tun: "ranet3", forwarded: []string{"docker0"},
-		lan4:     []netip.Prefix{prefix("192.0.2.1/32"), prefix("198.51.100.0/24"), prefix("203.0.113.0/25")},
-		lan6:     []netip.Prefix{prefix("2001:db8:a::/64")},
-		captured: []netip.Prefix{prefix("196.0.0.0/6"), prefix("2000::/12")},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("the sets read\n%+v\nwant\n%+v", got, want)
+	for _, c := range []struct {
+		name      string
+		overlay   []schema.Prefix
+		view      exitView
+		carveOuts []netip.Prefix
+		want      fallbackSets
+	}{
+		{
+			name:    "a network inside the overlay and one capturing the machine",
+			overlay: exitPassOverlay,
+			view: exitView{on: true, fallback: true, forwarded: []string{"docker0"}, lan: []netip.Prefix{prefix("198.51.100.0/24"), prefix("203.0.113.0/25"), prefix("2001:db8:a::/64")}, network: NetworkState{
+				IPv4: NetworkFamily{Links: []Link{
+					{Name: "docker0", Prefixes: []netip.Prefix{prefix("203.0.113.1/25")}},
+					{Name: "eth0", Prefixes: []netip.Prefix{prefix("198.51.100.10/24"), prefix("198.51.100.10/6"), prefix("192.0.2.7/24")}},
+				}},
+				IPv6: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{prefix("2001:db8:a::10/64"), prefix("2001:db8::10/12"), prefix("3fff::7/64")}}}},
+			}},
+			carveOuts: []netip.Prefix{prefix("192.0.2.1/32")},
+			want: fallbackSets{
+				tun: "ranet3", forwarded: []string{"docker0"},
+				lan4:     []netip.Prefix{prefix("192.0.2.1/32"), prefix("198.51.100.0/24"), prefix("203.0.113.0/25")},
+				lan6:     []netip.Prefix{prefix("2001:db8:a::/64")},
+				captured: []netip.Prefix{prefix("196.0.0.0/6"), prefix("2000::/12")},
+			},
+		},
+		{
+			name:    "a lease wider than an overlay prefix with its gateway outside it",
+			overlay: []schema.Prefix{schema.MustPrefix("192.168.100.0/24"), schema.MustPrefix("198.51.100.128/25"), schema.MustPrefix("203.0.113.128/25"), schema.MustPrefix("2001:db8:a:8000::/49")},
+			view: exitView{on: true, fallback: true, forwarded: []string{"docker0"}, network: NetworkState{
+				IPv4: NetworkFamily{Links: []Link{
+					{Name: "docker0", Prefixes: []netip.Prefix{prefix("198.51.100.1/24")}},
+					{Name: "eth0", Prefixes: []netip.Prefix{prefix("192.168.0.10/16"), prefix("203.0.113.10/24")}},
+				}},
+				IPv6: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{prefix("2001:db8:a::10/48")}}}},
+			}},
+			carveOuts: []netip.Prefix{prefix("192.168.100.0/25")},
+			want: fallbackSets{
+				tun: "ranet3", forwarded: []string{"docker0"},
+				lan4: []netip.Prefix{
+					prefix("192.168.0.0/18"), prefix("192.168.64.0/19"), prefix("192.168.96.0/22"), prefix("192.168.100.0/25"), prefix("192.168.101.0/24"),
+					prefix("192.168.102.0/23"), prefix("192.168.104.0/21"), prefix("192.168.112.0/20"), prefix("192.168.128.0/17"), prefix("198.51.100.0/25"),
+				},
+				public: []netip.Prefix{prefix("203.0.113.0/25"), prefix("2001:db8:a::/49")},
+			},
+		},
+		{
+			name:    "a network capturing the machine around an overlay prefix",
+			overlay: []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")},
+			view: exitView{on: true, fallback: true, network: NetworkState{
+				IPv4: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{prefix("192.0.2.7/6")}}}},
+				IPv6: NetworkFamily{Links: []Link{{Name: "eth0", Prefixes: []netip.Prefix{prefix("3fff::7/12")}}}},
+			}},
+			want: fallbackSets{
+				tun:      "ranet3",
+				captured: []netip.Prefix{prefix("192.0.0.0/6"), prefix("3ff0::/12")},
+			},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := c.view.fallbackSetsOf("ranet3", c.overlay, nil, c.carveOuts)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("the sets read\n%+v\nwant\n%+v", got, c.want)
+			}
+		})
 	}
 }
 
