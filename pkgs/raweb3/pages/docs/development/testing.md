@@ -517,9 +517,9 @@ nftables table of theirs is left on the host, and that the host's
 no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
 and the 3 of a session's fallback from its address.
 
-The `netlink` check, `integration-egress` and `integration-egress-segment` are
-the only places where a real kernel takes the `nf_tables` encoding. Elsewhere
-the encoding meets only the decoder written beside it.
+A real kernel takes the `nf_tables` encoding in the `netlink` check and in every
+integration check that sets `cap.egress` or `cap.border`. Elsewhere the encoding
+meets only the decoder written beside it.
 `internal/egress/kernel/testdata/messages.golden` holds the kind, flags and body
 of every request in the transactions the translator and the border filter write,
 in the order each transaction sends them. It holds neither the dumps the
@@ -568,6 +568,9 @@ nix build .#checks.x86_64-linux.integration-mlkem-fallback -L
 nix build .#checks.x86_64-linux.integration-mlkem-optional -L
 nix build .#checks.x86_64-linux.integration-mlkem-none -L
 nix build .#checks.x86_64-linux.integration-mlkem-fragment -L
+nix build .#checks.x86_64-linux.integration-docker -L
+nix build .#checks.x86_64-linux.integration-tailscale -L
+nix build .#checks.x86_64-linux.integration-k3s -L
 ```
 
 `integration-responder` inverts the exchange: strongSwan dials and ranet3
@@ -693,6 +696,52 @@ dropped. The address it delivers to is one the client holds on loopback and
 announces, since the forwarding decision delivers only to an address the client
 routes. A rule on the gateway ahead of its main table sends that address through
 the segment rather than the route it learns.
+
+`integration-docker`, `integration-tailscale` and `integration-k3s` each run
+another program's own daemon on the client beside ranet3, at the version the
+flake's nixpkgs pins, with `cap.table` and `cap.border.overlay` set. Once the
+program is up, after its service restarts and after ranet3 restarts, each check
+asserts that the client reaches the gateway's tunnel addresses in both families.
+After 2 more passes of the reconciler, `ranet3 debug rules --json` misses no
+derived rule and reads every lookup not taken, `ranet3 status` reports none
+taken, and the scrape carries `ranet3_kernel_overlay_taken` and
+`ranet3_kernel_underlay_taken` at 0 for each family the lookups asked in. The
+unit's journal shows no pass that could not ask its lookups without a later one
+that could. When the mesh does not reach, the check reads the rules view, the
+status and the gauges before it fails. A restart of ranet3 leaves the other
+program's policy rules and nftables tables as they were.
+
+`integration-docker` makes the client an exit node running Docker, with the
+machine behind it of `integration-egress`. The machine behind the exit sees the
+exit's own address in both families, the exit is ready in both, and
+`.egress.conflicts` is empty with `ranet3_egress_conflicts 0` beside Docker's
+nat `POSTROUTING`. [The packet filter](../coexistence.md#the-packet-filter) says
+which chains the report counts. A container, run from an empty image the check
+imports, reaches the machine behind the exit and the gateway's IPv4 tunnel
+address, where the gateway sees the client's own tun address. A restart of
+Docker leaves ranet3's tables as they were.
+
+`integration-tailscale` runs `tailscaled` on the client and on a third node,
+which also runs headscale, the control server both register with. With no exit
+node, the client holds Tailscale's 4 rules beside ranet3's in both families. The
+check then makes the third node the client's exit node with
+`--exit-node-allow-lan-access`, and the client reaches an address only that node
+answers through `tailscale0` and table 52, while the mesh still reaches the
+gateway and the underlay's lookups end in the main table. In both phases the
+nodes reach each other by `tailscale ping` and by an ICMP ping of each Tailscale
+address. `tailscaled` logs no restore of rules another program deleted.
+
+`integration-k3s` runs a k3s server on the client with kube-proxy in iptables
+mode and flannel, its pods from an image the check builds. ranet3 starts only
+once kube-proxy's masquerade is in place, so its session's first packet meets it
+([the packet filter](../coexistence.md#the-packet-filter)), and the gateway's
+`swanctl --list-sas` then reads the client at port 14000, the port ranet3 sends
+from. A pod fetches from another through a ClusterIP service's address and pings
+the gateway's IPv4 tunnel address, and the host reaches a pod by its main
+table's route. The reading once k3s is up and the one after k3s restarts first
+wait for the pods to be ready and for flannel's masquerade, and the one after
+the restart also waits for the restarted flannel to log that it set up its
+rules.
 
 `integration-reload` boots one machine and no gateway. It runs ranet3 through
 the NixOS module with a trust document that names only itself. The machine has 4
