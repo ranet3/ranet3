@@ -32,14 +32,20 @@ type fibRoute struct {
 	throw, unreachable bool
 }
 
-// fibPacket is one lookup: a packet's source, its destination and its mark
+// fibPacket is one lookup: a packet's source, its destination, its mark and the
+// link it arrived on, empty for the host's own lookup, which the kernel makes
+// with the loopback link as its input
 type fibPacket struct {
 	source, destination netip.Addr
 	mark                uint32
+	iif                 string
 }
 
+// input is the link the kernel gives p's lookup as its input
+func (p fibPacket) input() string { return cmp.Or(p.iif, loopback) }
+
 func (p fibPacket) String() string {
-	return fmt.Sprintf("from %s to %s mark %#x", p.source, p.destination, p.mark)
+	return fmt.Sprintf("from %s to %s mark %#x iif %s", p.source, p.destination, p.mark, p.input())
 }
 
 // fib is the model of Linux's policy routing: the rules in the order the
@@ -86,6 +92,9 @@ func matches(rule Rule, p fibPacket) bool {
 		return false
 	}
 	if rule.To.IsValid() && !rule.To.Contains(p.destination) || rule.From.IsValid() && !rule.From.Contains(p.source) {
+		return false
+	}
+	if rule.IIF != "" && rule.IIF != p.input() {
 		return false
 	}
 	mask := rule.FWMask
@@ -186,10 +195,10 @@ const foreignGoto = 5050
 
 // gotoTargets are where another program's goto may jump: a priority of
 // ranet3's, one of another program's rules, and one where no rule sits, which
-// the kernel passes over
+// the kernel passes over, as it does mode 2's priorities in mode off
 var gotoTargets = []uint32{
 	priorityUnderlayPastOverlay, priorityOverlay, priorityOverlayEnd, 5270, 5300, priorityUnderlayPastMesh,
-	priorityMain, priorityMesh, priorityOwn, priorityMeshEnd, 5500,
+	priorityUplinkSource, priorityMain, priorityMesh, priorityOwn, priorityLinkSource, priorityCatchAll, priorityMeshEnd, 5500,
 }
 
 // drawHost draws the tables and the rules another program holds beside
@@ -276,6 +285,7 @@ type interpreted struct {
 	host                   fib
 	kernel                 fib
 	desired                []Route
+	mode                   exitView
 }
 
 // exitInputs names each input that turns a node into an exit, drawn outright
@@ -283,8 +293,9 @@ type interpreted struct {
 // advertises, and one cap.route announces
 var exitInputs = []string{"none", "an egress segment", "a counted advertisement", "a counted announcement"}
 
-// drawInterpreted draws a host and builds its kernel from the reconciler's own derivation
-func drawInterpreted(t *testing.T, ht *hegel.T) interpreted {
+// drawInterpreted draws a host and builds its kernel from the reconciler's own derivation, with the families the tun holds no
+// overlay address of that the caller names
+func drawInterpreted(t *testing.T, ht *hegel.T) func(unaddressed []Family) interpreted {
 	overlay := hegel.Draw(ht, overlays())
 	var entries []mirrorEntry
 	for _, entry := range hegel.Draw(ht, mirrorEntries()) {
@@ -345,15 +356,79 @@ func drawInterpreted(t *testing.T, ht *hegel.T) interpreted {
 		advertised[counted] = input == "a counted advertisement"
 	}
 	gate := hegel.Draw(ht, hegel.WeightedBooleans(0.75))
-	return interpret(t, overlay, entries, advertised, egressSegment, gate, drawHost(ht))
+	host, mode := drawHost(ht), drawExitMode(ht, overlay)
+	return func(unaddressed []Family) interpreted {
+		m := mode
+		m.unaddressed = unaddressed
+		return interpret(t, overlay, entries, advertised, egressSegment, gate, host, m)
+	}
+}
+
+// exitLink is a link outside the mesh a drawn host holds now and then, with
+// its address in each family
+type exitLink struct{ name, v4, v6 string }
+
+// drawExitMode draws mode 2 half the time and mode off otherwise, over links
+// drawn whatever the mode: eth0 holding the uplink's address, now and then a
+// bridge, a LAN through eth1 and a point-to-point ppp0 with its far end, and
+// now and then an address of the overlay on lo or on dummy0 with a network
+// about it. forward names any of the bridge, the LAN, ppp0 and docker0, a
+// bridge holding no address.
+func drawExitMode(ht *hegel.T, overlay []schema.Prefix) exitView {
+	mode := exitView{on: hegel.Draw(ht, hegel.Booleans())}
+	for _, v6 := range []bool{false, true} {
+		bits := map[bool]int{false: 24, true: 64}[v6]
+		links := []Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.PrefixFrom(uplink[v6], bits)}}}
+		for _, link := range []exitLink{{"br-1a", "203.0.113.129/26", "2001:db8:17::1/64"}, {"eth1", "203.0.113.65/26", "2001:db8:50::1/64"}} {
+			if hegel.Draw(ht, hegel.Booleans()) {
+				links = append(links, Link{Name: link.name, Prefixes: []netip.Prefix{netip.MustParsePrefix(map[bool]string{false: link.v4, true: link.v6}[v6])}})
+			}
+		}
+		if hegel.Draw(ht, hegel.Booleans()) {
+			// a point-to-point link, as the reader gives one: IPv4 holds its address alone and routes the far end's network, IPv6 the reverse
+			links = append(links, map[bool]Link{
+				false: {Name: "ppp0", Prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.1/32")}, Peers: []netip.Prefix{netip.MustParsePrefix("203.0.113.16/28")}},
+				true:  {Name: "ppp0", Prefixes: []netip.Prefix{netip.MustParsePrefix("2001:db8:60::1/64")}, Peers: []netip.Prefix{netip.MustParsePrefix("2001:db8:61::1/128")}},
+			}[v6])
+		}
+		var held []netip.Prefix
+		for _, prefix := range overlay {
+			if prefix.Addr().Is6() == v6 {
+				held = append(held, prefix.Masked())
+			}
+		}
+		if len(held) > 0 && hegel.Draw(ht, hegel.Booleans()) {
+			within := hegel.Draw(ht, hegel.SampledFrom(held))
+			address := addressIn(ht, within)
+			link := Link{Name: loopback, Prefixes: []netip.Prefix{netip.PrefixFrom(address, address.BitLen())}}
+			if hegel.Draw(ht, hegel.Booleans()) {
+				// a network holding the overlay prefix, or one inside it
+				floor := map[bool]int{false: schema.MinSubnetBits4, true: schema.MinSubnetBits6}[v6]
+				link = Link{Name: "dummy0", Prefixes: []netip.Prefix{netip.PrefixFrom(address, hegel.Draw(ht, hegel.Integers(max(within.Bits()-4, floor), address.BitLen())))}}
+			}
+			links = append(links, link)
+		}
+		if v6 {
+			mode.network.IPv6.Links = links
+		} else {
+			mode.network.IPv4.Links = links
+		}
+	}
+	for _, name := range []string{"br-1a", "eth1", "ppp0", "docker0"} {
+		if hegel.Draw(ht, hegel.Booleans()) {
+			mode.forwarded = append(mode.forwarded, name)
+		}
+	}
+	return mode
 }
 
 // interpret builds the kernel of a host holding host's rules and tables, whose
 // ranet3 holds entries under overlay, advertises the prefixes of its own
 // advertised names through cap.egress and announces the rest through
-// cap.route, holds an egress segment where egressSegment says, and whose
-// capture gate is open where gate says
-func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, advertised map[netip.Prefix]bool, egressSegment, gate bool, host fib) interpreted {
+// cap.route, holds an egress segment where egressSegment says, whose capture
+// gate is open where gate says, and which runs mode, whose links but lo's hold
+// their connected networks in main
+func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, advertised map[netip.Prefix]bool, egressSegment, gate bool, host fib, mode exitView) interpreted {
 	routes := netstack.NewRouteTable()
 	routes.SetOverlay(overlay)
 	for _, entry := range entries {
@@ -392,6 +467,18 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	snapshot := routes.Snapshot()
 	desired := reconciler.desired(snapshot)
 	tables := maps.Clone(host.tables)
+	mainRoutes := slices.Clone(tables[schema.TableMain])
+	for _, link := range mode.links() {
+		for _, prefix := range link.Prefixes {
+			if link.Name != loopback {
+				mainRoutes = append(mainRoutes, fibRoute{destination: prefix.Masked(), device: link.Name})
+			}
+		}
+		for _, peer := range link.Peers {
+			mainRoutes = append(mainRoutes, fibRoute{destination: peer, device: link.Name})
+		}
+	}
+	tables[schema.TableMain] = mainRoutes
 	for _, route := range desired {
 		tables[DefaultTable] = append(tables[DefaultTable], fibRoute{
 			destination: route.Destination, source: route.Source, metric: route.Metric,
@@ -400,9 +487,14 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 		})
 	}
 	host.tables = tables
-	kernel := fib{rules: slices.Concat(host.rules, derivedRules(DefaultTable, overlay, reconciler.ownPrefixes(snapshot), exitView{})), tables: tables}
+	kernel := fib{rules: slices.Concat(host.rules, derivedRules(DefaultTable, overlay, reconciler.ownPrefixes(snapshot), mode)), tables: tables}
 	slices.SortStableFunc(kernel.rules, func(a, b Rule) int { return cmp.Compare(a.Priority, b.Priority) })
-	return interpreted{routes: routes, rt: rt, gate: gate, exit: exit, own: own, sources: sources, assigned: assigned, host: host, kernel: kernel, desired: desired}
+	return interpreted{routes: routes, rt: rt, gate: gate, exit: exit, own: own, sources: sources, assigned: assigned, host: host, kernel: kernel, desired: desired, mode: mode}
+}
+
+// links is every link of v's network, both families'
+func (v exitView) links() []Link {
+	return slices.Concat(v.network.IPv4.Links, v.network.IPv6.Links)
 }
 
 // unspecifiedSpace and unspecifiedSpace6 are where a route holding the
@@ -419,13 +511,17 @@ var (
 // prefixes, to an entry of ranet3's table, a prefix of the overlay or anywhere
 // near the drawn prefixes but an address of the host's own, which lookedUp
 // leaves out, unmarked, under ranet3's mark or under kube-proxy's 0x4000,
-// which shares bits with it. It adds an unmarked lookup from the uplink's
+// which shares bits with it, as the host's own lookup or arriving on a link,
+// forwarded or not. A source is also drawn from an address of a link outside
+// the mesh or its network. It adds an unmarked lookup from the uplink's
 // address into each prefix of the overlay, and one from each prefix of a
 // Local or an Assigned entry to each entry that counts as a default, the
 // lookups whose way past 5430 an exit's inputs and an advertised LAN decide,
-// which the draws seldom pair.
+// which the draws seldom pair, and the same from each link's address and its
+// network, the host's own and arriving on the link, which mode 2 decides.
 func (h interpreted) packets(ht *hegel.T) []fibPacket {
 	var out []fibPacket
+	inputs := []string{"", "", "eth0", "br-1a", "eth1", "ppp0", "docker0", "dummy0"}
 	for range hegel.Draw(ht, hegel.Integers(1, 24)) {
 		v6 := hegel.Draw(ht, hegel.Booleans())
 		// inside an entry of ranet3's table or a prefix of the overlay half the time, which near prefixes alone seldom reach
@@ -447,12 +543,23 @@ func (h interpreted) packets(ht *hegel.T) []fibPacket {
 		p := fibPacket{
 			destination: addressIn(ht, within),
 			mark:        hegel.Draw(ht, hegel.SampledFrom([]uint32{0, 0, schema.UnderlayMark, 0x4000})),
+			iif:         hegel.Draw(ht, hegel.SampledFrom(inputs)),
 		}
 		sources := slices.DeleteFunc(slices.Clone(h.sources), func(prefix netip.Prefix) bool { return prefix.Addr().Is6() != v6 })
-		switch choice := hegel.Draw(ht, hegel.Integers(0, 3)); {
+		var links []netip.Prefix
+		for _, link := range h.mode.links() {
+			links = append(links, slices.DeleteFunc(slices.Concat(link.Prefixes, link.Peers), func(prefix netip.Prefix) bool { return prefix.Addr().Is6() != v6 })...)
+		}
+		switch choice := hegel.Draw(ht, hegel.Integers(0, 4)); {
 		case choice <= 1 && len(sources) > 0:
 			p.source = addressIn(ht, hegel.Draw(ht, hegel.SampledFrom(sources)))
-		case choice <= 2:
+		case choice == 2 && len(links) > 0:
+			link := hegel.Draw(ht, hegel.SampledFrom(links))
+			p.source = link.Addr()
+			if hegel.Draw(ht, hegel.Booleans()) {
+				p.source = addressIn(ht, link.Masked())
+			}
+		case choice <= 3:
 			p.source = uplink[v6]
 		default:
 			p.source = addressIn(ht, hegel.Draw(ht, nearPrefixes(v6)))
@@ -475,18 +582,115 @@ func (h interpreted) packets(ht *hegel.T) []fibPacket {
 			}
 		}
 	}
+	for _, link := range h.mode.links() {
+		for _, prefix := range slices.Concat(link.Prefixes, link.Peers) {
+			for _, entry := range h.routes.Snapshot() {
+				if entry.Destination.Addr().Is6() != prefix.Addr().Is6() || !schema.CapturesTheMachine(entry.Destination, h.rt.Overlay) {
+					continue
+				}
+				for _, p := range []fibPacket{
+					{source: prefix.Addr(), destination: addressIn(ht, entry.Destination)},
+					{source: addressIn(ht, prefix.Masked()), destination: addressIn(ht, entry.Destination)},
+					{source: addressIn(ht, prefix.Masked()), destination: addressIn(ht, entry.Destination), iif: link.Name},
+				} {
+					if h.lookedUp(p) {
+						out = append(out, p)
+					}
+				}
+			}
+		}
+	}
 	return out
 }
 
 // lookedUp reports a packet whose way routing.md's tables write out: no
 // unroutable space, which the mirror leaves out, no unspecified space, where
 // 5420 answers a route that counts by its length, and no address of the
-// host's own, its uplink's or one cap.table assigns, which the host's local
-// table answers and the model holds no local table for
+// host's own, its uplink's, a link's or one cap.table assigns, which the
+// host's local table answers and the model holds no local table for
 func (h interpreted) lookedUp(p fibPacket) bool {
 	return unroutable(netip.PrefixFrom(p.destination, p.destination.BitLen())) == "" && !unspecifiedSpace.Contains(p.destination) && !unspecifiedSpace6.Contains(p.destination) &&
 		p.destination != uplink[p.destination.Is6()] &&
-		!slices.ContainsFunc(h.assigned, func(address netip.Prefix) bool { return address.Contains(p.destination) })
+		!slices.ContainsFunc(h.assigned, func(address netip.Prefix) bool { return address.Contains(p.destination) }) &&
+		!slices.ContainsFunc(h.mode.links(), func(link Link) bool {
+			return slices.ContainsFunc(link.Prefixes, func(prefix netip.Prefix) bool { return prefix.Addr() == p.destination })
+		})
+}
+
+// inOverlay reports address inside a prefix of the overlay
+func (h interpreted) inOverlay(address netip.Addr) bool {
+	return slices.ContainsFunc(h.rt.Overlay, func(prefix schema.Prefix) bool { return prefix.Contains(address) })
+}
+
+// modeTwo reports p of a family mode 2 adds its rules to, one the tun holds an
+// overlay address of
+func (h interpreted) modeTwo(p fibPacket) bool {
+	return h.mode.on && !slices.Contains(h.mode.unaddressed, familyOf(p.destination))
+}
+
+// uplinkSource reports p the host's own lookup in mode 2 from an address of a
+// link outside the mesh that neither the overlay nor an own prefix holds, which
+// 5405 takes
+func (h interpreted) uplinkSource(p fibPacket) bool {
+	return h.modeTwo(p) && p.input() == loopback && !h.inOverlay(p.source) && !h.owns(p.source) && slices.ContainsFunc(h.mode.links(), func(link Link) bool {
+		return slices.ContainsFunc(link.Prefixes, func(prefix netip.Prefix) bool { return prefix.Addr() == p.source })
+	})
+}
+
+// linkSource reports p the host's own lookup in mode 2 from a connected
+// network shorter than a host prefix or a point-to-point far end of a link
+// forward leaves out that shares no address with the overlay or an own prefix,
+// which 5435 takes
+func (h interpreted) linkSource(p fibPacket) bool {
+	if !h.modeTwo(p) || p.input() != loopback {
+		return false
+	}
+	taken := slices.Clone(h.own)
+	for _, prefix := range h.rt.Overlay {
+		taken = append(taken, prefix.Prefix)
+	}
+	for _, link := range h.mode.links() {
+		if slices.Contains(h.mode.forwarded, link.Name) {
+			continue
+		}
+		var networks []netip.Prefix
+		for _, prefix := range link.Prefixes {
+			if prefix.Bits() < prefix.Addr().BitLen() {
+				networks = append(networks, prefix.Masked())
+			}
+		}
+		for _, network := range append(networks, link.Peers...) {
+			// a network and a taken prefix share an address exactly where one holds the other's first
+			shares := slices.ContainsFunc(taken, func(o netip.Prefix) bool { return o.Contains(network.Addr()) || network.Contains(o.Masked().Addr()) })
+			if network.Contains(p.source) && !shares {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// caughtAll reports p the host's own lookup in mode 2, or one arriving on a
+// link forward expands to, which 5440 takes
+func (h interpreted) caughtAll(p fibPacket) bool {
+	return h.modeTwo(p) && (p.input() == loopback || slices.Contains(h.mode.forwarded, p.iif))
+}
+
+// pastOwn is where p goes past 5430: from main at 5435, from the mirror at
+// 5440 where it holds a route for p, and otherwise by another program's rules
+// past ranet3's
+func (h interpreted) pastOwn(p fibPacket, landing, past uint32) string {
+	if landing <= priorityLinkSource && h.linkSource(p) {
+		if route, ok := lookup(h.host.tables[schema.TableMain], p); ok {
+			return route.device
+		}
+	}
+	if landing <= priorityCatchAll && h.caughtAll(p) {
+		if route, ok := lookup(h.kernel.tables[DefaultTable], p); ok && !route.throw {
+			return answer(route)
+		}
+	}
+	return h.others(p, past, math.MaxUint32)
 }
 
 // owns reports source inside one of this node's own prefixes
@@ -544,7 +748,11 @@ func answer(route fibRoute) string {
 // overlay destination under a held overlay prefix from ranet3's own lookup and
 // one under no held prefix from the mirror's longest match, every other overlay
 // destination from the mirror's longest match, and a destination outside the
-// overlay from ranet3's own lookup, as "Where a lookup ends on Linux" gives it
+// overlay from ranet3's own lookup, as "Where a lookup ends on Linux" gives it.
+// Mode 2, in a family the tun holds an overlay address of, sends the host's own
+// lookup from a link's address to main ahead of 5410, and past 5430 one from a
+// network forward leaves out to main, and the host's own and a forwarded
+// link's to the mirror.
 func (h interpreted) expected(p fibPacket) string {
 	if before := h.others(p, 0, priorityUnderlayPastOverlay); before != "none" {
 		return before
@@ -576,6 +784,11 @@ func (h interpreted) expected(p fibPacket) string {
 	if marked && reaches(priorityUnderlayPastMesh) {
 		return h.others(p, past, math.MaxUint32)
 	}
+	if reaches(priorityUplinkSource) && h.uplinkSource(p) {
+		if route, ok := lookup(h.host.tables[schema.TableMain], p); ok {
+			return route.device
+		}
+	}
 	if route, ok := lookup(h.host.tables[schema.TableMain], p); ok && route.destination.Bits() > 0 && reaches(priorityMain) {
 		return route.device
 	}
@@ -589,7 +802,7 @@ func (h interpreted) expected(p fibPacket) string {
 		if route, ok := lookup(mirror, p); ok && !route.throw && (mesh && (route.unreachable || route.destination.Bits() > suppress) || own) {
 			return answer(route)
 		}
-		return h.others(p, past, math.MaxUint32)
+		return h.pastOwn(p, landing, past)
 	}
 	installed := h.gate && !h.exit
 	switch {
@@ -602,7 +815,7 @@ func (h interpreted) expected(p fibPacket) string {
 			return tunDevice
 		}
 	}
-	return h.others(p, past, math.MaxUint32)
+	return h.pastOwn(p, landing, past)
 }
 
 // withoutCountedHolds is ranet3's table less every hold that counts as a default, as the mirror leaves them out
@@ -623,14 +836,19 @@ func (h interpreted) withoutCountedHolds() *netstack.RouteTable {
 // beside a host's own tables, another program's lookups ahead of, between and
 // past ranet3's blocks and its goto ahead of them, sends every packet lookedUp
 // keeps where routing.md's tables say, on an exit by each of its inputs and on
-// a node that is none
+// a node that is none, in mode off and in mode 2, the last with the tun holding
+// an overlay address of each family and holding none of either in turn
 func TestRuleWalkSendsEveryPacketWhereTheRulesSay(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
-		h := drawInterpreted(t, ht)
-		for _, p := range h.packets(ht) {
-			if got, want := h.kernel.walk(p), h.expected(p); got != want {
-				ht.Fatalf("%s went to %s, want %s\nranet3's table:\n%s\nexit %v, gate %v, own %v\nthe mirror:\n%v\nthe rules:\n%s",
-					p, got, want, strings.Join(h.routes.Debug(), "\n"), h.exit, h.gate, h.own, h.desired, rulesText(h.kernel.rules))
+		build := drawInterpreted(t, ht)
+		packets := build(nil).packets(ht)
+		for _, unaddressed := range [][]Family{nil, {FamilyIPv4}, {FamilyIPv6}} {
+			h := build(unaddressed)
+			for _, p := range packets {
+				if got, want := h.kernel.walk(p), h.expected(p); got != want {
+					ht.Fatalf("%s went to %s, want %s\nranet3's table:\n%s\nexit %v, gate %v, own %v, mode 2 %v forwarding %v over %v, unaddressed %v\nthe mirror:\n%v\nthe rules:\n%s",
+						p, got, want, strings.Join(h.routes.Debug(), "\n"), h.exit, h.gate, h.own, h.mode.on, h.mode.forwarded, h.mode.links(), h.mode.unaddressed, h.desired, rulesText(h.kernel.rules))
+				}
 			}
 		}
 	})
@@ -660,13 +878,135 @@ func TestRuleWalkNamedCases(t *testing.T) {
 		return fibPacket{source: netip.MustParseAddr(source), destination: netip.MustParseAddr(destination)}
 	}
 	marked := func(p fibPacket, mark uint32) fibPacket { p.mark = mark; return p }
+	arriving := func(link string, p fibPacket) fibPacket { p.iif = link; return p }
+	// a bridge forward names and a LAN through eth1 it leaves out, an overlay
+	// address on lo, and on dummy0 a network about the overlay
+	forwarding := exitView{on: true, forwarded: []string{"br-1a"}, network: NetworkState{
+		IPv4: NetworkFamily{Links: []Link{
+			{Name: "br-1a", Prefixes: []netip.Prefix{prefix("203.0.113.129/26")}},
+			{Name: "eth0", Prefixes: []netip.Prefix{prefix("198.51.100.10/24")}},
+			{Name: "eth1", Prefixes: []netip.Prefix{prefix("203.0.113.65/26")}},
+			{Name: "lo", Prefixes: []netip.Prefix{prefix("192.0.2.1/32")}},
+		}},
+		IPv6: NetworkFamily{Links: []Link{
+			{Name: "br-1a", Prefixes: []netip.Prefix{prefix("2001:db8:17::1/64")}},
+			{Name: "dummy0", Prefixes: []netip.Prefix{prefix("3fff::10/48")}},
+			{Name: "eth0", Prefixes: []netip.Prefix{prefix("2001:db8:a::10/64")}},
+			{Name: "eth1", Prefixes: []netip.Prefix{prefix("2001:db8:50::1/64")}},
+		}},
+	}}
+	defaultsAndSubnets := []mirrorEntry{learnedAt("0.0.0.0/0"), learnedAt("::/0"), learnedAt("203.0.113.0/27"), learnedAt("2001:db8:300::/64")}
+	// a subnet router announcing the LAN through eth1 it holds an address in
+	routerLinks := NetworkState{
+		IPv4: NetworkFamily{Links: []Link{
+			{Name: "eth0", Prefixes: []netip.Prefix{prefix("198.51.100.10/24")}},
+			{Name: "eth1", Prefixes: []netip.Prefix{prefix("203.0.113.65/26")}},
+		}},
+		IPv6: NetworkFamily{Links: []Link{
+			{Name: "eth0", Prefixes: []netip.Prefix{prefix("2001:db8:a::10/64")}},
+			{Name: "eth1", Prefixes: []netip.Prefix{prefix("2001:db8:50::1/64")}},
+		}},
+	}
+	router := append(slices.Clone(defaultsAndSubnets), at(netstack.Local, "203.0.113.64/26"), at(netstack.Local, "2001:db8:50::/64"))
+	// the router's own packets from its LAN address, to another node's subnet and to the internet, which 5430 sends into the mesh
+	fromTheLAN := map[fibPacket]string{
+		from("203.0.113.65", "203.0.113.9"): tunDevice, from("203.0.113.65", "203.0.113.200"): tunDevice,
+		from("2001:db8:50::1", "2001:db8:300::9"): tunDevice, from("2001:db8:50::1", "2001:db8:c::1"): tunDevice,
+	}
 	for name, c := range map[string]struct {
 		entries []mirrorEntry
 		tailnet bool
 		// overlay stands in for the one above where it is set
-		overlay []schema.Prefix
-		packets map[fibPacket]string
+		overlay       []schema.Prefix
+		mode          exitView
+		egressSegment bool
+		packets       map[fibPacket]string
 	}{
+		"mode 2's lookups from the links' addresses and networks, the host's own and arriving on a link": {
+			entries: defaultsAndSubnets,
+			mode:    forwarding,
+			packets: map[fibPacket]string{
+				// 5405 ahead of 5420's subnet, so a socket bound to the uplink's address leaves by it
+				from("198.51.100.10", "203.0.113.9"): "eth0", from("2001:db8:a::10", "2001:db8:300::1"): "eth0",
+				// 5440 for the host's own, from the tun's address
+				from("192.0.2.5", "203.0.113.40"): tunDevice, from("3fff::5", "2001:db8:c::1"): tunDevice,
+				// 5435 for the reverse path of the LAN's reply by the uplink, and 5440 for the bridge's through the tun
+				from("203.0.113.66", "203.0.113.40"): "eth0", from("2001:db8:50::2", "2001:db8:c::1"): "eth0",
+				from("203.0.113.130", "203.0.113.40"): tunDevice, from("2001:db8:17::2", "2001:db8:c::1"): tunDevice,
+				// 5440 for the forwarded bridge's packets and not the LAN's
+				arriving("br-1a", from("203.0.113.130", "203.0.113.40")): tunDevice, arriving("br-1a", from("2001:db8:17::2", "2001:db8:c::1")): tunDevice,
+				arriving("eth1", from("203.0.113.66", "203.0.113.40")): "eth0", arriving("eth1", from("2001:db8:50::2", "2001:db8:c::1")): "eth0",
+				// 5405 and 5435 for the host's own lookups alone
+				arriving("br-1a", from("198.51.100.10", "203.0.113.9")): tunDevice, arriving("br-1a", from("203.0.113.66", "203.0.113.40")): tunDevice,
+			},
+		},
+		"an overlay address on lo and a network about the overlay on dummy0, which mode 2 sends nowhere by main": {
+			entries: defaultsAndSubnets,
+			mode:    forwarding,
+			packets: map[fibPacket]string{
+				from("192.0.2.1", "203.0.113.9"): tunDevice, from("3fff::10", "2001:db8:300::1"): tunDevice,
+				from("3fff::99", "2001:db8:c::1"): tunDevice,
+			},
+		},
+		// an unbound socket's first lookup carries no source, and a connected one's second the uplink's address the first picked
+		// toward the mesh's subnet 5420 answers the second, which in a family the tun holds an overlay address of 5405 sends by main
+		"mode 2 with the tun holding no IPv4 overlay address, which runs mode off's IPv4 rules": {
+			entries: defaultsAndSubnets,
+			mode:    exitView{on: true, network: forwarding.network, forwarded: forwarding.forwarded, unaddressed: []Family{FamilyIPv4}},
+			packets: map[fibPacket]string{
+				from("0.0.0.0", "203.0.113.40"): "eth0", from("198.51.100.10", "203.0.113.40"): "eth0",
+				arriving("br-1a", from("203.0.113.130", "203.0.113.40")):   "eth0",
+				from("198.51.100.10", "203.0.113.9"):                       tunDevice,
+				from("::", "2001:db8:c::1"):                                tunDevice,
+				arriving("br-1a", from("2001:db8:17::2", "2001:db8:c::1")): tunDevice,
+				from("2001:db8:a::10", "2001:db8:300::1"):                  "eth0",
+			},
+		},
+		"mode 2 with the tun holding no IPv6 overlay address, which runs mode off's IPv6 rules": {
+			entries: defaultsAndSubnets,
+			mode:    exitView{on: true, network: forwarding.network, forwarded: forwarding.forwarded, unaddressed: []Family{FamilyIPv6}},
+			packets: map[fibPacket]string{
+				from("::", "2001:db8:c::1"): "eth0", from("2001:db8:a::10", "2001:db8:c::1"): "eth0",
+				arriving("br-1a", from("2001:db8:17::2", "2001:db8:c::1")): "eth0",
+				from("2001:db8:a::10", "2001:db8:300::1"):                  tunDevice,
+				from("0.0.0.0", "203.0.113.40"):                            tunDevice,
+				arriving("br-1a", from("203.0.113.130", "203.0.113.40")):   tunDevice,
+				from("198.51.100.10", "203.0.113.9"):                       "eth0",
+			},
+		},
+		"mode 2 on an exit, whose mirror withholds the defaults, so 5440 finds none": {
+			entries:       defaultsAndSubnets,
+			mode:          forwarding,
+			egressSegment: true,
+			packets: map[fibPacket]string{
+				from("192.0.2.5", "203.0.113.40"): "eth0", from("3fff::5", "2001:db8:c::1"): "eth0",
+				arriving("br-1a", from("203.0.113.130", "203.0.113.40")): "eth0",
+				from("192.0.2.5", "203.0.113.9"):                         tunDevice,
+			},
+		},
+		"a subnet router's LAN address in mode 2, which 5405 leaves to 5430": {
+			entries: router,
+			mode:    exitView{on: true, network: routerLinks},
+			packets: fromTheLAN,
+		},
+		"a subnet router's LAN address in mode 2 forwarding the LAN": {
+			entries: router,
+			mode:    exitView{on: true, network: routerLinks, forwarded: []string{"eth1"}},
+			packets: fromTheLAN,
+		},
+		"a subnet router's LAN address in mode off": {
+			entries: router,
+			mode:    exitView{network: routerLinks},
+			packets: fromTheLAN,
+		},
+		"mode off over the same links": {
+			entries: defaultsAndSubnets,
+			mode:    exitView{network: forwarding.network, forwarded: forwarding.forwarded},
+			packets: map[fibPacket]string{
+				from("198.51.100.10", "203.0.113.9"): tunDevice, from("192.0.2.5", "203.0.113.40"): "eth0",
+				arriving("br-1a", from("203.0.113.130", "203.0.113.40")): "eth0",
+			},
+		},
 		"an overlay prefix holding the unspecified address, which gets no hold": {
 			entries: []mirrorEntry{learnedAt("::/0"), learnedAt("0.0.0.0/0")},
 			overlay: []schema.Prefix{schema.MustPrefix("::/12"), schema.MustPrefix("0.0.0.0/8")},
@@ -734,7 +1074,7 @@ func TestRuleWalkNamedCases(t *testing.T) {
 		if c.overlay != nil {
 			border = c.overlay
 		}
-		h := interpret(t, border, c.entries, nil, false, true, plainHost(c.tailnet))
+		h := interpret(t, border, c.entries, nil, c.egressSegment, true, plainHost(c.tailnet), c.mode)
 		for p, want := range c.packets {
 			if got := h.kernel.walk(p); got != want {
 				t.Errorf("%s: %s went to %s, want %s\nthe mirror:\n%v", name, p, got, want, h.desired)

@@ -25,15 +25,13 @@ import (
 // unreachable, blackhole or prohibit one.
 // routing.md's "Where a lookup ends on Linux" gives where each lookup ends.
 //
-// Mode 2 (exit.on) adds 5405, 5435 and 5440. Neither 5405 nor 5435 selects a
-// source overlapping the overlay or this node's own prefixes: 5405 comes ahead
-// of 5430, so an overlay address on lo, or an address in a LAN this node
-// announces, would otherwise leave by main where mode off sends it into the
-// mesh. A selector overlapping either is left out whole. In a family the tun
-// holds no overlay address of, 5440 holds no rule, so the host's traffic and
-// the forwarded links' leave by main as they do while no exit is live: the
-// tun read drops a packet 5440 would send it from another of the host's
-// addresses, the source a masquerade to the tun then picks as well.
+// Mode 2 (exit.on) adds 5405, 5435 and 5440 to each family the tun holds an
+// overlay address of, and a family it holds none of runs mode off's rules.
+// Neither 5405 nor 5435 selects a source overlapping the overlay or this
+// node's own prefixes: 5405 comes ahead of 5430, so an overlay address on lo,
+// or an address in a LAN this node announces, would otherwise leave by main
+// where mode off sends it into the mesh. A selector overlapping either is left
+// out whole.
 func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix, exit exitView) []Rule {
 	var out []Rule
 	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
@@ -61,14 +59,11 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 		for _, prefix := range familyPrefixes(family, own) {
 			out = append(out, Rule{Family: family, Priority: priorityOwn, From: schema.PrefixFrom(prefix), Table: id})
 		}
-		if !exit.on {
+		if !exit.on || slices.Contains(exit.unaddressed, family) {
 			continue
 		}
 		for _, network := range networks {
 			out = append(out, Rule{Family: family, Priority: priorityLinkSource, From: schema.PrefixFrom(network), IIF: loopback, Table: schema.TableMain})
-		}
-		if slices.Contains(exit.unaddressed, family) {
-			continue
 		}
 		out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: loopback, Table: id})
 		for _, link := range exit.forwarded {
@@ -92,9 +87,10 @@ type exitView struct {
 // sources is the selectors of one family's 5405 and 5435: each address of a
 // link outside the mesh as a host prefix, and each connected network shorter
 // than a host prefix and each point-to-point far end outside those networks of
-// a link forward leaves out, masked, each sorted and once. Mode off has none.
+// a link forward leaves out, masked, each sorted and once. Mode off and a
+// family the tun holds no overlay address of have none.
 func (v exitView) sources(family Family, overlay, own []netip.Prefix) (addresses, networks []netip.Prefix) {
-	if !v.on {
+	if !v.on || slices.Contains(v.unaddressed, family) {
 		return nil, nil
 	}
 	links := v.network.IPv4.Links
