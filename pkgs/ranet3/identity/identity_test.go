@@ -11,20 +11,20 @@ import (
 func TestParseRefusesEveryOtherSpelling(t *testing.T) {
 	for _, text := range []string{
 		"",
-		"ysun",
-		"ysun/isere:1:2",
-		"ysun/:1",
-		"/isere",
-		"ysun/isere:",
-		"ysun:1/isere",
-		"ysun/isere@0",
-		"ysun/isere:1@0",
-		"ysun/is ere",
-		"ysun/isere%3a1",
-		"ysun/%41isere",
-		"ysun/isere%2",
-		"ysun/isere%",
-		"ysun/isere%G0",
+		"example",
+		"example/gateway:1:2",
+		"example/:1",
+		"/gateway",
+		"example/gateway:",
+		"example:1/gateway",
+		"example/gateway@0",
+		"example/gateway:1@0",
+		"example/gate way",
+		"example/gateway%3a1",
+		"example/%41gateway",
+		"example/gateway%2",
+		"example/gateway%",
+		"example/gateway%G0",
 	} {
 		if id, err := Parse(text); err == nil {
 			t.Errorf("Parse(%q) took it as %#v", text, id)
@@ -33,7 +33,7 @@ func TestParseRefusesEveryOtherSpelling(t *testing.T) {
 }
 
 func TestParseRefusesAnOrganizationOfMoreThanOneLevel(t *testing.T) {
-	for _, text := range []string{"ysun/lab/gateway", "ysun/lab/gateway:0", "ysun/isere/1"} {
+	for _, text := range []string{"example/lab/gateway", "example/lab/gateway:0", "example/alpha/1"} {
 		if id, err := Parse(text); err == nil || !strings.Contains(err.Error(), "an organization has one level") {
 			t.Errorf("Parse(%q) = %#v, %v, want a refusal of the second level", text, id, err)
 		}
@@ -42,13 +42,13 @@ func TestParseRefusesAnOrganizationOfMoreThanOneLevel(t *testing.T) {
 
 // selectors and ids may take this shape later, so nothing may mean it today, and no query gives a bare name a serial
 func TestTextWithAColonAndNoSlashNamesNothing(t *testing.T) {
-	queries := []string{"tag:router", "id:7f3a", "isere:1"}
+	queries := []string{"tag:router", "id:7f3a", "gateway:1"}
 	for _, query := range queries {
 		if id, err := Parse(query); err == nil {
 			t.Errorf("Parse(%q) took it as %#v", query, id)
 		}
 	}
-	for _, subject := range []string{"ysun/isere:1@0", "ysun/isere:1", "ysun/isere@0", "ysun/tag:router@0", "ysun/id:7f3a"} {
+	for _, subject := range []string{"example/gateway:1@0", "example/gateway:1", "example/gateway@0", "example/tag:router@0", "example/id:7f3a"} {
 		for _, query := range queries {
 			if Names(subject, query) {
 				t.Errorf("%q names %q", query, subject)
@@ -58,7 +58,7 @@ func TestTextWithAColonAndNoSlashNamesNothing(t *testing.T) {
 }
 
 func TestFromRefusesAnEmptyOrganizationOrName(t *testing.T) {
-	for _, parts := range [][3]string{{"", "isere", "1"}, {"ysun", "", "1"}, {"", "", ""}} {
+	for _, parts := range [][3]string{{"", "gateway", "1"}, {"example", "", "1"}, {"", "", ""}} {
 		if id, err := From(parts[0], parts[1], parts[2]); err == nil {
 			t.Errorf("From(%q) took it as %#v", parts, id)
 		}
@@ -67,9 +67,9 @@ func TestFromRefusesAnEmptyOrganizationOrName(t *testing.T) {
 
 func TestCanonicalFormsReadAsTheirParts(t *testing.T) {
 	for text, want := range map[string]Identity{
-		"ysun/framework":            {"ysun", "framework", ""},
-		"ysun/framework:13001":      {"ysun", "framework", "13001"},
-		"nick%20cao/gateway:0":      {"nick cao", "gateway", "0"},
+		"example/laptop":            {"example", "laptop", ""},
+		"example/laptop:13001":      {"example", "laptop", "13001"},
+		"example%20org/gateway:0":   {"example org", "gateway", "0"},
 		"r%C3%A9seau/a%2Fb%3Ac:%40": {"r\xc3\xa9seau", "a/b:c", "@"},
 	} {
 		got, err := Parse(text)
@@ -101,13 +101,13 @@ func TestEveryByteRoundTripsInEveryPart(t *testing.T) {
 }
 
 func TestPathNamesTheRemoteAndTheLocalSerial(t *testing.T) {
-	framework := MustParse("ysun/framework:0")
+	laptop := MustParse("example/laptop:0")
 	for want, remote := range map[string]Identity{
-		"ysun/butte:0@0": MustParse("ysun/butte:0"),
-		"ysun/isere@0":   MustParse("ysun/isere"),
+		"example/bravo:0@0": MustParse("example/bravo:0"),
+		"example/gateway@0": MustParse("example/gateway"),
 	} {
-		if got := Path(remote, framework); got != want {
-			t.Errorf("Path(%s, %s) = %q, want %q", remote, framework, got, want)
+		if got := Path(remote, laptop); got != want {
+			t.Errorf("Path(%s, %s) = %q, want %q", remote, laptop, got, want)
 		}
 	}
 }
@@ -117,20 +117,20 @@ func TestNamesComparesWholeSegments(t *testing.T) {
 		subject, query string
 		want           bool
 	}{
-		{"ysun/isere:1@0", "ysun/isere:1@0", true},
-		{"ysun/isere:1@0", "ysun/isere:1", true},
-		{"ysun/isere:1@0", "ysun/isere", true},
-		{"ysun/isere:1@0", "isere", true},
-		{"ysun/isere@0", "ysun/isere", true},
-		{"ysun/isere:1", "isere", true},
-		{"ysun/isere", "isere", true},
-		{"ysun/isere2:1@0", "ysun/isere", false},
-		{"ysun/isere2:1@0", "isere", false},
-		{"ysun/isere:1@0", "ysun/isere:2", false},
-		{"ysun/isere:1@0", "ysun", false},
-		{"ysun/isere:1@0", "other/isere", false},
-		{"ysun/isere:1@0", "1", false},
-		{"ysun/isere:1@0", ":1", false},
+		{"example/gateway:1@0", "example/gateway:1@0", true},
+		{"example/gateway:1@0", "example/gateway:1", true},
+		{"example/gateway:1@0", "example/gateway", true},
+		{"example/gateway:1@0", "gateway", true},
+		{"example/gateway@0", "example/gateway", true},
+		{"example/gateway:1", "gateway", true},
+		{"example/gateway", "gateway", true},
+		{"example/gateway2:1@0", "example/gateway", false},
+		{"example/gateway2:1@0", "gateway", false},
+		{"example/gateway:1@0", "example/gateway:2", false},
+		{"example/gateway:1@0", "example", false},
+		{"example/gateway:1@0", "other/gateway", false},
+		{"example/gateway:1@0", "1", false},
+		{"example/gateway:1@0", ":1", false},
 	} {
 		if got := Names(test.subject, test.query); got != test.want {
 			t.Errorf("Names(%q, %q) = %v, want %v", test.subject, test.query, got, test.want)
