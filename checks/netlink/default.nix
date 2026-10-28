@@ -215,6 +215,7 @@ testers.runNixOSTest {
     # and the same leaf under fallback = "none", with its defaults present and retracted: each socket, other programs' chains and rules,
     # NAT at output, a destination changed after the tun, loopback, each CPU, the listed services, each reverse path check, neighbor
     # discovery and the host's ICMP errors, and a GRE and a WireGuard tunnel's outer packets
+    # and the line's middle node traced by uid 0 over its control socket, a record for each forward and answer
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -249,8 +250,9 @@ testers.runNixOSTest {
         "TestTUNKillSwitchKeepsKernelTunnelsOffTheUplink",
     ]:
         assert f"--- PASS: {name}" in out, f"the kill switch's lab {name} did not run:\n{out}"
+    assert "--- PASS: TestTUNTraceShowsTheMiddleNodesDecisions" in out, f"the trace's lab did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 16, f"only {ran} of the client's tun round trips ran:\n{out}"
+    assert ran >= 17, f"only {ran} of the client's tun round trips ran:\n{out}"
 
     # every datagram sent with DF and the path mtu a refused one reports, against linux itself
     # and a family's socket fragmenting past the path only while a session of the family asks
