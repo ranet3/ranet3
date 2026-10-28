@@ -132,6 +132,9 @@ func TestUnansweredDeleteOfARedundantIKESAEndsItAlone(t *testing.T) {
 			if !ok {
 				return
 			}
+			if p.rekeyResend(request) {
+				continue
+			}
 			if request.Header.SPIInitiator == p.localSPIi && request.Header.SPIResponder == collisionLoserSPIr && request.Header.ExchangeType == INFORMATIONAL {
 				if deletes.Add(1) == 1 {
 					close(deleting)

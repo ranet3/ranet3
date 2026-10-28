@@ -116,6 +116,13 @@ type collisionPeer struct {
 	// the losing candidate this end made and the surviving one the peer made, known once the collision is played
 	localSPIi, winnerSPIr uint64
 	loser, winner         *IKEKeys
+	// rekeyMID is the Message ID of this end's rekey over the old IKE SA
+	rekeyMID uint32
+}
+
+// rekeyResend reports that request is this end's rekey sent again over the old IKE SA, which a retransmit timer shorter than the collision's answer sends
+func (p *collisionPeer) rekeyResend(request *Message) bool {
+	return !request.Header.IsResponse() && request.Header.SPIInitiator == collisionOldSPIi && request.Header.MessageID == p.rekeyMID
 }
 
 // newCollisionPeer returns the peer of a session whose IKE SA was established at established, which the test configures before it calls play
@@ -199,7 +206,7 @@ func (p *collisionPeer) collide() bool {
 		t.Errorf("the rekey proposes %v, %v", props, err)
 		return false
 	}
-	p.localSPIi = binary.BigEndian.Uint64(props[0].SPI)
+	p.localSPIi, p.rekeyMID = binary.BigEndian.Uint64(props[0].SPI), rekey.Header.MessageID
 	_, localPublic, err := DecodeKE(findType(inner, PayloadKE).Body)
 	if err != nil {
 		t.Errorf("decode the rekey's KE: %v", err)
@@ -220,6 +227,9 @@ func (p *collisionPeer) collide() bool {
 		return false
 	}
 	answer, raw, ok := p.read("the answer to the peer's rekey")
+	for ok && p.rekeyResend(answer) {
+		answer, raw, ok = p.read("the answer to the peer's rekey")
+	}
 	if !ok {
 		return false
 	}
