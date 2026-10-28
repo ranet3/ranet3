@@ -58,12 +58,12 @@ func modeOff(id schema.TableID, overlay, own []netip.Prefix) map[Rule]bool {
 }
 
 // modeTwo is mode off with the three rules mode 2 adds, rule by rule for each
-// family: 5405 from each address of a link outside the mesh, 5435 from each
-// connected network shorter than a host prefix and each point-to-point far end
-// none of those holds of a link not forwarded, 5440 for the host's own traffic
-// and each forwarded link in a family the tun holds an overlay address of and
-// none in another, and no 5405 or 5435 from a source the overlay or an own
-// prefix 5430 selects holds
+// family the tun holds an overlay address of: 5405 from each address of a link
+// outside the mesh, 5435 from each connected network shorter than a host
+// prefix and each point-to-point far end none of those holds of a link not
+// forwarded, 5440 for the host's own traffic and each forwarded link, and no
+// 5405 or 5435 from a source the overlay or an own prefix 5430 selects holds.
+// A family the tun holds no overlay address of keeps mode off's rules alone.
 func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkState, forwarded []string, unaddressed []Family) map[Rule]bool {
 	out := modeOff(id, overlay, own)
 	taken := slices.Clone(overlay)
@@ -77,11 +77,12 @@ func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkStat
 		return slices.ContainsFunc(taken, func(o netip.Prefix) bool { return o.Contains(network.Addr()) || network.Contains(o.Masked().Addr()) })
 	}
 	for family, links := range map[Family][]Link{FamilyIPv4: network.IPv4.Links, FamilyIPv6: network.IPv6.Links} {
-		if !slices.Contains(unaddressed, family) {
-			out[Rule{Family: family, Priority: 5440, IIF: "lo", Table: id}] = true
-			for _, name := range forwarded {
-				out[Rule{Family: family, Priority: 5440, IIF: name, Table: id}] = true
-			}
+		if slices.Contains(unaddressed, family) {
+			continue
+		}
+		out[Rule{Family: family, Priority: 5440, IIF: "lo", Table: id}] = true
+		for _, name := range forwarded {
+			out[Rule{Family: family, Priority: 5440, IIF: name, Table: id}] = true
 		}
 		for _, link := range links {
 			for _, prefix := range link.Prefixes {
@@ -272,9 +273,8 @@ func modeTwoRules(t *testing.T, overlay []schema.Prefix, own []netip.Prefix, vie
 //   - a point-to-point link's far end is the network main routes by it, so
 //     5435 selects it where forward leaves the link out, but where a network
 //     of the same link holds it, whose rule answers for it already
-//   - in a family the tun holds no overlay address of, 5440 holds no rule, so
-//     the host's traffic and the forwarded links' leave by main, while 5405
-//     and 5435 stay
+//   - a family the tun holds no overlay address of runs mode off's rules, with
+//     no 5405, 5435 or 5440
 func TestModeTwoDerivesItsRulesFromTheLinks(t *testing.T) {
 	p := netip.MustParsePrefix
 	uplink := NetworkState{
@@ -361,12 +361,16 @@ func TestModeTwoDerivesItsRulesFromTheLinks(t *testing.T) {
 		{
 			what: "the tun holding no IPv4 overlay address",
 			view: exitView{on: true, network: uplink, forwarded: []string{"docker0"}, unaddressed: []Family{FamilyIPv4}},
-			want: slices.Concat(uplinkRules, []string{"ipv6 5440 iif docker0", "ipv6 5440 iif lo"}),
+			want: []string{"ipv6 5405 from 2001:db8::10/128 iif lo", "ipv6 5435 from 2001:db8::/64 iif lo", "ipv6 5440 iif docker0", "ipv6 5440 iif lo"},
 		},
 		{
 			what: "the tun holding no IPv6 overlay address",
 			view: exitView{on: true, network: uplink, forwarded: []string{"docker0"}, unaddressed: []Family{FamilyIPv6}},
-			want: slices.Concat(uplinkRules, []string{"ipv4 5440 iif docker0", "ipv4 5440 iif lo"}),
+			want: []string{"ipv4 5405 from 198.51.100.10/32 iif lo", "ipv4 5435 from 198.51.100.0/24 iif lo", "ipv4 5440 iif docker0", "ipv4 5440 iif lo"},
+		},
+		{
+			what: "the tun holding no overlay address of either family",
+			view: exitView{on: true, network: uplink, forwarded: []string{"docker0"}, unaddressed: []Family{FamilyIPv4, FamilyIPv6}},
 		},
 	} {
 		if got, want := modeTwoRules(t, c.overlay, c.own, c.view), slices.Sorted(slices.Values(c.want)); !slices.Equal(got, want) {
