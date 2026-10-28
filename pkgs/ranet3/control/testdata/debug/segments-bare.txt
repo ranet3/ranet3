@@ -1,0 +1,3 @@
+No local segment and no steering policy
+Counters  0 forwarded, 0 delivered, 0 dropped, 0 answered, 0 egressed, 0 refused, 0 not ready
+Steered   0 steered, 0 too large to encapsulate, 0 with no route to their first segment

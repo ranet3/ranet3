@@ -223,20 +223,26 @@ func (c *Client) exitStatus() control.EgressStatus {
 	return egressStatus((*exit).Status())
 }
 
+// readyFamilies names each family ready, ipv4 where v4 holds and ipv6 where
+// v6 does
+func readyFamilies(v4, v6 bool) []string {
+	var ready []string
+	if v4 {
+		ready = append(ready, "ipv4")
+	}
+	if v6 {
+		ready = append(ready, "ipv6")
+	}
+	return ready
+}
+
 // egressStatus is an exit's Status as the control surface reports it, the
 // detail of a backend holding rules in the host's packet filter among it
 func egressStatus(status egress.Status) control.EgressStatus {
-	var ready []string
-	if status.Ready4 {
-		ready = append(ready, "ipv4")
-	}
-	if status.Ready6 {
-		ready = append(ready, "ipv6")
-	}
 	out := control.EgressStatus{
 		Enabled:        true,
 		Where:          status.Where,
-		Ready:          ready,
+		Ready:          readyFamilies(status.Ready4, status.Ready6),
 		Unready:        status.Unready,
 		Skipped:        status.Skipped,
 		Return:         status.Return,
