@@ -18,7 +18,7 @@ import (
 // each error answers a short packet quoting all of it and a long one quoting what fits the IPv6 minimum MTU, RFC 4443 section 2.4 (c)
 // the golden file shows each answer's header, its ICMPv6 header and the length it quotes
 func TestErrorsMatchTheirGoldenAnswers(t *testing.T) {
-	sid := addr("3fff:1:69c:8c6::2")
+	sid := addr("3fff:b:0:106::2")
 	long := append(segmentRouted(t), make([]byte, 2000)...)
 	binary.BigEndian.PutUint16(long[4:], uint16(len(long)-ipv6HeaderLen))
 	var out strings.Builder

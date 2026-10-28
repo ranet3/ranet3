@@ -74,8 +74,8 @@ func message(kind byte) []byte { return []byte{kind, 0, 0, 0, 0, 0, 0, 0} }
 // End refuses it with ErrHopLimit, as the End SID it reaches does
 func expiring(t *testing.T, front int) []byte {
 	t.Helper()
-	path := []netip.Addr{addr("3fff:1:69c:98d6::2"), addr("3fff:1:69c:29a6::1")}
-	raw, err := Encapsulate(innerV6("payload"), addr("3fff:1:69c:8c0::1"), path)
+	path := []netip.Addr{addr("3fff:b:0:206::2"), addr("3fff:b:0:506::1")}
+	raw, err := Encapsulate(innerV6("payload"), addr("3fff:b:0:100::1"), path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func expiring(t *testing.T, front int) []byte {
 // does, over the same pseudo-header: a correct message sums to zero, which is
 // the check RFC 4443 section 2.3 has the receiver make.
 func TestTimeExceededChecksumsAsAReceiverVerifiesIt(t *testing.T) {
-	sid := addr("3fff:1:69c:8c6::2")
+	sid := addr("3fff:b:0:106::2")
 	offending := segmentRouted(t)
 	answer := TimeExceeded(offending, sid, always)
 	if answer == nil {
@@ -133,7 +133,7 @@ func TestTimeExceededChecksumsAsAReceiverVerifiesIt(t *testing.T) {
 // A packet quoted at the minimum MTU is truncated rather than dropped, and the
 // message still verifies, which is the odd-length path through the checksum.
 func TestLargeOffendingPacketIsQuotedUpToTheMinimumMTU(t *testing.T) {
-	sid := addr("3fff:1:69c:8c6::2")
+	sid := addr("3fff:b:0:106::2")
 	offending := append(segmentRouted(t), make([]byte, 2000)...)
 	binary.BigEndian.PutUint16(offending[4:], uint16(len(offending)-ipv6HeaderLen))
 	answer := ParameterProblem(offending, sid, always)
@@ -164,7 +164,7 @@ func TestLargeOffendingPacketIsQuotedUpToTheMinimumMTU(t *testing.T) {
 // inside the octets the walk reads of, and a chain past the headers the walk
 // reads.
 func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
-	sid := addr("3fff:1:69c:8c6::2")
+	sid := addr("3fff:b:0:106::2")
 	damaged := func(damage func(raw []byte)) []byte {
 		raw := segmentRouted(t)
 		damage(raw)
@@ -241,7 +241,7 @@ func TestPacketTooBigToAGroupIsRefusedDepartingFromRFC4443(t *testing.T) {
 	raw := segmentRouted(t)
 	copy(raw[24:], addr16(addr("ff0e::1")))
 	asked := false
-	if answer := PacketTooBig(raw, addr("3fff:1:69c:8c6::2"), MinimumIPv6MTU, func() bool { asked = true; return true }); answer != nil || asked {
+	if answer := PacketTooBig(raw, addr("3fff:b:0:106::2"), MinimumIPv6MTU, func() bool { asked = true; return true }); answer != nil || asked {
 		t.Errorf("a packet to a group got Packet Too Big %t, and allow was asked %t", answer != nil, asked)
 	}
 }
@@ -249,7 +249,7 @@ func TestPacketTooBigToAGroupIsRefusedDepartingFromRFC4443(t *testing.T) {
 // each builder asks allow once for a packet an error may answer, and builds nothing when allow refuses
 // it asks nothing about a packet it would not answer, so a rate limit behind allow spends nothing on one
 func TestBuildersAskAllowOnlyBeforeAnAnswer(t *testing.T) {
-	sid := addr("3fff:1:69c:8c6::2")
+	sid := addr("3fff:b:0:106::2")
 	for _, builder := range errorBuilders {
 		for _, allowed := range []bool{true, false} {
 			asked := 0
