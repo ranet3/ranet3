@@ -95,6 +95,12 @@ testers.runNixOSTest {
     assert "SKIP" not in out, f"the tests skipped themselves under root:\n{out}"
     assert "--- PASS: TestNetlinkDumpRulesReadsEveryOwner" in out, f"the rule dump's round trip did not run:\n{out}"
     assert "--- PASS: TestNetlinkRouteGetNamesTheMatchedRouteAndTable" in out, f"the route lookup did not run:\n{out}"
+    assert "--- PASS: TestNetlinkRouteGetNamesTheRuleTheLookupTook" in out, f"the rule a lookup took was not named:\n{out}"
+    assert "--- PASS: TestNetlinkRouteGetNamesACandidateForAnErrnoRaisedOutsideTheWalk" in out, f"a rule an errno raised outside the walk answers was not named a candidate:\n{out}"
+    assert "--- PASS: TestNetlinkRouteGetWalksAnInvertedRuleOfASelectorItDoesNotRead" in out, f"an inverted rule of an unread selector was not walked:\n{out}"
+    assert "--- PASS: TestNetlinkRouteGetNamesTheRuleAnExceptionTook" in out, f"the rule an exception took was not named:\n{out}"
+    assert "--- PASS: TestNetlinkRouteGetNamesLocalForALocalRouteOfOneTrie" in out, f"the local route of one trie was not named the lookup of local:\n{out}"
+    assert "--- PASS: TestNetlinkRouteGetAnswersARouteOfNoTableEntryAsTheKernelsOwn" in out, f"a route of no table entry was not answered as the kernel's own:\n{out}"
     assert "--- PASS: TestNetlinkLookupsReportAnotherProgramsRuleAhead" in out, f"the reconciler's lookups did not run:\n{out}"
     assert "--- PASS: TestNetlinkFollowsAnotherWritersAddressOnTheTun" in out, f"the reconciler's wake on the tun's addresses did not run:\n{out}"
     ran = out.count("--- PASS")

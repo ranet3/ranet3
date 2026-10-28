@@ -64,7 +64,28 @@ func TestNetlinkDumpRulesReadsEveryOwner(t *testing.T) {
 	l3mdev = putAttrU32(l3mdev, unix.FRA_PRIORITY, 1000)
 	l3mdev = putAttr(l3mdev, unix.FRA_L3MDEV, []byte{1})
 	l3mdev = putAttr(l3mdev, unix.FRA_PROTOCOL, []byte{unix.RTPROT_KERNEL})
-	for _, body := range [][]byte{foreign, unreachable, l3mdev} {
+	// the selectors DumpedRule holds no value of, which the dump marks unread
+	unread4 := make([]byte, sizeofFibRuleHdr)
+	unread4[0], unread4[3], unread4[7] = unix.AF_INET, 0x10, unix.FR_ACT_TO_TBL
+	unread4 = putAttrU32(unread4, unix.FRA_PRIORITY, 300)
+	unread4 = putAttrU32(unread4, unix.FRA_TABLE, 400)
+	// a user namespace maps uid 0 alone, and the kernel refuses a range it cannot map
+	unread4 = putAttr(unread4, unix.FRA_UID_RANGE, binary.NativeEndian.AppendUint64(nil, 0))
+	unread4 = putAttr(unread4, unix.FRA_IP_PROTO, []byte{unix.IPPROTO_UDP})
+	unread4 = putAttr(unread4, unix.FRA_DPORT_RANGE, binary.NativeEndian.AppendUint16(binary.NativeEndian.AppendUint16(nil, 53), 53))
+	unread4 = putAttr(unread4, unix.FRA_PROTOCOL, []byte{unix.RTPROT_STATIC})
+	unread6 := make([]byte, sizeofFibRuleHdr)
+	unread6[0], unread6[7] = unix.AF_INET6, unix.FR_ACT_TO_TBL
+	unread6 = putAttrU32(unread6, unix.FRA_PRIORITY, 301)
+	unread6 = putAttrU32(unread6, unix.FRA_TABLE, 400)
+	unread6 = putAttr(unread6, fraFlowlabel, binary.BigEndian.AppendUint32(nil, 0x12345))
+	// FRA_FLOWLABEL_MASK
+	unread6 = putAttr(unread6, 27, binary.BigEndian.AppendUint32(nil, 0xfffff))
+	unread6 = putAttr(unread6, unix.FRA_SPORT_RANGE, binary.NativeEndian.AppendUint16(binary.NativeEndian.AppendUint16(nil, 1024), 2048))
+	unread6 = putAttr(unread6, unix.FRA_TUN_ID, binary.BigEndian.AppendUint64(nil, 7))
+	unread6 = putAttrU32(unread6, unix.FRA_SUPPRESS_IFGROUP, 3)
+	unread6 = putAttr(unread6, unix.FRA_PROTOCOL, []byte{unix.RTPROT_STATIC})
+	for _, body := range [][]byte{foreign, unreachable, l3mdev, unread4, unread6} {
 		if _, err := conn.execute(unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, body); err != nil {
 			t.Fatalf("install another writer's rule: %v", err)
 		}
@@ -85,12 +106,14 @@ func TestNetlinkDumpRulesReadsEveryOwner(t *testing.T) {
 		{Family: FamilyIPv6, Priority: 101, From: netip.MustParsePrefix("3fff:1::/32"), Action: "lookup", Table: 300, Protocol: unix.RTPROT_STATIC},
 		{Family: FamilyIPv4, Priority: 200, IIF: device, Invert: true, Action: "unreachable", Protocol: unix.RTPROT_STATIC},
 		{Family: FamilyIPv6, Priority: 1000, L3mdev: true, Action: "lookup", Protocol: unix.RTPROT_KERNEL},
+		{Family: FamilyIPv4, Priority: 300, Action: "lookup", Table: 400, Protocol: unix.RTPROT_STATIC, Unread: SelectorDSCP | SelectorUIDRange | SelectorIPProto | SelectorDport},
+		{Family: FamilyIPv6, Priority: 301, Action: "lookup", Table: 400, Protocol: unix.RTPROT_STATIC, Unread: SelectorFlowlabel | SelectorSport | SelectorTunID | SelectorSuppressIfgroup},
 	} {
 		if !slices.Contains(dumped, want) {
 			t.Errorf("the dump does not hold %+v in:\n%+v", want, dumped)
 		}
 	}
-	if len(dumped) != 10 {
-		t.Errorf("the dump holds %d rules, want the kernel's five and the five written:\n%+v", len(dumped), dumped)
+	if len(dumped) != 12 {
+		t.Errorf("the dump holds %d rules, want the kernel's five and the seven written:\n%+v", len(dumped), dumped)
 	}
 }
