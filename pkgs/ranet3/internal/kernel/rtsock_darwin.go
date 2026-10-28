@@ -339,11 +339,15 @@ func (m *routeMonitor) run() {
 			if errors.Is(err, os.ErrClosed) {
 				return
 			}
-			// anything else is unexpected and would spin, so it is reported
-			// and the monitor stops. The periodic sweep in Run remains as the
-			// backstop.
+			// anything else is unexpected and would spin, so it is reported and the monitor stops
+			// the reconciler's monitor watches its interface alone, and its periodic sweep reads the table again
+			// no sweep reads the host's routes again for a monitor of every interface
 			m.wake()
-			slog.Warn("kernel route monitor stopped, falling back to the periodic sweep", "err", err)
+			if m.index != 0 {
+				slog.Warn("kernel route monitor stopped, falling back to the periodic sweep", "err", err)
+			} else {
+				slog.Warn("kernel route monitor stopped, so the underlay's selection or the network watch, whichever reads it, keeps its last reading until the daemon restarts", "err", err)
+			}
 			return
 		}
 		if m.interesting(buf[:n]) {
