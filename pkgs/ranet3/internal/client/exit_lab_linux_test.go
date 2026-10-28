@@ -146,12 +146,15 @@ func newExitLab(t *testing.T) *exitLab {
 	return lab
 }
 
-// exitDaemon is the leaf's node and its reconciler running over the mesh's table, with the peer every learned route goes to
+// exitDaemon is the leaf's node and its reconciler running over the mesh's table, with the peer every learned route goes to,
+// and the table and the announcements it last handed the reconciler
 type exitDaemon struct {
-	node    *Client
-	routes  *kernel.Reconciler
-	learned *netstack.Peer
-	stop    func()
+	node      *Client
+	routes    *kernel.Reconciler
+	learned   *netstack.Peer
+	stop      func()
+	table     kernel.Table
+	announced []netip.Prefix
 }
 
 // startExitDaemon starts the rules lab's node in the leaf's namespace and its reconciler in mode off, a session counting as live throughout
@@ -197,38 +200,67 @@ func startExitDaemon(t *testing.T, leaf *netnstest.Thread) *exitDaemon {
 	return d
 }
 
-// mode hands the reconciler the leaf's table running cap.exit with forward, mode off where on is false, less the tun's overlay
-// address of the family unaddressed names, 4 or 6, where it is not 0, and the announcements,
+// mode hands the reconciler the leaf's table running cap.exit with forward, mode off where on is false, and the announcements,
 // and waits for a pass that took them, since the state a wait looks for may be the one the last table left
-func (d *exitDaemon) mode(t *testing.T, forward []string, on bool, announced []netip.Prefix, unaddressed int) {
+func (d *exitDaemon) mode(t *testing.T, forward []string, on bool, announced []netip.Prefix) {
 	t.Helper()
-	cfg := d.node.config()
 	var mode *kernel.ExitMode
 	if on {
 		mode = &kernel.ExitMode{Forward: forward}
 	}
-	table := cfg.Cap.Table.WithMode(mode)
+	d.hand(t, d.node.config().Cap.Table.WithMode(mode), announced)
+}
+
+// withoutOverlayAddress hands the reconciler the table it runs less its addresses of each of families, 4 or 6, which the reconciler
+// then takes off the tun, and waits for a pass that took it
+func (d *exitDaemon) withoutOverlayAddress(t *testing.T, families ...int) {
+	t.Helper()
+	table := d.table
 	table.Addresses = slices.DeleteFunc(slices.Clone(table.Addresses), func(address schema.Prefix) bool {
-		return unaddressed != 0 && address.Addr().Is4() == (unaddressed == 4)
+		family := 6
+		if address.Addr().Is4() {
+			family = 4
+		}
+		return slices.Contains(families, family)
 	})
+	d.hand(t, table, d.announced)
+}
+
+// hand hands the reconciler table with the announcements and waits for a pass that took them
+func (d *exitDaemon) hand(t *testing.T, table kernel.Table, announced []netip.Prefix) {
+	t.Helper()
 	before := d.reloaded()
-	if err := d.routes.SetTable(table, cfg.Overlay(), announced); err != nil {
-		t.Fatalf("hand the reconciler cap.exit forwarding %v: %v", forward, err)
+	if err := d.routes.SetTable(table, d.node.config().Overlay(), announced); err != nil {
+		t.Fatalf("hand the reconciler cap.table with cap.exit %+v: %v", table.Mode(), err)
 	}
+	d.table, d.announced = table, announced
 	waitFor(t, rulesSettle, "a pass under the table the reconciler was handed", func() bool { return d.reloaded() > before })
 }
 
 // reloaded numbers the last pass the reconciler ran after taking a table it was handed, 0 before the first
-func (d *exitDaemon) reloaded() uint64 {
+func (d *exitDaemon) reloaded() uint64 { return d.lastPass("reload") }
+
+// lastPass numbers the last pass that changed anything, woken by trigger where it is set, 0 before the first
+func (d *exitDaemon) lastPass(trigger string) uint64 {
 	passes := d.node.events.Recorded(func(kind, _ string, attrs []slog.Attr) bool {
-		return kind == "kernel.pass" && slices.ContainsFunc(attrs, func(attr slog.Attr) bool {
-			return attr.Key == "trigger" && attr.Value.String() == "reload"
-		})
+		return kind == "kernel.pass" && (trigger == "" || slices.ContainsFunc(attrs, func(attr slog.Attr) bool {
+			return attr.Key == "trigger" && attr.Value.String() == trigger
+		}))
 	}, 0)
 	if len(passes) == 0 {
 		return 0
 	}
 	return passes[len(passes)-1].Seq
+}
+
+// settled waits for the rules at 5440 to read want after the last pass woken by trigger, and fails where a later pass moved anything,
+// so the rules are that pass's own
+func (d *exitDaemon) settled(t *testing.T, leaf *netnstest.Thread, trigger string, want []string) {
+	t.Helper()
+	waitFor(t, rulesSettle, "the catch-all of the pass woken by "+trigger, func() bool {
+		woken := d.lastPass(trigger)
+		return woken != 0 && woken == d.lastPass("") && slices.Equal(exitRules(t, leaf, 5440), want)
+	})
 }
 
 // exitRules is the rules of the reconciler's protocol the leaf holds at priority, each as its family, its source and its input link
@@ -455,9 +487,11 @@ type exitLabArm struct {
 	// strict sets rp_filter 1 on the uplink, and fib writes NixOS's reverse path chain, "strict" or "loose"
 	strict bool
 	fib    string
-	// unaddressed is the family, 4 or 6, whose overlay address the arm leaves off the tun, none where it is 0
+	// unaddressed is the family, 4 or 6, whose overlay address the arm takes out of cap.table and so off the tun, none where it is 0
 	unaddressed int
-	// catchAlls is the input links of the rules at 5440 the arm converges on, lo's in a family the tun holds an overlay address of
+	// byHand takes both overlay addresses out of cap.table and puts them on the tun as another writer would
+	byHand bool
+	// catchAlls is the input links of the rules at 5440 the arm converges on in a family the tun holds an overlay address of
 	catchAlls []string
 	probes    []rulesProbe
 	flows     []exitFlow
@@ -492,22 +526,39 @@ func exitLabArms() []exitLabArm {
 		}
 		return out
 	}
-	// the internet host from an unbound socket, connected and not, out of the uplink in the family the tun holds no overlay address of
-	// and into the tun in the other
-	unbound := func(unaddressed int) []rulesProbe {
-		var out []rulesProbe
+	// the internet host from an unbound socket, connected and not, and the container's and the LAN host's pings of it, the host's own and
+	// the container's into the tun in a family the tun holds an overlay address of and out of the uplink in the one it holds none of
+	unbound := func(unaddressed int) ([]rulesProbe, []exitFlow) {
+		var probes []rulesProbe
+		var flows []exitFlow
 		for _, family := range []int{4, 6} {
 			want := tun
 			if family == unaddressed {
 				want = up
 			}
 			internet := exitLabHost[family].internet.Addr()
-			out = append(out, rulesProbe{internet, rulesUnbound, want, 0}, rulesProbe{internet, rulesUnconnected, want, 0})
+			probes = append(probes, rulesProbe{internet, rulesUnbound, want, 0}, rulesProbe{internet, rulesUnconnected, want, 0})
+			flows = append(flows, exitFlow{"container", internet, want, exitReplies(want)}, exitFlow{"lan", internet, up, exitReplies(up)})
 		}
-		return out
+		return probes, flows
 	}
 	lo := []string{"lo"}
-	return []exitLabArm{{
+	var unaddressed []exitLabArm
+	for _, family := range []int{4, 6} {
+		probes, flows := unbound(family)
+		// with no overlay address of the family on the tun the family runs mode off's rules, so the host's own traffic to the internet
+		// and the bridge's leave by the uplink, and the host's own to the mesh's subnet enters the tun in both families, connected or not,
+		// with no rule at 5405 to send a connected socket's second lookup from the uplink's address by main
+		for _, subnet := range []netip.Addr{netip.MustParseAddr("203.0.113.40"), netip.MustParseAddr("2001:db8:300::4")} {
+			probes = append(probes, rulesProbe{subnet, rulesUnbound, tun, 0}, rulesProbe{subnet, rulesUnconnected, tun, 0})
+		}
+		unaddressed = append(unaddressed, exitLabArm{
+			name: fmt.Sprintf("the tun holding no IPv%d overlay address", family), on: true, forward: []string{exitBridge}, unaddressed: family,
+			catchAlls: []string{"lo", exitBridge}, probes: probes, flows: flows,
+		})
+	}
+	byHand, _ := unbound(0)
+	return slices.Concat([]exitLabArm{{
 		// the host's own traffic follows the mesh's default from every source but the uplink's and the underlay's,
 		// while a forwarded flow from a link forward leaves out keeps main's default
 		name: "the mesh's defaults with nothing forwarded", on: true, catchAlls: lo,
@@ -539,23 +590,15 @@ func exitLabArms() []exitLabArm {
 		probes: slices.Concat(rulesOut(internet4), rulesOut(internet6),
 			rulesRow("192.0.2.5", tun, tun, tun, up, up), rulesRow("3fff::5", tun, tun, tun, up, up)),
 		flows: flows(up, up), replies: answered(true, true),
-	}, {
-		// with no IPv4 overlay address on the tun, 5440 takes none of the host's own IPv4 traffic, so it leaves by the uplink
-		// whether its socket connects or not, while the host's IPv6 traffic and the bridge's keep following the mode
-		name: "the tun holding no IPv4 overlay address", on: true, forward: []string{exitBridge}, unaddressed: 4, catchAlls: []string{"lo", exitBridge},
-		probes: unbound(4),
-	}, {
-		name: "the tun holding no IPv6 overlay address", on: true, forward: []string{exitBridge}, unaddressed: 6, catchAlls: []string{"lo", exitBridge},
-		probes: unbound(6),
-	}}
+	}}, unaddressed, []exitLabArm{{
+		// another writer's overlay addresses on the tun, cap.table writing none, address both families, so the host's own traffic,
+		// connected or not, follows the mode into the tun from them
+		name: "another writer's overlay addresses on the tun", on: true, byHand: true, catchAlls: lo,
+		probes: byHand,
+	}})
 }
 
-// a leaf in mode 2 beside a container behind a bridge, masqueraded as Docker does, and a LAN it routes untranslated, each in a namespace of its own
-// for each arm the reconciler installs mode 2's rules over the leaf's links as the watch reads them, and each socket of the host's own,
-// unbound and connected or not, bound to the overlay address, bound to the uplink's address or device, carrying the underlay's mark, or that and
-// bound to the overlay address, sends UDP, TCP and echo where the arm says, a family whose overlay address an arm leaves off the tun among them, the container's and the LAN host's pings leave by the link the arm says and are answered as it says,
-// and the leaf's service on the uplink's address and its underlay's socket are answered from the internet under each reverse path check
-// and a clean stop leaves no rule or route of the reconciler's protocol
+// each arm probes after a pass under its own table, and a clean stop leaves no rule or route of the reconciler's protocol
 func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -606,19 +649,34 @@ func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 				reverseFib(t, lab.leaf, arm.fib == "strict")
 				t.Cleanup(func() { reverseFibRemove(t, lab.leaf) })
 			}
-			d.mode(t, arm.forward, arm.on, announced, arm.unaddressed)
-			var want []string
-			for _, family := range []int{4, 6} {
-				for _, link := range arm.catchAlls {
-					if family != arm.unaddressed {
-						want = append(want, fmt.Sprintf("5440 ipv%d iif %s", family, link))
+			d.mode(t, arm.forward, arm.on, announced)
+			// catchAll is the arm's rules at 5440 with none in each family of unaddressed
+			catchAll := func(unaddressed ...int) []string {
+				var want []string
+				for _, family := range []int{4, 6} {
+					for _, link := range arm.catchAlls {
+						if !slices.Contains(unaddressed, family) {
+							want = append(want, fmt.Sprintf("5440 ipv%d iif %s", family, link))
+						}
 					}
 				}
+				slices.Sort(want)
+				return want
 			}
-			slices.Sort(want)
 			waitFor(t, rulesSettle, "the reconciler to install the arm's catch-all and its routes", func() bool {
-				return slices.Equal(exitRules(t, lab.leaf, 5440), want) && exitDefaults(t, lab.leaf) == (!arm.retracted && !arm.exit)
+				return slices.Equal(exitRules(t, lab.leaf, 5440), catchAll()) && exitDefaults(t, lab.leaf, !arm.retracted && !arm.exit)
 			})
+			switch {
+			case arm.unaddressed != 0:
+				d.withoutOverlayAddress(t, arm.unaddressed)
+				d.settled(t, lab.leaf, "reload", catchAll(arm.unaddressed))
+			case arm.byHand:
+				d.withoutOverlayAddress(t, 4, 6)
+				d.settled(t, lab.leaf, "reload", catchAll(4, 6))
+				exitByHand(t, lab.leaf)
+				d.settled(t, lab.leaf, "kernel", catchAll())
+			}
+			waitFor(t, rulesSettle, "the mesh's defaults", func() bool { return exitDefaults(t, lab.leaf, !arm.retracted && !arm.exit) })
 			t.Logf("the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
 			if status := d.routes.Stats().Exit; status != nil {
 				t.Logf("the exit status reads %+v", *status)
@@ -661,8 +719,9 @@ func familyName(address netip.Addr) string {
 	return "IPv6"
 }
 
-// exitDefaults reports whether the mesh's table holds a default of each family
-func exitDefaults(t *testing.T, leaf *netnstest.Thread) bool {
+// exitDefaults reports whether the mesh's table holds a default of each family where live says, and of neither where it does
+// not, so a wait for the defaults retracted ends only once both families are
+func exitDefaults(t *testing.T, leaf *netnstest.Thread, live bool) bool {
 	t.Helper()
 	var routes []kernelRoute
 	if err := leaf.Do(func() (err error) { routes, err = dumpRoutes(); return err }); err != nil {
@@ -674,7 +733,43 @@ func exitDefaults(t *testing.T, leaf *netnstest.Thread) bool {
 			held++
 		}
 	}
-	return held == 2
+	if live {
+		return held == 2
+	}
+	return held == 0
+}
+
+// exitByHand puts the leaf's overlay address of each family on the tun as another writer would, and takes them off when t ends
+func exitByHand(t *testing.T, leaf *netnstest.Thread) {
+	t.Helper()
+	addresses := []netip.Prefix{rulesHost[4].own, rulesHost[6].own}
+	edit := func(add bool) error {
+		netlink, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer netlink.Close()
+		if add {
+			return netlink.AddAddresses(rulesTUN, addresses...)
+		}
+		link, err := net.InterfaceByName(rulesTUN)
+		if err != nil {
+			return err
+		}
+		var errs []error
+		for _, address := range addresses {
+			errs = append(errs, netlink.DelAddress(link.Index, address))
+		}
+		return errors.Join(errs...)
+	}
+	if err := leaf.Do(func() error { return edit(true) }); err != nil {
+		t.Fatalf("put the overlay addresses on the tun by hand: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := leaf.Do(func() error { return edit(false) }); err != nil {
+			t.Errorf("take the overlay addresses put on by hand off the tun: %v", err)
+		}
+	})
 }
 
 // exitStrict sets rp_filter on every link and on the uplink, the kernel taking the larger of the two

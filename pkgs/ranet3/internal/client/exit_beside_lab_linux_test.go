@@ -113,7 +113,7 @@ func runBeside(t *testing.T, c exitBeside) {
 				}
 			} else {
 				besideEntries(d, state == besideRetracted)
-				d.mode(t, []string{exitBridge}, true, nil, 0)
+				d.mode(t, []string{exitBridge}, true, nil)
 				besideConverged(t, lab, state == besideLive)
 			}
 			t.Logf("the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
@@ -170,7 +170,7 @@ func besideConverged(t *testing.T, lab *exitLab, live bool) {
 	t.Helper()
 	want := besideRules()
 	waitFor(t, rulesSettle, "the reconciler to install mode 2's rules and the mesh's defaults", func() bool {
-		return slices.Equal(exitRules(t, lab.leaf, 5440), want) && exitDefaults(t, lab.leaf) == live
+		return slices.Equal(exitRules(t, lab.leaf, 5440), want) && exitDefaults(t, lab.leaf, live)
 	})
 }
 
@@ -231,7 +231,7 @@ func TestExitLabCrashHelper(t *testing.T) {
 	leaf := netnstest.JoinThread(t, path)
 	d := startExitDaemon(t, leaf)
 	besideEntries(d, false)
-	d.mode(t, []string{exitBridge}, true, nil, 0)
+	d.mode(t, []string{exitBridge}, true, nil)
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
