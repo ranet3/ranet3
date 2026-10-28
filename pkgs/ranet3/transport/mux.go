@@ -29,14 +29,15 @@
 //
 // # Keeping the sockets out of their own tunnel
 //
-// [Underlay] and [Runtime] are the one setting that keeps these sockets off the
-// routes a mesh running over it installs on darwin, an interface binding. On
-// linux no setting does it: every socket carries schema.UnderlayMark where the
+// No setting keeps these sockets off the routes a mesh running over it
+// installs. On linux every socket carries schema.UnderlayMark where the
 // process may set it, which the reconciler's derived rules read to keep them
-// off, as routing.md's "Where a lookup ends on Linux" gives with its scope.
-// [Underlay] is a plain value a config file or a control plane can produce
-// whole, and [Runtime] carries what the caller has to resolve at startup, so a
-// caller that wants neither passes both zero.
+// off, as routing.md's "Where a lookup ends on Linux" gives with its scope. On
+// darwin every datagram names the interface [Runtime]'s [Selection] answers,
+// the host's own routes with ranet3's interface left out. [Underlay] is a
+// plain value a config file or a control plane can produce whole, and
+// [Runtime] carries what the caller has to resolve at startup, so a caller
+// that wants neither passes both zero.
 //
 // # What it does not do
 //
@@ -97,11 +98,6 @@ type Hub struct {
 	// pairs is nil where the bind cannot connect a socket to one peer
 	pairs *pairTable
 
-	// underlay is the configuration the socket was opened under, and boundTo
-	// the interface index it currently carries, zero for none. Both are read
-	// under mu, which the follower goroutine and a status reader share.
-	underlay Underlay
-	boundTo  int
 	// events is Runtime.Events, nil where the caller records nothing
 	events func(kind string, attrs ...slog.Attr)
 
@@ -257,10 +253,8 @@ type espChain struct {
 }
 
 // NewHub binds the one UDP socket every session shares, on localAddr's port
-// and on all local IPv4 and IPv6 interfaces. underlay says how that socket is
-// kept out of the reach of the routes the mesh installs, and rt carries what
-// the caller had to resolve to answer it. See Underlay for why both platforms
-// need one and why they need different things.
+// and on all local IPv4 and IPv6 interfaces. underlay is refused where it
+// means nothing, and rt carries what the caller resolved at startup.
 func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 	laddr, err := net.ResolveUDPAddr("udp", localAddr)
 	if err != nil {
@@ -269,36 +263,18 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 	if laddr.IP != nil && !laddr.IP.IsUnspecified() {
 		log.Printf("transport: binding to a specific local address (%s) is not supported, binding all interfaces on port %d instead", laddr.IP, laddr.Port)
 	}
-	index, err := bindUnderlay(underlay, rt)
-	if err != nil {
+	if err := underlay.refuse(); err != nil {
 		return nil, fmt.Errorf("transport: %w", err)
 	}
-	// Before the socket exists, for the same reason a move prepares before it
-	// rebinds: the first datagram this node sends goes out of a socket that is
-	// already bound, and nothing else will make that interface usable first.
-	if index != 0 && rt.Routes != nil {
-		if err := rt.Routes.Prepare(index); err != nil {
-			return nil, fmt.Errorf("transport: prepare interface %d: %w", index, err)
-		}
-	}
-	bind, fns, port, err := openPacketBind(uint16(laddr.Port), underlay, index, rt.Routes != nil, rt.Events)
+	bind, fns, port, err := openPacketBind(uint16(laddr.Port), rt.Selection, rt.Events)
 	if err != nil {
 		return nil, fmt.Errorf("transport: open bind: %w", err)
 	}
-	if index != 0 && rt.Routes != nil {
-		if err := rt.Routes.Settle(index); err != nil {
-			// The sockets are already open at this point, so returning
-			// without closing them leaves both bound to the port for the life
-			// of the process and the next attempt on it fails with EADDRINUSE.
-			_ = bind.Close()
-			return nil, fmt.Errorf("transport: settle on interface %d: %w", index, err)
-		}
-	}
-	return startHub(bind, fns, port, underlay, index, rt), nil
+	return startHub(bind, fns, port, rt), nil
 }
 
-func startHub(bind packetBind, fns []receiveFunc, port uint16, underlay Underlay, index int, rt Runtime) *Hub {
-	h := &Hub{bind: bind, port: port, underlay: underlay, boundTo: index, events: rt.Events,
+func startHub(bind packetBind, fns []receiveFunc, port uint16, rt Runtime) *Hub {
+	h := &Hub{bind: bind, port: port, events: rt.Events,
 		muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now(), retired: make(map[uint32]int64)}
 	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
 	h.reported.Store(-int64(dropReportInterval))
@@ -309,11 +285,6 @@ func startHub(bind packetBind, fns []receiveFunc, port uint16, underlay Underlay
 	if connector, ok := bind.(pairConnector); ok {
 		h.pairs = &pairTable{connector: connector, events: rt.Events, pairs: make(map[pairKey]*pair)}
 		go h.sweepPairsEvery()
-	}
-	// Started only where the binding has to follow something, so a hub that
-	// binds nothing carries no goroutine and no link source.
-	if underlay.Bind && rt.Links != nil {
-		go h.follow(rt.Links, rt.Routes)
 	}
 	return h
 }

@@ -57,7 +57,7 @@ func (b *portableBind) Send(packets [][]byte, endpoint Endpoint) error {
 // socket that quietly does nothing about the underlay.
 const bindsSockets = false
 
-func openPacketBind(port uint16, underlay Underlay, index int, routed bool, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+func openPacketBind(port uint16, _ Selection, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &portableBind{conn.NewStdNetBind()}
 	fns, port, err := b.Open(port)
 	if err != nil {

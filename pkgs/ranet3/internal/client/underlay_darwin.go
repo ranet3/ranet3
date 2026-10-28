@@ -6,6 +6,7 @@
 package client
 
 import (
+	"log/slog"
 	"path/filepath"
 
 	"ranet3.com/pkgs/ranet3/control"
@@ -24,20 +25,14 @@ import (
 // writes it.
 var underlayStatePath = filepath.Join(filepath.Dir(control.DefaultSocket), "underlay.json")
 
-// underlayRuntime opens what the transport needs to keep its UDP sockets
-// out of the mesh's own routing. On darwin that means binding the sockets to
-// the interface the host's default route leaves by, and, while an unscoped
-// route out of another interface holds a family's zero address or the
-// reconciler is about to install one, writing that interface a default of its
-// own scoped to it, because a bound socket still reads the shared forwarding
-// table. Only the route socket can answer either question, so internal/kernel
-// does both. This package wires the two together and speaks neither.
+// underlayRuntime opens, under link.underlay.bind, the defaults the
+// reconciler scopes to the interface the host's own default leaves by at the
+// start, while an unscoped route out of another interface holds a family's
+// zero address or the reconciler is about to install one.
 //
-// mesh is this node's own tun, which the lookup must never answer with: once
-// the mesh holds a route covering the address space, an ordinary lookup for
-// the unspecified address names the tun, and binding to that would put every
-// datagram this node sends inside its own tunnel. host is the machine both
-// halves read and write, nil for the one this process is running on.
+// mesh is this node's own tun, which the lookup must never answer with. host
+// is the machine both halves read and write, nil for the one this process is
+// running on.
 //
 // The returned close is always safe to call.
 func underlayRuntime(underlay transport.Underlay, mesh string, host kernel.Host) (transport.Runtime, kernel.CaptureRoutes, func(), error) {
@@ -59,5 +54,14 @@ func underlayRuntime(underlay transport.Underlay, mesh string, host kernel.Host)
 		_ = routes.Close()
 		_ = links.Close()
 	}
-	return transport.Runtime{Links: links, Routes: routes}, routes, close, nil
+	index, err := links.DefaultInterface()
+	if err != nil {
+		slog.Warn("client scopes no default to an uplink", "err", err, "detail", "the host has no default route at the start")
+		return transport.Runtime{}, routes, close, nil
+	}
+	if err := routes.Prepare(index); err != nil {
+		close()
+		return transport.Runtime{}, nil, func() {}, err
+	}
+	return transport.Runtime{}, routes, close, nil
 }

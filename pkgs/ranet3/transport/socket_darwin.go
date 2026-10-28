@@ -17,7 +17,6 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -31,16 +30,17 @@ import (
 )
 
 // This backend exists for what the portable one cannot offer. The first is
-// IP_BOUND_IF and IPV6_BOUND_IF, which scope the socket carrying IKE and ESP
-// to one interface. Nothing else on darwin keeps an underlay out of the mesh's
-// own routing: there are no marks, no policy rules and one table shared by
-// every program, so a real default route out of the mesh tun would otherwise
-// carry this node's own ESP into the tunnel that ESP is carrying. The second
-// is the address and interface each datagram reached, and the third its outer
-// ECN field.
-//
-// Scoping the socket is necessary and, on this kernel, not sufficient. See
-// reportBoundReach for what else the host needs and for the measurement.
+// naming each datagram's interface, in IP_PKTINFO or IPV6_PKTINFO
+// on the shared socket and in IP_BOUND_IF or IPV6_BOUND_IF on a socket
+// connected to one peer. Nothing else on darwin keeps an underlay out of the
+// mesh's own routing: there are no marks, no policy rules and one table shared
+// by every program, so a route out of the mesh tun would otherwise carry this
+// node's own ESP into the tunnel that ESP is carrying. The interface is the
+// one Runtime.Selection answers, and rt_lookup_common in bsd/net/route.c
+// refuses a send scoped to it rather than taking another interface's route,
+// unless the socket caches a route to that address, as in_pcbladdr in
+// bsd/netinet/in_pcb.c keeps whatever a send names. The second is the address
+// and interface each datagram reached, and the third its outer ECN field.
 //
 // The portable bind is wireguard's StdNetBind, which keeps its descriptors to
 // itself, so there is no seam to set a socket option through. The socket work
@@ -61,6 +61,17 @@ type darwinEndpoint struct {
 	pinFallback
 	// fragments lets darwin fragment this IPv6 endpoint's datagrams, each carrying an IPV6_DONTFRAG of 0
 	fragments atomic.Bool
+	// selected is the interface the bind's Selection named for addr, nil until a send asks
+	selected atomic.Pointer[selected]
+}
+
+// selected is the interface a Selection named for one endpoint under one generation, zero for no route,
+// and the control messages naming it, the second beside fragmentControl, all immutable
+type selected struct {
+	generation         uint64
+	index              int
+	control            []byte
+	fragmentingControl []byte
 }
 
 // pinnedEndpoint is addr answered from source by interface index, which zero leaves to the socket and the route
@@ -83,18 +94,15 @@ func (e *darwinEndpoint) pin() []byte {
 	return e.control
 }
 
-// sendControl is the control message a send to e carries: its pin while it has one, beside an IPV6_DONTFRAG of 0 while e fragments
-func (e *darwinEndpoint) sendControl() []byte {
-	if e.pin() == nil {
-		return e.unpinnedControl()
-	}
+// pinnedControl is the control message a send from e's pin carries, beside an IPV6_DONTFRAG of 0 while e fragments
+func (e *darwinEndpoint) pinnedControl() []byte {
 	if e.fragments.Load() {
 		return e.fragmentingControl
 	}
 	return e.control
 }
 
-// unpinnedControl is the control message a send to e that leaves the source to the kernel carries
+// unpinnedControl is the control message a send to e that names neither a source nor an interface carries
 func (e *darwinEndpoint) unpinnedControl() []byte {
 	if e.fragments.Load() {
 		return fragmentControl
@@ -124,18 +132,13 @@ func (e *darwinEndpoint) zone() string { return e.addr.Addr().Zone() }
 func (e *darwinEndpoint) withoutSource() Endpoint { return &darwinEndpoint{addr: e.addr} }
 
 // darwinSocket is one bound UDP socket of one family. raw is retained for the
-// whole life of the socket so the interface binding can be moved without
-// reopening it: the socket carries every SA this node holds, and a new
-// descriptor would drop all of them to follow a link change no peer saw.
+// whole life of the socket so its options can be set without reopening it.
 type darwinSocket struct {
 	conn *net.UDPConn
 	raw  syscall.RawConn
 	ipv6 bool
-	// bindOption is the setsockopt this socket moves with, a field so a test
-	// can fail one family and not the other. Every index the kernel refuses
-	// it refuses for both, so a half-finished move cannot be produced from
-	// outside and the rollback would otherwise go unmeasured.
-	bindOption func(index int) error
+	// released is the latest Selection generation this shared socket's cached route was released at
+	released atomic.Uint64
 	// fragmenting counts the muxes letting this IPv4 socket's sends fragment
 	// it is stored under its bind's fragmentMu and loaded without the lock
 	// the socket clears IP_DONTFRAG while it is above zero
@@ -200,33 +203,32 @@ func (s *darwinSocket) boundInterfaceOption() (level, option int) {
 	return unix.IPPROTO_IP, unix.IP_BOUND_IF
 }
 
-func (s *darwinSocket) setBoundInterface(index int) error {
-	if s.bindOption != nil {
-		return s.bindOption(index)
+// releaseRoute drops the route the socket caches once generation is past the last one it was dropped at
+// in_pcbladdr in bsd/netinet/in_pcb.c reuses a socket's cached route for its destination whatever interface a send names,
+// so a send naming the interface a selection left would take a later send naming its new one there
+// IP_BOUND_IF and IPV6_BOUND_IF of 0 leave the socket scoped to nothing and release the route, inp_bindif_common there
+func (s *darwinSocket) releaseRoute(generation uint64) error {
+	if s.released.Load() >= generation {
+		return nil
 	}
-	return s.setBoundInterfaceOption(index)
-}
-
-func (s *darwinSocket) setBoundInterfaceOption(index int) error {
 	level, option := s.boundInterfaceOption()
 	var setErr error
-	if err := s.raw.Control(func(fd uintptr) {
-		setErr = unix.SetsockoptInt(int(fd), level, option, index)
-	}); err != nil {
+	if err := s.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, 0) }); err != nil {
 		return err
 	}
-	return setErr
+	if setErr != nil {
+		return setErr
+	}
+	s.released.Store(generation)
+	return nil
 }
 
 // darwinBind holds the one socket per family every session shares.
 type darwinBind struct {
-	// rebind serializes a move from one interface to the other, so the two
-	// families cannot end up on different ones, and bound is the interface
-	// both are on, which a half-finished move puts them back onto.
-	rebind sync.Mutex
-	bound  int
 	v4, v6 *darwinSocket
-	events func(kind string, attrs ...slog.Attr)
+	// selection names each unpinned datagram's interface, and nil names none
+	selection Selection
+	events    func(kind string, attrs ...slog.Attr)
 	// fragmentMu serializes the IPv4 socket's count of muxes letting its sends fragment, and pairs
 	fragmentMu sync.Mutex
 	// pairs holds the open sockets connected to one peer, each IPv4 one with its listener's IP_DONTFRAG
@@ -258,102 +260,22 @@ func (b *darwinBind) Close() error {
 	return errors.Join(errs...)
 }
 
-// bindInterface moves both families at once, where zero unbinds. A partial
-// move is reported rather than left: one family on the old interface and one
-// on the new is a node that reaches half its peers.
-func (b *darwinBind) bindInterface(index int, routed bool) error {
-	b.rebind.Lock()
-	defer b.rebind.Unlock()
-	var moved []*darwinSocket
-	for _, socket := range []*darwinSocket{b.v4, b.v6} {
-		if socket == nil {
-			continue
-		}
-		if err := socket.setBoundInterface(index); err != nil {
-			// Put back whatever already moved, so a half-finished move leaves
-			// both families where they were rather than one on each
-			// interface. b.bound holds where they were, from this process's
-			// own record rather than from a guess.
-			errs := []error{fmt.Errorf("transport: bind the underlay socket to interface %d: %w", index, err)}
-			for _, done := range moved {
-				if back := done.setBoundInterface(b.bound); back != nil {
-					errs = append(errs, fmt.Errorf("transport: put the underlay socket back on interface %d: %w", b.bound, back))
-				}
-			}
-			return errors.Join(errs...)
-		}
-		moved = append(moved, socket)
+// selectedFor is the interface b's Selection names for ep, built once a generation and kept in ep
+// a datagram pays one atomic load and one compare while the generation holds
+func (b *darwinBind) selectedFor(ep *darwinEndpoint) *selected {
+	if s := ep.selected.Load(); s != nil && s.generation == b.selection.Generation() {
+		return s
 	}
-	b.bound = index
-	reportBoundReach(index, routed)
-	return nil
-}
-
-// offLinkProbes are the destinations a bound socket is asked about, one per
-// family, both from the documentation ranges so nothing is ever sent to a real
-// host. connect on a UDP socket resolves a route and sends no packet, so this
-// reads the forwarding table without touching the network.
-var offLinkProbes = []netip.Addr{
-	netip.MustParseAddr("192.0.2.1"),
-	netip.MustParseAddr("2001:db8::1"),
-}
-
-// reportBoundReach checks that the binding left the socket able to reach
-// anything at all, which on this platform does not follow from the binding.
-//
-// IP_BOUND_IF does not take a socket out of the forwarding table. Measured on
-// Darwin 27.2.0 by TestDarwinBoundSocketNeedsAScopedDefault: a scoped lookup
-// still finds the most specific route, and where that route leaves another
-// interface, the lookup falls back only to a route already on the bound one.
-// So an unscoped route out of another interface that holds its family's zero
-// address takes the underlay with it unless the underlay's own interface
-// carries a default of its own scoped to it. internal/kernel writes that
-// default for a family only while such a route is in the table, another
-// program's or its own, or while the reconciler is about to install its own,
-// and otherwise writes nothing. routed says the caller has Runtime.Routes,
-// which prepared the interface before the socket was bound to it, not that a
-// default was written.
-//
-// Routed or not, an unreachable socket is reported rather than refused: the
-// node stops holding a capturing route once its sessions die, so the state is
-// recoverable and a refusal here would turn a bad route into a dead daemon.
-func reportBoundReach(index int, routed bool) {
-	if index == 0 {
-		return
+	index, generation := b.selection.Interface(ep.addr.Addr())
+	s := &selected{generation: generation, index: index}
+	if index != 0 && ep.addr.Addr().Is4() {
+		s.control = (&ipv4.ControlMessage{IfIndex: index}).Marshal()
+	} else if index != 0 {
+		s.control = (&ipv6.ControlMessage{IfIndex: index}).Marshal()
+		s.fragmentingControl = append(slices.Clip(s.control), fragmentControl...)
 	}
-	var unreachable []string
-	for _, probe := range offLinkProbes {
-		if err := boundReachProbe(index, probe); err != nil {
-			unreachable = append(unreachable, probe.String())
-		}
-	}
-	// Only when neither family can get off the link. A node on an IPv4-only
-	// or IPv6-only uplink has one of these failing as a matter of course.
-	if len(unreachable) < len(offLinkProbes) {
-		return
-	}
-	if routed {
-		slog.Warn("transport bound the underlay socket to an interface it still cannot reach off",
-			"interface_index", index, "probes", strings.Join(unreachable, " "),
-			"detail", "this node writes a default scoped to that interface only for a family whose zero address an unscoped route out of another interface holds or is about to hold, so see which route a lookup scoped to it finds, route -n get [-inet6] -ifscope <interface> <probe>")
-		return
-	}
-	slog.Warn("transport bound the underlay socket to an interface it cannot reach off",
-		"interface_index", index, "probes", strings.Join(unreachable, " "),
-		"detail", "nothing here writes that interface's routing, so give it a default scoped to it, route -n add -net 0.0.0.0/0 <next hop> -ifscope <interface>")
-}
-
-// boundReachProbe is reachesWhenBound in production. A test replaces it,
-// because what a host answers about an off-link address is the host's own
-// business and this report's rules have to hold whatever it says.
-var boundReachProbe = reachesWhenBound
-
-// reachesWhenBound resolves one route the way the bound socket would. It opens
-// its own descriptor rather than using the live one, because connect on the
-// live socket would fix its destination.
-func reachesWhenBound(index int, target netip.Addr) error {
-	_, err := boundSource(index, netip.AddrPortFrom(target, 9))
-	return err
+	ep.selected.Store(s)
+	return s
 }
 
 // boundSource resolves one route the way a socket bound to index would, and answers the source it picks
@@ -382,24 +304,29 @@ func boundSource(index int, target netip.AddrPort) (netip.Addr, error) {
 // udp_ctlinput and udp6_ctlinput pass every errno of inetctlerrmap and inet6ctlerrmap to the socket's so_error
 var icmpErrnos = []unix.Errno{unix.ECONNREFUSED, unix.EHOSTDOWN, unix.EHOSTUNREACH, unix.EMSGSIZE, unix.ENETUNREACH, unix.ENOPROTOOPT}
 
-// pairOf leaves the local address to the route where sends to the endpoint do, and otherwise takes it and a link-local source's interface from the pin
+// pairOf takes the local address and a link-local source's interface from the pin, and otherwise leaves the address to the route
+// and takes the interface the selection names, so a changed selection is a changed pair
 func (b *darwinBind) pairOf(endpoint Endpoint) pairKey {
 	ep := endpoint.(*darwinEndpoint)
 	k := pairKey{remote: ep.addr}
 	if ep.pin() != nil {
 		k.local, k.index = ep.source, ep.index
+	} else if b.selection != nil {
+		k.index = b.selectedFor(ep).index
 	}
 	return k
 }
 
-// connectPair binds the pin, or else the route's source, on the hub's port beside the wildcard listener and connects to the peer
+// connectPair binds the pin, or else the source of the route scoped to k's interface, on the hub's port beside the wildcard listener
+// and connects to the peer, scoped to k's interface
 // XNU looks a datagram up by its exact 4-tuple before any wildcard socket
+// a pair the selection names no interface for opens nothing, as its shared socket sends nothing
 func (b *darwinBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
+	if b.selection != nil && k.index == 0 && !k.local.IsValid() {
+		return nil, nil, unix.ENETUNREACH
+	}
 	b.connecting.Lock()
 	defer b.connecting.Unlock()
-	b.rebind.Lock()
-	index := b.bound
-	b.rebind.Unlock()
 	v6 := k.remote.Addr().Is6()
 	network := "udp4"
 	if v6 {
@@ -411,11 +338,11 @@ func (b *darwinBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
 	}
 	if !local.IsValid() {
 		var err error
-		if local, err = boundSource(index, k.remote); err != nil {
+		if local, err = boundSource(k.index, k.remote); err != nil {
 			return nil, nil, err
 		}
 	}
-	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, b.port)), Control: socketControl(v6, index, pairBuffer, true)}
+	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, b.port)), Control: socketControl(v6, k.index, pairBuffer, true)}
 	conn, err := dialer.Dial(network, k.remote.String())
 	if err != nil {
 		return nil, nil, err
@@ -517,19 +444,51 @@ var fragmentControl = func() []byte {
 	return control
 }()
 
-// sendFrom sends one datagram to ep from its pin, and from the kernel's choice of source once darwin refuses the pin
+// sendFrom sends one datagram to ep from its pin, and by the interface the selection names, from the kernel's choice of source,
+// where ep has no pin or once darwin refused it
 func (b *darwinBind) sendFrom(socket *darwinSocket, packet []byte, ep *darwinEndpoint) error {
-	pinned := ep.pin() != nil
-	refused := socket.write(packet, ep, ep.sendControl())
-	if refused == nil || !pinned || !unpinnable(refused) {
+	if ep.pin() == nil {
+		control, err := b.selectedControl(socket, ep)
+		if err != nil {
+			return err
+		}
+		return socket.write(packet, ep, control)
+	}
+	refused := socket.write(packet, ep, ep.pinnedControl())
+	if refused == nil || !unpinnable(refused) {
 		return refused
 	}
-	err := socket.write(packet, ep, ep.unpinnedControl())
+	control, err := b.selectedControl(socket, ep)
+	if err != nil {
+		return err
+	}
+	err = socket.write(packet, ep, control)
 	// darwin refuses a datagram as too large only once it has routed it from the source it chose
 	if (err == nil || errors.Is(err, unix.EMSGSIZE)) && ep.unpin(refused) {
 		unpinned(b.events, ep, refused)
 	}
 	return err
+}
+
+// selectedControl is the control message a send to ep that leaves the source to the kernel carries on socket:
+// the interface the selection names, beside an IPV6_DONTFRAG of 0 while ep fragments, after the socket released a route it cached under an older generation
+// it refuses a send the selection names no interface for, as a marked lookup that ends in an empty main does on linux
+// with no selection it names no interface
+func (b *darwinBind) selectedControl(socket *darwinSocket, ep *darwinEndpoint) ([]byte, error) {
+	if b.selection == nil {
+		return ep.unpinnedControl(), nil
+	}
+	s := b.selectedFor(ep)
+	if s.index == 0 {
+		return nil, unix.ENETUNREACH
+	}
+	if err := socket.releaseRoute(s.generation); err != nil {
+		return nil, err
+	}
+	if ep.fragments.Load() {
+		return s.fragmentingControl, nil
+	}
+	return s.control, nil
 }
 
 // write sends one datagram to ep carrying control
@@ -564,17 +523,12 @@ func (b *darwinBind) sendWithin(socket *darwinSocket, packets [][]byte, ep *darw
 
 var _ pathBind = (*darwinBind)(nil)
 
-// readPathMTU reads the MTU of the interface sends to ep leave by, the bound one or else pinnedInterface's
+// readPathMTU reads the MTU of the interface sends to ep name, the one holding their pin, or on a hub with no selection the one the host routes them by
 // darwin refuses a datagram with DF only past that MTU, and the probes find a narrower path beyond the interface
 func (b *darwinBind) readPathMTU(endpoint Endpoint) (int, error) {
-	b.rebind.Lock()
-	index := b.bound
-	b.rebind.Unlock()
-	if index == 0 {
-		var err error
-		if index, err = pinnedInterface(endpoint.(*darwinEndpoint)); err != nil {
-			return 0, err
-		}
+	index, err := b.sendInterface(endpoint.(*darwinEndpoint))
+	if err != nil {
+		return 0, err
 	}
 	link, err := net.InterfaceByIndex(index)
 	if err != nil {
@@ -583,23 +537,29 @@ func (b *darwinBind) readPathMTU(endpoint Endpoint) (int, error) {
 	return link.MTU, nil
 }
 
-// pinnedInterface is the interface an unbound socket's sends to ep leave by
+// sendInterface is the interface sends to ep leave by
 // ip_output scopes the route of a send naming its source to the interface holding that source, and a link-local pin names its interface
-// a send that names no source, since ep fell back or never had one, leaves by the route, as does one from a source no interface holds, which falls back
-func pinnedInterface(ep *darwinEndpoint) (int, error) {
-	if ep.pin() == nil {
-		return routedInterface(ep.addr)
-	}
-	if ep.index != 0 {
+// a send that names no source, since ep fell back or never had one, leaves by the interface the selection names, as does one from a source no interface holds, which falls back
+func (b *darwinBind) sendInterface(ep *darwinEndpoint) (int, error) {
+	if ep.pin() != nil && ep.index != 0 {
 		return ep.index, nil
 	}
-	if index, err := interfaceHolding(ep.source); err == nil {
+	if ep.pin() != nil {
+		if index, err := interfaceHolding(ep.source); err == nil {
+			return index, nil
+		}
+	}
+	if b.selection == nil {
+		return routedInterface(ep.addr)
+	}
+	if index := b.selectedFor(ep).index; index != 0 {
 		return index, nil
 	}
-	return routedInterface(ep.addr)
+	return 0, unix.ENETUNREACH
 }
 
-// routedInterface is the interface the host routes a datagram to addr through, the one holding the source a socket connected to addr takes
+// routedInterface is the interface the host routes a datagram to addr through, the one holding the source a socket connected to addr takes,
+// which a hub with no selection sends by
 // connecting looks the route up and sends nothing
 func routedInterface(addr netip.AddrPort) (int, error) {
 	conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(addr))
@@ -763,16 +723,12 @@ func (s *darwinSocket) replyEndpoint(from netip.AddrPort, control []byte) (*darw
 	return pinnedEndpoint(from, source, index), nil
 }
 
-// darwin has no packet marks and no policy rules, and binds instead where
-// link.underlay.bind asks it to. Underlay.refuse reads this.
+// link.underlay.bind means something on darwin alone. Underlay.refuse reads this.
 const bindsSockets = true
 
-// openPacketBind takes the one socket this node's IKE and ESP share. index
-// binds it to that interface, and zero leaves it following the forwarding
-// table as every other socket on the machine does. routed says the caller has
-// Runtime.Routes, which prepares an interface before the socket is bound to
-// it, not that a default was written. See reportBoundReach.
-func openPacketBind(port uint16, underlay Underlay, index int, routed bool, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+// openPacketBind takes the one socket this node's IKE and ESP share, whose
+// unpinned sends name the interface selection answers.
+func openPacketBind(port uint16, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation, but an explicitly requested port still fails.
 	var err error
@@ -780,30 +736,23 @@ func openPacketBind(port uint16, underlay Underlay, index int, routed bool, even
 		var bind packetBind
 		var receivers []receiveFunc
 		var bound uint16
-		bind, receivers, bound, err = listenPacketBind(port, index, events)
+		bind, receivers, bound, err = listenPacketBind(port, selection, events)
 		if port != 0 || !errors.Is(err, unix.EADDRINUSE) {
-			if err == nil {
-				// The first binding goes through the listen hook rather than
-				// bindInterface, and it is the one that matters most: a node
-				// starting next to the default a previous run installed has no
-				// working underlay from its first datagram.
-				reportBoundReach(index, routed)
-			}
 			return bind, receivers, bound, err
 		}
 	}
 	return nil, nil, 0, err
 }
 
-func listenPacketBind(port uint16, index int, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
-	b := &darwinBind{events: events, pairs: make(map[*darwinPair]struct{}), setDontFragment: (*darwinSocket).setDontFragment}
+func listenPacketBind(port uint16, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+	b := &darwinBind{selection: selection, events: events, pairs: make(map[*darwinPair]struct{}), setDontFragment: (*darwinSocket).setDontFragment}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
 		ipv6 := i == 1
 		// the listener never sets SO_REUSEPORT, not even once bound as on linux
 		// in_pcbbind in bsd/netinet/in_pcb.c and in6_pcbbind in bsd/netinet6/in6_pcb.c (xnu f6217f8) read a held socket's options again at each later bind
 		// and skip the user check for a second bind of the wildcard address where the held socket has SO_REUSEPORT, which lets a process of any user share the port
-		lc := net.ListenConfig{Control: socketControl(ipv6, index, socketBufferSize, false)}
+		lc := net.ListenConfig{Control: socketControl(ipv6, 0, socketBufferSize, false)}
 		pc, err := lc.ListenPacket(context.Background(), network, fmt.Sprintf(":%d", port))
 		if err != nil {
 			if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EPROTONOSUPPORT) {
@@ -829,16 +778,11 @@ func listenPacketBind(port uint16, index int, events func(string, ...slog.Attr))
 	if len(receivers) == 0 {
 		return nil, nil, 0, unix.EAFNOSUPPORT
 	}
-	// The first binding happens in the listen hook above rather than through
-	// bindInterface, so this is where the bind learns where its sockets are.
-	// A rollback reads it, and without it a half-finished first move would put
-	// the family that had already moved onto no interface at all.
-	b.bound = index
 	b.port = port
 	return b, receivers, port, nil
 }
 
-// socketControl sets the buffers, DF and the interface binding on a socket before it binds
+// socketControl sets the buffers, DF and, where index is nonzero, the interface binding on a socket before it binds
 // and SO_REUSEADDR where it binds the listener's port on one address, which XNU then allows beside the wildcard listener
 func socketControl(ipv6 bool, index, buffer int, reuseAddr bool) func(string, string, syscall.RawConn) error {
 	return func(_, _ string, raw syscall.RawConn) error {
@@ -860,10 +804,7 @@ func socketControl(ipv6 bool, index, buffer int, reuseAddr bool) func(string, st
 			if index == 0 || optionErr != nil {
 				return
 			}
-			// Reported rather than ignored like the tuning above. This
-			// binding keeps the ESP underlay out of the tun carrying it,
-			// so a silent failure here is an underlay that disappears
-			// into the overlay.
+			// reported rather than ignored like the tuning above, since a socket scoped to nothing follows a route out of the tun
 			level, option := unix.IPPROTO_IP, unix.IP_BOUND_IF
 			if ipv6 {
 				level, option = unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF

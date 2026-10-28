@@ -39,9 +39,6 @@ const (
 	// ephemeralPortRetries is how many ports a hub asked for any port tries
 	// the port the IPv4 bind gets may be taken for IPv6, and each try draws another
 	ephemeralPortRetries = 10
-	// linkSettle is how long a hub waits for a burst of routing changes to end before it moves its socket
-	// a link coming up is several messages, and answering the first costs a rebind the last would redo
-	linkSettle = 250 * time.Millisecond
 	// pairThreshold is how many bytes an address pair carries within one pairIdle, sent and received together, before it gets a socket of its own
 	// which leaves handshakes, hellos and liveness on the shared socket
 	pairThreshold = 1 << 20

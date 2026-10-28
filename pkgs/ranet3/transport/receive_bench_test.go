@@ -31,7 +31,7 @@ func BenchmarkHubReceivesESP(b *testing.B) {
 		b.Run(bench.name, func(b *testing.B) {
 			network := NewMemoryNetwork()
 			p := network.hold(netip.Addr{})
-			hub := startHub(&memoryBind{network: network, port: p}, nil, p.port, Underlay{}, 0, Runtime{})
+			hub := startHub(&memoryBind{network: network, port: p}, nil, p.port, Runtime{})
 			defer hub.Close()
 			mux, err := hub.NewMux(net.ParseIP("192.0.2.1"), 4500)
 			if err != nil {

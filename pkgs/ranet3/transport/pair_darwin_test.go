@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
-	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -26,7 +25,7 @@ import (
 func TestConnectedSocketReceivesItsPeerWhileTheListenerKeepsTheRest(t *testing.T) {
 	for _, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			listening, _, _, err := listenPacketBind(0, 0, nil)
+			listening, _, _, err := listenPacketBind(0, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,53 +107,6 @@ func TestPairSocketFollowsItsFamilysDontFragment(t *testing.T) {
 	}
 }
 
-// a move of the underlay socket onto another interface closes every pair's socket, which a busy pair connects again bound where the listener now is
-func TestUnderlayMoveClosesPairSockets(t *testing.T) {
-	index, _ := twoInterfaces(t)
-	events := &eventLog{}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = hub.Close() })
-	at := listenPeer(t, "udp4", "127.0.0.1").LocalAddr().(*net.UDPAddr)
-	mux, err := hub.NewMux(at.IP, at.Port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := openNow(mux)
-	if p.socket.Load() == nil {
-		t.Fatal("the pair opened no socket")
-	}
-	if err := hub.BindUnderlay(index); err != nil {
-		t.Fatal(err)
-	}
-	if p.socket.Load() != nil || hub.PairSockets() != 0 {
-		t.Fatalf("the pair's socket outlived the move of the underlay socket onto interface %d", index)
-	}
-	closed := "transport.pair.closed local=127.0.0.1 remote=" + at.AddrPort().String() + " reason=" + pairUnderlayClose
-	if !slices.Contains(events.recorded(), closed) {
-		t.Errorf("the hub recorded %q, want %q among them", events.recorded(), closed)
-	}
-}
-
-// a move of the underlay socket also binds the pairs connected after it where the listener now is
-// so a pair's sends leave by the interface the shared socket's do
-func TestPairConnectedAfterAnUnderlayMoveIsBoundWhereTheListenerIs(t *testing.T) {
-	index, _ := twoInterfaces(t)
-	hub, _, mux := pairHub(t, "udp4", "127.0.0.1")
-	if err := hub.BindUnderlay(index); err != nil {
-		t.Fatal(err)
-	}
-	socket := openNow(mux).socket.Load()
-	if socket == nil {
-		t.Fatalf("the pair opened no socket once the underlay socket moved onto interface %d", index)
-	}
-	if got := boundInterface(t, (*socket).(*darwinPair).socket); got != index {
-		t.Fatalf("the pair connected after the move is bound to interface %d, want the listener's %d", got, index)
-	}
-}
-
 // hostRoute adds a route through route(8) and deletes it as the test ends
 func hostRoute(t *testing.T, args ...string) {
 	t.Helper()
@@ -162,10 +114,11 @@ func hostRoute(t *testing.T, args ...string) {
 	t.Cleanup(func() { _ = exec.Command("route", append([]string{"-n", "delete"}, args...)...).Run() })
 }
 
-// a pair of a hub bound to the near feth binds the near feth's address to a peer the host routes out of the far feth
+// a pair of a hub whose selection names the near feth binds the near feth's address to a peer the host routes out of the far feth
+// and is scoped to the near feth
 // the near feth carries a route to the peer scoped to it, which XNU's lookup bound to the near feth takes past the host's own
 // the host's own route to each peer leaves by the far feth from the far feth's address, which the test checks first
-func TestPairOfABoundHubTakesItsSourceFromTheBoundInterface(t *testing.T) {
+func TestPairTakesItsSourceFromTheSelectedInterface(t *testing.T) {
 	requireHostNet(t, "a feth pair")
 	fethPath(t)
 	near, err := net.InterfaceByName(fethNear)
@@ -201,14 +154,11 @@ func TestPairOfABoundHubTakesItsSourceFromTheBoundInterface(t *testing.T) {
 			t.Fatalf("the host routes %s from %s, want the far feth's %s", path.peer, from, path.far)
 		}
 	}
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Underlay{}, Runtime{Selection: newTestSelection(near.Index)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = hub.Close() })
-	if err := hub.BindUnderlay(near.Index); err != nil {
-		t.Fatal(err)
-	}
 	for _, path := range paths {
 		mux, err := hub.NewMux(net.ParseIP(path.peer), 4500)
 		if err != nil {
@@ -216,11 +166,14 @@ func TestPairOfABoundHubTakesItsSourceFromTheBoundInterface(t *testing.T) {
 		}
 		socket := openNow(mux).socket.Load()
 		if socket == nil {
-			t.Fatalf("the pair to %s opened no socket on a hub bound to %s", path.peer, fethNear)
+			t.Fatalf("the pair to %s opened no socket on a hub whose selection names %s", path.peer, fethNear)
 		}
 		bound := pairConn(*socket).LocalAddr().(*net.UDPAddr).AddrPort()
 		if got, want := netip.AddrPortFrom(bound.Addr().Unmap(), bound.Port()), netip.AddrPortFrom(netip.MustParseAddr(path.local), hub.port); got != want {
-			t.Errorf("the pair to %s from a hub bound to %s is bound to %s, want %s rather than the host's own %s", path.peer, fethNear, got, want, path.far)
+			t.Errorf("the pair to %s from a hub whose selection names %s is bound to %s, want %s rather than the host's own %s", path.peer, fethNear, got, want, path.far)
+		}
+		if got := boundInterface(t, (*socket).(*darwinPair).socket); got != near.Index {
+			t.Errorf("the pair to %s is scoped to interface %d, want %s's %d", path.peer, got, fethNear, near.Index)
 		}
 	}
 }

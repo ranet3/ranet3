@@ -216,7 +216,7 @@ func (b *memoryBind) receiver(q *memoryQueue) receiveFunc {
 func (n *MemoryNetwork) NewHub() (*Hub, error) {
 	p := n.hold(netip.Addr{})
 	b := &memoryBind{network: n, port: p}
-	return startHub(b, []receiveFunc{b.receiver(p.queues[0]), b.receiver(p.queues[1])}, p.port, Underlay{}, 0, Runtime{}), nil
+	return startHub(b, []receiveFunc{b.receiver(p.queues[0]), b.receiver(p.queues[1])}, p.port, Runtime{}), nil
 }
 
 // Dial returns a mux to remoteIP and remotePort on a hub of its own on the network, which it closes when closed

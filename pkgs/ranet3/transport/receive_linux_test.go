@@ -38,7 +38,7 @@ func TestUDPSourceEndpointOwnsAddress(t *testing.T) {
 
 // the real send and receive syscalls, with receive offloads off so each datagram is a message of its own
 func BenchmarkUDPReceiveVector(b *testing.B) {
-	bind, _, port, err := openPacketBind(0, Underlay{}, 0, false, nil)
+	bind, _, port, err := openPacketBind(0, nil, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func BenchmarkUDPReceiveVector(b *testing.B) {
 		b.Fatalf("disable receive GRO: %v %v", err, optionErr)
 	}
 	receive := socket.receiver(espSendBatch)
-	sender, _, _, err := openPacketBind(0, Underlay{}, 0, false, nil)
+	sender, _, _, err := openPacketBind(0, nil, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

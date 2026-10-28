@@ -550,10 +550,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		EgressSegment: len(cfg.Segments().Egress()) > 0,
 		Sessions:      c.LiveSessions,
 		Endpoints:     c.liveEndpoints,
-		// One setting decides both halves, so they cannot be set against each
-		// other: the transport binds its socket off the forwarding table, and
-		// the reconciler stops hiding an announced default from every socket
-		// that did not ask for the tun by name.
+		// the reconciler stops hiding an announced default from every socket that did not ask for the tun by name
 		BoundUnderlay: cfg.Link.Underlay.Bind,
 		Capture:       c.CaptureRoutes(),
 		Host:          c.host,
@@ -566,16 +563,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 // own traffic to the mesh, so the answer is deliberately the narrow one: a
 // session that is merely installed proves nothing, and a peer that rebooted
 // leaves one looking established for over a minute.
-//
-// A node whose underlay socket is not where its configuration says it should
-// be reports none, whatever its sessions are doing. On darwin the socket is
-// bound to the interface the host's own default leaves by, and a default route
-// out of the tun over an unbound socket is the tunnel inside itself that the
-// binding exists to prevent.
 func (c *Client) LiveSessions() int {
-	if !c.hub.UnderlayReady() {
-		return 0
-	}
 	return c.sessions.liveCount()
 }
 

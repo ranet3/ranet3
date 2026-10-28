@@ -66,7 +66,7 @@ func TestDarwinRepliesNameTheAddressTheRequestReached(t *testing.T) {
 		if linkLocal {
 			wantIndex = index
 		}
-		source, gotIndex, gotFragments, err := sentPin(ep.sendControl())
+		source, gotIndex, gotFragments, err := sentPin(ep.pinnedControl())
 		if err != nil || source != reached || gotIndex != wantIndex || gotFragments != fragments {
 			ht.Fatalf("the answer to %s that reached %s on interface %d names %s at interface %d, fragmenting %v, %v, want %s at interface %d, fragmenting %v",
 				peer, reached, index, source, gotIndex, gotFragments, err, reached, wantIndex, fragments)
@@ -84,7 +84,7 @@ func TestDarwinRepliesNameTheAddressTheRequestReached(t *testing.T) {
 			ht.Fatalf("the pair of %s pinned to %s at interface %d is %+v", peer, reached, wantIndex, got)
 		}
 		bare := ep.withoutSource().(*darwinEndpoint)
-		if bare.pin() != nil || bare.sendControl() != nil || bare.AddrPort() != ep.AddrPort() {
+		if bare.pin() != nil || bare.pinnedControl() != nil || bare.AddrPort() != ep.AddrPort() {
 			ht.Fatalf("%s without its source still names one, or moved to %s", ep, bare.AddrPort())
 		}
 		refused := hegel.Draw(ht, hegel.SampledFrom([]unix.Errno{unix.ENETUNREACH, unix.EHOSTUNREACH, unix.EINVAL, unix.ENODEV, unix.EADDRNOTAVAIL}))
@@ -97,8 +97,8 @@ func TestDarwinRepliesNameTheAddressTheRequestReached(t *testing.T) {
 			until != nil && (until.Before(before.Add(unroutedHold)) || until.After(after.Add(unroutedHold))) {
 			ht.Fatalf("%s fell back on %s and holds the pin until %v, want unroutedHold after the fallback for EHOSTUNREACH alone", ep, unix.ErrnoName(refused), until)
 		}
-		source, _, gotFragments, err = sentPin(ep.sendControl())
-		if err != nil || source.IsValid() || gotFragments != fragments {
+		source, _, gotFragments, err = sentPin(ep.unpinnedControl())
+		if ep.pin() != nil || err != nil || source.IsValid() || gotFragments != fragments {
 			ht.Fatalf("%s fell back and still names %s, fragmenting %v, %v", ep, source, gotFragments, err)
 		}
 		// the hold ends before the case reads it, or holdMargin or more after

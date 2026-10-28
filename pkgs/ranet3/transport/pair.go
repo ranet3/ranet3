@@ -46,7 +46,6 @@ const (
 	pairReleasedClose = "released"
 	pairFailedClose   = "failed"
 	pairNetworkClose  = "network"
-	pairUnderlayClose = "underlay"
 	pairHubClose      = "closed"
 )
 

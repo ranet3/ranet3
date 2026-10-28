@@ -166,9 +166,8 @@ var underlayMark = sync.OnceValue(func() uint32 {
 	return schema.UnderlayMark
 })
 
-// openPacketBind takes the one socket this node's IKE and ESP share. index
-// names an interface to bind it to, which this platform never asks for.
-func openPacketBind(port uint16, _ Underlay, index int, routed bool, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+// openPacketBind takes the one socket this node's IKE and ESP share.
+func openPacketBind(port uint16, _ Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	mark := underlayMark()
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation, but an explicitly requested port still fails.
