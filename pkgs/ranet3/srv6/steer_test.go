@@ -59,25 +59,25 @@ func TestNoSteeringTableClaimsNothing(t *testing.T) {
 // such a tool uses, everything sourced from this node's announced address, reaches
 // exactly the packets it reaches there.
 func TestSourceSelectorClaimsOnlyItsOwnTraffic(t *testing.T) {
-	announced := policy("3fff:1:69c:8c0::1", "3fff:1:69c:98d6::1")
+	announced := policy("3fff:b:0:100::1", "3fff:b:0:206::1")
 	table, err := NewSteerTable([]Steer{
-		steering("3fff:a::198:18:104:117/128", "", "3fff:1:69c:8c0::1", "3fff:1:69c:98d6::1"),
+		steering("3fff:a::203:0:113:10/128", "", "3fff:b:0:100::1", "3fff:b:0:206::1"),
 	}, schema.Addr{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := table.Lookup(addr("3fff:a::198:18:104:117"), addr("2001:4860:4860::8888")); got == nil {
+	if got := table.Lookup(addr("3fff:a::203:0:113:10"), addr("2001:4860:4860::8888")); got == nil {
 		t.Fatal("the announced address was not claimed")
 	} else if !slices.Equal(got.Path, announced.Path) {
 		t.Errorf("the claimed policy is %v", got.Path)
 	}
-	if got := table.Lookup(addr("3fff:a::198:18:104:118"), addr("2001:4860:4860::8888")); got != nil {
+	if got := table.Lookup(addr("3fff:a::203:0:113:11"), addr("2001:4860:4860::8888")); got != nil {
 		t.Errorf("another node's address was claimed by %s", got)
 	}
 	if table.Overhead() != Overhead(1) || len(table.Entries()) != 1 {
 		t.Errorf("the table reports overhead %d over %d entries", table.Overhead(), len(table.Entries()))
 	}
-	if entries := table.Entries(); len(entries) != 1 || entries[0] != "from 3fff:a::198:18:104:117/128 via 3fff:1:69c:98d6::1" {
+	if entries := table.Entries(); len(entries) != 1 || entries[0] != "from 3fff:a::203:0:113:10/128 via 3fff:b:0:206::1" {
 		t.Errorf("the table reads as %v", entries)
 	}
 }
@@ -85,12 +85,12 @@ func TestSourceSelectorClaimsOnlyItsOwnTraffic(t *testing.T) {
 // An entry that selects on nothing would claim the encapsulated packets this
 // node has just produced, which would then be encapsulated again.
 func TestSteeringRefusesWhatWouldClaimItsOwnEncapsulation(t *testing.T) {
-	const source, exit = "3fff:1:69c:8c0::1", "3fff:1:69c:98d6::1"
+	const source, exit = "3fff:b:0:100::1", "3fff:b:0:206::1"
 	for name, entry := range map[string]Steer{
 		"no selector":    steering("", "", source, exit),
 		"no segments":    steering("2001:db8::/32", "", source),
-		"a v4 source":    steering("10.0.0.0/8", "", "198.18.104.117", exit),
-		"a v4 segment":   steering("2001:db8::/32", "", source, "198.18.104.117"),
+		"a v4 source":    steering("10.0.0.0/8", "", "203.0.113.10", exit),
+		"a v4 segment":   steering("2001:db8::/32", "", source, "203.0.113.10"),
 		"mixed families": steering("2001:db8::/32", "10.0.0.0/8", source, exit),
 		// A v4-mapped prefix goes into the IPv6 half of the trie while a v4
 		// packet is looked up in the v4 half, so it would never match.
@@ -130,13 +130,13 @@ func TestSteeringRefusesWhatWouldClaimItsOwnEncapsulation(t *testing.T) {
 // An entry naming no source of its own takes the block's, which is how the
 // fleet's one `ip sr tunsrc` per node carries over.
 func TestSteeringEntryInheritsTheBlockSource(t *testing.T) {
-	entry := Steer{From: sprefix("2001:db8::/32"), Via: []schema.Addr{saddr("3fff:1:69c:98d6::1")}}
-	table, err := NewSteerTable([]Steer{entry}, saddr("3fff:1:69c:8c0::1"))
+	entry := Steer{From: sprefix("2001:db8::/32"), Via: []schema.Addr{saddr("3fff:b:0:206::1")}}
+	table, err := NewSteerTable([]Steer{entry}, saddr("3fff:b:0:100::1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := table.Lookup(addr("2001:db8::5"), addr("2001:4860:4860::8888"))
-	if got == nil || got.Source != addr("3fff:1:69c:8c0::1") {
+	if got == nil || got.Source != addr("3fff:b:0:100::1") {
 		t.Errorf("the entry was steered from %v", got)
 	}
 }
@@ -145,9 +145,9 @@ func TestSteeringEntryInheritsTheBlockSource(t *testing.T) {
 // disagree, and the trie keeps one of them while a diagnostic prints both. The
 // local segment table and the rule list both refuse the same shape.
 func TestSteeringRefusesTwoEntriesWithOneSelector(t *testing.T) {
-	const source = "3fff:1:69c:8c0::1"
-	first := steering("2001:db8::/32", "", source, "3fff:1:69c:98d6::1")
-	second := steering("2001:db8::/32", "", source, "3fff:1:69c:6c46::1")
+	const source = "3fff:b:0:100::1"
+	first := steering("2001:db8::/32", "", source, "3fff:b:0:206::1")
+	second := steering("2001:db8::/32", "", source, "3fff:b:0:406::1")
 	for name, entries := range map[string][]Steer{
 		"written the same way": {first, second},
 		// The check is keyed on what the trie stores rather than on what was
@@ -155,7 +155,7 @@ func TestSteeringRefusesTwoEntriesWithOneSelector(t *testing.T) {
 		// diagnostic reports both.
 		"one carrying a source of its own": {
 			first,
-			Steer{From: sprefix("2001:db8::/32"), Source: saddr(source), Via: []schema.Addr{saddr("3fff:1:69c:6c46::1")}},
+			Steer{From: sprefix("2001:db8::/32"), Source: saddr(source), Via: []schema.Addr{saddr("3fff:b:0:406::1")}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

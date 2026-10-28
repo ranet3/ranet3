@@ -277,7 +277,7 @@ func TestParseNeverPanicsOnArbitraryBytes(t *testing.T) {
 				ht.Fatalf("Decap delivered %d bytes of family %d", len(inner), family)
 			}
 		}
-		from := addr("3fff:1:69c:8c6::2")
+		from := addr("3fff:b:0:106::2")
 		TimeExceeded(raw, from, always)
 		ParameterProblem(raw, from, always)
 	})
@@ -395,7 +395,7 @@ func checkLaid(tb testing.TB, p laidPacket) {
 	raw, _ := p.whole()
 	p.length = min(p.length, len(raw))
 	offending := slices.Clip(raw[:p.length])
-	sid := addr("3fff:1:69c:8c6::2")
+	sid := addr("3fff:b:0:106::2")
 	for name, build := range map[string]func(allow func() bool) []byte{
 		"time exceeded":  func(allow func() bool) []byte { return TimeExceeded(offending, sid, allow) },
 		"packet too big": func(allow func() bool) []byte { return PacketTooBig(offending, sid, MinimumIPv6MTU, allow) },

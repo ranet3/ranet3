@@ -177,7 +177,7 @@ func TestEgressNeverCarriesASourceOutsideItsAllowList(t *testing.T) {
 // its IPv4 entries alone, at least one, which admit no outer source, and the
 // table is refused.
 func TestNoSIDActsOnAnOuterSourceOutsideTheOverlay(t *testing.T) {
-	waypoint, exit, egress := addr("3fff:1:69c:8c6::2"), addr("3fff:1:69c:98d6::1"), addr("3fff:1:69c:98d6::3")
+	waypoint, exit, egress := addr("3fff:b:0:106::2"), addr("3fff:b:0:206::1"), addr("3fff:b:0:206::3")
 	pbt.Check(t, func(ht *hegel.T) {
 		overlay := hegel.Draw(ht, allowLists())
 		if hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
