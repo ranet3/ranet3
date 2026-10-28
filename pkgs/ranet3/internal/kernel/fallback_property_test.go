@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -83,10 +84,8 @@ func switchModel(c switchConfig, p switchPacket) bool {
 			}
 		}
 	}
-	for _, local := range []string{"169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32", "fe80::/10", "ff00::/8"} {
-		if netip.MustParsePrefix(local).Contains(p.destination) {
-			return true
-		}
+	if slices.ContainsFunc(switchLocal, func(local netip.Prefix) bool { return local.Contains(p.destination) }) {
+		return true
 	}
 	if slices.ContainsFunc(c.view.own, func(prefix netip.Prefix) bool { return prefix.Contains(p.destination) }) {
 		return true
@@ -98,6 +97,13 @@ func switchModel(c switchConfig, p switchPacket) bool {
 		protocol := map[string]uint8{"tcp": unix.IPPROTO_TCP, "udp": unix.IPPROTO_UDP}[s.Protocol]
 		return protocol == p.protocol && s.First <= p.port && p.port <= s.Last
 	})
+}
+
+// switchLocal is link-local, multicast and the limited broadcast, which the
+// chain passes by any link
+var switchLocal = []netip.Prefix{
+	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8"),
 }
 
 // switchTun is the drawn host's tun
@@ -497,4 +503,111 @@ func (c switchConfig) String() string {
 	}
 	lines = append(lines, fmt.Sprintf("  forwarded %v own %v services %v", c.view.forwarded, c.view.own, c.services))
 	return strings.Join(lines, "\n")
+}
+
+// carvedOut reports p one the switch lets leave by a link outside the mesh:
+// carrying the underlay's mark, or to a connected network of a link outside
+// the mesh that overlaps no overlay prefix and does not count as capturing the
+// machine, to link-local, multicast or the limited broadcast, or to an own
+// prefix the mirror throws
+func (h interpreted) carvedOut(p fibPacket) bool {
+	if p.mark == schema.UnderlayMark || slices.ContainsFunc(switchLocal, func(local netip.Prefix) bool { return local.Contains(p.destination) }) {
+		return true
+	}
+	if slices.ContainsFunc(h.mode.own, func(own netip.Prefix) bool { return own.Contains(p.destination) }) {
+		return true
+	}
+	for _, link := range h.mode.links() {
+		for _, prefix := range link.Prefixes {
+			network := prefix.Masked()
+			overlaps := slices.ContainsFunc(h.rt.Overlay, func(o schema.Prefix) bool { return o.Overlaps(network) })
+			if !overlaps && !schema.CapturesTheMachine(network, h.rt.Overlay) && network.Contains(p.destination) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// switchState is h's kernel in one state of the switch
+type switchState struct {
+	name   string
+	kernel fib
+}
+
+// switchStates is h's kernel with the defaults present, as derived, with them
+// retracted, the mirror less each route into the tun that counts as a default,
+// and with the tun gone, the mirror less every route into it
+func (h interpreted) switchStates() []switchState {
+	without := func(drop func(fibRoute) bool) fib {
+		tables := maps.Clone(h.kernel.tables)
+		tables[DefaultTable] = slices.DeleteFunc(slices.Clone(tables[DefaultTable]), drop)
+		return fib{rules: h.kernel.rules, tables: tables}
+	}
+	return []switchState{
+		{"the defaults present", h.kernel},
+		{"the defaults retracted", without(func(route fibRoute) bool {
+			return route.device == tunDevice && schema.CapturesTheMachine(route.destination, h.rt.Overlay)
+		})},
+		{"the tun gone", without(func(route fibRoute) bool { return route.device == tunDevice })},
+	}
+}
+
+// Linux's rule walk over the derived rules under fallback = "none", composed
+// with the chain the table writes run as nf_tables runs it, lets out by a link
+// outside the mesh only what carvedOut names, of every drawn packet of the
+// host's own and forwarded from a link forward names, with the defaults
+// present, retracted and with the tun gone, the tun holding an overlay address
+// of each family and holding none of either in turn, beside another program's
+// rules and tables, to each boundary of the links' networks and the own
+// prefixes
+func TestFallbackWalkAndChainLetOutOnlyTheCarveOuts(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		build := drawInterpretedIn(t, ht, func(ht *hegel.T, overlay []schema.Prefix) exitView {
+			mode := drawExitMode(ht, overlay)
+			mode.on, mode.fallback = true, true
+			return mode
+		})
+		h := build(nil)
+		s := h.mode.fallbackSetsOf(tunDevice, h.rt.Overlay, nil, nil)
+		rules, err := s.rules()
+		if err != nil {
+			ht.Fatal(err)
+		}
+		sets := switchSets(ht, s, rules)
+		packets := h.packets(ht)
+		var boundaries []netip.Addr
+		for _, link := range h.mode.links() {
+			for _, prefix := range link.Prefixes {
+				boundaries = append(boundaries, prefixEdges(prefix)...)
+			}
+		}
+		for _, own := range h.mode.own {
+			boundaries = append(boundaries, prefixEdges(own)...)
+		}
+		for _, destination := range boundaries {
+			if p := (fibPacket{source: uplink[destination.Is6()], destination: destination}); h.lookedUp(p) {
+				packets = append(packets, p)
+			}
+		}
+		for _, unaddressed := range [][]Family{nil, {FamilyIPv4}, {FamilyIPv6}} {
+			h := build(unaddressed)
+			for _, state := range h.switchStates() {
+				for _, p := range packets {
+					if p.iif != "" && !slices.Contains(h.mode.forwarded, p.iif) {
+						continue
+					}
+					device := state.kernel.walk(p)
+					if device == tunDevice || device == "unreachable" || device == "none" {
+						continue
+					}
+					out := switchPacket{oif: device, iif: p.iif, mark: p.mark, destination: p.destination}
+					if evaluate(ht, rules, sets, out) && !h.carvedOut(p) {
+						ht.Fatalf("with %s and the tun holding no overlay address of %v, %s leaves by %s and the chain passes it\nranet3's table:\n%s\nown %v, forwarding %v over %v\nthe rules:\n%s",
+							state.name, unaddressed, p, device, strings.Join(h.routes.Debug(), "\n"), h.mode.own, h.mode.forwarded, h.mode.links(), rulesText(state.kernel.rules))
+					}
+				}
+			}
+		}
+	})
 }

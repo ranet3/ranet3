@@ -106,8 +106,9 @@ func matches(rule Rule, p fibPacket) bool {
 
 // walk is fib_rules_lookup over the rules, which each name a family
 // a goto continues at the first rule of its target's priority and is passed over
-// while it has none, a nop continues, and a lookup that finds no route or a
-// throw continues. An unreachable route ends the walk unsuppressed, and a
+// while it has none, a nop continues, an unreachable rule ends the walk, and a
+// lookup that finds no route or a throw continues. An unreachable route ends
+// the walk unsuppressed, and a
 // unicast route ends it unless its length is at or under the rule's suppress
 // length. It answers the device, "unreachable", or "none" past the last rule.
 func (f fib) walk(p fibPacket) string {
@@ -124,6 +125,8 @@ func (f fib) walk(p fibPacket) string {
 			continue
 		case actionNop:
 			continue
+		case actionUnreachable:
+			return "unreachable"
 		}
 		route, ok := lookup(f.tables[rule.Table], p)
 		switch {
@@ -198,7 +201,8 @@ const foreignGoto = 5050
 // the kernel passes over, as it does mode 2's priorities in mode off
 var gotoTargets = []uint32{
 	priorityUnderlayPastOverlay, priorityOverlay, priorityOverlayEnd, 5270, 5300, priorityUnderlayPastMesh,
-	priorityUplinkSource, priorityMain, priorityMesh, priorityOwn, priorityLinkSource, priorityCatchAll, priorityMeshEnd, 5500,
+	priorityUplinkSource, priorityMain, priorityMesh, priorityOwn, priorityLinkSource, priorityCatchAll, priorityOwnPastMesh, priorityRefused,
+	priorityMeshEnd, 5500,
 }
 
 // drawHost draws the tables and the rules another program holds beside
@@ -296,6 +300,11 @@ var exitInputs = []string{"none", "an egress segment", "a counted advertisement"
 // drawInterpreted draws a host and builds its kernel from the reconciler's own derivation, with the families the tun holds no
 // overlay address of that the caller names
 func drawInterpreted(t *testing.T, ht *hegel.T) func(unaddressed []Family) interpreted {
+	return drawInterpretedIn(t, ht, drawExitMode)
+}
+
+// drawInterpretedIn is drawInterpreted with its mode drawn by mode
+func drawInterpretedIn(t *testing.T, ht *hegel.T, mode func(*hegel.T, []schema.Prefix) exitView) func(unaddressed []Family) interpreted {
 	overlay := hegel.Draw(ht, overlays())
 	var entries []mirrorEntry
 	for _, entry := range hegel.Draw(ht, mirrorEntries()) {
@@ -356,9 +365,9 @@ func drawInterpreted(t *testing.T, ht *hegel.T) func(unaddressed []Family) inter
 		advertised[counted] = input == "a counted advertisement"
 	}
 	gate := hegel.Draw(ht, hegel.WeightedBooleans(0.75))
-	host, mode := drawHost(ht), drawExitMode(ht, overlay)
+	host, drawn := drawHost(ht), mode(ht, overlay)
 	return func(unaddressed []Family) interpreted {
-		m := mode
+		m := drawn
 		m.unaddressed = unaddressed
 		return interpret(t, overlay, entries, advertised, egressSegment, gate, host, m)
 	}
@@ -368,14 +377,15 @@ func drawInterpreted(t *testing.T, ht *hegel.T) func(unaddressed []Family) inter
 // its address in each family
 type exitLink struct{ name, v4, v6 string }
 
-// drawExitMode draws mode 2 half the time and mode off otherwise, over links
-// drawn whatever the mode: eth0 holding the uplink's address, now and then a
-// bridge, a LAN through eth1 and a point-to-point ppp0 with its far end, and
-// now and then an address of the overlay on lo or on dummy0 with a network
-// about it. forward names any of the bridge, the LAN, ppp0 and docker0, a
-// bridge holding no address.
+// drawExitMode draws mode 2 half the time, under fallback = "none" half of
+// that, and mode off otherwise, over links drawn whatever the mode: eth0
+// holding the uplink's address, now and then a bridge, a LAN through eth1 and
+// a point-to-point ppp0 with its far end, and now and then an address of the
+// overlay on lo or on dummy0 with a network about it. forward names any of the
+// bridge, the LAN, ppp0 and docker0, a bridge holding no address.
 func drawExitMode(ht *hegel.T, overlay []schema.Prefix) exitView {
 	mode := exitView{on: hegel.Draw(ht, hegel.Booleans())}
+	mode.fallback = mode.on && hegel.Draw(ht, hegel.Booleans())
 	for _, v6 := range []bool{false, true} {
 		bits := map[bool]int{false: 24, true: 64}[v6]
 		links := []Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.PrefixFrom(uplink[v6], bits)}}}
@@ -427,7 +437,8 @@ func drawExitMode(ht *hegel.T, overlay []schema.Prefix) exitView {
 // advertised names through cap.egress and announces the rest through
 // cap.route, holds an egress segment where egressSegment says, whose capture
 // gate is open where gate says, and which runs mode, whose links but lo's hold
-// their connected networks in main
+// their connected networks in main, under fallback = "none" with the own
+// prefixes the mirror throws as a pass reads them
 func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, advertised map[netip.Prefix]bool, egressSegment, gate bool, host fib, mode exitView) interpreted {
 	routes := netstack.NewRouteTable()
 	routes.SetOverlay(overlay)
@@ -466,6 +477,9 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	reconciler.capture = gate
 	snapshot := routes.Snapshot()
 	desired := reconciler.desired(snapshot)
+	if mode.fallback {
+		mode.own = reconciler.thrown(snapshot)
+	}
 	tables := maps.Clone(host.tables)
 	mainRoutes := slices.Clone(tables[schema.TableMain])
 	for _, link := range mode.links() {
@@ -677,8 +691,10 @@ func (h interpreted) caughtAll(p fibPacket) bool {
 }
 
 // pastOwn is where p goes past 5430: from main at 5435, from the mirror at
-// 5440 where it holds a route for p, and otherwise by another program's rules
-// past ranet3's
+// 5440 where it holds a route for p, under fallback = "none" from main at 5445
+// to an own prefix the mirror throws and unreachable at 5450 for the host's
+// own and a forwarded link's, in either family, and otherwise by another
+// program's rules past ranet3's
 func (h interpreted) pastOwn(p fibPacket, landing, past uint32) string {
 	if landing <= priorityLinkSource && h.linkSource(p) {
 		if route, ok := lookup(h.host.tables[schema.TableMain], p); ok {
@@ -688,6 +704,15 @@ func (h interpreted) pastOwn(p fibPacket, landing, past uint32) string {
 	if landing <= priorityCatchAll && h.caughtAll(p) {
 		if route, ok := lookup(h.kernel.tables[DefaultTable], p); ok && !route.throw {
 			return answer(route)
+		}
+	}
+	if h.mode.on && h.mode.fallback {
+		thrown := slices.ContainsFunc(h.mode.own, func(prefix netip.Prefix) bool { return prefix.Contains(p.destination) })
+		if route, ok := lookup(h.host.tables[schema.TableMain], p); ok && thrown && landing <= priorityOwnPastMesh {
+			return route.device
+		}
+		if landing <= priorityRefused && (p.input() == loopback || slices.Contains(h.mode.forwarded, p.iif)) {
+			return "unreachable"
 		}
 	}
 	return h.others(p, past, math.MaxUint32)
@@ -752,7 +777,9 @@ func answer(route fibRoute) string {
 // Mode 2, in a family the tun holds an overlay address of, sends the host's own
 // lookup from a link's address to main ahead of 5410, and past 5430 one from a
 // network forward leaves out to main, and the host's own and a forwarded
-// link's to the mirror.
+// link's to the mirror. Under fallback = "none", in either family, a lookup
+// left goes to main for an own prefix the mirror throws, and the host's own and
+// a forwarded link's are unreachable otherwise.
 func (h interpreted) expected(p fibPacket) string {
 	if before := h.others(p, 0, priorityUnderlayPastOverlay); before != "none" {
 		return before
@@ -836,8 +863,9 @@ func (h interpreted) withoutCountedHolds() *netstack.RouteTable {
 // beside a host's own tables, another program's lookups ahead of, between and
 // past ranet3's blocks and its goto ahead of them, sends every packet lookedUp
 // keeps where routing.md's tables say, on an exit by each of its inputs and on
-// a node that is none, in mode off and in mode 2, the last with the tun holding
-// an overlay address of each family and holding none of either in turn
+// a node that is none, in mode off and in mode 2 under each fallback, the last
+// with the tun holding an overlay address of each family and holding none of
+// either in turn
 func TestRuleWalkSendsEveryPacketWhereTheRulesSay(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		build := drawInterpreted(t, ht)
@@ -895,6 +923,8 @@ func TestRuleWalkNamedCases(t *testing.T) {
 			{Name: "eth1", Prefixes: []netip.Prefix{prefix("2001:db8:50::1/64")}},
 		}},
 	}}
+	refusing := forwarding
+	refusing.fallback = true
 	defaultsAndSubnets := []mirrorEntry{learnedAt("0.0.0.0/0"), learnedAt("::/0"), learnedAt("203.0.113.0/27"), learnedAt("2001:db8:300::/64")}
 	// a subnet router announcing the LAN through eth1 it holds an address in
 	routerLinks := NetworkState{
@@ -998,6 +1028,45 @@ func TestRuleWalkNamedCases(t *testing.T) {
 			entries: router,
 			mode:    exitView{network: routerLinks},
 			packets: fromTheLAN,
+		},
+		"mode 2 under fallback = \"none\" with the defaults present": {
+			entries: append(slices.Clone(defaultsAndSubnets), at(netstack.Local, "203.0.113.192/27"), at(netstack.Local, "2001:db8:c::/48")),
+			mode:    refusing,
+			packets: map[fibPacket]string{
+				from("192.0.2.5", "198.18.0.9"): tunDevice, from("3fff::5", "2001:db8:d::1"): tunDevice,
+				arriving("br-1a", from("203.0.113.130", "198.18.0.9")): tunDevice,
+				// 5445 for an own prefix the mirror throws, beyond the gateway
+				from("192.0.2.5", "203.0.113.200"): "eth0", from("3fff::5", "2001:db8:c::1"): "eth0",
+				arriving("br-1a", from("203.0.113.130", "203.0.113.200")): "eth0",
+			},
+		},
+		"mode 2 under fallback = \"none\" with the defaults retracted": {
+			entries: []mirrorEntry{learnedAt("203.0.113.0/27"), learnedAt("2001:db8:300::/64"), at(netstack.Local, "203.0.113.192/27"), at(netstack.Local, "2001:db8:c::/48")},
+			mode:    refusing,
+			packets: map[fibPacket]string{
+				// 5450 for the host's own and the bridge's, and not for the LAN forward leaves out
+				from("192.0.2.5", "198.18.0.9"): "unreachable", from("3fff::5", "2001:db8:d::1"): "unreachable",
+				arriving("br-1a", from("203.0.113.130", "198.18.0.9")): "unreachable", arriving("br-1a", from("2001:db8:17::2", "2001:db8:d::1")): "unreachable",
+				arriving("eth1", from("203.0.113.66", "198.18.0.9")): "eth0", arriving("eth1", from("2001:db8:50::2", "2001:db8:d::1")): "eth0",
+				// the subnets the mesh still holds, the own prefixes, the LAN, and 5405 and 5435, whose packets the filter refuses beyond the LAN
+				from("192.0.2.5", "203.0.113.9"): tunDevice, from("3fff::5", "2001:db8:300::1"): tunDevice,
+				from("192.0.2.5", "203.0.113.200"): "eth0", from("3fff::5", "2001:db8:c::1"): "eth0",
+				from("192.0.2.5", "203.0.113.70"): "eth1", from("3fff::5", "2001:db8:50::9"): "eth1",
+				from("198.51.100.10", "198.18.0.9"): "eth0", from("203.0.113.66", "198.18.0.9"): "eth0",
+			},
+		},
+		"mode 2 under fallback = \"none\" with the tun holding no IPv4 overlay address, which runs mode off's IPv4 rules with 5445 and 5450": {
+			entries: append(slices.Clone(defaultsAndSubnets), at(netstack.Local, "203.0.113.192/27"), at(netstack.Local, "2001:db8:c::/48")),
+			mode:    exitView{on: true, network: forwarding.network, forwarded: forwarding.forwarded, unaddressed: []Family{FamilyIPv4}, fallback: true},
+			packets: map[fibPacket]string{
+				// 5450 for the host's own, from any source, and the bridge's, with no 5440 to take them to the mesh's default
+				from("0.0.0.0", "198.18.0.9"): "unreachable", from("198.51.100.10", "198.18.0.9"): "unreachable",
+				arriving("br-1a", from("203.0.113.130", "198.18.0.9")): "unreachable",
+				arriving("eth1", from("203.0.113.66", "198.18.0.9")):   "eth0",
+				// 5445 for an own prefix the mirror throws, and 5420 for the mesh's subnet
+				from("0.0.0.0", "203.0.113.200"): "eth0", from("198.51.100.10", "203.0.113.9"): tunDevice,
+				from("3fff::5", "2001:db8:d::1"): tunDevice,
+			},
 		},
 		"mode off over the same links": {
 			entries: defaultsAndSubnets,
