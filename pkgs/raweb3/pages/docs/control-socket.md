@@ -19,7 +19,8 @@ snapshots and the event stream are open to whoever can open the socket.
 `debug probe`, the only action among them, takes root or the daemon's own user.
 The daemon's `--debug-access` changes this. `group` opens the probe to whoever
 can open the socket, and `off` refuses every debug path, as
-[debugging](development/debug.md) describes.
+[debugging](development/debug.md) describes. The trace of the packets the node
+handles takes uid 0 alone under `root` and `group`.
 
 The daemon bounds each connection by an idle timeout. It also bounds the
 connections open at once across every caller. Each connection costs a
@@ -182,33 +183,51 @@ fleet then has to firewall.
 
 Every path starts with `/v0`. A read answers GET and HEAD, and a verb answers
 POST. The class says who may call a path. `mode` is anyone the socket's mode
-lets in. `read` and `root` are the debug classes described above.
+lets in. `read`, `root` and `plaintext` are the debug classes described above.
 
-| Path                 | Method    | Class  | Request                                         | Answer                            |
-| -------------------- | --------- | ------ | ----------------------------------------------- | --------------------------------- |
-| `/v0/status`         | GET, HEAD | `mode` | none                                            | the node, a JSON object           |
-| `/v0/neighbors`      | GET, HEAD | `mode` | none                                            | Babel neighbors, a JSON list      |
-| `/v0/routes`         | GET, HEAD | `mode` | none                                            | Babel routes, a JSON list         |
-| `/v0/sessions`       | GET, HEAD | `mode` | none                                            | IKE sessions, a JSON list         |
-| `/v0/peers`          | GET, HEAD | `mode` | none                                            | dialed peers, a JSON list         |
-| `/v0/metrics`        | GET, HEAD | `mode` | none                                            | the Prometheus text format        |
-| `/v0/disable`        | POST      | `mode` | `subsystem`                                     | a result                          |
-| `/v0/enable`         | POST      | `mode` | `subsystem`                                     | a result                          |
-| `/v0/redial`         | POST      | `mode` | `peer` or `all`                                 | a result                          |
-| `/v0/rekey`          | POST      | `mode` | `peer` or `all`                                 | a result                          |
-| `/v0/reload`         | POST      | `mode` | empty body                                      | a result                          |
-| `/v0/down`           | POST      | `mode` | empty body                                      | a result                          |
-| `/v0/up`             | POST      | `mode` | empty body                                      | a result                          |
-| `/v0/debug/events`   | GET, HEAD | `read` | query `kind`, `peer`, `attr`, `since`, `follow` | events, 1 JSON object per line    |
-| `/v0/debug/pmtu`     | GET, HEAD | `read` | query `peer`                                    | path MTU view, a JSON object      |
-| `/v0/debug/runtime`  | GET, HEAD | `read` | none                                            | process view, a JSON object       |
-| `/v0/debug/updown`   | GET, HEAD | `read` | none                                            | up and down view, a JSON object   |
-| `/v0/debug/netmon`   | GET, HEAD | `read` | none                                            | network watch view, a JSON object |
-| `/v0/debug/rules`    | GET, HEAD | `read` | none                                            | rules view, a JSON object         |
-| `/v0/debug/route`    | GET, HEAD | `read` | query `src`, `dst`, `iif`                       | route view, a JSON object         |
-| `/v0/debug/egress`   | GET, HEAD | `read` | none                                            | exit view, a JSON object          |
-| `/v0/debug/segments` | GET, HEAD | `read` | none                                            | segments view, a JSON object      |
-| `/v0/debug/probe`    | POST      | `root` | `peer` or `all`                                 | a result                          |
+| Path                 | Method    | Class       | Request                                                            | Answer                              |
+| -------------------- | --------- | ----------- | ------------------------------------------------------------------ | ----------------------------------- |
+| `/v0/status`         | GET, HEAD | `mode`      | none                                                               | the node, a JSON object             |
+| `/v0/neighbors`      | GET, HEAD | `mode`      | none                                                               | Babel neighbors, a JSON list        |
+| `/v0/routes`         | GET, HEAD | `mode`      | none                                                               | Babel routes, a JSON list           |
+| `/v0/sessions`       | GET, HEAD | `mode`      | none                                                               | IKE sessions, a JSON list           |
+| `/v0/peers`          | GET, HEAD | `mode`      | none                                                               | dialed peers, a JSON list           |
+| `/v0/metrics`        | GET, HEAD | `mode`      | none                                                               | the Prometheus text format          |
+| `/v0/disable`        | POST      | `mode`      | `subsystem`                                                        | a result                            |
+| `/v0/enable`         | POST      | `mode`      | `subsystem`                                                        | a result                            |
+| `/v0/redial`         | POST      | `mode`      | `peer` or `all`                                                    | a result                            |
+| `/v0/rekey`          | POST      | `mode`      | `peer` or `all`                                                    | a result                            |
+| `/v0/reload`         | POST      | `mode`      | empty body                                                         | a result                            |
+| `/v0/down`           | POST      | `mode`      | empty body                                                         | a result                            |
+| `/v0/up`             | POST      | `mode`      | empty body                                                         | a result                            |
+| `/v0/debug/events`   | GET, HEAD | `read`      | query `kind`, `peer`, `attr`, `since`, `follow`                    | events, 1 JSON object per line      |
+| `/v0/debug/pmtu`     | GET, HEAD | `read`      | query `peer`                                                       | path MTU view, a JSON object        |
+| `/v0/debug/runtime`  | GET, HEAD | `read`      | none                                                               | process view, a JSON object         |
+| `/v0/debug/updown`   | GET, HEAD | `read`      | none                                                               | up and down view, a JSON object     |
+| `/v0/debug/netmon`   | GET, HEAD | `read`      | none                                                               | network watch view, a JSON object   |
+| `/v0/debug/rules`    | GET, HEAD | `read`      | none                                                               | rules view, a JSON object           |
+| `/v0/debug/route`    | GET, HEAD | `read`      | query `src`, `dst`, `iif`                                          | route view, a JSON object           |
+| `/v0/debug/egress`   | GET, HEAD | `read`      | none                                                               | exit view, a JSON object            |
+| `/v0/debug/segments` | GET, HEAD | `read`      | none                                                               | segments view, a JSON object        |
+| `/v0/debug/probe`    | POST      | `root`      | `peer` or `all`                                                    | a result                            |
+| `/v0/debug/trace`    | GET       | `plaintext` | query `src`, `dst`, `proto`, `decision`, `peer`, `rate`, `payload` | trace lines, 1 JSON object per line |
+
+A trace's query takes `src` and `dst` each up to 16 times, a prefix or an
+address, `proto` a protocol number or one of `icmp`, `tcp`, `udp`, `gre`, `esp`,
+`ah`, `icmpv6` and `sctp`, `decision` one of `deliver`, `forward`, `egress`,
+`answer` and `drop`, `peer` a peer named as `redial` names one, `rate` from 1 to
+10000 records a second, 1000 where it is left out, and `payload` from 0 to 65535
+bytes. Each line is an object holding a `packet` or a `note`. A `note` is
+`stream.live` first, then `stream.dropped` once a second while records were
+refused, with `rate` and `queue`, `stream.heartbeat` on a quiet stream, and
+`stream.closed` with its `reason` when the daemon ends the trace. A `packet`
+holds `arrival`, `from`, `decision`, `reason`, `next`, `segment`, `src`, `dst`,
+`proto`, `headers`, `transport`, `src_port`, `dst_port`, `tcp_flags`,
+`icmp_type`, `icmp_code`, `hop_limit`, `length`, `fragments`, `answer`,
+`outcome` and `payload`, the bytes in base64, as
+[debugging](development/debug.md#trace-records) describes, each but `arrival`,
+`decision`, `src`, `dst`, `proto`, `hop_limit` and `length` left out where it is
+empty or 0.
 
 ### Requests and answers
 
@@ -248,16 +267,16 @@ when empty, and every counter is always present. Other lists, such as
 
 ### Status codes
 
-| Code | When                                                                                                                                         |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| 200  | The read or the verb succeeded.                                                                                                              |
-| 400  | The node refused a verb, a body or query does not parse, or a query names more kinds or attributes than the limits allow. The body says why. |
-| 403  | The caller may not use this debug path. The body names the rule and the caller's uid.                                                        |
-| 404  | No such path. Under `--debug-access off`, an unknown debug path answers 403.                                                                 |
-| 405  | The method does not fit the path. `Allow` names the one that does.                                                                           |
-| 500  | The daemon could not encode its answer. The body says why.                                                                                   |
-| 501  | The program serving the socket does not implement that verb or debug view. The daemon implements them all.                                   |
-| 503  | A 5th event stream asked to follow while 4 are open.                                                                                         |
+| Code | When                                                                                                                                                                                                   |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 200  | The read or the verb succeeded.                                                                                                                                                                        |
+| 400  | The node refused a verb, a body or query does not parse, a query names more kinds, attributes or prefixes than the limits allow, or a trace's rate or payload is out of its bounds. The body says why. |
+| 403  | The caller may not use this debug path. The body names the rule and the caller's uid.                                                                                                                  |
+| 404  | No such path. Under `--debug-access off`, an unknown debug path answers 403.                                                                                                                           |
+| 405  | The method does not fit the path. `Allow` names the one that does.                                                                                                                                     |
+| 500  | The daemon could not encode its answer. The body says why.                                                                                                                                             |
+| 501  | The program serving the socket does not implement that verb or debug view. The daemon implements them all.                                                                                             |
+| 503  | A 5th stream, of events or a trace, asked for while 4 are open, or a trace asked for while the daemon stops.                                                                                           |
 
 ### Limits
 
@@ -268,7 +287,8 @@ when empty, and every counter is always present. Other lists, such as
 | Request headers                                           | 5 seconds                                               |
 | Writing an answer, a stream excepted                      | 30 seconds                                              |
 | Verb body the daemon reads                                | 64 KiB                                                  |
-| Event streams open at once                                | 4                                                       |
+| Streams open at once, of events and traces together       | 4                                                       |
+| Source and destination prefixes in 1 trace query          | 16 of each                                              |
 | 1 stream write waiting on its reader                      | 5 seconds, then the stream ends                         |
 | Heartbeat on a quiet stream                               | every 15 seconds                                        |
 | Kinds in 1 events query                                   | 16                                                      |

@@ -42,45 +42,52 @@ class:
 - **root**: every debug action. `debug probe` is the only one. Open to uid 0 and
   to the user the daemon runs as. Each such call is logged at info with the
   caller's uid and pid.
+- **plaintext**: what the node reads of the packets it handles, other nodes'
+  traffic among them. `debug trace` is the only one. Open to uid 0 alone. Each
+  such call is logged at info with the caller's uid and pid and its query, which
+  holds the filter and the payload length asked for.
 
-The daemon serves 10 debug paths:
+The daemon serves 11 debug paths:
 
-| Path                 | Class | Commands                     |
-| -------------------- | ----- | ---------------------------- |
-| `/v0/debug/egress`   | read  | `debug egress`               |
-| `/v0/debug/events`   | read  | `debug events`, `debug wait` |
-| `/v0/debug/netmon`   | read  | `debug netmon`               |
-| `/v0/debug/pmtu`     | read  | `debug pmtu`                 |
-| `/v0/debug/probe`    | root  | `debug probe`                |
-| `/v0/debug/route`    | read  | `debug route`                |
-| `/v0/debug/rules`    | read  | `debug rules`                |
-| `/v0/debug/runtime`  | read  | `debug runtime`              |
-| `/v0/debug/segments` | read  | `debug segments`             |
-| `/v0/debug/updown`   | read  | `debug updown`               |
+| Path                 | Class     | Commands                     |
+| -------------------- | --------- | ---------------------------- |
+| `/v0/debug/egress`   | read      | `debug egress`               |
+| `/v0/debug/events`   | read      | `debug events`, `debug wait` |
+| `/v0/debug/netmon`   | read      | `debug netmon`               |
+| `/v0/debug/pmtu`     | read      | `debug pmtu`                 |
+| `/v0/debug/probe`    | root      | `debug probe`                |
+| `/v0/debug/route`    | read      | `debug route`                |
+| `/v0/debug/rules`    | read      | `debug rules`                |
+| `/v0/debug/runtime`  | read      | `debug runtime`              |
+| `/v0/debug/segments` | read      | `debug segments`             |
+| `/v0/debug/trace`    | plaintext | `debug trace`                |
+| `/v0/debug/updown`   | read      | `debug updown`               |
 
 Profiles are not a debug path. The daemon's `--pprof` serves them on an address
 of its own, and no class covers that address.
 
 The daemon's `--debug-access` sets how far the root class reaches. `root` is the
 default. `group` opens the root class to everyone who can open the socket, and
-`off` refuses every debug path, the read class included. The modules carry no
-option of their own for it: `extraArgs` passes the flag. A connection whose
-caller the kernel does not name, which is every platform but Linux and macOS,
-reaches the read class alone under `root` and `group`, and nothing under `off`.
+`off` refuses every debug path, the read class included. `group` leaves the
+plaintext class to uid 0, since the packets it shows are other nodes' too. The
+modules carry no option of their own for it: `extraArgs` passes the flag. The
+daemon reads the caller's credentials on Linux and macOS only, so on every other
+platform a connection reaches the read class alone under `root` and `group`,
+nothing under `off`, and the root and plaintext classes refuse every call there.
 
 A debug request the daemon does not answer with 200 gets one of these statuses:
 
-| Status | When                                                                                                                                                                                                                      |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400    | an events query, an action body or a `debug route` packet that does not parse, a link `debug route` refuses as the arrival, such as the mesh's tun, or an action the node refuses, such as `debug probe` while it is down |
-| 403    | the class refuses the caller, and the answer names the rule and the caller's uid or the missing credentials                                                                                                               |
-| 404    | no debug path has that name, except under `off`, which answers 403                                                                                                                                                        |
-| 405    | a read sent with a method other than GET or HEAD, or an action sent with one other than POST                                                                                                                              |
-| 501    | the server behind the socket does not implement the view, and the answer names it. The `ranet3` daemon implements every view                                                                                              |
-| 503    | the daemon already holds 4 streams                                                                                                                                                                                        |
+| Status | When                                                                                                                                                                                                                                                                |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | an events or trace query, an action body or a `debug route` packet that does not parse, a trace query out of its bounds, a link `debug route` refuses as the arrival, such as the mesh's tun, or an action the node refuses, such as `debug probe` while it is down |
+| 403    | the class refuses the caller, and the answer names the rule and the caller's uid or the missing credentials                                                                                                                                                         |
+| 404    | no debug path has that name, except under `off`, which answers 403                                                                                                                                                                                                  |
+| 405    | a read sent with a method other than GET or HEAD, a trace sent with one other than GET, or an action sent with one other than POST                                                                                                                                  |
+| 501    | the server behind the socket does not implement the view, and the answer names it. The `ranet3` daemon implements every view                                                                                                                                        |
+| 503    | the daemon already holds 4 streams, event and trace streams together, or a trace asked for while the daemon stops                                                                                                                                                   |
 
-On a NixOS host the unit runs the daemon as root, so the root class means
-`sudo`. In an `unshare -rn` lab the caller already reads as uid 0.
+On a NixOS host and on macOS the daemon runs as root, so the root and plaintext
+classes mean `sudo`. In an `unshare -rn` lab the caller already reads as uid 0.
 
 ## Commands
 
@@ -93,20 +100,28 @@ Every command in the tree takes these 2 flags:
 
 These commands take flags of their own:
 
-| Command        | Flag             | Default              | What it sets                                                  |
-| -------------- | ---------------- | -------------------- | ------------------------------------------------------------- |
-| `debug socket` | `--timeout`      | 10 seconds           | how long the whole exchange may take, a stream included       |
-| `debug probe`  | `--all`          | off                  | probe every session instead of one peer's                     |
-| `debug events` | `-f`, `--follow` | off                  | print later events as they come                               |
-| `debug events` | `--for`          | 30 seconds           | how long `-f` follows                                         |
-| `debug events` | `--kind`         | every kind           | a kind, or the part of one before a dot, given up to 16 times |
-| `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                         |
-| `debug events` | `--since`        | every recorded event | how recent a recorded event must be                           |
-| `debug route`  | `--iif`          | none                 | the link the packet arrives on, none for this host's own      |
-| `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times      |
-| `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait     |
-| `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                         |
-| `debug wait`   | `--timeout`      | 10 seconds           | how long to wait                                              |
+| Command        | Flag             | Default              | What it sets                                                    |
+| -------------- | ---------------- | -------------------- | --------------------------------------------------------------- |
+| `debug socket` | `--timeout`      | 10 seconds           | how long the whole exchange may take, a stream included         |
+| `debug probe`  | `--all`          | off                  | probe every session instead of one peer's                       |
+| `debug events` | `-f`, `--follow` | off                  | print later events as they come                                 |
+| `debug events` | `--for`          | 30 seconds           | how long `-f` follows                                           |
+| `debug events` | `--kind`         | every kind           | a kind, or the part of one before a dot, given up to 16 times   |
+| `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                           |
+| `debug events` | `--since`        | every recorded event | how recent a recorded event must be                             |
+| `debug route`  | `--iif`          | none                 | the link the packet arrives on, none for this host's own        |
+| `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times        |
+| `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait       |
+| `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                           |
+| `debug wait`   | `--timeout`      | 10 seconds           | how long to wait                                                |
+| `debug trace`  | `--src`          | every source         | a prefix or an address the source lies in, given up to 16 times |
+| `debug trace`  | `--dst`          | every destination    | a prefix or an address the destination lies in, up to 16 times  |
+| `debug trace`  | `--proto`        | every protocol       | a protocol by name, such as `udp` or `icmpv6`, or by number     |
+| `debug trace`  | `--decision`     | every decision       | `deliver`, `forward`, `egress`, `answer` or `drop`              |
+| `debug trace`  | `--peer`         | every peer           | one peer, named as `redial` names one                           |
+| `debug trace`  | `--rate`         | 1000                 | the most records a second, from 1 to 10000                      |
+| `debug trace`  | `--payload`      | 0                    | the bytes of each packet a record carries, up to 65535          |
+| `debug trace`  | `--for`          | 30 seconds           | how long to trace                                               |
 
 - `debug socket [METHOD] PATH [BODY|-]` sends 1 request as written and prints
   the answer's body as it arrives, with the status line on standard error, and
@@ -353,6 +368,70 @@ These commands take flags of their own:
   prints 1 object with the `event` and `after`, the time from the start of the
   wait to the event. `after` is negative for an event recorded before the wait
   began.
+- `debug trace [--src P]... [--dst P]... [--proto P] [--decision D] [--peer P] [--rate 1000] [--payload 0] [--for 30s]`
+  prints a record of each packet the node's forwarding decision handles and the
+  filter selects, as the node decides it, until `--for` has passed, and then
+  exits 0. It needs uid 0, as the plaintext class above says. A record is
+  described below. A packet the forwarding decision never sees, such as Babel's
+  own or IKE and ESP on the underlay, never appears. With `--json` each line is
+  an object holding a `packet` or a `note`.
+
+## Trace records
+
+A record names the decision, `deliver`, `forward`, `egress`, `answer` or `drop`,
+and for an answer or a drop its reason, as the `reason` label of
+`ranet3_transit_packets_total` names it, or `budget` for a packet its next
+peer's send budget refused. It names how the packet arrived, `session` with the
+session's path, `tun` for a packet read off the tun, or `none` for one of no
+session, and the next peer's session for a forward. A packet a steering policy
+sent through a segment carries that first segment, one an End segment of this
+node sent on carries the next segment, and one a segment of this node egressed
+or dropped carries the segment that did, past any End of this node that sent the
+packet on to it. Then come the source and destination, the protocol after the
+IPv6 extension headers, or an IPv4 packet's, the names of those headers or of
+the IPv4 options, the ports and TCP flags or the ICMP type and code where the
+packet's first fragment carries them, the hop limit or TTL and the length, and
+how many fragments a forward cut the packet into. An answer names its ICMP error
+and what became of it: `sent`, `withheld` by the
+[ICMP rate limits](../path-mtu.md#packets-that-do-not-fit), `unanswered` where
+the node holds no address of the family to send it from, `not_answerable` for a
+packet no ICMP error may answer, or `unsent` for one built for, or due to, a
+source the mesh routes it no way back to, or one its session had no room for.
+
+Every field is read from the packet as it arrived, before the node took its hop
+limit down, clamped its MSS or handed it on, except in a `drop` record of reason
+`budget`. That record follows the packet's `forward` record, goes to the traces
+whose filter takes the packet as that record shows it, and shows the packet as
+it was queued for its peer. A packet a peer's queue later drops for its delay,
+or that the session's SA refuses, is counted in `ranet3_peer_send_dropped_total`
+and has no record of its own.
+
+A record carries none of the packet's bytes unless `--payload` asks for them,
+and then that many bytes from the IP header on, or the whole packet where it is
+shorter. The filter takes a packet whose source lies in any one of the `--src`
+prefixes and whose destination lies in any one of the `--dst` prefixes, where an
+IPv4-mapped IPv6 address lies in no IPv4 prefix, and `--peer` takes a packet
+that arrived on that peer's session or goes to it. The rate is a bucket of 1
+second's worth, which only a packet the filter takes draws on, and a packet past
+it builds no record. Before the node rewrites a packet, a trace whose bucket has
+room copies it if its filter may still take its record, as a filter of
+`--decision drop` or `answer` may take a forward's, which may yet drop or answer
+the packet, and a filter of `--peer` that of each IPv6 packet a session delivers
+to a node with segments of its own, which an End segment may send on to any
+peer. A packet past the rate is counted, but not one that arrived at a segment
+of this node while no trace whose filter may take it had room, whether End sent
+it on or a segment refused it before or after End's rewrite. An inner packet an
+egress segment took out past its allow list is counted, whether the segment sent
+it out or refused it. Each trace has a queue of its own, and what the rate and
+the queue refused is counted in a `stream.dropped` line once a second, with
+`rate` and `queue` each the records refused since the line before.
+
+Each session's packets are decided on a goroutine of their own, and so are each
+tun queue's reads. Records of one session or one queue come in the order the
+node decided them, and records of different ones interleave in no defined order.
+A trace stream is one of the daemon's 4 streams, and it is dropped and its trace
+closed once a write has waited 5 seconds on its reader. With no trace open, each
+step of the forwarding decision a batch passes reads one pointer to learn so.
 
 ## Events
 
@@ -387,6 +466,7 @@ connections to the reads.
 | `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag                    |
 | `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed                |
 | `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed                |
+| `control.trace.started`, `.ended`     | a trace of the forwarding decision opened, and closed                                     |
 | `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                                    |
 | `dial.woken`                          | a dialer was set going before its delay, as `redial` does                                 |
 | `ike.handshake.failed`                | the responder refused a handshake, as often as it logs one                                |
@@ -471,6 +551,8 @@ Each kind carries these attributes:
 | `node.up`                                     | `cause`                                                                                                                                                                                         |
 | `responder.changed`                           | `listen`, `closed`                                                                                                                                                                              |
 | `control.verb`                                | `verb`, `peer`, `uid`, `pid`, `err`, and `all` or `subsystem` for a verb that takes one                                                                                                         |
+| `control.trace.started`                       | `filter`, `rate`, `payload`, `uid`, `pid`                                                                                                                                                       |
+| `control.trace.ended`                         | `reason`, `recorded`, `refused_rate`, `refused_queue`                                                                                                                                           |
 | `dial.attempt`                                | `remote`                                                                                                                                                                                        |
 | `dial.failed`                                 | `err`                                                                                                                                                                                           |
 | `dial.woken`                                  | none                                                                                                                                                                                            |
@@ -715,6 +797,15 @@ of the session or dialer it was recorded under, which `--peer` takes by any name
 of that peer. A verb is recorded under each path its answer lists in `acted` or
 `missed`, and one that lists none, a refused one included, is recorded once
 without a peer.
+
+A `control.trace.started` and a `control.trace.ended` record who read the
+packets the node handles. The first carries the trace's `filter` as one line,
+such as `dst=192.0.2.3/32 decision=forward`, or `all`, its `rate` and the
+`payload` bytes it asked for, and the caller's `uid` and `pid`. The second
+carries in `reason` why the trace closed, `the reader left`,
+`the reader stopped reading` or `the daemon is stopping`, in `recorded` the
+records its queue took, and in `refused_rate` and `refused_queue` the records
+the rate and the queue refused.
 
 A `babel.own.changed` is recorded once for each change to the routes this node
 owns, at the start, on a reload and when `cap.egress` moves what the node
