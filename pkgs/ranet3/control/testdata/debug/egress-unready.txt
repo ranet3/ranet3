@@ -1,0 +1,14 @@
+Exit  nftables table ip and ip6 ranet3 chains limit and egress, 5 rules, 12 flows, withholding 203.0.113.0/24 2001:db8::/32 until its family is ready, egress not ready for ipv4 ipv6, the reply lookup of 192.0.2.65 for 203.0.113.0/24 from 203.0.113.128 arriving on up0 leaves by up0 rather than ranet0, last pass 2 minutes ago
+Rules
+  read now: egress: read table ip ranet3: operation not permitted
+Family ipv4, not ready, the reply lookup of 192.0.2.65 for 203.0.113.0/24 from 203.0.113.128 arriving on up0 leaves by up0 rather than ranet0
+  Chains      read back as written
+  Forwarding  on
+  Lookup      198.51.100.7, this host's own: kernel: look up the route to 198.51.100.7: network is unreachable
+  Lookup      203.0.113.128 from 192.0.2.65 arriving on ranet0: unicast, dev up0, dev up1 dead linkdown
+  Reply       192.0.2.65 from 203.0.113.128 arriving on up0: unicast, dev up0
+Family ipv6, not ready, the route lookups answered 1 of 2
+  Chains      its chains do not read back as written
+  Forwarding  on
+  Lookup      2001:db8:8000:: from 3fff::41 arriving on ranet0: not answered
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/up0/rp_filter 2, net/ipv4/conf/up1/rp_filter unreadable
