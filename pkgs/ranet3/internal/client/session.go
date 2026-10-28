@@ -93,40 +93,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	// without a Delete the peer sends into a dead SPI until its own liveness check gives up
 	defer c.tellDropped(ctx, sessionName, sess)
 
-	var frames [][]byte
-	emit := func(results []inboundDecrypted, _ []inboundECN) {
-		esp.CommitBatch(results)
-		frames = frames[:0]
-		mtu := peer.MTU()
-		var dropped int
-		var lastError error
-		for _, result := range results {
-			// each datagram is this session's alone once received, so each packet the loop keeps goes on as a slice of the datagram it was decrypted in, and the loop copies nothing itself
-			frame, nextHeader, err := result.Frame(netstack.TUNHeadroom)
-			if err != nil {
-				dropped, lastError = dropped+1, err
-				continue
-			}
-			sess.NoteTraffic()
-			inner, deliver, err := validateESPTunnelPayload(frame[netstack.TUNHeadroom:], nextHeader)
-			if err != nil {
-				dropped, lastError = dropped+1, err
-				continue
-			}
-			if deliver && !c.speaker.Receive(peer, inner) {
-				// a SYN from the peer has its MSS lowered to what this session carries back to it
-				c.Mesh.ClampMSS(inner, mtu)
-				end := netstack.TUNHeadroom + len(inner)
-				frames = append(frames, frame[:end:end])
-			}
-		}
-		if dropped > 0 {
-			c.noteInboundDropped(sessionName, dropped, lastError)
-		}
-		c.countInbound(len(results) - dropped)
-		c.Mesh.DeliverInboundBatch(frames, mtu, peer)
-		clear(frames)
-	}
+	emit := c.inboundEmit(sessionName, sess.NoteTraffic, peer)
 	results := make(chan sessionResult, 2)
 	go func() { results <- sessionResult{"IKE control", sess.Run(ctx)} }()
 	go func() {
@@ -143,6 +110,51 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	// so a reader pairs the two across a replacement
 	c.events.Emit("ike.session.ended", sessionName, append(established, slog.String("err", ended.Error()))...)
 	return ended
+}
+
+// inboundEmit is the emit of the session at path, which receiveESP calls on one goroutine with each batch of results in receive order
+// beside the outer ECN field of each, nil when every one arrived Not-ECT
+func (c *Client) inboundEmit(path string, noteTraffic func(), peer *netstack.Peer) func([]inboundDecrypted, []inboundECN) {
+	var frames [][]byte
+	var ecn sessionECN
+	return func(results []inboundDecrypted, outer []inboundECN) {
+		esp.CommitBatch(results)
+		frames = frames[:0]
+		mtu := peer.MTU()
+		var dropped int
+		var lastError error
+		for i, result := range results {
+			// each datagram is this session's alone once received, so each packet the loop keeps goes on as a slice of the datagram it was decrypted in, and the loop copies nothing itself
+			frame, nextHeader, err := result.Frame(netstack.TUNHeadroom)
+			if err != nil {
+				dropped, lastError = dropped+1, err
+				continue
+			}
+			noteTraffic()
+			inner, deliver, err := validateESPTunnelPayload(frame[netstack.TUNHeadroom:], nextHeader)
+			if err != nil {
+				dropped, lastError = dropped+1, err
+				continue
+			}
+			if deliver && outer != nil && !ecn.decapsulate(inner, outer[i]) {
+				dropped, lastError = dropped+1, errECNDropped
+				continue
+			}
+			if deliver && !c.speaker.Receive(peer, inner) {
+				// a SYN from the peer has its MSS lowered to what this session carries back to it
+				c.Mesh.ClampMSS(inner, mtu)
+				end := netstack.TUNHeadroom + len(inner)
+				frames = append(frames, frame[:end:end])
+			}
+		}
+		if dropped > 0 {
+			c.noteInboundDropped(path, dropped, lastError)
+		}
+		c.countInbound(len(results) - dropped)
+		c.settleECN(&ecn, path)
+		c.Mesh.DeliverInboundBatch(frames, mtu, peer)
+		clear(frames)
+	}
 }
 
 // endOf picks which of its two halves' ends a session reports, first being the half that ended first
