@@ -8,7 +8,6 @@
 @source "../internal/pages/*.templ";
 @source "../pages/**/*.md";
 
-/* the system fonts of each platform, as ysun sets them */
 @theme {
   --font-sans:
     -apple-system, BlinkMacSystemFont, avenir next, avenir, segoe ui, helvetica
