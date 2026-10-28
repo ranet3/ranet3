@@ -19,8 +19,10 @@ import (
 // RouteTable adds peer diagnostics to the shared SADR implementation. The
 // forwarding trie is the sole source of truth for lookup, removal and dumps.
 type RouteTable struct {
-	table   sadr.Table[routeEntry]
-	changed chan struct{}
+	table sadr.Table[routeEntry]
+	// readers holds one channel for each reader Changes handed out, under readersMu
+	readersMu sync.Mutex
+	readers   []chan struct{}
 	// mu orders the writers, so each entry takes its flags from the overlay and the egress prefixes in force as it enters
 	// and a change of either flags every entry again with no write lost between
 	mu sync.Mutex
@@ -80,7 +82,7 @@ func (rt *RouteTable) reflagLocked() {
 	}
 }
 
-func NewRouteTable() *RouteTable { return &RouteTable{changed: make(chan struct{}, 1)} }
+func NewRouteTable() *RouteTable { return &RouteTable{} }
 
 // Unreachable is installed for a prefix that is known and has no usable route.
 // A lookup that lands on it is answered rather than falling through to a
@@ -111,11 +113,20 @@ const (
 	RouteHeld
 )
 
-// Changed carries one coalesced notification per batch of forwarding table
-// changes, so a mirror outside this process reconciles from Snapshot rather
-// than from an event stream it could fall behind on. A writer never blocks on
-// it, so a reader that misses a wake still sees the change on the next one.
-func (rt *RouteTable) Changed() <-chan struct{} { return rt.changed }
+// Changes hands one reader a channel of its own, which carries one coalesced
+// notification per batch of forwarding table changes from here on, so a mirror
+// outside this process reconciles from Snapshot rather than from an event
+// stream it could fall behind on. No reader takes another's wake. A writer
+// never blocks on it, so a reader that misses a wake still sees the change on
+// the next one. A reader calls it once, and its channel lives as long as the
+// table.
+func (rt *RouteTable) Changes() <-chan struct{} {
+	changed := make(chan struct{}, 1)
+	rt.readersMu.Lock()
+	rt.readers = append(rt.readers, changed)
+	rt.readersMu.Unlock()
+	return changed
+}
 
 // Snapshot is one consistent view of the forwarding table. The underlying
 // trie publishes immutable roots, so this is safe to call from any goroutine.
@@ -139,12 +150,13 @@ func (rt *RouteTable) Snapshot() []sadr.Route[*Peer] {
 }
 
 func (rt *RouteTable) notify() {
-	if rt.changed == nil {
-		return
-	}
-	select {
-	case rt.changed <- struct{}{}:
-	default:
+	rt.readersMu.Lock()
+	defer rt.readersMu.Unlock()
+	for _, changed := range rt.readers {
+		select {
+		case changed <- struct{}{}:
+		default:
+		}
 	}
 }
 

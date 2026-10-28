@@ -329,11 +329,12 @@ func (t Table) Validate() error {
 }
 
 // RouteSource is the seam onto internal/netstack: one coalesced wake-up per
-// batch of changes, and one consistent view per reconcile pass. Reconciling
-// from snapshots rather than from an event stream lets a missed wake-up, a
-// restart and outside interference all converge on the same state.
+// batch of changes on a channel of the reconciler's own, and one consistent
+// view per reconcile pass. Reconciling from snapshots rather than from an event
+// stream lets a missed wake-up, a restart and outside interference all converge
+// on the same state.
 type RouteSource interface {
-	Changed() <-chan struct{}
+	Changes() <-chan struct{}
 	Snapshot() []sadr.Route[*netstack.Peer]
 }
 
@@ -1012,7 +1013,7 @@ func (r *Reconciler) adopt() bool {
 // error. Run returns the withdrawal error, never a reconcile error: a failed
 // pass is logged and retried instead.
 func (r *Reconciler) Run(ctx context.Context) error {
-	changed := r.src.Changed()
+	changed := r.src.Changes()
 	notify := r.plat.Notify()
 	ticker := time.NewTicker(r.table.Reconcile.Duration())
 	defer ticker.Stop()

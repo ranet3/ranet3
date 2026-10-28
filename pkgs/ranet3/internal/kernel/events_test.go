@@ -130,10 +130,9 @@ func TestReconcilerNamesWhatWokeIt(t *testing.T) {
 const sweepEvery = 100 * time.Millisecond
 
 // runToRecord starts the reconciler on a table that already holds its routes, and returns a function reading the trigger of the last pass recorded
-// the first pass reads those routes, so the change they made wakes nothing after it
-func runToRecord(t *testing.T, reconciler *Reconciler, table *netstack.RouteTable, bus *events.Bus) func() string {
+// the first pass reads those routes, and the change they made comes before the reconciler's channel, so it wakes nothing after it
+func runToRecord(t *testing.T, reconciler *Reconciler, _ *netstack.RouteTable, bus *events.Bus) func() string {
 	t.Helper()
-	<-table.Changed()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- reconciler.Run(ctx) }()

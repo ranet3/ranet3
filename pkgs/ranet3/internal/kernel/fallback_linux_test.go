@@ -355,9 +355,8 @@ func TestFallbackMissedNotificationWakesAPass(t *testing.T) {
 	network := &hostNetwork{state: exitPassHost("docker0")}
 	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
 	reconciler, routes, fake := harness(t, tbl, Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read})
+	// the reconciler's reader of the table starts with Run, so this change wakes nothing after the first pass
 	routes.Set(netip.Prefix{}, prefix("203.0.113.0/24"), netstack.Local)
-	// the first pass reads that route, so the change it made wakes nothing after it
-	<-routes.Changed()
 	held := func() bool {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()

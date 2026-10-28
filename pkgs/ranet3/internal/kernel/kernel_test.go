@@ -1553,9 +1553,8 @@ func TestStoppedReconcilerRetriesAWithdrawalThatFailed(t *testing.T) {
 	route := Route{Destination: prefix("10.0.0.0/8")}
 	table.Set(netip.Prefix{}, route.Destination, nil)
 	// the first pass reads the route
-	// the change it made then wakes nothing after it
+	// the change it made comes before the reconciler's channel, so it wakes nothing after it
 	// one failed withdrawal leaves the retry minRetryInterval out
-	<-table.Changed()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- reconciler.Run(ctx) }()
@@ -1634,7 +1633,6 @@ func TestRetryDoublesItsDelayUpToTheSweep(t *testing.T) {
 			reconciler, table, fake := harness(t, Table{Reconcile: schema.Duration(sweep)})
 			route := Route{Destination: prefix("10.0.0.0/8")}
 			table.Set(netip.Prefix{}, route.Destination, nil)
-			<-table.Changed()
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() { done <- reconciler.Run(ctx) }()

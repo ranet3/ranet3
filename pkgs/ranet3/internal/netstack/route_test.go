@@ -310,15 +310,16 @@ func TestSnapshotCarriesUnreachableHold(t *testing.T) {
 	}
 }
 
-// Changed is how the reconciler learns a route moved without waiting out its
+// Changes is how the reconciler learns a route moved without waiting out its
 // periodic sweep, which at the default interval is thirty seconds of the
 // kernel disagreeing with the mesh.
 func TestEveryTableChangeWakesReconciler(t *testing.T) {
 	rt := NewRouteTable()
+	changed := rt.Changes()
 	peer := &Peer{ID: "peer"}
 	drain := func() {
 		select {
-		case <-rt.Changed():
+		case <-changed:
 		default:
 		}
 	}
@@ -332,11 +333,37 @@ func TestEveryTableChangeWakesReconciler(t *testing.T) {
 			drain()
 			change()
 			select {
-			case <-rt.Changed():
+			case <-changed:
 			default:
 				t.Errorf("a %s left the reconciler asleep until its next sweep", name)
 			}
 		})
+	}
+}
+
+// Each reader has a channel of its own: one batch of changes wakes each once,
+// and a reader taking its wake leaves the other's in place
+func TestEachReaderIsWokenOnceByABatchOfChanges(t *testing.T) {
+	rt := NewRouteTable()
+	first, second := rt.Changes(), rt.Changes()
+	peer := &Peer{ID: "peer"}
+	rt.Set(netip.Prefix{}, netip.MustParsePrefix("198.51.100.0/24"), peer)
+	rt.Set(netip.Prefix{}, netip.MustParsePrefix("2001:db8::/32"), peer)
+	rt.Remove(netip.Prefix{}, netip.MustParsePrefix("198.51.100.0/24"))
+	for name, changed := range map[string]<-chan struct{}{"first": first, "second": second} {
+		select {
+		case <-changed:
+		default:
+			t.Fatalf("the %s reader was not woken", name)
+		}
+		select {
+		case <-changed:
+			t.Fatalf("the %s reader was woken twice by one batch", name)
+		default:
+		}
+	}
+	if late := rt.Changes(); len(late) != 0 {
+		t.Errorf("a reader arriving after the batch holds a wake of it")
 	}
 }
 
