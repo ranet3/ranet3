@@ -7,6 +7,7 @@ package netstack
 import (
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/wireguard/conn"
 )
 
@@ -136,16 +137,10 @@ const (
 	icmpNodeCost = time.Second / icmpNodeRate
 )
 
-// the trace's bounds
+// the trace's bounds, past the rate and payload control holds a query to
 const (
-	// TraceRateMin and TraceRateMax bound the records one trace takes a second, and TraceRateDefault is a client's where it names none
-	TraceRateMin     = 1
-	TraceRateMax     = 10000
-	TraceRateDefault = 1000
-	// TracePayloadMax is the most of its packet a record carries, the largest IPv4 packet and the largest IPv6 one but a jumbogram
-	TracePayloadMax = 65535
 	// traceQueueLength is the records one client's queue holds, a tenth of a second at the top rate
-	traceQueueLength = TraceRateMax / 10
+	traceQueueLength = control.TraceRateMax / 10
 	// traceBurst is the time's worth of records a client's rate lets through at once
 	traceBurst = time.Second
 	// traceHeaders is the most IPv6 extension headers or IPv4 options a record names, past which the walk stops

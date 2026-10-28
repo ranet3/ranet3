@@ -12,6 +12,7 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -91,7 +92,7 @@ func TestTraceRecordsExactlyThePacketsTheFilterSelects(t *testing.T) {
 					Decision:     TraceDecision(hegel.Draw(ht, pbt.Spanning(0, int(traceDecisionCount)-1))),
 					Peer:         hegel.Draw(ht, hegel.SampledFrom([]string{"", "example/gateway", "gateway", "my-laptop", "example/relay:2@1", "example/relay:2", "example/relay", "relay", "example/relay:3", "1", "example/other"})),
 				},
-				rate: hegel.Draw(ht, hegel.SampledFrom([]int{TraceRateMin, 2, 8, TraceRateMax})),
+				rate: hegel.Draw(ht, hegel.SampledFrom([]int{control.TraceRateMin, 2, 8, control.TraceRateMax})),
 			}
 			feed, err := m.Trace(c.filter, 0, c.rate)
 			if err != nil {

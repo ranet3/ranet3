@@ -58,53 +58,111 @@ func note(kind string, attrs map[string]string) Event {
 // the note parts the events recorded before the subscription from those after it, whatever their stamps
 // the place is taken before follow runs, so a refused stream never subscribes
 func (d *debugServer) stream(w http.ResponseWriter, r *http.Request, follow func() ([]Event, Subscription)) {
+	release, ok := d.place(w)
+	if !ok {
+		return
+	}
+	defer release()
+	backlog, sub := follow()
+	pour(d, w, r, backlog, eventFeed{sub})
+}
+
+// place takes one of the stream places, or answers 503 where every one is held
+func (d *debugServer) place(w http.ResponseWriter) (release func(), ok bool) {
 	select {
 	case d.streams <- struct{}{}:
-		defer func() { <-d.streams }()
+		return func() { <-d.streams }, true
 	default:
 		http.Error(w, fmt.Sprintf("this daemon already serves %d streams, which is as many as it holds open at once", cap(d.streams)),
 			http.StatusServiceUnavailable)
-		return
+		return nil, false
 	}
-	backlog, sub := follow()
-	defer sub.Close()
+}
+
+// lineFeed feeds a stream values of E as they arrive, written as lines of L
+type lineFeed[E, L any] interface {
+	// C carries the values in order, and a feed whose C closes has ended
+	C() <-chan E
+	// Done is closed once a feed whose C never closes has ended, and nil for a feed whose C closes
+	Done() <-chan struct{}
+	// Take is the lines of first and of what C holds after it, taken without waiting, and false once the feed has ended
+	// open false asks for the lines a feed that ended writes last, its stream.closed note among them
+	Take(first E, open bool) ([]L, bool)
+	// Tick is the lines the stream writes once a tick has passed, such as what the feed refused since the last
+	Tick() []L
+	// Note is a note the stream writes about itself, as a line
+	Note(Event) L
+	// Close ends the feed from the stream's side, why naming what ended the stream, empty where the feed ended
+	Close(why string)
+}
+
+// pour writes the backlog, a stream.live note, then the feed's lines, until the reader goes, the feed ends or a write misses its budget
+func pour[E, L any](d *debugServer, w http.ResponseWriter, r *http.Request, backlog []L, feed lineFeed[E, L]) {
+	why := ""
+	defer func() { feed.Close(why) }()
 	controller := http.NewResponseController(w)
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	encoder := json.NewEncoder(w)
 	// every write sets its own deadline, which replaces the WriteTimeout the server put on the request
 	// a stream outlives that, and a reader that stops reading is dropped after one budget
-	write := func(events []Event) bool {
-		if controller.SetWriteDeadline(time.Now().Add(d.budget)) != nil {
-			return false
+	write := func(lines []L) bool {
+		ok := controller.SetWriteDeadline(time.Now().Add(d.budget)) == nil
+		for _, line := range lines {
+			ok = ok && encoder.Encode(line) == nil
 		}
-		for _, event := range events {
-			if encoder.Encode(event) != nil {
-				return false
-			}
+		if ok = ok && controller.Flush() == nil; !ok {
+			why = "the reader stopped reading"
 		}
-		return controller.Flush() == nil
+		return ok
 	}
-	if !write(append(backlog, note("stream.live", nil))) {
+	if !write(append(backlog, feed.Note(note("stream.live", nil)))) {
 		return
 	}
 	heartbeat := time.NewTicker(d.heartbeat)
 	defer heartbeat.Stop()
+	tick := time.NewTicker(d.tick)
+	defer tick.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
+			why = "the reader left"
 			return
 		case <-heartbeat.C:
-			if !write([]Event{note("stream.heartbeat", nil)}) {
+			if !write([]L{feed.Note(note("stream.heartbeat", nil))}) {
 				return
 			}
-		case delivery, open := <-sub.C():
-			batch, open := drain(sub, delivery, open)
-			if !write(batch) || !open {
+		case <-tick.C:
+			if lines := feed.Tick(); len(lines) > 0 && !write(lines) {
+				return
+			}
+		case <-feed.Done():
+			lines, _ := feed.Take(*new(E), false)
+			write(lines)
+			why = ""
+			return
+		case value, open := <-feed.C():
+			lines, open := feed.Take(value, open)
+			if !write(lines) || !open {
 				return
 			}
 		}
 	}
 }
+
+// eventFeed is the lineFeed of an events subscription, whose C closes when it ends
+type eventFeed struct{ Subscription }
+
+func (eventFeed) Done() <-chan struct{} { return nil }
+
+func (f eventFeed) Take(first Delivery, open bool) ([]Event, bool) {
+	return drain(f.Subscription, first, open)
+}
+
+func (eventFeed) Tick() []Event { return nil }
+
+func (eventFeed) Note(event Event) Event { return event }
+
+func (f eventFeed) Close(string) { f.Subscription.Close() }
 
 // drain takes what the subscription already holds after first, without waiting for more
 // a run of refused events is noted where it was lost, before the event that followed it or before the feed's end

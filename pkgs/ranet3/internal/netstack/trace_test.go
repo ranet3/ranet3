@@ -12,6 +12,8 @@ import (
 	"slices"
 	"sync"
 	"testing"
+
+	"ranet3.com/pkgs/ranet3/control"
 )
 
 // the peers a traced packet arrives from or goes to
@@ -117,7 +119,7 @@ func TestTraceFilterSelectsByEachKind(t *testing.T) {
 		} {
 			t.Run(fmt.Sprintf("IPv%d %s", family, c.name), func(t *testing.T) {
 				m := traceMesh(t)
-				feed := openTrace(t, m, c.filter, 0, TraceRateMax)
+				feed := openTrace(t, m, c.filter, 0, control.TraceRateMax)
 				emit(m, c.site, c.raw)
 				if got := len(queued(feed)); got != map[bool]int{true: 1, false: 0}[c.want] {
 					t.Errorf("the feed took %d records, want selected %v", got, c.want)
@@ -127,7 +129,7 @@ func TestTraceFilterSelectsByEachKind(t *testing.T) {
 	}
 	t.Run("an IPv4-mapped source under an IPv4 prefix", func(t *testing.T) {
 		m := traceMesh(t)
-		feed := openTrace(t, m, TraceFilter{Sources: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}}, 0, TraceRateMax)
+		feed := openTrace(t, m, TraceFilter{Sources: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}}, 0, control.TraceRateMax)
 		emit(m, forwardedBy(nil, nil), udpPacket(mapped(transitSender[4]), transitFar[6], 100, false))
 		emit(m, forwardedBy(nil, nil), udpPacket(transitSender[4], transitFar[4], 100, false))
 		records := queued(feed)
@@ -140,8 +142,8 @@ func TestTraceFilterSelectsByEachKind(t *testing.T) {
 // two clients share one tracer, each holding its own filter
 func TestTraceClientsKeepTheirOwnFilters(t *testing.T) {
 	m := traceMesh(t)
-	toFar := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitFar[4])}}, 0, TraceRateMax)
-	toOwn := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitOwn[4])}}, 0, TraceRateMax)
+	toFar := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitFar[4])}}, 0, control.TraceRateMax)
+	toOwn := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitOwn[4])}}, 0, control.TraceRateMax)
 	emit(m, forwardedBy(nil, nil), udpPacket(transitSender[4], transitFar[4], 100, false))
 	emit(m, traceSite{decision: TraceDeliver}, udpPacket(transitSender[4], transitOwn[4], 100, false))
 	emit(m, traceSite{decision: TraceDeliver}, udpPacket(transitSender[4], transitOwn[4], 100, false))
@@ -157,14 +159,14 @@ func TestTraceClientsKeepTheirOwnFilters(t *testing.T) {
 // the rate refuses past one second's worth, counts what it refused, and builds nothing for a refused packet
 func TestTraceRateRefusesPastItsBurstAndBuildsNothing(t *testing.T) {
 	m := traceMesh(t)
-	feed := openTrace(t, m, TraceFilter{}, 64, TraceRateMin)
+	feed := openTrace(t, m, TraceFilter{}, 64, control.TraceRateMin)
 	raw := udpPacket(transitSender[4], transitFar[4], 100, false)
 	site := forwardedBy(traceGateway, traceLaptop)
 	for range 5 {
 		emit(m, site, raw)
 	}
 	if got := len(queued(feed)); got != 1 {
-		t.Errorf("a rate of %d a second took %d records at once, want 1", TraceRateMin, got)
+		t.Errorf("a rate of %d a second took %d records at once, want 1", control.TraceRateMin, got)
 	}
 	if got := feed.Counts(); got != (TraceCounts{Recorded: 1, RefusedRate: 4}) {
 		t.Errorf("the feed counted %+v", got)
@@ -180,7 +182,7 @@ func TestTraceRateRefusesPastItsBurstAndBuildsNothing(t *testing.T) {
 // the queue refuses what it has no room for, and counts it apart from the rate's refusals
 func TestTraceQueueRefusesPastItsLength(t *testing.T) {
 	m := traceMesh(t)
-	feed := openTrace(t, m, TraceFilter{}, 0, TraceRateMax)
+	feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
 	raw := udpPacket(transitSender[6], transitFar[6], 100, false)
 	for range traceQueueLength + 10 {
 		emit(m, forwardedBy(nil, nil), raw)
@@ -194,9 +196,9 @@ func TestTraceQueueRefusesPastItsLength(t *testing.T) {
 // a record carries no payload unless asked, and one that asked carries the packet's first bytes, as many as asked and the packet holds
 func TestTracePayloadOnlyWhenAsked(t *testing.T) {
 	raw := udpPacket(transitSender[4], transitFar[4], 100, false)
-	for _, payload := range []int{0, 1, 64, len(raw), TracePayloadMax} {
+	for _, payload := range []int{0, 1, 64, len(raw), control.TracePayloadMax} {
 		m := traceMesh(t)
-		feed := openTrace(t, m, TraceFilter{}, payload, TraceRateMax)
+		feed := openTrace(t, m, TraceFilter{}, payload, control.TraceRateMax)
 		packet := bytes.Clone(raw)
 		emit(m, forwardedBy(nil, nil), packet)
 		packet[30] ^= 0xff
@@ -217,8 +219,8 @@ func TestTracePayloadOnlyWhenAsked(t *testing.T) {
 // two clients asking for different payloads each get their own length
 func TestTracePayloadIsEachClientsOwn(t *testing.T) {
 	m := traceMesh(t)
-	none := openTrace(t, m, TraceFilter{}, 0, TraceRateMax)
-	some := openTrace(t, m, TraceFilter{}, 24, TraceRateMax)
+	none := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
+	some := openTrace(t, m, TraceFilter{}, 24, control.TraceRateMax)
 	raw := udpPacket(transitSender[6], transitFar[6], 100, false)
 	emit(m, forwardedBy(nil, nil), raw)
 	if records := queued(none); len(records) != 1 || records[0].Payload != nil {
@@ -281,7 +283,7 @@ func TestTraceRecordReadsThePacketsFields(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := traceMesh(t)
-			feed := openTrace(t, m, TraceFilter{}, 0, TraceRateMax)
+			feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
 			emit(m, traceSite{arrival: TraceArrivedTUN, decision: TraceDeliver}, c.raw)
 			records := queued(feed)
 			if len(records) != 1 {
@@ -328,12 +330,12 @@ func TestTraceFeedsOpenAndCloseUnderEmitters(t *testing.T) {
 		})
 	}
 	for i := range 200 {
-		feed, err := m.Trace(TraceFilter{}, i%3*16, TraceRateMax)
+		feed, err := m.Trace(TraceFilter{}, i%3*16, control.TraceRateMax)
 		if err != nil {
 			t.Fatal(err)
 		}
 		read(feed)
-		other, err := m.Trace(TraceFilter{Decision: TraceForward}, 0, TraceRateMin)
+		other, err := m.Trace(TraceFilter{Decision: TraceForward}, 0, control.TraceRateMin)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,7 +355,7 @@ func TestTraceFeedsOpenAndCloseUnderEmitters(t *testing.T) {
 // closing the mesh ends every feed and leaves it holding no tracer
 func TestMeshCloseEndsEveryFeed(t *testing.T) {
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
-	feed, err := m.Trace(TraceFilter{}, 0, TraceRateDefault)
+	feed, err := m.Trace(TraceFilter{}, 0, control.TraceRateDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +368,7 @@ func TestMeshCloseEndsEveryFeed(t *testing.T) {
 	if m.TraceClients() != 0 {
 		t.Errorf("the closed mesh holds %d feeds", m.TraceClients())
 	}
-	if _, err := m.Trace(TraceFilter{}, 0, TraceRateDefault); err == nil {
+	if _, err := m.Trace(TraceFilter{}, 0, control.TraceRateDefault); err == nil {
 		t.Error("a closed mesh opened a feed")
 	}
 	feed.Close()
@@ -379,12 +381,12 @@ func TestTraceRefusesWhatItsBoundsLeaveOut(t *testing.T) {
 		filter        TraceFilter
 		payload, rate int
 	}{
-		{"rate under the least", TraceFilter{}, 0, TraceRateMin - 1},
-		{"rate over the most", TraceFilter{}, 0, TraceRateMax + 1},
-		{"payload under none", TraceFilter{}, -1, TraceRateDefault},
-		{"payload past the largest packet", TraceFilter{}, TracePayloadMax + 1, TraceRateDefault},
-		{"a decision of none", TraceFilter{Decision: traceDecisionCount}, 0, TraceRateDefault},
-		{"a prefix of none", TraceFilter{Sources: []netip.Prefix{{}}}, 0, TraceRateDefault},
+		{"rate under the least", TraceFilter{}, 0, control.TraceRateMin - 1},
+		{"rate over the most", TraceFilter{}, 0, control.TraceRateMax + 1},
+		{"payload under none", TraceFilter{}, -1, control.TraceRateDefault},
+		{"payload past the largest packet", TraceFilter{}, control.TracePayloadMax + 1, control.TraceRateDefault},
+		{"a decision of none", TraceFilter{Decision: traceDecisionCount}, 0, control.TraceRateDefault},
+		{"a prefix of none", TraceFilter{Sources: []netip.Prefix{{}}}, 0, control.TraceRateDefault},
 	} {
 		if feed, err := m.Trace(c.filter, c.payload, c.rate); err == nil {
 			feed.Close()
@@ -393,6 +395,13 @@ func TestTraceRefusesWhatItsBoundsLeaveOut(t *testing.T) {
 	}
 	if m.TraceClients() != 0 {
 		t.Errorf("the refusals left %d feeds", m.TraceClients())
+	}
+}
+
+// every decision but TraceAny takes one name of control's list, and the list names no other
+func TestTraceDecisionsAreControlsList(t *testing.T) {
+	if len(control.TraceDecisions) != int(traceDecisionCount)-1 {
+		t.Errorf("control names %d decisions, and netstack has %d", len(control.TraceDecisions), traceDecisionCount-1)
 	}
 }
 
