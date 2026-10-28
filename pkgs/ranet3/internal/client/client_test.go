@@ -38,6 +38,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -55,7 +56,7 @@ func TestInboundBatchOrderMergesConsecutiveCompletedBatches(t *testing.T) {
 	emitterDone := make(chan struct{})
 	calls := 0
 	go func() {
-		emitInboundBatches(completed, recycled, func(results []inboundDecrypted) {
+		emitInboundBatches(completed, recycled, func(results []inboundDecrypted, _ []inboundECN) {
 			calls++
 			for _, result := range results {
 				if result.Err == firstResult.Err {
@@ -88,6 +89,47 @@ func TestInboundBatchOrderMergesConsecutiveCompletedBatches(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("emit called %d times, want one merged call", calls)
 	}
+}
+
+// batches that complete out of order merge back in ticket order with each result beside its own outer ECN field
+// a Not-ECT batch merged beside a marked one reads Not-ECT, and a merge of Not-ECT batches alone hands nil
+func TestInboundBatchOrderKeepsEachResultsOuterECN(t *testing.T) {
+	type call struct {
+		names []string
+		ecn   []inboundECN
+	}
+	result := func(name string) inboundDecrypted { return inboundDecrypted{Err: errors.New(name)} }
+	completed := make(chan *inboundBatch, 4)
+	recycled := make(chan *inboundBatch, 4)
+	calls := make(chan call, 2)
+	emitterDone := make(chan struct{})
+	go func() {
+		defer close(emitterDone)
+		emitInboundBatches(completed, recycled, func(results []inboundDecrypted, ecn []inboundECN) {
+			var c call
+			for _, r := range results {
+				c.names = append(c.names, r.Err.Error())
+			}
+			if ecn != nil {
+				c.ecn = slices.Clone(ecn)
+			}
+			calls <- c
+		})
+	}()
+	// ticket 0 goes last, so the emitter holds the other two when it can first emit
+	completed <- &inboundBatch{ticket: 2, results: []inboundDecrypted{result("d")}}
+	completed <- &inboundBatch{ticket: 1, results: []inboundDecrypted{result("b"), result("c")}, ecn: []inboundECN{packet.CE, packet.ECT0}}
+	completed <- &inboundBatch{ticket: 0, results: []inboundDecrypted{result("a")}}
+	want := call{[]string{"a", "b", "c", "d"}, []inboundECN{packet.NotECT, packet.CE, packet.ECT0, packet.NotECT}}
+	if got := <-calls; !slices.Equal(got.names, want.names) || !slices.Equal(got.ecn, want.ecn) {
+		t.Errorf("the merged emit was handed %v with the ECN fields %v, want %v with %v", got.names, got.ecn, want.names, want.ecn)
+	}
+	completed <- &inboundBatch{ticket: 3, results: []inboundDecrypted{result("e")}}
+	if got := <-calls; !slices.Equal(got.names, []string{"e"}) || got.ecn != nil {
+		t.Errorf("the emit of a Not-ECT batch was handed %v with the ECN fields %v, want [e] with none", got.names, got.ecn)
+	}
+	close(completed)
+	<-emitterDone
 }
 
 func runtimeFixture(t *testing.T) (*config.Config, ed25519.PrivateKey, registry.Registry) {

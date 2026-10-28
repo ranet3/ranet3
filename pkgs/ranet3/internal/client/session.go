@@ -94,7 +94,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	defer c.tellDropped(ctx, sessionName, sess)
 
 	var frames [][]byte
-	emit := func(results []inboundDecrypted) {
+	emit := func(results []inboundDecrypted, _ []inboundECN) {
 		esp.CommitBatch(results)
 		frames = frames[:0]
 		mtu := peer.MTU()

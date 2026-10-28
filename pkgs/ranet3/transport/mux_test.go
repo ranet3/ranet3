@@ -97,10 +97,20 @@ func TestSendESPBatchIPv6(t *testing.T) {
 	testSendESPBatch(t, "udp6", "::1")
 }
 
+// datagramBatch is a batch of packets as packReceivedBatch makes one, every packet Not-ECT
+func datagramBatch(packets ...[]byte) espDatagramBatch {
+	batch := espDatagramBatch{packets: packets}
+	for _, packet := range packets {
+		batch.bytes += len(packet)
+	}
+	return batch
+}
+
 func TestPackReceivedBatchDetachesReusableBuffers(t *testing.T) {
 	first := []byte("first")
 	second := []byte("second")
-	packets := packReceivedBatch([][]byte{first, second})
+	chain := espChain{last: 1, count: 2, bytes: len(first) + len(second)}
+	packets := packReceivedBatch(chain, [][]byte{first, second}, []int{len(first), len(second)}, make([]receiveRecord, 2), []int{0, 0}).packets
 
 	first[0] = 'x'
 	second[0] = 'y'
@@ -160,7 +170,7 @@ func TestRecvESPBatchDrainsToDestinationCapacity(t *testing.T) {
 
 func TestConcurrentESPReceiveCarriesDispatchOrder(t *testing.T) {
 	m := &Mux{espCh: make(chan espDatagramBatch, 2), done: make(chan struct{})}
-	if !m.dispatchESP([][]byte{[]byte("first")}, len("first")) || !m.dispatchESP([][]byte{[]byte("second")}, len("second")) {
+	if !m.dispatchESP(datagramBatch([]byte("first"))) || !m.dispatchESP(datagramBatch([]byte("second"))) {
 		t.Fatal("dispatch unexpectedly dropped a batch")
 	}
 
@@ -172,7 +182,7 @@ func TestConcurrentESPReceiveCarriesDispatchOrder(t *testing.T) {
 	results := make(chan received, 2)
 	for range 2 {
 		go func() {
-			ticket, packets, err := m.RecvESPBatchConcurrent()
+			ticket, packets, _, err := m.RecvESPBatchConcurrent()
 			results <- received{ticket: ticket, packets: packets, err: err}
 		}()
 	}
@@ -191,19 +201,19 @@ func TestConcurrentESPReceiveCarriesDispatchOrder(t *testing.T) {
 
 func TestDroppedESPBatchDoesNotLeaveTicketGap(t *testing.T) {
 	m := &Mux{espCh: make(chan espDatagramBatch, 1), done: make(chan struct{})}
-	if !m.dispatchESP([][]byte{[]byte("accepted")}, len("accepted")) {
+	if !m.dispatchESP(datagramBatch([]byte("accepted"))) {
 		t.Fatal("first dispatch was dropped")
 	}
-	if m.dispatchESP([][]byte{[]byte("dropped")}, len("dropped")) {
+	if m.dispatchESP(datagramBatch([]byte("dropped"))) {
 		t.Fatal("dispatch to a full queue succeeded")
 	}
-	if _, _, err := m.RecvESPBatchConcurrent(); err != nil {
+	if _, _, _, err := m.RecvESPBatchConcurrent(); err != nil {
 		t.Fatal(err)
 	}
-	if !m.dispatchESP([][]byte{[]byte("next")}, len("next")) {
+	if !m.dispatchESP(datagramBatch([]byte("next"))) {
 		t.Fatal("dispatch after draining was dropped")
 	}
-	ticket, _, err := m.RecvESPBatchConcurrent()
+	ticket, _, _, err := m.RecvESPBatchConcurrent()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -616,7 +626,7 @@ func TestESPReceiveQueueIsBoundedInBytes(t *testing.T) {
 		if !m.hasRoomForESP(len(packet)) {
 			break
 		}
-		if !m.dispatchESP([][]byte{packet}, len(packet)) {
+		if !m.dispatchESP(datagramBatch(packet)) {
 			break
 		}
 		queued += len(packet)
@@ -632,7 +642,7 @@ func TestESPReceiveQueueIsBoundedInBytes(t *testing.T) {
 	// Draining has to give the budget back, or the queue shrinks to nothing
 	// over the life of a session.
 	for range accepted {
-		if _, _, err := m.RecvESPBatchConcurrent(); err != nil {
+		if _, _, _, err := m.RecvESPBatchConcurrent(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -653,12 +663,12 @@ func TestEveryESPReceivePathReleasesItsBudget(t *testing.T) {
 			_, err := m.RecvESPUntil(time.Now().Add(arrivalBudget))
 			return err
 		},
-		"RecvESPBatchConcurrent": func(m *Mux) error { _, _, err := m.RecvESPBatchConcurrent(); return err },
+		"RecvESPBatchConcurrent": func(m *Mux) error { _, _, _, err := m.RecvESPBatchConcurrent(); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := &Mux{espCh: make(chan espDatagramBatch, 4), done: make(chan struct{})}
 			payload := []byte("one whole datagram")
-			if !m.dispatchESP([][]byte{payload}, len(payload)) {
+			if !m.dispatchESP(datagramBatch(payload)) {
 				t.Fatal("dispatch was dropped")
 			}
 			if err := recv(m); err != nil {
@@ -783,7 +793,7 @@ func TestEachESPByteBoundRefusesOnItsOwn(t *testing.T) {
 		// Deliberately not consulting hasRoomForESP: this is the check that
 		// has to hold on its own.
 		for range espChanSize {
-			if !m.dispatchESP([][]byte{packet}, len(packet)) {
+			if !m.dispatchESP(datagramBatch(packet)) {
 				break
 			}
 			accepted++
