@@ -430,8 +430,8 @@ type KernelStatus struct {
 	Skipped   int       `json:"skipped"`
 	Added     int       `json:"added"`
 	Removed   int       `json:"removed"`
-	// Cover names the families whose plain default the last pass left
-	// installed as its zero-free cover, on macOS under a bound underlay.
+	// Cover names the families in which the last pass left a zero route
+	// installed as its zero-free cover, on macOS under link.underlay.bind.
 	Cover []string `json:"cover,omitempty"`
 	// Taken is each lookup of the last pass whose batch answered that another
 	// program's rule takes, on linux alone

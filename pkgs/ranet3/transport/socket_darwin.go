@@ -778,9 +778,6 @@ func (s *darwinSocket) replyEndpoint(from netip.AddrPort, control []byte) (*darw
 	return pinnedEndpoint(from, source, index), nil
 }
 
-// link.underlay.bind means something on darwin alone. Underlay.refuse reads this.
-const bindsSockets = true
-
 // openPacketBind takes the one socket this node's IKE and ESP share, whose
 // unpinned sends name the interface selection answers.
 func openPacketBind(port uint16, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {

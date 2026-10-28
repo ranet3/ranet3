@@ -63,7 +63,7 @@ var (
 	// seven of ipv6Cover
 	halfCapture    = netip.MustParsePrefix("::/1")
 	ordinaryPrefix = netip.MustParsePrefix("2001:db8:2::/64")
-	// ipv6Cover holds the members a bound underlay installs capturingPrefix as
+	// ipv6Cover holds the members link.underlay.bind installs capturingPrefix as
 	ipv6Cover = []netip.Prefix{
 		netip.MustParsePrefix("100::/8"), netip.MustParsePrefix("200::/7"),
 		netip.MustParsePrefix("400::/6"), netip.MustParsePrefix("800::/5"),
@@ -243,7 +243,7 @@ func (d *daemon) heldBack(t *testing.T, prefix, witness netip.Prefix) bool {
 //
 // The assertions are about routes and sockets rather than about which
 // functions ran, so a rearrangement that keeps the behavior keeps the test.
-func TestBoundUnderlayConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
+func TestBindConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 	d := startDaemon(t, true, recordedHost(t))
 
 	// An ordinary prefix installs at once: the gate holds back what would
@@ -276,7 +276,7 @@ func TestBoundUnderlayConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *tes
 	// One live session opens it.
 	d.live(t)
 	if got := d.node.LiveSessions(); got != 1 {
-		t.Fatalf("a bound node with one live session counts %d", got)
+		t.Fatalf("a node under link.underlay.bind with one live session counts %d", got)
 	}
 	waitForKernel(t, "the announced default reaches the kernel as its cover", func() bool {
 		plain, _ := d.host.coverInstalled()
@@ -314,7 +314,7 @@ func TestBoundUnderlayConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *tes
 // The same file without link.underlay.bind produces a daemon that writes
 // nothing on the uplink and scopes its announced default to the tun so that
 // no ordinary socket follows it.
-func TestUnboundUnderlayConfigurationScopesItsCaptureToTheTun(t *testing.T) {
+func TestConfigurationWithoutBindScopesItsCaptureToTheTun(t *testing.T) {
 	d := startDaemon(t, false, recordedHost(t))
 
 	d.live(t)
@@ -324,7 +324,7 @@ func TestUnboundUnderlayConfigurationScopesItsCaptureToTheTun(t *testing.T) {
 		return scoped
 	})
 	if plain, _ := d.host.installed(capturingPrefix); plain {
-		t.Error("the announced default is reachable from every socket on this machine, underlay included")
+		t.Error("the announced default is reachable from every socket on this machine")
 	}
 	for _, write := range d.host.writes() {
 		if write.index != meshDeviceIndex {
@@ -407,12 +407,12 @@ func TestCoverGoesInForAFamilyTheHostHasNoDefaultIn(t *testing.T) {
 	}
 }
 
-// A prefix covering a peer's own endpoint takes this node's ESP into the
-// tunnel carrying it, however the socket is bound, because the peer is then
-// reached through the tun rather than past it. It is scoped for that reason
-// alone: it does not count as a default, and the capture gate does not cover
-// it.
-func TestPrefixCoveringAPeerEndpointIsScopedEvenWithABoundSocket(t *testing.T) {
+// A prefix covering a peer's own endpoint is scoped to the tun even under
+// link.underlay.bind: unscoped and longer than the host's own route to the
+// peer, it would leave the datagrams naming the selection's interface no route
+// there. It is scoped for that reason alone: it does not count as a default,
+// and the capture gate does not cover it.
+func TestPrefixCoveringAPeerEndpointIsScopedEvenUnderBind(t *testing.T) {
 	d := startDaemon(t, true, recordedHost(t))
 	d.live(t)
 
@@ -427,7 +427,7 @@ func TestPrefixCoveringAPeerEndpointIsScopedEvenWithABoundSocket(t *testing.T) {
 	})
 	plain, scoped := d.host.installed(covering)
 	if plain || !scoped {
-		t.Error("a prefix holding this node's own peer endpoint is reachable from the underlay socket, which sends its ESP into the tunnel carrying it")
+		t.Error("a prefix holding this node's own peer endpoint went in unscoped")
 	}
 }
 

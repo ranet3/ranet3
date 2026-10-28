@@ -174,16 +174,16 @@ type Runtime struct {
 	// node an exit. A reload never changes it, since it refuses adding the
 	// first egress segment and removing the last.
 	EgressSegment bool
-	// BoundUnderlay says the transport's own socket no longer consults the
-	// forwarding table, because it is bound to the interface the host's
-	// default route leaves by. The darwin backend then installs an announced
-	// plain default as its zero-free cover rather than scoping it out of
-	// every socket's reach, which is the difference between a node that can
-	// hold a mesh address and one that can use a mesh exit. Leaving it off
-	// keeps the scoping. Nothing reads it on linux, where a socket mark and a policy
-	// rule do the same job and a default is installed unscoped either way.
-	// It is set from link.underlay, so it is handed here rather than written
-	// in cap.table: one setting decides both halves and they cannot disagree.
+	// BoundUnderlay is link.underlay.bind, which decides how the darwin
+	// backend installs a route holding its family's zero address: unscoped,
+	// as the zero-free cover's members it contains, rather than scoped out of
+	// the reach of every socket that does not ask for the tun by name, which
+	// is the difference between a node that can hold a mesh address and one
+	// that can use a mesh exit. The underlay's datagrams name their interface
+	// from the host's routes with the tun left out either way. Nothing reads
+	// it on linux, where a socket mark and a policy rule keep the underlay off
+	// the mesh and a default is installed unscoped either way. It is set from
+	// link.underlay, so it is handed here rather than written in cap.table.
 	BoundUnderlay bool
 	// Sessions reports how many of this node's mesh sessions have recently
 	// proved their peer is there. Until one has, and once none has for
@@ -340,7 +340,7 @@ type Route struct {
 	// so the rule walk goes on to the next rule. It is never set with
 	// Unreachable.
 	Throw bool
-	// Cover marks a member of a plain default's zero-free cover (see
+	// Cover marks a member of the zero-free cover a zero route goes in as (see
 	// coverDefaults). It is never scoped, and a dump reads it back only for a
 	// member this process installed.
 	Cover bool
@@ -698,7 +698,7 @@ type Stats struct {
 	Skipped   int
 	Added     int
 	Removed   int
-	// Cover is the families whose plain default this pass left installed as
+	// Cover is the families in which this pass left a zero route installed as
 	// its zero-free cover.
 	Cover []Family
 	// Lookups holds the lookups the last pass whose batch answered asked of
@@ -735,14 +735,14 @@ func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 	}
 	t = t.Normalized()
 	if rt.BoundUnderlay && rt.Sessions == nil {
-		// The two halves of one arrangement. A bound underlay lets this
+		// The two halves of one arrangement. link.underlay.bind lets this
 		// backend install an announced default where every socket can see
 		// it, and the gate is the only thing that keeps such a route out
 		// of the kernel until the mesh has proved it can carry traffic. With
 		// no session source the gate is open from the first pass, so the two
 		// together would put this machine's traffic in a tun nothing has ever
 		// answered on.
-		return nil, errors.New("kernel: a bound underlay needs a session source, or an announced default would install before the mesh has carried anything")
+		return nil, errors.New("kernel: link.underlay.bind needs a session source, or an announced default would install before the mesh has carried anything")
 	}
 	addresses, err := resolveAddresses(t, rt.Announced)
 	if err != nil {

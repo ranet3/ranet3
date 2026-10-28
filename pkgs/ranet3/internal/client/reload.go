@@ -373,11 +373,8 @@ func reloadable(old, next *config.Config) error {
 	case old.Node != next.Node:
 		return fmt.Errorf("config: node changed, restart to apply")
 	case old.Link.Underlay != next.Link.Underlay:
-		// both spellings apply to the listener when it opens
-		// and a socket connected to one peer takes them from the listener
+		// bind is read once, by the route reconciler at its start
 		// so a change here would reach nothing
-		// the interface a bound socket sits on follows the host's own routing
-		// and this file never wrote that routing
 		return fmt.Errorf("config: link.underlay changed, restart to apply")
 	case old.Link.Port != next.Link.Port:
 		return fmt.Errorf("config: link.port changed, restart to apply")

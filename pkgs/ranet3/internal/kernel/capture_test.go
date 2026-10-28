@@ -370,25 +370,25 @@ func TestReconcilerAsksToBeWokenWhenTheGraceExpires(t *testing.T) {
 	}
 }
 
-// A bound underlay with nothing to ask about liveness is refused at startup.
-// The two are halves of one arrangement: the binding lets an announced
-// default install where every socket sees it, and the gate is the only thing
+// link.underlay.bind with nothing to ask about liveness is refused at startup.
+// The two are halves of one arrangement: bind lets an announced default
+// install unscoped, where every socket sees it, and the gate is the only thing
 // keeping it out of the kernel until the mesh has carried traffic.
-func TestNewRefusesABoundUnderlayWithNoSessionSource(t *testing.T) {
+func TestNewRefusesBindWithNoSessionSource(t *testing.T) {
 	table := netstack.NewRouteTable()
 	_, err := New(Table{}, Runtime{Interface: "lo0", BoundUnderlay: true}, table)
 	if err == nil {
-		t.Fatal("a bound underlay with no session source was accepted")
+		t.Fatal("bind with no session source was accepted")
 	}
 	if !strings.Contains(err.Error(), "session source") {
 		t.Errorf("the refusal reads %q", err)
 	}
 	// And the same runtime with a session source gets past that check, so the
-	// refusal is about the pair rather than about the binding.
+	// refusal is about the pair rather than about bind.
 	if _, err := New(Table{}, Runtime{
 		Interface: "lo0", BoundUnderlay: true, Sessions: func() int { return 0 },
 	}, table); err != nil && strings.Contains(err.Error(), "session source") {
-		t.Errorf("a bound underlay with a session source was refused for the same reason: %v", err)
+		t.Errorf("bind with a session source was refused for the same reason: %v", err)
 	}
 }
 

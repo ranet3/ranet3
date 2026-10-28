@@ -1435,19 +1435,19 @@ func TestDarwinRefusesSettingsItCannotHonor(t *testing.T) {
 	}
 }
 
-// With the underlay socket bound, a plain default goes in as its cover. Every
+// With link.underlay.bind, a plain default goes in as its cover. Every
 // member installs unscoped although a peer's endpoint lies inside one, reads
 // back as a member, and converges. A real route at a member's destination
 // keeps the endpoint check, and an unscoped route there that this process did
 // not install as a member reads back as an ordinary route.
-func TestDarwinInstallsTheCoverUnscopedOnceTheUnderlayIsBound(t *testing.T) {
+func TestDarwinInstallsTheCoverUnscopedUnderBind(t *testing.T) {
 	peer4, peer6 := addr("192.0.2.1"), addr("2001:db8:beef::1")
 	plat, sock := testPlatform(t, Table{}, Runtime{
 		BoundUnderlay: true,
 		Underlay:      func() []netip.Addr { return []netip.Addr{peer4, peer6} },
 	})
 	if !plat.covers() {
-		t.Fatal("a bound underlay does not ask for the cover")
+		t.Fatal("bind does not ask for the cover")
 	}
 	if _, err := plat.Routes(); err != nil {
 		t.Fatal(err)
@@ -1499,10 +1499,11 @@ func TestDarwinInstallsTheCoverUnscopedOnceTheUnderlayIsBound(t *testing.T) {
 	}
 }
 
-// The two remaining reasons to scope outlive the binding. A source prefix has
-// no other spelling on this platform at all, and a hold answers with an error
-// for every destination it covers, which unscoped is the whole machine.
-func TestDarwinKeepsScopingWhatABoundUnderlayDoesNotExplain(t *testing.T) {
+// The two remaining reasons to scope hold under link.underlay.bind too. A
+// source prefix has no other spelling on this platform at all, and a hold
+// answers with an error for every destination it covers, which unscoped is the
+// whole machine.
+func TestDarwinKeepsScopingWhatBindDoesNotExplain(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
 	plat.addrs = func() ([]netip.Prefix, error) { return []netip.Prefix{prefix("2001:db8:1::5/128")}, nil }
 	sourced := Route{Destination: prefix("::/0"), Source: prefix("2001:db8:1::/48")}
@@ -1515,12 +1516,12 @@ func TestDarwinKeepsScopingWhatABoundUnderlayDoesNotExplain(t *testing.T) {
 	}
 }
 
-// Leaving the binding off keeps the behavior this backend has always had,
-// which is the fallback for a node that cannot bind its socket.
-func TestDarwinScopesADefaultWhileTheUnderlayIsUnbound(t *testing.T) {
+// Without link.underlay.bind, an announced default goes in scoped to the
+// utun, beside the host's own default rather than in front of it.
+func TestDarwinScopesADefaultWithoutBind(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
 	if !plat.scopeRoute(Route{Destination: prefix("::/0")}) {
-		t.Error("an announced default installed plain with the underlay still on the forwarding table")
+		t.Error("an announced default installed plain without link.underlay.bind")
 	}
 }
 

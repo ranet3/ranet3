@@ -10,13 +10,12 @@ import (
 	"testing"
 )
 
-// IP_BOUND_IF is a darwin facility. A platform without it must refuse the
-// configuration rather than ignore it, because what asked for it was written
-// to keep the underlay out of a table, and a setting that never takes effect
-// is worse than an error at startup.
+// bind decides how darwin installs an exit's default. A platform without that
+// choice must refuse the configuration rather than ignore it, because a
+// setting that never takes effect is worse than an error at startup.
 func TestUnderlayIsolationIsRefusedWhereItCannotBeSet(t *testing.T) {
 	for name, underlay := range map[string]Underlay{
-		"an interface binding": {Bind: true},
+		"bind": {Bind: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := NewHub(":0", underlay, Runtime{})

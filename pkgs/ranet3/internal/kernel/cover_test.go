@@ -858,7 +858,7 @@ func TestZeroRouteInsideTheHoleIsSkippedAndLoggedOnce(t *testing.T) {
 }
 
 // scopingCoveringKernel is the fake on a platform that asks for the cover and
-// scopes what darwin scopes under a bound underlay with no endpoint inside the
+// scopes what darwin scopes under link.underlay.bind with no endpoint inside the
 // mesh's routes: a hold, and a route from a source.
 type scopingCoveringKernel struct{ *fakeKernel }
 

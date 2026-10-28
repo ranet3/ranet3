@@ -120,16 +120,16 @@ type Link struct {
 	// the device runs at it less the longest cap.segment steer list, which a steered packet carries inside the tunnel
 	// zero takes netstack.DefaultMTU, see SessionMTU
 	MTU uint16 `yaml:"mtu,omitempty" json:"mtu,omitempty" toml:"mtu,omitempty"`
-	// Underlay keeps the UDP sockets carrying IKE and ESP out of the reach
-	// of the routes the mesh installs on darwin, where bind is set, which lets
-	// an exit-announced default be a real default rather than one no ordinary
-	// socket can see. Linux needs no setting: every underlay socket carries
-	// schema.UnderlayMark where the process may set it, as transport's
-	// underlayMark says, and routing.md's "Where a lookup ends on Linux" gives
-	// where a marked lookup ends. The block holds darwin's bind alone, which
-	// the type in transport describes. Every other platform refuses bind by
-	// name, at startup rather than at load, so one file can carry a fleet's
-	// settings and a laptop's.
+	// Underlay holds macOS's bind alone, which the type in transport
+	// describes: whether an exit-announced default goes in as a real default
+	// every socket sees or scoped to the tun, which no ordinary socket does.
+	// The UDP sockets carrying IKE and ESP name each datagram's interface from
+	// the host's own routes either way. Linux needs no setting: every underlay
+	// socket carries schema.UnderlayMark where the process may set it, as
+	// transport's underlayMark says, and routing.md's "Where a lookup ends on
+	// Linux" gives where a marked lookup ends. Every other platform, iOS among
+	// them, refuses bind by name, at startup rather than at load, so one file can carry a
+	// fleet's settings and a laptop's.
 	Underlay transport.Underlay `yaml:"underlay,omitempty" json:"underlay,omitzero" toml:"underlay,omitempty"`
 }
 
