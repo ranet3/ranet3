@@ -33,6 +33,7 @@ setting or skips a route instead.
 | Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                           | refused                                                                                                                                                          |
 | `cap.border`                                           | an nftables chain at prerouting                                                                                                                                                                                                    | refused                                                                                                                                                          |
 | `cap.exit`                                             | the policy rules 5405, 5435 and 5440 of [exit mode](routing.md#exit-mode-on-linux)                                                                                                                                                 | refused at startup, naming the platform, ahead of `cap.border`                                                                                                   |
+| `cap.exit.fallback = "none"`                           | the rules 5445 and 5450 and the nftables table `ranet3_fallback`, its chains at output and postrouting, of [the kill switch](routing.md#the-kill-switch-on-linux), which outlives a crash                                          | refused with `cap.exit`                                                                                                                                          |
 | Network watch                                          | rtnetlink, with each link outside the mesh and its networks                                                                                                                                                                        | routing socket, with no links                                                                                                                                    |
 | Don't fragment                                         | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                                                                                                                                                                               | `IP_DONTFRAG`, `IPV6_DONTFRAG`                                                                                                                                   |
 | Route MTU a path search takes                          | the route's MTU, including a path MTU the host learned                                                                                                                                                                             | the MTU of the interface the session sends through                                                                                                               |
@@ -47,9 +48,12 @@ On macOS `cap.border` is refused at startup with
 `egress: cap.border is an nftables chain, which darwin does not have, so this node cannot filter what enters the mesh from its other links`,
 and a Mac that forwards gets the warning instead. `cap.exit` is refused there
 first, at startup and on a reload, with
-`kernel: cap.exit is refused on darwin, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
-The caller's credentials decide who may use the debug paths beyond the read
-paths.
+`kernel: cap.exit is refused on darwin, where this build has no exit mode: remove cap.exit, and this host keeps its own default`,
+so a Mac has no kill switch, nor do the BSDs. On Android and iOS no reconciler
+runs, and the platform's own setting holds the host's traffic to the tunnel:
+Android's always-on VPN with blocking, and iOS's include-all-networks, which
+only the user can turn on. The caller's credentials decide who may use the debug
+paths beyond the read paths.
 
 The exit a build carries is chosen when it is built, and no setting names it. A
 Linux build carries the kernel exit, which writes what it carries into the tun

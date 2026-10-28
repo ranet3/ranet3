@@ -98,8 +98,14 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 - `status` on a node with `cap.exit` names, on its `Kernel` line, the links the
   last pass forwarded, each link a `forward` entry matched and the pass left out
   with the reason, and a family the tun holds no overlay address of, as
-  [watching it](routing.md#watching-it) shows. `--json` carries them under
-  `kernel.exit`, the families in `unaddressed`.
+  [watching it](routing.md#watching-it) shows. Under `fallback = "none"` it
+  names the kill switch's state, `holding`, `passing` or `not holding` with the
+  reason, what the last lines of both chains dropped, summed, a connected
+  network left out of the LAN, an endpoint name whose last lookup failed and a
+  DNS server beyond the LAN. `--json` carries them under `kernel.exit`, the
+  families in `unaddressed`.
+- `down` withdraws the kill switch's rules and table with the rest of the
+  reconciler's, as a clean stop does, and `up` writes them again.
 - `debug netmon` lists each family's links outside the mesh with their addresses
   and point-to-point far ends on Linux, the links
   [exit mode](routing.md#exit-mode-on-linux) derives its rules from.
@@ -159,21 +165,21 @@ stable interface. A command, its output and the events it reports may change in
 any revision. `--control` and `--json` on `debug` apply to every command under
 it. [Debugging](development/debug.md) describes each command and the events.
 
-| Command                                | Help                                                       | Flags                                                                 |
-| -------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------- |
-| `debug socket [METHOD] PATH [BODY\|-]` | Send a raw control socket request                          | `--timeout` (10 seconds)                                              |
-| `debug buildinfo`                      | Print Go build information                                 | none                                                                  |
-| `debug events`                         | Show node events                                           | `-f`, `--follow`, `--for` (30 seconds), `--kind`, `--since`, `--peer` |
-| `debug wait <kind>`                    | Wait for a node event                                      | `--attr key=value`, `--past` (0), `--timeout` (10 seconds), `--peer`  |
-| `debug netmon`                         | Show the host network the node watches                     | none                                                                  |
-| `debug pmtu [peer]`                    | Show each session's path MTU                               | none                                                                  |
-| `debug probe [peer]`                   | Probe sessions now                                         | `--all`                                                               |
-| `debug rules`                          | Show the host's policy rules and the border filter's chain | none                                                                  |
-| `debug route <src> <dst>`              | Show where a packet goes                                   | `--iif`                                                               |
-| `debug egress`                         | Show the exit's rules and readiness                        | none                                                                  |
-| `debug segments`                       | Show local segments and steering                           | none                                                                  |
-| `debug runtime`                        | Show daemon runtime state                                  | none                                                                  |
-| `debug updown`                         | Show whether the node is on the mesh                       | none                                                                  |
+| Command                                | Help                                                                                | Flags                                                                 |
+| -------------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `debug socket [METHOD] PATH [BODY\|-]` | Send a raw control socket request                                                   | `--timeout` (10 seconds)                                              |
+| `debug buildinfo`                      | Print Go build information                                                          | none                                                                  |
+| `debug events`                         | Show node events                                                                    | `-f`, `--follow`, `--for` (30 seconds), `--kind`, `--since`, `--peer` |
+| `debug wait <kind>`                    | Wait for a node event                                                               | `--attr key=value`, `--past` (0), `--timeout` (10 seconds), `--peer`  |
+| `debug netmon`                         | Show the host network the node watches                                              | none                                                                  |
+| `debug pmtu [peer]`                    | Show each session's path MTU                                                        | none                                                                  |
+| `debug probe [peer]`                   | Probe sessions now                                                                  | `--all`                                                               |
+| `debug rules`                          | Show the host's policy rules, the border filter's chain and the kill switch's table | none                                                                  |
+| `debug route <src> <dst>`              | Show where a packet goes                                                            | `--iif`                                                               |
+| `debug egress`                         | Show the exit's rules and readiness                                                 | none                                                                  |
+| `debug segments`                       | Show local segments and steering                                                    | none                                                                  |
+| `debug runtime`                        | Show daemon runtime state                                                           | none                                                                  |
+| `debug updown`                         | Show whether the node is on the mesh                                                | none                                                                  |
 
 - `debug socket` sends GET, or POST when a body follows the path. A body of `-`
   is read from standard input. The answer goes to standard output and its status

@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-30
+updated: 2026-10-31
 order: 50
 ---
 
@@ -385,6 +385,14 @@ one, at load and on every reload, with the message
 loader, a reload and the reconciler read one rule for what makes a node an exit,
 so a file that loads never runs the mode on one.
 
+A host using an exit can ask with `cap.exit.fallback = "none"` for the kill
+switch, which holds while no exit is live and its table reads back as written,
+and stays after the daemon is killed.
+[The kill switch](routing.md#the-kill-switch-on-linux) lists the lines that let
+the host's traffic leave by its own uplink, and gives the rules and the table,
+the switch's reach, and what counts as the LAN. An exit installs no default for
+its own traffic and refuses `cap.exit`, so no exit's egress meets the table.
+
 ## What an exit carries out
 
 A packet a session delivers for a destination this node holds through a route
@@ -740,20 +748,20 @@ counters, of packets, each retry of a refused flow among them, and the dropped
 counts are those of the rules that drop a packet no flow is tracked for. All of
 them start from zero when a pass rewrites the chains.
 
-| Log line                                                            | Level | When                                                                                                               |
-| ------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------ |
-| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the translator                                                                                   |
-| `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`       |
-| `egress ready`                                                      | info  | a family went ready, with `family`                                                                                 |
-| `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                             |
-| `egress stopped reading nf_tables notifications`                    | warn  | a read of the notification socket failed, with `err`, after which another writer's change waits for the next sweep |
-| `egress rules installed`                                            | info  | a pass wrote the chains                                                                                            |
-| `egress advertisement changed`                                      | warn  | the announced prefixes changed after the first pass                                                                |
-| `egress is sharing the source translation hook with another writer` | warn  | a new chain appears at the same hook, once each                                                                    |
-| `egress pass failed, retrying`                                      | warn  | a pass failed, retried with backoff                                                                                |
-| `egress translator withdrawn`                                       | info  | the tables are removed, at shutdown or at `ranet3 down`                                                            |
-| `egress could not withdraw its tables, retrying`                    | warn  | `ranet3 down` could not remove the tables                                                                          |
-| `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                   |
+| Log line                                                            | Level | When                                                                                                                           |
+| ------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the translator                                                                                               |
+| `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                   |
+| `egress ready`                                                      | info  | a family went ready, with `family`                                                                                             |
+| `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                                         |
+| `stopped reading nf_tables notifications`                           | warn  | a read of the notification socket failed, with `table` and `err`, after which another writer's change waits for the next sweep |
+| `egress rules installed`                                            | info  | a pass wrote the chains                                                                                                        |
+| `egress advertisement changed`                                      | warn  | the announced prefixes changed after the first pass                                                                            |
+| `egress is sharing the source translation hook with another writer` | warn  | a new chain appears at the same hook, once each                                                                                |
+| `egress pass failed, retrying`                                      | warn  | a pass failed, retried with backoff                                                                                            |
+| `egress translator withdrawn`                                       | info  | the tables are removed, at shutdown or at `ranet3 down`                                                                        |
+| `egress could not withdraw its tables, retrying`                    | warn  | `ranet3 down` could not remove the tables                                                                                      |
+| `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                               |
 
 A pass that writes the chains, changes the announced prefixes or fails records
 an `egress.pass` event. So does `ranet3 down`. The event carries `trigger`,

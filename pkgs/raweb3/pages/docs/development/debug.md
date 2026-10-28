@@ -170,13 +170,17 @@ These commands take flags of their own:
   pass read it and whether it is ready, then each rule with the packets and
   bytes each drop counted, any rule the chain does not hold yet, and any rule it
   holds that the filter did not write, by its comment or as
-  `a rule with no comment`. The dump and the chain are each read now through a
-  socket of their own, so an operator who sends a test packet reads the counters
-  of that moment, and neither the reconciler's socket nor the filter's serves a
-  reader. A platform with no policy rules says so. A rule carrying a selector
-  the view keeps no value of, `uidrange`, `ipproto`, `sport`, `dport`, `dscp`,
-  `flowlabel` or `tun_id`, or carrying `suppress_ifgroup`, shows that name among
-  its selectors.
+  `a rule with no comment`. Then, under `cap.exit.fallback = "none"`, the table
+  `ranet3_fallback` as `Fallback table` with its two chains, their hooks and
+  priority and the switch's state, each line of each chain with the packets and
+  bytes the drop counted, and each named set with its elements, or `not held`
+  where the kernel holds no table. The dump and the chains are each read now
+  through a socket of their own, so an operator who sends a test packet reads
+  the counters of that moment, and neither the reconciler's socket nor the
+  filter's serves a reader. A platform with no policy rules says so. A rule
+  carrying a selector the view keeps no value of, `uidrange`, `ipproto`,
+  `sport`, `dport`, `dscp`, `flowlabel` or `tun_id`, or carrying
+  `suppress_ifgroup`, shows that name among its selectors.
 - `debug route <src> <dst> [--iif link]` follows one packet to where the kernel
   sends it: this host's own packet, or with `--iif` one arriving on that link.
   An unspecified `src`, such as `0.0.0.0`, is this host's own packet sent with
@@ -415,6 +419,7 @@ connections to the reads.
 | `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on Linux      |
 | `kernel.forward`                      | a link `cap.exit.forward` matched began or stopped being left out of the mode             |
 | `kernel.exit`                         | under `cap.exit`, the tun came to hold no overlay address of a family, or the state ended |
+| `kernel.fallback`                     | the kill switch began holding, passing or not holding, or ended                           |
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed                    |
 | `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                               |
 | `egress.refused`                      | a pass read a family's count of packets refused past a source's share move                |
@@ -504,6 +509,7 @@ Each kind carries these attributes:
 | `kernel.taken`                                | `family`, `lookup` (`overlay` or `underlay`), `prefix` and `address` for an overlay lookup or `endpoint` with `source` and `interface` where the send carries them, `answer`, `taken`           |
 | `kernel.forward`                              | `entry`, `link`, `reason` (the tun, the loopback link, or the link a family's default leaves by), `skipped`                                                                                     |
 | `kernel.exit`                                 | `family`, `addressed` (false where the family came to run mode off's rules, as [limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) says, and true where the state then ended) |
+| `kernel.fallback`                             | `state` and `was`, each `holding`, `passing`, `not holding` or `off`                                                                                                                            |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                              |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                           |
 | `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains)                                                                                 |

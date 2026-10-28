@@ -252,16 +252,16 @@ of the last pass. It lists every policy rule the kernel holds beside the chain,
 and the rules the reconciler derives from the overlay, as
 [the debug page](development/debug.md) describes.
 
-| Log line                                         | Level | When                                                                                                                        |
-| ------------------------------------------------ | ----- | --------------------------------------------------------------------------------------------------------------------------- |
-| `border filter in <where>, inside <devices>`     | info  | the daemon starts the filter                                                                                                |
-| `border filter installed`                        | info  | a pass rewrote the chain, with `rules`, `replaced` and `where`                                                              |
-| `border filter pass failed, retrying`            | warn  | a pass failed, with `err` and `retry_in`                                                                                    |
-| `border filter not ready`                        | warn  | the chain stopped reading back, with the reason as `detail`                                                                 |
-| `border filter ready`                            | info  | the chain reads back again                                                                                                  |
-| `border filter dropped packets`                  | info  | a pass read a counter that moved, at most once per pass                                                                     |
-| `border filter withdrawn`                        | info  | the table is removed at shutdown                                                                                            |
-| `egress stopped reading nf_tables notifications` | warn  | a read of the filter's notification socket failed, with `err`, after which another writer's change waits for the next sweep |
+| Log line                                     | Level | When                                                                                                                                    |
+| -------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `border filter in <where>, inside <devices>` | info  | the daemon starts the filter                                                                                                            |
+| `border filter installed`                    | info  | a pass rewrote the chain, with `rules`, `replaced` and `where`                                                                          |
+| `border filter pass failed, retrying`        | warn  | a pass failed, with `err` and `retry_in`                                                                                                |
+| `border filter not ready`                    | warn  | the chain stopped reading back, with the reason as `detail`                                                                             |
+| `border filter ready`                        | info  | the chain reads back again                                                                                                              |
+| `border filter dropped packets`              | info  | a pass read a counter that moved, at most once per pass                                                                                 |
+| `border filter withdrawn`                    | info  | the table is removed at shutdown                                                                                                        |
+| `stopped reading nf_tables notifications`    | warn  | a read of the filter's notification socket failed, with `table` and `err`, after which another writer's change waits for the next sweep |
 
 A pass that rewrote the chain or failed records a `border.pass` event with
 `trigger`, `took`, `installed` and, on failure, `err`. A change of readiness
