@@ -251,6 +251,7 @@ testers.runNixOSTest {
     ]:
         assert f"--- PASS: {name}" in out, f"the kill switch's lab {name} did not run:\n{out}"
     assert "--- PASS: TestTUNTraceShowsTheMiddleNodesDecisions" in out, f"the trace's lab did not run:\n{out}"
+    assert "--- PASS: TestTUNBorderKeepsAnOverlappingUplink" in out, f"the overlapping uplink's lab did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 17, f"only {ran} of the client's tun round trips ran:\n{out}"
 
