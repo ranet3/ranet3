@@ -297,6 +297,7 @@ connections to the reads.
 | `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason               |
 | `pmtu.floor`                          | a session's path went under 1280 bytes in one datagram, or came back                 |
 | `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back             |
+| `esp.ecn.unused`                      | a session's packets came in ECN pairs no tunnel sends, at most every 10 seconds      |
 | `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target                    |
 | `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target                   |
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                        |
@@ -313,6 +314,9 @@ recorded on macOS alone, because only macOS binds the underlay socket to an
 interface. `transport.pair.connected` and `transport.pair.closed` are recorded
 on Linux and macOS alone, the platforms that connect a socket to 1 busy peer, as
 [platforms](../platforms.md#sockets-connected-to-1-peer) describes.
+`esp.ecn.unused` is recorded on Linux and macOS alone, the platforms that read a
+datagram's outer ECN field, and the same record is written as a log line at the
+debug level, as [ECN](../design/protocol-deviations.md#ecn) describes.
 
 Each kind carries these attributes:
 
@@ -378,6 +382,7 @@ Each kind carries these attributes:
 | `pmtu.changed`                                | `endpoint`, `budget`, `budget_was`, `reason`                                                                                                |
 | `pmtu.floor`                                  | `endpoint`, `under`                                                                                                                         |
 | `pmtu.steering`                               | `budget`, `need`, `under`                                                                                                                   |
+| `esp.ecn.unused`                              | `outer`, `inner`, `count` (the packets since the session's last record), `header` (the first one's IP header in hex)                        |
 | `netstack.codel.dropping`, `.drained`         | `sojourn`, `target`                                                                                                                         |
 | `netstack.tun.refused`                        | `interface`, `frames`, `err`                                                                                                                |
 | `netstack.tun.failed`                         | `interface`, `err`                                                                                                                          |

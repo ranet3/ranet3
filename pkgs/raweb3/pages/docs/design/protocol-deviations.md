@@ -49,6 +49,8 @@ sections below give the details.
 | RFC 4303 section 4                                                                     | Let a system administrator turn auditing for ESP on and off                                                                                                           | No switch: the counter and `ike.notify.invalid_spi` are always on, and the debug line for a peer's `INVALID_SPI` follows `--log-level`                                                                                                                                                                                                                                                                      | The record holds at most 1 report for each session from each look, and at most 1 look every 10 seconds for the whole node, so a switch would be a setting no deployment needs, see ESP                                                                                                                     |
 | RFC 3948 section 2.1                                                                   | Send the IPv4 UDP checksum as zero                                                                                                                                    | Every IPv4 datagram carries a computed checksum                                                                                                                                                                                                                                                                                                                                                             | Linux refuses segmented sends without one                                                                                                                                                                                                                                                                  |
 | RFC 3948 section 4                                                                     | Send NAT keepalives                                                                                                                                                   | None are sent                                                                                                                                                                                                                                                                                                                                                                                               | Hellos and IKE liveness checks keep the mapping open                                                                                                                                                                                                                                                       |
+| RFC 7296 section 2.24, RFC 6040 sections 4.1 and 4.3                                   | Encapsulate in the normal mode, which copies the inner ECN field to the outer header                                                                                  | Every outer header is sent Not-ECT, RFC 6040's compatibility mode, the encapsulation of RFC 3168's limited functionality mode                                                                                                                                                                                                                                                                               | A Not-ECT outer header hides no congestion signal, see ECN                                                                                                                                                                                                                                                 |
+| RFC 7296 section 2.24, RFC 6040 section 4.2                                            | Decapsulate by the outer and the inner ECN field                                                                                                                      | The outer field is not read on FreeBSD and OpenBSD, so a hop's CE mark is lost there                                                                                                                                                                                                                                                                                                                        | The bind reads no control data there, see ECN                                                                                                                                                                                                                                                              |
 | RFC 4443 section 2.2                                                                   | Answer from an address of the node's own                                                                                                                              | A tun read's Packet Too Big and Destination Unreachable come from the packet's destination                                                                                                                                                                                                                                                                                                                  | Where the host routes the destination into the tun, only the destination passes every check, see ICMP answers                                                                                                                                                                                              |
 | RFC 4443 sections 2.4 and 3.2                                                          | Answer the packet that could not be forwarded, to its source                                                                                                          | `End` answers a segment it admits too large for its next session about the packet it carries, to that packet's source                                                                                                                                                                                                                                                                                       | The headend relays no answer to the sender, see ICMP answers                                                                                                                                                                                                                                               |
 | RFC 1812 sections 4.2.2.11 and 4.3.2.4                                                 | Originate from an address of the router's own, of the interface the answer leaves by                                                                                  | An ICMPv4 answer to a tun read comes from the packet's destination                                                                                                                                                                                                                                                                                                                                          | Where the host routes the destination into the tun, only the destination passes `rp_filter` 1 and a strict chain, see ICMP answers                                                                                                                                                                         |
@@ -852,6 +854,54 @@ alike. On Linux a socket with `SO_NO_CHECK` gets `EINVAL` for every
 macOS keeps the same checksum, for 1 behavior on both platforms. The same
 section says "receivers MUST NOT depend on the UDP checksum being a zero value",
 so nothing on the wire depends on a zero one.
+
+## ECN
+
+[RFC 7296 section 2.24](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.24)
+says tunnel mode SAs "MUST support the ECN full-functionality option for
+tunnels" and "MUST implement the tunnel encapsulation and decapsulation
+processing" of RFC 4301, which
+[RFC 6040 section 5.1](https://www.rfc-editor.org/rfc/rfc6040.html#section-5.1)
+updates.
+
+On Linux and macOS ranet3 reads the ECN field of each ESP datagram's outer IP
+header, in both families, and before it delivers the inner packet sets that
+packet's ECN field to the cell of
+[RFC 6040 section 4.2](https://www.rfc-editor.org/rfc/rfc6040.html#section-4.2)'s
+Figure 4 for the two, updating an IPv4 header's checksum with it. An inner
+Not-ECT packet whose datagram arrived CE is dropped and counted in
+`ranet3_esp_inbound_dropped_total`, and an inner ECT packet the outer mark set
+to CE is counted in `ranet3_esp_inbound_ce_total`, both shown on the ESP line of
+`ranet3 status`. A packet whose two fields are a combination the figure marks
+currently unused, the dropped one included, is counted in
+`ranet3_esp_inbound_ecn_unused_total`. Each session records such packets at most
+once every 10 seconds as an `esp.ecn.unused` event, with how many arrived since
+its last record and the IP header of the first of them, and writes the same
+record as a log line at the debug level. The section asks such a combination
+logged with alarms rate-limited, and says "It MUST be possible to suppress
+alarms or logging": `--log-level` at its default of `info` or above leaves the
+line out, the event is held in the daemon's record that
+[`ranet3 debug events`](../development/debug.md#events) reads and is pushed to
+no log, and ranet3 raises no alarm. The dropped combination is also logged by
+the warning line of dropped ESP packets, which names the last drop's reason at
+most once every 10 seconds for the node, and `--log-level error` leaves that
+line out.
+
+On FreeBSD and OpenBSD the bind reads no control data, so the outer field is not
+read and every packet is decapsulated as though its datagram arrived Not-ECT. A
+CE mark a hop on the underlay set is lost there. Neither platform is supported
+beyond building.
+
+Every outer header ranet3 sends is Not-ECT, which is RFC 6040's compatibility
+mode, the encapsulation of RFC 3168's limited functionality mode, where
+[RFC 6040 section 4.1](https://www.rfc-editor.org/rfc/rfc6040.html#section-4.1)
+asks the normal mode, which copies the inner field to the outer header, and
+[section 4.3](https://www.rfc-editor.org/rfc/rfc6040.html#section-4.3) says an
+ingress "MUST at least implement normal mode" and "MUST NOT permanently disable
+ECN processing across the tunnel". A Not-ECT outer header hides no congestion
+signal, as
+[RFC 3168 section 5](https://www.rfc-editor.org/rfc/rfc3168.html#section-5) has
+it, so what the inner flow loses is ECN's lower latency rather than any signal.
 
 ## ICMP answers
 
