@@ -261,7 +261,12 @@ let
     MTUBytes = fragmentMTU.ip4;
   };
   # what each program beside ranet3 adds to the client, at its defaults
-  besideClient = { };
+  besideClient = {
+    docker = {
+      virtualisation.docker.enable = true;
+      virtualisation.memorySize = 1536;
+    };
+  };
 in
 testers.runNixOSTest {
   name =
@@ -321,7 +326,7 @@ testers.runNixOSTest {
           ]
           # A capture is the only thing that tells a packet that never arrived
           # from one the far end refused.
-          ++ pkgs.lib.optionals segments [ tcpdump ];
+          ++ pkgs.lib.optionals (segments || beside == "docker") [ tcpdump ];
 
         environment.etc = {
           "swanctl/private/org-key.pem".source = ../../fixtures/org-key.pem;
@@ -2068,7 +2073,70 @@ testers.runNixOSTest {
             assert after == before, f"ranet3's restart changed another program's rules:\n{before}\nthen\n{after}"
       '';
 
-      besideScript = { };
+      besideScript = {
+        # Docker beside an exit: a container reaches outside the mesh by main's route and inside it through the tun
+        # under Docker's own masquerade, and the exit's translation at 99 runs ahead of Docker's nat POSTROUTING at 100
+        docker = exitTranslates + ''
+          # an empty image, and the VM's own store and programs in the container
+          docker_run = "docker run --rm -v /nix/store:/nix/store -v /run/current-system/sw/bin:/bin scratch"
+          ranet3_tables = ["inet", "ip", "ip6"]
+
+          def exit_holds():
+              """the exit translates for the mesh beside Docker's chains, and finds no other translation that runs ahead of its own"""
+              exit_translates()
+              two_passes("egress")
+              egress = json.loads(client.succeed("ranet3 status --json"))["egress"]
+              print(json.dumps(egress, indent=2))
+              assert egress["ready"] == ["ipv4", "ipv6"], egress
+              assert not egress.get("conflicts"), f"another program's source translation runs at or ahead of the exit's: {egress['conflicts']}"
+              metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics").splitlines()
+              assert "ranet3_egress_conflicts 0" in metrics, "the scrape does not carry ranet3_egress_conflicts 0"
+              tables = client.succeed("nft list tables").splitlines()
+              for want in [f"table {family} ranet3" for family in ranet3_tables] + ["table ip nat", "table ip filter"]:
+                  assert want in tables, f"{want} is not among {tables}"
+
+          def docker_works():
+              """a container reaches behind outside the mesh, and the gateway's tunnel address as the client's own tun address"""
+              client.wait_until_succeeds(f"{docker_run} ping -c 1 -W 2 ${behindV4}", timeout=timeout)
+              capture = capture_while(
+                  gateway, "swan0", "docker", "icmp[icmptype] = icmp-echo", 1,
+                  lambda: client.wait_until_succeeds(f"{docker_run} ping -c 1 -W 2 ${gatewayTunnelV4}", timeout=timeout))
+              print(capture)
+              assert "${clientTunnelV4} > ${gatewayTunnelV4}" in capture, f"the gateway did not see the client's tun address:\n{capture}"
+
+          def ranet3_rules():
+              return [client.succeed(f"nft -s -t list table {family} ranet3") for family in ranet3_tables]
+
+          try:
+              gateway.wait_for_unit("systemd-networkd-wait-online.service")
+              gateway.wait_for_unit("strongswan-swanctl.service")
+              gateway.wait_for_unit("bird.service")
+              for address in ["${behindV4}", "${behindV6}"]:
+                  behind.wait_until_succeeds(f"ip addr show dev eth1 | grep -qF {address}", timeout=timeout)
+              client.wait_for_unit("docker.service")
+              client.wait_for_unit("ranet3.service")
+              client.succeed("tar c --files-from /dev/null | docker import - scratch")
+
+              holds_beside()
+              exit_holds()
+              docker_works()
+
+              ours = ranet3_rules()
+              client.succeed("systemctl restart docker.service")
+              holds_beside()
+              exit_holds()
+              docker_works()
+              assert ranet3_rules() == ours, "Docker's restart changed ranet3's tables"
+
+              restart_ranet3()
+              exit_holds()
+              docker_works()
+          finally:
+              print(client.execute("ranet3 status")[1])
+              print(client.execute("nft list ruleset")[1])
+              print(client.execute("ip -4 rule show")[1])
+        '';
+      };
     in
     preamble
     + (
