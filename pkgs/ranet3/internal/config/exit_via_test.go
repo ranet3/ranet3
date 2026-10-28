@@ -264,6 +264,17 @@ func TestExitViaRefusesUnlessFallbackSaysUplink(t *testing.T) {
 	}
 }
 
+// cap.exit via on an exit is refused as cap.exit is, whose leaves' packets the path's defaults would otherwise steer on along via
+func TestExitViaIsRefusedOnAnExit(t *testing.T) {
+	const want = "config: cap.exit sends this node's own traffic out through another exit, and this node is an exit (cap.egress advertises 0.0.0.0/0), whose own traffic and whose egress leave by its own uplink: remove cap.exit, or stop offering the exit"
+	extension, text := exitLeaf("toml", "via = [\"3fff:b:0:206::1\"]\n[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\n")
+	// an IPv6 overlay address gives the path its outer source, so only the exit's refusal can refuse the node
+	text = strings.Replace(text, "[cap.table]\n", "[cap.table]\naddresses = [\"3fff::2/20\"]\n", 1)
+	if _, err := load(t, extension, text); err == nil || err.Error() != want {
+		t.Errorf("cap.exit via on an exit was refused with %v, want %q", err, want)
+	}
+}
+
 // a path long enough to take the device under 1280 bytes is refused by the MTU's arithmetic, which counts via beside cap.segment steer
 func TestExitViaCountsInTheDeviceMTU(t *testing.T) {
 	node := viaFixture("3fff:b:0:306::3", "3fff:b:0:206::1")
