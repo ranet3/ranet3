@@ -118,8 +118,8 @@ func TestDarwinHubWithNoSelectionNamesNothing(t *testing.T) {
 			if ep.addr.Addr().Is6() {
 				socket = bind.v6
 			}
-			if control, err := bind.selectedControl(socket, ep); control != nil || err != nil {
-				t.Errorf("a send to %s from a hub with no selection carries %x, %v, want no control message", at, control, err)
+			if control, generation, err := bind.selectedControl(socket, ep); control != nil || generation != 0 || err != nil {
+				t.Errorf("a send to %s from a hub with no selection carries %x under generation %d, %v, want no control message", at, control, generation, err)
 			}
 			if k := bind.pairOf(ep); k.index != 0 {
 				t.Errorf("the pair to %s from a hub with no selection is keyed to interface %d", at, k.index)
@@ -553,6 +553,58 @@ func TestDarwinUnderlayFollowsTheSelection(t *testing.T) {
 			leftBy(t, paired, u2, u)
 			if open := hub.PairSockets(); open != 1 {
 				t.Errorf("the hub holds %d sockets connected to one peer after the move, want the new pair's alone", open)
+			}
+		})
+	}
+}
+
+// a send that built its control under one generation and reaches the socket after a send of the next released its route
+// leaves by the interface it names, and the next generation's send after it leaves by the new interface, not by the route the late send cached
+// the two sends are ordered by hand, as two muxes racing a selection change order them, both naming the peer on a route scoped to its interface
+func TestDarwinUnderlayReleasesTheRouteALateSendCached(t *testing.T) {
+	requireHostNet(t, "test utuns")
+	u, u2 := newTestTUN(t, uplinkV4, uplinkV6), newTestTUN(t, secondV4, secondV6)
+	for _, family := range underlayFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			u.route(t, family.wide, true)
+			u2.route(t, family.wide, true)
+			selection := newTestSelection(u.index)
+			hub := selectedHub(t, selection)
+			bind := hub.bind.(*darwinBind)
+			peer := netip.AddrPortFrom(family.peer, underlayPort)
+			parsed, err := bind.ParseEndpoint(peer.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ep := parsed.(*darwinEndpoint)
+			socket := bind.v4
+			if family.peer.Is6() {
+				socket = bind.v6
+			}
+			late, lateGeneration, err := bind.selectedControl(socket, ep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			selection.move(u2.index)
+			next, nextGeneration, err := bind.selectedControl(socket, ep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range []struct {
+				name        string
+				control     []byte
+				generation  uint64
+				want, other *testTUN
+			}{
+				{"the late send", late, lateGeneration, u, u2},
+				{"the next generation's send", next, nextGeneration, u2, u},
+			} {
+				d := datagram{peer, []byte(family.name + ", " + step.name)}
+				drainAll(u, u2)
+				if err := socket.writeSelected(d.payload, ep, step.control, step.generation); err != nil {
+					t.Fatalf("%s to %s under generation %d: %v", step.name, peer, step.generation, err)
+				}
+				leftBy(t, d, step.want, step.other)
 			}
 		})
 	}

@@ -29,7 +29,7 @@ import (
 // socket rather than on the bookkeeping beside it.
 func boundInterface(t *testing.T, socket *darwinSocket) int {
 	t.Helper()
-	level, option := socket.boundInterfaceOption()
+	level, option := boundInterfaceOption(socket.ipv6)
 	var index int
 	var readErr error
 	if err := socket.raw.Control(func(fd uintptr) {

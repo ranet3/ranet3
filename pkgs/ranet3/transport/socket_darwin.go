@@ -194,10 +194,9 @@ func (s *darwinSocket) setDontFragment(on bool) error {
 	return setErr
 }
 
-// boundInterfaceOption is the level and option name that binds this family's
-// socket to one interface.
-func (s *darwinSocket) boundInterfaceOption() (level, option int) {
-	if s.ipv6 {
+// boundInterfaceOption is the level and option name that binds a socket of this family to one interface
+func boundInterfaceOption(ipv6 bool) (level, option int) {
+	if ipv6 {
 		return unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
 	}
 	return unix.IPPROTO_IP, unix.IP_BOUND_IF
@@ -206,21 +205,24 @@ func (s *darwinSocket) boundInterfaceOption() (level, option int) {
 // releaseRoute drops the route the socket caches once generation is past the last one it was dropped at
 // in_pcbladdr in bsd/netinet/in_pcb.c reuses a socket's cached route for its destination whatever interface a send names,
 // so a send naming the interface a selection left would take a later send naming its new one there
-// IP_BOUND_IF and IPV6_BOUND_IF of 0 leave the socket scoped to nothing and release the route, inp_bindif_common there
+// the generation is stored before the drop, so a send of an older one that writes meanwhile finds it and drops what it cached
 func (s *darwinSocket) releaseRoute(generation uint64) error {
 	if s.released.Load() >= generation {
 		return nil
 	}
-	level, option := s.boundInterfaceOption()
+	s.released.Store(generation)
+	return s.dropRoute()
+}
+
+// dropRoute releases the route the socket caches
+// IP_BOUND_IF and IPV6_BOUND_IF of 0 leave the socket scoped to nothing and release the route, inp_bindif_common in bsd/netinet/in_pcb.c
+func (s *darwinSocket) dropRoute() error {
+	level, option := boundInterfaceOption(s.ipv6)
 	var setErr error
 	if err := s.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, 0) }); err != nil {
 		return err
 	}
-	if setErr != nil {
-		return setErr
-	}
-	s.released.Store(generation)
-	return nil
+	return setErr
 }
 
 // darwinBind holds the one socket per family every session shares.
@@ -281,10 +283,11 @@ func (b *darwinBind) selectedFor(ep *darwinEndpoint) *selected {
 // boundSource resolves one route the way a socket bound to index would, and answers the source it picks
 // a link-local target's zone names the interface its route takes, and a link-local source comes back zoned by it
 func boundSource(index int, target netip.AddrPort) (netip.Addr, error) {
-	network, level, option := "udp4", unix.IPPROTO_IP, unix.IP_BOUND_IF
+	network := "udp4"
 	if target.Addr().Is6() {
-		network, level, option = "udp6", unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
+		network = "udp6"
 	}
+	level, option := boundInterfaceOption(target.Addr().Is6())
 	dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
 		var setErr error
 		if err := raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, index) }); err != nil {
@@ -448,21 +451,21 @@ var fragmentControl = func() []byte {
 // where ep has no pin or once darwin refused it
 func (b *darwinBind) sendFrom(socket *darwinSocket, packet []byte, ep *darwinEndpoint) error {
 	if ep.pin() == nil {
-		control, err := b.selectedControl(socket, ep)
+		control, generation, err := b.selectedControl(socket, ep)
 		if err != nil {
 			return err
 		}
-		return socket.write(packet, ep, control)
+		return socket.writeSelected(packet, ep, control, generation)
 	}
 	refused := socket.write(packet, ep, ep.pinnedControl())
 	if refused == nil || !unpinnable(refused) {
 		return refused
 	}
-	control, err := b.selectedControl(socket, ep)
+	control, generation, err := b.selectedControl(socket, ep)
 	if err != nil {
 		return err
 	}
-	err = socket.write(packet, ep, control)
+	err = socket.writeSelected(packet, ep, control, generation)
 	// darwin refuses a datagram as too large only once it has routed it from the source it chose
 	if (err == nil || errors.Is(err, unix.EMSGSIZE)) && ep.unpin(refused) {
 		unpinned(b.events, ep, refused)
@@ -470,25 +473,36 @@ func (b *darwinBind) sendFrom(socket *darwinSocket, packet []byte, ep *darwinEnd
 	return err
 }
 
-// selectedControl is the control message a send to ep that leaves the source to the kernel carries on socket:
+// selectedControl is the control message a send to ep that leaves the source to the kernel carries on socket, and the generation it names an interface under:
 // the interface the selection names, beside an IPV6_DONTFRAG of 0 while ep fragments, after the socket released a route it cached under an older generation
 // it refuses a send the selection names no interface for, as a marked lookup that ends in an empty main does on linux
-// with no selection it names no interface
-func (b *darwinBind) selectedControl(socket *darwinSocket, ep *darwinEndpoint) ([]byte, error) {
+// with no selection it names no interface, under generation 0
+func (b *darwinBind) selectedControl(socket *darwinSocket, ep *darwinEndpoint) ([]byte, uint64, error) {
 	if b.selection == nil {
-		return ep.unpinnedControl(), nil
+		return ep.unpinnedControl(), 0, nil
 	}
 	s := b.selectedFor(ep)
 	if s.index == 0 {
-		return nil, unix.ENETUNREACH
+		return nil, 0, unix.ENETUNREACH
 	}
 	if err := socket.releaseRoute(s.generation); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if ep.fragments.Load() {
-		return s.fragmentingControl, nil
+		return s.fragmentingControl, s.generation, nil
 	}
-	return s.control, nil
+	return s.control, s.generation, nil
+}
+
+// writeSelected sends one datagram to ep carrying control, which selectedControl built under generation
+// a send whose generation is older than the socket's last release, which ran between the two, cached the route of the interface the old generation named,
+// and a later send naming the new one would take that route, so the socket releases it again
+func (s *darwinSocket) writeSelected(packet []byte, ep *darwinEndpoint, control []byte, generation uint64) error {
+	err := s.write(packet, ep, control)
+	if generation < s.released.Load() {
+		return errors.Join(err, s.dropRoute())
+	}
+	return err
 }
 
 // write sends one datagram to ep carrying control
@@ -805,10 +819,7 @@ func socketControl(ipv6 bool, index, buffer int, reuseAddr bool) func(string, st
 				return
 			}
 			// reported rather than ignored like the tuning above, since a socket scoped to nothing follows a route out of the tun
-			level, option := unix.IPPROTO_IP, unix.IP_BOUND_IF
-			if ipv6 {
-				level, option = unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
-			}
+			level, option := boundInterfaceOption(ipv6)
 			optionErr = unix.SetsockoptInt(int(fd), level, option, index)
 		}); err != nil {
 			return err
