@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-27
+updated: 2026-10-28
 order: 70
 ---
 
@@ -359,9 +359,10 @@ describes.
 
 The daemon reads this node's global unicast and private mesh addresses of each
 family `cap.egress` translates once at startup, among the host prefixes
-`cap.route` announces and those `cap.table` assigns. The In direction translates
-to one of them where no class names its source, and this node's own traffic from
-each leaves under that address's class. A reload that moves one is refused with
+`cap.route` announces and those `cap.table` assigns. Under `return`, the In
+direction translates to one of them where the class from `0.0.0.0/0` or `::/0`
+names no address. This node's own traffic from each leaves under that address's
+class. A reload that moves one is refused with
 `config: cap.route or cap.table moved a mesh address cap.egress translates under, restart to apply`.
 With `cap.egress.return` set, a reload that leaves none or more than 1 to pick
 from, in a family whose class from `0.0.0.0/0` or `::/0` names no address, is

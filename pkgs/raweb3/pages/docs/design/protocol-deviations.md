@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-10-27
+updated: 2026-10-28
 order: 20
 ---
 
@@ -93,12 +93,12 @@ lists. The table summarizes them, and the sections below give the details.
 | RFC 7857 section 2.1                                                                   | Make the timeouts of a TCP connection opening and closing configurable apart (SHOULD)                                                                                 | The kernel exit's timeouts for a translated connection are fixed in code                                                                                                                                                                                                                                                                                                                                    | No deployment found needing other values, see Exit translation                                                                                                                                                                                                                                             |
 | RFC 5382 section 5 (REQ-5)                                                             | Abandon a partially open TCP connection only once it has been idle 4 minutes (MUST)                                                                                   | The kernel exit keeps a translated connection opening 4 minutes from its first SYN, which a retransmitted SYN does not renew                                                                                                                                                                                                                                                                                | A SYN that renewed it would let a port a client or a NAT reuses keep the entry forever, see Exit translation                                                                                                                                                                                               |
 | RFC 7857 section 2.2                                                                   | Keep a TCP session 4 minutes after a reset that matches it (SHOULD)                                                                                                   | The kernel exit keeps a translated connection 10 seconds after a reset, the kernel's own, and none after a reset before any reply                                                                                                                                                                                                                                                                           | A closed connection is outside its source's share, so its timeout bounds what the source holds past it, see Exit translation                                                                                                                                                                               |
-| RFC 5508 section 6                                                                     | Answer a new flow the NAT cannot set up with an ICMP destination unreachable, code 13 (SHOULD)                                                                        | The kernel exit answers an IPv4 flow past its source's share with code 1, Host Unreachable                                                                                                                                                                                                                                                                                                                  | RFC 6888 REQ-11 asks code 1 of a refusal under a quota, a soft error TCP does not abort on, see Exit translation                                                                                                                                                                                           |
+| RFC 5508 section 6                                                                     | Answer a new flow the NAT cannot set up with an ICMP destination unreachable, code 13 (SHOULD)                                                                        | The kernel exit answers an IPv4 flow past its source's share with code 1, Host Unreachable                                                                                                                                                                                                                                                                                                                  | RFC 6888 REQ-11 asks code 1 of a refusal under a quota, see Exit translation                                                                                                                                                                                                                               |
 | RFC 1812 section 5.2.7.1                                                               | Answer a packet the router filters administratively with Destination Unreachable, code 13 (SHOULD)                                                                    | The kernel exit answers an IPv4 flow past its source's share with code 1, Host Unreachable                                                                                                                                                                                                                                                                                                                  | RFC 6888 REQ-11 answers a refusal under a quota, see Exit translation                                                                                                                                                                                                                                      |
-| RFC 4443 section 3.1                                                                   | Allow sending Destination Unreachable to be disabled, preferably per interface (SHOULD)                                                                               | The kernel exit's answer to a flow past its source's share cannot be turned off                                                                                                                                                                                                                                                                                                                             | It goes to a mesh source alone, which then stops the refused flow, and the host's rate limit thins it, see Exit translation                                                                                                                                                                                |
+| RFC 4443 section 3.1                                                                   | Allow sending Destination Unreachable to be disabled, preferably per interface (SHOULD)                                                                               | The kernel exit's answer to a flow past its source's share cannot be turned off                                                                                                                                                                                                                                                                                                                             | It goes to a mesh source alone, and the host's rate limit thins it, see Exit translation                                                                                                                                                                                                                   |
 | RFC 5508 section 7.7                                                                   | Copy into an ICMP error the diffserv class of the packet that caused it (SHOULD)                                                                                      | The kernel exit's IPv4 answer to a flow past its source's share carries precedence 6, internet control                                                                                                                                                                                                                                                                                                      | Linux marks every ICMP error it originates so, and the nf_tables reject has no option for it, see Exit translation                                                                                                                                                                                         |
 | RFC 5508 section 6                                                                     | Answer a new flow the NAT cannot set up with an ICMP destination unreachable, code 13 (SHOULD)                                                                        | Past the host's connection table, or with no port left, the kernel exit drops the packet with no answer                                                                                                                                                                                                                                                                                                     | The drop happens inside connection tracking, where no rule sees it, see Exit translation                                                                                                                                                                                                                   |
-| RFC 6888 section 3 (REQ-11)                                                            | Answer a mapping it cannot create with Host Unreachable and a notification (SHOULD), and delete no existing mapping to make room (MUST)                               | Past the host's connection table, the kernel evicts a flow it has not marked assured to take a new one, and with none to evict drops the packet with no answer, count or event                                                                                                                                                                                                                              | The table is the host's, see Exit translation                                                                                                                                                                                                                                                              |
+| RFC 6888 section 3 (REQ-11)                                                            | Answer a mapping it cannot create with Host Unreachable and a notification (SHOULD), and delete no existing mapping to make room (MUST)                               | Past the host's connection table, the kernel evicts a flow or drops the packet, with no answer, count or event                                                                                                                                                                                                                                                                                              | The table is the host's, see Exit translation                                                                                                                                                                                                                                                              |
 | RFC 4787 section 4.3 (REQ-5), RFC 5382 section 5 (REQ-5), RFC 5508 section 3.2 (REQ-2) | Keep an idle UDP mapping at least 2 minutes, a TCP connection established 2 hours 4 minutes and one opening or closing 4 minutes, and an ICMP query 60 seconds (MUST) | Once the host's connection table is full, the kernel may evict a translated flow before its timeout                                                                                                                                                                                                                                                                                                         | The table is the host's, see Exit translation                                                                                                                                                                                                                                                              |
 | RFC 6888 section 3 (REQ-4 and REQ-5)                                                   | Limit the rate at which one subscriber creates mappings (RECOMMENDED, SHOULD)                                                                                         | The kernel exit bounds the flows a source holds open, not the rate it opens them                                                                                                                                                                                                                                                                                                                            | A known gap, see Exit translation                                                                                                                                                                                                                                                                          |
 | RFC 6888 section 3 (REQ-6)                                                             | Turn translation off by administration for given destination addresses or ports (MUST)                                                                                | The exit chooses whether to translate a flow by the flow's source alone                                                                                                                                                                                                                                                                                                                                     | A known gap, see Exit translation                                                                                                                                                                                                                                                                          |
@@ -1928,7 +1928,9 @@ read does not say whether it answers a flow.
 The departures below are those of the flows the exit translates: out of the mesh
 under a class of `auto` or an address, and into it under `return`. A class of
 `none` leaves a flow under the source it carries and is no NAT, so these
-requirements do not apply to its flows.
+requirements do not apply to its flows. Each source's share of the flows covers
+every class, `none` among them. The departures of its answer below hold for a
+`none` source's refused flows too.
 
 The kernel exit translates with the host's connection tracking, which maps each
 connection on its own. A new connection from an inside address and port takes
@@ -1976,11 +1978,12 @@ forwards meets, and a drop for the exit's own packets would need a chain at the
 output hook, which every packet the exit sends meets.
 
 Under `auto` the kernel exit takes the address the kernel's masquerade picks for
-each flow's route: in IPv4 the address of the link it leaves by that shares a
-subnet with the next hop, and in IPv6 the one source address selection picks for
-the destination, a deprecated address avoided. On an uplink holding several
-addresses of a family, one source's flows can so leave under several addresses
-at once, the "IP address pooling" behavior
+each flow's route, for
+[IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_masquerade.c?id=940de590b839f71d6dc846160534bf202401b8b7#n54)
+and for
+[IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_masquerade.c?id=940de590b839f71d6dc846160534bf202401b8b7#n237).
+On an uplink holding several addresses of a family, one source's flows can so
+leave under several addresses at once, the "IP address pooling" behavior
 [RFC 4787 section 4.1](https://www.rfc-editor.org/rfc/rfc4787.html#section-4.1)
 calls "Arbitrary". It says:
 
@@ -2057,11 +2060,12 @@ traversal of hairpinned ICMP Error messages". A hairpin needs a destination
 translation for each mapping, which no nf_tables statement makes, and leaves
 reach each other over the mesh at their overlay addresses.
 
-The kernel exit attaches timeouts of its own to each flow it translates, one a
-class translates out of the mesh and one an in rule translates into it under
-`return` alike, by a connection tracking timeout object for each protocol, which
-its rules attach on the flow's first packet. Every other connection the host
-tracks, a flow under `none` among them, keeps the host's timeouts.
+The kernel exit attaches timeouts of its own to each TCP, UDP, ICMP and ICMPv6
+flow it translates, UDP to port 53 aside, one a class translates out of the mesh
+and one an in rule translates into it under `return` alike, by a connection
+tracking timeout object for each protocol, which its rules attach on the flow's
+first packet. Every other connection the host tracks, a flow under `none` among
+them, keeps the host's timeouts.
 [RFC 5382 section 5](https://www.rfc-editor.org/rfc/rfc5382.html#section-5)
 says:
 
@@ -2088,10 +2092,8 @@ unspecified. A reset before any reply ends the session at once.
 The kernel does not renew an opening connection's timeout on a retransmitted
 SYN, so an attempt whose SYNs go unanswered is forgotten 4 minutes after the
 first, though each retransmission keeps it from being idle as the section counts
-idleness. Linux gives the reason in its connection tracking: a retransmitted SYN
-that renewed the entry would let a port a client or a NAT reuses keep it, with
-its translation, indefinitely. A Linux client at its defaults gives up an
-unanswered connection about 2 minutes after its first SYN.
+idleness. Linux gives the reason in
+[its connection tracking](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_proto_tcp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1357).
 
 [RFC 7857 section 2.1](https://www.rfc-editor.org/rfc/rfc7857.html#section-2.1)
 says "a NAT SHOULD provide different configurable parameters for configuring the
@@ -2120,13 +2122,13 @@ after its last packet until it has a reply and a packet more than 2 seconds
 after its first, and 5 minutes from then on. Before that it departs from item c:
 a flow nobody answers carries nothing back, and the shorter timer bounds the
 entries a source's unanswered flows hold in the table every source shares. A
-flow to UDP port 53 keeps the host's timeouts, 30 seconds at the kernel's
-defaults, under item a: "For specific destination ports in the well-known port
-range (ports 0-1023), a NAT MAY have shorter UDP mapping timers that are
-specific to the IANA-registered application running over that specific
-destination port." A resolver answers in one exchange, and a busy exit sends
-many. The timers hold for as long as the host's connection tracking keeps the
-flow, which a full table can cut short, as REQ-8's paragraph below says.
+flow to UDP port 53 keeps the host's timeouts, under item a: "For specific
+destination ports in the well-known port range (ports 0-1023), a NAT MAY have
+shorter UDP mapping timers that are specific to the IANA-registered application
+running over that specific destination port." A resolver answers in one
+exchange, and a busy exit sends many. The timers hold for as long as the host's
+connection tracking keeps the flow, which a full table can cut short, as REQ-8's
+paragraph below says.
 
 [RFC 5508 section 3.2](https://www.rfc-editor.org/rfc/rfc5508.html#section-3.2)
 says:
@@ -2164,11 +2166,12 @@ listed as a "soft error" in [RFC1122], which is important because we don't want
 TCP stacks to abort the connection attempt in this case."
 [RFC 1122 section 4.2.3.9](https://www.rfc-editor.org/rfc/rfc1122.html#section-4.2.3.9)
 lists codes 0, 1 and 5 as soft errors on which "TCP MUST NOT abort the
-connection", so a stack that retries while the source's own flows end can open
-its connection once its share frees. The cost falls on UDP: a connected UDP
-socket on a Linux leaf is told of code 13 and not of code 1, unless its
-application asked for every error with `IP_RECVERR`, so such an application no
-longer learns that its flow was refused.
+connection". What a leaf's TCP does with the answer is its stack's, as
+[the share](../exit-nodes.md#each-sources-share-of-the-flows) says. The cost
+falls on UDP: a connected UDP socket on a Linux leaf
+[is told of code 13 and not of code 1](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/udp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n995),
+unless its application asked for every error with `IP_RECVERR`, so such an
+application no longer learns that its flow was refused.
 [RFC 1812 section 5.2.7.1](https://www.rfc-editor.org/rfc/rfc1812.html#section-5.2.7.1)
 says "Routers SHOULD use the newly defined Code 13 (Communication
 Administratively Prohibited) if they administratively filter packets". A refusal
@@ -2181,13 +2184,14 @@ The answer cannot be turned off.
 says "For security reasons, it is recommended that implementations SHOULD allow
 sending of ICMP destination unreachable messages to be disabled, preferably on a
 per-interface basis." The exit's answer goes only to a mesh source, through the
-tun, so that the leaf stops a flow the exit refused rather than waiting on it,
-and the host's rate limit on ICMP errors thins the answers to one source.
+tun, and
+[the host's rate limit on ICMP errors](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/icmp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n311)
+thins the answers to one source.
 
 In IPv4 the answer sets precedence 6, internet control, in its TOS octet, so it
-does not carry the refused packet's diffserv class. Linux marks every ICMP error
-it originates so, and the nf_tables reject statement has no option for another
-class.
+does not carry the refused packet's diffserv class.
+[Linux marks every ICMP error it originates so](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/icmp.c?id=940de590b839f71d6dc846160534bf202401b8b7#n944),
+and the nf_tables reject statement has no option for another class.
 [RFC 5508 section 7.7](https://www.rfc-editor.org/rfc/rfc5508.html#section-7.7)
 says "When generating an ICMP message, a NAT device SHOULD copy the diffserv
 class of the message that causes the sending of the ICMP error message."
@@ -2223,12 +2227,13 @@ from consuming excessive CPU resources from the CGN (e.g., rate-limit the
 subscriber's creation of new mappings)", and REQ-5's item b says "it SHOULD be
 possible to limit the rate at which memory-consuming state elements are
 allocated". The kernel exit bounds the flows a source holds open and not the
-rate at which it opens them. Each new flow from a source at its share walks the
-source's list of flows, so a source that keeps opening flows past its share
-costs the exit CPU in proportion to its share. And the share leaves out
-connections in TIME_WAIT or closed, so a source closing short connections fast
-holds entries its share does not count. A known gap: no rule bounds the rate at
-which one source opens flows.
+rate at which it opens them, so a source that keeps opening flows past its share
+can cost the exit CPU in proportion to its share, as
+[the kernel's count](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conncount.c?id=940de590b839f71d6dc846160534bf202401b8b7#n201)
+walks the source's list of flows. And the share leaves out connections in
+TIME_WAIT or closed, so a source closing short connections fast holds entries
+its share does not count. A known gap: no rule bounds the rate at which one
+source opens flows.
 
 REQ-11 covers a NAT unable to create a mapping. Its item b says it "SHOULD send
 an ICMP Destination Unreachable message with code 1 (Host Unreachable) to the

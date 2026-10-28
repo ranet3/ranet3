@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-27
+updated: 2026-10-28
 order: 35
 ---
 
@@ -673,15 +673,16 @@ needs.
   node an exit for its family, as under `cap.route`, and loads with a warning
   unless it is a default.
 - A prefix is announced only while its family is
-  [ready](exit-nodes.md#readiness): its translation chain reads back exactly as
-  written, with no other writer's rule among it, the host forwards that family,
-  and, where they run, the kernel's lookups of a translated packet and its reply
-  pass.
-- The lookups read from the address of a mesh member inside
-  `cap.border.overlay`. A node with no `cap.border`, or whose mesh routes no
-  other node's prefix of a family inside the overlay, skips that family's
-  lookups and judges it by its chain and its forwarding alone, and `status` says
-  so.
+  [ready](exit-nodes.md#readiness): its 2 chains, its set and its timeout
+  objects read back exactly as written, with no other writer's rule in its
+  chains and in a table with no flags, the host forwards that family and holds
+  every address its classes name, and, where they run, the kernel's lookups of a
+  translated packet and its reply pass.
+- The lookups of a translated packet and its reply read from the address of a
+  mesh member inside `cap.border.overlay`. A node with no `cap.border`, or whose
+  mesh routes no other node's prefix of a family inside the overlay, skips that
+  family's forward and reply lookups and judges it by its table, its forwarding
+  and its classes' addresses alone, and `status` says so.
 - A node with an egress segment translates both families, whatever `advertise`
   holds.
 - An `advertise` prefix with bits set below its length, written as IPv4-mapped
@@ -724,10 +725,9 @@ needs.
   this node in each family, every protocol's together, past which its next new
   flow is refused, as
   [exit nodes](exit-nodes.md#each-sources-share-of-the-flows) describes. `0` or
-  leaving it out is the default, and a value past 2147483647, the most entries
-  `net.netfilter.nf_conntrack_max` can be set to, is refused. The shares come
-  out of the host's connection tracking table, which ranet3 never sizes, so size
-  the two together.
+  leaving it out is the default, and a value past 2147483647 is refused. The
+  shares come out of the host's connection tracking table, which ranet3 never
+  sizes, so size the two together.
 - The periodic pass reinstalls a removed table and reads the forwarding sysctls
   again. `sweep` also caps the delay between retries of a failed pass. A
   negative `sweep` is refused.

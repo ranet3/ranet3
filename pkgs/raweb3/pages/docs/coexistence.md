@@ -167,16 +167,17 @@ table, with the host's own addresses at row L1 ahead of every one:
   32765 and 32764, and 5110 answers every overlay destination ahead of them.
 
 ranet3 takes no lookup back from another program's rule, and reports one that
-takes it. After the passes [when a pass runs](routing.md#when-a-pass-runs)
-names, the reconciler asks the kernel where 2 kinds of lookup end, on the socket
-it writes with:
+takes it. After each pass that applies without error, among the passes
+[when a pass runs](routing.md#when-a-pass-runs) lists, the reconciler asks the
+kernel where 2 kinds of lookup end, on the socket it writes with:
 
 - An unmarked lookup of one address of each overlay prefix it holds: the first
   address after the prefix's network address outside every prefix `cap.table`
   assigns, or where the assigned prefixes leave none, the first that no assigned
-  address equals, or the one address of a full length prefix. The prefix is
-  taken when the answer is anything but a route out of the tun, from any table,
-  or the refusal of an unreachable route, the hold's among them.
+  address equals, or the one address of a full length prefix, and none where
+  `cap.table` assigns every address of the prefix. The prefix is taken when the
+  answer is anything but a route out of the tun, from any table, or the refusal
+  of an unreachable route, the hold's among them.
 - A lookup marked 0x72 toward every address a live session sends its underlay
   to, once for each address, in both families. The lookup is taken when the
   answer is a route out of the tun, from any table but local. Another program's
@@ -403,10 +404,12 @@ Tailscale's among them, and the first one to translate a connection
 for that connection's lifetime. The translator's chain is at priority 99, 1
 below `srcnat`, so it runs ahead of every chain at `srcnat` whatever order the
 chains were made in. An operator who wants to translate a mesh flow itself
-writes a chain below 99, or one at 99 made after the translator's. A flow such a
-chain translates leaves without this node's translation, its timeouts and its
-count of translated flows, and the limit still holds it to its source's share.
-Deleting a neighbor's rule instead would break whatever installed it.
+writes a chain below 99, or one at 99
+[made after the translator's](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n147).
+A flow such a chain translates leaves without this node's translation, its
+timeouts and its count of translated flows, and the limit still holds it to its
+source's share. Deleting a neighbor's rule instead would break whatever
+installed it.
 
 `status` and the log name the other chains instead and leave them alone. Their
 rules and this one are usually disjoint, since this one matches on the mesh
@@ -420,7 +423,7 @@ leaves out chains in `inet` tables and chains past 99, which run after it.
 A class of `none` binds its flows to the source they carry in the translator's
 chain, at priority 99, so a host's masquerade at `srcnat` or after leaves them
 alone, and a chain below 99, or one at 99 made after the translator's, still
-translates them.
+translates them, as [for every mesh flow above](#the-packet-filter).
 
 The filter chain at forward, priority 0, runs beside the host's own filter
 chains at that hook: a packet passes only where no chain drops it, so its

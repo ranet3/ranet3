@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-27
+updated: 2026-10-28
 order: 30
 ---
 
@@ -243,66 +243,66 @@ whose daemon is stopping ends with a `stream.closed` line saying so. A daemon
 holds 4 streams at once and refuses a 5th with 503, which leaves the rest of its
 connections to the reads.
 
-| Kind                                  | When                                                                         |
-| ------------------------------------- | ---------------------------------------------------------------------------- |
-| `daemon.started`, `daemon.stopping`   | the node is up, and its shutdown has begun                                   |
-| `daemon.reload`                       | the file and trust document were read again, with what applied or the error  |
-| `daemon.ttl`                          | a reload could not read the host's default TTL, which ICMPv4 answers carry   |
-| `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag       |
-| `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed   |
-| `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed   |
-| `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                       |
-| `dial.woken`                          | a dialer was set going before its delay, as `redial` does                    |
-| `ike.handshake.failed`                | the responder refused a handshake, as often as it logs one                   |
-| `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                                |
-| `ike.followup.dropped`                | a peer's rekey was dropped before its last `IKE_FOLLOWUP_KE`                 |
-| `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as    |
-| `ike.session.established`, `.ended`   | a session started serving, and stopped                                       |
-| `ike.session.resolved`                | 2 sessions for 1 path were resolved to 1                                     |
-| `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete      |
-| `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                   |
-| `ike.rekey.failed`                    | the same rekey failing, with its error                                       |
-| `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane             |
-| `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                              |
-| `ike.suite.unlisted`                  | an SA runs a transform the lists left out, and its rekey or replacement      |
-| `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request          |
-| `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again          |
-| `ike.probe`                           | asked to prove its path, a session started a check or resent its request     |
-| `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                  |
-| `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended        |
-| `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size   |
-| `babel.request.sent`                  | this node asked a neighbor that came up for its whole table                  |
-| `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload        |
-| `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals and cost         |
-| `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved  |
-| `babel.route.selected`, `.retracted`  | a prefix's next hop changed, every time rather than once a second as logged  |
-| `babel.seqno.requested`               | a seqno request naming this node's own router id arrived                     |
-| `babel.seqno.raised`                  | this node's own seqno rose, at a start of the speaker or for a request       |
-| `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start        |
-| `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed        |
-| `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS        |
-| `kernel.taken`                        | a reconciler lookup became taken or not, or changed its answer, on Linux     |
-| `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed       |
-| `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                  |
-| `egress.refused`                      | a pass read a family's count of packets refused past a source's share move   |
-| `border.pass`                         | a border filter pass that rewrote its chain or failed                        |
-| `border.ready`                        | the border filter's chain went ready or not ready, with `ready`              |
-| `border.dropped`                      | a pass read a drop counter that moved, at most once per pass                 |
-| `network.changed`                     | the host's default or addresses moved, so every session was probed           |
-| `transport.underlay.bound`            | the underlay socket moved onto another interface                             |
-| `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable    |
-| `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment        |
-| `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why    |
-| `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason       |
-| `pmtu.floor`                          | a session's path went under 1280 bytes in one datagram, or came back         |
-| `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back     |
-| `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target            |
-| `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target           |
-| `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                |
-| `netstack.tun.failed`                 | the tun went away under the running node, which then stops                   |
-| `netstack.transit.dropped`            | the forwarding decision dropped a packet a session delivered, with why       |
-| `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit |
-| `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                       |
+| Kind                                  | When                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------ |
+| `daemon.started`, `daemon.stopping`   | the node is up, and its shutdown has begun                                           |
+| `daemon.reload`                       | the file and trust document were read again, with what applied or the error          |
+| `daemon.ttl`                          | a reload could not read the host's default TTL, which ICMPv4 answers carry           |
+| `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag               |
+| `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed           |
+| `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed           |
+| `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                               |
+| `dial.woken`                          | a dialer was set going before its delay, as `redial` does                            |
+| `ike.handshake.failed`                | the responder refused a handshake, as often as it logs one                           |
+| `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                                        |
+| `ike.followup.dropped`                | a peer's rekey was dropped before its last `IKE_FOLLOWUP_KE`                         |
+| `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as            |
+| `ike.session.established`, `.ended`   | a session started serving, and stopped                                               |
+| `ike.session.resolved`                | 2 sessions for 1 path were resolved to 1                                             |
+| `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete              |
+| `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                           |
+| `ike.rekey.failed`                    | the same rekey failing, with its error                                               |
+| `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane                     |
+| `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                                      |
+| `ike.suite.unlisted`                  | an SA runs a transform the lists left out, and its rekey or replacement              |
+| `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request                  |
+| `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again                  |
+| `ike.probe`                           | asked to prove its path, a session started a check or resent its request             |
+| `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                          |
+| `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended                |
+| `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size           |
+| `babel.request.sent`                  | this node asked a neighbor that came up for its whole table                          |
+| `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload                |
+| `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals and cost                 |
+| `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved          |
+| `babel.route.selected`, `.retracted`  | a prefix's next hop changed, every time rather than once a second as logged          |
+| `babel.seqno.requested`               | a seqno request naming this node's own router id arrived                             |
+| `babel.seqno.raised`                  | this node's own seqno rose, at a start of the speaker or for a request               |
+| `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start                |
+| `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed                |
+| `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS                |
+| `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on Linux |
+| `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed               |
+| `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                          |
+| `egress.refused`                      | a pass read a family's count of packets refused past a source's share move           |
+| `border.pass`                         | a border filter pass that rewrote its chain or failed                                |
+| `border.ready`                        | the border filter's chain went ready or not ready, with `ready`                      |
+| `border.dropped`                      | a pass read a drop counter that moved, at most once per pass                         |
+| `network.changed`                     | the host's default or addresses moved, so every session was probed                   |
+| `transport.underlay.bound`            | the underlay socket moved onto another interface                                     |
+| `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable            |
+| `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment                |
+| `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why            |
+| `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason               |
+| `pmtu.floor`                          | a session's path went under 1280 bytes in one datagram, or came back                 |
+| `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back             |
+| `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target                    |
+| `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target                   |
+| `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                        |
+| `netstack.tun.failed`                 | the tun went away under the running node, which then stops                           |
+| `netstack.transit.dropped`            | the forwarding decision dropped a packet a session delivered, with why               |
+| `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit         |
+| `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                               |
 
 `egress.pass`, `egress.ready`, `egress.refused`, the 3 `border` kinds and
 `transport.endpoint.unsegmented` are recorded on Linux alone, and
