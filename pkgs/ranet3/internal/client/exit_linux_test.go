@@ -165,6 +165,44 @@ func TestReloadOfCapExitViaSwapsTheDefaultPolicyAndTheMTU(t *testing.T) {
 	}
 }
 
+// a reload moving cap.segment source alone hands the reconciler the outer source it resolves the path's SIDs from, which the mesh's default policy is sent from too
+// removing it hands back the node's overlay address
+func TestReloadOfTheOuterSourceAloneHandsTheReconcilerTheSource(t *testing.T) {
+	via := []schema.Addr{schema.MustAddr("3fff:b:0:306::3")}
+	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
+		exitLeafStart(old)
+		old.Cap.Table.Addresses = []schema.Prefix{schema.MustPrefix("192.0.2.2/24"), schema.MustPrefix("3fff::2/20")}
+		old.Cap.Exit = &kernel.ExitMode{Via: via}
+	})
+	segmentsOf(t, c)
+	for _, written := range []string{"3fff::5", ""} {
+		next := *c.config()
+		segment := next.Segments()
+		segment.Source = schema.Addr{}
+		want := netip.MustParseAddr("3fff::2")
+		if written != "" {
+			segment.Source = schema.MustAddr(written)
+			want = segment.Source.Addr
+		}
+		next.Cap.Segment = &segment
+		writeConfig(t, path, &next)
+		handed := len(reconciler.tables)
+		if err := c.ReloadFrom(path); err != nil {
+			t.Fatalf("a reload writing cap.segment source %q was refused: %v", written, err)
+		}
+		// a table WithPathSource(want) leaves as it is already sends the path from want
+		if len(reconciler.tables) != handed+1 || !reflect.DeepEqual(reconciler.tables[handed], reconciler.tables[handed].WithPathSource(want)) {
+			t.Fatalf("with cap.segment source %q the reconciler was handed %+v, want one more table sending the path from %s", written, reconciler.tables, want)
+		}
+		if policy := c.Mesh.Steering().Default(); policy == nil || policy.Source != want {
+			t.Errorf("with cap.segment source %q the mesh steers by default along %+v, want it sent from %s", written, policy, want)
+		}
+		if got := lastReload(t, bus)["applied"]; got != "cap.segment" {
+			t.Errorf("a reload writing cap.segment source %q was recorded as applying %q, want cap.segment", written, got)
+		}
+	}
+}
+
 // eth0 carries the host's IPv4 default and wlan0 its IPv6 one, beside a bridge
 var exitHost = kernel.NetworkState{
 	IPv4: kernel.NetworkFamily{Default: kernel.DefaultRoute{Interface: "eth0"}, Links: []kernel.Link{{Name: "docker0"}, {Name: "eth0"}, {Name: "wlan0"}}},

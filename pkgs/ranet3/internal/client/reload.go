@@ -125,7 +125,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	// the last refusal
 	// the reconciler takes a table it accepts at once
 	// with cap.exit's mode, and the overlay and the announcements its exit rule reads
-	if !sameTable(old, cfg) || cfg.Cap.Table != nil && (!sameOverlay(old, cfg) || !sameExit(old, cfg) || !sameExitMode(old, cfg)) {
+	// and the outer source mode 3 resolves the path's SIDs from
+	if !sameTable(old, cfg) || cfg.Cap.Table != nil && (!sameOverlay(old, cfg) || !sameExit(old, cfg) || !sameExitMode(old, cfg) || !sameExitPath(old, cfg)) {
 		if err := c.retable(old, cfg); err != nil {
 			return err
 		}
@@ -213,6 +214,8 @@ func (c *Client) retable(old, next *config.Config) error {
 			moved = "cap.border overlay"
 		case !sameExitMode(old, next):
 			moved = "cap.exit"
+		case !sameExitPath(old, next):
+			moved = "cap.segment source"
 		default:
 			moved = "cap.route announce"
 		}

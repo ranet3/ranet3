@@ -144,6 +144,10 @@ type Table struct {
 	// reconciler runs with it, nil in mode off. It is unexported so the file
 	// never spells it under cap.table.
 	mode *ExitMode
+	// pathSource is the outer source cap.exit via's path is sent from, which
+	// the pass resolves each SID from as the dataplane does, invalid outside
+	// mode 3
+	pathSource netip.Addr
 }
 
 // WithMode is t running cap.exit's mode, mode off where m is nil
@@ -661,6 +665,9 @@ type Reconciler struct {
 	// last pass reported, rebuilt each pass, so a route the mesh keeps
 	// announcing costs one log line
 	memberless map[Route]bool
+	// pathDown is the SID of cap.exit via the last pass found unresolved,
+	// invalid while the path stood, so a change is reported once
+	pathDown netip.Addr
 
 	// rules is the optional half of the platform, nil where it has no policy
 	// engine
@@ -1556,7 +1563,7 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 	warned := make(map[Route]bool, len(r.warned))
 	// the throw rows and the overlay holds stand with the policy rules that
 	// read them, which linux alone has
-	exit, policy := r.exit(), r.rules != nil
+	exit, policy, steered := r.exit(), r.rules != nil, r.table.steers()
 	for _, entry := range snapshot {
 		// The host's kernel holds every address cap.table assigns as one of its
 		// own already, so the mirror installs nothing for one this node does not
@@ -1595,7 +1602,10 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 		// with another exit's default in this table, on linux the exit's own
 		// traffic from its own prefixes would take it into the tun at 5430 and
 		// out of that exit (routing.md, where a lookup ends on Linux).
-		if r.captures(route) && (unreachable || !r.capture || exit) {
+		// Mode 3 declines every route that counts as well, and installs its
+		// own two defaults below in their place: what such a route covers
+		// would otherwise leave by an exit the path does not name.
+		if r.captures(route) && (unreachable || !r.capture || exit || steered) {
 			continue
 		}
 		// This node's own prefix outside the overlay that counts as no default
@@ -1632,6 +1642,9 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 	if policy {
 		carved := network.carved
 		out = r.carveThrows(r.overlayHolds(out, carved), carved, snapshot)
+	}
+	if steered {
+		out = r.steeredDefaults(out)
 	}
 	return out
 }

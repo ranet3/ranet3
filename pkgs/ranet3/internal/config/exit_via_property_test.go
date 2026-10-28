@@ -7,6 +7,7 @@ package config
 
 import (
 	"net/netip"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -135,14 +136,26 @@ func TestExitViaPolicyIsThePathFromTheModelsSource(t *testing.T) {
 			ht.Fatal(err)
 		}
 		policy := steering.Default()
+		// handedFrom reports the reconciler's table sending the path from source, which WithPathSource(source) then leaves as it is
+		handedFrom := func(source netip.Addr) bool {
+			table := cfg.ReconcilerTable()
+			if table == nil {
+				return !source.IsValid()
+			}
+			return reflect.DeepEqual(*table, table.WithPathSource(source))
+		}
 		if len(via) == 0 {
-			if policy != nil {
-				ht.Fatalf("a node with no via steers by default along %v", policy)
+			if policy != nil || !handedFrom(netip.Addr{}) {
+				ht.Fatalf("a node with no via steers by default along %v, or hands the reconciler a source for it", policy)
 			}
 			return
 		}
 		if policy == nil || policy.Source != want || !slices.Equal(policy.Path, via) {
 			ht.Fatalf("overlay %v, addresses %v, source %q: the default policy is %+v, want %v from %s", overlay, addresses, source, policy, via, want)
+		}
+		// the reconciler resolves the path's SIDs from the source the dataplane sends it from
+		if !handedFrom(want) {
+			ht.Fatalf("overlay %v, addresses %v, source %q: the reconciler resolves the path from another source than %s", overlay, addresses, source, want)
 		}
 		if steering.Overhead() != srv6.Overhead(len(via)) {
 			ht.Fatalf("a path of %d segments costs the device %d bytes, want %d", len(via), steering.Overhead(), srv6.Overhead(len(via)))

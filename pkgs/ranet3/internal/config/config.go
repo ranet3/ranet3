@@ -187,11 +187,13 @@ type Caps struct {
 }
 
 // ReconcilerTable is cap.table with cap.exit's mode, which the reconciler runs together, nil without cap.table
+// in mode 3 it carries the outer source cap.exit via's path is sent from, which the reconciler resolves each SID from
 func (c *Config) ReconcilerTable() *kernel.Table {
 	if c.Cap.Table == nil {
 		return nil
 	}
-	table := c.Cap.Table.WithMode(c.Cap.Exit)
+	source, _ := c.ExitPath()
+	table := c.Cap.Table.WithMode(c.Cap.Exit).WithPathSource(source)
 	return &table
 }
 
