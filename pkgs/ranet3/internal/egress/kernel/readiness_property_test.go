@@ -9,6 +9,7 @@ import (
 	"cmp"
 	"errors"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -472,6 +473,88 @@ func TestReadinessFollowsTheLookupsOverDrawnAnswers(t *testing.T) {
 			if calls[i] == calls[i-1] {
 				ht.Fatalf("Ready was told %v twice in a row, in %v", calls[i], calls)
 			}
+		}
+	})
+}
+
+// Over drawn exits, hosts, members and batches, a debug read after a pass
+// carries each family's lookups in the order the pass asked them, each with
+// the answer the batch gave it and none where the batch failed or answered
+// short, and each family's readiness as the pass left it for Status
+func TestDebugCarriesTheLookupsThePassJudged(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		drawn := hegel.Draw(ht, exits())
+		cfg, rt := drawn.cfg, drawn.rt
+		ht.Assume(cfg.Validate() == nil && cfg.Serves(rt.Steered) == nil)
+		var now step
+		onHost(&rt, &now)
+		members := pbt.Subset(ht, memberPool, 0, 4)
+		rt.Members = func() []netip.Prefix { return slices.Clone(members) }
+		whole := hegel.Draw(ht, hegel.WeightedBooleans(1.0/8))
+		short := hegel.Draw(ht, hegel.WeightedBooleans(1.0/8))
+		host, held := map[netip.Addr]hostAnswer{}, map[netip.Addr]Answer{}
+		var asked []Lookup
+		var given []Answer
+		rt.Lookup = func(lookups []Lookup) ([]Answer, error) {
+			asked = slices.Clone(lookups)
+			if whole {
+				return nil, errors.New("kernel: open a netlink socket: too many open files")
+			}
+			given = make([]Answer, len(lookups))
+			for i, lookup := range lookups {
+				if !lookup.Source.IsValid() {
+					if _, ok := held[lookup.Destination]; !ok {
+						held[lookup.Destination] = hegel.Draw(ht, heldAnswers())
+					}
+					given[i] = held[lookup.Destination]
+					continue
+				}
+				if _, ok := host[lookup.Destination]; !ok {
+					host[lookup.Destination] = hegel.Draw(ht, hostAnswers(rt.Interface))
+				}
+				given[i] = host[lookup.Destination].answer(lookup)
+			}
+			if short && len(given) > 0 {
+				return given[:len(given)-1], nil
+			}
+			return given, nil
+		}
+		be := &fakeBackend{}
+		tr := newTranslator(cfg, rt, be)
+		now = hegel.Draw(ht, steps(tr.desired()))
+		now.load(be)
+		_ = tr.reconcile()
+		stats := tr.lastPass()
+		debug := tr.Debug()
+		answered := !whole && !short
+		var carried []Lookup
+		var answers []Answer
+		for _, family := range debug.Families {
+			ready := stats.Ready4
+			if family.Family == egress.FamilyIPv6 {
+				ready = stats.Ready6
+			}
+			if family.Ready != ready {
+				ht.Fatalf("the debug read holds %s ready %v, and the pass left it ready %v", egress.FamilyName(family.Family), family.Ready, ready)
+			}
+			want := 0
+			if answered {
+				want = len(family.Lookups)
+			}
+			if len(family.Answers) != want {
+				ht.Fatalf("the debug read answers %d of %s's %d lookups, where the batch failed %v and answered short %v", len(family.Answers), egress.FamilyName(family.Family), len(family.Lookups), whole, short)
+			}
+			carried = append(carried, family.Lookups...)
+			answers = append(answers, family.Answers...)
+		}
+		if !slices.Equal(carried, asked) {
+			ht.Fatalf("the debug read carries the lookups %v, and the pass asked %v", carried, asked)
+		}
+		if !answered {
+			given = nil
+		}
+		if !slices.EqualFunc(answers, given, func(read, answer Answer) bool { return reflect.DeepEqual(read, answer) }) {
+			ht.Fatalf("the debug read carries the answers %+v, where the batch answered %+v", answers, given)
 		}
 	})
 }

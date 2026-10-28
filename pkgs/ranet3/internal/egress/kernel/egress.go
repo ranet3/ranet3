@@ -292,13 +292,81 @@ func (m Message) String() string {
 	return ""
 }
 
+// ruleKind names a rule's action, which decides the chain it sits in and
+// whether it keeps a counter
+type ruleKind uint8
+
+const (
+	// translating translates a flow's source, or binds it to its own for a
+	// class of none, in the translation's chain, counting the flows it meets
+	translating ruleKind = iota
+	// timing attaches timeouts ahead of a translation and keeps no counter,
+	// so a flow is counted once, by the translation after it
+	timing
+	// limiting refuses a source's new flow past the limit, in the forward
+	// hook's chain, counting the packets it refuses
+	limiting
+	// dropping drops a packet no flow is tracked for, counting the packets
+	dropping
+	// passing passes such a packet on for a class of none, keeping no counter
+	passing
+	// screening drops an ICMP message of a kind or refuses a packet by its
+	// protocol, in the forward hook's chain, counting the packets
+	screening
+	// admitting passes a packet of such a protocol on for a class of none,
+	// keeping no counter
+	admitting
+)
+
+func (r Rule) kind() ruleKind {
+	switch {
+	case r.Limit != 0:
+		return limiting
+	case r.Drops != NoMessage, r.Protocol.Number != 0 && !r.None:
+		return screening
+	case r.Protocol.Number != 0:
+		return admitting
+	case r.Untracked && r.None:
+		return passing
+	case r.Untracked:
+		return dropping
+	case r.Timeouts != NoTimeouts:
+		return timing
+	}
+	return translating
+}
+
+// chain is the chain a rule of the kind sits in
+func (k ruleKind) chain() string {
+	if k == translating || k == timing {
+		return ChainName
+	}
+	return LimitChain
+}
+
+// counted is whether a rule of the kind keeps a counter
+func (k ruleKind) counted() bool { return k != timing && k != passing && k != admitting }
+
+// counterUnit names the unit of a counter read from chain: flows in the
+// translation's chain, which meets a flow's first packet alone, packets in the
+// forward hook's, and none where the rule keeps no counter
+func counterUnit(chain string, counted bool) string {
+	switch {
+	case !counted:
+		return ""
+	case chain == ChainName:
+		return "flows"
+	}
+	return "packets"
+}
+
 // String is the rule as an operator reads it in `nft list ruleset` and as the
 // diff compares it. Every field that changes what the rule does is in it, so a
 // changed source or prefix reads back as a different rule and is replaced.
 func (r Rule) String() string {
 	action := "masquerade"
-	switch {
-	case r.Limit != 0:
+	switch kind := r.kind(); {
+	case kind == limiting:
 		action = fmt.Sprintf("limit %d", r.Limit)
 	case r.Drops != NoMessage:
 		action = r.Drops.String() + " dropped"
@@ -306,11 +374,11 @@ func (r Rule) String() string {
 		action = r.Protocol.Name + " passed"
 	case r.Protocol.Number != 0:
 		action = r.Protocol.Name + " refused"
-	case r.Untracked && r.None:
+	case kind == passing:
 		action = "untracked passed"
-	case r.Untracked:
+	case kind == dropping:
 		action = "untracked dropped"
-	case r.Timeouts != NoTimeouts:
+	case kind == timing:
 		action = "timeouts " + r.Timeouts.String()
 	case r.None:
 		action = "untranslated"
@@ -334,7 +402,11 @@ type Installed struct {
 	// Family places a rule another writer put in a chain, which reads back with
 	// no spelling, in its family's readback. The border's one inet table leaves
 	// it 0.
-	Family  uint8
+	Family uint8
+	// Chain is the chain it was read from, and Counted whether it keeps a
+	// counter, which say what a rule another writer put there counts
+	Chain   string
+	Counted bool
 	Packets uint64
 	Bytes   uint64
 }
@@ -357,6 +429,10 @@ type backend interface {
 	// Rules reads back this tool's own chains and the table holding them in
 	// each family it owns, keyed by family.
 	Rules() (map[uint8]chainReadback, error)
+	// Read is Rules through a socket of its own, for a reader off the run
+	// goroutine, which owns the backend's socket, one reader at a time. After
+	// Close it reads nothing and answers an error of its own.
+	Read() (map[uint8]chainReadback, error)
 	// Apply brings this tool's own chains to rules, deleting the table of each
 	// family in remake first. It replaces the chains' contents in one
 	// transaction rather than editing them, because nftables commits a batch
@@ -410,6 +486,8 @@ type passStats struct {
 	// there is nothing to say
 	Ready4, Ready6   bool
 	Unready, Skipped string
+	// judged is each translated family's judgment, which Debug reads
+	judged map[uint8]judgment
 }
 
 // Translator owns the capability on one node: the rules, the tables they live
@@ -479,8 +557,9 @@ func (t *Translator) Egress(frames [][]byte) { t.rt.Write(frames) }
 
 // Status is the last pass, the capability's translation and the rules the
 // host holds for this translator
-func (t *Translator) Status() egress.Status {
-	stats := t.lastPass()
+func (t *Translator) Status() egress.Status { return t.statusOf(t.lastPass()) }
+
+func (t *Translator) statusOf(stats passStats) egress.Status {
 	advertise := make([]netip.Prefix, 0, len(t.cfg.Advertise))
 	for _, entry := range t.cfg.Advertise {
 		advertise = append(advertise, entry.Prefix)
@@ -498,6 +577,56 @@ func (t *Translator) Status() egress.Status {
 			ConntrackCount: stats.ConntrackCount, ConntrackMax: stats.ConntrackMax, Conflicts: stats.Conflicts,
 		},
 	}
+}
+
+// Debug reads the chains now through a socket of the backend's own, so an
+// operator injecting a packet reads counters of now rather than of the last
+// sweep, and lays each family's readiness beside them as the last pass judged
+// it, from the lookups and answers that pass read
+func (t *Translator) Debug() egress.ExitDebug {
+	pass := t.lastPass()
+	out := egress.ExitDebug{Status: t.statusOf(pass)}
+	read, err := t.be.Read()
+	if err != nil {
+		out.ReadErr = err.Error()
+	}
+	held, _, _ := flatten(read)
+	readings := make(map[string]Installed, len(held))
+	for _, reading := range held {
+		readings[reading.Spec] = reading
+	}
+	for _, rule := range t.desired() {
+		reading, ok := readings[rule.String()]
+		delete(readings, rule.String())
+		kind := rule.kind()
+		out.Rules = append(out.Rules, egress.RuleReading{Spec: rule.String(), Wanted: true, Held: ok, Counter: counterUnit(kind.chain(), kind.counted()), Packets: reading.Packets, Bytes: reading.Bytes})
+	}
+	for _, reading := range held {
+		if _, extra := readings[reading.Spec]; extra {
+			out.Rules = append(out.Rules, egress.RuleReading{Spec: reading.Spec, Held: true, Counter: counterUnit(reading.Chain, reading.Counted), Packets: reading.Packets, Bytes: reading.Bytes})
+		}
+	}
+	var devices []string
+	for _, family := range t.cfg.Translated(t.rt.Steered) {
+		j, ok := pass.judged[family]
+		if !ok {
+			continue
+		}
+		out.Families = append(out.Families, egress.FamilyReading{
+			Family: family, Ready: j.ready, Why: j.why, Unwritten: j.unwritten, Forwarding: j.forwarding, Lookups: j.lookups, Answers: j.answers,
+		})
+		for _, answer := range j.answers {
+			for _, hop := range append(slices.Clone(answer.Route.Hops), answer.Reply.Hops...) {
+				devices = append(devices, hop.Device)
+			}
+		}
+	}
+	slices.Sort(devices)
+	for _, device := range append([]string{"all"}, slices.Compact(devices)...) {
+		name := "net/ipv4/conf/" + device + "/rp_filter"
+		out.RPFilter = append(out.RPFilter, egress.Setting{Name: name, Value: t.rt.Sysctl(name)})
+	}
+	return out
 }
 
 func (t *Translator) where() string { return t.be.where(t.cfg) }
@@ -733,6 +862,7 @@ func (t *Translator) reconcile() error {
 		ConntrackCount: t.conntrack("count"), ConntrackMax: t.conntrack("max"),
 		Announced: announced, Conflicts: conflicts,
 		Ready4: t.ready4, Ready6: t.ready6, Unready: t.unready, Skipped: t.skipped,
+		judged: judged,
 	}
 	if err != nil {
 		stats.Err = err.Error()

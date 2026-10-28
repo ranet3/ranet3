@@ -35,9 +35,8 @@ type fakeBackend struct {
 	failApply bool
 	// failWithdraw makes a host that will not let the tables go, which a stop tries again rather than records as done
 	failWithdraw bool
-	// flows is added to each rule's counter on every readback, so a test can
-	// tell a rule the pass rewrote from one it left alone, but an uncounted
-	// one's, as newRule writes it.
+	// flows is added to each counted rule's counter on every readback, so a
+	// test can tell a rule the pass rewrote from one it left alone.
 	flows uint64
 	// changed stands for another writer's changes to the tables and missed
 	// for notifications lost, nil for none
@@ -54,6 +53,9 @@ type fakeBackend struct {
 	stuck  bool
 	// log records each listing, apply and withdrawal in order, beside what record adds
 	log []string
+	// reads counts the debug reads, and failRead makes them fail
+	reads    int
+	failRead bool
 }
 
 func (f *fakeBackend) record(entry string) {
@@ -77,12 +79,29 @@ func (f *fakeBackend) Rules() (map[uint8]chainReadback, error) {
 	if f.failRules || f.failReadback && readback {
 		return nil, errors.New("no")
 	}
+	return f.holding(), nil
+}
+
+// Read is Rules for a debug read, which logs no listing and leaves a readback
+// an apply made due as it is
+func (f *fakeBackend) Read() (map[uint8]chainReadback, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads++
+	if f.failRead {
+		return nil, errors.New("no")
+	}
+	return f.holding(), nil
+}
+
+// holding is the host's chains as a listing reads them, under f.mu
+func (f *fakeBackend) holding() map[uint8]chainReadback {
 	out := map[uint8]chainReadback{}
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		read := chainReadback{fault: f.faults[family], remake: f.faults[family] != "" && f.remake[family]}
 		for _, rule := range f.held {
 			if rule.Family == family {
-				if !uncounted(rule.Spec) {
+				if rule.Counted {
 					rule.Packets += f.flows
 				}
 				read.rules = append(read.rules, rule)
@@ -90,7 +109,7 @@ func (f *fakeBackend) Rules() (map[uint8]chainReadback, error) {
 		}
 		out[family] = read
 	}
-	return out, nil
+	return out
 }
 
 // Apply stores the rules grouped by family, as the nftables backend does: each
@@ -120,7 +139,8 @@ func (f *fakeBackend) Apply(rules []Rule, remake []uint8) error {
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		for _, rule := range rules {
 			if rule.Family == family {
-				f.held = append(f.held, Installed{Spec: rule.String(), Family: family})
+				kind := rule.kind()
+				f.held = append(f.held, Installed{Spec: rule.String(), Family: family, Chain: kind.chain(), Counted: kind.counted()})
 			}
 		}
 	}
@@ -177,13 +197,6 @@ func (f *fakeBackend) translations() []string {
 // none, or a rule taking what no flow is tracked for
 func dropsRefusesOrPasses(spec string) bool {
 	return strings.HasSuffix(spec, " dropped") || strings.HasSuffix(spec, " refused") || strings.HasSuffix(spec, " passed")
-}
-
-// uncounted is whether newRule writes the rule spelled spec with no counter: a
-// timeout rule, and one passing a class of none's packet no flow is tracked for
-// or of a protocol refused under the other classes
-func uncounted(spec string) bool {
-	return strings.Contains(spec, " timeouts ") || strings.HasSuffix(spec, " passed")
 }
 
 // translator builds one around a fake backend, bypassing New so that a test

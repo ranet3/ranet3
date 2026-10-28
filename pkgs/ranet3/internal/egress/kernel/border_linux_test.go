@@ -57,7 +57,7 @@ func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 		if request.Body[0] != unix.NFPROTO_INET {
 			t.Errorf("%s went to family %d, want inet", desired[i], request.Body[0])
 		}
-		table, chain, spec, _, _ := nftables.DecodeRule(nftables.Message{Data: request.Body})
+		table, chain, spec, _, _, _ := nftables.DecodeRule(nftables.Message{Data: request.Body})
 		if table != TableName || chain != BorderChain || spec != desired[i].String() {
 			t.Errorf("%s was written as %q into %s/%s", desired[i], spec, table, chain)
 		}

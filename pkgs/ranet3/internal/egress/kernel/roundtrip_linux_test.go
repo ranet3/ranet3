@@ -138,7 +138,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	// behind the ip forward chain, which reads back first
 	forwardRules := 0
 	for _, rule := range desired {
-		if rule.Family == egress.FamilyIPv4 && inForwardChain(rule) {
+		if rule.Family == egress.FamilyIPv4 && rule.kind().chain() == LimitChain {
 			forwardRules++
 		}
 	}
@@ -309,8 +309,14 @@ func woken(changed <-chan struct{}) bool {
 // anotherWritersAccept is another writer's rule with no comment accepting
 // every packet, at the head of chain in this tool's table of the family proto
 func anotherWritersAccept(proto uint8, chain string) nftables.Request {
+	return anotherWritersRule(proto, chain, verdict(nftables.Accept))
+}
+
+// anotherWritersRule is another writer's rule with no comment of expressions,
+// at the head of chain in this tool's table of the family proto
+func anotherWritersRule(proto uint8, chain string, expressions ...[]byte) nftables.Request {
 	body := nftables.PutAttrString(nftables.PutAttrString(nftables.PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, TableName), unix.NFTA_RULE_CHAIN, chain)
-	body = nftables.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, verdict(nftables.Accept))
+	body = nftables.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, slices.Concat(expressions...))
 	// with no NLM_F_APPEND the kernel inserts the rule at the head of the chain
 	return nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWRULE), Flags: unix.NLM_F_CREATE, Body: body}
 }
@@ -356,15 +362,29 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = another.Close() })
-	if err := another.Batch([]nftables.Request{anotherWritersAccept(unix.NFPROTO_IPV6, ChainName), anotherWritersAccept(unix.NFPROTO_IPV4, LimitChain)}); err != nil {
+	// the ip6 one counted, which the debug read names by its chain
+	counted := anotherWritersRule(unix.NFPROTO_IPV6, ChainName, nftables.Expression("counter", nil), verdict(nftables.Accept))
+	if err := another.Batch([]nftables.Request{counted, anotherWritersAccept(unix.NFPROTO_IPV4, LimitChain)}); err != nil {
 		t.Fatalf("insert another writer's accept rules: %v", err)
 	}
 	read, err := be.Rules()
-	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
-		if err != nil || !slices.ContainsFunc(read[family].rules, func(rule Installed) bool { return rule.Spec == "" }) {
-			t.Errorf("with another writer's accept rule at the head of the ip forward and ip6 postrouting chains the %s readback holds %v (%v), want that rule with no comment among them",
-				tableFamilyName(family), read[family], err)
+	for family, want := range map[uint8]Installed{
+		egress.FamilyIPv4: {Family: egress.FamilyIPv4, Chain: LimitChain},
+		egress.FamilyIPv6: {Family: egress.FamilyIPv6, Chain: ChainName, Counted: true},
+	} {
+		if err != nil || !slices.Contains(read[family].rules, want) {
+			t.Errorf("with another writer's accept rule at the head of the ip forward and ip6 postrouting chains the %s readback holds %v (%v), want %+v among them",
+				tableFamilyName(family), read[family], err, want)
 		}
+	}
+	var extra []egress.RuleReading
+	for _, rule := range tr.Debug().Rules {
+		if !rule.Wanted {
+			extra = append(extra, rule)
+		}
+	}
+	if want := []egress.RuleReading{{Held: true}, {Held: true, Counter: "flows"}}; !slices.Equal(extra, want) {
+		t.Errorf("the debug read names another writer's rules %+v, want the ip forward one uncounted and the ip6 postrouting one counting flows, %+v", extra, want)
 	}
 	handles := tableHandles(t, another)
 
@@ -388,7 +408,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 		}
 		for _, written := range translatorChains {
 			for _, reply := range replies {
-				if table, chain, spec, _, _ := nftables.DecodeRule(reply); table == TableName && chain == written.Name {
+				if table, chain, spec, _, _, _ := nftables.DecodeRule(reply); table == TableName && chain == written.Name {
 					got = append(got, spec)
 				}
 			}

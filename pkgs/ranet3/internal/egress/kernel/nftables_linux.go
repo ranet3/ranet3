@@ -12,6 +12,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 
 	"golang.org/x/sys/unix"
 
@@ -23,11 +24,20 @@ import (
 // address family in use, and the limit their sets count each source's flows
 // against.
 type natTables struct {
-	conn     *nftables.Conn
-	monitor  *nftables.Monitor
+	conn    *nftables.Conn
+	monitor *nftables.Monitor
+	// reads is Read's socket, opened beside conn so it reads the namespace
+	// conn writes whichever thread calls Read. readMu holds it and closed,
+	// which Close sets as it closes it, for one reader at a time.
+	reads    *nftables.Conn
+	readMu   sync.Mutex
+	closed   bool
 	families []uint8
 	limit    int
 }
+
+// errClosed is Read's error once Close has run
+var errClosed = errors.New("egress: the exit's tables are no longer read, the exit having stopped")
 
 // New validates the capability and opens the tables the backend owns, so a
 // deployment that cannot have it fails at startup rather than on the first
@@ -82,10 +92,20 @@ func newBackend(cfg egress.Egress, rt Runtime) (backend, error) {
 		conn.Close()
 		return nil, err
 	}
+	if be.reads, err = nftables.Dial(); err != nil {
+		be.monitor.Close()
+		conn.Close()
+		return nil, err
+	}
 	return be, nil
 }
 
-func (n *natTables) Close() error { return errors.Join(n.monitor.Close(), n.conn.Close()) }
+func (n *natTables) Close() error {
+	n.readMu.Lock()
+	defer n.readMu.Unlock()
+	n.closed = true
+	return errors.Join(n.monitor.Close(), n.conn.Close(), n.reads.Close())
+}
 
 func (n *natTables) Changed() <-chan struct{} { return n.monitor.Changed() }
 
@@ -135,8 +155,19 @@ func nftFamily(family uint8) uint8 {
 // chain without it. A rule in any other table or chain is skipped. This
 // backend never removes one in another table, and one in another chain of its
 // table goes with the table whenever the table is removed whole.
-func (n *natTables) Rules() (map[uint8]chainReadback, error) {
-	tables, err := nftables.Tables(n.conn, TableName)
+func (n *natTables) Rules() (map[uint8]chainReadback, error) { return n.read(n.conn) }
+
+func (n *natTables) Read() (map[uint8]chainReadback, error) {
+	n.readMu.Lock()
+	defer n.readMu.Unlock()
+	if n.closed {
+		return nil, errClosed
+	}
+	return n.read(n.reads)
+}
+
+func (n *natTables) read(conn *nftables.Conn) (map[uint8]chainReadback, error) {
+	tables, err := nftables.Tables(conn, TableName)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +175,7 @@ func (n *natTables) Rules() (map[uint8]chainReadback, error) {
 	for _, family := range n.families {
 		read, err := nftables.Contents{
 			Chains: translatorChains, Sets: []nftables.Set{flowSet(family, n.limit)}, Timeouts: timeoutObjects(family),
-		}.Read(n.conn, tables, nftFamily(family))
+		}.Read(conn, tables, nftFamily(family))
 		if err != nil {
 			return nil, fmt.Errorf("egress: read table %s %s: %w", tableFamilyName(family), TableName, err)
 		}
@@ -157,7 +188,7 @@ func (n *natTables) Rules() (map[uint8]chainReadback, error) {
 func readback(read nftables.Readback, family uint8) chainReadback {
 	rules := make([]Installed, 0, len(read.Rules))
 	for _, rule := range read.Rules {
-		rules = append(rules, Installed{Spec: rule.Spec, Family: family, Packets: rule.Packets, Bytes: rule.Bytes})
+		rules = append(rules, Installed{Spec: rule.Spec, Family: family, Chain: rule.Chain, Counted: rule.Counted, Packets: rule.Packets, Bytes: rule.Bytes})
 	}
 	return chainReadback{rules: rules, fault: read.Fault, remake: read.Remake}
 }
@@ -342,7 +373,7 @@ func newRule(rule Rule) (nftables.Request, error) {
 	// a rule reading the flow's state reads it first, and one taking a protocol
 	// reads that first, so a packet of an established flow fails the rule at its
 	// first compare
-	expressions, tail := protocolRule(rule)
+	expressions, match, action := protocolRule(rule)
 	if rule.Limit != 0 {
 		// Only the packet that creates a connection's entry is judged. A UDP
 		// flow nothing has answered stays in state new, and nf_conncount ends
@@ -388,44 +419,55 @@ func newRule(rule Rule) (nftables.Request, error) {
 		expressions = append(expressions, nftables.SourcePrefix(rule.From)...)
 	}
 	proto := nftFamily(rule.Family)
-	switch {
-	case rule.byProtocol():
-		return forward.Rule(proto, rule.String(), append(expressions, tail...))
-	case rule.Limit != 0:
+	kind := rule.kind()
+	switch kind {
+	case limiting:
+		expressions = append(expressions, nftables.SourceLoad(proto), nftables.ConnectionsOver(flowSet(rule.Family, rule.Limit).Name, uint32(rule.Limit)))
+	case timing:
+		expressions = append(expressions, attachTimeouts(rule.Timeouts)...)
+	case screening, admitting:
+		expressions = append(expressions, match...)
+	}
+	if kind.counted() {
+		expressions = append(expressions, nftables.Expression("counter", nil))
+	}
+	switch kind {
+	case limiting:
 		// The counter counts every refusal, of which the host's rate limit on ICMP
 		// errors answers some. Code 1 is IPv6's administratively prohibited, RFC
 		// 4443's, and IPv4's host unreachable, which RFC 6888 REQ-11 asks of a NAT
 		// refusing a source past its quota, since RFC 1122 section 4.2.3.9 has TCP
 		// keep a connection open on it.
-		expressions = append(expressions, nftables.SourceLoad(proto), nftables.ConnectionsOver(flowSet(rule.Family, rule.Limit).Name, uint32(rule.Limit)),
-			nftables.Expression("counter", nil), nftables.RejectUnreachable(1))
-		return forward.Rule(proto, rule.String(), expressions)
-	case rule.Untracked && rule.None:
+		expressions = append(expressions, nftables.RejectUnreachable(1))
+	case passing:
 		// a class of none's packet goes on as the host forwards it, past the
 		// drops of the shorter classes after this rule
-		return forward.Rule(proto, rule.String(), append(expressions, verdict(nftables.Accept)))
-	case rule.Untracked:
-		expressions = append(expressions, nftables.Expression("counter", nil), verdict(verdictDrop))
-		return forward.Rule(proto, rule.String(), expressions)
-	case rule.Timeouts != NoTimeouts:
-		// no counter, so a flow is counted once, by the translation after it
-		expressions = append(expressions, attachTimeouts(rule.Timeouts)...)
-		return postrouting.Rule(proto, rule.String(), expressions)
+		expressions = append(expressions, verdict(nftables.Accept))
+	case dropping:
+		expressions = append(expressions, verdict(verdictDrop))
+	case translating:
+		expressions = append(expressions, translate(rule)...)
+	case screening, admitting:
+		expressions = append(expressions, action)
 	}
-	expressions = append(expressions, nftables.Expression("counter", nil))
-	expressions = append(expressions, translate(rule)...)
-	return postrouting.Rule(proto, rule.String(), expressions)
+	chain := postrouting
+	if kind.chain() == forward.Name {
+		chain = forward
+	}
+	return chain.Rule(proto, rule.String(), expressions)
 }
 
-// protocolRule is the expressions newRule puts ahead of the interfaces and the
-// prefix it matches and after them, for a rule taking a packet by its protocol
-func protocolRule(rule Rule) (head, tail [][]byte) {
+// protocolRule is, for a rule taking a packet by its protocol, the expressions
+// newRule puts ahead of the interfaces and the prefix it matches, those it puts
+// after them, and the verdict that ends the rule, past the counter its kind
+// keeps
+func protocolRule(rule Rule) (head, match [][]byte, action []byte) {
 	number := rule.Protocol.Number
 	if rule.Drops != NoMessage {
 		number = unix.IPPROTO_ICMP
 	}
 	if number == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	head = nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{number})
 	if rule.Protocol.Number != 0 {
@@ -438,14 +480,14 @@ func protocolRule(rule Rule) (head, tail [][]byte) {
 	}
 	switch {
 	case rule.Drops == SourceQuench:
-		tail = [][]byte{nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{4})),
-			nftables.Expression("counter", nil), verdict(verdictDrop)}
+		match = [][]byte{nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{4}))}
+		action = verdict(verdictDrop)
 	case rule.Drops == Information:
-		tail = [][]byte{nftables.TransportLoad(0, 1),
-			nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_GTE, []byte{15})), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_LTE, []byte{16})),
-			nftables.Expression("counter", nil), verdict(verdictDrop)}
+		match = [][]byte{nftables.TransportLoad(0, 1),
+			nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_GTE, []byte{15})), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_LTE, []byte{16}))}
+		action = verdict(verdictDrop)
 	case rule.None:
-		tail = [][]byte{verdict(nftables.Accept)}
+		action = verdict(nftables.Accept)
 	default:
 		// administratively prohibited, RFC 5508 section 6's code 13 in IPv4 and
 		// RFC 4443 section 3.1's code 1 in IPv6
@@ -453,9 +495,9 @@ func protocolRule(rule Rule) (head, tail [][]byte) {
 		if rule.Family == egress.FamilyIPv4 {
 			code = 13
 		}
-		tail = [][]byte{nftables.Expression("counter", nil), nftables.RejectUnreachable(code)}
+		action = nftables.RejectUnreachable(code)
 	}
-	return head, tail
+	return head, match, action
 }
 
 // attachTimeouts matches a timeout rule's protocol and attaches its object,
