@@ -241,21 +241,21 @@ func TestArgumentsAndFlagValuesAreCompleted(t *testing.T) {
 	}
 }
 
-// pinning dials one endpoint of ysun/isere and holds a session another endpoint of it opened
+// pinning dials one endpoint of example/alpha and holds a session another endpoint of it opened
 type pinning struct{ stubSource }
 
 func (pinning) Peers() []control.Peer {
-	return []control.Peer{{Path: "ysun/isere:1@0", Peer: "ysun/isere:1"}}
+	return []control.Peer{{Path: "example/alpha:1@0", Peer: "example/alpha:1"}}
 }
 
 func (pinning) Sessions() []control.Session {
-	return []control.Session{{Path: "ysun/isere:2@0", Peer: "ysun/isere", Active: true}}
+	return []control.Session{{Path: "example/alpha:2@0", Peer: "example/alpha", Active: true}}
 }
 
 // a peer completes to the canonical form the daemon names it by, the endpoint a pinned peer names and the node a session names
 func TestPeersCompleteToTheirCanonicalForm(t *testing.T) {
 	socket := serve(t, pinning{})
-	for word, want := range map[string][]string{"": {"ysun/isere", "ysun/isere:1"}, "ysun/isere:": {"ysun/isere:1"}} {
+	for word, want := range map[string][]string{"": {"example/alpha", "example/alpha:1"}, "example/alpha:": {"example/alpha:1"}} {
 		out, err := execute(t, cobra.ShellCompRequestCmd, "redial", "--control", socket, word)
 		if err != nil {
 			t.Fatalf("completing %q failed: %v", word, err)

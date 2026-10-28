@@ -203,7 +203,7 @@
         "bytes": 0
       },
       {
-        "spec": "drop ipv4 source 23.161.104.0/24",
+        "spec": "drop ipv4 source 203.0.113.0/24",
         "verdict": "drop",
         "reason": "overlay_source",
         "family": "ipv4",
@@ -212,7 +212,7 @@
         "bytes": 720
       },
       {
-        "spec": "drop ipv6 source 2602:f590::/36",
+        "spec": "drop ipv6 source 3fff:a::/36",
         "verdict": "drop",
         "reason": "overlay_source",
         "family": "ipv6",
@@ -230,7 +230,7 @@
         "bytes": 0
       },
       {
-        "spec": "drop ipv6 destination 2a0c:b641:69c:5d26::3",
+        "spec": "drop ipv6 destination 3fff:b:0:306::3",
         "verdict": "drop",
         "reason": "sid_destination",
         "family": "ipv6",

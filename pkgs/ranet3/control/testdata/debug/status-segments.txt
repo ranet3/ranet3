@@ -14,7 +14,7 @@ Sessions    0
 Neighbors   0, 0 alive
 Routes      0 prefixes, 0 selected, 1 originated
 Originate   2001:db8:a::/48
-Segments    3fff:1:69c:8c6::1 End.DT46, 3fff:1:69c:8c6::2 End (7 forwarded, 5 delivered, 4 dropped)
+Segments    3fff:b:0:106::1 End.DT46, 3fff:b:0:106::2 End (7 forwarded, 5 delivered, 4 dropped)
 Steering    off
 Transit     0 forwarded, 0 delivered, 0 dropped
 ESP         0 in, 0 dropped, 0 refused
@@ -35,7 +35,7 @@ Sessions    0
 Neighbors   0, 0 alive
 Routes      0 prefixes, 0 selected, 1 originated
 Originate   2001:db8:a::/48
-Segments    3fff:1:69c:8c6::1 End.DT46, 3fff:1:69c:8c6::2 End (7 forwarded, 5 delivered, 4 dropped, 1 answered, 33 egressed, 2 refused, 3 not ready)
+Segments    3fff:b:0:106::1 End.DT46, 3fff:b:0:106::2 End (7 forwarded, 5 delivered, 4 dropped, 1 answered, 33 egressed, 2 refused, 3 not ready)
 Steering    off
 Transit     0 forwarded, 0 delivered, 0 dropped
 ESP         0 in, 0 dropped, 0 refused

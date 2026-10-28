@@ -5,7 +5,7 @@ Destination      From           Via             Metric  Router ID         Seqno 
 2001:db8::/48                   this node       0                         0      0
 ::/0             2001:db8::/32  example/exit@0  212     0a1b2c3d4e5f6071  42     2
 
-198.18.104.117 is in 198.18.104.117/32 originated by this node
+203.0.113.10 is in 203.0.113.10/32 originated by this node
 
-Destination        From  Via        Metric  Router ID  Seqno  Paths
-198.18.104.117/32        this node  0                  0      0
+Destination      From  Via        Metric  Router ID  Seqno  Paths
+203.0.113.10/32        this node  0                  0      0

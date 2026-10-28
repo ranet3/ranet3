@@ -30,7 +30,7 @@ func (stubSource) Neighbors() []control.Neighbor {
 }
 
 func (stubSource) Routes() []control.Route {
-	return []control.Route{{Destination: netip.MustParsePrefix("198.18.104.117/32"), Originated: true}}
+	return []control.Route{{Destination: netip.MustParsePrefix("203.0.113.10/32"), Originated: true}}
 }
 
 func (stubSource) Sessions() []control.Session {
@@ -156,7 +156,7 @@ func TestCommandsReadTheirOwnSubsystem(t *testing.T) {
 	for name, want := range map[string]string{
 		"status":    "example/laptop",
 		"neighbors": "example/gateway@0",
-		"routes":    "198.18.104.117/32",
+		"routes":    "203.0.113.10/32",
 		"sessions":  "example/gateway:0@0",
 		"peers":     "gateway",
 	} {

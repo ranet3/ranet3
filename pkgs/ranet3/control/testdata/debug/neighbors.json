@@ -12,7 +12,7 @@
     "send_failed": 0
   },
   {
-    "peer": "ysun/lagern:0@0",
+    "peer": "example/alpha:0@0",
     "alive": true,
     "cost": 116,
     "extra": 0,

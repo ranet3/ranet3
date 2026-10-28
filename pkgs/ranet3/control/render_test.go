@@ -101,7 +101,7 @@ func TestNeighborsShowTheExtraApartFromTheCost(t *testing.T) {
 	rtt := Duration(27200 * time.Microsecond)
 	neighbors := []Neighbor{
 		{Peer: "example/gateway:0@0", Alive: true, Cost: 1140, Extra: 1024, ReportedCost: &cost, RTT: &rtt, Routes: 3, Expires: Duration(14 * time.Second)},
-		{Peer: "ysun/lagern:0@0", Alive: true, Cost: 116, ReportedCost: &cost, Routes: 1, Expires: Duration(13 * time.Second)},
+		{Peer: "example/alpha:0@0", Alive: true, Cost: 116, ReportedCost: &cost, Routes: 1, Expires: Duration(13 * time.Second)},
 	}
 	var out strings.Builder
 	RenderNeighbors(&out, neighbors)
@@ -131,7 +131,7 @@ func TestRoutesNameOriginatedAndUnreachable(t *testing.T) {
 // from a source prefix
 func ownAndLearned() []Route {
 	return []Route{
-		{Destination: netip.MustParsePrefix("198.18.104.117/32"), Originated: true, Assigned: true},
+		{Destination: netip.MustParsePrefix("203.0.113.10/32"), Originated: true, Assigned: true},
 		{Destination: netip.MustParsePrefix("2001:db8::/48"), Originated: true},
 		{Destination: netip.MustParsePrefix("2001:db8::5/128"), Assigned: true},
 		{Destination: netip.MustParsePrefix("2001:db8:1::/48"), Metric: 65535, Candidates: 1},
@@ -155,7 +155,7 @@ func TestRoutesRenderAsTheGoldenFiles(t *testing.T) {
 // announces as well as originated.
 func TestWhoisNamesAnAssignedAddressThisNodes(t *testing.T) {
 	var out strings.Builder
-	for i, address := range []netip.Addr{netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("198.18.104.117")} {
+	for i, address := range []netip.Addr{netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("203.0.113.10")} {
 		if i > 0 {
 			out.WriteString("\n")
 		}
@@ -184,7 +184,7 @@ func TestStatusSaysTheRoleInWords(t *testing.T) {
 func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
-	status.Segments = []string{"3fff:1:69c:8c6::1 End.DT46", "3fff:1:69c:8c6::2 End"}
+	status.Segments = []string{"3fff:b:0:106::1 End.DT46", "3fff:b:0:106::2 End"}
 	var out strings.Builder
 	for _, counters := range []SegmentCounters{
 		{Forwarded: 7, Delivered: 5, Dropped: 4},
@@ -278,12 +278,12 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	status.Down = nil
 	status.Border = &BorderStatus{
 		Where:  "nftables table inet ranet3 chain border",
-		Inside: []string{"ranet3", "lo", "gravity"},
+		Inside: []string{"ranet3", "lo", "dummy0"},
 		Overlay: []netip.Prefix{
-			netip.MustParsePrefix("23.161.104.0/24"), netip.MustParsePrefix("192.104.136.0/24"), netip.MustParsePrefix("204.115.20.0/23"),
-			netip.MustParsePrefix("2602:f590::/36"), netip.MustParsePrefix("2a0c:b641:69c::/48"),
+			netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
+			netip.MustParsePrefix("3fff:a::/36"), netip.MustParsePrefix("3fff:b::/48"),
 		},
-		SIDs:      []netip.Addr{netip.MustParseAddr("2a0c:b641:69c:5d26::3")},
+		SIDs:      []netip.Addr{netip.MustParseAddr("3fff:b:0:306::3")},
 		Ready:     true,
 		PassAt:    time.Date(2026, 10, 19, 9, 14, 2, 0, time.UTC),
 		Installed: 11,

@@ -23,7 +23,7 @@ func (meshStub) Status() control.Status {
 	return control.Status{
 		Node: "example/laptop", Version: "1.2.3",
 		Originate: []control.Originated{
-			{Prefix: netip.MustParsePrefix("198.18.104.117/32")},
+			{Prefix: netip.MustParsePrefix("203.0.113.10/32")},
 			{Prefix: netip.MustParsePrefix("2001:db8:1::5/128")},
 			{Prefix: netip.MustParsePrefix("2001:db8:9::/48")},
 		},
@@ -35,7 +35,7 @@ func (meshStub) Routes() []control.Route {
 		{Destination: netip.MustParsePrefix("2001:db8::/32"), Via: "example/core@0", Metric: 212, Candidates: 4},
 		{Destination: netip.MustParsePrefix("2001:db8:1::/48"), Via: "example/gateway@0", Metric: 116, Candidates: 3},
 		{Destination: netip.MustParsePrefix("::/0"), From: netip.MustParsePrefix("2001:db8::/32"), Via: "example/exit@0", Metric: 300, Candidates: 2},
-		{Destination: netip.MustParsePrefix("198.18.104.117/32"), Originated: true},
+		{Destination: netip.MustParsePrefix("203.0.113.10/32"), Originated: true},
 	}
 }
 
@@ -60,12 +60,12 @@ func TestQueriesAnswerFromTheReads(t *testing.T) {
 			want: []string{"2001:db8:1::9 is in 2001:db8:1::/48", "example/gateway@0", "2001:db8::/32"},
 		},
 		"whois in this node's own": {
-			args: []string{"whois", "198.18.104.117"},
+			args: []string{"whois", "203.0.113.10"},
 			want: []string{"originated by this node"},
 		},
 		"ip": {
 			args: []string{"ip"},
-			want: []string{"198.18.104.117", "2001:db8:1::5"},
+			want: []string{"203.0.113.10", "2001:db8:1::5"},
 		},
 		"exit list": {
 			args: []string{"exit", "list"},
@@ -94,7 +94,7 @@ func TestIPPrintsOnlyTheHostPrefixes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ip failed: %v", err)
 	}
-	if out != "198.18.104.117\n2001:db8:1::5\n" {
+	if out != "203.0.113.10\n2001:db8:1::5\n" {
 		t.Errorf("ip printed %q", out)
 	}
 }
