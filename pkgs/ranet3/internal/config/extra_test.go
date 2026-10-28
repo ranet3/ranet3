@@ -40,13 +40,13 @@ func TestExtraCostRefusals(t *testing.T) {
 		"this node":          {".yaml", block("        node: {example/laptop: 300}\n"), "is this node"},
 		"infinity":           {".yaml", block("        foreign: 65535\n"), "foreign is 65535"},
 		"an endpoint":        {".yaml", block("        node: {example/gateway:0: 300}\n"), "names an endpoint"},
-		"a float":            {".yaml", block("        org: {gravity: 2048.0}\n"), "written as a float"},
-		"a minus sign":       {".yaml", block("        org: {gravity: -0}\n"), "minus sign"},
-		"a merge key":        {".yaml", block("        org: {<<: {gravity: 2048}}\n"), "a merge key is refused"},
-		"too large":          {".toml", nodeTOML + "[cap.babel.cost.extra]\norg = { gravity = 70000 }\n", "out of range"},
+		"a float":            {".yaml", block("        org: {other: 2048.0}\n"), "written as a float"},
+		"a minus sign":       {".yaml", block("        org: {other: -0}\n"), "minus sign"},
+		"a merge key":        {".yaml", block("        org: {<<: {other: 2048}}\n"), "a merge key is refused"},
+		"too large":          {".toml", nodeTOML + "[cap.babel.cost.extra]\norg = { other = 70000 }\n", "out of range"},
 		"not a table":        {".toml", nodeTOML + "[cap.babel.cost.extra]\norg = true\n", "takes a table"},
 		"an unknown key":     {".toml", nodeTOML + "[cap.babel.cost.extra]\nforiegn = 1\n", "foriegn"},
-		"an unknown in yaml": {".yaml", block("        orgs: {gravity: 1}\n"), "orgs"},
+		"an unknown in yaml": {".yaml", block("        orgs: {other: 1}\n"), "orgs"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := load(t, file.extension, file.body)

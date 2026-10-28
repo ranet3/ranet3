@@ -127,9 +127,9 @@ cap:
     id: 200
     addresses: ["10.66.0.5/32"]
   segment:
-    source: "3fff:1:69c:8c0::1"
+    source: "3fff:b:0:100::1"
     local:
-      - { sid: "3fff:1:69c:8c6::1", behavior: "End.DT46" }
+      - { sid: "3fff:b:0:106::1", behavior: "End.DT46" }
   border:
     overlay: ["3fff::/20"]
   crypto:
@@ -154,8 +154,8 @@ max = "1024ms"
 id = 200
 addresses = ["10.66.0.5/32"]
 [cap.segment]
-source = "3fff:1:69c:8c0::1"
-local = [{ sid = "3fff:1:69c:8c6::1", behavior = "End.DT46" }]
+source = "3fff:b:0:100::1"
+local = [{ sid = "3fff:b:0:106::1", behavior = "End.DT46" }]
 [cap.border]
 overlay = ["3fff::/20"]
 [cap.crypto]
@@ -274,8 +274,8 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asTOML: "[cap.crypto.rekey]\nchild = \"5m\"\n",
 		},
 		"a segment this node also carries as an address": {
-			asYAML: "cap:\n  table:\n    addresses: [\"3fff:1:69c:8c6::1/128\"]\n  segment:\n    local: [{ sid: \"3fff:1:69c:8c6::1\", behavior: End }]\n  border:\n    overlay: [\"3fff::/20\"]\n",
-			asTOML: "[cap.table]\naddresses = [\"3fff:1:69c:8c6::1/128\"]\n[cap.segment]\nlocal = [{ sid = \"3fff:1:69c:8c6::1\", behavior = \"End\" }]\n[cap.border]\noverlay = [\"3fff::/20\"]\n",
+			asYAML: "cap:\n  table:\n    addresses: [\"3fff:b:0:106::1/128\"]\n  segment:\n    local: [{ sid: \"3fff:b:0:106::1\", behavior: End }]\n  border:\n    overlay: [\"3fff::/20\"]\n",
+			asTOML: "[cap.table]\naddresses = [\"3fff:b:0:106::1/128\"]\n[cap.segment]\nlocal = [{ sid = \"3fff:b:0:106::1\", behavior = \"End\" }]\n[cap.border]\noverlay = [\"3fff::/20\"]\n",
 		},
 		"an exit that advertises nothing": {
 			asYAML: "cap:\n  egress:\n    translate: [{ from: \"0.0.0.0/0\", to: auto }]\n",
@@ -307,12 +307,12 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 		// configuration check and the daemon agree: lists of five and more
 		// loaded clean and then would not start.
 		"a segment list the device cannot carry": {
-			asYAML: "cap:\n  segment:\n    source: \"3fff:1:69c:8c0::1\"\n    steer:\n      - from: \"3fff:a::1/128\"\n        via: [\"3fff:1:69c::1\", \"3fff:1:69c::2\", \"3fff:1:69c::3\", \"3fff:1:69c::4\", \"3fff:1:69c::5\"]\n",
-			asTOML: "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ from = \"3fff:a::1/128\", via = [\"3fff:1:69c::1\", \"3fff:1:69c::2\", \"3fff:1:69c::3\", \"3fff:1:69c::4\", \"3fff:1:69c::5\"] }]\n",
+			asYAML: "cap:\n  segment:\n    source: \"3fff:b:0:100::1\"\n    steer:\n      - from: \"3fff:a::1/128\"\n        via: [\"3fff:b::1\", \"3fff:b::2\", \"3fff:b::3\", \"3fff:b::4\", \"3fff:b::5\"]\n",
+			asTOML: "[cap.segment]\nsource = \"3fff:b:0:100::1\"\nsteer = [{ from = \"3fff:a::1/128\", via = [\"3fff:b::1\", \"3fff:b::2\", \"3fff:b::3\", \"3fff:b::4\", \"3fff:b::5\"] }]\n",
 		},
 		"a steering selector that claims every address": {
-			asYAML: "cap:\n  segment:\n    source: \"3fff:1:69c:8c0::1\"\n    steer: [{ from: \"::/0\", via: [\"3fff:1:69c::1\"] }]\n",
-			asTOML: "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ from = \"::/0\", via = [\"3fff:1:69c::1\"] }]\n",
+			asYAML: "cap:\n  segment:\n    source: \"3fff:b:0:100::1\"\n    steer: [{ from: \"::/0\", via: [\"3fff:b::1\"] }]\n",
+			asTOML: "[cap.segment]\nsource = \"3fff:b:0:100::1\"\nsteer = [{ from = \"::/0\", via = [\"3fff:b::1\"] }]\n",
 		},
 		"an egress class translating to an address nothing can reply to": {
 			asYAML: "cap:\n  egress:\n    advertise: [\"0.0.0.0/0\"]\n    translate: [{ from: \"0.0.0.0/0\", to: 127.0.0.1 }]\n",
@@ -381,15 +381,15 @@ func TestLoaderRefusesTheVRFKeyAsUnknown(t *testing.T) {
 		`"cap":{"table":{"id":200%s}}}`
 	for name, test := range map[string]struct{ extension, with, without, refusal string }{
 		"toml": {".toml",
-			nodeTOML + "[cap.table]\nid = 200\n[cap.table.vrf]\nname = \"gravity\"\n",
+			nodeTOML + "[cap.table]\nid = 200\n[cap.table.vrf]\nname = \"other\"\n",
 			nodeTOML + "[cap.table]\nid = 200\n",
 			`unknown field "cap.table.vrf"`},
 		"yaml": {".yaml",
-			nodeYAML + "cap:\n  table:\n    id: 200\n    vrf: { name: gravity }\n",
+			nodeYAML + "cap:\n  table:\n    id: 200\n    vrf: { name: other }\n",
 			nodeYAML + "cap:\n  table:\n    id: 200\n",
 			"field vrf not found in type kernel.Table"},
 		"json": {".json",
-			fmt.Sprintf(asJSON, `,"vrf":{"name":"gravity"}`),
+			fmt.Sprintf(asJSON, `,"vrf":{"name":"other"}`),
 			fmt.Sprintf(asJSON, ""),
 			"field vrf not found in type kernel.Table"},
 	} {
@@ -537,8 +537,8 @@ func TestDialToRefusesAnEntryThatNamesNobody(t *testing.T) {
 // and the refusal names the field, the value written and the bound it misses
 func TestLinkMTURefusalsNameTheFieldUnderEitherDecoder(t *testing.T) {
 	const (
-		twoSegmentsYAML = "cap:\n  segment:\n    source: \"3fff:1:69c:8c0::1\"\n    steer: [{ from: \"3fff:a::1/128\", via: [\"3fff:1:69c::1\", \"3fff:1:69c::2\"] }]\n"
-		twoSegmentsTOML = "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ from = \"3fff:a::1/128\", via = [\"3fff:1:69c::1\", \"3fff:1:69c::2\"] }]\n"
+		twoSegmentsYAML = "cap:\n  segment:\n    source: \"3fff:b:0:100::1\"\n    steer: [{ from: \"3fff:a::1/128\", via: [\"3fff:b::1\", \"3fff:b::2\"] }]\n"
+		twoSegmentsTOML = "[cap.segment]\nsource = \"3fff:b:0:100::1\"\nsteer = [{ from = \"3fff:a::1/128\", via = [\"3fff:b::1\", \"3fff:b::2\"] }]\n"
 	)
 	for name, refusal := range map[string]struct {
 		mtu        string
@@ -724,18 +724,18 @@ func TestRefusalsNameTheBlockTheOperatorWrote(t *testing.T) {
 			names: []string{"cap.babel cost rtt min", "2s", "1s"},
 		},
 		"a steering selector with host bits": {
-			body:  "cap:\n  segment:\n    source: \"3fff:1:69c:8c0::1\"\n    steer: [{ from: \"3fff:a::1/128\", to: \"2001:db8::1/32\", via: [\"3fff:1:69c::1\"] }]\n",
+			body:  "cap:\n  segment:\n    source: \"3fff:b:0:100::1\"\n    steer: [{ from: \"3fff:a::1/128\", to: \"2001:db8::1/32\", via: [\"3fff:b::1\"] }]\n",
 			names: []string{"cap.segment steer to", "2001:db8::1/32"},
 		},
 		"a local segment written twice": {
-			body:  "cap:\n  segment:\n    local:\n      - { sid: \"3fff:1:69c:8c6::1\", behavior: End }\n      - { sid: \"3fff:1:69c:8c6::1\", behavior: \"End.DT46\" }\n",
-			names: []string{"cap.segment local", "3fff:1:69c:8c6::1"},
+			body:  "cap:\n  segment:\n    local:\n      - { sid: \"3fff:b:0:106::1\", behavior: End }\n      - { sid: \"3fff:b:0:106::1\", behavior: \"End.DT46\" }\n",
+			names: []string{"cap.segment local", "3fff:b:0:106::1"},
 		},
 		// The entry's own source or the block's, and the refusal says so:
 		// without the check the path check below answers instead, and it
 		// describes the segment list rather than the field that is missing.
 		"a steering entry with no source anywhere": {
-			body:  "cap:\n  segment:\n    steer: [{ from: \"3fff:a::1/128\", via: [\"3fff:1:69c::1\"] }]\n",
+			body:  "cap:\n  segment:\n    steer: [{ from: \"3fff:a::1/128\", via: [\"3fff:b::1\"] }]\n",
 			names: []string{"cap.segment steer", "names no source", "3fff:a::1/128"},
 		},
 		"a share of an exit's flows past any connection table": {
@@ -813,7 +813,7 @@ func TestIntegerFieldRefusesANumberThatIsNotWhole(t *testing.T) {
 		"a merge key in a nested block": {
 			".yaml", nodeYAML + "cap:\n  crypto:\n    <<: { replay: 4096.7 }\n", "<<"},
 		"a merge key in a list": {
-			".yaml", nodeYAML + "cap:\n  segment:\n    source: \"3fff:1:69c:8c0::1\"\n    steer:\n      - <<: { from: \"3fff:a::1/128\" }\n        via: [\"3fff:1:69c::1\"]\n", "<<"},
+			".yaml", nodeYAML + "cap:\n  segment:\n    source: \"3fff:b:0:100::1\"\n    steer:\n      - <<: { from: \"3fff:a::1/128\" }\n        via: [\"3fff:b::1\"]\n", "<<"},
 		"a merge key at the top of the file": {
 			".yaml", "<<: { dial: { all: true } }\n" + nodeYAML, "<<"},
 	} {
@@ -833,8 +833,8 @@ func TestTOMLRefusesAKeyThatDiffersOnlyInCase(t *testing.T) {
 	for name, body := range map[string]string{
 		"a capability's field":          "[cap.route]\nANNOUNCE = [\"10.66.0.5/32\"]\n",
 		"a nested block":                "[cap.crypto.REKEY]\nchild = \"1h\"\n",
-		"a field inside a list":         "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ FROM = \"3fff:a::1/128\", via = [\"3fff:1:69c::1\"] }]\n",
-		"a field in an array of tables": "[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\n[[cap.segment.steer]]\nFROM = \"3fff:a::1/128\"\nvia = [\"3fff:1:69c::1\"]\n",
+		"a field inside a list":         "[cap.segment]\nsource = \"3fff:b:0:100::1\"\nsteer = [{ FROM = \"3fff:a::1/128\", via = [\"3fff:b::1\"] }]\n",
+		"a field in an array of tables": "[cap.segment]\nsource = \"3fff:b:0:100::1\"\n[[cap.segment.steer]]\nFROM = \"3fff:a::1/128\"\nvia = [\"3fff:b::1\"]\n",
 		// Both spellings in one document, where the folded one used to win or
 		// lose depending on the run.
 		"one written twice": "[cap.route]\nannounce = [\"10.66.0.5/32\"]\nANNOUNCE = [\"10.66.0.6/32\"]\n",
@@ -851,7 +851,7 @@ func TestTOMLRefusesAKeyThatDiffersOnlyInCase(t *testing.T) {
 	}
 	// The same keys spelled right are still taken, so the check refuses the
 	// case rather than the key.
-	if _, err := loadTOML(t, nodeTOML+"[cap.segment]\nsource = \"3fff:1:69c:8c0::1\"\nsteer = [{ from = \"3fff:a::1/128\", via = [\"3fff:1:69c::1\"] }]\n[cap.crypto.rekey]\nchild = \"1h\"\n"); err != nil {
+	if _, err := loadTOML(t, nodeTOML+"[cap.segment]\nsource = \"3fff:b:0:100::1\"\nsteer = [{ from = \"3fff:a::1/128\", via = [\"3fff:b::1\"] }]\n[cap.crypto.rekey]\nchild = \"1h\"\n"); err != nil {
 		t.Errorf("the keys as the tags spell them were refused: %v", err)
 	}
 }
@@ -1205,7 +1205,7 @@ func fullConfig() Config {
 					Max:    &rttMax,
 				}, Extra: babel.ExtraCost{
 					Foreign: 1024,
-					Org:     map[string]uint16{"gravity": 2048, "example": 5},
+					Org:     map[string]uint16{"other": 2048, "example": 5},
 					Node:    map[string]uint16{"example/gateway": 300},
 				}},
 			},
@@ -1219,30 +1219,30 @@ func fullConfig() Config {
 				CaptureGrace:    schema.Duration(10 * time.Second),
 			},
 			Segment: &srv6.Segments{
-				Source: schema.MustAddr("3fff:1:69c:8c0::1"),
+				Source: schema.MustAddr("3fff:b:0:100::1"),
 				Local: []srv6.Segment{
-					{SID: schema.MustAddr("3fff:1:69c:8c6::1"), Behavior: srv6.BehaviorEndDT46},
-					{SID: schema.MustAddr("3fff:1:69c:8c6::2"), Behavior: srv6.BehaviorEnd},
+					{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEndDT46},
+					{SID: schema.MustAddr("3fff:b:0:106::2"), Behavior: srv6.BehaviorEnd},
 					{
-						SID:      schema.MustAddr("3fff:1:69c:8c6::3"),
+						SID:      schema.MustAddr("3fff:b:0:106::3"),
 						Behavior: srv6.BehaviorEndDT46,
 						Deliver:  srv6.DeliverEgress,
-						Allow:    []schema.Prefix{schema.MustPrefix("3fff:a::/32"), schema.MustPrefix("198.18.104.0/24")},
+						Allow:    []schema.Prefix{schema.MustPrefix("3fff:a::/32"), schema.MustPrefix("203.0.113.0/24")},
 					},
 				},
 				Steer: []srv6.Steer{{
-					From:   schema.MustPrefix("3fff:a::198:18:104:117/128"),
-					To:     schema.MustPrefix("3fff:1:69c:8c9::/64"),
-					Source: schema.MustAddr("3fff:1:69c:8c0::2"),
+					From:   schema.MustPrefix("3fff:a::203:0:113:10/128"),
+					To:     schema.MustPrefix("3fff:b:0:109::/64"),
+					Source: schema.MustAddr("3fff:b:0:100::2"),
 					Via: []schema.Addr{
-						schema.MustAddr("3fff:1:69c:98d6::1"),
-						schema.MustAddr("3fff:1:69c:98d6::2"),
+						schema.MustAddr("3fff:b:0:206::1"),
+						schema.MustAddr("3fff:b:0:206::2"),
 					},
 				}, {
 					// a source selector and next hops alone
 					// whose unset destination and source json has to leave out rather than refuse to spell
-					From: schema.MustPrefix("3fff:a::198:18:104:118/128"),
-					Via:  []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
+					From: schema.MustPrefix("3fff:a::203:0:113:11/128"),
+					Via:  []schema.Addr{schema.MustAddr("3fff:b:0:206::1")},
 				}},
 			},
 			Crypto: &ike.Crypto{
@@ -1277,7 +1277,7 @@ func fullConfig() Config {
 				Sweep:          schema.Duration(45 * time.Second),
 			},
 			// covering the egress segment's allow list, which the loader asks of it
-			Border: &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")}},
+			Border: &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.0.0/8")}},
 		},
 	}
 }
@@ -1519,12 +1519,12 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 		"cap.route announce from": babel.Routes{Announce: []schema.Announce{
 			{Prefix: schema.MustPrefix("::/0"), From: schema.MustPrefix("2001:db8:1::/48")},
 		}},
-		"cap.segment source": srv6.Segments{Source: schema.MustAddr("3fff:1:69c:8c0::1")},
+		"cap.segment source": srv6.Segments{Source: schema.MustAddr("3fff:b:0:100::1")},
 		"cap.segment steer": srv6.Segments{Steer: []srv6.Steer{{
-			From:   schema.MustPrefix("3fff:a::198:18:104:117/128"),
-			To:     schema.MustPrefix("3fff:1:69c:8c9::/64"),
-			Source: schema.MustAddr("3fff:1:69c:8c0::2"),
-			Via:    []schema.Addr{schema.MustAddr("3fff:1:69c:98d6::1")},
+			From:   schema.MustPrefix("3fff:a::203:0:113:10/128"),
+			To:     schema.MustPrefix("3fff:b:0:109::/64"),
+			Source: schema.MustAddr("3fff:b:0:100::2"),
+			Via:    []schema.Addr{schema.MustAddr("3fff:b:0:206::1")},
 		}}},
 		"cap.egress translate to": egress.Class{From: schema.MustPrefix("3fff::/20"), To: egress.Translation{None: true}},
 		"cap.egress translate": egress.Egress{Translate: []egress.Class{
