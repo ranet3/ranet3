@@ -45,7 +45,8 @@ func expressionNames(t *testing.T, body []byte) []string {
 // order a packet meets them: both interfaces, then the narrowing, then the
 // counter and the translation, or for a timeout rule its protocol and its
 // object, and for the limit's rule the connection's state and status first and
-// the count, the counter and the answer last, in the limit's chain
+// the count, the counter and the answer last, in the limit's chain, as are the
+// ICMP drops, which take their protocol first
 func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	for _, one := range []struct {
 		name string
@@ -117,6 +118,17 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", From: netip.MustParsePrefix("3fff::/20"), None: true, Untracked: true},
 			[]string{"ct", "bitwise", "cmp", "meta", "cmp", "meta", "cmp", "payload", "bitwise", "cmp", "immediate"},
 		},
+		{
+			"the drop of source quench out of the mesh",
+			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Drops: SourceQuench},
+			// The protocol first, then the direction, the type and the counted drop.
+			[]string{"meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "cmp", "counter", "immediate"},
+		},
+		{
+			"the drop of information requests and replies into the mesh",
+			Rule{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet0", Drops: Information},
+			[]string{"meta", "cmp", "meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "cmp", "cmp", "counter", "immediate"},
+		},
 	} {
 		t.Run(one.name, func(t *testing.T) {
 			request, err := newRule(one.rule)
@@ -127,7 +139,7 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 				t.Errorf("encoded %q, want %q", got, one.want)
 			}
 			want := ChainName
-			if one.rule.Limit != 0 || one.rule.Untracked {
+			if one.rule.Limit != 0 || one.rule.Untracked || one.rule.Drops != NoMessage {
 				want = LimitChain
 			}
 			table, chain, spec, _, _ := nftables.DecodeRule(nftables.Message{Data: request.Body})
@@ -244,7 +256,7 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 }
 
 // the longest spec of each direction a translator writes, from a /128 to an address under the longest device name and the longest IPv6 spelling, fits nft's comment limit
-// and so do its longest timeout rule's, its limit rule's, at the largest limit a capability names, and its rules' taking what no flow is tracked for, so no configuration reaches the refusal of a longer one, which nft -f would not load back
+// and so do its longest timeout rule's, its limit rule's, at the largest limit a capability names, its rules' taking what no flow is tracked for and its ICMP drops', so no configuration reaches the refusal of a longer one, which nft -f would not load back
 func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 	address := netip.MustParseAddr("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")
 	device := strings.Repeat("r", unix.IFNAMSIZ-1)
@@ -265,6 +277,9 @@ func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 		if _, err := newRule(Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: device, From: netip.PrefixFrom(address, 128), None: none, Untracked: true}); err != nil {
 			t.Errorf("the longest rule taking what no flow is tracked for was refused: %v", err)
 		}
+	}
+	if _, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: device, Drops: SourceQuench}); err != nil {
+		t.Errorf("the longest drop was refused: %v", err)
 	}
 	if _, err := flowSet(egress.FamilyIPv6, egress.MaxFlowsPerSource).Create(unix.NFPROTO_IPV6); err != nil {
 		t.Errorf("the set of the largest limit was refused: %v", err)
@@ -398,6 +413,56 @@ func TestOversizedInterfaceNameIsRefused(t *testing.T) {
 	}
 	if _, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: strings.Repeat("r", unix.IFNAMSIZ-1)}); err != nil {
 		t.Errorf("the longest name a device can have was refused: %v", err)
+	}
+}
+
+// The forward chain but the limit drops ICMP types 15 and 16, the Information
+// Request and Reply, out of the mesh and into it, under a class of none and
+// one that translates, and carries type 14, a Timestamp Reply, and type 17
+// on each way
+func TestInformationDropTakesTypes15And16Alone(t *testing.T) {
+	for name, to := range map[string]egress.Translation{"none": {None: true}, "auto": {Auto: true}} {
+		cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24"),
+			Translate: []egress.Class{{From: schema.MustPrefix("192.0.2.0/24"), To: to}}}
+		tr := translator(t, cfg, Runtime{MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.200")}}, &fakeBackend{})
+		var requests []nftables.Request
+		var rules []Rule
+		for _, rule := range tr.desired() {
+			if rule.Family == egress.FamilyIPv4 && (rule.Untracked || rule.Drops != NoMessage) {
+				request, err := newRule(rule)
+				if err != nil {
+					t.Fatal(err)
+				}
+				requests, rules = append(requests, request), append(rules, rule)
+			}
+		}
+		for _, way := range []struct {
+			direction           Direction
+			iif, oif            string
+			source, destination string
+		}{
+			{Out, "ranet0", "eth0", "192.0.2.5", "203.0.113.9"},
+			{In, "eth1", "ranet0", "198.51.100.9", "192.0.2.5"},
+		} {
+			for _, kind := range []uint8{14, 15, 16, 17} {
+				packet := drawnPacket{iif: way.iif, source: netip.MustParseAddr(way.source), destination: netip.MustParseAddr(way.destination)}.carrying(unix.IPPROTO_ICMP, 0)
+				packet.transport[0] = kind
+				packet.oif, packet.ctState = way.oif, nftables.CTStateNew
+				run := runChain(t, requests, packet)
+				by := ""
+				if run.rule >= 0 {
+					by, run.rule = rules[run.rule].String(), 0
+				}
+				want, wantBy := chainRun{rule: -1, accept: true}, ""
+				if kind == 15 || kind == 16 {
+					want = chainRun{counted: true}
+					wantBy = Rule{Family: egress.FamilyIPv4, Direction: way.direction, Interface: "ranet0", Drops: Information}.String()
+				}
+				if by != wantBy || run != want {
+					t.Errorf("under %s, ICMP type %d %s via ranet0 meets %q as %+v, want %q as %+v", name, kind, way.direction, by, run, wantBy, want)
+				}
+			}
+		}
 	}
 }
 

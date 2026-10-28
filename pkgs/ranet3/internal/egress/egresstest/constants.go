@@ -124,4 +124,12 @@ const (
 	intoUntrackedEchoID = 10012
 	unmatchedPort       = 10013
 	leafUnmatchedPort   = 40801
+
+	// the server's port the quench's mapping is opened toward, the identifiers
+	// of the information request and the echo after it, and the leaf's port of
+	// the mapping
+	quenchPort     = 10300
+	informationID  = 10301
+	quenchEchoID   = 10302
+	leafQuenchPort = 40710
 )

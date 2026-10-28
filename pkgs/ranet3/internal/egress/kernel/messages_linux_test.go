@@ -35,13 +35,15 @@ var golden []byte
 // node's own address, each family's limit, and the rules taking what no flow
 // is tracked for, out of the mesh a pass from a class of none and a drop from a
 // class and from every source, and into it a drop from a prefix and from
-// every source
+// every source, and the ICMP drops of each message out of the mesh and into it
 func everyTranslation() []Rule {
 	v4, v6 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")
 	return []Rule{
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/25"), None: true, Untracked: true},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Untracked: true},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Untracked: true},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Drops: SourceQuench},
+		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", Drops: Information},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Limit: egress.DefaultFlowsPerSource},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3"},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Source: v4},
