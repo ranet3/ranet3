@@ -25,27 +25,35 @@ import (
 // writes it.
 var underlayStatePath = filepath.Join(filepath.Dir(control.DefaultSocket), "underlay.json")
 
-// underlayRuntime opens, under link.underlay.bind, the defaults the
-// reconciler scopes to the interface the host's own default leaves by at the
-// start, while an unscoped route out of another interface holds a family's
-// zero address or the reconciler is about to install one.
+// underlayRuntime opens the selection the hub names each underlay datagram's
+// interface from, and under link.underlay.bind the defaults the reconciler
+// scopes to the interface the host's own default leaves by at the start, while
+// an unscoped route out of another interface holds a family's zero address or
+// the reconciler is about to install one.
 //
-// mesh is this node's own tun, which the lookup must never answer with. host
-// is the machine both halves read and write, nil for the one this process is
-// running on.
+// mesh is this node's own tun, which no selection and no lookup may answer
+// with. host is the machine they read and write, nil for the one this process
+// is running on.
 //
 // The returned close is always safe to call.
 func underlayRuntime(underlay transport.Underlay, mesh string, host kernel.Host) (transport.Runtime, kernel.CaptureRoutes, func(), error) {
+	selection, err := kernel.OpenSelection(host, mesh)
+	if err != nil {
+		return transport.Runtime{}, nil, func() {}, err
+	}
+	rt := transport.Runtime{Selection: selection}
 	if !underlay.Bind {
-		return transport.Runtime{}, nil, func() {}, nil
+		return rt, nil, func() { _ = selection.Close() }, nil
 	}
 	links, err := kernel.WatchLinksOn(host, mesh)
 	if err != nil {
+		_ = selection.Close()
 		return transport.Runtime{}, nil, func() {}, err
 	}
 	routes, err := kernel.NewUnderlayDefaults(host, links, links.Mesh(), underlayStatePath)
 	if err != nil {
 		_ = links.Close()
+		_ = selection.Close()
 		return transport.Runtime{}, nil, func() {}, err
 	}
 	close := func() {
@@ -53,15 +61,16 @@ func underlayRuntime(underlay transport.Underlay, mesh string, host kernel.Host)
 		// owns, and the link watcher is only a notification channel.
 		_ = routes.Close()
 		_ = links.Close()
+		_ = selection.Close()
 	}
 	index, err := links.DefaultInterface()
 	if err != nil {
 		slog.Warn("client scopes no default to an uplink", "err", err, "detail", "the host has no default route at the start")
-		return transport.Runtime{}, routes, close, nil
+		return rt, routes, close, nil
 	}
 	if err := routes.Prepare(index); err != nil {
 		close()
 		return transport.Runtime{}, nil, func() {}, err
 	}
-	return transport.Runtime{}, routes, close, nil
+	return rt, routes, close, nil
 }

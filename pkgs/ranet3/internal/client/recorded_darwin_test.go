@@ -27,8 +27,8 @@ import (
 // It stands in for kernel.Host, which is the whole of what internal/kernel
 // does to a machine, so a daemon built on one touches nothing outside this
 // process. The one exception is deliberate: uplink is a real interface index,
-// because the transport binds its own UDP socket to it with IP_BOUND_IF and
-// the running kernel is the only thing that can answer that.
+// because the transport names it on its own UDP sockets' datagrams and the
+// running kernel is the only thing that can answer that.
 type recordedKernel struct {
 	mu sync.Mutex
 	// uplink is where the host's own traffic leaves by and mesh is the tun
@@ -435,8 +435,8 @@ func (w *recordedWatcher) Close() error {
 }
 
 // loopbackIndex is a real interface index, for the one call these tests leave
-// with the running kernel: the transport sets IP_BOUND_IF on its own UDP
-// socket, and an index no device has is refused.
+// with the running kernel: the transport names the interface the selection
+// answers on its own UDP sockets, and an index no device has is refused.
 func loopbackIndex(t *testing.T) int {
 	t.Helper()
 	device, err := net.InterfaceByName("lo0")

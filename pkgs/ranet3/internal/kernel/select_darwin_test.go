@@ -184,6 +184,16 @@ func TestDarwinSelectionFollowsTheWatcher(t *testing.T) {
 	}
 }
 
+// a selection for a node without an interface of its own opens without looking
+// one up, and leaves no interface out
+func TestDarwinSelectionWithoutAMeshLeavesNoInterfaceOut(t *testing.T) {
+	host := newSelectionHost(t, selectionEntry(selectMesh, 0, "203.0.113.0/24"))
+	selection := openTestSelection(t, host, "")
+	if got, _ := selection.Interface(netip.MustParseAddr("203.0.113.9")); got != selectMesh {
+		t.Errorf("203.0.113.9 selects interface %d, want %d, the one its route leaves by", got, selectMesh)
+	}
+}
+
 // a table that cannot be read refuses the start
 func TestDarwinSelectionRefusesAnUnreadableTable(t *testing.T) {
 	host := newSelectionHost(t)
