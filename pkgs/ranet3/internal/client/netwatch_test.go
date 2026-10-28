@@ -13,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -158,6 +160,128 @@ func TestNetworkChangeProbesEverySessionAndWakesEveryDialer(t *testing.T) {
 	if _, ok := event.Attrs["ipv6_default"]; ok {
 		t.Errorf("a change to IPv4 alone recorded IPv6 as well: %v", event.Attrs)
 	}
+}
+
+// a change holding links alone, a container's bridge coming up, wakes the route reconciler and probes no session, wakes no dialer and closes no socket
+// a point-to-point far end moving alone is named among the links that changed
+// a change of the path that follows it wakes the reconciler again and probes every session
+func TestLinkAloneWakesTheReconcilerAndProbesNoSession(t *testing.T) {
+	c := writable(t)
+	c.events = events.New()
+	c.hub = recordingHub(t, c.events)
+	busyPeer(t, c.hub, c.events)
+	var probedMu sync.Mutex
+	probed := 0
+	c.sessions.probe = func(*ike.Session) {
+		probedMu.Lock()
+		defer probedMu.Unlock()
+		probed++
+	}
+	c.sessions.active = func(*ike.Session) bool { return true }
+	c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+	dialer := &dialer{cancel: func() {}, wake: make(chan struct{}, 1)}
+	c.dialers["example/gateway:1@0"] = dialer
+	wakes := make(chan struct{}, 2)
+	c.SetReconcilerNetwork(func() { wakes <- struct{}{} })
+
+	network := &fakeNetwork{changes: make(chan kernel.NetworkChange, 1)}
+	c.network = network
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.followNetwork(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	uplink := kernel.NetworkFamily{
+		Default:   kernel.DefaultRoute{Interface: "eth0"},
+		Addresses: []netip.Addr{netip.MustParseAddr("198.51.100.10")},
+		Links:     []kernel.Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/24")}}, {Name: "veth9"}},
+	}
+	// a bridge comes, a container's link goes and the uplink's network narrows, its address kept
+	bridged := uplink
+	bridged.Links = []kernel.Link{{Name: "docker0"}, {Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/25")}}}
+	recordedChanges := func(want int) []control.Event {
+		t.Helper()
+		for deadline := time.Now().Add(networkChangeBudget); len(recorded(c.events, "network.changed")) < want; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d changes were recorded, want %d", len(recorded(c.events, "network.changed")), want)
+			}
+		}
+		return recorded(c.events, "network.changed")
+	}
+	woke := func(step string) {
+		t.Helper()
+		select {
+		case <-wakes:
+		case <-time.After(networkChangeBudget):
+			t.Fatalf("%s did not wake the reconciler", step)
+		}
+	}
+
+	network.changes <- kernel.NetworkChange{At: time.Now(), Before: kernel.NetworkState{IPv4: uplink}, After: kernel.NetworkState{IPv4: bridged}}
+	woke("a link alone")
+	event := recordedChanges(1)[0]
+	probedMu.Lock()
+	alone := probed
+	probedMu.Unlock()
+	if alone != 0 || event.Attrs["probed"] != "0" || event.Attrs["woken"] != "0" {
+		t.Errorf("a link alone probed %d sessions and was recorded as %v", alone, event.Attrs)
+	}
+	for key, want := range map[string]string{"ipv4_links_added": "docker0", "ipv4_links_removed": "veth9", "ipv4_links_changed": "eth0"} {
+		if event.Attrs[key] != want {
+			t.Errorf("a change of links alone carries %s=%q, want %q (all %v)", key, event.Attrs[key], want, event.Attrs)
+		}
+	}
+	select {
+	case <-dialer.wake:
+		t.Error("a link alone woke a dialer")
+	default:
+	}
+	if open := c.hub.PairSockets(); open != 1 {
+		t.Errorf("a link alone left %d sockets connected to one peer, want the one it had", open)
+	}
+
+	// a point-to-point link's far end moves, its local address kept
+	pointToPoint := func(far string) kernel.NetworkState {
+		family := bridged
+		family.Links = append(slices.Clone(bridged.Links), kernel.Link{Name: "ppp0", Prefixes: []netip.Prefix{netip.MustParsePrefix("203.0.113.1/32")}, Peers: []netip.Prefix{netip.MustParsePrefix(far)}})
+		return kernel.NetworkState{IPv4: family}
+	}
+	network.changes <- kernel.NetworkChange{At: time.Now(), Before: pointToPoint("203.0.113.16/28"), After: pointToPoint("203.0.113.32/28")}
+	woke("a far end alone")
+	if event := recordedChanges(2)[1]; event.Attrs["probed"] != "0" || event.Attrs["ipv4_links_changed"] != "ppp0" {
+		t.Errorf("a far end alone was recorded as %v, want no session probed and ipv4_links_changed=ppp0", event.Attrs)
+	}
+
+	moved := bridged
+	moved.Default = kernel.DefaultRoute{Interface: "docker0"}
+	network.changes <- kernel.NetworkChange{At: time.Now(), Before: kernel.NetworkState{IPv4: bridged}, After: kernel.NetworkState{IPv4: moved}}
+	woke("a default moving")
+	if event := recordedChanges(3)[2]; event.Attrs["probed"] != "1" || event.Attrs["woken"] != "1" {
+		t.Errorf("a default moving was recorded as %v, want one session probed and one dialer woken", event.Attrs)
+	}
+}
+
+// the reconciler's runtime reads the network at each call, so a pass after a link comes derives its rules from the links as they are then
+func TestKernelRuntimeReadsTheNetworkAtEachCall(t *testing.T) {
+	c := writable(t)
+	c.Mesh = netstack.NewRoutesOnly()
+	eth0 := kernel.Link{Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/24")}}
+	network := &fakeNetwork{current: kernel.NetworkState{IPv4: kernel.NetworkFamily{Links: []kernel.Link{eth0}}}}
+	c.network = network
+	read := c.KernelRuntime().Network
+	if got := read().IPv4.Links; !slices.EqualFunc(got, []kernel.Link{eth0}, sameLink) {
+		t.Fatalf("the first call read the links %v, want eth0 alone", got)
+	}
+	bridged := []kernel.Link{{Name: "docker0", Prefixes: []netip.Prefix{netip.MustParsePrefix("192.0.2.1/24")}}, eth0}
+	network.current = kernel.NetworkState{IPv4: kernel.NetworkFamily{Links: bridged}}
+	if got := read().IPv4.Links; !slices.EqualFunc(got, bridged, sameLink) {
+		t.Errorf("the call after a bridge came read the links %v, want %v", got, bridged)
+	}
+}
+
+// sameLink is whether two links hold one name, its prefixes and its far ends
+func sameLink(a, b kernel.Link) bool {
+	return a.Name == b.Name && slices.Equal(a.Prefixes, b.Prefixes) && slices.Equal(a.Peers, b.Peers)
 }
 
 // a change of the host's network closes every socket connected to one peer, which may keep a source the host lost

@@ -256,6 +256,130 @@ func TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault(t *testing.T) {
 	}
 }
 
+// in a fresh namespace a link outside the mesh signals as it comes up with no address, as it takes an address of each family under its network's length, a point-to-point one among them, and as it goes
+// a link that is down is none, and the mesh's own device never appears among the links
+func TestNetworkWatchFollowsLinksInNetworkNamespace(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
+	const meshName, linkName = "ranetwatch0", "ranetlink0"
+	createTUN(t, meshName)
+	mesh, err := conn.link(0, meshName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, mesh.index, unix.IFF_UP)
+	if _, err := conn.execute(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, hostAddrMessage(mesh.index, prefix("192.0.2.1/24"))); err != nil {
+		t.Fatal(err)
+	}
+	w, err := WatchNetwork(nil, meshName)
+	if err != nil {
+		t.Fatalf("open the watch: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	next := func(step string) NetworkChange {
+		t.Helper()
+		select {
+		case change := <-w.Changes():
+			for _, family := range []NetworkFamily{change.After.IPv4, change.After.IPv6} {
+				for _, link := range family.Links {
+					if link.Name == meshName {
+						t.Errorf("%s: the mesh's own device is among the links %v", step, family.Links)
+					}
+				}
+			}
+			return change
+		case <-time.After(quietWindow):
+			t.Fatalf("%s signaled nothing", step)
+		}
+		return NetworkChange{}
+	}
+	quiet := func(step string) {
+		t.Helper()
+		select {
+		case change := <-w.Changes():
+			t.Fatalf("%s signaled %+v", step, change.Families())
+		case <-time.After(quietWindow):
+		}
+	}
+	links := func(step string, got []Link, want ...Link) {
+		t.Helper()
+		if !sameLinks(got, want) {
+			t.Errorf("%s: the links read %v, want %v", step, got, want)
+		}
+	}
+
+	if err := createLink(conn, linkName, "dummy"); err != nil {
+		t.Fatalf("create the dummy %s: %v", linkName, err)
+	}
+	link, err := conn.link(0, linkName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet("a link that is down")
+
+	setLinkFlags(t, conn, link.index, unix.IFF_UP)
+	change := next("a link up with no address")
+	links("a link up with no address", change.After.IPv4.Links, Link{Name: linkName})
+	links("a link up with no address", change.After.IPv6.Links, Link{Name: linkName})
+	for _, family := range change.Families() {
+		if family.PathMoved() || !family.LinksMoved() {
+			t.Errorf("a link up with no address moved %s's path %v and its links %v", family.Family, family.PathMoved(), family.LinksMoved())
+		}
+	}
+
+	add := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL | unix.NLM_F_ACK)
+	if _, err := conn.execute(unix.RTM_NEWADDR, add, hostAddrMessage(link.index, prefix("198.51.100.10/24"))); err != nil {
+		t.Fatal(err)
+	}
+	change = next("an IPv4 address")
+	links("an IPv4 address", change.After.IPv4.Links, Link{Name: linkName, Prefixes: []netip.Prefix{prefix("198.51.100.10/24")}})
+	if !slices.Equal(change.After.IPv4.Addresses, addrs("198.51.100.10")) {
+		t.Errorf("an IPv4 address reads the addresses %v", change.After.IPv4.Addresses)
+	}
+
+	if _, err := conn.execute(unix.RTM_NEWADDR, add, hostAddrMessage(link.index, prefix("2001:db8::10/64"))); err != nil {
+		t.Fatal(err)
+	}
+	change = next("an IPv6 address")
+	links("an IPv6 address", change.After.IPv6.Links, Link{Name: linkName, Prefixes: []netip.Prefix{prefix("2001:db8::10/64")}})
+
+	// a point-to-point address of each family, its far end apart as the kernel routes it
+	addr := netip.MustParseAddr
+	if _, err := conn.execute(unix.RTM_NEWADDR, add, addressMessage(link.index, addr("203.0.113.1"), addr("198.51.100.200"), 25, 0, false).Data); err != nil {
+		t.Fatal(err)
+	}
+	change = next("an IPv4 point-to-point address")
+	links("an IPv4 point-to-point address", change.After.IPv4.Links,
+		Link{Name: linkName, Prefixes: []netip.Prefix{prefix("198.51.100.10/24"), prefix("203.0.113.1/32")}, Peers: []netip.Prefix{prefix("198.51.100.128/25")}})
+	if _, err := conn.execute(unix.RTM_NEWADDR, add, addressMessage(link.index, addr("2001:db8:5::1"), addr("2001:db8:6::"), 64, 0, false).Data); err != nil {
+		t.Fatal(err)
+	}
+	change = next("an IPv6 point-to-point address")
+	links("an IPv6 point-to-point address", change.After.IPv6.Links,
+		Link{Name: linkName, Prefixes: []netip.Prefix{prefix("2001:db8::10/64"), prefix("2001:db8:5::1/64")}, Peers: []netip.Prefix{prefix("2001:db8:6::/128")}})
+
+	body := make([]byte, unix.SizeofIfInfomsg)
+	binary.NativeEndian.PutUint32(body[4:], link.index)
+	if _, err := conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, body); err != nil {
+		t.Fatalf("delete %s: %v", linkName, err)
+	}
+	change = next("the link gone")
+	links("the link gone", change.After.IPv4.Links)
+	links("the link gone", change.After.IPv6.Links)
+	if len(change.After.IPv4.Addresses) != 0 || len(change.After.IPv6.Addresses) != 0 {
+		t.Errorf("with the link gone the addresses read %v and %v", change.After.IPv4.Addresses, change.After.IPv6.Addresses)
+	}
+}
+
 // linkMessage is the RTM_NEWLINK of one named link with its flags
 func linkMessage(index uint32, name string, flags uint32) nlMessage {
 	body := make([]byte, unix.SizeofIfInfomsg)
@@ -277,14 +401,15 @@ func TestReaderKeepsUpLinksOutsideTheMesh(t *testing.T) {
 	}
 }
 
-// addressMessage is the RTM_NEWADDR of one address, its IFA_LOCAL and IFA_ADDRESS each left out where invalid
+// addressMessage is the RTM_NEWADDR of one address under bits, its IFA_LOCAL and IFA_ADDRESS each left out where invalid
 // flags ride in ifa_flags, or in IFA_FLAGS alone where inAttribute is set, as the flags above the first byte do
-func addressMessage(index uint32, local, address netip.Addr, flags uint32, inAttribute bool) nlMessage {
+func addressMessage(index uint32, local, address netip.Addr, bits uint8, flags uint32, inAttribute bool) nlMessage {
 	body := make([]byte, unix.SizeofIfAddrmsg)
 	body[0] = unix.AF_INET
 	if local.Is6() || address.Is6() {
 		body[0] = unix.AF_INET6
 	}
+	body[1] = bits
 	binary.NativeEndian.PutUint32(body[4:], index)
 	if local.IsValid() {
 		body = putAttr(body, unix.IFA_LOCAL, addressBytes(local))
@@ -301,30 +426,46 @@ func addressMessage(index uint32, local, address netip.Addr, flags uint32, inAtt
 }
 
 // the reader keeps the global unicast addresses a socket can send from on an up link, the local end of a point-to-point one
+// each under the length of its network, and every up link by name, one carrying none of the family among them
+// a point-to-point address keeps its far end apart, as the kernel routes it: on IPv4 the far end's network with the local address a host, on IPv6 the local address's network with the far end a host
 // an address on a down link, a link-local one and one still in or failed by duplicate address detection stay out
 func TestReaderKeepsAddressesASocketCanSendFrom(t *testing.T) {
-	up := map[uint32]string{2: "eth0"}
+	up := map[uint32]string{2: "eth0", 4: "docker0"}
 	addr := netip.MustParseAddr
 	none := netip.Addr{}
 	v4 := upAddresses([]nlMessage{
-		addressMessage(2, addr("192.0.2.10"), addr("192.0.2.10"), 0, false),
-		addressMessage(3, addr("198.51.100.10"), addr("198.51.100.10"), 0, false),
-		addressMessage(2, addr("169.254.1.1"), addr("169.254.1.1"), 0, false),
-		addressMessage(2, addr("10.0.0.1"), addr("10.0.0.2"), 0, false),
-		addressMessage(2, none, addr("2001:db8::9"), 0, false),
+		addressMessage(2, addr("198.51.100.10"), addr("198.51.100.10"), 24, 0, false),
+		addressMessage(3, addr("192.0.2.10"), addr("192.0.2.10"), 24, 0, false),
+		addressMessage(2, addr("169.254.1.1"), addr("169.254.1.1"), 16, 0, false),
+		addressMessage(2, addr("203.0.113.1"), addr("203.0.113.2"), 32, 0, false),
+		addressMessage(2, addr("203.0.113.65"), addr("198.51.100.200"), 25, 0, false),
+		addressMessage(2, none, addr("2001:db8::9"), 64, 0, false),
 	}, unix.AF_INET, up)
-	if want := addrs("10.0.0.1", "192.0.2.10"); !slices.Equal(v4, want) {
-		t.Errorf("the reader takes IPv4 as %v, want %v", v4, want)
+	want := []Link{{Name: "docker0"}, {
+		Name:     "eth0",
+		Prefixes: []netip.Prefix{prefix("198.51.100.10/24"), prefix("203.0.113.1/32"), prefix("203.0.113.65/32")},
+		Peers:    []netip.Prefix{prefix("198.51.100.128/25"), prefix("203.0.113.2/32")},
+	}}
+	if !sameLinks(v4, want) {
+		t.Errorf("the reader takes IPv4's links as %v, want %v", v4, want)
+	}
+	if got, want := linkAddresses(v4), addrs("198.51.100.10", "203.0.113.1", "203.0.113.65"); !slices.Equal(got, want) {
+		t.Errorf("the reader takes IPv4's addresses as %v, want %v", got, want)
 	}
 	v6 := upAddresses([]nlMessage{
-		addressMessage(2, none, addr("2001:db8::5"), unix.IFA_F_PERMANENT, false),
-		addressMessage(2, none, addr("2001:db8::6"), unix.IFA_F_TENTATIVE, false),
-		addressMessage(2, none, addr("2001:db8::7"), unix.IFA_F_DADFAILED, true),
-		addressMessage(2, none, addr("fe80::1"), 0, false),
-		addressMessage(2, addr("192.0.2.11"), addr("192.0.2.11"), 0, false),
+		addressMessage(2, none, addr("2001:db8::5"), 64, unix.IFA_F_PERMANENT, false),
+		addressMessage(2, none, addr("2001:db8::6"), 64, unix.IFA_F_TENTATIVE, false),
+		addressMessage(2, none, addr("2001:db8::7"), 64, unix.IFA_F_DADFAILED, true),
+		addressMessage(2, none, addr("fe80::1"), 64, 0, false),
+		addressMessage(2, addr("198.51.100.11"), addr("198.51.100.11"), 24, 0, false),
+		addressMessage(2, addr("2001:db8:5::1"), addr("2001:db8:6::"), 64, 0, false),
 	}, unix.AF_INET6, up)
-	if want := addrs("2001:db8::5"); !slices.Equal(v6, want) {
-		t.Errorf("the reader takes IPv6 as %v, want %v", v6, want)
+	want = []Link{{Name: "docker0"}, {Name: "eth0", Prefixes: []netip.Prefix{prefix("2001:db8::5/64"), prefix("2001:db8:5::1/64")}, Peers: []netip.Prefix{prefix("2001:db8:6::/128")}}}
+	if !sameLinks(v6, want) {
+		t.Errorf("the reader takes IPv6's links as %v, want %v", v6, want)
+	}
+	if got, want := linkAddresses(v6), addrs("2001:db8::5", "2001:db8:5::1"); !slices.Equal(got, want) {
+		t.Errorf("the reader takes IPv6's addresses as %v, want %v", got, want)
 	}
 }
 

@@ -138,6 +138,8 @@ type Client struct {
 	reconcilerEnable atomic.Pointer[func(bool)]
 	// reconcilerTable hands the route reconciler a reloaded cap.table and cap.border overlay, supplied as reconcilerEnable is
 	reconcilerTable atomic.Pointer[func(kernel.Table, []schema.Prefix, []netip.Prefix) error]
+	// reconcilerNetwork wakes the route reconciler for a change of the host's network, supplied as reconcilerEnable is
+	reconcilerNetwork atomic.Pointer[func()]
 	// configPath is where the daemon read this node's configuration, so the
 	// reload verb re-reads the same file SIGHUP does. Empty on a client a test
 	// built by hand, where the verb says so rather than guessing at a path.
@@ -548,6 +550,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		BoundUnderlay: cfg.Link.Underlay.Bind,
 		Host:          c.host,
 		Events:        c.events,
+		Network:       c.networkState,
 	}
 }
 

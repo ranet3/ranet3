@@ -176,6 +176,21 @@ func TestReconcilerNamesTheSweep(t *testing.T) {
 	awaitPass(t, last, "the sweep to put the route back", "sweep", func() bool { return fake.has(ordinary) })
 }
 
+// a change of the host's network wakes a pass at once, named for the network, long before the sweep
+func TestReconcilerRunsAPassWhenTheNetworkChanges(t *testing.T) {
+	bus := events.New()
+	reconciler, table, fake := harness(t, Table{}, Runtime{Events: bus})
+	ordinary := Route{Destination: prefix("2001:db8:5::/48"), Metric: defaultIPv6Metric}
+	table.Set(netip.Prefix{}, ordinary.Destination, nil)
+	last := runToRecord(t, reconciler, table, bus)
+	awaitPass(t, last, "the first pass", "start", func() bool { return fake.has(ordinary) })
+	fake.mu.Lock()
+	delete(fake.routes, ordinary)
+	fake.mu.Unlock()
+	reconciler.NetworkChanged()
+	awaitPass(t, last, "the pass the network asked for", "network", func() bool { return fake.has(ordinary) })
+}
+
 // a pass the capture grace woke, withdrawing a capture once the sessions went quiet, is named for the grace
 // the sweep is a minute out, so only the grace can reach the withdrawal
 func TestReconcilerNamesTheGrace(t *testing.T) {
