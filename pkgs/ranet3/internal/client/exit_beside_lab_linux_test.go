@@ -443,8 +443,9 @@ type dockerChain struct {
 }
 
 // dockerTables is the tables Docker 29.9.1 writes through iptables-nft with no container running, as `nft list ruleset` prints them on a
-// NixOS VM whose forwarding was off before Docker started, with the lab's bridge for docker0 and the container's network for 172.17.0.0/16. ipv4 is ip filter's FORWARD policy, which that VM's Docker set to drop, and which a host forwarding before Docker
-// starts keeps at accept. ip6 filter's stays accept. The nat table's DOCKER chains, empty with no published port, are left out.
+// NixOS VM whose forwarding was off before Docker started, with the lab's bridge for docker0 and the container's network for Docker's default bridge network. ipv4 is ip filter's FORWARD policy, which that VM's Docker set to drop, and which a host forwarding before Docker
+// starts keeps at accept. ip6 filter's stays accept. Of the nat tables only ip nat's POSTROUTING is copied: ip nat's PREROUTING and
+// OUTPUT and the whole ip6 nat table are left out, each reaching only a DOCKER chain that is empty with no published port.
 func dockerTables(ipv4 uint32) map[uint8][]dockerChain {
 	counter := nftables.Expression("counter", nil)
 	jump := func(chain string) [][]byte { return [][]byte{counter, labJump(chain)} }
