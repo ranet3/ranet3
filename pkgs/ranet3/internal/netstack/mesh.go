@@ -184,6 +184,17 @@ func NewRoutesOnly() *Mesh {
 	return &Mesh{Routes: NewRouteTable(), closed: make(chan struct{})}
 }
 
+// NewOnDevice is NewRoutesOnly writing what it delivers to dev, for a test
+// outside this package that must see a packet the mesh hands to the host
+// without the root a tun needs. It starts no reader, writer lane or forward
+// pipeline, so a delivery is written on the caller's goroutine and a forward
+// goes nowhere, finding no batch to join.
+func NewOnDevice(dev tun.Device) *Mesh {
+	m := NewRoutesOnly()
+	m.setDevice(dev)
+	return m
+}
+
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
 // an empty name opens defaultTUNName, which is always created and never attached to
 // mtu is the device's MTU, zero taking DefaultMTU

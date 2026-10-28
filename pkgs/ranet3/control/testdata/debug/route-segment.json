@@ -1,0 +1,22 @@
+{
+  "src": "3fff::1",
+  "dst": "3fff:5::20",
+  "peer": "example/gateway:1@0",
+  "arrival": "session",
+  "segment": {
+    "sid": "3fff:5::20",
+    "behavior": "End.DT46",
+    "deliver": "egress",
+    "allow": [
+      "3fff::1/128"
+    ],
+    "egress": {
+      "served": true,
+      "ready": [
+        "ipv4"
+      ]
+    },
+    "overlay": true,
+    "allowed": true
+  }
+}

@@ -94,11 +94,7 @@ func RenderSegments(w io.Writer, info SegmentsInfo) {
 	if s := info.Steering; s != nil {
 		policies := make([][]string, 0, len(s.Policies))
 		for _, policy := range s.Policies {
-			path := make([]string, 0, len(policy.Path))
-			for _, segment := range policy.Path {
-				path = append(path, segment.String())
-			}
-			policies = append(policies, []string{selectorText(policy), policy.Source.String(), strings.Join(path, " "), fmt.Sprintf("%d B", policy.Overhead)})
+			policies = append(policies, []string{selectorText(policy), policy.Source.String(), pathText(policy), fmt.Sprintf("%d B", policy.Overhead)})
 		}
 		indented(w, func(w io.Writer) { table(w, []string{"Selects", "Source", "Path", "Overhead"}, policies) })
 	}
@@ -149,4 +145,13 @@ func selectorText(p SteerPolicy) string {
 		parts = append(parts, "to "+p.To.String())
 	}
 	return strings.Join(parts, " ")
+}
+
+// pathText is a policy's segment list as the file spells it
+func pathText(p SteerPolicy) string {
+	path := make([]string, 0, len(p.Path))
+	for _, segment := range p.Path {
+		path = append(path, segment.String())
+	}
+	return strings.Join(path, " ")
 }

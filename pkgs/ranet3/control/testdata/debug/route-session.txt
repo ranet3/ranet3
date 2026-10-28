@@ -1,0 +1,59 @@
+Packet    from 192.0.2.1 to 192.0.2.3, through the session example/gateway:1@0
+Mesh      forward to example/far:1@0
+Matched   192.0.2.3/32
+Session   example/far:1@0 carries 1280 B, so a larger packet is answered too big with DF or cut into fragments without
+Expiring  a packet arriving with a hop limit of 1 or less is answered expired
+
+Packet   from 192.0.2.1 to 192.0.2.2, through the session example/gateway:1@0
+Mesh     deliver
+Matched  192.0.2.2/32
+Rule     0 all lookup local, kernel
+Route    192.0.2.2/32 in table local, local
+Leaves   nowhere, the kernel delivers it to this host
+
+Packet   from 192.0.2.1 to 198.51.100.255, through the session example/gateway:1@0
+Mesh     deliver
+Matched  198.51.100.128/25
+Rule     0 all lookup local, kernel
+Route    198.51.100.255/32 in table local, broadcast, dev lan0
+Leaves   nowhere, the kernel delivers it to this host
+
+Packet    from 192.0.2.1 to 192.0.2.2, through the session example/gateway:1@0
+Mesh      deliver
+Matched   192.0.2.2/32
+Kernel    EINVAL, a martian source or a blackhole
+Rule      none named, the walk ends past the last rule
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/ranet0/rp_filter 0
+
+Packet    from 192.0.2.1 to 192.0.2.2, through the session example/gateway:1@0
+Mesh      deliver
+Matched   192.0.2.2/32
+Kernel    EINVAL, a martian source, a blackhole route or the rule below
+Rule      40000 to 192.0.2.0/24 blackhole, protocol 99, if the walk reached it rather than a check outside the walk raising the same errno, and unless a blackhole route in a table a rule ahead of it looks up ended the walk
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/ranet0/rp_filter 0
+
+Packet    from 192.0.2.1 to 239.1.2.4, through the session example/gateway:1@0
+Mesh      deliver
+Kernel    EINVAL, a group this host has not joined on ranet0, or a source the kernel's checks refuse for it
+Rule      none, the kernel walks no rule for this destination arriving on a link
+Settings  net/ipv4/conf/all/rp_filter 0, net/ipv4/conf/ranet0/rp_filter 0
+
+Packet    from 192.0.2.1 to 198.51.100.140, through the session example/gateway:1@0
+Mesh      deliver
+Matched   198.51.100.128/25
+Kernel    EHOSTUNREACH, an unreachable route
+Rule      none named, an unreachable route in a table some rule looks up if the walk raised this errno rather than forwarding off on the link
+Settings  net/ipv4/conf/ranet0/forwarding unreadable
+
+Packet   from 192.0.2.1 to 192.0.2.2, through the session example/gateway:1@0
+Mesh     deliver
+Matched  192.0.2.2/32
+Kernel   this platform looks up this host's own packets only
+
+Packet   from 192.0.2.1 to 203.0.113.200, through the session example/gateway:1@0
+Mesh     egress
+Matched  0.0.0.0/0, counting as a default
+
+Packet   from 3fff::1 to 2001:db8:5::9, through the session example/gateway:1@0
+Mesh     answer no_route, reason held
+Matched  2001:db8:5::/48

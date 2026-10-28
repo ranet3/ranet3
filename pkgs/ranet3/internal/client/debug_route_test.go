@@ -82,7 +82,7 @@ func TestDebugRouteRefusesWhatIsNoArrival(t *testing.T) {
 		if test.src != "" {
 			src = netip.MustParseAddr(test.src)
 		}
-		if info, err := c.DebugRoute(src, netip.MustParseAddr("203.0.113.200"), test.iif); err == nil {
+		if info, err := c.DebugRoute(src, netip.MustParseAddr("203.0.113.200"), test.iif, ""); err == nil {
 			t.Errorf("%s was followed as %+v", name, info)
 		}
 	}
@@ -98,7 +98,7 @@ func TestDebugRouteNamesTheRuleAndTheRoute(t *testing.T) {
 		{Device: "ranet0"}, {Device: "lan0", Gateway: netip.MustParseAddr("198.51.100.129"), Dead: true, LinkDown: true},
 	}}
 	c, read := routeClient(t, route, nil, nil)
-	info, err := c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.10"), "")
+	info, err := c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.10"), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,13 +113,13 @@ func TestDebugRouteNamesTheRuleAndTheRoute(t *testing.T) {
 
 	route.NextHops = route.NextHops[1:]
 	c, _ = routeClient(t, route, nil, nil)
-	if info, _ := c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.10"), ""); info.Kernel.IntoTun {
+	if info, _ := c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.10"), "", ""); info.Kernel.IntoTun {
 		t.Errorf("a route by lan0 alone reads as entering the mesh")
 	}
 
 	cached := kernel.MatchedRoute{Prefix: netip.MustParsePrefix("::/0"), Table: 254, Type: "unicast", NextHops: []kernel.NextHop{{Device: "up0"}}, Exception: true}
 	c, _ = routeClient(t, cached, nil, nil)
-	info, err = c.DebugRoute(netip.MustParseAddr("2001:db8:2::5"), netip.MustParseAddr("2001:db8:ffff::10"), "")
+	info, err = c.DebugRoute(netip.MustParseAddr("2001:db8:2::5"), netip.MustParseAddr("2001:db8:ffff::10"), "", "")
 	if err != nil || !info.Kernel.Exception || info.Kernel.NoSource != !kernel.RouteGetTakesSource {
 		t.Errorf("a lookup answered through an exception reads %+v, %v", info.Kernel, err)
 	}
@@ -130,7 +130,7 @@ func TestDebugRouteNamesTheRuleAndTheRoute(t *testing.T) {
 func TestDebugRouteNamesNothingForARouteOfNoTableEntry(t *testing.T) {
 	route := kernel.MatchedRoute{Prefix: netip.MustParsePrefix("255.255.255.255/32"), Type: "broadcast", NextHops: []kernel.NextHop{{Device: "lo"}}, NoEntry: true}
 	c, read := routeClient(t, route, nil, nil)
-	info, err := c.DebugRoute(netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("255.255.255.255"), "lan0")
+	info, err := c.DebugRoute(netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("255.255.255.255"), "lan0", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestDebugRouteNamesTheRulesItDoesNotRead(t *testing.T) {
 	c, _ := routeClient(t, route, nil, nil)
 	uid := kernel.DumpedRule{Family: kernel.FamilyIPv4, Priority: 300, Action: "lookup", Table: 254, Protocol: 4, Unread: kernel.SelectorUIDRange}
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return append(routeDump(), uid), nil }
-	info, err := c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.200"), "")
+	info, err := c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.200"), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestDebugRouteExplainsTheKernelsError(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, read := routeClient(t, test.answer, test.err, test.settings)
-			info, err := c.DebugRoute(test.src, test.dst, test.iif)
+			info, err := c.DebugRoute(test.src, test.dst, test.iif, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -328,7 +328,7 @@ func TestDebugRouteOnAPlatformWithoutRules(t *testing.T) {
 	c, _ := routeClient(t, kernel.MatchedRoute{}, refused, nil)
 	dumped := false
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { dumped = true; return nil, kernel.ErrUnsupported }
-	info, err := c.DebugRoute(netip.MustParseAddr("192.0.2.7"), netip.MustParseAddr("203.0.113.200"), "en0")
+	info, err := c.DebugRoute(netip.MustParseAddr("192.0.2.7"), netip.MustParseAddr("203.0.113.200"), "en0", "")
 	if err != nil || info.Kernel.Why != control.WhyUnsupported || dumped || info.Kernel.Rule != nil {
 		t.Errorf("an arrival darwin does not look up reads %+v, %v, the rules dumped %v", info.Kernel, err, dumped)
 	}
@@ -336,12 +336,12 @@ func TestDebugRouteOnAPlatformWithoutRules(t *testing.T) {
 	route := kernel.MatchedRoute{Prefix: netip.MustParsePrefix("0.0.0.0/0"), Type: "unicast", NextHops: []kernel.NextHop{{Device: "en0"}}}
 	c, _ = routeClient(t, route, nil, nil)
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return nil, kernel.ErrUnsupported }
-	info, err = c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.200"), "")
+	info, err = c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.200"), "", "")
 	if err != nil || info.Kernel.RuleErr != "this platform has no policy rules" || info.Kernel.Route != route.Prefix {
 		t.Errorf("this host's own packet on darwin reads %+v, %v", info.Kernel, err)
 	}
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return nil, errors.New("kernel: dump rules: permission denied") }
-	if info, _ = c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.200"), ""); info.Kernel.RuleErr != "kernel: dump rules: permission denied" {
+	if info, _ = c.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.200"), "", ""); info.Kernel.RuleErr != "kernel: dump rules: permission denied" {
 		t.Errorf("a failed dump reads %+v", info.Kernel)
 	}
 }

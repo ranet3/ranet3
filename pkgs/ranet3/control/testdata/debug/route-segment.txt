@@ -1,0 +1,24 @@
+Packet   from 3fff::1 to 3fff:5::20, through the session example/gateway:1@0
+Segment  3fff:5::20 End.DT46 deliver egress allow 3fff::1/128, served, ready for ipv4
+Source   3fff::1 inside cap.border's overlay and the allow list
+Then     End.DT46 takes out the inner packet, which this view's packet carries none of, checks its source against the allow list with the exit's other checks, and hands it to the exit
+
+Packet    from 3fff::3 to 3fff:5::20, through the session example/gateway:1@0
+Segment   3fff:5::20 End.DT46 deliver egress allow 3fff::1/128, served, ready for ipv4
+Source    3fff::3 inside cap.border's overlay, outside the allow list
+Decision  drop, reason refused
+
+Packet   from 3fff::3 to 3fff:5::1, through the session example/gateway:1@0
+Segment  3fff:5::1 End.DT46 deliver mesh
+Source   3fff::3 inside cap.border's overlay
+Then     End.DT46 takes out the inner packet, which this view's packet carries none of, and hands it to the mesh's decision whatever cap.transit says
+
+Packet    from 2001:db8:66::6 to 3fff:5::10, through the session example/gateway:1@0
+Segment   3fff:5::10 End
+Source    2001:db8:66::6 outside cap.border's overlay
+Decision  drop, reason refused
+
+Packet   from 3fff::3 to 3fff:5::10, through the session example/gateway:1@0
+Segment  3fff:5::10 End
+Source   3fff::3 inside cap.border's overlay
+Then     End sends the packet on to the next segment of its routing header, which this view's packet carries none of

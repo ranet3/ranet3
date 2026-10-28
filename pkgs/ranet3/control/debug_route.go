@@ -27,6 +27,8 @@ const (
 	ArrivalLocal = "local"
 	// ArrivalLink is a packet arriving on a link other than the tun
 	ArrivalLink = "link"
+	// ArrivalSession is a packet arriving through a session from a peer
+	ArrivalSession = "session"
 )
 
 // why the kernel answered a packet as it did, where a setting or the answer
@@ -60,21 +62,72 @@ const (
 
 // RouteSource is a Source that follows a packet through its routing
 type RouteSource interface {
-	// DebugRoute follows a packet from src to dst, this host's own where iif
-	// is empty and arriving on the link iif otherwise, or says why it cannot.
-	// An invalid src is this host's own packet sent with none.
-	DebugRoute(src, dst netip.Addr, iif string) (RouteInfo, error)
+	// DebugRoute follows a packet from src to dst, arriving on the link iif,
+	// through a session from the peer peer names, or this host's own where
+	// both are empty, or says why it cannot. An invalid src is this host's
+	// own packet sent with none.
+	DebugRoute(src, dst netip.Addr, iif, peer string) (RouteInfo, error)
 }
 
 // RouteInfo is each part of the host a packet meets in order, a part absent
 // where the walk did not reach it
 type RouteInfo struct {
 	// Src is absent for this host's own packet sent with no source
-	Src     netip.Addr   `json:"src,omitzero"`
-	Dst     netip.Addr   `json:"dst"`
-	IIF     string       `json:"iif,omitempty"`
-	Arrival string       `json:"arrival"`
-	Kernel  *RouteKernel `json:"kernel,omitempty"`
+	Src netip.Addr `json:"src,omitzero"`
+	Dst netip.Addr `json:"dst"`
+	// IIF is the link the kernel takes the packet as arriving on, the tun
+	// for one the mesh delivers to this host
+	IIF string `json:"iif,omitempty"`
+	// Peer is the session a packet arriving through one comes through, by
+	// its path
+	Peer    string        `json:"peer,omitempty"`
+	Arrival string        `json:"arrival"`
+	Segment *RouteSegment `json:"segment,omitempty"`
+	Mesh    *RouteMesh    `json:"mesh,omitempty"`
+	Kernel  *RouteKernel  `json:"kernel,omitempty"`
+	// Unfollowed is why the walk did not take a packet the kernel routes into
+	// the tun on through the mesh's checks of a read, where it does not
+	Unfollowed string `json:"unfollowed,omitempty"`
+}
+
+// RouteSegment is the segment of this node a packet from a session is
+// addressed to, which acts on it before the mesh's decision, and what it asks
+// of the packet's source
+type RouteSegment struct {
+	LocalSegment
+	// Overlay is the source lying in cap.border's overlay, which every SID
+	// asks first. Allowed is it lying in an egress segment's allow list,
+	// which only such a segment asks, of a source Overlay admits.
+	Overlay bool `json:"overlay"`
+	Allowed bool `json:"allowed,omitempty"`
+	// Decision and Reason are the segment's drop of a source it refuses, as a
+	// trace's record names it, and absent for one it admits
+	Decision string `json:"decision,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// RouteMesh is the mesh's decision for the packet, as a trace's record of it
+// names it
+type RouteMesh struct {
+	Decision string `json:"decision"`
+	// Reason is why the packet is answered or dropped, and Answer the ICMP
+	// error it is answered with
+	Reason string `json:"reason,omitempty"`
+	Answer string `json:"answer,omitempty"`
+	// Next is the session the packet is held to, by its path, for a forward,
+	// and for an answer or a drop about its size past that session, and MTU
+	// the most that session carries, the bytes Policy puts in front of the
+	// packet among them
+	Next string `json:"next,omitempty"`
+	MTU  int    `json:"mtu,omitempty"`
+	// Policy is the policy that steers a read, which sends it to the first
+	// segment of its path
+	Policy *SteerPolicy `json:"policy,omitempty"`
+	// Matched is the table's entry for the destination, absent where the walk
+	// ended before the table or no entry holds the destination, and Counted
+	// is that entry counting as a default
+	Matched netip.Prefix `json:"matched,omitzero"`
+	Counted bool         `json:"counted,omitempty"`
 }
 
 // RouteKernel is the kernel's answer: the rule its walk took and the route it
@@ -183,7 +236,7 @@ func serveRoute(d *debugServer, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	info, err := source.DebugRoute(src, dst, query.Get("iif"))
+	info, err := source.DebugRoute(src, dst, query.Get("iif"), query.Get("peer"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -191,10 +244,11 @@ func serveRoute(d *debugServer, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, info)
 }
 
-// Route follows a packet from src to dst through the host, arriving on iif or
-// this host's own where iif is empty
+// Route follows a packet from src to dst through the host, arriving on iif,
+// through a session from the peer peer names, or this host's own where both
+// are empty
 // ctx bounds the exchange beside the client's own timeout
-func (c *Client) Route(ctx context.Context, src, dst netip.Addr, iif string) (RouteInfo, error) {
+func (c *Client) Route(ctx context.Context, src, dst netip.Addr, iif, peer string) (RouteInfo, error) {
 	from := "::"
 	if dst.Is4() {
 		from = "0.0.0.0"
@@ -205,6 +259,9 @@ func (c *Client) Route(ctx context.Context, src, dst netip.Addr, iif string) (Ro
 	query := url.Values{"src": {from}, "dst": {dst.String()}}
 	if iif != "" {
 		query.Set("iif", iif)
+	}
+	if peer != "" {
+		query.Set("peer", peer)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://control"+PathDebugRoute+"?"+query.Encode(), nil)
 	if err != nil {
@@ -225,23 +282,107 @@ func RenderRoute(w io.Writer, info RouteInfo) {
 		from = info.Src.String()
 	}
 	arrival := "this host's own"
-	if info.Arrival == ArrivalLink {
+	switch info.Arrival {
+	case ArrivalLink:
 		arrival = "arriving on " + info.IIF
+	case ArrivalSession:
+		arrival = "through the session " + info.Peer
 	}
 	packet := fmt.Sprintf("from %s to %s, %s", from, info.Dst, arrival)
 	if info.Kernel != nil && info.Kernel.NoSource {
 		packet += ", looked up without its source, which this platform's lookup does not take"
 	}
 	rows := [][]string{{"Packet", packet}}
+	if s := info.Segment; s != nil {
+		rows = append(rows, segmentRows(info, *s)...)
+	}
+	var mesh [][]string
+	switch {
+	case info.Mesh != nil:
+		mesh = meshRows(info, *info.Mesh)
+	case info.Unfollowed != "":
+		mesh = [][]string{{"Mesh", "not followed, " + info.Unfollowed}}
+	}
+	if info.Arrival == ArrivalSession {
+		rows, mesh = append(rows, mesh...), nil
+	}
 	if k := info.Kernel; k != nil {
 		rows = append(rows, kernelRows(info, *k)...)
 	}
-	pairs(w, rows)
+	pairs(w, append(rows, mesh...))
+}
+
+// segmentRows says what the segment a session's packet is addressed to asks
+// of its source, then the drop of a source it refuses or what it does next
+func segmentRows(info RouteInfo, s RouteSegment) [][]string {
+	source := "outside cap.border's overlay"
+	switch {
+	case s.Overlay && s.Egress != nil && s.Allowed:
+		source = "inside cap.border's overlay and the allow list"
+	case s.Overlay && s.Egress != nil:
+		source = "inside cap.border's overlay, outside the allow list"
+	case s.Overlay:
+		source = "inside cap.border's overlay"
+	}
+	rows := [][]string{{"Segment", segmentText(s.LocalSegment)}, {"Source", info.Src.String() + " " + source}}
+	if s.Decision != "" {
+		return append(rows, []string{"Decision", s.Decision + ", reason " + s.Reason})
+	}
+	next := "End sends the packet on to the next segment of its routing header, which this view's packet carries none of"
+	switch {
+	case s.Egress != nil:
+		next = "End.DT46 takes out the inner packet, which this view's packet carries none of, checks its source against the allow list with the exit's other checks, and hands it to the exit"
+	case s.Deliver != "":
+		next = "End.DT46 takes out the inner packet, which this view's packet carries none of, and hands it to the mesh's decision whatever cap.transit says"
+	}
+	return append(rows, []string{"Then", next})
+}
+
+// meshRows says what the mesh decides for the packet, the table's entry it
+// matched, and for a packet held to a session what a larger or expiring one
+// meets instead
+func meshRows(info RouteInfo, m RouteMesh) [][]string {
+	decision := m.Decision
+	switch {
+	case m.Answer != "":
+		decision += " " + m.Answer + ", reason " + m.Reason
+	case m.Reason != "":
+		decision += ", reason " + m.Reason
+	case m.Next != "":
+		decision += " to " + m.Next
+	}
+	rows := [][]string{{"Mesh", decision}}
+	if p := m.Policy; p != nil {
+		rows = append(rows, []string{"Steered", fmt.Sprintf("by the policy %s, source %s, path %s", selectorText(*p), p.Source, pathText(*p))})
+	}
+	if m.Matched.IsValid() {
+		matched := m.Matched.String()
+		if m.Counted {
+			matched += ", counting as a default"
+		}
+		rows = append(rows, []string{"Matched", matched})
+	}
+	if m.Next == "" {
+		return rows
+	}
+	session := fmt.Sprintf("%s carries %d B", m.Next, m.MTU)
+	if p := m.Policy; p != nil && p.Overhead != 0 {
+		session += fmt.Sprintf(", %d B of them the steering's header", p.Overhead)
+	}
+	session += ", so a larger packet is answered too big"
+	if info.Dst.Is4() {
+		session += " with DF or cut into fragments without"
+	}
+	rows = append(rows, []string{"Session", session})
+	if info.Arrival == ArrivalSession {
+		rows = append(rows, []string{"Expiring", "a packet arriving with a hop limit of 1 or less is answered expired"})
+	}
+	return rows
 }
 
 func kernelRows(info RouteInfo, k RouteKernel) [][]string {
 	if k.Why == WhyUnsupported {
-		if info.Arrival == ArrivalLink {
+		if info.Arrival != ArrivalLocal {
 			return [][]string{{"Kernel", "this platform looks up this host's own packets only"}}
 		}
 		return [][]string{{"Kernel", "this platform looks up no route"}}
@@ -319,9 +460,9 @@ func routeRefusal(info RouteInfo, k RouteKernel) string {
 		return name + ", reverse path filtering, or a martian source or a blackhole, which answer the same"
 	case k.Why == WhyForwardingOff:
 		return name + ", forwarding is off on " + info.IIF
-	case name == "EINVAL" && info.Arrival == ArrivalLink && info.Dst.Is4() && k.Candidate != nil:
+	case name == "EINVAL" && info.Arrival != ArrivalLocal && info.Dst.Is4() && k.Candidate != nil:
 		return name + ", a martian source, a blackhole route or the rule below"
-	case name == "EINVAL" && info.Arrival == ArrivalLink && info.Dst.Is4():
+	case name == "EINVAL" && info.Arrival != ArrivalLocal && info.Dst.Is4():
 		return name + ", a martian source or a blackhole"
 	case name == "EINVAL" && info.Dst.Is4() && k.Candidate != nil:
 		return name + ", a source or destination the kernel refuses, a blackhole route or the rule below"
@@ -347,9 +488,10 @@ func multicastRoutingUnread(k RouteKernel) bool {
 	return slices.ContainsFunc(k.Settings, func(s RouteSetting) bool { return s.unread() && strings.HasSuffix(s.Name, "/mc_forwarding") })
 }
 
-// arrivingGroup reports a packet arriving on a link to a group
+// arrivingGroup reports a packet arriving on a link, or on the tun from a
+// session, to a group
 func arrivingGroup(info RouteInfo) bool {
-	return info.Arrival == ArrivalLink && info.Dst.IsMulticast()
+	return info.Arrival != ArrivalLocal && info.Dst.IsMulticast()
 }
 
 func ruleLine(info RouteInfo, k RouteKernel) string {
@@ -381,7 +523,7 @@ func ruleLine(info RouteInfo, k RouteKernel) string {
 		return "none named, " + article(k.RouteType) + " route in a table some rule looks up if the walk raised this errno rather than a check outside it"
 	// an IPv4 arrival's EHOSTUNREACH is also the link's forwarding off, which
 	// a setting left unread does not rule out
-	case k.RouteType != "" && k.Errno == "EHOSTUNREACH" && info.Arrival == ArrivalLink && info.Dst.Is4() && slices.ContainsFunc(k.Settings, RouteSetting.unread):
+	case k.RouteType != "" && k.Errno == "EHOSTUNREACH" && info.Arrival != ArrivalLocal && info.Dst.Is4() && slices.ContainsFunc(k.Settings, RouteSetting.unread):
 		return "none named, " + article(k.RouteType) + " route in a table some rule looks up if the walk raised this errno rather than forwarding off on the link"
 	case k.RouteType != "":
 		return "none named, " + article(k.RouteType) + " route in a table some rule looks up ends the walk with this errno"
@@ -447,7 +589,7 @@ func leaves(info RouteInfo, k RouteKernel) string {
 		return "nowhere, the kernel delivers it to this host where it joined the group on " + info.IIF + ", and forwards it by multicast routing where that is on for " + info.IIF
 	case arrivingGroup(info) && info.Dst.Is4():
 		return "nowhere, the kernel delivers it to this host, which joined the group on " + info.IIF
-	case k.Type == "local", info.Arrival == ArrivalLink && k.Type == "broadcast":
+	case k.Type == "local", info.Arrival != ArrivalLocal && k.Type == "broadcast":
 		return "nowhere, the kernel delivers it to this host"
 	case k.IntoTun:
 		return "into the mesh's tun"

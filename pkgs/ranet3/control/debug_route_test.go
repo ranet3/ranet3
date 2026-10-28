@@ -32,7 +32,11 @@ func routeRule(family string, priority, table uint32, protocol uint8, owned bool
 // own packet into the tun in mode 2, and the routes of no table entry the
 // kernel makes for this host's multicast, its packet to 0.0.0.0, an arrival
 // to the limited broadcast, and an arrival to a group beyond the link with
-// multicast routing off, on and unread and to one on the link
+// multicast routing off, on and unread and to one on the link. A session's
+// packet the mesh forwards, delivers with the kernel's step, to an address,
+// to a subnet's broadcast, refused with EINVAL, to a group not joined and by an
+// unreachable route with forwarding unread, egresses and answers for a hold, one at each kind of segment admitted and refused, and a read into the
+// tun steered and forwarded, and one answered.
 func routeFixtures() map[string][]RouteInfo {
 	own := RouteInfo{Dst: netip.MustParseAddr("203.0.113.200"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
 		Rule:  routeRule("ipv4", 32766, 254, 2, false),
@@ -119,7 +123,7 @@ func routeFixtures() map[string][]RouteInfo {
 	intoTun := RouteInfo{Dst: netip.MustParseAddr("203.0.113.200"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
 		Rule: tun, Route: netip.MustParsePrefix("128.0.0.0/1"), Table: 100, Type: "unicast",
 		NextHops: []RouteNextHop{{Dev: "ranet0"}}, IntoTun: true,
-	}}
+	}, Unfollowed: "since its checks read the source the kernel picks, which its answer does not carry"}
 	// a terminal rule whose errno a check outside the walk raises too
 	blackholed := forged
 	blackholed.Kernel = &RouteKernel{
@@ -208,7 +212,88 @@ func routeFixtures() map[string][]RouteInfo {
 	allHosts := arrival4
 	allHosts.Dst = netip.MustParseAddr("224.0.0.1")
 	allHosts.Kernel = &RouteKernel{NoEntry: true, Route: netip.MustParsePrefix("224.0.0.1/32"), Type: "multicast", NextHops: []RouteNextHop{{Dev: "lo"}}}
+	session := RouteInfo{Src: netip.MustParseAddr("192.0.2.1"), Dst: netip.MustParseAddr("192.0.2.3"), Peer: "example/gateway:1@0", Arrival: ArrivalSession, Mesh: &RouteMesh{
+		Decision: "forward", Next: "example/far:1@0", MTU: 1280, Matched: netip.MustParsePrefix("192.0.2.3/32"),
+	}}
+	delivered := session
+	delivered.Dst, delivered.IIF = netip.MustParseAddr("192.0.2.2"), "ranet0"
+	delivered.Mesh = &RouteMesh{Decision: "deliver", Matched: netip.MustParsePrefix("192.0.2.2/32")}
+	delivered.Kernel = &RouteKernel{
+		Rule:  &PolicyRule{Family: "ipv4", Priority: 0, Action: "lookup", Table: 255, Protocol: 2},
+		Route: netip.MustParsePrefix("192.0.2.2/32"), Table: 255, Type: "local",
+	}
+	// the kernel looks a delivered packet up as one arriving on the tun
+	broadcastDelivered := delivered
+	broadcastDelivered.Dst = netip.MustParseAddr("198.51.100.255")
+	broadcastDelivered.Mesh = &RouteMesh{Decision: "deliver", Matched: netip.MustParsePrefix("198.51.100.128/25")}
+	broadcastDelivered.Kernel = &RouteKernel{
+		Rule:  &PolicyRule{Family: "ipv4", Priority: 0, Action: "lookup", Table: 255, Protocol: 2},
+		Route: netip.MustParsePrefix("198.51.100.255/32"), Table: 255, Type: "broadcast", NextHops: []RouteNextHop{{Dev: "lan0"}},
+	}
+	refusedDelivered := delivered
+	refusedDelivered.Kernel = &RouteKernel{
+		Err: "kernel: look up the route to 192.0.2.2: invalid argument", Errno: "EINVAL",
+		Settings: []RouteSetting{{Name: "net/ipv4/conf/all/rp_filter", Value: "0"}, {Name: "net/ipv4/conf/ranet0/rp_filter", Value: "0"}},
+	}
+	// the mesh delivers a group whatever its table holds
+	groupDelivered := delivered
+	groupDelivered.Dst = netip.MustParseAddr("239.1.2.4")
+	groupDelivered.Mesh = &RouteMesh{Decision: "deliver"}
+	groupDelivered.Kernel = &RouteKernel{
+		Err: "kernel: look up the route to 239.1.2.4: invalid argument", Errno: "EINVAL",
+		Settings: []RouteSetting{{Name: "net/ipv4/conf/all/rp_filter", Value: "0"}, {Name: "net/ipv4/conf/ranet0/rp_filter", Value: "0"}},
+	}
+	candidateDelivered := refusedDelivered
+	candidateDelivered.Kernel = &RouteKernel{
+		Candidate: &PolicyRule{Family: "ipv4", Priority: 40000, To: netip.MustParsePrefix("192.0.2.0/24"), Action: "blackhole", Protocol: 99},
+		RouteType: "blackhole", Err: refusedDelivered.Kernel.Err, Errno: "EINVAL", Settings: refusedDelivered.Kernel.Settings,
+	}
+	// darwin looks up no arrival, the tun's among them
+	unsupportedDelivered := delivered
+	unsupportedDelivered.Kernel = &RouteKernel{
+		Err: "kernel: unsupported on this platform: darwin looks up the route of this host's own packet only, not of one arriving on ranet0", Why: WhyUnsupported,
+	}
+	unreachableDelivered := broadcastDelivered
+	unreachableDelivered.Dst = netip.MustParseAddr("198.51.100.140")
+	unreachableDelivered.Kernel = &RouteKernel{
+		RouteType: "unreachable", Err: "kernel: look up the route to 198.51.100.140: no route to host", Errno: "EHOSTUNREACH",
+		Settings: []RouteSetting{{Name: "net/ipv4/conf/ranet0/forwarding", Err: "unreadable"}},
+	}
+	egressed := session
+	egressed.Dst = netip.MustParseAddr("203.0.113.200")
+	egressed.Mesh = &RouteMesh{Decision: "egress", Matched: netip.MustParsePrefix("0.0.0.0/0"), Counted: true}
+	held := RouteInfo{Src: netip.MustParseAddr("3fff::1"), Dst: netip.MustParseAddr("2001:db8:5::9"), Peer: "example/gateway:1@0", Arrival: ArrivalSession, Mesh: &RouteMesh{
+		Decision: "answer", Reason: "held", Answer: "no_route", Matched: netip.MustParsePrefix("2001:db8:5::/48"),
+	}}
+	egress := LocalSegment{SID: netip.MustParseAddr("3fff:5::20"), Behavior: "End.DT46", Deliver: "egress", Allow: []netip.Prefix{netip.MustParsePrefix("3fff::1/128")}, Egress: &SegmentEgress{Served: true, Ready: []string{"ipv4"}}}
+	allowed := RouteInfo{Src: netip.MustParseAddr("3fff::1"), Dst: egress.SID, Peer: "example/gateway:1@0", Arrival: ArrivalSession, Segment: &RouteSegment{LocalSegment: egress, Overlay: true, Allowed: true}}
+	unlisted := allowed
+	unlisted.Src = netip.MustParseAddr("3fff::3")
+	unlisted.Segment = &RouteSegment{LocalSegment: egress, Overlay: true, Decision: "drop", Reason: "refused"}
+	toMesh := allowed
+	toMesh.Src, toMesh.Dst = netip.MustParseAddr("3fff::3"), netip.MustParseAddr("3fff:5::1")
+	toMesh.Segment = &RouteSegment{LocalSegment: LocalSegment{SID: toMesh.Dst, Behavior: "End.DT46", Deliver: "mesh"}, Overlay: true}
+	stranger := allowed
+	stranger.Src, stranger.Dst = netip.MustParseAddr("2001:db8:66::6"), netip.MustParseAddr("3fff:5::10")
+	stranger.Segment = &RouteSegment{LocalSegment: LocalSegment{SID: stranger.Dst, Behavior: "End"}, Decision: "drop", Reason: "refused"}
+	waypoint := stranger
+	waypoint.Src = netip.MustParseAddr("3fff::3")
+	waypoint.Segment = &RouteSegment{LocalSegment: stranger.Segment.LocalSegment, Overlay: true}
+	read := RouteInfo{Src: netip.MustParseAddr("3fff::2"), Dst: netip.MustParseAddr("3fff::3"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
+		Rule: routeRule("ipv6", 5420, 100, 155, true), Route: netip.MustParsePrefix("3fff::/20"), Table: 100, Type: "unicast",
+		NextHops: []RouteNextHop{{Dev: "ranet0"}}, IntoTun: true,
+	}, Mesh: &RouteMesh{
+		Decision: "forward", Next: "example/far:1@0", MTU: 1280, Matched: netip.MustParsePrefix("3fff::3/128"),
+		Policy: &SteerPolicy{From: netip.MustParsePrefix("3fff::2/128"), Source: netip.MustParseAddr("3fff:b:0:100::1"), Path: []netip.Addr{netip.MustParseAddr("3fff:1::1")}, Overhead: 64},
+	}}
+	answered := RouteInfo{Src: netip.MustParseAddr("198.51.100.20"), Dst: netip.MustParseAddr("192.0.2.5"), IIF: "lan0", Arrival: ArrivalLink, Kernel: &RouteKernel{
+		Rule: routeRule("ipv4", 5420, 100, 155, true), Route: netip.MustParsePrefix("192.0.2.0/24"), Table: 100, Type: "unicast",
+		NextHops: []RouteNextHop{{Dev: "ranet0"}}, IntoTun: true,
+	}, Mesh: &RouteMesh{Decision: "answer", Reason: "no_route", Answer: "host_unreachable"}}
 	return map[string][]RouteInfo{
+		"route-session":        {session, delivered, broadcastDelivered, refusedDelivered, candidateDelivered, groupDelivered, unreachableDelivered, unsupportedDelivered, egressed, held},
+		"route-segment":        {allowed, unlisted, toMesh, stranger, waypoint},
+		"route-read":           {read, answered},
 		"route-unread":         {behind},
 		"route-own":            {own, cached, unspecified6},
 		"route-link":           {link, subnetBroadcast, group6},
@@ -233,6 +318,9 @@ func TestRouteRendersAsTheGoldenFiles(t *testing.T) {
 		golden(t, name+".txt", []byte(out.String()))
 	}
 	goldenJSON(t, "route-own.json", routeFixtures()["route-own"][0])
+	goldenJSON(t, "route-session.json", routeFixtures()["route-session"][1])
+	goldenJSON(t, "route-segment.json", routeFixtures()["route-segment"][0])
+	goldenJSON(t, "route-read.json", routeFixtures()["route-read"][0])
 }
 
 // the source and destination are of one family and carry no zone, and an
@@ -262,8 +350,8 @@ func TestRoutePacketIsParsed(t *testing.T) {
 // routeSource answers the route view with the packet it was asked for
 type routeSource struct{ fakeSource }
 
-func (*routeSource) DebugRoute(src, dst netip.Addr, iif string) (RouteInfo, error) {
-	return RouteInfo{Src: src, Dst: dst, IIF: iif, Arrival: ArrivalLink}, nil
+func (*routeSource) DebugRoute(src, dst netip.Addr, iif, peer string) (RouteInfo, error) {
+	return RouteInfo{Src: src, Dst: dst, IIF: iif, Peer: peer, Arrival: ArrivalLink}, nil
 }
 
 // the route view discloses what the kernel and the rule dump tell any user,
@@ -275,6 +363,11 @@ func TestRouteIsReadByACallerTheRootClassRefuses(t *testing.T) {
 	status, body := get(t, server.Client(), server.URL+PathDebugRoute+"?"+query.Encode())
 	if status != http.StatusOK || !strings.Contains(body, `"dst":"203.0.113.1"`) || !strings.Contains(body, `"iif":"lan0"`) || strings.Contains(body, `"src"`) {
 		t.Errorf("uid 4242 asking for the route view was answered %d %q", status, body)
+	}
+	query.Del("iif")
+	query.Set("peer", "example/gateway")
+	if status, body := get(t, server.Client(), server.URL+PathDebugRoute+"?"+query.Encode()); status != http.StatusOK || !strings.Contains(body, `"peer":"example/gateway"`) {
+		t.Errorf("a packet from a peer was answered %d %q", status, body)
 	}
 	query.Set("dst", "2001:db8::1")
 	if status, body := get(t, server.Client(), server.URL+PathDebugRoute+"?"+query.Encode()); status != http.StatusBadRequest {

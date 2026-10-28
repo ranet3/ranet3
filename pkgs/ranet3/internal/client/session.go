@@ -545,7 +545,7 @@ func (s *sessionSet) closeMatching(peer string, all bool) []string {
 	return paths
 }
 
-// matching runs act on every live session naming one peer, or every session at all, and reports their paths sorted
+// matching runs act, nil for none, on every live session naming one peer, or every session at all, and reports their paths sorted
 func (s *sessionSet) matching(peer string, all bool, act func(liveSessionView)) []string {
 	if s == nil {
 		return nil
@@ -554,7 +554,9 @@ func (s *sessionSet) matching(peer string, all bool, act func(liveSessionView)) 
 	for _, live := range s.snapshot() {
 		if all || identity.Names(live.path, peer) {
 			paths = append(paths, live.path)
-			act(live)
+			if act != nil {
+				act(live)
+			}
 		}
 	}
 	slices.Sort(paths)

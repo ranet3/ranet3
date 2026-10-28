@@ -80,7 +80,7 @@ func TestTUNDebugRouteNamesTheIPv6DropWhereTheKernelMakesIt(t *testing.T) {
 		if setting.force != "" {
 			routeViewSysctl(t, "net/ipv6/conf/in0/force_forwarding", setting.force)
 		}
-		info, err := c.DebugRoute(src, dst, "in0")
+		info, err := c.DebugRoute(src, dst, "in0", "")
 		if err != nil || info.Kernel == nil || info.Kernel.Err != "" {
 			t.Fatalf("all %s, in0 %s, force_forwarding %q: the route view reads %+v, %v", setting.all, setting.link, setting.force, info.Kernel, err)
 		}
@@ -221,7 +221,7 @@ func TestTUNDebugRouteNamesThePathTheKernelTakesForEachDestinationKind(t *testin
 		if errors.As(err, &errno) {
 			answer = unix.ErrnoName(errno)
 		}
-		info, viewErr := c.DebugRoute(src, dst, iif)
+		info, viewErr := c.DebugRoute(src, dst, iif, "")
 		if viewErr != nil {
 			t.Fatalf("%s: the route view refused the packet: %v", row.name, viewErr)
 		}

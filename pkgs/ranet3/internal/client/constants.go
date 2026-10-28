@@ -55,3 +55,6 @@ const (
 	// stateDirMode is the state directory's mode where the daemon makes it, for the same reason
 	stateDirMode = 0o700
 )
+
+// routeHopLimit is the hop limit of the packet debug route follows, the one linux and darwin send with by default
+const routeHopLimit = 64

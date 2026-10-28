@@ -20,7 +20,7 @@ import (
 func TestDebugRouteLooksUpThroughXNU(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(*config.Config) {})
 	loopback := netip.MustParseAddr("127.0.0.1")
-	info, err := c.DebugRoute(netip.Addr{}, loopback, "")
+	info, err := c.DebugRoute(netip.Addr{}, loopback, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,12 +32,12 @@ func TestDebugRouteLooksUpThroughXNU(t *testing.T) {
 		t.Errorf("this host's own packet to %s with no source names %+v, %q, no source %v", loopback, k.Rule, k.RuleErr, k.NoSource)
 	}
 
-	info, err = c.DebugRoute(netip.MustParseAddr("192.0.2.7"), loopback, "")
+	info, err = c.DebugRoute(netip.MustParseAddr("192.0.2.7"), loopback, "", "")
 	if err != nil || !info.Kernel.NoSource || !info.Kernel.Route.Contains(loopback) {
 		t.Errorf("this host's own packet from 192.0.2.7 to %s reads %+v, %v, want it looked up without its source", loopback, info.Kernel, err)
 	}
 
-	info, err = c.DebugRoute(netip.MustParseAddr("192.0.2.7"), loopback, "en0")
+	info, err = c.DebugRoute(netip.MustParseAddr("192.0.2.7"), loopback, "en0", "")
 	if err != nil || info.Kernel == nil || info.Kernel.Why != control.WhyUnsupported || info.Kernel.Rule != nil || info.Kernel.RuleErr != "" {
 		t.Errorf("an arrival on en0 reads %+v, %v, want it refused before the rules are dumped", info.Kernel, err)
 	}
