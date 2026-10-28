@@ -49,9 +49,21 @@
   # "optional" and "none" answer a strongSwan that dials with ML-KEM-768 optional, listing x25519+mlkem768 first or x25519 alone
   # "fragment" dials x25519+mlkem768 and then p384+mlkem1024, over IPv6 on a link of MTU 1280 and then over IPv4 on one of 576
   mlkem ? null,
+  # beside runs another program's own daemon on the client at the version nixpkgs pins, "docker", "tailscale" or "k3s"
+  # with cap.table and cap.border.overlay, so ranet3's rules and its lookups of them meet that program's rules
+  beside ? null,
 }:
 
 assert suites == null || mlkem == null;
+assert lib.elem beside [
+  null
+  "docker"
+  "tailscale"
+  "k3s"
+];
+# a program beside ranet3 meets the plain dialing client, and Docker the exit
+assert beside != null -> suites == null && mlkem == null && !segments && !responder && !fqdn;
+assert beside != null -> egress == (beside == "docker");
 # strongSwan dials in "optional" and "none" and ranet3 in "fallback" and "fragment"
 assert
   lib.elem mlkem [
@@ -248,10 +260,14 @@ let
     Destination = "${underlayAddress peer "ip4"}/32";
     MTUBytes = fragmentMTU.ip4;
   };
+  # what each program beside ranet3 adds to the client, at its defaults
+  besideClient = { };
 in
 testers.runNixOSTest {
   name =
-    if suites != null then
+    if beside != null then
+      "ranet3-beside-${beside}"
+    else if suites != null then
       "ranet3-suites-${suites}${lib.optionalString responder "-responder"}"
     else if mlkem != null then
       "ranet3-mlkem-${mlkem}${lib.optionalString responder "-responder"}"
@@ -542,7 +558,8 @@ testers.runNixOSTest {
         imports = [
           common
           inputs.self.nixosModules.ranet3
-        ];
+        ]
+        ++ lib.optional (beside != null) besideClient.${beside};
 
         boot.kernelModules = [ "tun" ];
 
@@ -624,7 +641,7 @@ testers.runNixOSTest {
           ]
           # nft reads back what this tree wrote through netlink, and jq asks
           # the control socket a question the shell cannot.
-          ++ pkgs.lib.optionals egress [
+          ++ pkgs.lib.optionals (egress || beside != null) [
             jq
             nftables
           ]
@@ -775,7 +792,8 @@ testers.runNixOSTest {
               # a local segment needs the border, whose overlay covers both
               # tunnel prefixes, so every outer source the gateway sends from
               # and the egress segment's allow list
-              border = pkgs.lib.mkIf segments {
+              # and beside another program the reconciler holds each overlay prefix and looks up an address of it
+              border = pkgs.lib.mkIf (segments || beside != null) {
                 overlay = [
                   "fd00:88::/32"
                   "fd00:99::/32"
@@ -792,7 +810,7 @@ testers.runNixOSTest {
                 ];
                 sweep = "2s";
               };
-              table = pkgs.lib.mkIf (kernel || egress) {
+              table = pkgs.lib.mkIf (kernel || egress || beside != null) {
                 id = kernelTable;
                 proto = kernelProtocol;
                 metric = 32;
@@ -975,6 +993,49 @@ testers.runNixOSTest {
         assert status["segments"], "the local segment is not reported"
       '';
 
+      exitTranslates = ''
+        def capture_while(machine, interface, name, filter, count, act):
+            """What machine saw on interface of count packets the filter matches while act ran.
+
+            tcpdump counts the packets it wants and exits on its own, rather
+            than being killed once act is done: a kill races the write. A
+            filter of the echo request alone keeps neighbor discovery from
+            making up the count.
+            """
+            machine.succeed(f"rm -f /tmp/{name}.pcap /tmp/{name}.log")
+            machine.execute(
+                f"tcpdump -Uni {interface} -c {count} -w /tmp/{name}.pcap '{filter}' >/tmp/{name}.log 2>&1 &")
+            machine.wait_until_succeeds(f"grep -q 'listening on' /tmp/{name}.log", timeout=timeout)
+            act()
+            machine.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
+            print(machine.succeed(f"cat /tmp/{name}.log"))
+            return machine.succeed(f"tcpdump -nr /tmp/{name}.pcap")
+
+        def carried(name, filter, source, destination):
+            """what the far side saw of three pings through the exit"""
+            return capture_while(
+                behind, "eth1", name, filter, 3,
+                lambda: print(gateway.succeed(f"ping -c 3 -i 0.3 -W 2 -I {source} {destination}")))
+
+        def exit_translates():
+            """the gateway reaches behind through the exit in both families, and behind sees the exit's own address"""
+            for name, filter, source, destination, translated in [
+                ("v4", "icmp[icmptype] = icmp-echo", "${gatewayTunnelV4}", "${behindV4}", "${exitV4}"),
+                ("v6", "icmp6 and ip6[40] = 128", "${gatewayTunnel}", "${behindV6}", "${exitV6}"),
+            ]:
+                # The round trip first: behind has no route to the tunnel
+                # prefixes, so a reply that comes back at all is one the exit
+                # translated and then put back.
+                gateway.wait_until_succeeds(
+                    f"ping -c 1 -W 2 -I {source} {destination}", timeout=timeout)
+                capture = carried(name, filter, source, destination)
+                print(capture)
+                assert f"{translated} > {destination}" in capture, (
+                    f"the far side did not see the exit's own address:\n{capture}")
+                assert source not in capture, (
+                    f"the mesh address reached the far side untranslated:\n{capture}")
+      '';
+
       # The client is the exit node and the gateway is the peer using it. What
       # is measured is a third machine's view: it answers in prefixes only the
       # exit can reach, and it sees the exit's own address rather than the mesh
@@ -1016,39 +1077,7 @@ testers.runNixOSTest {
             gateway.wait_until_succeeds("ip -4 route show ${exitNetV4} | grep -q swan0", timeout=timeout)
             gateway.wait_until_succeeds("ip -6 route show ${exitNetV6} | grep -q swan0", timeout=timeout)
 
-            def carried(name, filter, source, destination):
-                """What the far side saw of three pings through the exit.
-
-                tcpdump counts the three it wants and exits on its own, rather
-                than being killed once the pings are done: a kill races the
-                write, and measured here it lost, reporting six packets past
-                the filter and none written. The filter is the echo request
-                alone, so neighbor discovery cannot make up the count.
-                """
-                behind.succeed(f"rm -f /tmp/{name}.pcap /tmp/{name}.log")
-                behind.execute(
-                    f"tcpdump -Uni eth1 -c 3 -w /tmp/{name}.pcap '{filter}' >/tmp/{name}.log 2>&1 &")
-                behind.wait_until_succeeds(f"grep -q 'listening on' /tmp/{name}.log", timeout=timeout)
-                print(gateway.succeed(f"ping -c 3 -i 0.3 -W 2 -I {source} {destination}"))
-                behind.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
-                print(behind.succeed(f"cat /tmp/{name}.log"))
-                return behind.succeed(f"tcpdump -nr /tmp/{name}.pcap")
-
-            for name, filter, source, destination, translated in [
-                ("v4", "icmp[icmptype] = icmp-echo", "${gatewayTunnelV4}", "${behindV4}", "${exitV4}"),
-                ("v6", "icmp6 and ip6[40] = 128", "${gatewayTunnel}", "${behindV6}", "${exitV6}"),
-            ]:
-                # The round trip first: behind has no route to the tunnel
-                # prefixes, so a reply that comes back at all is one the exit
-                # translated and then put back.
-                gateway.wait_until_succeeds(
-                    f"ping -c 1 -W 2 -I {source} {destination}", timeout=timeout)
-                capture = carried(name, filter, source, destination)
-                print(capture)
-                assert f"{translated} > {destination}" in capture, (
-                    f"the far side did not see the exit's own address:\n{capture}")
-                assert source not in capture, (
-                    f"the mesh address reached the far side untranslated:\n{capture}")
+            exit_translates()
 
             status = json.loads(client.succeed("ranet3 status --json"))["egress"]
             print(json.dumps(status, indent=2))
@@ -1943,10 +1972,109 @@ testers.runNixOSTest {
             print(client.execute("ranet3 sessions")[1])
             print(client.execute("ranet3 debug events --kind ike")[1])
       '';
+
+      # what ranet3 holds beside another program, read after the program is up and after each disturbance
+      besideCommon = ''
+        import json
+
+        def last_pass(capability):
+            """when the last pass of capability's status ended, or None while the control socket does not answer"""
+            code, output = client.execute("ranet3 status --json")
+            return json.loads(output)[capability].get("pass_at") if code == 0 else None
+
+        def two_passes(capability="kernel"):
+            """two passes of capability that ended after the call, the second begun after it, its period apart at most"""
+            seen = [last_pass(capability)]
+
+            def moved(last_try):
+                at = last_pass(capability)
+                if at is not None and at != seen[-1]:
+                    seen.append(at)
+                return len(seen) == 3
+
+            retry(moved, timeout=timeout)
+
+        def untaken():
+            """the rules view, the status and the gauges read no lookup taken, and what the rules view and the status hold"""
+            rules = json.loads(client.succeed("ranet3 debug rules --json"))
+            lookups = rules.get("lookups") or []
+            print(json.dumps(lookups, indent=2))
+            taken = [l for l in lookups if l["taken"]]
+            assert not taken, f"another program's rule takes {taken}:\n{client.execute('ranet3 status')[1]}"
+
+            kernel = json.loads(client.succeed("ranet3 status --json"))["kernel"]
+            assert not kernel.get("taken"), f"the status reads taken {kernel['taken']}:\n{client.execute('ranet3 status')[1]}"
+            text = client.succeed("ranet3 status")
+            assert "taken" not in text, text
+
+            asked = {kind: sorted({l["family"] for l in lookups if l["lookup"] == kind}) for kind in ["overlay", "underlay"]}
+            metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics").splitlines()
+            for kind, families in asked.items():
+                for family in families:
+                    want = f'ranet3_kernel_{kind}_taken{{family="{family}"}} 0'
+                    assert want in metrics, f"the scrape does not carry {want}"
+            return rules, kernel, asked
+
+        def holds_beside():
+            """the mesh reaches the gateway, and no lookup of the reconciler's finds another program's rule ahead of ranet3's"""
+            for address in ["${gatewayTunnel}", "${gatewayTunnelV4}"]:
+                try:
+                    client.wait_until_succeeds(f"ping -c 1 -W 2 {address}", timeout=timeout)
+                except Exception:
+                    untaken()
+                    raise AssertionError(f"the mesh does not reach {address}:\n{client.execute('ranet3 status')[1]}")
+            two_passes()
+
+            rules, kernel, asked = untaken()
+            assert not rules.get("policy_err"), f"the policy rules read back with {rules['policy_err']}"
+            assert not rules.get("missing"), f"the kernel lacks derived rules: {rules['missing']}"
+            assert asked["overlay"] == ["ipv4", "ipv6"], f"the overlay was looked up in {asked['overlay']}"
+            assert asked["underlay"], "no live session's endpoint was looked up"
+            assert kernel["enabled"], kernel
+            assert not kernel.get("err"), kernel
+
+            # a pass whose lookups fail keeps the last answers and logs the failure once, until one succeeds again
+            invocation = client.succeed("systemctl show -P InvocationID ranet3.service").strip()
+            journal = client.succeed(f"journalctl _SYSTEMD_INVOCATION_ID={invocation} -o cat --no-pager").splitlines()
+            assert journal, f"the journal holds nothing of ranet3's invocation {invocation}"
+            failed = [i for i, line in enumerate(journal) if "could not ask where its overlay and underlay lookups end" in line]
+            again = [i for i, line in enumerate(journal) if "can ask where its overlay and underlay lookups end again" in line]
+            assert not failed or (again and again[-1] > failed[-1]), (
+                f"the lookups read are kept from before a pass that could not ask them:\n{journal[failed[-1]]}")
+            return rules["lookups"]
+
+        def their_rules():
+            """the policy rules and netfilter tables that are not ranet3's, without counters and set elements"""
+            rules = [
+                line
+                for family in ["-4", "-6"]
+                for line in client.succeed(f"ip {family} rule show").splitlines()
+                if f"proto {kernel_protocol}" not in line
+            ]
+            tables, theirs = [], True
+            for line in client.succeed("nft -s -t list ruleset").splitlines():
+                if line.startswith("table "):
+                    theirs = line.split()[2] != "ranet3"
+                if theirs:
+                    tables.append(line)
+            return rules, tables
+
+        def restart_ranet3():
+            """ranet3 restarted changes nothing of the other program's, and holds beside it again"""
+            before = their_rules()
+            client.succeed("systemctl restart ranet3.service")
+            holds_beside()
+            after = their_rules()
+            assert after == before, f"ranet3's restart changed another program's rules:\n{before}\nthen\n{after}"
+      '';
+
+      besideScript = { };
     in
     preamble
     + (
-      if suites == "meet" then
+      if beside != null then
+        besideCommon + besideScript.${beside}
+      else if suites == "meet" then
         suitesMeet
       else if suites == "apart" then
         suitesApart
@@ -1967,7 +2095,7 @@ testers.runNixOSTest {
       else if segments then
         segmentRouted
       else if egress then
-        exitNode
+        exitTranslates + exitNode
       else
         initiator
     );
