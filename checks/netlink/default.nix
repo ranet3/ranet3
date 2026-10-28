@@ -117,8 +117,9 @@ testers.runNixOSTest {
     assert "--- PASS: TestNetlinkFallbackNoneEndsTheWalkAsTheRulesSay" in out, f"fallback = \"none\"'s rules did not run:\n{out}"
     assert "--- PASS: TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter" in out, f"the fallback table did not run:\n{out}"
     assert "--- PASS: TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass" in out, f"the fallback table's wake did not run:\n{out}"
+    assert "--- PASS: TestNetlinkSteeredDefaultsComeAndGoWithTheSegments" in out, f"mode 3's steered defaults did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 6, f"only {ran} netlink round trips ran:\n{out}"
+    assert ran >= 7, f"only {ran} netlink round trips ran:\n{out}"
 
     # The nf_tables half. A fake backend can only ever agree with the encoder
     # it was written beside, so what the kernel accepts, and the spelling it
