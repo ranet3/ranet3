@@ -65,6 +65,14 @@ const (
 	// priorityCatchAll looks the mesh's table up, in mode 2, for the host's own
 	// traffic and for what it forwards from the links forward names.
 	priorityCatchAll = 5440
+	// priorityOwnPastMesh looks main up, in mode 2 under fallback = "none", to
+	// each of this node's own prefixes the mesh's table throws, which 5440's
+	// lookup passes on.
+	priorityOwnPastMesh = 5445
+	// priorityRefused fails, in mode 2 under fallback = "none", every unmarked
+	// lookup of the host's own traffic and of what it forwards from the links
+	// forward names that no rule above answered.
+	priorityRefused = 5450
 	// priorityMeshEnd is the nop the second block's goto jumps to.
 	priorityMeshEnd = 5490
 )

@@ -106,6 +106,7 @@ testers.runNixOSTest {
     assert "--- PASS: TestNetlinkRouteGetAnswersARouteOfNoTableEntryAsTheKernelsOwn" in out, f"a route of no table entry was not answered as the kernel's own:\n{out}"
     assert "--- PASS: TestNetlinkLookupsReportAnotherProgramsRuleAhead" in out, f"the reconciler's lookups did not run:\n{out}"
     assert "--- PASS: TestNetlinkFollowsAnotherWritersAddressOnTheTun" in out, f"the reconciler's wake on the tun's addresses did not run:\n{out}"
+    assert "--- PASS: TestNetlinkFallbackNoneEndsTheWalkAsTheRulesSay" in out, f"fallback = \"none\"'s rules did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 6, f"only {ran} netlink round trips ran:\n{out}"
 

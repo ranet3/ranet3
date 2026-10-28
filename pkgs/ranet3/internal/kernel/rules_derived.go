@@ -32,6 +32,17 @@ import (
 // or an address in a LAN this node announces, would otherwise leave by main
 // where mode off sends it into the mesh. A selector overlapping either is left
 // out whole.
+//
+// Under fallback = "none" (exit.fallback) mode 2 adds two more to both
+// families, so a family the tun holds no overlay address of runs mode off's
+// rules and these two:
+//   - 5445 looks main up to each of this node's own prefixes the mesh's table
+//     throws, which its lookups pass on, so the host reaches its own prefix
+//     beyond the gateway
+//   - 5450 fails as unreachable every lookup of the host's own traffic and of
+//     what it forwards from each link forward expands to that no rule above
+//     answered, so a connect meets ENETUNREACH at once while the mesh holds no
+//     default, where the filter's drop alone would leave it waiting
 func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix, exit exitView) []Rule {
 	var out []Rule
 	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
@@ -59,15 +70,27 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 		for _, prefix := range familyPrefixes(family, own) {
 			out = append(out, Rule{Family: family, Priority: priorityOwn, From: schema.PrefixFrom(prefix), Table: id})
 		}
-		if !exit.on || slices.Contains(exit.unaddressed, family) {
+		if !exit.on {
 			continue
 		}
-		for _, network := range networks {
-			out = append(out, Rule{Family: family, Priority: priorityLinkSource, From: schema.PrefixFrom(network), IIF: loopback, Table: schema.TableMain})
+		if !slices.Contains(exit.unaddressed, family) {
+			for _, network := range networks {
+				out = append(out, Rule{Family: family, Priority: priorityLinkSource, From: schema.PrefixFrom(network), IIF: loopback, Table: schema.TableMain})
+			}
+			out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: loopback, Table: id})
+			for _, link := range exit.forwarded {
+				out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: link, Table: id})
+			}
 		}
-		out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: loopback, Table: id})
+		if !exit.fallback {
+			continue
+		}
+		for _, prefix := range familyPrefixes(family, exit.own) {
+			out = append(out, Rule{Family: family, Priority: priorityOwnPastMesh, To: schema.PrefixFrom(prefix), Table: schema.TableMain})
+		}
+		out = append(out, Rule{Family: family, Priority: priorityRefused, IIF: loopback, action: actionUnreachable})
 		for _, link := range exit.forwarded {
-			out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: link, Table: id})
+			out = append(out, Rule{Family: family, Priority: priorityRefused, IIF: link, action: actionUnreachable})
 		}
 	}
 	return out
@@ -76,12 +99,30 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 // exitView is mode 2 as a pass derives its rules: the host's links outside the
 // mesh as the network watch reads them, the names forward expands to among them
 // (see expandForward), and each family the tun holds no overlay address of. The
-// zero value is mode off, whatever it holds beside.
+// zero value is mode off, whatever it holds beside. fallback is cap.exit
+// fallback = "none", and own is this node's own prefixes the mesh's table
+// throws, which a pass reads only under it.
 type exitView struct {
 	on          bool
 	network     NetworkState
 	forwarded   []string
 	unaddressed []Family
+	fallback    bool
+	own         []netip.Prefix
+}
+
+// thrown is the destination of each throw the mirror installs for this
+// snapshot that holds no source, each of this node's own prefixes outside the
+// overlay that counts as no default. A source-specific one is left out, so a
+// lookup from its source the mesh's table passes on meets 5450.
+func (r *Reconciler) thrown(snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
+	var out []netip.Prefix
+	for _, route := range r.desired(snapshot) {
+		if route.Throw && !route.Source.IsValid() {
+			out = append(out, route.Destination)
+		}
+	}
+	return out
 }
 
 // sources is the selectors of one family's 5405 and 5435: each address of a

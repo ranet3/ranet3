@@ -96,6 +96,21 @@ func TestRuleMessageCarriesTheInputDevice(t *testing.T) {
 	}
 }
 
+// An unreachable rule goes out as FR_ACT_UNREACHABLE in the header with no
+// FRA_TABLE and no FRA_GOTO, as `ip rule add unreachable` writes it.
+func TestUnreachableRuleCarriesItsActionAndNoTable(t *testing.T) {
+	plat, _ := writePlatform(t)
+	hdr, attrs := ruleAttrs(t, plat.ruleMessage(Rule{Family: FamilyIPv4, IIF: "lo", action: actionUnreachable, Priority: 5450}))
+	if hdr[7] != unix.FR_ACT_UNREACHABLE {
+		t.Errorf("action is %d, want FR_ACT_UNREACHABLE", hdr[7])
+	}
+	for _, kind := range []uint16{unix.FRA_TABLE, unix.FRA_GOTO} {
+		if _, ok := attrs[kind]; ok {
+			t.Errorf("an unreachable rule carries attribute %d", kind)
+		}
+	}
+}
+
 // What the backend writes has to read back as the same value, or the diff
 // installs a duplicate on every pass and the rule list grows without bound.
 func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
@@ -106,6 +121,7 @@ func TestRuleRoundTripsThroughItsOwnEncoding(t *testing.T) {
 		"a mark rule":        {Family: FamilyIPv6, FWMark: 0x72, Table: 254, Priority: 40},
 		"both selectors":     {Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), From: schema.MustPrefix("10.1.0.0/16"), Table: 7, Priority: 90},
 		"a device rule":      {Family: FamilyIPv4, IIF: "eth1", Table: 254, Priority: 60},
+		"an unreachable":     {Family: FamilyIPv6, IIF: "lo", action: actionUnreachable, Priority: 5450},
 	} {
 		t.Run(name, func(t *testing.T) {
 			conn.replies = []nlMessage{{Kind: unix.RTM_NEWRULE, Data: plat.ruleMessage(rule)}}
@@ -157,6 +173,11 @@ func TestRuleDumpKeepsOnlyWhatThisReconcilerOwns(t *testing.T) {
 	blackhole := plat.ruleMessage(Rule{Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), Table: 200, Priority: 101})
 	blackhole[7] = unix.FR_ACT_BLACKHOLE
 
+	// an unreachable rule looking up a table, or of another writer's protocol
+	unreachableTable := plat.ruleMessage(Rule{Family: FamilyIPv4, To: schema.MustPrefix("10.0.0.0/8"), Table: 200, Priority: 104})
+	unreachableTable[7] = unix.FR_ACT_UNREACHABLE
+	unreachableOther := replaceProtocol(t, plat.ruleMessage(Rule{Family: FamilyIPv4, IIF: "lo", action: actionUnreachable, Priority: 105}), unix.RTPROT_STATIC)
+
 	unmarked := plat.ruleMessage(Rule{Family: FamilyIPv4, To: schema.MustPrefix("192.0.2.0/24"), Table: 200, Priority: 102})
 	unmarked = stripProtocol(t, unmarked)
 
@@ -172,6 +193,8 @@ func TestRuleDumpKeepsOnlyWhatThisReconcilerOwns(t *testing.T) {
 		{Kind: unix.RTM_NEWRULE, Data: unmarked},
 		{Kind: unix.RTM_NEWRULE, Data: tableless},
 		{Kind: unix.RTM_NEWRULE, Data: first},
+		{Kind: unix.RTM_NEWRULE, Data: unreachableTable},
+		{Kind: unix.RTM_NEWRULE, Data: unreachableOther},
 	}
 	got, err := plat.Rules()
 	if err != nil {

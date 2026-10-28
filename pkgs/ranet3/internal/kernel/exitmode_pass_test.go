@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -293,6 +294,69 @@ func TestExitModeSettlesAfterAddingItsOwnAddresses(t *testing.T) {
 	defer fake.mu.Unlock()
 	if got, want := catchAll(fake), []string{"ipv4 iif lo", "ipv6 iif lo"}; !slices.Equal(got, want) {
 		t.Errorf("the catch-all reads %v, want %v", got, want)
+	}
+}
+
+// fallbackRules is the rules at 5445 and 5450 the fake holds, as `ip rule` spells each
+func fallbackRules(fake *fakeKernel) []string {
+	var out []string
+	for rule := range fake.rules {
+		if rule.Priority == priorityOwnPastMesh || rule.Priority == priorityRefused {
+			out = append(out, rule.String())
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// under fallback = "none" a pass adds 5445 to each own prefix the mirror throws, which holds no source, and 5450 for lo and each
+// forwarded link, and a reload to "uplink" takes them out
+func TestFallbackNoneAddsTheThrownPrefixesAndTheUnreachableRules(t *testing.T) {
+	network := &hostNetwork{state: exitPassHost("docker0")}
+	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}
+	none := tbl.WithMode(&ExitMode{Forward: []string{"docker0"}, Fallback: FallbackNone})
+	reconciler, routes, fake := harness(t, none, Runtime{Overlay: exitPassOverlay, Network: network.read})
+	for _, own := range []string{"203.0.113.0/24", "2001:db8:5::/48", "3fff:1::/48"} {
+		routes.Set(netip.Prefix{}, netip.MustParsePrefix(own), netstack.Local)
+	}
+	routes.Set(netip.MustParsePrefix("2001:db8:a::/48"), netip.MustParsePrefix("2001:db8:6::/48"), netstack.Local)
+	reconciler.reconcile()
+	want := []string{
+		"priority 5445 to 2001:db8:5::/48 family ipv6 lookup main",
+		"priority 5445 to 203.0.113.0/24 family ipv4 lookup main",
+		"priority 5450 iif docker0 family ipv4 unreachable",
+		"priority 5450 iif docker0 family ipv6 unreachable",
+		"priority 5450 iif lo family ipv4 unreachable",
+		"priority 5450 iif lo family ipv6 unreachable",
+	}
+	if got := fallbackRules(fake); !slices.Equal(got, want) {
+		t.Errorf("under fallback = \"none\" the reconciler holds\n%v\nwant\n%v", got, want)
+	}
+
+	// a family the tun holds no overlay address of runs mode off's rules with both
+	unaddressed := Table{Addresses: prefixes(prefix("3fff::1/128"))}
+	if err := reconciler.SetTable(unaddressed.WithMode(&ExitMode{Forward: []string{"docker0"}, Fallback: FallbackNone}), exitPassOverlay, nil); err != nil {
+		t.Fatal(err)
+	}
+	reconciler.adopt()
+	reconciler.reconcile()
+	if got := fallbackRules(fake); !slices.Equal(got, want) {
+		t.Errorf("with the tun holding no IPv4 overlay address the reconciler holds\n%v\nwant\n%v", got, want)
+	}
+	if got, want := catchAll(fake), []string{"ipv6 iif docker0", "ipv6 iif lo"}; !slices.Equal(got, want) {
+		t.Errorf("with the tun holding no IPv4 overlay address the catch-all reads %v, want %v", got, want)
+	}
+
+	if err := reconciler.SetTable(tbl.WithMode(&ExitMode{Forward: []string{"docker0"}, Fallback: FallbackUplink}), exitPassOverlay, nil); err != nil {
+		t.Fatal(err)
+	}
+	reconciler.adopt()
+	reconciler.reconcile()
+	if got := fallbackRules(fake); len(got) != 0 {
+		t.Errorf("after a reload to \"uplink\" the reconciler holds %v", got)
+	}
+	if got, want := catchAll(fake), []string{"ipv4 iif docker0", "ipv4 iif lo", "ipv6 iif docker0", "ipv6 iif lo"}; !slices.Equal(got, want) {
+		t.Errorf("after a reload to \"uplink\" the catch-all reads %v, want %v", got, want)
 	}
 }
 

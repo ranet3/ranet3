@@ -271,7 +271,7 @@ func (r *Reconciler) exitPass(held []netip.Prefix) (exitView, *ExitStatus) {
 			status.Unaddressed = append(status.Unaddressed, family)
 		}
 	}
-	return exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed}, status
+	return exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed, fallback: mode.Refuses()}, status
 }
 
 // reportExit records each skip and each family the tun holds no overlay
