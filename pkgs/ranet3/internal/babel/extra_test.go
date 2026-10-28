@@ -179,16 +179,16 @@ func wireExtraPair(t *testing.T, amount uint16) (speakerA, speakerB *Speaker) {
 func TestPeerSpeakerReadsTheExtraInTheIHU(t *testing.T) {
 	speakerA, speakerB := wireExtraPair(t, 1000)
 	want := uint16(96 + 1000)
-	var b NeighborStat
+	var a, b NeighborStat
 	for deadline := time.Now().Add(exchangeBudget); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if b = speakerB.Stats().Neighbors[0]; b.HaveReportedCost && b.ReportedCost == want && b.Cost == want {
+		a, b = speakerA.Stats().Neighbors[0], speakerB.Stats().Neighbors[0]
+		if b.HaveReportedCost && b.ReportedCost == want && b.Cost == want && a.Cost == want {
 			break
 		}
 	}
 	if b.ReportedCost != want || b.Cost != want || b.Extra != 0 {
 		t.Errorf("b reads a as %+v, want a reported cost and a cost of %d and no extra of its own", b, want)
 	}
-	a := speakerA.Stats().Neighbors[0]
 	if a.Cost != want || a.Extra != 1000 {
 		t.Errorf("a reads b as %+v, want b's 96 with the 1000 extra, and the extra shown apart", a)
 	}
