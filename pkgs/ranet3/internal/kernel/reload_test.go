@@ -88,7 +88,7 @@ func TestReloadMovesTheRulesWithTheOverlay(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[Rule]bool{}
-	for _, rule := range derivedRules(DefaultTable, after, nil) {
+	for _, rule := range derivedRules(DefaultTable, after, nil, exitView{}) {
 		want[rule] = true
 	}
 	if got := fake.heldRules(); !maps.Equal(got, want) {

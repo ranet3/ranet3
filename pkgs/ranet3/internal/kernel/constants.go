@@ -45,6 +45,9 @@ const (
 	// priorityUnderlayPastMesh is the goto the underlay's mark matches, to
 	// priorityMeshEnd.
 	priorityUnderlayPastMesh = 5400
+	// priorityUplinkSource looks main up, in mode 2, for the host's own packet
+	// from an address of a link outside the mesh.
+	priorityUplinkSource = 5405
 	// priorityMain looks main up for every route of it longer than /0, and
 	// for an unreachable, blackhole or prohibit /0, which suppression never
 	// refuses.
@@ -55,6 +58,13 @@ const (
 	priorityMesh = 5420
 	// priorityOwn looks the mesh's table up for a source among this node's own prefixes.
 	priorityOwn = 5430
+	// priorityLinkSource looks main up, in mode 2, for the host's own lookup
+	// from a connected network of a link forward leaves out, which a fib
+	// expression's reverse path check makes.
+	priorityLinkSource = 5435
+	// priorityCatchAll looks the mesh's table up, in mode 2, for the host's own
+	// traffic and for what it forwards from the links forward names.
+	priorityCatchAll = 5440
 	// priorityMeshEnd is the nop the second block's goto jumps to.
 	priorityMeshEnd = 5490
 )

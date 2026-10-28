@@ -400,7 +400,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 		})
 	}
 	host.tables = tables
-	kernel := fib{rules: slices.Concat(host.rules, derivedRules(DefaultTable, overlay, reconciler.ownPrefixes(snapshot))), tables: tables}
+	kernel := fib{rules: slices.Concat(host.rules, derivedRules(DefaultTable, overlay, reconciler.ownPrefixes(snapshot), exitView{})), tables: tables}
 	slices.SortStableFunc(kernel.rules, func(a, b Rule) int { return cmp.Compare(a.Priority, b.Priority) })
 	return interpreted{routes: routes, rt: rt, gate: gate, exit: exit, own: own, sources: sources, assigned: assigned, host: host, kernel: kernel, desired: desired}
 }

@@ -1230,7 +1230,7 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer]) error {
 	if r.rules == nil {
 		return nil
 	}
-	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot))
+	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exitView{})
 	r.derived.Store(&ruleSet)
 	actual, err := r.rules.Rules()
 	if err != nil {

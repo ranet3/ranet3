@@ -63,7 +63,7 @@ func TestNetlinkRestoresADeletedRuleWithinASecond(t *testing.T) {
 
 	// the rules derived from an overlay of each family
 	overlay := []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}
-	installed := derivedRules(DefaultTable, overlay, nil)
+	installed := derivedRules(DefaultTable, overlay, nil, exitView{})
 	r, err := New(Table{}, Runtime{Interface: device, Overlay: overlay}, netstack.NewRouteTable())
 	if err != nil {
 		t.Fatalf("start the reconciler: %v", err)
