@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -80,6 +81,53 @@ type fakeKernel struct {
 	// emptied is set by a delete that takes the last IPv4 address off the link
 	byLength bool
 	emptied  bool
+
+	// fallback is the table ranet3_fallback the fake holds, nil for none.
+	// spoiled is a fault every read reports, as another writer's change no
+	// rewrite outlasts, and failFallback fails every write, read and delete.
+	fallback        *fallbackSets
+	fallbackWrites  int
+	fallbackDeletes int
+	spoiled         string
+	failFallback    error
+}
+
+func (f *fakeKernel) writeFallback(s fallbackSets) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failFallback != nil {
+		return f.failFallback
+	}
+	f.fallback = &s
+	f.fallbackWrites++
+	return nil
+}
+
+func (f *fakeKernel) readFallback(s fallbackSets) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case f.failFallback != nil:
+		return "", f.failFallback
+	case f.fallback == nil:
+		return "the table is missing", nil
+	case f.spoiled != "":
+		return f.spoiled, nil
+	case !reflect.DeepEqual(*f.fallback, s):
+		return "it holds other sets", nil
+	}
+	return "", nil
+}
+
+func (f *fakeKernel) deleteFallback() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failFallback != nil {
+		return f.failFallback
+	}
+	f.fallback = nil
+	f.fallbackDeletes++
+	return nil
 }
 
 func newFakeKernel(t *testing.T) *fakeKernel {

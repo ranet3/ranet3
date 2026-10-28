@@ -716,6 +716,12 @@ type Reconciler struct {
 	// exitStatus is cap.exit's mode as the last rule pass ran it, nil in mode off, and belongs to the same goroutine
 	// a pass replaces it whole, so a Stats holding it reads one pass
 	exitStatus *ExitStatus
+	// fallbackFault is why the table ranet3_fallback did not read back as
+	// written at the last pass that asked for it, empty where it did, and
+	// fallbackClear says a pass deleted the table, or found none, since the
+	// last that asked for it. Both belong to the pass's goroutine.
+	fallbackFault string
+	fallbackClear bool
 }
 
 // Stats is one finished route pass. Installed counts the routes the kernel
@@ -1253,7 +1259,16 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], held []ne
 	if exit.fallback {
 		exit.own = r.thrown(snapshot)
 	}
+	holding, fallbackErr := r.applyFallback(exit)
 	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
+	if exit.on && exit.fallback && !holding {
+		// without the table the host's own lookups from the uplink's addresses
+		// and networks meet 5440 and 5450 rather than main, but for a route of
+		// main longer than /0, which 5410 still takes
+		ruleSet = slices.DeleteFunc(ruleSet, func(rule Rule) bool {
+			return rule.Priority == priorityUplinkSource || rule.Priority == priorityLinkSource
+		})
+	}
 	r.derived.Store(&ruleSet)
 	actual, err := r.rules.Rules()
 	if err != nil {
@@ -1293,7 +1308,7 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], held []ne
 		r.changed = true
 		slog.Info("kernel rules reconciled", "added", added, "removed", removed)
 	}
-	return errors.Join(errs...)
+	return errors.Join(append(errs, fallbackErr)...)
 }
 
 // applyRoutes removes before it installs, so a changed non-key attribute does
@@ -1902,6 +1917,15 @@ func (r *Reconciler) withdraw() error {
 				rules++
 			}
 		}
+	}
+	// the table goes after the rules, so its chains hold the host's traffic while they go
+	if sw, ok := r.plat.(switcher); ok && !r.fallbackClear {
+		if err := sw.deleteFallback(); err != nil {
+			errs = append(errs, fmt.Errorf("delete table inet %s: %w", FallbackTable, err))
+		} else {
+			r.fallbackClear = true
+		}
+		r.reportFallback("")
 	}
 	// Every count is of something that left, so a line reporting nothing
 	// removed is a shutdown that removed nothing.
