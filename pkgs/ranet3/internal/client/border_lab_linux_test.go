@@ -507,11 +507,15 @@ func borderDropped(t *testing.T, exit *netnstest.Thread, border *kernelexit.Bord
 	if debug.Err != "" {
 		t.Fatalf("read the border's chain: %s", debug.Err)
 	}
-	index := slices.IndexFunc(debug.Rules, func(rule egress.BorderReading) bool { return rule.Spec == spec })
-	if index < 0 || !debug.Rules[index].Held {
-		t.Fatalf("the border's chain holds no %q in %+v", spec, debug.Rules)
+	var rules []egress.BorderReading
+	for _, chain := range debug.Chains {
+		rules = append(rules, chain.Rules...)
 	}
-	return debug.Rules[index].Packets
+	index := slices.IndexFunc(rules, func(rule egress.BorderReading) bool { return rule.Spec == spec })
+	if index < 0 || !rules[index].Held {
+		t.Fatalf("the border's table holds no %q in %+v", spec, rules)
+	}
+	return rules[index].Packets
 }
 
 // counts waits for the border's rule spec to count a packet past before

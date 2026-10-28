@@ -26,9 +26,23 @@ Lookups
   underlay  ipv6    -             2001:db8:400::7  2001:db8:a::10  eth0       yes    table 300 dev ranet0
   underlay  ipv6    -             2001:db8:400::7  2001:db8:b::10  -          no     table main dev eth0
 
-Border filter, nftables table inet ranet3 chain border, prerouting at priority -300, read 3 seconds ago, ready
-  accept  via ranet3
-  accept  via lo
-  drop    ipv4 source 203.0.113.0/24  12 packets, 720 B
-  drop    ipv6 source 3fff:a::/36     0 packets, 0 B
-  drop    ipv6 source 3fff:b::/48     not held
+Border filter, nftables table inet ranet3 chains border and mesh_entry, read 3 seconds ago, ready
+  chain border, prerouting at priority -300
+    accept  via ranet3
+    accept  via lo
+    drop    ipv4 source @carved4  2 packets, 120 B
+    drop    ipv6 source @carved6  0 packets, 0 B
+    accept  via eth0 source 203.0.113.0/26
+    drop    ipv4 source 203.0.113.0/24  12 packets, 720 B
+    drop    ipv6 source 3fff:a::/36     0 packets, 0 B
+    drop    ipv6 source 3fff:b::/48     not held
+  chain mesh_entry, postrouting at priority 110
+    return  via other than ranet3
+    return  a reply
+    return  ipv4 source @owned4
+    drop    ipv4 entering the mesh  4 packets, 336 B
+  rules the filter does not ask for
+      a rule with no comment
+  set carved4  203.0.113.5
+  set owned4   203.0.113.0/26, 198.51.100.7-198.51.100.9
+  set none4    empty

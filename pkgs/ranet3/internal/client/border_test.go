@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -70,7 +71,9 @@ func (b *borderRecord) Stats() egress.BorderStats {
 	if b.missing {
 		return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Unready: "another writer changed its table"}
 	}
-	return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 7, Dropped: egress.BorderDrops{Source4: 3, Source6: 1}}
+	return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 7,
+		Dropped:   egress.BorderDrops{3, 1, 4, 5, 6, 8},
+		CarveOuts: []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}}
 }
 
 func (b *borderRecord) Debug() egress.BorderDebug { return b.debug }
@@ -397,8 +400,12 @@ func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
 	}
 	c.SetBorder(&borderRecord{border: *borderOf("3fff::/20", "198.18.0.0/15")})
 	status := c.Status().Border
-	want := control.BorderDrops{OverlaySourceIPv4: 3, OverlaySourceIPv6: 1}
-	if status == nil || !status.Ready || status.Installed != 7 || status.Dropped != want || len(status.Overlay) != 2 || len(status.Inside) != 2 {
+	want := control.BorderDrops{
+		"overlay_source_ipv4": 3, "overlay_source_ipv6": 1, "carved_source_ipv4": 4, "carved_source_ipv6": 5,
+		"mesh_entry_ipv4": 6, "mesh_entry_ipv6": 8,
+	}
+	carved := []control.BorderCarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}
+	if status == nil || !status.Ready || status.Installed != 7 || !maps.Equal(status.Dropped, want) || len(status.Overlay) != 2 || len(status.Inside) != 2 || !slices.Equal(status.Carved, carved) {
 		t.Errorf("the border reported %+v", status)
 	}
 }
@@ -419,6 +426,10 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 		"ranet3_border_ready 1",
 		`ranet3_border_dropped_packets_total{reason="overlay_source",family="ipv4"} 3`,
 		`ranet3_border_dropped_packets_total{reason="overlay_source",family="ipv6"} 1`,
+		`ranet3_border_dropped_packets_total{reason="carved_source",family="ipv4"} 4`,
+		`ranet3_border_dropped_packets_total{reason="carved_source",family="ipv6"} 5`,
+		`ranet3_border_dropped_packets_total{reason="mesh_entry",family="ipv4"} 6`,
+		`ranet3_border_dropped_packets_total{reason="mesh_entry",family="ipv6"} 8`,
 	} {
 		if !strings.Contains(out.String(), want+"\n") {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
@@ -495,8 +506,10 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 
 	passed := time.Now().Add(-3 * time.Second)
 	c.SetBorder(&borderRecord{debug: egress.BorderDebug{
-		Where: "nftables table inet ranet3 chain border", Hook: "prerouting", Priority: -300, PassAt: passed, Ready: true,
-		Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}},
+		Where: "nftables table inet ranet3 chains border and mesh_entry", PassAt: passed, Ready: true,
+		Chains: []egress.BorderChainReading{{Name: "border", Hook: "prerouting", Priority: -300,
+			Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}}}},
+		Sets: []egress.BorderSetReading{{Name: "owned4", Elements: []egress.Range{{First: netip.MustParseAddr("192.0.2.7"), Last: netip.MustParseAddr("192.0.2.7")}}}},
 	}})
 	for name, dump := range map[string]struct {
 		err  error
@@ -510,10 +523,11 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		if info.PolicyErr != dump.want || len(info.Policy) != 0 || len(info.Missing) != 0 {
 			t.Errorf("%s: debug rules reads policy error %q, %d rules and missing %+v", name, info.PolicyErr, len(info.Policy), info.Missing)
 		}
-		chain := info.Border
-		if chain == nil || !chain.ReadAt.Equal(passed) || chain.ReadAt.Location() != time.UTC || time.Duration(chain.ReadAgo) < 3*time.Second ||
-			len(chain.Rules) != 1 || chain.Rules[0].Packets != 2 || chain.Priority != -300 || !chain.Ready {
-			t.Errorf("%s: debug rules carries the chain %+v", name, chain)
+		table := info.Border
+		if table == nil || !table.ReadAt.Equal(passed) || table.ReadAt.Location() != time.UTC || time.Duration(table.ReadAgo) < 3*time.Second ||
+			len(table.Chains) != 1 || len(table.Chains[0].Rules) != 1 || table.Chains[0].Rules[0].Packets != 2 || table.Chains[0].Priority != -300 || !table.Ready ||
+			len(table.Sets) != 1 || table.Sets[0].Name != "owned4" || !slices.Equal(table.Sets[0].Elements, []string{"192.0.2.7"}) {
+			t.Errorf("%s: debug rules carries the table %+v", name, table)
 		}
 	}
 }

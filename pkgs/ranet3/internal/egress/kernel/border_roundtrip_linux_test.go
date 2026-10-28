@@ -74,9 +74,11 @@ func TestBorderRoundTrip(t *testing.T) {
 			t.Errorf("%s came back with %d packets and %d bytes in an empty namespace", rule.Spec, rule.Packets, rule.Bytes)
 		}
 	}
-	for _, rule := range f.Debug().Rules {
-		if !rule.Held {
-			t.Errorf("a debug read through its own socket does not find %s", rule.Spec)
+	for _, chain := range f.Debug().Chains {
+		for _, rule := range chain.Rules {
+			if !rule.Held {
+				t.Errorf("a debug read through its own socket does not find %s", rule.Spec)
+			}
 		}
 	}
 	select {

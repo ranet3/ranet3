@@ -39,8 +39,9 @@ type RulesInfo struct {
 	// asked to find another program's rule ahead of the mesh's, and on darwin
 	// the route the underlay's selection takes toward each live endpoint
 	Lookups []RuleLookup `json:"lookups,omitempty"`
-	// Border is absent on a node that writes no cap.border
-	Border *BorderChain `json:"border,omitempty"`
+	// Border is absent where no border filter runs, which every Linux node
+	// runs for its entry chain
+	Border *BorderTable `json:"border,omitempty"`
 	// Fallback is absent on a node whose cap.exit asks for no fallback = "none"
 	Fallback *FallbackTable `json:"fallback,omitempty"`
 }
@@ -128,24 +129,41 @@ type PolicyRule struct {
 	Wanted bool `json:"wanted"`
 }
 
-// BorderChain is the border filter's chain as a debug read finds it
-type BorderChain struct {
-	Where    string `json:"where"`
-	Hook     string `json:"hook"`
-	Priority int    `json:"priority"`
+// BorderTable is the border filter's table as a debug read finds it: its
+// chains and its sets
+type BorderTable struct {
+	Where string `json:"where"`
 	// ReadAt is the last pass, whose readback Ready and Unready report, and
 	// ReadAgo how long before the answer it ran
-	ReadAt  time.Time         `json:"read_at,omitzero"`
-	ReadAgo Duration          `json:"read_ago"`
-	Ready   bool              `json:"ready"`
-	Unready string            `json:"unready,omitempty"`
-	Rules   []BorderChainRule `json:"rules"`
-	Err     string            `json:"err,omitempty"`
+	ReadAt  time.Time     `json:"read_at,omitzero"`
+	ReadAgo Duration      `json:"read_ago"`
+	Ready   bool          `json:"ready"`
+	Unready string        `json:"unready,omitempty"`
+	Chains  []BorderChain `json:"chains"`
+	Sets    []BorderSet   `json:"sets"`
+	Err     string        `json:"err,omitempty"`
 }
 
-// BorderChainRule is one rule of the chain: the ones the configuration asks
-// for in order, with their counters read now, then any the chain holds that
-// it does not ask for
+// BorderChain is one chain of the table, its hook, its priority and its
+// rules. One with no name holds the rules the table holds that the filter
+// does not ask for.
+type BorderChain struct {
+	Name     string            `json:"name,omitempty"`
+	Hook     string            `json:"hook,omitempty"`
+	Priority int               `json:"priority"`
+	Rules    []BorderChainRule `json:"rules"`
+}
+
+// BorderSet is one set of the table, its elements as the last pass asked for
+// them, each written as nft prints it, one address bare, a prefix or a first
+// and last address
+type BorderSet struct {
+	Name     string   `json:"name"`
+	Elements []string `json:"elements"`
+}
+
+// BorderChainRule is one rule of a chain: the ones the configuration asks
+// for in order, with their counters read now
 type BorderChainRule struct {
 	Spec    string `json:"spec"`
 	Verdict string `json:"verdict"`
@@ -260,8 +278,9 @@ func renderFallback(w io.Writer, table *FallbackTable) {
 	indented(w, func(w io.Writer) { pairs(w, rows) })
 }
 
-// renderBorder writes the border filter's chain with the packets each drop counted
-func renderBorder(w io.Writer, border *BorderChain) {
+// renderBorder writes the border filter's table: each chain with the packets
+// each drop counted, then each set's elements
+func renderBorder(w io.Writer, border *BorderTable) {
 	state := "ready"
 	if !border.Ready {
 		state = "not ready, " + border.Unready
@@ -270,20 +289,36 @@ func renderBorder(w io.Writer, border *BorderChain) {
 	if !border.ReadAt.IsZero() {
 		read = "read " + sinceText(time.Duration(border.ReadAgo)) + " ago"
 	}
-	fmt.Fprintf(w, "\nBorder filter, %s, %s at priority %d, %s, %s\n", border.Where, border.Hook, border.Priority, read, state)
+	fmt.Fprintf(w, "\nBorder filter, %s, %s, %s\n", border.Where, read, state)
 	if border.Err != "" {
 		fmt.Fprintf(w, "  read now: %s\n", border.Err)
 	}
-	rows := make([][]string, 0, len(border.Rules))
-	for _, rule := range border.Rules {
-		row := []string{rule.Verdict, strings.TrimPrefix(rule.Spec, rule.Verdict+" ")}
-		switch {
-		case !rule.Held:
-			row = append(row, "not held")
-		case rule.Verdict == "drop":
-			row = append(row, fmt.Sprintf("%d packets, %d B", rule.Packets, rule.Bytes))
+	for _, chain := range border.Chains {
+		if chain.Name == "" {
+			fmt.Fprint(w, "  rules the filter does not ask for\n")
+		} else {
+			fmt.Fprintf(w, "  chain %s, %s at priority %d\n", chain.Name, chain.Hook, chain.Priority)
 		}
-		rows = append(rows, row)
+		rows := make([][]string, 0, len(chain.Rules))
+		for _, rule := range chain.Rules {
+			row := []string{rule.Verdict, strings.TrimPrefix(rule.Spec, rule.Verdict+" ")}
+			switch {
+			case !rule.Held:
+				row = append(row, "not held")
+			case rule.Verdict == "drop":
+				row = append(row, fmt.Sprintf("%d packets, %d B", rule.Packets, rule.Bytes))
+			}
+			rows = append(rows, row)
+		}
+		indented(w, func(w io.Writer) { indented(w, func(w io.Writer) { pairs(w, rows) }) })
+	}
+	rows := make([][]string, 0, len(border.Sets))
+	for _, set := range border.Sets {
+		elements := "empty"
+		if len(set.Elements) != 0 {
+			elements = strings.Join(set.Elements, ", ")
+		}
+		rows = append(rows, []string{"set " + set.Name, elements})
 	}
 	indented(w, func(w io.Writer) { pairs(w, rows) })
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -154,51 +155,31 @@ func (r BorderRule) Family() string {
 	return "ipv4"
 }
 
-// addDrops counts packets in d under the drop and family of rule
+// addDrops counts packets in d under the drop and family of rule, nothing for
+// a rule that drops nothing
 func addDrops(d *egress.BorderDrops, rule BorderRule, packets uint64) {
-	v6 := rule.Family() == "ipv6"
-	var into *uint64
-	switch {
-	case rule.Class == BorderSource && v6:
-		into = &d.Source6
-	case rule.Class == BorderSource:
-		into = &d.Source4
-	case rule.Class == BorderCarved && v6:
-		into = &d.Carved6
-	case rule.Class == BorderCarved:
-		into = &d.Carved4
-	case rule.Class == EntryDrop && v6:
-		into = &d.Entry6
-	case rule.Class == EntryDrop:
-		into = &d.Entry4
-	default:
-		return
+	if i := slices.Index(egress.BorderDropKinds[:], egress.BorderDrop{Reason: rule.Reason(), Family: rule.Family()}); i >= 0 {
+		d[i] += packets
 	}
-	*into += packets
 }
 
 // dropsSince is the drops in d after was, a counter below its earlier reading
 // being a table rewritten in between
 func dropsSince(d, was egress.BorderDrops) egress.BorderDrops {
-	after := func(now, before uint64) uint64 {
-		if now < before {
-			return now
+	for i := range d {
+		if d[i] >= was[i] {
+			d[i] -= was[i]
 		}
-		return now - before
 	}
-	return egress.BorderDrops{
-		Source4: after(d.Source4, was.Source4), Source6: after(d.Source6, was.Source6),
-		Carved4: after(d.Carved4, was.Carved4), Carved6: after(d.Carved6, was.Carved6),
-		Entry4: after(d.Entry4, was.Entry4), Entry6: after(d.Entry6, was.Entry6),
-	}
+	return d
 }
 
 func dropAttrs(d egress.BorderDrops) []slog.Attr {
-	return []slog.Attr{
-		slog.Uint64("overlay_source_ipv4", d.Source4), slog.Uint64("overlay_source_ipv6", d.Source6),
-		slog.Uint64("carved_source_ipv4", d.Carved4), slog.Uint64("carved_source_ipv6", d.Carved6),
-		slog.Uint64("mesh_entry_ipv4", d.Entry4), slog.Uint64("mesh_entry_ipv6", d.Entry6),
+	attrs := make([]slog.Attr, 0, len(d))
+	for i, kind := range egress.BorderDropKinds {
+		attrs = append(attrs, slog.Uint64(kind.Name(), d[i]))
 	}
+	return attrs
 }
 
 // borderSets is each named set's ranges, of its one family and as
@@ -512,7 +493,7 @@ func (f *BorderFilter) reconcile() error {
 			err = fmt.Errorf("list rules: %w", err)
 		}
 	}
-	held := read.rules
+	installed := read.rules
 	switch {
 	case err != nil:
 		f.setReady(false, "a pass failed: "+err.Error())
@@ -525,11 +506,11 @@ func (f *BorderFilter) reconcile() error {
 	if f.ready {
 		f.last = rules
 	}
-	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(held), Dropped: f.dropped, CarveOuts: carveOuts}
+	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, CarveOuts: carveOuts, Sets: sets.readings()}
 	if err != nil {
 		stats.Err = err.Error()
 	} else {
-		stats.Dropped = f.countDrops(held, rules)
+		stats.Dropped = f.countDrops(installed, rules)
 	}
 	f.stats.Store(&stats)
 	if wrote != "" || err != nil {
@@ -610,7 +591,7 @@ func (f *BorderFilter) setReady(ok bool, detail string) {
 // lays it beside the table the configuration asks for
 func (f *BorderFilter) Debug() egress.BorderDebug {
 	stats := f.Stats()
-	out := egress.BorderDebug{Where: f.Where(), Hook: "prerouting", Priority: rawPriority, PassAt: stats.At, Ready: stats.Ready, Unready: stats.Unready}
+	out := egress.BorderDebug{Where: f.Where(), PassAt: stats.At, Ready: stats.Ready, Unready: stats.Unready, Sets: stats.Sets}
 	read, err := f.be.Read()
 	if err != nil {
 		out.Err = err.Error()
@@ -622,13 +603,22 @@ func (f *BorderFilter) Debug() egress.BorderDebug {
 	}
 	rules, _, _ := f.desired()
 	for _, rule := range rules {
+		if len(out.Chains) == 0 || out.Chains[len(out.Chains)-1].Name != rule.Chain() {
+			chain := egress.BorderChainReading{Name: BorderChain, Hook: "prerouting", Priority: rawPriority}
+			if rule.Chain() == EntryChain {
+				chain = egress.BorderChainReading{Name: EntryChain, Hook: "postrouting", Priority: entryPriority}
+			}
+			out.Chains = append(out.Chains, chain)
+		}
 		reading, ok := readings[rule.String()]
 		delete(readings, rule.String())
-		out.Rules = append(out.Rules, egress.BorderReading{Spec: rule.String(), Verdict: rule.Verdict(), Reason: rule.Reason(), Family: rule.Family(),
+		chain := &out.Chains[len(out.Chains)-1]
+		chain.Rules = append(chain.Rules, egress.BorderReading{Spec: rule.String(), Verdict: rule.Verdict(), Reason: rule.Reason(), Family: rule.Family(),
 			Held: ok, Packets: reading.Packets, Bytes: reading.Bytes})
 	}
+	var extra egress.BorderChainReading
 	for _, reading := range held {
-		if _, extra := readings[reading.Spec]; !extra {
+		if _, unasked := readings[reading.Spec]; !unasked {
 			continue
 		}
 		spec := reading.Spec
@@ -636,7 +626,19 @@ func (f *BorderFilter) Debug() egress.BorderDebug {
 		if spec == "" {
 			spec = "a rule with no comment"
 		}
-		out.Rules = append(out.Rules, egress.BorderReading{Spec: spec, Verdict: verdict, Held: true, Packets: reading.Packets, Bytes: reading.Bytes})
+		extra.Rules = append(extra.Rules, egress.BorderReading{Spec: spec, Verdict: verdict, Held: true, Packets: reading.Packets, Bytes: reading.Bytes})
+	}
+	if len(extra.Rules) != 0 {
+		out.Chains = append(out.Chains, extra)
+	}
+	return out
+}
+
+// readings is the sets by name
+func (s borderSets) readings() []egress.BorderSetReading {
+	out := make([]egress.BorderSetReading, 0, len(s))
+	for _, name := range slices.Sorted(maps.Keys(s)) {
+		out = append(out, egress.BorderSetReading{Name: name, Elements: slices.Clone(s[name])})
 	}
 	return out
 }

@@ -273,12 +273,19 @@ func borderLine(b BorderStatus) string {
 		}
 		return "not installed, " + why
 	}
+	entering := fmt.Sprintf("dropped %d entering the mesh", b.Dropped.Reason("mesh_entry"))
+	if len(b.Overlay) == 0 {
+		return b.Where + ", " + entering
+	}
 	overlay := fmt.Sprintf("%d overlay prefixes", len(b.Overlay))
 	if len(b.Overlay) == 1 {
 		overlay = "1 overlay prefix"
 	}
-	return fmt.Sprintf("%s, inside %s, %s, dropped %d overlay sources",
-		b.Where, strings.Join(b.Inside, " "), overlay, b.Dropped.OverlaySourceIPv4+b.Dropped.OverlaySourceIPv6)
+	for _, carveOut := range b.Carved {
+		overlay += fmt.Sprintf(", carving %s on %s", carveOut.Prefix, carveOut.Link)
+	}
+	return fmt.Sprintf("%s, inside %s, %s, dropped %d overlay sources and %d carved sources, %s",
+		b.Where, strings.Join(b.Inside, " "), overlay, b.Dropped.Reason("overlay_source"), b.Dropped.Reason("carved_source"), entering)
 }
 
 func egressReadyText(ready []string, unready string) string {

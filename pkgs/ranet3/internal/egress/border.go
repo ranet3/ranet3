@@ -98,16 +98,26 @@ type BorderSets struct {
 	None []Range
 }
 
-// BorderDrops counts the packets each drop of the table took per family, as
-// the chains' counters read on a pass: a source in the overlay or in a
-// carve-out's mesh prefixes from outside the mesh, and a packet entering the
-// mesh from a source this node does not own. A rewrite of the table starts
-// them from zero.
-type BorderDrops struct {
-	Source4, Source6 uint64
-	Carved4, Carved6 uint64
-	Entry4, Entry6   uint64
+// BorderDrop is one drop of the table in one family, as the metric labels it
+type BorderDrop struct{ Reason, Family string }
+
+// Name is the drop as the status and the log spell it
+func (d BorderDrop) Name() string { return d.Reason + "_" + d.Family }
+
+// BorderDropKinds is each drop the table counts, in the order every report
+// lists them: a source in the overlay or in a carve-out's mesh prefixes from
+// outside the mesh, and a packet into the tun that none of the entry chain's
+// lines BorderRuntime.Tun lists passes
+var BorderDropKinds = [...]BorderDrop{
+	{"overlay_source", "ipv4"}, {"overlay_source", "ipv6"},
+	{"carved_source", "ipv4"}, {"carved_source", "ipv6"},
+	{"mesh_entry", "ipv4"}, {"mesh_entry", "ipv6"},
 }
+
+// BorderDrops counts the packets each drop of BorderDropKinds took, at its
+// index, as the chains' counters read on a pass. A rewrite of the table
+// starts them from zero.
+type BorderDrops [len(BorderDropKinds)]uint64
 
 // BorderStats is one finished pass as an operator reads it
 type BorderStats struct {
@@ -122,10 +132,12 @@ type BorderStats struct {
 	// CarveOuts is the carve-outs the last pass asked for, written or not, as
 	// Ready says
 	CarveOuts []CarveOut
-	Err       string
+	// Sets is each set as the last pass asked for it
+	Sets []BorderSetReading
+	Err  string
 }
 
-// BorderReading is one rule of the chain as a debug read finds it
+// BorderReading is one rule of a chain as a debug read finds it
 type BorderReading struct {
 	Spec, Verdict, Reason, Family string
 	// Held is whether the chain holds it, which a rule the configuration asks
@@ -134,17 +146,32 @@ type BorderReading struct {
 	Packets, Bytes uint64
 }
 
-// BorderDebug is the chain as a debug read finds it: the rules the
+// BorderChainReading is one chain of the table as a debug read finds it: its
+// hook and priority and its rules in order. A chain with no name holds the
+// rules the table holds that the filter does not ask for.
+type BorderChainReading struct {
+	Name, Hook string
+	Priority   int
+	Rules      []BorderReading
+}
+
+// BorderSetReading is one set of the table and its ranges
+type BorderSetReading struct {
+	Name     string
+	Elements []Range
+}
+
+// BorderDebug is the table as a debug read finds it: each chain's rules the
 // configuration asks for in order, each with the counters read now through a
-// socket of its own, then any the chain holds that it does not ask for
+// socket of its own, then any the table holds that it does not ask for, and
+// the sets as the last pass asked for them
 type BorderDebug struct {
-	Where    string
-	Hook     string
-	Priority int
+	Where string
 	// PassAt is the last pass, whose readback Ready and Unready report
 	PassAt  time.Time
 	Ready   bool
 	Unready string
-	Rules   []BorderReading
+	Chains  []BorderChainReading
+	Sets    []BorderSetReading
 	Err     string
 }

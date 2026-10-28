@@ -285,7 +285,7 @@ func egressStatus(status egress.Status) control.EgressStatus {
 	return out
 }
 
-// borderStatus reports the border filter, and nil on a node with no cap.border
+// borderStatus reports the border filter, and nil on a node that runs none
 func (c *Client) borderStatus() *control.BorderStatus {
 	f := c.border.Load()
 	if f == nil {
@@ -298,15 +298,24 @@ func (c *Client) borderStatus() *control.BorderStatus {
 	for _, entry := range overlay {
 		prefixes = append(prefixes, entry.Prefix)
 	}
+	var carved []control.BorderCarveOut
+	for _, carveOut := range stats.CarveOuts {
+		carved = append(carved, control.BorderCarveOut{Link: carveOut.Link, Prefix: carveOut.Prefix})
+	}
+	dropped := make(control.BorderDrops, len(egress.BorderDropKinds))
+	for i, kind := range egress.BorderDropKinds {
+		dropped[kind.Name()] = stats.Dropped[i]
+	}
 	return &control.BorderStatus{
 		Where:     border.Where(),
 		Inside:    border.Inside(),
 		Overlay:   prefixes,
+		Carved:    carved,
 		Ready:     stats.Ready,
 		Unready:   stats.Unready,
 		PassAt:    stats.At,
 		Installed: stats.Installed,
-		Dropped:   control.BorderDrops{OverlaySourceIPv4: stats.Dropped.Source4, OverlaySourceIPv6: stats.Dropped.Source6},
+		Dropped:   dropped,
 		Err:       stats.Err,
 	}
 }

@@ -606,6 +606,8 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	f.reconcile()
 	be.setCount("drop ipv4 source 198.18.0.0/15", 5)
 	be.setCount("drop ipv6 source 3fff::/20", 2)
+	be.setCount("drop ipv4 source @carved4", 1)
+	be.setCount("drop ipv6 entering the mesh", 4)
 	// another writer flushed the chain, so this pass lists, rewrites and reads back
 	be.mu.Lock()
 	be.held = nil
@@ -613,15 +615,19 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	f.reconcile()
 	var got []string
 	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.dropped" }, 0) {
-		got = append(got, fmt.Sprintf("%s %s", event.Attrs["overlay_source_ipv4"], event.Attrs["overlay_source_ipv6"]))
+		var counts []string
+		for _, kind := range egress.BorderDropKinds {
+			counts = append(counts, event.Attrs[kind.Name()])
+		}
+		got = append(got, strings.Join(counts, " "))
 	}
-	if want := []string{"3 0", "2 2"}; !slices.Equal(got, want) {
+	if want := []string{"3 0 0 0 0 0", "2 2 1 0 0 4"}; !slices.Equal(got, want) {
 		t.Errorf("recorded border.dropped %q, want %q", got, want)
 	}
 	if n := strings.Count(lines.String(), "border filter dropped packets"); n != 2 {
 		t.Errorf("logged the drops %d times, want twice:\n%s", n, lines.String())
 	}
-	if want := (egress.BorderDrops{Source4: 5, Source6: 2}); f.Stats().Dropped != want {
+	if want := (egress.BorderDrops{5, 2, 1, 0, 0, 4}); f.Stats().Dropped != want {
 		t.Errorf("the last pass reports %+v dropped, want %+v", f.Stats().Dropped, want)
 	}
 }
@@ -629,9 +635,9 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 // A counter below its last reading is a chain rewritten in between, which
 // starts its counters from zero, so what it reads is all new
 func TestBorderDropsAfterARewriteCountFromZero(t *testing.T) {
-	was := egress.BorderDrops{Source4: 10, Source6: 4}
-	now := egress.BorderDrops{Source4: 2, Source6: 6}
-	if got, want := dropsSince(now, was), (egress.BorderDrops{Source4: 2, Source6: 2}); got != want {
+	was := egress.BorderDrops{10, 4}
+	now := egress.BorderDrops{2, 6}
+	if got, want := dropsSince(now, was), (egress.BorderDrops{2, 2}); got != want {
 		t.Errorf("read %+v since %+v as %+v, want %+v", now, was, got, want)
 	}
 }
@@ -826,9 +832,10 @@ func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {
 	}
 }
 
-// A debug read lays the chain held now beside the one the configuration asks
-// for: each desired rule with its counters or as not held yet, then any rule
-// held that the configuration does not ask for
+// A debug read lays the table held now beside the one the configuration asks
+// for: each chain with its hook and priority, each desired rule with its
+// counters or as not held yet, then any rule held that the configuration does
+// not ask for, and the sets as the last pass asked for them
 func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	be := &fakeBorder{}
 	f, err := startBorderFilter(overlay(t), borderRuntime(nil), be)
@@ -842,18 +849,26 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	be.held = append(be.held, Installed{Spec: "drop ipv4 source 192.0.2.0/24"}, Installed{})
 	be.mu.Unlock()
 	debug := f.Debug()
-	if debug.Where != "nftables table inet ranet3 chains border and mesh_entry" || debug.Hook != "prerouting" || debug.Priority != -300 || !debug.Ready {
+	if debug.Where != "nftables table inet ranet3 chains border and mesh_entry" || !debug.Ready {
 		t.Errorf("the debug read reports %+v", debug)
 	}
 	var got []string
-	for _, rule := range debug.Rules {
-		got = append(got, fmt.Sprintf("%s|%s|%s|%s|%v|%d", rule.Spec, rule.Verdict, rule.Reason, rule.Family, rule.Held, rule.Packets))
+	for _, chain := range debug.Chains {
+		got = append(got, fmt.Sprintf("chain %s %s %d", chain.Name, chain.Hook, chain.Priority))
+		for _, rule := range chain.Rules {
+			got = append(got, fmt.Sprintf("%s|%s|%s|%s|%v|%d", rule.Spec, rule.Verdict, rule.Reason, rule.Family, rule.Held, rule.Packets))
+		}
+	}
+	for _, set := range debug.Sets {
+		got = append(got, fmt.Sprintf("set %s %v", set.Name, set.Elements))
 	}
 	want := []string{
+		"chain border prerouting -300",
 		"accept via ranet0|accept|inside||true|0",
 		"accept via lo|accept|inside||false|0",
 		"drop ipv4 source 198.18.0.0/15|drop|overlay_source|ipv4|true|12",
 		"drop ipv6 source 3fff::/20|drop|overlay_source|ipv6|true|0",
+		"chain mesh_entry postrouting 110",
 		"return via other than ranet0|return|outside||true|0",
 		"return a reply|return|reply||true|0",
 		"return ipv6 to fe80::/10|return|link_local|ipv6|true|0",
@@ -864,8 +879,10 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 		"return ipv6 to @none6|return|none|ipv6|true|0",
 		"drop ipv4 entering the mesh|drop|mesh_entry|ipv4|true|0",
 		"drop ipv6 entering the mesh|drop|mesh_entry|ipv6|true|0",
+		"chain   0",
 		"drop ipv4 source 192.0.2.0/24|drop|||true|0",
 		"a rule with no comment||||true|3",
+		"set carved4 []", "set carved6 []", "set none4 []", "set none6 []", "set owned4 []", "set owned6 []",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the debug read lists\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

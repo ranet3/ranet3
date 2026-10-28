@@ -196,55 +196,159 @@
     }
   ],
   "border": {
-    "where": "nftables table inet ranet3 chain border",
-    "hook": "prerouting",
-    "priority": -300,
+    "where": "nftables table inet ranet3 chains border and mesh_entry",
     "read_at": "2026-10-19T09:14:02Z",
     "read_ago": "3s",
     "ready": true,
-    "rules": [
+    "chains": [
       {
-        "spec": "accept via ranet3",
-        "verdict": "accept",
-        "reason": "inside",
-        "held": true,
-        "packets": 0,
-        "bytes": 0
+        "name": "border",
+        "hook": "prerouting",
+        "priority": -300,
+        "rules": [
+          {
+            "spec": "accept via ranet3",
+            "verdict": "accept",
+            "reason": "inside",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "accept via lo",
+            "verdict": "accept",
+            "reason": "inside",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "drop ipv4 source @carved4",
+            "verdict": "drop",
+            "reason": "carved_source",
+            "family": "ipv4",
+            "held": true,
+            "packets": 2,
+            "bytes": 120
+          },
+          {
+            "spec": "drop ipv6 source @carved6",
+            "verdict": "drop",
+            "reason": "carved_source",
+            "family": "ipv6",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "accept via eth0 source 203.0.113.0/26",
+            "verdict": "accept",
+            "reason": "carve_out",
+            "family": "ipv4",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "drop ipv4 source 203.0.113.0/24",
+            "verdict": "drop",
+            "reason": "overlay_source",
+            "family": "ipv4",
+            "held": true,
+            "packets": 12,
+            "bytes": 720
+          },
+          {
+            "spec": "drop ipv6 source 3fff:a::/36",
+            "verdict": "drop",
+            "reason": "overlay_source",
+            "family": "ipv6",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "drop ipv6 source 3fff:b::/48",
+            "verdict": "drop",
+            "reason": "overlay_source",
+            "family": "ipv6",
+            "held": false,
+            "packets": 0,
+            "bytes": 0
+          }
+        ]
       },
       {
-        "spec": "accept via lo",
-        "verdict": "accept",
-        "reason": "inside",
-        "held": true,
-        "packets": 0,
-        "bytes": 0
+        "name": "mesh_entry",
+        "hook": "postrouting",
+        "priority": 110,
+        "rules": [
+          {
+            "spec": "return via other than ranet3",
+            "verdict": "return",
+            "reason": "outside",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "return a reply",
+            "verdict": "return",
+            "reason": "reply",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "return ipv4 source @owned4",
+            "verdict": "return",
+            "reason": "owned",
+            "family": "ipv4",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "drop ipv4 entering the mesh",
+            "verdict": "drop",
+            "reason": "mesh_entry",
+            "family": "ipv4",
+            "held": true,
+            "packets": 4,
+            "bytes": 336
+          }
+        ]
       },
       {
-        "spec": "drop ipv4 source 203.0.113.0/24",
-        "verdict": "drop",
-        "reason": "overlay_source",
-        "family": "ipv4",
-        "held": true,
-        "packets": 12,
-        "bytes": 720
+        "priority": 0,
+        "rules": [
+          {
+            "spec": "a rule with no comment",
+            "verdict": "",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          }
+        ]
+      }
+    ],
+    "sets": [
+      {
+        "name": "carved4",
+        "elements": [
+          "203.0.113.5"
+        ]
       },
       {
-        "spec": "drop ipv6 source 3fff:a::/36",
-        "verdict": "drop",
-        "reason": "overlay_source",
-        "family": "ipv6",
-        "held": true,
-        "packets": 0,
-        "bytes": 0
+        "name": "owned4",
+        "elements": [
+          "203.0.113.0/26",
+          "198.51.100.7-198.51.100.9"
+        ]
       },
       {
-        "spec": "drop ipv6 source 3fff:b::/48",
-        "verdict": "drop",
-        "reason": "overlay_source",
-        "family": "ipv6",
-        "held": false,
-        "packets": 0,
-        "bytes": 0
+        "name": "none4",
+        "elements": null
       }
     ]
   }

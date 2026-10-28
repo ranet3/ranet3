@@ -595,15 +595,20 @@ type EgressClass struct {
 	To   string       `json:"to"`
 }
 
-// BorderStatus is the border filter: the chain dropping what arrives from
-// outside the mesh carrying a mesh source. Status carries one only under
-// cap.border.
+// BorderStatus is the border filter: the chain border dropping what arrives
+// from outside the mesh carrying a mesh source, under cap.border, and the
+// chain mesh_entry dropping a packet into the tun that none of its lines
+// passes, a reply, an IPv6 link-local or multicast destination, a source this
+// node owns or a destination a none class takes. Status carries one wherever
+// the filter runs.
 type BorderStatus struct {
-	// Where names the table and the chain, as the filter spells them
+	// Where names the table and the chains, as the filter spells them
 	Where string `json:"where"`
-	// Inside is the devices whose traffic the chain accepts whatever it carries
+	// Inside is the devices whose traffic the border chain accepts whatever it carries
 	Inside  []string       `json:"inside"`
 	Overlay []netip.Prefix `json:"overlay"`
+	// Carved is each carve-out the border chain accepts from its own link
+	Carved []BorderCarveOut `json:"carved,omitempty"`
 	// Ready is whether the last pass read the chain back as written, and
 	// Unready why it did not
 	Ready   bool   `json:"ready"`
@@ -615,11 +620,23 @@ type BorderStatus struct {
 	Err       string      `json:"err,omitempty"`
 }
 
-// BorderDrops is the packets each drop of the chain has counted, as the last
-// pass read them. A rewrite of the chain starts them from zero.
-type BorderDrops struct {
-	OverlaySourceIPv4 uint64 `json:"overlay_source_ipv4"`
-	OverlaySourceIPv6 uint64 `json:"overlay_source_ipv6"`
+// BorderCarveOut is a part of the overlay a link outside the mesh is on
+type BorderCarveOut struct {
+	Link   string       `json:"link"`
+	Prefix netip.Prefix `json:"prefix"`
+}
+
+// BorderDrops is the packets each drop of the table has counted, as the last
+// pass read them, by the drop's reason and family joined with an underscore:
+// overlay_source and carved_source from outside the mesh, and mesh_entry for
+// a packet into the tun that none of the entry chain's lines BorderStatus
+// lists passes, each in ipv4 and ipv6. Every one is present. A rewrite of the
+// table starts them from zero.
+type BorderDrops map[string]uint64
+
+// Reason is the packets a drop counted in both families
+func (d BorderDrops) Reason(reason string) uint64 {
+	return d[reason+"_ipv4"] + d[reason+"_ipv6"]
 }
 
 // Counts is the mesh in six numbers, which is the first thing to read when

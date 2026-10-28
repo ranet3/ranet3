@@ -54,19 +54,34 @@ func rulesFixture() RulesInfo {
 			{Lookup: "underlay", Family: "ipv6", Address: netip.MustParseAddr("2001:db8:400::7"), Source: netip.MustParseAddr("2001:db8:a::10"), Interface: "eth0", Answer: "table 300 dev ranet0", Taken: true},
 			{Lookup: "underlay", Family: "ipv6", Address: netip.MustParseAddr("2001:db8:400::7"), Source: netip.MustParseAddr("2001:db8:b::10"), Answer: "table main dev eth0"},
 		},
-		Border: &BorderChain{
-			Where:    "nftables table inet ranet3 chain border",
-			Hook:     "prerouting",
-			Priority: -300,
-			ReadAt:   time.Date(2026, 10, 19, 9, 14, 2, 0, time.UTC),
-			ReadAgo:  Duration(3 * time.Second),
-			Ready:    true,
-			Rules: []BorderChainRule{
-				{Spec: "accept via ranet3", Verdict: "accept", Reason: "inside", Held: true},
-				{Spec: "accept via lo", Verdict: "accept", Reason: "inside", Held: true},
-				{Spec: "drop ipv4 source 203.0.113.0/24", Verdict: "drop", Reason: "overlay_source", Family: "ipv4", Held: true, Packets: 12, Bytes: 720},
-				{Spec: "drop ipv6 source 3fff:a::/36", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true},
-				{Spec: "drop ipv6 source 3fff:b::/48", Verdict: "drop", Reason: "overlay_source", Family: "ipv6"},
+		Border: &BorderTable{
+			Where:   "nftables table inet ranet3 chains border and mesh_entry",
+			ReadAt:  time.Date(2026, 10, 19, 9, 14, 2, 0, time.UTC),
+			ReadAgo: Duration(3 * time.Second),
+			Ready:   true,
+			Chains: []BorderChain{
+				{Name: "border", Hook: "prerouting", Priority: -300, Rules: []BorderChainRule{
+					{Spec: "accept via ranet3", Verdict: "accept", Reason: "inside", Held: true},
+					{Spec: "accept via lo", Verdict: "accept", Reason: "inside", Held: true},
+					{Spec: "drop ipv4 source @carved4", Verdict: "drop", Reason: "carved_source", Family: "ipv4", Held: true, Packets: 2, Bytes: 120},
+					{Spec: "drop ipv6 source @carved6", Verdict: "drop", Reason: "carved_source", Family: "ipv6", Held: true},
+					{Spec: "accept via eth0 source 203.0.113.0/26", Verdict: "accept", Reason: "carve_out", Family: "ipv4", Held: true},
+					{Spec: "drop ipv4 source 203.0.113.0/24", Verdict: "drop", Reason: "overlay_source", Family: "ipv4", Held: true, Packets: 12, Bytes: 720},
+					{Spec: "drop ipv6 source 3fff:a::/36", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true},
+					{Spec: "drop ipv6 source 3fff:b::/48", Verdict: "drop", Reason: "overlay_source", Family: "ipv6"},
+				}},
+				{Name: "mesh_entry", Hook: "postrouting", Priority: 110, Rules: []BorderChainRule{
+					{Spec: "return via other than ranet3", Verdict: "return", Reason: "outside", Held: true},
+					{Spec: "return a reply", Verdict: "return", Reason: "reply", Held: true},
+					{Spec: "return ipv4 source @owned4", Verdict: "return", Reason: "owned", Family: "ipv4", Held: true},
+					{Spec: "drop ipv4 entering the mesh", Verdict: "drop", Reason: "mesh_entry", Family: "ipv4", Held: true, Packets: 4, Bytes: 336},
+				}},
+				{Rules: []BorderChainRule{{Spec: "a rule with no comment", Held: true}}},
+			},
+			Sets: []BorderSet{
+				{Name: "carved4", Elements: []string{"203.0.113.5"}},
+				{Name: "owned4", Elements: []string{"203.0.113.0/26", "198.51.100.7-198.51.100.9"}},
+				{Name: "none4"},
 			},
 		},
 	}

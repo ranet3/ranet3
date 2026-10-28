@@ -14,6 +14,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
@@ -108,25 +109,19 @@ func (c *Client) Metrics(w io.Writer) {
 }
 
 // renderBorder writes the border filter's readiness and the packets each drop
-// counted as its last pass read them, and nothing on a node with no cap.border
+// counted as its last pass read them, and nothing on a node that runs no filter
 func (c *Client) renderBorder(w io.Writer) {
 	border := c.borderStatus()
 	if border == nil {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet3_border_ready Whether the border filter's chain reads back as the configuration asks.\n")
+	fmt.Fprint(w, "# HELP ranet3_border_ready Whether the border filter's chains and sets read back as the configuration asks.\n")
 	fmt.Fprint(w, "# TYPE ranet3_border_ready gauge\n")
 	fmt.Fprintf(w, "ranet3_border_ready %d\n", boolValue(border.Ready))
-	fmt.Fprint(w, "# HELP ranet3_border_dropped_packets_total Packets arriving from outside the mesh that the border filter dropped, by what they carried, as of its last pass. A rewrite of the chain starts them from zero.\n")
+	fmt.Fprint(w, "# HELP ranet3_border_dropped_packets_total Packets the border filter dropped, arriving from outside the mesh with an overlay source or a mesh source inside a carve-out, or kept out of the tun by the entry chain, as of its last pass. A rewrite of the table starts them from zero.\n")
 	fmt.Fprint(w, "# TYPE ranet3_border_dropped_packets_total counter\n")
-	for _, row := range []struct {
-		reason, family string
-		packets        uint64
-	}{
-		{"overlay_source", "ipv4", border.Dropped.OverlaySourceIPv4},
-		{"overlay_source", "ipv6", border.Dropped.OverlaySourceIPv6},
-	} {
-		fmt.Fprintf(w, "ranet3_border_dropped_packets_total{reason=\"%s\",family=\"%s\"} %d\n", row.reason, row.family, row.packets)
+	for _, kind := range egress.BorderDropKinds {
+		fmt.Fprintf(w, "ranet3_border_dropped_packets_total{reason=\"%s\",family=\"%s\"} %d\n", kind.Reason, kind.Family, border.Dropped[kind.Name()])
 	}
 }
 

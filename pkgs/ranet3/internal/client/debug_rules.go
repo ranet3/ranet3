@@ -83,7 +83,7 @@ func (c *Client) DebugRules() control.RulesInfo {
 		}
 	}
 	if f := c.border.Load(); f != nil {
-		info.Border = borderChain((*f).Debug())
+		info.Border = borderTable((*f).Debug())
 	}
 	if exit := c.kernel().Exit; exit != nil && exit.Fallback != nil {
 		info.Fallback = c.fallbackTable(*exit.Fallback)
@@ -174,21 +174,32 @@ func policyRule(rule kernel.DumpedRule) control.PolicyRule {
 	return policy
 }
 
-// borderChain is the border filter's chain as the wire carries it
-func borderChain(debug egress.BorderDebug) *control.BorderChain {
-	chain := &control.BorderChain{
-		Where: debug.Where, Hook: debug.Hook, Priority: debug.Priority,
-		Ready: debug.Ready, Unready: debug.Unready, Err: debug.Err,
-		Rules: make([]control.BorderChainRule, 0, len(debug.Rules)),
+// borderTable is the border filter's table as the wire carries it
+func borderTable(debug egress.BorderDebug) *control.BorderTable {
+	table := &control.BorderTable{
+		Where: debug.Where, Ready: debug.Ready, Unready: debug.Unready, Err: debug.Err,
+		Chains: make([]control.BorderChain, 0, len(debug.Chains)),
+		Sets:   make([]control.BorderSet, 0, len(debug.Sets)),
 	}
 	if !debug.PassAt.IsZero() {
-		chain.ReadAt, chain.ReadAgo = debug.PassAt.UTC(), control.Duration(time.Since(debug.PassAt))
+		table.ReadAt, table.ReadAgo = debug.PassAt.UTC(), control.Duration(time.Since(debug.PassAt))
 	}
-	for _, rule := range debug.Rules {
-		chain.Rules = append(chain.Rules, control.BorderChainRule{
-			Spec: rule.Spec, Verdict: rule.Verdict, Reason: rule.Reason, Family: rule.Family,
-			Held: rule.Held, Packets: rule.Packets, Bytes: rule.Bytes,
-		})
+	for _, reading := range debug.Chains {
+		chain := control.BorderChain{Name: reading.Name, Hook: reading.Hook, Priority: reading.Priority, Rules: make([]control.BorderChainRule, 0, len(reading.Rules))}
+		for _, rule := range reading.Rules {
+			chain.Rules = append(chain.Rules, control.BorderChainRule{
+				Spec: rule.Spec, Verdict: rule.Verdict, Reason: rule.Reason, Family: rule.Family,
+				Held: rule.Held, Packets: rule.Packets, Bytes: rule.Bytes,
+			})
+		}
+		table.Chains = append(table.Chains, chain)
 	}
-	return chain
+	for _, set := range debug.Sets {
+		elements := make([]string, 0, len(set.Elements))
+		for _, r := range set.Elements {
+			elements = append(elements, r.String())
+		}
+		table.Sets = append(table.Sets, control.BorderSet{Name: set.Name, Elements: elements})
+	}
+	return table
 }

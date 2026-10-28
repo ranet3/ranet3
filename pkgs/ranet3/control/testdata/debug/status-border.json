@@ -1,5 +1,5 @@
 {
-  "where": "nftables table inet ranet3 chain border",
+  "where": "nftables table inet ranet3 chains border and mesh_entry",
   "inside": [
     "ranet3",
     "lo",
@@ -12,10 +12,20 @@
     "3fff:a::/36",
     "3fff:b::/48"
   ],
+  "carved": [
+    {
+      "link": "eth0",
+      "prefix": "192.0.2.0/25"
+    }
+  ],
   "ready": true,
   "pass_at": "2026-10-19T09:14:02Z",
-  "installed": 8,
+  "installed": 24,
   "dropped": {
+    "carved_source_ipv4": 2,
+    "carved_source_ipv6": 0,
+    "mesh_entry_ipv4": 5,
+    "mesh_entry_ipv6": 1,
     "overlay_source_ipv4": 3,
     "overlay_source_ipv6": 1
   }

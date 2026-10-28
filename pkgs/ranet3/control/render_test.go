@@ -293,29 +293,35 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	golden(t, "status-egress.txt", []byte(out.String()))
 }
 
-// the border row follows the egress row, naming where the chain is, what it
-// accepts and what its drops counted, or that it is not installed and why
+// the border row follows the egress row, naming where the table is, what it
+// accepts, what it carves and what its drops counted, the entry chain's drops
+// alone on a node with no cap.border, or that it is not installed and why
 func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
 	status.Border = &BorderStatus{
-		Where:  "nftables table inet ranet3 chain border",
+		Where:  "nftables table inet ranet3 chains border and mesh_entry",
 		Inside: []string{"ranet3", "lo", "dummy0"},
 		Overlay: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
 			netip.MustParsePrefix("3fff:a::/36"), netip.MustParsePrefix("3fff:b::/48"),
 		},
+		Carved:    []BorderCarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("192.0.2.0/25")}},
 		Ready:     true,
 		PassAt:    time.Date(2026, 10, 19, 9, 14, 2, 0, time.UTC),
-		Installed: 8,
-		Dropped:   BorderDrops{OverlaySourceIPv4: 3, OverlaySourceIPv6: 1},
+		Installed: 24,
+		Dropped: BorderDrops{
+			"overlay_source_ipv4": 3, "overlay_source_ipv6": 1, "carved_source_ipv4": 2, "carved_source_ipv6": 0,
+			"mesh_entry_ipv4": 5, "mesh_entry_ipv6": 1,
+		},
 	}
 	var out strings.Builder
 	RenderStatus(&out, status)
 	goldenJSON(t, "status-border.json", status.Border)
 	out.WriteString("\n")
-	where := "nftables table inet ranet3 chain border"
+	where := "nftables table inet ranet3 chains border and mesh_entry"
 	for _, border := range []BorderStatus{
+		{Where: "nftables table inet ranet3 chain mesh_entry", Inside: []string{"ranet3", "lo"}, Ready: true, Dropped: BorderDrops{"mesh_entry_ipv6": 7}},
 		{Where: where, Unready: "another writer changed its table"},
 		{Where: where, Unready: "the readback differs", Err: "egress: list the rules of nftables table inet ranet3 chain border: operation not permitted"},
 	} {
