@@ -135,11 +135,11 @@ func (p CostParams) Cost(rtt time.Duration, haveRTT bool) uint16 {
 // link, added to the rxcost the neighbor reports, rather than on the rxcost
 // this node advertises.
 //
-// Measured against the fleet before this was so: every one of sixteen
-// nodes reported cost 96 whether its real round trip was 10 ms or 307 ms,
-// because BIRD applies the penalty locally and advertises the nominal cost.
-// Selection could not tell Paris from Sydney and took a 202 ms exit from a
-// node 10 ms from Paris.
+// A peer such as BIRD applies the penalty locally and advertises its
+// nominal rxcost, so a node that put the penalty on its advertised rxcost
+// instead would compute every link to such a peer at the nominal cost
+// whatever its round trip, and selection could not tell a near neighbor
+// from a far one.
 func (p CostParams) RTTPenalty(rtt time.Duration, haveRTT bool) uint16 {
 	low, high := p.RTT.Min.Duration(), p.RTT.Max.Duration()
 	if !haveRTT || p.RTT.Weight == 0 || high <= low || rtt <= low {

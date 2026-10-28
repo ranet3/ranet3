@@ -447,7 +447,7 @@ func TestSourceSpecificOriginationAndSelection(t *testing.T) {
 		miss   string
 	}{
 		{"ipv6 default from an exit prefix", "::/0", "3fff:a::/36", "2001:4860::1", "3fff:a:1::7", "2001:db8::7"},
-		{"ipv4 default from an announced prefix", "0.0.0.0/0", "198.18.104.0/24", "192.0.2.1", "198.18.104.7", "198.51.100.7"},
+		{"ipv4 default from an announced prefix", "0.0.0.0/0", "203.0.113.0/24", "192.0.2.1", "203.0.113.7", "198.51.100.7"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fabric := newMeshFabric(t, Config{}, "a-b")

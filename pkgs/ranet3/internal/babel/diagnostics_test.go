@@ -22,7 +22,7 @@ func TestRouteDumpCarriesOriginatedPrefixes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	own := netip.MustParsePrefix("198.18.104.117/32")
+	own := netip.MustParsePrefix("203.0.113.10/32")
 	exit := netip.MustParsePrefix("::/0")
 	from := netip.MustParsePrefix("3fff:a::/36")
 	speaker.OriginateFrom(own, netip.Prefix{})
@@ -63,7 +63,7 @@ func TestRouteDumpCarriesAssignedAddresses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	both := netip.MustParseAddr("198.18.104.117")
+	both := netip.MustParseAddr("203.0.113.10")
 	assigned := netip.MustParseAddr("2001:db8::5")
 	speaker.Originate(netip.PrefixFrom(both, both.BitLen()))
 	speaker.SetAssigned([]netip.Addr{both, assigned})
@@ -94,7 +94,7 @@ func TestRouteDumpReportsSelectionAndHolds(t *testing.T) {
 	defer handle.Close()
 	neighbor := speaker.neighbors[peer.ID]
 	makeNeighborReachable(neighbor)
-	dest := netip.MustParsePrefix("3fff:1:69c:98d0::/60")
+	dest := netip.MustParsePrefix("3fff:b:0:200::/60")
 	key := routeKey{dest: dest}
 	speaker.routes.update(neighbor, key, advertisement{routerID: [8]byte{1, 2}, seqno: 7, metric: 100}, time.Minute, time.Now())
 

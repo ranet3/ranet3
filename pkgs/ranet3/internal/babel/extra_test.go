@@ -21,41 +21,41 @@ const exchangeBudget = 5 * time.Second
 func TestExtraCostTakesTheMostSpecificKey(t *testing.T) {
 	extra := ExtraCost{
 		Foreign: 1024,
-		Org:     map[string]uint16{"gravity": 2048, "cheap": 5},
-		Node:    map[string]uint16{"gravity/near": 300, "ysun/lagern": 7},
+		Org:     map[string]uint16{"alpha": 2048, "cheap": 5},
+		Node:    map[string]uint16{"alpha/near": 300, "example/gateway": 7},
 	}
 	for _, test := range []struct {
 		peer string
 		want uint16
 	}{
-		{"gravity/near:0", 300},
-		{"gravity/far:0", 2048},
+		{"alpha/near:0", 300},
+		{"alpha/far:0", 2048},
 		{"cheap/any:0", 5},
 		{"other/any:0", 1024},
-		{"ysun/cradle:0", 0},
-		{"ysun/lagern:1", 7},
+		{"example/bravo:0", 0},
+		{"example/gateway:1", 7},
 	} {
-		if got := extra.For("ysun", identity.MustParse(test.peer)); got != test.want {
+		if got := extra.For("example", identity.MustParse(test.peer)); got != test.want {
 			t.Errorf("%s pays %d, want %d", test.peer, got, test.want)
 		}
 	}
-	extra.Org["ysun"] = 11
-	if got := extra.For("ysun", identity.MustParse("ysun/cradle:0")); got != 11 {
+	extra.Org["example"] = 11
+	if got := extra.For("example", identity.MustParse("example/bravo:0")); got != 11 {
 		t.Errorf("an org key naming this node's own organization charges its peer %d, want 11", got)
 	}
-	if got := extra.For("ysun", identity.Identity{}); got != 0 {
+	if got := extra.For("example", identity.Identity{}); got != 0 {
 		t.Errorf("a neighbor with no identity pays %d, want nothing", got)
 	}
 }
 
 // foreign is measured against the organization the speaker is given, so its own organization's neighbor pays nothing
 func TestSpeakerChargesForeignAgainstItsOwnOrganization(t *testing.T) {
-	speaker, err := New(Config{Cost: CostOptions{Extra: ExtraCost{Foreign: 1024}}}, Routes{}, Runtime{Organization: "ysun"}, netstack.NewRoutesOnly())
+	speaker, err := New(Config{Cost: CostOptions{Extra: ExtraCost{Foreign: 1024}}}, Routes{}, Runtime{Organization: "example"}, netstack.NewRoutesOnly())
 	if err != nil {
 		t.Fatal(err)
 	}
-	speaker.AddPeer(newTestPeer(t, "own", nil).Peer, identity.MustParse("ysun/cradle:0"))
-	speaker.AddPeer(newTestPeer(t, "other", nil).Peer, identity.MustParse("gravity/far:0"))
+	speaker.AddPeer(newTestPeer(t, "own", nil).Peer, identity.MustParse("example/bravo:0"))
+	speaker.AddPeer(newTestPeer(t, "other", nil).Peer, identity.MustParse("alpha/far:0"))
 	for _, neighbor := range speaker.Stats().Neighbors {
 		want := map[string]uint16{"own": 0, "other": 1024}[neighbor.Peer]
 		if neighbor.Extra != want {
@@ -71,18 +71,18 @@ func TestExtraCostRefusals(t *testing.T) {
 		names string
 	}{
 		{ExtraCost{Foreign: MetricInfinity}, "foreign"},
-		{ExtraCost{Org: map[string]uint16{"gravity": MetricInfinity}}, `org "gravity"`},
+		{ExtraCost{Org: map[string]uint16{"alpha": MetricInfinity}}, `org "alpha"`},
 		{ExtraCost{Org: map[string]uint16{"": 1}}, "empty organization"},
-		{ExtraCost{Node: map[string]uint16{"ysun/lagern": MetricInfinity}}, `node "ysun/lagern"`},
-		{ExtraCost{Node: map[string]uint16{"ysun/lagern:0": 1}}, "names an endpoint"},
-		{ExtraCost{Node: map[string]uint16{"lagern": 1}}, `node "lagern"`},
+		{ExtraCost{Node: map[string]uint16{"example/gateway": MetricInfinity}}, `node "example/gateway"`},
+		{ExtraCost{Node: map[string]uint16{"example/gateway:0": 1}}, "names an endpoint"},
+		{ExtraCost{Node: map[string]uint16{"gateway": 1}}, `node "gateway"`},
 	} {
 		err := (Config{Cost: CostOptions{Extra: test.extra}}).Validate()
 		if err == nil || !strings.Contains(err.Error(), test.names) {
 			t.Errorf("%+v was refused with %v, want an error naming %s", test.extra, err, test.names)
 		}
 	}
-	top := ExtraCost{Foreign: MetricInfinity - 1, Org: map[string]uint16{"gravity": MetricInfinity - 1}, Node: map[string]uint16{"ysun/lagern": MetricInfinity - 1}}
+	top := ExtraCost{Foreign: MetricInfinity - 1, Org: map[string]uint16{"alpha": MetricInfinity - 1}, Node: map[string]uint16{"example/gateway": MetricInfinity - 1}}
 	if err := (Config{Cost: CostOptions{Extra: top}}).Validate(); err != nil {
 		t.Errorf("the largest amounts were refused: %v", err)
 	}
@@ -93,11 +93,11 @@ func extraNeighbor(t *testing.T, amount uint16) (*Speaker, *neighborState) {
 	t.Helper()
 	zero := uint16(0)
 	cfg := Config{Quality: LinkQualityNone, Cost: CostOptions{RTT: RTTOptions{Weight: &zero}, Extra: ExtraCost{Foreign: amount}}}
-	speaker, err := New(cfg, Routes{}, Runtime{Organization: "ysun"}, netstack.NewRoutesOnly())
+	speaker, err := New(cfg, Routes{}, Runtime{Organization: "example"}, netstack.NewRoutesOnly())
 	if err != nil {
 		t.Fatal(err)
 	}
-	speaker.AddPeer(newTestPeer(t, "peer", nil).Peer, identity.MustParse("gravity/far:0"))
+	speaker.AddPeer(newTestPeer(t, "peer", nil).Peer, identity.MustParse("alpha/far:0"))
 	n := speaker.neighbors["peer"]
 	makeNeighborReachable(n)
 	return speaker, n
