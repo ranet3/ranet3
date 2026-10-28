@@ -12,16 +12,11 @@
     "3fff:a::/36",
     "3fff:b::/48"
   ],
-  "sids": [
-    "3fff:b:0:306::3"
-  ],
   "ready": true,
   "pass_at": "2026-10-19T09:14:02Z",
-  "installed": 11,
+  "installed": 8,
   "dropped": {
     "overlay_source_ipv4": 3,
-    "overlay_source_ipv6": 1,
-    "routing_header": 2,
-    "sid_destination": 5
+    "overlay_source_ipv6": 1
   }
 }

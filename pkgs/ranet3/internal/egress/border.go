@@ -15,8 +15,7 @@ import (
 )
 
 // Border is the cap.border capability: this node drops what arrives on a link
-// outside the mesh carrying a mesh source, a routing header or one of this
-// node's own SIDs. Writing the block turns it on.
+// outside the mesh carrying a mesh source. Writing the block turns it on.
 type Border struct {
 	// Overlay names the prefixes the mesh numbers its nodes from. A packet
 	// arriving from outside the mesh with a source in one of them is forged,
@@ -58,22 +57,16 @@ type BorderRuntime struct {
 	// Inside names the devices whose traffic the filter takes whatever it
 	// carries: the mesh tun and lo
 	Inside []string
-	// SIDs are this node's own local segments, each dropped as a destination
-	// arriving from outside. SetConfig replaces them on a reload.
-	SIDs []netip.Addr
-	// Ready receives whether the chain reads back as the configuration asks,
-	// whenever that moves, starting from false. Nil where nothing reads it,
-	// which only a test does.
-	Ready func(bool)
 	// Events records the passes that rewrote the chain or failed, readiness
 	// moving and the drops each pass read, nil records nothing
 	Events *events.Bus
 }
 
-// BorderDrops counts the packets each class dropped, as the chain's counters
-// read on a pass. A rewrite of the chain starts them from zero.
+// BorderDrops counts the packets each family's overlay sources dropped, as the
+// chain's counters read on a pass. A rewrite of the chain starts them from
+// zero.
 type BorderDrops struct {
-	Source4, Source6, RoutingHeader, Destination uint64
+	Source4, Source6 uint64
 }
 
 // BorderStats is one finished pass as an operator reads it

@@ -19,7 +19,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -60,8 +59,9 @@ type borderLab struct {
 //     mesh destination, crosses the mesh tun, so the path exists
 //   - the same from a source inside the overlay never does, and the border
 //     counts it
-//   - a type 4 routing header, alone or behind one of type 0 or 2, never
-//     crosses the tun and is counted, as is a packet to the local SID
+//   - a type 4 routing header, alone or behind one of type 0 or 2, passes the
+//     border, and the tun read drops and counts it
+//   - a packet to the local SID passes the border and never crosses the tun
 //   - a packet from beyond the uplink to another node's SID, with no routing
 //     header and an outer source outside the overlay, crosses the tun, and
 //     the SID's owner refuses and counts it, delivering one from inside
@@ -102,6 +102,7 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 			lab.counts(t, arm.spec, before)
 		})
 	}
+	// a routing header the border passes crosses the tun, where the tun read drops and counts it
 	// an address of the leaf's mesh prefix, which a packet the border passes reaches through the tun
 	beyond := netip.MustParseAddr("3fff:a::d4")
 	for _, arm := range []struct {
@@ -113,26 +114,27 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 		{"a type 4 routing header behind a type 2", []uint8{2, 4}},
 	} {
 		t.Run(arm.name, func(t *testing.T) {
-			const spec = "drop ipv6 routing header"
-			payload := []byte(arm.name + " from beyond the uplink")
-			before := lab.dropped(t, spec)
-			lab.quiet(t, payload, labIPv6To(beyond, payload), func() { lab.raw(t, beyond, labOuter(labFar6.Addr(), beyond, arm.routing, payload)) })
-			lab.counts(t, spec, before)
+			before := lab.node.Mesh.TransitCounters().RoutingHeader
+			lab.raw(t, beyond, labOuter(labFar6.Addr(), beyond, arm.routing, []byte(arm.name+" from beyond the uplink")))
+			waitFor(t, convergeBudget, "the tun read to count a routing header", func() bool { return lab.node.Mesh.TransitCounters().RoutingHeader > before })
 		})
 	}
+	// the mesh's table holds the overlay unreachable, and the SID's /128 only as a rule at 5430 from it, so the kernel refuses a packet to it short of the tun
 	t.Run("a packet to the local SID", func(t *testing.T) {
-		spec := "drop ipv6 destination " + labSID.String()
-		before := lab.dropped(t, spec)
+		payload := []byte("to the SID from beyond the uplink")
+		before := lab.node.Mesh.SegmentCounters()
 		lab.routeFar(t, netip.PrefixFrom(labSID, 128), labExit6.Addr())
-		lab.sender(t, labFar6.Addr(), labSID, []byte("to the SID from beyond the uplink"))()
-		lab.counts(t, spec, before)
+		lab.quiet(t, payload, labReplyTo(labSID, payload), lab.sender(t, labFar6.Addr(), labSID, payload))
+		if got := lab.node.Mesh.SegmentCounters(); got != before {
+			t.Errorf("a packet to the SID from beyond the uplink moved the counters from %+v to %+v", before, got)
+		}
 	})
 	t.Run("another node's SID from outside the overlay", func(t *testing.T) {
 		// an address of the leaf's mesh prefix, standing for an End.DT46 SID of the leaf's
 		other := netip.MustParseAddr("3fff:a::d46")
 		// outer is a packet from source to other with no routing header, carrying an IPv4 packet with a mesh source
 		outer := func(source netip.Addr, payload []byte) []byte { return labOuter(source, other, nil, payload) }
-		// it carries no mesh source, no routing header and none of this node's SIDs, so the border passes it into the mesh
+		// it carries no mesh source, so the border passes it into the mesh
 		crossing := []byte("to another node's SID from beyond the uplink")
 		crossed := false
 		for deadline := time.Now().Add(convergeBudget); !crossed && time.Now().Before(deadline); {
@@ -203,32 +205,6 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 	})
 	lab.stop()
 	lab.withoutTable(t)
-}
-
-// an exit whose border's chain is not read back egresses neither family of an
-// egress segment into its tun, whatever the translator holds, and with the
-// chain read back it egresses each family the translator holds
-func TestTUNEgressCarriesNothingWhileTheBorderIsNotReady(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("creating a tun needs root on linux")
-	}
-	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(labSID.String(), labLeaves...)) })
-	carried := meshCarrying(t, c)
-	speakerRecording(t, c, bus)
-	for _, step := range []struct{ v4, v6, border bool }{
-		{true, true, false},
-		{true, true, true},
-		{true, true, false},
-		{true, false, true},
-		{false, true, true},
-		{false, true, false},
-	} {
-		c.SetEgressReady(step.v4, step.v6, step.v4 || step.v6)
-		c.SetBorderReady(step.border)
-		if got, want := carried(), [2]bool{step.v4 && step.border, step.v6 && step.border}; got != want {
-			t.Errorf("with the translator holding %v %v and the border ready %v the mesh carries %v, want %v", step.v4, step.v6, step.border, got, want)
-		}
-	}
 }
 
 // meshCarrying gives c a mesh on a tun in a namespace of its own, holding the

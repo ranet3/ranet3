@@ -461,8 +461,6 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	})
 
 	t.Run("a packet from the far host to the SID", func(t *testing.T) {
-		spec := "drop ipv6 destination " + labSID.String()
-		dropped := borderDropped(t, exit, border, spec)
 		before := node.Mesh.SegmentCounters()
 		if err := far.Do(func() error {
 			netlink, err := netnstest.OpenNetlink()
@@ -492,11 +490,9 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 			t.Fatalf("send to the SID from the far host: %v", err)
 		}
 		time.Sleep(labQuiet)
+		// the border passes them, and the mesh's table, holding the overlay unreachable, keeps them out of the tun
 		if got := node.Mesh.SegmentCounters(); got != before {
 			t.Errorf("packets sent to the SID from beyond the uplink moved the counters from %+v to %+v", before, got)
-		}
-		if got := borderDropped(t, exit, border, spec); got < dropped+3 {
-			t.Errorf("the border counted %d packets to the SID from beyond the uplink after %d, want three more", got, dropped)
 		}
 	})
 
@@ -527,7 +523,8 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 
 // the mesh takes the readiness before the announcement is rebuilt, so the
 // SID's /128 follows the word just given and never the one before it, the
-// mesh's word read by what it egresses into a real tun
+// mesh's word read by what it egresses into a real tun, with the border's
+// chain missing
 func TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -535,6 +532,8 @@ func TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(labSID.String(), labLeaves...)) })
 	carried := meshCarrying(t, c)
 	speakerRecording(t, c, bus)
+	// a border whose chain is missing holds neither family back, since the egress segments wait on the translator alone
+	c.SetBorder(&borderRecord{missing: true})
 	var rebuiltWith [2]bool
 	c.SetExit(&fakeExit{announce: func() []netip.Prefix {
 		rebuiltWith = carried()

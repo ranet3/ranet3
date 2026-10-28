@@ -465,7 +465,6 @@ func labErrorTo(destination netip.Addr) func([]byte) bool {
 
 // a node with cap.egress and no egress segment egresses mode 2 through the prefixes cap.egress advertises into its tun
 // for each family the exit holds ready and lets it announce as Republish last read, and is dropped and counted not ready for a family it does not
-// whatever the border's chain reads back, which holds the egress SIDs alone
 func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
@@ -511,22 +510,18 @@ func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T)
 	c.SetExit(&fakeExit{announce: func() []netip.Prefix { return announced }, write: c.Mesh.WriteHost})
 	// the exit holds both families ready, as it does for every family it lets the node announce
 	c.SetEgressReady(true, true, false)
-	for _, step := range []struct {
-		announced []netip.Prefix
-		border    bool
-	}{
-		{nil, true},
-		{[]netip.Prefix{every[4], every[6]}, true},
-		{[]netip.Prefix{every[6]}, true},
-		{[]netip.Prefix{every[4], every[6]}, false},
-		{[]netip.Prefix{every[4]}, false},
-		{nil, false},
+	for _, step := range [][]netip.Prefix{
+		nil,
+		{every[4], every[6]},
+		{every[6]},
+		{every[4]},
+		nil,
 	} {
-		announced = step.announced
-		c.SetBorderReady(step.border)
-		want := [2]bool{slices.Contains(step.announced, every[4]), slices.Contains(step.announced, every[6])}
+		announced = step
+		c.Republish()
+		want := [2]bool{slices.Contains(step, every[4]), slices.Contains(step, every[6])}
 		if got := egressed(t); got != want {
-			t.Errorf("with the translator letting the node announce %v and the border ready %v the mesh egressed %v, want %v", step.announced, step.border, got, want)
+			t.Errorf("with the translator letting the node announce %v the mesh egressed %v, want %v", step, got, want)
 		}
 	}
 }

@@ -120,36 +120,17 @@ func delBorderTable() nftables.Request { return nftables.DeleteTable(unix.NFPROT
 // update on every mesh packet
 func newBorderRule(rule BorderRule) (nftables.Request, error) {
 	var expressions [][]byte
-	switch rule.Class {
-	case BorderInside:
+	if rule.Class == BorderInside {
 		if err := nftables.DeviceName(rule.Device); err != nil {
 			return nftables.Request{}, err
 		}
 		expressions = append(nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, rule.Device), nftables.Verdict(nftables.Accept))
-	case BorderSource:
+	} else {
 		proto := uint8(unix.NFPROTO_IPV6)
 		if rule.Source.Addr().Is4() {
 			proto = unix.NFPROTO_IPV4
 		}
 		expressions = slices.Concat(nftables.NFProto(proto), nftables.SourcePrefix(rule.Source), nftables.CountedDrop())
-	case BorderRoutingHeader:
-		// whether any routing header is present rather than its type: the
-		// kernel's search finds only the first routing header, so a test of
-		// the type would let one of type 0 or 2 hide a segment routing header
-		// behind it. From Linux 7.1 the search gives up at the thirteenth
-		// extension header, so one behind twelve others passes, and before
-		// 7.1 it finds one anywhere
-		exthdr := nftables.PutAttrBE32(nil, unix.NFTA_EXTHDR_DREG, unix.NFT_REG_1)
-		exthdr = nftables.PutAttr(exthdr, unix.NFTA_EXTHDR_TYPE, []byte{unix.IPPROTO_ROUTING})
-		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_OFFSET, 0)
-		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_LEN, 1)
-		exthdr = nftables.PutAttrBE32(exthdr, unix.NFTA_EXTHDR_FLAGS, unix.NFT_EXTHDR_F_PRESENT)
-		expressions = slices.Concat(nftables.NFProto(unix.NFPROTO_IPV6),
-			[][]byte{nftables.Expression("exthdr", exthdr), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{1}))}, nftables.CountedDrop())
-	default:
-		expressions = slices.Concat(nftables.NFProto(unix.NFPROTO_IPV6),
-			[][]byte{nftables.DestinationLoad(unix.NFPROTO_IPV6), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(rule.Destination)))},
-			nftables.CountedDrop())
 	}
 	return prerouting.Rule(unix.NFPROTO_INET, rule.String(), expressions)
 }

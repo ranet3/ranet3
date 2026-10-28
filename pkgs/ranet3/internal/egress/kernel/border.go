@@ -24,8 +24,6 @@ type BorderClass uint8
 const (
 	BorderInside BorderClass = iota
 	BorderSource
-	BorderRoutingHeader
-	BorderDestination
 )
 
 // BorderRule is one rule of the chain and its own diff key, as Rule is the
@@ -37,20 +35,13 @@ type BorderRule struct {
 	Device string
 	// Source is the overlay prefix a source rule drops
 	Source netip.Prefix
-	// Destination is the SID a destination rule drops
-	Destination netip.Addr
 }
 
 func (r BorderRule) String() string {
-	switch r.Class {
-	case BorderInside:
+	if r.Class == BorderInside {
 		return "accept via " + r.Device
-	case BorderSource:
-		return "drop " + r.Family() + " source " + r.Source.String()
-	case BorderRoutingHeader:
-		return "drop ipv6 routing header"
 	}
-	return "drop ipv6 destination " + r.Destination.String()
+	return "drop " + r.Family() + " source " + r.Source.String()
 }
 
 // Verdict names the verdict a matching packet meets, accept or drop
@@ -63,15 +54,10 @@ func (r BorderRule) Verdict() string {
 
 // Reason names a drop as the metric labels it, and is inside for an accept
 func (r BorderRule) Reason() string {
-	switch r.Class {
-	case BorderInside:
+	if r.Class == BorderInside {
 		return "inside"
-	case BorderSource:
-		return "overlay_source"
-	case BorderRoutingHeader:
-		return "routing_header"
 	}
-	return "sid_destination"
+	return "overlay_source"
 }
 
 // Family is the address family a rule matches, empty for an inside rule,
@@ -80,27 +66,24 @@ func (r BorderRule) Family() string {
 	switch {
 	case r.Class == BorderInside:
 		return ""
-	case r.Class == BorderSource && r.Source.Addr().Is4():
+	case r.Source.Addr().Is4():
 		return "ipv4"
 	}
 	return "ipv6"
 }
 
-// addDrops counts packets in d under the class rule drops
+// addDrops counts packets in d under the family rule drops
 func addDrops(d *egress.BorderDrops, rule BorderRule, packets uint64) {
 	switch {
-	case rule.Class == BorderSource && rule.Source.Addr().Is4():
+	case rule.Class == BorderInside:
+	case rule.Source.Addr().Is4():
 		d.Source4 += packets
-	case rule.Class == BorderSource:
+	default:
 		d.Source6 += packets
-	case rule.Class == BorderRoutingHeader:
-		d.RoutingHeader += packets
-	case rule.Class == BorderDestination:
-		d.Destination += packets
 	}
 }
 
-// dropsSince is the drops of each class in d after was, a counter below its
+// dropsSince is the drops of each family in d after was, a counter below its
 // earlier reading being a chain rewritten in between
 func dropsSince(d, was egress.BorderDrops) egress.BorderDrops {
 	after := func(now, before uint64) uint64 {
@@ -109,16 +92,11 @@ func dropsSince(d, was egress.BorderDrops) egress.BorderDrops {
 		}
 		return now - before
 	}
-	return egress.BorderDrops{
-		Source4:       after(d.Source4, was.Source4),
-		Source6:       after(d.Source6, was.Source6),
-		RoutingHeader: after(d.RoutingHeader, was.RoutingHeader),
-		Destination:   after(d.Destination, was.Destination),
-	}
+	return egress.BorderDrops{Source4: after(d.Source4, was.Source4), Source6: after(d.Source6, was.Source6)}
 }
 
 func dropAttrs(d egress.BorderDrops) []any {
-	return []any{"overlay_source_ipv4", d.Source4, "overlay_source_ipv6", d.Source6, "routing_header", d.RoutingHeader, "sid_destination", d.Destination}
+	return []any{"overlay_source_ipv4", d.Source4, "overlay_source_ipv6", d.Source6}
 }
 
 // borderBackend is the kernel surface the filter drives
@@ -142,19 +120,14 @@ type borderBackend interface {
 	Close() error
 }
 
-type borderConfig struct {
-	border egress.Border
-	sids   []netip.Addr
-}
-
 // BorderFilter owns the border chain on one node: its table, its readback and
-// the readiness the egress segments' families wait for
+// its readiness
 type BorderFilter struct {
 	rt    egress.BorderRuntime
 	be    borderBackend
 	sweep time.Duration
 	// config is replaced whole by SetConfig and read by the run goroutine
-	config atomic.Pointer[borderConfig]
+	config atomic.Pointer[egress.Border]
 	// stats is the last pass, published whole as Translator.stats is
 	stats atomic.Pointer[egress.BorderStats]
 	// wake carries a SetConfig to the run goroutine
@@ -165,7 +138,7 @@ type BorderFilter struct {
 
 	// trigger, ready, unready and dropped belong to the run goroutine, and to
 	// NewBorderFilter before it starts: what woke the pass, the readiness last
-	// handed to Ready, why it is not ready, and the counters last reported
+	// reported, why it is not ready, and the counters last reported
 	trigger string
 	ready   bool
 	unready string
@@ -177,7 +150,7 @@ type BorderFilter struct {
 // and read it back: a node that asked for the filter does not run without it.
 // Run keeps it from then on.
 func NewBorderFilter(cfg egress.Border, rt egress.BorderRuntime) (*BorderFilter, error) {
-	if err := checkBorder(cfg, rt.SIDs); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	if len(rt.Inside) == 0 {
@@ -206,7 +179,7 @@ func startBorderFilter(cfg egress.Border, rt egress.BorderRuntime, be borderBack
 // newBorderFilter is a filter over a backend that is already open, before its first pass
 func newBorderFilter(cfg egress.Border, rt egress.BorderRuntime, be borderBackend) *BorderFilter {
 	f := &BorderFilter{rt: rt, be: be, sweep: egress.DefaultSweep, wake: make(chan struct{}, 1), trigger: "start"}
-	f.config.Store(&borderConfig{border: cfg, sids: slices.Clone(rt.SIDs)})
+	f.config.Store(&cfg)
 	f.finish = sync.OnceValue(func() error {
 		f.setReady(false, "the border filter is stopping")
 		err := f.be.Withdraw()
@@ -220,28 +193,14 @@ func newBorderFilter(cfg egress.Border, rt egress.BorderRuntime, be borderBacken
 	return f
 }
 
-// checkBorder refuses an overlay list Validate refuses and a SID the chain
-// cannot compare as an IPv6 destination
-func checkBorder(cfg egress.Border, sids []netip.Addr) error {
+// SetConfig hands the filter the overlay a reload carries, refusing what
+// NewBorderFilter refuses before anything changes, and wakes the run goroutine
+// to rewrite the chain
+func (f *BorderFilter) SetConfig(cfg egress.Border) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	for _, sid := range sids {
-		if !sid.Is6() || sid.Is4In6() || sid.Zone() != "" {
-			return fmt.Errorf("egress: the border filter drops SIDs as IPv6 destinations, and %s is not one", sid)
-		}
-	}
-	return nil
-}
-
-// SetConfig hands the filter the overlay and the SIDs a reload carries,
-// refusing what NewBorderFilter refuses before anything changes, and wakes the
-// run goroutine to rewrite the chain
-func (f *BorderFilter) SetConfig(cfg egress.Border, sids []netip.Addr) error {
-	if err := checkBorder(cfg, sids); err != nil {
-		return err
-	}
-	f.config.Store(&borderConfig{border: cfg, sids: slices.Clone(sids)})
+	f.config.Store(&cfg)
 	select {
 	case f.wake <- struct{}{}:
 	default:
@@ -250,10 +209,7 @@ func (f *BorderFilter) SetConfig(cfg egress.Border, sids []netip.Addr) error {
 }
 
 // Capability is the block as the last SetConfig gave it
-func (f *BorderFilter) Capability() egress.Border { return f.config.Load().border }
-
-// SIDs are the SIDs as the last SetConfig gave them
-func (f *BorderFilter) SIDs() []netip.Addr { return slices.Clone(f.config.Load().sids) }
+func (f *BorderFilter) Capability() egress.Border { return *f.config.Load() }
 
 func (f *BorderFilter) Inside() []string { return slices.Clone(f.rt.Inside) }
 
@@ -290,7 +246,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 		case <-f.wake:
 			f.trigger = "reload"
 		case <-f.be.Changed():
-			// the chain may be gone or bypassed already, so the egress segments stop before the pass that puts it back
+			// the chain may be gone or bypassed already, so it reads not ready until the pass puts it back
 			f.trigger = "changed"
 			f.setReady(false, "another writer changed its table")
 		case <-f.be.Missed():
@@ -306,22 +262,15 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 }
 
 // desired is the chain the configuration asks for, in the order a packet
-// meets it: the inside accepts, then the drops in the order overlay source,
-// routing header, SID destination, so a packet two drops match counts in the
-// first and the counters partition the drops
+// meets it: the inside accepts, then the overlay source drops
 func (f *BorderFilter) desired() []BorderRule {
-	in := f.config.Load()
-	overlay := in.border.Normalized().Overlay
-	out := make([]BorderRule, 0, len(f.rt.Inside)+len(overlay)+1+len(in.sids))
+	overlay := f.config.Load().Normalized().Overlay
+	out := make([]BorderRule, 0, len(f.rt.Inside)+len(overlay))
 	for _, device := range f.rt.Inside {
 		out = append(out, BorderRule{Class: BorderInside, Device: device})
 	}
 	for _, prefix := range overlay {
 		out = append(out, BorderRule{Class: BorderSource, Source: prefix.Prefix})
-	}
-	out = append(out, BorderRule{Class: BorderRoutingHeader})
-	for _, sid := range slices.SortedFunc(slices.Values(in.sids), netip.Addr.Compare) {
-		out = append(out, BorderRule{Class: BorderDestination, Destination: sid})
 	}
 	return out
 }
@@ -380,7 +329,7 @@ func (f *BorderFilter) reconcile() error {
 }
 
 // countDrops reads the counters of the drops the chain holds and, at most
-// once per pass, reports the packets each class dropped since the last pass
+// once per pass, reports the packets each family dropped since the last pass
 // when one moved
 func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress.BorderDrops {
 	rules := make(map[string]BorderRule, len(desired))
@@ -397,15 +346,13 @@ func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress
 	f.dropped = now
 	if moved != (egress.BorderDrops{}) {
 		slog.Info("border filter dropped packets", dropAttrs(moved)...)
-		f.rt.Events.Emit("border.dropped", "",
-			slog.Uint64("overlay_source_ipv4", moved.Source4), slog.Uint64("overlay_source_ipv6", moved.Source6),
-			slog.Uint64("routing_header", moved.RoutingHeader), slog.Uint64("sid_destination", moved.Destination))
+		f.rt.Events.Emit("border.dropped", "", slog.Uint64("overlay_source_ipv4", moved.Source4), slog.Uint64("overlay_source_ipv6", moved.Source6))
 	}
 	return now
 }
 
-// setReady hands Runtime.Ready the chain's readiness when it moved, logs it
-// and records it, with detail saying why it is not ready
+// setReady logs and records the chain's readiness when it moved, with detail
+// saying why it is not ready
 func (f *BorderFilter) setReady(ok bool, detail string) {
 	f.unready = ""
 	if !ok {
@@ -419,9 +366,6 @@ func (f *BorderFilter) setReady(ok bool, detail string) {
 		slog.Info("border filter ready", "where", f.Where())
 	} else {
 		slog.Warn("border filter not ready", "where", f.Where(), "detail", detail)
-	}
-	if f.rt.Ready != nil {
-		f.rt.Ready(ok)
 	}
 	f.rt.Events.Emit("border.ready", "", slog.Bool("ready", ok))
 }

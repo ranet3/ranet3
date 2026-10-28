@@ -180,7 +180,7 @@ type Caps struct {
 	Segment *srv6.Segments `yaml:"segment,omitempty" json:"segment,omitempty" toml:"segment,omitempty"`
 	Crypto  *ike.Crypto    `yaml:"crypto,omitempty" json:"crypto,omitempty" toml:"crypto,omitempty"`
 	Egress  *egress.Egress `yaml:"egress,omitempty" json:"egress,omitempty" toml:"egress,omitempty"`
-	// Border drops what arrives from outside the mesh carrying a mesh source, a routing header or one of this node's SIDs
+	// Border drops what arrives from outside the mesh carrying a mesh source
 	Border *egress.Border `yaml:"border,omitempty" json:"border,omitempty" toml:"border,omitempty"`
 	// Exit makes the mesh's default this host's default, which the reconciler of cap.table runs, see ReconcilerTable
 	Exit *kernel.ExitMode `yaml:"exit,omitempty" json:"exit,omitempty" toml:"exit,omitempty"`

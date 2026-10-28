@@ -531,8 +531,7 @@ type EgressStatus struct {
 	// Where names the tables this node owns, as the backend spells them.
 	Where string `json:"where,omitempty"`
 	// Ready is the families the last pass judged ready, ipv4 and ipv6, by the
-	// route lookups where they ran and, on a node with egress segments, while
-	// the border filter reads back, and Unready why a family it translates is
+	// route lookups where they ran, and Unready why a family it translates is
 	// not. Skipped names the route lookups the pass left out and why: those of
 	// a family no other node's prefix inside cap.border.overlay gives a source
 	// to read from, and that of a prefix holding no address to read
@@ -595,17 +594,16 @@ type EgressClass struct {
 }
 
 // BorderStatus is the border filter: the chain dropping what arrives from
-// outside the mesh carrying a mesh source, a routing header or one of this
-// node's SIDs. Status carries one only under cap.border.
+// outside the mesh carrying a mesh source. Status carries one only under
+// cap.border.
 type BorderStatus struct {
 	// Where names the table and the chain, as the filter spells them
 	Where string `json:"where"`
 	// Inside is the devices whose traffic the chain accepts whatever it carries
 	Inside  []string       `json:"inside"`
 	Overlay []netip.Prefix `json:"overlay"`
-	SIDs    []netip.Addr   `json:"sids,omitempty"`
-	// Ready is whether the last pass read the chain back as written, which
-	// every family of the egress segments waits for, and Unready why it did not
+	// Ready is whether the last pass read the chain back as written, and
+	// Unready why it did not
 	Ready   bool   `json:"ready"`
 	Unready string `json:"unready,omitempty"`
 	// PassAt is zero until the first pass has run
@@ -620,8 +618,6 @@ type BorderStatus struct {
 type BorderDrops struct {
 	OverlaySourceIPv4 uint64 `json:"overlay_source_ipv4"`
 	OverlaySourceIPv6 uint64 `json:"overlay_source_ipv6"`
-	RoutingHeader     uint64 `json:"routing_header"`
-	SIDDestination    uint64 `json:"sid_destination"`
 }
 
 // Counts is the mesh in six numbers, which is the first thing to read when

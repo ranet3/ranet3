@@ -66,8 +66,7 @@ func rulesFixture() RulesInfo {
 				{Spec: "accept via lo", Verdict: "accept", Reason: "inside", Held: true},
 				{Spec: "drop ipv4 source 203.0.113.0/24", Verdict: "drop", Reason: "overlay_source", Family: "ipv4", Held: true, Packets: 12, Bytes: 720},
 				{Spec: "drop ipv6 source 3fff:a::/36", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true},
-				{Spec: "drop ipv6 routing header", Verdict: "drop", Reason: "routing_header", Family: "ipv6", Held: true},
-				{Spec: "drop ipv6 destination 3fff:b:0:306::3", Verdict: "drop", Reason: "sid_destination", Family: "ipv6"},
+				{Spec: "drop ipv6 source 3fff:b::/48", Verdict: "drop", Reason: "overlay_source", Family: "ipv6"},
 			},
 		},
 	}
@@ -170,7 +169,7 @@ func (*rulesSource) DebugRules() RulesInfo { return rulesFixture() }
 // to the socket's group, so a caller the root class refuses still reads it
 func TestRulesAreReadByACallerTheRootClassRefuses(t *testing.T) {
 	server := injected(t, &rulesSource{}, Caller{UID: 4242})
-	if status, body := get(t, server.Client(), server.URL+PathDebugRules); status != http.StatusOK || !strings.Contains(body, `"drop ipv6 routing header"`) {
+	if status, body := get(t, server.Client(), server.URL+PathDebugRules); status != http.StatusOK || !strings.Contains(body, `"drop ipv4 source 203.0.113.0/24"`) {
 		t.Errorf("uid 4242 asking for the rules view was answered %d %q", status, body)
 	}
 }

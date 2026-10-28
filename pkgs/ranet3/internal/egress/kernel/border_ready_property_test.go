@@ -7,11 +7,13 @@ package kernel
 
 import (
 	"slices"
+	"strconv"
 	"testing"
 
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -115,21 +117,16 @@ func borderPassAfter(now borderStep, desired []BorderRule) (log, chain []string,
 // Over a run of passes on a host drawn anew for each, the border filter lists,
 // rewrites and reads back as borderPassAfter does, leaves the host holding the
 // model's chain, and reports the model's readiness and reason in Stats and
-// through Ready, which hears only a change.
+// in a border.ready event, recorded only on a change.
 func TestBorderReadinessFollowsWhatThePassReadBack(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
-		var sids []string
-		for _, sid := range []string{"3fff:a::1", "3fff:a::2"} {
-			if hegel.Draw(ht, hegel.Booleans()) {
-				sids = append(sids, sid)
-			}
-		}
 		be := &fakeBorder{}
-		var calls []bool
-		rt := borderRuntime(be, nil, sids...)
-		rt.Ready = func(ok bool) { calls = append(calls, ok) }
+		bus := events.New()
 		cfg := egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}}
-		f := newBorderFilter(cfg, rt, be)
+		if hegel.Draw(ht, hegel.Booleans()) {
+			cfg.Overlay = append(cfg.Overlay, schema.MustPrefix("192.0.2.0/24"))
+		}
+		f := newBorderFilter(cfg, borderRuntime(bus), be)
 		desired := f.desired()
 		ready := false
 		for range hegel.Draw(ht, pbt.Spanning(1, 5)) {
@@ -140,8 +137,9 @@ func TestBorderReadinessFollowsWhatThePassReadBack(t *testing.T) {
 			be.log = nil
 			be.mu.Unlock()
 			log, chain, installed, wantReady, unready := borderPassAfter(now, desired)
-			told := len(calls)
+			told := len(readyMoves(bus))
 			_ = f.reconcile()
+			calls := readyMoves(bus)
 			if got := be.entries(); !slices.Equal(got, log) {
 				ht.Fatalf("over %+v the pass went %q, want %q", now, got, log)
 			}
@@ -151,8 +149,8 @@ func TestBorderReadinessFollowsWhatThePassReadBack(t *testing.T) {
 			if stats := f.Stats(); stats.Ready != wantReady || stats.Unready != unready || stats.Installed != installed {
 				ht.Fatalf("over %+v the pass reports ready %v (%q) over %d rules, want ready %v (%q) over %d", now, stats.Ready, stats.Unready, stats.Installed, wantReady, unready, installed)
 			}
-			if wantReady == ready && len(calls) != told || wantReady != ready && !slices.Equal(calls[told:], []bool{wantReady}) {
-				ht.Fatalf("over %+v Ready was told %v after %v, want only a change to %v", now, calls[told:], ready, wantReady)
+			if wantReady == ready && len(calls) != told || wantReady != ready && !slices.Equal(calls[told:], []string{strconv.FormatBool(wantReady)}) {
+				ht.Fatalf("over %+v readiness moved %q after %v, want only a change to %v", now, calls[told:], ready, wantReady)
 			}
 			ready = wantReady
 		}

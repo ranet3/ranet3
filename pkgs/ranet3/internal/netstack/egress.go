@@ -31,7 +31,6 @@ func (m *Mesh) SetExit(exit Exit) { m.exit = exit }
 
 // SetAdvertisedReady tells the mesh which families cap.egress translates for the prefixes it advertises, those the translator reports ready and lets this node announce
 // a packet egressing through such a prefix of a family that is not ready is dropped and counted not ready
-// the egress segments' word is not it, since that one also carries cap.border's hold, which holds no advertised prefix back
 func (m *Mesh) SetAdvertisedReady(v4, v6 bool) { m.advertisedReady.Store(readyBits(v4, v6)) }
 
 func readyBits(v4, v6 bool) uint32 {
@@ -51,9 +50,8 @@ const (
 )
 
 // SetEgressReady tells the mesh which families the egress segments carry out
-// translated, from the translator's last pass and, under cap.border, the
-// border filter's, and an egress result of a family that is not ready is
-// dropped and counted NotReady
+// translated, from the translator's last pass, and an egress result of a
+// family that is not ready is dropped and counted NotReady
 func (m *Mesh) SetEgressReady(v4, v6 bool) { m.egressReady.Store(readyBits(v4, v6)) }
 
 // EgressReady is the families SetEgressReady last named ready

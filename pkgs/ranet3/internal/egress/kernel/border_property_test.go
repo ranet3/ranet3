@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -234,31 +233,6 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 				default:
 					t.Fatalf("cmp with operator %d, which the interpreter does not model", be32(t, fields[unix.NFTA_CMP_OP]))
 				}
-			case "exthdr":
-				requireRegister(t, name, fields, unix.NFTA_EXTHDR_DREG)
-				if len(fields[unix.NFTA_EXTHDR_TYPE]) != 1 {
-					t.Fatalf("exthdr names its header in %d bytes, not one", len(fields[unix.NFTA_EXTHDR_TYPE]))
-				}
-				if packet.nfproto != unix.NFPROTO_IPV6 {
-					return undecided()
-				}
-				start, found := findExtension(packet.network, fields[unix.NFTA_EXTHDR_TYPE][0])
-				offset, length := int(be32(t, fields[unix.NFTA_EXTHDR_OFFSET])), int(be32(t, fields[unix.NFTA_EXTHDR_LEN]))
-				if flags, ok := fields[unix.NFTA_EXTHDR_FLAGS]; ok {
-					if be32(t, flags) != unix.NFT_EXTHDR_F_PRESENT {
-						t.Fatalf("exthdr carries flags %#x, of which the interpreter models only present", be32(t, flags))
-					}
-					// present stores one byte, whatever the offset and length
-					register = []byte{0}
-					if found {
-						register[0] = 1
-					}
-					continue
-				}
-				if !found || start+offset+length > len(packet.network) {
-					return undecided()
-				}
-				register = slices.Clone(packet.network[start+offset : start+offset+length])
 			case "counter":
 				run.counted = true
 			case "immediate":
@@ -321,7 +295,7 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 }
 
 // modeled is the attributes the interpreter reads of each expression. Any
-// other, an exthdr operation, a bitwise operation, a payload checksum, a nat
+// other, a bitwise operation, a payload checksum, a nat
 // range's maximum or flags, changes what the expression does, so it fails the
 // test.
 var modeled = map[string][]uint16{
@@ -330,7 +304,6 @@ var modeled = map[string][]uint16{
 	"payload":   {unix.NFTA_PAYLOAD_DREG, unix.NFTA_PAYLOAD_BASE, unix.NFTA_PAYLOAD_OFFSET, unix.NFTA_PAYLOAD_LEN},
 	"bitwise":   {unix.NFTA_BITWISE_SREG, unix.NFTA_BITWISE_DREG, unix.NFTA_BITWISE_LEN, unix.NFTA_BITWISE_MASK, unix.NFTA_BITWISE_XOR},
 	"cmp":       {unix.NFTA_CMP_SREG, unix.NFTA_CMP_OP, unix.NFTA_CMP_DATA},
-	"exthdr":    {unix.NFTA_EXTHDR_DREG, unix.NFTA_EXTHDR_TYPE, unix.NFTA_EXTHDR_OFFSET, unix.NFTA_EXTHDR_LEN, unix.NFTA_EXTHDR_FLAGS},
 	"counter":   {},
 	"immediate": {unix.NFTA_IMMEDIATE_DREG, unix.NFTA_IMMEDIATE_DATA},
 	"masq":      {},
@@ -364,67 +337,19 @@ func dataValue(attribute []byte) []byte {
 	return nil
 }
 
-// kernelHeaderSearch is IP6_MAX_EXT_HDRS_CNT, the extension headers the
-// kernel's ipv6_find_hdr walks before it gives up from Linux 7.1
-const kernelHeaderSearch = 12
-
-// findExtension walks the IPv6 extension header chain as the kernel's
-// ipv6_find_hdr does with no flags: from the next header field at byte 6 and
-// the end of a fixed header at byte 40, through hop-by-hop, routing,
-// fragment, authentication and destination options headers, to the first
-// header of the type asked for among the first kernelHeaderSearch. A fragment
-// other than the first ends the walk, as does any other header.
-func findExtension(network []byte, target uint8) (int, bool) {
-	if len(network) < 40 {
-		return 0, false
-	}
-	next, start := network[6], 40
-	for walked := 0; ; walked++ {
-		switch next {
-		case unix.IPPROTO_HOPOPTS, unix.IPPROTO_ROUTING, unix.IPPROTO_FRAGMENT, unix.IPPROTO_AH, unix.IPPROTO_DSTOPTS:
-		default:
-			return 0, false
-		}
-		if walked == kernelHeaderSearch || start+2 > len(network) {
-			return 0, false
-		}
-		if next == target {
-			return start, true
-		}
-		header := network[start:]
-		length := (int(header[1]) + 1) * 8
-		switch next {
-		case unix.IPPROTO_FRAGMENT:
-			if start+4 > len(network) || binary.BigEndian.Uint16(header[2:])&^7 != 0 {
-				return 0, false
-			}
-			length = 8
-		case unix.IPPROTO_AH:
-			length = (int(header[1]) + 2) * 4
-		}
-		next, start = header[0], start+length
-	}
-}
-
 // drawnPacket is a packet the property sends at the chain, and the fields
 // the model reads of it
 type drawnPacket struct {
 	iif                 string
 	source, destination netip.Addr
-	// headers is the IPv6 extension headers in order, each "hop", "dest",
-	// "fragment" or "routing" followed by the routing type
-	headers []string
 }
 
-// isRouting is whether header names a routing header
-func isRouting(header string) bool { return strings.HasPrefix(header, "routing") }
-
 // wire is the packet's bytes from its network header on, with eight bytes of
-// UDP to port 0 after the headers
+// UDP to port 0 after the header
 func (p drawnPacket) wire() chainPacket { return p.carrying(unix.IPPROTO_UDP, 0) }
 
 // carrying is the packet's bytes from its network header on, with eight bytes
-// of protocol after the headers whose destination port, the third and fourth
+// of protocol after the header whose destination port, the third and fourth
 // of UDP's and TCP's, is port
 func (p drawnPacket) carrying(protocol uint8, port uint16) chainPacket {
 	transport := binary.BigEndian.AppendUint16(make([]byte, 2, 8), port)
@@ -439,52 +364,20 @@ func (p drawnPacket) carrying(protocol uint8, port uint16) chainPacket {
 		copy(header[16:], destination[:])
 		return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV4, network: header, l4proto: protocol, transport: header[20:]}
 	}
-	codes := map[string]uint8{"hop": unix.IPPROTO_HOPOPTS, "dest": unix.IPPROTO_DSTOPTS, "fragment": unix.IPPROTO_FRAGMENT}
-	nexts := make([]uint8, 0, len(p.headers)+1)
-	for _, header := range p.headers {
-		if isRouting(header) {
-			nexts = append(nexts, unix.IPPROTO_ROUTING)
-		} else {
-			nexts = append(nexts, codes[header])
-		}
-	}
-	nexts = append(nexts, protocol)
-	out := make([]byte, 40)
-	out[0], out[6], out[7] = 0x60, nexts[0], 64
+	out := make([]byte, 40, 40+len(transport))
+	out[0], out[6], out[7] = 0x60, protocol, 64
 	source, destination := p.source.As16(), p.destination.As16()
 	copy(out[8:], source[:])
 	copy(out[24:], destination[:])
-	for i, header := range p.headers {
-		switch {
-		case header == "hop" || header == "dest":
-			// one PadN option filling the header to its eight bytes
-			out = append(out, nexts[i+1], 0, 1, 4, 0, 0, 0, 0)
-		case isRouting(header):
-			// one segment of sixteen bytes, segments left one
-			routing, err := strconv.ParseUint(strings.TrimPrefix(header, "routing"), 10, 8)
-			if err != nil {
-				panic("a routing header drawn without its type: " + header)
-			}
-			segment := destination
-			out = append(out, nexts[i+1], 2, uint8(routing), 1, 0, 0, 0, 0)
-			out = append(out, segment[:]...)
-		case header == "fragment":
-			// the first fragment, offset zero and more to come
-			out = append(out, nexts[i+1], 0, 0, 1, 0, 0, 0x2a, 0x2a)
-		}
-	}
-	start := len(out)
 	out = append(out, transport...)
 	binary.BigEndian.PutUint16(out[4:], uint16(len(out)-40))
-	return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV6, network: out, l4proto: protocol, transport: out[start:]}
+	return chainPacket{iif: p.iif, nfproto: unix.NFPROTO_IPV6, network: out, l4proto: protocol, transport: out[40:]}
 }
 
 // borderModel gives the verdict the chain means for a packet: whatever
 // arrives on a device inside the mesh passes, and from outside it a source in
-// the overlay, then a routing header of any type among the first
-// kernelHeaderSearch extension headers, then one of this node's SIDs as the
-// destination is dropped under that reason, and anything else passes
-func borderModel(inside []string, cfg egress.Border, sids []netip.Addr, p drawnPacket) (accept bool, reason string) {
+// the overlay is dropped under that reason, and anything else passes
+func borderModel(inside []string, cfg egress.Border, p drawnPacket) (accept bool, reason string) {
 	if slices.Contains(inside, p.iif) {
 		return true, ""
 	}
@@ -492,12 +385,6 @@ func borderModel(inside []string, cfg egress.Border, sids []netip.Addr, p drawnP
 		if prefix.Contains(p.source) {
 			return false, "overlay_source"
 		}
-	}
-	if routing := slices.IndexFunc(p.headers, isRouting); p.source.Is6() && routing >= 0 && routing < kernelHeaderSearch {
-		return false, "routing_header"
-	}
-	if p.source.Is6() && slices.Contains(sids, p.destination) {
-		return false, "sid_destination"
 	}
 	return true, ""
 }
@@ -513,7 +400,7 @@ func lastAddress(prefix netip.Prefix) netip.Addr {
 }
 
 // unmappedIPv6 draws an IPv6 address that is not an IPv4 address written as
-// one, which the overlay and the SIDs both refuse
+// one, which the overlay refuses
 func unmappedIPv6() hegel.Generator[netip.Addr] {
 	return hegel.Filter(hegel.IPAddresses().IPv6(), func(a netip.Addr) bool { return !a.Is4In6() })
 }
@@ -548,9 +435,7 @@ func overlayPrefixes() hegel.Generator[[]schema.Prefix] {
 // The inside names share prefixes with each other and with the devices a
 // packet arrives on, and the sources sit on either side of each overlay
 // prefix's edges, among them IPv6 sources whose bytes 4 to 7 spell an IPv4
-// overlay address, which an IPv4 rule with no family test would read. The
-// routing headers are of types 0, 2 and 4, one behind another, and behind
-// options headers on either side of the kernel's search limit.
+// overlay address, which an IPv4 rule with no family test would read.
 func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		inside := []string{"ranet3"}
@@ -562,11 +447,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			ht.Fatalf("drew an overlay Validate refuses: %v", err)
 		}
-		var sids []netip.Addr
-		for range hegel.Draw(ht, pbt.Spanning(0, 3)) {
-			sids = append(sids, hegel.Draw(ht, unmappedIPv6()))
-		}
-		desired := newBorderFilter(cfg, egress.BorderRuntime{Inside: inside, SIDs: sids}, &fakeBorder{}).desired()
+		desired := newBorderFilter(cfg, egress.BorderRuntime{Inside: inside}, &fakeBorder{}).desired()
 		requests, err := borderBatch(desired, false)
 		refused := slices.ContainsFunc(inside, func(name string) bool { return len(name) >= unix.IFNAMSIZ })
 		if refused != (err != nil) {
@@ -607,25 +488,6 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 			}
 		}
 		p.destination = hegel.Draw(ht, random)
-		if !v4 && len(sids) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(2.0/3)) {
-			raw := hegel.Draw(ht, hegel.SampledFrom(sids)).As16()
-			if hegel.Draw(ht, hegel.Booleans()) {
-				bit := hegel.Draw(ht, pbt.Spanning(0, 127))
-				raw[bit/8] ^= 0x80 >> (bit % 8)
-			}
-			p.destination = netip.AddrFrom16(raw)
-		}
-		if !v4 {
-			routing := hegel.Draw(ht, hegel.SampledFrom([]string{"routing0", "routing2", "routing4"}))
-			p.headers = hegel.Draw(ht, hegel.SampledFrom([][]string{
-				nil, {routing}, {"hop", routing}, {"fragment", routing}, {routing, "fragment"}, {"hop"}, {"fragment"}, {"hop", "dest"},
-				{"routing0", "routing4"}, {"routing2", "routing4"}, {"hop", "routing0", "dest", "routing4"},
-			}))
-			if hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
-				options := hegel.Draw(ht, pbt.Spanning(kernelHeaderSearch-2, kernelHeaderSearch+1))
-				p.headers = append(slices.Repeat([]string{"dest"}, options), routing)
-			}
-		}
 		arrivals := []string{"eth0", "ranet3a1b2"}
 		for _, name := range inside {
 			arrivals = append(arrivals, name, name[:len(name)-1])
@@ -636,23 +498,9 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		arrivals = slices.DeleteFunc(arrivals, func(name string) bool { return name == "" })
 		p.iif = hegel.Draw(ht, hegel.SampledFrom(arrivals))
 
-		// a quarter of the cases with SIDs aim at the last two rules: an IPv6
-		// packet from outside the mesh and the overlay to one of the SIDs, with a
-		// routing header or none, which the order of those two rules and the
-		// address the SID rule loads decide
-		if len(sids) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
-			p = drawnPacket{iif: "eth0", destination: hegel.Draw(ht, hegel.SampledFrom(sids))}
-			p.source = hegel.Draw(ht, hegel.Filter(unmappedIPv6(), func(a netip.Addr) bool {
-				return !slices.ContainsFunc(cfg.Overlay, func(prefix schema.Prefix) bool { return prefix.Contains(a) })
-			}))
-			if hegel.Draw(ht, hegel.Booleans()) {
-				p.headers = []string{"routing4"}
-			}
-		}
-
 		run := runChain(ht, rules, p.wire())
-		accept, reason := borderModel(inside, cfg, sids, p)
-		where := fmt.Sprintf("a packet %+v through inside %q, overlay %v and SIDs %v", p, inside, cfg.Overlay, sids)
+		accept, reason := borderModel(inside, cfg, p)
+		where := fmt.Sprintf("a packet %+v through inside %q and overlay %v", p, inside, cfg.Overlay)
 		switch {
 		case run.accept != accept:
 			ht.Fatalf("%s: the chain accepted %v at rule %d, the model %v for %q", where, run.accept, run.rule, accept, reason)

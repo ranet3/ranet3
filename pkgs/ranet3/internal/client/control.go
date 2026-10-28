@@ -89,7 +89,7 @@ func (c *Client) Status() control.Status {
 			ReadAt:        c.registryReadAt(),
 		},
 		Kernel: c.kernelWithResolvers(),
-		Egress: c.egress(),
+		Egress: c.exitStatus(),
 		Border: c.borderStatus(),
 		Counts: control.Counts{
 			Dialers:        c.dialerCount(),
@@ -231,25 +231,11 @@ func (c *Client) kernelWithResolvers() control.KernelStatus {
 	return status
 }
 
-// egress reports the exit node capability, or that there is none. As with the
-// reconciler, the configured half comes from the exit the command handed over
-// through SetExit rather than from the config file, because a block that
+// exitStatus reports the exit node capability, or that there is none. As with
+// the reconciler, the configured half comes from the exit the command handed
+// over through SetExit rather than from the config file, because a block that
 // failed validation never became an exit and reporting its fields would
 // describe rules nobody installed.
-//
-// The exit reports the families it holds ready, and the egress segments
-// carry neither while the border's chain is not read back, so the status
-// says what the mesh holds.
-func (c *Client) egress() control.EgressStatus {
-	status := c.exitStatus()
-	if status.Enabled && c.borderHeld.Load() && len(c.config().Segments().Egress()) != 0 {
-		status.Ready = nil
-		reasons := slices.DeleteFunc([]string{status.Unready, "until the border filter is read back"}, func(reason string) bool { return reason == "" })
-		status.Unready = strings.Join(reasons, ", and ")
-	}
-	return status
-}
-
 func (c *Client) exitStatus() control.EgressStatus {
 	exit := c.exit.Load()
 	if exit == nil {
@@ -316,18 +302,12 @@ func (c *Client) borderStatus() *control.BorderStatus {
 		Where:     border.Where(),
 		Inside:    border.Inside(),
 		Overlay:   prefixes,
-		SIDs:      slices.SortedFunc(slices.Values(border.SIDs()), netip.Addr.Compare),
 		Ready:     stats.Ready,
 		Unready:   stats.Unready,
 		PassAt:    stats.At,
 		Installed: stats.Installed,
-		Dropped: control.BorderDrops{
-			OverlaySourceIPv4: stats.Dropped.Source4,
-			OverlaySourceIPv6: stats.Dropped.Source6,
-			RoutingHeader:     stats.Dropped.RoutingHeader,
-			SIDDestination:    stats.Dropped.Destination,
-		},
-		Err: stats.Err,
+		Dropped:   control.BorderDrops{OverlaySourceIPv4: stats.Dropped.Source4, OverlaySourceIPv6: stats.Dropped.Source6},
+		Err:       stats.Err,
 	}
 }
 

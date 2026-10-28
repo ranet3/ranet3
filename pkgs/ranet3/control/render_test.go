@@ -294,8 +294,7 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 }
 
 // the border row follows the egress row, naming where the chain is, what it
-// accepts and what each drop counted, or that it is not installed and why, and
-// the egress line names the border when it holds the egress segments back
+// accepts and what its drops counted, or that it is not installed and why
 func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
@@ -306,11 +305,10 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 			netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
 			netip.MustParsePrefix("3fff:a::/36"), netip.MustParsePrefix("3fff:b::/48"),
 		},
-		SIDs:      []netip.Addr{netip.MustParseAddr("3fff:b:0:306::3")},
 		Ready:     true,
 		PassAt:    time.Date(2026, 10, 19, 9, 14, 2, 0, time.UTC),
-		Installed: 11,
-		Dropped:   BorderDrops{OverlaySourceIPv4: 3, OverlaySourceIPv6: 1, RoutingHeader: 2, SIDDestination: 5},
+		Installed: 8,
+		Dropped:   BorderDrops{OverlaySourceIPv4: 3, OverlaySourceIPv6: 1},
 	}
 	var out strings.Builder
 	RenderStatus(&out, status)
@@ -323,7 +321,6 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	} {
 		out.WriteString(borderLine(border) + "\n")
 	}
-	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Unready: "until the border filter is read back"}) + "\n")
 	golden(t, "status-border.txt", []byte(out.String()))
 }
 

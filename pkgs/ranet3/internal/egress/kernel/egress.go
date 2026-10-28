@@ -56,16 +56,7 @@
 // rather than ip and ip6, holding one filter chain at prerouting and priority
 // raw, before conntrack, so a forged packet creates no connection entry. It
 // accepts whatever arrives on a device inside the mesh, the tun and lo, then
-// drops a source in the mesh's own prefixes, any routing header and this node's
-// own SIDs as destinations, in that order, each drop counted. The routing header
-// rule takes every type, since nf_tables finds only the first routing header of
-// a packet, and one of type 0 or 2 would otherwise hide a type 4 header behind
-// it. From Linux 7.1 the kernel's search for it gives up at the thirteenth
-// extension header, so one behind twelve others passes, and a Linux host from
-// 7.1 it is addressed to with seg6_enabled set still acts on a segment routing
-// header there. That host's receive path drops a packet whose routing header
-// sits further back. Before 7.1 neither search has a limit: the rule finds a
-// routing header anywhere in the chain, and the host acts on one anywhere.
+// drops a source in the mesh's own prefixes, each drop counted.
 //
 // It is a second owner beside Translator, with its own run goroutine, socket
 // and change monitor, and neither writes, replaces or deletes the other's

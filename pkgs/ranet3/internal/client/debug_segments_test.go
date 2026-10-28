@@ -44,9 +44,9 @@ func TestDebugSegmentsReadsTheSegmentsAndSteeringTheMeshHolds(t *testing.T) {
 		t.Errorf("the segments view reads\n%+v\nwant\n%+v", got, want)
 	}
 	c.Mesh.SetSteeringEnabled(false)
-	c.SetBorderReady(false)
+	c.SetEgressReady(false, true, false)
 	if got := c.DebugSegments(); got.Steering.Enabled || got.Segments[1].Egress.Served {
-		t.Errorf("stopped steering and a border holding the SIDs read %+v and %+v", got.Steering, got.Segments[1].Egress)
+		t.Errorf("stopped steering and SIDs the translator does not serve read %+v and %+v", got.Steering, got.Segments[1].Egress)
 	}
 	c.Mesh.SetSegments(nil)
 	c.Mesh.SetSteering(nil)

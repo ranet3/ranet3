@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -47,14 +46,8 @@ type fakeBorder struct {
 	changed chan struct{}
 	// missed stands for notifications the backend lost, nil for none
 	missed chan struct{}
-	// log records each listing, apply and withdrawal in order, beside what record adds
+	// log records each listing, apply and withdrawal in order
 	log []string
-}
-
-func (f *fakeBorder) record(entry string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.log = append(f.log, entry)
 }
 
 func (f *fakeBorder) entries() []string {
@@ -151,14 +144,18 @@ func (f *fakeBorder) setCount(spec string, packets uint64) {
 	f.counts[spec] = packets
 }
 
-// borderRuntime is a filter's runtime over the mesh tun and lo, whose
-// readiness goes into be's log between its listings and applies
-func borderRuntime(be *fakeBorder, bus *events.Bus, sids ...string) egress.BorderRuntime {
-	rt := egress.BorderRuntime{Inside: []string{"ranet0", "lo"}, Events: bus, Ready: func(ok bool) { be.record(fmt.Sprintf("ready %v", ok)) }}
-	for _, sid := range sids {
-		rt.SIDs = append(rt.SIDs, netip.MustParseAddr(sid))
+// borderRuntime is a filter's runtime over the mesh tun and lo, recording on bus
+func borderRuntime(bus *events.Bus) egress.BorderRuntime {
+	return egress.BorderRuntime{Inside: []string{"ranet0", "lo"}, Events: bus}
+}
+
+// readyMoves is each move of the filter's readiness bus recorded, in order
+func readyMoves(bus *events.Bus) []string {
+	var out []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.ready" }, 0) {
+		out = append(out, event.Attrs["ready"])
 	}
-	return rt
+	return out
 }
 
 // overlay is a valid overlay list of both families
@@ -200,11 +197,11 @@ func waitForPass(t *testing.T, bus *events.Bus, trigger string) {
 }
 
 // The chain takes everything arriving on a device inside the mesh before it
-// drops anything, then drops by source, by routing header and by SID in that
-// order, each list in one order whatever order it was written in
+// drops anything, then drops by source, the list in one order whatever order
+// it was written in
 func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 	be := &fakeBorder{}
-	rt := borderRuntime(be, nil, "3fff:a::2", "3fff:a::1")
+	rt := borderRuntime(nil)
 	rt.Inside = []string{"ranet0", "lo", "dummy0"}
 	f, err := startBorderFilter(overlay(t, "3fff::/20", "198.18.0.0/15", "192.0.2.0/24"), rt, be)
 	if err != nil {
@@ -217,9 +214,6 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 		"drop ipv4 source 192.0.2.0/24",
 		"drop ipv4 source 198.18.0.0/15",
 		"drop ipv6 source 3fff::/20",
-		"drop ipv6 routing header",
-		"drop ipv6 destination 3fff:a::1",
-		"drop ipv6 destination 3fff:a::2",
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
@@ -230,45 +224,34 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 }
 
 // Validation runs in this package, so an overlay list sent by a control plane
-// is judged by the rules a written one is, and the SIDs a reload hands the
-// filter by the rules the first pass judged
+// is judged by the rules a written one is
 func TestBorderRefusesWhatWouldNotFilter(t *testing.T) {
 	for _, one := range []struct {
 		name string
 		cfg  egress.Border
-		sids []string
 		want string
 	}{
-		{"an empty overlay", egress.Border{}, nil, "overlay is empty, so the filter would pass every forged mesh source"},
-		{"an entry that is not a prefix", egress.Border{Overlay: []schema.Prefix{{}}}, nil, "is not a prefix"},
-		{"bits below the length", egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.1/15")}}, nil, "has bits set below its prefix length"},
-		{"an IPv4 prefix written as IPv6", overlay(t, "::ffff:198.18.0.0/111"), nil, "written as IPv6, so write it as 198.18.0.0/15"},
-		{"every IPv4 address", overlay(t, "0.0.0.0/0"), nil, "covers every address of its family"},
-		{"every IPv6 address", overlay(t, "::/0"), nil, "covers every address of its family"},
-		{"an IPv4 prefix under the floor", overlay(t, "8.0.0.0/7"), nil, "is shorter than /8 for IPv4 or /12 for IPv6"},
-		{"an IPv6 prefix under the floor", overlay(t, "2000::/11"), nil, "is shorter than /8 for IPv4 or /12 for IPv6"},
-		{"an entry written twice", overlay(t, "198.18.0.0/15", "3fff::/20", "198.18.0.0/15"), nil, "198.18.0.0/15 is written twice"},
-		{"an IPv4 SID", overlay(t), []string{"192.0.2.1"}, "192.0.2.1 is not one"},
-		{"a SID written as IPv4 in IPv6", overlay(t), []string{"::ffff:192.0.2.1"}, "::ffff:192.0.2.1 is not one"},
-		{"a SID with a zone", overlay(t), []string{"fe80::1%eth0"}, "fe80::1%eth0 is not one"},
+		{"an empty overlay", egress.Border{}, "overlay is empty, so the filter would pass every forged mesh source"},
+		{"an entry that is not a prefix", egress.Border{Overlay: []schema.Prefix{{}}}, "is not a prefix"},
+		{"bits below the length", egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.1/15")}}, "has bits set below its prefix length"},
+		{"an IPv4 prefix written as IPv6", overlay(t, "::ffff:198.18.0.0/111"), "written as IPv6, so write it as 198.18.0.0/15"},
+		{"every IPv4 address", overlay(t, "0.0.0.0/0"), "covers every address of its family"},
+		{"every IPv6 address", overlay(t, "::/0"), "covers every address of its family"},
+		{"an IPv4 prefix under the floor", overlay(t, "8.0.0.0/7"), "is shorter than /8 for IPv4 or /12 for IPv6"},
+		{"an IPv6 prefix under the floor", overlay(t, "2000::/11"), "is shorter than /8 for IPv4 or /12 for IPv6"},
+		{"an entry written twice", overlay(t, "198.18.0.0/15", "3fff::/20", "198.18.0.0/15"), "198.18.0.0/15 is written twice"},
 	} {
 		t.Run(one.name, func(t *testing.T) {
-			var sids []netip.Addr
-			for _, sid := range one.sids {
-				sids = append(sids, netip.MustParseAddr(sid))
-			}
-			f := newBorderFilter(overlay(t), borderRuntime(&fakeBorder{}, nil), &fakeBorder{})
-			err := f.SetConfig(one.cfg, sids)
+			f := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{})
+			err := f.SetConfig(one.cfg)
 			if err == nil || !strings.Contains(err.Error(), one.want) {
 				t.Fatalf("refused with %v, want a message containing %q", err, one.want)
 			}
-			if got := f.Capability(); len(got.Overlay) != 2 || len(f.SIDs()) != 0 {
-				t.Errorf("a refused reload left the filter at %v and %v, want the overlay it ran", got, f.SIDs())
+			if got := f.Capability(); len(got.Overlay) != 2 {
+				t.Errorf("a refused reload left the filter at %v, want the overlay it ran", got)
 			}
-			if one.sids == nil {
-				if err := one.cfg.Validate(); err == nil || !strings.Contains(err.Error(), one.want) {
-					t.Errorf("Validate refused with %v, want a message containing %q", err, one.want)
-				}
+			if err := one.cfg.Validate(); err == nil || !strings.Contains(err.Error(), one.want) {
+				t.Errorf("Validate refused with %v, want a message containing %q", err, one.want)
 			}
 		})
 	}
@@ -300,7 +283,8 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chain reads back other than it was written"},
 	} {
 		t.Run(one.name, func(t *testing.T) {
-			f, err := startBorderFilter(overlay(t), borderRuntime(one.be, nil), one.be)
+			bus := events.New()
+			f, err := startBorderFilter(overlay(t), borderRuntime(bus), one.be)
 			if err == nil || !strings.Contains(err.Error(), one.want) {
 				t.Fatalf("the start returned %v, want a refusal containing %q", err, one.want)
 			}
@@ -310,17 +294,18 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 			if one.be.withdrawn != 1 {
 				t.Errorf("the refused start withdrew %d times, want once", one.be.withdrawn)
 			}
-			if slices.Contains(one.be.entries(), "ready true") {
-				t.Errorf("the refused start reported the border ready: %q", one.be.entries())
+			if moves := readyMoves(bus); slices.Contains(moves, "true") {
+				t.Errorf("the refused start reported the border ready: %q", moves)
 			}
 		})
 	}
+	bus := events.New()
 	be := &fakeBorder{}
-	if _, err := startBorderFilter(overlay(t), borderRuntime(be, nil), be); err != nil {
+	if _, err := startBorderFilter(overlay(t), borderRuntime(bus), be); err != nil {
 		t.Fatal(err)
 	}
-	if got := be.entries(); !slices.Equal(got, []string{"rules", "apply", "rules", "ready true"}) {
-		t.Errorf("the start went %q, want a pass that installs and reads back, then ready", got)
+	if got, moves := be.entries(), readyMoves(bus); !slices.Equal(got, []string{"rules", "apply", "rules"}) || !slices.Equal(moves, []string{"true"}) {
+		t.Errorf("the start went %q with readiness moving %q, want a pass that installs and reads back, then ready", got, moves)
 	}
 }
 
@@ -329,7 +314,7 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 	bus := events.New()
 	be := &fakeBorder{}
-	f := newBorderFilter(overlay(t), borderRuntime(be, bus), be)
+	f := newBorderFilter(overlay(t), borderRuntime(bus), be)
 	f.trigger = "sweep"
 	f.reconcile()
 	f.reconcile()
@@ -343,7 +328,7 @@ func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 		}
 		got = append(got, []string{event.Attrs["installed"], event.Attrs["err"]})
 	}
-	if want := [][]string{{"5", ""}, {"0", "install rules: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
+	if want := [][]string{{"4", ""}, {"0", "install rules: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
 		t.Errorf("the border filter recorded %q, want %q", got, want)
 	}
 }
@@ -355,15 +340,13 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
 	bus := events.New()
 	be := &fakeBorder{}
-	f := newBorderFilter(overlay(t), borderRuntime(be, bus, "3fff:a::1"), be)
+	f := newBorderFilter(overlay(t), borderRuntime(bus), be)
 	f.reconcile()
 	be.setCount("drop ipv4 source 198.18.0.0/15", 3)
-	be.setCount("drop ipv6 routing header", 1)
 	f.reconcile()
 	f.reconcile()
 	be.setCount("drop ipv4 source 198.18.0.0/15", 5)
 	be.setCount("drop ipv6 source 3fff::/20", 2)
-	be.setCount("drop ipv6 destination 3fff:a::1", 7)
 	// another writer flushed the chain, so this pass lists, rewrites and reads back
 	be.mu.Lock()
 	be.held = nil
@@ -371,15 +354,15 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	f.reconcile()
 	var got []string
 	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.dropped" }, 0) {
-		got = append(got, fmt.Sprintf("%s %s %s %s", event.Attrs["overlay_source_ipv4"], event.Attrs["overlay_source_ipv6"], event.Attrs["routing_header"], event.Attrs["sid_destination"]))
+		got = append(got, fmt.Sprintf("%s %s", event.Attrs["overlay_source_ipv4"], event.Attrs["overlay_source_ipv6"]))
 	}
-	if want := []string{"3 0 1 0", "2 2 0 7"}; !slices.Equal(got, want) {
+	if want := []string{"3 0", "2 2"}; !slices.Equal(got, want) {
 		t.Errorf("recorded border.dropped %q, want %q", got, want)
 	}
 	if n := strings.Count(lines.String(), "border filter dropped packets"); n != 2 {
 		t.Errorf("logged the drops %d times, want twice:\n%s", n, lines.String())
 	}
-	if want := (egress.BorderDrops{Source4: 5, Source6: 2, RoutingHeader: 1, Destination: 7}); f.Stats().Dropped != want {
+	if want := (egress.BorderDrops{Source4: 5, Source6: 2}); f.Stats().Dropped != want {
 		t.Errorf("the last pass reports %+v dropped, want %+v", f.Stats().Dropped, want)
 	}
 }
@@ -387,9 +370,9 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 // A counter below its last reading is a chain rewritten in between, which
 // starts its counters from zero, so what it reads is all new
 func TestBorderDropsAfterARewriteCountFromZero(t *testing.T) {
-	was := egress.BorderDrops{Source4: 10, RoutingHeader: 4}
-	now := egress.BorderDrops{Source4: 2, RoutingHeader: 6}
-	if got, want := dropsSince(now, was), (egress.BorderDrops{Source4: 2, RoutingHeader: 2}); got != want {
+	was := egress.BorderDrops{Source4: 10, Source6: 4}
+	now := egress.BorderDrops{Source4: 2, Source6: 6}
+	if got, want := dropsSince(now, was), (egress.BorderDrops{Source4: 2, Source6: 2}); got != want {
 		t.Errorf("read %+v since %+v as %+v, want %+v", now, was, got, want)
 	}
 }
@@ -400,7 +383,7 @@ func TestBorderDropsAfterARewriteCountFromZero(t *testing.T) {
 func TestAnotherWritersChangeTakesTheBorderDownUntilThePassRestoresIt(t *testing.T) {
 	bus := events.New()
 	be := &fakeBorder{changed: make(chan struct{}, 1)}
-	f, err := startBorderFilter(overlay(t), borderRuntime(be, bus), be)
+	f, err := startBorderFilter(overlay(t), borderRuntime(bus), be)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,8 +395,11 @@ func TestAnotherWritersChangeTakesTheBorderDownUntilThePassRestoresIt(t *testing
 	mark := len(be.entries())
 	be.changed <- struct{}{}
 	waitForPass(t, bus, "changed")
-	if got, want := be.entries()[mark:], []string{"ready false", "rules", "apply", "rules", "ready true"}; !slices.Equal(got, want) {
+	if got, want := be.entries()[mark:], []string{"rules", "apply", "rules"}; !slices.Equal(got, want) {
 		t.Errorf("after the change the border filter went %q, want %q", got, want)
+	}
+	if got, want := readyMoves(bus), []string{"true", "false", "true"}; !slices.Equal(got, want) {
+		t.Errorf("the border's readiness moved %q, want %q", got, want)
 	}
 }
 
@@ -425,7 +411,7 @@ func TestAnotherWritersChangeTakesTheBorderDownUntilThePassRestoresIt(t *testing
 // put back leaves the filter not ready, naming it.
 func TestBorderRewritesWhatReadsBackOtherThanWritten(t *testing.T) {
 	be := &fakeBorder{}
-	f, err := startBorderFilter(overlay(t), borderRuntime(be, nil), be)
+	f, err := startBorderFilter(overlay(t), borderRuntime(nil), be)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +456,7 @@ func TestBorderRewritesWhatReadsBackOtherThanWritten(t *testing.T) {
 func TestMissedNotificationsWakeTheBorderAndLeaveItReady(t *testing.T) {
 	bus := events.New()
 	be := &fakeBorder{missed: make(chan struct{}, 1)}
-	f, err := startBorderFilter(overlay(t), borderRuntime(be, bus), be)
+	f, err := startBorderFilter(overlay(t), borderRuntime(bus), be)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,22 +473,22 @@ func TestMissedNotificationsWakeTheBorderAndLeaveItReady(t *testing.T) {
 	}
 }
 
-// A reload hands the filter a new overlay and new SIDs, and the run
-// goroutine rewrites the chain at once rather than at the next sweep
+// A reload hands the filter a new overlay, and the run goroutine rewrites the
+// chain at once rather than at the next sweep
 func TestBorderReloadRewritesTheChainInPlace(t *testing.T) {
 	bus := events.New()
 	be := &fakeBorder{}
-	f, err := startBorderFilter(overlay(t), borderRuntime(be, bus), be)
+	f, err := startBorderFilter(overlay(t), borderRuntime(bus), be)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.sweep = lateSweep
 	runBorder(t, f)
-	if err := f.SetConfig(overlay(t, "192.0.2.0/24"), []netip.Addr{netip.MustParseAddr("3fff:a::1")}); err != nil {
+	if err := f.SetConfig(overlay(t, "192.0.2.0/24")); err != nil {
 		t.Fatal(err)
 	}
 	waitForPass(t, bus, "reload")
-	want := []string{"accept via ranet0", "accept via lo", "drop ipv4 source 192.0.2.0/24", "drop ipv6 routing header", "drop ipv6 destination 3fff:a::1"}
+	want := []string{"accept via ranet0", "accept via lo", "drop ipv4 source 192.0.2.0/24"}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("after the reload the chain holds %q, want %q", got, want)
 	}
@@ -512,7 +498,7 @@ func TestBorderReloadRewritesTheChainInPlace(t *testing.T) {
 func TestBorderRetriesAFailedPass(t *testing.T) {
 	bus := events.New()
 	be := &fakeBorder{changed: make(chan struct{}, 1)}
-	f, err := startBorderFilter(overlay(t), borderRuntime(be, bus), be)
+	f, err := startBorderFilter(overlay(t), borderRuntime(bus), be)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -554,13 +540,13 @@ func TestRetryBacksOffUpToTheSweepAndStartsOverAfterAPass(t *testing.T) {
 	}
 }
 
-// A filter that stops reports the border not ready before its table goes,
-// so the egress segments stop before a forged source can pass, and Run
-// returns the withdrawal's error
-func TestBorderStopsNotReadyBeforeItWithdraws(t *testing.T) {
+// A filter that stops reports the border not ready and withdraws its table,
+// and Run returns the withdrawal's error
+func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {
 	for _, failing := range []bool{false, true} {
+		bus := events.New()
 		be := &fakeBorder{}
-		f, err := startBorderFilter(overlay(t), borderRuntime(be, nil), be)
+		f, err := startBorderFilter(overlay(t), borderRuntime(bus), be)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -572,8 +558,11 @@ func TestBorderStopsNotReadyBeforeItWithdraws(t *testing.T) {
 			t.Errorf("a withdrawal failing %v stopped with %v", failing, err)
 		}
 		entries := be.entries()
-		if got := entries[len(entries)-2:]; !slices.Equal(got, []string{"ready false", "withdraw"}) {
-			t.Errorf("the border filter stopped by %q, want not ready and then the withdrawal", got)
+		if got := entries[len(entries)-1]; got != "withdraw" {
+			t.Errorf("the border filter stopped by %q, want the withdrawal", got)
+		}
+		if got, want := readyMoves(bus), []string{"true", "false"}; !slices.Equal(got, want) {
+			t.Errorf("the border's readiness moved %q, want %q", got, want)
 		}
 	}
 }
@@ -583,7 +572,7 @@ func TestBorderStopsNotReadyBeforeItWithdraws(t *testing.T) {
 // held that the configuration does not ask for
 func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	be := &fakeBorder{}
-	f, err := startBorderFilter(overlay(t), borderRuntime(be, nil), be)
+	f, err := startBorderFilter(overlay(t), borderRuntime(nil), be)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +595,6 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 		"accept via lo|accept|inside||false|0",
 		"drop ipv4 source 198.18.0.0/15|drop|overlay_source|ipv4|true|12",
 		"drop ipv6 source 3fff::/20|drop|overlay_source|ipv6|true|0",
-		"drop ipv6 routing header|drop|routing_header|ipv6|true|0",
 		"drop ipv4 source 192.0.2.0/24|drop|||true|0",
 		"a rule with no comment||||true|3",
 	}

@@ -423,21 +423,15 @@ func reloadable(old, next *config.Config) error {
 	return sameMeshSources(old, next)
 }
 
-// reborder hands the running border filter the overlay and the SIDs next
-// carries, where either moved. The loader ran every check SetConfig runs, so
-// after retable it adds no refusal a file can reach.
+// reborder hands the running border filter the overlay next carries, where it
+// moved. The loader ran every check SetConfig runs, so after retable it adds no
+// refusal a file can reach.
 func (c *Client) reborder(old, next *config.Config) error {
 	f := c.border.Load()
-	if f == nil || next.Cap.Border == nil || sameBorder(old, next) {
+	if f == nil || next.Cap.Border == nil || sameOverlay(old, next) {
 		return nil
 	}
-	return (*f).SetConfig(*next.Cap.Border, borderSIDs(next))
-}
-
-// sameBorder compares cap.border as the filter runs it, with the SIDs it drops,
-// so a list written in another order is no change
-func sameBorder(old, next *config.Config) bool {
-	return sameOverlay(old, next) && slices.Equal(sortedAddrs(borderSIDs(old)), sortedAddrs(borderSIDs(next)))
+	return (*f).SetConfig(*next.Cap.Border)
 }
 
 // sameOverlay compares cap.border's overlay as the filter runs it, in any order
@@ -446,10 +440,6 @@ func sameOverlay(old, next *config.Config) bool {
 		return slices.SortedFunc(slices.Values(cfg.Overlay()), schema.ComparePrefix)
 	}
 	return slices.Equal(sorted(old), sorted(next))
-}
-
-func sortedAddrs(addrs []netip.Addr) []netip.Addr {
-	return slices.SortedFunc(slices.Values(addrs), netip.Addr.Compare)
 }
 
 // sameMeshSources refuses a reload that moves a mesh source of a family cap.egress translates, which the translator read once, at startup
@@ -585,9 +575,8 @@ func sortedPrefixes(prefixes []netip.Prefix) []netip.Prefix {
 // announced is every prefix this node is putting into the mesh right now: the
 // ones cap.route asks for unconditionally, plus the ones cap.egress is
 // currently willing to stand behind, plus the /128 of each egress SID while
-// the translator's last word says the SIDs are served and, under cap.border,
-// the border filter's chain reads back. The second and third sets are read
-// from what the translator and the filter last reported on every call rather
+// the translator's last word says the SIDs are served. The second and third
+// sets are read from what the translator last reported on every call rather
 // than from the file, because an exit withholds a prefix whose chain does not
 // read back as written and that answer changes under a running node.
 // advertised is the second set, as the caller's one read of egressAdvertised gives it
@@ -596,7 +585,7 @@ func (c *Client) announced(cfg *config.Config, advertised []netip.Prefix) []babe
 	for _, prefix := range advertised {
 		routes = append(routes, babel.OriginatedRoute{Destination: prefix})
 	}
-	if !c.servesEgressSIDs() {
+	if !c.egressServes.Load() {
 		return routes
 	}
 	for _, segment := range cfg.Segments().Egress() {
@@ -604,11 +593,6 @@ func (c *Client) announced(cfg *config.Config, advertised []netip.Prefix) []babe
 	}
 	return routes
 }
-
-// servesEgressSIDs is whether the egress SIDs' /128s are announced: while the
-// translator's last word says they are served and the border filter does not
-// hold them back
-func (c *Client) servesEgressSIDs() bool { return c.egressServes.Load() && !c.borderHeld.Load() }
 
 // egressAdvertised is the prefixes the exit may advertise now, and none on a
 // node with no exit. See announced.

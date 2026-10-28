@@ -32,7 +32,7 @@ func (c *Client) DebugSegments() control.SegmentsInfo {
 // segmentEgress is an egress segment's part of the exit now: whether the
 // egress SIDs are served, and the families the mesh hands to the exit
 func (c *Client) segmentEgress() control.SegmentEgress {
-	return control.SegmentEgress{Served: c.servesEgressSIDs(), Ready: readyFamilies(c.Mesh.EgressReady())}
+	return control.SegmentEgress{Served: c.egressServes.Load(), Ready: readyFamilies(c.Mesh.EgressReady())}
 }
 
 // localSegment is segment on the wire, with egress where it delivers to the

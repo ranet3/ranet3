@@ -29,8 +29,7 @@ type EgressSource interface {
 // absent for an exit whose backend holds no rules in the host's packet filter
 type EgressInfo struct {
 	Enabled bool `json:"enabled"`
-	// Status is the exit's own report, as ranet3 status gives it but for the
-	// border filter's hold on the egress segments, which this view leaves out
+	// Status is the exit's own report, as ranet3 status gives it
 	Status EgressStatus `json:"status,omitzero"`
 	// Rules is each rule the exit asks for in order, then each its chains hold
 	// that it does not ask for, and ReadErr why they could not be read now

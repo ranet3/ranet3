@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -45,8 +46,8 @@ func TestBorderRoundTrip(t *testing.T) {
 		t.Fatalf("the namespace already holds an inet table named %s", TableName)
 	}
 
-	fake := &fakeBorder{}
-	rt := borderRuntime(fake, nil, "3fff:a::1")
+	bus := events.New()
+	rt := borderRuntime(bus)
 	rt.Inside = []string{"ranet3", "lo"}
 	f, err := startBorderFilter(overlay(t, "198.18.0.0/15", "3fff::/20"), rt, be)
 	if err != nil {
@@ -115,8 +116,6 @@ func TestBorderRoundTrip(t *testing.T) {
 			`iifname "lo" accept comment "accept via lo"`,
 			`ip saddr 198.18.0.0/15 counter packets 0 bytes 0 drop comment "drop ipv4 source 198.18.0.0/15"`,
 			`ip6 saddr 3fff::/20 counter packets 0 bytes 0 drop comment "drop ipv6 source 3fff::/20"`,
-			`exthdr rt exists counter packets 0 bytes 0 drop comment "drop ipv6 routing header"`,
-			`ip6 daddr 3fff:a::1 counter packets 0 bytes 0 drop comment "drop ipv6 destination 3fff:a::1"`,
 		} {
 			if !strings.Contains(listing, want) {
 				t.Errorf("nft does not read %s in:\n%s", want, listing)
@@ -142,17 +141,17 @@ func TestBorderRoundTrip(t *testing.T) {
 		{"inserted an accept at the head of the chain", anotherWritersAccept(unix.NFPROTO_INET, BorderChain)},
 		{"set the table dormant", dormantTable(unix.NFPROTO_INET)},
 	} {
-		mark := len(fake.entries())
+		mark := len(readyMoves(bus))
 		if err := another.Batch([]nftables.Request{change.request}); err != nil {
 			t.Fatalf("another writer %s: %v", change.name, err)
 		}
 		for deadline := time.Now().Add(notificationWait); ; time.Sleep(passPoll) {
-			moved := fake.entries()[mark:]
-			if len(moved) >= 2 && moved[0] == "ready false" && moved[len(moved)-1] == "ready true" {
+			moved := readyMoves(bus)[mark:]
+			if len(moved) >= 2 && moved[0] == "false" && moved[len(moved)-1] == "true" {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("after another writer %s the filter went %q, want not ready and then ready", change.name, fake.entries()[mark:])
+				t.Fatalf("after another writer %s the filter's readiness moved %q, want not ready and then ready", change.name, moved)
 			}
 		}
 		if read, err := be.Rules(); err != nil || read.fault != "" || !sameBorderRules(read.rules, desired) {
@@ -228,8 +227,7 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the border backend: %v", err)
 	}
-	fake := &fakeBorder{}
-	rt := borderRuntime(fake, nil, "3fff:a::1")
+	rt := borderRuntime(nil)
 	rt.Inside = []string{"ranet3", "lo"}
 	f, err := startBorderFilter(overlay(t, "198.18.0.0/15", "3fff::/20"), rt, be)
 	if err != nil {

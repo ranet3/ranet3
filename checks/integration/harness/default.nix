@@ -1437,9 +1437,10 @@ testers.runNixOSTest {
             for want in ['ranet3_egress_ready{family="ipv4"} 1', 'ranet3_egress_ready{family="ipv6"} 1', "ranet3_border_ready 1"]:
                 assert want in metrics, f"the scrape does not carry {want}:\n{metrics}"
 
-            # behind is on the client's link and outside the mesh, so a mesh source, a type 4 routing
-            # header and the client's own SID arriving from it are dropped at the client's border:
-            # each is counted, none reaches the gateway, and nothing is egressed or refused
+            # behind is on the client's link and outside the mesh, so a mesh source arriving from it is
+            # dropped at the client's border and counted there, and none of it, a type 4 routing header
+            # or a packet to the client's own SID among it, reaches the gateway, and nothing is egressed
+            # or refused
             behind.succeed(
                 "ip -6 addr add ${borderForged6}/128 dev eth1 nodad",
                 "ip addr add ${borderForged4}/32 dev eth1",
@@ -1462,15 +1463,15 @@ testers.runNixOSTest {
             behind.succeed("ip -6 route add ${gatewayTunnel}/128 encap seg6 mode encap segs ${borderSegment} via ${exitV6} dev eth1")
             behind.fail("ping -c 3 -i 0.3 -W 1 -I ${behindV6} ${gatewayTunnel}")
             # the counters reach the scrape at the border's next pass, one sweep at most
-            for reason, family in [("overlay_source", "ipv6"), ("overlay_source", "ipv4"), ("sid_destination", "ipv6"), ("routing_header", "ipv6")]:
-                series = 'ranet3_border_dropped_packets_total{reason="' + reason + '",family="' + family + '"}'
+            for family in ["ipv6", "ipv4"]:
+                series = 'ranet3_border_dropped_packets_total{reason="overlay_source",family="' + family + '"}'
                 client.wait_until_succeeds(
                     "curl -sf http://127.0.0.1:9669/metrics | awk -v want='" + series + "' '$1 == want && $2 >= 3 { found = 1 } END { exit !found }'",
                     timeout=dt.timedelta(seconds=90))
             gateway.succeed("pkill -x tcpdump")
             gateway.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
             capture = gateway.succeed("tcpdump -nr /tmp/border.pcap 2>/dev/null").strip()
-            assert capture == "", f"a packet the border drops reached the gateway:\n{capture}"
+            assert capture == "", f"a packet behind sent across the client's border reached the gateway:\n{capture}"
             after = counters()
             assert after["egressed"] == before["egressed"] and after["refused"] == before["refused"], f"a dropped packet reached the egress segment: {before} then {after}"
             print(client.succeed("ranet3 debug rules"))

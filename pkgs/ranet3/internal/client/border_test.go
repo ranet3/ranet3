@@ -19,7 +19,6 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
-	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -28,24 +27,25 @@ import (
 )
 
 // borderRecord is the border filter as the node drives one, recording each
-// overlay and SID list a reload hands it
+// overlay a reload hands it
 type borderRecord struct {
 	mu      sync.Mutex
 	border  egress.Border
-	sids    []netip.Addr
 	handed  int
 	refusal error
 	debug   egress.BorderDebug
+	// missing is a chain another writer took, which the filter reads not ready
+	missing bool
 }
 
-func (b *borderRecord) SetConfig(cfg egress.Border, sids []netip.Addr) error {
+func (b *borderRecord) SetConfig(cfg egress.Border) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.handed++
 	if b.refusal != nil {
 		return b.refusal
 	}
-	b.border, b.sids = cfg, slices.Clone(sids)
+	b.border = cfg
 	return nil
 }
 
@@ -53,12 +53,6 @@ func (b *borderRecord) Capability() egress.Border {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.border
-}
-
-func (b *borderRecord) SIDs() []netip.Addr {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return slices.Clone(b.sids)
 }
 
 func (b *borderRecord) calls() int {
@@ -71,8 +65,11 @@ func (*borderRecord) Inside() []string { return []string{"ranet3", "lo"} }
 
 func (*borderRecord) Where() string { return "nftables table inet ranet3 chain border" }
 
-func (*borderRecord) Stats() egress.BorderStats {
-	return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 7, Dropped: egress.BorderDrops{Source4: 3, RoutingHeader: 1}}
+func (b *borderRecord) Stats() egress.BorderStats {
+	if b.missing {
+		return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Unready: "another writer changed its table"}
+	}
+	return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 7, Dropped: egress.BorderDrops{Source4: 3, Source6: 1}}
 }
 
 func (b *borderRecord) Debug() egress.BorderDebug { return b.debug }
@@ -86,131 +83,67 @@ func borderOf(prefixes ...string) *egress.Border {
 	return border
 }
 
-// an exit whose border's chain is not read back withdraws its SID and reads
-// neither family ready, whatever the translator holds, the status saying why,
-// and both come back with the chain
-func TestEgressStopsWhileTheBorderIsNotReady(t *testing.T) {
+// an exit's egress follows the translator alone: with the border's chain
+// missing, its SID stays originated, both families ready and the status
+// carries the translator's word, while the border's status says the chain is
+// not ready
+func TestEgressFollowsTheTranslatorWhileTheBordersChainIsMissing(t *testing.T) {
 	const sid = "3fff:b:0:106::3"
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
+	c.SetBorder(&borderRecord{missing: true})
 	c.SetExit(&fakeExit{status: egress.Status{Ready4: true, Ready6: true}})
-	c.SetEgressReady(true, true, true)
-	for _, ready := range []bool{false, true, false, true} {
-		c.SetBorderReady(ready)
-		if got := sidOriginated(c, sid); got != ready {
-			t.Errorf("with the border ready %v the SID's /128 is originated %v", ready, got)
+	for _, serves := range []bool{true, false, true} {
+		c.SetEgressReady(true, true, serves)
+		if got := sidOriginated(c, sid); got != serves {
+			t.Errorf("with the translator serving %v and the border's chain missing the SID's /128 is originated %v", serves, got)
 		}
-		status := c.egress()
-		if ready && (len(status.Ready) != 2 || status.Unready != "") {
-			t.Errorf("with the border ready the egress status reads ready %v, unready %q", status.Ready, status.Unready)
-		}
-		if !ready && (len(status.Ready) != 0 || status.Unready != "until the border filter is read back") {
-			t.Errorf("with the border not ready the egress status reads ready %v, unready %q, want neither family and the border named", status.Ready, status.Unready)
-		}
+	}
+	if status := c.exitStatus(); len(status.Ready) != 2 || status.Unready != "" {
+		t.Errorf("with the border's chain missing the egress status reads ready %v, unready %q, want the translator's word alone", status.Ready, status.Unready)
+	}
+	if status := c.borderStatus(); status == nil || status.Ready || status.Unready == "" {
+		t.Errorf("the border's status reads %+v, want not ready and why", status)
 	}
 }
 
-// a node writing cap.border starts with the border not ready, so a translator
-// serving the SIDs before the filter's first pass originates none
-func TestEgressWaitsForTheBordersFirstPass(t *testing.T) {
-	const sid = "3fff:b:0:106::3"
-	cfg, privateKey, reg := runtimeFixture(t)
-	cfg.Link.Port = freeUDPPort(t)
-	egressNode(cfg, egressSegment(sid, "3fff:a::/32"))
-	c, err := newClient(cfg, privateKey, trust(t, reg), netstack.NewRoutesOnly(), nil, events.New())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { c.Close() })
-	c.SetEgressReady(true, true, true)
-	if sidOriginated(c, sid) {
-		t.Error("before the border's first pass the SID's /128 is originated")
-	}
-	c.SetBorderReady(true)
-	if !sidOriginated(c, sid) {
-		t.Error("after the border's first pass the SID's /128 is not originated")
-	}
-}
-
-// A republish that read the SID's two conditions before one of them fell ends
-// before the republish of the fall, so the SID's /128 ends withdrawn: the
-// border going down while the translator's republish is held, and the
-// translator withdrawing while the border's is held
+// A republish that read the SID standing before the translator withdrew it
+// ends before the republish of the withdrawal, so the SID's /128 ends
+// withdrawn
 func TestRepublishRacingAFallLeavesTheSIDWithdrawn(t *testing.T) {
 	const sid = "3fff:b:0:106::3"
-	for _, arm := range []struct {
-		name         string
-		held, racing func(c *Client)
-		stored       func(c *Client) bool
-	}{
-		{
-			name:   "the border going down",
-			held:   func(c *Client) { c.SetEgressReady(true, true, true) },
-			racing: func(c *Client) { c.SetBorderReady(false) },
-			stored: func(c *Client) bool { return c.borderHeld.Load() },
-		},
-		{
-			name:   "the translator withdrawing",
-			held:   func(c *Client) { c.SetBorderReady(true) },
-			racing: func(c *Client) { c.SetEgressReady(true, true, false) },
-			stored: func(c *Client) bool { return !c.egressServes.Load() },
-		},
-	} {
-		t.Run(arm.name, func(t *testing.T) {
-			c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
-			segmentsOf(t, c)
-			speakerRecording(t, c, bus)
-			h := holdRepublish(c)
-			c.SetEgressReady(true, true, true)
-			c.SetBorderReady(true)
-			if !sidOriginated(c, sid) {
-				t.Fatal("the SID is not originated with the border and the translator ready")
-			}
+	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
+	segmentsOf(t, c)
+	speakerRecording(t, c, bus)
+	h := holdRepublish(c)
+	c.SetEgressReady(true, true, true)
+	if !sidOriginated(c, sid) {
+		t.Fatal("the SID is not originated with the translator ready")
+	}
 
-			h.armed.Store(true)
-			held := make(chan struct{})
-			go func() { defer close(held); arm.held(c) }()
-			h.wait(t)
-			fell := make(chan struct{})
-			go func() { defer close(fell); arm.racing(c) }()
-			waitFor(t, heldWait, "the fall stored", func() bool { return arm.stored(c) })
-			// a fall whose republish nothing orders runs to its end here
-			select {
-			case <-fell:
-			case <-time.After(unorderedWait):
-			}
-			close(h.release)
-			joined(t, "the held republish", held)
-			joined(t, "the fall", fell)
-			if sidOriginated(c, sid) {
-				t.Errorf("after %s the SID's /128 is originated: the republish that read it standing landed last", arm.name)
-			}
-		})
+	h.armed.Store(true)
+	held := make(chan struct{})
+	go func() { defer close(held); c.SetEgressReady(true, true, true) }()
+	h.wait(t)
+	fell := make(chan struct{})
+	go func() { defer close(fell); c.SetEgressReady(true, true, false) }()
+	waitFor(t, heldWait, "the fall stored", func() bool { return !c.egressServes.Load() })
+	// a fall whose republish nothing orders runs to its end here
+	select {
+	case <-fell:
+	case <-time.After(unorderedWait):
+	}
+	close(h.release)
+	joined(t, "the held republish", held)
+	joined(t, "the fall", fell)
+	if sidOriginated(c, sid) {
+		t.Error("after the translator withdrew the SID's /128 is originated: the republish that read it standing landed last")
 	}
 }
 
-// the translator's own reason stays beside the border's, and a node with no
-// egress segment is not held, since the hold covers the egress segments alone
-func TestEgressStatusKeepsTheTranslatorsReasonBesideTheBorders(t *testing.T) {
-	const reason = "net.ipv4.ip_forward is 0"
-	c := &Client{Mesh: &netstack.Mesh{}}
-	c.cfg.Store(&config.Config{})
-	c.borderHeld.Store(true)
-	c.SetExit(&fakeExit{status: egress.Status{Ready6: true, Unready: reason}})
-	if got := c.egress(); len(got.Ready) != 1 || got.Unready != reason {
-		t.Errorf("a node with no egress segment reads ready %v, unready %q, want the translator's word alone", got.Ready, got.Unready)
-	}
-	cfg := &config.Config{}
-	egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32"))
-	c.cfg.Store(cfg)
-	if got := c.egress().Unready; got != reason+", and until the border filter is read back" {
-		t.Errorf("the egress status reads unready %q", got)
-	}
-}
-
-// a reload changing the overlay or the SIDs hands the running filter both,
-// and one reordering the overlay hands it nothing
+// a reload changing the overlay hands the running filter it, and one
+// reordering the overlay or moving a SID hands it nothing
 func TestReloadMovesTheBorderInPlace(t *testing.T) {
 	const sid, moved = "3fff:b:0:106::3", "3fff:b:0:106::4"
 	c, path, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(sid, "3fff:a::/32")) })
@@ -247,8 +180,8 @@ func TestReloadMovesTheBorderInPlace(t *testing.T) {
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("an egress segment moved to another SID was refused: %v", err)
 	}
-	if got := border.SIDs(); !slices.Equal(got, []netip.Addr{netip.MustParseAddr(moved)}) || border.calls() != 2 {
-		t.Errorf("after the SID moved the filter drops %v after %d lists, want %s alone", got, border.calls(), moved)
+	if border.calls() != 1 {
+		t.Errorf("a SID moved handed the filter %d lists in all, want the grown overlay's alone", border.calls())
 	}
 }
 
@@ -324,16 +257,14 @@ func TestReloadRefusesRemovingTheBorder(t *testing.T) {
 func TestDownKeepsTheBorder(t *testing.T) {
 	c, _, translator := downable(t, t.TempDir())
 	c.SetBorder(&borderRecord{})
-	c.SetBorderReady(true)
 	if _, err := c.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if on, _ := translator.calls(); len(on) == 0 || on[len(on)-1] {
 		t.Fatalf("down left the translator at %v", on)
 	}
-	status := c.Status().Border
-	if held := c.borderHeld.Load(); held || status == nil || !status.Ready {
-		t.Errorf("down left the border not ready %v with status %+v", held, status)
+	if status := c.Status().Border; status == nil || !status.Ready {
+		t.Errorf("down left the border with status %+v", status)
 	}
 	if _, err := c.Up(context.Background()); err != nil {
 		t.Fatal(err)
@@ -414,18 +345,6 @@ func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 	}
 }
 
-// the filter drops the SID of every local segment, whatever its behavior
-func TestBorderDropsEveryLocalSegmentsSID(t *testing.T) {
-	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
-		egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32"), srv6.Segment{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd})
-	})
-	c.Mesh = &netstack.Mesh{Name: "ranet3"}
-	want := []netip.Addr{netip.MustParseAddr("3fff:b:0:106::3"), netip.MustParseAddr("3fff:b:0:106::1")}
-	if got := c.BorderRuntime().SIDs; !slices.Equal(got, want) {
-		t.Errorf("the border drops %v, want %v", got, want)
-	}
-}
-
 // the status carries the filter as it reports itself, and nothing on a node
 // with no cap.border
 func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
@@ -433,15 +352,11 @@ func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
 	if status := c.Status().Border; status != nil {
 		t.Errorf("a node with no border reported %+v", status)
 	}
-	sids := []netip.Addr{netip.MustParseAddr("3fff:b:0:106::3"), netip.MustParseAddr("3fff:b:0:106::1")}
-	c.SetBorder(&borderRecord{border: *borderOf("3fff::/20", "198.18.0.0/15"), sids: sids})
+	c.SetBorder(&borderRecord{border: *borderOf("3fff::/20", "198.18.0.0/15")})
 	status := c.Status().Border
-	want := control.BorderDrops{OverlaySourceIPv4: 3, RoutingHeader: 1}
+	want := control.BorderDrops{OverlaySourceIPv4: 3, OverlaySourceIPv6: 1}
 	if status == nil || !status.Ready || status.Installed != 7 || status.Dropped != want || len(status.Overlay) != 2 || len(status.Inside) != 2 {
 		t.Errorf("the border reported %+v", status)
-	}
-	if status != nil && !slices.Equal(status.SIDs, []netip.Addr{sids[1], sids[0]}) {
-		t.Errorf("the border reported the SIDs %v, want them in order", status.SIDs)
 	}
 }
 
@@ -460,9 +375,7 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 	for _, want := range []string{
 		"ranet3_border_ready 1",
 		`ranet3_border_dropped_packets_total{reason="overlay_source",family="ipv4"} 3`,
-		`ranet3_border_dropped_packets_total{reason="overlay_source",family="ipv6"} 0`,
-		`ranet3_border_dropped_packets_total{reason="routing_header",family="ipv6"} 1`,
-		`ranet3_border_dropped_packets_total{reason="sid_destination",family="ipv6"} 0`,
+		`ranet3_border_dropped_packets_total{reason="overlay_source",family="ipv6"} 1`,
 	} {
 		if !strings.Contains(out.String(), want+"\n") {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
@@ -540,7 +453,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	passed := time.Now().Add(-3 * time.Second)
 	c.SetBorder(&borderRecord{debug: egress.BorderDebug{
 		Where: "nftables table inet ranet3 chain border", Hook: "prerouting", Priority: -300, PassAt: passed, Ready: true,
-		Rules: []egress.BorderReading{{Spec: "drop ipv6 routing header", Verdict: "drop", Reason: "routing_header", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}},
+		Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}},
 	}})
 	for name, dump := range map[string]struct {
 		err  error

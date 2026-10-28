@@ -18,13 +18,10 @@ import (
 )
 
 // borderChain encodes the chain the filter asks for over cfg, the mesh tun
-// ranet3 and lo, and sids
-func borderChain(t *testing.T, cfg egress.Border, sids ...string) ([]BorderRule, []nftables.Request) {
+// ranet3 and lo
+func borderChain(t *testing.T, cfg egress.Border) ([]BorderRule, []nftables.Request) {
 	t.Helper()
 	rt := egress.BorderRuntime{Inside: []string{"ranet3", "lo"}}
-	for _, sid := range sids {
-		rt.SIDs = append(rt.SIDs, netip.MustParseAddr(sid))
-	}
 	desired := newBorderFilter(cfg, rt, &fakeBorder{}).desired()
 	requests, err := borderBatch(desired, false)
 	if err != nil {
@@ -37,14 +34,12 @@ func borderChain(t *testing.T, cfg egress.Border, sids ...string) ([]BorderRule,
 // the inet table of this tool's name and the border chain, and reads back as
 // the spelling it was written under
 func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
-	desired, rules := borderChain(t, overlay(t, "198.18.0.0/15", "3fff::7/128"), "3fff:a::1")
+	desired, rules := borderChain(t, overlay(t, "198.18.0.0/15", "3fff::7/128"))
 	want := [][]string{
 		{"meta", "cmp", "immediate"},
 		{"meta", "cmp", "immediate"},
 		{"meta", "cmp", "payload", "bitwise", "cmp", "counter", "immediate"},
 		// no bitwise: a prefix as long as the address masks nothing
-		{"meta", "cmp", "payload", "cmp", "counter", "immediate"},
-		{"meta", "cmp", "exthdr", "cmp", "counter", "immediate"},
 		{"meta", "cmp", "payload", "cmp", "counter", "immediate"},
 	}
 	if len(rules) != len(want) {
@@ -199,56 +194,6 @@ func TestBorderComparesTheWholeInterfaceName(t *testing.T) {
 		packet := drawnPacket{iif: one.iif, source: netip.MustParseAddr("198.18.0.1"), destination: netip.MustParseAddr("192.0.2.1")}
 		if run := runChain(t, rules, packet.wire()); run.accept != one.accept {
 			t.Errorf("a forged mesh source arriving on %s: accepted %v, want %v", one.iif, run.accept, one.accept)
-		}
-	}
-}
-
-// The routing header rule drops a routing header of any type wherever it sits
-// among a packet's first 12 extension headers, a type 4 header behind one of
-// type 0 or 2 among them, while a packet with none passes, as does one whose
-// routing header sits behind 12 others, where the kernel's search gives up
-// from Linux 7.1
-func TestBorderDropsARoutingHeaderOfAnyTypeWhereverItSits(t *testing.T) {
-	desired, rules := borderChain(t, overlay(t, "198.18.0.0/15"))
-	behind := func(options int, last string) []string { return append(slices.Repeat([]string{"dest"}, options), last) }
-	for _, one := range []struct {
-		headers []string
-		drop    bool
-	}{
-		{[]string{"routing4"}, true},
-		{[]string{"hop", "routing4"}, true},
-		{[]string{"fragment", "routing4"}, true},
-		{[]string{"routing4", "fragment"}, true},
-		{[]string{"routing0"}, true},
-		{[]string{"hop", "routing2"}, true},
-		{[]string{"routing0", "routing4"}, true},
-		{[]string{"routing2", "routing4"}, true},
-		{behind(kernelHeaderSearch-1, "routing4"), true},
-		{behind(kernelHeaderSearch, "routing4"), false},
-		{nil, false},
-		{[]string{"hop", "dest", "fragment"}, false},
-	} {
-		packet := drawnPacket{iif: "eth0", source: netip.MustParseAddr("2001:db8::1"), destination: netip.MustParseAddr("2001:db8::2"), headers: one.headers}
-		run := runChain(t, rules, packet.wire())
-		if run.accept == one.drop {
-			t.Errorf("headers %q: accepted %v, want dropped %v", one.headers, run.accept, one.drop)
-		} else if one.drop && desired[run.rule].Class != BorderRoutingHeader {
-			t.Errorf("headers %q dropped by %s", one.headers, desired[run.rule])
-		}
-	}
-}
-
-// A packet to one of this node's own SIDs from outside the mesh is dropped,
-// and one to an address a bit away from it passes
-func TestBorderDropsThisNodesSIDsAsDestinations(t *testing.T) {
-	desired, rules := borderChain(t, overlay(t, "198.18.0.0/15"), "3fff:a::1")
-	for destination, drop := range map[string]bool{"3fff:a::1": true, "3fff:a::3": false} {
-		packet := drawnPacket{iif: "eth0", source: netip.MustParseAddr("2001:db8::1"), destination: netip.MustParseAddr(destination)}
-		run := runChain(t, rules, packet.wire())
-		if run.accept == drop {
-			t.Errorf("a packet to %s: accepted %v, want dropped %v", destination, run.accept, drop)
-		} else if drop && desired[run.rule].Class != BorderDestination {
-			t.Errorf("a packet to %s dropped by %s", destination, desired[run.rule])
 		}
 	}
 }

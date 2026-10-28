@@ -238,18 +238,9 @@
         "bytes": 0
       },
       {
-        "spec": "drop ipv6 routing header",
+        "spec": "drop ipv6 source 3fff:b::/48",
         "verdict": "drop",
-        "reason": "routing_header",
-        "family": "ipv6",
-        "held": true,
-        "packets": 0,
-        "bytes": 0
-      },
-      {
-        "spec": "drop ipv6 destination 3fff:b:0:306::3",
-        "verdict": "drop",
-        "reason": "sid_destination",
+        "reason": "overlay_source",
         "family": "ipv6",
         "held": false,
         "packets": 0,

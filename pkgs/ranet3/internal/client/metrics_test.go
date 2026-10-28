@@ -300,11 +300,11 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		}
 	}
 
-	// the gauge is the exit's judgment, which the border's hold on the egress segments does not narrow
+	// the gauge is the exit's judgment, which a border whose chain is missing does not narrow
 	cfg := &config.Config{}
 	egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32"))
 	c.cfg.Store(cfg)
-	c.borderHeld.Store(true)
+	c.SetBorder(&borderRecord{missing: true})
 	c.SetExit(&fakeExit{status: egress.Status{Ready6: true}})
 	var ready strings.Builder
 	c.renderEgress(&ready)

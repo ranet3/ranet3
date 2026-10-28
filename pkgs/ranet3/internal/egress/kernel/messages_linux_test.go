@@ -129,7 +129,7 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		write(c.name, requests, err)
 	}
 
-	rt := egress.BorderRuntime{Inside: []string{"ranet3", "lo"}, SIDs: []netip.Addr{netip.MustParseAddr("2001:db8:a::1")}}
+	rt := egress.BorderRuntime{Inside: []string{"ranet3", "lo"}}
 	desired := newBorderFilter(overlay(t, "192.0.2.0/24", "2001:db8:1::7/128"), rt, &fakeBorder{}).desired()
 	requests, err = borderBatch(desired, false)
 	write("border", requests, err)

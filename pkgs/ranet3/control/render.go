@@ -277,9 +277,8 @@ func borderLine(b BorderStatus) string {
 	if len(b.Overlay) == 1 {
 		overlay = "1 overlay prefix"
 	}
-	return fmt.Sprintf("%s, inside %s, %s, %s, dropped %d overlay sources, %d routing headers, %d SID destinations",
-		b.Where, strings.Join(b.Inside, " "), overlay, countOf(len(b.SIDs), "SID"),
-		b.Dropped.OverlaySourceIPv4+b.Dropped.OverlaySourceIPv6, b.Dropped.RoutingHeader, b.Dropped.SIDDestination)
+	return fmt.Sprintf("%s, inside %s, %s, dropped %d overlay sources",
+		b.Where, strings.Join(b.Inside, " "), overlay, b.Dropped.OverlaySourceIPv4+b.Dropped.OverlaySourceIPv6)
 }
 
 func egressReadyText(ready []string, unready string) string {

@@ -114,7 +114,7 @@ func (c *Client) renderBorder(w io.Writer) {
 	if border == nil {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet3_border_ready Whether the border filter's chain reads back as the configuration asks, which every family of the egress segments waits for.\n")
+	fmt.Fprint(w, "# HELP ranet3_border_ready Whether the border filter's chain reads back as the configuration asks.\n")
 	fmt.Fprint(w, "# TYPE ranet3_border_ready gauge\n")
 	fmt.Fprintf(w, "ranet3_border_ready %d\n", boolValue(border.Ready))
 	fmt.Fprint(w, "# HELP ranet3_border_dropped_packets_total Packets arriving from outside the mesh that the border filter dropped, by what they carried, as of its last pass. A rewrite of the chain starts them from zero.\n")
@@ -125,8 +125,6 @@ func (c *Client) renderBorder(w io.Writer) {
 	}{
 		{"overlay_source", "ipv4", border.Dropped.OverlaySourceIPv4},
 		{"overlay_source", "ipv6", border.Dropped.OverlaySourceIPv6},
-		{"routing_header", "ipv6", border.Dropped.RoutingHeader},
-		{"sid_destination", "ipv6", border.Dropped.SIDDestination},
 	} {
 		fmt.Fprintf(w, "ranet3_border_dropped_packets_total{reason=\"%s\",family=\"%s\"} %d\n", row.reason, row.family, row.packets)
 	}
@@ -188,53 +186,52 @@ func (c *Client) renderPathMTU(w io.Writer) {
 // announced below advertised is this node declining to attract traffic it
 // would drop, and no peer can see that from its own end.
 func (c *Client) renderEgress(w io.Writer) {
-	egress := c.egress()
-	if !egress.Enabled {
+	status := c.exitStatus()
+	if !status.Enabled {
 		return
 	}
 	fmt.Fprint(w, "# HELP ranet3_egress_rules_installed Rules the host holds in this node's limit and translation chains as of its last pass.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_rules_installed gauge\n")
-	fmt.Fprintf(w, "ranet3_egress_rules_installed %d\n", egress.Installed)
+	fmt.Fprintf(w, "ranet3_egress_rules_installed %d\n", status.Installed)
 	fmt.Fprint(w, "# HELP ranet3_egress_prefixes Prefixes this node offers to carry, and the ones it is announcing: announcing fewer is this node withholding the prefixes of a family that is not ready, for the reason ranet3 status gives.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_prefixes gauge\n")
-	fmt.Fprintf(w, "ranet3_egress_prefixes{state=\"advertised\"} %d\n", len(egress.Advertise))
-	fmt.Fprintf(w, "ranet3_egress_prefixes{state=\"announced\"} %d\n", len(egress.Announced))
+	fmt.Fprintf(w, "ranet3_egress_prefixes{state=\"advertised\"} %d\n", len(status.Advertise))
+	fmt.Fprintf(w, "ranet3_egress_prefixes{state=\"announced\"} %d\n", len(status.Announced))
 	fmt.Fprint(w, "# HELP ranet3_egress_flows_total Connections the translation rules have rewritten. A nat chain is consulted once per connection, so this counts flows rather than packets.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_flows_total counter\n")
-	fmt.Fprintf(w, "ranet3_egress_flows_total %d\n", egress.Flows)
+	fmt.Fprintf(w, "ranet3_egress_flows_total %d\n", status.Flows)
 	fmt.Fprint(w, "# HELP ranet3_egress_untranslated_flows_total Connections a class of none left under the source they carry, counted once per connection as the flows are.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_untranslated_flows_total counter\n")
-	fmt.Fprintf(w, "ranet3_egress_untranslated_flows_total %d\n", egress.Untranslated)
+	fmt.Fprintf(w, "ranet3_egress_untranslated_flows_total %d\n", status.Untranslated)
 	fmt.Fprint(w, "# HELP ranet3_egress_refused_total Packets refused because their source already held as many flows open through this node as cap.egress flows_per_source lets one source hold, each retry of a refused flow counted, answered host unreachable over IPv4 and administratively prohibited over IPv6.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_refused_total counter\n")
-	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv4\"} %d\n", egress.Refused.IPv4)
-	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv6\"} %d\n", egress.Refused.IPv6)
+	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv4\"} %d\n", status.Refused.IPv4)
+	fmt.Fprintf(w, "ranet3_egress_refused_total{family=\"ipv6\"} %d\n", status.Refused.IPv6)
 	fmt.Fprint(w, "# HELP ranet3_egress_dropped_total Packets out of the mesh, and into it under return, dropped because no flow is tracked for them, which a rule that translates would otherwise send on under their own source.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_dropped_total counter\n")
-	fmt.Fprintf(w, "ranet3_egress_dropped_total{family=\"ipv4\"} %d\n", egress.Dropped.IPv4)
-	fmt.Fprintf(w, "ranet3_egress_dropped_total{family=\"ipv6\"} %d\n", egress.Dropped.IPv6)
+	fmt.Fprintf(w, "ranet3_egress_dropped_total{family=\"ipv4\"} %d\n", status.Dropped.IPv4)
+	fmt.Fprintf(w, "ranet3_egress_dropped_total{family=\"ipv6\"} %d\n", status.Dropped.IPv6)
 	// each left out while the host's connection tracking is unread, as before its module has loaded
-	if egress.ConntrackCount != nil {
+	if status.ConntrackCount != nil {
 		fmt.Fprint(w, "# HELP ranet3_egress_conntrack_entries Entries the host's connection tracking table holds, which each source's share of the flows comes out of.\n")
 		fmt.Fprint(w, "# TYPE ranet3_egress_conntrack_entries gauge\n")
-		fmt.Fprintf(w, "ranet3_egress_conntrack_entries %d\n", *egress.ConntrackCount)
+		fmt.Fprintf(w, "ranet3_egress_conntrack_entries %d\n", *status.ConntrackCount)
 	}
-	if egress.ConntrackMax != nil {
+	if status.ConntrackMax != nil {
 		fmt.Fprint(w, "# HELP ranet3_egress_conntrack_max The most entries the host's connection tracking table takes, net.netfilter.nf_conntrack_max, read on each pass and never written.\n")
 		fmt.Fprint(w, "# TYPE ranet3_egress_conntrack_max gauge\n")
-		fmt.Fprintf(w, "ranet3_egress_conntrack_max %d\n", *egress.ConntrackMax)
+		fmt.Fprintf(w, "ranet3_egress_conntrack_max %d\n", *status.ConntrackMax)
 	}
 	fmt.Fprint(w, "# HELP ranet3_egress_conflicts Other source translation at the same hook at this node's priority or below, which can run ahead of this node's, and the first chain to claim a connection keeps it.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_conflicts gauge\n")
-	fmt.Fprintf(w, "ranet3_egress_conflicts %d\n", len(egress.Conflicts))
+	fmt.Fprintf(w, "ranet3_egress_conflicts %d\n", len(status.Conflicts))
 	fmt.Fprint(w, "# HELP ranet3_egress_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_pass_timestamp_seconds gauge\n")
-	fmt.Fprintf(w, "ranet3_egress_pass_timestamp_seconds %d\n", unixOrZero(egress.PassAt))
+	fmt.Fprintf(w, "ranet3_egress_pass_timestamp_seconds %d\n", unixOrZero(status.PassAt))
 	fmt.Fprint(w, "# HELP ranet3_egress_pass_failed Whether the last pass reported an error.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_pass_failed gauge\n")
-	fmt.Fprintf(w, "ranet3_egress_pass_failed %d\n", boolValue(egress.Err != ""))
-	// the exit's own judgment, since ranet3_border_ready reports the border's hold on the egress segments
-	ready := c.exitStatus().Ready
+	fmt.Fprintf(w, "ranet3_egress_pass_failed %d\n", boolValue(status.Err != ""))
+	ready := status.Ready
 	fmt.Fprint(w, "# HELP ranet3_egress_ready Whether this node carries a family out of the mesh translated, which egress of that family waits for in both modes.\n")
 	fmt.Fprint(w, "# TYPE ranet3_egress_ready gauge\n")
 	fmt.Fprintf(w, "ranet3_egress_ready{family=\"ipv4\"} %d\n", boolValue(slices.Contains(ready, "ipv4")))
