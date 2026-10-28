@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -21,6 +22,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
@@ -39,8 +42,9 @@ import (
 // Nothing here needs privilege or a second machine. internal/kernel names the
 // machine it reads and writes, see kernel.Host, and recordedKernel is a
 // routing table this test writes and reads back. The one thing still left
-// with the running kernel is IP_BOUND_IF on the transport's own UDP socket,
-// which is why the uplink below is lo0's index.
+// with the running kernel is the transport's own UDP sockets, whose datagrams
+// name the interface the recorded routes select, which is why the uplink below
+// is lo0's index.
 
 // meshDeviceIndex is the tun this node carries the overlay on. No socket is
 // bound to it, so it names a device that need not exist.
@@ -373,6 +377,42 @@ func TestUnboundUnderlayConfigurationScopesItsCaptureToTheTun(t *testing.T) {
 		if write.index != meshDeviceIndex {
 			t.Errorf("a node that binds no socket wrote %+v, which is not on its own tun", write)
 		}
+	}
+}
+
+// unnamedQuiet is how long the listener behind lo0 hears nothing before a test takes it that no datagram left unnamed
+const unnamedQuiet = 200 * time.Millisecond
+
+// A daemon names each underlay datagram's interface from the selection it
+// opens over the host's own routes. The recorded host sends the loopback by a
+// device the running machine lacks, so the datagram naming it is refused with
+// the ENXIO udp_check_pktinfo in bsd/netinet/udp_usrreq.c answers, and the
+// listener behind lo0, which a datagram naming no interface reaches, hears
+// nothing.
+func TestDaemonNamesEachUnderlayDatagramsInterfaceFromTheHostsRoutes(t *testing.T) {
+	host := recordedHost(t)
+	host.hold(recordedRoute{destination: netip.MustParsePrefix("127.0.0.0/8"), index: otherProgramIndex})
+	d := startDaemon(t, false, host)
+	listener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	at := listener.LocalAddr().(*net.UDPAddr)
+	mux, err := d.node.hub.NewMux(at.IP, at.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mux.Close() })
+	if err := mux.SendIKE([]byte("named")); !errors.Is(err, unix.ENXIO) {
+		t.Errorf("a datagram to %s, which the host's routes send by interface %d, answered %v, want ENXIO", at, otherProgramIndex, err)
+	}
+	if err := listener.SetReadDeadline(time.Now().Add(unnamedQuiet)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	if n, _, err := listener.ReadFromUDP(buf); err == nil {
+		t.Errorf("the listener behind lo0 read %q, a datagram that named no interface", buf[:n])
 	}
 }
 

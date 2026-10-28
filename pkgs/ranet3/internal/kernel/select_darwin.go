@@ -43,13 +43,17 @@ type selectionSnapshot struct {
 }
 
 // OpenSelection reads the host's routing table with mesh, ranet3's own interface, left out, and follows it until Close
+// mesh is empty on a node without one, which leaves no interface out
 // host is the machine it reads, nil for the one this process runs on
 // a table it cannot read refuses the start, since a host that cannot read its table cannot run its reconciler either
 func OpenSelection(host Host, mesh string) (*Selection, error) {
 	host = hostOr(host)
-	index, err := host.InterfaceIndex(mesh)
-	if err != nil {
-		return nil, err
+	index := 0
+	if mesh != "" {
+		var err error
+		if index, err = host.InterfaceIndex(mesh); err != nil {
+			return nil, err
+		}
 	}
 	// opened before the first dump, so a change between the two is read again
 	watcher, err := host.Watch(0, index, false)
