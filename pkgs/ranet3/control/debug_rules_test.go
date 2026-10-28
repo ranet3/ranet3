@@ -60,10 +60,10 @@ func rulesFixture() RulesInfo {
 			Rules: []BorderChainRule{
 				{Spec: "accept via ranet3", Verdict: "accept", Reason: "inside", Held: true},
 				{Spec: "accept via lo", Verdict: "accept", Reason: "inside", Held: true},
-				{Spec: "drop ipv4 source 23.161.104.0/24", Verdict: "drop", Reason: "overlay_source", Family: "ipv4", Held: true, Packets: 12, Bytes: 720},
-				{Spec: "drop ipv6 source 2602:f590::/36", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true},
+				{Spec: "drop ipv4 source 203.0.113.0/24", Verdict: "drop", Reason: "overlay_source", Family: "ipv4", Held: true, Packets: 12, Bytes: 720},
+				{Spec: "drop ipv6 source 3fff:a::/36", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true},
 				{Spec: "drop ipv6 routing header", Verdict: "drop", Reason: "routing_header", Family: "ipv6", Held: true},
-				{Spec: "drop ipv6 destination 2a0c:b641:69c:5d26::3", Verdict: "drop", Reason: "sid_destination", Family: "ipv6"},
+				{Spec: "drop ipv6 destination 3fff:b:0:306::3", Verdict: "drop", Reason: "sid_destination", Family: "ipv6"},
 			},
 		},
 	}

@@ -9,7 +9,7 @@ Forwarding  IPv4 on IPv6 on
 Registry    /etc/ranet3/registry.json, 12 nodes in 1 organizations
 Kernel      table 100, 0 installed, last pass 3 minutes ago
 Egress      off, this node carries no traffic for others
-Border      nftables table inet ranet3 chain border, inside ranet3 lo gravity, 5 overlay prefixes, 1 SID, dropped 4 overlay sources, 2 routing headers, 5 SID destinations
+Border      nftables table inet ranet3 chain border, inside ranet3 lo dummy0, 5 overlay prefixes, 1 SID, dropped 4 overlay sources, 2 routing headers, 5 SID destinations
 Dialers     0 running
 Sessions    0
 Neighbors   0, 0 alive

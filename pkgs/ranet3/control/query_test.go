@@ -20,7 +20,7 @@ func meshRoutes() []Route {
 		{Destination: netip.MustParsePrefix("2001:db8:2::/48"), Metric: 65535},
 		{Destination: netip.MustParsePrefix("::/0"), From: netip.MustParsePrefix("2001:db8::/32"), Via: "example/exit@0", Metric: 300, RouterID: "1122334455667788", Candidates: 2},
 		{Destination: netip.MustParsePrefix("0.0.0.0/0"), Metric: 65535},
-		{Destination: netip.MustParsePrefix("198.18.104.117/32"), Originated: true},
+		{Destination: netip.MustParsePrefix("203.0.113.10/32"), Originated: true},
 	}
 }
 
@@ -111,14 +111,14 @@ func TestDefaultsListANodeAdvertisingBothHalves(t *testing.T) {
 // prefix twice is one address.
 func TestMeshAddressesTakeOnlyTheHostPrefixes(t *testing.T) {
 	status := Status{Originate: []Originated{
-		{Prefix: netip.MustParsePrefix("198.18.104.117/32")},
+		{Prefix: netip.MustParsePrefix("203.0.113.10/32")},
 		{Prefix: netip.MustParsePrefix("2001:db8:1::5/128")},
 		{Prefix: netip.MustParsePrefix("2001:db8:9::/48")},
 		{Prefix: netip.MustParsePrefix("::/0"), From: netip.MustParsePrefix("2001:db8::/32")},
-		{Prefix: netip.MustParsePrefix("198.18.104.117/32")},
+		{Prefix: netip.MustParsePrefix("203.0.113.10/32")},
 	}}
 	got := MeshAddresses(status)
-	if len(got) != 2 || got[0].String() != "198.18.104.117" || got[1].String() != "2001:db8:1::5" {
+	if len(got) != 2 || got[0].String() != "203.0.113.10" || got[1].String() != "2001:db8:1::5" {
 		t.Errorf("the mesh addresses are %v", got)
 	}
 }
@@ -135,7 +135,7 @@ func TestWhoisNamesThePrefixAndTheNextHop(t *testing.T) {
 	}
 
 	out.Reset()
-	RenderWhois(&out, netip.MustParseAddr("198.18.104.117"), Covering(meshRoutes(), netip.MustParseAddr("198.18.104.117")))
+	RenderWhois(&out, netip.MustParseAddr("203.0.113.10"), Covering(meshRoutes(), netip.MustParseAddr("203.0.113.10")))
 	if !strings.Contains(out.String(), "originated by this node") {
 		t.Errorf("a prefix this node originates printed as %q", out.String())
 	}
@@ -182,8 +182,8 @@ func TestExitNodesSayWhichDefaultIsTaken(t *testing.T) {
 // variable without being cut up first.
 func TestAddressesArePrintedOnePerLine(t *testing.T) {
 	var out strings.Builder
-	RenderAddresses(&out, []netip.Addr{netip.MustParseAddr("198.18.104.117"), netip.MustParseAddr("2001:db8:1::5")})
-	if out.String() != "198.18.104.117\n2001:db8:1::5\n" {
+	RenderAddresses(&out, []netip.Addr{netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("2001:db8:1::5")})
+	if out.String() != "203.0.113.10\n2001:db8:1::5\n" {
 		t.Errorf("the addresses printed as %q", out.String())
 	}
 }

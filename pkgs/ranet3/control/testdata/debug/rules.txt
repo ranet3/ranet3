@@ -27,7 +27,7 @@ Lookups
 Border filter, nftables table inet ranet3 chain border, prerouting at priority -300, read 3 seconds ago, ready
   accept  via ranet3
   accept  via lo
-  drop    ipv4 source 23.161.104.0/24             12 packets, 720 B
-  drop    ipv6 source 2602:f590::/36              0 packets, 0 B
-  drop    ipv6 routing header                     0 packets, 0 B
-  drop    ipv6 destination 2a0c:b641:69c:5d26::3  not held
+  drop    ipv4 source 203.0.113.0/24        12 packets, 720 B
+  drop    ipv6 source 3fff:a::/36           0 packets, 0 B
+  drop    ipv6 routing header               0 packets, 0 B
+  drop    ipv6 destination 3fff:b:0:306::3  not held
