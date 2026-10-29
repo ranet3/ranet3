@@ -549,6 +549,17 @@ func edgesOf(v4 bool, prefixes ...netip.Prefix) []netip.Addr {
 	return slices.DeleteFunc(out, func(a netip.Addr) bool { return !a.IsValid() })
 }
 
+// endsOf is each prefix's first and last address, in family v4 or IPv6
+func endsOf(v4 bool, prefixes ...netip.Prefix) []netip.Addr {
+	var out []netip.Addr
+	for _, prefix := range prefixes {
+		if prefix.Addr().Is4() == v4 {
+			out = append(out, prefix.Masked().Addr(), lastAddress(prefix))
+		}
+	}
+	return out
+}
+
 // schemaPrefixesOf is each prefix of an overlay list
 func schemaPrefixesOf(prefixes []schema.Prefix) []netip.Prefix {
 	out := make([]netip.Prefix, 0, len(prefixes))
@@ -588,13 +599,14 @@ func overlayPrefixes() hegel.Generator[[]schema.Prefix] {
 	})
 }
 
-// For a drawn configuration and a drawn packet, the encoded chain, executed
-// byte by byte by the interpreter above, passes or drops the packet as the
-// model does and counts a drop under the model's reason, never an accept.
-// The inside names share prefixes with each other and with the devices a
-// packet arrives on, and the sources sit on either side of each overlay
-// prefix's edges, among them IPv6 sources whose bytes 4 to 7 spell an IPv4
-// overlay address, which an IPv4 rule with no family test would read.
+// For a drawn configuration and each of up to 16 drawn packets, the encoded
+// chain, executed byte by byte by the interpreter above, passes or drops the
+// packet as the model does and counts a drop under the model's reason, never
+// an accept. The inside names share prefixes with each other and with the
+// devices a packet arrives on, and the sources sit on either side of each
+// overlay prefix's edges, among them IPv6 sources whose bytes 4 to 7 spell an
+// address inside an IPv4 carved or overlay prefix, which an IPv4 rule with no
+// family test would read.
 func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		inside := []string{"ranet3"}
@@ -630,30 +642,6 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		}
 		desired, rules := chainRules(all, requests, BorderChain)
 		held := encodedSets(ht, requests)
-
-		v4 := hegel.Draw(ht, hegel.Booleans())
-		edges := edgesOf(v4, schemaPrefixesOf(cfg.Overlay)...)
-		for _, carveOut := range drawn.CarveOuts {
-			edges = append(edges, edgesOf(v4, carveOut.Prefix)...)
-		}
-		edges = append(edges, edgesOf(v4, drawn.Carved...)...)
-		var p drawnPacket
-		random := hegel.IPAddresses().IPv6()
-		if v4 {
-			random = hegel.IPAddresses().IPv4()
-		}
-		if len(edges) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
-			p.source = hegel.Draw(ht, hegel.SampledFrom(edges))
-		} else {
-			p.source = hegel.Draw(ht, random)
-		}
-		// an IPv6 source whose bytes 4 to 7 spell an IPv4 overlay or carved edge
-		if spelled := edgesOf(true, append(schemaPrefixesOf(cfg.Overlay), drawn.Carved...)...); !v4 && len(spelled) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(1.0/3)) {
-			raw, inner := p.source.As16(), hegel.Draw(ht, hegel.SampledFrom(spelled)).As4()
-			copy(raw[4:8], inner[:])
-			p.source = netip.AddrFrom16(raw)
-		}
-		p.destination = hegel.Draw(ht, random)
 		arrivals := []string{"eth0", "eth1", "eth", "ranet3a1b2"}
 		for _, name := range inside {
 			arrivals = append(arrivals, name, name[:len(name)-1])
@@ -662,22 +650,55 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 			}
 		}
 		arrivals = slices.DeleteFunc(arrivals, func(name string) bool { return name == "" })
-		p.iif = hegel.Draw(ht, hegel.SampledFrom(arrivals))
 
-		wire := p.wire()
-		wire.sets = held
-		run := runChain(ht, rules, wire)
-		accept, reason := borderModel(inside, cfg, drawn, p)
-		where := fmt.Sprintf("a packet %+v through inside %q, overlay %v and carve-outs %+v", p, inside, cfg.Overlay, drawn)
-		switch {
-		case run.accept != accept:
-			ht.Fatalf("%s: the chain accepted %v at rule %d, the model %v for %q", where, run.accept, run.rule, accept, reason)
-		case !accept && (!run.counted || desired[run.rule].Reason() != reason):
-			ht.Fatalf("%s: dropped by %s, counted %v, want counted as %s", where, desired[run.rule], run.counted, reason)
-		case accept && run.counted:
-			ht.Fatalf("%s: accepted by a rule carrying a counter", where)
-		case accept && run.rule != -1 && !strings.HasPrefix(desired[run.rule].String(), "accept via "):
-			ht.Fatalf("%s: accepted by %s", where, desired[run.rule])
+		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
+			v4 := hegel.Draw(ht, hegel.Booleans())
+			edges := edgesOf(v4, schemaPrefixesOf(cfg.Overlay)...)
+			for _, carveOut := range drawn.CarveOuts {
+				edges = append(edges, edgesOf(v4, carveOut.Prefix)...)
+			}
+			edges = append(edges, edgesOf(v4, drawn.Carved...)...)
+			var p drawnPacket
+			random := hegel.IPAddresses().IPv6()
+			if v4 {
+				random = hegel.IPAddresses().IPv4()
+			}
+			if len(edges) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
+				p.source = hegel.Draw(ht, hegel.SampledFrom(edges))
+			} else {
+				p.source = hegel.Draw(ht, random)
+			}
+			// an IPv6 source whose bytes 4 to 7 spell an address inside an IPv4 carved prefix, or now and then
+			// an IPv4 overlay prefix
+			if !v4 && hegel.Draw(ht, hegel.Booleans()) {
+				spelled := endsOf(true, drawn.Carved...)
+				if len(spelled) == 0 || hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
+					spelled = endsOf(true, schemaPrefixesOf(cfg.Overlay)...)
+				}
+				if len(spelled) != 0 {
+					raw, inner := p.source.As16(), hegel.Draw(ht, hegel.SampledFrom(spelled)).As4()
+					copy(raw[4:8], inner[:])
+					p.source = netip.AddrFrom16(raw)
+				}
+			}
+			p.destination = hegel.Draw(ht, random)
+			p.iif = hegel.Draw(ht, hegel.SampledFrom(arrivals))
+
+			wire := p.wire()
+			wire.sets = held
+			run := runChain(ht, rules, wire)
+			accept, reason := borderModel(inside, cfg, drawn, p)
+			where := fmt.Sprintf("a packet %+v through inside %q, overlay %v and carve-outs %+v", p, inside, cfg.Overlay, drawn)
+			switch {
+			case run.accept != accept:
+				ht.Fatalf("%s: the chain accepted %v at rule %d, the model %v for %q", where, run.accept, run.rule, accept, reason)
+			case !accept && (!run.counted || desired[run.rule].Reason() != reason):
+				ht.Fatalf("%s: dropped by %s, counted %v, want counted as %s", where, desired[run.rule], run.counted, reason)
+			case accept && run.counted:
+				ht.Fatalf("%s: accepted by a rule carrying a counter", where)
+			case accept && run.rule != -1 && !strings.HasPrefix(desired[run.rule].String(), "accept via "):
+				ht.Fatalf("%s: accepted by %s", where, desired[run.rule])
+			}
 		}
 	})
 }
@@ -721,13 +742,13 @@ func entryPrefixes() hegel.Generator[[]netip.Prefix] {
 	})
 }
 
-// For drawn owned and none sets and a drawn packet, the encoded entry chain,
-// executed byte by byte by the interpreter, passes or drops the packet as
-// entryModel does and counts a drop as mesh_entry, never a pass. The output
-// devices share the tun's prefix, the addresses sit on either side of each
-// set's edges and of the IPv6 link-local and multicast prefixes, and an IPv6
-// packet's address bytes now and then spell an IPv4 set's edge where an IPv4
-// rule with no family test would read it.
+// For drawn owned and none sets and each of up to 16 drawn packets, the
+// encoded entry chain, executed byte by byte by the interpreter, passes or
+// drops the packet as entryModel does and counts a drop as mesh_entry, never a
+// pass. The output devices share the tun's prefix, the addresses sit on either
+// side of each set's edges and of the IPv6 link-local and multicast prefixes,
+// and an IPv6 packet's address bytes now and then spell an address inside an
+// IPv4 set where an IPv4 rule with no family test would read it.
 func TestEntryChainReturnsWhatTheModelReturns(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		const tun = "ranet3"
@@ -742,58 +763,61 @@ func TestEntryChainReturnsWhatTheModelReturns(t *testing.T) {
 			ht.Fatalf("encode the table: %v", err)
 		}
 		desired, rules := chainRules(all, requests, EntryChain)
+		held := encodedSets(ht, requests)
 
-		v4 := hegel.Draw(ht, hegel.Booleans())
-		random := hegel.IPAddresses().IPv6()
-		if v4 {
-			random = hegel.IPAddresses().IPv4()
-		}
-		address := func(edges []netip.Addr) netip.Addr {
-			if len(edges) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
-				return hegel.Draw(ht, hegel.SampledFrom(edges))
+		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
+			v4 := hegel.Draw(ht, hegel.Booleans())
+			random := hegel.IPAddresses().IPv6()
+			if v4 {
+				random = hegel.IPAddresses().IPv4()
 			}
-			return hegel.Draw(ht, random)
-		}
-		p := entryPacket{
-			oif:       hegel.Draw(ht, hegel.SampledFrom([]string{tun, tun, tun, tun[:len(tun)-1], tun + "a", "eth0"})),
-			direction: hegel.Draw(ht, hegel.SampledFrom([]string{"original", "reply", "untracked"})),
-			source:    address(edgesOf(v4, drawn.Owned...)),
-			destination: address(edgesOf(v4, append(slices.Clone(drawn.None),
-				netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8"))...)),
-		}
-		// an IPv6 source's bytes 4 to 7 sit where an IPv4 source is read, and its
-		// bytes 8 to 11 where an IPv4 destination is
-		if !v4 {
-			raw := p.source.As16()
-			if spelled := edgesOf(true, drawn.Owned...); len(spelled) != 0 && hegel.Draw(ht, hegel.Booleans()) {
-				inner := hegel.Draw(ht, hegel.SampledFrom(spelled)).As4()
-				copy(raw[4:8], inner[:])
+			address := func(edges []netip.Addr) netip.Addr {
+				if len(edges) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
+					return hegel.Draw(ht, hegel.SampledFrom(edges))
+				}
+				return hegel.Draw(ht, random)
 			}
-			if spelled := edgesOf(true, drawn.None...); len(spelled) != 0 && hegel.Draw(ht, hegel.Booleans()) {
-				inner := hegel.Draw(ht, hegel.SampledFrom(spelled)).As4()
-				copy(raw[8:12], inner[:])
+			p := entryPacket{
+				oif:       hegel.Draw(ht, hegel.SampledFrom([]string{tun, tun, tun, tun[:len(tun)-1], tun + "a", "eth0"})),
+				direction: hegel.Draw(ht, hegel.SampledFrom([]string{"original", "reply", "untracked"})),
+				source:    address(edgesOf(v4, drawn.Owned...)),
+				destination: address(edgesOf(v4, append(slices.Clone(drawn.None),
+					netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8"))...)),
 			}
-			p.source = netip.AddrFrom16(raw)
-		}
+			// an IPv6 source's bytes 4 to 7 sit where an IPv4 source is read, and its
+			// bytes 8 to 11 where an IPv4 destination is
+			if !v4 {
+				raw := p.source.As16()
+				if spelled := endsOf(true, drawn.Owned...); len(spelled) != 0 && hegel.Draw(ht, hegel.Booleans()) {
+					inner := hegel.Draw(ht, hegel.SampledFrom(spelled)).As4()
+					copy(raw[4:8], inner[:])
+				}
+				if spelled := endsOf(true, drawn.None...); len(spelled) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
+					inner := hegel.Draw(ht, hegel.SampledFrom(spelled)).As4()
+					copy(raw[8:12], inner[:])
+				}
+				p.source = netip.AddrFrom16(raw)
+			}
 
-		wire := drawnPacket{iif: "eth0", source: p.source, destination: p.destination}.wire()
-		wire.oif, wire.sets = p.oif, encodedSets(ht, requests)
-		switch p.direction {
-		case "untracked":
-			wire.ctState = nftables.CTStateUntracked
-		case "reply":
-			wire.reply = true
-		}
-		run := runChain(ht, rules, wire)
-		accept := entryModel(tun, drawn, p)
-		where := fmt.Sprintf("a packet %+v over owned %v and none %v", p, drawn.Owned, drawn.None)
-		switch {
-		case run.accept != accept:
-			ht.Fatalf("%s: the chain passed %v at rule %d, the model %v", where, run.accept, run.rule, accept)
-		case !accept && (!run.counted || desired[run.rule].Reason() != "mesh_entry"):
-			ht.Fatalf("%s: dropped by %s, counted %v, want counted as mesh_entry", where, desired[run.rule], run.counted)
-		case accept && run.counted:
-			ht.Fatalf("%s: passed by a rule carrying a counter", where)
+			wire := drawnPacket{iif: "eth0", source: p.source, destination: p.destination}.wire()
+			wire.oif, wire.sets = p.oif, held
+			switch p.direction {
+			case "untracked":
+				wire.ctState = nftables.CTStateUntracked
+			case "reply":
+				wire.reply = true
+			}
+			run := runChain(ht, rules, wire)
+			accept := entryModel(tun, drawn, p)
+			where := fmt.Sprintf("a packet %+v over owned %v and none %v", p, drawn.Owned, drawn.None)
+			switch {
+			case run.accept != accept:
+				ht.Fatalf("%s: the chain passed %v at rule %d, the model %v", where, run.accept, run.rule, accept)
+			case !accept && (!run.counted || desired[run.rule].Reason() != "mesh_entry"):
+				ht.Fatalf("%s: dropped by %s, counted %v, want counted as mesh_entry", where, desired[run.rule], run.counted)
+			case accept && run.counted:
+				ht.Fatalf("%s: passed by a rule carrying a counter", where)
+			}
 		}
 	})
 }
