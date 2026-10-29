@@ -12,10 +12,6 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// Range is the addresses of one family from First through Last, both
-// included, as the border filter's sets take them
-type Range = egress.Range
-
 // OwnedSources is the sources this node owns, as the tun read judges a source
 // its own: every address covered by an entry of this node's own, Local or
 // Assigned, that schema.CapturesTheMachine does not count under overlay. A

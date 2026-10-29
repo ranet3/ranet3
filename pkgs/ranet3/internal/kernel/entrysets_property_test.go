@@ -202,28 +202,50 @@ func TestNoneDestinationsAreTheNoneClassLessOtherNodesLANs(t *testing.T) {
 	})
 }
 
-// A range drawn between two addresses near carveBases, each family's first
-// and last address among them, splits into masked prefixes that run from its
-// first address to its last with no gap or overlap, and no two neighbors are
-// the halves of one prefix, which leaves no fewer prefixes holding it
+// rangeSpan is the most addresses past its first a drawn range holds
+const rangeSpan = 1 << 12
+
+// modelPrefixCount is the fewest prefixes holding exactly r's addresses inside
+// prefix: one where prefix lies inside r, none where it misses r, and else the
+// count of each of its halves
+func modelPrefixCount(r egress.Range, prefix netip.Prefix) int {
+	first, last := prefix.Addr(), modelLast(prefix)
+	switch {
+	case last.Less(r.First) || r.Last.Less(first):
+		return 0
+	case !first.Less(r.First) && !r.Last.Less(last):
+		return 1
+	}
+	low := netip.PrefixFrom(first, prefix.Bits()+1)
+	return modelPrefixCount(r, low) + modelPrefixCount(r, netip.PrefixFrom(modelLast(low).Next(), prefix.Bits()+1))
+}
+
+// A range of up to rangeSpan addresses past a first one near carveBases, at
+// its family's first address or ending at its last, splits into masked
+// prefixes that run from its first address to its last with no gap or
+// overlap, as few as the model counts
 func TestRangePrefixesHoldExactlyTheRange(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
-		family := FamilyIPv4
+		family, whole := FamilyIPv4, netip.PrefixFrom(netip.IPv4Unspecified(), 0)
 		if hegel.Draw(ht, pbt.Spanning(0, 1)) == 1 {
-			family = FamilyIPv6
+			family, whole = FamilyIPv6, netip.PrefixFrom(netip.IPv6Unspecified(), 0)
 		}
-		end := func() netip.Addr {
-			switch hegel.Draw(ht, pbt.Spanning(0, 2)) {
-			case 0:
-				return modelLast(netip.PrefixFrom(nearAddress(ht, family), 0).Masked())
-			case 1:
-				return netip.PrefixFrom(nearAddress(ht, family), 0).Masked().Addr()
+		span := hegel.Draw(ht, pbt.Spanning(0, rangeSpan))
+		r := egress.Range{First: nearAddress(ht, family)}
+		switch hegel.Draw(ht, pbt.Spanning(0, 2)) {
+		case 0:
+			r.First = whole.Addr()
+		case 1:
+			r.First = modelLast(whole)
+			for range span {
+				r.First = r.First.Prev()
 			}
-			return nearAddress(ht, family)
 		}
-		r := Range{First: end(), Last: end()}
-		if r.Last.Less(r.First) {
-			r.First, r.Last = r.Last, r.First
+		r.Last = r.First
+		for range span {
+			if next := r.Last.Next(); next.IsValid() {
+				r.Last = next
+			}
 		}
 		got := rangePrefixes(r)
 		next := r.First
@@ -231,13 +253,13 @@ func TestRangePrefixesHoldExactlyTheRange(t *testing.T) {
 			if prefix != prefix.Masked() || prefix.Addr() != next {
 				ht.Fatalf("prefix %d of %v for %s to %s is %s, where the one before ended before %s", i, got, r.First, r.Last, prefix, next)
 			}
-			if i > 0 && got[i-1].Bits() == prefix.Bits() && prefix.Bits() > 0 && netip.PrefixFrom(prefix.Addr(), prefix.Bits()-1).Masked().Addr() == got[i-1].Addr() {
-				ht.Fatalf("%s and %s of %v are the halves of one prefix", got[i-1], prefix, got)
-			}
 			next = modelLast(prefix).Next()
 		}
 		if len(got) == 0 || modelLast(got[len(got)-1]) != r.Last {
 			ht.Fatalf("%v for %s to %s does not end at its last address", got, r.First, r.Last)
+		}
+		if want := modelPrefixCount(r, whole); len(got) != want {
+			ht.Fatalf("%v for %s to %s holds it in %d prefixes, where %d do", got, r.First, r.Last, len(got), want)
 		}
 	})
 }
