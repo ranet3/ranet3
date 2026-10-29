@@ -247,8 +247,8 @@ type Rule struct {
 	// original direction and refuses it, or passes an Out one on where None is
 	// set. Its checksum covers the addresses, and a kernel with no tracker for
 	// the protocol does not rewrite it, so a translated one would arrive there
-	// with a checksum its receiver discards. A reply
-	// is translated only where its flow's first packet was, which the rule took.
+	// with a checksum its receiver discards. A reply is translated only where
+	// its flow's first packet was, which the rule took.
 	Protocol Protocol
 }
 
