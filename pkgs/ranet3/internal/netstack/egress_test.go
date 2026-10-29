@@ -318,7 +318,6 @@ func TestEgressThroughTheTunWriterKeepsEachFlowOnItsLaneInOrder(t *testing.T) {
 	run(func(family int, mode3 bool) bool { return mode3 == (family == 6) })
 }
 
-// handOffMesh is a mesh of one tun lane recording its writes, with the segments and advertised defaults the tests below use, handing both egress verdicts to exit
 func handOffMesh(t *testing.T, exit Exit) (*Mesh, *recordingDevice) {
 	dev := &recordingDevice{writes: make(chan recordedWrite, 16)}
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
@@ -419,8 +418,7 @@ func (e *countReadingExit) Egress(frames [][]byte) {
 	e.recordingExit.Egress(frames)
 }
 
-// both egress hand-offs count a batch before the exit takes it, so a reader that has a frame at the exit finds it counted
-// the exit reads the egress segments' Egressed and the decision's Delivered as each batch reaches it, in the batch of an egress segment's inner packets and then in the batch of the decision's verdicts, each of both families
+// a reader that has a frame at the exit finds it counted
 func TestEgressHandOffsCountEachBatchBeforeTheExitTakesIt(t *testing.T) {
 	exit := &countReadingExit{}
 	m, _ := handOffMesh(t, exit)

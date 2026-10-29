@@ -264,12 +264,12 @@ func dataCharge(count, bytes int) int { return min(max(bytes, count*leastPacketB
 //
 // It does not wait at all, even briefly. The budget frees as the peer's sender
 // returns from the transport, so a budget is full when its socket is
-// backpressured or when its sender has not yet run to drain it. Backpressure
-// lasts far longer than any wait worth having, so a wait for it would only add
-// latency before dropping anyway. The caller also runs on a goroutine that
-// serves other peers: a TUN reader holds the tickets it has reserved for the
-// rest of its read until it submits them. ReserveRawOrDrop says the same of
-// its own callers.
+// backpressured, when its reads still wait for or sit in a crypto worker, or
+// when its sender has not yet run to drain it. Backpressure lasts far longer
+// than any wait worth having, so a wait for it would only add latency before
+// dropping anyway. The caller also runs on a goroutine that serves other peers:
+// a TUN reader holds the tickets it has reserved for the rest of its read until
+// it submits them. ReserveRawOrDrop says the same of its own callers.
 func (p *Peer) reserveBatchNow(count, bytes int) *peerBatch {
 	return p.reserveNow(count, dataCharge(count, bytes), false)
 }
