@@ -40,7 +40,7 @@ func (f *pinFallback) unpin(refused error) bool {
 }
 
 // arrival is control while it tells the endpoint apart from others: before a fallback, and until unroutedUntil after one from EHOSTUNREACH
-// a request that reaches a pin refused with EHOSTUNREACH within the hold is the same destination, whose sends would only fall back again
+// a fresh request or answer that reaches a pin refused with EHOSTUNREACH within the hold is the same destination, whose sends would only fall back again
 // one after the hold, or one that reaches an address the host lost and holds again, moves the session back onto the pin
 func (f *pinFallback) arrival(control []byte) []byte {
 	if f.unpinned.Load() {
