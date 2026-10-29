@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-28
+updated: 2026-10-29
 order: 20
 ---
 
@@ -699,8 +699,8 @@ families. At the end it asserts that each log holds none of these lines:
 - ranet3's: `no matching inbound ESP SA`,
   `ike stopping ESP on a Child SA past its lifetime` and
   `ike dropped the fragments of a message the peer left incomplete`
-- strongSwan's: `integrity check failed`, `no CHILD_SA built` and
-  `AUTHENTICATION_FAILED`
+- strongSwan's: `integrity check failed`, `no CHILD_SA built`,
+  `AUTHENTICATION_FAILED` and `N(INVAL_SPI)`
 
 The checks that write no `kex` list, all but `suites-meet` and the `mlkem-*`
 ones, run its default: ranet3 offers `x25519+mlkem768` first, and a strongSwan
@@ -828,7 +828,9 @@ client's IKE for 5 seconds while iperf3 runs, which outlasts a rekey's first
 send, and asserts that a Child SA rekey completed and that no Child SA reached
 its lifetime. The scripts of the initiator, responder and `suites-meet` checks,
 and of the `mlkem-*` checks except the 2 `mlkem-apart` ones, fail whenever
-ranet3 logs that it stopped ESP on a Child SA past its lifetime.
+ranet3 logs that it stopped ESP on a Child SA past its lifetime, and whenever
+strongSwan's journal shows an `N(INVAL_SPI)`, an `INVALID_SPI` notify from
+ranet3, across the rekeys.
 
 The VM console, systemd, strongSwan, BIRD, ranet3, and iperf3 output is streamed
 by the Nix test driver. The test also prints strongSwan SA state and BIRD

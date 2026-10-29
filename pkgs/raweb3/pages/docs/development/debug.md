@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-28
+updated: 2026-10-29
 order: 30
 ---
 
@@ -654,17 +654,16 @@ endpoint, at its first fallback. Every answer is sent to its request's own
 endpoint. While the kernel refuses sends from a session's address, each answer
 to a request that reaches the address therefore records an `unpinned` event, and
 a fresh request or answer that moves the session back to the address records one
-at the first send from the address after the move, at most one every minute
-after `EHOSTUNREACH`. An `unsegmented` one is recorded each time segmentation
-stops, which for a route that keeps refusing segments is at most once every 10
-minutes. A send refused only for its size records none, since it lowers that
-session's budget instead. On a socket that fragments, a segmented message
-refused with `EMSGSIZE` twice in a row records an `unsegmented` one with that
-`errno`, as [platforms](../platforms.md#path-mtu) describes. An
-`ike.send.failed` carries the error of the first send that failed, and its
-`ike.send.recovered` how many failed before one went out. A reply to a
-retransmitted request counts toward neither, since a replay can come from any
-address.
+at its first fallback after the move, at most one every minute after
+`EHOSTUNREACH`. An `unsegmented` one is recorded each time segmentation stops,
+which for a route that keeps refusing segments is at most once every 10 minutes.
+A send refused only for its size records none, since it lowers that session's
+budget instead. On a socket that fragments, a segmented message refused with
+`EMSGSIZE` twice in a row records an `unsegmented` one with that `errno`, as
+[platforms](../platforms.md#path-mtu) describes. An `ike.send.failed` carries
+the error of the first send that failed, and its `ike.send.recovered` how many
+failed before one went out. A reply to a retransmitted request counts toward
+neither, since a replay can come from any address.
 
 A `netstack.codel` event carries the `sojourn` of the batch that changed the
 state, how long that batch had waited since it was reserved, and the `target`. A
