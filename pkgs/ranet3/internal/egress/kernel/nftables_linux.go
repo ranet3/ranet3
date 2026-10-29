@@ -314,10 +314,8 @@ func delTable(family uint8) nftables.Request {
 // natPriority
 var postrouting = nftables.Chain{Table: TableName, Name: ChainName, Type: "nat", Hook: unix.NF_INET_POST_ROUTING, Priority: natPriority}
 
-// forward is the chain of IPv4's ICMP drops, the packets no flow is tracked
-// for, the limit and the refusals of a protocol whose checksum covers the
-// addresses, in that order, at the forward hook a forwarded packet meets before
-// the translation's, at the priority of the host's own filters
+// forward is the filter chain at the forward hook, which a forwarded packet
+// meets before the translation's, at the priority of the host's own filters
 var forward = nftables.Chain{Table: TableName, Name: LimitChain, Type: "filter", Hook: unix.NF_INET_FORWARD, Priority: filterPriority}
 
 // translatorChains is a family's chains in the order desired writes their rules

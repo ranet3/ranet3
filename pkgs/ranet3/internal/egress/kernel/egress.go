@@ -245,8 +245,9 @@ type Rule struct {
 	// Protocol makes the rule an Out or In rule of the limit's chain, past the
 	// limit, that takes a packet of this protocol from From in its flow's
 	// original direction and refuses it, or passes an Out one on where None is
-	// set. nf_nat rewrites no checksum of it, which covers the addresses, so a
-	// translated one would arrive with a checksum its receiver discards. A reply
+	// set. Its checksum covers the addresses, and a kernel with no tracker for
+	// the protocol does not rewrite it, so a translated one would arrive there
+	// with a checksum its receiver discards. A reply
 	// is translated only where its flow's first packet was, which the rule took.
 	Protocol Protocol
 }

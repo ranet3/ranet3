@@ -265,7 +265,8 @@ func translatedTimeouts(packet crossing) Timeouts {
 // translated, out of the mesh under a class that translates and into it under
 // return, and passed out of the mesh under none, and a reply meets neither.
 // Each family's forward chain holds the ICMP drops, the rules taking what
-// no flow is tracked for, the limit and the refusals in that order. A second
+// no flow is tracked for, the limit, and the passes under none and refusals
+// of a protocol whose checksum covers the addresses, in that order. A second
 // pass writes nothing, so the host holds the order it reads back, and only
 // advertised prefixes are announced.
 func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
@@ -331,8 +332,9 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			return Rule{}, decision{}
 		}
 		// in each family's forward chain the ICMP drops come first, then the
-		// rules taking what no flow is tracked for, the limit and the refusals,
-		// ahead of every rule of the translation's chain
+		// rules taking what no flow is tracked for, the limit, and the passes
+		// under none and refusals of a protocol whose checksum covers the
+		// addresses, ahead of every rule of the translation's chain
 		rank := func(rule Rule) int {
 			switch {
 			case rule.Drops != NoMessage:

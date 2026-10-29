@@ -475,8 +475,9 @@ func inForwardChain(rule Rule) bool {
 	return rule.Limit != 0 || rule.Untracked || rule.byProtocol()
 }
 
-// forwardButLimit is the IPv4 rules of tr's forward chain but the limit, which
-// takes a flow's first packet alone, and their requests in the chain's order
+// forwardButLimit is the IPv4 rules of tr's forward chain but the limit, whose
+// count of each source's flows runRule does not model, and their requests in
+// the chain's order
 func forwardButLimit(t *testing.T, tr *Translator) ([]nftables.Request, []Rule) {
 	t.Helper()
 	var requests []nftables.Request
@@ -545,8 +546,8 @@ func TestNewRefusesAnUnresolvableReturnBeforeOpeningTheBackend(t *testing.T) {
 	}
 }
 
-// The forward chain but the limit, which takes a flow's first packet alone,
-// decides a DCCP or UDP-Lite packet by its flow. A flow's first packet out of
+// The forward chain but the limit, as forwardButLimit gives it, decides a
+// DCCP or UDP-Lite packet by its flow. A flow's first packet out of
 // the mesh is refused from a source the exit translates and passed from one
 // under none. A packet no flow is tracked for meets the rules taking it, which
 // drop it or pass it under none in place of a refusal. A reply goes on to the
