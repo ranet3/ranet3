@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-28
+updated: 2026-10-29
 order: 50
 ---
 
@@ -120,15 +120,17 @@ since every in rule translates.
 ICMP queries this leaves unanswered.
 
 A DCCP or UDP-Lite packet the exit forwards in its flow's original direction is
-refused and counted wherever it would be translated, out of the mesh under a
-class that translates and into the mesh under `return`, since from Linux 6.17
-for DCCP and 7.1 for UDP-Lite the host's source translation
-[rewrites neither protocol's checksum](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_proto.c?id=940de590b839f71d6dc846160534bf202401b8b7#n261),
-which covers the addresses. A reply is left to cross. The refusal answers
-Destination Unreachable, administratively prohibited, code 13 over IPv4 and code
-1 over IPv6, where the kernel's reject answers at all. On a kernel before 7.1
-the host's connection tracking can give a valid UDP-Lite packet no flow, and the
-rule for a packet no flow is tracked for then takes it first, as
+refused and counted on every kernel wherever it would be translated, out of the
+mesh under a class that translates and into the mesh under `return`. Each
+protocol's checksum covers the addresses, and
+[the host's source translation does not rewrite that checksum](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_nat_proto.c?id=940de590b839f71d6dc846160534bf202401b8b7#n261)
+on a kernel with no connection tracker for the protocol. The exit refuses on a
+kernel that has one too, rather than read which kernel it runs on. A reply is
+left to cross. The refusal answers Destination Unreachable, administratively
+prohibited, code 13 over IPv4 and code 1 over IPv6, where the kernel's reject
+answers at all. On a kernel before 7.1 the host's connection tracking can give a
+valid UDP-Lite packet no flow, and the rule for a packet no flow is tracked for
+then takes it first, as
 [protocol deviations](design/protocol-deviations.md#exit-translation) describes.
 Under a class of `none` such a packet leaves as the host forwards it. In IPv4,
 Source Quench and Information Request and Reply are dropped and counted out of
@@ -725,8 +727,8 @@ the node does not translate with none. Before the first pass the line names no
 family. While the border filter holds the egress segments back, the line says
 `until the border filter is read back`. The refused counts are the limit rules'
 counters, of packets, each retry of a refused flow among them, and the dropped
-counts the dropping rules', which all start from zero when a pass rewrites the
-chains.
+counts are those of the rules that drop a packet no flow is tracked for. All of
+them start from zero when a pass rewrites the chains.
 
 | Log line                                                            | Level | When                                                                                                               |
 | ------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------ |
