@@ -259,8 +259,9 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 }
 
 // startBorderLab makes the two namespaces and their uplink, and starts the
-// exit's node, reconciler and border with the leaves' routes in the mesh
-func startBorderLab(t *testing.T) *borderLab {
+// exit's node, reconciler and border with the leaves' routes in the mesh and
+// classes beside the leaves' own
+func startBorderLab(t *testing.T, classes ...egress.Class) *borderLab {
 	t.Helper()
 	lab := &borderLab{exit: netnstest.StartThread(t), far: netnstest.StartThread(t)}
 	labUplink(t, lab.exit, lab.far)
@@ -272,6 +273,7 @@ func startBorderLab(t *testing.T) *borderLab {
 	for _, prefix := range labLeafPrefixes() {
 		exit.Translate = append(exit.Translate, egress.Class{From: schema.PrefixFrom(prefix), To: egress.Translation{None: true}})
 	}
+	exit.Translate = append(exit.Translate, classes...)
 	cfg.Cap.Egress = &exit
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the exit's configuration with its none classes is refused: %v", err)

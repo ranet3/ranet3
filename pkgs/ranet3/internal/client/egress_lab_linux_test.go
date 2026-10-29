@@ -496,6 +496,67 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		}
 	})
 
+	// a stranger beyond the uplink sends to a leaf from a source the exit does not own, to an address no class leaves
+	// untranslated: mesh_entry drops and counts it
+	t.Run("a stranger's datagram to a leaf", func(t *testing.T) {
+		if err := far.Do(func() error {
+			netlink, err := netnstest.OpenNetlink()
+			if err != nil {
+				return err
+			}
+			defer netlink.Close()
+			uplink, err := net.InterfaceByName("labf")
+			if err != nil {
+				return err
+			}
+			return errors.Join(netlink.RouteVia(uplink.Index, labLeafPrefixes()[1], labExit4.Addr()), netlink.RouteVia(uplink.Index, labLeafPrefixes()[0], labExit6.Addr()))
+		}); err != nil {
+			t.Fatalf("route the leaves through the exit at the far host: %v", err)
+		}
+		for _, arm := range arms {
+			payload := []byte("a stranger's to the leaf over " + arm.name)
+			before := borderDropped(t, exit, border, entryDrop[arm.family])
+			if err := far.Do(func() error {
+				conn, err := net.DialUDP("udp", net.UDPAddrFromAddrPort(netip.AddrPortFrom(arm.far, 0)), net.UDPAddrFromAddrPort(netip.AddrPortFrom(arm.leaf, labLeafPort)))
+				if err != nil {
+					return err
+				}
+				defer conn.Close()
+				_, err = conn.Write(payload)
+				return err
+			}); err != nil {
+				t.Fatalf("send to the leaf from the far host: %v", err)
+			}
+			if labCaptured(capture, labReplyTo(arm.leaf, payload)) {
+				t.Errorf("%q crossed the mesh tun", payload)
+			}
+			if got := borderDropped(t, exit, border, entryDrop[arm.family]); got != before+1 {
+				t.Errorf("mesh_entry counted %d %s packets after %d, want one more", got, arm.name, before)
+			}
+		}
+	})
+
+	// a router beyond the exit answers a leaf's egressed datagram with an ICMP error about it, which conntrack relates to the
+	// flow as its reply and translates back to the leaf, so mesh_entry passes it into the tun though no set holds its source
+	// or its destination
+	t.Run("an ICMP error about an egressed flow", func(t *testing.T) {
+		for _, arm := range arms {
+			from := carry(t, send, delivered, arm.leaf, arm.far, arm.exit, arm.listener, "sent before an ICMP error over "+arm.name)
+			message := entryTooBig(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), netip.AddrPortFrom(arm.far, labPort))
+			for deadline := time.Now().Add(rulesSettle); ; {
+				if err := far.Do(func() error { return entrySendError(arm.exit, message) }); err != nil {
+					t.Fatalf("send the ICMP error from the far host: %v", err)
+				}
+				if labCaptured(capture, entryErrorTo(arm.leaf)) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("no ICMP error about the %s flow reached the leaf %s through the tun within %s", arm.name, arm.leaf, rulesSettle)
+				}
+			}
+		}
+	})
+
 	stop()
 	if err := exit.Do(func() error {
 		if _, err := net.InterfaceByName(labTUN); err == nil {
