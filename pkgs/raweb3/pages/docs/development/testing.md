@@ -98,7 +98,11 @@ unless run as root.
   in `unpin_namespace_linux_test.go`, check that an answer from an address with
   no route to the peer leaves from the kernel's choice, and that the session
   returns to its address once the host holds it again, or 1 minute after a
-  fallback from `EHOSTUNREACH`, once it routes again.
+  fallback from `EHOSTUNREACH`, once it routes again. 2 more, in
+  `receive_namespace_linux_test.go` and `ecn_namespace_linux_test.go`, turn GRO
+  on at the near end of the veth and check that it coalesced some datagrams into
+  one message, and that each datagram's record holds its own source, and its own
+  outer ECN field on the listener and on a pair.
 - `internal/netstack` has tests whose names start with `TestTUN` that create and
   attach to a real TUN device. They read its `gso_max_segs` back, open several
   queues as 1 device and no more than the kernel attaches, and refuse a mesh
@@ -813,8 +817,12 @@ restart comes up on the mesh.
 `integration-initiator`, with a 4-core client, and `integration-kernel`, with a
 1-core client, run the same script. It covers IPv4 and IPv6 routes, locally
 scheduled and peer-initiated rekeys, BIRD withdrawal and recovery, and a clean
-stop and restart with an idle tun read. `integration-responder` drives both
-rekeys from the peer.
+stop and restart with an idle tun read. It also sends an ECT(0) UDP flow from
+the gateway while `fq_codel` behind a 1 Mbit/s shaper on the gateway's underlay
+marks strongSwan's ESP CE, and asserts that the flow reaches the client's tun
+marked CE with a valid IPv4 header checksum, that `ranet3_esp_inbound_ce_total`
+rose and that `ranet3_esp_inbound_ecn_unused_total` stayed 0.
+`integration-responder` drives both rekeys from the peer.
 
 The checks give the Child SA a lifetime of 24 seconds and the IKE SA one of 34
 seconds, with a margin of 22 seconds and no jitter, so each SA rekeys soon after

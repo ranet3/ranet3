@@ -306,17 +306,18 @@ connections to the reads.
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit         |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                               |
 
-`egress.pass`, `egress.ready`, `egress.refused`, the 3 `border` kinds and
-`transport.endpoint.unsegmented` are recorded on Linux alone, and
-`transport.endpoint.unpinned` on Linux and macOS alone, the platforms that
-answer from the address a request reached. `transport.underlay.bound` is
+`egress.pass`, `egress.ready`, `egress.refused` and the 3 `border` kinds are
+recorded on Linux alone. `transport.endpoint.unsegmented` is recorded on Linux
+and Android, which build the Linux sockets. `transport.underlay.bound` is
 recorded on macOS alone, because only macOS binds the underlay socket to an
-interface. `transport.pair.connected` and `transport.pair.closed` are recorded
-on Linux and macOS alone, the platforms that connect a socket to 1 busy peer, as
-[platforms](../platforms.md#sockets-connected-to-1-peer) describes.
-`esp.ecn.unused` is recorded on Linux and macOS alone, the platforms that read a
-datagram's outer ECN field, and the same record is written as a log line at the
-debug level, as [ECN](../design/protocol-deviations.md#ecn) describes.
+interface. `transport.endpoint.unpinned`, `transport.pair.connected` and
+`transport.pair.closed` are recorded on Linux, macOS, iOS and Android, the
+platforms that answer from the address a request reached and connect a socket to
+1 busy peer, as [platforms](../platforms.md#sockets-connected-to-1-peer)
+describes. `esp.ecn.unused` is recorded on the same 4, the platforms that read a
+datagram's outer ECN field, and the same record is written at the debug level as
+`esp packets arrived with an ecn combination no tunnel sends`, with the same
+fields, as [ECN](../design/protocol-deviations.md#ecn) describes.
 
 Each kind carries these attributes:
 
