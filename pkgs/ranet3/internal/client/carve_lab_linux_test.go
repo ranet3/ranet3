@@ -7,6 +7,7 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
@@ -19,9 +20,11 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // carveLease is the leaf's lease on its uplink in one family, as wide as the overlay's prefix, and the far side's addresses in it:
@@ -37,9 +40,20 @@ var carveLease = map[int]struct{ lease, gateway, neighbor, unannounced, peer net
 	},
 }
 
+// carveHold is a prefix inside the lease in each family that the mesh's table holds unreachable
+var carveHold = map[int]netip.Prefix{4: netip.MustParsePrefix("192.0.2.128/28"), 6: netip.MustParsePrefix("3fff::8000/116")}
+
 // carveTable is the mesh table's routes the leaf converges on under the lease, each as its kind and prefix: each overlay prefix
-// a throw in place of its hold, and the peer inside the lease a route into the tun
-var carveTable = []string{"throw 192.0.2.0/24", "throw 3fff::/20", "unicast 192.0.2.5/32", "unicast 3fff::5/128"}
+// a throw in place of its hold, the peer inside the lease a route into the tun, and the held prefix inside it unreachable
+var carveTable = []string{
+	"throw 192.0.2.0/24", "throw 3fff::/20", "unicast 192.0.2.5/32", "unicast 3fff::5/128", "unreachable 192.0.2.128/28", "unreachable 3fff::8000/116",
+}
+
+// carveOther is the leaf's second link outside the mesh and the far end of it, in each family, from which a forger sends
+var carveOther = map[int]struct{ leaf, far netip.Prefix }{
+	4: {netip.MustParsePrefix("203.0.113.1/24"), netip.MustParsePrefix("203.0.113.2/24")},
+	6: {netip.MustParsePrefix("2001:db8:c::1/64"), netip.MustParsePrefix("2001:db8:c::2/64")},
+}
 
 // a leaf whose uplink holds a lease as wide as the overlay in both families carves the lease out of the overlay:
 // the gateway and a neighbor on the link answer the host's echo requests, a mesh peer inside the lease stays on the tun,
@@ -75,9 +89,12 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("address the far side of the lease: %v", err)
 	}
+	other := netnstest.StartThread(t)
+	carveOtherLink(t, leaf, other)
 	d := startExitDaemon(t, leaf)
-	for _, family := range carveLease {
-		d.node.Mesh.Routes.Set(netip.Prefix{}, family.peer, d.learned)
+	for family, lease := range carveLease {
+		d.node.Mesh.Routes.Set(netip.Prefix{}, lease.peer, d.learned)
+		d.node.Mesh.Routes.Set(netip.Prefix{}, carveHold[family], netstack.Unreachable)
 	}
 	var held []string
 	waitFor(t, rulesSettle, "the reconciler to throw the lease in place of the overlay's holds", func() bool {
@@ -152,7 +169,9 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 	}
 
 	// the border carves the lease out of the overlay's drops: the gateway's datagram from the leased link reaches the
-	// leaf's socket, and one forged from the mesh peer's source inside the lease is dropped and counted, in each family
+	// leaf's socket, and one forged from the mesh peer's source, the held prefix's or this node's own inside the lease is
+	// dropped and counted as carved, in each family. From the second link the lease's unannounced address meets the
+	// overlay's drop, since the carve-out passes only from its own link, and the mesh peer's meets the carved drop first.
 	var border *kernelexit.BorderFilter
 	if err := leaf.Do(func() (err error) {
 		border, err = kernelexit.NewBorderFilter(d.node.config().Cap.Border, d.node.BorderRuntime())
@@ -181,14 +200,176 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 		t.Fatalf("listen on the leaf: %v", err)
 	}
 	t.Cleanup(func() { _ = receiver.Close() })
-	before := map[int]uint64{4: borderDropped(t, leaf, border, "drop ipv4 source @carved4"), 6: borderDropped(t, leaf, border, "drop ipv6 source @carved6")}
+	overlayBefore := map[int]uint64{}
+	for _, family := range []int{4, 6} {
+		overlayBefore[family] = borderDropped(t, leaf, border, carveOverlayDrop(family))
+	}
 	if err := far.Do(func() error {
 		for _, family := range []int{4, 6} {
 			lease := carveLease[family]
-			for name, source := range map[string]netip.Addr{"gateway": lease.gateway.Addr(), "forged": lease.peer.Addr()} {
+			for name, source := range map[string]netip.Addr{
+				"gateway": lease.gateway.Addr(), "forged": lease.peer.Addr(), "held": carveHold[family].Addr().Next(), "own": rulesHost[family].own.Addr(),
+			} {
 				if err := carveSend(source, lease.lease.Addr(), name+" "+source.String()); err != nil {
 					return err
 				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("send to the leaf from the far side: %v", err)
+	}
+	if err := other.Do(func() error {
+		for _, family := range []int{4, 6} {
+			lease := carveLease[family]
+			for name, source := range map[string]netip.Addr{"unannounced": lease.unannounced.Addr(), "forged": lease.peer.Addr()} {
+				if err := carveSend(source, lease.lease.Addr(), "second link "+name+" "+source.String()); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("send to the leaf from the second link: %v", err)
+	}
+	var delivered []string
+	buf := make([]byte, 256)
+	if err := receiver.SetReadDeadline(time.Now().Add(labQuiet)); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		n, _, err := receiver.ReadFromUDPAddrPort(buf)
+		if err != nil {
+			break
+		}
+		delivered = append(delivered, string(buf[:n]))
+	}
+	slices.Sort(delivered)
+	if want := []string{"gateway " + carveLease[6].gateway.Addr().String(), "gateway " + carveLease[4].gateway.Addr().String()}; !slices.Equal(delivered, slices.Sorted(slices.Values(want))) {
+		t.Errorf("the leaf's socket took %q, want the gateway's datagram in each family alone", delivered)
+	}
+	// the border's table is new and nothing sent before it carried a carved source: the peer's, the held prefix's and
+	// this node's own from the leased link, and the peer's from the second link
+	for _, family := range []int{4, 6} {
+		spec := fmt.Sprintf("drop ipv%d source @carved%d", family, family)
+		waitFor(t, rulesSettle, "the border to count the 4 forged datagrams on "+spec, func() bool { return borderDropped(t, leaf, border, spec) >= 4 })
+		overlay := carveOverlayDrop(family)
+		waitFor(t, rulesSettle, "the border to count the second link's unannounced lease address on "+overlay, func() bool {
+			return borderDropped(t, leaf, border, overlay) > overlayBefore[family]
+		})
+	}
+}
+
+// carveOverlayDrop is the rule comment of the overlay's drop in family, 4 or 6
+func carveOverlayDrop(family int) string {
+	if family == 4 {
+		return "drop ipv4 source " + rulesOverlay[0].String()
+	}
+	return "drop ipv6 source " + rulesOverlay[1].String()
+}
+
+// carveOtherLink makes a second link from the leaf's namespace to other's, outside the mesh and the overlay, with other's
+// route to the lease's addresses through it
+func carveOtherLink(t *testing.T, leaf, other *netnstest.Thread) {
+	t.Helper()
+	if err := leaf.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer netlink.Close()
+		if err := netlink.AddVeth("carx", "carf", 0, other.Path); err != nil {
+			return fmt.Errorf("make the second link: %w", err)
+		}
+		return netlink.AddAddresses("carx", carveOther[4].leaf, carveOther[6].leaf)
+	}); err != nil {
+		t.Fatalf("make the leaf's end of the second link: %v", err)
+	}
+	if err := other.Do(func() error {
+		netlink, err := netnstest.OpenNetlink()
+		if err != nil {
+			return err
+		}
+		defer netlink.Close()
+		if err := netlink.AddAddresses("carf", carveOther[4].far, carveOther[6].far); err != nil {
+			return err
+		}
+		link, err := net.InterfaceByName("carf")
+		if err != nil {
+			return err
+		}
+		for family, lease := range carveLease {
+			if err := netlink.RouteVia(link.Index, netip.PrefixFrom(lease.lease.Addr(), lease.lease.Addr().BitLen()), carveOther[family].leaf.Addr()); err != nil {
+				return fmt.Errorf("route the lease's address through the second link: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("make the far end of the second link: %v", err)
+	}
+}
+
+// carvePointToPoint is a PPPoE uplink's addresses in the lab, the leaf's own outside the overlay and its gateway's inside it,
+// and an address of the overlay off the link that a datagram from the far side forges
+var carvePointToPoint = struct{ local, gateway, forged netip.Addr }{
+	netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("192.0.2.254"), netip.MustParseAddr("192.0.2.5"),
+}
+
+// a leaf whose uplink is point to point, its gateway's address inside the overlay as a PPPoE peer's can be, carves the gateway
+// alone: the mesh's table throws the gateway's host prefix, the border takes the gateway's datagram from the link, and it drops
+// and counts one forged from another address of the overlay
+func TestTUNBorderCarvesAPointToPointUplinksGateway(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("creating a tun needs root on linux")
+	}
+	leaf, far := netnstest.StartThread(t), netnstest.StartThread(t)
+	rulesUplinkPair(t, leaf, far)
+	p2p := carvePointToPoint
+	if err := leaf.Do(func() error { return carvePeerAddress(rulesUplink, p2p.local, p2p.gateway) }); err != nil {
+		t.Fatalf("address the leaf's end of the point-to-point uplink: %v", err)
+	}
+	if err := far.Do(func() error { return carvePeerAddress(rulesFar, p2p.gateway, p2p.local) }); err != nil {
+		t.Fatalf("address the gateway's end of the point-to-point uplink: %v", err)
+	}
+	d := startExitDaemon(t, leaf)
+	gateway := netip.PrefixFrom(p2p.gateway, 32)
+	waitFor(t, rulesSettle, "the reconciler to throw the gateway in place of the overlay's hold", func() bool {
+		return slices.Contains(carveHeld(t, leaf), "throw "+gateway.String())
+	})
+	var border *kernelexit.BorderFilter
+	if err := leaf.Do(func() (err error) {
+		border, err = kernelexit.NewBorderFilter(d.node.config().Cap.Border, d.node.BorderRuntime())
+		return err
+	}); err != nil {
+		t.Fatalf("start the border: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = border.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	waitFor(t, rulesSettle, "the border to carve the gateway", func() bool {
+		return slices.ContainsFunc(border.Stats().CarveOuts, func(c egress.CarveOut) bool { return c.Link == rulesUplink && c.Prefix == gateway })
+	})
+	var receiver *net.UDPConn
+	if err := leaf.Do(func() (err error) {
+		receiver, err = net.ListenUDP("udp4", &net.UDPAddr{Port: carvePort})
+		return err
+	}); err != nil {
+		t.Fatalf("listen on the leaf: %v", err)
+	}
+	t.Cleanup(func() { _ = receiver.Close() })
+	const overlayDrop = "drop ipv4 source 192.0.2.0/24"
+	before := borderDropped(t, leaf, border, overlayDrop)
+	if err := far.Do(func() error {
+		for name, source := range map[string]netip.Addr{"gateway": p2p.gateway, "forged": p2p.forged} {
+			if err := carveSend(source, p2p.local, name+" "+source.String()); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -207,14 +388,28 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 		}
 		delivered = append(delivered, string(buf[:n]))
 	}
-	slices.Sort(delivered)
-	if want := []string{"gateway " + carveLease[6].gateway.Addr().String(), "gateway " + carveLease[4].gateway.Addr().String()}; !slices.Equal(delivered, slices.Sorted(slices.Values(want))) {
-		t.Errorf("the leaf's socket took %q, want the gateway's datagram in each family alone", delivered)
+	if want := []string{"gateway " + p2p.gateway.String()}; !slices.Equal(delivered, want) {
+		t.Errorf("the leaf's socket took %q, want the gateway's datagram alone", delivered)
 	}
-	for _, family := range []int{4, 6} {
-		spec := fmt.Sprintf("drop ipv%d source @carved%d", family, family)
-		waitFor(t, rulesSettle, "the border to count the forged datagram on "+spec, func() bool { return borderDropped(t, leaf, border, spec) > before[family] })
+	waitFor(t, rulesSettle, "the border to count the forged datagram on "+overlayDrop, func() bool { return borderDropped(t, leaf, border, overlayDrop) > before })
+}
+
+// carvePeerAddress gives the link name the address local with peer at its far end, as pppd addresses a PPPoE link: IFA_LOCAL
+// is the host's own and IFA_ADDRESS the peer's, a host prefix the kernel routes by the link
+func carvePeerAddress(name string, local, peer netip.Addr) error {
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		return err
 	}
+	netlink, err := netnstest.OpenNetlink()
+	if err != nil {
+		return err
+	}
+	defer netlink.Close()
+	header := []byte{unix.AF_INET, 32, unix.IFA_F_NODAD, unix.RT_SCOPE_UNIVERSE, 0, 0, 0, 0}
+	binary.NativeEndian.PutUint32(header[4:], uint32(link.Index))
+	return netlink.Request(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL,
+		slices.Concat(header, netnstest.Attr(unix.IFA_LOCAL, local.AsSlice()), netnstest.Attr(unix.IFA_ADDRESS, peer.AsSlice())))
 }
 
 // carvePort is the leaf's port the far side sends to through the carve-out
