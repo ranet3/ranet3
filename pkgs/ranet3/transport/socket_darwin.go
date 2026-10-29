@@ -36,7 +36,8 @@ import (
 // own routing: there are no marks, no policy rules and one table shared by
 // every program, so a real default route out of the mesh tun would otherwise
 // carry this node's own ESP into the tunnel that ESP is carrying. The second
-// is the address and interface each datagram reached.
+// is the address and interface each datagram reached, and the third its outer
+// ECN field.
 //
 // Scoping the socket is necessary and, on this kernel, not sufficient. See
 // reportBoundReach for what else the host needs and for the measurement.
