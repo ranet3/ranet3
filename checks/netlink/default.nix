@@ -138,14 +138,15 @@ testers.runNixOSTest {
     assert ran >= 11, f"only {ran} nftables round trips ran:\n{out}"
 
     # the encoder's sets, their elements, the lookup, ct with a direction and the set messages of the monitor, each
-    # acting on loopback's datagrams, and woken by another writer
+    # acting on loopback's datagrams, and woken by another writer, and a set of ten thousand intervals filled in one batch
     out = machine.succeed(
-        "${netlinkTests}/bin/nftables-tests -test.v -test.run '^TestNftables(FilterExpressionsActOnPackets|SetElementsReadBackAndWakeOnAnothersChange)$' 2>&1"
+        "${netlinkTests}/bin/nftables-tests -test.v -test.run '^TestNftables(FilterExpressionsActOnPackets|SetElementsReadBackAndWakeOnAnothersChange|BatchFillsASetOfTenThousandIntervals)$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the encoder's round trips skipped themselves under root:\n{out}"
     assert "--- PASS: TestNftablesFilterExpressionsActOnPackets" in out, f"the expressions on packets did not run:\n{out}"
     assert "--- PASS: TestNftablesSetElementsReadBackAndWakeOnAnothersChange" in out, f"the set elements' readback and wake did not run:\n{out}"
+    assert "--- PASS: TestNftablesBatchFillsASetOfTenThousandIntervals" in out, f"the batch of ten thousand intervals did not run:\n{out}"
 
     # the exit behavior suite against the kernel exit under each class: rows 1 to 5, Egress from several sessions, the
     # packets no flow is tracked for out of the mesh and into it, the idle timers read from conntrack's listing, the

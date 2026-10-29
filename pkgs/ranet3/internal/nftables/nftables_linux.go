@@ -825,6 +825,22 @@ type Message struct {
 	Data []byte
 }
 
+// fitSendBuffer grows the socket's send buffer to hold a batch of size bytes,
+// since netlink refuses a message longer than the buffer whole (EMSGSIZE), as
+// a set of thousands of elements is. SO_SNDBUFFORCE passes net.core.wmem_max
+// where the process holds CAP_NET_ADMIN, as nft's own socket does.
+func (c *Conn) fitSendBuffer(size int) error {
+	// the kernel reports the buffer doubled, its own overhead included
+	held, err := unix.GetsockoptInt(c.fd, unix.SOL_SOCKET, unix.SO_SNDBUF)
+	if err != nil || held/2 >= size {
+		return err
+	}
+	if err := unix.SetsockoptInt(c.fd, unix.SOL_SOCKET, unix.SO_SNDBUFFORCE, size); err == nil {
+		return nil
+	}
+	return unix.SetsockoptInt(c.fd, unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+}
+
 // Batch sends one transaction and waits for the kernel to acknowledge every
 // message in it. Everything between the batch markers commits together or not
 // at all, so a failure leaves the host holding exactly what it held before.
@@ -853,6 +869,9 @@ func (c *Conn) Batch(requests []Request) error {
 	end := c.next()
 	last = end
 	buf = c.appendMessage(buf, unix.NFNL_MSG_BATCH_END, 0, end, marker)
+	if err := c.fitSendBuffer(len(buf)); err != nil {
+		return err
+	}
 	if err := unix.Sendto(c.fd, buf, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
 		return err
 	}

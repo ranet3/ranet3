@@ -266,6 +266,72 @@ func TestNftablesSetElementsReadBackAndWakeOnAnothersChange(t *testing.T) {
 	}
 }
 
+// largeSetIntervals is how many intervals the large set's one transaction
+// fills, two elements each
+const largeSetIntervals = 10000
+
+// A transaction filling a set with ten thousand intervals goes through as one
+// batch on a socket whose send buffer starts at a fraction of it, and the set
+// reads back every interval
+func TestNftablesBatchFillsASetOfTenThousandIntervals(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn := dial(t)
+	set := Set{Table: "large", Name: "large6", ID: 1, KeyType: TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL}
+	prefixes := make([]netip.Prefix, 0, largeSetIntervals)
+	for i := range largeSetIntervals {
+		// every other /64 of 2001:db8::/48, so no two intervals join
+		n := 2 * i
+		prefixes = append(prefixes, netip.PrefixFrom(netip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 6: byte(n >> 8), 7: byte(n)}), 64))
+	}
+	intervals := Prefixes(prefixes)
+	if len(intervals) != largeSetIntervals {
+		t.Fatalf("the prefixes make %d intervals, want %d", len(intervals), largeSetIntervals)
+	}
+	made, err := set.Create(unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled, err := set.Fill(unix.NFPROTO_INET, intervals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := append([]Request{NewTable(unix.NFPROTO_INET, set.Table), made}, filled...)
+	size := 0
+	for _, request := range requests {
+		size += unix.NLMSG_HDRLEN + (len(request.Body)+unix.NLMSG_ALIGNTO-1)&^(unix.NLMSG_ALIGNTO-1)
+	}
+	// a quarter of the batch, which the kernel doubles, whatever net.core.wmem_default holds
+	if err := unix.SetsockoptInt(conn.fd, unix.SOL_SOCKET, unix.SO_SNDBUF, size/4); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Batch(requests); err != nil {
+		t.Fatalf("fill %d intervals in one batch of %d bytes: %v", len(intervals), size, err)
+	}
+	held, err := set.Elements(conn, unix.NFPROTO_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.EqualFunc(held, intervals, func(a, b Interval) bool { return bytes.Equal(a.First, b.First) && bytes.Equal(a.Last, b.Last) }) {
+		t.Errorf("the set reads back %d intervals, not the %d written", len(held), len(intervals))
+	}
+	grown, err := unix.GetsockoptInt(conn.fd, unix.SOL_SOCKET, unix.SO_SNDBUF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "SO_SNDBUFFORCE"
+	if err := unix.SetsockoptInt(conn.fd, unix.SOL_SOCKET, unix.SO_SNDBUFFORCE, grown/2); err != nil {
+		path = "SO_SNDBUF, SO_SNDBUFFORCE refused with " + err.Error()
+	}
+	most, err := os.ReadFile("/proc/sys/net/core/wmem_max")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("a batch of %d bytes went through a send buffer grown to %d bytes by %s, net.core.wmem_max %s", size, grown, path, strings.TrimSpace(string(most)))
+}
+
 func dial(t *testing.T) *Conn {
 	t.Helper()
 	conn, err := Dial()
