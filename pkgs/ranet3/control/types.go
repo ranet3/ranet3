@@ -460,13 +460,17 @@ type KernelSkip struct {
 }
 
 // KernelTaken is one lookup another program's rule takes: an overlay prefix
-// whose address the kernel answers outside the tun and its hold, or a peer's
-// endpoint whose lookup under the underlay's mark the kernel answers through
-// the tun
+// whose address the kernel answers outside the tun and its hold, or a live
+// session's send to a peer's endpoint whose lookup under the underlay's mark
+// the kernel answers through the tun
 type KernelTaken struct {
 	Family   string `json:"family"`
 	Prefix   string `json:"prefix,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"`
+	// Source and Interface are the source address and interface the send
+	// carries, absent where the route picks them
+	Source    string `json:"source,omitempty"`
+	Interface string `json:"interface,omitempty"`
 	// Address is the address asked inside Prefix
 	Address string `json:"address,omitempty"`
 	Answer  string `json:"answer"`

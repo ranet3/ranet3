@@ -188,7 +188,11 @@ func (c *Client) kernel() control.KernelStatus {
 		switch {
 		case !lookup.Taken:
 		case lookup.Underlay():
-			status.Taken = append(status.Taken, control.KernelTaken{Family: string(lookup.Family), Endpoint: lookup.Address.String(), Answer: lookup.Answer})
+			taken := control.KernelTaken{Family: string(lookup.Family), Endpoint: lookup.Address.String(), Interface: lookup.Interface, Answer: lookup.Answer}
+			if lookup.Source.IsValid() {
+				taken.Source = lookup.Source.String()
+			}
+			status.Taken = append(status.Taken, taken)
 		default:
 			status.Taken = append(status.Taken, control.KernelTaken{Family: string(lookup.Family), Prefix: lookup.Prefix.String(), Address: lookup.Address.String(), Answer: lookup.Answer})
 		}

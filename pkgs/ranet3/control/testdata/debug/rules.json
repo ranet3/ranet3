@@ -176,6 +176,23 @@
       "address": "203.0.113.70",
       "answer": "table 51820 dev wg0",
       "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv6",
+      "address": "2001:db8:400::7",
+      "source": "2001:db8:a::10",
+      "interface": "eth0",
+      "answer": "table 300 dev ranet0",
+      "taken": true
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv6",
+      "address": "2001:db8:400::7",
+      "source": "2001:db8:b::10",
+      "answer": "table main dev eth0",
+      "taken": false
     }
   ],
   "border": {

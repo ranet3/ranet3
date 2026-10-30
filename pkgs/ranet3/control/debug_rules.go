@@ -4,6 +4,7 @@
 package control
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"net/netip"
@@ -44,18 +45,22 @@ type RulesInfo struct {
 
 // RuleLookup is one lookup of the reconciler: unmarked, of Address inside the
 // overlay hold Prefix, or of the underlay, under its mark toward the peer
-// endpoint Address. Taken is an overlay lookup answered outside the tun and
-// its hold, or the underlay's answered through the tun. On darwin an underlay
-// row is the interface a live session's datagrams to Address name, or the
-// interface of the pin they carry, Prefix the route the selection matched,
-// absent for a pin, and never taken
+// endpoint Address from Source out of Interface, each absent where a live
+// session's send carries none. Taken is an overlay lookup answered outside the
+// tun and its hold, or the underlay's answered through the tun. Source and
+// Interface are linux's lookups'. On darwin an underlay row is the interface a
+// live session's datagrams to Address name, or the interface of the pin they
+// carry, in Answer, its Source and Interface empty, Prefix the route the
+// selection matched, absent for a pin, and never taken
 type RuleLookup struct {
-	Lookup  string       `json:"lookup"`
-	Family  string       `json:"family"`
-	Prefix  netip.Prefix `json:"prefix,omitzero"`
-	Address netip.Addr   `json:"address"`
-	Answer  string       `json:"answer"`
-	Taken   bool         `json:"taken"`
+	Lookup    string       `json:"lookup"`
+	Family    string       `json:"family"`
+	Prefix    netip.Prefix `json:"prefix,omitzero"`
+	Address   netip.Addr   `json:"address"`
+	Source    netip.Addr   `json:"source,omitzero"`
+	Interface string       `json:"interface,omitempty"`
+	Answer    string       `json:"answer"`
+	Taken     bool         `json:"taken"`
 }
 
 // PolicyRule is one policy rule, as the kernel holds it or as the reconciler
@@ -156,18 +161,21 @@ func RenderRules(w io.Writer, info RulesInfo) {
 	if len(info.Lookups) > 0 {
 		rows := make([][]string, 0, len(info.Lookups))
 		for _, lookup := range info.Lookups {
-			prefix, taken := "-", "no"
+			prefix, source, iface, taken := "-", "-", cmp.Or(lookup.Interface, "-"), "no"
 			if lookup.Prefix.IsValid() {
 				prefix = lookup.Prefix.String()
+			}
+			if lookup.Source.IsValid() {
+				source = lookup.Source.String()
 			}
 			if lookup.Taken {
 				taken = "yes"
 			}
-			rows = append(rows, []string{lookup.Lookup, lookup.Family, prefix, lookup.Address.String(), taken, lookup.Answer})
+			rows = append(rows, []string{lookup.Lookup, lookup.Family, prefix, lookup.Address.String(), source, iface, taken, lookup.Answer})
 		}
 		fmt.Fprint(w, "Lookups\n")
 		indented(w, func(w io.Writer) {
-			table(w, []string{"Lookup", "Family", "Prefix", "Address", "Taken", "Answer"}, rows)
+			table(w, []string{"Lookup", "Family", "Prefix", "Address", "Source", "Interface", "Taken", "Answer"}, rows)
 		})
 	} else if info.PolicyErr == "" {
 		fmt.Fprint(w, "Lookups: none\n")

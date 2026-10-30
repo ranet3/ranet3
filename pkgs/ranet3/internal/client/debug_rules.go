@@ -66,7 +66,8 @@ func (c *Client) DebugRules() control.RulesInfo {
 			kind = "underlay"
 		}
 		info.Lookups = append(info.Lookups, control.RuleLookup{
-			Lookup: kind, Family: string(lookup.Family), Prefix: lookup.Prefix, Address: lookup.Address, Answer: lookup.Answer, Taken: lookup.Taken,
+			Lookup: kind, Family: string(lookup.Family), Prefix: lookup.Prefix, Address: lookup.Address,
+			Source: lookup.Source, Interface: lookup.Interface, Answer: lookup.Answer, Taken: lookup.Taken,
 		})
 	}
 	if c.underlayRoutes != nil {

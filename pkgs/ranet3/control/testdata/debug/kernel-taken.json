@@ -29,6 +29,19 @@
       "family": "ipv4",
       "endpoint": "203.0.113.70",
       "answer": "table 200 dev ranet0"
+    },
+    {
+      "family": "ipv4",
+      "endpoint": "203.0.113.71",
+      "source": "198.51.100.10",
+      "answer": "table 300 dev ranet0"
+    },
+    {
+      "family": "ipv6",
+      "endpoint": "2001:db8:400::7",
+      "source": "2001:db8:a::10",
+      "interface": "eth0",
+      "answer": "table 300 dev ranet0"
     }
   ],
   "err": "add rule priority 5110: file exists"
