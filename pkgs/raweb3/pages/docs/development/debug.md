@@ -77,14 +77,14 @@ nothing under `off`, and the root and plaintext classes refuse every call there.
 
 A debug request the daemon does not answer with 200 gets one of these statuses:
 
-| Status | When                                                                                                                                                                                                                                                                |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 400    | an events or trace query, an action body or a `debug route` packet that does not parse, a trace query out of its bounds, a link `debug route` refuses as the arrival, such as the mesh's tun, or an action the node refuses, such as `debug probe` while it is down |
-| 403    | the class refuses the caller, and the answer names the rule and the caller's uid or the missing credentials                                                                                                                                                         |
-| 404    | no debug path has that name, except under `off`, which answers 403                                                                                                                                                                                                  |
-| 405    | a read sent with a method other than GET or HEAD, a trace sent with one other than GET, or an action sent with one other than POST                                                                                                                                  |
-| 501    | the server behind the socket does not implement the view, and the answer names it. The `ranet3` daemon implements every view                                                                                                                                        |
-| 503    | the daemon already holds 4 streams, event and trace streams together, or a trace asked for while the daemon stops                                                                                                                                                   |
+| Status | When                                                                                                                                                                                                                                                                                                                    |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | an events or trace query, an action body or a `debug route` packet that does not parse, a trace query out of its bounds, a link or a peer `debug route` refuses as the arrival, such as the mesh's tun or a node this node holds no session with, or an action the node refuses, such as `debug probe` while it is down |
+| 403    | the class refuses the caller, and the answer names the rule and the caller's uid or the missing credentials                                                                                                                                                                                                             |
+| 404    | no debug path has that name, except under `off`, which answers 403                                                                                                                                                                                                                                                      |
+| 405    | a read sent with a method other than GET or HEAD, a trace sent with one other than GET, or an action sent with one other than POST                                                                                                                                                                                      |
+| 501    | the server behind the socket does not implement the view, and the answer names it. The `ranet3` daemon implements every view                                                                                                                                                                                            |
+| 503    | the daemon already holds 4 streams, event and trace streams together, or a trace asked for while the daemon stops                                                                                                                                                                                                       |
 
 On a NixOS host and on macOS the daemon runs as root, so the root and plaintext
 classes mean `sudo`. In an `unshare -rn` lab the caller already reads as uid 0.
@@ -110,6 +110,7 @@ These commands take flags of their own:
 | `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                           |
 | `debug events` | `--since`        | every recorded event | how recent a recorded event must be                             |
 | `debug route`  | `--iif`          | none                 | the link the packet arrives on, none for this host's own        |
+| `debug route`  | `--peer`         | none                 | the node whose session the packet arrives through               |
 | `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times        |
 | `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait       |
 | `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                           |
@@ -196,24 +197,40 @@ These commands take flags of their own:
   carrying a selector the view keeps no value of, `uidrange`, `ipproto`,
   `sport`, `dport`, `dscp`, `flowlabel` or `tun_id`, or carrying
   `suppress_ifgroup`, shows that name among its selectors.
-- `debug route <src> <dst> [--iif link]` follows one packet to where the kernel
-  sends it: this host's own packet, or with `--iif` one arriving on that link.
-  An unspecified `src`, such as `0.0.0.0`, is this host's own packet sent with
-  no source. The mesh's tun is refused as `--iif`, since a packet written into
-  it is this host's own. The packet is taken unmarked and well formed. The view
-  makes 1 route lookup, and a second where an IPv6 one answers a route or an
-  IPv4 one answers `EHOSTUNREACH`, through one socket, and 1 rule dump through
-  another, now, and shows the route the kernel matched with its prefix, table
-  and next hops, each marked `dead` or `linkdown` where the kernel marks it,
-  beside the type the kernel gives the packet, and where the route leaves by: a
-  link, this host, nowhere, or into the mesh's tun, where this view ends. It
-  reads no nftables chain, so a link it names is where the route leaves by, not
-  what [the kill switch](../routing.md#the-kill-switch-on-linux) lets leave. For
-  this host's own IPv6 packet to `::`, the unspecified address, it names no path
-  the packet leaves by, and says in a line of its own, whatever the lookup
-  answers, that a socket sends such a packet to `::1` or by the route, or
-  refuses it, as its type and the platform decide, so the answer may not be the
-  packet's path (Linux's rewrite is in
+- `debug route <src> <dst> [--iif link | --peer node]` follows one packet to
+  where this host sends it: this host's own packet, with `--iif` one arriving on
+  that link, or with `--peer` one arriving through a session from that node,
+  named as `redial` names a peer, and where this node holds several live
+  sessions with it, the first in path order. An unspecified `src`, such as
+  `0.0.0.0`, is this host's own packet sent with no source, and a packet
+  arriving on a link or through a session needs a `src`. The mesh's tun is
+  refused as `--iif`, since a packet written into it is this host's own. The
+  packet is an ICMP echo request of no data, unmarked and well formed, with a
+  hop limit of 64 and no IPv4 option or IPv6 extension header. A packet arriving
+  through a session meets the segment of this node whose SID is its destination,
+  and stops there, since its packet carries no routing header or inner packet,
+  or else the mesh's decision, and the kernel's lookup only where the mesh
+  delivers it to this host, as a packet arriving on the tun, whose route ends
+  the walk. Any other packet meets the kernel's lookup. Where the kernel routes
+  it into the tun, a packet of this host with a source, or one arriving on a
+  link that the kernel forwards, goes on through the checks the mesh makes of a
+  packet it reads off the tun, the checks of its source made afresh rather than
+  kept from an earlier read. This host's own packet with no source ends at the
+  kernel's route, since the kernel picks its source and does not answer with it,
+  and so does an arrival the kernel does not forward. The view's steps through
+  the mesh call the mesh's own checks in the order a packet meets them, and
+  spend no ICMP token, move no counter and write nothing. Where it reaches the
+  kernel, the view asks the kernel for 1 route lookup, a second where an IPv6
+  one answers a route or an IPv4 one answers `EHOSTUNREACH`, and a link lookup
+  for the arrival and for each next hop, through one socket, and 1 rule dump
+  through another, now, and reads the settings of `all` and of the arrival link
+  that the answer calls for. It reads no nftables chain, so a link it names is
+  where the route leaves by, not what
+  [the kill switch](../routing.md#the-kill-switch-on-linux) lets leave.
+  [Route rows](#route-rows) gives each row the view prints. For this host's own
+  IPv6 packet to `::`, the unspecified address, the view names no path the
+  packet leaves by, since a socket sends such a packet to `::1` or by the route,
+  or refuses it, as its type and the platform decide (Linux's rewrite is in
   [`udpv6_sendmsg`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/udp.c#L1459)).
   The kernel names no rule, so the rule shown is the one a walk of the dumped
   rules ends on for that answer, as far as the answer tells: the view walks them
@@ -375,6 +392,33 @@ These commands take flags of their own:
   described below. A packet the forwarding decision never sees, such as Babel's
   own or IKE and ESP on the underlay, never appears. With `--json` each line is
   an object holding a `packet` or a `note`.
+
+## Route rows
+
+`debug route` prints a row for each part the packet meets, in the order it meets
+them: the segment's or the mesh's rows before the kernel's for a packet arriving
+through a session, after them for any other. A row with nothing to say is left
+out.
+
+| Row      | What it shows                                                                                                                                         |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Packet   | the source, the destination and the arrival, and that the lookup left out the source where the platform's lookup does not take one                    |
+| Segment  | the segment of this node the packet is addressed to, as the file spells it, with an egress segment's part of the exit                                 |
+| Source   | whether the source lies in `cap.border`'s overlay and, for an egress segment, in its allow list, the order the segment checks them in                 |
+| Decision | the drop of a source the segment refuses, as a [trace record](#trace-records) names it                                                                |
+| Then     | what the segment does next with a packet it admits                                                                                                    |
+| Mesh     | the mesh's decision and its reason as a trace record names them, with the ICMP error an answer carries, or why the walk did not follow the packet     |
+| Steered  | the policy that steers a read to the first segment of its path                                                                                        |
+| Matched  | the table's entry the destination matched, and whether it counts as a default                                                                         |
+| Session  | the session a packet is held to and the most it carries, the steering's header among it, past which a packet is answered too big or cut               |
+| Expiring | for a packet arriving through a session, that one arriving with a hop limit of 1 or less is answered expired                                          |
+| Kernel   | the errno the kernel refused the lookup with and what it means as far as the answer and the settings tell, or that the platform looks up no route     |
+| Unread   | a rule ahead of the one shown carrying a selector the walk does not read, taken as not taking the packet                                              |
+| Rule     | the rule a walk of the dumped rules ends on for the answer                                                                                            |
+| Route    | the route the kernel matched, with its prefix, table and next hops, each marked `dead` or `linkdown` where the kernel marks it, and the packet's type |
+| Leaves   | where the route leaves by: a link, this host, nowhere, or into the mesh's tun                                                                         |
+| Socket   | for this host's own IPv6 packet to `::`, that a socket decides where it goes, so the answer may not be its path                                       |
+| Settings | each setting read to explain the answer, with its value or why it could not be read                                                                   |
 
 ## Trace records
 

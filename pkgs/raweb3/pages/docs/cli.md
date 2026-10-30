@@ -179,7 +179,7 @@ it. [Debugging](development/debug.md) describes each command and the events.
 | `debug pmtu [peer]`                    | Show each session's path MTU                                                        | none                                                                                                        |
 | `debug probe [peer]`                   | Probe sessions now                                                                  | `--all`                                                                                                     |
 | `debug rules`                          | Show the host's policy rules, the border filter's chain and the kill switch's table | none                                                                                                        |
-| `debug route <src> <dst>`              | Show where a packet goes                                                            | `--iif`                                                                                                     |
+| `debug route <src> <dst>`              | Show where a packet goes                                                            | `--iif`, `--peer`                                                                                           |
 | `debug egress`                         | Show the exit's rules and readiness                                                 | none                                                                                                        |
 | `debug segments`                       | Show local segments and steering                                                    | none                                                                                                        |
 | `debug runtime`                        | Show daemon runtime state                                                           | none                                                                                                        |
@@ -199,10 +199,17 @@ it. [Debugging](development/debug.md) describes each command and the events.
   it came. `--attr` may be repeated, and every attribute must match. `--past`
   takes a duration and also matches an event recorded within it.
 - `debug pmtu` shows every session, or the sessions of 1 peer.
-- `debug route` follows this host's own packet from `src` to `dst`, or with
-  `--iif` one arriving on that link. An unspecified `src` such as `0.0.0.0` is
-  this host's own packet sent with no source. The mesh's tun is refused as
-  `--iif`.
+- `debug route` follows this host's own packet from `src` to `dst`, with `--iif`
+  one arriving on that link, or with `--peer` one arriving through a session
+  from that node, named as `redial` names a peer. An unspecified `src` such as
+  `0.0.0.0` is this host's own packet sent with no source. The mesh's tun is
+  refused as `--iif`, and `--iif` and `--peer` together are refused. A packet
+  from a session meets the segment of this node it is addressed to, or the
+  mesh's decision and, where the mesh delivers it to this host, the kernel's
+  lookup, whose route ends the walk. Any other meets the kernel's lookup, and
+  where the kernel routes it into the tun, a packet of this host with a source,
+  or one arriving on a link that the kernel forwards, goes on through the mesh's
+  checks of what it reads off the tun.
 - `debug trace` prints a line for each packet the forwarding decision handles
   and the filter selects until `--for` has passed, and needs uid 0. `--src` and
   `--dst` take a prefix or an address and may be repeated, `--proto` a name or a
@@ -252,8 +259,8 @@ These complete without a daemon:
 These ask the daemon at the socket the command line names, or at the default
 socket:
 
-- the peer of `redial`, `rekey` and `debug probe`, and `--peer` of
-  `debug trace`, from the peers the daemon dials and the nodes it holds a
+- the peer of `redial`, `rekey` and `debug probe`, and `--peer` of `debug route`
+  and `debug trace`, from the peers the daemon dials and the nodes it holds a
   session with
 - the peer of `debug pmtu`, from the nodes of its sessions
 - the kind of `debug wait`, and `--kind` of `debug events`, from the kinds of
@@ -264,6 +271,7 @@ socket:
   mesh's tun the daemon names left out
 
 When the daemon does not answer, completion offers nothing. A completion from
-the recorded events, from `debug pmtu` or for `debug route` waits at most 1
-second. A completion for `redial`, `rekey`, `debug probe` or `--peer` of
-`debug trace` makes 2 reads, and waits up to 10 seconds for each.
+the recorded events, from `debug pmtu` or for `--iif` of `debug route` waits at
+most 1 second. A completion for `redial`, `rekey`, `debug probe` or `--peer` of
+`debug route` or `debug trace` makes 2 reads, and waits up to 10 seconds for
+each.
