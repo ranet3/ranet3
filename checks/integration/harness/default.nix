@@ -262,6 +262,11 @@ let
   };
   # the address Tailscale's exit node holds and nothing else answers
   exitOnlyV4 = "203.0.113.1";
+  # Docker runs an arm under cap.exit, the client switched into it with the gateway announcing a default
+  # the gateway answers these on lo as the far side of the mesh's exit, and the client sends them nothing over the mesh otherwise
+  exitArm = lib.elem beside [ "docker" ];
+  meshExitV4 = "203.0.113.2";
+  meshExitV6 = "2001:db8:ff00::2";
   # k3s pulls nothing: its pods and its pause container run this image from the store
   podImageName = "example.org/pod:local";
   podImage = pkgs.dockerTools.buildLayeredImage {
@@ -300,8 +305,11 @@ let
   # what each program beside ranet3 adds to the client, at its defaults
   besideClient = {
     docker = {
+      # main's default, which the catch-all under cap.exit has to come ahead of, as on a deployed host
+      imports = [ uplinkDefault ];
       virtualisation.docker.enable = true;
       virtualisation.memorySize = 1536;
+      specialisation.exit.configuration.networking.ranet3.settings.cap.exit.forward = [ "docker0" ];
     };
     tailscale =
       { nodes, ... }:
@@ -444,7 +452,7 @@ testers.runNixOSTest {
           ]
           # A capture is the only thing that tells a packet that never arrived
           # from one the far end refused.
-          ++ pkgs.lib.optionals (segments || beside == "docker") [ tcpdump ];
+          ++ pkgs.lib.optionals (segments || exitArm) [ tcpdump ];
 
         environment.etc = {
           "swanctl/private/org-key.pem".source = ../../fixtures/org-key.pem;
@@ -487,6 +495,14 @@ testers.runNixOSTest {
               # sends straight back to the client.
               ++ pkgs.lib.optionals segments [ { Address = "${gatewayBehind}/128"; } ]
               ++ pkgs.lib.optionals egressSegment [ { Address = "${gatewayOutside}/128"; } ];
+            };
+            "05-lo" = lib.mkIf exitArm {
+              matchConfig.Name = "lo";
+              networkConfig.ConfigureWithoutCarrier = true;
+              addresses = [
+                { Address = "${meshExitV4}/32"; }
+                { Address = "${meshExitV6}/128"; }
+              ];
             };
           };
         };
@@ -580,7 +596,10 @@ testers.runNixOSTest {
               scan time 1;
             }
 
+            # after ranet3 restarts under cap.exit, the kernel keeps this BIRD's unreachable for a network the client
+            # announces until a kernel protocol's next scan, 60 s apart by default, while BIRD's table routes it by the client
             protocol kernel {
+              scan time 1;
               ipv6 sadr {
                 export all;
                 import none;
@@ -593,6 +612,7 @@ testers.runNixOSTest {
             }
 
             protocol kernel kernel4 {
+              scan time 1;
               ipv4 {
                 export all;
                 import none;
@@ -623,6 +643,20 @@ testers.runNixOSTest {
                 rtt max 1024 ms;
                 rx buffer 1500;
               };
+            }
+          ''
+          # the mesh's default, which the arm under cap.exit enables
+          + lib.optionalString exitArm ''
+            protocol static exit4 {
+              disabled;
+              ipv4;
+              route 0.0.0.0/0 unreachable;
+            }
+
+            protocol static exit6 {
+              disabled;
+              ipv6 sadr;
+              route ::/0 from ::/0 unreachable;
             }
           '';
         };
@@ -1155,7 +1189,7 @@ testers.runNixOSTest {
         assert status["segments"], "the local segment is not reported"
       '';
 
-      exitTranslates = ''
+      captureWhile = ''
         def capture_while(machine, interface, name, filter, count, act):
             """What machine saw on interface of count packets the filter matches while act ran.
 
@@ -1172,7 +1206,9 @@ testers.runNixOSTest {
             machine.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
             print(machine.succeed(f"cat /tmp/{name}.log"))
             return machine.succeed(f"tcpdump -nr /tmp/{name}.pcap")
+      '';
 
+      exitTranslates = captureWhile + ''
         def carried(name, filter, source, destination):
             """what the far side saw of three pings through the exit"""
             return capture_while(
@@ -2258,16 +2294,74 @@ testers.runNixOSTest {
             assert after == before, f"ranet3's restart changed another program's rules:\n{before}\nthen\n{after}"
       '';
 
+      exitMode = ''
+        def exit_mode():
+            """the client holds the gateway's default in both families and runs cap.exit's rules"""
+            gateway.succeed("birdc enable exit4", "birdc enable exit6")
+            for family in ["-4", "-6"]:
+                client.wait_until_succeeds(f"ip {family} route show table {kernel_table} | grep -q '^default '", timeout=timeout)
+            client.succeed("${nodes.client.system.build.toplevel}/specialisation/exit/bin/switch-to-configuration test")
+            for family in ["-4", "-6"]:
+                client.wait_until_succeeds(f"ip {family} rule show | grep -q 'from all iif lo lookup {kernel_table} '", timeout=timeout)
+
+        def leaves_by_mesh_exit(name, ping, families=("ipv4", "ipv6"), lookup=""):
+            """the lookup of the far side of the mesh's exit takes the catch-all at 5440 into the mesh's table ahead of
+            main's default, and what ping sends there enters the mesh from the tun's own address"""
+            for family in families:
+                flag, filter, source, destination = {
+                    "ipv4": ("-4", "icmp[icmptype] = icmp-echo", "${clientTunnelV4}", "${meshExitV4}"),
+                    "ipv6": ("-6", "icmp6 and ip6[40] = 128", "${clientTunnel}", "${meshExitV6}"),
+                }[family]
+                rules = client.succeed(f"ip {flag} rule show")
+                route = client.succeed(f"ip route get {destination}{lookup}")
+                assert f"dev ${clientDevice} table {kernel_table} " in route, (
+                    f"the {name}'s lookup of {destination} does not take the catch-all at 5440 into table {kernel_table}:\n{route}\n{rules}")
+                try:
+                    client.wait_until_succeeds(f"{ping} -c 1 -W 2 {destination}", timeout=timeout)
+                except Exception:
+                    raise AssertionError(f"the {name}'s traffic does not reach {destination} beyond the mesh's exit:\n{rules}")
+                try:
+                    capture = capture_while(
+                        gateway, "swan0", f"{name}-{family}", f"{filter} and dst host {destination}", 1,
+                        lambda: client.succeed(f"{ping} -c 1 -W 2 {destination}"))
+                except Exception:
+                    gateway.execute("pkill -x tcpdump")
+                    raise AssertionError(f"the {name}'s traffic to {destination} did not enter the mesh:\n{rules}")
+                print(capture)
+                assert f"{source} > {destination}" in capture, f"the {name}'s traffic did not enter the mesh from {source}:\n{capture}"
+      '';
+
       besideScript = {
         # Docker beside an exit: a container reaches outside the mesh by main's route and inside it through the tun
         # under Docker's own masquerade, and the exit's translation at 99 runs ahead of Docker's nat POSTROUTING at 100
         docker = exitTranslates + ''
+          ${exitMode}
           # an empty image, and the VM's own store and programs in the container
           docker_run = "docker run --rm -v /nix/store:/nix/store -v /run/current-system/sw/bin:/bin scratch"
           ranet3_tables = ["inet", "ip", "ip6"]
 
+          def behind_reached():
+              """the gateway routes behind's network by the client's announcement and reaches behind through the exit,
+              with what the gateway and the client hold printed at each try that does not"""
+              def reached(_):
+                  route = gateway.succeed("ip -4 route show ${exitNetV4}")
+                  code, _ = gateway.execute("ping -c 1 -W 1 -I ${gatewayTunnelV4} ${behindV4}")
+                  if code != 0:
+                      print(gateway.execute("date +%T.%N; ip -4 route show ${exitNetV4}; birdc show route for ${behindV4} all")[1])
+                      print(client.execute("date +%T.%N; ip -4 route get ${gatewayTunnelV4} from ${behindV4} iif eth1; ip -4 route show table 200")[1])
+                  return "dev swan0" in route and code == 0
+
+              try:
+                  retry(reached, timeout=timeout)
+              except Exception:
+                  route = gateway.execute("ip -4 route show ${exitNetV4}")[1]
+                  if "dev swan0" not in route:
+                      raise AssertionError(f"the gateway holds no route to ${exitNetV4} by the client:\n{gateway.execute('birdc show route all')[1]}")
+                  raise AssertionError(f"the gateway routes ${exitNetV4} by the client and does not reach ${behindV4}:\n{route}")
+
           def exit_holds():
               """the exit translates for the mesh beside Docker's chains, and finds no other translation that runs ahead of its own"""
+              behind_reached()
               exit_translates()
               two_passes("egress")
               egress = json.loads(client.succeed("ranet3 status --json"))["egress"]
@@ -2281,16 +2375,52 @@ testers.runNixOSTest {
                   assert want in tables, f"{want} is not among {tables}"
 
           def docker_works():
-              """a container reaches behind outside the mesh, and the gateway's tunnel address as the client's own tun address"""
-              client.wait_until_succeeds(f"{docker_run} ping -c 1 -W 2 ${behindV4}", timeout=timeout)
-              capture = capture_while(
-                  gateway, "swan0", "docker", "icmp[icmptype] = icmp-echo", 1,
-                  lambda: client.wait_until_succeeds(f"{docker_run} ping -c 1 -W 2 ${gatewayTunnelV4}", timeout=timeout))
+              """a container reaches behind outside the mesh, and the gateway's tunnel address as the client's own tun address,
+              and the gateway reaches the container through its published port"""
+              try:
+                  client.wait_until_succeeds(f"{docker_run} ping -c 1 -W 2 ${behindV4}", timeout=timeout)
+              except Exception:
+                  raise AssertionError(f"a container does not reach ${behindV4} outside the mesh:\n{client.execute('ip -4 rule show')[1]}")
+              try:
+                  capture = capture_while(
+                      gateway, "swan0", "docker", "icmp[icmptype] = icmp-echo", 1,
+                      lambda: client.wait_until_succeeds(f"{docker_run} ping -c 1 -W 2 ${gatewayTunnelV4}", timeout=timeout))
+              except Exception:
+                  gateway.execute("pkill -x tcpdump")
+                  raise AssertionError(f"a container does not reach ${gatewayTunnelV4} through the mesh:\n{client.execute('ip -4 rule show')[1]}")
               print(capture)
               assert "${clientTunnelV4} > ${gatewayTunnelV4}" in capture, f"the gateway did not see the client's tun address:\n{capture}"
+              try:
+                  gateway.wait_until_succeeds(
+                      "curl -sf -m 2 http://${nodes.client.networking.primaryIPAddress}:8080/ | grep -qx beside", timeout=timeout)
+              except Exception:
+                  raise AssertionError(f"the gateway does not reach the container through its published port 8080:\n{client.execute('ip -4 rule show')[1]}")
+
+          def mode_off():
+              """the exit and a container hold beside Docker's chains with no cap.exit"""
+              exit_holds()
+              docker_works()
+
+          def exit_arm():
+              """under cap.exit the host's own traffic and a container's leave through the mesh's exit, beside Docker's chains"""
+              exit_holds()
+              docker_works()
+              leaves_by_mesh_exit("host", "ping")
+              web = client.succeed("docker inspect -f '{{.NetworkSettings.Networks.bridge.IPAddress}}' web").strip()
+              leaves_by_mesh_exit("container", f"{docker_run} ping", ["ipv4"], f" from {web} iif docker0")
 
           def ranet3_rules():
               return [client.succeed(f"nft -s -t list table {family} ranet3") for family in ranet3_tables]
+
+          def disturbed(reading):
+              """reading holds after Docker's restart, which leaves ranet3's tables as they were, and after ranet3's"""
+              tables = ranet3_rules()
+              client.succeed("systemctl restart docker.service")
+              holds_beside()
+              reading()
+              assert ranet3_rules() == tables, "Docker's restart changed ranet3's tables"
+              restart_ranet3()
+              reading()
 
           try:
               gateway.wait_for_unit("systemd-networkd-wait-online.service")
@@ -2301,21 +2431,18 @@ testers.runNixOSTest {
               client.wait_for_unit("docker.service")
               client.wait_for_unit("ranet3.service")
               client.succeed("tar c --files-from /dev/null | docker import - scratch")
+              client.succeed(
+                  "docker run -d --name web --restart always -p 8080:80 -v /nix/store:/nix/store scratch"
+                  " ${pkgs.busybox}/bin/busybox httpd -f -p 80 -h ${pkgs.writeTextDir "index.html" "beside\n"}")
 
               holds_beside()
-              exit_holds()
-              docker_works()
+              mode_off()
+              disturbed(mode_off)
 
-              ours = ranet3_rules()
-              client.succeed("systemctl restart docker.service")
+              exit_mode()
               holds_beside()
-              exit_holds()
-              docker_works()
-              assert ranet3_rules() == ours, "Docker's restart changed ranet3's tables"
-
-              restart_ranet3()
-              exit_holds()
-              docker_works()
+              exit_arm()
+              disturbed(exit_arm)
           finally:
               print(client.execute("ranet3 status")[1])
               print(client.execute("nft list ruleset")[1])
