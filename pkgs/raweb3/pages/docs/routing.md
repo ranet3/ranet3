@@ -505,8 +505,8 @@ Where that does not hold, the reconciler does this:
 - Another program's rule ahead of 5100 can take any lookup it selects, a marked
   one among them, before the reconciler's rules see it. The reconciler asks the
   lookups [sharing a host](coexistence.md#another-programs-rules) describes, an
-  overlay prefix's and each live endpoint's under the mark, and reports such a
-  rule where it takes one of them, as [watching it](#watching-it) lists.
+  overlay prefix's and each live session's send under the mark, and reports such
+  a rule where it takes one of them, as [watching it](#watching-it) lists.
 
 [Sharing a host](coexistence.md#another-programs-rules) gives how another
 program's rule changes where a lookup ends, with the layouts measured.
@@ -963,12 +963,13 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   routes installed and skipped, and the last pass. On Linux it then names each
   lookup the reconciler last found taken, an overlay prefix as
   `overlay 192.0.2.0/24 taken by table 51820 dev wg0`, or
-  `a refusal (permission denied)` in place of the table, and each live endpoint
-  whose lookup under the mark is taken as
-  `the underlay's mark taken by table 200 dev ranet0 toward 203.0.113.70`. With
-  `cap.exit` it names the links the last pass forwarded as
-  `exit mode forwarding br-1 docker0`, each link a `forward` entry matched and
-  the pass left out as
+  `a refusal (permission denied)` in place of the table, and each live session's
+  send whose lookup under the mark is taken as
+  `the underlay's mark taken by table 200 dev ranet0 toward 203.0.113.70`, with
+  the source and interface the send carries after it where it carries them, as
+  `from 198.51.100.10 dev eth0`. With `cap.exit` it names the links the last
+  pass forwarded as `exit mode forwarding br-1 docker0`, each link a `forward`
+  entry matched and the pass left out as
   `forward e* skips eth0, the link the IPv4 default leaves by`, and a family the
   tun holds no overlay address of as
   `no IPv6 overlay address on the tun, so IPv6 runs mode off's rules`, as
@@ -978,7 +979,8 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 - `ranet3 debug netmon` lists each family's links outside the mesh with their
   networks and point-to-point far ends, which exit mode derives its rules from.
 - `ranet3 debug rules` lists every lookup the reconciler last asked, taken or
-  not, with its answer, as [debugging](development/debug.md#commands) gives.
+  not, with the source and interface of an underlay lookup and its answer, as
+  [debugging](development/debug.md#commands) gives.
 
 `SIGUSR1` writes the mesh's routes to the log, this node's own entries as
 `via this node` and the holds as `via unreachable`.
@@ -993,9 +995,9 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 | `kernel reconciler withdrawn`                                                        | info  | shutdown or `ranet3 disable reconciler` removed the routes, addresses and rules      |
 | `kernel finds an overlay prefix answered outside the mesh's table`                   | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed             |
 | `kernel finds an overlay prefix answered through the tun or by a hold again`         | info  | an overlay prefix's lookup stopped being taken                                       |
-| `kernel finds the underlay's mark answered through the tun`                          | warn  | an endpoint's lookup under the mark became taken, or a taken one's answer changed    |
-| `kernel finds the underlay's mark answered outside the tun again`                    | info  | an endpoint's lookup under the mark stopped being taken                              |
-| `kernel no longer asks a lookup it found taken`                                      | info  | a taken lookup's prefix or endpoint left the pass, or a withdrawal ended the lookups |
+| `kernel finds the underlay's mark answered through the tun`                          | warn  | a send's lookup under the mark became taken, or a taken one's answer changed         |
+| `kernel finds the underlay's mark answered outside the tun again`                    | info  | a send's lookup under the mark stopped being taken                                   |
+| `kernel no longer asks a lookup it found taken`                                      | info  | a taken lookup's prefix or send left the pass, or a withdrawal ended the lookups     |
 | `kernel could not ask where its overlay and underlay lookups end`                    | warn  | the lookups failed, once until they answer again, and the last answers stay          |
 | `kernel can ask where its overlay and underlay lookups end again`                    | info  | the lookups answered after failing                                                   |
 | `kernel leaves a link cap.exit forward matches out of the mode`                      | warn  | a `forward` entry matches the tun, `lo` or a default's link, once until it no longer |
@@ -1006,7 +1008,8 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 The 2 route lines share 1 limit of 1 line per second. Each carries
 `changes_since_last`, the number of changes since the last line. A lookup's
 lines carry `family`, `prefix` and the `address` asked inside it for an overlay
-prefix or `endpoint` for the underlay, and `answer`. The events
+prefix or `endpoint` for the underlay, with the `source` and `interface` the
+send carries where it carries them, and `answer`. The events
 `babel.neighbor.up`, `babel.neighbor.down`, `babel.route.selected` and
 `babel.route.retracted` record each change. `kernel.pass` records each pass that
 changed the kernel, met a newly refused route, failed or followed a reload, and
@@ -1028,7 +1031,7 @@ no overlay address of, with its `family` and `addressed`, as
 | `ranet3_kernel_pass_timestamp_seconds` | when the last pass finished                                                                |
 | `ranet3_kernel_pass_failed`            | whether the last pass reported an error                                                    |
 | `ranet3_kernel_overlay_taken{family}`  | overlay prefixes the reconciler's last answered lookups found taken                        |
-| `ranet3_kernel_underlay_taken{family}` | live endpoints the reconciler's last answered lookups found taken under the mark           |
+| `ranet3_kernel_underlay_taken{family}` | live sessions' sends the reconciler's last answered lookups found taken under the mark     |
 
 The neighbor cost includes the amount `cap.babel.cost.extra` charges, which no
 series reports alone. `ranet3 neighbors` shows it apart. [Metrics](metrics.md)

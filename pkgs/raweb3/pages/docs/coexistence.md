@@ -178,11 +178,24 @@ kernel where 2 kinds of lookup end, on the socket it writes with:
   `cap.table` assigns every address of the prefix. The prefix is taken when the
   answer is anything but a route out of the tun, from any table, or the refusal
   of an unreachable route, the hold's among them.
-- A lookup marked 0x72 toward every address a live session sends its underlay
-  to, once for each address, in both families. The lookup is taken when the
-  answer is a route out of the tun, from any table but local. Another program's
-  table answering it out of another device is not reported, since ranet3's
-  underlay inside another tunnel is a setup that works.
+- A lookup marked 0x72 for each send of a live session, in both families: toward
+  the address the session sends its underlay to, from the source and out of the
+  interface its datagrams carry where they carry one. A session a peer opened
+  sends from the address and interface its peer's datagram reached, a session
+  sending on a socket connected to its peer from the address that socket is
+  bound to, with the interface of its pin where it has one, and an unpinned
+  session to a link-local peer out of the interface the peer's zone names
+  ([the underlay socket](design/limits.md#the-underlay-socket)). Sends carrying
+  the same address, source and interface are asked once. A lookup naming an
+  interface the pass's dump of the links does not hold is answered
+  `a refusal (no such device)`, which is `ENODEV`, and nothing is asked, unless
+  its send goes on an IPv6 socket connected to the peer, whose lookup is asked
+  ([ip6_datagram_send_ctl](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/datagram.c#L855),
+  [ip_route_output_key_hash_rcu](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/route.c#L2804),
+  [udpv6_sendmsg](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/udp.c#L1683)).
+  The lookup is taken when the answer is a route out of the tun, from any table
+  but local. Another program's table answering it out of another device is not
+  reported, since ranet3's underlay inside another tunnel is a setup that works.
 
 The reconciler reports a lookup when it becomes taken, when a taken one's answer
 changes and when it stops being taken, in the log, on the Kernel line of
@@ -194,20 +207,17 @@ changes and when it stops being taken, in the log, on the Kernel line of
   unreachable route at that address reads as the hold.
 - It asks the addresses live sessions send to, so a rule that takes the underlay
   toward a peer no session reaches is not reported.
-- ranet3 sends a lookup its destination and, for the underlay, the mark, and
-  nothing else, no interface or source among them. The kernel fills in the rest
+- ranet3 sends an overlay lookup its destination, and an underlay lookup its
+  destination, the mark and the source and interface its send carries, and
+  nothing else. The kernel fills in the rest
   ([inet_rtm_getroute](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/route.c#L3319),
   [inet6_rtm_getroute](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/route.c#L6232)),
-  so a rule selecting by anything else meets the lookup as those functions
-  decide, and may take traffic the check never asks about. A session a peer
-  opened sends from the address and interface its peer reached
-  ([the underlay socket](design/limits.md#the-underlay-socket)), and its sends
-  carry that interface into their own lookup
-  ([ip_cmsg_send](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/ip_sockglue.c#L295),
-  [udp_sendmsg](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/udp.c#L1404),
-  [fib_lookup_good_nhc](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/fib_trie.c#L1413)).
-  So a taken lookup toward that peer's endpoint may name traffic that leaves by
-  that interface, and a rule that takes such traffic may not be reported.
+  so a rule selecting by anything else a send carries, such as its ports, meets
+  the lookup as those functions decide, and may take traffic the check never
+  asks about.
+- It asks what the sends carried when the pass ran, so a send that moves between
+  a pin, a connected socket and neither is asked anew at the next pass, and the
+  lookup it left is reported as no longer asked where it was taken.
 - A route is judged by the first next hop the kernel's answer names, so another
   hop of a multipath route is not read. Which hop comes first is the kernel's
   ([fib_add_multipath](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/fib_semantics.c#L1709),
