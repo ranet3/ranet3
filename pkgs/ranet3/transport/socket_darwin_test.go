@@ -179,7 +179,7 @@ func TestPathMTUIsTheSelectedInterfaceMTU(t *testing.T) {
 	}
 }
 
-// the path MTU of an endpoint pinned to a link-local address is the MTU of the interface the pin names, the one the request arrived on
+// the path MTU of an endpoint pinned to an IPv6 link-local address is the MTU of the interface the pin names, the one the request arrived on
 // lo0 holds fe80::1, and the pin names it on another live interface, as a link that shares the address would
 func TestPathMTUOfALinkLocalPinIsItsInterfaceMTU(t *testing.T) {
 	loopbackIndex, index := twoInterfaces(t)

@@ -370,7 +370,7 @@ func TestPairSocketSendsPastTheInterfaceWhileItsMuxFragments(t *testing.T) {
 }
 
 // a pair to an endpoint pinned to the address its request reached binds that address, where the route to the peer picks the loopback's own
-// a link-local pin binds by the interface its request arrived on, and the pair's sends reach the peer from the pin as the shared socket's answers do
+// an IPv6 link-local pin binds by the interface its request arrived on, and the pair's sends reach the peer from the pin as the shared socket's answers do
 func TestDarwinPairBindsThePinnedSource(t *testing.T) {
 	t.Run("link-local", func(t *testing.T) {
 		reached, index := loopbackLinkLocal(t)
