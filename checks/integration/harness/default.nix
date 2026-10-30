@@ -283,18 +283,35 @@ let
     image = podImageName;
     imagePullPolicy = "Never";
   };
+  # tailscaled closes its connection to the control server on every link change while the host has no default route,
+  # and then dials it only over HTTPS for as long as it keeps retrying, which headscale here does not serve
+  uplinkDefault =
+    { nodes, ... }:
+    {
+      networking.defaultGateway = {
+        address = nodes.gateway.networking.primaryIPAddress;
+        interface = "eth1";
+      };
+      networking.defaultGateway6 = {
+        address = nodes.gateway.networking.primaryIPv6Address;
+        interface = "eth1";
+      };
+    };
   # what each program beside ranet3 adds to the client, at its defaults
   besideClient = {
     docker = {
       virtualisation.docker.enable = true;
       virtualisation.memorySize = 1536;
     };
-    tailscale = {
-      services.tailscale = {
-        enable = true;
-        useRoutingFeatures = "client";
+    tailscale =
+      { nodes, ... }:
+      {
+        imports = [ uplinkDefault ];
+        services.tailscale = {
+          enable = true;
+          useRoutingFeatures = "client";
+        };
       };
-    };
     k3s =
       { config, ... }:
       {
@@ -955,7 +972,10 @@ testers.runNixOSTest {
   // lib.optionalAttrs (beside == "tailscale") {
     # Tailscale's other node and its exit, and headscale, the control server it registers with
     peer = {
-      imports = [ common ];
+      imports = [
+        common
+        uplinkDefault
+      ];
       services.tailscale = {
         enable = true;
         useRoutingFeatures = "server";
@@ -2306,6 +2326,8 @@ testers.runNixOSTest {
         # and then with peer as its exit node, whose default in table 52 meets an overlay address only after 5110 answered it
         tailscale = ''
           login = "--login-server http://peer:8080 --accept-dns=false"
+          renames = iter(range(1, 100))
+          tailscale_priorities = ["5210", "5230", "5250", "5270"]
 
           def tailscale_rules():
               """tailscaled has put back none of its rules another program deleted, and its 4 rules sit beside ranet3's in both families"""
@@ -2313,7 +2335,7 @@ testers.runNixOSTest {
               assert not restored, f"another program deleted Tailscale's rules:\n{restored}"
               for family in ["-4", "-6"]:
                   rules = client.succeed(f"ip {family} rule show")
-                  for priority in ["5210", "5230", "5250", "5270"]:
+                  for priority in tailscale_priorities:
                       assert f"\n{priority}:" in rules, f"Tailscale's rule at {priority} is missing:\n{rules}"
 
           def tailscale_works(exit_node):
@@ -2338,11 +2360,40 @@ testers.runNixOSTest {
               assert all(l["answer"].startswith("table main ") and "dev tailscale0" not in l["answer"] for l in underlay), (
                   f"the underlay's lookups do not end in main: {underlay}")
 
+          def controlled():
+              """the client still takes the control server's updates: a name headscale gives peer reaches it"""
+              name = f"r{next(renames)}peer"
+              peer.succeed(f"headscale nodes rename --identifier {peer_node} {name}")
+              try:
+                  client.wait_until_succeeds(
+                      f"tailscale status --json | jq -e 'any(.Peer[]; .DNSName | split(\".\")[0] == \"{name}\")'", timeout=timeout)
+              except Exception:
+                  raise AssertionError(
+                      f"the client no longer takes the control server's updates:\n{client.execute(f'{tailscaled_journal} | tail -n 20')[1]}")
+
           try:
               peer.wait_for_unit("headscale.service")
               peer.wait_for_open_port(8080)
               for machine in [client, peer]:
                   machine.wait_for_unit("tailscaled.service")
+              # networkd deletes every rule it did not ask for, Tailscale's among them, as it configures a link, and
+              # tailscaled logs that it restores them before it adds them again, so the journal is read from once
+              # networkd has configured the uplink and the tun and Tailscale's IPv4 rules are all in place, and once
+              # journald has written what it was sent, since the cursor is the last entry it has written
+              try:
+                  client.wait_until_succeeds(
+                      "networkctl list --no-legend > /tmp/links"
+                      " && [ \"$(grep -Ew 'eth1|${clientDevice}' /tmp/links | grep -cw configured)\" -eq 2 ]"
+                      " && ! grep -Eqw 'pending|initialized|configuring' /tmp/links", timeout=timeout)
+              except Exception:
+                  raise AssertionError(f"networkd has not configured eth1 and ${clientDevice}:\n{client.execute('networkctl list')[1]}")
+              try:
+                  client.wait_until_succeeds(
+                      f"[ \"$(ip -4 rule show | grep -cE '^({'|'.join(tailscale_priorities)}):')\" -eq {len(tailscale_priorities)} ]",
+                      timeout=timeout)
+              except Exception:
+                  raise AssertionError(f"Tailscale's IPv4 rules are not all in place:\n{client.execute('ip -4 rule show')[1]}")
+              client.succeed("journalctl --sync")
               tailscaled_journal = journal_after(client, "tailscaled.service")
               client.wait_for_unit("ranet3.service")
 
@@ -2353,32 +2404,38 @@ testers.runNixOSTest {
               client.succeed(f"tailscale up {login} --auth-key {key}")
               peer_ips = peer.succeed("tailscale ip").split()
               client_ips = client.succeed("tailscale ip").split()
+              peer_node = [n["id"] for n in json.loads(peer.succeed("headscale nodes list -o json")) if n["name"] == "peer"][0]
 
               # (a) no exit node: table 52 holds Tailscale's own addresses alone
               tailscale_works(False)
               holds_beside()
               tailscale_rules()
+              controlled()
 
               # (b) peer as the exit node, with the LAN left to main, so the underlay's marked lookup goes on past 5270
-              node = [n["id"] for n in json.loads(peer.succeed("headscale nodes list -o json")) if n["name"] == "peer"][0]
-              peer.succeed(f"headscale nodes approve-routes --identifier {node} --routes 0.0.0.0/0,::/0")
+              peer.succeed(f"headscale nodes approve-routes --identifier {peer_node} --routes 0.0.0.0/0,::/0")
               client.wait_until_succeeds(f"tailscale set --exit-node={peer_ips[0]} --exit-node-allow-lan-access", timeout=timeout)
               exit_default()
               underlay_in_main(holds_beside())
               tailscale_works(True)
+              controlled()
 
               client.succeed("systemctl restart tailscaled.service")
               exit_default()
               underlay_in_main(holds_beside())
               tailscale_works(True)
               tailscale_rules()
+              controlled()
 
               restart_ranet3()
               tailscale_works(True)
               tailscale_rules()
+              controlled()
           finally:
               print(client.execute("ranet3 status")[1])
               print(client.execute("tailscale status")[1])
+              for family in ["-4", "-6"]:
+                  print(client.execute(f"ip {family} route show table main")[1])
               for family in ["-4", "-6"]:
                   print(client.execute(f"ip {family} rule show")[1])
                   print(client.execute(f"ip {family} route show table 52")[1])
