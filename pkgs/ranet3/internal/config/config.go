@@ -957,7 +957,8 @@ func (c *Config) validateBorder() error {
 // validateExit refuses cap.exit without the reconciler whose rules make the
 // mode, without the overlay those rules send to the mesh whatever the mode and
 // keep out of the selectors that send a source by the uplink, and on an exit,
-// whose own traffic and egress leave by its own uplink
+// whose own traffic and egress leave by its own uplink. It refuses a lan entry
+// overlapping the overlay and one schema.CapturesTheMachine counts.
 func (c *Config) validateExit() error {
 	if c.Cap.Exit == nil {
 		return nil
@@ -974,7 +975,16 @@ func (c *Config) validateExit() error {
 	case exit.EgressSegment:
 		return exitRefused(fmt.Sprintf("cap.segment local %s delivers to egress", c.Segments().Egress()[0].SID))
 	}
-	return nil
+	overlay := c.Overlay()
+	return schema.CheckPrefixes("config: cap.exit lan", c.Cap.Exit.LAN, func(prefix netip.Prefix) string {
+		if at := slices.IndexFunc(overlay, func(entry schema.Prefix) bool { return entry.Overlaps(prefix) }); at >= 0 {
+			return fmt.Sprintf("overlaps cap.border overlay %s, whose destinations the mesh carries whatever the LAN holds", overlay[at])
+		}
+		if schema.CapturesTheMachine(prefix, overlay) {
+			return "counts as capturing the machine, so it would let the host's traffic leave by the uplink as a default does"
+		}
+		return ""
+	})
 }
 
 func exitRefused(because string) error {

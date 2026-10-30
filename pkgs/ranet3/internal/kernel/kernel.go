@@ -696,6 +696,8 @@ type Reconciler struct {
 	reload chan struct{}
 	// network carries NetworkChanged to the loop
 	network chan struct{}
+	// firstPass closes once the loop's first pass or withdrawal has ended
+	firstPass chan struct{}
 	// inForce is table as another goroutine reads it, stored whole when the loop takes a capability
 	inForce atomic.Pointer[Table]
 	// reloaded says the pass under way follows a capability the loop took, and belongs to that goroutine
@@ -728,10 +730,11 @@ type Reconciler struct {
 	fallbackFault string
 	fallbackClear bool
 	// fallbackState is the switch's state the last pass reported, empty where
-	// none asked for it, and resolversErr the last error reading the DNS
-	// servers, both the pass's goroutine's
+	// none asked for it, the pass's goroutine's
 	fallbackState FallbackState
-	resolversErr  string
+	// resolversFailed is a read of systemd-resolved's servers that failed and
+	// was logged, with none succeeding since, shared by the status's readers
+	resolversFailed atomic.Bool
 }
 
 // Stats is one finished route pass. Installed counts the routes the kernel
@@ -879,6 +882,7 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 		wake:        make(chan struct{}, 1),
 		reload:      make(chan struct{}, 1),
 		network:     make(chan struct{}, 1),
+		firstPass:   make(chan struct{}),
 	}
 	r.enabled.Store(true)
 	r.inForce.Store(&t)
@@ -931,6 +935,10 @@ func (r *Reconciler) SetEnabled(on bool) {
 	default:
 	}
 }
+
+// FirstPass is closed once Run's first pass has ended, or its first
+// withdrawal for a reconciler started disabled, whether or not it failed
+func (r *Reconciler) FirstPass() <-chan struct{} { return r.firstPass }
 
 // Enabled reports whether this reconciler is writing to the kernel.
 func (r *Reconciler) Enabled() bool { return r.enabled.Load() }
@@ -1072,6 +1080,11 @@ func (r *Reconciler) Run(ctx context.Context) error {
 				grace.Reset(max(at.Sub(r.now()), 0))
 			}
 		}
+		select {
+		case <-r.firstPass:
+		default:
+			close(r.firstPass)
+		}
 
 		select {
 		case <-ctx.Done():
@@ -1154,7 +1167,8 @@ func (r *Reconciler) reconcile() error {
 	r.sampleCapture()
 	snapshot := r.src.Snapshot()
 	held, listed, addressErr := r.applyAddresses()
-	err := errors.Join(addressErr, r.applyRoutes(snapshot), r.applyRules(snapshot, held, listed))
+	desired := r.desired(snapshot)
+	err := errors.Join(addressErr, r.applyRoutes(desired), r.applyRules(snapshot, thrown(desired), held, listed))
 	// a pass missing a rule or a hold would find its own fault, which err reports
 	if err == nil {
 		r.lookUp()
@@ -1254,8 +1268,9 @@ func (r *Reconciler) audit() {
 // rather than trusting a record, so rules an earlier instance left behind are
 // adopted, and withdrawn where no longer derived, rather than duplicated. It
 // adds in the set's order, which puts each nop ahead of its goto. held is the
-// tun's addresses as the pass's address step left them, where listed.
-func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], held []netip.Prefix, listed bool) error {
+// tun's addresses as the pass's address step left them, where listed, and
+// throws the own prefixes the pass's mirror throws.
+func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], throws, held []netip.Prefix, listed bool) error {
 	if r.rules == nil {
 		return nil
 	}
@@ -1267,21 +1282,14 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], held []ne
 	exit, status := r.exitPass(held)
 	r.reportExit(status)
 	if exit.fallback {
-		exit.own = r.thrown(snapshot)
+		exit.own = throws
 	}
 	fallback, fallbackErr := r.applyFallback(exit)
 	if status != nil {
 		status.Fallback = fallback
 	}
+	exit.unheld = fallback == nil || fallback.State == FallbackNotHolding
 	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
-	if exit.on && exit.fallback && (fallback == nil || fallback.State == FallbackNotHolding) {
-		// without the table the host's own lookups from the uplink's addresses
-		// and networks meet 5440 and 5450 rather than main, but for a route of
-		// main longer than /0, which 5410 still takes
-		ruleSet = slices.DeleteFunc(ruleSet, func(rule Rule) bool {
-			return rule.Priority == priorityUplinkSource || rule.Priority == priorityLinkSource
-		})
-	}
 	r.derived.Store(&ruleSet)
 	actual, err := r.rules.Rules()
 	if err != nil {
@@ -1326,7 +1334,7 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], held []ne
 
 // applyRoutes removes before it installs, so a changed non-key attribute does
 // not collide with the old route under the exclusive-install policy.
-func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
+func (r *Reconciler) applyRoutes(desired []Route) error {
 	// Cleared first, so a pass that fails before it can count anything reports
 	// nothing rather than the counts of the last pass that succeeded.
 	r.routePass = Stats{}
@@ -1334,7 +1342,6 @@ func (r *Reconciler) applyRoutes(snapshot []sadr.Route[*netstack.Peer]) error {
 	if err != nil {
 		return fmt.Errorf("list routes: %w", err)
 	}
-	desired := r.desired(snapshot)
 	// Whether this pass leaves the mesh carrying this machine's own traffic,
 	// which desired answers alone: it already holds only the capturing routes
 	// this pass may install.
@@ -1938,7 +1945,6 @@ func (r *Reconciler) withdraw() error {
 		} else {
 			r.fallbackClear = true
 		}
-		r.reportFallback("")
 		r.reportFallbackState(nil)
 	}
 	// Every count is of something that left, so a line reporting nothing

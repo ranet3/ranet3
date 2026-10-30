@@ -463,13 +463,17 @@ type KernelFallback struct {
 	// kill switch on Linux" lists the table's lines.
 	State  string `json:"state"`
 	Reason string `json:"reason,omitempty"`
-	// Dropped and DroppedBytes are the packets and bytes the chain's last line has dropped, as the last pass read them
+	// Dropped and DroppedBytes are the packets and bytes the last lines of both chains have dropped, summed, as the last pass read them
 	Dropped      uint64 `json:"dropped"`
 	DroppedBytes uint64 `json:"dropped_bytes"`
 	// Captured is each connected network left out of the LAN, since its
 	// length counts as capturing the machine
 	Captured []string `json:"captured,omitempty"`
-	// Unresolved is each endpoint name whose last lookup failed while the switch held
+	// Public is each connected network left out of the LAN in whole or in
+	// part, since the part lies outside the private and link-local ranges and
+	// every prefix cap.exit lan lists
+	Public []string `json:"public,omitempty"`
+	// Unresolved is each endpoint name whose last lookup failed, in any state of the switch
 	Unresolved []string `json:"unresolved,omitempty"`
 	// Resolvers is each DNS server systemd-resolved queries through one link
 	// outside the mesh at an address outside the LAN, this node's own prefixes,

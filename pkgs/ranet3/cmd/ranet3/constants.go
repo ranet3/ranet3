@@ -14,6 +14,9 @@ const (
 	followFor = 30 * time.Second
 	// waitTimeout is how long debug wait waits by default, as long as a session takes to come up on a slow link
 	waitTimeout = 10 * time.Second
+	// firstPassWait bounds how long a start under fallback = "none" waits for the reconciler's first pass before it dials, long
+	// past a pass that writes the table once beside the routes and rules, so only a stalled pass dials first
+	firstPassWait = 10 * time.Second
 	// completionTimeout bounds a completion that asks the daemon, so a shell does not stall on one that is gone
 	completionTimeout = time.Second
 	// suggestionDistance is the most edits a mistyped command may be from a real one and still have it suggested, as cobra allows the root

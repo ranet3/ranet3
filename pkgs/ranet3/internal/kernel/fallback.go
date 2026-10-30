@@ -5,10 +5,12 @@ package kernel
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
+	"syscall"
 
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -40,18 +42,20 @@ type FallbackStatus struct {
 	State FallbackState
 	// Fault is why the table does not read back, under FallbackNotHolding
 	Fault string
-	// Dropped and DroppedBytes are the packets and bytes the chain's last line
-	// has dropped, as the pass read them
+	// Dropped and DroppedBytes are the packets and bytes the last lines of
+	// both chains have dropped, summed, as the pass read them
 	Dropped, DroppedBytes uint64
-	// LAN is each connected network the table passes
-	LAN []netip.Prefix
 	// Captured is each connected network left out of the LAN, since its
 	// length counts as capturing the machine
 	Captured []netip.Prefix
-	// Resolvers is each DNS server systemd-resolved queries through one link
-	// that lies beyond the LAN, which the table refuses whether an exit is
-	// live or not, since the query leaves by that link
-	Resolvers []LinkResolver
+	// Public is each connected network left out of the LAN in whole or in
+	// part, since the part lies outside the private and link-local ranges and
+	// every prefix cap.exit lan lists
+	Public []netip.Prefix
+	// tun and passed are the mesh's device and the LAN's and this node's own
+	// prefixes the table's lines pass, which FallbackResolvers reads
+	tun    string
+	passed []netip.Prefix
 }
 
 // LinkResolver is a DNS server systemd-resolved queries through one link
@@ -71,9 +75,10 @@ type FallbackDebug struct {
 	Sets  []FallbackDebugSet
 }
 
-// FallbackDebugRule is one line of the chain, by the comment it was written
+// FallbackDebugRule is one line of a chain, by the comment it was written
 // under, with what it counted
 type FallbackDebugRule struct {
+	Chain          string
 	Spec           string
 	Packets, Bytes uint64
 }
@@ -95,9 +100,11 @@ type fallbackSets struct {
 	// forwarded is the links forward expands to, whose forwarded traffic the
 	// forwarded line does not pass, so it meets the other lines
 	forwarded []string
-	// lan is each family's connected networks of the links outside the mesh,
-	// less those overlapping the overlay and those schema.CapturesTheMachine
-	// counts, with the carve-outs added
+	// lan is each family's connected networks of the links forward names,
+	// whole, and parts of the connected networks of the other links outside
+	// the mesh that lie inside lanRanges or a prefix cap.exit lan lists, less
+	// the networks overlapping the overlay and those
+	// schema.CapturesTheMachine counts, with the carve-outs added
 	lan4, lan6 []netip.Prefix
 	// own is this node's own prefixes the mesh's table throws, as 5445 reads them
 	own4, own6 []netip.Prefix
@@ -106,6 +113,18 @@ type fallbackSets struct {
 	// captured is each connected network left out of lan because it counts as
 	// capturing the machine
 	captured []netip.Prefix
+	// public is each connected network of a link forward does not name that
+	// lan leaves out whole or in part, lying outside lanRanges and the
+	// prefixes cap.exit lan lists
+	public []netip.Prefix
+}
+
+// lanRanges is the ranges a connected network counts as the LAN inside: the
+// private ones of RFC 1918, link-local of RFC 3927 and RFC 4291 section 2.5.6,
+// and the unique local ones of RFC 4193
+var lanRanges = []netip.Prefix{
+	netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("fc00::/7"),
 }
 
 // fallbackSetsOf derives the table's sets. carveOuts is each prefix the LAN
@@ -125,8 +144,15 @@ func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []
 				case overlaps(network):
 				case schema.CapturesTheMachine(network, overlay):
 					out.captured = append(out.captured, network)
-				default:
+				case slices.Contains(v.forwarded, link.Name):
+					// a hostile network reaches the host by an uplink, which forward never names
 					lan = append(lan, network)
+				default:
+					parts := lanParts(network, v.lan)
+					lan = append(lan, parts...)
+					if !covers(network, parts) {
+						out.public = append(out.public, network)
+					}
 				}
 			}
 		}
@@ -135,6 +161,7 @@ func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []
 	out.lan4, out.lan6 = familyPrefixes(FamilyIPv4, lan), familyPrefixes(FamilyIPv6, lan)
 	out.own4, out.own6 = familyPrefixes(FamilyIPv4, v.own), familyPrefixes(FamilyIPv6, v.own)
 	out.captured = slices.Compact(slices.SortedFunc(slices.Values(out.captured), comparePrefixes))
+	out.public = slices.Compact(slices.SortedFunc(slices.Values(out.public), comparePrefixes))
 	for _, service := range inbound {
 		if service.Protocol == "tcp" {
 			out.tcp = append(out.tcp, service)
@@ -145,8 +172,47 @@ func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []
 	return out
 }
 
-// fallbackFor is the sets of the pass under way, and whether the mode asks
-// for the table at all
+// lanParts is each part of network inside a range of lanRanges or a prefix of
+// listed, but one another part holds, in order. Two prefixes share an address
+// only where one holds the other, so a part is network or the range it holds.
+func lanParts(network netip.Prefix, listed []netip.Prefix) []netip.Prefix {
+	var parts []netip.Prefix
+	for _, r := range slices.Concat(lanRanges, listed) {
+		r = r.Masked()
+		switch {
+		case r.Bits() <= network.Bits() && r.Contains(network.Addr()):
+			parts = append(parts, network)
+		case network.Bits() < r.Bits() && network.Contains(r.Addr()):
+			parts = append(parts, r)
+		}
+	}
+	// in this order a part comes after each part holding it
+	var out []netip.Prefix
+	for _, part := range slices.SortedFunc(slices.Values(parts), comparePrefixes) {
+		if !slices.ContainsFunc(out, func(kept netip.Prefix) bool { return kept.Bits() <= part.Bits() && kept.Contains(part.Addr()) }) {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// covers reports parts, each inside network and none holding another, in
+// order, holding every address of it
+func covers(network netip.Prefix, parts []netip.Prefix) bool {
+	next, last := network.Addr(), lastAddress(network)
+	for _, part := range parts {
+		if next.Less(part.Addr()) {
+			return false
+		}
+		end := lastAddress(part)
+		if end == last {
+			return true
+		}
+		next = end.Next()
+	}
+	return false
+}
+
 func (r *Reconciler) fallbackFor(exit exitView) (fallbackSets, bool) {
 	mode := r.table.Mode()
 	if !exit.on || !exit.fallback || mode == nil {
@@ -167,24 +233,23 @@ func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 	}
 	sets, asked := r.fallbackFor(exit)
 	if !asked {
-		r.reportFallback("")
 		r.reportFallbackState(nil)
 		if r.fallbackClear {
 			return nil, nil
 		}
-		// a kernel without nf_tables holds no table, so a failed delete is
-		// logged once and not tried again until a pass asks for the table
-		r.fallbackClear = true
-		if err := sw.deleteFallback(); err != nil {
-			slog.Warn("kernel could not delete a fallback table an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted",
-				"table", FallbackTable, "err", err, "fix", "nft delete table inet "+FallbackTable)
+		// a kernel without nf_tables holds no table, so that refusal is not
+		// tried again until a pass asks for the table, and any other is
+		err := sw.deleteFallback()
+		r.fallbackClear = err == nil || withoutNFTables(err)
+		if err != nil {
+			warnFallbackLeft(err)
 		}
 		return nil, nil
 	}
 	r.fallbackClear = false
 	read, err := sw.readFallback(sets)
 	if err == nil && read.fault != "" {
-		if err = sw.writeFallback(sets); err == nil {
+		if err = sw.writeFallback(sets, read.remake); err == nil {
 			read, err = sw.readFallback(sets)
 		}
 	}
@@ -192,10 +257,9 @@ func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 		read.fault = err.Error()
 		err = fmt.Errorf("write table inet %s: %w", FallbackTable, err)
 	}
-	r.reportFallback(read.fault)
 	status := &FallbackStatus{
 		State: FallbackHolding, Fault: read.fault, Dropped: read.dropped, DroppedBytes: read.bytes,
-		LAN: slices.Concat(sets.lan4, sets.lan6), Captured: sets.captured, Resolvers: r.resolversBeyond(sets),
+		Captured: sets.captured, Public: sets.public, tun: sets.tun, passed: slices.Concat(sets.lan4, sets.lan6, sets.own4, sets.own6),
 	}
 	switch {
 	case read.fault != "":
@@ -207,26 +271,37 @@ func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 	return status, err
 }
 
-// resolversBeyond is each DNS server systemd-resolved queries through a link
-// outside the mesh that the table refuses: one outside the LAN, this node's
-// own prefixes, loopback and link-local
-func (r *Reconciler) resolversBeyond(sets fallbackSets) []LinkResolver {
-	if r.rt.Resolvers == nil {
+// warnFallbackLeft is the one line for a delete of the table that failed
+func warnFallbackLeft(err error) {
+	slog.Warn("kernel could not delete a fallback table an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted",
+		"table", FallbackTable, "err", err, "fix", "nft delete table inet "+FallbackTable)
+}
+
+// FallbackResolvers is each DNS server systemd-resolved queries now through a
+// link outside the mesh at an address outside the LAN, this node's own
+// prefixes, loopback and link-local, nil where no pass asked for the table. A
+// status read asks resolved, never a pass, so a resolved slow to answer delays
+// no withdrawal of 5405 and 5435.
+// A read that fails is logged once, until one succeeds.
+func (r *Reconciler) FallbackResolvers() []LinkResolver {
+	stats := r.stats.Load()
+	if stats == nil || stats.Exit == nil || stats.Exit.Fallback == nil || r.rt.Resolvers == nil {
 		return nil
 	}
+	status := stats.Exit.Fallback
 	all, err := r.rt.Resolvers()
-	if text := errorText(err); text != r.resolversErr {
-		if err != nil {
+	if err != nil {
+		if !r.resolversFailed.Swap(true) {
 			slog.Warn("kernel could not read the DNS servers systemd-resolved queries through each link", "err", err)
 		}
-		r.resolversErr = text
+		return nil
 	}
-	passed := slices.Concat(sets.lan4, sets.lan6, sets.own4, sets.own6)
+	r.resolversFailed.Store(false)
 	var out []LinkResolver
 	for _, resolver := range all {
 		address := resolver.Address.Unmap()
-		if resolver.Link == sets.tun || address.IsLoopback() || address.IsLinkLocalUnicast() ||
-			slices.ContainsFunc(passed, func(prefix netip.Prefix) bool { return prefix.Contains(address) }) {
+		if resolver.Link == status.tun || address.IsLoopback() || address.IsLinkLocalUnicast() ||
+			slices.ContainsFunc(status.passed, func(prefix netip.Prefix) bool { return prefix.Contains(address) }) {
 			continue
 		}
 		out = append(out, resolver)
@@ -234,24 +309,28 @@ func (r *Reconciler) resolversBeyond(sets fallbackSets) []LinkResolver {
 	return out
 }
 
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
+// withoutNFTables reports err as a kernel with no nf_tables to hold a table:
+// no netfilter netlink, or none of its nf_tables subsystem, which nfnetlink.c
+// answers with EINVAL
+func withoutNFTables(err error) bool {
+	return errors.Is(err, syscall.EPROTONOSUPPORT) || errors.Is(err, syscall.EINVAL)
 }
 
 // reportFallbackState records the switch's state, nil where no pass asks for
-// it, with an event and a line each time it changes
+// it, with a line each time it or the table's fault changes and an event each
+// time the state does
 func (r *Reconciler) reportFallbackState(status *FallbackStatus) {
-	state := FallbackState("")
+	state, fault := FallbackState(""), ""
 	if status != nil {
-		state = status.State
+		state, fault = status.State, status.Fault
 	}
-	if state == r.fallbackState {
+	if state == r.fallbackState && fault == r.fallbackFault {
 		return
 	}
 	switch state {
+	case FallbackNotHolding:
+		slog.Warn("kernel's fallback table does not read back as written, so the host's own lookups from the uplink's addresses reach main only for its routes longer than /0",
+			"table", FallbackTable, "fault", fault)
 	case FallbackHolding:
 		slog.Info("kernel's fallback table holds the host's traffic to the LAN while no exit is live", "table", FallbackTable)
 	case FallbackPassing:
@@ -259,21 +338,10 @@ func (r *Reconciler) reportFallbackState(status *FallbackStatus) {
 	case "":
 		slog.Info("kernel's fallback table is no longer asked for", "table", FallbackTable)
 	}
-	r.rt.Events.Emit("kernel.fallback", "", slog.String("state", cmp.Or(string(state), "off")), slog.String("was", cmp.Or(string(r.fallbackState), "off")))
-	r.fallbackState = state
-}
-
-// reportFallback logs the table's fault when it begins and when it ends
-func (r *Reconciler) reportFallback(fault string) {
-	switch {
-	case fault == r.fallbackFault:
-	case fault != "":
-		slog.Warn("kernel's fallback table does not read back as written, so the host's own lookups from the uplink's addresses no longer reach main",
-			"table", FallbackTable, "fault", fault)
-	default:
-		slog.Info("kernel's fallback table reads back as written", "table", FallbackTable)
+	if state != r.fallbackState {
+		r.rt.Events.Emit("kernel.fallback", "", slog.String("state", cmp.Or(string(state), "off")), slog.String("was", cmp.Or(string(r.fallbackState), "off")))
 	}
-	r.fallbackFault = fault
+	r.fallbackState, r.fallbackFault = state, fault
 }
 
 // switcher is the optional half of a platform that writes the table
@@ -281,8 +349,9 @@ func (r *Reconciler) reportFallback(fault string) {
 // start refuses.
 type switcher interface {
 	// writeFallback writes the table whole in one transaction, its sets
-	// flushed and filled and its chain rewritten
-	writeFallback(fallbackSets) error
+	// flushed and filled and its chains rewritten, the table deleted first
+	// where remake, as the read before it found
+	writeFallback(sets fallbackSets, remake bool) error
 	// readFallback reads the table back against what writeFallback writes for sets
 	readFallback(fallbackSets) (fallbackRead, error)
 	// deleteFallback deletes the table where one is held, whoever wrote it
@@ -294,6 +363,8 @@ type fallbackRead struct {
 	// fault names the first way the table differs from what was written, a
 	// missing table among them, empty where none does
 	fault string
-	// dropped and bytes are the packets and bytes the chain's last line has dropped
+	// dropped and bytes are the packets and bytes the last lines of both chains have dropped, summed
 	dropped, bytes uint64
+	// remake is a table a rewrite cannot mend in place, which goes first
+	remake bool
 }

@@ -39,10 +39,16 @@ import (
 //   - 5445 looks main up to each of this node's own prefixes the mesh's table
 //     throws, which its lookups pass on, so the host reaches its own prefix
 //     beyond the gateway
-//   - 5450 fails as unreachable every lookup of the host's own traffic and of
-//     what it forwards from each link forward expands to that no rule above
-//     answered, so a connect meets ENETUNREACH at once while the mesh holds no
-//     default, where the filter's drop alone would leave it waiting
+//   - 5450 fails as unreachable every unmarked lookup of the host's own
+//     traffic and of what it forwards from each link forward expands to that
+//     no rule above answered, so a connect meets ENETUNREACH at once while
+//     the mesh holds no default, where the filter's drop alone would leave it
+//     waiting
+//
+// While the table ranet3_fallback does not hold (exit.unheld) it leaves 5405
+// and 5435 out, so the host's own unmarked lookups from the uplink's addresses
+// and networks meet 5440, 5445 and 5450 rather than main, but for a route of
+// main longer than /0, which 5410 still takes.
 func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix, exit exitView) []Rule {
 	var out []Rule
 	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
@@ -100,8 +106,10 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 // mesh as the network watch reads them, the names forward expands to among them
 // (see expandForward), and each family the tun holds no overlay address of. The
 // zero value is mode off, whatever it holds beside. fallback is cap.exit
-// fallback = "none", and own is this node's own prefixes the mesh's table
-// throws, which a pass reads only under it.
+// fallback = "none", own is this node's own prefixes the mesh's table throws,
+// which a pass reads only under it, lan is the prefixes cap.exit lan lists,
+// and unheld is the table ranet3_fallback not holding, which a pass reads only
+// under fallback.
 type exitView struct {
 	on          bool
 	network     NetworkState
@@ -109,15 +117,17 @@ type exitView struct {
 	unaddressed []Family
 	fallback    bool
 	own         []netip.Prefix
+	lan         []netip.Prefix
+	unheld      bool
 }
 
-// thrown is the destination of each throw the mirror installs for this
-// snapshot that holds no source, each of this node's own prefixes outside the
-// overlay that counts as no default. A source-specific one is left out, so a
-// lookup from its source the mesh's table passes on meets 5450.
-func (r *Reconciler) thrown(snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
+// thrown is the destination of each throw of the mirror's desired routes that
+// holds no source, each of this node's own prefixes outside the overlay that
+// counts as no default. A source-specific one is left out, so the host's own
+// unmarked lookup from its source the mesh's table passes on meets 5450.
+func thrown(desired []Route) []netip.Prefix {
 	var out []netip.Prefix
-	for _, route := range r.desired(snapshot) {
+	for _, route := range desired {
 		if route.Throw && !route.Source.IsValid() {
 			out = append(out, route.Destination)
 		}
@@ -128,10 +138,11 @@ func (r *Reconciler) thrown(snapshot []sadr.Route[*netstack.Peer]) []netip.Prefi
 // sources is the selectors of one family's 5405 and 5435: each address of a
 // link outside the mesh as a host prefix, and each connected network shorter
 // than a host prefix and each point-to-point far end outside those networks of
-// a link forward leaves out, masked, each sorted and once. Mode off and a
-// family the tun holds no overlay address of have none.
+// a link forward leaves out, masked, each sorted and once. Mode off, a family
+// the tun holds no overlay address of and fallback = "none" while its table
+// does not hold have none.
 func (v exitView) sources(family Family, overlay, own []netip.Prefix) (addresses, networks []netip.Prefix) {
-	if !v.on || slices.Contains(v.unaddressed, family) {
+	if !v.on || slices.Contains(v.unaddressed, family) || v.fallback && v.unheld {
 		return nil, nil
 	}
 	links := v.network.IPv4.Links

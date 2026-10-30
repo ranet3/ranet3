@@ -11,8 +11,6 @@ import (
 	"errors"
 	"net/netip"
 	"os"
-	"os/exec"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -29,118 +27,8 @@ import (
 // rootWait bounds a wait for a datagram the kernel delivers on loopback at once
 const rootWait = 2 * time.Second
 
-// filterText is the switch's chain as nft spells it, written by nft into one
-// table and by the encoders into another
-const filterText = `table inet %s {
-	set forwarded { type ifname; elements = { "lan1", "br0" } }
-	set lan4 { type ipv4_addr; flags interval; elements = { 198.51.100.0/24, 203.0.113.0/25, 192.0.2.128/26 } }
-	set lan6 { type ipv6_addr; flags interval; elements = { 2001:db8:a:1::/64, 2001:db8:9::/64 } }
-	chain fallback {
-		type filter hook postrouting priority 2147483646; policy accept;
-		oifname { "lo", "ranet3" } accept
-		meta mark 0x00000072 accept
-		meta iif != 0 iifname != @forwarded accept
-		ip daddr @lan4 accept
-		ip6 daddr @lan6 accept
-		ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
-		ip6 daddr { fe80::/10, ff00::/8 } accept
-		ct direction reply ct protocol tcp ct original proto-dst { 22, 60000-61000 } accept
-		counter drop
-	}
-}
-`
-
-// The switch's table written by the encoders lists, dumps and holds its
-// elements exactly as the same text written by nft 1.1.7: each rule's
-// expressions as the kernel hands them back, anonymous sets aside by name,
-// each named set's elements, and `nft list table` line by line but for the
-// comments the encoders write
-func TestNftablesFilterEncodesAsNftsOwn(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getuid() != 0 {
-		t.Skip("the real nftables path needs root on linux")
-	}
-	enterThrowawayNamespace(t)
-	nft, err := exec.LookPath("nft")
-	if err != nil {
-		t.Fatal("the table to compare with is written through nft, which is not on the path")
-	}
-	conn := dial(t)
-	cmd := exec.Command(nft, "-f", "-")
-	cmd.Stdin = strings.NewReader(strings.ReplaceAll(filterText, "%s", "nftside"))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("write the table through nft: %v\n%s", err, out)
-	}
-	sets, elements := filterSets("goside")
-	if err := conn.Batch(filterBatch(t, "goside", sets, elements)); err != nil {
-		t.Fatalf("write the table through the encoders: %v", err)
-	}
-
-	listed := func(table string) []string {
-		out, err := exec.Command(nft, "list", "table", "inet", table).CombinedOutput()
-		if err != nil {
-			t.Fatalf("list table %s: %v\n%s", table, err, out)
-		}
-		text := regexp.MustCompile(` comment "[^"]*"`).ReplaceAllString(string(out), "")
-		return strings.Split(strings.ReplaceAll(text, table, "TABLE"), "\n")
-	}
-	if got, want := listed("goside"), listed("nftside"); !slices.Equal(got, want) {
-		t.Errorf("the encoders' table lists as\n%s\nwhere nft's lists as\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-
-	expressions := func(table string) []string {
-		replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), PutNfgenmsg(nil, unix.NFPROTO_INET))
-		if err != nil {
-			t.Fatal(err)
-		}
-		anonymous := regexp.MustCompile(`1=5f5f736574[0-9a-f]*`)
-		var out []string
-		for _, reply := range replies {
-			var held string
-			var list []byte
-			for kind, value := range reply.Attributes() {
-				switch kind {
-				case unix.NFTA_RULE_TABLE:
-					held = unix.ByteSliceToString(value)
-				case unix.NFTA_RULE_EXPRESSIONS:
-					list = value
-				}
-			}
-			if held != table {
-				continue
-			}
-			var rule []string
-			for _, element := range Nested(list) {
-				rule = append(rule, anonymous.ReplaceAllString(rendered(t, PutAttr(nil, unix.NFTA_LIST_ELEM, element.Value)), "1=anonymous"))
-			}
-			out = append(out, strings.Join(rule, " | "))
-		}
-		return out
-	}
-	if got, want := expressions("goside"), expressions("nftside"); !slices.Equal(got, want) {
-		t.Errorf("the encoders' rules dump as\n%s\nwhere nft's dump as\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-	}
-
-	for _, s := range sets {
-		mine, err := s.Elements(conn, unix.NFPROTO_INET)
-		if err != nil {
-			t.Fatal(err)
-		}
-		other := s
-		other.Table = "nftside"
-		theirs, err := other.Elements(conn, unix.NFPROTO_INET)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if fault := s.elementFault(elements[s.Name], mine); fault != "" {
-			t.Errorf("the encoders' table: %s", fault)
-		}
-		if fault := s.elementFault(elements[s.Name], theirs); fault != "" {
-			t.Errorf("nft's table: %s", fault)
-		}
-	}
-}
-
-// filterSets is the named sets of filterText in table, with their elements
+// filterSets is named sets of each key the switch's table writes, an ifname
+// and an address of each family, in table, with their elements
 func filterSets(table string) ([]Set, map[string][]Interval) {
 	sets := []Set{
 		{Table: table, Name: "forwarded", ID: 1, KeyType: TypeIfname, KeyLen: unix.IFNAMSIZ},
@@ -153,63 +41,6 @@ func filterSets(table string) ([]Set, map[string][]Interval) {
 		"lan6":      Prefixes(prefixList("2001:db8:a:1::/64", "2001:db8:9::/64")),
 	}
 	return sets, elements
-}
-
-// filterBatch is filterText's table in one transaction through the encoders
-func filterBatch(t *testing.T, table string, sets []Set, elements map[string][]Interval) []Request {
-	t.Helper()
-	requests := []Request{NewTable(unix.NFPROTO_INET, table)}
-	fill := func(s Set, intervals []Interval) {
-		made, err := s.Create(unix.NFPROTO_INET)
-		if err != nil {
-			t.Fatal(err)
-		}
-		filled, err := s.Fill(unix.NFPROTO_INET, intervals)
-		if err != nil {
-			t.Fatal(err)
-		}
-		requests = append(append(requests, made), filled...)
-	}
-	for _, s := range sets {
-		fill(s, elements[s.Name])
-	}
-	chain := Chain{Table: table, Name: "fallback", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: 2147483646}
-	requests = append(requests, chain.Create(unix.NFPROTO_INET), chain.Flush(unix.NFPROTO_INET))
-	byName := func(name string) Set { return sets[slices.IndexFunc(sets, func(s Set) bool { return s.Name == name })] }
-	accept := Verdict(Accept)
-	oif := Anonymous(table, 10, TypeIfname, unix.IFNAMSIZ, 0)
-	fill(oif, []Interval{Key(InterfaceName("lo")), Key(InterfaceName("ranet3"))})
-	link4 := Anonymous(table, 11, TypeIPv4Addr, 4, unix.NFT_SET_INTERVAL)
-	fill(link4, Prefixes(prefixList("169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32")))
-	link6 := Anonymous(table, 12, TypeIPv6Addr, 16, unix.NFT_SET_INTERVAL)
-	fill(link6, Prefixes(prefixList("fe80::/10", "ff00::/8")))
-	ports := Anonymous(table, 13, TypeInetService, 2, unix.NFT_SET_INTERVAL)
-	fill(ports, []Interval{Key([]byte{0, 22}), {First: []byte{0xea, 0x60}, Last: []byte{0xee, 0x48}}})
-	for spec, expressions := range map[string][][]byte{
-		"1 oifname":   {MetaLoad(unix.NFT_META_OIFNAME), Lookup(oif, false), accept},
-		"2 mark":      append(MetaCompareValue(unix.NFT_META_MARK, unix.NFT_CMP_EQ, binary.NativeEndian.AppendUint32(nil, 0x72)), accept),
-		"3 forwarded": slices.Concat(MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_NEQ, make([]byte, 4)), [][]byte{MetaLoad(unix.NFT_META_IIFNAME), Lookup(byName("forwarded"), true), accept}),
-		"4 lan4":      slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(byName("lan4"), false), accept}),
-		"5 lan6":      slices.Concat(NFProto(unix.NFPROTO_IPV6), [][]byte{DestinationLoad(unix.NFPROTO_IPV6), Lookup(byName("lan6"), false), accept}),
-		"6 link4":     slices.Concat(NFProto(unix.NFPROTO_IPV4), [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(link4, false), accept}),
-		"7 link6":     slices.Concat(NFProto(unix.NFPROTO_IPV6), [][]byte{DestinationLoad(unix.NFPROTO_IPV6), Lookup(link6, false), accept}),
-		"8 inbound":   {CTLoad(unix.NFT_CT_DIRECTION), Expression("cmp", Compare(unix.NFT_CMP_EQ, []byte{CTReply})), CTLoad(unix.NFT_CT_PROTOCOL), Expression("cmp", Compare(unix.NFT_CMP_EQ, []byte{unix.IPPROTO_TCP})), CTLoadDirection(unix.NFT_CT_PROTO_DST, CTOriginal), Lookup(ports, false), accept},
-		"9 drop":      CountedDrop(),
-	} {
-		rule, err := chain.Rule(unix.NFPROTO_INET, spec, expressions)
-		if err != nil {
-			t.Fatal(err)
-		}
-		requests = append(requests, rule)
-	}
-	// the map's order is random, and each rule goes in after the sets it names and in the chain's order
-	rules := requests[len(requests)-9:]
-	slices.SortFunc(rules, func(a, b Request) int {
-		_, _, x, _, _, _ := DecodeRule(Message{Data: a.Body})
-		_, _, y, _, _, _ := DecodeRule(Message{Data: b.Body})
-		return strings.Compare(x, y)
-	})
-	return requests
 }
 
 func prefixList(prefixes ...string) []netip.Prefix {

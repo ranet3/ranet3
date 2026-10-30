@@ -15,6 +15,10 @@
       "captured": [
         "198.0.0.0/7"
       ],
+      "public": [
+        "203.0.113.0/24",
+        "2001:db8:a::/64"
+      ],
       "unresolved": [
         "gateway.example.org"
       ],

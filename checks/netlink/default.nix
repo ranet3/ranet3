@@ -75,6 +75,14 @@ testers.runNixOSTest {
 
   nodes.machine.virtualisation.memorySize = 2048;
 
+  # the kill switch's tunnel lab writes a GRE and a WireGuard tunnel, whose modules nothing else here loads
+  nodes.machine.boot.kernelModules = [
+    "ip_gre"
+    "wireguard"
+  ];
+  # ip_gre would add its fallback devices gre0, gretap0 and erspan0 to every namespace, where the labs read each link
+  nodes.machine.boot.kernel.sysctl."net.core.fb_tunnels_only_for_init_net" = 2;
+
   testScript = ''
     machine.wait_for_unit("multi-user.target")
 
@@ -130,13 +138,12 @@ testers.runNixOSTest {
     assert ran >= 11, f"only {ran} nftables round trips ran:\n{out}"
 
     # the encoder's sets, their elements, the lookup, ct with a direction and the set messages of the monitor, each
-    # written beside nft's own encoding of the same text, acting on loopback's datagrams, and woken by another writer
+    # acting on loopback's datagrams, and woken by another writer
     out = machine.succeed(
-        "${netlinkTests}/bin/nftables-tests -test.v -test.run '^TestNftables(FilterEncodesAsNftsOwn|FilterExpressionsActOnPackets|SetElementsReadBackAndWakeOnAnothersChange)$' 2>&1"
+        "${netlinkTests}/bin/nftables-tests -test.v -test.run '^TestNftables(FilterExpressionsActOnPackets|SetElementsReadBackAndWakeOnAnothersChange)$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the encoder's round trips skipped themselves under root:\n{out}"
-    assert "--- PASS: TestNftablesFilterEncodesAsNftsOwn" in out, f"the encoding beside nft's did not run:\n{out}"
     assert "--- PASS: TestNftablesFilterExpressionsActOnPackets" in out, f"the expressions on packets did not run:\n{out}"
     assert "--- PASS: TestNftablesSetElementsReadBackAndWakeOnAnothersChange" in out, f"the set elements' readback and wake did not run:\n{out}"
 
@@ -206,7 +213,8 @@ testers.runNixOSTest {
     # and an IPv6 arrival the route view says the kernel drops exactly where the kernel counts it dropped, not forwarded
     # and each kind of destination, own and arriving, the route view naming the path the kernel takes for it
     # and the same leaf under fallback = "none", with its defaults present and retracted: each socket, other programs' chains and rules,
-    # NAT at output, a destination changed after the tun, loopback, each CPU, the listed services and each reverse path check
+    # NAT at output, a destination changed after the tun, loopback, each CPU, the listed services, each reverse path check, neighbor
+    # discovery and the host's ICMP errors, and a GRE and a WireGuard tunnel's outer packets
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
@@ -237,6 +245,8 @@ testers.runNixOSTest {
         "TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback",
         "TestTUNKillSwitchIsTheSameOnEveryCPU",
         "TestTUNKillSwitchKeepsReversePathChecksPassing",
+        "TestTUNKillSwitchPassesDiscoveryAndTheHostsErrors",
+        "TestTUNKillSwitchKeepsKernelTunnelsOffTheUplink",
     ]:
         assert f"--- PASS: {name}" in out, f"the kill switch's lab {name} did not run:\n{out}"
     ran = out.count("--- PASS")

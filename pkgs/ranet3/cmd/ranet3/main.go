@@ -27,6 +27,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -331,11 +332,24 @@ func runDaemon(opts options) int {
 		log.Printf("tun device %s ready with %d queues, reconciling its routes into %s",
 			mesh.Name, mesh.QueueCount(), routes.Where())
 		node.SetKernelStatus(func() control.KernelStatus { return kernelStatus(routes) })
+		node.SetFallbackResolvers(routes.FallbackResolvers)
 		node.SetReconcilerRules(routes.DerivedRules)
 		node.SetReconcilerLookups(func() []kernel.Lookup { return routes.Stats().Lookups })
 		node.SetReconcilerTable(routes.SetTable)
 		node.SetReconcilerNetwork(routes.NetworkChanged)
+		if mode := table.Mode(); mode != nil && mode.Refuses() {
+			// a session is dialed once the reconciler's first pass has ended, which writes the switch's table where it does not
+			// fail, a stop arrives or firstPassWait passes
+			select {
+			case <-routes.FirstPass():
+			case <-ctx.Done():
+			case <-time.After(firstPassWait):
+				slog.Warn("kernel's first pass has not ended, so sessions are dialed before the fallback table is written", "waited", firstPassWait)
+			}
+		}
 	} else {
+		// no reconciler runs to delete a table an earlier instance left, which holds the host's traffic whatever this file asks
+		kernel.DeleteFallback()
 		log.Printf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",
 			mesh.Name, mesh.QueueCount())
 	}
@@ -523,8 +537,8 @@ func exitStatus(exit *kernel.ExitStatus) *control.KernelExit {
 		for _, network := range f.Captured {
 			out.Fallback.Captured = append(out.Fallback.Captured, network.String())
 		}
-		for _, resolver := range f.Resolvers {
-			out.Fallback.Resolvers = append(out.Fallback.Resolvers, control.KernelResolver{Link: resolver.Link, Address: resolver.Address.String()})
+		for _, network := range f.Public {
+			out.Fallback.Public = append(out.Fallback.Public, network.String())
 		}
 	}
 	return out

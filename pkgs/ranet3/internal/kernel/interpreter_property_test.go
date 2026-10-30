@@ -478,7 +478,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	snapshot := routes.Snapshot()
 	desired := reconciler.desired(snapshot)
 	if mode.fallback {
-		mode.own = reconciler.thrown(snapshot)
+		mode.own = thrown(desired)
 	}
 	tables := maps.Clone(host.tables)
 	mainRoutes := slices.Clone(tables[schema.TableMain])

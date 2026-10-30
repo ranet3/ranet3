@@ -7,6 +7,7 @@ package kernel
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"net/netip"
 	"slices"
@@ -113,9 +114,13 @@ func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkStat
 // modeTwoNone is mode 2 with the two rules fallback = "none" adds, rule by
 // rule for each family, one the tun holds no overlay address of included: 5445
 // to each own prefix the mesh's table throws by main, and 5450 unreachable for
-// the host's own traffic and each forwarded link
-func modeTwoNone(id schema.TableID, overlay, own []netip.Prefix, network NetworkState, forwarded []string, unaddressed []Family, thrown []netip.Prefix) map[Rule]bool {
+// the host's own traffic and each forwarded link, less 5405 and 5435 while the
+// table does not hold
+func modeTwoNone(id schema.TableID, overlay, own []netip.Prefix, network NetworkState, forwarded []string, unaddressed []Family, thrown []netip.Prefix, unheld bool) map[Rule]bool {
 	out := modeTwo(id, overlay, own, network, forwarded, unaddressed)
+	if unheld {
+		maps.DeleteFunc(out, func(rule Rule, _ bool) bool { return rule.Priority == 5405 || rule.Priority == 5435 })
+	}
 	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
 		out[Rule{Family: family, Priority: 5450, IIF: "lo", action: actionUnreachable}] = true
 		for _, name := range forwarded {
@@ -183,7 +188,8 @@ func drawnExitLinks(tc hegel.TestCase, family Family) []Link {
 // The derivation installs exactly mode 2's rules for every table, overlay, set
 // of own prefixes, links, forwarded links and families the tun holds no overlay
 // address of, with fallback = "none"'s two more for every set of thrown
-// prefixes, each once with each nop ahead of its goto, and exactly mode off's
+// prefixes and its table's 5405 and 5435 out while it does not hold, each once
+// with each nop ahead of its goto, and exactly mode off's
 // when the mode is off, whatever the links and the fallback. No 5405 or 5435
 // selects a source the overlay or an own prefix holds.
 func TestDerivedRulesAreModeTwoWithTheLinksAndModeOffWithout(t *testing.T) {
@@ -216,13 +222,14 @@ func TestDerivedRulesAreModeTwoWithTheLinksAndModeOffWithout(t *testing.T) {
 		}
 		on := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
 		none := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
+		unheld := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
 		thrown := hegel.Draw(ht, anyPrefixes())
 
-		derived := derivedRules(id, prefixes(overlay...), own, exitView{on: on, network: network, forwarded: forwarded, unaddressed: unaddressed, fallback: none, own: thrown})
+		derived := derivedRules(id, prefixes(overlay...), own, exitView{on: on, network: network, forwarded: forwarded, unaddressed: unaddressed, fallback: none, own: thrown, unheld: unheld})
 		want := modeOff(id, overlay, own)
 		switch {
 		case on && none:
-			want = modeTwoNone(id, overlay, own, network, forwarded, unaddressed, thrown)
+			want = modeTwoNone(id, overlay, own, network, forwarded, unaddressed, thrown, unheld)
 		case on:
 			want = modeTwo(id, overlay, own, network, forwarded, unaddressed)
 		}
