@@ -181,22 +181,24 @@ These commands take flags of their own:
   [the selection](../routing.md#the-underlays-interface-on-macos) names and the
   route it matched, or `no route`. No row is taken. An IPv4 datagram can ride
   the shared socket's cached route of another interface instead, as
-  [limits](../design/limits.md#the-underlay-socket) gives. Then, on a node with
-  `cap.border`, the border filter's chain: its table and hook, when its last
-  pass read it and whether it is ready, then each rule with the packets and
-  bytes each drop counted, any rule the chain does not hold yet, and any rule it
+  [limits](../design/limits.md#the-underlay-socket) gives. Then, on Linux, the
+  border filter's table: when its last pass read it and whether it is ready,
+  then each chain, `border` with `cap.border` and `mesh_entry`, with the hook
+  and priority it is written at and each rule read now with the packets and
+  bytes each drop counted, any rule the table does not hold yet, any rule it
   holds that the filter did not write, by its comment or as
-  `a rule with no comment`. Then, under `cap.exit.fallback = "none"`, the table
-  `ranet3_fallback` as `Fallback table` with its two chains, their hooks and
-  priority and the switch's state, each line of each chain with the packets and
-  bytes the drop counted, and each named set with its elements, or `not held`
-  where the kernel holds no table. The dump and the chains are each read now
-  through a socket of their own, so an operator who sends a test packet reads
-  the counters of that moment, and neither the reconciler's socket nor the
-  filter's serves a reader. A platform with no policy rules says so. A rule
-  carrying a selector the view keeps no value of, `uidrange`, `ipproto`,
-  `sport`, `dport`, `dscp`, `flowlabel` or `tun_id`, or carrying
-  `suppress_ifgroup`, shows that name among its selectors.
+  `a rule with no comment`, and each set with the elements the last pass asked
+  for. Then, under `cap.exit.fallback = "none"`, the table `ranet3_fallback` as
+  `Fallback table` with its two chains, their hooks and priority and the
+  switch's state, each line of each chain with the packets and bytes the drop
+  counted, and each named set with its elements, or `not held` where the kernel
+  holds no table. The dump and the chains are each read now through a socket of
+  their own, so an operator who sends a test packet reads the counters of that
+  moment, and neither the reconciler's socket nor the filter's serves a reader.
+  A platform with no policy rules says so. A rule carrying a selector the view
+  keeps no value of, `uidrange`, `ipproto`, `sport`, `dport`, `dscp`,
+  `flowlabel` or `tun_id`, or carrying `suppress_ifgroup`, shows that name among
+  its selectors.
 - `debug route <src> <dst> [--iif link | --peer node]` follows one packet to
   where this host sends it: this host's own packet, with `--iif` one arriving on
   that link, or with `--peer` one arriving through a session from that node,
@@ -226,7 +228,12 @@ These commands take flags of their own:
   through another, now, and reads the settings of `all` and of the arrival link
   that the answer calls for. It reads no nftables chain, so a link it names is
   where the route leaves by, not what
-  [the kill switch](../routing.md#the-kill-switch-on-linux) lets leave.
+  [the kill switch](../routing.md#the-kill-switch-on-linux) lets leave. Nor does
+  it show the border filter's drops: an arrival chain `border` drops from
+  outside the mesh is followed as though the host routed it, and a packet
+  [`mesh_entry`](../border-filter.md#the-entry-chain) drops before the tun reads
+  it is shown entering the tun and meeting the mesh's checks of a read. The drop
+  shows in the filter's counters, in `debug rules` and `ranet3 status`.
   [Route rows](#route-rows) gives each row the view prints. For this host's own
   IPv6 packet to `::`, the unspecified address, the view names no path the
   packet leaves by, since a socket sends such a packet to `::1` or by the route,
@@ -296,19 +303,18 @@ These commands take flags of their own:
   A setting it cannot read is shown unread. macOS looks up this host's own
   packets only, with no policy rules and without the source, which its lookup
   does not take, so its `ENETUNREACH` is no route alone. The BSDs look up none.
-- `debug egress` is the exit: its status line as `ranet3 status` gives it but
-  for the border filter's hold on the egress segments, each rule of its chains
-  with its counter read now through a socket of its own, a rule of the
-  translation's chain counting flows and the bytes of their first packets, one
-  of the forward hook's chain counting packets, and one that keeps no counter
-  shown uncounted, any rule it asks for and the chains do not hold, any they
-  hold that it did not write, counted by the chain it was read from, then each
-  family as the last pass judged it: ready or why not, its chains read back, the
-  host's forwarding, and each route lookup the pass read with its answer, the
-  reply's lookup included, as [exit nodes](../exit-nodes.md) describes the
-  readiness. Then IPv4's `rp_filter` of `all` and of each link a route of those
-  lookups leaves by, read now. The lookups are the last pass's and are not asked
-  again. A node with no `cap.egress` says so.
+- `debug egress` is the exit: its status line as `ranet3 status` gives it, each
+  rule of its chains with its counter read now through a socket of its own, a
+  rule of the translation's chain counting flows and the bytes of their first
+  packets, one of the forward hook's chain counting packets, and one that keeps
+  no counter shown uncounted, any rule it asks for and the chains do not hold,
+  any they hold that it did not write, counted by the chain it was read from,
+  then each family as the last pass judged it: ready or why not, its chains read
+  back, the host's forwarding, and each route lookup the pass read with its
+  answer, the reply's lookup included, as [exit nodes](../exit-nodes.md)
+  describes the readiness. Then IPv4's `rp_filter` of `all` and of each link a
+  route of those lookups leaves by, read now. The lookups are the last pass's
+  and are not asked again. A node with no `cap.egress` says so.
 - `debug segments` is each segment the node answers for, an egress segment with
   whether its SID is announced and the families the mesh hands to the exit
   through it, then the steering policies, on or stopped, with the overhead the
@@ -390,8 +396,10 @@ These commands take flags of their own:
   filter selects, as the node decides it, until `--for` has passed, and then
   exits 0. It needs uid 0, as the plaintext class above says. A record is
   described below. A packet the forwarding decision never sees, such as Babel's
-  own or IKE and ESP on the underlay, never appears. With `--json` each line is
-  an object holding a `packet` or a `note`.
+  own or IKE and ESP on the underlay, never appears, and neither does one the
+  border filter drops, since chain `border` drops it before the host routes it
+  and `mesh_entry` before the tun reads it. With `--json` each line is an object
+  holding a `packet` or a `note`.
 
 ## Route rows
 
@@ -549,9 +557,10 @@ connections to the reads.
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed                    |
 | `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                               |
 | `egress.refused`                      | a pass read a family's count of packets refused past a source's share move                |
-| `border.pass`                         | a border filter pass that rewrote its chain or failed                                     |
-| `border.ready`                        | the border filter's chain went ready or not ready, with `ready`                           |
+| `border.pass`                         | a border filter pass that rewrote its table or a set, or failed                           |
+| `border.ready`                        | the border filter's table went ready or not ready, with `ready`                           |
 | `border.dropped`                      | a pass read a drop counter that moved, at most once per pass                              |
+| `border.carve`                        | a carve-out of the overlay for a link came or went                                        |
 | `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two      |
 | `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                            |
 | `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                 |
@@ -569,7 +578,7 @@ connections to the reads.
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit              |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                    |
 
-`egress.pass`, `egress.ready`, `egress.refused` and the 3 `border` kinds are
+`egress.pass`, `egress.ready`, `egress.refused` and the 4 `border` kinds are
 recorded on Linux alone. `transport.endpoint.unsegmented` is recorded on Linux
 and Android, which build the Linux sockets. `transport.underlay.selected` is
 recorded on macOS alone, because only macOS names each underlay datagram's
@@ -641,9 +650,10 @@ Each kind carries these attributes:
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                              |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                           |
 | `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains)                                                                                 |
-| `border.pass`                                 | `trigger`, `took`, `installed`, `err`                                                                                                                                                           |
+| `border.pass`                                 | `trigger`, `took`, `installed`, `wrote` (`table` or `sets`, where the pass wrote), `err`                                                                                                        |
 | `border.ready`                                | `ready`                                                                                                                                                                                         |
-| `border.dropped`                              | `overlay_source_ipv4`, `overlay_source_ipv6`, `routing_header`, `sid_destination`, each the packets since the pass before                                                                       |
+| `border.dropped`                              | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, each the packets since the pass before                          |
+| `border.carve`                                | `link`, `prefix`, `carved` (true where the carve-out came, false where it went)                                                                                                                 |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, `ipv4_links_added`, `ipv4_links_removed`, `ipv4_links_changed`, the same 7 for `ipv6`, `probed`, `woken`                      |
 | `transport.underlay.selected`                 | `endpoint`, `interface`, empty where no route holds the endpoint, `interface_index`, 0 then                                                                                                     |
 | `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                                                                             |
@@ -669,9 +679,10 @@ session the verb missed it is the reason the answer gives. The `trigger` of a
 `disable`, `enable`, `changed` when another writer added, changed or deleted
 part of its tables, or `missed` when the daemon lost nf_tables notifications to
 an overflow or could not read one, whoever's tables they were about. The
-`trigger` of a `border.pass` is `start`, `sweep`, `retry`, `reload`, `changed`
-when another writer added, changed or deleted part of its table, or `missed` as
-for an `egress.pass`.
+`trigger` of a `border.pass` is `start`, `sweep`, `retry`, `reload`, `routes`
+when the mesh's table changed, `network` when the host's links did or a reload
+stored a new overlay, `changed` when another writer added, changed or deleted
+part of its table, or `missed` as for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an

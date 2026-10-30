@@ -348,18 +348,17 @@ holding rules from a configuration nothing is running.
 `config: cap.border added, restart to apply` or
 `config: cap.border removed, restart to apply`, since the filter and its pass
 are built once at startup, as the translator is. Its `overlay` list reloads in
-place, and so do the SIDs it drops, which follow `cap.segment.local`: the reload
-hands both to the running filter, which rewrites its chain on the pass the
-reload wakes. The reload also hands the new overlay to the
+place: the reload hands it to the running filter, which rewrites its chain on
+the pass the reload wakes. The reload also hands the new overlay to the
 [forwarding decision](routing.md#transit) at once, which answers an IPv4
 destination no route holds Host Unreachable inside it and Network Unreachable
 outside it. In the same step the decision judges again, for every route the mesh
 holds, whether it
 [counts as a default](routing.md#routes-that-count-as-a-default), which decides
 where an exit [carries a packet out](exit-nodes.md#what-an-exit-carries-out). A
-reload of a node whose host forwards and whose file writes no `cap.border` logs
-the warning [the border filter](border-filter.md#nodes-that-forward-without-it)
-describes.
+reload of a node that runs no entry chain, whose host forwards and whose file
+writes no `cap.border`, logs the warning
+[the border filter](border-filter.md#nodes-that-forward-without-it) describes.
 
 The daemon reads this node's global unicast and private mesh addresses of each
 family `cap.egress` translates once at startup, among the host prefixes

@@ -594,19 +594,37 @@ Save the ruleset table by table with `nft list table <family> <name>`, leaving
 out the tables named `ranet3`, which the translator makes again on the pass a
 load wakes.
 
-`cap.border` adds a third table under the same name, `inet ranet3`, holding 1
-filter chain at prerouting, priority `raw` (-300).
-[The border filter](border-filter.md) describes it. The same rules hold: it
-writes only inside its table, replaces the chain in 1 transaction, adopts a
-table an earlier instance left, and removes it at shutdown. Unlike the
-translator's tables it stays through `ranet3 down`. The conflict report above
-leaves its chain out, since it is in an `inet` table and translates nothing.
-Another base chain at the same hook, such as a firewall's own raw chain, runs
-beside it: both see every packet, and only a drop in either ends the hook. A
-firewall reload that flushes the whole ruleset deletes the table, and the filter
-puts it back on the pass the deletion wakes. A table or chain another writer
-changed in a way nf_tables will not undo in place is deleted and made again in 1
+[The border filter](border-filter.md) adds a third table under the same name,
+`inet ranet3`, on every Linux node: filter chain `mesh_entry` at postrouting,
+priority `srcnat` + 10 (110), and with `cap.border` filter chain `border` at
+prerouting, priority `raw` (-300). The same rules hold: it writes only inside
+its table, replaces its chains and sets in 1 transaction, adopts a table an
+earlier instance left, and removes it at shutdown. Unlike the translator's
+tables it stays through `ranet3 down`. The conflict report above leaves its
+chains out, since they are in an `inet` table and translate nothing. Another
+base chain at the same hook, such as a firewall's own raw chain, runs beside it:
+both see every packet, and only a drop in either ends the hook. A firewall
+reload that flushes the whole ruleset deletes the table, and the filter puts it
+back on the pass the deletion wakes. A table or chain another writer changed in
+a way nf_tables will not undo in place is deleted and made again in 1
 transaction, any chain another writer put in the table with it.
+
+For a firewall's author, `mesh_entry` reads the source a packet leaves by the
+tun with, after every source translation: each NAT chain at postrouting runs
+inside NAT's own hook at 100, whatever priority it names, so the translator's at
+99, Docker's masquerade at `srcnat` and any other have run by 110. A container
+masqueraded to the tun's address therefore enters the mesh, and one a bridge
+forwards unmasqueraded does not. Another filter chain at 110 runs before or
+after `mesh_entry` by the order the chains were made in, the later first, and
+neither changes the source the other reads. A packet it drops meets no chain
+after it at postrouting,
+[the kill switch](routing.md#the-kill-switch-on-linux)'s among them.
+
+`cap.border.overlay` must not hold another overlay's space, such as Tailscale's
+`100.64.0.0/10`: the border would drop that program's peers' sources arriving on
+its own link. Tailscale's sources forwarded from `tailscale0` into the tun are
+dropped by `mesh_entry` unless a masquerade gives them the tun's address, since
+this node owns none of them.
 
 ## What forwarded traffic meets
 
@@ -616,7 +634,11 @@ bridge, or a LAN behind a subnet router can put a packet into the tun this way.
 The forwarding decision checks what the tun hands this node before the packet
 enters the mesh, as [the border filter](border-filter.md) checks what arrives on
 the links outside the mesh. A drop sends no answer and counts on the `Transit`
-line, as [metrics](metrics.md#transit-counters) lists.
+line, as [metrics](metrics.md#transit-counters) lists. On Linux the border
+filter's [entry chain](border-filter.md#the-entry-chain) meets such a packet
+first, before the tun, and passes only a source this node owns, a reply, a
+destination a `none` class takes, or an IPv6 link-local or multicast
+destination, so the checks below read what it passed.
 
 - A read from a source the table routes to another node or holds unreachable,
   through a route that does not count as a default, or from an overlay source
@@ -642,7 +664,10 @@ line, as [metrics](metrics.md#transit-counters) lists.
 names forwards into the tun toward the mesh's default, so the owned-source rule
 decides it. A Docker bridge's IPv4 flows pass, masqueraded to the tun's address.
 A LAN this node announces through `cap.route` or advertises through `cap.egress`
-passes. Any other LAN's packets are dropped and counted `unowned_source`.
+passes. Any other LAN's packets are dropped and counted `unowned_source`. On
+Linux the [entry chain](border-filter.md#the-entry-chain) drops them before the
+tun, toward any destination but a `none` class's, and counts them as
+`mesh_entry`.
 
 Replies to the mesh's overlay and to subnets the mesh routes are untouched by
 the owned-source rule: an exit's egress replies, translated back by the kernel,

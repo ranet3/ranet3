@@ -104,6 +104,34 @@ where a route counting as a default covers that destination. A steer toward a
 destination no route covers has no owned-source check yet. The arm that would
 add it waits for the steering mode that carries such a packet.
 
+## The border filter
+
+**An untracked reply enters the mesh only by its addresses.** Chain `mesh_entry`
+of [the border filter](../border-filter.md#the-entry-chain) passes a reply by
+conntrack's direction. A packet a host rule exempts from connection tracking,
+such as a `notrack` rule in a raw chain, has no direction, so it enters the mesh
+only from a source this node owns, toward a destination a `none` class takes, or
+toward an IPv6 link-local or multicast destination. A host that exempts a flow
+into the mesh from conntrack announces the flow's source, or keeps it tracked.
+
+**A reply behind an extension header conntrack does not walk is no reply.**
+Linux's conntrack walks past hop-by-hop, routing, fragment, destination options,
+AH and no next header alone, as `ipv6_ext_hdr` in
+[exthdrs_core.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/exthdrs_core.c)
+lists them, to find a flow's protocol. An IPv6 reply carrying a Mobility (135),
+HIP (139), Shim6 (140) or experimental (253, 254) header is tracked under that
+header, not as its flow's reply, so `mesh_entry` passes it only by its
+addresses, as an untracked one, and drops it otherwise as no reply. RFC 7045
+section 2.1 asks a forwarding node to discard a packet for its extension headers
+only by a policy it can configure, and this drop is fixed.
+
+**An address of a carve-out that no node announces belongs to the link.** Inside
+a [carve-out](../border-filter.md#carve-outs) the mesh keeps only the prefixes
+its table holds. Every other address of the carve-out leaves by the link, and
+its source arriving on that link is accepted, so a node numbered there that does
+not announce its address is reached as the link's neighbor, not through the
+mesh.
+
 ## Who a node dials
 
 `dial.all` dials every other node the trust document names. Entries in `dial.to`
@@ -230,7 +258,7 @@ family ends where rows L1 to L12 of
 [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, but
 where they give main at 32766 an unmarked lookup of the host's own or of a link
 `forward` names ends at 5450 under the switch, or at 5445 to this node's own
-prefixes, and a packet they send into the tun meets the
+prefixes or a carve-out, and a packet they send into the tun meets the
 [tun read](../routing.md#transit). One from a source in this node's own
 prefixes, the host's or a forwarded link's, follows the mesh at 5430 where row
 L11 gives, and

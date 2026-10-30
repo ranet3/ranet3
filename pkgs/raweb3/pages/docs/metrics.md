@@ -39,17 +39,18 @@ chains starts them from 0, which a scrape reads as a counter reset. A pass that
 cannot read them back keeps the last pass's, unless it rewrote the chains, whose
 counts start from 0 whether or not it read them back.
 
-[The border filter](border-filter.md) is reported as whether its chain reads
-back and the packets each of its drops counted, by `reason`: `overlay_source` in
-both families, and `routing_header` and `sid_destination` in `ipv6`. The counts
-are read from the chain at each pass, so they lag by up to 1 pass, and a rewrite
-of the chain starts them from 0, which a scrape reads as a counter reset.
+[The border filter](border-filter.md) is reported as whether its table reads
+back, both chains and every set, and the packets each of its drops counted, by
+`reason`, each in both families: `overlay_source` and `carved_source` from chain
+`border`, and `mesh_entry`, what the entry chain kept out of the tun, though the
+series is named for the border. The counts are read from the table at each pass,
+so they lag by up to 1 pass, and a rewrite of the table starts them from 0,
+which a scrape reads as a counter reset.
 
 A node without `cap.table` writes none of the reconciler's series, a node
-without `cap.egress` writes none of the egress series, and a node without
-`cap.border` writes none of the border's. Zeros there would read as a subsystem
-installing nothing. Segment routing writes its series on every node, zeros
-included.
+without `cap.egress` writes none of the egress series, and a node off Linux
+writes none of the border's. Zeros there would read as a subsystem installing
+nothing. Segment routing writes its series on every node, zeros included.
 
 Everything is read from live state at scrape time, so a scrape reflects the
 instant it happened rather than a sampled snapshot. A counter cannot carry the
@@ -120,8 +121,8 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_egress_pass_timestamp_seconds`   | gauge   | none                 | Unix time the last pass finished, 0 before the first                                                                                                                                                                                                                                                                                                                                                                                                            | with `cap.egress`                                               |
 | `ranet3_egress_pass_failed`              | gauge   | none                 | 1 when the last pass reported an error                                                                                                                                                                                                                                                                                                                                                                                                                          | with `cap.egress`                                               |
 | `ranet3_egress_ready`                    | gauge   | `family`             | 1 while this node carries the family out of the mesh translated, which egress of that family waits for in both modes, as [readiness](exit-nodes.md#readiness) says                                                                                                                                                                                                                                                                                              | with `cap.egress`                                               |
-| `ranet3_border_ready`                    | gauge   | none                 | 1 while the border filter's chain reads back as the configuration asks                                                                                                                                                                                                                                                                                                                                                                                          | with `cap.border`                                               |
-| `ranet3_border_dropped_packets_total`    | counter | `reason`, `family`   | Packets from outside the mesh the border filter dropped, as of its last pass                                                                                                                                                                                                                                                                                                                                                                                    | with `cap.border`                                               |
+| `ranet3_border_ready`                    | gauge   | none                 | 1 while the border filter's chains and sets read back as the configuration asks                                                                                                                                                                                                                                                                                                                                                                                 | on Linux                                                        |
+| `ranet3_border_dropped_packets_total`    | counter | `reason`, `family`   | Packets the border filter dropped from outside the mesh or kept out of the tun, as of its last pass                                                                                                                                                                                                                                                                                                                                                             | on Linux                                                        |
 
 `ranet3_babel_neighbor_cost` holds the amount `cap.babel.cost.extra` charges the
 neighbor, and no series reports that amount alone. It is configuration rather

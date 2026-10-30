@@ -28,10 +28,12 @@ setting or skips a route instead.
 | Policy rules                                           | derived from `cap.border.overlay` and this node's own prefixes                                                                                                                                                                                                                 | none                                                                                                                                                             |
 | An own prefix this node originates outside the overlay | a throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, row L10 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)                                                                                           | nothing, row D2 of [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) for a socket bound to no interface and no address of the utun         |
 | Hold of each overlay prefix                            | installed for each that holds no unspecified address and that the mesh can carry                                                                                                                                                                                               | none, since `cap.border` is refused                                                                                                                              |
+| A link's network inside the overlay                    | a throw in place of the overlay prefix's hold, and accepted from its own link by chain `border`, as [carve-outs](border-filter.md#carve-outs) describe                                                                                                                         | none, since `cap.border` is refused                                                                                                                              |
 | `cap.table.metric`                                     | supported                                                                                                                                                                                                                                                                      | ignored                                                                                                                                                          |
 | `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                                                                   | refused, naming the platform                                                                                                                                     |
 | Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                                                                       | refused                                                                                                                                                          |
-| `cap.border`                                           | an nftables chain at prerouting                                                                                                                                                                                                                                                | refused                                                                                                                                                          |
+| `cap.border`                                           | chain `border` at prerouting in the nftables table `inet ranet3`                                                                                                                                                                                                               | refused                                                                                                                                                          |
+| Entry chain                                            | chain `mesh_entry` at postrouting in `inet ranet3` on every node, with no key, as [the border filter](border-filter.md#the-entry-chain) describes                                                                                                                              | none, and a Mac that forwards is warned without `cap.border`                                                                                                     |
 | `cap.exit`                                             | the policy rules 5405, 5435 and 5440 of [exit mode](routing.md#exit-mode-on-linux)                                                                                                                                                                                             | refused at startup, naming the platform, ahead of `cap.border`                                                                                                   |
 | `cap.exit.fallback = "none"`                           | the rules 5445 and 5450 and the nftables table `ranet3_fallback`, its chains at output and postrouting, of [the kill switch](routing.md#the-kill-switch-on-linux), which stays after a stop that withdraws nothing, such as `SIGKILL`, and goes with every stop that withdraws | refused with `cap.exit`                                                                                                                                          |
 | Network watch                                          | rtnetlink, with each link outside the mesh and its networks                                                                                                                                                                                                                    | routing socket, with no links                                                                                                                                    |
@@ -41,10 +43,10 @@ setting or skips a route instead.
 | Control socket caller                                  | `SO_PEERCRED`                                                                                                                                                                                                                                                                  | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                                                                                                                                |
 | Default state directory                                | `/var/lib/ranet3`                                                                                                                                                                                                                                                              | `/var/db/ranet3`                                                                                                                                                 |
 
-The forwarding settings decide whether a node warns about forwarding without
-`cap.border`, and whether `cap.egress` advertises its prefixes. Transit needs
-neither, since the mesh forwards it between sessions itself on every platform.
-On macOS `cap.border` is refused at startup with
+The forwarding settings decide whether a node with no entry chain warns about
+forwarding without `cap.border`, and whether `cap.egress` advertises its
+prefixes. Transit needs neither, since the mesh forwards it between sessions
+itself on every platform. On macOS `cap.border` is refused at startup with
 `egress: cap.border is an nftables chain, which darwin does not have, so this node cannot filter what enters the mesh from its other links`,
 and a Mac that forwards gets the warning instead. `cap.exit` is refused there
 first, at startup and on a reload, with
@@ -199,17 +201,20 @@ On a platform other than Linux, macOS, iOS and Android:
 
 iOS and Android build the underlay sockets, the sockets connected to 1 peer, the
 path MTU search, the forwarding read and the caller credentials of macOS and
-Linux, but none of the reconciler, the network watch, `cap.egress` or
-`cap.border`. An Android build, which Go makes with the `linux` build tag, and
-an iOS build, which it makes with the `darwin` one, refuse `cap.egress`,
-`cap.border` and `cap.exit` at startup in the same words, naming `android` or
-`ios`. `cap.table` fails the start there too, and a moved host waits for each
-session's own liveness check. An iOS build opens no selection, so its underlay
-datagrams name no interface and leave by the host's own routes. A session there
-that sends from the kernel's choice of source reads its path MTU from the
-interface holding the source the kernel picks for a socket connected to the
-peer, and one the peer opened from the interface holding the address it sends
-from.
+Linux, but none of the reconciler, the network watch, `cap.egress`, `cap.border`
+or the entry chain. Neither drops a mesh source from outside, since iOS has no
+packet filter an application can write and an Android application cannot filter
+the device's inbound traffic, and neither needs the entry chain, since nothing
+forwards into the tunnel there. An Android build, which Go makes with the
+`linux` build tag, and an iOS build, which it makes with the `darwin` one,
+refuse `cap.egress`, `cap.border` and `cap.exit` at startup in the same words,
+naming `android` or `ios`. `cap.table` fails the start there too, and a moved
+host waits for each session's own liveness check. An iOS build opens no
+selection, so its underlay datagrams name no interface and leave by the host's
+own routes. A session there that sends from the kernel's choice of source reads
+its path MTU from the interface holding the source the kernel picks for a socket
+connected to the peer, and one the peer opened from the interface holding the
+address it sends from.
 
 ## Moving hosts
 

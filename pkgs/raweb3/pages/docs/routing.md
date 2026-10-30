@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-10-31
+updated: 2026-11-01
 order: 45
 ---
 
@@ -383,6 +383,7 @@ Each entry of the mesh's table becomes:
 | This node's own prefix inside the overlay                                                         | a hold                                                                                                                                                                                                                                                        |
 | An address only `cap.table` assigns                                                               | nothing                                                                                                                                                                                                                                                       |
 | Each prefix of `cap.border.overlay` that holds no unspecified address and that the mesh can carry | a hold, on Linux only, since macOS refuses `cap.border`                                                                                                                                                                                                       |
+| Each [carve-out](border-filter.md#carve-outs), a link's network inside the overlay                | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself                                                                                             |
 
 A throw ends the table's lookup, and the rules after the one that looked it up
 decide, as row L10 of [where a lookup ends](#where-a-lookup-ends-on-linux)
@@ -461,7 +462,11 @@ packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
   5430, so an overlay address on `lo` or on a dummy link, as a host checking the
   mesh puts one there, or an address in a LAN this node announces, would
   otherwise leave by main where mode off sends it into the mesh. A selector
-  overlapping either is left out whole.
+  overlapping either is left out whole, but one a
+  [carve-out](border-filter.md#carve-outs) holds whole and no entry of the
+  mesh's table holds is kept for the overlay, since the link's neighbors hold
+  its addresses. A selector overlapping this node's own prefixes is left out
+  even there.
 - 5435 reaches a reverse path check only where 5405 to 5430 did not answer it. A
   `/32` or `/128` address is its own network, which 5405 already selects, so it
   takes no rule at 5435. 5405 comes ahead of 5410 to 5430, so a socket bound to
@@ -496,10 +501,10 @@ and
 [in IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89).
 Two more rules close the routing side, in each family:
 
-| Priority | Rule                                                                                    | What it does                                                                                         |
-| -------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| 5445     | `to <prefix> lookup main`, for each of this node's own prefixes the mesh's table throws | the host reaches its own prefix beyond the gateway, which 5440's lookup passes on as a throw         |
-| 5450     | `iif lo unreachable`, and `iif <link> unreachable` for each link `forward` expands to   | an unmarked lookup of the host's own or a forwarded link's that no rule above answered fails at once |
+| Priority | Rule                                                                                                                                      | What it does                                                                                                               |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 5445     | `to <prefix> lookup main`, for each of this node's own prefixes and each [carve-out](border-filter.md#carve-outs) the mesh's table throws | the host reaches its own prefix beyond the gateway and a carved link's neighbors, which 5440's lookup passes on as a throw |
+| 5450     | `iif lo unreachable`, and `iif <link> unreachable` for each link `forward` expands to                                                     | an unmarked lookup of the host's own or a forwarded link's that no rule above answered fails at once                       |
 
 5450 fails a connect with `ENETUNREACH` at once while the mesh holds no default,
 where a drop after routing would leave it waiting out its retransmissions. A
@@ -509,8 +514,9 @@ the tun holds no overlay address of runs [mode off's rules](#exit-mode-on-linux)
 with 5445 and 5450 beside them, so an unmarked lookup of the host's own or of a
 link `forward` names that rows L1 to L12 of
 [where a lookup ends](#where-a-lookup-ends-on-linux) send to main at 32766 meets
-5450 first, but one to this node's own prefixes, which 5445 sends to main, and
-one that a route of main longer than /0 answers at 5410 meets the chains below.
+5450 first, but one to this node's own prefixes or a carve-out, which 5445 sends
+to main, and one that a route of main longer than /0 answers at 5410 meets the
+chains below.
 
 The routing side leaves open a socket bound to the uplink's address, which 5405
 sends by main, one bound to the uplink's device, and a mark another program's
@@ -603,13 +609,18 @@ counter drop
   [RFC 1918](https://www.rfc-editor.org/rfc/rfc1918), the unique local
   `fc00::/7` of [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193), the
   link-local `169.254.0.0/16` and `fe80::/10`, and the prefixes `cap.exit.lan`
-  lists. A network holding such a range counts for that range alone. A network
-  that shares an address with `cap.border.overlay` and one as short as a route
-  that [counts as a default](#routes-that-count-as-a-default) are left out
-  whole. Status names the second, and a network the ranges and `cap.exit.lan`
-  leave out in whole or in part as public. `own4` and `own6` hold the prefixes
-  5445 names, and `tcp_ports` and `udp_ports` the ranges `inbound` lists. The
-  rules and the sets come from one derivation each pass.
+  lists. A network holding such a range counts for that range alone. Of a
+  network that shares an address with `cap.border.overlay`, its part outside the
+  overlay counts by the same rules, so a lease wider than an overlay prefix
+  keeps its gateway outside it, and each
+  [carve-out](border-filter.md#carve-outs) less the mesh's prefixes inside it is
+  held. A network as short as a route that
+  [counts as a default](#routes-that-count-as-a-default) is left out whole.
+  Status names it, and as public a network, or a prefix of its part outside the
+  overlay, that the ranges and `cap.exit.lan` leave out in whole or in part.
+  `own4` and `own6` hold the prefixes 5445 names but the carve-outs, and
+  `tcp_ports` and `udp_ports` the ranges `inbound` lists. The rules and the sets
+  come from one derivation each pass.
 
 The table carries no owner flag, so the kernel does not delete it with the
 process that wrote it:
@@ -723,6 +734,9 @@ A lookup bound to no device:
   family's unspecified address and one the mesh cannot carry, so only inside
   those can the mesh's longest match be a route shorter than the prefix, a
   throw, or nothing. Without `cap.border` no destination is inside the overlay.
+- L5: a [carve-out](border-filter.md#carve-outs)'s throw is the mesh's longest
+  match for an address of the carve-out no route of the mesh holds, so a lookup
+  to the link's gateway or neighbor ends at L6 by main's route for the link.
 - L4, L7 and L9: a skipped length never skips an `unreachable`, `blackhole` or
   `prohibit` route. That is why the reconciler installs no hold of a route that
   counts.
@@ -752,9 +766,9 @@ In a family it holds none of, the rows above hold alone.
 - E3: the mesh's default, which 5420 skips at L11, answers here, so the host's
   own traffic from any source leaves by the exit. A throw goes on to main.
 - Under [the kill switch](#the-kill-switch-on-linux), E3's lookup goes on to
-  5445 rather than main: to one of this node's own prefixes it ends by main's
-  route there, and any other ends refused at 5450. E1 and E2 still end by main,
-  and meet the table's chains.
+  5445 rather than main: to one of this node's own prefixes or a carve-out it
+  ends by main's route there, and any other ends refused at 5450. E1 and E2
+  still end by main, and meet the table's chains.
 
 A lookup bound to a device, such as by a socket bound with `SO_BINDTODEVICE`,
 ends by the rows above with these changes. An address of the host's own ends at
@@ -1163,8 +1177,10 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   dropped, summed, as `fallback none holding, 12 packets, 720 B dropped`,
   `passing` while an exit is live, or `not holding` with the reason the table
   does not read back. It names a connected network left out of the LAN as
-  `198.0.0.0/7 left out of the LAN as it captures the machine`, one the private
-  and link-local ranges and `cap.exit.lan` leave out in whole or in part as
+  `198.0.0.0/7 left out of the LAN as it captures the machine`, and one the
+  private and link-local ranges and `cap.exit.lan` leave out in whole or in
+  part, or of one sharing an address with the overlay each such prefix of its
+  part outside the overlay, as
   `203.0.113.0/24 left out of the LAN as public, outside the private and link-local ranges and cap.exit lan`,
   an endpoint name whose last lookup failed, in any state of the switch, as
   `gateway.example.org does not resolve`, and a DNS server systemd-resolved

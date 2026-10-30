@@ -57,7 +57,7 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress/kernel` has 12 that write into a real packet filter. One
+- `internal/egress/kernel` has 15 that write into a real packet filter. One
   round trips the translator's tables, chains, set and timeout objects, another
   checks that the kernel tells the backend when another writer adds a rule to
   its chain, sets its table dormant or deletes it, and that its own writes tell
@@ -74,15 +74,18 @@ unless run as root.
   set counts under another share, and the ninth reports another writer's nat
   chains at the translator's priority or below and not one above it. The tenth
   takes the address a class translates to off `lo` in each family and reads that
-  family alone not ready, with the address named, until it is back. The other 2
-  round trip the border filter's chain. One puts it back on the pass another
-  writer wakes by deleting the table, adding a rule or setting the table
-  dormant, and leaves no table behind. The other writes it back after another
-  writer adds a rule to it, sets its table dormant, turns its policy to drop,
-  makes the chain again at another priority or as a regular chain, or makes the
-  table again with a flag nf_tables will not clear in place, the last 3 by
-  deleting and making the table again. It also runs the
-  [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
+  family alone not ready, with the address named, until it is back. The other 5
+  round trip the border filter's table, both chains and its sets. One puts it
+  back on the pass another writer wakes by deleting the table, adding a rule or
+  setting the table dormant, and leaves no table behind. One writes it back
+  after another writer adds a rule to it, sets its table dormant, turns a policy
+  to drop, makes a chain again at another priority or as a regular chain, or
+  makes the table again with a flag nf_tables will not clear in place, the last
+  3 by deleting and making the table again. One refills a set another writer
+  flushed on the pass that change wakes, one holds chain `mesh_entry` alone with
+  no `cap.border`, and one kills the filter's process with `SIGKILL` and finds
+  the table still there, still dropping a forged overlay source. It also runs
+  the [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
 - `transport` has 2 that send through a veth pair to a peer in a second
   namespace, behind a route with a locked path MTU. They check that the kernel
   refuses what the path cannot carry, segmented or single, and reports the path
@@ -154,8 +157,11 @@ unless run as root.
     the filter. An inner packet for the leaf at the SID is refused and counted.
     With no IPv6 prefix of the leaf's inside the overlay, the IPv6 lookups are
     skipped and say so, and IPv6 still egresses. The node puts back an nftables
-    table another writer deleted, and the border drops a packet from the far
-    host to the SID.
+    table another writer deleted, and a packet from the far host to the SID
+    never reaches the tun. A stranger's datagram from beyond the uplink to a
+    leaf is dropped and counted by `mesh_entry`, and an ICMP error from beyond
+    the uplink about a leaf's egressed flow reaches the leaf through the tun as
+    the flow's reply.
   - `TestTUNExitTranslatesEachClassUnderTheDerivedRules` runs an exit with the
     egress segment, border and table of the one above, advertising no default
     but a LAN of each family under `return`, on a link of its own to a host in a
@@ -183,17 +189,31 @@ unless run as root.
   - `TestTUNBorderDropsAForgedSourceAtTheUplink` runs an exit node with
     `cap.border` and a far host behind a veth pair. A packet from beyond the
     uplink with a source outside the overlay crosses the mesh tun, while one
-    with a source inside it, a type 4 routing header alone or behind one of type
-    0 or 2, or the local SID never crosses it and is counted. A packet to
-    another node's SID from outside the overlay crosses the tun and is refused
-    at that SID. The mesh's own packets leave through the tun, a packet the exit
-    sends to its own mesh address arrives through lo, nothing crosses once the
-    border is withdrawn and forwarding is off, and no table is left behind.
-  - `TestTUNEgressCarriesNothingWhileTheBorderIsNotReady` and
-    `TestTUNEgressFollowsTheTranslatorOnlyWhileTheBorderReadsBack` read what the
-    mesh egresses into a real tun, and check that an egress segment carries a
-    family only while the translator holds it ready and the border's chain reads
-    back.
+    with a source inside it never crosses it and is counted. A type 4 routing
+    header, alone or behind one of type 0 or 2, crosses the border and is
+    dropped and counted by the tun read, and a packet to the local SID never
+    reaches the tun. A packet to another node's SID from outside the overlay
+    crosses the tun and is refused at that SID. The mesh's own packets leave
+    through the tun, a packet the exit sends to its own mesh address arrives
+    through lo, nothing crosses once the border is withdrawn and forwarding is
+    off, and no table is left behind.
+  - `TestTUNBorderKeepsAnOverlappingUplink` runs a leaf whose uplink holds a
+    lease as wide as the overlay in both families. The gateway and a neighbor on
+    the link answer the host, a mesh peer inside the lease stays on the tun, an
+    overlay address no node announces leaves by the link, and a datagram forged
+    from the peer's source never reaches the host's socket and is counted as
+    carved.
+  - The `TestTUNEntry` labs run `mesh_entry` in both families with real sockets.
+    At a forwarding host in mode off a stranger's and an unannounced LAN host's
+    datagrams stay out of the tun, a container masqueraded at `srcnat` and the
+    host's own sockets enter from the tun's address, and a socket bound to the
+    uplink's address meets `EPERM`. At a subnet router in mode 2 beside the kill
+    switch its LAN's datagrams and their replies pass, and neither of the
+    switch's chains drops anything. An exit's `none` classes take a leaf's
+    datagram from the internet and keep another node's LAN out, and a LAN
+    learned inside such a class leaves the set before its route lands. A node
+    killed with `SIGKILL` leaves its table, which keeps dropping a forged
+    overlay source until the next start takes it over.
   - `TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter` runs 3
     nodes in a line, each in a namespace of its own, with transit on at the
     middle one, whose kernel forwards neither family and whose tun holds no
@@ -261,7 +281,7 @@ unless run as root.
   - `TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment` gives a node
     with `cap.egress` and no egress segment a real tun, and checks that its
     egress through a default reaches the tun for each family it announces and is
-    counted not ready for the others, whatever the border's chain reads back.
+    counted not ready for the others.
   - `TestTUNDerivedRulesSendEachSocketWhereModeOffSays` runs a leaf with its
     tun, an uplink to a far host, another program's link and the loopback, and
     the reconciler over the mesh's table. For each state of the table, a learned
@@ -838,7 +858,14 @@ gateway then steers its IPv6 traffic to the SID, and the machine behind the exit
 sees the exit's own address. A source outside the allow list is refused, and so
 is an inner packet for a destination the mesh routes, which the gateway never
 gets back through the mesh. Turning IPv6 forwarding off keeps the SID, since a
-family the host does not forward is not waited for. A stop removes the tables.
+family the host does not forward is not waited for. A stop removes the tables. A
+host on the client's link outside the mesh sends from mesh sources, which the
+client's border drops and counts as `overlay_source` in both families, a type 4
+routing header to a segment the mesh routes, which `mesh_entry` drops before the
+tun read sees it, at least 3 more in `mesh_entry_ipv6`, and packets to the
+client's own SID, which meet the mirror's hold. The tun read's `routing_header`
+and `sid` counts stay as they were, nothing reaches the gateway, nothing is
+egressed or refused, and `ranet3_border_ready` reads 1.
 
 `integration-segments` steers 1 destination through a segment routing header
 (RFC 8754). The gateway's own kernel removes the header with End.DT6, and a

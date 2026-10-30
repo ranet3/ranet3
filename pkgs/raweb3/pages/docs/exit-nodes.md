@@ -202,6 +202,15 @@ leaves it alone whatever order the chains were made in. A chain below 99, or one
 at 99 made after it, still translates it, as
 [sharing a host](coexistence.md#the-packet-filter) describes.
 
+On Linux, a connection an internet host opens to an address of a `none` class
+enters the tun through the exit's
+[entry chain](border-filter.md#the-entry-chain), whose `none4` and `none6` hold
+the class's addresses. A longer class inside it that translates keeps its own
+addresses out, and so does every LAN another node advertises inside the class,
+held or not, so such an exit carries no inbound connection to another node's
+LAN. An exit that advertises a LAN itself, under a `none` class covering it,
+carries that LAN's inbound connections.
+
 ### An address that routes back to this exit
 
 A translated flow's state is held by this exit alone, so the replies to the
@@ -427,7 +436,6 @@ only where 3 checks pass:
   the exit's next pass, and its packets are dropped from the moment the exit
   holds it not ready. Once the speaker retracts the prefix, the decision treats
   a packet for it as [retracted routes](routing.md#retracted-routes) describe.
-  The border filter takes no part: it holds back the egress segments alone.
 
 A packet through a prefix counting as a default that `cap.route` announces meets
 the first 2 checks, and past them goes to the tun with no readiness to wait on,
@@ -698,8 +706,7 @@ An egress segment needs no `cap.table`, though its replies need a route back
 into the tun, such as the one `cap.table` gives by the rules of
 [the return path](#the-return-path), and the reply lookup reads it. Its packets
 wait for their family's [readiness](#readiness), and the mesh counts one of a
-family not ready as not ready. Both families also wait while the border filter's
-chain is not read back, since the border is 1 chain for both.
+family not ready as not ready.
 
 The node originates each egress SID as a `/128` while at least 1 family is ready
 and every family the host forwards is. A leaf reads the `/128` as the exit's
@@ -743,11 +750,10 @@ the last pass and the last error, such as
 `nftables table ip and ip6 ranet3 chains forward and postrouting, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, conntrack holding 9000 of 262144 entries, ...`.
 A family not ready is named with the reason the last pass found, and a family
 the node does not translate with none. Before the first pass the line names no
-family. While the border filter holds the egress segments back, the line says
-`until the border filter is read back`. The refused counts are the limit rules'
-counters, of packets, each retry of a refused flow among them, and the dropped
-counts are those of the rules that drop a packet no flow is tracked for. All of
-them start from zero when a pass rewrites the chains.
+family. The refused counts are the limit rules' counters, of packets, each retry
+of a refused flow among them, and the dropped counts are those of the rules that
+drop a packet no flow is tracked for. All of them start from zero when a pass
+rewrites the chains.
 
 | Log line                                                            | Level | When                                                                                                                           |
 | ------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -790,6 +796,6 @@ zero whether or not it read them back.
 | `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, which can run ahead of the exit's                                  |
 | `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                              |
 | `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                  |
-| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the translator's judgment without the border filter's hold            |
+| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the translator's judgment                                             |
 
 [Metrics](metrics.md) describes the scrape.

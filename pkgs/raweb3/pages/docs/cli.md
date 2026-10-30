@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-10-31
+updated: 2026-11-01
 order: 75
 ---
 
@@ -104,9 +104,9 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
   [watching it](routing.md#watching-it) shows. Under `fallback = "none"` it
   names [the kill switch's](routing.md#the-kill-switch-on-linux) state,
   `holding`, `passing` or `not holding` with the reason, what the last lines of
-  both chains dropped, summed, a connected network left out of the LAN, an
-  endpoint name whose last lookup failed and a DNS server beyond the LAN.
-  `--json` carries them under `kernel.exit`, the families in `unaddressed`.
+  both chains dropped, summed, a connected network or a part of one left out of
+  the LAN, an endpoint name whose last lookup failed and a DNS server beyond the
+  LAN. `--json` carries them under `kernel.exit`, the families in `unaddressed`.
 - `down` withdraws [the kill switch's](routing.md#the-kill-switch-on-linux)
   rules and table with the rest of the reconciler's, as a clean stop does, and
   `up` writes them again.
@@ -178,7 +178,7 @@ it. [Debugging](development/debug.md) describes each command and the events.
 | `debug netmon`                         | Show the host network the node watches                                              | none                                                                                                        |
 | `debug pmtu [peer]`                    | Show each session's path MTU                                                        | none                                                                                                        |
 | `debug probe [peer]`                   | Probe sessions now                                                                  | `--all`                                                                                                     |
-| `debug rules`                          | Show the host's policy rules, the border filter's chain and the kill switch's table | none                                                                                                        |
+| `debug rules`                          | Show the host's policy rules, the border filter's table and the kill switch's table | none                                                                                                        |
 | `debug route <src> <dst>`              | Show where a packet goes                                                            | `--iif`, `--peer`                                                                                           |
 | `debug egress`                         | Show the exit's rules and readiness                                                 | none                                                                                                        |
 | `debug segments`                       | Show local segments and steering                                                    | none                                                                                                        |

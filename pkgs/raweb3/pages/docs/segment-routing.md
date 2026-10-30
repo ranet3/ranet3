@@ -179,17 +179,23 @@ its SID, its behavior, `deliver egress` and its list.
 
 ## At the border of the mesh
 
-The mesh is the segment routing domain, and a node with
-[the border filter](border-filter.md) is its edge, as RFC 8754 section 5.1 asks.
-A packet arriving on a link outside the mesh with a routing header of any type,
-or addressed to one of this node's own SIDs, is dropped there before the routing
-decision. A packet read from the tun crosses the same edge the other way, and
-the forwarding decision checks it beside the border filter: a routing header of
-type 0, 1 or 4, or a type the mesh does not recognize, is dropped and counted
-`routing_header`, and one of this node's own SIDs is dropped and counted `sid`.
-A host steers with [`cap.segment.steer`](#steering), which puts the segments on
-inside the mesh, after the checks, since the checks drop the segment routing
-header an `encap seg6` route on the tun writes
+The mesh is the segment routing domain, and the tun is its edge, as RFC 8754
+section 5.1 asks. A packet read from the tun enters the domain there, and the
+forwarding decision checks it: a routing header of type 0, 1 or 4, or a type the
+mesh does not recognize, is dropped and counted `routing_header`, and one of
+this node's own SIDs is dropped and counted `sid`. A packet arriving on a link
+outside the mesh with a routing header goes by its destination, as RFC 7045
+section 2.1 asks. ranet3 sets no `seg6_enabled` and installs no `seg6local`
+route, and the kernel drops a segment routing header addressed to the host while
+`seg6_enabled` is off
+([exthdrs.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/exthdrs.c#L381)).
+A packet from outside addressed to one of this node's own SIDs never reaches the
+tun, since the mirror holds or throws this node's own `/128`, and
+[the border filter](border-filter.md) drops it where its source lies in the
+overlay outside a [carve-out](border-filter.md#carve-outs) on its link. A host
+steers with [`cap.segment.steer`](#steering), which puts the segments on inside
+the mesh, after the checks, since the checks drop the segment routing header an
+`encap seg6` route on the tun writes
 ([seg6_iptunnel.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/seg6_iptunnel.c#L141)),
 as [interoperation with the Linux kernel](#interoperation-with-the-linux-kernel)
 says. A packet read from the tun addressed to another node's SID with no routing
@@ -197,10 +203,7 @@ header passes the routing header and SID checks, its source meets the same
 source checks as any read, and the IPv4 or IPv6 packet it carries meets every
 check one level deep as a read of its own, as [routing](routing.md#transit)
 lists. What passes, that node refuses where its outer source lies outside the
-overlay, as [local segments](#local-segments) describe. A node that transits
-another segment routing domain between 2 links outside the mesh would lose that
-traffic, which [the deviations](design/protocol-deviations.md#the-border-filter)
-list.
+overlay, as [local segments](#local-segments) describe.
 
 ## Steering
 

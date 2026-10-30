@@ -731,10 +731,12 @@ needs.
 
 ## `cap.border`
 
-Drop what arrives on a link outside the mesh carrying a mesh source, an IPv6
-routing header of any type or one of this node's SIDs. Linux only, and the
-daemon refuses it at startup on other platforms.
-[The border filter](border-filter.md) describes what it drops and where.
+Drop what arrives on a link outside the mesh carrying a mesh source, except from
+a link's own network inside the overlay, which it carves out. Linux only, and
+the daemon refuses it at startup on other platforms. The border filter's entry
+chain, which lets into the tun only what
+[its list](border-filter.md#the-entry-chain) passes, runs on every Linux node
+with no key. [The border filter](border-filter.md) describes both.
 
 | Key       | Value            | Default  | Meaning                                      |
 | --------- | ---------------- | -------- | -------------------------------------------- |
@@ -760,12 +762,19 @@ daemon refuses it at startup on other platforms.
   unspecified address or the mesh cannot carry it, an unreachable hold in that
   table. A lookup bound to no device for an overlay address then ends as rows L1
   to L5 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give.
+  A link's network inside a prefix is thrown in place of the hold, as
+  [carve-outs](border-filter.md#carve-outs) describe.
 - A file with a local segment and no `cap.border` is refused, and so is one
   whose `overlay` holds no IPv6 prefix, since every local SID acts only on an
   outer source in those prefixes. An egress segment's `allow` entry no `overlay`
   entry covers is refused too.
-- The SIDs it drops are those of `cap.segment.local`, and the devices it accepts
-  are derived, so neither is a key.
+- A file with a `cap.egress` translate class of `none` and no `cap.border` is
+  refused: a learned route reads alike for a node's own address and for a LAN
+  another node advertises, so only the overlay tells
+  [the entry chain](border-filter.md#the-entry-chain) which `none` destinations
+  to keep.
+- The devices it accepts and the carve-outs are derived from the host's links,
+  so neither is a key.
 
 ## `cap.exit`
 
