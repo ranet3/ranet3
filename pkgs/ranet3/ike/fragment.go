@@ -257,7 +257,7 @@ func (s *Session) resend(t *transmission, fit int, send func([]byte) error) (boo
 }
 
 // retransmit is resend for a send of a request that its backoff schedules, the first send included, and only such a send counts toward stepDownSends
-// so a probe, which a network change or an operator asks for at any time, steps a request down only once the backoff's own sends under its cut reached stepDownSends, and a step that cuts the request starts the backoff over
+// so a probe, which a move of the host's default or one of its addresses or an operator asks for at any time, steps a request down only once the backoff's own sends under its cut reached stepDownSends, and a step that cuts the request starts the backoff over
 func (s *Session) retransmit(t *transmission, send func([]byte) error) (bool, error) {
 	again, err := s.resend(t, 0, send)
 	t.sends++

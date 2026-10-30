@@ -46,9 +46,9 @@ type RulesInfo struct {
 // overlay hold Prefix, or of the underlay, under its mark toward the peer
 // endpoint Address. Taken is an overlay lookup answered outside the tun and
 // its hold, or the underlay's answered through the tun. On darwin an underlay
-// row is the interface a live session's datagrams to Address name, or the one
-// holding their pin, Prefix the route the selection matched, absent for a pin,
-// and never taken
+// row is the interface a live session's datagrams to Address name, or the
+// interface of the pin they carry, Prefix the route the selection matched,
+// absent for a pin, and never taken
 type RuleLookup struct {
 	Lookup  string       `json:"lookup"`
 	Family  string       `json:"family"`
