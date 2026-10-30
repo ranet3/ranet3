@@ -844,8 +844,19 @@ exit's own address in both families, the exit is ready in both, and
 nat `POSTROUTING`. [The packet filter](../coexistence.md#the-packet-filter) says
 which chains the report counts. A container, run from an empty image the check
 imports, reaches the machine behind the exit and the gateway's IPv4 tunnel
-address, where the gateway sees the client's own tun address. A restart of
-Docker leaves ranet3's tables as they were.
+address, where the gateway sees the client's own tun address, and the gateway
+fetches a page a container serves on a published port. A restart of Docker
+leaves ranet3's tables as they were. The client holds a default route by the
+gateway in the main table. Last, the gateway announces a default into the mesh
+and answers an address on its loopback beyond it, and the client switches into a
+specialisation that sets [`cap.exit`](../configuration-reference.md#capexit)
+with `forward` naming `docker0`, which ranet3 applies by a reload. The host's
+lookups of that address in both families, and a container's IPv4 lookup from its
+address on `docker0`, end in the mesh's table ahead of the main table's default,
+and the gateway's capture on its xfrm interface reads what the check sends there
+entering the mesh from the client's own tun address. The exit, the container's
+reach and the published port hold under `cap.exit` too, again after a restart of
+Docker and after a restart of ranet3.
 
 `integration-tailscale` runs `tailscaled` on the client and on a third node,
 which also runs headscale, the control server both register with. With no exit
@@ -855,7 +866,24 @@ check then makes the third node the client's exit node with
 answers through `tailscale0` and table 52, while the mesh still reaches the
 gateway and the underlay's lookups end in the main table. In both phases the
 nodes reach each other by `tailscale ping` and by an ICMP ping of each Tailscale
-address. `tailscaled` logs no restore of rules another program deleted.
+address. `tailscaled` logs no restore of rules another program deleted, read
+from the moment systemd-networkd has configured the uplink and the tun and
+Tailscale's 4 IPv4 rules are in place, since networkd removes the rules it did
+not ask for as it configures a link
+([routes on Linux](../coexistence.md#routes-on-linux)). Both Tailscale nodes
+hold a default route by the gateway. After each step that changes the client's
+links, a name headscale gives the third node reaches the client, so the client
+still takes the control server's updates. Last, the client switches into
+`cap.exit` as in `integration-docker`, first with the third node as its exit
+node. The host's lookups of the third node's Tailscale addresses and of the
+address beyond the mesh's exit, in both families, are routed by `tailscale0` and
+table 52, as
+[exit mode beside other programs](../coexistence.md#exit-mode-beside-other-programs)
+measures, and the switch leaves the other program's rules and nftables tables as
+they were. With no exit node, the host's own traffic to the address beyond the
+mesh's exit enters the mesh as in `integration-docker`, and the nodes still
+reach each other through Tailscale. Once Tailscale is back from a restart of
+`tailscaled`, ranet3's rules are as they were.
 
 `integration-k3s` runs a k3s server on the client with kube-proxy in iptables
 mode and flannel, its pods from an image the check builds. ranet3 starts only
