@@ -21,17 +21,24 @@ import (
 
 var _ switcher = (*netlinkPlatform)(nil)
 
-// fallbackPriority runs the chain after every priority nft and iptables name
-// and ahead of conntrack's confirmation at the last one, so a packet it drops
-// confirms no entry
-const fallbackPriority = 2147483646
-
-// fallbackDrop is the chain's last line, whose counter status reads
+// fallbackDrop is each chain's last line, whose counters status reads summed
 const fallbackDrop = "counter drop"
 
-// fallbackChain is the table's one chain, at postrouting, which sees the
-// device every packet leaves by after every route chain and NAT has moved it
+// fallbackChain is the table's chain at postrouting, which reads the device a
+// packet leaves by (ip_output in ip_output.c, ip6_output in ip6_output.c)
 var fallbackChain = nftables.Chain{Table: FallbackTable, Name: "fallback", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: fallbackPriority}
+
+// fallbackOutput holds postrouting's lines for the packets reaching output,
+// which carry no input link there (__ip_local_out in ip_output.c,
+// __ip6_local_out in output_core.c). At postrouting a packet's input link is
+// its device before its route (ip_output in ip_output.c, ip6_output in
+// ip6_output.c), a kernel
+// tunnel's for its outer packet, which the forwarded line's iif match reads as
+// forwarded.
+var fallbackOutput = nftables.Chain{Table: FallbackTable, Name: "output", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: fallbackPriority}
+
+// fallbackChains is the table's chains, in the order the readback lists their lines
+var fallbackChains = []nftables.Chain{fallbackChain, fallbackOutput}
 
 // fallbackNamed is the table's named sets, the IDs naming them to the rules of
 // the transaction that makes them
@@ -55,10 +62,10 @@ var (
 	linkLocal6 = []netip.Prefix{netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8")}
 )
 
-// elements is each named set's elements for sets
 func (s fallbackSets) elements() map[string][]nftables.Interval {
+	// lo counts as a link forward names, as 5450 does, so a packet looped back through it and forwarded meets the lines
 	var forwarded []nftables.Interval
-	for _, name := range s.forwarded {
+	for _, name := range append([]string{loopback}, s.forwarded...) {
 		forwarded = append(forwarded, nftables.Key(nftables.InterfaceName(name)))
 	}
 	return map[string][]nftables.Interval{
@@ -72,7 +79,6 @@ func (s fallbackSets) elements() map[string][]nftables.Interval {
 	}
 }
 
-// ports is each service's range of ports as an interval of network order keys
 func ports(services []Service) []nftables.Interval {
 	var out []nftables.Interval
 	for _, service := range services {
@@ -81,23 +87,23 @@ func ports(services []Service) []nftables.Interval {
 	return out
 }
 
-// fallbackRule is one line of the chain: its text as nft lists it, the
-// comment the readback knows it by, its expressions and the anonymous set it
-// reads, if any, with that set's elements
 type fallbackRule struct {
+	// spec is the line as nft lists it and also its comment
 	spec        string
 	expressions [][]byte
 	anonymous   *nftables.Set
 	members     []nftables.Interval
 }
 
-// rules is the chain's lines in order
-func (s fallbackSets) rules() ([]fallbackRule, error) {
+// rules is the lines in order of the chain at index chain of fallbackChains,
+// the anonymous sets they read numbered from chainFirstSet, so each chain's
+// sets take IDs of their own in one transaction
+func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 	named := func(name string) nftables.Set {
 		return fallbackNamed[slices.IndexFunc(fallbackNamed, func(set nftables.Set) bool { return set.Name == name })]
 	}
 	accept := nftables.Verdict(nftables.Accept)
-	id := uint32(10)
+	id := chainFirstSet(chain)
 	anonymous := func(keyType, keyLen, flags uint32) *nftables.Set {
 		set := nftables.Anonymous(FallbackTable, id, keyType, keyLen, flags)
 		id++
@@ -125,9 +131,14 @@ func (s fallbackSets) rules() ([]fallbackRule, error) {
 			expressions: append(nftables.MetaCompareValue(unix.NFT_META_MARK, unix.NFT_CMP_EQ, binary.NativeEndian.AppendUint32(nil, schema.UnderlayMark)), accept),
 		},
 		fallbackRule{
-			spec: "meta iif != 0 iifname != @forwarded accept",
+			// a forwarded packet from a link outside forwarded whose destination the fib does not type local (nft_fib4_eval_type in
+			// nft_fib_ipv4.c, __nft_fib6_eval_type in nft_fib_ipv6.c). The type keeps the line off a packet a rule ahead of the
+			// local table sends on toward a destination it types local, and off a kernel tunnel's outer packet bound to a link toward
+			// an address another link holds, whose lookup passes over that address's local route (fib_trie.c, fib_lookup_good_nhc).
+			spec: "meta iif != 0 iifname != @forwarded fib daddr type != local accept",
 			expressions: slices.Concat(nftables.MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_NEQ, make([]byte, 4)),
-				[][]byte{nftables.MetaLoad(unix.NFT_META_IIFNAME), nftables.Lookup(named("forwarded"), true), accept}),
+				[][]byte{nftables.MetaLoad(unix.NFT_META_IIFNAME), nftables.Lookup(named("forwarded"), true), nftables.FibDestinationType(),
+					nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_NEQ, binary.NativeEndian.AppendUint32(nil, unix.RTN_LOCAL))), accept}),
 		},
 	)
 	for _, line := range []struct {
@@ -140,6 +151,43 @@ func (s fallbackSets) rules() ([]fallbackRule, error) {
 	out = append(out, addressLine(unix.NFPROTO_IPV4, "{ 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 }", nftables.Lookup(*link4, false), link4, nftables.Prefixes(linkLocal4)))
 	link6 := anonymous(nftables.TypeIPv6Addr, 16, unix.NFT_SET_INTERVAL)
 	out = append(out, addressLine(unix.NFPROTO_IPV6, "{ fe80::/10, ff00::/8 }", nftables.Lookup(*link6, false), link6, nftables.Prefixes(linkLocal6)))
+	// neighbor and router discovery, which RFC 4890 section 4.4.1 says must not be dropped, at the hop limit of 255 RFC 4861
+	// sections 6.1 and 7.1 require, to any destination, since a solicited advertisement goes to the solicitation's source
+	discovery := anonymous(nftables.TypeICMPv6Type, 1, 0)
+	var discoveryTypes []nftables.Interval
+	for icmpType := byte(133); icmpType <= 136; icmpType++ {
+		discoveryTypes = append(discoveryTypes, nftables.Key([]byte{icmpType}))
+	}
+	icmp := func(proto, l4 uint8) [][]byte {
+		return slices.Concat(nftables.NFProto(proto), nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{l4}))
+	}
+	// a packet with no input link at postrouting (ip_output in ip_output.c, ip6_output in ip6_output.c), such as the host's own,
+	// where a forwarded one reads its own
+	own := nftables.MetaCompareValue(unix.NFT_META_IIF, unix.NFT_CMP_EQ, make([]byte, 4))
+	out = append(out,
+		fallbackRule{
+			spec: "icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept",
+			expressions: slices.Concat(icmp(unix.NFPROTO_IPV6, unix.IPPROTO_ICMPV6), [][]byte{
+				nftables.TransportLoad(0, 1), nftables.Lookup(*discovery, false),
+				nftables.NetworkLoad(7, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{255})), accept,
+			}),
+			anonymous: discovery, members: discoveryTypes,
+		},
+		// the errors path MTU discovery reads, Packet Too Big of RFC 4443 and fragmentation needed of RFC 792, which the kernel sends
+		// only to the source of a packet too big for its next hop, a forwarded one among them, and the host's own alone
+		fallbackRule{
+			spec: "meta iif 0 icmpv6 type packet-too-big accept",
+			expressions: slices.Concat(own, icmp(unix.NFPROTO_IPV6, unix.IPPROTO_ICMPV6), [][]byte{
+				nftables.TransportLoad(0, 1), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{2})), accept,
+			}),
+		},
+		fallbackRule{
+			spec: "meta iif 0 icmp type destination-unreachable icmp code 4 accept",
+			expressions: slices.Concat(own, icmp(unix.NFPROTO_IPV4, unix.IPPROTO_ICMP), [][]byte{
+				nftables.TransportLoad(0, 2), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, []byte{3, 4})), accept,
+			}),
+		},
+	)
 	for _, line := range []struct {
 		proto uint8
 		set   string
@@ -163,6 +211,19 @@ func (s fallbackSets) rules() ([]fallbackRule, error) {
 			},
 		})
 	}
+	if fallbackChains[chain].Hook == unix.NF_INET_LOCAL_OUT {
+		// oifname reads the device of the packet's first route (__ip_local_out in ip_output.c, __ip6_local_out in output_core.c),
+		// so a packet whose destination the fib types local (nft_fib4_eval_type in nft_fib_ipv4.c, __nft_fib6_eval_type in
+		// nft_fib_ipv6.c), whatever gave it that destination, passes on that type and meets postrouting's lines by the link it
+		// leaves by, which the reroute at output looks up again (ip_route_me_harder and ip6_route_me_harder in each family's
+		// netfilter.c)
+		out = append(out, fallbackRule{
+			spec: "fib daddr type local accept",
+			expressions: []([]byte){
+				nftables.FibDestinationType(), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, binary.NativeEndian.AppendUint32(nil, unix.RTN_LOCAL))), accept,
+			},
+		})
+	}
 	out = append(out, fallbackRule{spec: fallbackDrop, expressions: nftables.CountedDrop()})
 	return out, nil
 }
@@ -181,7 +242,7 @@ func addressLine(proto uint8, set string, lookup []byte, anonymous *nftables.Set
 }
 
 // fallbackBatch is the table in one transaction: the table with no owner
-// flag, its named sets made, flushed and filled, the chain made and flushed,
+// flag, its named sets made, flushed and filled, each chain made and flushed,
 // and each line behind the anonymous set it reads. remake deletes the table
 // first, for one holding what nf_tables will not change in place.
 func fallbackBatch(s fallbackSets, remake bool) ([]nftables.Request, error) {
@@ -202,31 +263,38 @@ func fallbackBatch(s fallbackSets, remake bool) ([]nftables.Request, error) {
 		}
 		requests = append(append(requests, made, set.Flush(unix.NFPROTO_INET)), filled...)
 	}
-	requests = append(requests, fallbackChain.Create(unix.NFPROTO_INET), fallbackChain.Flush(unix.NFPROTO_INET))
-	rules, err := s.rules()
-	if err != nil {
-		return nil, err
-	}
-	for _, rule := range rules {
-		if rule.anonymous != nil {
-			made, err := rule.anonymous.Create(unix.NFPROTO_INET)
-			if err != nil {
-				return nil, err
-			}
-			filled, err := rule.anonymous.Fill(unix.NFPROTO_INET, rule.members)
-			if err != nil {
-				return nil, err
-			}
-			requests = append(append(requests, made), filled...)
-		}
-		request, err := fallbackChain.Rule(unix.NFPROTO_INET, rule.spec, rule.expressions)
+	for i, chain := range fallbackChains {
+		requests = append(requests, chain.Create(unix.NFPROTO_INET), chain.Flush(unix.NFPROTO_INET))
+		rules, err := s.rules(i)
 		if err != nil {
 			return nil, err
 		}
-		requests = append(requests, request)
+		for _, rule := range rules {
+			if rule.anonymous != nil {
+				made, err := rule.anonymous.Create(unix.NFPROTO_INET)
+				if err != nil {
+					return nil, err
+				}
+				filled, err := rule.anonymous.Fill(unix.NFPROTO_INET, rule.members)
+				if err != nil {
+					return nil, err
+				}
+				requests = append(append(requests, made), filled...)
+			}
+			request, err := chain.Rule(unix.NFPROTO_INET, rule.spec, rule.expressions)
+			if err != nil {
+				return nil, err
+			}
+			requests = append(requests, request)
+		}
 	}
 	return requests, nil
 }
+
+// chainFirstSet is the ID of the first anonymous set the lines of the chain
+// at index i of fallbackChains read, past the named sets' and the sets of the
+// chains before it
+func chainFirstSet(i int) uint32 { return uint32(fallbackSetIDs * (i + 1)) }
 
 // fallbackTables is the scope another writer's change wakes the reconciler in
 var fallbackTables = nftables.Scope{Name: FallbackTable, Families: []uint8{unix.NFPROTO_INET}}
@@ -289,16 +357,12 @@ func (p *netlinkPlatform) unwatchFallback() error {
 	return errors.Join(w.monitor.Close(), w.conn.Close())
 }
 
-func (p *netlinkPlatform) writeFallback(s fallbackSets) error {
+func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 	conn, err := p.watchFallback()
 	if err != nil {
 		return err
 	}
-	read, err := readFallback(conn, s)
-	if err != nil {
-		return err
-	}
-	requests, err := fallbackBatch(s, read.Remake)
+	requests, err := fallbackBatch(s, remake)
 	if err != nil {
 		return err
 	}
@@ -320,37 +384,76 @@ func fallbackFault(conn *nftables.Conn, s fallbackSets) (fallbackRead, error) {
 	if err != nil {
 		return fallbackRead{}, err
 	}
-	var out fallbackRead
+	out := fallbackRead{remake: read.Remake}
 	for _, rule := range read.Rules {
 		if rule.Spec == fallbackDrop {
-			out.dropped, out.bytes = rule.Packets, rule.Bytes
+			out.dropped, out.bytes = out.dropped+rule.Packets, out.bytes+rule.Bytes
 		}
 	}
 	if read.Fault != "" {
 		out.fault = read.Fault
 		return out, nil
 	}
-	rules, err := s.rules()
-	if err != nil {
-		return fallbackRead{}, err
-	}
-	var want, held []string
-	for _, rule := range rules {
-		want = append(want, rule.spec)
-	}
-	for _, rule := range read.Rules {
-		held = append(held, rule.Spec)
-	}
-	if !slices.Equal(held, want) {
-		out.fault = fmt.Sprintf("its chain holds [%s], where [%s] was written", strings.Join(held, "; "), strings.Join(want, "; "))
+	for i := range fallbackChains {
+		if out.fault, err = chainFault(conn, s, i, read.Rules); err != nil {
+			return fallbackRead{}, err
+		}
+		if out.fault != "" {
+			break
+		}
 	}
 	return out, nil
+}
+
+// chainFault names how the chain at index chain of fallbackChains holds lines
+// other than those written for s, read from every chain's lines in held,
+// empty where it does not
+func chainFault(conn *nftables.Conn, s fallbackSets, chain int, held []nftables.Installed) (string, error) {
+	want, err := s.rules(chain)
+	if err != nil {
+		return "", err
+	}
+	name := fallbackChains[chain].Name
+	held = slices.DeleteFunc(slices.Clone(held), func(rule nftables.Installed) bool { return rule.Chain != name })
+	var wantSpecs, heldSpecs []string
+	for _, rule := range want {
+		wantSpecs = append(wantSpecs, rule.spec)
+	}
+	for _, rule := range held {
+		heldSpecs = append(heldSpecs, rule.Spec)
+	}
+	if !slices.Equal(heldSpecs, wantSpecs) {
+		return fmt.Sprintf("its chain %s holds [%s], where [%s] was written", name, strings.Join(heldSpecs, "; "), strings.Join(wantSpecs, "; ")), nil
+	}
+	// a line edited under the comment it was written with reads as its comment says, so each is read by what it does
+	for i, rule := range want {
+		if fault := nftables.ExpressionFault(rule.expressions, held[i].Expressions); fault != "" {
+			return fmt.Sprintf("its chain %s's line %s: %s", name, rule.spec, fault), nil
+		}
+		if rule.anonymous == nil {
+			continue
+		}
+		sets := nftables.LookupSets(held[i].Expressions)
+		if len(sets) != 1 {
+			return fmt.Sprintf("its chain %s's line %s looks up %v, where one set was written", name, rule.spec, sets), nil
+		}
+		set := *rule.anonymous
+		set.Name = sets[0]
+		fault, err := set.ElementFault(conn, unix.NFPROTO_INET, rule.members)
+		if err != nil {
+			return "", err
+		}
+		if fault != "" {
+			return fmt.Sprintf("its chain %s's line %s: %s", name, rule.spec, fault), nil
+		}
+	}
+	return "", nil
 }
 
 // ReadFallback reads the table through a socket of its own, so the
 // reconciler's stays with its one user
 func ReadFallback() (FallbackDebug, error) {
-	out := FallbackDebug{Where: "nftables table inet " + FallbackTable + " chain " + fallbackChain.Name, Hook: "postrouting", Priority: fallbackPriority}
+	out := FallbackDebug{Where: "nftables table inet " + FallbackTable + " chains " + fallbackChain.Name + " and " + fallbackOutput.Name, Hook: "postrouting and output", Priority: fallbackPriority}
 	conn, err := nftables.Dial()
 	if err != nil {
 		return out, err
@@ -363,12 +466,14 @@ func ReadFallback() (FallbackDebug, error) {
 	if _, out.Held = tables[unix.NFPROTO_INET]; !out.Held {
 		return out, nil
 	}
-	read, err := nftables.Contents{Chains: []nftables.Chain{fallbackChain}}.Read(conn, tables, unix.NFPROTO_INET)
-	if err != nil {
-		return out, err
-	}
-	for _, rule := range read.Rules {
-		out.Rules = append(out.Rules, FallbackDebugRule{Spec: rule.Spec, Packets: rule.Packets, Bytes: rule.Bytes})
+	for _, chain := range fallbackChains {
+		read, err := nftables.Contents{Chains: []nftables.Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET)
+		if err != nil {
+			return out, err
+		}
+		for _, rule := range read.Rules {
+			out.Rules = append(out.Rules, FallbackDebugRule{Chain: chain.Name, Spec: rule.Spec, Packets: rule.Packets, Bytes: rule.Bytes})
+		}
 	}
 	for _, set := range fallbackNamed {
 		held, err := set.Elements(conn, unix.NFPROTO_INET)
@@ -377,51 +482,11 @@ func ReadFallback() (FallbackDebug, error) {
 		}
 		elements := []string{}
 		for _, interval := range held {
-			elements = append(elements, intervalText(set, interval))
+			elements = append(elements, set.Text(interval))
 		}
 		out.Sets = append(out.Sets, FallbackDebugSet{Name: set.Name, Elements: elements})
 	}
 	return out, nil
-}
-
-// intervalText is an element as nft lists it: a link's name, a port or a
-// range of ports, an address, a prefix, or a range's first and last address
-func intervalText(set nftables.Set, interval nftables.Interval) string {
-	switch {
-	case set.KeyType == nftables.TypeIfname:
-		return unix.ByteSliceToString(interval.First)
-	case set.KeyType == nftables.TypeInetService && len(interval.First) == 2 && len(interval.Last) == 2:
-		first, last := binary.BigEndian.Uint16(interval.First), binary.BigEndian.Uint16(interval.Last)
-		if first == last {
-			return fmt.Sprint(first)
-		}
-		return fmt.Sprintf("%d-%d", first, last)
-	}
-	first, okFirst := netip.AddrFromSlice(interval.First)
-	last, okLast := netip.AddrFromSlice(interval.Last)
-	if !okFirst || !okLast {
-		return fmt.Sprintf("%x-%x", interval.First, interval.Last)
-	}
-	for bits := 0; bits <= first.BitLen(); bits++ {
-		prefix := netip.PrefixFrom(first, bits)
-		if prefix.Masked().Addr() == first && lastOf(prefix) == last {
-			if bits == first.BitLen() {
-				return first.String()
-			}
-			return prefix.String()
-		}
-	}
-	return first.String() + "-" + last.String()
-}
-
-// lastOf is the last address of prefix
-func lastOf(prefix netip.Prefix) netip.Addr {
-	raw := prefix.Addr().AsSlice()
-	for i := prefix.Bits(); i < len(raw)*8; i++ {
-		raw[i/8] |= 0x80 >> (i % 8)
-	}
-	last, _ := netip.AddrFromSlice(raw)
-	return last
 }
 
 // readFallback reads the table back, a missing one as a fault
@@ -433,7 +498,7 @@ func readFallback(conn *nftables.Conn, s fallbackSets) (nftables.Readback, error
 	if _, held := tables[unix.NFPROTO_INET]; !held {
 		return nftables.Readback{Fault: "the table is missing"}, nil
 	}
-	read, err := nftables.Contents{Chains: []nftables.Chain{fallbackChain}, Sets: fallbackNamed, Elements: s.elements()}.Read(conn, tables, unix.NFPROTO_INET)
+	read, err := nftables.Contents{Chains: fallbackChains, Sets: fallbackNamed, Elements: s.elements()}.Read(conn, tables, unix.NFPROTO_INET)
 	if err != nil {
 		return nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", FallbackTable, err)
 	}
@@ -441,13 +506,18 @@ func readFallback(conn *nftables.Conn, s fallbackSets) (nftables.Readback, error
 }
 
 // deleteFallback deletes through the watch's socket, so its own delete wakes
-// nothing. It lists first, since deleting a table that is not there fails the
-// batch.
+// nothing
 func (p *netlinkPlatform) deleteFallback() error {
 	conn, err := p.watchFallback()
 	if err != nil {
 		return err
 	}
+	return deleteFallback(conn)
+}
+
+// deleteFallback lists first, since deleting a table that is not there fails
+// the batch
+func deleteFallback(conn *nftables.Conn) error {
 	tables, err := nftables.Tables(conn, FallbackTable)
 	if err != nil {
 		return err
@@ -456,4 +526,19 @@ func (p *netlinkPlatform) deleteFallback() error {
 		return nil
 	}
 	return conn.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, FallbackTable)})
+}
+
+// DeleteFallback deletes the table an earlier instance left, for a start that
+// runs no reconciler to delete it. A kernel without nf_tables holds none. A
+// start without CAP_NET_ADMIN, which nfnetlink refuses with EPERM, cannot
+// tell whether one is held, and warns as any other refusal.
+func DeleteFallback() {
+	conn, err := nftables.Dial()
+	if err == nil {
+		err = deleteFallback(conn)
+		_ = conn.Close()
+	}
+	if err != nil && !withoutNFTables(err) {
+		warnFallbackLeft(err)
+	}
 }

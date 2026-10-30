@@ -8,10 +8,12 @@ package kernel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os/exec"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,32 +35,60 @@ const (
 	tableOwner = 0x2
 )
 
-// fallbackText is fallbackSample's table as nft spells it
-const fallbackText = `table inet ranet3_fallback {
-	set forwarded { type ifname; elements = { "ranetfw0" } }
+// fallbackLines is the lines of the chain at postrouting in fallbackSample's
+// table as nft spells them, and output's with fib daddr type local accept
+// ahead of the drop
+const fallbackLines = `		oifname { "lo", "ranetsw0" } accept
+		meta mark 0x00000072 accept
+		meta iif != 0 iifname != @forwarded fib daddr type != local accept
+		ip daddr @lan4 accept
+		ip6 daddr @lan6 accept
+		ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
+		ip6 daddr { fe80::/10, ff00::/8 } accept
+		icmpv6 type { nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept
+		meta iif 0 icmpv6 type packet-too-big accept
+		meta iif 0 icmp type destination-unreachable icmp code 4 accept
+		ip daddr @own4 accept
+		ip6 daddr @own6 accept
+		ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept
+		ct direction reply ct protocol udp ct original proto-dst @udp_ports accept
+		counter drop
+`
+
+// fallbackText is fallbackSample's table as nft spells it, each line under the
+// comment the platform writes for it
+func fallbackText(t *testing.T) string {
+	t.Helper()
+	text := `table inet ranet3_fallback {
+	set forwarded { type ifname; elements = { "lo", "ranetfw0" } }
 	set lan4 { type ipv4_addr; flags interval; elements = { 198.51.100.0/25 } }
 	set lan6 { type ipv6_addr; flags interval; elements = { 2001:db8:a::/64 } }
 	set own4 { type ipv4_addr; flags interval; elements = { 203.0.113.0/24 } }
 	set own6 { type ipv6_addr; flags interval; }
 	set tcp_ports { type inet_service; flags interval; elements = { 22, 2222 } }
 	set udp_ports { type inet_service; flags interval; elements = { 53, 60000-61000 } }
-	chain fallback {
-		type filter hook postrouting priority 2147483646; policy accept;
-		oifname { "lo", "ranetsw0" } accept
-		meta mark 0x00000072 accept
-		meta iif != 0 iifname != @forwarded accept
-		ip daddr @lan4 accept
-		ip6 daddr @lan6 accept
-		ip daddr { 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } accept
-		ip6 daddr { fe80::/10, ff00::/8 } accept
-		ip daddr @own4 accept
-		ip6 daddr @own6 accept
-		ct direction reply ct protocol tcp ct original proto-dst @tcp_ports accept
-		ct direction reply ct protocol udp ct original proto-dst @udp_ports accept
-		counter drop
-	}
-}
 `
+	postrouting := strings.Split(strings.TrimSuffix(fallbackLines, "\n"), "\n")
+	output := slices.Insert(slices.Clone(postrouting), len(postrouting)-1, "\t\tfib daddr type local accept")
+	for i, chain := range []struct {
+		header string
+		lines  []string
+	}{
+		{"\tchain fallback {\n\t\ttype filter hook postrouting priority 2147483646; policy accept;\n", postrouting},
+		{"\tchain output {\n\t\ttype filter hook output priority 2147483646; policy accept;\n", output},
+	} {
+		rules, err := fallbackSample.rules(i)
+		if err != nil || len(rules) != len(chain.lines) {
+			t.Fatalf("the sample's chain %s has %d lines (err %v), where the text spells %d", fallbackChains[i].Name, len(rules), err, len(chain.lines))
+		}
+		text += chain.header
+		for j, rule := range rules {
+			text += fmt.Sprintf("%s comment %q\n", chain.lines[j], rule.spec)
+		}
+		text += "\t}\n"
+	}
+	return text + "}\n"
+}
 
 // fallbackSample is a table of every line, on the tun ranetsw0, each port set
 // holding a port beside another port or a range
@@ -70,11 +100,12 @@ var fallbackSample = fallbackSets{
 	udp:  []Service{{Protocol: "udp", First: 53, Last: 53}, {Protocol: "udp", First: 60000, Last: 61000}},
 }
 
-// The table the platform writes lists as nft 1.1.7 lists the same text, but
-// for the comments it writes, reads back as written, outlives the socket
-// that wrote it, and drops the host's own datagram beyond the LAN with EPERM
-// while passing one to the LAN. Another writer's flushed set or chain reads
-// back as a fault until the next write, and the delete takes the table.
+// nft 1.1.7's own table of the same text reads back as the platform writes
+// it, and the platform's lists as nft's does and outlives the socket that
+// wrote it. A datagram bound to the uplink toward an address another link
+// holds, translated so by NAT at output or not, passes output's fib line and
+// meets postrouting's drop, and the read sums both chains' drops. Another
+// writer's change reads back as a fault until the next write.
 func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	plat := rootRulePlatform(t, "ranetsw0")
 	nft, err := exec.LookPath("nft")
@@ -85,29 +116,43 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command(nft, args...)
 		if args[0] == "-f" {
-			cmd.Stdin = strings.NewReader(fallbackText)
+			cmd.Stdin = strings.NewReader(fallbackText(t))
 		}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("nft %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
-		return regexp.MustCompile(` comment "[^"]*"`).ReplaceAllString(string(out), "")
+		return string(out)
+	}
+	runScript := func(script string) {
+		t.Helper()
+		cmd := exec.Command(nft, "-f", "-")
+		cmd.Stdin = strings.NewReader(script)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("nft -f %q: %v\n%s", script, err, out)
+		}
+	}
+	list := func() string {
+		return regexp.MustCompile(` comment "[^"]*"`).ReplaceAllString(run("list", "table", "inet", FallbackTable), "")
 	}
 	run("-f", "-")
-	theirs := run("list", "table", "inet", FallbackTable)
+	theirs := list()
+	if read, err := plat.readFallback(fallbackSample); read.fault != "" || err != nil {
+		t.Errorf("nft's table reads back with %q (err %v), want it as the platform writes it", read.fault, err)
+	}
 	if err := plat.deleteFallback(); err != nil {
 		t.Fatal(err)
 	}
 
 	// closing the platform's socket for the table deletes a table carrying the
 	// owner flag
-	if err := plat.writeFallback(fallbackSample); err != nil {
+	if err := plat.writeFallback(fallbackSample, false); err != nil {
 		t.Fatalf("write the table: %v", err)
 	}
 	if err := plat.unwatchFallback(); err != nil {
 		t.Fatal(err)
 	}
-	if mine := run("list", "table", "inet", FallbackTable); mine != theirs {
+	if mine := list(); mine != theirs {
 		t.Errorf("the platform's table lists as\n%s\nwhere nft's lists as\n%s", mine, theirs)
 	}
 	if read, err := plat.readFallback(fallbackSample); read.fault != "" || err != nil {
@@ -119,31 +164,98 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	createTUN(t, "ranetup0")
-	link, err := conn.link(0, "ranetup0")
+	const uplink = "ranetup0"
+	createTUN(t, uplink)
+	createTUN(t, "ranetd1")
+	link, err := conn.link(0, uplink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := conn.link(0, "ranetd1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	setLinkFlags(t, conn, link.index, unix.IFF_UP)
+	setLinkFlags(t, conn, other.index, unix.IFF_UP)
 	writeBatchAddress(t, conn, link.index, prefix("198.51.100.10/25"))
+	writeBatchAddress(t, conn, link.index, prefix("2001:db8:a::10/64"))
 	writeBatchRoute(t, conn, unix.RT_TABLE_MAIN, prefix("0.0.0.0/0"), batchHop{index: link.index})
-	send := func(to string) error {
-		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	writeBatchRoute(t, conn, unix.RT_TABLE_MAIN, prefix("::/0"), batchHop{index: link.index})
+	// addresses of the host's own on another link, outside the sample's LAN and own prefixes
+	held := []netip.Addr{netip.MustParseAddr("192.0.2.77"), netip.MustParseAddr("2001:db8:f::77")}
+	for _, address := range held {
+		writeBatchAddress(t, conn, other.index, netip.PrefixFrom(address, address.BitLen()))
+	}
+	// send sends a datagram of one byte to port at to, from a socket bound to the uplink's device where bound is set
+	send := func(to netip.Addr, port int, bound bool) error {
+		family, address := unix.AF_INET6, unix.Sockaddr(&unix.SockaddrInet6{Port: port, Addr: to.As16()})
+		if to.Is4() {
+			family, address = unix.AF_INET, &unix.SockaddrInet4{Port: port, Addr: to.As4()}
+		}
+		fd, err := unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer unix.Close(fd)
-		return unix.Sendto(fd, []byte("x"), 0, &unix.SockaddrInet4{Port: 9, Addr: netip.MustParseAddr(to).As4()})
+		if bound {
+			if err := unix.BindToDevice(fd, uplink); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return unix.Sendto(fd, []byte("x"), 0, address)
 	}
-	if err := send("192.0.2.200"); !errors.Is(err, unix.EPERM) {
+	// sourced is the source a datagram to the IPv6 address to takes, from a socket bound to the uplink's device where bound is
+	// set, invalid where none can be had
+	sourced := func(to netip.Addr, bound bool) netip.Addr {
+		fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unix.Close(fd)
+		if bound {
+			if err := unix.BindToDevice(fd, uplink); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if unix.Connect(fd, &unix.SockaddrInet6{Port: 9, Addr: to.As16()}) != nil {
+			return netip.Addr{}
+		}
+		name, err := unix.Getsockname(fd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return netip.AddrFrom16(name.(*unix.SockaddrInet6).Addr)
+	}
+	// an IPv6 address stays tentative until the work of its duplicate address detection runs, even on a tun, where it detects
+	// nothing, so the sends wait until the uplink's address sources a datagram bound to it and the other link's address is the
+	// host's own
+	waitFor(t, func() bool { return sourced(held[1], true).IsValid() && sourced(held[1], false) == held[1] })
+	beyond := []netip.Addr{netip.MustParseAddr("192.0.2.200"), netip.MustParseAddr("2001:db8:e::9")}
+	if err := send(beyond[0], 9, false); !errors.Is(err, unix.EPERM) {
 		t.Errorf("a datagram beyond the LAN left with %v, want EPERM", err)
 	}
-	if err := send("198.51.100.5"); err != nil {
+	if err := send(netip.MustParseAddr("198.51.100.5"), 9, false); err != nil {
 		t.Errorf("a datagram to the LAN was refused: %v", err)
 	}
-	// the refused datagram is 29 bytes, its IPv4 header and UDP's and one byte
-	if read, err := plat.readFallback(fallbackSample); read.dropped != 1 || read.bytes != 29 || err != nil {
-		t.Errorf("the drop counted %d packets and %d bytes (err %v), want the one refused datagram", read.dropped, read.bytes, err)
+	// a lookup bound to the uplink passes over the local route of an address another link holds and sends the datagram out of the
+	// uplink toward a destination of the host's own
+	for _, to := range held {
+		if err := send(to, 9, true); !errors.Is(err, unix.EPERM) {
+			t.Errorf("a datagram bound to the uplink to %s, which the host holds on another link, left with %v, want EPERM", to, err)
+		}
+	}
+	runScript("table inet othernat {\n\tchain output {\n\t\ttype nat hook output priority -100; policy accept;\n" +
+		"\t\tmeta nfproto ipv4 udp dport 7 dnat ip to " + held[0].String() + "\n\t\tmeta nfproto ipv6 udp dport 7 dnat ip6 to " + held[1].String() + "\n\t}\n}\n")
+	for _, to := range beyond {
+		if err := send(to, 7, true); !errors.Is(err, unix.EPERM) {
+			t.Errorf("a datagram bound to the uplink to %s that NAT at output translated to an address of the host's own left with %v, want EPERM", to, err)
+		}
+	}
+	run("delete", "table", "inet", "othernat")
+	// a datagram of one byte is 29 bytes in IPv4 and 49 in IPv6: output dropped the one beyond the LAN, and postrouting both bound
+	// to an address of the host's own and both NAT translated
+	if read, err := plat.readFallback(fallbackSample); read.dropped != 5 || read.bytes != 185 || err != nil {
+		t.Errorf("the drops counted %d packets and %d bytes (err %v), want the five refused datagrams", read.dropped, read.bytes, err)
 	}
 	debug, err := ReadFallback()
 	if err != nil {
@@ -153,25 +265,63 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	for _, set := range debug.Sets {
 		sets[set.Name] = set.Elements
 	}
-	if !debug.Held || len(debug.Rules) != 12 {
-		t.Fatalf("the debug read finds %+v, want the table's twelve lines", debug)
+	// fifteen lines at postrouting and sixteen at output, each datagram output dropped kept from postrouting
+	if !debug.Held || len(debug.Rules) != 31 {
+		t.Fatalf("the debug read finds %+v, want the table's thirty-one lines", debug)
 	}
-	if last := debug.Rules[11]; last.Spec != fallbackDrop || last.Packets != 1 ||
-		!reflect.DeepEqual(sets, map[string][]string{"forwarded": {"ranetfw0"}, "lan4": {"198.51.100.0/25"}, "lan6": {"2001:db8:a::/64"}, "own4": {"203.0.113.0/24"}, "own6": {},
+	if routed, output := debug.Rules[14], debug.Rules[30]; routed.Spec != fallbackDrop || routed.Chain != "fallback" || routed.Packets != 4 ||
+		output.Spec != fallbackDrop || output.Chain != "output" || output.Packets != 1 ||
+		!reflect.DeepEqual(sets, map[string][]string{"forwarded": {"lo", "ranetfw0"}, "lan4": {"198.51.100.0/25"}, "lan6": {"2001:db8:a::/64"}, "own4": {"203.0.113.0/24"}, "own6": {},
 			"tcp_ports": {"22", "2222"}, "udp_ports": {"53", "60000-61000"}}) {
 		t.Errorf("the debug read finds %+v", debug)
 	}
 
-	for _, change := range [][]string{{"flush", "set", "inet", FallbackTable, "lan4"}, {"flush", "chain", "inet", FallbackTable, "fallback"}} {
-		run(change...)
-		if read, err := plat.readFallback(fallbackSample); read.fault == "" || err != nil {
-			t.Errorf("after nft %s the table reads back with %q (err %v), want a fault", strings.Join(change, " "), read.fault, err)
+	mark := regexp.MustCompile(`meta mark 0x00000072 accept (comment "[^"]*") # handle (\d+)`)
+	oifname := regexp.MustCompile(`oifname \{[^}]*\} accept (comment "[^"]*") # handle (\d+)`)
+	for _, change := range []func() string{
+		func() string { run("flush", "set", "inet", FallbackTable, "lan4"); return "a flushed set" },
+		func() string { run("flush", "chain", "inet", FallbackTable, "fallback"); return "a flushed chain" },
+		func() string {
+			found := mark.FindStringSubmatch(run("-a", "list", "chain", "inet", FallbackTable, "output"))
+			if found == nil {
+				t.Fatal("the output chain lists no mark line")
+			}
+			run("replace", "rule", "inet", FallbackTable, "output", "handle", found[2], "meta", "mark", "0x72", "drop", found[1])
+			return "a verdict edited under its comment"
+		},
+		func() string {
+			found := oifname.FindStringSubmatch(run("-a", "list", "chain", "inet", FallbackTable, "output"))
+			if found == nil {
+				t.Fatal("the output chain lists no oifname line")
+			}
+			run("replace", "rule", "inet", FallbackTable, "output", "handle", found[2], `oifname { "lo", "ranetup0" } accept`, found[1])
+			return "a line's own set naming the uplink under its comment"
+		},
+		func() string {
+			// in one transaction, the chains' lines in the order the two chains list them, all in output
+			rules, err := fallbackSample.rules(0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSuffix(fallbackLines, "\n"), "\n")
+			script := "flush chain inet " + FallbackTable + " fallback\n"
+			for j := len(rules) - 1; j >= 0; j-- {
+				script += fmt.Sprintf("insert rule inet %s output %s comment %q\n", FallbackTable, strings.TrimSpace(lines[j]), rules[j].spec)
+			}
+			runScript(script)
+			return "the postrouting chain's lines moved ahead of output's"
+		},
+	} {
+		what := change()
+		read, err := plat.readFallback(fallbackSample)
+		if read.fault == "" || err != nil {
+			t.Errorf("after %s the table reads back with %q (err %v), want a fault", what, read.fault, err)
 		}
-		if err := plat.writeFallback(fallbackSample); err != nil {
+		if err := plat.writeFallback(fallbackSample, read.remake); err != nil {
 			t.Fatal(err)
 		}
 		if read, err := plat.readFallback(fallbackSample); read.fault != "" || err != nil {
-			t.Errorf("after nft %s and a write the table reads back with %q (err %v)", strings.Join(change, " "), read.fault, err)
+			t.Errorf("after %s and a write the table reads back with %q (err %v)", what, read.fault, err)
 		}
 	}
 
@@ -181,16 +331,78 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	if read, err := plat.readFallback(fallbackSample); read.fault != "the table is missing" || err != nil {
 		t.Errorf("after the delete the table reads back with %q (err %v)", read.fault, err)
 	}
-	if err := send("192.0.2.200"); err != nil {
+	if err := send(beyond[0], 9, false); err != nil {
 		t.Errorf("with the table gone a datagram beyond the LAN was refused: %v", err)
 	}
 	if err := plat.deleteFallback(); err != nil {
 		t.Errorf("a delete with no table failed: %v", err)
 	}
+
+	// a start with no reconciler deletes the table an earlier instance left
+	if err := plat.writeFallback(fallbackSample, false); err != nil {
+		t.Fatal(err)
+	}
+	DeleteFallback()
+	if read, err := plat.readFallback(fallbackSample); read.fault != "the table is missing" || err != nil {
+		t.Errorf("after a start with no reconciler the table reads back with %q (err %v)", read.fault, err)
+	}
 }
 
-// Another writer's flushed set and deleted rule are written back within a pass
-// of the change, where the periodic pass is an hour away. A table another
+// A notification the watch may have missed wakes a pass, which finds the table
+// not reading back and takes 5405 and 5435 out within it, where the periodic
+// pass is the default's 30 seconds away
+func TestFallbackMissedNotificationWakesAPass(t *testing.T) {
+	network := &hostNetwork{state: exitPassHost("docker0")}
+	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
+	reconciler, routes, fake := harness(t, tbl, Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read})
+	routes.Set(netip.Prefix{}, prefix("203.0.113.0/24"), netstack.Local)
+	// the first pass reads that route, so the change it made wakes nothing after it
+	<-routes.Changed()
+	held := func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return uplinkSources(fake)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reconciler.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	<-reconciler.FirstPass()
+	if !held() {
+		t.Fatal("the first pass left 5405 and 5435 out")
+	}
+
+	changed, missed := make(chan struct{}), make(chan struct{}, 1)
+	w := &fallbackWatch{stop: make(chan struct{}), done: make(chan struct{})}
+	go w.forward(changed, missed, func() {
+		select {
+		case fake.signal <- struct{}{}:
+		default:
+		}
+	})
+	t.Cleanup(func() {
+		close(w.stop)
+		<-w.done
+	})
+	fake.mu.Lock()
+	fake.spoiled = "its set lan4 holds { }"
+	fake.mu.Unlock()
+	sent := time.Now()
+	missed <- struct{}{}
+	for held() {
+		if time.Since(sent) > fallbackRestoreBudget {
+			t.Fatalf("5405 and 5435 held %s after a missed notification, want them out within %s", time.Since(sent), fallbackRestoreBudget)
+		}
+		time.Sleep(waitPoll)
+	}
+}
+
+// Another writer's flushed set, deleted rule and set remade otherwise are
+// written back within a pass of the change, where the periodic pass is an hour
+// away, the last by a table deleted and made again. A table another
 // writer holds under its own socket, which the reconciler cannot write, takes
 // 5405 and 5435 out within a pass, and once that socket closes the
 // reconciler's next try writes the table back and puts them in again.
@@ -228,7 +440,9 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 		IPv6: NetworkFamily{Default: DefaultRoute{Interface: uplink}, Links: []Link{{Name: uplink, Prefixes: []netip.Prefix{lan6}}}},
 	}
 	rt.Network = func() NetworkState { return network }
-	reconciler := newReconciler(tbl.WithMode(&ExitMode{Fallback: FallbackNone}).Normalized(), rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
+	// lan lists the uplink's public networks, so lan4 holds one for the flush to take
+	mode := &ExitMode{Fallback: FallbackNone, LAN: []schema.Prefix{schema.PrefixFrom(lan4.Masked()), schema.PrefixFrom(lan6.Masked())}}
+	reconciler := newReconciler(tbl.WithMode(mode).Normalized(), rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses)
 	sets, asked := reconciler.fallbackFor(exit)
 	if !asked {
@@ -310,6 +524,11 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 			}
 			run("delete", "rule", "inet", FallbackTable, "fallback", "handle", found[1])
 			return "a deleted drop"
+		},
+		func() string {
+			// in one transaction, so no pass writes the table between them, and nf_tables changes no set's flags in place
+			run("delete table inet " + FallbackTable + "; add table inet " + FallbackTable + "; add set inet " + FallbackTable + " lan4 { type ipv4_addr; }")
+			return "a set remade without its interval flag"
 		},
 	} {
 		what := change()

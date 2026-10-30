@@ -111,7 +111,7 @@ func benchTUN(b *testing.B, name string) int {
 func (s *benchSwitch) write(b *testing.B, sets fallbackSets) {
 	b.Helper()
 	sets.tun = benchMesh
-	if err := s.plat.writeFallback(sets); err != nil {
+	if err := s.plat.writeFallback(sets, false); err != nil {
 		b.Fatalf("write the table: %v", err)
 	}
 }

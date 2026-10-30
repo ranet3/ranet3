@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // exitLeaf is a node writing cap.table, cap.border and cap.exit in each format, cap.exit's body given as each format spells it
@@ -192,13 +193,13 @@ func TestExitForwardRefusesWhatNamesNoLink(t *testing.T) {
 	}
 }
 
-// fallback and inbound read alike in each format, and the reconciler's mode
-// carries them. fallback unwritten is "uplink" and refuses nothing.
+// fallback, inbound and lan read alike in each format, and the reconciler's
+// mode carries them. fallback unwritten is "uplink" and refuses nothing.
 func TestFallbackAndInboundReadAlikeInEveryFormat(t *testing.T) {
 	for format, body := range map[string]string{
-		"toml": "fallback = \"none\"\ninbound = [\"60000-61000/udp\", \"22/tcp\"]\n",
-		"yaml": `{fallback: none, inbound: [60000-61000/udp, 22/tcp]}`,
-		"json": `{"fallback": "none", "inbound": ["60000-61000/udp", "22/tcp"]}`,
+		"toml": "fallback = \"none\"\ninbound = [\"60000-61000/udp\", \"22/tcp\"]\nlan = [\"2001:db8:a::/64\", \"198.51.100.0/24\"]\n",
+		"yaml": `{fallback: none, inbound: [60000-61000/udp, 22/tcp], lan: ["2001:db8:a::/64", 198.51.100.0/24]}`,
+		"json": `{"fallback": "none", "inbound": ["60000-61000/udp", "22/tcp"], "lan": ["2001:db8:a::/64", "198.51.100.0/24"]}`,
 	} {
 		extension, text := exitLeaf(format, body)
 		cfg, err := load(t, extension, text)
@@ -206,18 +207,22 @@ func TestFallbackAndInboundReadAlikeInEveryFormat(t *testing.T) {
 			t.Fatalf("%s: %v", format, err)
 		}
 		mode := cfg.ReconcilerTable().Mode()
-		if mode == nil || mode.Fallback != kernel.FallbackNone || !mode.Refuses() || !slices.Equal(mode.Inbound, []string{"60000-61000/udp", "22/tcp"}) {
+		if mode == nil || mode.Fallback != kernel.FallbackNone || !mode.Refuses() || !slices.Equal(mode.Inbound, []string{"60000-61000/udp", "22/tcp"}) ||
+			!slices.Equal(mode.LAN, []schema.Prefix{schema.MustPrefix("2001:db8:a::/64"), schema.MustPrefix("198.51.100.0/24")}) {
 			t.Errorf("%s: cap.exit %s reaches the reconciler as %+v", format, body, mode)
 		}
 		if normal := mode.Normalized().Inbound; !slices.Equal(normal, []string{"22/tcp", "60000-61000/udp"}) {
 			t.Errorf("%s: inbound normalized to %q", format, normal)
+		}
+		if normal := mode.Normalized().LAN; !slices.Equal(normal, []schema.Prefix{schema.MustPrefix("198.51.100.0/24"), schema.MustPrefix("2001:db8:a::/64")}) {
+			t.Errorf("%s: lan normalized to %v", format, normal)
 		}
 	}
 	cfg, err := loadTOML(t, exitLeafBody("toml", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode := cfg.ReconcilerTable().Mode(); mode == nil || mode.Fallback != "" || mode.Refuses() || mode.Inbound != nil {
+	if mode := cfg.ReconcilerTable().Mode(); mode == nil || mode.Fallback != "" || mode.Refuses() || mode.Inbound != nil || mode.LAN != nil {
 		t.Errorf("cap.exit with neither key reaches the reconciler as %+v", mode)
 	}
 	cfg, err = loadTOML(t, exitLeafBody("toml", "fallback = \"uplink\"\n"))
@@ -272,6 +277,49 @@ func TestFallbackAndInboundRefusals(t *testing.T) {
 	} {
 		if _, err := loadTOML(t, inbound("none", entries...)); err != nil {
 			t.Errorf("inbound %q was refused: %v", entries, err)
+		}
+	}
+}
+
+// lan is refused unless fallback is "none", and an entry is refused when it is
+// not a prefix, has host bits, spells IPv4 as IPv6, is written twice, overlaps
+// cap.border overlay or counts as capturing the machine. A prefix one bit past
+// the capturing floor and one beside the overlay are taken.
+func TestLANRefusals(t *testing.T) {
+	lan := func(fallback string, entries ...string) string {
+		body := "lan = ['" + strings.Join(entries, "', '") + "']\n"
+		if fallback != "" {
+			body = "fallback = \"" + fallback + "\"\n" + body
+		}
+		return exitLeafBody("toml", body)
+	}
+	const notNone = `kernel: cap.exit lan lists the connected networks that count as the LAN while fallback = "none" refuses the rest, and fallback is not "none": write fallback = "none" or remove lan`
+	const captures = "counts as capturing the machine, so it would let the host's traffic leave by the uplink as a default does"
+	for name, refused := range map[string]struct{ body, says string }{
+		"under uplink":         {lan("uplink", "198.51.100.0/24"), notNone},
+		"under no fallback":    {lan("", "198.51.100.0/24"), notNone},
+		"not a prefix":         {lan("none", "198.51.100.0"), `ParsePrefix("198.51.100.0")`},
+		"host bits":            {lan("none", "198.51.100.1/24"), "kernel: cap.exit lan 198.51.100.1/24 has bits set below its prefix length"},
+		"IPv4 as IPv6":         {lan("none", "::ffff:198.51.100.0/120"), "kernel: cap.exit lan ::ffff:198.51.100.0/120 is an IPv4 prefix written as IPv6, so write it as 198.51.100.0/24"},
+		"twice":                {lan("none", "198.51.100.0/24", "2001:db8:a::/64", "198.51.100.0/24"), "kernel: cap.exit lan 198.51.100.0/24 is written twice"},
+		"inside the overlay":   {lan("none", "192.0.2.128/25"), "config: cap.exit lan 192.0.2.128/25 overlaps cap.border overlay 192.0.2.0/24, whose destinations the mesh carries whatever the LAN holds"},
+		"holding the overlay":  {lan("none", "3ff0::/12"), "config: cap.exit lan 3ff0::/12 overlaps cap.border overlay 3fff::/20, whose destinations the mesh carries whatever the LAN holds"},
+		"half a split default": {lan("none", "0.0.0.0/1"), "config: cap.exit lan 0.0.0.0/1 " + captures},
+		"short of the floor":   {lan("none", "198.0.0.0/7"), "config: cap.exit lan 198.0.0.0/7 " + captures},
+		"IPv6 short of floor":  {lan("none", "2000::/15"), "config: cap.exit lan 2000::/15 " + captures},
+		"the unspecified /24":  {lan("none", "0.0.0.0/24"), "config: cap.exit lan 0.0.0.0/24 " + captures},
+	} {
+		if _, err := loadTOML(t, refused.body); err == nil || !strings.Contains(err.Error(), refused.says) {
+			t.Errorf("%s was refused with %v, want %q", name, err, refused.says)
+		}
+	}
+	for _, entries := range [][]string{
+		{"198.0.0.0/8", "2001::/16"},
+		{"192.0.3.0/24", "3fff:1000::/20"},
+		{"198.51.100.0/24", "198.51.100.0/25", "2001:db8:a::/64"},
+	} {
+		if _, err := loadTOML(t, lan("none", entries...)); err != nil {
+			t.Errorf("lan %q was refused: %v", entries, err)
 		}
 	}
 }

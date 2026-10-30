@@ -152,7 +152,7 @@ func (c *Client) fallbackTable(state control.KernelFallback) *control.FallbackTa
 		table.Err = err.Error()
 	}
 	for _, rule := range debug.Rules {
-		table.Rules = append(table.Rules, control.FallbackTableRule{Spec: rule.Spec, Packets: rule.Packets, Bytes: rule.Bytes})
+		table.Rules = append(table.Rules, control.FallbackTableRule{Chain: rule.Chain, Spec: rule.Spec, Packets: rule.Packets, Bytes: rule.Bytes})
 	}
 	for _, set := range debug.Sets {
 		table.Sets = append(table.Sets, control.FallbackTableSet{Name: set.Name, Elements: set.Elements})

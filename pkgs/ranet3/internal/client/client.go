@@ -131,6 +131,8 @@ type Client struct {
 	reconcilerLookups atomic.Pointer[func() []kernel.Lookup]
 	// fallbackRead reads the table ranet3_fallback, and nil means kernel.ReadFallback
 	fallbackRead func() (kernel.FallbackDebug, error)
+	// fallbackResolvers asks systemd-resolved for the DNS servers beyond the switch's LAN, supplied as kernelStatus is
+	fallbackResolvers atomic.Pointer[func() []kernel.LinkResolver]
 	// unresolved is each endpoint name whose last lookup failed
 	unresolved names
 

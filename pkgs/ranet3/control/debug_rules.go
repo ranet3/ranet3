@@ -60,9 +60,10 @@ type FallbackTable struct {
 	Err   string              `json:"err,omitempty"`
 }
 
-// FallbackTableRule is one line of the chain as the kernel holds it, with
+// FallbackTableRule is one line of a chain as the kernel holds it, with
 // what it counted where it counts
 type FallbackTableRule struct {
+	Chain   string `json:"chain,omitempty"`
 	Spec    string `json:"spec"`
 	Packets uint64 `json:"packets"`
 	Bytes   uint64 `json:"bytes"`
@@ -237,7 +238,12 @@ func renderFallback(w io.Writer, table *FallbackTable) {
 		return
 	}
 	rows := make([][]string, 0, len(table.Rules)+len(table.Sets))
+	chain := ""
 	for _, rule := range table.Rules {
+		if rule.Chain != chain {
+			chain = rule.Chain
+			rows = append(rows, []string{"chain " + chain})
+		}
 		row := []string{rule.Spec}
 		if strings.HasSuffix(rule.Spec, "drop") {
 			row = append(row, fmt.Sprintf("%d packets, %d B", rule.Packets, rule.Bytes))

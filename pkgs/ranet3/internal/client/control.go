@@ -13,6 +13,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/version"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -33,6 +34,13 @@ import (
 // is the honest answer for a node configuring its routes externally.
 func (c *Client) SetKernelStatus(read func() control.KernelStatus) {
 	c.kernelStatus.Store(&read)
+}
+
+// SetFallbackResolvers hands the status the reconciler's question to
+// systemd-resolved, which a status read asks and a metrics scrape and debug
+// rules, which show no resolver, do not
+func (c *Client) SetFallbackResolvers(ask func() []kernel.LinkResolver) {
+	c.fallbackResolvers.Store(&ask)
 }
 
 // Forwarding reports whether this host forwards, per family
@@ -80,7 +88,7 @@ func (c *Client) Status() control.Status {
 			Nodes:         nodes,
 			ReadAt:        c.registryReadAt(),
 		},
-		Kernel: c.kernel(),
+		Kernel: c.kernelWithResolvers(),
 		Egress: c.egress(),
 		Border: c.borderStatus(),
 		Counts: control.Counts{
@@ -204,6 +212,21 @@ func (c *Client) kernel() control.KernelStatus {
 		exit := *status.Exit
 		exit.Fallback = &fallback
 		status.Exit = &exit
+	}
+	return status
+}
+
+// kernelWithResolvers is kernel with the DNS servers beyond the switch's LAN
+// systemd-resolved names at this read, where the switch is asked for
+func (c *Client) kernelWithResolvers() control.KernelStatus {
+	status := c.kernel()
+	ask := c.fallbackResolvers.Load()
+	if ask == nil || status.Exit == nil || status.Exit.Fallback == nil {
+		return status
+	}
+	// kernel copied the switch's status, so this writes nothing of the reconciler's
+	for _, resolver := range (*ask)() {
+		status.Exit.Fallback.Resolvers = append(status.Exit.Fallback.Resolvers, control.KernelResolver{Link: resolver.Link, Address: resolver.Address.String()})
 	}
 	return status
 }

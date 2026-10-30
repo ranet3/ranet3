@@ -165,8 +165,11 @@ func kernelLine(k KernelStatus) string {
 			for _, network := range f.Captured {
 				line += fmt.Sprintf(", %s left out of the LAN as it captures the machine", network)
 			}
+			for _, network := range f.Public {
+				line += fmt.Sprintf(", %s left out of the LAN as public, outside the private and link-local ranges and cap.exit lan", network)
+			}
 			for _, name := range f.Unresolved {
-				line += fmt.Sprintf(", %s does not resolve under the switch", name)
+				line += fmt.Sprintf(", %s does not resolve", name)
 			}
 			for _, resolver := range f.Resolvers {
 				line += fmt.Sprintf(", DNS server %s on %s lies beyond the LAN", resolver.Address, resolver.Link)

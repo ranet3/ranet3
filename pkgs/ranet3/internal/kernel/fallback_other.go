@@ -8,5 +8,8 @@ package kernel
 // ReadFallback has no table to read here, where fallback = "none" is refused at start
 func ReadFallback() (FallbackDebug, error) { return FallbackDebug{}, ErrUnsupported }
 
+// DeleteFallback has no table to delete here
+func DeleteFallback() {}
+
 // ResolvedLinkServers has no systemd-resolved to ask here
 func ResolvedLinkServers() ([]LinkResolver, error) { return nil, nil }

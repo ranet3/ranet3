@@ -61,13 +61,14 @@ func TestReloadAddingAndRemovingCapExitHandsTheReconcilerItsMode(t *testing.T) {
 	}
 }
 
-// a reload changing fallback or inbound applies in place, handing the reconciler one table running the new mode, and inbound written in another order or split another way hands nothing
+// a reload changing fallback, inbound or lan applies in place, handing the reconciler one table running the new mode, and inbound or lan written in another order or inbound split another way hands nothing
 func TestReloadChangingFallbackOrInboundHandsTheReconcilerOneTable(t *testing.T) {
 	c, path, reconciler, bus := reloadOf(t, func(old *config.Config) {
 		exitLeafStart(old)
 		old.Cap.Exit = &kernel.ExitMode{}
 	})
 	next := *c.config()
+	lan := []schema.Prefix{schema.MustPrefix("198.51.100.0/24"), schema.MustPrefix("2001:db8:a::/64")}
 	for i, step := range []struct {
 		mode   kernel.ExitMode
 		passes int
@@ -76,7 +77,10 @@ func TestReloadChangingFallbackOrInboundHandsTheReconcilerOneTable(t *testing.T)
 		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp", "60000-61000/udp"}}, 2},
 		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"60000-60500/udp", "60501-61000/udp", "22/tcp"}}, 2},
 		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}}, 3},
-		{kernel.ExitMode{Fallback: kernel.FallbackUplink}, 4},
+		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}, LAN: lan}, 4},
+		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}, LAN: []schema.Prefix{lan[1], lan[0]}}, 4},
+		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}, LAN: lan[1:]}, 5},
+		{kernel.ExitMode{Fallback: kernel.FallbackUplink}, 6},
 	} {
 		next.Cap.Exit = &step.mode
 		writeConfig(t, path, &next)
@@ -90,8 +94,22 @@ func TestReloadChangingFallbackOrInboundHandsTheReconcilerOneTable(t *testing.T)
 		if got := reconciler.tables[len(reconciler.tables)-1].Normalized().Mode(); !reflect.DeepEqual(got, &want) {
 			t.Errorf("step %d: the reconciler runs %+v, want %+v", i, got, want)
 		}
-		if got := lastReload(t, bus)["applied"]; got != "cap.exit" && i != 2 {
+		if got := lastReload(t, bus)["applied"]; got != "cap.exit" && i != 2 && i != 5 {
 			t.Errorf("step %d: the reload was recorded as applying %q, want cap.exit", i, got)
+		}
+	}
+	// lan reaching into the overlay and lan under fallback = "uplink" are refused, handing the reconciler nothing
+	for _, mode := range []kernel.ExitMode{
+		{Fallback: kernel.FallbackNone, LAN: []schema.Prefix{schema.MustPrefix("192.0.2.128/25")}},
+		{Fallback: kernel.FallbackUplink, LAN: lan},
+	} {
+		next.Cap.Exit = &mode
+		writeConfig(t, path, &next)
+		if err := c.ReloadFrom(path); err == nil {
+			t.Errorf("the reload to %+v was taken", mode)
+		}
+		if len(reconciler.tables) != 6 {
+			t.Errorf("a refused reload to %+v handed the reconciler a table, %d in all", mode, len(reconciler.tables))
 		}
 	}
 }

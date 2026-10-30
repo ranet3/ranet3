@@ -5,6 +5,8 @@ package client
 
 import (
 	"errors"
+	"io"
+	"net/netip"
 	"reflect"
 	"slices"
 	"testing"
@@ -63,5 +65,34 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	}
 	if got := c.DebugRules().Fallback; got != nil {
 		t.Errorf("under uplink debug rules carries the table %+v", got)
+	}
+}
+
+// Under fallback = "none" a status read asks systemd-resolved for the servers
+// beyond the LAN once and names them, and a metrics scrape and a debug rules
+// read, which name none, ask nothing
+func TestOnlyAStatusReadAsksSystemdResolved(t *testing.T) {
+	c, _, _, _ := reloadOf(t, func(*config.Config) {})
+	c.sessions = newSessionSet()
+	c.SetKernelStatus(func() control.KernelStatus {
+		return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{Fallback: &control.KernelFallback{State: "holding"}}}
+	})
+	c.ruleDump = func() ([]kernel.DumpedRule, error) { return nil, nil }
+	c.fallbackRead = func() (kernel.FallbackDebug, error) { return kernel.FallbackDebug{Held: true}, nil }
+	asked := 0
+	c.SetFallbackResolvers(func() []kernel.LinkResolver {
+		asked++
+		return []kernel.LinkResolver{{Link: "eth0", Address: netip.MustParseAddr("203.0.113.53")}}
+	})
+	c.Metrics(io.Discard)
+	c.DebugRules()
+	if asked != 0 {
+		t.Errorf("a metrics scrape and a debug rules read asked systemd-resolved %d times, want none", asked)
+	}
+	want := []control.KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}
+	for read := range 2 {
+		if got := c.Status().Kernel.Exit.Fallback.Resolvers; !reflect.DeepEqual(got, want) || asked != read+1 {
+			t.Errorf("status read %d names the resolvers %v after %d questions, want %v after %d", read+1, got, asked, want, read+1)
+		}
 	}
 }

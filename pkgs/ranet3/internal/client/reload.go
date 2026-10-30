@@ -540,7 +540,7 @@ func sameTable(old, next *config.Config) bool {
 		sortedPrefixes(next.Cap.Table.Assigned(next.Routes().Announced())))
 }
 
-// sameExitMode reports that next runs cap.exit as old does, forward or inbound written in another order being no change
+// sameExitMode reports that next runs cap.exit as old does, forward, inbound or lan written in another order being no change
 func sameExitMode(old, next *config.Config) bool {
 	normalize := func(m *kernel.ExitMode) *kernel.ExitMode {
 		if m == nil {

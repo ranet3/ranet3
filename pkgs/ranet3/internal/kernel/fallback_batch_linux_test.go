@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -18,10 +19,11 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// Every request the table's transaction sends, written whole, remade, with
-// nothing forwarded, no LAN, no own prefix and no service, and withdrawn,
-// keeps the kind, flags and body testdata/fallback.golden holds. The root
-// test holds the same table beside nft's own listing of it.
+// Every request the table's transaction sends, written whole, with nothing
+// forwarded, no LAN, no own prefix and no service, and withdrawn, keeps the
+// kind, flags and body testdata/fallback.golden holds, and a remade table is
+// the whole one behind the withdrawal's request. The root test holds the same
+// table beside nft's own listing of it.
 func TestFallbackBatchKeepsItsBytes(t *testing.T) {
 	var out bytes.Buffer
 	write := func(name string, requests []nftables.Request, err error) {
@@ -34,14 +36,17 @@ func TestFallbackBatchKeepsItsBytes(t *testing.T) {
 			fmt.Fprintf(&out, "  kind %#06x flags %#06x body %x\n", request.Kind, request.Flags, request.Body)
 		}
 	}
-	requests, err := fallbackBatch(fallbackSample, false)
-	write("the table of every line", requests, err)
-	requests, err = fallbackBatch(fallbackSample, true)
-	write("the table remade", requests, err)
-	requests, err = fallbackBatch(fallbackSets{tun: "ranetsw0"}, false)
+	whole, err := fallbackBatch(fallbackSample, false)
+	write("the table of every line", whole, err)
+	requests, err := fallbackBatch(fallbackSets{tun: "ranetsw0"}, false)
 	write("the table with nothing forwarded, no LAN, no own prefix and no service", requests, err)
-	write("the withdrawal", []nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, FallbackTable)}, nil)
+	withdrawal := nftables.DeleteTable(unix.NFPROTO_INET, FallbackTable)
+	write("the withdrawal", []nftables.Request{withdrawal}, nil)
 	goldentest.Check(t, "./internal/kernel", "testdata/fallback.golden", out.Bytes())
+	remade, err := fallbackBatch(fallbackSample, true)
+	if err != nil || !reflect.DeepEqual(remade, append([]nftables.Request{withdrawal}, whole...)) {
+		t.Errorf("the table remade sends %+v (err %v), want the withdrawal's request and the whole table's", remade, err)
+	}
 }
 
 // A table listing a hundred services of each protocol is written in one
@@ -82,7 +87,7 @@ func TestIntervalTextSpellsEachElementAsNftDoes(t *testing.T) {
 		{"tcp_ports", nftables.Interval{First: []byte{0, 22}, Last: []byte{0, 22}}, "22"},
 		{"udp_ports", nftables.Interval{First: []byte{0xea, 0x60}, Last: []byte{0xee, 0x48}}, "60000-61000"},
 	} {
-		if got := intervalText(named(c.set), c.interval); got != c.want {
+		if got := named(c.set).Text(c.interval); got != c.want {
 			t.Errorf("%s's element %x-%x reads %q, want %q", c.set, c.interval.First, c.interval.Last, got, c.want)
 		}
 	}

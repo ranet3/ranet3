@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -152,6 +153,20 @@ func switchUnaddressedProbes(state switchState) []switchProbe {
 		slices.DeleteFunc(switchSocketProbes(state), func(p switchProbe) bool { return p.destination.Is4() }))
 }
 
+// switchUnlistedProbes is switchSocketProbes with cap.exit lan listing none of switchLAN: the LAN host beside the uplink, on a
+// public network, is held from every socket but the marked ones, as the internet is
+func switchUnlistedProbes(state switchState) []switchProbe {
+	probes := switchSocketProbes(state)
+	for i, p := range probes {
+		if p.destination == switchAt(4).lan || p.destination == switchAt(6).lan {
+			if p.mark != schema.UnderlayMark {
+				probes[i].want = switchHeld
+			}
+		}
+	}
+	return probes
+}
+
 // switchTableOwner is NFT_TABLE_F_OWNER of linux/netfilter/nf_tables.h, which x/sys does not carry
 const switchTableOwner = 0x2
 
@@ -221,6 +236,8 @@ type switchArm struct {
 	inbound []string
 	// unaddressed is the family, 4 or 6, whose overlay address the arm takes out of cap.table and so off the tun, none where it is 0
 	unaddressed int
+	// unlisted is an arm whose cap.exit lan lists none of switchLAN, so no connected network, each public, counts as the LAN
+	unlisted bool
 	// other writes another program's chains and rules in the leaf's namespace and answers how to remove them
 	other func(t *testing.T, leaf *netnstest.Thread) func()
 	// underlayCut is an arm whose chains take the underlay's mark off ranet3's own packets, so its probes carrying it go nowhere by the uplink
@@ -299,12 +316,28 @@ func switchEntries(d *exitDaemon, state switchState) []netip.Prefix {
 	return out
 }
 
-// switchMode hands d's reconciler cap.exit with fallback = "none", forward and inbound, and cap.table less its addresses of the
-// family unaddressed, 4 or 6, where it is not 0
-func switchMode(t *testing.T, d *exitDaemon, forward, inbound []string, unaddressed int) {
+// switchLAN is the leaf's connected networks, the uplink's, the bridge's and the LAN link's, each public from the documentation
+// ranges, sorted, which cap.exit lan lists in every arm but an unlisted one
+var switchLAN = func() []schema.Prefix {
+	var out []schema.Prefix
+	for _, family := range []int{4, 6} {
+		for _, network := range []netip.Prefix{rulesHost[family].uplink, exitLabHost[family].bridge, exitLabHost[family].lan} {
+			out = append(out, schema.PrefixFrom(network.Masked()))
+		}
+	}
+	return slices.SortedFunc(slices.Values(out), schema.ComparePrefix)
+}()
+
+// switchMode hands d's reconciler cap.exit with fallback = "none", forward, inbound and lan listing switchLAN unless unlisted,
+// and cap.table less its addresses of the family unaddressed, 4 or 6, where it is not 0
+func switchMode(t *testing.T, d *exitDaemon, forward, inbound []string, unaddressed int, unlisted bool) {
 	t.Helper()
 	cfg := d.node.config()
-	table := cfg.Cap.Table.WithMode(&kernel.ExitMode{Forward: forward, Fallback: kernel.FallbackNone, Inbound: inbound})
+	lan := switchLAN
+	if unlisted {
+		lan = nil
+	}
+	table := cfg.Cap.Table.WithMode(&kernel.ExitMode{Forward: forward, Fallback: kernel.FallbackNone, Inbound: inbound, LAN: lan})
 	table.Addresses = slices.DeleteFunc(slices.Clone(table.Addresses), func(address schema.Prefix) bool {
 		return address.Addr().Is4() && unaddressed == 4 || address.Addr().Is6() && unaddressed == 6
 	})
@@ -344,7 +377,7 @@ func (lab *switchLab) settle(t *testing.T, arm switchArm) {
 			d.node.Mesh.Routes.Remove(netip.Prefix{}, prefix)
 		}
 	})
-	switchMode(t, d, arm.forward, arm.inbound, arm.unaddressed)
+	switchMode(t, d, arm.forward, arm.inbound, arm.unaddressed, arm.unlisted)
 	state := string(kernel.FallbackPassing)
 	if arm.state == switchRetracted {
 		state = string(kernel.FallbackHolding)
@@ -359,10 +392,11 @@ func (lab *switchLab) settle(t *testing.T, arm switchArm) {
 const switchHelperArm = "RANET3_SWITCH_LAB_ARM"
 
 // switchHelped holds the kill switch crash helper's cap.exit forward and inbound, the family it takes the tun's overlay address of,
-// and the file it writes once its switch passes
+// whether its lan lists none of switchLAN, and the file it writes once its switch passes
 type switchHelped struct {
 	Forward, Inbound []string
 	Unaddressed      int
+	Unlisted         bool
 	Ready            string
 }
 
@@ -371,7 +405,7 @@ type switchHelped struct {
 func (lab *switchLab) crash(t *testing.T, arm switchArm) {
 	t.Helper()
 	lab.d.stop()
-	helped := switchHelped{Forward: arm.forward, Inbound: arm.inbound, Unaddressed: arm.unaddressed, Ready: filepath.Join(t.TempDir(), "ready")}
+	helped := switchHelped{Forward: arm.forward, Inbound: arm.inbound, Unaddressed: arm.unaddressed, Unlisted: arm.unlisted, Ready: filepath.Join(t.TempDir(), "ready")}
 	encoded, err := json.Marshal(helped)
 	if err != nil {
 		t.Fatal(err)
@@ -406,7 +440,7 @@ func TestKillSwitchLabCrashHelper(t *testing.T) {
 	}
 	d := startExitDaemon(t, netnstest.JoinThread(t, path))
 	switchEntries(d, switchPresent)
-	switchMode(t, d, helped.Forward, helped.Inbound, helped.Unaddressed)
+	switchMode(t, d, helped.Forward, helped.Inbound, helped.Unaddressed, helped.Unlisted)
 	waitFor(t, rulesSettle, "the switch to pass", func() bool {
 		exit := d.routes.Stats().Exit
 		return exit != nil && exit.Fallback != nil && exit.Fallback.State == kernel.FallbackPassing
@@ -606,16 +640,16 @@ func switchSolicit() ([]int, error) {
 	return fds, nil
 }
 
-// switchSeen holds the targets of the neighbor solicitations a capture read and the count of its router solicitations
+// switchSeen holds the targets of the neighbor solicitations and advertisements a capture read and the count of its router solicitations
 type switchSeen struct {
-	solicited      map[netip.Addr]bool
-	routerSolicits int
+	solicited, advertised map[netip.Addr]bool
+	routerSolicits        int
 }
 
 // switchDrain reads the capture until a read waits out its timeout, and answers the source of each probe's packet it read and the solicitations
 func switchDrain(capture int) (map[rulesKey]netip.Addr, switchSeen) {
 	out := make(map[rulesKey]netip.Addr)
-	seen := switchSeen{solicited: map[netip.Addr]bool{}}
+	seen := switchSeen{solicited: map[netip.Addr]bool{}, advertised: map[netip.Addr]bool{}}
 	buf := make([]byte, 1<<16)
 	for {
 		n, _, err := unix.Recvfrom(capture, buf, 0)
@@ -636,6 +670,8 @@ func switchDrain(capture int) (map[rulesKey]netip.Addr, switchSeen) {
 		switch icmp := raw[40:]; {
 		case icmp[0] == 135 && len(icmp) >= 24:
 			seen.solicited[netip.AddrFrom16([16]byte(icmp[8:24]))] = true
+		case icmp[0] == 136 && len(icmp) >= 24:
+			seen.advertised[netip.AddrFrom16([16]byte(icmp[8:24]))] = true
 		case icmp[0] == 133:
 			seen.routerSolicits++
 		}
@@ -710,7 +746,11 @@ func switchReplies(listed, underlay bool) []exitReply {
 // the defaults are present. Neighbor and router solicitation, DHCP, multicast and link-local pass, a forwarded link forward leaves
 // out keeps its routes and one it names follows the switch, a listed service answers and an unlisted one does not, a clean stop
 // leaves no table or rule, and the table a node killed with SIGKILL leaves holds as it did. With the tun holding no IPv4 overlay
-// address 5450 refuses IPv4 beyond the LAN, and while another writer holds the table it still refuses what the switch would drop.
+// address 5450 refuses the internet host to the unbound and the uplink-bound unmarked sockets in IPv4, where 5445 sends the own
+// prefix beyond the gateway out of the uplink, and while another writer holds the table it still refuses what the switch would
+// drop.
+// With cap.exit lan listing none of the leaf's public networks the LAN host is held as the internet is, the status naming each
+// network public, and the probes of DHCP, multicast and link-local still pass.
 func TestTUNKillSwitchKeepsEachSocketOffTheUplink(t *testing.T) {
 	lab := newSwitchLab(t)
 	linkLocal := farLinkLocal(t, lab.exitLab)
@@ -741,6 +781,24 @@ func TestTUNKillSwitchKeepsEachSocketOffTheUplink(t *testing.T) {
 			})
 			if state != switchCrashed {
 				lab.notHolding(t, state, map[switchState]kernel.FallbackState{switchPresent: kernel.FallbackPassing, switchRetracted: kernel.FallbackHolding}[state])
+			}
+		})
+		t.Run(string(state)+", lan listing none of the public networks", func(t *testing.T) {
+			lab.run(t, switchArm{
+				state: state, unlisted: true, probes: slices.Concat(switchUnlistedProbes(state), switchUsability(linkLocal)),
+				flows: switchForwardedFlows(state, false), replies: switchReplies(false, true),
+			})
+			if state == switchCrashed {
+				return
+			}
+			var public []schema.Prefix
+			if exit := lab.d.routes.Stats().Exit; exit != nil && exit.Fallback != nil {
+				for _, network := range exit.Fallback.Public {
+					public = append(public, schema.PrefixFrom(network))
+				}
+			}
+			if !slices.Equal(public, switchLAN) {
+				t.Errorf("the status names %v public, want %v", public, switchLAN)
 			}
 		})
 	}
@@ -1321,6 +1379,128 @@ func TestTUNKillSwitchKeepsReversePathChecksPassing(t *testing.T) {
 				}
 				lab.run(t, switchArm{state: state, inbound: listed, flows: switchForwardedFlows(state, false), replies: switchReplies(true, true)})
 			})
+		}
+	}
+}
+
+// switchSolicited is the first of the addresses on the uplink the leaf takes, one for each arm, which the far end has never resolved
+var switchSolicited = netip.MustParsePrefix("2001:db8:a::11/64")
+
+// a leaf in mode 2 with fallback = "none" and cap.exit lan listing none of its public networks, while the defaults are present and
+// while they are retracted: the leaf's neighbor advertisement answers the far end's solicitation from its global address (ND), the
+// container behind the bridge forward names is answered by the leaf's own address there (BR), and the container behind the bridge
+// forward leaves out learns the uplink's smaller MTU from the leaf's fragmentation needed and Packet Too Big (PMTU)
+func TestTUNKillSwitchPassesDiscoveryAndTheHostsErrors(t *testing.T) {
+	lab := newSwitchLab(t)
+	next := switchSolicited
+	for _, state := range []switchState{switchPresent, switchRetracted} {
+		t.Run("ND, "+string(state), func(t *testing.T) {
+			solicited := next
+			next = netip.PrefixFrom(next.Addr().Next(), next.Bits())
+			lab.settle(t, switchArm{state: state, unlisted: true})
+			if err := lab.leaf.Do(func() error {
+				netlink, err := netnstest.OpenNetlink()
+				if err != nil {
+					return err
+				}
+				defer netlink.Close()
+				return netlink.AddAddresses(rulesUplink, solicited)
+			}); err != nil {
+				t.Fatalf("give the uplink %s: %v", solicited, err)
+			}
+			t.Cleanup(func() {
+				_ = lab.leaf.Do(func() error {
+					netlink, err := netnstest.OpenNetlink()
+					if err != nil {
+						return err
+					}
+					defer netlink.Close()
+					link, err := net.InterfaceByName(rulesUplink)
+					if err != nil {
+						return err
+					}
+					return netlink.DelAddress(link.Index, solicited)
+				})
+			})
+			rulesDrain(lab.farCapture)
+			if err := lab.far.Do(func() error {
+				fd, err := exitSocket(netip.IPv6Unspecified(), 0, 0)
+				if err != nil {
+					return err
+				}
+				defer unix.Close(fd)
+				return unix.Sendto(fd, []byte("solicit"), 0, rulesSockaddr(solicited.Addr(), rulesDiscard))
+			}); err != nil {
+				t.Fatalf("send to %s from the far end: %v", solicited.Addr(), err)
+			}
+			if _, seen := switchDrain(lab.farCapture); !seen.advertised[solicited.Addr()] {
+				t.Errorf("the far end read advertisements of %v, want one of %s", seen.advertised, solicited.Addr())
+			}
+		})
+		t.Run("BR, "+string(state), func(t *testing.T) {
+			var flows []switchFlow
+			for _, family := range []int{4, 6} {
+				flows = append(flows, switchFlow{"container", exitLabHost[family].bridge.Addr(), switchKept, exitPings})
+			}
+			lab.run(t, switchArm{state: state, unlisted: true, forward: []string{exitBridge}, flows: flows})
+		})
+		t.Run("PMTU, "+string(state), func(t *testing.T) {
+			lab.settle(t, switchArm{state: state, unlisted: true})
+			setMTU := func(mtu int) error {
+				return lab.leaf.Do(func() error {
+					link, err := net.InterfaceByName(rulesUplink)
+					if err != nil {
+						return err
+					}
+					return netnstest.SetLinkMTU(link.Index, mtu)
+				})
+			}
+			if err := setMTU(switchUplinkMTU); err != nil {
+				t.Fatalf("set the uplink's MTU: %v", err)
+			}
+			t.Cleanup(func() { _ = setMTU(1500) })
+			for _, family := range []int{4, 6} {
+				var mtu int
+				internet := exitLabHost[family].internet.Addr()
+				if err := lab.container.Do(func() (err error) { mtu, err = switchPathMTU(internet); return err }); err != nil {
+					t.Fatalf("send to %s from the container: %v", internet, err)
+				}
+				if mtu != switchUplinkMTU {
+					t.Errorf("the container's path to %s reads an MTU of %d, want the uplink's %d", internet, mtu, switchUplinkMTU)
+				}
+			}
+		})
+	}
+}
+
+// switchUplinkMTU is the uplink's MTU in the arm whose forwarded datagrams are too big for it, the least IPv6 allows
+const switchUplinkMTU = 1280
+
+// switchPathMTU sends a datagram of 1400 bytes, more than switchUplinkMTU holds, to destination, which no router may fragment, until
+// the calling thread's namespace learns a smaller MTU for the path or exitPingWait passes, and answers the path's MTU
+func switchPathMTU(destination netip.Addr) (int, error) {
+	family, level, dontFragment, value, mtu := unix.AF_INET6, unix.IPPROTO_IPV6, unix.IPV6_DONTFRAG, 1, unix.IPV6_MTU
+	if destination.Is4() {
+		family, level, dontFragment, value, mtu = unix.AF_INET, unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO, unix.IP_MTU
+	}
+	fd, err := unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return 0, err
+	}
+	defer unix.Close(fd)
+	if err := unix.SetsockoptInt(fd, level, dontFragment, value); err != nil {
+		return 0, err
+	}
+	if err := unix.Connect(fd, rulesSockaddr(destination, rulesDiscard)); err != nil {
+		return 0, err
+	}
+	payload := make([]byte, 1400)
+	for deadline := time.Now().Add(exitPingWait); ; time.Sleep(labRetry / 10) {
+		// EMSGSIZE once the path's MTU is learned
+		_, _ = unix.Write(fd, payload)
+		got, err := unix.GetsockoptInt(fd, level, mtu)
+		if err != nil || got < len(payload) || time.Now().After(deadline) {
+			return got, err
 		}
 	}
 }

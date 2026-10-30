@@ -37,6 +37,10 @@ type ExitMode struct {
 	// written "<port>/<protocol>" or "<first>-<last>/<protocol>" with the
 	// protocol tcp or udp
 	Inbound []string `yaml:"inbound,omitempty" json:"inbound,omitempty" toml:"inbound,omitempty"`
+	// LAN is the prefixes beyond the private and link-local ranges whose part
+	// of a connected network counts as the LAN while fallback is "none". It
+	// adds no destination a link outside the mesh is not connected to.
+	LAN []schema.Prefix `yaml:"lan,omitempty" json:"lan,omitempty" toml:"lan,omitempty"`
 }
 
 // Fallback is cap.exit fallback
@@ -134,13 +138,20 @@ const loopback = "lo"
 // malformed pattern, and lo by name, whose traffic is the host's own. It
 // refuses a fallback other than "uplink" and "none", inbound unless fallback
 // is "none", and an inbound entry that is malformed, names port 0 or another
-// protocol, runs downward or is written twice.
+// protocol, runs downward or is written twice. It refuses lan unless fallback
+// is "none", and an entry of it as schema.CheckPrefixes does.
 func (m ExitMode) Validate() error {
 	if m.Fallback != "" && m.Fallback != FallbackUplink && m.Fallback != FallbackNone {
 		return fmt.Errorf("kernel: cap.exit fallback %q is neither \"uplink\" nor \"none\"", m.Fallback)
 	}
 	if len(m.Inbound) > 0 && !m.Refuses() {
 		return errors.New("kernel: cap.exit inbound lists the services that answer beyond the LAN while fallback = \"none\" refuses the rest, and fallback is not \"none\": write fallback = \"none\" or remove inbound")
+	}
+	if len(m.LAN) > 0 && !m.Refuses() {
+		return errors.New("kernel: cap.exit lan lists the connected networks that count as the LAN while fallback = \"none\" refuses the rest, and fallback is not \"none\": write fallback = \"none\" or remove lan")
+	}
+	if err := schema.CheckPrefixes("kernel: cap.exit lan", m.LAN, nil); err != nil {
+		return err
 	}
 	seen := make(map[Service]string, len(m.Inbound))
 	for _, entry := range m.Inbound {
@@ -168,11 +179,13 @@ func (m ExitMode) Validate() error {
 	return nil
 }
 
-// Normalized is the capability as the reconciler runs it, forward in one order
-// and each entry once, and inbound as Services spells it, so a reload over a
-// list written in another order or split another way is no change.
+// Normalized is the capability as the reconciler runs it, forward and lan in
+// one order and each entry once, and inbound as Services spells it, so a
+// reload over a list written in another order or split another way is no
+// change.
 func (m ExitMode) Normalized() ExitMode {
 	m.Forward = slices.Compact(slices.Sorted(slices.Values(m.Forward)))
+	m.LAN = slices.Compact(slices.SortedFunc(slices.Values(m.LAN), schema.ComparePrefix))
 	inbound := m.Services()
 	m.Inbound = nil
 	for _, service := range inbound {
@@ -273,7 +286,7 @@ func (r *Reconciler) exitPass(held []netip.Prefix) (exitView, *ExitStatus) {
 			status.Unaddressed = append(status.Unaddressed, family)
 		}
 	}
-	return exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed, fallback: mode.Refuses()}, status
+	return exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed, fallback: mode.Refuses(), lan: schemaPrefixes(mode.LAN)}, status
 }
 
 // reportExit records each skip and each family the tun holds no overlay

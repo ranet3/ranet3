@@ -418,6 +418,7 @@ func TestKernelLineNamesTheSwitchsState(t *testing.T) {
 		{State: "passing", Dropped: 0},
 		{State: "holding", Dropped: 12, DroppedBytes: 720,
 			Captured:   []string{"198.0.0.0/7"},
+			Public:     []string{"203.0.113.0/24", "2001:db8:a::/64"},
 			Unresolved: []string{"gateway.example.org"},
 			Resolvers:  []KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}},
 		{State: "not holding", Reason: "its set lan4 holds { }, where { 198.51.100.0/25 } was written", Dropped: 3, DroppedBytes: 180},
@@ -426,7 +427,7 @@ func TestKernelLineNamesTheSwitchsState(t *testing.T) {
 	}
 	golden(t, "kernel-fallback.txt", []byte(lines.String()))
 	goldenJSON(t, "kernel-fallback.json", exit(&KernelFallback{State: "holding", Dropped: 12, DroppedBytes: 720,
-		Captured: []string{"198.0.0.0/7"}, Unresolved: []string{"gateway.example.org"}, Resolvers: []KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}}))
+		Captured: []string{"198.0.0.0/7"}, Public: []string{"203.0.113.0/24", "2001:db8:a::/64"}, Unresolved: []string{"gateway.example.org"}, Resolvers: []KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}}))
 	if line := kernelLine(exit(nil)); strings.Contains(line, "fallback") {
 		t.Errorf("the kernel line reads %q under fallback uplink, want no switch clause", line)
 	}
