@@ -148,17 +148,20 @@ These commands take flags of their own:
   another program's rule ahead of its own, as
   [sharing a host](../coexistence.md#another-programs-rules) describes, with its
   kind, `overlay` or `underlay`, its family, the overlay prefix, the address
-  asked, whether it is taken and the kernel's answer, also when the dump failed,
-  or `Lookups: none` where the dump answered and the reconciler asked none. On
-  macOS, which has no policy rules, `Lookups` lists the `underlay` rows. A row
-  is one address live sessions send to, a link-local one with its zone, with the
-  interface of the pin their sends carry where that pin has one. A pin has the
-  interface its index names, or with no index, the interface holding its
-  address, and [routing](../routing.md#the-underlays-interface-on-macos) gives
-  which sends carry a pin. Sessions whose sends carry no pin, or a pin with no
-  interface, share the address's row. A row with an interface shows `dev` with
-  its name, or its index where the host has no interface of that index, and no
-  matched route. A row without one shows `dev` with the interface
+  asked, on Linux the source and interface a live session's send carries for an
+  `underlay` lookup, `-` where it carries none, whether it is taken and the
+  kernel's answer, also when the dump failed, or `Lookups: none` where the dump
+  answered and the reconciler asked none. On macOS, which has no policy rules,
+  `Lookups` lists the `underlay` rows, their source and interface `-`, the pin's
+  interface named in the answer. A row is one address live sessions send to, a
+  link-local one with its zone, with the interface of the pin their sends carry
+  where that pin has one. A pin has the interface its index names, or with no
+  index, the interface holding its address, and
+  [routing](../routing.md#the-underlays-interface-on-macos) gives which sends
+  carry a pin. Sessions whose sends carry no pin, or a pin with no interface,
+  share the address's row. A row with an interface shows `dev` with its name, or
+  its index where the host has no interface of that index, and no matched route.
+  A row without one shows `dev` with the interface
   [the selection](../routing.md#the-underlays-interface-on-macos) names and the
   route it matched, or `no route`. No row is taken. An IPv4 datagram can ride
   the shared socket's cached route of another interface instead, as
@@ -498,7 +501,7 @@ Each kind carries these attributes:
 | `babel.state.unreadable`                      | `file`, `err`                                                                                                                                                                                   |
 | `kernel.pass`                                 | `trigger`, `took`, `added`, `removed`, `skipped`, `installed`, `err`                                                                                                                            |
 | `kernel.cover`                                | `family`, `installed`                                                                                                                                                                           |
-| `kernel.taken`                                | `family`, `lookup` (`overlay` or `underlay`), `prefix` and `address` for an overlay lookup or `endpoint`, `answer`, `taken`                                                                     |
+| `kernel.taken`                                | `family`, `lookup` (`overlay` or `underlay`), `prefix` and `address` for an overlay lookup or `endpoint` with `source` and `interface` where the send carries them, `answer`, `taken`           |
 | `kernel.forward`                              | `entry`, `link`, `reason` (the tun, the loopback link, or the link a family's default leaves by), `skipped`                                                                                     |
 | `kernel.exit`                                 | `family`, `addressed` (false where the family came to run mode off's rules, as [limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) says, and true where the state then ended) |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                              |
