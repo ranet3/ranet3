@@ -282,8 +282,10 @@ testers.runNixOSTest {
     ]:
         assert f"--- PASS: {name}" in out, f"mesh_entry's lab {name} did not run:\n{out}"
     assert "--- PASS: TestTUNExitPathLeavesByTheNamedExitAndNoOther" in out, f"mode 3's two-exit lab did not run:\n{out}"
+    assert "--- PASS: TestTUNKillSwitchHoldsInModeThree" in out, f"the kill switch's lab in mode 3 did not run:\n{out}"
+    assert "--- PASS: TestTUNStatusCountsTheReadsThePathAloneTook" in out, f"the status's count of the path's reads did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 22, f"only {ran} of the client's tun round trips ran:\n{out}"
+    assert ran >= 23, f"only {ran} of the client's tun round trips ran:\n{out}"
 
     # every datagram sent with DF and the path mtu a refused one reports, against linux itself
     # and a family's socket fragmenting past the path only while a session of the family asks
