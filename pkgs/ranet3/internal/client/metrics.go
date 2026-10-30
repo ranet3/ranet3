@@ -329,7 +329,7 @@ func writeTaken(w io.Writer, lookups []kernel.Lookup) {
 		underlay   bool
 	}{
 		{"ranet3_kernel_overlay_taken", "Overlay holds whose address the last pass whose batch answered found taken, for each family it asked.", false},
-		{"ranet3_kernel_underlay_taken", "Live peer endpoints whose lookup under the underlay's mark the last pass whose batch answered found answered through the tun, for each family it asked.", true},
+		{"ranet3_kernel_underlay_taken", "Sends of live sessions whose lookup under the underlay's mark the last pass whose batch answered found answered through the tun, for each family it asked. Each lookup carries the source and interface its send carries.", true},
 	} {
 		asked := map[kernel.Family]bool{}
 		taken := map[kernel.Family]int{}

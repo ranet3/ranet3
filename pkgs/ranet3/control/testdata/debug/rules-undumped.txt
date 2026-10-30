@@ -1,7 +1,9 @@
 Policy rules: kernel: dump rules: permission denied
 Lookups
-  Lookup    Family  Prefix        Address        Taken  Answer
-  overlay   ipv4    192.0.2.0/24  192.0.2.2      yes    table 51820 dev wg0
-  overlay   ipv6    3fff::/20     3fff::2        no     a refusal (no route to host)
-  underlay  ipv4    -             198.51.100.77  no     table 51820 dev wg0
-  underlay  ipv4    -             203.0.113.70   no     table 51820 dev wg0
+  Lookup    Family  Prefix        Address          Source          Interface  Taken  Answer
+  overlay   ipv4    192.0.2.0/24  192.0.2.2        -               -          yes    table 51820 dev wg0
+  overlay   ipv6    3fff::/20     3fff::2          -               -          no     a refusal (no route to host)
+  underlay  ipv4    -             198.51.100.77    -               -          no     table 51820 dev wg0
+  underlay  ipv4    -             203.0.113.70     -               -          no     table 51820 dev wg0
+  underlay  ipv6    -             2001:db8:400::7  2001:db8:a::10  eth0       yes    table 300 dev ranet0
+  underlay  ipv6    -             2001:db8:400::7  2001:db8:b::10  -          no     table main dev eth0

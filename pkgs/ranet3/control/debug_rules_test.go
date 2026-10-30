@@ -13,8 +13,10 @@ import (
 
 // rulesFixture is a node's derived rules beside networkd's, a VRF's and one of
 // its own protocol it does not derive, one derived rule missing, its last
-// pass's lookups with wg-quick's table taking the IPv4 overlay, and its border
-// chain read three seconds after its last pass with one forged source dropped
+// pass's lookups with wg-quick's table taking the IPv4 overlay and another
+// program's table 300 taking a send pinned to eth0 but not one from a pair's
+// bound source, and its border chain read three seconds after its last pass
+// with one forged source dropped
 func rulesFixture() RulesInfo {
 	lookup := func(family string, priority uint32, table uint32, protocol uint8, owned bool) PolicyRule {
 		return PolicyRule{Family: family, Priority: priority, Action: "lookup", Table: table, Protocol: protocol, Owned: owned, Wanted: owned}
@@ -49,6 +51,8 @@ func rulesFixture() RulesInfo {
 			{Lookup: "overlay", Family: "ipv6", Prefix: netip.MustParsePrefix("3fff::/20"), Address: netip.MustParseAddr("3fff::2"), Answer: "a refusal (no route to host)"},
 			{Lookup: "underlay", Family: "ipv4", Address: netip.MustParseAddr("198.51.100.77"), Answer: "table 51820 dev wg0"},
 			{Lookup: "underlay", Family: "ipv4", Address: netip.MustParseAddr("203.0.113.70"), Answer: "table 51820 dev wg0"},
+			{Lookup: "underlay", Family: "ipv6", Address: netip.MustParseAddr("2001:db8:400::7"), Source: netip.MustParseAddr("2001:db8:a::10"), Interface: "eth0", Answer: "table 300 dev ranet0", Taken: true},
+			{Lookup: "underlay", Family: "ipv6", Address: netip.MustParseAddr("2001:db8:400::7"), Source: netip.MustParseAddr("2001:db8:b::10"), Answer: "table main dev eth0"},
 		},
 		Border: &BorderChain{
 			Where:    "nftables table inet ranet3 chain border",

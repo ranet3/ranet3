@@ -347,8 +347,9 @@ func TestShortDurationRoundsToWhatIsReadable(t *testing.T) {
 }
 
 // The kernel line names each overlay prefix another program's rule takes and
-// each endpoint the underlay's mark is answered through the tun toward, each by
-// the answer that took it, ahead of the pass's error.
+// each send the underlay's mark is answered through the tun for, by its
+// endpoint and the source and interface it carries, each by the answer that
+// took it, ahead of the pass's error.
 func TestKernelLineNamesWhatAnotherProgramsRuleTakes(t *testing.T) {
 	status := KernelStatus{
 		Enabled: true, Where: "table 200 protocol 155", Table: 200, Protocol: 155, Installed: 6,
@@ -357,6 +358,8 @@ func TestKernelLineNamesWhatAnotherProgramsRuleTakes(t *testing.T) {
 			{Family: "ipv6", Prefix: "3fff::/20", Address: "3fff::2", Answer: "a refusal (permission denied)"},
 			{Family: "ipv4", Endpoint: "198.51.100.77", Answer: "table 200 dev ranet0"},
 			{Family: "ipv4", Endpoint: "203.0.113.70", Answer: "table 200 dev ranet0"},
+			{Family: "ipv4", Endpoint: "203.0.113.71", Source: "198.51.100.10", Answer: "table 300 dev ranet0"},
+			{Family: "ipv6", Endpoint: "2001:db8:400::7", Source: "2001:db8:a::10", Interface: "eth0", Answer: "table 300 dev ranet0"},
 		},
 		Err: "add rule priority 5110: file exists",
 	}
