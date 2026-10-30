@@ -11,7 +11,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 )
 
-// DebugProbe asks the sessions of one peer, or every session, to prove their path now, as a network change asks every one
+// DebugProbe asks the sessions of one peer, or every session, to prove their path now, as a move of the host's default or one of its addresses asks every one
 func (c *Client) DebugProbe(ctx context.Context, peer string, all bool) (result control.Result, err error) {
 	defer func() { c.noteVerb(ctx, "probe", peer, result, err, slog.Bool("all", all)) }()
 	probed, err := c.askSessions("probe", peer, all, c.sessions.startProbe)

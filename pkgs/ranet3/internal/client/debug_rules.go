@@ -41,7 +41,8 @@ func (c *Client) lookups() []kernel.Lookup {
 // chain, each through a socket of its own, so neither the reconciler's nor the
 // filter's run goroutine shares one with a reader. Where the transport names
 // each underlay datagram's interface, on darwin, it lists beside them the
-// interface each live session's datagrams name, or the one holding their pin
+// interface each live session's datagrams name, or the interface of the pin
+// they carry
 func (c *Client) DebugRules() control.RulesInfo {
 	dump := c.ruleDump
 	if dump == nil {
@@ -105,7 +106,7 @@ func (c *Client) underlayPaths() []transport.UnderlayPath {
 	return paths
 }
 
-// underlayLookups is one underlay row per distinct path in address order: the interface holding its pin,
+// underlayLookups is one underlay row per distinct path in address order: the interface of its pin, by name or index,
 // or else the route routes selects its address by and that route's interface, or no route
 // never taken, since neither is ranet3's interface
 func underlayLookups(routes underlayRoutes, paths []transport.UnderlayPath) []control.RuleLookup {

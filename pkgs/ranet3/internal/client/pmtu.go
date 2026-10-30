@@ -322,7 +322,7 @@ func (s *pathSearch) lowered(route int, why string, now time.Time) {
 	}
 }
 
-// reconfirm probes the budget at once with the route read afresh, after the host's network changed or an operator asked
+// reconfirm probes the budget at once with the route read afresh, after a move of the host's default or one of its addresses or an operator asked
 // the route only lowers the target here, and a path under the floor leaves it once its route carries the floor
 func (s *pathSearch) reconfirm(route int, now time.Time) {
 	if s.phase == underFloor {

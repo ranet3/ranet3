@@ -77,8 +77,8 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	goldenJSON(t, "rules.json", info)
 
 	// darwin has no policy rules and refuses cap.border, and lists the
-	// interface each live session's datagrams name, or the one holding their
-	// pin: the route the selection matched, one address no route holds, a pin
+	// interface each live session's datagrams name, or the interface of the pin
+	// they carry: the route the selection matched, one address no route holds, a pin
 	// of a session the peer opened, and a link-local zone's
 	out.Reset()
 	darwin := RulesInfo{

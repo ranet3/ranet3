@@ -9,7 +9,7 @@ import (
 	"reflect"
 )
 
-// PathDebugProbe asks sessions to prove their path now, the way a network change asks every one
+// PathDebugProbe asks sessions to prove their path now, the way a move of the host's default or one of its addresses asks every one
 const PathDebugProbe = PathDebug + "probe"
 
 func init() { registerDebug(PathDebugProbe, classRoot, reflect.TypeFor[Result](), serveProbe) }
