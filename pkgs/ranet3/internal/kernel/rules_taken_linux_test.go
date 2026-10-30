@@ -386,7 +386,7 @@ func TestNetlinkRouteGetAnswersARouteOfNoTableEntryAsTheKernelsOwn(t *testing.T)
 		if c.iif != "" {
 			arrival = up.index
 		}
-		_, _, matchErr := matchedRoute(conn, c.src, c.dst, arrival, 0)
+		_, _, matchErr := matchedRoute(conn, c.src, c.dst, arrival, 0, 0)
 		route, err := RouteGet(c.src, c.dst, c.iif)
 		taken := TakeRule(rules, c.src, c.dst, c.iif, route, err)
 		t.Logf("%s: under RTM_F_FIB_MATCH the kernel answered %v, and RouteGet %+v %v, the finder %+v", c.name, matchErr, route, err, taken)

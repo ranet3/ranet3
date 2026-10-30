@@ -4,35 +4,70 @@
 package kernel
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strconv"
 	"syscall"
 
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
+// Send is transport's Send: where a live session sends its underlay and what
+// its datagrams carry
+type Send struct {
+	Destination, Source netip.Addr
+	Interface           int
+	Pair                bool
+}
+
+// compare orders sends by the lookup they ask, and a pair's send first among
+// one lookup's, so the lookup is asked as the pair's send, which the batch
+// asks where an IPv6 pair's interface is gone
+func (s Send) compare(other Send) int {
+	pair := 0
+	if s.Pair != other.Pair {
+		pair = 1
+		if s.Pair {
+			pair = -1
+		}
+	}
+	return cmp.Or(s.Destination.Compare(other.Destination), s.Source.Compare(other.Source), cmp.Compare(s.Interface, other.Interface), pair)
+}
+
+func (s Send) asksAs(other Send) bool {
+	return s.Destination == other.Destination && s.Source == other.Source && s.Interface == other.Interface
+}
+
 // Lookup is one route lookup a pass asked to find another program's rule ahead
 // of the mesh's: an unmarked lookup of Address inside the overlay hold Prefix,
-// or, with Prefix invalid, a lookup of a live peer endpoint at Address under the
-// underlay's mark. Answer is the kernel's answer as text, and Taken says it is
-// not the mesh's for an overlay lookup, or is for the underlay's
+// or, with Prefix invalid, the lookup under the underlay's mark of a live
+// session's send to Address from Source out of Interface, either absent where
+// the send carries none. Interface is named as the pass's dump of the links
+// named it, and by its index where the dump held none. Answer is the kernel's
+// answer as text, and Taken says it is not the mesh's for an overlay lookup,
+// or is for the underlay's
 type Lookup struct {
-	Family  Family
-	Prefix  netip.Prefix
-	Address netip.Addr
-	Answer  string
-	Taken   bool
+	Family    Family
+	Prefix    netip.Prefix
+	Address   netip.Addr
+	Source    netip.Addr
+	Interface string
+	index     int
+	Answer    string
+	Taken     bool
 }
 
 // Underlay says the lookup is the underlay's marked one
 func (l Lookup) Underlay() bool { return !l.Prefix.IsValid() }
 
 func (l Lookup) asks(other Lookup) bool {
-	return l.Family == other.Family && l.Prefix == other.Prefix && (!l.Underlay() || l.Address == other.Address)
+	return l.Family == other.Family && l.Prefix == other.Prefix &&
+		(!l.Underlay() || l.Address == other.Address && l.Source == other.Source && l.index == other.index)
 }
 
 func (r *Reconciler) lookUp() {
@@ -52,10 +87,10 @@ func (r *Reconciler) lookUp() {
 		asked = append(asked, Lookup{Family: familyOf(address), Prefix: hold.Destination, Address: address})
 		reads = append(reads, RouteRead{Destination: address})
 	}
-	if r.rt.Endpoints != nil {
-		for _, endpoint := range slices.Compact(slices.SortedFunc(slices.Values(r.rt.Endpoints()), netip.Addr.Compare)) {
-			asked = append(asked, Lookup{Family: familyOf(endpoint), Address: endpoint})
-			reads = append(reads, RouteRead{Destination: endpoint, Mark: schema.UnderlayMark})
+	if r.rt.Sends != nil {
+		for _, send := range slices.CompactFunc(slices.SortedFunc(slices.Values(r.rt.Sends()), Send.compare), Send.asksAs) {
+			asked = append(asked, Lookup{Family: familyOf(send.Destination), Address: send.Destination, Source: send.Source, index: send.Interface})
+			reads = append(reads, RouteRead{Source: send.Source, Destination: send.Destination, OIF: uint32(send.Interface), Pair: send.Pair, Mark: schema.UnderlayMark})
 		}
 	}
 	if len(reads) > 0 {
@@ -73,6 +108,9 @@ func (r *Reconciler) lookUp() {
 		r.lookFailed = false
 		for i := range asked {
 			asked[i].Answer, asked[i].Taken = judgeLookup(asked[i].Underlay(), answers[i], r.rt.Interface)
+			if asked[i].index != 0 {
+				asked[i].Interface = cmp.Or(answers[i].OIF, strconv.Itoa(asked[i].index))
+			}
 		}
 	}
 	r.report(asked)
@@ -110,6 +148,12 @@ func (r *Reconciler) reportLookup(level slog.Level, message string, lookup Looku
 	kind, at := "overlay", []slog.Attr{slog.String("prefix", lookup.Prefix.String()), slog.String("address", lookup.Address.String())}
 	if lookup.Underlay() {
 		kind, at = "underlay", []slog.Attr{slog.String("endpoint", lookup.Address.String())}
+		if lookup.Source.IsValid() {
+			at = append(at, slog.String("source", lookup.Source.String()))
+		}
+		if lookup.Interface != "" {
+			at = append(at, slog.String("interface", lookup.Interface))
+		}
 	}
 	attrs := slices.Concat([]slog.Attr{slog.String("family", string(lookup.Family))}, at, []slog.Attr{slog.String("answer", lookup.Answer)})
 	slog.LogAttrs(context.Background(), level, message, attrs...)

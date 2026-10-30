@@ -554,7 +554,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		Advertised:    cfg.Advertised(),
 		EgressSegment: len(cfg.Segments().Egress()) > 0,
 		Sessions:      c.LiveSessions,
-		Endpoints:     c.liveEndpoints,
+		Sends:         c.liveSends,
 		// the reconciler stops hiding an announced default from every socket that did not ask for the tun by name
 		BoundUnderlay: cfg.Link.Underlay.Bind,
 		Host:          c.host,
@@ -572,15 +572,15 @@ func (c *Client) LiveSessions() int {
 	return c.sessions.liveCount()
 }
 
-func (c *Client) liveEndpoints() []netip.Addr {
+func (c *Client) liveSends() []kernel.Send {
 	if c.sessions == nil {
 		return nil
 	}
 	live := c.sessions.snapshot()
-	out := make([]netip.Addr, 0, len(live))
+	out := make([]kernel.Send, 0, len(live))
 	for _, session := range live {
-		if endpoint := session.session.Mux().Endpoint(); endpoint != nil {
-			out = append(out, endpoint.AddrPort().Addr())
+		if send := session.session.Mux().Sends(); send.Destination.IsValid() {
+			out = append(out, kernel.Send(send))
 		}
 	}
 	return out

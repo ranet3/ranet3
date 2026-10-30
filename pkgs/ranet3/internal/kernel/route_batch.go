@@ -10,6 +10,12 @@ import "net/netip"
 type RouteRead struct {
 	Source, Destination netip.Addr
 	IIF                 string
+	// OIF is the index of the interface the read names as a send naming one
+	// does, none at zero (fib_lookup_good_nhc, rt6_score_route,
+	// rt6_need_strict). The reply read names none
+	OIF uint32
+	// Pair says the send goes on a socket connected to the peer
+	Pair bool
 	// Mark is the packet's mark, none at zero. The reply read carries none
 	Mark uint32
 	// Reply asks for the lookup of the packet answering this one as well, from
@@ -25,8 +31,11 @@ type RouteRead struct {
 // device that lookup arrived on, empty where none was made, with its route or
 // its error
 type BatchAnswer struct {
-	Route    MatchedRoute
-	Err      error
+	Route MatchedRoute
+	Err   error
+	// OIF names the read's OIF as the batch's dump of the links did, empty
+	// where the read names none or the dump held none
+	OIF      string
 	ReplyIIF string
 	Reply    MatchedRoute
 	ReplyErr error

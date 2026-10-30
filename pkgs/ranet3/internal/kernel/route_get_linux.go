@@ -31,7 +31,7 @@ func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 		}
 		arrival = link.index
 	}
-	route, indexes, err := matchedRoute(conn, src, dst, arrival, 0)
+	route, indexes, err := matchedRoute(conn, src, dst, arrival, 0, 0)
 	// under RTM_F_FIB_MATCH IPv4 answers a route of no table entry with
 	// EHOSTUNREACH, so a lookup without the flag tells it from a refusal
 	if dst.Is4() && errors.Is(err, unix.EHOSTUNREACH) {
@@ -63,17 +63,18 @@ func routeGet(src, dst netip.Addr, iif string) (MatchedRoute, error) {
 }
 
 // matchedRoute is one RTM_GETROUTE under RTM_F_FIB_MATCH, for a packet from src
-// to dst arriving on the device of index arrival, or this host's own for 0,
-// carrying mark where it is nonzero. It answers each next hop's interface index
-// at its place in NextHops, whose Device it leaves empty
-func matchedRoute(c netlinkConn, src, dst netip.Addr, arrival, mark uint32) (MatchedRoute, []uint32, error) {
+// to dst arriving on the device of index arrival, or this host's own for 0. It
+// names the device of index leaving and carries mark, each where it is
+// nonzero. It answers each next hop's interface index at its place in
+// NextHops, whose Device it leaves empty
+func matchedRoute(c netlinkConn, src, dst netip.Addr, arrival, leaving, mark uint32) (MatchedRoute, []uint32, error) {
 	flags := uint32(unix.RTM_F_FIB_MATCH)
 	if dst.Is4() {
 		// IPv4 answers with main for the table unless asked for the one it
 		// looked in, and IPv6 refuses the flag
 		flags |= unix.RTM_F_LOOKUP_TABLE
 	}
-	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, mark, flags), dst)
+	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, leaving, mark, flags), dst)
 	if err != nil {
 		return MatchedRoute{}, nil, err
 	}
@@ -84,7 +85,7 @@ func matchedRoute(c netlinkConn, src, dst netip.Addr, arrival, mark uint32) (Mat
 // RTM_F_FIB_MATCH, as NoEntry, under RTM_F_LOOKUP_TABLE, which answers the
 // table 0 where no rule's lookup found the route
 func entrylessRoute(c netlinkConn, src, dst netip.Addr, arrival uint32) (MatchedRoute, []uint32, error) {
-	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, 0, unix.RTM_F_LOOKUP_TABLE), dst)
+	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, 0, 0, unix.RTM_F_LOOKUP_TABLE), dst)
 	if err != nil {
 		return MatchedRoute{}, nil, err
 	}
@@ -98,7 +99,7 @@ func entrylessRoute(c netlinkConn, src, dst netip.Addr, arrival uint32) (Matched
 // it cached for dst, which it marks RTM_F_CLONED where RTM_F_FIB_MATCH answers
 // the route the cached one hangs off
 func cachedRoute(c netlinkConn, src, dst netip.Addr, arrival uint32) (bool, error) {
-	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, 0, 0), dst)
+	reply, err := routeAnswer(c, routeRequest(src, dst, arrival, 0, 0, 0), dst)
 	if err != nil {
 		return false, err
 	}
@@ -106,9 +107,9 @@ func cachedRoute(c netlinkConn, src, dst netip.Addr, arrival uint32) (bool, erro
 }
 
 // routeRequest is an RTM_GETROUTE body for a packet from src to dst arriving
-// on the device of index arrival, or this host's own for 0, carrying mark
-// where it is nonzero
-func routeRequest(src, dst netip.Addr, arrival, mark, flags uint32) []byte {
+// on the device of index arrival, or this host's own for 0, leaving by the
+// device of index leaving and carrying mark where each is nonzero
+func routeRequest(src, dst netip.Addr, arrival, leaving, mark, flags uint32) []byte {
 	body := make([]byte, unix.SizeofRtMsg)
 	body[0] = unix.AF_INET6
 	if dst.Is4() {
@@ -125,6 +126,9 @@ func routeRequest(src, dst netip.Addr, arrival, mark, flags uint32) []byte {
 	}
 	if arrival != 0 {
 		body = putAttrU32(body, unix.RTA_IIF, arrival)
+	}
+	if leaving != 0 {
+		body = putAttrU32(body, unix.RTA_OIF, leaving)
 	}
 	if mark != 0 {
 		body = putAttrU32(body, unix.RTA_MARK, mark)
