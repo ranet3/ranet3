@@ -307,6 +307,8 @@ func (b *udpBind) pairOf(endpoint Endpoint) pairKey {
 	return k
 }
 
+func (b *udpBind) sendKey(endpoint Endpoint) pairKey { return b.pairOf(endpoint) }
+
 // connectPair binds the hub's port on one address, which keeps the socket out of any reuseport group the listener is in
 // and once connected the kernel prefers it to the wildcard listener for its peer's datagrams to that address
 // a pinned pair leaves by its pin's interface as the shared socket's replies do, and a link-local source binds only on it

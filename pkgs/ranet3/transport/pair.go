@@ -6,6 +6,7 @@ package transport
 import (
 	"log/slog"
 	"net/netip"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -276,6 +277,47 @@ func (m *Mux) pairFor(endpoint Endpoint) *pair {
 		t.release(previous)
 	}
 	return next
+}
+
+// Send is where a mux's datagrams go and the source address and interface index they leave with, invalid and zero where the route picks them
+// Pair says they go on a socket connected to the peer rather than the shared one
+type Send struct {
+	Destination, Source netip.Addr
+	Interface           int
+	Pair                bool
+}
+
+// sendKeyer is a bind whose pair key for an endpoint changes nothing, linux's
+// darwin's pairOf selects an interface and records the selection as a send does
+type sendKeyer interface {
+	sendKey(ep Endpoint) pairKey
+}
+
+// Sends answers where m's datagrams go now and the source and interface of the pair its endpoint names, the source the address its connected socket is bound to while m sends on one
+// an unpinned send to a zoned peer leaves by the zone's interface, which linux names by its index
+// a bind with no sendKey answers the destination alone
+// it takes only the endpoint's read lock, which sends share
+func (m *Mux) Sends() Send {
+	endpoint := m.currentEndpoint()
+	if endpoint == nil {
+		return Send{}
+	}
+	send := Send{Destination: endpoint.AddrPort().Addr()}
+	keyer, ok := m.hub.bind.(sendKeyer)
+	if !ok {
+		return send
+	}
+	key := keyer.sendKey(endpoint)
+	send.Source, send.Interface = key.local.WithZone(""), key.index
+	if zone := key.remote.Addr().Zone(); send.Interface == 0 && zone != "" {
+		send.Interface, _ = strconv.Atoi(zone)
+	}
+	if p := m.pair.Load(); p != nil && p.key == key {
+		if socket := p.socket.Load(); socket != nil {
+			send.Source, send.Pair = (*socket).local().WithZone(""), true
+		}
+	}
+	return send
 }
 
 func (m *Mux) leavePair() {
