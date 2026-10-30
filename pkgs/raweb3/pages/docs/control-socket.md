@@ -206,7 +206,7 @@ lets in. `read`, `root` and `plaintext` are the debug classes described above.
 | `/v0/debug/updown`   | GET, HEAD | `read`      | none                                                               | up and down view, a JSON object     |
 | `/v0/debug/netmon`   | GET, HEAD | `read`      | none                                                               | network watch view, a JSON object   |
 | `/v0/debug/rules`    | GET, HEAD | `read`      | none                                                               | rules view, a JSON object           |
-| `/v0/debug/route`    | GET, HEAD | `read`      | query `src`, `dst`, `iif`                                          | route view, a JSON object           |
+| `/v0/debug/route`    | GET, HEAD | `read`      | query `src`, `dst`, `iif`, `peer`                                  | route view, a JSON object           |
 | `/v0/debug/egress`   | GET, HEAD | `read`      | none                                                               | exit view, a JSON object            |
 | `/v0/debug/segments` | GET, HEAD | `read`      | none                                                               | segments view, a JSON object        |
 | `/v0/debug/probe`    | POST      | `root`      | `peer` or `all`                                                    | a result                            |
