@@ -57,16 +57,13 @@ func TestSessionsCountTheInvalidSPIReportsSent(t *testing.T) {
 	held, _ := answered.ChildSPIs()
 	// the complement of the one SPI bravo holds
 	stray := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, ^held), 1)
-	waitFor(t, convergeBudget, "bravo's control socket to count a report", func() bool {
+	waitFor(t, convergeBudget, "bravo to record a report and its control socket to count it under the one session", func() bool {
 		if err := dialed.Mux().SendESP(stray); err != nil {
 			t.Fatal(err)
 		}
 		reported := bravo.client.Sessions()
-		return len(reported) == 1 && reported[0].InvalidSPIReports > 0
+		return len(recorded(bravo.events, "ike.notify.invalid_spi")) > 0 && len(reported) == 1 && reported[0].InvalidSPIReports > 0
 	})
-	if got := recorded(bravo.events, "ike.notify.invalid_spi"); len(got) == 0 {
-		t.Error("bravo recorded no report")
-	}
 	if len(alpha.client.sessions.paths()) != 1 || len(bravo.client.sessions.paths()) != 1 || alpha.client.sessions.snapshot()[0].session != dialed {
 		t.Error("a report ended the session it went over")
 	}
