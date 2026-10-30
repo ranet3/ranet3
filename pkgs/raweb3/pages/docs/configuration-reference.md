@@ -408,12 +408,12 @@ selector may be IPv4.
 
 The segments this node answers for.
 
-| Key        | Value               | Default  | Meaning                                                  |
-| ---------- | ------------------- | -------- | -------------------------------------------------------- |
-| `sid`      | address             | required | The segment identifier                                   |
-| `behavior` | `End` or `End.DT46` | required | What this node does with the packet                      |
-| `deliver`  | `mesh` or `egress`  | `mesh`   | Where `End.DT46` hands the inner packet                  |
-| `allow`    | list of prefixes    | none     | Sources an egress segment carries, outer and inner alike |
+| Key        | Value               | Default  | Meaning                                 |
+| ---------- | ------------------- | -------- | --------------------------------------- |
+| `sid`      | address             | required | The segment identifier                  |
+| `behavior` | `End` or `End.DT46` | required | What this node does with the packet     |
+| `deliver`  | `mesh` or `egress`  | `mesh`   | Where `End.DT46` hands the inner packet |
+| `allow`    | list of prefixes    | none     | Sources an egress segment carries       |
 
 - `End` sends the packet to its next segment. `End.DT46` removes the outer
   header and delivers the inner packet, to the mesh's
@@ -434,10 +434,16 @@ The segments this node answers for.
   a list with no IPv6 entry are refused. The order does not matter.
 - Every segment needs `cap.border` with an IPv6 prefix in its `overlay`, and
   acts only on a packet whose outer source lies in those prefixes.
+- An `allow` entry inside `cap.border.overlay` admits outer and inner sources,
+  and one outside it admits inner sources alone, such as a LAN behind a subnet
+  router. A list with an entry outside the overlay is refused unless one IPv6
+  entry lies inside it. The exit pairs no inner source with an outer one: each
+  node the list admits by its overlay address may carry any inner source the
+  list holds, a listed LAN among them. A node sends no LAN source it does not
+  own, and the replies go to the node that announces the LAN.
 - An egress segment needs `cap.egress`, which may advertise nothing, and
-  `cap.border` whose `overlay` covers every `allow` entry. It needs no
-  `cap.table`. `cap.route` may not announce its SID's `/128`, which the node
-  originates while the exit is ready.
+  `cap.border`. It needs no `cap.table`. `cap.route` may not announce its SID's
+  `/128`, which the node originates while the exit is ready.
 
 ### `cap.segment.steer`
 
@@ -453,14 +459,20 @@ traffic and any traffic the host forwards into the mesh.
 
 - An entry names `from`, `to` or both. Both are in the same family. An omitted
   one matches every address of the other's family.
-- A prefix of length 0, or with bits set below its length, is refused.
+- A prefix of length 0, or with bits set below its length, is refused, and so is
+  a `to` that [counts as a default](routing.md#routes-that-count-as-a-default),
+  such as `0.0.0.0/1` or `2000::/3`:
+  `config: cap.segment steer to 0.0.0.0/1 counts as a default, which is cap.exit via: write the path there`.
 - An entry with no `source` and no `cap.segment.source` is refused.
 - `via` holds 1 to 16 segments. At the default `link.mtu` of 1400 bytes, a list
-  of more than 4 segments leaves the tun under 1280 bytes and is refused.
+  of more than 4 segments, here or in `cap.exit.via`, leaves the tun under 1280
+  bytes and is refused.
 - 2 entries with the same `from` and `to` are refused.
 - A steered packet carries its list inside the tunnel. The tun's MTU is
   `link.mtu` less 40 bytes of outer header, 8 bytes of routing header, and 16
-  bytes per segment of the longest list.
+  bytes per segment of the longest list, `cap.exit.via` among them.
+- A packet whose first segment has no route is answered Destination Unreachable,
+  as [routing](routing.md#transit) gives.
 
 ## `cap.crypto`
 
@@ -778,19 +790,21 @@ with no key. [The border filter](border-filter.md) describes both.
 
 ## `cap.exit`
 
-Exit mode. Writing this block turns it on. The mesh's default of lowest metric
-becomes this host's default, for its own traffic and for what it forwards from
-the links `forward` names. Linux only. [Routing](routing.md#exit-mode-on-linux)
-lists the rules it adds, and
+Exit mode. Writing this block turns it on. The mesh's default of lowest metric,
+or with `via` the path to one exit, becomes this host's default, for its own
+traffic and for what it forwards from the links `forward` names. Linux only.
+[Routing](routing.md#exit-mode-on-linux) lists the rules it adds and
+[mode 3](routing.md#mode-3-on-linux) what `via` changes, and
 [sharing a host](coexistence.md#exit-mode-beside-other-programs) what other
 programs' rules do beside them.
 
-| Key        | Value                | Default    | Meaning                                                                                                    |
-| ---------- | -------------------- | ---------- | ---------------------------------------------------------------------------------------------------------- |
-| `forward`  | list of names        | none       | Links whose forwarded traffic follows the mode as the host's does                                          |
-| `fallback` | `"uplink"`, `"none"` | `"uplink"` | Where the host's traffic leaves while no exit is live. `"none"` is the kill switch                         |
-| `inbound`  | list of services     | none       | Under `"none"`, the services on the uplink's addresses that answer beyond the LAN, on flows opened to them |
-| `lan`      | list of prefixes     | none       | Under `"none"`, the parts of connected networks beyond the private and link-local ranges that count as LAN |
+| Key        | Value                | Default                         | Meaning                                                                                                    |
+| ---------- | -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `forward`  | list of names        | none                            | Links whose forwarded traffic follows the mode as the host's does                                          |
+| `fallback` | `"uplink"`, `"none"` | `"uplink"`, `"none"` with `via` | Where the host's traffic leaves while no exit is live. `"none"` is the kill switch                         |
+| `via`      | list of addresses    | none                            | The SIDs the host's internet traffic visits, an exit's egress segment last                                 |
+| `inbound`  | list of services     | none                            | Under `"none"`, the services on the uplink's addresses that answer beyond the LAN, on flows opened to them |
+| `lan`      | list of prefixes     | none                            | Under `"none"`, the parts of connected networks beyond the private and link-local ranges that count as LAN |
 
 - `fallback = "uplink"` sends the host's traffic by its own default wherever the
   mesh's table holds none. `"none"` writes
@@ -839,8 +853,31 @@ programs' rules do beside them.
   `cap.route announces <prefix>, which counts as a default` and
   `cap.segment local <sid> delivers to egress`.
   [Exit nodes](exit-nodes.md#an-exits-own-traffic) say why.
-- `via` is refused by name. This version follows the mesh's default of lowest
-  metric.
+- `via` makes the host's traffic for the internet leave by the one exit whose
+  egress segment it names last, through the waypoints before it, as
+  [mode 3](routing.md#mode-3-on-linux) describes. With `via` an unwritten
+  `fallback` is `"none"`, so the host's traffic stays off the uplink while the
+  path is down, and `inbound` and `lan` apply. Write `fallback = "uplink"` to
+  let it leave by the host's own default then.
+- The path is up only while this node reaches each segment of another node
+  through the segment's own `/128`. An exit announces its egress segment's
+  `/128` while it is ready. The node of a waypoint's `End` that `via` names
+  announces that `/128` only where its [`cap.route`](#caproute) lists it, so
+  list it there. The load cannot check this, since it does not know which node
+  serves a segment.
+- The path's outer source is `cap.segment.source` where written, else the first
+  IPv6 address of `cap.table` inside `cap.border.overlay`. The exit's `allow`
+  holds that source and every inner source the host sends, its overlay addresses
+  and any LAN behind it, as [`cap.segment.local`](#capsegmentlocal) gives.
+- `via` is refused with more than 16 segments, a segment written twice, an
+  address that cannot be a SID, such as an IPv4, IPv4-mapped or multicast one, a
+  first or last segment of this node's own `cap.segment.local`, a
+  `cap.border.overlay` holding no IPv6 prefix, and with no outer source or one
+  outside the overlay, as
+  `config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside cap.border overlay gives the path an outer source: write cap.segment source`.
+  The loader cannot check that the last segment is an `End.DT46` and the others
+  `End`, since it knows no other node's SIDs, as
+  [segment routing](segment-routing.md#steering) says.
 - Each `forward` entry is a link's name or a pattern as Go's
   [`path.Match`](https://pkg.go.dev/path#Match) reads one, such as `docker*` or
   `br-*`. An empty entry, a malformed pattern and `lo` are refused at load. The
@@ -852,6 +889,8 @@ programs' rules do beside them.
   lists.
 - macOS, the BSDs, Android and iOS refuse the block at startup:
   `kernel: cap.exit is refused on <platform>, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
+  `via` with `fallback` unwritten is refused ahead of it, naming `"none"` and
+  `fallback = "uplink"`.
 
 ## Daemon flags
 

@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-31
+updated: 2026-11-01
 order: 110
 ---
 
@@ -656,9 +656,11 @@ destination, so the checks below read what it passed.
   every check here, and one that is itself encapsulated is dropped and counted
   `nested`. [The limits](design/limits.md#transit) say what this costs a host's
   own tunnel.
-- A read toward an exit's default from a source this node does not own is
-  dropped and counted `unowned_source`, the owned-source rule. Only this node's
-  own traffic leaves the mesh through its exits.
+- A read toward an exit's default, or under
+  [`cap.exit.via`](routing.md#mode-3-on-linux) toward a destination outside the
+  overlay that no entry covers, from a source this node does not own is dropped
+  and counted `unowned_source`, the owned-source rule. Only this node's own
+  traffic leaves the mesh through its exits.
 
 [Exit mode](routing.md#exit-mode-on-linux) sends what a link `cap.exit.forward`
 names forwards into the tun toward the mesh's default, so the owned-source rule

@@ -101,8 +101,10 @@ destination it was read with, before the steer puts its segment list on. It is
 dropped as `forged` wherever any read would be, and a steered packet whose
 source this node does not own is otherwise dropped, as `unowned_source`, only
 where a route counting as a default covers that destination. A steer toward a
-destination no route covers has no owned-source check yet. The arm that would
-add it waits for the steering mode that carries such a packet.
+destination no route covers has no owned-source check but under
+[`cap.exit.via`](../routing.md#mode-3-on-linux), where a read toward such a
+destination outside the overlay is dropped from a source this node does not own,
+as [transit](../routing.md#transit) gives.
 
 ## The border filter
 
@@ -263,9 +265,14 @@ prefixes or a carve-out, and a packet they send into the tun meets the
 prefixes, the host's or a forwarded link's, follows the mesh at 5430 where row
 L11 gives, and
 [what forwarded traffic meets](../coexistence.md#what-forwarded-traffic-meets)
-says what source a forwarded link's packet carries. `ranet3 status` names the
-family, and an overlay address on the tun, from `cap.table` or another writer,
-brings mode 2's rules back on the pass it
+says what source a forwarded link's packet carries.
+[Mode 3](../routing.md#mode-3-on-linux) is mode 2 family by family, with `via`
+in place of the mesh's choice: in such a family 5440 is absent, so a lookup ends
+as above, at 5450 under the switch, mode 3's default, and by main under
+`fallback = "uplink"`, and a socket bound to an address of this node's own on
+`lo` meets 5430 and the steered default and leaves by `via`'s exit.
+`ranet3 status` names the family, and an overlay address on the tun, from
+`cap.table` or another writer, brings mode 2's rules back on the pass it
 [wakes](../routing.md#when-a-pass-runs). Another program's rule ahead of 5440,
 such as Tailscale's at 5270 while it uses an exit node, takes the host's traffic
 first, as [sharing a host](../coexistence.md#exit-mode-beside-other-programs)
@@ -395,6 +402,28 @@ these costs over the reach that page gives.
   `ENETUNREACH` at once.
 - A source-specific announcement of this node's, D from S, gets no 5445, so the
   host's own unmarked lookup to D the mesh's table passes on fails at 5450.
+
+[Mode 3](../routing.md#mode-3-on-linux) takes `fallback = "none"` when
+`fallback` is unwritten, so the switch's costs above are mode 3's by default,
+and `fallback = "uplink"` written gives mode 2's leaks while the path is down.
+Three more limits are mode 3's own:
+
+- Every packet of the host that only a default would carry is encapsulated at
+  this node, so the Time Exceeded and Parameter Problem a waypoint sends to the
+  path's outer source reach this node, the headend, and are not relayed to the
+  host, the gap [the deviations](protocol-deviations.md#icmp-answers) name for
+  RFC 8754 section 5.4. `End`'s Packet Too Big reaches the host, and an error
+  about the inner packet takes the return path a reply does, as
+  [exit nodes](../exit-nodes.md#the-return-path) give.
+- The path's state is one for both families. An exit serves its egress segment
+  while at least one family is ready and every family its host forwards is, as
+  [egress segments](../exit-nodes.md#egress-segments) give. So an exit whose
+  host forwards a family it cannot translate withdraws its SID, and a leaf
+  behind it is refused in both families under the default. An exit whose host
+  forwards one family keeps serving, and the leaf's other family is lost at the
+  exit, counted `not_ready`, with no answer, while the first works.
+- A waypoint can send the host's packets to another node through that node's
+  subnet, in the case [mode 3](../routing.md#mode-3-on-linux) names.
 
 The rule about the unspecified address follows the macOS kernel's fallback of a
 scoped lookup, which

@@ -107,6 +107,10 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
   both chains dropped, summed, a connected network or a part of one left out of
   the LAN, an endpoint name whose last lookup failed and a DNS server beyond the
   LAN. `--json` carries them under `kernel.exit`, the families in `unaddressed`.
+  Under `cap.exit.via` the line names the path, its outer source, `up`, or
+  `down` at the first segment that does not resolve with the mesh's answer, the
+  families whose steered default is installed, and the path's own `steered` and
+  `unrouted` counts, which `--json` carries under `kernel.exit_path`.
 - `down` withdraws [the kill switch's](routing.md#the-kill-switch-on-linux)
   rules and table with the rest of the reconciler's, as a clean stop does, and
   `up` writes them again.

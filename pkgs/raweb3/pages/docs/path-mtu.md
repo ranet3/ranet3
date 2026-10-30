@@ -19,8 +19,11 @@ MSS lowered to fit.
 to 1400 bytes, which a 1500 byte path carries over IPv4 and IPv6.
 
 The tun runs at `link.mtu` less the header of the longest `cap.segment.steer`
-list: 40 bytes of outer IPv6 header, 8 bytes of routing header and 16 bytes per
-segment. A steered packet carries that header inside the tunnel.
+list or `cap.exit.via` path: 40 bytes of outer IPv6 header, 8 bytes of routing
+header and 16 bytes per segment. A steered packet carries that header inside the
+tunnel. Under [mode 3](routing.md#mode-3-on-linux) every packet of the host that
+only a default would carry is steered, so a path of 1 segment leaves the tun at
+`link.mtu` less 64 bytes, 1336 bytes by default.
 
 | Limit   | Value                                                                  |
 | ------- | ---------------------------------------------------------------------- |

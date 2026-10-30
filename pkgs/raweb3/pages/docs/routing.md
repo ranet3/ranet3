@@ -315,27 +315,31 @@ header of their choosing. The decision drops a read from a source the table
 routes to another node or holds unreachable, through a route that does not count
 as a default, or from an overlay source this node does not own (`forged`), one
 carrying an IPv6 routing header the mesh refuses (`routing_header`), one to this
-node's own SIDs (`sid`), or one bound toward an exit's default from a source
-this node does not own (`unowned_source`). Every IPv6 read whose walk ends at an
-inner IPv4 or IPv6 packet has that packet checked one level deep, whatever its
-destination, since the mesh cannot tell another node's SID from any other
-address, as [the limits](design/limits.md#transit) say. An inner packet that is
-itself encapsulated is dropped (`nested`). A read the table answers as this
-node's own, which the mesh could only hand back to the tun, is dropped
-(`looped`). None of these is answered, as [the border filter](border-filter.md)
-and [segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for
-the mesh's edge.
+node's own SIDs (`sid`), or one bound toward an exit's default, or under
+[mode 3](#mode-3-on-linux) toward a destination outside `cap.border.overlay`
+that no entry holds, from a source this node does not own (`unowned_source`).
+Every IPv6 read whose walk ends at an inner IPv4 or IPv6 packet has that packet
+checked one level deep, whatever its destination, since the mesh cannot tell
+another node's SID from any other address, as
+[the limits](design/limits.md#transit) say. An inner packet that is itself
+encapsulated is dropped (`nested`). A read the table answers as this node's own,
+which the mesh could only hand back to the tun, is dropped (`looped`). None of
+these is answered, as [the border filter](border-filter.md) and
+[segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for the
+mesh's edge.
 
 A read off the tun that passes those checks and that no steering policy takes,
 whose destination no entry holds or that lies inside a held prefix, is answered
 as the table above gives for that destination. The answer goes back into the tun
 from the packet's destination, whatever the packet's source, since the tun is
 the one link the packet came by: an uplink address the mesh routes nothing to is
-answered too, unless the destination lies under an entry that
-[counts as a default](#routes-that-count-as-a-default), where the check above
-drops the read as `unowned_source`. It draws on the same rate limits. A steered
-packet goes by its first segment, and one whose first segment has no route is
-counted and gets no answer.
+answered too, unless the check above drops the read as `unowned_source`. It
+draws on the same rate limits. Under [mode 3](#mode-3-on-linux), a read that no
+steering policy takes, whose destination lies outside `cap.border.overlay` and
+that the table answers through an entry that counts as a default or through
+none, is steered along `cap.exit.via` instead. A steered packet goes by its
+first segment, and one whose first segment has no route is counted and answered
+as one whose destination no entry holds, from its destination into the tun.
 
 `ranet3 status` counts each outcome on its `Transit` line, and
 `ranet3_transit_packets_total` exports the same counts. Each drop they count,
@@ -373,17 +377,17 @@ Linux it also installs the [policy rules](#policy-rules-on-linux) it derives.
 
 Each entry of the mesh's table becomes:
 
-| Entry in the mesh's table                                                                         | In the kernel table                                                                                                                                                                                                                                           |
-| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A learned route                                                                                   | a route out of the tun                                                                                                                                                                                                                                        |
-| A learned route that [counts as a default](#routes-that-count-as-a-default)                       | out of the tun once a session has been live, and never on an exit. On macOS with `link.underlay.bind` one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
-| A hold that does not count                                                                        | a hold                                                                                                                                                                                                                                                        |
-| A hold that counts, or this node's own prefix that counts                                         | nothing                                                                                                                                                                                                                                                       |
-| This node's own prefix outside `cap.border.overlay`                                               | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                            |
-| This node's own prefix inside the overlay                                                         | a hold                                                                                                                                                                                                                                                        |
-| An address only `cap.table` assigns                                                               | nothing                                                                                                                                                                                                                                                       |
-| Each prefix of `cap.border.overlay` that holds no unspecified address and that the mesh can carry | a hold, on Linux only, since macOS refuses `cap.border`                                                                                                                                                                                                       |
-| Each [carve-out](border-filter.md#carve-outs), a link's network inside the overlay                | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself                                                                                             |
+| Entry in the mesh's table                                                                         | In the kernel table                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A learned route                                                                                   | a route out of the tun                                                                                                                                                                                                                                                                         |
+| A learned route that [counts as a default](#routes-that-count-as-a-default)                       | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS with `link.underlay.bind` one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
+| A hold that does not count                                                                        | a hold                                                                                                                                                                                                                                                                                         |
+| A hold that counts, or this node's own prefix that counts                                         | nothing                                                                                                                                                                                                                                                                                        |
+| This node's own prefix outside `cap.border.overlay`                                               | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                             |
+| This node's own prefix inside the overlay                                                         | a hold                                                                                                                                                                                                                                                                                         |
+| An address only `cap.table` assigns                                                               | nothing                                                                                                                                                                                                                                                                                        |
+| Each prefix of `cap.border.overlay` that holds no unspecified address and that the mesh can carry | a hold, on Linux only, since macOS refuses `cap.border`                                                                                                                                                                                                                                        |
+| Each [carve-out](border-filter.md#carve-outs), a link's network inside the overlay                | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself                                                                                                                              |
 
 A throw ends the table's lookup, and the rules after the one that looked it up
 decide, as row L10 of [where a lookup ends](#where-a-lookup-ends-on-linux)
@@ -657,6 +661,52 @@ reason, and the services on the uplink's address answer only where 5410 or 5445
 routes the reply, or the mark 0x72 sends it past them to main, until the table
 reads back. The reconciler watches the table's notifications, so another
 writer's flush or deleted line starts a pass at once.
+
+#### Mode 3 on Linux
+
+With [`cap.exit.via`](configuration-reference.md#capexit) the host's traffic
+that only a default would carry leaves by the one exit the path names, and a
+route the mesh holds that
+[counts as no default](#routes-that-count-as-a-default) is followed as in
+mode 2. Mode 3 is [exit mode's](#exit-mode-on-linux) rules, family by family,
+with `via` in place of the mesh's choice of default:
+
+- The reconciler installs no learned route that
+  [counts as a default](#routes-that-count-as-a-default), so the kernel sends
+  nothing of the host's by another exit's default or `/1` pair. It installs two
+  steered defaults instead, `0.0.0.0/0` and `::/0` out of the tun, while every
+  segment of `via` resolves to a peer through its own `/128`, the entry whose
+  prefix is the segment, or for a segment after the first to this node, looked
+  up from the path's outer source. The capture hold of
+  [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) applies to
+  them as to any route that counts.
+- A pass that finds a segment of `via` unresolved, with no route, held, this
+  node's own as the first, reached only through a route that counts, or by no
+  route of its own, withdraws both, and the first pass that finds every segment
+  resolved installs them again. Each change is logged and recorded as
+  `kernel.path`.
+- A packet the steered defaults send into the tun is steered along `via` by
+  [the tun read](#transit), from the outer source
+  [the configuration reference](configuration-reference.md#capexit) gives. A
+  packet whose first segment the tun read reaches by no route of its own is
+  answered as one with no route to that segment. Through a route that counts,
+  the exit behind it would egress the packet where the segment lies outside the
+  overlay and answer it inside, and through another node's subnet that node may
+  hand it to its own host.
+- An `End` drops a packet whose next segment only a route that counts reaches,
+  as [local segments](segment-routing.md#local-segments) gives. A waypoint that
+  loses the exit's `/128` while this node still reaches the exit's segment, and
+  whose table then reaches that segment through another node's subnet, a route
+  that counts as no default, sends the host's packets on to that node. This node
+  reads each segment in its own table, so nothing withdraws the steered defaults
+  then, and before typed SIDs no node can tell an exit's segment from a subnet's
+  address.
+- While the path is down, the host's traffic meets the fallback. In mode 3 an
+  unwritten `fallback` is `"none"`, so
+  [the kill switch](#the-kill-switch-on-linux) holds as that section gives, its
+  state passing while the steered defaults are installed and holding while they
+  are withdrawn. With `fallback = "uplink"` written, the host's traffic leaves
+  by main while the path is down and after the daemon is killed, as in mode 2.
 
 #### Where a lookup ends on Linux
 

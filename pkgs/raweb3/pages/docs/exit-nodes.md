@@ -668,6 +668,20 @@ exit by its segment list rather than by the default route Babel selects.
 [Segment routing](segment-routing.md#egress-segments) describes the segment and
 its `allow` list. This page covers what the exit does with the inner packet.
 
+A Linux leaf chooses the exit for its own traffic with `cap.exit.via`, the SIDs
+of any waypoints and then this exit's egress segment, as
+[mode 3](routing.md#mode-3-on-linux) describes. For a leaf to use it, the exit
+writes the segment with `deliver = "egress"` and an `allow` that holds the
+leaf's outer source and every inner source it sends, and originates the SID's
+`/128` while it is ready, as below. A LAN reaches the internet through the exit
+by a subnet router that announces the LAN and names its link in `forward`, and
+the exit's `allow` lists the LAN beside the router's overlay address, as
+[the configuration reference](configuration-reference.md#capsegmentlocal) gives.
+
+A leaf sees one state for both families, the SID's `/128` the exit originates as
+below, and [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic)
+declare what that costs a leaf in mode 3.
+
 The mesh hands each inner packet to the exit, as it hands a packet the
 forwarding decision egresses, and the exit writes it into the tun. The kernel
 forwards it by its own routes, translated by the out rules keyed on the tun
@@ -695,12 +709,12 @@ deliver = "egress"
 allow = ["203.0.113.0/25", "3fff:a::/64"]
 ```
 
-An egress segment needs [the border filter](border-filter.md), and its `allow`
-list lies inside the filter's `overlay`. The daemon refuses a file with an
-egress segment and no `cap.border`, or with an `allow` entry the overlay does
-not cover. The list names mesh sources, which a host on a link of a forwarding
-node could otherwise forge, among them that node's own, and send through that
-node to the SID.
+An egress segment needs [the border filter](border-filter.md). The daemon
+refuses a file with an egress segment and no `cap.border`, or with an `allow`
+entry outside the filter's `overlay` and no IPv6 entry inside it. The outer
+source passes only through an entry inside the overlay, which a host on a link
+of a forwarding node cannot forge past the filter, and an entry outside it
+admits inner sources alone.
 
 An egress segment needs no `cap.table`, though its replies need a route back
 into the tun, such as the one `cap.table` gives by the rules of

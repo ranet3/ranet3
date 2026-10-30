@@ -181,7 +181,10 @@ These commands take flags of their own:
   [the selection](../routing.md#the-underlays-interface-on-macos) names and the
   route it matched, or `no route`. No row is taken. An IPv4 datagram can ride
   the shared socket's cached route of another interface instead, as
-  [limits](../design/limits.md#the-underlay-socket) gives. Then, on Linux, the
+  [limits](../design/limits.md#the-underlay-socket) gives. Then, under
+  `cap.exit.via`, `Steered defaults in table <id>` with the path `up`, or `down`
+  at the first segment that does not resolve and the mesh's answer, and each
+  family's steered default `installed` or `not installed`. Then, on Linux, the
   border filter's table: when its last pass read it and whether it is ready,
   then each chain, `border` with `cap.border` and `mesh_entry`, with the hook
   and priority it is written at and each rule read now with the packets and
@@ -408,25 +411,25 @@ them: the segment's or the mesh's rows before the kernel's for a packet arriving
 through a session, after them for any other. A row with nothing to say is left
 out.
 
-| Row      | What it shows                                                                                                                                         |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Packet   | the source, the destination and the arrival, and that the lookup left out the source where the platform's lookup does not take one                    |
-| Segment  | the segment of this node the packet is addressed to, as the file spells it, with an egress segment's part of the exit                                 |
-| Source   | whether the source lies in `cap.border`'s overlay and, for an egress segment, in its allow list, the order the segment checks them in                 |
-| Decision | the drop of a source the segment refuses, as a [trace record](#trace-records) names it                                                                |
-| Then     | what the segment does next with a packet it admits                                                                                                    |
-| Mesh     | the mesh's decision and its reason as a trace record names them, with the ICMP error an answer carries, or why the walk did not follow the packet     |
-| Steered  | the policy that steers a read to the first segment of its path                                                                                        |
-| Matched  | the table's entry the destination matched, and whether it counts as a default                                                                         |
-| Session  | the session a packet is held to and the most it carries, the steering's header among it, past which a packet is answered too big or cut               |
-| Expiring | for a packet arriving through a session, that one arriving with a hop limit of 1 or less is answered expired                                          |
-| Kernel   | the errno the kernel refused the lookup with and what it means as far as the answer and the settings tell, or that the platform looks up no route     |
-| Unread   | a rule ahead of the one shown carrying a selector the walk does not read, taken as not taking the packet                                              |
-| Rule     | the rule a walk of the dumped rules ends on for the answer                                                                                            |
-| Route    | the route the kernel matched, with its prefix, table and next hops, each marked `dead` or `linkdown` where the kernel marks it, and the packet's type |
-| Leaves   | where the route leaves by: a link, this host, nowhere, or into the mesh's tun                                                                         |
-| Socket   | for this host's own IPv6 packet to `::`, that a socket decides where it goes, so the answer may not be its path                                       |
-| Settings | each setting read to explain the answer, with its value or why it could not be read                                                                   |
+| Row      | What it shows                                                                                                                                                        |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Packet   | the source, the destination and the arrival, and that the lookup left out the source where the platform's lookup does not take one                                   |
+| Segment  | the segment of this node the packet is addressed to, as the file spells it, with an egress segment's part of the exit                                                |
+| Source   | whether the source lies in `cap.border`'s overlay and, for an egress segment, in an entry of its allow list inside the overlay, the order the segment checks them in |
+| Decision | the drop of a source the segment refuses, as a [trace record](#trace-records) names it                                                                               |
+| Then     | what the segment does next with a packet it admits                                                                                                                   |
+| Mesh     | the mesh's decision and its reason as a trace record names them, with the ICMP error an answer carries, or why the walk did not follow the packet                    |
+| Steered  | the policy, or `cap.exit.via`'s path, that steers a read to the first segment of its path                                                                            |
+| Matched  | the table's entry the destination matched, and whether it counts as a default                                                                                        |
+| Session  | the session a packet is held to and the most it carries, the steering's header among it, past which a packet is answered too big or cut                              |
+| Expiring | for a packet arriving through a session, that one arriving with a hop limit of 1 or less is answered expired                                                         |
+| Kernel   | the errno the kernel refused the lookup with and what it means as far as the answer and the settings tell, or that the platform looks up no route                    |
+| Unread   | a rule ahead of the one shown carrying a selector the walk does not read, taken as not taking the packet                                                             |
+| Rule     | the rule a walk of the dumped rules ends on for the answer                                                                                                           |
+| Route    | the route the kernel matched, with its prefix, table and next hops, each marked `dead` or `linkdown` where the kernel marks it, and the packet's type                |
+| Leaves   | where the route leaves by: a link, this host, nowhere, or into the mesh's tun                                                                                        |
+| Socket   | for this host's own IPv6 packet to `::`, that a socket decides where it goes, so the answer may not be its path                                                      |
+| Settings | each setting read to explain the answer, with its value or why it could not be read                                                                                  |
 
 ## Trace records
 
@@ -436,15 +439,16 @@ and for an answer or a drop its reason, as the `reason` label of
 peer's send budget refused. It names how the packet arrived, `session` with the
 session's path, `tun` for a packet read off the tun, or `none` for one of no
 session, and the next peer's session for a forward. A packet a steering policy
-sent through a segment carries that first segment, one an End segment of this
-node sent on carries the next segment, and one a segment of this node egressed
-or dropped carries the segment that did, past any End of this node that sent the
-packet on to it. Then come the source and destination, the protocol after the
-IPv6 extension headers, or an IPv4 packet's, the names of those headers or of
-the IPv4 options, the ports and TCP flags or the ICMP type and code where the
-packet's first fragment carries them, the hop limit or TTL and the length, and
-how many fragments a forward cut the packet into. An answer names its ICMP error
-and what became of it: `sent`, `withheld` by the
+or `cap.exit.via`'s path sent through a segment carries that first segment, as
+does one answered since the mesh routes it no way to that segment, one an End
+segment of this node sent on carries the next segment, and one a segment of this
+node egressed or dropped carries the segment that did, past any End of this node
+that sent the packet on to it. Then come the source and destination, the
+protocol after the IPv6 extension headers, or an IPv4 packet's, the names of
+those headers or of the IPv4 options, the ports and TCP flags or the ICMP type
+and code where the packet's first fragment carries them, the hop limit or TTL
+and the length, and how many fragments a forward cut the packet into. An answer
+names its ICMP error and what became of it: `sent`, `withheld` by the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit), `unanswered` where
 the node holds no address of the family to send it from, `not_answerable` for a
 packet no ICMP error may answer, or `unsent` for one built for, or due to, a
@@ -554,6 +558,7 @@ connections to the reads.
 | `kernel.forward`                      | a link `cap.exit.forward` matched began or stopped being left out of the mode             |
 | `kernel.exit`                         | under `cap.exit`, the tun came to hold no overlay address of a family, or the state ended |
 | `kernel.fallback`                     | the kill switch began holding, passing or not holding, or ended                           |
+| `kernel.path`                         | under `cap.exit.via`, the path went up or down, or the steered defaults installed changed |
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed                    |
 | `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                               |
 | `egress.refused`                      | a pass read a family's count of packets refused past a source's share move                |
@@ -647,6 +652,7 @@ Each kind carries these attributes:
 | `kernel.forward`                              | `entry`, `link`, `reason` (the tun, the loopback link, or the link a family's default leaves by), `skipped`                                                                                     |
 | `kernel.exit`                                 | `family`, `addressed` (false where the family came to run mode off's rules, as [limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) says, and true where the state then ended) |
 | `kernel.fallback`                             | `state` and `was`, each `holding`, `passing`, `not holding` or `off`                                                                                                                            |
+| `kernel.path`                                 | `state` (`up` or `down`), with `segment` and `verdict` where it is down, and `installed`, the families whose steered default the pass left in the table                                         |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                              |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                           |
 | `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains)                                                                                 |

@@ -383,6 +383,33 @@ unless run as root.
     `TestTUNKillSwitchKeepsKernelTunnelsOffTheUplink` runs in the netlink VM,
     where `ip_gre` and `wireguard` load, and finds no GRE or WireGuard outer
     packet of a tunnel whose network counts as the LAN leaving by the uplink.
+  - `TestTUNKillSwitchHoldsInModeThree` runs that leaf in
+    [mode 3](../routing.md#mode-3-on-linux) with `fallback` unwritten, the
+    path's SID resolved with the steered defaults installed, held with both
+    withdrawn, and after the crash helper wrote it, the leaf's border filter
+    running while its node does. Every socket kind, the forwarded links, a
+    listed service and an M2 route chain go where they go in mode 2 under the
+    switch, but for what a socket bound to the uplink's address sends to a mesh
+    peer, which `mesh_entry` drops and counts, and with `fallback = "uplink"`
+    written no table is held and the host's unbound traffic leaves by main once
+    the path is down.
+  - `TestTUNExitPathLeavesByTheNamedExitAndNoOther` runs a leaf in mode 3 beside
+    two exits, `a` and `b`, each with an egress segment and a default, `b`'s the
+    better, and a waypoint, each node writing the table `inet ranet3`. Echo, UDP
+    and TCP in both families, unbound and bound to the overlay address, leave
+    `a`'s uplink and never `b`'s, `mesh_entry` dropping none of them, and status
+    and `debug rules` read the path up. With `a`'s SID retracted the steered
+    defaults go and the leaf's sends are refused, or leave its own uplink under
+    `fallback = "uplink"`, and they come back with the SID. A neighbor on a link
+    `forward` leaves out reaches neither exit, one on a forwarded link from a
+    source the leaf does not own is dropped by `mesh_entry`, a LAN host behind
+    the leaf leaves `a`'s uplink, a path through the waypoint carries the
+    traffic, and one whose last SID is an `End` carries none. With `via` naming
+    a SID of `a`'s outside the overlay and the waypoint gone, only `b`'s default
+    covers that SID, and a datagram sent before the steered defaults go is
+    answered at the leaf with nothing toward the SID leaving `b`'s uplink. With
+    `b` announcing a subnet over that SID, the path stays down and nothing
+    toward the SID leaves `b`'s uplink.
 
 The `internal/client` tests `TestNodeGoingDownLeavesItsPeerAndItsKernelAtOnce`,
 `TestNodeRestartedWhileDownInstallsNothingUntilUp`,

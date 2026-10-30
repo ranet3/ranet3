@@ -158,19 +158,50 @@ inbound = ["22/tcp", "60000-61000/udp"]
 lan = ["198.51.100.0/24"]         # a LAN at a public address
 ```
 
+With `via` the host's traffic leaves by one exit, the one whose egress segment
+the path names last, rather than by the mesh's default of lowest metric, as
+[mode 3](routing.md#mode-3-on-linux) describes. `fallback` is then `"none"`
+unless written. The exit's `allow` holds the leaf's IPv6 overlay address, the
+path's outer source, and any LAN the leaf forwards and announces, such as
+`198.51.100.128/28` here, which lies outside the overlay and so admits inner
+sources alone:
+
+```toml
+# the leaf, 203.0.113.10 and 3fff:a::10 on the tun
+[cap.table]
+addresses = ["203.0.113.10/32", "3fff:a::10/128"]
+
+[cap.border]
+overlay = ["203.0.113.0/24", "3fff:a::/36"]
+
+[cap.route]
+announce = ["203.0.113.10/32", "3fff:a::10/128", "198.51.100.128/28"]
+
+[cap.exit]
+via = ["2001:db8:0:6::3"]         # the exit's egress segment
+forward = ["lan0"]                # the LAN's link
+
+# the exit, under the same cap.border
+[[cap.segment.local]]
+sid = "2001:db8:0:6::3"
+behavior = "End.DT46"
+deliver = "egress"
+allow = ["3fff:a::10/128", "203.0.113.10/32", "198.51.100.128/28"]
+```
+
 ### Capabilities
 
-| Block         | What it turns on                                                                            |
-| ------------- | ------------------------------------------------------------------------------------------- |
-| `cap.route`   | What this node announces                                                                    |
-| `cap.transit` | Whether this node relays the routes it learns, and so other nodes' traffic                  |
-| `cap.babel`   | The speaker's timers, link quality estimator and costs                                      |
-| `cap.table`   | The route reconciler: a routing table, addresses and, on Linux, the policy rules it derives |
-| `cap.segment` | Segment routing (RFC 8986): the SIDs this node answers for and what it steers               |
-| `cap.crypto`  | The transforms, the replay window and the rekey timers                                      |
-| `cap.egress`  | Source translation for an exit node or a subnet router, Linux only                          |
-| `cap.border`  | A filter for forged mesh traffic arriving from other links, Linux only                      |
-| `cap.exit`    | Exit mode: this host's own traffic and its forwarded links out by the mesh's default, Linux |
+| Block         | What it turns on                                                                                            |
+| ------------- | ----------------------------------------------------------------------------------------------------------- |
+| `cap.route`   | What this node announces                                                                                    |
+| `cap.transit` | Whether this node relays the routes it learns, and so other nodes' traffic                                  |
+| `cap.babel`   | The speaker's timers, link quality estimator and costs                                                      |
+| `cap.table`   | The route reconciler: a routing table, addresses and, on Linux, the policy rules it derives                 |
+| `cap.segment` | Segment routing (RFC 8986): the SIDs this node answers for and what it steers                               |
+| `cap.crypto`  | The transforms, the replay window and the rekey timers                                                      |
+| `cap.egress`  | Source translation for an exit node or a subnet router, Linux only                                          |
+| `cap.border`  | A filter for forged mesh traffic arriving from other links, Linux only                                      |
+| `cap.exit`    | Exit mode: this host's own traffic and its forwarded links out by the mesh's default or `via`'s exit, Linux |
 
 [Routing](routing.md), [segment routing](segment-routing.md),
 [exit nodes](exit-nodes.md) and [the border filter](border-filter.md) describe
