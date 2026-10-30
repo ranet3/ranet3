@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-10-29
+updated: 2026-10-30
 order: 110
 ---
 
@@ -336,11 +336,12 @@ selection exists, a Mac with `bind` set takes whichever `/0` Babel selects.
 [Exit nodes](exit-nodes.md#what-to-advertise) says why an exit advertises the
 `/0` only.
 
-ranet3 writes nothing outside its utun. Its own datagrams name the interface the
-host's routes send them by, its utun's left out, as
-[routing](routing.md#the-underlays-interface-on-macos) describes, so another
-VPN's full tunnel or a second uplink's route carries them as it carries any
-other program's traffic.
+ranet3 writes nothing outside its utun. A datagram it sends without a pin names
+the interface the selection answers from the host's routes, so another VPN's
+full tunnel or a second uplink's route carries it as it carries any other
+program's traffic. One sent from a pin names the address the peer reached as its
+source and leaves by the interface the kernel takes for that address, as
+[routing](routing.md#the-underlays-interface-on-macos) describes.
 
 What a scoped route does not give you is automatic use of an exit-announced
 address. Invisibility to an ordinary lookup is the safety property, and it

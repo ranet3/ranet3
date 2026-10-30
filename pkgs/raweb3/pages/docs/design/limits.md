@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-29
+updated: 2026-10-30
 order: 10
 ---
 
@@ -111,15 +111,15 @@ no device ends at row L1 or L2 of
 IPv4 reply pinned to the interface its request arrived on as row B1 gives, and
 an IPv6 one, which also names the address its request arrived at, as row L2
 gives. The head of that account says what another program's rule or another
-writer's route does. On macOS, with or without `link.underlay.bind`, each
-datagram names the interface the host's own routes send it by, ranet3's utun
-left out, as row D4 of
+writer's route does. On macOS, with or without `link.underlay.bind`, a datagram
+sent without a pin leaves as row D4 of
 [where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos)
-gives, and an answer from the address a peer reached leaves as row D5 gives. No
-datagram enters the utun. The reconciler scopes a route of the mesh covering a
-literal endpoint address the trust document lists, while an endpoint written as
-a hostname has no listed address, so a route of the mesh covering the address it
-resolves to goes in unscoped unless it is a hold, carries a source prefix or
+gives, and one sent from its pin as row D5 gives, as
+[the underlay's interface](../routing.md#the-underlays-interface-on-macos) says.
+No datagram enters the utun. The reconciler scopes a route of the mesh covering
+a literal endpoint address the trust document lists, while an endpoint written
+as a hostname has no listed address, so a route of the mesh covering the address
+it resolves to goes in unscoped unless it is a hold, carries a source prefix or
 counts as a default. Where that route is longer than the host's own route to the
 address, and the interface the selection names holds no route of its own to it
 and not the host's default, the lookup scoped to that interface finds no route,
@@ -215,8 +215,7 @@ overlay address of, an address inside no prefix of `cap.border.overlay` counting
 for none, runs mode off's rules whatever the mesh's table holds. A lookup of
 that family ends where rows L1 to L12 of
 [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, and a
-packet they send into the tun meets the [tun read](../routing.md#transit), which
-drops it where its source is forged and carries it into the mesh otherwise. One
+packet they send into the tun meets the [tun read](../routing.md#transit). One
 from a source in this node's own prefixes, the host's or a forwarded link's,
 follows the mesh at 5430 where row L11 gives, and
 [what forwarded traffic meets](../coexistence.md#what-forwarded-traffic-meets)
@@ -252,9 +251,10 @@ On macOS an unscoped `/0` out of the tun would collide with the host's own
 default, because macOS has no route replace. With `bind` set, the reconciler
 installs it as the zero-free cover instead, and the hold judges the cover by its
 `/0`. The cover's members stay unscoped even over a literal endpoint address the
-trust document lists, because each of the transport's datagrams names the
-interface the host's own routes send it by, and no member takes the fallback
-from it. An exit serving Macs advertises the `/0` only, as
+trust document lists, because no member holds the zero address a datagram that
+names its interface falls back to, as
+[the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. An
+exit serving Macs advertises the `/0` only, as
 [exit nodes](../exit-nodes.md#what-to-advertise) describes.
 
 ## Source-specific routing
@@ -403,31 +403,33 @@ threshold: the path MTU the host holds for the peer, or 1280 bytes for IPv6 and
 576 for IPv4 where the host knows none or a smaller one. `IKE_SA_INIT` always
 goes whole. A request that goes unanswered twice under a threshold above its
 family's floor steps to the floor at its next send, the schedule's or a probe's,
-as a network change or `ranet3 debug probe` asks for one. A request too large to
-go whole at the floor is cut for it at the step, and its waits start over. A
-request that fits the floor whole, such as a liveness check, only moves its
-threshold and keeps its 5 sends over 62 seconds. From a step that cuts a request
-down to the floor, taken on the path the request was readied or last cut on,
-which every send of it went on since, the step's own included, the session's
-threshold is the floor for every later message, request or answer, across rekeys
-of its IKE SA. That lasts until a send or a status read finds the peer's address
-or port or the path MTU the host reads changed since the step, or until the
-session is asked to probe its path, as each network change asks. A step that
-cuts nothing leaves later messages at the path's threshold, since its sends were
-no larger than the floor. So does a step where a send of the request since its
-readying or its last cut, the step's own included, found that the peer moved,
-that the path MTU the host reads changed or that the session probed its path,
-even where the step finds the path as it was then, since that send went on a
-path that may have differed. A path that widens where the host sees no change
-keeps the floor until one of those comes or the session ends, the suboptimal
-fragmentation the downward search of RFC 7383 section 2.5.2 accepts. A narrower
-hop that sends no ICMP message, or one beyond the interface on macOS, which
-reads only the interface's MTU, then delays a session by 6 seconds once instead
-of failing it, and its later exchanges start at the floor. An answer never steps
-down by itself. It is cut for the path's threshold at each send, and within the
-largest datagram of the peer's request in fragments, or of the repeat that draws
-it again, where that is smaller, never under the floor. A responder behind such
-a hop thereby follows the initiator's step, and the first answer to a request in
+as a move of the host's default or one of its addresses
+([moving hosts](../platforms.md#moving-hosts)) or `ranet3 debug probe` asks for
+one. A request too large to go whole at the floor is cut for it at the step, and
+its waits start over. A request that fits the floor whole, such as a liveness
+check, only moves its threshold and keeps its 5 sends over 62 seconds. From a
+step that cuts a request down to the floor, taken on the path the request was
+readied or last cut on, which every send of it went on since, the step's own
+included, the session's threshold is the floor for every later message, request
+or answer, across rekeys of its IKE SA. That lasts until a send or a status read
+finds the peer's address or port or the path MTU the host reads changed since
+the step, or until the session is asked to probe its path, as
+[moving hosts](../platforms.md#moving-hosts) gives. A step that cuts nothing
+leaves later messages at the path's threshold, since its sends were no larger
+than the floor. So does a step where a send of the request since its readying or
+its last cut, the step's own included, found that the peer moved, that the path
+MTU the host reads changed or that the session probed its path, even where the
+step finds the path as it was then, since that send went on a path that may have
+differed. A path that widens where the host sees no change keeps the floor until
+one of those comes or the session ends, the suboptimal fragmentation the
+downward search of RFC 7383 section 2.5.2 accepts. A narrower hop that sends no
+ICMP message, or one beyond the interface on macOS, which reads only the
+interface's MTU, then delays a session by 6 seconds once instead of failing it,
+and its later exchanges start at the floor. An answer never steps down by
+itself. It is cut for the path's threshold at each send, and within the largest
+datagram of the peer's request in fragments, or of the repeat that draws it
+again, where that is smaller, never under the floor. A responder behind such a
+hop thereby follows the initiator's step, and the first answer to a request in
 fragments already fits the datagrams that request came in.
 
 ## ML-KEM and the path

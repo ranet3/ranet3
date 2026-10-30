@@ -23,7 +23,7 @@ setting or skips a route instead.
 | Tun queues                                             | 1 per CPU the Go runtime uses, up to 256                                                                                                                                                                                           | 1                                                                                                                                                                |
 | Underlay sockets                                       | 1 per family, batched with `recvmmsg`, `UDP_GRO` and `UDP_SEGMENT`                                                                                                                                                                 | 1 per family, 1 datagram per call                                                                                                                                |
 | Sockets connected to 1 peer                            | 1 per busy address pair, up to 256, batched like the shared ones                                                                                                                                                                   | 1 per busy address pair, up to 256, 1 datagram per call                                                                                                          |
-| Keeping the underlay out of the mesh                   | [the mark 0x72](coexistence.md#the-underlays-mark) on every underlay socket where the process may set it, which ends a lookup bound to no device at row L1 or L2 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) | each datagram names the interface the host's routes send it by, the utun's left out, see [the underlay's interface](routing.md#the-underlays-interface-on-macos) |
+| Keeping the underlay out of the mesh                   | [the mark 0x72](coexistence.md#the-underlays-mark) on every underlay socket where the process may set it, which ends a lookup bound to no device at row L1 or L2 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) | each datagram names the interface the selection answers or the source its pin holds, see [the underlay's interface](routing.md#the-underlays-interface-on-macos) |
 | Route ownership                                        | the table `cap.table.id` and the protocol `cap.table.proto`                                                                                                                                                                        | the utun and the shape of the routes ranet3 installs                                                                                                             |
 | Policy rules                                           | derived from `cap.border.overlay` and this node's own prefixes                                                                                                                                                                     | none                                                                                                                                                             |
 | An own prefix this node originates outside the overlay | a throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, row L10 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)                                               | nothing, row D2 of [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) for a socket bound to no interface and no address of the utun         |
@@ -125,12 +125,11 @@ give ranet3 a utun no other program writes. macOS cannot replace a route. A
 route another program holds under the same key stays, and the reconciler warns
 about it once.
 
-macOS has no rule to select a mark, so its underlay sockets carry none. Each
-underlay datagram names the interface the host's own routes send it by, ranet3's
-utun left out, with or without `link.underlay.bind`, as
+macOS has no rule to select a mark, so its underlay sockets carry none. With or
+without `link.underlay.bind`, each underlay datagram names the interface the
+selection answers or the source its pin holds, as
 [the underlay's interface](routing.md#the-underlays-interface-on-macos)
-describes, so no datagram enters the utun. A datagram the selection names no
-interface for is refused.
+describes.
 
 Interface scope on macOS takes the place of the policy rules on Linux. Without
 `link.underlay.bind` it keeps the host's own traffic from being captured.
@@ -275,30 +274,31 @@ chooses it.
 The transport counts the bytes each address pair carries, sent and received
 together. A pair is this host's address and the peer's address and port. On
 Linux and macOS the address of a session a peer opened is the one the peer's
-request arrived on, and a session this node dialed, or one whose sends fell back
-from that address, leaves it to the route. A pair that carries 1 MiB within 1
-sweep of 30 seconds gets a socket on `link.port`, the listener's port, bound to
-its address or to the one the route picks then, and connected to the peer. The
-peer sees the same address and port as before. The pair's sends leave on that
-socket. The kernel hands the socket the peer's datagrams to that address ahead
-of the listener, and a reader of its own takes them to the same sessions. Before
-Linux 5.4, once 2 such sockets share 1 address, the kernel hands each datagram
-to that address from a peer with a socket of its own to 1 of them by a hash, so
-a peer's datagrams can arrive on another peer's socket. Every reader takes them
-to the same sessions, so none is lost. A node holds at most 256 such sockets. A
-pair past the cap stays on the shared socket.
+latest fresh request or answer arrived on, and a session this node dialed, or
+one whose sends fell back from that address, leaves it to the route. A pair that
+carries 1 MiB within 1 sweep of 30 seconds gets a socket on `link.port`, the
+listener's port, bound to its address or to the one the route picks then, and
+connected to the peer. The peer sees the same address and port as before. The
+pair's sends leave on that socket. The kernel hands the socket the peer's
+datagrams to that address ahead of the listener, and a reader of its own takes
+them to the same sessions. Before Linux 5.4, once 2 such sockets share 1
+address, the kernel hands each datagram to that address from a peer with a
+socket of its own to 1 of them by a hash, so a peer's datagrams can arrive on
+another peer's socket. Every reader takes them to the same sessions, so none is
+lost. A node holds at most 256 such sockets. A pair past the cap stays on the
+shared socket.
 
 On Linux the socket of a session a peer opened also leaves by the interface the
-peer's request arrived on, as the shared socket's replies do. An IPv4 socket
-binds to that interface with `SO_BINDTOIFINDEX`, which Linux has from 5.1 and
-allows a process without `CAP_NET_RAW` from 5.7. Where the kernel refuses the
-bind, such a session stays on the shared socket. An IPv6 socket names the
-interface with `IPV6_UNICAST_IF`, which like the reply's own choice prefers that
-interface only among the routes of the lowest metric. A link-local address binds
-on that interface alone. On macOS the socket of a session the peer opened binds
-the address the peer's latest fresh request or answer reached, and a link-local
-one also its arrival interface. Only a socket whose sends leave the source to
-the kernel binds on the interface
+peer's latest fresh request or answer arrived on, as the shared socket's replies
+do. An IPv4 socket binds to that interface with `SO_BINDTOIFINDEX`, which Linux
+has from 5.1 and allows a process without `CAP_NET_RAW` from 5.7. Where the
+kernel refuses the bind, such a session stays on the shared socket. An IPv6
+socket names the interface with `IPV6_UNICAST_IF`, which like the reply's own
+choice prefers that interface only among the routes of the lowest metric. A
+link-local address binds on that interface alone. On macOS the socket of a
+session the peer opened binds the address the peer's latest fresh request or
+answer reached, and an IPv6 link-local one also its arrival interface. Only a
+socket whose sends leave the source to the kernel binds on the interface
 [the selection](routing.md#the-underlays-interface-on-macos) names for the peer,
 from the source the route scoped to that interface picks, and moves with it.
 
@@ -306,9 +306,9 @@ A socket connected to 1 peer closes:
 
 - when it carried nothing for a whole sweep.
 - when the last session sending on it ends, or moves to another address.
-- when the host's network changes, as [moving hosts](#moving-hosts) describes. A
-  busy pair connects again at its next send, from the address its pair names
-  then.
+- on a move of the host's default or one of its addresses, as
+  [moving hosts](#moving-hosts) describes. A busy pair connects again at its
+  next send, from the address its pair names then.
 - on macOS, when the selection names another interface for the peer. The next
   send connects a socket on that interface.
 - when a read on it fails other than for an ICMP error, or a send fails other
@@ -327,9 +327,9 @@ and the socket stays.
 
 A connected socket keeps the source address it bound. On Linux an IPv4 send from
 an address the host lost is refused, and the socket closes at once. An IPv6 send
-from such an address still leaves, so only the network change closes the socket.
-Naming the source on each IPv6 send instead would cost the socket the cached
-route that keeps its transmit queue.
+from such an address still leaves, so only a move of the host's default or one
+of its addresses closes the socket. Naming the source on each IPv6 send instead
+would cost the socket the cached route that keeps its transmit queue.
 
 Each such socket follows the path MTU discovery mode of its family's shared
 socket. While a session of its family is under the floor, it lets the host
@@ -393,7 +393,7 @@ for its size reads the MTU of the interface it sends through, and the session's
 search takes that as its route's MTU. A session the peer opened sends through
 the interface holding the address it sends from, the one the peer's latest fresh
 request or answer reached until a send from it falls back, as
-[moving hosts](#moving-hosts) describes, and a link-local one through the
+[moving hosts](#moving-hosts) describes, and an IPv6 link-local one through the
 interface that request or answer arrived on. Any other session, one whose send
 fell back included, sends through the interface
 [the selection](routing.md#the-underlays-interface-on-macos) names for its peer.

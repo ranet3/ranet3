@@ -291,24 +291,26 @@ These commands take flags of their own:
   reason. A session that is `not searched` shows its path, peer, endpoint, state
   and budget, and no probes. Its budget follows `link.mtu`, and it records no
   change. A probe whose target the search moves while it is out counts as sent,
-  and as neither acked nor lost. A refusal, the route read lower after a network
-  change or `debug probe`, a change of `link.mtu` and a move to another endpoint
-  can each move the target. A probe answered after its wait ran out counts as
-  both acked and lost, so the 3 counts need not add up.
-  `ranet3_pmtu_probes_total` counts acked and lost probes the same way and has
-  no series for probes sent. The peer is named as `rekey` names one, and
-  completes to the nodes of the sessions the daemon holds. The command fails for
-  a peer the node holds no session with.
+  and as neither acked nor lost. A refusal, the route read lower after a move of
+  the host's default or one of its addresses or `debug probe`, a change of
+  `link.mtu` and a move to another endpoint can each move the target. A probe
+  answered after its wait ran out counts as both acked and lost, so the 3 counts
+  need not add up. `ranet3_pmtu_probes_total` counts acked and lost probes the
+  same way and has no series for probes sent. The peer is named as `rekey` names
+  one, and completes to the nodes of the sessions the daemon holds. The command
+  fails for a peer the node holds no session with.
 - `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
   every session, to send a liveness check now and to probe their path MTU
-  budget, as each does after a network change, and name the sessions asked. A
-  session with a request outstanding resends that request instead. One with none
-  sends no liveness check while its IKE SA is past its lifetime or a Delete of
-  it has gone out, or while a rekey of its own may run `IKE_FOLLOWUP_KE`
-  exchanges or waits on the peer's. It is an action, so it takes the root class,
-  and it is recorded as a `control.verb` like the other verbs. It completes to
-  the peers the node dials and the nodes it holds a session with. The daemon
-  refuses it while the node is down, and when no session matches.
+  budget, as each does after a move of the host's default or one of its
+  addresses ([moving hosts](../platforms.md#moving-hosts)), and name the
+  sessions asked. A session with a request outstanding resends that request
+  instead. One with none sends no liveness check while its IKE SA is past its
+  lifetime or a Delete of it has gone out, or while a rekey of its own may run
+  `IKE_FOLLOWUP_KE` exchanges or waits on the peer's. It is an action, so it
+  takes the root class, and it is recorded as a `control.verb` like the other
+  verbs. It completes to the peers the node dials and the nodes it holds a
+  session with. The daemon refuses it while the node is down, and when no
+  session matches.
 - `debug updown` is whether the node is on the mesh and since when, the flag
   that keeps it off through a restart and whether the flag is there, and the
   last move between up and down with its cause, a request or the flag at start.
@@ -650,24 +652,25 @@ A `transport.pair.connected` names in `local` the address the socket bound and
 in `remote` the peer it is connected to. The `reason` of a
 `transport.pair.closed` is `idle` for a socket that carried nothing for a whole
 sweep, `released` once the last session sending on it ended or moved, on macOS
-to another interface the selection named among them, `network` for a change of
-the host's network, `failed` for a send or a read on it that failed, and
-`closed` when the transport closed. Neither an ICMP error an earlier datagram
-drew nor a refusal of the socket's segments counts as `failed`, as
+to another interface the selection named among them, `network` for a move of the
+host's default or one of its addresses, `failed` for a send or a read on it that
+failed, and `closed` when the transport closed. Neither an ICMP error an earlier
+datagram drew nor a refusal of the socket's segments counts as `failed`, as
 [platforms](../platforms.md#sockets-connected-to-1-peer) describes. Each
 `failed` also counts in `ranet3_transport_pair_fallbacks_total`, and
 `ranet3_transport_pair_sockets` counts the sockets open, as
 [metrics](../metrics.md) lists.
 
-A change of the host's default or addresses also wakes every dialer, and a
-change of links alone wakes none and probes no session. A `network.changed`
-names only what moved. `ipv4_default` and `ipv4_default_was` hold the new IPv4
-default and the one before it. `ipv4_added` and `ipv4_removed` hold the IPv4
-addresses that came and went. `ipv4_links_added` and `ipv4_links_removed` name
-the links outside the mesh that came and went, and `ipv4_links_changed` those
-whose prefixes or far ends moved, which `debug netmon` lists in full. The `ipv6`
-attributes do the same for IPv6. `probed` counts the sessions asked to probe,
-and `woken` counts the dialers woken.
+A move of the host's default or one of its addresses also wakes every dialer,
+and a change of links alone wakes none and probes no session. A
+`network.changed` names only what moved. `ipv4_default` and `ipv4_default_was`
+hold the new IPv4 default and the one before it. `ipv4_added` and `ipv4_removed`
+hold the IPv4 addresses that came and went. `ipv4_links_added` and
+`ipv4_links_removed` name the links outside the mesh that came and went, and
+`ipv4_links_changed` those whose prefixes or far ends moved, which
+`debug netmon` lists in full. The `ipv6` attributes do the same for IPv6.
+`probed` counts the sessions asked to probe, and `woken` counts the dialers
+woken.
 
 A `daemon.reload` names in `applied` the capabilities the reload changed in
 place, and carries none when it changed only the trust document or the peers
@@ -777,15 +780,15 @@ message, as
 that comes from another peer address or port, or, in a session the peer opened,
 reaches this node at an address other than the one the session's sends name. Its
 `packet` is `request` or `response`. In a session that names an interface, as it
-does on Linux and for a link-local address on macOS, a fresh message arriving on
-another interface records it too. Its `endpoint` names the peer's address and
-port, which in these two cases can be the same as before. A session whose sends
-fell back from an address that is gone names no address, and its next fresh
-message records an `ike.endpoint.moved` wherever it arrives. A session that fell
-back after the kernel refused its address with `EHOSTUNREACH` moves back to it,
-recording an `ike.endpoint.moved`, only at the first fresh message 1 minute or
-more after the fallback, and one that fell back after any other refusal at its
-next fresh message that reaches the address, as
+does on Linux and for an IPv6 link-local address on macOS, a fresh message
+arriving on another interface records it too. Its `endpoint` names the peer's
+address and port, which in these two cases can be the same as before. A session
+whose sends fell back from an address that is gone names no address, and its
+next fresh message records an `ike.endpoint.moved` wherever it arrives. A
+session that fell back after the kernel refused its address with `EHOSTUNREACH`
+moves back to it, recording an `ike.endpoint.moved`, only at the first fresh
+message 1 minute or more after the fallback, and one that fell back after any
+other refusal at its next fresh message that reaches the address, as
 [moving hosts](../platforms.md#moving-hosts) describes.
 
 A `transport.endpoint` event carries the peer's `endpoint` and the `errno` the
