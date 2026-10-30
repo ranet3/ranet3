@@ -324,7 +324,7 @@ func boundSource(index int, target netip.AddrPort) (netip.Addr, error) {
 // udp_ctlinput and udp6_ctlinput pass every errno of inetctlerrmap and inet6ctlerrmap to the socket's so_error
 var icmpErrnos = []unix.Errno{unix.ECONNREFUSED, unix.EHOSTDOWN, unix.EHOSTUNREACH, unix.EMSGSIZE, unix.ENETUNREACH, unix.ENOPROTOOPT}
 
-// pairOf takes the local address and a link-local source's interface from the pin, and otherwise leaves the address to the route
+// pairOf takes the local address and an IPv6 link-local source's interface from the pin, and otherwise leaves the address to the route
 // and takes the interface the selection names, so a changed selection is a changed pair
 func (b *darwinBind) pairOf(endpoint Endpoint) pairKey {
 	ep := endpoint.(*darwinEndpoint)
@@ -554,7 +554,7 @@ func (b *darwinBind) sendWithin(socket *darwinSocket, packets [][]byte, ep *darw
 
 var _ pathBind = (*darwinBind)(nil)
 
-// readPathMTU reads the MTU of the interface sends to ep name, the one holding their pin, or on a hub with no selection the one the host routes them by
+// readPathMTU reads the MTU of the interface sends to ep name, the interface of the pin they carry, or on a hub with no selection the one the host routes them by
 // darwin refuses a datagram with DF only past that MTU, and the probes find a narrower path beyond the interface
 func (b *darwinBind) readPathMTU(endpoint Endpoint) (int, error) {
 	index, err := b.sendInterface(endpoint.(*darwinEndpoint))
@@ -568,7 +568,7 @@ func (b *darwinBind) readPathMTU(endpoint Endpoint) (int, error) {
 	return link.MTU, nil
 }
 
-// sendInterface is the interface sends to ep name, the one holding their pin, or on a hub with no selection the one the host routes them by
+// sendInterface is the interface sends to ep name, the interface of the pin they carry, or on a hub with no selection the one the host routes them by
 // a send that names no source, since ep fell back or never had one, names the selection's interface, as does one from a source no interface holds, which falls back
 func (b *darwinBind) sendInterface(ep *darwinEndpoint) (int, error) {
 	if index := ep.pinInterface(); index != 0 {
@@ -583,7 +583,7 @@ func (b *darwinBind) sendInterface(ep *darwinEndpoint) (int, error) {
 	return 0, unix.ENETUNREACH
 }
 
-// pinInterface is the interface ep's pin sends by, a link-local pin's arrival interface or the one holding its address,
+// pinInterface is the interface ep's pin sends by, an IPv6 link-local pin's arrival interface or the one holding its address,
 // and zero where ep sends from no pin or no interface holds it
 // ip_output in bsd/netinet/ip_output.c takes a send from a source by a route of the interface holding it, unless a route the socket cached decides
 func (e *darwinEndpoint) pinInterface() int {
@@ -747,7 +747,7 @@ func outerECN(control []byte) (packet.ECN, error) {
 	return packet.NotECT, nil
 }
 
-// replyEndpoint is the endpoint of from, answered from the address the datagram reached and by the interface it arrived on where that address is link-local
+// replyEndpoint is the endpoint of from, answered from the address the datagram reached and by the interface it arrived on where that address is IPv6 link-local
 // it refuses a datagram whose control message names no destination
 func (s *darwinSocket) replyEndpoint(from netip.AddrPort, control []byte) (*darwinEndpoint, error) {
 	var dst net.IP

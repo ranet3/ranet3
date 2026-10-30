@@ -238,7 +238,7 @@ func TestDarwinSelectionIsRecordedOncePerChange(t *testing.T) {
 }
 
 // the path a hub gives for an endpoint keeps a link-local endpoint's zone for the selection to answer, names the interface
-// holding a pin, a link-local pin's arrival interface or the one holding the pin's address, and leaves a pin no interface
+// holding a pin, an IPv6 link-local pin's arrival interface or the one holding the pin's address, and leaves a pin no interface
 // holds to the selection, as the sends do, and a hub with no selection gives none
 func TestDarwinUnderlayPathIsWhereTheDatagramsLeave(t *testing.T) {
 	loopback, err := net.InterfaceByName("lo0")

@@ -175,7 +175,7 @@ func (h *Hub) dropPairs(reason string) {
 	}
 }
 
-// NetworkChanged closes every socket connected to one peer after the host's network changed
+// NetworkChanged closes every socket connected to one peer after a move of the host's default or one of its addresses
 // a socket keeps the source address it bound, which may be gone or no longer the one its route picks
 // linux goes on sending from an IPv6 source the host lost
 func (h *Hub) NetworkChanged() { h.dropPairs(pairNetworkClose) }
