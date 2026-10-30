@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-10-26
+updated: 2026-10-30
 order: 65
 ---
 
@@ -63,8 +63,9 @@ Once settled, the session keeps checking its path:
 - When the host refuses a send as too large, the route's MTU lowers the budget
   at once. A refusal never raises it.
 - A session that moves to another endpoint searches the new path from the start.
-- A network change, or `ranet3 debug probe`, makes sessions probe their budget
-  at once.
+- A move of the host's default or one of its addresses, as
+  [moving hosts](platforms.md#moving-hosts) describes, or `ranet3 debug probe`,
+  makes sessions probe their budget at once.
 
 The budget always stays between 1280 bytes and `link.mtu`.
 

@@ -85,15 +85,18 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # route out of its own tun covering the peers it reaches that tun through, and
 # an underlay following it is a tunnel running inside itself. On linux every
 # underlay socket carries the mark 0x72, which no key sets, where the process
-# may set it.
+# may set it. On macOS a datagram sent without a pin names the interface the
+# host's own routes send it by, the tun's left out, and one sent from its pin
+# names that source, as the routing page's "The underlay's interface on macOS"
+# says.
 #
-# bind is IP_BOUND_IF and IPV6_BOUND_IF on the interface the host's own default
-# route leaves by, darwin only. It also gives that interface a default of its
-# own scoped to it while a route over a zero address leaves by another
-# interface, follows both when the machine moves between wifi, ethernet and a
-# dock, and tells the reconciler to install an announced default as a real
-# default rather than scoping it out of every socket's reach, without which
-# this machine cannot use a mesh exit at all. It is refused on linux.
+# bind, macOS only, decides how a route that counts as a default goes in, as
+# the routing page's "Where a lookup ends on macOS" gives. Without it such a
+# route is scoped to the tun, which no socket selects unless it asks for the tun
+# by name, so this machine cannot use a mesh exit. With it, a route holding its
+# family's zero address goes in as the members of the zero-free cover it
+# contains, as the routing page's "The zero-free cover on macOS" says. Every
+# other platform refuses it.
 # [link.underlay]
 # bind = true
 
@@ -181,7 +184,8 @@ update = "16s"
 # On linux the reconciler derives its policy rules, at priorities 5100 to 5490
 # and carrying the protocol above, from cap.border's overlay and this node's own
 # prefixes, which are the addresses above and what cap.route announces that
-# counts as no default. A packet carrying the underlay's mark skips every lookup
+# counts as no default, and under cap.exit from the links outside the mesh too.
+# A packet carrying the underlay's mark skips every lookup
 # of this table. The routing page's "Policy rules on Linux" lists each rule and
 # where a lookup ends under them. A dump reads back only these, a delete never reaches another writer's
 # rule, and they are withdrawn at shutdown with the routes. darwin installs no

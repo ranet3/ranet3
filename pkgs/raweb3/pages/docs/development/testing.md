@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-29
+updated: 2026-10-30
 order: 20
 ---
 
@@ -102,7 +102,12 @@ unless run as root.
   `receive_namespace_linux_test.go` and `ecn_namespace_linux_test.go`, turn GRO
   on at the near end of the veth and check that it coalesced some datagrams into
   one message, and that each datagram's record holds its own source, and its own
-  outer ECN field on the listener and on a pair.
+  outer ECN field on the listener and on a pair. 1 more,
+  `TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark` in
+  `mark_namespace_linux_test.go`, checks that the underlay's IKE and ESP
+  datagrams from the shared socket and from a pair's socket leave by the uplink
+  with the source address and port they were sent from, in both families, beside
+  Cilium's rule and kube-proxy's masquerade, whose counter counts none of them.
 - `internal/netstack` has tests whose names start with `TestTUN` that create and
   attach to a real TUN device. They read its `gso_max_segs` back, open several
   queues as 1 device and no more than the kernel attaches, and refuse a mesh

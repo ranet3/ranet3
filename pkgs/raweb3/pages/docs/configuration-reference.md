@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-28
+updated: 2026-10-30
 order: 35
 ---
 
@@ -182,7 +182,7 @@ but macOS.
   as row L2 gives. [Sharing a host](coexistence.md#the-underlays-mark) says what
   a process the kernel refuses the mark does.
 - On macOS, with or without `bind`, each underlay datagram names the interface
-  the host's own routes send it by, ranet3's utun left out, as
+  the selection answers or the source its pin holds, as
   [the underlay's interface](routing.md#the-underlays-interface-on-macos)
   describes.
 - With `bind`, the reconciler installs a route Babel selects that holds its
