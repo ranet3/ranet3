@@ -55,6 +55,8 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	alpha, bravo := newLoopbackMeshOn(t, mesh)
 	exit := netip.MustParseAddr("fd00:b::d7")
 	cfg := *bravo.client.config()
+	// no resolution closes the peer the SYNs go to, since only alpha dials
+	cfg.Dial.To = nil
 	cfg.Link.MTU = session
 	cfg.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}}}
 	// holding the headend's outer source below
