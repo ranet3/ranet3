@@ -182,6 +182,7 @@ testers.runNixOSTest {
     # and an exit carrying transit in process, with nothing out of its uplink
     # and the same exit egressing each shape of the internet it advertises translated, a stranger's source refused
     # and an exit egressing both modes through its one tun, held not ready by each kernel lookup that fails and refusing a mesh destination at its SID
+    # and an exit carrying a class of none, a class of an address, return from its LAN and its own traffic under the derived rules
     # and a leaf's sockets of every kind sent where the derived rules and the mirror send them, beside another program's table, as an exit, and nothing left after a stop
     # and the same leaf in exit mode beside a masqueraded bridge and a routed LAN, under each reverse path check
     # and in exit mode beside Tailscale, a conntrack mark restore, kube-proxy and Cilium, and Docker, live, retracted and after kill -9
@@ -199,6 +200,7 @@ testers.runNixOSTest {
     assert "--- PASS: TestTUNExitEgressesEachShapeOfTheInternetTranslated" in out, f"the exit's egress lab did not run:\n{out}"
     assert "--- PASS: TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment" in out, f"mode 2 egress at a node with no egress segment did not run:\n{out}"
     assert "--- PASS: TestTUNExitEgressesBothModesThroughItsOneTun" in out, f"the egress lab did not run:\n{out}"
+    assert "--- PASS: TestTUNExitTranslatesEachClassUnderTheDerivedRules" in out, f"the classes' lab did not run:\n{out}"
     assert "--- PASS: TestTUNDerivedRulesSendEachSocketWhereModeOffSays" in out, f"the derived rules' socket lab did not run:\n{out}"
     assert "--- PASS: TestTUNExitModeSendsEachSocketWhereModeTwoSays" in out, f"the exit mode's socket lab did not run:\n{out}"
     assert "--- PASS: TestTUNExitModeBesideTailscale" in out, f"the exit mode beside Tailscale did not run:\n{out}"
