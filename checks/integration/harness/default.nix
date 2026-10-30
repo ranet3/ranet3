@@ -262,9 +262,11 @@ let
   };
   # the address Tailscale's exit node holds and nothing else answers
   exitOnlyV4 = "203.0.113.1";
-  # Docker runs an arm under cap.exit, the client switched into it with the gateway announcing a default
+  exitArm = lib.elem beside [
+    "docker"
+    "tailscale"
+  ];
   # the gateway answers these on lo as the far side of the mesh's exit, and the client sends them nothing over the mesh otherwise
-  exitArm = lib.elem beside [ "docker" ];
   meshExitV4 = "203.0.113.2";
   meshExitV6 = "2001:db8:ff00::2";
   # k3s pulls nothing: its pods and its pause container run this image from the store
@@ -311,15 +313,14 @@ let
       virtualisation.memorySize = 1536;
       specialisation.exit.configuration.networking.ranet3.settings.cap.exit.forward = [ "docker0" ];
     };
-    tailscale =
-      { nodes, ... }:
-      {
-        imports = [ uplinkDefault ];
-        services.tailscale = {
-          enable = true;
-          useRoutingFeatures = "client";
-        };
+    tailscale = {
+      imports = [ uplinkDefault ];
+      services.tailscale = {
+        enable = true;
+        useRoutingFeatures = "client";
       };
+      specialisation.exit.configuration.networking.ranet3.settings.cap.exit = { };
+    };
     k3s =
       { config, ... }:
       {
@@ -2269,14 +2270,18 @@ testers.runNixOSTest {
                 f"the lookups read are kept from before a pass that could not ask them:\n{journal[failed[-1]]}")
             return rules["lookups"]
 
-        def their_rules():
-            """the policy rules and netfilter tables that are not ranet3's, without counters and set elements"""
-            rules = [
+        def policy_rules(mine):
+            """the policy rules of both families that are ranet3's, or that are not"""
+            return [
                 line
                 for family in ["-4", "-6"]
                 for line in client.succeed(f"ip {family} rule show").splitlines()
-                if f"proto {kernel_protocol}" not in line
+                if (f"proto {kernel_protocol}" in line) == mine
             ]
+
+        def their_rules():
+            """the policy rules and netfilter tables that are not ranet3's, without counters and set elements"""
+            rules = policy_rules(False)
             tables, theirs = [], True
             for line in client.succeed("nft -s -t list ruleset").splitlines():
                 if line.startswith("table "):
@@ -2451,7 +2456,8 @@ testers.runNixOSTest {
 
         # Tailscale at its default base, its rules at 5210 to 5270 between ranet3's two blocks, first with no exit node
         # and then with peer as its exit node, whose default in table 52 meets an overlay address only after 5110 answered it
-        tailscale = ''
+        tailscale = captureWhile + ''
+          ${exitMode}
           login = "--login-server http://peer:8080 --accept-dns=false"
           renames = iter(range(1, 100))
           tailscale_priorities = ["5210", "5230", "5250", "5270"]
@@ -2465,6 +2471,11 @@ testers.runNixOSTest {
                   for priority in tailscale_priorities:
                       assert f"\n{priority}:" in rules, f"Tailscale's rule at {priority} is missing:\n{rules}"
 
+          def through_tailscale(address):
+              """the host's own lookup of address ends in Tailscale's table 52 by tailscale0"""
+              route = client.succeed(f"ip route get {address}")
+              assert "dev tailscale0 table 52 " in route, f"Tailscale's table 52 does not route the host's own traffic to {address}:\n{route}"
+
           def tailscale_works(exit_node):
               """each node reaches the other through Tailscale, and with the exit node the client reaches the address only peer answers"""
               for machine, other in [(client, peer_ips), (peer, client_ips)]:
@@ -2473,8 +2484,7 @@ testers.runNixOSTest {
                       machine.wait_until_succeeds(f"ping -c 1 -W 2 {address}", timeout=timeout)
               if exit_node:
                   client.wait_until_succeeds("ping -c 1 -W 2 ${exitOnlyV4}", timeout=timeout)
-                  route = client.succeed("ip route get ${exitOnlyV4}")
-                  assert "dev tailscale0 table 52 " in route, f"the exit's address is not routed through Tailscale:\n{route}"
+                  through_tailscale("${exitOnlyV4}")
 
           def exit_default():
               """Tailscale's table 52 holds the exit node's default in both families"""
@@ -2556,6 +2566,47 @@ testers.runNixOSTest {
 
               restart_ranet3()
               tailscale_works(True)
+              tailscale_rules()
+              controlled()
+
+              # (c) cap.exit, first with Tailscale's exit node in use: its table at 5270 takes the host's own traffic ahead of 5440
+              theirs = their_rules()
+              exit_mode()
+              exit_default()
+              for address in peer_ips + ["${meshExitV4}", "${meshExitV6}"]:
+                  through_tailscale(address)
+              underlay_in_main(holds_beside())
+              tailscale_works(True)
+              tailscale_rules()
+              assert their_rules() == theirs, f"cap.exit changed another program's rules:\n{theirs}\nthen\n{their_rules()}"
+              controlled()
+
+              # then with no exit node of Tailscale's: the host's own traffic leaves through the mesh's exit by 5440,
+              # and Tailscale's own addresses through its table at 5270
+              client.succeed("tailscale set --exit-node=")
+              for family in ["-4", "-6"]:
+                  client.wait_until_fails(f"ip {family} route show table 52 | grep -q '^default '", timeout=timeout)
+              underlay_in_main(holds_beside())
+              tailscale_works(False)
+              leaves_by_mesh_exit("host", "ping")
+              tailscale_rules()
+              controlled()
+
+              # sorted, since ranet3 takes its rules for tailscale0's addresses down and back with the link, and a rule
+              # put back is listed after the others at its priority
+              before = sorted(policy_rules(True))
+              client.succeed("systemctl restart tailscaled.service")
+              tailscale_works(False)
+              underlay_in_main(holds_beside())
+              after = sorted(policy_rules(True))
+              assert after == before, f"ranet3's rules are not as they were once Tailscale is back:\n{before}\nthen\n{after}"
+              leaves_by_mesh_exit("host", "ping")
+              tailscale_rules()
+              controlled()
+
+              restart_ranet3()
+              tailscale_works(False)
+              leaves_by_mesh_exit("host", "ping")
               tailscale_rules()
               controlled()
           finally:
