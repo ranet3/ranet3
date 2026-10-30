@@ -15,8 +15,8 @@ import (
 
 // RouteGetBatch answers each read as RouteGet does, through one rtnetlink
 // socket rather than one a read. A read's failure is its own answer, and the
-// batch fails whole only when the socket, an arrival device's lookup or the
-// dump of the links does
+// batch fails whole only when the socket, an arrival device's lookup or a dump
+// of the links does
 func RouteGetBatch(reads []RouteRead) ([]BatchAnswer, error) {
 	conn, err := dialNetlink()
 	if err != nil {
@@ -39,11 +39,26 @@ func routeGetBatch(conn netlinkConn, reads []RouteRead) ([]BatchAnswer, error) {
 		}
 		arrivals[read.IIF] = link.index
 	}
+	var names map[uint32]string
+	if slices.ContainsFunc(reads, func(read RouteRead) bool { return read.OIF != 0 }) {
+		var err error
+		if names, err = linkNames(conn); err != nil {
+			return nil, err
+		}
+	}
 	answers := make([]BatchAnswer, len(reads))
 	unnamed := make([]batchIndexes, len(reads))
 	for i, read := range reads {
 		answer, indexes := &answers[i], &unnamed[i]
-		answer.Route, indexes.route, answer.Err = batchRead(conn, read.Source, read.Destination, arrivals[read.IIF], read.Mark)
+		// a read naming an interface the dump does not hold answers ENODEV with
+		// no request, but an IPv6 pair's, which is asked (ip6_datagram_send_ctl,
+		// ip_route_output_key_hash_rcu, udpv6_sendmsg)
+		if name, held := names[read.OIF]; read.OIF == 0 || held || read.Pair && read.Destination.Is6() {
+			answer.OIF = name
+			answer.Route, indexes.route, answer.Err = batchRead(conn, read.Source, read.Destination, arrivals[read.IIF], read.OIF, read.Mark)
+		} else {
+			answer.Err = fmt.Errorf("kernel: look up the route to %s out of interface %d: %w", read.Destination, read.OIF, unix.ENODEV)
+		}
 		if !read.Reply {
 			continue
 		}
@@ -55,15 +70,25 @@ func routeGetBatch(conn netlinkConn, reads []RouteRead) ([]BatchAnswer, error) {
 			answer.ReplyErr = fmt.Errorf("kernel: no reply lookup from %s to %s: the route to %s has no live next hop", read.Destination, read.Source, read.Destination)
 		default:
 			indexes.arrival = indexes.route[live]
-			answer.Reply, indexes.reply, answer.ReplyErr = batchRead(conn, read.Destination, read.Source, indexes.arrival, 0)
+			answer.Reply, indexes.reply, answer.ReplyErr = batchRead(conn, read.Destination, read.Source, indexes.arrival, 0, 0)
 		}
 	}
 	if !slices.ContainsFunc(unnamed, func(indexes batchIndexes) bool { return len(indexes.route) > 0 }) {
 		return answers, nil
 	}
-	names, err := linkNames(conn)
-	if err != nil {
-		return nil, err
+	// the hops are named by the dump a read naming an interface took, and a hop
+	// that dump does not hold takes another
+	unheld := func(index uint32) bool {
+		_, ok := names[index]
+		return !ok
+	}
+	if slices.ContainsFunc(unnamed, func(indexes batchIndexes) bool {
+		return slices.ContainsFunc(indexes.route, unheld) || slices.ContainsFunc(indexes.reply, unheld)
+	}) {
+		var err error
+		if names, err = linkNames(conn); err != nil {
+			return nil, err
+		}
 	}
 	for i, read := range reads {
 		answer, indexes := &answers[i], unnamed[i]
@@ -93,11 +118,11 @@ type batchIndexes struct {
 	arrival      uint32
 }
 
-func batchRead(c netlinkConn, src, dst netip.Addr, arrival, mark uint32) (MatchedRoute, []uint32, error) {
+func batchRead(c netlinkConn, src, dst netip.Addr, arrival, leaving, mark uint32) (MatchedRoute, []uint32, error) {
 	if err := refuseRouteLookup(src, dst); err != nil {
 		return MatchedRoute{}, nil, err
 	}
-	return matchedRoute(c, src, dst, arrival, mark)
+	return matchedRoute(c, src, dst, arrival, leaving, mark)
 }
 
 func replyUnread(read RouteRead) error {

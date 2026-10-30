@@ -212,9 +212,9 @@ type Runtime struct {
 	// sessions. It is here rather than in the capability because no operator
 	// writes it down.
 	Sessions func() int
-	// Endpoints reports the addresses the live sessions send their underlay
-	// to now. Nil reports none
-	Endpoints func() []netip.Addr
+	// Sends reports where the live sessions send their underlay now, each
+	// with the source and interface its datagrams carry. Nil reports none
+	Sends func() []Send
 	// Host is the machine this reconciler reads and writes, nil for the one
 	// this process is running on, as a daemon passes. A test hands
 	// in a recorded routing table so the path from a configuration file to a

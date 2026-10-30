@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -59,6 +60,15 @@ func refused(errno syscall.Errno) BatchAnswer {
 
 func answeredBy(table uint32, device string) BatchAnswer {
 	return BatchAnswer{Route: MatchedRoute{Table: table, NextHops: []NextHop{{Device: device}}}}
+}
+
+// bareSends is a send to each address carrying neither a source nor an interface
+func bareSends(addresses ...netip.Addr) []Send {
+	sends := make([]Send, len(addresses))
+	for i, address := range addresses {
+		sends[i] = Send{Destination: address}
+	}
+	return sends
 }
 
 // each answer the kernel gives a lookup is judged as routing.md's lookups end:
@@ -155,9 +165,9 @@ func TestPassAsksIntoEachOverlayHoldItInstalled(t *testing.T) {
 // address order, whatever the mesh's table holds, and a taken lookup no
 // longer asked clears once
 func TestPassAsksEveryLiveEndpointUnderTheMark(t *testing.T) {
-	endpoints := []netip.Addr{addr("2001:db8:a::7"), addr("203.0.113.70"), addr("198.51.100.7"), addr("2001:db8:a::7"), addr("203.0.113.70")}
+	sends := bareSends(addr("2001:db8:a::7"), addr("203.0.113.70"), addr("198.51.100.7"), addr("2001:db8:a::7"), addr("203.0.113.70"))
 	bus := events.New()
-	reconciler, _, look := lookingHarness(t, Table{}, Runtime{Endpoints: func() []netip.Addr { return endpoints }, Events: bus})
+	reconciler, _, look := lookingHarness(t, Table{}, Runtime{Sends: func() []Send { return sends }, Events: bus})
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -172,14 +182,14 @@ func TestPassAsksEveryLiveEndpointUnderTheMark(t *testing.T) {
 		t.Errorf("the pass published %+v, want each endpoint taken through the tun", got)
 	}
 
-	endpoints = []netip.Addr{addr("198.51.100.7"), addr("2001:db8:a::7")}
+	sends = bareSends(addr("198.51.100.7"), addr("2001:db8:a::7"))
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
 	if got := reconciler.Stats().Lookups; len(got) != 2 {
 		t.Errorf("with 2 endpoints live the pass published %+v", got)
 	}
-	endpoints = nil
+	sends = nil
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +210,156 @@ func TestPassAsksEveryLiveEndpointUnderTheMark(t *testing.T) {
 	}
 	if !slices.Equal(got, reported) {
 		t.Errorf("the events are %q, want %q", got, reported)
+	}
+}
+
+// takenEvents is each kernel.taken event of an underlay lookup bus recorded, as
+// its endpoint, source, interface and taken
+func takenEvents(bus *events.Bus) []string {
+	var got []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "kernel.taken" }, 0) {
+		got = append(got, strings.Join([]string{event.Attrs["endpoint"], event.Attrs["source"], event.Attrs["interface"], event.Attrs["taken"]}, " "))
+	}
+	return got
+}
+
+// a send carrying a source and an interface is asked under the mark with both
+// and one carrying neither with neither, and each is published and reported
+// with what it carries, its interface by the name the batch's dump of the links
+// gave it, and by its index where the dump held none
+func TestPinnedSendIsAskedWithItsSourceAndInterface(t *testing.T) {
+	pinned := Send{Destination: addr("203.0.113.70"), Source: addr("198.51.100.10"), Interface: 2}
+	gone := Send{Destination: addr("2001:db8:400::7"), Source: addr("2001:db8:a::10"), Interface: 9}
+	bare := Send{Destination: addr("203.0.113.70")}
+	bus := events.New()
+	reconciler, _, look := lookingHarness(t, Table{}, Runtime{Sends: func() []Send { return []Send{gone, pinned, bare} }, Events: bus})
+	look.answer = func(read RouteRead) BatchAnswer {
+		answer := answeredBy(200, "ranet0")
+		if read.OIF == 2 {
+			answer.OIF = "eth0"
+		}
+		return answer
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []RouteRead{
+		{Destination: bare.Destination, Mark: schema.UnderlayMark},
+		{Source: pinned.Source, Destination: pinned.Destination, OIF: 2, Mark: schema.UnderlayMark},
+		{Source: gone.Source, Destination: gone.Destination, OIF: 9, Mark: schema.UnderlayMark},
+	}
+	if len(look.asked) != 1 || !slices.Equal(look.asked[0], want) {
+		t.Fatalf("the pass asked %v, want %v", look.asked, want)
+	}
+	var published []string
+	for _, lookup := range reconciler.Stats().Lookups {
+		published = append(published, fmt.Sprintf("%s %v %q", lookup.Address, lookup.Source, lookup.Interface))
+	}
+	if want := []string{`203.0.113.70 invalid IP ""`, `203.0.113.70 198.51.100.10 "eth0"`, `2001:db8:400::7 2001:db8:a::10 "9"`}; !slices.Equal(published, want) {
+		t.Errorf("the pass published %q, want %q", published, want)
+	}
+	if got, want := takenEvents(bus), []string{"203.0.113.70   true", "203.0.113.70 198.51.100.10 eth0 true", "2001:db8:400::7 2001:db8:a::10 9 true"}; !slices.Equal(got, want) {
+		t.Errorf("the events are %q, want %q", got, want)
+	}
+}
+
+// sessions sending to one address from different pins are asked once each, and
+// sessions sending what one pin carries are asked once
+func TestSendsToOneAddressAreAskedOncePerPin(t *testing.T) {
+	first := Send{Destination: addr("2001:db8:400::7"), Source: addr("2001:db8:a::10"), Interface: 2}
+	second := Send{Destination: addr("2001:db8:400::7"), Source: addr("2001:db8:b::10"), Interface: 3}
+	reconciler, _, look := lookingHarness(t, Table{}, Runtime{Sends: func() []Send { return []Send{second, first, second, first} }})
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []RouteRead{
+		{Source: first.Source, Destination: first.Destination, OIF: 2, Mark: schema.UnderlayMark},
+		{Source: second.Source, Destination: second.Destination, OIF: 3, Mark: schema.UnderlayMark},
+	}
+	if len(look.asked) != 1 || !slices.Equal(look.asked[0], want) {
+		t.Fatalf("the pass asked %v, want %v", look.asked, want)
+	}
+	if got := reconciler.Stats().Lookups; len(got) != 2 || got[0].Source != first.Source || got[1].Source != second.Source {
+		t.Errorf("the pass published %+v, want one lookup a pin", got)
+	}
+}
+
+// sends of one source out of two interfaces are two lookups, and a taken one
+// whose interface the sends no longer carry is no longer asked
+func TestSendsOfOneSourceAreAskedOncePerInterface(t *testing.T) {
+	first := Send{Destination: addr("2001:db8:400::7"), Source: addr("2001:db8:a::10"), Interface: 2}
+	second := first
+	second.Interface = 3
+	sends := []Send{second, first}
+	bus := events.New()
+	reconciler, _, look := lookingHarness(t, Table{}, Runtime{Sends: func() []Send { return sends }, Events: bus})
+	look.answer = func(RouteRead) BatchAnswer { return answeredBy(300, "ranet0") }
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []RouteRead{
+		{Source: first.Source, Destination: first.Destination, OIF: 2, Mark: schema.UnderlayMark},
+		{Source: second.Source, Destination: second.Destination, OIF: 3, Mark: schema.UnderlayMark},
+	}
+	if len(look.asked) != 1 || !slices.Equal(look.asked[0], want) {
+		t.Fatalf("the pass asked %v, want %v", look.asked, want)
+	}
+	sends = []Send{second}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	reported := []string{"2001:db8:400::7 2001:db8:a::10 2 true", "2001:db8:400::7 2001:db8:a::10 3 true", "2001:db8:400::7 2001:db8:a::10 2 false"}
+	if got := takenEvents(bus); !slices.Equal(got, reported) {
+		t.Errorf("the events are %q, want %q", got, reported)
+	}
+}
+
+// the sends of one destination, source and interface are one lookup, asked as
+// the pair's where one goes on a socket connected to the peer
+func TestSendsOfOneLookupAreAskedAsItsPairs(t *testing.T) {
+	shared := Send{Destination: addr("2001:db8:400::7"), Source: addr("2001:db8:a::10"), Interface: 2}
+	pair := shared
+	pair.Pair = true
+	reconciler, _, look := lookingHarness(t, Table{}, Runtime{Sends: func() []Send { return []Send{shared, pair, shared} }})
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []RouteRead{{Source: shared.Source, Destination: shared.Destination, OIF: 2, Pair: true, Mark: schema.UnderlayMark}}
+	if len(look.asked) != 1 || !slices.Equal(look.asked[0], want) {
+		t.Fatalf("the pass asked %v, want %v", look.asked, want)
+	}
+	if got := reconciler.Stats().Lookups; len(got) != 1 {
+		t.Errorf("the pass published %+v, want one lookup", got)
+	}
+}
+
+// a send whose pin fell back between two passes is the pinned lookup no longer
+// asked and the bare one asked in its place, under a rule that takes the
+// pinned send through the tun and leaves the bare one to main
+func TestSendWhosePinFellBackIsAnotherLookup(t *testing.T) {
+	pinned := Send{Destination: addr("2001:db8:400::7"), Source: addr("2001:db8:a::10"), Interface: 2}
+	sends := []Send{pinned}
+	bus := events.New()
+	reconciler, _, look := lookingHarness(t, Table{}, Runtime{Sends: func() []Send { return sends }, Events: bus})
+	look.answer = func(read RouteRead) BatchAnswer {
+		if read.Source.IsValid() {
+			return BatchAnswer{Route: MatchedRoute{Table: 300, NextHops: []NextHop{{Device: "ranet0"}}}, OIF: "eth0"}
+		}
+		return answeredBy(uint32(schema.TableMain), "eth0")
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	sends = []Send{{Destination: pinned.Destination}}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reconciler.Stats().Lookups; len(got) != 1 || got[0].Source.IsValid() || got[0].Interface != "" || got[0].Taken {
+		t.Errorf("after the fallback the pass published %+v, want the bare send alone, not taken", got)
+	}
+	want := []string{"2001:db8:400::7 2001:db8:a::10 eth0 true", "2001:db8:400::7 2001:db8:a::10 eth0 false"}
+	if got := takenEvents(bus); !slices.Equal(got, want) {
+		t.Errorf("the events are %q, want %q", got, want)
 	}
 }
 
@@ -232,7 +392,7 @@ func TestEveryEndpointWhoseMarkedLookupLeavesThroughTheTunIsTaken(t *testing.T) 
 			bus := events.New()
 			reconciler, table, look := lookingHarness(t, Table{}, Runtime{
 				Interface: tun,
-				Endpoints: func() []netip.Addr { return endpoints },
+				Sends:     func() []Send { return bareSends(endpoints...) },
 				Events:    bus,
 			})
 			for _, entry := range test.entries {
@@ -271,7 +431,7 @@ func TestEveryEndpointWhoseMarkedLookupLeavesThroughTheTunIsTaken(t *testing.T) 
 func TestMovedEndpointIsReportedByItsAddress(t *testing.T) {
 	endpoint := addr("203.0.113.70")
 	bus := events.New()
-	reconciler, _, _ := lookingHarness(t, Table{}, Runtime{Endpoints: func() []netip.Addr { return []netip.Addr{endpoint} }, Events: bus})
+	reconciler, _, _ := lookingHarness(t, Table{}, Runtime{Sends: func() []Send { return bareSends(endpoint) }, Events: bus})
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -402,8 +562,8 @@ func TestWithdrawalClearsTheLookups(t *testing.T) {
 // a platform with no lookup half, darwin's, asks and publishes nothing
 func TestPlatformWithoutLookupsPublishesNone(t *testing.T) {
 	reconciler, _, _ := harness(t, Table{}, Runtime{
-		Overlay:   prefixes(prefix("192.0.2.0/24")),
-		Endpoints: func() []netip.Addr { return []netip.Addr{addr("192.0.2.9")} },
+		Overlay: prefixes(prefix("192.0.2.0/24")),
+		Sends:   func() []Send { return bareSends(addr("192.0.2.9")) },
 	})
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)

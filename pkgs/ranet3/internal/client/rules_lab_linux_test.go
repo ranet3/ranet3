@@ -290,8 +290,8 @@ func rulesArms(learned *netstack.Peer) []rulesArm {
 	}}
 }
 
-// rulesEndpoints are the peer endpoints the leaf's reconciler asks under the underlay's mark, inside the mesh's subnets of the last arm
-var rulesEndpoints = []netip.Addr{netip.MustParseAddr("203.0.113.200"), netip.MustParseAddr("2001:db8:e::9")}
+// rulesSends are the unpinned sends of the peers the leaf's reconciler asks under the underlay's mark, inside the mesh's subnets of the last arm
+var rulesSends = []kernel.Send{{Destination: netip.MustParseAddr("203.0.113.200")}, {Destination: netip.MustParseAddr("2001:db8:e::9")}}
 
 // a leaf in a namespace of its own holds its tun, an uplink to a far host and the loopback, and runs the reconciler main builds over the mesh's table
 // for each arm the reconciler installs the mirror's routes and the rules of mode off it derives
@@ -327,7 +327,7 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 		rt := node.KernelRuntime()
 		// a session counts as live throughout, so the gate is open and a route that counts as a default, unless it is a hold or this node is an exit, is the mirror's to install
 		rt.Sessions = func() int { return 1 }
-		rt.Endpoints = func() []netip.Addr { return rulesEndpoints }
+		rt.Sends = func() []kernel.Send { return rulesSends }
 		routes, err = kernel.New(*cfg.Cap.Table, rt, node.Mesh.Routes)
 		return err
 	}); err != nil {

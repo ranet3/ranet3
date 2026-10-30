@@ -31,6 +31,7 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 )
@@ -289,20 +290,39 @@ func TestTwoNodesConvergeOverLoopback(t *testing.T) {
 	stop()
 }
 
-// the reconciler's runtime reads the address each live session sends its
-// underlay to, which its marked lookup asks
-func TestKernelRuntimeHandsTheLiveEndpoints(t *testing.T) {
+// the reconciler's runtime reads where each live session sends its underlay
+// and what its datagrams carry, which its marked lookup asks: the node that
+// answered the session sends from the address its peer's datagram reached
+func TestKernelRuntimeHandsTheLiveSends(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
 	_, stop := run(t, alpha, bravo)
 	defer stop()
-	endpoints := alpha.client.KernelRuntime().Endpoints
-	if endpoints == nil {
-		t.Fatal("the reconciler's runtime carries no endpoints, so it asks no marked lookup")
+	loopback := netip.MustParseAddr("127.0.0.1")
+	pinned := 0
+	for _, node := range []*loopbackNode{alpha, bravo} {
+		sends := node.client.KernelRuntime().Sends
+		if sends == nil {
+			t.Fatalf("%s's reconciler runtime carries no sends, so it asks no marked lookup", node.name)
+		}
+		waitFor(t, convergeBudget, node.name+"'s live sends to read one to loopback", func() bool {
+			live := sends()
+			return len(live) == 1 && live[0].Destination == loopback
+		})
+		for _, session := range node.client.sessions.snapshot() {
+			var mux kernel.Send
+			waitFor(t, convergeBudget, node.name+"'s runtime to hand what its session's mux sends", func() bool {
+				mux = kernel.Send(session.session.Mux().Sends())
+				return slices.Equal(sends(), []kernel.Send{mux})
+			})
+			if mux.Interface != 0 {
+				pinned++
+			}
+		}
 	}
-	want := []netip.Addr{netip.MustParseAddr("127.0.0.1")}
-	waitFor(t, convergeBudget, fmt.Sprintf("the live endpoints to read %v", want), func() bool {
-		return slices.Equal(endpoints(), want)
-	})
+	// darwin's mux leaves the pin to its selection and names none
+	if pinned == 0 && runtime.GOOS == "linux" {
+		t.Error("neither node's session sends from a pin, so the runtime's sources and interfaces go unread")
+	}
 }
 
 // reaches is whether from forwards to an address in to's prefix through the mesh
