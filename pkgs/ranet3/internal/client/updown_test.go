@@ -447,10 +447,14 @@ func TestDownTellsThePeerOnceAndUpPutsTheNodeBack(t *testing.T) {
 		mu.Unlock()
 		closeSession(sess)
 	}
+	// no resolution leaves alpha between two sessions when down comes, since only bravo dials
+	quiet := *alpha.cfg
+	quiet.Dial.To = nil
+	alpha.client.cfg.Store(&quiet)
 	bravo.client.dialRetry = shortDialRetry
 	run(t, alpha, bravo)
-	waitFor(t, convergeBudget, "each node forwarding to the other's prefix", func() bool {
-		return reaches(alpha, bravo) && reaches(bravo, alpha)
+	waitFor(t, convergeBudget, "one session at each end and each node forwarding to the other's prefix", func() bool {
+		return len(alpha.client.sessions.paths()) == 1 && len(bravo.client.sessions.paths()) == 1 && reaches(alpha, bravo) && reaches(bravo, alpha)
 	})
 
 	result, err := alpha.client.Down(context.Background())
