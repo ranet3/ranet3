@@ -156,6 +156,22 @@ unless run as root.
     skipped and say so, and IPv6 still egresses. The node puts back an nftables
     table another writer deleted, and the border drops a packet from the far
     host to the SID.
+  - `TestTUNExitTranslatesEachClassUnderTheDerivedRules` runs an exit with the
+    egress segment, border and table of the one above, advertising no default
+    but a LAN of each family under `return`, on a link of its own to a host in a
+    namespace of its own, with a class of `none` and a class of an address in
+    each family and a mesh address of each family, under the derived rules of
+    mode off. Over UDP and TCP in both families, a leaf's flow steered through
+    the SID from inside the class of `none` reaches the far host from the leaf's
+    address, its reply takes the rule at 5110 into the tun toward the leaf, and
+    status counts it untranslated. One from inside the class of an address
+    reaches the far host from that address, its reply enters the tun toward the
+    leaf, and status counts it translated. The LAN host's flow to a leaf reaches
+    the tun from the exit's mesh address and its reply reaches the host by main
+    at 5410, and the exit's own flow from its mesh address leaves the uplink
+    under its class's address while another exit's `/1` halves are learned. The
+    mesh's edge counts nothing `forged`, `unowned_source` or `looped` in any
+    arm, and the stop leaves no tun, table, rule or route of the node's.
   - `TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement` reads what the mesh
     egresses into a real tun while the announcement is rebuilt, and checks that
     it already follows the readiness just given.
