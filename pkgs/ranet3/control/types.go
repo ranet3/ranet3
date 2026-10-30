@@ -342,7 +342,7 @@ type SegmentCounters struct {
 	Answered uint64 `json:"answered"`
 	// Egressed counts the inner packets an egress segment handed to the exit
 	Egressed uint64 `json:"egressed"`
-	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for a source outside its allow list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or cap.border overlay holds, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside cap.border overlay or an inner source outside the list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or cap.border overlay holds, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
 	// NotReady counts the egress results dropped as not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`

@@ -209,6 +209,61 @@ func TestEgressSegmentCarriesOnlyTheSourcesItAllows(t *testing.T) {
 	}
 }
 
+// An allow entry outside the overlay admits an inner source alone: a LAN behind
+// the node an outer source names, in either family, is carried, and an outer
+// source an entry reaching past the overlay holds is refused where no entry
+// inside the overlay holds it
+func TestEgressSegmentTakesAnEntryOutsideTheOverlayForInnerSourcesAlone(t *testing.T) {
+	exit := addr("3fff:b:0:206::3")
+	table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: []schema.Prefix{
+		schema.MustPrefix("3fff:b:0:100::/60"),
+		schema.MustPrefix("2001:db8:f3::/64"),
+		schema.MustPrefix("203.0.113.64/28"),
+		schema.MustPrefix("3ff0::/12"),
+	}}}, []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourced := func(inner []byte, source netip.Addr) []byte {
+		offset := 8
+		if source.Is4() {
+			offset = 12
+		}
+		copy(inner[offset:], source.AsSlice())
+		return inner
+	}
+	for name, c := range map[string]struct {
+		outer, inner netip.Addr
+		family       uint8
+	}{
+		"a v6 LAN host behind a listed node":                   {addr("3fff:b:0:100::1"), addr("2001:db8:f3::20"), NextHeaderIPv6},
+		"a v4 LAN host behind a listed node":                   {addr("3fff:b:0:100::1"), addr("203.0.113.70"), NextHeaderIPv4},
+		"a listed node's own source":                           {addr("3fff:b:0:100::1"), addr("3fff:b:0:100::1"), NextHeaderIPv6},
+		"an outer source only an entry past the overlay holds": {addr("3fff:b:0:600::1"), addr("3fff:b:0:100::1"), 0},
+		"an outer source in an entry outside the overlay":      {addr("2001:db8:f3::20"), addr("2001:db8:f3::20"), 0},
+		"a LAN source outside the list":                        {addr("3fff:b:0:100::1"), addr("2001:db8:f4::20"), 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inner := innerV6("payload")
+			if c.inner.Is4() {
+				inner = innerV4("payload")
+			}
+			raw, err := Encapsulate(sourced(inner, c.inner), c.outer, []netip.Addr{exit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := slices.Clone(raw[Overhead(1):])
+			result := table.Handle(raw)
+			switch {
+			case c.family == 0 && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
+				t.Errorf("from %s and %s Handle returned %v (%v), want a refusal of the source", c.outer, c.inner, result.Action, result.Err)
+			case c.family != 0 && (result.Action != ActionEgress || result.Family != c.family || !bytes.Equal(result.Inner, want)):
+				t.Errorf("from %s and %s Handle returned %v of family %d (%v), want the inner packet of family %d for egress", c.outer, c.inner, result.Action, result.Family, result.Err, c.family)
+			}
+		})
+	}
+}
+
 // Every SID refuses a packet whose outer source lies outside the overlay,
 // whatever it delivers to and before its header is parsed, so a host beyond
 // the mesh is never answered, and acts on one from inside. The egress

@@ -65,9 +65,10 @@ func TestBorderRefusalsReachTheLoader(t *testing.T) {
 	}
 }
 
-// An egress segment loads only beside the filter guarding it, and only with
-// an allow list the filter's overlay covers, since a forged allowed source
-// reaches the segment through any forwarding node whose filter passes it
+// An egress segment loads only beside the filter guarding it, and an allow
+// entry outside the filter's overlay, which admits an inner source alone, loads
+// only beside an IPv6 entry inside it to admit the outer source, which is
+// always IPv6, and is refused for every other reason an entry inside is
 func TestEgressSegmentIsRefusedOutsideTheBorder(t *testing.T) {
 	exit := nodeTOML + egressExitTOML
 	overlay := func(list string) string {
@@ -77,26 +78,47 @@ func TestEgressSegmentIsRefusedOutsideTheBorder(t *testing.T) {
 	second := func(list string) string {
 		return exit + "\n[[cap.segment.local]]\nsid = \"3fff:b:0:306::4\"\nbehavior = \"End.DT46\"\ndeliver = \"egress\"\nallow = " + list + "\n"
 	}
+	const alone = "lies outside cap.border overlay, which admits it as an inner source alone, and no IPv6 entry of the list lies inside the overlay to admit an outer source, which is always IPv6"
 	for name, c := range map[string]struct{ body, says string }{
 		"no cap.border": {
 			strings.Replace(exit, egressBorderTOML, "", 1),
 			"config: cap.segment local 3fff:b:0:306::3 is written and cap.border is absent",
 		},
-		"an allow entry of another family's overlay": {
+		"an IPv6 entry of another family's overlay alone": {
 			overlay(`["203.0.113.0/24", "3fff:c::/30"]`),
-			"config: cap.segment local 3fff:b:0:306::3 allow 3fff:a::/36 lies outside cap.border overlay, so every forwarding node's filter lets a forged 3fff:a::/36 source through to it",
+			"config: cap.segment local 3fff:b:0:306::3 allow 3fff:a::/36 " + alone,
 		},
-		"an allow entry wider than its overlay entry": {
-			overlay(`["203.0.113.0/25", "3fff:a::/36"]`),
-			"allow 203.0.113.0/24 lies outside cap.border overlay",
+		"entries outside beside an IPv4 entry inside alone": {
+			second(`["203.0.113.0/24", "2001:db8:f3::/64", "3fff:c::/32"]`),
+			"config: cap.segment local 3fff:b:0:306::4 allow 2001:db8:f3::/64 " + alone,
 		},
-		"an allow entry beside its overlay entry": {
-			overlay(`["198.51.100.0/24", "3fff:a::/36"]`),
-			"allow 203.0.113.0/24 lies outside cap.border overlay",
+		"an IPv6 entry reaching past the overlay alone": {
+			second(`["3fff::/20"]`),
+			"config: cap.segment local 3fff:b:0:306::4 allow 3fff::/20 " + alone,
 		},
-		"an allow entry of a second egress segment outside the overlay": {
-			second(`["203.0.113.0/24", "3fff:c::/32"]`),
-			"config: cap.segment local 3fff:b:0:306::4 allow 3fff:c::/32 lies outside cap.border overlay",
+		"an IPv4 entry outside with no IPv6 entry": {
+			second(`["198.51.100.0/24"]`),
+			"srv6: cap.segment local 3fff:b:0:306::4 allow holds no IPv6 prefix",
+		},
+		"an entry outside of length zero": {
+			second(`["3fff:a::/36", "0.0.0.0/0"]`),
+			"srv6: cap.segment local 3fff:b:0:306::4 allow 0.0.0.0/0 admits every address of its family",
+		},
+		"an entry outside under the floor": {
+			second(`["3fff:a::/36", "2000::/11"]`),
+			"srv6: cap.segment local 3fff:b:0:306::4 allow 2000::/11 is shorter than /8 for IPv4 or /12 for IPv6",
+		},
+		"an entry outside written as IPv6": {
+			second(`["3fff:a::/36", "::ffff:198.51.100.0/120"]`),
+			"srv6: cap.segment local 3fff:b:0:306::4 allow ::ffff:198.51.100.0/120 is an IPv4 prefix written as IPv6",
+		},
+		"an entry outside with host bits": {
+			second(`["3fff:a::/36", "198.51.100.1/24"]`),
+			"srv6: cap.segment local 3fff:b:0:306::4 allow 198.51.100.1/24 has bits set below its prefix length",
+		},
+		"an entry outside written twice": {
+			second(`["3fff:a::/36", "198.51.100.0/24", "198.51.100.0/24"]`),
+			"srv6: cap.segment local 3fff:b:0:306::4 allow 198.51.100.0/24 is written twice",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -105,16 +127,21 @@ func TestEgressSegmentIsRefusedOutsideTheBorder(t *testing.T) {
 			}
 		})
 	}
-	// an overlay entry covering an allow entry from a shorter prefix covers it
-	if _, err := loadTOML(t, overlay(`["203.0.0.0/8", "3fff:a::/32"]`)); err != nil {
-		t.Errorf("an overlay covering the allow list from shorter prefixes was refused: %v", err)
-	}
-	if _, err := loadTOML(t, second(`["203.0.113.128/25", "3fff:a:1::/48"]`)); err != nil {
-		t.Errorf("a second egress segment the overlay covers was refused: %v", err)
-	}
-	// a node with no egress segment writes the filter on its own
-	if _, err := loadTOML(t, nodeTOML+egressBorderTOML); err != nil {
-		t.Errorf("a node with cap.border alone was refused: %v", err)
+	for name, body := range map[string]string{
+		// an overlay entry covering an allow entry from a shorter prefix covers it
+		"an overlay covering the list from shorter prefixes": overlay(`["203.0.0.0/8", "3fff:a::/32"]`),
+		"a second egress segment the overlay covers":         second(`["203.0.113.128/25", "3fff:a:1::/48"]`),
+		"an IPv4 entry wider than its overlay entry":         overlay(`["203.0.113.0/25", "3fff:a::/36"]`),
+		"an IPv4 entry beside the overlay":                   overlay(`["198.51.100.0/24", "3fff:a::/36"]`),
+		"a LAN of each family beside an IPv6 entry inside":   second(`["3fff:a:1::/48", "2001:db8:f3::/64", "198.51.100.64/28"]`),
+		// a node with no egress segment writes the filter on its own
+		"cap.border alone": nodeTOML + egressBorderTOML,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadTOML(t, body); err != nil {
+				t.Errorf("refused: %v", err)
+			}
+		})
 	}
 }
 

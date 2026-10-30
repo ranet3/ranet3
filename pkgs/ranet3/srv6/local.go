@@ -6,7 +6,6 @@ package srv6
 import (
 	"errors"
 	"fmt"
-	"maps"
 	"net/netip"
 	"slices"
 	"strings"
@@ -72,8 +71,9 @@ type Segment struct {
 	// Deliver is the table End.DT46 hands the inner packet to, the parameter
 	// RFC 8986 section 4.8 gives the behavior
 	Deliver Delivery `yaml:"deliver,omitempty" json:"deliver,omitempty" toml:"deliver,omitempty"`
-	// Allow holds the outer and inner sources a segment delivering to egress
-	// carries, and is refused with any other delivery
+	// Allow holds the sources a segment delivering to egress carries, and is
+	// refused with any other delivery. An entry inside cap.border overlay admits
+	// outer and inner sources, and one outside it inner sources alone.
 	Allow []schema.Prefix `yaml:"allow,omitempty" json:"allow,omitempty" toml:"allow,omitempty"`
 }
 
@@ -85,8 +85,8 @@ const (
 	// a file omitting deliver means it
 	DeliverMesh Delivery = iota
 	// DeliverEgress hands it to the node's exit to leave the mesh under
-	// cap.egress's translation, and only for a packet whose outer and inner
-	// sources both lie in Allow
+	// cap.egress's translation, and only for a packet whose outer source lies in
+	// an entry of Allow inside the overlay and whose inner source lies in Allow
 	DeliverEgress
 )
 
@@ -102,8 +102,8 @@ func (d Delivery) String() string {
 
 // ErrSourceRefused is a local SID's refusal of a packet for its source: at
 // every SID an outer source outside the overlay, and at an egress segment an
-// outer or inner source outside its allow list, or an inner source it cannot
-// read
+// outer source outside its allow list's entries inside the overlay, an inner
+// source outside its allow list, or an inner source it cannot read
 var ErrSourceRefused = errors.New("srv6: the segment does not admit the packet's source")
 
 // errOutsideOverlay is ErrSourceRefused for an outer source outside the
@@ -135,6 +135,17 @@ func (s Segment) allows(source netip.Addr) bool {
 	return false
 }
 
+// localSegment is a segment as the table holds it, with outer the entries of
+// its allow list inside the overlay, the only ones an outer source passes
+type localSegment struct {
+	Segment
+	outer []schema.Prefix
+}
+
+func (s localSegment) allowsOuter(source netip.Addr) bool {
+	return slices.ContainsFunc(s.outer, func(prefix schema.Prefix) bool { return prefix.Contains(source) })
+}
+
 // checkAllow refuses an allow list that would make an egress segment an open
 // proxy, or that a packet could never pass
 func (s Segment) checkAllow() error {
@@ -163,7 +174,7 @@ func (s Segment) checkAllow() error {
 // for none, which is every node that configures no segment routing, and every
 // method below works on one so a caller never has to ask first.
 type LocalTable struct {
-	entries map[netip.Addr]Segment
+	entries map[netip.Addr]localSegment
 	// overlay is the IPv6 prefixes of cap.border's overlay, the only outer
 	// sources any SID of entries acts on
 	overlay []netip.Prefix
@@ -189,11 +200,11 @@ type LocalTable struct {
 // its tun read drops the rest. An outer source is always IPv6, so a table
 // holding a SID and no IPv6 prefix of overlay is refused.
 func NewLocalTable(segments []Segment, overlay []schema.Prefix) (*LocalTable, error) {
-	entries, err := localEntries(segments)
-	if err != nil || entries == nil {
+	checked, err := localEntries(segments)
+	if err != nil || checked == nil {
 		return nil, err
 	}
-	table := &LocalTable{entries: entries}
+	table := &LocalTable{entries: make(map[netip.Addr]localSegment, len(checked))}
 	for _, prefix := range overlay {
 		if prefix.Addr().Is6() {
 			table.overlay = append(table.overlay, prefix.Prefix)
@@ -201,6 +212,15 @@ func NewLocalTable(segments []Segment, overlay []schema.Prefix) (*LocalTable, er
 	}
 	if len(table.overlay) == 0 {
 		return nil, fmt.Errorf("srv6: cap.segment local %s would refuse every packet, since cap.border overlay holds no IPv6 prefix to admit an outer source from", segments[0].SID)
+	}
+	for sid, segment := range checked {
+		entry := localSegment{Segment: segment}
+		for _, allowed := range segment.Allow {
+			if schema.InsideOverlay(allowed.Prefix, overlay) {
+				entry.outer = append(entry.outer, allowed)
+			}
+		}
+		table.entries[sid] = entry
 	}
 	return table, nil
 }
@@ -255,7 +275,10 @@ func (t *LocalTable) Segments() []Segment {
 	if t == nil {
 		return nil
 	}
-	out := slices.Collect(maps.Values(t.entries))
+	out := make([]Segment, 0, len(t.entries))
+	for _, entry := range t.entries {
+		out = append(out, entry.Segment)
+	}
 	slices.SortFunc(out, func(a, b Segment) int { return a.SID.Compare(b.SID.Addr) })
 	return out
 }
@@ -271,12 +294,12 @@ func (t *LocalTable) admits(source netip.Addr) bool {
 }
 
 // refuses is the refusal of source, a packet's outer source, at segment, nil for one it admits
-// every SID asks the overlay first, and an egress segment then its allow list
-func (t *LocalTable) refuses(segment *Segment, source netip.Addr) error {
+// every SID asks the overlay first, and an egress segment then its allow list's entries inside the overlay
+func (t *LocalTable) refuses(segment *localSegment, source netip.Addr) error {
 	switch {
 	case !t.admits(source):
 		return errOutsideOverlay
-	case segment.Deliver == DeliverEgress && !segment.allows(source):
+	case segment.Deliver == DeliverEgress && !segment.allowsOuter(source):
 		return ErrSourceRefused
 	}
 	return nil
@@ -286,7 +309,7 @@ func (t *LocalTable) refuses(segment *Segment, source netip.Addr) error {
 type Admission struct {
 	Segment Segment
 	// Overlay is the source lying in the overlay, which every SID asks first
-	// Allowed is it lying in an egress segment's allow list, which only such a segment asks, of a source Overlay admits
+	// Allowed is it lying in an entry of an egress segment's allow list inside the overlay, which only such a segment asks, of a source Overlay admits
 	Overlay, Allowed bool
 	// Err is the refusal Handle drops the packet with, nil for a source both admit
 	Err error
@@ -302,7 +325,7 @@ func (t *LocalTable) Admit(sid, source netip.Addr) (Admission, bool) {
 		return Admission{}, false
 	}
 	err := t.refuses(&segment, source)
-	return Admission{Segment: segment, Overlay: err != errOutsideOverlay, Allowed: segment.Deliver == DeliverEgress && err == nil, Err: err}, true
+	return Admission{Segment: segment.Segment, Overlay: err != errOutsideOverlay, Allowed: segment.Deliver == DeliverEgress && err == nil, Err: err}, true
 }
 
 // Action tells the caller how to treat a packet Handle has looked at.

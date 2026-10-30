@@ -44,6 +44,8 @@ const (
 	// pathForwarded is the leaf's end of the link to the neighbor cap.exit forward names, and pathUnforwarded its end of the link to the one it does not
 	pathForwarded   = "lnf"
 	pathUnforwarded = "lnn"
+	// pathLAN is the leaf's end of the link to a LAN it announces and forward names, whose prefixes the exits' allow lists hold outside the overlay
+	pathLAN = "lnl"
 )
 
 var (
@@ -58,6 +60,10 @@ var (
 	pathSIDA = netip.MustParseAddr("3fff:0:0:a::46")
 	pathSIDB = netip.MustParseAddr("3fff:0:0:b::46")
 	pathSIDW = netip.MustParseAddr("3fff:0:0:d::1")
+	// pathSIDAOutside is a second egress segment of a's, outside the overlay, which b would egress toward as to any internet host
+	pathSIDAOutside = netip.MustParseAddr("2001:db8:0:a::46")
+	// pathSubnetB is a subnet over pathSIDAOutside that b comes to announce, a route counting as no default
+	pathSubnetB = netip.MustParsePrefix("2001:db8:0:a::/64")
 	// pathInternet is a host of the internet of each family, which only a default reaches
 	pathInternet = map[int]netip.Addr{4: netip.MustParseAddr("203.0.113.99"), 6: netip.MustParseAddr("2001:db8:99::9")}
 	// pathLinks are the mesh's veth pairs: the leaf to b, the leaf to the waypoint, and the waypoint to a, so a's routes reach the leaf a hop further than b's
@@ -76,7 +82,10 @@ var (
 	pathNeighbors = map[string][2][2]netip.Prefix{
 		pathForwarded:   {{netip.MustParsePrefix("203.0.113.33/28"), netip.MustParsePrefix("2001:db8:f1::1/64")}, {netip.MustParsePrefix("203.0.113.34/28"), netip.MustParsePrefix("2001:db8:f1::2/64")}},
 		pathUnforwarded: {{netip.MustParsePrefix("203.0.113.49/28"), netip.MustParsePrefix("2001:db8:f2::1/64")}, {netip.MustParsePrefix("203.0.113.50/28"), netip.MustParsePrefix("2001:db8:f2::2/64")}},
+		pathLAN:         {{netip.MustParsePrefix("203.0.113.65/28"), netip.MustParsePrefix("2001:db8:f3::1/64")}, {netip.MustParsePrefix("203.0.113.66/28"), netip.MustParsePrefix("2001:db8:f3::2/64")}},
 	}
+	// pathLANPrefixes is the LAN's two networks
+	pathLANPrefixes = []string{"203.0.113.64/28", "2001:db8:f3::/64"}
 )
 
 // pathLab is the two-exit lab: the four nodes, the far host on each uplink with a capture of it, the leaf's two neighbors,
@@ -92,8 +101,8 @@ type pathLab struct {
 	exits      map[int]*kernelexit.Translator
 }
 
-// pathSpecs is the lab's four nodes: the leaf in mode 3 along via, forwarding the link to one neighbor
-// a and b exits advertising a default of each family, each with an egress segment whose allow holds the leaf's own addresses
+// pathSpecs is the lab's four nodes: the leaf in mode 3 along via, forwarding the link to one neighbor and the LAN it announces
+// a and b exits advertising a default of each family, each with an egress segment whose allow holds the leaf's own addresses and its LAN, a with a second outside the overlay
 // and the waypoint carrying transit, with an End segment of its own
 func pathSpecs(via ...netip.Addr) []labSpec {
 	hosts := func(place int) []string {
@@ -109,22 +118,25 @@ func pathSpecs(via ...netip.Addr) []labSpec {
 		}
 		return out
 	}
-	exit := func(sid netip.Addr) func(*config.Config) {
+	exit := func(sids ...netip.Addr) func(*config.Config) {
 		return func(cfg *config.Config) {
 			cfg.Cap.Egress = &egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0")}}
 			cfg.Cap.Border = &egress.Border{Overlay: overlay()}
-			cfg.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{egressSegment(sid.String(), rulesHost[4].own.String(), rulesHost[6].own.String())}}
+			cfg.Cap.Segment = &srv6.Segments{}
+			for _, sid := range sids {
+				cfg.Cap.Segment.Local = append(cfg.Cap.Segment.Local, egressSegment(sid.String(), append([]string{rulesHost[4].own.String(), rulesHost[6].own.String()}, pathLANPrefixes...)...))
+			}
 		}
 	}
-	leaf := labSpec{announce: hosts(pathLeaf), dial: []int{pathExitB, pathWaypoint}, forwards: true, change: func(cfg *config.Config) {
+	leaf := labSpec{announce: append(hosts(pathLeaf), pathLANPrefixes...), dial: []int{pathExitB, pathWaypoint}, forwards: true, change: func(cfg *config.Config) {
 		cfg.Cap.Table = &kernel.Table{ID: kernel.DefaultTable, Addresses: []schema.Prefix{schema.PrefixFrom(rulesHost[4].own), schema.PrefixFrom(rulesHost[6].own)}}
 		cfg.Cap.Border = &egress.Border{Overlay: overlay()}
-		cfg.Cap.Exit = &kernel.ExitMode{Forward: []string{pathForwarded}}
+		cfg.Cap.Exit = &kernel.ExitMode{Forward: []string{pathForwarded, pathLAN}}
 		for _, sid := range via {
 			cfg.Cap.Exit.Via = append(cfg.Cap.Exit.Via, schema.AddrFrom(sid))
 		}
 	}}
-	a := labSpec{announce: hosts(pathExitA), hosts: tunHosts(pathExitA), forwards: true, change: exit(pathSIDA)}
+	a := labSpec{announce: hosts(pathExitA), hosts: tunHosts(pathExitA), forwards: true, change: exit(pathSIDA, pathSIDAOutside)}
 	b := labSpec{announce: hosts(pathExitB), hosts: tunHosts(pathExitB), forwards: true, change: exit(pathSIDB)}
 	w := labSpec{announce: append(hosts(pathWaypoint), netip.PrefixFrom(pathSIDW, 128).String()), hosts: tunHosts(pathWaypoint), dial: []int{pathExitA}, change: func(cfg *config.Config) {
 		on := true
@@ -159,7 +171,7 @@ func startPathLab(t *testing.T, via ...netip.Addr) *pathLab {
 	for _, place := range []int{pathExitA, pathExitB, pathLeaf} {
 		lab.captures[place] = pathUplink(t, lab.nodes[place], pathUplinks[place])
 	}
-	for _, name := range []string{pathForwarded, pathUnforwarded} {
+	for _, name := range []string{pathForwarded, pathUnforwarded, pathLAN} {
 		lab.neighbors[name] = pathNeighbor(t, leaf, name, pathNeighbors[name])
 	}
 	// the table inet ranet3 is on at every node before a reconciler routes anything into the tun, as the command writes it
@@ -367,6 +379,48 @@ func (lab *pathLab) refused(t *testing.T, next *int) {
 	}
 }
 
+// sendNow sends a UDP datagram of each family to the internet from the leaf's unbound sockets, numbered from *next, reading no capture
+func (lab *pathLab) sendNow(t *testing.T, next *int) {
+	t.Helper()
+	var fds []int
+	if err := lab.nodes[pathLeaf].ns.Do(func() error {
+		for _, family := range []int{4, 6} {
+			*next++
+			fd, _, err := rulesSend(rulesProbe{destination: pathInternet[family], socket: rulesUnbound}, "udp", *next)
+			if err != nil {
+				return fmt.Errorf("udp to %s: %w", pathInternet[family], err)
+			}
+			if fd >= 0 {
+				fds = append(fds, fd)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("send the datagrams: %v", err)
+	}
+	for _, fd := range fds {
+		_ = unix.Close(fd)
+	}
+}
+
+// pathToward reads the capture until a read waits out its timeout, and counts the IPv6 packets toward destination it read
+func pathToward(capture int, destination netip.Addr) int {
+	buf := make([]byte, 1<<16)
+	count := 0
+	for {
+		n, _, err := unix.Recvfrom(capture, buf, 0)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return count
+		}
+		if n >= 40 && buf[0]>>4 == 6 && netip.AddrFrom16([16]byte(buf[24:40])) == destination {
+			count++
+		}
+	}
+}
+
 // switchState is the leaf's switch as status reads it, "off" where it reads none
 func (lab *pathLab) switchState() string {
 	exit := lab.nodes[pathLeaf].client.Status().Kernel.Exit
@@ -479,9 +533,14 @@ func (lab *pathLab) lastPathEvent() string {
 // with a's egress back the defaults return within the settle of a pass of the table's change, and the sockets leave a's uplink again
 // a neighbor's ping on a link forward does not name leaves the leaf's uplink and reaches neither exit, and one on the link forward names, from a source the leaf does not own,
 // is dropped by mesh_entry on its way into the tun, counted there and never read by the tun
+// a ping of each family from a host of the LAN the leaf announces on a link forward names leaves a's uplink alone, a's allow holding the LAN outside the overlay
 // a path through the waypoint's End to a, reloaded in, carries the sockets out of a's uplink through the waypoint
 // a path of the waypoint's End alone leaves by no uplink, its packets dropped at the waypoint
-// and with the waypoint gone the defaults go, down at its SID, and the sockets leave by no uplink
+// with a's egress turned off behind the waypoint, which still resolves, the defaults go, down at a's SID, and the sockets leave by no uplink
+// and with via naming a's SID outside the overlay and the waypoint gone, b's default the leaf's one route to that SID,
+// a datagram sent before the steered defaults go is answered at the leaf and nothing toward the SID leaves b's uplink, then the defaults go, down at that SID, and the sockets leave by no uplink
+// and with b announcing a subnet over that SID, a route counting as no default, the path stays down at the SID with no route of its own,
+// and the sockets leave by no uplink and nothing toward the SID leaves b's uplink
 // and a clean stop of the reconciler leaves no rule or route of its protocol and no table ranet3_fallback
 func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 	lab := startPathLab(t, pathSIDA)
@@ -573,7 +632,27 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 			}
 		}
 	})
-	t.Run("a path through the waypoint", func(t *testing.T) {
+	t.Run("LAN host behind the leaf", func(t *testing.T) {
+		for _, family := range []int{4, 6} {
+			next++
+			egressed := a.client.Mesh.SegmentCounters().Egressed
+			entered := entryDropped(t, leaf.ns, lab.borders[pathLeaf])
+			if err := lab.neighbors[pathLAN].Do(func() (err error) { _, err = exitPing(pathInternet[family], next); return err }); err != nil {
+				t.Fatalf("ping from the LAN host: %v", err)
+			}
+			// the leaf announces the LAN, so mesh_entry takes its source for one the leaf owns
+			entryMoved(t, entered, entryDropped(t, leaf.ns, lab.borders[pathLeaf]), map[int]uint64{4: 0, 6: 0})
+			for name, place := range map[string]int{"a": pathExitA, "b": pathExitB, "the leaf": pathLeaf} {
+				if _, got := rulesDrain(lab.captures[place])[rulesKey{"echo", next}]; got != (place == pathExitA) {
+					t.Errorf("the LAN host's ping of %s out of %s's uplink: %v, want %v", pathInternet[family], name, got, place == pathExitA)
+				}
+			}
+			if got := a.client.Mesh.SegmentCounters().Egressed; got < egressed+exitPings {
+				t.Errorf("a counted %d egressed of the LAN host's %d pings of %s", got-egressed, exitPings, pathInternet[family])
+			}
+		}
+	})
+	t.Run("path through the waypoint", func(t *testing.T) {
 		lab.reload(t, pathSIDW, pathSIDA)
 		forwarded := w.client.Mesh.SegmentCounters().Forwarded
 		lab.expect(t, &next, "a")
@@ -607,13 +686,57 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 		lab.settle(t, true)
 	})
 	t.Run("waypoint gone", func(t *testing.T) {
-		lab.reload(t, pathSIDW, pathSIDA)
+		lab.reload(t, pathSIDAOutside)
+		lab.expect(t, &next, "a")
+		unrouted := leaf.client.Mesh.PathCounters().Unrouted
 		lab.stopW()
-		waitFor(t, convergeBudget, "the leaf to lose the waypoint's SID", func() bool { return pathLost(leaf, pathSIDW) })
+		waitFor(t, convergeBudget, "the leaf to lose a's SID outside the overlay", func() bool { return pathLost(leaf, pathSIDAOutside) })
+		// a session's end removes its routes with no hold at a leaf that carries no transit, so the next lookup reaches b's default
+		if _, verdict, match := leaf.client.Mesh.Routes.Resolve(netip.Addr{}, pathSIDAOutside); verdict != netstack.RoutePeer || !match.Counted {
+			t.Fatalf("the leaf resolves a's SID outside the overlay as verdict %v, counted %v, not through b's default alone, so this proves nothing of the window", verdict, match.Counted)
+		}
+		lab.sendNow(t, &next)
+		if got := pathToward(lab.captures[pathExitB], pathSIDAOutside); got != 0 {
+			t.Errorf("%d packets toward a's SID outside the overlay left b's uplink", got)
+		}
+		if got := leaf.client.Mesh.PathCounters().Unrouted; got <= unrouted {
+			t.Errorf("the leaf counted %d unrouted along the path, as before the datagrams sent with b's default its one route to a's SID", got)
+		}
 		lab.settle(t, false)
-		lab.awaitDown(t, pathSIDW)
-		lab.awaitEvent(t, "down "+pathSIDW.String()+" none")
+		lab.awaitDown(t, pathSIDAOutside)
+		lab.awaitEvent(t, "down "+pathSIDAOutside.String()+" none")
 		lab.awaitSwitch(t, kernel.FallbackHolding)
+		lab.refused(t, &next)
+	})
+	t.Run("b's subnet over a's SID", func(t *testing.T) {
+		b := lab.nodes[pathExitB]
+		cfg := *b.client.config()
+		route := babel.Routes{Announce: append(slices.Clone(cfg.Cap.Route.Announce), schema.Announce{Prefix: schema.PrefixFrom(pathSubnetB)})}
+		cfg.Cap.Route = &route
+		writeConfig(t, b.configPath, &cfg)
+		if err := b.ns.Do(func() error { return b.client.ReloadFrom(b.configPath) }); err != nil {
+			t.Fatalf("b's reload to announce %s: %v", pathSubnetB, err)
+		}
+		waitFor(t, convergeBudget, "the leaf to reach a's SID through b's subnet", func() bool {
+			_, verdict, match := leaf.client.Mesh.Routes.Resolve(netip.Addr{}, pathSIDAOutside)
+			return verdict == netstack.RoutePeer && !match.Counted && match.Bits == pathSubnetB.Bits()
+		})
+		// the pass the table's change starts reads the SID again, and a pass taking the subnet for its route would install the steered defaults
+		held := func(path control.KernelExitPath) bool {
+			return path.State == "down" && path.Down == pathSIDAOutside.String() && path.Verdict == "no route of its own" && len(path.Installed) == 0
+		}
+		path := lab.path(t)
+		for deadline := time.Now().Add(rulesSettle); !held(path) && time.Now().Before(deadline); path = lab.path(t) {
+			time.Sleep(labPoll)
+		}
+		if !held(path) {
+			t.Errorf("status reads the path %+v, want it down at %s with no route of its own and nothing installed", path, pathSIDAOutside)
+		}
+		lab.sendNow(t, &next)
+		if got := pathToward(lab.captures[pathExitB], pathSIDAOutside); got != 0 {
+			t.Errorf("%d packets toward a's SID outside the overlay left b's uplink", got)
+		}
+		lab.settle(t, false)
 		lab.refused(t, &next)
 	})
 	t.Run("clean stop", func(t *testing.T) {

@@ -27,13 +27,15 @@ import (
 // local segment: without the block, no local segment, and with it, an overlay
 // of at least one entry, each a masked prefix of its own family no shorter
 // than the family's floor and longer than zero, none written twice, holding an
-// IPv6 prefix beside a local segment, covering every allow entry, and
-// overlapping no advertised prefix but a default. Without the block no
-// translate class is none either, since nothing but the overlay tells the
-// mesh's node addresses from the LANs the none sets leave out.
-func borderTaken(border *egress.Border, allow, advertise []schema.Prefix, none bool) bool {
+// IPv6 prefix beside a local segment, covering an IPv6 entry of each allow list
+// that holds an entry it does not cover, and overlapping no advertised prefix
+// but a default. An entry covers by itself, which no overlay of the pool's
+// splits from a union of entries. Without the block no translate class is none
+// either, since nothing but the overlay tells the mesh's node addresses from
+// the LANs the none sets leave out.
+func borderTaken(border *egress.Border, allows [][]schema.Prefix, advertise []schema.Prefix, none bool) bool {
 	if border == nil {
-		return len(allow) == 0 && !none
+		return len(allows) == 0 && !none
 	}
 	if len(border.Overlay) == 0 {
 		return false
@@ -49,15 +51,21 @@ func borderTaken(border *egress.Border, allow, advertise []schema.Prefix, none b
 			return false
 		}
 	}
-	if len(allow) > 0 && !slices.ContainsFunc(border.Overlay, func(entry schema.Prefix) bool { return entry.Addr().Is6() }) {
+	if len(allows) > 0 && !slices.ContainsFunc(border.Overlay, func(entry schema.Prefix) bool { return entry.Addr().Is6() }) {
 		return false
 	}
-	for _, allowed := range allow {
-		covered := false
+	covered := func(allowed schema.Prefix) bool {
 		for _, entry := range border.Overlay {
-			covered = covered || entry.Addr().BitLen() == allowed.Addr().BitLen() && entry.Bits() <= allowed.Bits() && maskedTo(allowed, entry.Bits()) == entry.Addr()
+			if entry.Addr().BitLen() == allowed.Addr().BitLen() && entry.Bits() <= allowed.Bits() && maskedTo(allowed, entry.Bits()) == entry.Addr() {
+				return true
+			}
 		}
-		if !covered {
+		return false
+	}
+	for _, allow := range allows {
+		uncovered := slices.ContainsFunc(allow, func(allowed schema.Prefix) bool { return !covered(allowed) })
+		ipv6 := slices.ContainsFunc(allow, func(allowed schema.Prefix) bool { return allowed.Addr().Is6() && covered(allowed) })
+		if uncovered && !ipv6 {
 			return false
 		}
 	}
@@ -145,17 +153,20 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 		}
 		allow := []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3fff:a::/36")}
 		segments := []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:306::3"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow}}
+		allows := [][]schema.Prefix{allow}
 		if hegel.Draw(ht, hegel.Booleans()) {
 			// a second egress segment, whose allow list the overlay covers or
-			// misses apart from the first's
+			// misses apart from the first's, a LAN outside it beside an IPv6 entry inside among them
 			second := slices.Clone(hegel.Draw(ht, hegel.SampledFrom([][]schema.Prefix{
 				{schema.MustPrefix("203.0.113.128/25"), schema.MustPrefix("3fff:a:1::/48")},
 				{schema.MustPrefix("198.18.4.0/24"), schema.MustPrefix("3fff:c::/32")},
 				{schema.MustPrefix("3fff:c::/32")},
+				{schema.MustPrefix("3fff:a:1::/48"), schema.MustPrefix("2001:db8:f3::/64"), schema.MustPrefix("198.51.100.64/28")},
+				{schema.MustPrefix("203.0.113.128/25"), schema.MustPrefix("2001:db8:f3::/64")},
 				allow,
 			})))
 			segments = append(segments, srv6.Segment{SID: schema.MustAddr("3fff:b:0:306::4"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: second})
-			allow = slices.Concat(allow, second)
+			allows = append(allows, second)
 		}
 		// a class of the leaves' addresses translating auto or none, beside a longer one translating auto
 		translate := slices.Clone(hegel.Draw(ht, hegel.SampledFrom([][]egress.Class{
@@ -178,23 +189,23 @@ func TestBorderLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 		}
 		switch {
 		case hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)):
-			c.Cap.Segment, c.Cap.Egress, allow, advertise, translate = nil, nil, nil, nil, nil
+			c.Cap.Segment, c.Cap.Egress, allows, advertise, translate = nil, nil, nil, nil, nil
 		case hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)):
 			// cap.egress alone, an exit advertising the defaults with no segment
 			advertise = []schema.Prefix{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0")}
-			c.Cap.Segment, c.Cap.Egress.Advertise, allow = nil, advertise, nil
+			c.Cap.Segment, c.Cap.Egress.Advertise, allows = nil, advertise, nil
 		}
 		none := slices.ContainsFunc(translate, func(class egress.Class) bool { return class.To.None })
 		err := c.Validate()
-		if want := borderTaken(border, allow, advertise, none); want != (err == nil) {
-			ht.Fatalf("%s beside allow %v, advertise %v and translate %v loaded with %v, want taken %v", describe(border), allow, advertise, translate, err, want)
+		if want := borderTaken(border, allows, advertise, none); want != (err == nil) {
+			ht.Fatalf("%s beside allow %v, advertise %v and translate %v loaded with %v, want taken %v", describe(border), allows, advertise, translate, err, want)
 		}
 		// refused for the absent block itself, not later for the local table it leaves unbounded
-		if border == nil && len(allow) > 0 && !strings.Contains(fmt.Sprint(err), "is written and cap.border is absent") {
+		if border == nil && len(allows) > 0 && !strings.Contains(fmt.Sprint(err), "is written and cap.border is absent") {
 			ht.Fatalf("local segments without cap.border were refused with %v, want the absent block named", err)
 		}
 		// and a none class without it for that, by name
-		if border == nil && len(allow) == 0 && none && !strings.Contains(fmt.Sprint(err), "is none and cap.border is absent") {
+		if border == nil && len(allows) == 0 && none && !strings.Contains(fmt.Sprint(err), "is none and cap.border is absent") {
 			ht.Fatalf("a none class without cap.border was refused with %v, want the class and the absent block named", err)
 		}
 		if err == nil {

@@ -244,6 +244,116 @@ func TestNoSIDActsOnAnOuterSourceOutsideTheOverlay(t *testing.T) {
 	})
 }
 
+// bounds is the first and the last address of prefix
+func bounds(prefix netip.Prefix) (netip.Addr, netip.Addr) {
+	first, last := prefix.Addr().AsSlice(), prefix.Addr().AsSlice()
+	for bit := prefix.Bits(); bit < 8*len(first); bit++ {
+		first[bit/8] &^= 0x80 >> (bit % 8)
+		last[bit/8] |= 0x80 >> (bit % 8)
+	}
+	lo, _ := netip.AddrFromSlice(first)
+	hi, _ := netip.AddrFromSlice(last)
+	return lo, hi
+}
+
+// spanned is the model of an allow entry inside the overlay: the overlay's
+// spans of entry's family, sorted by their first address, leave no gap from
+// entry's first address to its last
+func spanned(overlay []netip.Prefix, entry netip.Prefix) bool {
+	var spans [][2]netip.Addr
+	for _, prefix := range overlay {
+		if prefix.Addr().BitLen() == entry.Addr().BitLen() {
+			lo, hi := bounds(prefix)
+			spans = append(spans, [2]netip.Addr{lo, hi})
+		}
+	}
+	slices.SortFunc(spans, func(a, b [2]netip.Addr) int { return a[0].Compare(b[0]) })
+	at, last := bounds(entry)
+	for _, span := range spans {
+		if span[0].Compare(at) > 0 {
+			return false
+		}
+		if span[1].Compare(last) >= 0 {
+			return true
+		}
+		if span[1].Compare(at) >= 0 {
+			at = span[1].Next()
+		}
+	}
+	return false
+}
+
+// An egress segment under a drawn overlay hands egress exactly the packets
+// whose outer source an allow entry inside the overlay holds and whose inner
+// source any allow entry holds, so an entry outside the overlay admits inner
+// sources alone. The allow list holds entries inside an overlay entry, one
+// reaching past it now and then, and entries drawn anywhere, and both sources
+// lie on either side of an edge of the overlay and of the list.
+func TestEgressAdmitsAnOuterSourceOnlyThroughAnEntryInsideTheOverlay(t *testing.T) {
+	exit := addr("3fff:b:0:206::3")
+	pbt.Check(t, func(ht *hegel.T) {
+		overlay := hegel.Draw(ht, allowLists())
+		allow := hegel.Draw(ht, allowLists())
+		for _, prefix := range overlay {
+			if !hegel.Draw(ht, hegel.Booleans()) {
+				continue
+			}
+			// an entry inside it, or one holding it from a shorter length now and then
+			floor := map[bool]int{false: schema.MinSourceBits4, true: schema.MinSourceBits6}[prefix.Addr().Is6()]
+			bits := hegel.Draw(ht, pbt.Spanning(prefix.Bits(), prefix.Addr().BitLen()))
+			if prefix.Bits() > floor && hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)) {
+				bits = hegel.Draw(ht, pbt.Spanning(floor, prefix.Bits()-1))
+			}
+			if entry := netip.PrefixFrom(hegel.Draw(ht, sources([]netip.Prefix{prefix}, prefix.Addr().Is4())), bits).Masked(); !entry.Addr().Is4In6() {
+				allow = append(allow, entry)
+			}
+		}
+		allow = slices.Compact(slices.SortedFunc(slices.Values(allow), func(a, b netip.Prefix) int {
+			if c := a.Addr().Compare(b.Addr()); c != 0 {
+				return c
+			}
+			return a.Bits() - b.Bits()
+		}))
+		written := func(prefixes []netip.Prefix) []schema.Prefix {
+			out := make([]schema.Prefix, len(prefixes))
+			for i, prefix := range prefixes {
+				out[i] = schema.PrefixFrom(prefix)
+			}
+			return out
+		}
+		table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: written(allow)}}, written(overlay))
+		if err != nil {
+			ht.Fatalf("an egress segment allowing %v under overlay %v was refused: %v", allow, overlay, err)
+		}
+		inside := slices.DeleteFunc(slices.Clone(allow), func(entry netip.Prefix) bool { return !spanned(overlay, entry) })
+
+		inner := hegel.Draw(ht, innerPackets())
+		v4 := inner[0]>>4 == 4
+		from := hegel.Draw(ht, sources(allow, v4))
+		offset := 8
+		if v4 {
+			offset = 12
+		}
+		copy(inner[offset:], from.AsSlice())
+		outer := hegel.Draw(ht, sources(slices.Concat(allow, overlay), false))
+		raw, err := Encapsulate(inner, exit, []netip.Addr{exit})
+		if err != nil {
+			ht.Fatalf("Encapsulate refused %d bytes: %v", len(inner), err)
+		}
+		// written in place, since Encapsulate refuses a source no segment routed packet carries and the table must refuse it too
+		copy(raw[8:24], outer.AsSlice())
+
+		result := table.Handle(raw)
+		carried := listed(overlay, outer) && listed(inside, outer) && listed(allow, from)
+		switch {
+		case carried && result.Action != ActionEgress:
+			ht.Fatalf("from %s and %s, allowed %v under overlay %v, inside %v, Handle returned %v (%v), want egress", outer, from, allow, overlay, inside, result.Action, result.Err)
+		case !carried && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
+			ht.Fatalf("from %s and %s, allowed %v under overlay %v, inside %v, Handle returned %v (%v), want a refusal of the source", outer, from, allow, overlay, inside, result.Action, result.Err)
+		}
+	})
+}
+
 // allowEntries draws an allow entry a file could write, IPv6 or IPv4 as asked,
 // at its family's floor, at full length or anywhere between, with nothing
 // below its length

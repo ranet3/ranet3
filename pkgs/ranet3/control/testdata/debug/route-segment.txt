@@ -5,7 +5,7 @@ Then     End.DT46 takes out the inner packet, which this view's packet carries n
 
 Packet    from 3fff::3 to 3fff:5::20, through the session example/gateway:1@0
 Segment   3fff:5::20 End.DT46 deliver egress allow 3fff::1/128, served, ready for ipv4
-Source    3fff::3 inside cap.border's overlay, outside the allow list
+Source    3fff::3 inside cap.border's overlay, outside the allow list's entries inside it
 Decision  drop, reason refused
 
 Packet   from 3fff::3 to 3fff:5::1, through the session example/gateway:1@0

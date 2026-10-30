@@ -944,7 +944,8 @@ func (c *Config) validateEgressSegments(segments []srv6.Segment) error {
 // segments cannot both mean: a segment no filter guards and no overlay
 // bounds, a none class with no overlay to keep its hosts' addresses in the
 // entry chain's sets, an overlay admitting no outer source, which is always IPv6, an
-// allow entry a forwarding node's filter would pass forged, and an advertised
+// allow entry outside the overlay, which admits an inner source alone, with no
+// IPv6 entry inside it to admit the outer source, and an advertised
 // prefix whose own hosts the filter would drop. The exit default overlaps
 // everything and is left out, since nothing behind an exit is numbered from
 // the mesh.
@@ -972,13 +973,11 @@ func (c *Config) validateBorder() error {
 		return fmt.Errorf("config: cap.border overlay holds no IPv6 prefix, so cap.segment local %s would refuse every packet, whose outer source is always IPv6", local[0].SID)
 	}
 	for _, segment := range c.Segments().Egress() {
-		for _, allowed := range segment.Allow {
-			covered := slices.ContainsFunc(border.Overlay, func(overlay schema.Prefix) bool {
-				return overlay.Bits() <= allowed.Bits() && overlay.Contains(allowed.Addr())
-			})
-			if !covered {
-				return fmt.Errorf("config: cap.segment local %s allow %s lies outside cap.border overlay, so every forwarding node's filter lets a forged %s source through to it", segment.SID, allowed, allowed)
-			}
+		inside := func(allowed schema.Prefix) bool { return schema.InsideOverlay(allowed.Prefix, border.Overlay) }
+		outside := slices.IndexFunc(segment.Allow, func(allowed schema.Prefix) bool { return !inside(allowed) })
+		ipv6Inside := slices.ContainsFunc(segment.Allow, func(allowed schema.Prefix) bool { return allowed.Addr().Is6() && inside(allowed) })
+		if outside >= 0 && !ipv6Inside {
+			return fmt.Errorf("config: cap.segment local %s allow %s lies outside cap.border overlay, which admits it as an inner source alone, and no IPv6 entry of the list lies inside the overlay to admit an outer source, which is always IPv6", segment.SID, segment.Allow[outside])
 		}
 	}
 	if c.Cap.Egress == nil {

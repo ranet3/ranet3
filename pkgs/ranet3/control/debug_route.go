@@ -96,8 +96,9 @@ type RouteInfo struct {
 type RouteSegment struct {
 	LocalSegment
 	// Overlay is the source lying in cap.border's overlay, which every SID
-	// asks first. Allowed is it lying in an egress segment's allow list,
-	// which only such a segment asks, of a source Overlay admits.
+	// asks first. Allowed is it lying in an entry of an egress segment's allow
+	// list inside the overlay, which only such a segment asks, of a source
+	// Overlay admits.
 	Overlay bool `json:"overlay"`
 	Allowed bool `json:"allowed,omitempty"`
 	// Decision and Reason are the segment's drop of a source it refuses, as a
@@ -322,7 +323,7 @@ func segmentRows(info RouteInfo, s RouteSegment) [][]string {
 	case s.Overlay && s.Egress != nil && s.Allowed:
 		source = "inside cap.border's overlay and the allow list"
 	case s.Overlay && s.Egress != nil:
-		source = "inside cap.border's overlay, outside the allow list"
+		source = "inside cap.border's overlay, outside the allow list's entries inside it"
 	case s.Overlay:
 		source = "inside cap.border's overlay"
 	}

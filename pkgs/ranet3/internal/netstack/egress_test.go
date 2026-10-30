@@ -668,6 +668,48 @@ func TestEgressSegmentRefusesAnInnerPacketTheMeshRoutesNoReplyTo(t *testing.T) {
 	}
 }
 
+// an allow entry outside the overlay admits a LAN behind the node the outer source names by its inner source alone
+// a LAN host of each family the mesh routes a reply to is egressed, and one the mesh routes none to is refused as any inner source is
+// and an outer source only an entry reaching past the overlay holds is refused, its inner LAN source listed and routed
+func TestEgressSegmentAdmitsALANBehindAListedNodeByItsInnerSource(t *testing.T) {
+	m, meshTUN := egressMesh(t)
+	table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(egressExit), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: []schema.Prefix{
+		schema.MustPrefix("3fff:b:0:200::/64"), schema.MustPrefix("2001:db8:f3::/64"), schema.MustPrefix("203.0.113.64/28"), schema.MustPrefix("3ff0::/12"),
+	}}}, []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetSegments(table)
+	back := &recordingPeer{}
+	leaf := back.peer(t, "headend")
+	unlisted := segAddr("3fff:b:0:600::1")
+	for _, prefix := range []netip.Prefix{netip.PrefixFrom(headend, 128), netip.PrefixFrom(unlisted, 128), segPrefix("2001:db8:f3::/65"), segPrefix("203.0.113.64/29")} {
+		m.Routes.Set(netip.Prefix{}, prefix, leaf)
+	}
+	internet := map[int]netip.Addr{4: segAddr("198.51.100.9"), 6: segAddr("2001:db8:99::9")}
+	lan := map[int]netip.Addr{4: segAddr("203.0.113.70"), 6: segAddr("2001:db8:f3::20")}
+	unrouted := map[int]netip.Addr{4: segAddr("203.0.113.78"), 6: segAddr("2001:db8:f3:0:8000::20")}
+	var frames, want [][]byte
+	for _, family := range []int{4, 6} {
+		admitted := udpPacket(lan[family], internet[family], 64, false)
+		frames = append(frames,
+			steered(t, admitted, headend, egressExit),
+			steered(t, udpPacket(unrouted[family], internet[family], 64, false), headend, egressExit),
+			steered(t, udpPacket(lan[family], internet[family], 64, false), unlisted, egressExit))
+		want = append(want, admitted)
+	}
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	if writes := tunWrites(meshTUN); len(writes) != 1 || !slices.EqualFunc(writes[0], want, bytes.Equal) {
+		t.Errorf("the tun took %q, want the LAN host's packet of each family alone", writes)
+	}
+	if counters := m.SegmentCounters(); counters.Egressed != 2 || counters.Refused != 4 || counters.Dropped != 4 || counters.Answered != 0 {
+		t.Errorf("two LAN packets admitted and four refused counted %+v", counters)
+	}
+	if sent := back.packets(t); len(sent) != 0 {
+		t.Errorf("a refused packet was answered with %q", sent)
+	}
+}
+
 // a batch of egress results refused for an inner source the mesh routes no reply to, or for an inner destination the mesh routes, allocates at most once more than the same batch delivered to the mesh tun
 // since the address is boxed only for the one refusal an interval reports
 func TestEgressRefusalAllocatesOnceMoreThanADelivery(t *testing.T) {
