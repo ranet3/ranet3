@@ -129,8 +129,8 @@ unless run as root.
   that the socket reads back the bytes sent. 2 more check that a lane's write
   into the tun allocates nothing and keeps no reference to the frames it wrote,
   whether its packets go alone or coalesce.
-- `internal/client` has tests under the same prefix that run a node on a real
-  TUN device:
+- `internal/client` has these tests under the same prefix, which run a node, or
+  a part of one, on a real TUN device or in a namespace of its own:
   - A SYN arriving through a session between 2 nodes on loopback reaches the tun
     with its MSS lowered.
   - A reload moves the tun's MTU.
@@ -175,6 +175,11 @@ unless run as root.
   - `TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement` reads what the mesh
     egresses into a real tun while the announcement is rebuilt, and checks that
     it already follows the readiness just given.
+  - `TestTUNAdvertisedEgressWaitsOnReadyAndTheAnnouncement` reads what the mesh
+    egresses into a real tun through an advertised default of each family, and
+    checks that a family egresses only while the readiness given holds it and
+    the announcement carries its default, and that a family the readiness takes
+    away stops before the announcement is rebuilt.
   - `TestTUNBorderDropsAForgedSourceAtTheUplink` runs an exit node with
     `cap.border` and a far host behind a veth pair. A packet from beyond the
     uplink with a source outside the overlay crosses the mesh tun, while one
@@ -205,6 +210,30 @@ unless run as root.
     line with transit off at the middle node, which answers administratively
     prohibited, and still carries what the sender steers through its End.DT46
     SID.
+  - `TestTUNTraceShowsTheMiddleNodesDecisions` runs the line with transit on and
+    traces its middle node over its control socket as uid 0. In each family, a
+    datagram from one end to the other draws a forward record naming its arrival
+    on a session, the peer it came from and the next peer, with no payload, one
+    at a hop limit of 1 draws an answer expired and sent, and one into a prefix
+    the middle node holds unreachable draws an answer held and sent. A second
+    trace whose filter matches nothing takes no record, both traces are recorded
+    as uid 0's, and the middle node holds no tracer once both close.
+  - `TestTUNDebugRouteNamesTheIPv6DropWhereTheKernelMakesIt` writes an IPv6
+    packet into a tun in an empty namespace under settings of `all`'s and the
+    tun's `forwarding` and the tun's `force_forwarding`, those of
+    `force_forwarding` left out where the kernel has none. It checks that
+    `debug route` names the drop exactly where the kernel counts one in place of
+    a forwarded packet.
+  - `TestTUNDebugRouteNamesThePathTheKernelTakesForEachDestinationKind` asks the
+    kernel of an empty namespace for the route of each kind of destination,
+    unicast, local, broadcast, the limited broadcast, joined and unjoined
+    groups, link-local, `0.0.0.0` and `::`, as this host's own packet and as one
+    arriving on a link, in both families where the kind exists, with forwarding
+    off, multicast routing on and no IPv6 default where those change the answer.
+    It checks the kernel's answer, that `debug route`'s `Kernel`, `Rule`,
+    `Route` and `Leaves` lines name the path the kernel takes for each, and that
+    its `Socket` line, for this host's own packet to `::`, says the answer may
+    not be that packet's path.
   - `TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink` runs an exit
     that announces a default of each family, with forwarding on and a default
     route out of an uplink to a fourth namespace. Transit between its 2

@@ -565,7 +565,7 @@ connections to the reads.
 | `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target                        |
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                             |
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                |
-| `netstack.transit.dropped`            | the forwarding decision dropped a session's packet or a read off the tun, with why        |
+| `netstack.transit.dropped`            | a drop the transit counters count, but a read counted as multicast, with why              |
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit              |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                    |
 
@@ -974,9 +974,10 @@ the read returned. On Linux, a tun whose link was deleted reads
 A `netstack.transit.dropped` is recorded at most once every 30 seconds, as is
 its warning in the log, for the packet that dropped first in that time. `reason`
 is the `reason` label of `ranet3_transit_packets_total`, which counts every
-drop, as [metrics](../metrics.md#transit-counters) describes. `src` and `dst`
-read `invalid IP` for a frame that holds no whole IP packet, and for a read off
-the tun that is not exactly one.
+drop, as [metrics](../metrics.md#transit-counters) describes. A read off the tun
+dropped as `multicast` records neither, and the counter alone counts it. `src`
+and `dst` read `invalid IP` for a frame that holds no whole IP packet, and for a
+read off the tun that is not exactly one IP packet.
 
 A `netstack.icmp.withheld` is recorded when one of the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit) withholds an answer
@@ -1011,4 +1012,7 @@ which `go test ./control -update` rewrites. A renderer prints the ages the
 daemon computed rather than reading the clock, so its output is the same on
 every run. The check that no debug answer has room for key material, and the
 property that every wire type survives a trip through JSON, walk each registered
-path's type without being told about a new one.
+path's type without being told about a new one. The check passes one field by
+name, a trace record's `payload`, the packet's bytes `--payload` asks for, which
+hold none of the node's keys and which the plaintext class keeps to uid 0. Any
+other field of bytes fails it.
