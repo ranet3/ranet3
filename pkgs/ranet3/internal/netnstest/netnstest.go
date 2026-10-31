@@ -308,6 +308,20 @@ func SetLinkMTU(index, mtu int) error {
 	return netlink.Request(unix.RTM_NEWLINK, 0, slices.Concat(IfInfo(index, 0), Attr(unix.IFLA_MTU, U32(uint32(mtu)))))
 }
 
+// DelLink deletes the link name in the namespace of the calling thread
+func DelLink(name string) error {
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		return err
+	}
+	netlink, err := OpenNetlink()
+	if err != nil {
+		return err
+	}
+	defer netlink.Close()
+	return netlink.Request(unix.RTM_DELLINK, 0, IfInfo(link.Index, 0))
+}
+
 // IfInfo is an ifinfomsg for link index that sets flags and changes nothing else
 func IfInfo(index int, flags uint32) []byte {
 	message := make([]byte, unix.SizeofIfInfomsg)

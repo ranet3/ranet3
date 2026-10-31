@@ -303,7 +303,7 @@ func TestSessionMovedUnderTheFloorHandsItsFragmentingOver(t *testing.T) {
 	}
 	// the tests after it in the process find the namespace as the claim left it
 	t.Cleanup(func() {
-		if err := netlink.Request(unix.RTM_DELLINK, 0, netnstest.IfInfo(narrow.Index, 0)); err != nil {
+		if err := netnstest.DelLink("narrow"); err != nil {
 			t.Errorf("delete the dummy link: %v", err)
 		}
 	})

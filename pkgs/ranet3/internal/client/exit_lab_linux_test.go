@@ -161,12 +161,13 @@ func hostDefaults(t *testing.T, ns *netnstest.Thread, link string, gateway4, gat
 }
 
 // exitDaemon is the leaf's node and its reconciler running over the mesh's table, with the peer every learned route goes to,
-// and the table and the announcements it last handed the reconciler
+// and the table and the announcements it last handed the reconciler. stopFor stops both once, the reconciler for a cause.
 type exitDaemon struct {
 	node      *Client
 	routes    *kernel.Reconciler
 	learned   *netstack.Peer
 	stop      func()
+	stopFor   func(cause error)
 	table     kernel.Table
 	announced []netip.Prefix
 }
@@ -198,13 +199,17 @@ func startExitDaemon(t *testing.T, leaf *netnstest.Thread) *exitDaemon {
 		t.Fatalf("build the reconciler: %v", err)
 	}
 	d.node.SetReconcilerNetwork(d.routes.NetworkChanged)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	var runs sync.WaitGroup
-	d.stop = sync.OnceFunc(func() {
-		cancel()
-		runs.Wait()
-		d.node.Close()
-	})
+	var once sync.Once
+	d.stopFor = func(cause error) {
+		once.Do(func() {
+			cancel(cause)
+			runs.Wait()
+			d.node.Close()
+		})
+	}
+	d.stop = func() { d.stopFor(nil) }
 	t.Cleanup(d.stop)
 	runs.Go(func() {
 		if err := d.routes.Run(ctx); err != nil {
