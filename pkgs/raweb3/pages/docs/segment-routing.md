@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-28
+updated: 2026-10-31
 order: 60
 ---
 
@@ -346,7 +346,9 @@ refused, counted among the dropped and never answered: an outer source outside
 the overlay at any SID, or at an egress segment one of the reasons below. The
 Steering line lists the entries with the steered count, and the count for each
 reason a steered packet was lost once it is above 0. `ranet3 debug segments`
-shows each segment and policy field by field, as
+shows each segment and policy field by field, `ranet3 debug route --peer`
+whether a segment admits the source of a packet arriving through a session, and
+`ranet3 debug trace` what the packets a segment acts on meet, as
 [debugging](development/debug.md) describes.
 
 An egress segment's packets are counted 3 ways. Egressed is a packet handed to

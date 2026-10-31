@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-10-30
+updated: 2026-10-31
 order: 90
 ---
 
@@ -140,37 +140,37 @@ readiness holds back both modes.
 `ranet3_transit_packets_total` counts what the
 [forwarding decision](routing.md#transit) did with each packet a session
 delivered that no segment of this node took, and each read off the tun it
-dropped for a multicast destination or the limited broadcast, or at the mesh's
-edge, where it checks what the tun hands this node before the packet enters the
-mesh. `decision` is `forwarded`, `delivered`, `dropped`, `answered` or
-`unanswered`, and `reason` names why a packet was dropped and is empty for every
-other decision. The dropped series sum to the packets dropped. `answered` also
-counts each answer to a read off the tun that no route reaches or a hold holds,
-a read counted under no other decision.
+dropped for not being exactly one IP packet, for a multicast destination or the
+limited broadcast, or at the mesh's edge, where it checks what the tun hands
+this node before the packet enters the mesh. `decision` is `forwarded`,
+`delivered`, `dropped`, `answered` or `unanswered`, and `reason` names why a
+packet was dropped and is empty for every other decision. The dropped series sum
+to the packets dropped. `answered` also counts each answer to a read off the tun
+that no route reaches or a hold holds, a read counted under no other decision.
 
-| `decision`   | `reason`          | Counts                                                                                                                                                                                                                 |
-| ------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `forwarded`  |                   | packets sent on to a peer, one cut into fragments counted once                                                                                                                                                         |
-| `delivered`  |                   | packets written to the tun, for this node's own destinations, IPv6 link-local ones, multicast and the limited broadcast, or handed to the exit through a prefix `cap.egress` advertises that counts as a default       |
-| `dropped`    | `expired`         | packets whose hop limit or TTL ran out here                                                                                                                                                                            |
-| `dropped`    | `no_route`        | packets no entry of the table holds                                                                                                                                                                                    |
-| `dropped`    | `held`            | packets inside a prefix held unreachable                                                                                                                                                                               |
-| `dropped`    | `refused`         | packets for another node while `cap.transit` is off                                                                                                                                                                    |
-| `dropped`    | `invalid`         | frames holding no whole IP packet, IPv4 headers failing their checks, IPv4 options that cannot be read, and tun reads whose header chain runs past 16 headers or ends inside one, or whose inner packet cannot be read |
-| `dropped`    | `martian`         | packets from or to an address no router forwards, but those to an IPv6 link-local address, multicast or the limited broadcast                                                                                          |
-| `dropped`    | `source_route`    | IPv4 packets carrying a loose or strict source route                                                                                                                                                                   |
-| `dropped`    | `unrouted_source` | packets an exit would egress, through a route that counts as a default, whose source the mesh routes no reply to                                                                                                       |
-| `dropped`    | `not_ready`       | packets an exit would egress through a prefix `cap.egress` advertises, while it announces no prefix of that family                                                                                                     |
-| `dropped`    | `too_big`         | packets larger than the session to their next hop, answered or past cutting                                                                                                                                            |
-| `dropped`    | `multicast`       | reads off the tun to a multicast destination or the limited broadcast, which the mesh forwards none of                                                                                                                 |
-| `dropped`    | `forged`          | reads off the tun from a source the table routes to another node or holds unreachable, through a route that does not count as a default, or an overlay source this node does not own                                   |
-| `dropped`    | `routing_header`  | reads off the tun walked to a routing header of type 0, 1 or 4, or a routing type ranet3 does not recognize                                                                                                            |
-| `dropped`    | `sid`             | reads off the tun addressed to one of this node's own SIDs                                                                                                                                                             |
-| `dropped`    | `unowned_source`  | reads off the tun toward an entry that counts as a default, from a source this node does not own                                                                                                                       |
-| `dropped`    | `nested`          | reads off the tun whose inner packet, opened one level deep, carries another IP packet inside                                                                                                                          |
-| `dropped`    | `looped`          | reads off the tun the table answers as this node's own, which the mesh could only hand back to the tun                                                                                                                 |
-| `answered`   |                   | ICMP errors sent about dropped packets                                                                                                                                                                                 |
-| `unanswered` |                   | dropped packets the decision would answer that find no address of their family to come from                                                                                                                            |
+| `decision`   | `reason`          | Counts                                                                                                                                                                                                                                                     |
+| ------------ | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `forwarded`  |                   | packets sent on to a peer, one cut into fragments counted once                                                                                                                                                                                             |
+| `delivered`  |                   | packets written to the tun, for this node's own destinations, IPv6 link-local ones, multicast and the limited broadcast, or handed to the exit through a prefix `cap.egress` advertises that counts as a default                                           |
+| `dropped`    | `expired`         | packets whose hop limit or TTL ran out here                                                                                                                                                                                                                |
+| `dropped`    | `no_route`        | packets no entry of the table holds                                                                                                                                                                                                                        |
+| `dropped`    | `held`            | packets inside a prefix held unreachable                                                                                                                                                                                                                   |
+| `dropped`    | `refused`         | packets for another node while `cap.transit` is off                                                                                                                                                                                                        |
+| `dropped`    | `invalid`         | frames holding no whole IP packet, IPv4 headers failing their checks, IPv4 options that cannot be read, and tun reads that are not exactly one IP packet, whose header chain runs past 16 headers or ends inside one, or whose inner packet cannot be read |
+| `dropped`    | `martian`         | packets from or to an address no router forwards, but those to an IPv6 link-local address, multicast or the limited broadcast                                                                                                                              |
+| `dropped`    | `source_route`    | IPv4 packets carrying a loose or strict source route                                                                                                                                                                                                       |
+| `dropped`    | `unrouted_source` | packets an exit would egress, through a route that counts as a default, whose source the mesh routes no reply to                                                                                                                                           |
+| `dropped`    | `not_ready`       | packets an exit would egress through a prefix `cap.egress` advertises, while it announces no prefix of that family                                                                                                                                         |
+| `dropped`    | `too_big`         | packets larger than the session to their next hop, answered or past cutting                                                                                                                                                                                |
+| `dropped`    | `multicast`       | reads off the tun to a multicast destination or the limited broadcast, which the mesh forwards none of                                                                                                                                                     |
+| `dropped`    | `forged`          | reads off the tun from a source the table routes to another node or holds unreachable, through a route that does not count as a default, or an overlay source this node does not own                                                                       |
+| `dropped`    | `routing_header`  | reads off the tun walked to a routing header of type 0, 1 or 4, or a routing type ranet3 does not recognize                                                                                                                                                |
+| `dropped`    | `sid`             | reads off the tun addressed to one of this node's own SIDs                                                                                                                                                                                                 |
+| `dropped`    | `unowned_source`  | reads off the tun toward an entry that counts as a default, from a source this node does not own                                                                                                                                                           |
+| `dropped`    | `nested`          | reads off the tun whose inner packet, opened one level deep, carries another IP packet inside                                                                                                                                                              |
+| `dropped`    | `looped`          | reads off the tun the table answers as this node's own, which the mesh could only hand back to the tun                                                                                                                                                     |
+| `answered`   |                   | ICMP errors sent about dropped packets                                                                                                                                                                                                                     |
+| `unanswered` |                   | dropped packets the decision would answer that find no address of their family to come from                                                                                                                                                                |
 
 `unanswered` counts a drop before the rules that keep an error from answering a
 packet, such as one about an ICMP error or to a group, and before the rate
