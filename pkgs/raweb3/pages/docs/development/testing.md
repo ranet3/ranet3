@@ -373,27 +373,31 @@ unless run as root.
     `TestTUNKillSwitchHoldsUnderNATAtOutput`,
     `TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun`,
     `TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback`,
-    `TestTUNKillSwitchIsTheSameOnEveryCPU`,
-    `TestTUNKillSwitchKeepsReversePathChecksPassing` and
-    `TestTUNKillSwitchPassesDiscoveryAndTheHostsErrors` run the same leaf under
+    `TestTUNKillSwitchIsTheSameOnEveryCPU` and
+    `TestTUNKillSwitchKeepsReversePathChecksPassing` run the same leaf under
     [the kill switch](../routing.md#the-kill-switch-on-linux) with the mesh's
-    defaults present, retracted, and after a helper process,
+    defaults present, retracted, after a helper process,
     `TestKillSwitchLabCrashHelper`, wrote the switch and was killed with
-    `SIGKILL`. In both families, UDP, TCP and echo from every socket kind, the
-    container's and the LAN host's pings, the listed and unlisted services,
-    other programs' chains and NAT at output, neighbor and router discovery,
-    DHCP, multicast, link-local and the host's Packet Too Big and fragmentation
-    needed leave by the uplink only where the switch passes them, the far side's
-    capture and the tun's showing where each went.
+    `SIGKILL`, and after the lab's own node, started again in mode off, which
+    removes what the helper or an earlier arm left, wrote the switch, lost its
+    tun and stopped for the mesh's failure as the daemon does.
+    `TestTUNKillSwitchPassesDiscoveryAndTheHostsErrors` runs it with the
+    defaults present and retracted alone. In both families, UDP, TCP and echo
+    from every socket kind, the container's and the LAN host's pings, the listed
+    and unlisted services, other programs' chains and NAT at output, neighbor
+    and router discovery, DHCP, multicast, link-local and the host's Packet Too
+    Big and fragmentation needed leave by the uplink only where the switch
+    passes them, the far side's capture and the tun's showing where each went.
     `TestTUNKillSwitchKeepsKernelTunnelsOffTheUplink` runs in the netlink VM,
     where `ip_gre` and `wireguard` load, and finds no GRE or WireGuard outer
     packet of a tunnel whose network counts as the LAN leaving by the uplink.
   - `TestTUNKillSwitchHoldsInModeThree` runs that leaf in
     [mode 3](../routing.md#mode-3-on-linux) with `fallback` unwritten, the
     path's SID resolved with the steered defaults installed, held with both
-    withdrawn, and after the crash helper wrote it, the leaf's border filter
-    running while its node does. Every socket kind, the forwarded links, a
-    listed service and an M2 route chain go where they go in mode 2 under the
+    withdrawn, after the crash helper wrote it, and after the lab's own node
+    wrote it and stopped for the mesh's failure as above, the leaf's border
+    filter running while its node does. Every socket kind, the forwarded links,
+    a listed service and an M2 route chain go where they go in mode 2 under the
     switch, but for what a socket bound to the uplink's address sends to a mesh
     peer, which `mesh_entry` drops and counts, and with `fallback = "uplink"`
     written no table is held and the host's unbound traffic leaves by main once

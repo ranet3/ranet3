@@ -144,12 +144,11 @@ forward = ["docker0", "br-*"]     # names, or patterns as path.Match reads them
 
 With `fallback = "none"` ranet3 writes
 [the kill switch](routing.md#the-kill-switch-on-linux), which holds while no
-exit is live and its table reads back as written. Every stop that withdraws, a
-failure's included, deletes it, and only a stop that withdraws nothing, such as
-`SIGKILL`, leaves it. Its section lists the lines that let the host's traffic
-leave by a link outside the mesh, and the switch's reach. The LAN's line passes
-what that list gives as the LAN, and `lan` adds a network outside the overlay
-that its ranges leave out:
+exit is live and its table reads back as written. Its section lists the lines
+that let the host's traffic leave by a link outside the mesh, the switch's
+reach, and what each stop leaves of it. The LAN's line passes what that list
+gives as the LAN, and `lan` adds a network outside the overlay that its ranges
+leave out:
 
 ```toml
 [cap.exit]

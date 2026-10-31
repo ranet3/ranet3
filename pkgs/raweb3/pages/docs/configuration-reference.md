@@ -811,11 +811,10 @@ programs' rules do beside them.
 - `fallback = "uplink"` sends the host's traffic by its own default wherever the
   mesh's table holds none. `"none"` writes
   [the kill switch](routing.md#the-kill-switch-on-linux), whether an exit is
-  live or not. It stays after a stop that withdraws nothing, such as `SIGKILL`,
-  and every stop that withdraws deletes it, a failure's included. Its section
-  lists the lines that let the host's traffic leave by a link outside the mesh,
-  and gives the rules, the table it writes, how the kernel takes what each line
-  reads, and the switch's reach.
+  live or not. Its section lists the lines that let the host's traffic leave by
+  a link outside the mesh, and gives the rules, the table it writes, how the
+  kernel takes what each line reads, the switch's reach, and what each stop
+  leaves of it.
 - [The kill switch's list](routing.md#the-kill-switch-on-linux) gives the LAN of
   each connected network. `lan` adds a network outside the overlay that the
   list's ranges leave out, such as

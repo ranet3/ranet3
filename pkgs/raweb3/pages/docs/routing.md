@@ -494,13 +494,12 @@ packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
 
 With `cap.exit.fallback = "none"` the host's traffic leaves by a link outside
 the mesh only where a line of the chains below passes it while the table reads
-back as written, whether an exit is live or not, and after a stop that withdraws
-nothing, such as `SIGKILL`. Every stop that withdraws deletes the table, a
-failure's included, as its lifetime below gives. The switch covers the host's
-own traffic and that of the links `forward` names. The chain's forwarded line
-below passes a forwarded packet from a link outside `forwarded`, such as a
-container's or a VM's, whose destination `fib daddr type` does not read as
-local, a type the kernel takes
+back as written, whether an exit is live or not, and after each stop its
+lifetime below says leaves the table. The switch covers the host's own traffic
+and that of the links `forward` names. The chain's forwarded line below passes a
+forwarded packet from a link outside `forwarded`, such as a container's or a
+VM's, whose destination `fib daddr type` does not read as local, a type the
+kernel takes
 [in IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58)
 and
 [in IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89).
@@ -635,19 +634,40 @@ process that wrote it:
   one transaction with its sets. A first pass that fails, such as one that
   cannot list the tun's addresses, is logged as
   `kernel reconcile failed, retrying` and the start dials without the table
-  until a retry writes it. A table left by an earlier instance is taken over.
-- A clean stop, `ranet3 down`, `ranet3 disable reconciler`, the stop a failed
-  tun or mesh causes, and a reload to `"uplink"` or without `cap.exit` withdraw
-  it with the rules. After the failure's stop no switch holds until the
-  supervisor's restart writes it again, a gap
-  [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) declares. A
-  start or a reload whose file asks for no switch deletes one an earlier
-  instance left.
+  until a retry writes it. A table left by an earlier instance is taken over: a
+  pass that reads it back as written keeps it, with its drop's count, and one
+  that does not rewrites it.
+- A clean stop, `ranet3 down`, `ranet3 disable reconciler` and a reload to
+  `"uplink"` or without `cap.exit` withdraw it with the rules. A start or a
+  reload whose file asks for no switch deletes one an earlier instance left.
+- The stop a failed tun causes withdraws the rules, routes and addresses, 5445
+  and mode 3's steered defaults among them, and last the border's table
+  `inet ranet3`, as [the border filter](border-filter.md#where-it-runs) gives
+  for every shutdown. Where `fallback = "none"` is in force, as it is in mode 3
+  unless `"uplink"` is written, it deletes no `ranet3_fallback`: a table that is
+  there it leaves as found, with no rule behind it, whatever the last pass read
+  or wrote, and before any pass an earlier instance's. The chains alone then
+  judge what leaves, by main's routes and the sets the last pass wrote: what
+  5445 sent to a carve-out or this node's own prefix leaves by the LAN's line or
+  the own prefixes' line, what the mesh's default or the steered defaults
+  carried meets the drop unless another line passes it, and a connect they
+  refuse waits out its retransmissions rather than meeting 5450's `ENETUNREACH`.
+  Where no table is there the host's traffic leaves by its routes. Either way it
+  [logs a warning](#watching-it) that says whether a listing found the table,
+  found none, or failed. Where the file in force asks for no switch it deletes
+  the table as the stops above do. The daemon exits 1 for
+  [the supervisor's restart](service.md#restarts-and-the-network). While ranet3
+  stays down, the operator removes a table left with
+  `nft delete table inet ranet3_fallback`.
 - After `SIGKILL`, or another stop that withdraws nothing, the table and the
-  rules stay and the tun goes with the process, so the chains' drop keeps taking
-  the host's traffic that no other line passes until ranet3 starts again or the
-  operator runs `nft delete table inet ranet3_fallback`. Nothing outlives a
-  reboot, so the switch holds from ranet3's start, not from boot.
+  rules stay and the tun goes with the process. A start followed by
+  `ranet3 down` withdraws them. With ranet3 stopped, the operator removes the
+  switch by deleting the table and the rules of `cap.table.proto` in both
+  families: `nft delete table inet ranet3_fallback`,
+  `ip rule flush protocol 155` and `ip -6 rule flush protocol 155` at the
+  default protocol.
+- Nothing outlives a reboot, so the switch holds from ranet3's start, not from
+  boot.
 
 Each pass reads the table back, its hook, priority, lines and set elements.
 While it does not read back as written, or cannot be written, such as on a
@@ -1275,6 +1295,9 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 | `kernel's fallback table holds the host's traffic to the LAN while no exit is live`                                                                            | info  | the switch began holding, or holds again once the table reads back                                                                                            |
 | `kernel's fallback table passes the host's traffic to the exit live through the tun`                                                                           | info  | an exit became live under the switch                                                                                                                          |
 | `kernel's fallback table is no longer asked for`                                                                                                               | info  | a reload or a withdrawal ended the switch                                                                                                                     |
+| `kernel is leaving its fallback table after the mesh failed`                                                                                                   | warn  | under `fallback = "none"` a failed tun's stop left the table it found, with `table` and the last pass's `state`, empty before one                             |
+| `kernel found no fallback table to leave after the mesh failed, so the host's traffic leaves by its routes`                                                    | warn  | under `fallback = "none"` a failed tun's stop found no table, with `table` and the last pass's `state`, empty before one                                      |
+| `kernel is leaving any fallback table there after the mesh failed, which it could not list`                                                                    | warn  | under `fallback = "none"` a failed tun's stop could not list the table and deleted none, with `table`, `state` and `err`                                      |
 | `kernel's fallback table does not read back as written, so the host's own lookups from the uplink's addresses reach main only for its routes longer than /0`   | warn  | the table stopped reading back, with `fault`, once for each fault until it does                                                                               |
 | `kernel could not delete a fallback table an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted`                | warn  | a start or reload asking for no switch, or a start with no `cap.table`, failed to delete the table, with `err` and `fix`                                      |
 | `kernel's first pass has not ended, so sessions are dialed before the fallback table is written`                                                               | warn  | under `fallback = "none"` the start waited `waited` for the reconciler's first pass and dials without it                                                      |

@@ -395,13 +395,12 @@ loader, a reload and the reconciler read one rule for what makes a node an exit,
 so a file that loads never runs the mode on one.
 
 A host using an exit can ask with `cap.exit.fallback = "none"` for the kill
-switch, which holds while no exit is live and its table reads back as written,
-and stays after the daemon is killed with `SIGKILL`. Every stop that withdraws,
-a failure's included, deletes it.
+switch, which holds while no exit is live and its table reads back as written.
 [The kill switch](routing.md#the-kill-switch-on-linux) lists the lines that let
 the host's traffic leave by its own uplink, and gives the rules and the table,
-the switch's reach, and what counts as the LAN. An exit installs no default for
-its own traffic and refuses `cap.exit`, so no exit's egress meets the table.
+the switch's reach, what each stop leaves of it, and what counts as the LAN. An
+exit installs no default for its own traffic and refuses `cap.exit`, so no
+exit's egress meets the table.
 
 ## What an exit carries out
 
