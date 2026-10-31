@@ -65,7 +65,7 @@ const (
 	// classRead is a snapshot without key material, or the event stream
 	// status and sessions already disclose that kind of thing to the socket's group
 	classRead debugClass = iota
-	// classRoot is logs, the trust document and every action
+	// classRoot is every action, which is the probe
 	classRoot
 	// classPlaintext shows the packets the node handles, other nodes' traffic among them, so uid 0 alone may read it
 	// --debug-access group does not open it

@@ -64,7 +64,7 @@
 // # Debug paths
 //
 // the paths under [PathDebug] sit outside the file's argument
-// a profile, a capture or a log level is nothing the file can express
+// a probe or a trace of the packets the node handles is nothing the file can express
 // so the caller's peer credentials authorize them instead
 // a read class path is open to whoever can open the socket
 // a root class path takes uid 0 or the daemon's own user
