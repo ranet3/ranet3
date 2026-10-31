@@ -479,11 +479,13 @@ packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
 
 With `cap.exit.fallback = "none"` the host's traffic leaves by a link outside
 the mesh only where a line of the chains below passes it while the table reads
-back as written, whether an exit is live or not, and after the daemon is killed.
-The switch covers the host's own traffic and that of the links `forward` names.
-The chain's forwarded line below passes a forwarded packet from a link outside
-`forwarded`, such as a container's or a VM's, whose destination `fib daddr type`
-does not read as local, a type the kernel takes
+back as written, whether an exit is live or not, and after a stop that withdraws
+nothing, such as `SIGKILL`. Every stop that withdraws deletes the table, a
+failure's included, as its lifetime below gives. The switch covers the host's
+own traffic and that of the links `forward` names. The chain's forwarded line
+below passes a forwarded packet from a link outside `forwarded`, such as a
+container's or a VM's, whose destination `fib daddr type` does not read as
+local, a type the kernel takes
 [in IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/netfilter/nft_fib_ipv4.c?id=940de590b839f71d6dc846160534bf202401b8b7#n58)
 and
 [in IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89).
@@ -604,7 +606,8 @@ counter drop
   5445 names, and `tcp_ports` and `udp_ports` the ranges `inbound` lists. The
   rules and the sets come from one derivation each pass.
 
-The table carries no owner flag, so it outlives the process that wrote it:
+The table carries no owner flag, so the kernel does not delete it with the
+process that wrote it:
 
 - It is written by the reconciler's first pass, which the start waits up to 10 s
   for before it dials a session, and again by each pass whose inputs moved, in

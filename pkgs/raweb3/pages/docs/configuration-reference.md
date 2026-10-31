@@ -786,10 +786,11 @@ programs' rules do beside them.
 - `fallback = "uplink"` sends the host's traffic by its own default wherever the
   mesh's table holds none. `"none"` writes
   [the kill switch](routing.md#the-kill-switch-on-linux), whether an exit is
-  live or not, and it stays after the daemon is killed. Its section lists the
-  lines that let the host's traffic leave by a link outside the mesh, and gives
-  the rules, the table it writes, how the kernel takes what each line reads, and
-  the switch's reach.
+  live or not. It stays after a stop that withdraws nothing, such as `SIGKILL`,
+  and every stop that withdraws deletes it, a failure's included. Its section
+  lists the lines that let the host's traffic leave by a link outside the mesh,
+  and gives the rules, the table it writes, how the kernel takes what each line
+  reads, and the switch's reach.
 - The LAN is the part of each connected network that
   [the kill switch](routing.md#the-kill-switch-on-linux) says counts, by default
   only the private and link-local ranges and every network of a link `forward`

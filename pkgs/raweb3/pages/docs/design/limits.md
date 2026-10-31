@@ -209,11 +209,12 @@ Wherever the mesh's table holds no default, traffic toward a default under
 [exit mode](../routing.md#exit-mode-on-linux), the host's own and a forwarded
 link's, leaves by main under `fallback = "uplink"`, with no rule of ranet3's
 refusing it: before the first session is live, after `capture_grace`, while the
-mesh's defaults are retracted, and after the daemon is killed and the tun goes
-with it, whose rules stay until the next start, while a clean stop withdraws
-them. A family the tun holds no overlay address of, an address inside no prefix
-of `cap.border.overlay` counting for none, runs mode off's rules whatever the
-mesh's table holds, with 5445 and 5450 beside them under
+mesh's defaults are retracted, and after the daemon is killed with `SIGKILL` and
+the tun goes with it, whose rules stay until the next start, while every stop
+that withdraws, a failure's included, withdraws them. A family the tun holds no
+overlay address of, an address inside no prefix of `cap.border.overlay` counting
+for none, runs mode off's rules whatever the mesh's table holds, with 5445 and
+5450 beside them under
 [the kill switch](../routing.md#the-kill-switch-on-linux). A lookup of that
 family ends where rows L1 to L12 of
 [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, but

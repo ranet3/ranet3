@@ -51,8 +51,10 @@ const (
 	// while no exit is live
 	FallbackUplink Fallback = "uplink"
 	// FallbackNone writes the table ranet3_fallback, whose lines routing.md's
-	// "The kill switch on Linux" lists, whether an exit is live or not, and
-	// the table stays after ranet3 has crashed. While it reads back as written
+	// "The kill switch on Linux" lists, whether an exit is live or not. The
+	// table stays after a stop that withdraws nothing, such as SIGKILL, and
+	// every stop that withdraws deletes it, a failure's included. While it
+	// reads back as written
 	// the host's traffic leaves by a link outside the mesh only where one of
 	// its lines passes it.
 	FallbackNone Fallback = "none"
