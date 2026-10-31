@@ -919,8 +919,9 @@ func (r *Reconciler) DerivedRules() []DumpedRule {
 
 // SetEnabled stops or starts this reconciler while it runs, which is the
 // `birdc disable` a kernel protocol took while Babel lived in BIRD. Stopping
-// withdraws every route, address and rule it installed, and starting puts them
-// back on the next pass, which is idempotent like every other pass. A table
+// withdraws every route, address and rule it installed and the table
+// ranet3_fallback, and starting puts back on the next pass what that pass asks
+// for, which is idempotent like every other pass. A table
 // left holding routes nobody maintains is the state a stop exists to avoid,
 // so the withdrawal is part of it rather than a separate ask.
 //
@@ -1883,10 +1884,10 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 	return append(tun, added...), true, errors.Join(errs...)
 }
 
-// withdraw removes exactly what this reconciler installed: every route and
-// rule still carrying its marker and every address it added itself. Routes are
-// read back rather than remembered, so routes an earlier crashed instance left
-// behind go with them.
+// withdraw removes what this reconciler holds: every route and rule still
+// carrying its marker, every address it added itself, and the table
+// ranet3_fallback, whoever wrote it. Routes are read back rather than
+// remembered, so routes an earlier crashed instance left behind go with them.
 func (r *Reconciler) withdraw() error {
 	r.report(nil)
 	r.reportExit(nil)
