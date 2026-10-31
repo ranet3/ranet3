@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-30
+updated: 2026-10-31
 order: 30
 ---
 
@@ -191,7 +191,9 @@ These commands take flags of their own:
   another, now, and shows the route the kernel matched with its prefix, table
   and next hops, each marked `dead` or `linkdown` where the kernel marks it,
   beside the type the kernel gives the packet, and where the route leaves by: a
-  link, this host, nowhere, or into the mesh's tun, where this view ends. For
+  link, this host, nowhere, or into the mesh's tun, where this view ends. It
+  reads no nftables chain, so a link it names is where the route leaves by, not
+  what [the kill switch](../routing.md#the-kill-switch-on-linux) lets leave. For
   this host's own IPv6 packet to `::`, the unspecified address, it names no path
   the packet leaves by, and says in a line of its own, whatever the lookup
   answers, that a socket sends such a packet to `::1` or by the route, or
