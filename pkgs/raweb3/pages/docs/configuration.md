@@ -146,7 +146,7 @@ With `fallback = "none"` ranet3 writes
 [the kill switch](routing.md#the-kill-switch-on-linux), which holds while no
 exit is live and its table reads back as written. Every stop that withdraws, a
 failure's included, deletes it, and only a stop that withdraws nothing, such as
-a crash, leaves it. Its section lists the lines that let the host's traffic
+`SIGKILL`, leaves it. Its section lists the lines that let the host's traffic
 leave by a link outside the mesh, and the switch's reach. The LAN's line passes
 the private and link-local part of each connected network and every network of a
 link `forward` names, and `lan` adds another:

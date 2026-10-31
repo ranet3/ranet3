@@ -18,8 +18,8 @@ import (
 // FallbackTable is the nf_tables inet table cap.exit fallback = "none" writes,
 // whose chains let a packet leave by a link outside the mesh only where one of
 // their lines passes it, and drop the rest. routing.md's "The kill switch on
-// Linux" lists the lines. It carries no owner flag, so it outlives the process
-// that wrote it.
+// Linux" lists the lines. It carries no owner flag, so a stop that withdraws
+// nothing, such as SIGKILL, leaves it, and every stop that withdraws deletes it.
 const FallbackTable = "ranet3_fallback"
 
 // FallbackState is the switch fallback = "none" asks for, as a pass leaves it
