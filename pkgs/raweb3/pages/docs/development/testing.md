@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-30
+updated: 2026-10-31
 order: 20
 ---
 
@@ -879,11 +879,11 @@ node. The host's lookups of the third node's Tailscale addresses and of the
 address beyond the mesh's exit, in both families, are routed by `tailscale0` and
 table 52, as
 [exit mode beside other programs](../coexistence.md#exit-mode-beside-other-programs)
-measures, and the switch leaves the other program's rules and nftables tables as
-they were. With no exit node, the host's own traffic to the address beyond the
-mesh's exit enters the mesh as in `integration-docker`, and the nodes still
-reach each other through Tailscale. Once Tailscale is back from a restart of
-`tailscaled`, ranet3's rules are as they were.
+measures, and the switch into `cap.exit` leaves the other program's rules and
+nftables tables as they were. With no exit node, the host's own traffic to the
+address beyond the mesh's exit enters the mesh as in `integration-docker`, and
+the nodes still reach each other through Tailscale. Once Tailscale is back from
+a restart of `tailscaled`, ranet3's rules are as they were.
 
 `integration-k3s` runs a k3s server on the client with kube-proxy in iptables
 mode and flannel, its pods from an image the check builds. ranet3 starts only
