@@ -110,7 +110,7 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	golden(t, "rules-undumped.txt", []byte(out.String()))
 }
 
-// fallbackFixture is the switch's table holding, its drop having counted
+// fallbackFixture is a table of one chain, holding, its drop having counted
 // twelve packets, nothing forwarded and no own prefix of IPv6
 func fallbackFixture() *FallbackTable {
 	return &FallbackTable{
