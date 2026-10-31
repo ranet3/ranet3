@@ -11,9 +11,9 @@ require (
 	github.com/spf13/cobra v1.10.2
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
-	hegel.dev/go/hegel v0.9.27
+	hegel.dev/go/hegel v0.9.28
 	ranet3.com/pkgs/wireguard v0.0.0-00010101000000-000000000000
 )
 
