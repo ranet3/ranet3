@@ -58,11 +58,11 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 
 ### Signals
 
-| Signal              | Effect                                                                                                                                                                                                                                                                                |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SIGHUP`            | Reloads the file `--config` names and the trust document it names. A refusal goes to the log as `reload: <reason>`, and the node runs on as before. See [reloading](reloading.md).                                                                                                    |
-| `SIGINT`, `SIGTERM` | Starts a clean shutdown. The daemon closes every session with a Delete, withdraws the routes, rules, addresses and egress tables it installed and the kill switch's table, waits for every dialer, and then withdraws the border filter. A second signal exits at once with status 1. |
-| `SIGUSR1`           | Writes the mesh route table to the log.                                                                                                                                                                                                                                               |
+| Signal              | Effect                                                                                                                                                                                                                                                                                                                       |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SIGHUP`            | Reloads the file `--config` names and the trust document it names. A refusal goes to the log as `reload: <reason>`, and the node runs on as before. See [reloading](reloading.md).                                                                                                                                           |
+| `SIGINT`, `SIGTERM` | Starts a clean shutdown. The daemon closes every session with a Delete, withdraws the routes, rules, addresses and egress tables it installed and [the kill switch's](routing.md#the-kill-switch-on-linux) table, waits for every dialer, and then withdraws the border filter. A second signal exits at once with status 1. |
+| `SIGUSR1`           | Writes the mesh route table to the log.                                                                                                                                                                                                                                                                                      |
 
 ## Reading state
 
@@ -99,13 +99,14 @@ go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
   last pass forwarded, each link a `forward` entry matched and the pass left out
   with the reason, and a family the tun holds no overlay address of, as
   [watching it](routing.md#watching-it) shows. Under `fallback = "none"` it
-  names the kill switch's state, `holding`, `passing` or `not holding` with the
-  reason, what the last lines of both chains dropped, summed, a connected
-  network left out of the LAN, an endpoint name whose last lookup failed and a
-  DNS server beyond the LAN. `--json` carries them under `kernel.exit`, the
-  families in `unaddressed`.
-- `down` withdraws the kill switch's rules and table with the rest of the
-  reconciler's, as a clean stop does, and `up` writes them again.
+  names [the kill switch's](routing.md#the-kill-switch-on-linux) state,
+  `holding`, `passing` or `not holding` with the reason, what the last lines of
+  both chains dropped, summed, a connected network left out of the LAN, an
+  endpoint name whose last lookup failed and a DNS server beyond the LAN.
+  `--json` carries them under `kernel.exit`, the families in `unaddressed`.
+- `down` withdraws [the kill switch's](routing.md#the-kill-switch-on-linux)
+  rules and table with the rest of the reconciler's, as a clean stop does, and
+  `up` writes them again.
 - `debug netmon` lists each family's links outside the mesh with their addresses
   and point-to-point far ends on Linux, the links
   [exit mode](routing.md#exit-mode-on-linux) derives its rules from.

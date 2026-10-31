@@ -387,7 +387,8 @@ so a file that loads never runs the mode on one.
 
 A host using an exit can ask with `cap.exit.fallback = "none"` for the kill
 switch, which holds while no exit is live and its table reads back as written,
-and stays after the daemon is killed.
+and stays after the daemon is killed with `SIGKILL`. Every stop that withdraws,
+a failure's included, deletes it.
 [The kill switch](routing.md#the-kill-switch-on-linux) lists the lines that let
 the host's traffic leave by its own uplink, and gives the rules and the table,
 the switch's reach, and what counts as the LAN. An exit installs no default for

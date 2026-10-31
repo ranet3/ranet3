@@ -612,14 +612,18 @@ The table carries no owner flag, so it outlives the process that wrote it:
   cannot list the tun's addresses, is logged as
   `kernel reconcile failed, retrying` and the start dials without the table
   until a retry writes it. A table left by an earlier instance is taken over.
-- A clean stop, `ranet3 down` and a reload to `"uplink"` or without `cap.exit`
-  withdraw it with the rules. A start or a reload whose file asks for no switch
-  deletes one an earlier instance left.
-- After `SIGKILL` the table and the rules stay and the tun goes with the
-  process, so the chains' drop keeps taking the host's traffic that no other
-  line passes until ranet3 starts again or the operator runs
-  `nft delete table inet ranet3_fallback`. Nothing outlives a reboot, so the
-  switch holds from ranet3's start, not from boot.
+- A clean stop, `ranet3 down`, `ranet3 disable reconciler`, the stop a failed
+  tun or mesh causes, and a reload to `"uplink"` or without `cap.exit` withdraw
+  it with the rules. After the failure's stop no switch holds until the
+  supervisor's restart writes it again, a gap
+  [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) declares. A
+  start or a reload whose file asks for no switch deletes one an earlier
+  instance left.
+- After `SIGKILL`, or another stop that withdraws nothing, the table and the
+  rules stay and the tun goes with the process, so the chains' drop keeps taking
+  the host's traffic that no other line passes until ranet3 starts again or the
+  operator runs `nft delete table inet ranet3_fallback`. Nothing outlives a
+  reboot, so the switch holds from ranet3's start, not from boot.
 
 Each pass reads the table back, its hook, priority, lines and set elements.
 While it does not read back as written, or cannot be written, such as on a
@@ -800,7 +804,7 @@ failed asks none, and it and a pass whose lookups failed keep the last answers.
   later. Changes in that window join the same pass. On Linux the notifications
   are a route of the mesh's table coming or going, a rule of the reconciler's
   protocol going, and an address of the tun coming or going, another writer's
-  among them.
+  among them, and another writer's change to the table `ranet3_fallback`.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
@@ -893,8 +897,11 @@ shows its route, and `ranet3 whois` names the peer an address inside it takes.
 The reconciler reads back, deletes and withdraws only what it owns. On Linux it
 owns the routes in its own table that carry its protocol and leave by its tun,
 and its holds and throws there. It also owns the rules that carry its protocol
-and the addresses it added. On macOS it is the routes of its own shape out of
-its own utun. [Sharing a host](coexistence.md) describes the rules in full.
+and the addresses it added, and the nftables table `inet ranet3_fallback` by its
+name, whoever wrote it, which it writes, reads back and deletes as
+[the kill switch](#the-kill-switch-on-linux) gives. On macOS it is the routes of
+its own shape out of its own utun. [Sharing a host](coexistence.md) describes
+the rules in full.
 
 ## Linux and macOS
 

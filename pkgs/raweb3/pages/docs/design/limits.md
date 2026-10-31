@@ -340,9 +340,15 @@ these costs over the reach that page gives.
   refused where no other line passes it, and falls back to its broadcast, and so
   is a DHCPv6 client's message to a server beyond the LAN under Server Unicast,
   which falls back to `ff02::1:2`.
-- The switch holds from ranet3's start, not from boot. A crash leaves the table
-  and the rules until ranet3 starts again or the table is deleted with
-  `nft delete table inet ranet3_fallback`.
+- The switch holds from ranet3's start, not from boot. Every stop that withdraws
+  deletes the table and the rules 5445 and 5450 with the rest: a clean stop,
+  `ranet3 down`, `ranet3 disable reconciler`, and the stop a failed tun or mesh
+  causes, which exits 1 for
+  [the supervisor's restart](../service.md#restarts-and-the-network) 5 seconds
+  later. From that stop until the new start's first pass writes the table again,
+  no switch holds. Only a stop that withdraws nothing, such as `SIGKILL` or a
+  crash, leaves the table and the rules, until ranet3 starts again or the table
+  is deleted with `nft delete table inet ranet3_fallback`.
 - A TCP connect the chain refuses waits out its retransmissions rather than
   failing at once: an IPv6 connect bound to no address beyond the LAN while no
   exit is live, whose second lookup passes 5450, and every connect bound to the
