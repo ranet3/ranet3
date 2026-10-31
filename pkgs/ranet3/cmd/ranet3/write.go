@@ -36,9 +36,10 @@ command for a subsystem it does not run.`, true),
 		r.reloadCommand(),
 		r.meshCommand("down", "Take this node off the mesh", `The node closes every session with an IKE Delete and stops dialing,
 answering and speaking Babel, and it withdraws the routes, rules,
-addresses and egress tables it installed. The daemon, its tun, the
-control socket and the metrics stay. A flag in the state directory keeps
-the node down through a restart or a reboot until ranet3 up.`, false),
+addresses and egress tables it installed and the table ranet3_fallback.
+The daemon, its tun, the control socket and the metrics stay. A flag in
+the state directory keeps the node down through a restart or a reboot
+until ranet3 up.`, false),
 		r.meshCommand("up", "Put this node back on the mesh", `This removes the flag ranet3 down left and starts what a start would:
 the addresses, rules and routes, then Babel, the responder and every
 dialer. A subsystem somebody disabled stays disabled.`, true),
