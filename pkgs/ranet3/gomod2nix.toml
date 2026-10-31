@@ -30,13 +30,13 @@ version = 'v0.58.0'
 hash = 'sha256-33ioL7suoYfgBIEQDAeqy+lwhbCgy885BkcXavowffo='
 
 [mod.'golang.org/x/net']
-version = 'v0.61.0'
-hash = 'sha256-yCy7Bik5cvIVfX7G08rVYhkVDuro3sPk3iicVz4j/kA='
+version = 'v0.62.0'
+hash = 'sha256-BX+i/MyhVigz/sDRJNGydfkimaeAHAFtrRN//eXuZFY='
 
 [mod.'golang.org/x/sys']
 version = 'v0.49.0'
 hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
 
 [mod.'hegel.dev/go/hegel']
-version = 'v0.9.27'
-hash = 'sha256-w3hIa2vQryJqcC968EM8w1wasPYEf98CyWMDKd7sELU='
+version = 'v0.9.28'
+hash = 'sha256-1rOmMIyDWxKcr85NZt0euZrDddLApfAefwpsL/nj6ww='

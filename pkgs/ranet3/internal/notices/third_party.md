@@ -483,7 +483,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## golang.org/x/net
 
-golang.org/x/net v0.61.0, from `LICENSE`.
+golang.org/x/net v0.62.0, from `LICENSE`.
 
 ```
 Copyright 2009 The Go Authors.
