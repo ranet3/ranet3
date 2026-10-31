@@ -32,11 +32,7 @@ runCommand "ranet3-tree"
       deno
       go
       nixfmt
-      # TODO: FIXME: drop the override for plain reuse once the pinned nixpkgs
-      # carries f77944fa (NixOS/nixpkgs#573479), the sphinx hook's fix. Under
-      # structured attributes the hook runs only the first of reuse's sphinx
-      # builders, and reuse fails for want of the man output it declares
-      (reuse.overridePythonAttrs { __structuredAttrs = false; })
+      reuse
       taplo
       templ
       writableTmpDirAsHomeHook
