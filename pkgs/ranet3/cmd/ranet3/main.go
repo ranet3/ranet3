@@ -95,10 +95,13 @@ seqno limit a restart starts from. A node that starts with the flag
 there stays off the mesh. The daemon makes the directory with mode 0700
 when it is missing.
 
-The --debug-access flag decides who may use the debug paths that serve
-profiles, logs and captures. The value root admits uid 0 and the user
-the daemon runs as, group admits everyone who can open the socket, and
-off refuses every debug path.
+The --debug-access flag decides who may use the debug paths. The read
+class is open to everyone who can open the socket. The root class, debug
+probe, admits uid 0 and the user the daemon runs as when the value is
+root, and everyone who can open the socket when it is group. The
+plaintext class, debug trace, admits uid 0 alone under both. The value
+off refuses every debug path. Profiles are no debug path, since --pprof
+serves them on an address of its own.
 
 The --pprof flag serves pprof on an address such as 127.0.0.1:6060. A CPU
 profile is at /debug/pprof/profile, and this opens one as a flamegraph:
