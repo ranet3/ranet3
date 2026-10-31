@@ -31,7 +31,7 @@ const (
 	transitHeld
 	// transitRefused counts packets for another node while cap.transit is off
 	transitRefused
-	// transitInvalid counts what is not one IP packet, an IPv4 header failing RFC 1812 section 5.2.2's checks, IPv4 options RFC 791 cannot read
+	// transitInvalid counts a frame holding no whole IP packet, a read off the tun that is not exactly one, an IPv4 header failing RFC 1812 section 5.2.2's checks, IPv4 options RFC 791 cannot read
 	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish, or the header of whose carried packet cannot be read
 	transitInvalid
 	// transitMartian counts packets from or to an address no router forwards, but for those to a destination linkScoped takes to the tun
@@ -147,7 +147,7 @@ type TransitCounters struct {
 	// Forwarded counts packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
-	// Invalid counting as well the reads off the tun that are not one IP packet, whose extension headers the walk cannot finish or whose carried packet's header cannot be read
+	// Invalid counting as well the reads off the tun that are not exactly one IP packet, the reads whose extension headers the walk cannot finish, and the reads whose carried packet's header cannot be read
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
 	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
 	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
