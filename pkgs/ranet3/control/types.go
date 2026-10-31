@@ -68,6 +68,7 @@
 // so the caller's peer credentials authorize them instead
 // a read class path is open to whoever can open the socket
 // a root class path takes uid 0 or the daemon's own user
+// a plaintext class path shows the packets the node handles and takes uid 0 alone
 // [DebugAccess] opens the root class to the socket's group or closes every debug path
 // a debug path may change or go in any revision
 //

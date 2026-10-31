@@ -65,7 +65,7 @@ const (
 	// classRead is a snapshot without key material, or the event stream
 	// status and sessions already disclose that kind of thing to the socket's group
 	classRead debugClass = iota
-	// classRoot is profiles, goroutine dumps, logs, the trust document and every action
+	// classRoot is logs, the trust document and every action
 	classRoot
 	// classPlaintext shows the packets the node handles, other nodes' traffic among them, so uid 0 alone may read it
 	// --debug-access group does not open it
@@ -119,7 +119,7 @@ type debugServer struct {
 	access DebugAccess
 	// euid is the daemon's own user, which the root class admits beside uid 0
 	euid uint32
-	// streams holds a place for every stream open, see stream
+	// streams holds a place for every stream open, see place
 	streams                 chan struct{}
 	budget, heartbeat, tick time.Duration
 }
