@@ -32,6 +32,10 @@ func TestTUNTakesFragmentsOfOrdinaryTrafficAndNoneOfABabelPacket(t *testing.T) {
 	t.Cleanup(mesh.Close)
 	capture := captureInbound(t, mesh.Name)
 	alpha, bravo := newLoopbackMeshOn(t, mesh)
+	// no resolution closes the peer the fragments go to, since only alpha dials
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	bravo.client.cfg.Store(&quiet)
 	run(t, alpha, bravo)
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "alpha forwarding to bravo's prefix", func() bool {
