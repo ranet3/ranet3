@@ -223,7 +223,7 @@ type Sink interface {
 	Reload(ctx context.Context) (Result, error)
 	// Down takes the node off the mesh and keeps its daemon, tun and socket
 	// every dialer, the responder and Babel stop, every session is closed with a Delete
-	// and the routes, rules, addresses and egress tables the node installed are withdrawn
+	// and the routes, rules, addresses and egress tables the node installed and the table ranet3_fallback are withdrawn
 	// the flag it writes first keeps the node down through a restart until Up
 	Down(ctx context.Context) (Result, error)
 	// Up removes the flag and puts the node back on the mesh as a start would
