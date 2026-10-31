@@ -41,8 +41,9 @@ The daemon, its tun, the control socket and the metrics stay. A flag in
 the state directory keeps the node down through a restart or a reboot
 until ranet3 up.`, false),
 		r.meshCommand("up", "Put this node back on the mesh", `This removes the flag ranet3 down left and starts what a start would:
-the addresses, rules and routes, then Babel, the responder and every
-dialer. A subsystem somebody disabled stays disabled.`, true),
+the addresses, rules and routes and the table ranet3_fallback, then
+Babel, the responder and every dialer. A subsystem somebody disabled
+stays disabled.`, true),
 	}
 }
 
