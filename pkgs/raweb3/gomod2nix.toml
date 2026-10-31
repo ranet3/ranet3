@@ -30,16 +30,16 @@ version = 'v1.0.10'
 hash = 'sha256-uDPnWjHpSrzXr17KEYEA1yAbizfcsfo5AyztY2tS6ZU='
 
 [mod.'github.com/tdewolff/minify/v2']
-version = 'v2.24.23'
-hash = 'sha256-u2hhcafRkgOSRYb3ox5fPs+gIGaQunqYHeI1qvgGFgw='
+version = 'v2.24.24'
+hash = 'sha256-Xxw1CVQnVJEKlS4ezRpwLaIXYuFAH0NzBQtcoxbT7nI='
 
 [mod.'github.com/tdewolff/parse/v2']
 version = 'v2.8.20'
 hash = 'sha256-i3dL4AAO862cghwnezQjH0VoH33XCvL9I0/h6dh2jdM='
 
 [mod.'github.com/yuin/goldmark']
-version = 'v1.8.6'
-hash = 'sha256-rAwGzzmVrhhtzr8OSGid+F+NM5YWMyYYW6BSTWaDIGE='
+version = 'v1.8.7'
+hash = 'sha256-nK7Vu8+T9OoNQW0XmLWmypI7Mja1ql2oh/5kr/CNfI4='
 
 [mod.'go.yaml.in/yaml/v3']
 version = 'v3.0.5'
