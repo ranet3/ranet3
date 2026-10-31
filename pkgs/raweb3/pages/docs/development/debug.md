@@ -565,7 +565,7 @@ connections to the reads.
 | `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target                        |
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                             |
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                |
-| `netstack.transit.dropped`            | the forwarding decision dropped a packet a session delivered, with why                    |
+| `netstack.transit.dropped`            | the forwarding decision dropped a session's packet or a read off the tun, with why        |
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit              |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                    |
 
@@ -975,7 +975,8 @@ A `netstack.transit.dropped` is recorded at most once every 30 seconds, as is
 its warning in the log, for the packet that dropped first in that time. `reason`
 is the `reason` label of `ranet3_transit_packets_total`, which counts every
 drop, as [metrics](../metrics.md#transit-counters) describes. `src` and `dst`
-read `invalid IP` for a frame that holds no whole IP packet.
+read `invalid IP` for a frame that holds no whole IP packet, and for a read off
+the tun that is not exactly one.
 
 A `netstack.icmp.withheld` is recorded when one of the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit) withholds an answer

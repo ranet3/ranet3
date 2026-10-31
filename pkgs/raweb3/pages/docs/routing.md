@@ -300,7 +300,8 @@ gives the rate limits the answers draw on, and
 [the protocol deviations](design/protocol-deviations.md#icmp-answers) say where
 each departs from the RFCs.
 
-A read off the tun to a multicast destination, link scope included, or to the
+A read off the tun that is not exactly one IP packet is dropped and counted as
+invalid first. One to a multicast destination, link scope included, or to the
 limited broadcast 255.255.255.255 is dropped and counted as multicast before its
 route is looked up or it is steered. The mesh routes no multicast, and
 [RFC 1812 section 5.3.5.1](https://www.rfc-editor.org/rfc/rfc1812.html#section-5.3.5.1)
@@ -338,7 +339,9 @@ counted and gets no answer.
 `ranet3 status` counts each outcome on its `Transit` line, and
 `ranet3_transit_packets_total` exports the same counts. A dropped packet also
 records the event `netstack.transit.dropped` with its reason, at most once every
-30 seconds.
+30 seconds. A trace, `ranet3 debug trace`, shows the packets the decision takes
+as it takes them, each with what it met and why, and `ranet3 debug route` the
+checks one packet would meet, as [debugging](development/debug.md) describes.
 
 ## The route reconciler
 
