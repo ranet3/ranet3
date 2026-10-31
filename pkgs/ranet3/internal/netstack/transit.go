@@ -147,7 +147,7 @@ type TransitCounters struct {
 	// Forwarded counts packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
-	// Invalid counting as well the reads off the tun whose extension headers the walk cannot finish or whose carried packet's header cannot be read
+	// Invalid counting as well the reads off the tun that are not one IP packet, whose extension headers the walk cannot finish or whose carried packet's header cannot be read
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
 	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
 	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
