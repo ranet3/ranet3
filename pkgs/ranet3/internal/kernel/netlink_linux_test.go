@@ -328,7 +328,7 @@ func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 	step(Table{Addresses: prefixes(second, third), Metric: 32}, after)
 	holds("a renumbered tun and a new metric", []netip.Prefix{second, third}, Route{Destination: prefix("10.0.0.0/8"), Metric: 32}, after)
 
-	if err := r.withdraw(); err != nil {
+	if err := r.withdraw(nil); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	if assigned, _ := plat.Addrs(); slices.ContainsFunc(assigned, func(p netip.Prefix) bool { return p.Addr().Is4() }) {

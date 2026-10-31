@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -139,7 +140,7 @@ func TestFallbackTableLeftByAnEarlierInstanceGoesAtAStartNotAskingForIt(t *testi
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if err := reconciler.withdraw(); err != nil {
+	if err := reconciler.withdraw(nil); err != nil {
 		t.Fatal(err)
 	}
 	if fake.fallback != nil {
@@ -165,13 +166,193 @@ func TestFallbackTableWhoseDeleteFailedGoesAtTheWithdrawal(t *testing.T) {
 				t.Fatal(err)
 			}
 			fake.failFallback = nil
-			if err := reconciler.withdraw(); err != nil {
+			if err := reconciler.withdraw(nil); err != nil {
 				t.Fatal(err)
 			}
 			if left := fake.fallback != nil; left != c.left {
 				t.Errorf("after a delete that failed with %v the withdrawal left %+v, want a table left %v", c.err, fake.fallback, c.left)
 			}
 		})
+	}
+}
+
+// runThroughFirstPass runs reconciler until its first pass has ended and
+// answers the stop that cancels it for a cause and waits for it to return
+func runThroughFirstPass(t *testing.T, reconciler *Reconciler) func(cause error) {
+	t.Helper()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- reconciler.Run(ctx) }()
+	var once sync.Once
+	stop := func(cause error) {
+		once.Do(func() {
+			cancel(cause)
+			if err := <-done; err != nil {
+				t.Errorf("the reconciler stopped with %v", err)
+			}
+		})
+	}
+	t.Cleanup(func() { stop(nil) })
+	select {
+	case <-reconciler.FirstPass():
+	case <-time.After(waitBudget):
+		t.Fatalf("the first pass did not end within %s", waitBudget)
+	}
+	return stop
+}
+
+// leftLine, noneLine and unlistedLine are the warnings of a failed mesh's stop
+// that leaves the table, as its listing words them: the table there, none
+// there, or the listing failed
+const (
+	leftLine     = "kernel is leaving its fallback table after the mesh failed"
+	noneLine     = "kernel found no fallback table to leave after the mesh failed, so the host's traffic leaves by its routes"
+	unlistedLine = "kernel is leaving any fallback table there after the mesh failed, which it could not list"
+)
+
+// logged is slog's text from here to the end of t, read once what writes it has returned
+func logged(t *testing.T) *strings.Builder {
+	said := &strings.Builder{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(said, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return said
+}
+
+// A Run the mesh's failure stops withdraws every route, address and rule of
+// its own and leaves the table, warning once with the switch's state, and the
+// next Run reads the table back as written and keeps it while it puts the
+// rules back. A Run stopped plainly deletes it with no warning.
+func TestFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
+	network := &hostNetwork{state: exitPassHost("docker0")}
+	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN}).Normalized()
+	rt := Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read}
+	fake := newFakeKernel(t)
+	said := logged(t)
+	start := func() func(error) {
+		return runThroughFirstPass(t, newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), fake))
+	}
+	type leftover struct {
+		table                            bool
+		routes, addresses, rules, writes int
+	}
+	held := func() leftover {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return leftover{fake.fallback != nil, len(fake.routes), len(fake.addrs), len(fake.rules), fake.fallbackWrites}
+	}
+
+	stop := start()
+	written := held().rules
+	stop(ErrMeshFailed)
+	if left := held(); !left.table || left.routes+left.addresses+left.rules > 0 {
+		t.Fatalf("the failed mesh's stop left %+v, want the table alone", left)
+	}
+	if n := strings.Count(said.String(), leftLine); n != 1 || !strings.Contains(said.String(), leftLine+`" table=ranet3_fallback state=holding`) {
+		t.Errorf("the failed mesh's stop warned %d times, want once with the state holding:\n%s", n, said)
+	}
+	stop = start()
+	if left := held(); !left.table || left.rules != written || left.writes != 1 {
+		t.Errorf("the next start holds %+v, want the table kept from the one write before and %d rules", left, written)
+	}
+	stop(nil)
+	if left := held(); left.table || left.routes+left.addresses+left.rules > 0 {
+		t.Errorf("a plain stop left %+v, want nothing", left)
+	}
+	if n := strings.Count(said.String(), leftLine); n != 1 {
+		t.Errorf("after a plain stop the warning was written %d times, want the failed stop's alone", n)
+	}
+}
+
+// A failed mesh's stop deletes no table wherever the capability in force asks
+// for the switch, whatever the last pass read or wrote or its own listing
+// finds: it leaves an earlier instance's before any pass, and one a pass whose
+// readback or rewrite failed left as found. It warns once with the last pass's
+// state, worded by the listing: the table left, none there, or the listing
+// failed. Under a reload to "uplink" taken before the stop it deletes the
+// table with no warning.
+func TestFailedMeshsStopLeavesATableWhereTheSwitchIsAskedFor(t *testing.T) {
+	failed := errors.New("no buffer space available")
+	for name, c := range map[string]struct {
+		pass func(*Reconciler, *fakeKernel)
+		// state is the warning's state attribute, the last pass's
+		state string
+	}{
+		"before the first pass": {func(*Reconciler, *fakeKernel) {}, `""`},
+		"after a failed readback": {func(r *Reconciler, fake *fakeKernel) {
+			fake.failFallback = failed
+			_ = r.reconcile()
+			fake.failFallback = nil
+		}, `"not holding"`},
+		"after a failed rewrite": {func(r *Reconciler, fake *fakeKernel) {
+			fake.failWrite = failed
+			_ = r.reconcile()
+			fake.failWrite = nil
+		}, `"not holding"`},
+	} {
+		for planted, there := range map[bool]string{true: "an earlier instance's table", false: "no table"} {
+			for asked, mode := range map[bool]string{true: `fallback = "none"`, false: `a reload to "uplink"`} {
+				for listed, listing := range map[bool]string{true: "a listing", false: "a failed listing"} {
+					t.Run(name+", "+there+", "+mode+", "+listing, func(t *testing.T) {
+						reconciler, fake := fallbackHarness(t, &ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
+						if planted {
+							fake.fallback = &fallbackSets{tun: "ranet3"}
+						}
+						said := logged(t)
+						c.pass(reconciler, fake)
+						if !asked {
+							_ = reconciler.SetTable(reconciler.table.WithMode(&ExitMode{Fallback: FallbackUplink}), exitPassOverlay, nil)
+							reconciler.adopt()
+						}
+						if !listed {
+							fake.failListing = failed
+						}
+						if err := reconciler.withdraw(ErrMeshFailed); err != nil {
+							t.Fatal(err)
+						}
+						// line is the one warning the stop words, none where it deletes
+						line := ""
+						switch {
+						case !asked:
+						case !listed:
+							line = unlistedLine
+						case planted:
+							line = leftLine
+						default:
+							line = noneLine
+						}
+						if left, deletes := fake.fallback != nil, fake.fallbackDeletes; left != (planted && asked) || deletes != map[bool]int{false: 1}[asked] {
+							t.Errorf("the stop left a table %v after %d deletes, want a table left %v and a delete %v", left, deletes, planted && asked, !asked)
+						}
+						for _, each := range []string{leftLine, noneLine, unlistedLine} {
+							if n := strings.Count(said.String(), each); n != map[bool]int{true: 1}[each == line] {
+								t.Errorf("the stop warned %q %d times, want the warning %q alone:\n%s", each, n, line, said)
+							}
+						}
+						if line != "" && !strings.Contains(said.String(), line+`" table=ranet3_fallback state=`+c.state) {
+							t.Errorf("the stop's warning did not carry the state %s:\n%s", c.state, said)
+						}
+						if asked && strings.Contains(said.String(), "is no longer asked for") {
+							t.Errorf("the stop said the switch is no longer asked for under fallback = \"none\":\n%s", said)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+// In mode 3 with fallback unwritten, which is "none" there, a failed mesh's
+// stop leaves the table as it does under fallback = "none"
+func TestFailedMeshsStopInModeThreeLeavesTheTable(t *testing.T) {
+	reconciler, fake := fallbackHarness(t, &ExitMode{Via: []schema.Addr{schema.MustAddr("3fff:0:0:e::46")}})
+	fake.fallback = &fallbackSets{tun: "ranet3"}
+	said := logged(t)
+	if err := reconciler.withdraw(ErrMeshFailed); err != nil {
+		t.Fatal(err)
+	}
+	if fake.fallback == nil || fake.fallbackDeletes != 0 || strings.Count(said.String(), leftLine) != 1 {
+		t.Errorf("in mode 3 the stop left a table %v after %d deletes, want it left with one warning:\n%s", fake.fallback != nil, fake.fallbackDeletes, said)
 	}
 }
 

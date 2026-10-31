@@ -186,24 +186,6 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	for _, address := range held {
 		writeBatchAddress(t, conn, other.index, netip.PrefixFrom(address, address.BitLen()))
 	}
-	// send sends a datagram of one byte to port at to, from a socket bound to the uplink's device where bound is set
-	send := func(to netip.Addr, port int, bound bool) error {
-		family, address := unix.AF_INET6, unix.Sockaddr(&unix.SockaddrInet6{Port: port, Addr: to.As16()})
-		if to.Is4() {
-			family, address = unix.AF_INET, &unix.SockaddrInet4{Port: port, Addr: to.As4()}
-		}
-		fd, err := unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer unix.Close(fd)
-		if bound {
-			if err := unix.BindToDevice(fd, uplink); err != nil {
-				t.Fatal(err)
-			}
-		}
-		return unix.Sendto(fd, []byte("x"), 0, address)
-	}
 	// sourced is the source a datagram to the IPv6 address to takes, from a socket bound to the uplink's device where bound is
 	// set, invalid where none can be had
 	sourced := func(to netip.Addr, bound bool) netip.Addr {
@@ -231,23 +213,23 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	// host's own
 	waitFor(t, func() bool { return sourced(held[1], true).IsValid() && sourced(held[1], false) == held[1] })
 	beyond := []netip.Addr{netip.MustParseAddr("192.0.2.200"), netip.MustParseAddr("2001:db8:e::9")}
-	if err := send(beyond[0], 9, false); !errors.Is(err, unix.EPERM) {
+	if err := sendFrom(t, beyond[0], 9, ""); !errors.Is(err, unix.EPERM) {
 		t.Errorf("a datagram beyond the LAN left with %v, want EPERM", err)
 	}
-	if err := send(netip.MustParseAddr("198.51.100.5"), 9, false); err != nil {
+	if err := sendFrom(t, netip.MustParseAddr("198.51.100.5"), 9, ""); err != nil {
 		t.Errorf("a datagram to the LAN was refused: %v", err)
 	}
 	// a lookup bound to the uplink passes over the local route of an address another link holds and sends the datagram out of the
 	// uplink toward a destination of the host's own
 	for _, to := range held {
-		if err := send(to, 9, true); !errors.Is(err, unix.EPERM) {
+		if err := sendFrom(t, to, 9, uplink); !errors.Is(err, unix.EPERM) {
 			t.Errorf("a datagram bound to the uplink to %s, which the host holds on another link, left with %v, want EPERM", to, err)
 		}
 	}
 	runScript("table inet othernat {\n\tchain output {\n\t\ttype nat hook output priority -100; policy accept;\n" +
 		"\t\tmeta nfproto ipv4 udp dport 7 dnat ip to " + held[0].String() + "\n\t\tmeta nfproto ipv6 udp dport 7 dnat ip6 to " + held[1].String() + "\n\t}\n}\n")
 	for _, to := range beyond {
-		if err := send(to, 7, true); !errors.Is(err, unix.EPERM) {
+		if err := sendFrom(t, to, 7, uplink); !errors.Is(err, unix.EPERM) {
 			t.Errorf("a datagram bound to the uplink to %s that NAT at output translated to an address of the host's own left with %v, want EPERM", to, err)
 		}
 	}
@@ -331,7 +313,7 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	if read, err := plat.readFallback(fallbackSample); read.fault != "the table is missing" || err != nil {
 		t.Errorf("after the delete the table reads back with %q (err %v)", read.fault, err)
 	}
-	if err := send(beyond[0], 9, false); err != nil {
+	if err := sendFrom(t, beyond[0], 9, ""); err != nil {
 		t.Errorf("with the table gone a datagram beyond the LAN was refused: %v", err)
 	}
 	if err := plat.deleteFallback(); err != nil {
@@ -557,4 +539,111 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 		t.Fatal(err)
 	}
 	settle(true, sources)
+}
+
+// A Run the failed mesh's stop ends leaves the table ranet3_fallback, which a
+// listing finds, and no rule, route or address of its own, so the table's drop
+// alone refuses the host's datagram beyond the LAN. The next Run puts the rules
+// back and takes the table over as it finds it, its drop's count kept, and a
+// Run stopped plainly leaves nothing for a listing to find.
+func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
+	const device, uplink = "ranetsw0", "ranetup0"
+	plat := rootRulePlatform(t, device)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	createTUN(t, uplink)
+	link, err := conn.link(0, uplink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, link.index, unix.IFF_UP)
+	lan := prefix("198.51.100.10/25")
+	writeBatchAddress(t, conn, link.index, lan)
+	writeBatchRoute(t, conn, unix.RT_TABLE_MAIN, prefix("0.0.0.0/0"), batchHop{index: link.index})
+
+	tbl, rt := platformFor(device)
+	tbl.Addresses = prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))
+	tbl = tbl.WithMode(&ExitMode{Fallback: FallbackNone, LAN: []schema.Prefix{schema.PrefixFrom(lan.Masked())}}).Normalized()
+	rt.Overlay = exitPassOverlay
+	rt.Network = func() NetworkState {
+		return NetworkState{IPv4: NetworkFamily{Default: DefaultRoute{Interface: uplink}, Links: []Link{{Name: uplink, Prefixes: []netip.Prefix{lan}}}}}
+	}
+	open := func() *Reconciler {
+		opened, err := newPlatform(tbl, rt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), opened)
+	}
+	first := open()
+	exit, _ := first.exitPass(first.addresses, nil, first.readNetwork())
+	sets, asked := first.fallbackFor(exit)
+	if !asked {
+		t.Fatal("the mode does not ask for the table")
+	}
+	type leftover struct {
+		read                     fallbackRead
+		listed                   bool
+		rules, routes, addresses int
+	}
+	// held reads the table back and lists it through the test's own platform, and counts the reconciler's rules, routes and
+	// addresses
+	held := func() (out leftover) {
+		read, err := plat.readFallback(sets)
+		listed, listErr := plat.holdsFallback()
+		rules, ruleErr := plat.Rules()
+		routes, routeErr := plat.Routes()
+		addresses, addressErr := plat.Addrs()
+		if err := errors.Join(err, listErr, ruleErr, routeErr, addressErr); err != nil {
+			t.Fatalf("read the namespace back: %v", err)
+		}
+		out = leftover{read: read, listed: listed, rules: len(rules), routes: len(routes)}
+		for _, address := range addresses {
+			if slices.Contains(first.addresses, address) {
+				out.addresses++
+			}
+		}
+		return out
+	}
+
+	stop := runThroughFirstPass(t, first)
+	written := held().rules
+	stop(ErrMeshFailed)
+	if left := held(); left.read.fault != "" || !left.listed || left.rules+left.routes+left.addresses > 0 {
+		t.Fatalf("the failed mesh's stop left %+v, want the table as written alone", left)
+	}
+	if err := sendFrom(t, netip.MustParseAddr("203.0.113.9"), 9, ""); !errors.Is(err, unix.EPERM) {
+		t.Errorf("with the table alone a datagram beyond the LAN left with %v, want EPERM", err)
+	}
+	stop = runThroughFirstPass(t, open())
+	if left := held(); left.read.fault != "" || left.read.dropped != 1 || left.rules != written {
+		t.Errorf("the next start holds %+v, want the table as written with the one drop and %d rules", left, written)
+	}
+	stop(nil)
+	if left := held(); left.read.fault != "the table is missing" || left.listed || left.rules+left.routes+left.addresses > 0 {
+		t.Errorf("a plain stop left %+v, want nothing", left)
+	}
+}
+
+// sendFrom sends a datagram of one byte to port at to, from a socket bound to device where it is not empty
+func sendFrom(t *testing.T, to netip.Addr, port int, device string) error {
+	t.Helper()
+	family, address := unix.AF_INET6, unix.Sockaddr(&unix.SockaddrInet6{Port: port, Addr: to.As16()})
+	if to.Is4() {
+		family, address = unix.AF_INET, &unix.SockaddrInet4{Port: port, Addr: to.As4()}
+	}
+	fd, err := unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if device != "" {
+		if err := unix.BindToDevice(fd, device); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return unix.Sendto(fd, []byte("x"), 0, address)
 }

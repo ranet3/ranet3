@@ -499,6 +499,20 @@ func (p *netlinkPlatform) deleteFallback() error {
 	return deleteFallback(conn)
 }
 
+// holdsFallback lists through the watch's socket
+func (p *netlinkPlatform) holdsFallback() (bool, error) {
+	conn, err := p.watchFallback()
+	if err != nil {
+		return false, err
+	}
+	tables, err := nftables.Tables(conn, FallbackTable)
+	if err != nil {
+		return false, err
+	}
+	_, held := tables[unix.NFPROTO_INET]
+	return held, nil
+}
+
 // deleteFallback lists first, since deleting a table that is not there fails
 // the batch
 func deleteFallback(conn *nftables.Conn) error {

@@ -84,12 +84,16 @@ type fakeKernel struct {
 
 	// fallback is the table ranet3_fallback the fake holds, nil for none.
 	// spoiled is a fault every read reports, as another writer's change no
-	// rewrite outlasts, and failFallback fails every write, read and delete.
+	// rewrite outlasts, failFallback fails every write, read, delete and
+	// listing, failWrite fails the writes alone and failListing the listings
+	// alone.
 	fallback        *fallbackSets
 	fallbackWrites  int
 	fallbackDeletes int
 	spoiled         string
 	failFallback    error
+	failWrite       error
+	failListing     error
 	// fallbackDropped is the packets the table's last line has dropped, each of 60 bytes
 	fallbackDropped uint64
 }
@@ -99,6 +103,9 @@ func (f *fakeKernel) writeFallback(s fallbackSets, _ bool) error {
 	defer f.mu.Unlock()
 	if f.failFallback != nil {
 		return f.failFallback
+	}
+	if f.failWrite != nil {
+		return f.failWrite
 	}
 	f.fallback = &s
 	f.fallbackWrites++
@@ -130,6 +137,18 @@ func (f *fakeKernel) deleteFallback() error {
 	f.fallback = nil
 	f.fallbackDeletes++
 	return nil
+}
+
+func (f *fakeKernel) holdsFallback() (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failFallback != nil {
+		return false, f.failFallback
+	}
+	if f.failListing != nil {
+		return false, f.failListing
+	}
+	return f.fallback != nil, nil
 }
 
 func newFakeKernel(t *testing.T) *fakeKernel {
@@ -516,7 +535,7 @@ func TestReconcileNeverTouchesForeignRoutes(t *testing.T) {
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if err := reconciler.withdraw(); err != nil {
+	if err := reconciler.withdraw(nil); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	if _, dels := fake.counts(); dels != 1 {
@@ -737,7 +756,7 @@ func TestApplyAddressesOnlyRemovesWhatItAdded(t *testing.T) {
 	if !fake.addrs[ours] {
 		t.Fatal("configured address was not assigned")
 	}
-	if err := reconciler.withdraw(); err != nil {
+	if err := reconciler.withdraw(nil); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	if fake.addrs[ours] {
@@ -1185,7 +1204,7 @@ func TestWithdrawLeavesAnAddressAnotherWriterRewrote(t *testing.T) {
 	delete(kernel.addrs, ours)
 	kernel.addrs[prefix("2001:db8::1/64")] = true
 
-	if err := r.withdraw(); err != nil {
+	if err := r.withdraw(nil); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	if !kernel.addrs[prefix("2001:db8::1/64")] {
@@ -1211,7 +1230,7 @@ func TestWithdrawLeavesEveryAddressWhenTheLinkWillNotReadBack(t *testing.T) {
 	}
 
 	kernel.failAddrs = errors.New("link is gone")
-	if err := r.withdraw(); err == nil {
+	if err := r.withdraw(nil); err == nil {
 		t.Error("a shutdown that could not read the link back reported success")
 	}
 	if !kernel.addrs[ours] {
@@ -1399,7 +1418,7 @@ func TestRulePassWithdrawsWhatItDoesNotDeriveAndPublishesWhatItDoes(t *testing.T
 	if rule := want[marked]; rule.FWMask != ^uint32(0) || rule.Action != "goto" || rule.Goto != priorityOverlayEnd || rule.Table != 0 {
 		t.Errorf("the goto at 5100 reads %+v, want the all-ones mask the kernel dumps and no table", rule)
 	}
-	if err := reconciler.withdraw(); err != nil {
+	if err := reconciler.withdraw(nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := fake.Rules(); len(got) != 0 {

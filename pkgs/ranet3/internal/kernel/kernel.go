@@ -92,6 +92,10 @@ const (
 // everywhere but linux, and the route lookups RouteGet does not make
 var ErrUnsupported = errors.New("kernel: unsupported on this platform")
 
+// ErrMeshFailed is the cause a daemon cancels Run's context with once the
+// mesh's tun is gone, for which withdraw can leave the table ranet3_fallback
+var ErrMeshFailed = errors.New("kernel: the mesh failed")
+
 // errRouteSkipped distinguishes a route that was deliberately not installed
 // from one that was, and from a transient failure. It covers a route the
 // platform cannot represent and a key another writer already holds. The
@@ -1020,7 +1024,8 @@ func (r *Reconciler) adopt() bool {
 }
 
 // Run reconciles until ctx is canceled, then withdraws everything this
-// reconciler installed and closes its netlink sockets. It is called once.
+// reconciler installed, as withdraw gives for ctx's cause, and closes its
+// netlink sockets. It is called once.
 //
 // Withdrawal is best effort by construction: the caller usually cancels the
 // mesh at the same moment, and the kernel drops routes and addresses on its
@@ -1063,7 +1068,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			// it is retried on the backoff a failed pass takes rather than reported done
 			if !r.withdrawn {
 				started := time.Now()
-				err := r.withdraw()
+				err := r.withdraw(nil)
 				r.routePass = Stats{}
 				r.recordPass(err, time.Since(started))
 				stopTimer(retry)
@@ -1138,7 +1143,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	// anyway rather than skipping it on the flag keeps one exit path: what the
 	// kernel holds is read back rather than remembered, so anything installed
 	// between the stop and here still leaves.
-	return errors.Join(r.withdraw(), r.plat.Close())
+	return errors.Join(r.withdraw(context.Cause(ctx)), r.plat.Close())
 }
 
 // settle waits out a fixed window, discarding further wake-ups, so a burst of
@@ -1929,11 +1934,14 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 	return append(tun, added...), true, errors.Join(errs...)
 }
 
-// withdraw removes what this reconciler holds: every route and rule still
-// carrying its marker, every address it added itself, and the table
-// ranet3_fallback, whoever wrote it. Routes are read back rather than
-// remembered, so routes an earlier crashed instance left behind go with them.
-func (r *Reconciler) withdraw() error {
+// withdraw removes what this reconciler holds for a stop of cause: every route
+// and rule still carrying its marker, every address it added itself, and the
+// table ranet3_fallback, whoever wrote it, but where cause is ErrMeshFailed
+// and the capability in force asks for the table, which it leaves, listing it
+// only to say in a warning whether one is there.
+// Routes are read back rather than remembered, so routes an earlier crashed
+// instance left behind go with them.
+func (r *Reconciler) withdraw(cause error) error {
 	r.report(nil)
 	r.reportExit(nil)
 	var errs []error
@@ -1986,12 +1994,24 @@ func (r *Reconciler) withdraw() error {
 	}
 	// the table goes after the rules, so its chains hold the host's traffic while they go
 	if sw, ok := r.plat.(switcher); ok && !r.fallbackClear {
-		if err := sw.deleteFallback(); err != nil {
-			errs = append(errs, fmt.Errorf("delete table inet %s: %w", FallbackTable, err))
+		if mode := r.table.Mode(); errors.Is(cause, ErrMeshFailed) && mode != nil && mode.Refuses() {
+			// the listing words the warning alone, so one that fails deletes nothing
+			switch held, err := sw.holdsFallback(); {
+			case err != nil:
+				slog.Warn("kernel is leaving any fallback table there after the mesh failed, which it could not list", "table", FallbackTable, "state", r.fallbackState, "err", err)
+			case held:
+				slog.Warn("kernel is leaving its fallback table after the mesh failed", "table", FallbackTable, "state", r.fallbackState)
+			default:
+				slog.Warn("kernel found no fallback table to leave after the mesh failed, so the host's traffic leaves by its routes", "table", FallbackTable, "state", r.fallbackState)
+			}
 		} else {
-			r.fallbackClear = true
+			if err := sw.deleteFallback(); err != nil {
+				errs = append(errs, fmt.Errorf("delete table inet %s: %w", FallbackTable, err))
+			} else {
+				r.fallbackClear = true
+			}
+			r.reportFallbackState(nil)
 		}
-		r.reportFallbackState(nil)
 	}
 	// Every count is of something that left, so a line reporting nothing
 	// removed is a shutdown that removed nothing.

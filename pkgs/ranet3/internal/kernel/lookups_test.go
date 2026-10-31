@@ -551,7 +551,7 @@ func TestWithdrawalClearsTheLookups(t *testing.T) {
 	if got := reconciler.Stats().Lookups; len(got) != 1 || !got[0].Taken {
 		t.Fatalf("the pass published %+v, want the hold taken, so this proves nothing", got)
 	}
-	err := reconciler.withdraw()
+	err := reconciler.withdraw(nil)
 	reconciler.routePass = Stats{}
 	reconciler.recordPass(err, 0)
 	if got := reconciler.Stats().Lookups; len(got) != 0 {

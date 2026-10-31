@@ -91,7 +91,7 @@ func TestNetlinkFallbackNoneEndsTheWalkAsTheRulesSay(t *testing.T) {
 			t.Fatalf("with %s: %v", c.name, err)
 		}
 		checkFallbackNoneWalk(t, plat, uplink, forwarded, left, lan4, lan6)
-		if err := reconciler.withdraw(); err != nil {
+		if err := reconciler.withdraw(nil); err != nil {
 			t.Fatalf("with %s: %v", c.name, err)
 		}
 		if got, err := plat.Rules(); err != nil || len(got) != 0 {

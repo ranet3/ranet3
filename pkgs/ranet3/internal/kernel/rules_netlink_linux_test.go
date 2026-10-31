@@ -173,7 +173,7 @@ func TestNetlinkPassConvergesOnTheDerivedRules(t *testing.T) {
 	if plat.writes != writes {
 		t.Errorf("a second pass wrote %d rules", plat.writes-writes)
 	}
-	if err := reconciler.withdraw(); err != nil {
+	if err := reconciler.withdraw(nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := plat.Rules(); err != nil || len(got) != 0 {
@@ -219,7 +219,7 @@ func TestNetlinkMirrorReadsBackTheThrowAndTheOverlayHolds(t *testing.T) {
 	if stats := reconciler.Stats(); stats.Added != 0 || stats.Removed != 0 {
 		t.Errorf("a second pass added %d routes and removed %d", stats.Added, stats.Removed)
 	}
-	if err := reconciler.withdraw(); err != nil {
+	if err := reconciler.withdraw(nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := plat.Routes(); err != nil || len(got) != 0 {
@@ -711,7 +711,7 @@ func TestNetlinkLookupsReportAnotherProgramsRuleAhead(t *testing.T) {
 	sends = peers
 
 	expect("P0 again")
-	if err := reconciler.withdraw(); err != nil {
+	if err := reconciler.withdraw(nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -732,7 +732,7 @@ func TestNetlinkLookupsReportAnotherProgramsRuleAhead(t *testing.T) {
 	expect("X2 under wg-quick", "ipv6 3fff:0:0:1:: table 51820"+other4, "ipv4 192.0.2.5"+onTun, "ipv6 3fff::5"+onTun)
 	del(wg)
 	route(unix.RTM_DELROUTE, 51820, defaults...)
-	if err := reconciler.withdraw(); err != nil {
+	if err := reconciler.withdraw(nil); err != nil {
 		t.Fatal(err)
 	}
 }

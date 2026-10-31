@@ -97,7 +97,7 @@ func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
 // passByHand closes the reconciler when the test ends, for a test that runs
 // its passes itself.
 func (rig *coverRig) passByHand(t *testing.T) {
-	t.Cleanup(func() { _ = rig.reconcile.withdraw(); _ = rig.reconcile.plat.Close() })
+	t.Cleanup(func() { _ = rig.reconcile.withdraw(nil); _ = rig.reconcile.plat.Close() })
 }
 
 // The reconciler puts a plain default in as every member, unscoped though a

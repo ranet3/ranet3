@@ -18,6 +18,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/client"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
@@ -90,6 +91,40 @@ func TestShutdownWithdrawsTheBorderLast(t *testing.T) {
 	stopInOrder(cancel, wait, func() { record("border withdrew") })
 	if len(order) != 4 || order[2] != "both waited for" || order[3] != "border withdrew" {
 		t.Errorf("the shutdown ran %v, want the border to withdraw after the reconciler and the translator", order)
+	}
+}
+
+// The mesh's failure cancels for kernel.ErrMeshFailed, which the reconciler
+// reads to leave the kill switch's table, and fails the exit status. A stop
+// that ends ctx with the mesh still up, a signal's, returns with neither.
+func TestMeshFailureCancelsForItsCause(t *testing.T) {
+	for name, failure := range map[string]bool{"the failure": true, "a signal": false} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			meshFailed := make(chan struct{})
+			want := error(kernel.ErrMeshFailed)
+			if failure {
+				close(meshFailed)
+			} else {
+				cancel(nil)
+				want = context.Canceled
+			}
+			var failed atomic.Bool
+			returned := make(chan struct{})
+			go func() {
+				cancelOnMeshFailure(ctx, meshFailed, &failed, cancel)
+				close(returned)
+			}()
+			select {
+			case <-returned:
+			case <-time.After(5 * time.Second):
+				t.Fatal("cancelOnMeshFailure did not return")
+			}
+			if cause := context.Cause(ctx); cause != want || failed.Load() != failure {
+				t.Errorf("the stop's cause is %v with the exit status failed %v, want %v and %v", cause, failed.Load(), want, failure)
+			}
+		})
 	}
 }
 

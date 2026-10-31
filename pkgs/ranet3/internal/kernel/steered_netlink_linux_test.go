@@ -83,7 +83,7 @@ func TestNetlinkSteeredDefaultsComeAndGoWithTheSegments(t *testing.T) {
 	mesh.Set(netip.Prefix{}, waypoint, learned)
 	pass("the waypoint's segment back", steered())
 
-	if err := r.withdraw(); err != nil {
+	if err := r.withdraw(nil); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	if routes, _ := plat.Routes(); len(routes) != 0 {

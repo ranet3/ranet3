@@ -277,18 +277,12 @@ func runDaemon(opts options) int {
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancelFor := context.WithCancelCause(context.Background())
+	cancel := func() { cancelFor(nil) }
 	defer cancel()
 	go watchSignals(signals, cancel, func() { os.Exit(1) })
 	// the supervisor restarts the node on the exit status
-	go func() {
-		select {
-		case <-mesh.Failed():
-			failed.Store(true)
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
+	go cancelOnMeshFailure(ctx, mesh.Failed(), &failed, cancelFor)
 
 	// SIGHUP reconciles rather than restarts. The registry is rewritten every
 	// time any node joins the mesh, and a restart to pick that up would drop
@@ -502,4 +496,15 @@ func watchSignals(signals <-chan os.Signal, cancel context.CancelFunc, force fun
 	<-signals
 	log.Print("second signal, exiting without finishing shutdown")
 	force()
+}
+
+// cancelOnMeshFailure returns once meshFailed closes or ctx ends, and where it reads meshFailed's close it marks the exit status
+// failed and cancels for kernel.ErrMeshFailed, which keeps the cause of a cancel before it
+func cancelOnMeshFailure(ctx context.Context, meshFailed <-chan struct{}, failed *atomic.Bool, cancel context.CancelCauseFunc) {
+	select {
+	case <-meshFailed:
+		failed.Store(true)
+		cancel(kernel.ErrMeshFailed)
+	case <-ctx.Done():
+	}
 }

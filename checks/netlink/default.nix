@@ -118,6 +118,7 @@ testers.runNixOSTest {
     assert "--- PASS: TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter" in out, f"the fallback table did not run:\n{out}"
     assert "--- PASS: TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass" in out, f"the fallback table's wake did not run:\n{out}"
     assert "--- PASS: TestNetlinkSteeredDefaultsComeAndGoWithTheSegments" in out, f"mode 3's steered defaults did not run:\n{out}"
+    assert "--- PASS: TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh" in out, f"the fallback table after a failed mesh's stop did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 7, f"only {ran} netlink round trips ran:\n{out}"
 
