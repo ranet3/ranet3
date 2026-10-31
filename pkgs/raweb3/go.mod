@@ -9,8 +9,8 @@ require (
 	github.com/a-h/templ v0.3.1020
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/spf13/cobra v1.10.2
-	github.com/tdewolff/minify/v2 v2.24.23
-	github.com/yuin/goldmark v1.8.6
+	github.com/tdewolff/minify/v2 v2.24.24
+	github.com/yuin/goldmark v1.8.7
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
