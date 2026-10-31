@@ -137,8 +137,9 @@ type Subsystem string
 
 const (
 	// SubsystemReconciler is the cap.table route reconciler. Stopping it
-	// withdraws every route, address and rule it installed, the same as
-	// `birdc disable` on a kernel protocol while Babel lived in BIRD.
+	// withdraws every route, address and rule it installed and the table
+	// ranet3_fallback, the same as `birdc disable` on a kernel protocol while
+	// Babel lived in BIRD.
 	SubsystemReconciler Subsystem = "reconciler"
 	// SubsystemSteering is cap.segment's steer policies, the decision to send
 	// this node's own packets through a segment list. Stopping it sends them
