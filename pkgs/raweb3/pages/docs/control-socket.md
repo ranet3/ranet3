@@ -383,13 +383,15 @@ synced and renamed into place, and the directory is synced after it, so a crash
 leaves the flag as it was or as asked.
 
 `ranet3 up` removes the flag before it acts. It then puts back the addresses,
-rules and routes as the reconciler does at start, and on an exit node the
-translator's tables and advertisement. It starts every dialer, the responder and
-the speaker. A subsystem somebody disabled stays disabled. A `down` on a node
-that is down and an `up` on one that is up succeed and say so. While the node is
-down, `redial`, `rekey`, `enable` and `debug probe` are refused with an error
-saying it is down. A reload applies the file and the trust document and leaves
-the node down, and a peer the reload adds is dialed after `up`.
+rules and routes, and [the kill switch's](routing.md#the-kill-switch-on-linux)
+table where `fallback = "none"` asks for it, as the reconciler does at start,
+and on an exit node the translator's tables and advertisement. It starts every
+dialer, the responder and the speaker. A subsystem somebody disabled stays
+disabled. A `down` on a node that is down and an `up` on one that is up succeed
+and say so. While the node is down, `redial`, `rekey`, `enable` and
+`debug probe` are refused with an error saying it is down. A reload applies the
+file and the trust document and leaves the node down, and a peer the reload adds
+is dialed after `up`.
 
 ```console
 $ ranet3 down

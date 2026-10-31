@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-10-28
+updated: 2026-10-31
 order: 40
 ---
 
@@ -204,10 +204,14 @@ The mesh tun going away under a running node, such as one an operator deleted,
 is a failure the daemon cannot repair. It logs `netstack tun failed` with the
 interface and the error, records a `netstack.tun.failed` event, and stops as it
 does on SIGTERM: it closes every session with its grace period and withdraws its
-routes, its translation rules and, last, its border filter. It then exits 1, and
-the unit starts it again 5 seconds later, which opens the tun anew. On macOS
-launchd starts it again through `KeepAlive`. A single frame the tun hands over
-that cannot be read as packets costs that frame alone, as
+routes and rules, [the kill switch's](routing.md#the-kill-switch-on-linux)
+table, its translation rules and, last, its border filter. It then exits 1, and
+the unit starts it again 5 seconds later, which opens the tun anew. Under
+`cap.exit.fallback = "none"` no switch holds from that stop until the new
+start's first pass writes the table again, as
+[limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) declares. On
+macOS launchd starts it again through `KeepAlive`. A single frame the tun hands
+over that cannot be read as packets costs that frame alone, as
 [metrics](metrics.md#tun-reads) describes. An exit's egress segments write to
 the same tun, so they have no device of their own to lose. An uplink going away
 does not stop the daemon either. Where the lookups of
