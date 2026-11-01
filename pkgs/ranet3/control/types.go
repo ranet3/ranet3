@@ -336,6 +336,8 @@ type SegmentCounters struct {
 	Refused uint64 `json:"refused"`
 	// NotReady counts the egress results dropped as not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`
+	// ECNUnused counts the packets an End.DT46 decapsulated whose inner and outer ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them
+	ECNUnused uint64 `json:"ecn_unused"`
 }
 
 // TransitCounters counts the forwarding decision's outcomes since startup

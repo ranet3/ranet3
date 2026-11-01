@@ -401,13 +401,21 @@ func TestEncapsulationCopiesTheInnerTrafficClassAndHopLimit(t *testing.T) {
 			t.Fatalf("class %#x: the outer hop limit is %d, want the inner 7", class, out[7])
 		}
 	}
-	// An IPv4 inner has no class or label to copy, so the outer gets neither.
-	out, err := Encapsulate(innerV4("payload"), addr("3fff:b:0:100::1"), exit)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out[0] != 0x60 || out[1] != 0 || out[2] != 0 || out[3] != 0 || out[7] != DefaultHopLimit {
-		t.Errorf("an encapsulated v4 packet got outer %x hop limit %d", out[:4], out[7])
+	// RFC 6040 section 4.1: "In normal mode, an encapsulator compliant with this
+	// specification MUST construct the outer encapsulating IP header by copying
+	// the two-bit ECN field of the incoming IP header." An IPv4 inner has no flow
+	// label, so its outer class is that field alone, every TOS octet swept.
+	for tos := range 256 {
+		inner := innerV4("payload")
+		inner[1] = byte(tos)
+		out, err := Encapsulate(inner, addr("3fff:b:0:100::1"), exit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		class := out[0]<<4 | out[1]>>4
+		if out[0]>>4 != 6 || class != byte(tos)&0b11 || out[1]&0x0f != 0 || out[2] != 0 || out[3] != 0 || out[7] != DefaultHopLimit {
+			t.Fatalf("TOS %#x: an encapsulated v4 packet got outer %x hop limit %d, want traffic class %#x and no flow label", tos, out[:4], out[7], tos&0b11)
+		}
 	}
 }
 

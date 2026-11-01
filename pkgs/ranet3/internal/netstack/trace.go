@@ -354,7 +354,7 @@ type traceSite struct {
 	arrival  TraceArrival
 	from     *Peer
 	decision TraceDecision
-	// reason is a transitReason, or traceBudget
+	// reason is a transitReason, traceBudget or traceECN
 	reason    transitReason
 	next      *Peer
 	segment   netip.Addr
@@ -420,6 +420,8 @@ func segmentReason(err error) transitReason {
 		return transitExpired
 	case errors.Is(err, srv6.ErrSourceRefused):
 		return transitRefused
+	case errors.Is(err, srv6.ErrECNDropped):
+		return traceECN
 	}
 	return transitInvalid
 }
@@ -464,11 +466,18 @@ func (t *tracer) arrive(arena, packet []byte) ([]byte, []byte) {
 }
 
 // traceBudget is the reason of a packet its peer's budget refused, which Peer.Dropped counts rather than the transit counters
-const traceBudget = transitReasonCount
+// and traceECN that of a packet an End.DT46 of this node dropped where RFC 6040 section 4.2's Figure 4 drops it, which the segment counters count
+const (
+	traceBudget = transitReasonCount
+	traceECN    = transitReasonCount + 1
+)
 
 func traceReasonName(reason transitReason) string {
-	if reason == traceBudget {
+	switch reason {
+	case traceBudget:
 		return "budget"
+	case traceECN:
+		return "ecn"
 	}
 	return transitReasonNames[reason]
 }

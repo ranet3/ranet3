@@ -50,7 +50,8 @@ func hopLimits() hegel.Generator[uint8] {
 // built by innerV4 and innerV6Hops as the table tests build theirs, with the
 // header fields H.Encaps copies onto the outer header drawn as well: the
 // traffic class, the flow label and the hop limit of an IPv6 packet. The TOS
-// and the TTL of an IPv4 one are drawn too, the two it must not copy.
+// and the TTL of an IPv4 one are drawn too, of which it copies the ECN field
+// of the TOS alone.
 func innerPackets() hegel.Generator[[]byte] {
 	return hegel.Composite(func(tc hegel.TestCase) []byte {
 		if hegel.Draw(tc, hegel.Booleans()) {
@@ -463,9 +464,10 @@ func TestWalkRefusesExactlyWhatTheModelFindsAnError(t *testing.T) {
 // segment, writing that segment into the outer destination, until the exit
 // hands back the inner packet and its family, as the tail of the outer packet
 // rather than a copy of it. The outer header copies the
-// traffic class, the flow label and the hop limit of an IPv6 inner packet and
-// takes none of an IPv4 one's, its TOS and TTL included, so a walk stops with
-// ErrHopLimit exactly where the inner IPv6 budget runs out, and nowhere else.
+// traffic class, the flow label and the hop limit of an IPv6 inner packet, and
+// of an IPv4 one the ECN field of its TOS alone and not its TTL, so a walk
+// stops with ErrHopLimit exactly where the inner IPv6 budget runs out, and
+// nowhere else.
 // A reversal or an offset wrong in any one of these sends traffic through the
 // waypoints in the wrong order, or delivers something other than what was
 // sent.
@@ -483,7 +485,8 @@ func TestEncapsulationParsesBackToItsPath(t *testing.T) {
 		if err != nil {
 			ht.Fatalf("Parse refused what Encapsulate wrote: %v", err)
 		}
-		family, hops, word := uint8(NextHeaderIPv4), uint8(DefaultHopLimit), []byte{0x60, 0, 0, 0}
+		// an IPv4 packet's ECN field, the low bits of its TOS octet, goes to the low bits of the traffic class, RFC 6040 section 4.1's normal mode
+		family, hops, word := uint8(NextHeaderIPv4), uint8(DefaultHopLimit), []byte{0x60, (inner[1] & 0b11) << 4, 0, 0}
 		if inner[0]>>4 == 6 {
 			family, hops, word = NextHeaderIPv6, inner[7], inner[:4]
 		}

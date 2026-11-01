@@ -147,6 +147,7 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 		"ranet3_segments_egressed_total 0",
 		"ranet3_segments_refused_total 0",
 		"ranet3_segments_not_ready_total 0",
+		"ranet3_segments_ecn_unused_total 0",
 		"ranet3_steered_total 0",
 		// The two ways this node's own steering loses a packet are one series
 		// with a reason, since an alert wants their sum and a reader wants

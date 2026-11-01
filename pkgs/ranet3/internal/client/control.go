@@ -120,6 +120,7 @@ func segmentCounters(counters netstack.SegmentCounters) control.SegmentCounters 
 		Egressed:  counters.Egressed,
 		Refused:   counters.Refused,
 		NotReady:  counters.NotReady,
+		ECNUnused: counters.ECNUnused,
 	}
 }
 

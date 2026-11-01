@@ -5,6 +5,7 @@ package netstack
 
 import (
 	"cmp"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/netip"
@@ -150,6 +151,8 @@ type SegmentCounters struct {
 	// NotReady counts the egress results dropped as not ready for their family
 	// it is this node's own state, so it is not in Dropped
 	NotReady uint64
+	// ECNUnused counts the packets an End.DT46 decapsulated whose inner and outer ECN fields RFC 6040 section 4.2's Figure 4 marks currently unused, the dropped ones among them
+	ECNUnused uint64
 }
 
 func (m *Mesh) SegmentCounters() SegmentCounters {
@@ -164,6 +167,7 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 		Egressed:  m.segmentsEgressed.Load(),
 		Refused:   m.segmentsRefused.Load(),
 		NotReady:  m.segmentsNotReady.Load(),
+		ECNUnused: m.ecnUnused.total.Load(),
 	}
 }
 
@@ -211,6 +215,9 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, records *segmentRecords, 
 	for i, frame := range frames {
 		packet := frame[TUNHeadroom:]
 		result := act(packet)
+		if result.Unused {
+			m.noteECNUnused(packet, result.Inner)
+		}
 		switch result.Action {
 		case srv6.ActionPass:
 			if routed != nil {
@@ -477,6 +484,27 @@ func (m *Mesh) noteSegmentDrop(err error) {
 	m.reportSegmentDrop("a packet addressed to one of this node's segments was refused", "err", err)
 }
 
+// noteECNUnused counts a packet an End.DT46 took inner out of whose ECN fields, outer's and inner's, RFC 6040 section 4.2's Figure 4 marks currently unused
+// and records netstack.ecn.unused at most once an interval, with the count since the last record and inner's IP header, as section 4.2 asks such a combination logged and rate-limited
+// and RFC 3168 section 9.2.2 a record of them to hold one such packet's headers
+// the figure writes no unused cell's field into inner, so inner's field is the one it arrived with
+func (m *Mesh) noteECNUnused(outer, inner []byte) {
+	count, record := m.ecnUnused.add(int64(time.Since(m.segmentsStarted)))
+	if !record {
+		return
+	}
+	length := 40
+	if inner[0]>>4 == 4 {
+		length = int(inner[0]&0x0f) * 4
+	}
+	header := hex.EncodeToString(inner[:min(len(inner), length)])
+	if m.events != nil {
+		m.events("netstack.ecn.unused", "", slog.String("interface", m.Name), slog.String("outer", packet.ECNOf(outer).String()), slog.String("inner", packet.ECNOf(inner).String()),
+			slog.Uint64("count", count), slog.String("header", header))
+	}
+	slog.Debug("segments arrived at an end.dt46 with an ecn combination no tunnel sends", "interface", m.Name, "outer", packet.ECNOf(outer), "inner", packet.ECNOf(inner), "count", count, "header", header)
+}
+
 // answerRefused sends the ICMP error RFC 8986 section 4.1 answers a refused
 // packet with, S06 for a hop limit that ran out here and S10 for a header this
 // node will not act on. Everything else is dropped in silence, because an
@@ -723,6 +751,8 @@ type segmentCounters struct {
 	icmpLimit icmpLimit
 	// withheldBySource and withheldByNode space the reports of the answers a source's bucket and the node's cap withheld, which the limit's shards count as IcmpOutRateLimitHost and IcmpOutRateLimitGlobal count them
 	withheldBySource, withheldByNode reportedCount
+	// ecnUnused counts the packets SegmentCounters.ECNUnused counts and spaces their records
+	ecnUnused reportedCount
 	// segmentsStarted and segmentReported space the drop reports on the
 	// monotonic clock, as Peer.sendErrReported does, so a backward step of the
 	// wall clock cannot suppress every report until it catches up.

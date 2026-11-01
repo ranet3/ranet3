@@ -388,6 +388,7 @@ func segmentLine(s Status) string {
 		{s.SegmentCounters.Egressed, "egressed"},
 		{s.SegmentCounters.Refused, "refused"},
 		{s.SegmentCounters.NotReady, "not ready"},
+		{s.SegmentCounters.ECNUnused, "with an unused ECN combination"},
 	} {
 		if count.n > 0 {
 			line += fmt.Sprintf(", %d %s", count.n, count.name)

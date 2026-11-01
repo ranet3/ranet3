@@ -60,6 +60,7 @@
     "answered": 1,
     "egressed": 5,
     "refused": 1,
-    "not_ready": 0
+    "not_ready": 0,
+    "ecn_unused": 0
   }
 }

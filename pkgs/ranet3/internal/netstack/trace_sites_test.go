@@ -225,11 +225,18 @@ var outcomeCases = func() []outcomeCase {
 			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), closed)
 		}, end(64)), with(session(TraceDrop, "budget"), func(r *TraceRecord) { r.Next = "closed" })},
 		{"End past the hop limit", transitExpired, acted(nil, end(1)), with(session(TraceDrop, "expired"), func(r *TraceRecord) { r.Segment = egressWaypoint })},
+		{"an egress segment dropping CE over Not-ECT", traceECN, acted(nil, outerCE(headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressExit))), with(session(TraceDrop, "ecn"), func(r *TraceRecord) { r.Segment = egressExit })},
 	}
 }()
 
+// outerCE is raw, an IPv6 packet, with its ECN field CE
+func outerCE(raw []byte) []byte {
+	raw[1] |= 0b11_0000
+	return raw
+}
+
 // each outcome of decide, classify, the segments and the budget records the decision, reason, next peer, segment and answer it met
-// and once every case ran, every reason the transit counters name but answered, and budget, has a case that recorded it, so a reason added without a record fails here
+// and once every case ran, every reason the transit counters name but answered, budget and ecn, has a case that recorded it, so a reason added without a record fails here
 func TestTraceRecordsEachOutcome(t *testing.T) {
 	covered := map[transitReason]bool{}
 	ran := 0
@@ -253,7 +260,7 @@ func TestTraceRecordsEachOutcome(t *testing.T) {
 	if ran < len(outcomeCases) {
 		return
 	}
-	for reason := range transitReasonCount + 1 {
+	for reason := range traceECN + 1 {
 		if reason != transitAnswered && !covered[reason] {
 			t.Errorf("no input draws a record of reason %s", traceReasonName(reason))
 		}

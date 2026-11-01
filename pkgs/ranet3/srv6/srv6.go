@@ -297,7 +297,8 @@ func writeOuter(out, inner []byte, innerNext uint8, source netip.Addr, path []ne
 		// packet's version nibble is already 6.
 		copy(out[:4], inner[:4])
 	} else {
-		out[0], out[1] = 0x60, 0
+		// RFC 6040 section 4.1's normal mode: "copying the two-bit ECN field of the incoming IP header", the low bits of the TOS octet, into the low bits of the traffic class
+		out[0], out[1] = 0x60, (inner[1]&0b11)<<4
 		binary.BigEndian.PutUint16(out[2:], 0)
 	}
 	binary.BigEndian.PutUint16(out[4:], uint16(srhLen+len(inner)))

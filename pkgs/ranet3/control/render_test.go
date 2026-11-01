@@ -182,7 +182,7 @@ func TestStatusSaysTheRoleInWords(t *testing.T) {
 }
 
 // the segment line always names forwarded, delivered and dropped
-// and names answered, egressed, refused and not ready only while each is above 0
+// and names answered, egressed, refused, not ready and the packets of an unused ECN combination only while each is above 0
 func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
@@ -190,7 +190,7 @@ func TestStatusSegmentLineRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	for _, counters := range []SegmentCounters{
 		{Forwarded: 7, Delivered: 5, Dropped: 4},
-		{Forwarded: 7, Delivered: 5, Dropped: 4, Answered: 1, Egressed: 33, Refused: 2, NotReady: 3},
+		{Forwarded: 7, Delivered: 5, Dropped: 4, Answered: 1, Egressed: 33, Refused: 2, NotReady: 3, ECNUnused: 6},
 	} {
 		status.SegmentCounters = counters
 		RenderStatus(&out, status)

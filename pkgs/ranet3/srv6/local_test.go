@@ -5,6 +5,7 @@ package srv6
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
 
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -143,6 +145,88 @@ func TestSegmentsOfOursThatCannotBeActedOnAreDropped(t *testing.T) {
 				t.Errorf("an exit in the middle of a path returned %v (%v), want a drop that is neither refused nor answered", result.Action, result.Err)
 			}
 		})
+	}
+}
+
+// figure4 is RFC 6040 section 4.2's Figure 4, by the arriving inner ECN field and then the outer, in the figure's order of Not-ECT, ECT(0), ECT(1) and CE
+// figureDrop marks its one cell that drops the packet
+var figure4 = [4][4]uint8{
+	{0b00, 0b00, 0b00, figureDrop},
+	{0b10, 0b10, 0b01, 0b11},
+	{0b01, 0b01, 0b01, 0b11},
+	{0b11, 0b11, 0b11, 0b11},
+}
+
+const figureDrop = 0xff
+
+// figureOrder is the codepoints in Figure 4's order, RFC 3168 section 5's 00, 10, 01 and 11
+var figureOrder = [4]uint8{0b00, 0b10, 0b01, 0b11}
+
+// figureUnused marks the cells Figure 4 marks (!!!) or (!), the currently unused combinations
+var figureUnused = [4][4]bool{
+	{false, true, true, true},
+	{false, false, false, false},
+	{false, true, false, false},
+	{false, false, true, false},
+}
+
+// RFC 6040 section 4.2: "a compliant tunnel egress MUST set the outgoing ECN field to the codepoint at the intersection of the appropriate arriving inner header (row) and outer header (column) in Figure 4 (the IPv4 header checksum also changes whenever the ECN field is changed)"
+// and "If the inner ECN field is Not-ECT and the outer ECN field is CE, the decapsulator MUST drop the packet."
+// an End.DT46 delivering to the mesh or to egress hands on each inner packet of either family with the figure's field, an IPv4 header's checksum still valid, or drops it at that cell
+// and it reports each combination the figure marks currently unused, which "the decapsulator SHOULD log", the dropped one among them with the packet it drops
+func TestExitDecapsulatesTheECNFieldByRFC6040(t *testing.T) {
+	exit, source := addr("3fff:b:0:206::1"), addr("3fff:b:0:100::1")
+	for name, segment := range map[string]Segment{
+		"delivering to the mesh": {SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46},
+		"egress": {SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress,
+			Allow: []schema.Prefix{schema.MustPrefix("3fff:b:0:100::/60"), schema.MustPrefix("3fff:a::/64"), schema.MustPrefix("203.0.113.0/24")}},
+	} {
+		table, err := NewLocalTable([]Segment{segment}, everySource)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for row, innerField := range figureOrder {
+			for column, outerField := range figureOrder {
+				for _, family := range []int{4, 6} {
+					inner := innerV6("payload")
+					inner[1] |= innerField << 4
+					if family == 4 {
+						inner = innerV4("payload")
+						inner[1] = innerField
+						binary.BigEndian.PutUint16(inner[10:], ^uint16(packet.Sum(0, inner[:20])))
+					}
+					raw, err := Encapsulate(inner, source, []netip.Addr{exit})
+					if err != nil {
+						t.Fatal(err)
+					}
+					raw[1] = raw[1]&^0b11_0000 | outerField<<4
+					result := table.Handle(raw)
+					want := figure4[row][column]
+					if result.Unused != figureUnused[row][column] {
+						t.Errorf("%s IPv%d: inner %02b under outer %02b reported unused %t, Figure 4 marks it %t", name, family, innerField, outerField, result.Unused, figureUnused[row][column])
+					}
+					if want == figureDrop {
+						if result.Action != ActionDrop || result.Err != ErrECNDropped || result.Inner == nil {
+							t.Errorf("%s IPv%d: inner %02b under outer %02b returned %v (%v) carrying %d octets, want the drop with its packet", name, family, innerField, outerField, result.Action, result.Err, len(result.Inner))
+						}
+						continue
+					}
+					if result.Action == ActionDrop {
+						t.Fatalf("%s IPv%d: inner %02b under outer %02b was dropped: %v", name, family, innerField, outerField, result.Err)
+					}
+					got := result.Inner[1] >> 4 & 0b11
+					if family == 4 {
+						got = result.Inner[1] & 0b11
+						if sum := packet.Sum(0, result.Inner[:20]); sum != 0xffff {
+							t.Errorf("%s IPv4: inner %02b under outer %02b left a header summing to %#x, want its checksum valid", name, innerField, outerField, sum)
+						}
+					}
+					if got != want {
+						t.Errorf("%s IPv%d: inner %02b under outer %02b delivered %02b, want %02b", name, family, innerField, outerField, got, want)
+					}
+				}
+			}
+		}
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -358,6 +359,11 @@ const (
 )
 
 // Result carries Handle's decision.
+//
+// Unused reports a packet an End.DT46 took Inner out of whose inner and outer
+// ECN fields RFC 6040 section 4.2's Figure 4 marks currently unused, which
+// that section asks logged. The cell the figure drops is one of them, an
+// ActionDrop for ErrECNDropped that carries Inner.
 type Result struct {
 	Action Action
 	Next   netip.Addr
@@ -365,6 +371,7 @@ type Result struct {
 	Inner  []byte
 	Family uint8
 	Err    error
+	Unused bool
 }
 
 // Handle decides what this node does with one decrypted packet.
@@ -404,17 +411,39 @@ func (t *LocalTable) Handle(raw []byte) Result {
 		if err != nil {
 			return Result{Action: ActionDrop, Err: err}
 		}
-		if !egress {
-			return Result{Action: ActionDeliver, Inner: inner, Family: family}
+		action := ActionDeliver
+		if egress {
+			if source, ok := innerSource(inner, family); !ok || !segment.allows(source) {
+				return Result{Action: ActionDrop, Err: ErrSourceRefused}
+			}
+			action = ActionEgress
 		}
-		if source, ok := innerSource(inner, family); !ok || !segment.allows(source) {
-			return Result{Action: ActionDrop, Err: ErrSourceRefused}
+		drop, unused := decapsulateECN(raw, inner)
+		if drop {
+			return Result{Action: ActionDrop, Inner: inner, Err: ErrECNDropped, Unused: true}
 		}
-		return Result{Action: ActionEgress, Inner: inner, Family: family}
+		return Result{Action: action, Inner: inner, Family: family, Unused: unused}
 	}
 	// NewLocalTable refuses anything else, so this is unreachable rather than
 	// a case left to fall through into silence.
 	return Result{Action: ActionDrop, Err: fmt.Errorf("srv6: %s carries an unimplemented behavior", destination)}
+}
+
+// ErrECNDropped is the packet RFC 6040 section 4.2's Figure 4 drops
+var ErrECNDropped = errors.New("srv6: an outer CE mark over an inner Not-ECT packet")
+
+// decapsulateECN writes into inner, the packet Decap took out of outer, the ECN field of RFC 6040 section 4.2's Figure 4 for the two, and reports the cell's drop and unused
+// an inner packet shorter than its version's header, or of neither version, is left as it came
+func decapsulateECN(outer, inner []byte) (drop, unused bool) {
+	if _, err := innerNextHeader(inner); err != nil {
+		return false, false
+	}
+	field := packet.ECNOf(inner)
+	out, drop, unused := packet.Decapsulate(field, packet.ECNOf(outer))
+	if !drop && out != field {
+		packet.SetECN(inner, out)
+	}
+	return drop, unused
 }
 
 // innerSource reads the source the host's stack will read off the tun, which
