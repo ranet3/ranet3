@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-01
+updated: 2026-11-02
 order: 100
 ---
 
@@ -271,9 +271,10 @@ it, and every dialer that is waiting out its reconnect delay dials again. A
 change of links alone probes no session and wakes no dialer, and wakes the
 reconciler only under [`cap.exit`](routing.md#exit-mode-on-linux). Either change
 is recorded as a `network.changed` event naming what moved. A dialer that finds
-its session healthy stands down as it does after any wake. A change the host
-shows nowhere, such as a captive portal that lets nothing through, needs
-`ranet3 redial --all` instead.
+its session healthy stands down as it does after any wake, and so does one
+behind a [`preferred`](control-socket.md#requests-and-answers) session its own
+dial would not replace. A change the host shows nowhere, such as a captive
+portal that lets nothing through, needs `ranet3 redial --all` instead.
 
 ## Sockets connected to 1 peer
 

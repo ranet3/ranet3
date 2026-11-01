@@ -31,7 +31,7 @@ sections below give the details.
 | RFC 7296 section 1.3.1                                                                 | A failed Child SA does not tear down the IKE SA                                                                                                                                                                           | When the Child SA in `IKE_AUTH` fails, both ends delete the IKE SA                                                                                                                                                                                                                                                                                                                                                                    | An IKE SA carries nothing without its Child SA                                                                                                                                                                                                                                                             |
 | RFC 7296 section 2.4                                                                   | Send a Delete for an IKE SA closed while the peer still answers                                                                                                                                                           | None when a Message ID space is spent, a message cannot be built, or the peer's fragments of 1 message pass the reassembly limit                                                                                                                                                                                                                                                                                                      | A Delete needs a Message ID and the same encoding, and RFC 7383 section 5 drops the connection, see Closing SAs                                                                                                                                                                                            |
 | RFC 7296 section 2.1                                                                   | A retransmission is bitwise identical to the original request                                                                                                                                                             | A request cut again for a smaller threshold is not                                                                                                                                                                                                                                                                                                                                                                                    | RFC 7383 section 2.5.2 has it refragmented, see IKE fragmentation                                                                                                                                                                                                                                          |
-| RFC 7296 section 2.4                                                                   | Retransmission times increase exponentially                                                                                                                                                                               | Each new cut of a request starts them over                                                                                                                                                                                                                                                                                                                                                                                            | RFC 7383 section 2.5.2 has the timers start over                                                                                                                                                                                                                                                           |
+| RFC 7296 section 2.4                                                                   | Retransmission times increase exponentially                                                                                                                                                                               | Each new cut of a request starts them over, and once the IKE SA starts to close, the request outstanding takes its next counted send at once                                                                                                                                                                                                                                                                                          | RFC 7383 section 2.5.2 has the timers start over, and the close's send frees the window of 1 within a round trip, so the Delete leaves before the node stops waiting for it, for 1 datagram a close and no send past the request's budget, see IKE fragmentation                                           |
 | RFC 7296 section 2.11                                                                  | Answer a request at the address and port it came from                                                                                                                                                                     | A repeat from another address draws the answer only within the bytes it sent                                                                                                                                                                                                                                                                                                                                                          | A replayed fragment would aim answers at any address                                                                                                                                                                                                                                                       |
 | RFC 7383 section 2.5.1                                                                 | Use the path MTU the sender knows for the fragments                                                                                                                                                                       | Never less than 1280 bytes over IPv6 or 576 over IPv4                                                                                                                                                                                                                                                                                                                                                                                 | The values the section gives where the path MTU is unknown                                                                                                                                                                                                                                                 |
 | RFC 7383 section 5                                                                     | Bound the decrypted content of the fragments held                                                                                                                                                                         | The fragments are bounded as the IKE messages they came in                                                                                                                                                                                                                                                                                                                                                                            | They hold more than their content                                                                                                                                                                                                                                                                          |
@@ -326,8 +326,8 @@ and a new handshake under the new lists replaces it, as
 [reloading](../reloading.md#capcrypto) describes.
 
 An IKE SA rekey this node starts may run each `cap.crypto.ike.kex` entry that
-keeps every ML-KEM method of the SA's entry while `kex` holds that entry, and
-any `kex` entry once a reload left it out. An SA of `x25519+mlkem768` is then
+keeps the ML-KEM method of the SA's entry while `kex` holds that entry, and any
+`kex` entry once a reload left it out. An SA of `x25519+mlkem768` is then
 rekeyed only by an entry joining `mlkem768`, and an SA of a classical entry may
 move to a joined one. The rekey runs its key exchange in the SA's group while
 one of those entries has that group, and in the group of the first of them
@@ -415,7 +415,7 @@ once its lifetime expires, an SA "MUST NOT be used", and a rekey answered on it
 would use its keys for the exchange and for the new SA's keys. Before the
 lifetime, such a rekey is answered as usual, except while this end's own rekey
 of the IKE SA has had its `CREATE_CHILD_SA` answered and runs its
-`IKE_FOLLOWUP_KE` exchanges. ranet3 then answers the peer's rekey with
+`IKE_FOLLOWUP_KE` exchange. ranet3 then answers the peer's rekey with
 `TEMPORARY_FAILURE`, as
 [RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
 requires for a rekey that arrives while "the CREATE_CHILD_SA exchange initiated
@@ -424,12 +424,12 @@ exchanges is in progress": "a TEMPORARY_FAILURE notification MUST be sent in
 response to such a request."
 
 [RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
-has a responder delete the state of a rekey whose next `IKE_FOLLOWUP_KE` request
-it "does not receive ... after some reasonable period of time", and says "In
+has a responder delete the state of a rekey whose `IKE_FOLLOWUP_KE` request it
+"does not receive ... after some reasonable period of time", and says "In
 general, 5-20 seconds of waiting time should be appropriate in most cases."
 ranet3 waits 62 seconds, the time it resends 1 cut of a request to a silent peer
 before it deems the IKE SA failed. A peer that resends as ranet3 does makes the
-sends of its next request within those 62 seconds through a step to its family's
+sends of that request within those 62 seconds through a step to its family's
 floor and 1 or 2 falls of the path MTU, the last at most 40 seconds after the
 answer before it where its schedule's own sends see the falls and at most 52
 where probes see them, and finds the state kept. A chain of falls can carry its
@@ -449,18 +449,20 @@ lifetime, its answers to the peer's requests and then its own Delete.
 request retransmitted until it is answered or the IKE SA is deemed failed, and
 [section 2.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.3) has an
 end wait for the answer to each request before it sends the next. The Delete
-waits for the exchange already out. That exchange gets the sends of a silent
-peer whatever traffic the peer keeps up: 5 over about 62 seconds for 1 cut, a
-request that fits its family's floor whole and one whose path already sits at
-the floor included, 7 over 68 seconds for a request too large for the floor that
-the step to it from a larger threshold cuts again, and more where the path MTU
-falls, at most 20 counted sends, with a probe that cuts nothing adding sends it
-does not count. A Delete of an IKE SA gets 2. The IKE SA is then deemed failed.
-The peer's rekeys are answered `TEMPORARY_FAILURE`, and nothing else starts. A
-replaced IKE SA this end deletes carries that Delete, which section 2.8 makes
-the last request on the old SA, and takes its answer past the lifetime. When
-both of its sends go unanswered, the replaced IKE SA alone is deemed failed,
-since the new one holds its Child SAs.
+waits for the exchange already out, which takes its next send at the lifetime as
+[limits](limits.md#ike) gives for an IKE SA that starts to close. That exchange
+gets the sends of a silent peer whatever traffic the peer keeps up: 5 over about
+62 seconds at the most for 1 cut, a request that fits its family's floor whole
+and one whose path already sits at the floor included, 7 over 68 seconds at the
+most for a request too large for the floor that the step to it from a larger
+threshold cuts again, and more where the path MTU falls, at most 20 counted
+sends, with a probe that cuts nothing adding sends it does not count. A Delete
+of an IKE SA gets 2. The IKE SA is then deemed failed. The peer's rekeys are
+answered `TEMPORARY_FAILURE`, and nothing else starts. A replaced IKE SA this
+end deletes carries that Delete, which section 2.8 makes the last request on the
+old SA, and takes its answer past the lifetime. When both of its sends go
+unanswered, the replaced IKE SA alone is deemed failed, since the new one holds
+its Child SAs.
 
 An ESP batch that took a Child SA's keys before its lifetime finishes on them.
 The keys leave the dataplane at the lifetime, and the batch holds the set of SAs
@@ -507,10 +509,8 @@ answer, except in 4 cases where it closes without one:
   broken sender implementation. In either case, the receiver SHOULD drop the
   connection and discard all the received fragments."
 
-Two closes come near these. A loaded configuration never reaches the close of
-the session settings applied after `IKE_AUTH`, which refuse only what the
-configuration's validation refuses. An answer to this end's own request that
-does not decode after its integrity check closes the IKE SA as
+One close comes near these. An answer to this end's own request that does not
+decode after its integrity check closes the IKE SA as
 [section 2.21.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.3)
 closes one after a malformed request, without a Delete, since the 2 ends'
 encodings disagree and a Delete's answer would come from the same encoder.
@@ -558,31 +558,17 @@ leaves the largest message a peer sends room at the IPv4 floor.
 the initiator of an exchange probe smaller thresholds, coarse-grained. On Linux
 and macOS ranet3 tries 2: the path MTU the host holds, read again at each send,
 and the family's floor once the schedule's sends under a larger threshold went
-unanswered twice, taken at the next send, the schedule's or a probe's. Where the
+unanswered twice, taken at the next send, the schedule's or a probe's, as
+[paths under 1280 bytes](limits.md#paths-under-1280-bytes) gives. Where the
 host's path MTU cannot be read, as on FreeBSD and OpenBSD, whose IKE leaves
-without DF, only the floor is tried. After a step that cuts a request down to
-the floor, taken on the path the request was readied or last cut on, which every
-send of it went on since, the step's own included, the session's later
-exchanges, its answers included, start at the floor, as the section's "In
-subsequent exchanges, the node should start with the current value of the
-fragmentation threshold" asks, across rekeys of the IKE SA. They start from the
-path MTU the host reads again once a send or a status read finds the peer's
-address or port or that reading changed since the step, or once the session is
-asked to probe its path, as a move of the host's default or one of its addresses
-([moving hosts](../platforms.md#moving-hosts)) or `ranet3 debug probe` asks. A
-step carries nothing to later exchanges where a send of the request since its
-readying or its last cut, the step's own included, found that the peer moved,
-that the reading changed or that the session probed, even where the step finds
-the path as it was then. Nor does a request that fits the floor whole, which
-only moves its threshold at the step and keeps its schedule, since its lost
-sends say nothing of larger datagrams and
-[section 2.4](https://www.rfc-editor.org/rfc/rfc7383.html#section-2.4) finds "no
-point in fragmenting liveness check messages". A path that widens where the host
-sees no change keeps the floor until one of those comes or the session ends,
-which the section's search, "performed downward", accepts: "Using these values
-could lead to suboptimal fragmentation, but it is acceptable given the amount of
-traffic IKE produces." Each new cut is the original message cut again, with a
-larger Total Fragments, as the section asks, so a retransmission after it is not
+without DF, only the floor is tried. Each exchange starts from the path MTU the
+host reads, so a step carries nothing to the session's later exchanges, though
+the section has "In subsequent exchanges, the node should start with the current
+value of the fragmentation threshold", a sentence without a BCP 14 keyword. A
+later exchange on a path narrower than the host reads, whose hop drops larger
+datagrams and sends no ICMP message, steps down again after the same 2
+unanswered sends. Each new cut is the original message cut again, with a larger
+Total Fragments, as the section asks, so a retransmission after it is not
 bitwise identical to the first send, which
 [RFC 7296 section 2.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.1)
 requires. Each new cut also starts the retransmission waits over, as section
@@ -590,25 +576,29 @@ requires. Each new cut also starts the retransmission waits over, as section
 [RFC 7296 section 2.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.4)
 says "retransmission times MUST increase exponentially". The sends of a request
 that ranet3 counts stay within 20 however it is cut, and a probe that cuts
-nothing resends it without counting it.
+nothing resends it without counting it. A close cuts a wait short too: once the
+IKE SA starts to close, for any reason its lifetime included, the request
+outstanding then takes its next counted send at once, from its own budget, as
+[limits](limits.md#ike) gives. The window of 1 that section 2.3 holds this end
+to then frees within a round trip, so the Delete leaves before the node stops
+waiting for it, at the cost of 1 datagram a close and no send past the request's
+budget.
 
 A responder takes section 2.5.1's "may use the maximum size of the received IKE
 Fragment message IP datagrams as a threshold when constructing a fragmented
 response", for the first answer to a request in fragments and for a kept answer
 a repeat draws again, never under the floor, with Total Fragments grown as
 section 2.5.2 asks. A repeat whole carries no size and leaves the answer as it
-stands, unless the session's threshold fell since the answer's cut, by a fall of
-the path MTU or a request of ranet3's own stepping down to the floor, and the
-answer is then cut again for that threshold with Total Fragments grown. An
-answer cut for a wider path to a request that came whole thus never shrinks for
-a repeat whole while the session's threshold holds, and where a hop narrower
+stands, unless the path MTU the host reads fell below the threshold the answer
+was cut under, and the answer is then cut again for it with Total Fragments
+grown. An answer cut for a wider path to a request that came whole thus never
+shrinks for a repeat whole while that reading holds, and where a hop narrower
 than the path the host reads drops its datagrams and sends no ICMP message, the
-exchange runs to its budget, unless an earlier step of a request of ranet3's own
-holds the session at the floor, as above, after which its answers start at the
-floor too. That stays because an answer no larger than a request that came whole
-goes in datagrams no larger than that request, which the hop carried, and with
-ML-KEM the request is at least as large as the answer in every exchange ranet3
-runs. Elsewhere an answer passes its request by a few octets at most.
+exchange runs to its budget. That stays because an answer no larger than a
+request that came whole goes in datagrams no larger than that request, which the
+hop carried, and with ML-KEM the request is at least as large as the answer in
+every exchange ranet3 runs. Elsewhere an answer passes its request by a few
+octets at most.
 
 [RFC 7296 section 2.11](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.11)
 says an implementation "MUST respond to the address and port from which the

@@ -325,11 +325,15 @@ These commands take flags of their own:
   addresses ([moving hosts](../platforms.md#moving-hosts)), and name the
   sessions asked. A session with a request outstanding resends that request
   instead. One with none sends no liveness check while its IKE SA is past its
-  lifetime or a Delete of it has gone out, or while a rekey of its own may run
-  `IKE_FOLLOWUP_KE` exchanges or waits on the peer's. It is an action, so it
-  takes a POST, and it is recorded as a `control.verb` like the other verbs. It
-  completes to the peers the node dials and the nodes it holds a session with.
-  The daemon refuses it while the node is down, and when no session matches.
+  lifetime, closing or a Delete of it has gone out, or while a rekey of its own
+  may run an `IKE_FOLLOWUP_KE` exchange or, having lost a simultaneous rekey to
+  the peer's, waits on the peer's `IKE_FOLLOWUP_KE`, a wait that ends when the
+  peer's rekey replaces the IKE SA or is dropped, or when the IKE SA starts to
+  close. The same holds keep back the liveness checks its schedule sends. It is
+  an action, so it takes a POST, and it is recorded as a `control.verb` like the
+  other verbs. It completes to the peers the node dials and the nodes it holds a
+  session with. The daemon refuses it while the node is down, and when no
+  session matches.
 - `debug updown` is whether the node is on the mesh and since when, the flag
   that keeps it off through a restart and whether the flag is there, and the
   last move between up and down with its cause, a request or the flag at start.
@@ -495,7 +499,7 @@ connections to the reads.
 | `dial.woken`                          | a dialer was set going before its delay, as `redial` does                                 |
 | `ike.handshake.failed`                | the responder refused a handshake, as often as it logs one                                |
 | `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                                             |
-| `ike.followup.dropped`                | a peer's rekey was dropped before its last `IKE_FOLLOWUP_KE`                              |
+| `ike.followup.dropped`                | a peer's rekey was dropped before its `IKE_FOLLOWUP_KE`                                   |
 | `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as                 |
 | `ike.session.established`, `.ended`   | a session started serving, and stopped                                                    |
 | `ike.session.resolved`                | 2 sessions for 1 path were resolved to 1                                                  |
@@ -674,14 +678,21 @@ when the peer's fragments of 1 message passed the reassembly limit
 `local failure` when this node failed on its own side, as when its dataplane
 refused a change to a Child SA. An IKE SA rekey of this node's that runs
 `IKE_FOLLOWUP_KE` adds 3 more: `rekey answer refused` when this node refused the
-peer's answer that selected an additional key exchange or carried its link, or
-when an `IKE_FOLLOWUP_KE` response linked no next exchange the rekey still
-needs, `kex rejected` when the peer's ML-KEM ciphertext was refused, and
+peer's answer that selected an additional key exchange or carried its link,
+`kex rejected` when the peer's ML-KEM ciphertext was refused, and
 `state not found` when 3 rekeys in a row drew `STATE_NOT_FOUND`. Each closes the
 IKE SA with a Delete. `err` says what ended it, and the `ike.session.ended` that
-follows carries it as well. An `INVALID_SYNTAX` this end sends on the current
-IKE SA records no `ike.sa.closed`: the session logs a warning and ends with
-`ike.session.ended`.
+follows carries it as well. While a session deletes its IKE SA for a new
+handshake, after an `ike.suite.unlisted` with `action=replace`, an
+`ike.sa.closed` recorded before that Delete is answered sends no Delete of its
+own. The `ike.session.ended` that follows carries the replacement's `err`, which
+the node that dialed the session reads to dial again at once, and can carry the
+`ike.sa.closed`'s `err` after it only where the session ended before that Delete
+was answered. An `INVALID_SYNTAX` this end sends on the current IKE SA records
+no `ike.sa.closed`: the session logs a warning and ends with
+`ike.session.ended`. Nor does the peer's Delete of the IKE SA, and the
+`ike.session.ended` that follows carries `ike: the peer deleted the IKE SA` in
+its `err`.
 
 The `ike` of an `ike.session.established` names the IKE SA's cipher, PRF and kex
 entry by their `cap.crypto` names, joined by `/`, such as
@@ -697,17 +708,16 @@ rekey keyed with key exchanges of its own has their kex entry after its cipher,
 such as `aes128gcm/p256` or `aes128gcm/x25519+mlkem768`, in the `suite` of an
 `ike.suite.unlisted`. Where the peer refuses this node's IKE SA rekey with an
 error notify after this node answered the peer's own rekey of the same SA, its
-last `IKE_FOLLOWUP_KE` included where it ran any, this node takes the SA the
-peer's rekey made, and the `ike.rekey.completed` names that SA. Every error
-notify does so but `INVALID_SYNTAX`, which ends the IKE SA, and an
-`INVALID_KE_PAYLOAD` naming a group this node offered is retried once in that
-group first. A refusal that comes while the peer's rekey still runs its
-`IKE_FOLLOWUP_KE` records `ike.rekey.failed`, and the last of those exchanges
-then makes the peer's SA current with no `ike.rekey.completed`, since a peer's
-rekey records none. An IKE SA rekey whose Delete of the replaced or redundant
-IKE SA goes unanswered or is refused records `ike.rekey.completed`, since the
-surviving IKE SA is current by then. The session logs
-`ike replaced IKE SA was not deleted by this end` or
+`IKE_FOLLOWUP_KE` included where it ran one, this node takes the SA the peer's
+rekey made, and the `ike.rekey.completed` names that SA. Every error notify does
+so but `INVALID_SYNTAX`, which ends the IKE SA, and an `INVALID_KE_PAYLOAD`
+naming a group this node offered is retried once in that group first. A refusal
+that comes while the peer's rekey still runs its `IKE_FOLLOWUP_KE` records
+`ike.rekey.failed`, and that exchange then makes the peer's SA current with no
+`ike.rekey.completed`, since a peer's rekey records none. An IKE SA rekey whose
+Delete of the replaced or redundant IKE SA goes unanswered or is refused records
+`ike.rekey.completed`, since the surviving IKE SA is current by then. The
+session logs `ike replaced IKE SA was not deleted by this end` or
 `ike redundant IKE SA was not deleted by this end` with the error.
 
 An `ike.suite.unlisted` is recorded when a session schedules a rekey or a
@@ -736,14 +746,14 @@ missing, appears twice or names another method. A dial then ends without
 `ike.sa.closed` with the reason `kex rejected`.
 
 An `ike.followup.dropped` is recorded once for each rekey of the peer's that
-this node drops before its last `IKE_FOLLOWUP_KE`. Its `sa` names the SA the
-rekey would have made. Its `reason` is `expired` when the peer's next
-`IKE_FOLLOWUP_KE` did not come within the wait [limits](../design/limits.md#ike)
-gives, and `superseded` when a new rekey of the peer's replaced it, the IKE SA
-it ran on was replaced, or this node's own rekey won a simultaneous rekey
-against it. The peer's next `IKE_FOLLOWUP_KE` for a dropped rekey is answered
-`STATE_NOT_FOUND`, or `TEMPORARY_FAILURE` where that exchange is the one that
-found this node's own rekey had won.
+this node drops before its `IKE_FOLLOWUP_KE`. Its `sa` names the SA the rekey
+would have made. Its `reason` is `expired` when the peer's `IKE_FOLLOWUP_KE` did
+not come within the wait [limits](../design/limits.md#ike) gives, and
+`superseded` when a new rekey of the peer's replaced it, the IKE SA it ran on
+was replaced, or this node's own rekey won a simultaneous rekey against it. The
+peer's `IKE_FOLLOWUP_KE` for a dropped rekey is answered `STATE_NOT_FOUND`, or
+`TEMPORARY_FAILURE` where that exchange is the one that found this node's own
+rekey had won.
 
 An `ike.message.fragmented` is recorded each time a session cuts an IKE message
 into fragments, a request cut again for a smaller threshold included, as

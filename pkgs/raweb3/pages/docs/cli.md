@@ -129,14 +129,9 @@ removes one in a family the file no longer translates, as
   `aes256gcm/x25519+mlkem768`, until this node's own rekey of it, which runs
   none. Its Fragments column is `no` where the 2 ends did not both say they
   support the IKE fragmentation of RFC 7383, and otherwise the path's threshold,
-  the largest IP datagram this node cuts a new IKE message to fit. That is the
-  family's floor, 576 or 1280, once a step cut a request of the session down to
-  it, taken on the path the request was readied or last cut on, which every send
-  of it went on since, the step's own included, until a send or this read finds
-  that the peer moved or that the path MTU the host reads changed, or the
-  session is asked to probe its path. Its Invalid SPI column counts the
-  `INVALID_SPI` notifies the session sent its peer about ESP on an SPI this node
-  does not hold, as
+  the largest IP datagram this node cuts a new IKE message to fit. Its Invalid
+  SPI column counts the `INVALID_SPI` notifies the session sent its peer about
+  ESP on an SPI this node does not hold, as
   [protocol deviations](design/protocol-deviations.md#errors-outside-an-exchange)
   describes.
 - `whois` takes 1 address. It prints the longest prefix that covers the address,

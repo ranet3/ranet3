@@ -612,7 +612,8 @@ The IKE SA's transforms, each list most preferred first.
   - An entry that starts with an ML-KEM name or is one alone, such as
     `mlkem768`, since ML-KEM runs only after a classical key exchange.
   - An entry that joins a classical name, such as `x25519+p256`.
-  - An entry that joins more than 1 name.
+  - An entry that joins more than 1 name, such as `x25519+mlkem768+mlkem1024`,
+    since an entry holds 1 additional key exchange.
   - An entry that names `mlkem512` or any other name `kex` does not take.
 - A peer's Child SA creation or rekey may run any entry of `kex`, a joined
   entry's ML-KEM method in `IKE_FOLLOWUP_KE`. A proposal that offers `NONE` for

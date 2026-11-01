@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-01
+updated: 2026-11-02
 order: 10
 ---
 
@@ -601,32 +601,18 @@ goes whole. A request that goes unanswered twice under a threshold above its
 family's floor steps to the floor at its next send, the schedule's or a probe's,
 as a move of the host's default or one of its addresses
 ([moving hosts](../platforms.md#moving-hosts)) or `ranet3 debug probe` asks for
-one. A request too large to go whole at the floor is cut for it at the step, and
-its waits start over. A request that fits the floor whole, such as a liveness
-check, only moves its threshold and keeps its 5 sends over 62 seconds. From a
-step that cuts a request down to the floor, taken on the path the request was
-readied or last cut on, which every send of it went on since, the step's own
-included, the session's threshold is the floor for every later message, request
-or answer, across rekeys of its IKE SA. That lasts until a send or a status read
-finds the peer's address or port or the path MTU the host reads changed since
-the step, or until the session is asked to probe its path, as
-[moving hosts](../platforms.md#moving-hosts) gives. A step that cuts nothing
-leaves later messages at the path's threshold, since its sends were no larger
-than the floor. So does a step where a send of the request since its readying or
-its last cut, the step's own included, found that the peer moved, that the path
-MTU the host reads changed or that the session probed its path, even where the
-step finds the path as it was then, since that send went on a path that may have
-differed. A path that widens where the host sees no change keeps the floor until
-one of those comes or the session ends, the suboptimal fragmentation the
-downward search of RFC 7383 section 2.5.2 accepts. A narrower hop that sends no
-ICMP message, or one beyond the interface on macOS, which reads only the
-interface's MTU, then delays a session by 6 seconds once instead of failing it,
-and its later exchanges start at the floor. An answer never steps down by
-itself. It is cut for the path's threshold at each send, and within the largest
-datagram of the peer's request in fragments, or of the repeat that draws it
-again, where that is smaller, never under the floor. A responder behind such a
-hop thereby follows the initiator's step, and the first answer to a request in
-fragments already fits the datagrams that request came in.
+one, and stays there until its exchange ends. A request too large to go whole at
+the floor is cut for it at the step, and its waits start over. A request that
+fits the floor whole, such as a liveness check, only moves its threshold and
+keeps its 5 sends over 62 seconds. The session's next exchange starts at the
+path's threshold again. A narrower hop that sends no ICMP message, or one beyond
+the interface on macOS, which reads only the interface's MTU, then delays each
+exchange whose request it drops by 6 seconds instead of failing it. An answer
+never steps down by itself. It is cut for the path's threshold at each send, and
+within the largest datagram of the peer's request in fragments, or of the repeat
+that draws it again, where that is smaller, never under the floor. A responder
+behind such a hop thereby follows the initiator's step, and the first answer to
+a request in fragments already fits the datagrams that request came in.
 
 ## ML-KEM and the path
 
@@ -672,32 +658,32 @@ can configure are in
 
 ### IKE
 
-| Limit                                          | Value                                                                                   | Past it                                                                                                |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Half-open SAs before a cookie                  | 32 in all, or 2 from 1 address                                                          | An `IKE_SA_INIT` without a valid cookie is answered with one (RFC 7296 section 2.6)                    |
-| Half-open SAs                                  | 256 in all, 16 from 1 address                                                           | A further `IKE_SA_INIT` is dropped unanswered, and its sender retransmits                              |
-| Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                       | A further one is not sent, and at most 1 log line every minute counts those held back                  |
-| Responder handshake                            | 30 seconds                                                                              | The handshake is abandoned                                                                             |
-| `IKE_INTERMEDIATE` exchanges in a handshake    | 1 for each additional key exchange of the chosen kex entry, at most 1                   | A further one, or an `IKE_AUTH` ahead of the last, is answered `INVALID_SYNTAX` and the handshake ends |
-| Wait for a peer's next `IKE_FOLLOWUP_KE`       | 62 seconds from this end's last answer in the rekey                                     | The peer's rekey is dropped, and its next `IKE_FOLLOWUP_KE` is answered `STATE_NOT_FOUND`              |
-| Rekeys in a row answered `STATE_NOT_FOUND`     | 3                                                                                       | The IKE SA is deleted, and the session ends                                                            |
-| Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails                  |
-| Sends of a request not cut again               | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                                   |
-| Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and its IKE SA is deemed failed though the peer's ESP still arrives                |
-| Silence before a liveness check                | 10 seconds                                                                              | The session sends an `INFORMATIONAL` request, retransmitted on the schedule above                      |
-| Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                                   |
-| Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                                     |
-| Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds                                                            |
-| SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | A Child SA goes unused and an IKE SA starts only its Delete, and with no rekey the IKE SA is deleted   |
-| `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes with no rekey of either SA completed by either end                            | The IKE SA is deleted, and the session ends                                                            |
-| Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                                         |
-| Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                              | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile              |
-| Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                        | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                                        |
-| Messages in reassembly                         | 1 for each direction of an IKE SA, beside the repeats below                             | A fragment of another message drops the fragments held                                                 |
-| Fragments of 1 message in reassembly           | 16 KiB of the IKE messages they came in                                                 | The IKE SA ends, and a dial fails                                                                      |
-| Wait for the rest of a message's fragments     | 62 seconds from the first fragment of its cut                                           | The fragments held are dropped                                                                         |
-| Answers to the peer's repeats of 1 request     | 20 from the peer's own address and port                                                 | A further repeat from there draws nothing                                                              |
-| Other addresses repeating 1 request            | 4, each with a credit of the bytes it sent repeating it                                 | A newcomer takes the place of the one heard from least recently                                        |
+| Limit                                          | Value                                                                                   | Past it                                                                                              |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Half-open SAs before a cookie                  | 32 in all, or 2 from 1 address                                                          | An `IKE_SA_INIT` without a valid cookie is answered with one (RFC 7296 section 2.6)                  |
+| Half-open SAs                                  | 256 in all, 16 from 1 address                                                           | A further `IKE_SA_INIT` is dropped unanswered, and its sender retransmits                            |
+| Error answers sent in the clear                | 256 at once, then 32 a second, for the whole node                                       | A further one is not sent, and at most 1 log line every minute counts those held back                |
+| Responder handshake                            | 30 seconds                                                                              | The handshake is abandoned                                                                           |
+| `IKE_INTERMEDIATE` exchanges in a handshake    | 1 where the chosen kex entry joins an additional key exchange, 0 otherwise              | A further one, or an `IKE_AUTH` ahead of it, is answered `INVALID_SYNTAX` and the handshake ends     |
+| Wait for a peer's `IKE_FOLLOWUP_KE`            | 62 seconds from this end's answer to the rekey's `CREATE_CHILD_SA`                      | The peer's rekey is dropped, and its `IKE_FOLLOWUP_KE` is answered `STATE_NOT_FOUND`                 |
+| Rekeys in a row answered `STATE_NOT_FOUND`     | 3                                                                                       | The IKE SA is deleted, and the session ends                                                          |
+| Canceled dial's wait for its `IKE_AUTH` answer | 2 seconds                                                                               | The dial ends, and a peer whose answer is late keeps its session until liveness fails                |
+| Sends of a request not cut again               | 5, waiting 2, 4, 8, 16 and 32 seconds after each                                        | The exchange fails after 62 seconds, and its IKE SA is deemed failed                                 |
+| Sends while the peer's other traffic continues | 20, about 9 minutes in all                                                              | The exchange fails, and its IKE SA is deemed failed though the peer's ESP still arrives              |
+| Silence before a liveness check                | 10 seconds                                                                              | The session sends an `INFORMATIONAL` request, retransmitted on the schedule above                    |
+| Live session                                   | 20 seconds since the peer's last authenticated IKE, 20 to 30 seconds since its last ESP | The session no longer counts as live                                                                 |
+| Reconnect delay                                | 10 seconds                                                                              | A dialer whose session ended waits this long before it dials again                                   |
+| Sends of the Delete that ends an IKE SA        | 2, waiting 2 and 4 seconds after each                                                   | The IKE SA is deemed failed after 6 seconds                                                          |
+| SA lifetime                                    | `cap.crypto.rekey.child` and `cap.crypto.rekey.ike`                                     | A Child SA goes unused and an IKE SA starts only its Delete, and with no rekey the IKE SA is deleted |
+| `TEMPORARY_FAILURE` answers on 1 IKE SA        | 5 minutes with no rekey of either SA completed by either end                            | The IKE SA is deleted, and the session ends                                                          |
+| Peer rekeys                                    | 1 per second for each kind of SA                                                        | A faster rekey is answered `TEMPORARY_FAILURE`                                                       |
+| Replaced Child SA awaiting the peer's Delete   | up to 30 seconds, then this end deletes it                                              | Every Child SA rekey in either direction, and a peer's IKE SA rekey, is refused meanwhile            |
+| Replaced IKE SA awaiting the peer's Delete     | up to 2 minutes, and no longer than its lifetime                                        | A peer's IKE SA rekey is answered `TEMPORARY_FAILURE` meanwhile                                      |
+| Messages in reassembly                         | 1 for each direction of an IKE SA, beside the repeats below                             | A fragment of another message drops the fragments held                                               |
+| Fragments of 1 message in reassembly           | 16 KiB of the IKE messages they came in                                                 | The IKE SA ends, and a dial fails                                                                    |
+| Wait for the rest of a message's fragments     | 62 seconds from the first fragment of its cut                                           | The fragments held are dropped                                                                       |
+| Answers to the peer's repeats of 1 request     | 20 from the peer's own address and port                                                 | A further repeat from there draws nothing                                                            |
+| Other addresses repeating 1 request            | 4, each with a credit of the bytes it sent repeating it                                 | A newcomer takes the place of the one heard from least recently                                      |
 
 The second row holds even for a request with a valid cookie. More than 16 nodes
 behind 1 NAT that restart at once therefore wait for their retransmissions.
@@ -798,27 +784,25 @@ and in at most 2 at or above the IPv6 floor, and each fall cuts it into 2 more.
 Its 20 answers then run from 6 to 44 datagrams over IPv4 and from 4 to 42 over
 IPv6, where each datagram's IP header takes 40 bytes against IPv4's 20.
 
-The wait for a peer's next `IKE_FOLLOWUP_KE` is the time this end resends 1 cut
-of a request to a silent peer, 62 seconds, and each answer in the peer's rekey
-starts it again. A peer's new rekey of the same SA drops the earlier one before
-its wait ends. Either way the dropped rekey records `ike.followup.dropped`, as
-[debugging](../development/debug.md#events) describes. This end's own
-`IKE_FOLLOWUP_KE` is resent as any request is, until it is answered or the IKE
-SA is deemed failed, and its answer settles the rekey whenever it comes. Through
-a step to the floor and 1 or 2 falls of the path MTU its sends still come within
-the peer's wait. The last comes at most 40 seconds after the answer before it
-where the schedule's own sends see the falls, and at most 52 where probes see
-them, since each cut starts the count of sends toward the step over and a
-probe's send adds nothing to it. A chain of falls can carry the last send past
-it: 4 falls that probes see, or 13 that the schedule's sends see. A
-`STATE_NOT_FOUND` that answers a send made 62 seconds or more after the answer
-before it fails the rekey without counting toward the 3 in a row, since the peer
-was free to drop the rekey by then. The schedule retries a failed rekey after
-its backoff, and no SA is lost. A session sends no liveness check, not even when
-asked to probe its path, while its own rekey may run `IKE_FOLLOWUP_KE`
-exchanges, nor while it waits for the peer's after losing a simultaneous rekey
-to it. That wait ends when the peer's rekey replaces the IKE SA or is dropped,
-or when the IKE SA starts to close.
+The wait for a peer's `IKE_FOLLOWUP_KE` is the time this end resends 1 cut of a
+request to a silent peer, 62 seconds, from this end's answer to the rekey's
+`CREATE_CHILD_SA`. A peer's new rekey of the same SA drops the earlier one
+before its wait ends. Either way the dropped rekey records
+`ike.followup.dropped`, as [debugging](../development/debug.md#events)
+describes. This end's own `IKE_FOLLOWUP_KE` is resent as any request is, until
+it is answered or the IKE SA is deemed failed, and its answer settles the rekey
+whenever it comes. Through a step to the floor and 1 or 2 falls of the path MTU
+its sends still come within the peer's wait. The last comes at most 40 seconds
+after the answer before it where the schedule's own sends see the falls, and at
+most 52 where probes see them, since each cut starts the count of sends toward
+the step over and a probe's send adds nothing to it. A chain of falls can carry
+the last send past it: 4 falls that probes see, or 13 that the schedule's sends
+see. A `STATE_NOT_FOUND` that answers a send made 62 seconds or more after the
+answer before it fails the rekey without counting toward the 3 in a row, since
+the peer was free to drop the rekey by then. The schedule retries a failed rekey
+after its backoff, and no SA is lost. The liveness checks a session holds back
+during a rekey are those [`debug probe`](../development/debug.md#commands)
+lists.
 
 An IKE SA deemed failed ends the session when it is the session's current IKE
 SA, and the node that dialed it dials again. A replaced or redundant IKE SA
@@ -831,23 +815,20 @@ cut for the floor at the step as
 [paths under 1280 bytes](#paths-under-1280-bytes) describes. It is sent 7 times,
 at 0, 2, 6, 8, 12, 20 and 36 seconds, and fails after 68 seconds. A request
 whose threshold is already the floor takes no step. That covers an IPv6 path of
-1280 bytes, an IPv4 path of 576, a path whose MTU the host cannot read, as on
-FreeBSD and OpenBSD, and a session an earlier step holds at the floor, as that
-section says, until the floor ends there. Such a request, where it is too large
-to go whole, is cut for the floor at its first send. It keeps its 5 sends over
-62 seconds, as does a request that fits the floor whole, such as a liveness
-check, through any step. Each cut again for a path MTU that fell starts its
-waits over, up to 20 sends, which bound the sends of every request this end
-counts however it is cut. A request is sent up to 20 times while the peer's
-authenticated traffic has arrived within the last 10 seconds. The exchange holds
-the only outstanding request this end allows. Rekeys, Deletes and liveness
-checks wait until it ends. A liveness check and a Delete of an IKE SA never take
-the longer schedule, and neither does an exchange still outstanding when its IKE
-SA reaches its lifetime. A request on the session's current IKE SA waits behind
-the Delete of a replaced or redundant IKE SA for at most 6 seconds. Behind a
-liveness check left on an IKE SA the peer rekeyed, it waits for that check's 5
-sends, up to 62 seconds, unless the peer's Delete of that IKE SA ends the check
-first.
+1280 bytes, an IPv4 path of 576 and a path whose MTU the host cannot read, as on
+FreeBSD and OpenBSD. Such a request, where it is too large to go whole, is cut
+for the floor at its first send, and keeps its 5 sends over 62 seconds. Each cut
+again for a path MTU that fell starts its waits over, up to 20 sends, which
+bound the sends of every request this end counts however it is cut. A request is
+sent up to 20 times while the peer's authenticated traffic has arrived within
+the last 10 seconds. The exchange holds the only outstanding request this end
+allows. Rekeys, Deletes and liveness checks wait until it ends. A liveness check
+and a Delete of an IKE SA never take the longer schedule, and neither does an
+exchange still outstanding when its IKE SA reaches its lifetime. A request on
+the session's current IKE SA waits behind the Delete of a replaced or redundant
+IKE SA for at most 6 seconds. Behind a liveness check left on an IKE SA the peer
+rekeyed, it waits for that check's 5 sends, up to 62 seconds, unless the peer's
+Delete of that IKE SA ends the check first.
 
 Every Delete of an IKE SA has the 2 sends, since a peer that took it has deleted
 the SA and ignores a resend, as
@@ -861,8 +842,16 @@ of an IKE SA whose PRF a reload left out, as
 [reloading](../reloading.md#capcrypto) describes, and of a node closing a
 session. A session whose dataplane refuses its first Child SA has not started to
 run, and sends its Delete once without waiting for an answer. The session's own
-Delete waits for an exchange already out. A node closing a session, as at
-shutdown, waits 2 seconds for its Delete to be answered. Once a Delete of the
+Delete waits for an exchange already out. Once the IKE SA starts to close, that
+exchange takes its next send at once where it has one left, and the session
+takes no request but a Delete of an IKE SA and starts no liveness check, as
+[`debug probe`](../development/debug.md#commands) lists. A rekey under way then
+stops at its next request, unless that request is its Delete of the IKE SA it
+replaced or of a redundant one, which still goes, since
+[RFC 7296 section 2.8](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.8)
+makes it the last request on that SA. The session's Delete follows the answer to
+that send, or to the rekey's Delete where one goes. A node closing a session, as
+at shutdown, waits 2 seconds for its Delete to be answered. Once a Delete of the
 session's IKE SA has gone out, whoever sent it, the session starts no other
 request or liveness check on that IKE SA, and sends no Delete of its own when it
 then ends.
