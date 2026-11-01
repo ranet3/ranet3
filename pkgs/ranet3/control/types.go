@@ -763,8 +763,7 @@ type Session struct {
 	IKECipher string `json:"ike_cipher,omitempty"`
 	IKEPRF    string `json:"ike_prf,omitempty"`
 	IKEKex    string `json:"ike_kex,omitempty"`
-	// IKEFragments is whether both ends said they support RFC 7383 fragmentation, and IKEFragmentThreshold, where they did, the path's threshold, the largest IP datagram this end cuts a new IKE message to fit
-	// it is the family's floor from a step that cuts a request down to it, taken on the path the request was readied or last cut on, which every send of it went on since, the step's own included, until a reset, and an answer cut within the datagrams of the request or repeat it answers goes below it
+	// IKEFragments is whether both ends said they support RFC 7383 fragmentation, and IKEFragmentThreshold, where they did, the path's threshold, the largest IP datagram this end cuts a new IKE message to fit, as ike's Session.Fragments reports it
 	IKEFragments         bool `json:"ike_fragments"`
 	IKEFragmentThreshold int  `json:"ike_fragment_threshold,omitempty"`
 	// ESPCipher is the Child SA's cipher by its cap.crypto name

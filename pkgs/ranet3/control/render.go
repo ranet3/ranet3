@@ -618,8 +618,7 @@ func RenderSessions(w io.Writer, sessions []Session) {
 	table(w, []string{"Path", "Peer", "Remote", "End", "State", "SPI in/out", "IKE", "Fragments", "ESP", "Age", "Idle", "Invalid SPI"}, rows)
 }
 
-// fragments is the path's threshold, the largest IP datagram this end cuts a new IKE message to fit, or no where its ends did not both say they support RFC 7383 fragmentation
-// it is the family's floor from a step that cuts a request down to it, taken on the path the request was readied or last cut on, which every send of it went on since, the step's own included, until a reset, and an answer cut within the datagrams of the request or repeat it answers goes below it
+// fragments is the path's threshold, the largest IP datagram this end cuts a new IKE message to fit, as ike's Session.Fragments reports it, or no where its ends did not both say they support RFC 7383 fragmentation
 func fragments(supported bool, threshold int) string {
 	if !supported {
 		return "no"

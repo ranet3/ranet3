@@ -160,11 +160,6 @@ type Session struct {
 	fragments bool
 	// pathMTU stands in for the mux's PathMTU, and nil reads the mux
 	pathMTU func() (int, error)
-	// stepped is the path of the last step that cut a request down to its family's floor, taken on the path the request was readied or last cut on, which every send of it went on since, the step's own included, nil for none, and it lives with the session across IKE SA rekeys
-	// the goroutine sending requests stores it, and path drops it once the path it reads is another
-	stepped atomic.Pointer[pathRead]
-	// probed counts the times the session was asked to probe its path, which Probe bumps off Run's goroutine
-	probed atomic.Uint64
 	// invalidSPIReports counts the INVALID_SPI notifies Run sent, which the sessions view reads off Run's goroutine
 	invalidSPIReports atomic.Uint64
 
