@@ -69,3 +69,8 @@ const minFragmentAge = time.Second
 // while it stays a fragment of it still to come goes with it
 // while it stays a copy of one read is not read twice
 const maxFragmentAge = 16 * time.Second
+
+// seqnoForwardExpiry is how long a seqno request this node forwarded is kept, so the new seqno that answers it is sent on as a triggered update, RFC 8966 section 3.8.1.2
+// the answer comes back one hop at a time, each in a triggered update the hop before it sent, so it can arrive well after the seqnoRequestSuppress in which a repeat is redundant
+// it is BIRD's BABEL_SEQNO_FORWARD_EXPIRY
+const seqnoForwardExpiry = 10 * time.Second

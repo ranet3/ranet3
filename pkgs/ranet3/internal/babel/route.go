@@ -120,6 +120,10 @@ type routeTable struct {
 	// forget writes the forwarding entry of a key the table has no route
 	// for, unreachable while held is true and none otherwise
 	forget func(key routeKey, held bool)
+	// answers reports whether seqno, which a selected route now carries for
+	// key under routerID, answers a seqno request the Speaker forwarded or is
+	// still retrying
+	answers func(key routeKey, routerID [8]byte, seqno uint16, now time.Time) bool
 	// updateExpiry is how long an update this node sends now stays selectable
 	// at a neighbor: RFC 8966 Appendix B's route expiry of the interval the
 	// update carries, plus one Hello interval for its transit
@@ -160,6 +164,7 @@ func newRouteTable(install func(routeKey, routeSelection)) *routeTable {
 		held:            make(map[routeKey]struct{}),
 		install:         install,
 		forget:          func(routeKey, bool) {},
+		answers:         func(routeKey, [8]byte, uint16, time.Time) bool { return false },
 	}
 }
 
@@ -302,7 +307,7 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 		}
 		rt.install(key, selected)
 	}
-	if rt.significant(previous, selected) {
+	if rt.significant(key, previous, selected, now) {
 		rt.dirty[key] = struct{}{}
 	}
 	if selected.neighbor != nil {
@@ -373,21 +378,24 @@ func (rt *routeTable) flush(key routeKey) bool {
 }
 
 // significant decides whether a selection change earns a triggered update,
-// RFC 8966 section 3.7.2. A different next hop, origin or sequence number does,
-// as does any move to or from unreachable, but a metric fluctuation does not. An
-// improvement is deliberately left to the periodic dump: advertising a smaller
-// metric lowers this node's feasibility distance, which can make routes it
-// already holds unselectable.
-func (rt *routeTable) significant(old, new routeSelection) bool {
+// RFC 8966 section 3.7.2: a move to or from unreachable, a new router-id, a
+// cost risen by the trigger threshold or more, and a new seqno that answers a
+// request. The section has a node not trigger when the next hop changes alone
+// or to propagate a new seqno otherwise, and an improvement waits for the
+// periodic dump: advertising a smaller metric lowers this node's feasibility
+// distance, which can make routes it already holds unselectable.
+func (rt *routeTable) significant(key routeKey, old, new routeSelection, now time.Time) bool {
 	switch {
 	case (old.neighbor == nil) != (new.neighbor == nil):
 		return true
 	case new.neighbor == nil:
 		return false
-	case old.neighbor != new.neighbor || old.routerID != new.routerID || old.seqno != new.seqno:
+	case old.routerID != new.routerID:
+		return true
+	case new.cost > old.cost && uint32(new.cost)-uint32(old.cost) >= uint32(rt.trigger):
 		return true
 	default:
-		return new.cost > old.cost && uint32(new.cost)-uint32(old.cost) >= uint32(rt.trigger)
+		return old.seqno != new.seqno && rt.answers(key, new.routerID, new.seqno, now)
 	}
 }
 

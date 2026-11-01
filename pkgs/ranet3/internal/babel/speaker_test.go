@@ -2709,12 +2709,12 @@ func TestCongestedPeerDoesNotReopenTheWakePerPacket(t *testing.T) {
 	}
 }
 
-// The two request suppression tables expire on a two second window, which is
-// shorter than every other deadline the run loop has. Nothing on the receive
-// path sweeps them any more, so without a deadline of their own the budgets
-// they hold (maxPendingSeqnoPerNeighbor of them per neighbor) stay held by
-// entries that suppress nothing for as long as a hello interval, which
-// Validate allows to be minutes.
+// pendingSeqno entries are kept seqnoForwardExpiry and askedSeqno entries
+// seqnoRequestSuppress, both shorter than the hello interval Validate allows,
+// which can be minutes. Nothing on the receive path sweeps them any more, so
+// without a deadline of their own the budgets they hold
+// (maxPendingSeqnoPerNeighbor of them per neighbor) stay held by entries that
+// serve nothing for as long as a hello interval.
 func TestSuppressionWindowIsADeadlineOfItsOwn(t *testing.T) {
 	speaker, neighbor, _ := captureSpeaker(t, Config{Hello: dur(10 * time.Minute), Update: dur(10 * time.Minute)})
 	makeNeighborReachable(neighbor)
@@ -2731,11 +2731,11 @@ func TestSuppressionWindowIsADeadlineOfItsOwn(t *testing.T) {
 		t.Fatalf("the asker holds %d of its share", speaker.pendingByAsker[neighbor.peer.ID])
 	}
 	want := now.Add(seqnoRequestSuppress)
-	if got := speaker.deadlineLocked(); got.After(want) {
-		t.Fatalf("the loop sleeps until %v, past the %v the window expires at", got, want)
+	if got := speaker.deadlineLocked(); got.After(now.Add(seqnoForwardExpiry)) {
+		t.Fatalf("the loop sleeps until %v, past the %v the entry expires at", got, now.Add(seqnoForwardExpiry))
 	}
 
-	// The record of what this node asked expires on the same window and is
+	// The record of what this node asked is kept seqnoRequestSuppress and is
 	// held by the same budget, so it is a deadline the same way.
 	speaker.nextRequestSweep = time.Time{}
 	if !speaker.allowAsk(neighbor, index.route, index.routerID, now) {
@@ -2759,23 +2759,179 @@ func TestSuppressionWindowIsADeadlineOfItsOwn(t *testing.T) {
 		t.Fatal("the second request was suppressed")
 	}
 	speaker.sweepRequestsLocked(want)
-	if len(speaker.askedSeqno) != 1 || len(speaker.pendingSeqno) != 1 {
-		t.Fatalf("the sweep left %d asks and %d entries, want one of each",
+
+	// The first ask has run out, and both entries are kept past the window for
+	// the seqno that answers them.
+	if len(speaker.askedSeqno) != 1 || len(speaker.pendingSeqno) != 2 {
+		t.Fatalf("the sweep left %d asks and %d entries, want 1 ask and both entries",
 			len(speaker.askedSeqno), len(speaker.pendingSeqno))
 	}
 	if got := speaker.nextRequestSweep; got.IsZero() || got.After(want.Add(seqnoRequestSuppress)) {
 		t.Errorf("the ask the sweep walked past is due at %v and the kept deadline is %v",
 			want.Add(seqnoRequestSuppress), got)
 	}
+	// and no earlier than anything left, or the loop wakes at once and sweeps
+	// again for nothing until the entries expire
+	if got := speaker.nextRequestSweep; !got.After(want) {
+		t.Errorf("the sweep at %v kept the deadline %v, which is not after it", want, got)
+	}
+	// Once the ask has run out the first entry's expiry is the deadline.
+	speaker.sweepRequestsLocked(now.Add(5 * time.Second))
+	if len(speaker.askedSeqno) != 0 || len(speaker.pendingSeqno) != 2 {
+		t.Fatalf("the sweep at 5 s left %d asks and %d entries, want no ask and both entries",
+			len(speaker.askedSeqno), len(speaker.pendingSeqno))
+	}
+	if got := speaker.nextRequestSweep; !got.Equal(now.Add(seqnoForwardExpiry)) {
+		t.Errorf("the sweep at 5 s kept the deadline %v, want the first entry's expiry %v", got, now.Add(seqnoForwardExpiry))
+	}
 
 	// And a sweep that empties both tables leaves nothing to wake for.
-	speaker.sweepRequestsLocked(want.Add(2 * seqnoRequestSuppress).Add(time.Second))
+	speaker.sweepRequestsLocked(want.Add(time.Second).Add(seqnoForwardExpiry))
 	if len(speaker.pendingSeqno) != 0 || len(speaker.pendingByAsker) != 0 || len(speaker.askedSeqno) != 0 {
 		t.Errorf("the sweep left %d entries, %d shares and %d asks",
 			len(speaker.pendingSeqno), len(speaker.pendingByAsker), len(speaker.askedSeqno))
 	}
 	if !speaker.nextRequestSweep.IsZero() {
 		t.Errorf("with nothing left the sweep is still due at %v", speaker.nextRequestSweep)
+	}
+}
+
+// a request this node sends for itself past the window leaves the asker, seqno and time of one it forwarded and still
+// keeps as they are, and is held beside them. The seqno that answers the forwarded request is still one a triggered
+// update carries, RFC 8966 section 3.8.1.2
+func TestOwnRequestOverAKeptForwardedOneStillAnswersIt(t *testing.T) {
+	speaker, neighbor, _ := captureSpeaker(t, Config{})
+	makeNeighborReachable(neighbor)
+	key := routeKey{dest: netip.MustParsePrefix("fd00:7:1::/64")}
+	origin := [8]byte{3}
+	now := time.Now()
+	speaker.mu.Lock()
+	defer speaker.mu.Unlock()
+	index := sourceKey{route: key, routerID: origin}
+	forwarded := now.Add(-3 * time.Second)
+	if !speaker.allowSeqnoRequest(index, 3, "asker", forwarded) {
+		t.Fatal("the request was not forwarded, so this proves nothing")
+	}
+	speaker.seqnoRequestTo(neighbor, key, origin, 2, now)
+	if entry := speaker.pendingSeqno[index]; entry.asker != "asker" || entry.seqno != 3 || !entry.sentAt.Equal(forwarded) {
+		t.Errorf("this node's own request left the entry %+v, want the forwarded asker and seqno 3, sent 3 s ago", entry)
+	}
+	if !speaker.answersRequestLocked(key, origin, 3, now) {
+		t.Error("seqno 3 no longer answers the request forwarded 3 s ago")
+	}
+	if speaker.answersRequestLocked(key, origin, 2, now) {
+		t.Error("seqno 2 answers a forwarded request for 3")
+	}
+	if got := speaker.pendingByAsker["asker"]; got != 1 || speaker.pendingByAsker[""] != 0 {
+		t.Errorf("the asker holds %d of its share and this node %d, want 1 and 0", got, speaker.pendingByAsker[""])
+	}
+}
+
+// this node's own request for 7, sent while the entry of a forwarded request for 5 is kept, holds back another
+// neighbor's request for 6 half a second later as redundant, inside the forward's window or past it, as an own request
+// with no forward does (RFC 8966 section 3.8.1.2)
+func TestOwnGreaterRequestOverAKeptForwardHoldsBackARequestItCovers(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		forward bool
+		gap     time.Duration
+	}{
+		{"no forward", false, 0},
+		{"inside the forward's window", true, 500 * time.Millisecond},
+		{"past the forward's window", true, 3 * time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			speaker, neighbor, _ := captureSpeaker(t, Config{})
+			makeNeighborReachable(neighbor)
+			key := routeKey{dest: netip.MustParsePrefix("fd00:7:4::/64")}
+			origin := [8]byte{6}
+			forwarded := time.Now().Add(-time.Minute)
+			speaker.mu.Lock()
+			defer speaker.mu.Unlock()
+			index := sourceKey{route: key, routerID: origin}
+			if c.forward && !speaker.allowSeqnoRequest(index, 5, "a", forwarded) {
+				t.Fatal("the request was not forwarded, so this proves nothing")
+			}
+			own := forwarded.Add(c.gap)
+			speaker.seqnoRequestTo(neighbor, key, origin, 7, own)
+			entry := speaker.pendingSeqno[index]
+			if c.forward && (entry.asker != "a" || entry.seqno != 5 || !entry.sentAt.Equal(forwarded)) {
+				t.Errorf("the own request left the entry %+v, want the forward's asker, seqno and time", entry)
+			}
+			if speaker.allowSeqnoRequest(index, 6, "d", own.Add(500*time.Millisecond)) {
+				t.Errorf("d's request for 6, half a second after this node's own request for 7, was forwarded (entry before it %+v)", entry)
+			}
+			if !speaker.allowSeqnoRequest(index, 6, "d", own.Add(seqnoRequestSuppress)) {
+				t.Errorf("d's request for 6, at the end of the own request's window, was held back (entry %+v)", speaker.pendingSeqno[index])
+			}
+		})
+	}
+}
+
+// a's repeat for 5, forwarded 9 s after this node forwarded its first, replaces the kept entry, so the answer 3 s
+// after the repeat still triggers and d's request for 5 half a second after it is redundant. Only this node's own
+// request leaves a kept forwarded entry's fields as they are
+func TestForwardedRepeatReplacesTheKeptEntry(t *testing.T) {
+	speaker, _, _ := captureSpeaker(t, Config{})
+	key := routeKey{dest: netip.MustParsePrefix("fd00:7:5::/64")}
+	origin := [8]byte{7}
+	first := time.Now().Add(-time.Minute)
+	speaker.mu.Lock()
+	defer speaker.mu.Unlock()
+	index := sourceKey{route: key, routerID: origin}
+	if !speaker.allowSeqnoRequest(index, 5, "a", first) {
+		t.Fatal("the first request was not forwarded, so this proves nothing")
+	}
+	repeat := first.Add(9 * time.Second)
+	if !speaker.allowSeqnoRequest(index, 5, "a", repeat) {
+		t.Fatal("a's repeat past the window was not forwarded, so this proves nothing")
+	}
+	if entry := speaker.pendingSeqno[index]; !entry.sentAt.Equal(repeat) || entry.asker != "a" {
+		t.Errorf("a's repeat left the entry %+v, want it a's, sent at the repeat", entry)
+	}
+	if got := speaker.pendingByAsker["a"]; got != 1 {
+		t.Errorf("a holds %d of its share, want 1", got)
+	}
+	if speaker.allowSeqnoRequest(index, 5, "d", repeat.Add(500*time.Millisecond)) {
+		t.Error("d's request for 5, half a second after a's repeat for 5 was forwarded, was forwarded too")
+	}
+	speaker.sweepRequestsLocked(repeat.Add(3 * time.Second))
+	if !speaker.answersRequestLocked(key, origin, 5, repeat.Add(3*time.Second)) {
+		t.Error("seqno 5, 3 s after a's repeat was forwarded, does not answer it")
+	}
+}
+
+// this node's own request for 3, sent past the window of its own request for 2, replaces that entry, so d's request
+// for 3 a second and a half later is redundant, here too where the first entry would have gone by then
+func TestOwnRequestPastItsWindowReplacesItsOwnEntry(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		gap  time.Duration
+	}{
+		{"half a second past the window", seqnoRequestSuppress + 500*time.Millisecond},
+		{"9 s after the first", 9 * time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			speaker, neighbor, _ := captureSpeaker(t, Config{})
+			makeNeighborReachable(neighbor)
+			key := routeKey{dest: netip.MustParsePrefix("fd00:7:6::/64")}
+			origin := [8]byte{8}
+			first := time.Now().Add(-time.Minute)
+			speaker.mu.Lock()
+			defer speaker.mu.Unlock()
+			index := sourceKey{route: key, routerID: origin}
+			speaker.seqnoRequestTo(neighbor, key, origin, 2, first)
+			again := first.Add(c.gap)
+			speaker.seqnoRequestTo(neighbor, key, origin, 3, again)
+			if entry := speaker.pendingSeqno[index]; entry.seqno != 3 || !entry.sentAt.Equal(again) {
+				t.Errorf("the second own request left the entry %+v, want seqno 3 sent then", entry)
+			}
+			later := again.Add(1500 * time.Millisecond)
+			speaker.sweepRequestsLocked(later)
+			if speaker.allowSeqnoRequest(index, 3, "d", later) {
+				t.Error("d's request for 3, a second and a half after this node's own request for 3, was forwarded")
+			}
+		})
 	}
 }
 

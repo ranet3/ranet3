@@ -271,6 +271,119 @@ func TestOneUnitRiseKeepsTheSelectedRouteAndAClearlyBetterOneTakesOver(t *testin
 	}
 }
 
+// RFC 8966 section 3.7.2 triggers an update on a new router-id, a move to or from unreachable and a cost risen by the threshold, and not on a next hop that changes alone
+// a and b offer one prefix under one origin and seqno, the table at no margin and no smoothing so each change is selected at once
+func TestTriggeredUpdatesFollowSection372(t *testing.T) {
+	now := time.Now()
+	setup := func(t *testing.T) (*routeTable, routeKey, *neighborState, *neighborState) {
+		t.Helper()
+		rt, key, a, b := twoEqualRoutes(t, 0, now)
+		rt.tau, rt.trigger = 0, 96
+		rt.takeDirty()
+		return rt, key, a, b
+	}
+	offer := func(rt *routeTable, n *neighborState, key routeKey, origin byte, metric uint16) {
+		rt.update(n, key, advertisement{routerID: [8]byte{origin}, seqno: 1, metric: metric}, time.Hour, now)
+	}
+	for _, test := range []struct {
+		name    string
+		change  func(*routeTable, routeKey, *neighborState, *neighborState)
+		trigger bool
+	}{
+		{"a next hop that changes alone", func(rt *routeTable, key routeKey, a, b *neighborState) { offer(rt, b, key, 1, 58) }, false},
+		{"a new router-id", func(rt *routeTable, key routeKey, a, b *neighborState) { offer(rt, b, key, 2, 58) }, true},
+		{"a move to unreachable", func(rt *routeTable, key routeKey, a, b *neighborState) {
+			offer(rt, a, key, 1, MetricInfinity)
+			offer(rt, b, key, 1, MetricInfinity)
+		}, true},
+		{"a cost risen by the threshold", func(rt *routeTable, key routeKey, a, b *neighborState) {
+			offer(rt, b, key, 1, 68+96)
+			offer(rt, a, key, 1, 68+96)
+		}, true},
+		{"a cost risen by less", func(rt *routeTable, key routeKey, a, b *neighborState) {
+			offer(rt, b, key, 1, 68+95)
+			offer(rt, a, key, 1, 68+95)
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rt, key, a, b := setup(t)
+			test.change(rt, key, a, b)
+			if got := len(rt.takeDirty()) == 1; got != test.trigger {
+				t.Errorf("the change left a triggered update owed %v, want %v", got, test.trigger)
+			}
+		})
+	}
+
+	rt, key, a, b := setup(t)
+	offer(rt, a, key, 1, MetricInfinity)
+	offer(rt, b, key, 1, MetricInfinity)
+	rt.takeDirty()
+	offer(rt, b, key, 1, 68)
+	if len(rt.takeDirty()) != 1 {
+		t.Error("a move from unreachable owed no triggered update")
+	}
+}
+
+// RFC 8966 Section 3.7.2 triggers on a new seqno only to satisfy a request, here one this node forwarded or one it is still repeating
+// a seqno nobody asked for waits for the periodic dump
+func TestNewSeqnoTriggersOnlyWhereItAnswersARequest(t *testing.T) {
+	origin := [8]byte{0x72, 3}
+	dest := netip.MustParsePrefix("2001:db8:6::/48")
+	key := routeKey{dest: dest}
+	for _, test := range []struct {
+		name    string
+		asked   func(s *Speaker, now time.Time)
+		trigger bool
+	}{
+		{"no request", func(*Speaker, time.Time) {}, false},
+		{"a request forwarded for a neighbor", func(s *Speaker, now time.Time) {
+			s.recordSeqnoRequest(sourceKey{route: key, routerID: origin}, 2, "asker", now)
+		}, true},
+		{"a request forwarded past the window that suppresses a repeat", func(s *Speaker, now time.Time) {
+			s.recordSeqnoRequest(sourceKey{route: key, routerID: origin}, 2, "asker", now.Add(-seqnoRequestSuppress-100*time.Millisecond))
+		}, true},
+		{"a request forwarded longer ago than it is kept", func(s *Speaker, now time.Time) {
+			s.recordSeqnoRequest(sourceKey{route: key, routerID: origin}, 2, "asker", now.Add(-seqnoForwardExpiry))
+		}, false},
+		{"a request forwarded for a later seqno", func(s *Speaker, now time.Time) {
+			s.recordSeqnoRequest(sourceKey{route: key, routerID: origin}, 3, "asker", now)
+		}, false},
+		{"a request this node sent for itself alone", func(s *Speaker, now time.Time) {
+			s.recordSeqnoRequest(sourceKey{route: key, routerID: origin}, 2, "", now)
+		}, false},
+		{"a request this node is still repeating", func(s *Speaker, now time.Time) {
+			s.rememberStarved(key, origin, 2, "peer", now)
+		}, true},
+		{"a request for a later seqno", func(s *Speaker, now time.Time) {
+			s.rememberStarved(key, origin, 3, "peer", now)
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			speaker, neighbor, _ := captureSpeaker(t, Config{})
+			makeNeighborReachable(neighbor)
+			announce := func(seqno uint16) {
+				speaker.handlePacket(neighbor, EncodePacket([]RawTLV{EncodeRouterID(origin), EncodeUpdate(Update{
+					AE: AEIPv6, Plen: dest.Bits(), Prefix: dest.Addr().AsSlice(), Interval: 400, Seqno: seqno, Metric: 10})}))
+			}
+			announce(1)
+			speaker.mu.Lock()
+			if speaker.routes.entries[key] == nil || speaker.routes.entries[key].selected.neighbor != neighbor {
+				speaker.mu.Unlock()
+				t.Fatal("the route was not selected, so this proves nothing")
+			}
+			speaker.routes.takeDirty()
+			test.asked(speaker, time.Now())
+			speaker.mu.Unlock()
+			announce(2)
+			speaker.mu.Lock()
+			defer speaker.mu.Unlock()
+			if got := len(speaker.routes.takeDirty()) == 1; got != test.trigger {
+				t.Errorf("seqno 2 left a triggered update owed %v, want %v", got, test.trigger)
+			}
+		})
+	}
+}
+
 // RFC 8966 section 3.5.4 holds a retracted prefix for its whole interval, so a
 // packet for it is answered rather than sent down a covering route. The hold
 // has to run from the retraction: one arriving just before the deadline of the

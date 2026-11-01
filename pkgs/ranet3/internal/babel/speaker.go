@@ -82,6 +82,26 @@ type pendingSeqno struct {
 	// this node sent on its own behalf. It is the peer's name rather than its
 	// state, so an entry left behind cannot pin a retired neighbor.
 	asker string
+	// ownSeqno and ownSentAt are the last request this node sent on its own
+	// behalf, and the entry did not already cover, while the entry of a
+	// forwarded one was kept. A covered one still goes out but is not
+	// recorded. They are held beside
+	// the forward's fields, which that request leaves as they are, so it still
+	// holds back a request it makes redundant.
+	ownSeqno  uint16
+	ownSentAt time.Time
+}
+
+// covers reports whether a request for seqno at now is redundant against the
+// entry, RFC 8966 section 3.8.1.2: the request the entry records, or this
+// node's own one held beside it, was sent inside seqnoRequestSuppress for a
+// seqno no smaller.
+func (p pendingSeqno) covers(seqno uint16, now time.Time) bool {
+	return recentRequestCovers(p.seqno, p.sentAt, seqno, now) || recentRequestCovers(p.ownSeqno, p.ownSentAt, seqno, now)
+}
+
+func recentRequestCovers(sent uint16, sentAt time.Time, seqno uint16, now time.Time) bool {
+	return now.Before(sentAt.Add(seqnoRequestSuppress)) && !seqnoGT(seqno, sent)
 }
 
 // Request timeout, RFC 8966 Appendix B. A request for the same source within
@@ -230,13 +250,13 @@ type Speaker struct {
 	nextHello  time.Time
 	nextUpdate time.Time
 	sleepUntil time.Time
-	// nextRequestSweep is the earliest seqnoRequestSuppress window that has
+	// nextRequestSweep is the earliest end, of a seqnoRequestSuppress window
+	// in askedSeqno or of a seqnoForwardExpiry in pendingSeqno, that has
 	// still to be cleaned up, kept the way the route table keeps its expiry
-	// minimum. The window is two seconds and every other deadline the loop has
-	// is a hello interval or longer, so without this the two suppression
-	// tables are swept a hello interval late and their per-neighbor budgets
-	// are held that long by entries that suppress nothing. Only ever moved
-	// earlier between sweeps. sweepRequestsLocked rebuilds it exactly.
+	// minimum. Without it the two tables are swept at the loop's next other
+	// deadline, which can be a hello interval away, and their per-neighbor
+	// budgets are held that long by entries that serve nothing. Only ever
+	// moved earlier between sweeps. sweepRequestsLocked rebuilds it exactly.
 	nextRequestSweep time.Time
 	// passes counts what wakeForPacketLocked exists to keep down: one pass is
 	// a reselection of the whole route table. Kept because the decision is
@@ -301,7 +321,7 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 		changed:        make(chan struct{}, 1),
 	}
 	s.routes = newRouteTable(s.installRoute)
-	s.routes.forget = s.unrouteLocked
+	s.routes.forget, s.routes.answers = s.unrouteLocked, s.answersRequestLocked
 	s.applyEffective(cfg.Effective())
 	s.SetRoutes(routes)
 	return s, nil
@@ -996,7 +1016,7 @@ func (s *Speaker) sweepExpiredLocked(now time.Time) {
 // carried a sequence number that is no smaller.
 func (s *Speaker) allowSeqnoRequest(index sourceKey, seqno uint16, asker string, now time.Time) bool {
 	pending, known := s.pendingSeqno[index]
-	if known && now.Before(pending.sentAt.Add(seqnoRequestSuppress)) && !seqnoGT(seqno, pending.seqno) {
+	if known && pending.covers(seqno, now) {
 		return false
 	}
 	// The share is checked whether or not the index already exists: taking
@@ -1012,15 +1032,41 @@ func (s *Speaker) allowSeqnoRequest(index sourceKey, seqno uint16, asker string,
 	return true
 }
 
-// recordSeqnoRequest replaces one entry of the suppression table, keeping the
+// answersRequestLocked reports whether seqno, which a selected route now
+// carries for key under routerID, satisfies a seqno request this node forwarded
+// inside seqnoForwardExpiry or one it is still retrying, the one new seqno RFC
+// 8966 section 3.7.2 has a triggered update carry.
+func (s *Speaker) answersRequestLocked(key routeKey, routerID [8]byte, seqno uint16, now time.Time) bool {
+	index := sourceKey{route: key, routerID: routerID}
+	if pending, ok := s.pendingSeqno[index]; ok && pending.asker != "" &&
+		now.Before(pending.sentAt.Add(seqnoForwardExpiry)) && !seqnoGT(pending.seqno, seqno) {
+		return true
+	}
+	retry, ok := s.starveRetries[index]
+	return ok && !seqnoGT(retry.seqno, seqno)
+}
+
+// recordSeqnoRequest records one request in the suppression table, keeping the
 // per-asker counts in step with it.
 func (s *Speaker) recordSeqnoRequest(index sourceKey, seqno uint16, asker string, now time.Time) {
 	if previous, known := s.pendingSeqno[index]; known {
+		// This node's own request over the entry of one it forwarded and still
+		// keeps leaves the forward's fields as they are, its asker, seqno and
+		// time: the seqno that answers the forwarded request is still sent on as
+		// a triggered update, and a repeat from its asker is judged against the
+		// forward. The own request is held beside them, so it holds back what it
+		// makes redundant until the entry goes at the forward's expiry. It goes
+		// out whatever the entry holds.
+		if asker == "" && previous.asker != "" && now.Before(previous.sentAt.Add(seqnoForwardExpiry)) {
+			previous.ownSeqno, previous.ownSentAt = seqno, now
+			s.pendingSeqno[index] = previous
+			return
+		}
 		s.releaseSeqnoRequest(previous)
 	}
 	s.pendingSeqno[index] = pendingSeqno{seqno: seqno, sentAt: now, asker: asker}
 	s.pendingByAsker[asker]++
-	s.noteRequestSweep(now)
+	s.nextRequestSweep = earlier(s.nextRequestSweep, now.Add(seqnoForwardExpiry))
 }
 
 func (s *Speaker) releaseSeqnoRequest(entry pendingSeqno) {
@@ -1040,17 +1086,22 @@ func (s *Speaker) sweepRequestsLocked(now time.Time) {
 	// Cleared first and rebuilt by the walk, which is the one pass that reads
 	// every window, so the kept minimum is exact again afterward.
 	s.nextRequestSweep = time.Time{}
+	// A pending entry suppresses a repeat for seqnoRequestSuppress and is kept
+	// for seqnoForwardExpiry, so the seqno that answers a forwarded request
+	// still triggers when it comes back late.
 	for index, pending := range s.pendingSeqno {
-		if !now.Before(pending.sentAt.Add(seqnoRequestSuppress)) {
+		expiry := pending.sentAt.Add(seqnoForwardExpiry)
+		if !now.Before(expiry) {
 			s.releaseSeqnoRequest(pending)
 			delete(s.pendingSeqno, index)
 			continue
 		}
-		s.noteRequestSweep(pending.sentAt)
+		s.nextRequestSweep = earlier(s.nextRequestSweep, expiry)
 	}
-	// askedSeqno expires on the same window. It is keyed by router id, which
-	// the peer chooses, and by neighbor pointer, so an entry left behind pins
-	// a retired neighborState and everything it advertised.
+	// askedSeqno entries are kept seqnoRequestSuppress alone. The table is
+	// keyed by router id, which the peer chooses, and by neighbor pointer, so
+	// an entry left behind pins a retired neighborState and everything it
+	// advertised.
 	for index, at := range s.askedSeqno {
 		if !now.Before(at.Add(seqnoRequestSuppress)) {
 			delete(s.askedSeqno, index)

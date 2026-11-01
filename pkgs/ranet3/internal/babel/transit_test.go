@@ -398,6 +398,65 @@ func TestSeqnoRequestIsForwardedOnceTowardOrigin(t *testing.T) {
 	if got := seqnoRequestsFor(t, fabric.tlvs("b", "c"), dest); len(got) != 0 {
 		t.Fatalf("relay forwarded %d duplicate requests", len(got))
 	}
+
+	// The same request past the window is a repeat of its asker's, and goes on
+	// although the relay still keeps the entry for the seqno that answers it.
+	relay := fabric.speakers["b"]
+	index := sourceKey{route: key, routerID: routerID("c")}
+	relay.mu.Lock()
+	pending, kept := relay.pendingSeqno[index]
+	pending.sentAt = pending.sentAt.Add(-seqnoRequestSuppress - 100*time.Millisecond)
+	relay.pendingSeqno[index] = pending
+	relay.mu.Unlock()
+	if !kept {
+		t.Fatal("the relay keeps no entry for the forwarded request, so this proves nothing")
+	}
+	fabric.reset()
+	fabric.inject("b", "a", request)
+	if got := seqnoRequestsFor(t, fabric.tlvs("b", "c"), dest); len(got) != 1 {
+		t.Errorf("past the window, with the entry still kept, the relay forwarded %d requests, want 1", len(got))
+	}
+}
+
+// relay b forwarded a's request for seqno 5 past the window, and its own request for a lower seqno, past its own distance, leaves the forward's asker, seqno and time in b's entry as they are and is held beside them
+// a's repeat for 5 is judged against the forward, past the window, and goes on, as it does with no request of b's own in between
+func TestOwnLowerRequestLeavesTheForwardedAskersRepeatToGoOn(t *testing.T) {
+	for _, own := range []bool{false, true} {
+		t.Run(fmt.Sprintf("own request %v", own), func(t *testing.T) {
+			fabric := newMeshFabric(t, Config{}, "a-b", "b-c")
+			dest := netip.MustParsePrefix("fd00:c::/64")
+			key := routeKey{dest: dest}
+			fabric.speakers["c"].Originate(dest)
+			fabric.flush("c", "b", "a")
+			fabric.reset()
+			request := EncodeSeqnoRequest(SeqnoRequest{AE: AEIPv6, Prefix: dest, Seqno: 5, HopCount: 64, RouterID: routerID("c")})
+			fabric.inject("b", "a", request)
+			if got := seqnoRequestsFor(t, fabric.tlvs("b", "c"), dest); len(got) != 1 {
+				t.Fatalf("relay forwarded %d requests, want 1", len(got))
+			}
+			relay := fabric.speakers["b"]
+			index := sourceKey{route: key, routerID: routerID("c")}
+			relay.mu.Lock()
+			pending, kept := relay.pendingSeqno[index]
+			pending.sentAt = pending.sentAt.Add(-seqnoRequestSuppress - 500*time.Millisecond)
+			relay.pendingSeqno[index] = pending
+			ownSeqno := relay.routes.requestSeqno(key, advertisement{routerID: routerID("c")})
+			if own {
+				relay.seqnoRequestTo(fabric.neighbor("b", "c"), key, routerID("c"), ownSeqno, time.Now())
+			}
+			entry := relay.pendingSeqno[index]
+			relay.mu.Unlock()
+			if !kept || ownSeqno >= 5 {
+				t.Fatalf("kept %v, own seqno %d, so this proves nothing", kept, ownSeqno)
+			}
+			fabric.reset()
+			fabric.inject("b", "a", request)
+			if got := seqnoRequestsFor(t, fabric.tlvs("b", "c"), dest); len(got) != 1 {
+				t.Errorf("a's repeat for seqno 5, 2.5 s after b forwarded its first, was forwarded %d times, want 1 (b's own request for %d sent just before: %v, entry %+v)",
+					len(got), ownSeqno, own, entry)
+			}
+		})
+	}
 }
 
 // An unfeasible update for the selected route must produce a request for a
