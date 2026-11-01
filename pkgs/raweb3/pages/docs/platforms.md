@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-10-31
+updated: 2026-11-01
 order: 100
 ---
 

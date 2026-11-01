@@ -436,11 +436,12 @@ The segments this node answers for.
   acts only on a packet whose outer source lies in those prefixes.
 - An `allow` entry inside `cap.border.overlay` admits outer and inner sources,
   and one outside it admits inner sources alone, such as a LAN behind a subnet
-  router. A list with an entry outside the overlay is refused unless one IPv6
-  entry lies inside it. The exit pairs no inner source with an outer one: each
-  node the list admits by its overlay address may carry any inner source the
-  list holds, a listed LAN among them. A node sends no LAN source it does not
-  own, and the replies go to the node that announces the LAN.
+  router, refused where the overlay cannot admit the list, as
+  [egress segments](segment-routing.md#egress-segments) gives. The exit pairs no
+  inner source with an outer one: each node the list admits by its overlay
+  address may carry any inner source the list holds, a listed LAN among them. A
+  node sends no LAN source it does not own, and the replies go to the node that
+  announces the LAN.
 - An egress segment needs `cap.egress`, which may advertise nothing, and
   `cap.border`. It needs no `cap.table`. `cap.route` may not announce its SID's
   `/128`, which the node originates while the exit is ready.
@@ -760,7 +761,7 @@ with no key. [The border filter](border-filter.md) describes both.
   than `/12`, an entry with bits set below its length, an IPv4 address written
   as IPv6 and an entry written twice are refused. The order does not matter.
 - Every node of the mesh writes the same list, which covers every exit's `allow`
-  list.
+  entry that admits an outer source.
 - On an exit, the list enables the kernel lookups of its
   [readiness](exit-nodes.md#readiness), which read from a member's address
   inside it. A family with no prefix in it skips them.
@@ -778,8 +779,9 @@ with no key. [The border filter](border-filter.md) describes both.
   [carve-outs](border-filter.md#carve-outs) describe.
 - A file with a local segment and no `cap.border` is refused, and so is one
   whose `overlay` holds no IPv6 prefix, since every local SID acts only on an
-  outer source in those prefixes. An egress segment's `allow` entry no `overlay`
-  entry covers is refused too.
+  outer source in those prefixes. An egress segment's `allow` list the `overlay`
+  cannot admit is refused too, as
+  [egress segments](segment-routing.md#egress-segments) gives.
 - A file with a `cap.egress` translate class of `none` and no `cap.border` is
   refused: a learned route reads alike for a node's own address and for a LAN
   another node advertises, so only the overlay tells
@@ -798,13 +800,13 @@ traffic and for what it forwards from the links `forward` names. Linux only.
 [sharing a host](coexistence.md#exit-mode-beside-other-programs) what other
 programs' rules do beside them.
 
-| Key        | Value                | Default                         | Meaning                                                                                                    |
-| ---------- | -------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `forward`  | list of names        | none                            | Links whose forwarded traffic follows the mode as the host's does                                          |
-| `fallback` | `"uplink"`, `"none"` | `"uplink"`, `"none"` with `via` | Where the host's traffic leaves while no exit is live. `"none"` is the kill switch                         |
-| `via`      | list of addresses    | none                            | The SIDs the host's internet traffic visits, an exit's egress segment last                                 |
-| `inbound`  | list of services     | none                            | Under `"none"`, the services on the uplink's addresses that answer beyond the LAN, on flows opened to them |
-| `lan`      | list of prefixes     | none                            | Under `"none"`, the parts of connected networks beyond the private and link-local ranges that count as LAN |
+| Key        | Value                | Default                         | Meaning                                                                                                                  |
+| ---------- | -------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `forward`  | list of names        | none                            | Links whose forwarded traffic follows the mode as the host's does                                                        |
+| `fallback` | `"uplink"`, `"none"` | `"uplink"`, `"none"` with `via` | Where the host's traffic leaves while no exit is live, or with `via` while the path is down. `"none"` is the kill switch |
+| `via`      | list of addresses    | none                            | The SIDs the host's internet traffic visits, an exit's egress segment last                                               |
+| `inbound`  | list of services     | none                            | Under `"none"`, the services on the uplink's addresses that answer beyond the LAN, on flows opened to them               |
+| `lan`      | list of prefixes     | none                            | Under `"none"`, the parts of connected networks beyond the private and link-local ranges that count as LAN               |
 
 - `fallback = "uplink"` sends the host's traffic by its own default wherever the
   mesh's table holds none. `"none"` writes

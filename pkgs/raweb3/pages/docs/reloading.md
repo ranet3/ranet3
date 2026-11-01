@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-10-30
+updated: 2026-11-01
 order: 70
 ---
 
@@ -390,16 +390,21 @@ which happens only to a device on its way out.
 A reload loads the file as a startup does. A file that fails to parse or names
 an unknown key is refused whole. The checks across blocks run again:
 
-- the longest `cap.segment` steer list must leave the tun at 1280 bytes or more
+- the longest `cap.segment` steer list or `cap.exit.via` path must leave the tun
+  at 1280 bytes or more
+- a `cap.segment` steer `to` must not count as a default, and `cap.exit.via`
+  needs an IPv6 prefix in `cap.border.overlay` and an outer source inside it, as
+  [the configuration reference](configuration-reference.md#capexit) lists with
+  its other refusals
 - a `cap.segment.local` SID must not be an address `cap.table` assigns to the
   tun
 - a `cap.route` announcement must not equal a `cap.egress.advertise` prefix,
   which it would announce whether or not the translation rule is installed
 - an egress segment needs `cap.egress`, and `cap.route` must not announce its
   SID's `/128`
-- an egress segment needs `cap.border`, whose `overlay` covers every entry of
-  its `allow` list, and a `cap.egress.advertise` entry longer than 0 bits must
-  not overlap the `overlay`
+- an egress segment needs `cap.border` and an `allow` list its `overlay` admits,
+  as [egress segments](segment-routing.md#egress-segments) gives, and a
+  `cap.egress.advertise` entry longer than 0 bits must not overlap the `overlay`
 - `auth.aliases.local` needs at most 1 `link.endpoints` entry in each family,
   and its `keyid` values must not spell an endpoint of another node, as
   [the configuration reference](configuration-reference.md#authaliases) lists

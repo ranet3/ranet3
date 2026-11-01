@@ -4,7 +4,7 @@
 title: "The border filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving a link's own network out of the overlay, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-10-31
+updated: 2026-11-01
 order: 55
 ---
 
@@ -45,11 +45,12 @@ says.
 An [egress segment](segment-routing.md#egress-segments) carries out of the mesh
 only the sources its `allow` list names. The list is authorization. A forged
 allowed source sent through a forwarding node is dropped there by `mesh_entry`
-unless that node owns it, and by `border` where its `cap.border` holds the
-overlay, which the loader makes cover every `allow` list. The filter on the exit
-itself keeps a forged mesh source off the host's services. Another node's SID
-that delivers to the mesh is protected by that node, as [below](#what-it-drops)
-describes.
+unless that node owns it, and, for a source inside the overlay, by `border`
+where its `cap.border` holds the overlay. A source an `allow` entry outside the
+overlay admits, which [egress segments](segment-routing.md#egress-segments)
+describe, meets `mesh_entry` alone. The filter on the exit itself keeps a forged
+mesh source off the host's services. Another node's SID that delivers to the
+mesh is protected by that node, as [below](#what-it-drops) describes.
 
 The filter guards the mesh's edge on the links outside it. A packet this host's
 own kernel routes into the tun enters the mesh by the other side of that edge,
@@ -79,9 +80,10 @@ A packet matching none passes. A drop sends no ICMP error, as
 [the deviations](design/protocol-deviations.md#drops-with-no-answer) explain.
 
 The overlay is the address space every node of the mesh is numbered from, the
-same on every node. It has to cover every exit's `allow` list, since a source
-outside it passes every filter. The loader refuses an egress segment with an
-`allow` entry the overlay does not cover.
+same on every node. An exit's `allow` entry admits an outer source only where
+the overlay covers it, since a source outside the overlay passes every filter.
+The loader refuses an egress segment whose `allow` list the overlay cannot
+admit, as [egress segments](segment-routing.md#egress-segments) gives.
 
 The overlay holds only addresses the mesh carries inside its tunnels. Every
 address a peer's ESP comes from lies outside it, since that ESP arrives on a

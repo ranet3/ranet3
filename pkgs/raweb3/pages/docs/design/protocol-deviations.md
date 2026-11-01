@@ -978,10 +978,11 @@ that read the packet and behind a waypoint.
 
 A SID admits a packet only where its outer source lies inside
 `cap.border.overlay`, and an egress segment only where that source lies inside
-its allow list as well. It drops any other packet with no answer before it reads
-an extension header, as [Drops with no answer](#drops-with-no-answer) lists, so
-each answer of a SID this section names is to a packet it admits, sent through a
-session and within the limits this section gives below.
+an entry of its allow list inside the overlay as well. It drops any other packet
+with no answer before it reads an extension header, as
+[Drops with no answer](#drops-with-no-answer) lists, so each answer of a SID
+this section names is to a packet it admits, sent through a session and within
+the limits this section gives below.
 
 `End` answers a segment too large for its next session about the packet the
 segment carries, to that packet's source, rather than about the segment it could
@@ -2610,10 +2611,10 @@ drops:
   says "The router MUST allow packets to be silently discarded" and "The router
   SHOULD allow an appropriate ICMP unreachable message to be sent when a packet
   is discarded", with code 13. The reason is the allow list's above. Each packet
-  passed the SID's overlay check and the allow list, so its sources are overlay
-  addresses, some of which a host beyond the mesh can forge through a node
-  without `cap.border`, and an answer could reach the mesh node the source
-  names.
+  passed the SID's overlay check and the allow list, so its outer source is an
+  overlay address and its inner one an overlay address or a LAN the list names,
+  some of which a host beyond the mesh can forge through a node without
+  `cap.border`, and an answer could reach the mesh node the source names.
 - For code 0, an egress segment past its reply check refuses an inner packet
   whose destination lies inside `cap.border.overlay`, the mesh's own address
   space. No node whose `cap.border` sets that overlay egresses such a

@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-10-31
+updated: 2026-11-01
 order: 30
 ---
 
@@ -321,9 +321,9 @@ These commands take flags of their own:
 - `debug segments` is each segment the node answers for, an egress segment with
   whether its SID is announced and the families the mesh hands to the exit
   through it, then the steering policies, on or stopped, with the overhead the
-  tun's MTU leaves room for and each policy's selector, source, path and
-  overhead, then the segment counters `ranet3 status` reports. A node with
-  neither says so.
+  tun's MTU leaves room for, `cap.exit.via`'s path counted in it, and each
+  `cap.segment.steer` policy's selector, source, path and overhead, then the
+  segment counters `ranet3 status` reports. A node with neither says so.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
   packets past a session's budget and the SYNs whose MSS was clamped, both for

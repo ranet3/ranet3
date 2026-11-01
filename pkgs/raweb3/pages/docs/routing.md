@@ -338,8 +338,9 @@ draws on the same rate limits. Under [mode 3](#mode-3-on-linux), a read that no
 steering policy takes, whose destination lies outside `cap.border.overlay` and
 that the table answers through an entry that counts as a default or through
 none, is steered along `cap.exit.via` instead. A steered packet goes by its
-first segment, and one whose first segment has no route is counted and answered
-as one whose destination no entry holds, from its destination into the tun.
+first segment, and one whose first segment has no route, or, along `via`, has no
+route of its own as [mode 3](#mode-3-on-linux) gives, is counted and answered as
+one whose destination no entry holds, from its destination into the tun.
 
 `ranet3 status` counts each outcome on its `Transit` line, and
 `ranet3_transit_packets_total` exports the same counts. Each drop they count,
@@ -1235,45 +1236,50 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   an endpoint name whose last lookup failed, in any state of the switch, as
   `gateway.example.org does not resolve`, and a DNS server systemd-resolved
   queries through one link beyond the LAN, read when status is, as
-  `DNS server 203.0.113.53 on eth0 lies beyond the LAN`.
+  `DNS server 203.0.113.53 on eth0 lies beyond the LAN`. With `cap.exit.via` it
+  names the path, its state and its counts, as
+  [the command line](cli.md#reading-state) gives.
 - `ranet3 debug netmon` lists each family's links outside the mesh with their
   networks and point-to-point far ends, which exit mode derives its rules from.
 - `ranet3 debug rules` lists every lookup the reconciler last asked, taken or
   not, with the source and interface of an underlay lookup and its answer, as
-  [debugging](development/debug.md#commands) gives, and under
-  `fallback = "none"` the table `ranet3_fallback` as the kernel holds it now,
-  each line with the drop's count and each set's elements.
+  [debugging](development/debug.md#commands) gives, under `cap.exit.via` the
+  steered defaults with the path's state, and under `fallback = "none"` the
+  table `ranet3_fallback` as the kernel holds it now, each line with the drop's
+  count and each set's elements.
 
 `SIGUSR1` writes the mesh's routes to the log, this node's own entries as
 `via this node` and the holds as `via unreachable`.
 
-| Log line                                                                                                                                                     | Level | When                                                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `babel neighbor up`, `babel neighbor down`                                                                                                                   | info  | a neighbor comes up or goes down                                                                                                             |
-| `babel route installed`                                                                                                                                      | info  | a route is selected                                                                                                                          |
-| `babel route retracted`                                                                                                                                      | info  | a route is held unreachable                                                                                                                  |
-| `kernel reconciler started`                                                                                                                                  | info  | the reconciler starts, naming where it writes                                                                                                |
-| `kernel routes reconciled`                                                                                                                                   | info  | a pass added or removed a route                                                                                                              |
-| `kernel reconciler withdrawn`                                                                                                                                | info  | shutdown or `ranet3 disable reconciler` removed the routes, addresses and rules                                                              |
-| `kernel finds an overlay prefix answered outside the mesh's table`                                                                                           | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed                                                                     |
-| `kernel finds an overlay prefix answered through the tun or by a hold again`                                                                                 | info  | an overlay prefix's lookup stopped being taken                                                                                               |
-| `kernel finds the underlay's mark answered through the tun`                                                                                                  | warn  | a send's lookup under the mark became taken, or a taken one's answer changed                                                                 |
-| `kernel finds the underlay's mark answered outside the tun again`                                                                                            | info  | a send's lookup under the mark stopped being taken                                                                                           |
-| `kernel no longer asks a lookup it found taken`                                                                                                              | info  | a taken lookup's prefix or send left the pass, or a withdrawal ended the lookups                                                             |
-| `kernel could not ask where its overlay and underlay lookups end`                                                                                            | warn  | the lookups failed, once until they answer again, and the last answers stay                                                                  |
-| `kernel can ask where its overlay and underlay lookups end again`                                                                                            | info  | the lookups answered after failing                                                                                                           |
-| `kernel leaves a link cap.exit forward matches out of the mode`                                                                                              | warn  | a `forward` entry matches the tun, `lo` or a default's link, once until it no longer                                                         |
-| `kernel no longer leaves a link cap.exit forward matched out of the mode`                                                                                    | info  | that link stopped being one of them, or stopped matching                                                                                     |
-| `kernel runs mode off's rules in a family, the tun holding no overlay address of it`                                                                         | warn  | under `cap.exit`, the tun came to hold no overlay address of the `family`                                                                    |
-| `kernel no longer counts a family as one the tun holds no overlay address of`                                                                                | info  | the tun holds one again, `cap.exit` was removed or the reconciler withdrew                                                                   |
-| `kernel's fallback table holds the host's traffic to the LAN while no exit is live`                                                                          | info  | the switch began holding, or holds again once the table reads back                                                                           |
-| `kernel's fallback table passes the host's traffic to the exit live through the tun`                                                                         | info  | an exit became live under the switch                                                                                                         |
-| `kernel's fallback table is no longer asked for`                                                                                                             | info  | a reload or a withdrawal ended the switch                                                                                                    |
-| `kernel's fallback table does not read back as written, so the host's own lookups from the uplink's addresses reach main only for its routes longer than /0` | warn  | the table stopped reading back, with `fault`, once for each fault until it does                                                              |
-| `kernel could not delete a fallback table an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted`              | warn  | a start or reload asking for no switch, or a start with no `cap.table`, failed to delete the table, with `err` and `fix`                     |
-| `kernel's first pass has not ended, so sessions are dialed before the fallback table is written`                                                             | warn  | under `fallback = "none"` the start waited `waited` for the reconciler's first pass and dials without it                                     |
-| `kernel could not read the DNS servers systemd-resolved queries through each link`                                                                           | warn  | status could not name the resolvers beyond the LAN, once until it can                                                                        |
-| `stopped reading nf_tables notifications`                                                                                                                    | warn  | a read of a table's notification socket failed, with `table` and `err`, after which another writer's change waits for the next periodic pass |
+| Log line                                                                                                                                                       | Level | When                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `babel neighbor up`, `babel neighbor down`                                                                                                                     | info  | a neighbor comes up or goes down                                                                                                                              |
+| `babel route installed`                                                                                                                                        | info  | a route is selected                                                                                                                                           |
+| `babel route retracted`                                                                                                                                        | info  | a route is held unreachable                                                                                                                                   |
+| `kernel reconciler started`                                                                                                                                    | info  | the reconciler starts, naming where it writes                                                                                                                 |
+| `kernel routes reconciled`                                                                                                                                     | info  | a pass added or removed a route                                                                                                                               |
+| `kernel reconciler withdrawn`                                                                                                                                  | info  | shutdown or `ranet3 disable reconciler` removed the routes, addresses and rules                                                                               |
+| `kernel finds an overlay prefix answered outside the mesh's table`                                                                                             | warn  | an overlay prefix's lookup became taken, or a taken one's answer changed                                                                                      |
+| `kernel finds an overlay prefix answered through the tun or by a hold again`                                                                                   | info  | an overlay prefix's lookup stopped being taken                                                                                                                |
+| `kernel finds the underlay's mark answered through the tun`                                                                                                    | warn  | a send's lookup under the mark became taken, or a taken one's answer changed                                                                                  |
+| `kernel finds the underlay's mark answered outside the tun again`                                                                                              | info  | a send's lookup under the mark stopped being taken                                                                                                            |
+| `kernel no longer asks a lookup it found taken`                                                                                                                | info  | a taken lookup's prefix or send left the pass, or a withdrawal ended the lookups                                                                              |
+| `kernel could not ask where its overlay and underlay lookups end`                                                                                              | warn  | the lookups failed, once until they answer again, and the last answers stay                                                                                   |
+| `kernel can ask where its overlay and underlay lookups end again`                                                                                              | info  | the lookups answered after failing                                                                                                                            |
+| `kernel leaves a link cap.exit forward matches out of the mode`                                                                                                | warn  | a `forward` entry matches the tun, `lo` or a default's link, once until it no longer                                                                          |
+| `kernel no longer leaves a link cap.exit forward matched out of the mode`                                                                                      | info  | that link stopped being one of them, or stopped matching                                                                                                      |
+| `kernel runs mode off's rules in a family, the tun holding no overlay address of it`                                                                           | warn  | under `cap.exit`, the tun came to hold no overlay address of the `family`                                                                                     |
+| `kernel no longer counts a family as one the tun holds no overlay address of`                                                                                  | info  | the tun holds one again, `cap.exit` was removed or the reconciler withdrew                                                                                    |
+| `kernel is withdrawing the steered defaults`                                                                                                                   | warn  | under `cap.exit.via`, a pass found a segment of the path unresolved, with `segment` and `verdict`, once until that changes                                    |
+| `kernel holds the steered defaults while every segment of cap.exit via resolves to a peer through its own /128, or for a segment after the first to this node` | info  | under `cap.exit.via`, a pass found every segment resolved, with `installed`, the families whose steered default it left in the table, once until that changes |
+| `kernel's fallback table holds the host's traffic to the LAN while no exit is live`                                                                            | info  | the switch began holding, or holds again once the table reads back                                                                                            |
+| `kernel's fallback table passes the host's traffic to the exit live through the tun`                                                                           | info  | an exit became live under the switch                                                                                                                          |
+| `kernel's fallback table is no longer asked for`                                                                                                               | info  | a reload or a withdrawal ended the switch                                                                                                                     |
+| `kernel's fallback table does not read back as written, so the host's own lookups from the uplink's addresses reach main only for its routes longer than /0`   | warn  | the table stopped reading back, with `fault`, once for each fault until it does                                                                               |
+| `kernel could not delete a fallback table an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted`                | warn  | a start or reload asking for no switch, or a start with no `cap.table`, failed to delete the table, with `err` and `fix`                                      |
+| `kernel's first pass has not ended, so sessions are dialed before the fallback table is written`                                                               | warn  | under `fallback = "none"` the start waited `waited` for the reconciler's first pass and dials without it                                                      |
+| `kernel could not read the DNS servers systemd-resolved queries through each link`                                                                             | warn  | status could not name the resolvers beyond the LAN, once until it can                                                                                         |
+| `stopped reading nf_tables notifications`                                                                                                                      | warn  | a read of a table's notification socket failed, with `table` and `err`, after which another writer's change waits for the next periodic pass                  |
 
 The 2 route lines share 1 limit of 1 line per second. Each carries
 `changes_since_last`, the number of changes since the last line. A lookup's
@@ -1286,10 +1292,11 @@ changed the kernel, met a newly refused route, failed or followed a reload, and
 a withdrawal only when it fails, `kernel.taken` each line that names a lookup,
 `kernel.forward` each line about a skipped link, with its `entry`, `link`,
 `reason` and `skipped`, `kernel.exit` each line about a family the tun holds no
-overlay address of, with its `family` and `addressed`, and `kernel.fallback`
-each change of the switch's state, with `state` and `was`, each `holding`,
-`passing`, `not holding` or `off`, as [debugging](development/debug.md#events)
-says.
+overlay address of, with its `family` and `addressed`, `kernel.fallback` each
+change of the switch's state, with `state` and `was`, each `holding`, `passing`,
+`not holding` or `off`, and `kernel.path` each line about the path, with
+`state`, `segment`, `verdict` and `installed`, as
+[debugging](development/debug.md#events) says.
 
 | Metric                                 | Meaning                                                                                    |
 | -------------------------------------- | ------------------------------------------------------------------------------------------ |

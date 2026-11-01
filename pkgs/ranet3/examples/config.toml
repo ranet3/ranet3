@@ -74,10 +74,11 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # tun = "ranet0"
 
 # The largest packet a session carries inside ESP. The device runs at this
-# less the longest cap.segment steer list below, since a steered packet carries
-# its segment list inside the tunnel. Omitted it is 1400, which a 1500 byte
-# path carries over IPv4 and IPv6 alike. A value under 1280 plus that list, or
-# past 65470, the most one ESP-in-UDP datagram carries over IPv4, is refused.
+# less the longest cap.segment steer list below or cap.exit via path, since a
+# steered packet carries its segment list inside the tunnel. Omitted it is
+# 1400, which a 1500 byte path carries over IPv4 and IPv6 alike. A value under
+# 1280 plus that list, or past 65470, the most one ESP-in-UDP datagram carries
+# over IPv4, is refused.
 # mtu = 1400
 
 # Keep the one UDP socket carrying IKE and ESP out of the reach of the routes
@@ -211,11 +212,13 @@ update = "16s"
 # The third is an egress segment, an End.DT46 whose inner packet leaves through
 # the mesh tun and out of this node's uplink under cap.egress's source
 # translation, so a leaf picks this exit by naming its SID. allow is required:
-# a packet passes only when its outer and its inner source are both inside it,
-# so the exit is no open proxy. It needs cap.egress, which may advertise
-# nothing, and cap.border below with allow inside its overlay. The node
-# announces the SID's /128 itself while the exit is ready, so cap.route does
-# not. linux only.
+# a packet passes only when its outer source is inside an entry that lies
+# inside cap.border's overlay and its inner source is inside any entry, so the
+# exit is no open proxy. An entry outside the overlay, such as a LAN behind a
+# subnet router, admits inner sources alone. It needs cap.egress, which may
+# advertise nothing, and cap.border below with an overlay that admits allow, as
+# the segment routing page's "Egress segments" gives. The node announces the
+# SID's /128 itself while the exit is ready, so cap.route does not. linux only.
 # local = [
 #   { sid = "3fff:b:0:106::1", behavior = "End.DT46" },
 #   { sid = "3fff:b:0:106::2", behavior = "End" },
@@ -351,8 +354,8 @@ update = "16s"
 # derived: the tun and lo. The entry chain, which lets into the tun only a
 # reply, an owned source, an IPv6 link-local or multicast destination or what a
 # none class takes, runs on every linux node without this block. A local
-# segment needs it, with an IPv6 prefix in overlay, an egress segment every
-# allow entry inside overlay as well, and a none class under cap.egress
+# segment needs it, with an IPv6 prefix in overlay, an egress segment an
+# overlay that admits its allow list as well, and a none class under cap.egress
 # translate. A prefix cap.egress advertises, a default aside, may not overlap
 # overlay. linux only, refused by name elsewhere.
 # [cap.border]

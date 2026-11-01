@@ -157,6 +157,11 @@ unless run as root.
   - A SYN arriving through a session between 2 nodes on loopback reaches the tun
     with its MSS lowered.
   - A reload moves the tun's MTU.
+  - `TestTUNStatusCountsTheReadsThePathAloneTook` sends one datagram toward the
+    internet, which `cap.exit.via`'s path steers, and one toward a
+    `cap.segment.steer` entry's prefix, each finding no route to its first
+    segment, and checks that status carries the path's own count of 1 steered
+    and 1 unrouted apart from the totals.
   - A TCP stream keeps flowing through a session whose path drops IPv4 packets
     past 1400 bytes, and later past 1360, without an answer, as the search finds
     each.

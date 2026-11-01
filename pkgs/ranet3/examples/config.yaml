@@ -44,7 +44,8 @@ link:
   # listen: true
   # tun: ranet0
   # The largest packet a session carries inside ESP, 1400 when omitted. The
-  # device runs at this less the longest cap.segment steer list.
+  # device runs at this less the longest cap.segment steer list or cap.exit via
+  # path.
   # mtu: 1400
   # Keep the one socket carrying IKE and ESP out of the reach of the routes the
   # mesh installs. On linux every underlay socket carries the mark 0x72,

@@ -40,16 +40,20 @@ on with `cap.transit` off too. It takes no table. The spelling is the one
 unchanged.
 
 Other nodes reach a SID through the mesh, so this node announces a prefix
-covering it under `cap.route`. A SID may not be an address `cap.table` assigns
-to the tun, `assign_announced` included. The daemon refuses that at load,
-because every packet to that address would be taken as a segment.
+covering it under `cap.route`, and an `End` SID's own `/128` where another
+node's `cap.exit.via` names it, as
+[the configuration reference](configuration-reference.md#capexit) gives. A SID
+may not be an address `cap.table` assigns to the tun, `assign_announced`
+included. The daemon refuses that at load, because every packet to that address
+would be taken as a segment.
 
 Every SID acts only on a packet whose outer source lies in the IPv6 prefixes of
 `cap.border.overlay`, the per-node list of RFC 8754 section 5.1, and an
-[egress segment](#egress-segments) only on one whose outer source lies in its
-`allow` list too. Any other counts as refused, before its header is read, and is
-never answered. [The border filter](border-filter.md) drops a source inside the
-overlay arriving from outside the mesh, but for the rest of a
+[egress segment](#egress-segments) only on one whose outer source lies in an
+entry of its `allow` list inside the overlay too. Any other counts as refused,
+before its header is read, and is never answered.
+[The border filter](border-filter.md) drops a source inside the overlay arriving
+from outside the mesh, but for the rest of a
 [carve-out](border-filter.md#carve-outs), less the mesh's prefixes inside it, on
 that carve-out's own link. [The entry chain](border-filter.md#the-entry-chain)
 and the [tun read](routing.md#transit) keep that rest out of the mesh as a
@@ -273,10 +277,12 @@ the waypoint, within the ICMP rate limits below and the checks
 A packet a policy claims and this node cannot send is not sent by the ordinary
 route, which would put it out of another exit under a source that exit does not
 announce, a wrong path, not a degraded one. One too large to encapsulate is
-dropped, and one whose first segment has no route is answered as one whose
-destination no entry holds, as [routing](routing.md#transit) gives, from its
-destination into the tun, within the ICMP rate limits. `status` and the scrape
-count the 2 reasons apart, and `cap.exit.via`'s own counts beside the totals.
+dropped, and one whose first segment has no route, or, along `cap.exit.via`, has
+no route of its own, is answered as one whose destination no entry holds, as
+[routing](routing.md#transit) gives, from its destination into the tun, within
+the ICMP rate limits. `status` and the scrape count the 2 reasons apart, and
+status's Kernel line alone carries `cap.exit.via`'s own steered and unrouted
+counts beside the totals, as [the command line](cli.md#reading-state) gives.
 Neither counts against the segments this node answers for, because neither is
 anything a peer did.
 
@@ -384,11 +390,14 @@ refused and not ready counts once it is above 0. Refused is a packet a SID
 refused, counted among the dropped and never answered: an outer source outside
 the overlay at any SID, or at an egress segment one of the reasons below. The
 Steering line lists the entries with the steered count, and the count for each
-reason a steered packet was lost once it is above 0. `ranet3 debug segments`
-shows each segment and policy field by field, `ranet3 debug route --peer`
-whether a segment admits the source of a packet arriving through a session, and
-`ranet3 debug trace` what the packets a segment acts on meet, as
-[debugging](development/debug.md) describes.
+reason a steered packet was lost once it is above 0. Those counts are the
+totals, `cap.exit.via`'s path among them, and a node whose one policy is that
+path reads `off` there, its Kernel line carrying the path's own counts, as
+[the command line](cli.md#reading-state) gives. `ranet3 debug segments` shows
+each segment and each `cap.segment.steer` policy field by field,
+`ranet3 debug route --peer` whether a segment admits the source of a packet
+arriving through a session, and `ranet3 debug trace` what the packets a segment
+acts on meet, as [debugging](development/debug.md) describes.
 
 An egress segment's packets are counted 3 ways. Egressed is a packet handed to
 the exit. Refused is a packet whose outer source is outside every entry of the

@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-10-31
+updated: 2026-11-01
 order: 50
 ---
 
@@ -711,10 +711,11 @@ allow = ["203.0.113.0/25", "3fff:a::/64"]
 
 An egress segment needs [the border filter](border-filter.md). The daemon
 refuses a file with an egress segment and no `cap.border`, or with an `allow`
-entry outside the filter's `overlay` and no IPv6 entry inside it. The outer
-source passes only through an entry inside the overlay, which a host on a link
-of a forwarding node cannot forge past the filter, and an entry outside it
-admits inner sources alone.
+list the filter's `overlay` cannot admit, as
+[segment routing](segment-routing.md#egress-segments) gives. The outer source
+passes only through an entry inside the overlay, which a host on a link of a
+forwarding node cannot forge past the filter, and an entry outside it admits
+inner sources alone.
 
 An egress segment needs no `cap.table`, though its replies need a route back
 into the tun, such as the one `cap.table` gives by the rules of
