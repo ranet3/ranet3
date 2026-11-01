@@ -74,29 +74,31 @@ unless run as root.
   set counts under another share, and the ninth reports another writer's nat
   chains at the translator's priority or below and not one above it. The tenth
   takes the address a class translates to off `lo` in each family and reads that
-  family alone not ready, with the address named, until it is back. Six round
-  trip the border filter's table, both chains and its sets. One puts it back on
-  the pass another writer wakes by deleting the table, adding a rule or setting
-  the table dormant, and leaves no table behind. One writes it back after
-  another writer adds a rule to it, sets its table dormant, turns a policy to
-  drop, makes a chain again at another priority or as a regular chain, or makes
-  the table again with a flag nf_tables will not clear in place, the last 3 by
-  deleting and making the table again. One refills a set another writer flushed,
-  or a chain it emptied, on the pass that change wakes, one holds chain
-  `mesh_entry` alone with no `cap.border`, and one kills the filter's process
-  with `SIGKILL` and finds the table still there with every rule and element,
-  which the next start takes over without a write. That process is the test
-  binary run again as `TestBorderCrashHelper`, which joins the test's namespace
-  by its path and skips when run any other way. The last of the 6 moves a `none`
-  set by one LAN at 10, 1,000 and 10,000 LANs held, and reads at most 6 element
-  notifications for each pass. The other 3 read the translator's rules for
-  debug. One sends a datagram from the mesh address out of the uplink and finds
-  its rule's counter moved while the last pass still counts none. One reads from
-  2 readers at once while one pass follows another, each read and each pass with
-  no error. One reads on while the exit stops, and each read answers the rules
-  or the error a stopped exit answers, which names no descriptor its close
-  released. It also runs the [exit behavior suite](#the-exit-behavior-suite)
-  against the kernel exit.
+  family alone not ready, with the address named, until it is back. Seven round
+  trip the antispoof filter's table, both chains and its sets, one with an
+  exemption of each kind. One puts it back on the pass another writer wakes by
+  deleting the table, adding a rule or setting the table dormant, and leaves no
+  table behind. One writes it back after another writer adds a rule to it, sets
+  its table dormant, turns a policy to drop, makes a chain again at another
+  priority or as a regular chain, or makes the table again with a flag nf_tables
+  will not clear in place, the last 3 by deleting and making the table again.
+  One refills a set another writer flushed, or a chain it emptied, on the pass
+  that change wakes, one holds chain `mesh_entry` alone with no `overlay`, one
+  starts over a table holding a chain the filter does not write and finds the
+  table made again without that chain, with and without `overlay`, and one kills
+  the filter's process with `SIGKILL` and finds the table still there with every
+  rule and element, which the next start takes over without a write. That
+  process is the test binary run again as `TestBorderCrashHelper`, which joins
+  the test's namespace by its path and skips when run any other way. The last of
+  the 7 moves a `none` set by one LAN at 10, 1,000 and 10,000 LANs held, and
+  reads at most 6 element notifications for each pass. The other 3 read the
+  translator's rules for debug. One sends a datagram from the mesh address out
+  of the uplink and finds its rule's counter moved while the last pass still
+  counts none. One reads from 2 readers at once while one pass follows another,
+  each read and each pass with no error. One reads on while the exit stops, and
+  each read answers the rules or the error a stopped exit answers, which names
+  no descriptor its close released. It also runs the
+  [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
 - `internal/nftables` has 5 that write into a real packet filter. One checks
   that each expression the encoder writes acts on the host's own datagrams on
   loopback as its line says, an interval set's lookup, the mark, the device
@@ -188,7 +190,7 @@ unless run as root.
     the uplink about a leaf's egressed flow reaches the leaf through the tun as
     the flow's reply.
   - `TestTUNExitTranslatesEachClassUnderTheDerivedRules` runs an exit with the
-    egress segment, border and table of the one above, advertising no default
+    egress segment, overlay and table of the one above, advertising no default
     but a LAN of each family under `return`, on a link of its own to a host in a
     namespace of its own, with a class of `none` and a class of an address in
     each family and a mesh address of each family, under the derived rules of
@@ -212,16 +214,16 @@ unless run as root.
     the announcement carries its default, and that a family the readiness takes
     away stops before the announcement is rebuilt.
   - `TestTUNBorderDropsAForgedSourceAtTheUplink` runs an exit node with
-    `cap.border` and a far host behind a veth pair. A packet from beyond the
-    uplink with a source outside the overlay crosses the mesh tun, while one
-    with a source inside it never crosses it and is counted. A type 4 routing
-    header, alone or behind one of type 0 or 2, crosses the border and is
-    dropped and counted by the tun read, and a packet to the local SID never
-    reaches the tun. A packet to another node's SID from outside the overlay
-    crosses the tun and is refused at that SID. The mesh's own packets leave
-    through the tun, a packet the exit sends to its own mesh address arrives
-    through lo, nothing crosses once the border is withdrawn and forwarding is
-    off, and no table is left behind.
+    `overlay` and a far host behind a veth pair. A packet from beyond the uplink
+    with a source outside the overlay crosses the mesh tun, while one with a
+    source inside it never crosses it and is counted. A type 4 routing header,
+    alone or behind one of type 0 or 2, crosses the filter and is dropped and
+    counted by the tun read, and a packet to the local SID never reaches the
+    tun. A packet to another node's SID from outside the overlay crosses the tun
+    and is refused at that SID. The mesh's own packets leave through the tun, a
+    packet the exit sends to its own mesh address arrives through lo, nothing
+    crosses once the filter is withdrawn and forwarding is off, and no table is
+    left behind.
   - `TestTUNBorderKeepsAnOverlappingUplink` runs a leaf whose uplink holds a
     lease as wide as the overlay in both families, with a mesh peer and a held
     prefix inside it. The gateway and a neighbor on the link answer the host,
@@ -236,6 +238,26 @@ unless run as root.
     PPPoE peer's can be. The mesh's table throws the gateway's host prefix, the
     gateway's datagram reaches the host's socket, and one forged from another
     address of the overlay does not and is counted as an overlay source.
+  - `TestTUNAntispoofExemptsFromTheInterfacesItNames` runs a leaf with an uplink
+    and a second link named `carx`, outside the mesh, and a mesh prefix inside
+    each exemption that the mesh's table routes to a peer. With no
+    `cap.antispoof` no overlay source reaches the host's socket from either
+    link. With a shared exemption, one for the uplink's name and one for `car*`,
+    the shared one passes from both, the uplink's from the uplink alone and the
+    wildcard's from `carx` alone, while the mesh prefixes are dropped as carved
+    from both and the rest of the overlay as overlay sources.
+  - `TestTUNAntispoofGatewayExemptsItsSiteAndNoOtherNode` runs the same leaf as
+    [a gateway's site](../antispoof.md#a-gateways-site), announcing
+    `192.0.2.0/25` and exempting it under `carx`. A site source passes from
+    `carx` and is dropped from the uplink, and the leaf's own address and a
+    peer's prefix inside the range are dropped as carved, the prefix recorded
+    once as `antispoof.conflict` though another pass finds it again. A more
+    specific prefix the peer comes to hold is carved on the pass its route
+    wakes.
+  - `TestTUNAntispoofExemptingTheOverlayKeepsTheCarvedDrops` exempts the whole
+    overlay from every interface on the same leaf: every overlay source the
+    mesh's table holds no prefix for reaches the socket from both links in both
+    families, and the mesh prefixes are still dropped as carved.
   - The `TestTUNEntry` labs run `mesh_entry` in both families with real sockets.
     At a forwarding host in mode off a stranger's and an unannounced LAN host's
     datagrams stay out of the tun, a container masqueraded at `srcnat` and the
@@ -395,7 +417,7 @@ unless run as root.
     [mode 3](../routing.md#mode-3-on-linux) with `fallback` unwritten, the
     path's SID resolved with the steered defaults installed, held with both
     withdrawn, after the crash helper wrote it, and after the lab's own node
-    wrote it and stopped for the mesh's failure as above, the leaf's border
+    wrote it and stopped for the mesh's failure as above, the leaf's antispoof
     filter running while its node does. Every socket kind, the forwarded links,
     a listed service and an M2 route chain go where they go in mode 2 under the
     switch, but for what a socket bound to the uplink's address sends to a mesh
@@ -701,7 +723,7 @@ Property tests build on Linux and macOS alone. `internal/pbt` and every property
 test carry a build constraint that names them. The `transport` properties of its
 sends and of the source a socket connected to 1 peer binds, the
 `internal/kernel` netlink and rule message properties, the
-`internal/egress/kernel` nftables and border chain properties and the
+`internal/egress/kernel` nftables and antispoof chain properties and the
 `internal/nftables` properties build on Linux alone, and the `transport`
 property of the address an answer leaves from builds on macOS alone. The
 `go-lint` check vets the tree for FreeBSD, which fails on a property test
@@ -760,12 +782,12 @@ no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
 and the 3 of a session's fallback from its address.
 
 A real kernel takes the `nf_tables` encoding in the `netlink` check and in every
-integration check that sets `cap.egress` or `cap.border`. Elsewhere the encoding
+integration check that sets `cap.egress` or `overlay`. Elsewhere the encoding
 meets only the decoder written beside it.
 `internal/egress/kernel/testdata/messages.golden` holds the kind, flags and body
-of every request in the transactions the translator and the border filter write,
-in the order each transaction sends them. It holds neither the dumps the
-translator and the border filter read with, nor the netlink header, sequence
+of every request in the transactions the translator and the antispoof filter
+write, in the order each transaction sends them. It holds neither the dumps the
+translator and the antispoof filter read with, nor the netlink header, sequence
 numbers, batch markers and acknowledgment flag that sending adds.
 `go test ./internal/egress/kernel -update` rewrites it on Linux.
 
@@ -927,12 +949,12 @@ is an inner packet for a destination the mesh routes, which the gateway never
 gets back through the mesh. Turning IPv6 forwarding off keeps the SID, since a
 family the host does not forward is not waited for. A stop removes the tables. A
 host on the client's link outside the mesh sends from mesh sources, which the
-client's border drops and counts as `overlay_source` in both families, a type 4
-routing header to a segment the mesh routes, which `mesh_entry` drops before the
-tun read sees it, at least 3 more in `mesh_entry_ipv6`, and packets to the
-client's own SID, which meet the mirror's hold. The tun read's `routing_header`
-and `sid` counts stay as they were, nothing reaches the gateway, nothing is
-egressed or refused, and `ranet3_border_ready` reads 1.
+client's antispoof filter drops and counts as `overlay_source` in both families,
+a type 4 routing header to a segment the mesh routes, which `mesh_entry` drops
+before the tun read sees it, at least 3 more in `mesh_entry_ipv6`, and packets
+to the client's own SID, which meet the mirror's hold. The tun read's
+`routing_header` and `sid` counts stay as they were, nothing reaches the
+gateway, nothing is egressed or refused, and `ranet3_antispoof_ready` reads 1.
 
 `integration-segments` steers 1 destination through a segment routing header
 (RFC 8754). The gateway's own kernel removes the header with End.DT6, and a
@@ -948,12 +970,12 @@ the segment rather than the route it learns.
 
 `integration-docker`, `integration-tailscale` and `integration-k3s` each run
 another program's own daemon on the client beside ranet3, at the version the
-flake's nixpkgs pins, with `cap.table` and `cap.border.overlay` set. Once the
-program is up, after its service restarts and after ranet3 restarts, each check
-asserts that the client reaches the gateway's tunnel addresses in both families.
-After 2 more passes of the reconciler, `ranet3 debug rules --json` misses no
-derived rule and reads every lookup not taken, `ranet3 status` reports none
-taken, and the scrape carries `ranet3_kernel_overlay_taken` and
+flake's nixpkgs pins, with `cap.table` and `overlay` set. Once the program is
+up, after its service restarts and after ranet3 restarts, each check asserts
+that the client reaches the gateway's tunnel addresses in both families. After 2
+more passes of the reconciler, `ranet3 debug rules --json` misses no derived
+rule and reads every lookup not taken, `ranet3 status` reports none taken, and
+the scrape carries `ranet3_kernel_overlay_taken` and
 `ranet3_kernel_underlay_taken` at 0 for each family the lookups asked in. The
 unit's journal shows no pass that could not ask its lookups without a later one
 that could. When the mesh does not reach, the check reads the rules view, the

@@ -5,7 +5,7 @@
 title: "Getting started"
 description: "Building the binary, the binary cache, and running a node by hand."
 created: 2026-08-17
-updated: 2026-10-26
+updated: 2026-11-01
 order: 20
 ---
 
@@ -75,18 +75,18 @@ With `cap.table`, the node installs its routes itself. It assigns the addresses
 `cap.table.addresses` lists, and with `cap.table.assign_announced` the prefixes
 it announces, but for one written with its family's unspecified address, such as
 a default. On Linux the routes go into table `cap.table.id`, 200 unless set. The
-node writes the policy rules the host reads that table through itself.
-`cap.border.overlay`, Linux only, names the prefixes the mesh numbers its nodes
-from, and a lookup bound to no device for one of their addresses then ends as
-rows L1 to L5 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)
-give:
+node writes the policy rules the host reads that table through itself. The
+top-level `overlay` names the prefixes the mesh numbers its nodes from. On Linux
+a lookup bound to no device for one of their addresses then ends as rows L1 to
+L5 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give, and
+[the antispoof filter](antispoof.md) drops such a source arriving from outside
+the mesh. TOML takes it above the first table:
 
 ```toml
+overlay = ["203.0.113.0/24"]
+
 [cap.table]
 addresses = ["203.0.113.10/32"]
-
-[cap.border]
-overlay = ["203.0.113.0/24"]
 ```
 
 The line then names where the node reconciles, such as `table 200 protocol 155`

@@ -58,8 +58,9 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `cap.crypto.ike`, `cap.crypto.esp` and every key under them          | applied                                  | To each exchange after it. An SA holding a transform they leave out is rekeyed or replaced, as [`cap.crypto`](#capcrypto) says.                                                                                                                                                                                                             |
 | `cap.crypto.replay`, `cap.crypto.rekey` and every key under it       | refused when its effective value changes |                                                                                                                                                                                                                                                                                                                                             |
 | `cap.egress`, written, removed, or any key under it                  | refused when its effective value changes | A new order of `advertise` or `translate`, a class of `auto` from `0.0.0.0/0` or `::/0`, and `flows_per_source` or `sweep` written as its default are no change.                                                                                                                                                                            |
-| `cap.border`, written or removed                                     | refused                                  |                                                                                                                                                                                                                                                                                                                                             |
-| `cap.border.overlay`                                                 | applied                                  | The filter rewrites its chain on the pass the reload wakes, and the forwarding decision answers by the new overlay at once, every route judged again for whether it counts as a default. With `cap.table`, the reconciler's pass moves its rules at 5110 and its holds of the overlay. A new order is no change.                            |
+| `overlay`, written or removed                                        | refused                                  |                                                                                                                                                                                                                                                                                                                                             |
+| `overlay`, changed                                                   | applied                                  | [The filter](antispoof.md#reloads) takes it in place, and the forwarding decision answers by the new overlay at once, every route judged again for whether it counts as a default. With `cap.table`, the reconciler's pass moves its rules at 5110 and its holds of the overlay. A new order is no change.                                  |
+| `cap.antispoof` and every key under it                               | applied                                  | [The antispoof filter](antispoof.md#reloads) takes it in place.                                                                                                                                                                                                                                                                             |
 | `cap.exit`, written, removed, or `forward`                           | applied                                  | The reconciler's next pass adds or removes [exit mode's](routing.md#exit-mode-on-linux) rules, with no restart. Refused on an exit, off Linux, and where `forward` names the tun or a default's link. A new order of `forward` is no change.                                                                                                |
 | `cap.exit.fallback`, `cap.exit.inbound`, `cap.exit.lan`              | applied                                  | The reconciler's next pass writes or deletes [the kill switch's](routing.md#the-kill-switch-on-linux) rules and table, or rewrites the table's sets, in one pass. A reload to `"uplink"` or without `cap.exit` withdraws the switch. A new order or spelling of `inbound` that lists the same ports, or a new order of `lan`, is no change. |
 | `cap.exit.via`, written, changed or removed                          | applied                                  | The dataplane swaps its steering table and moves the tun's MTU by the path's overhead, and the reconciler's next pass installs or withdraws [mode 3's](routing.md#mode-3-on-linux) steered defaults and, with `fallback` unwritten, the kill switch. Nothing restarts.                                                                      |
@@ -116,9 +117,9 @@ A reload hands a changed `cap.table` to the running reconciler. It takes a new
 expands into, `reconcile` and `capture_grace`. The reconciler checks the block
 as it would at startup and runs a pass at once. From then on the periodic pass
 runs every `reconcile`, and an announced default outlives the last live session
-by `capture_grace`. A reload that moves `cap.border.overlay` hands the
-reconciler the new overlay with its block too, and its pass judges again which
-routes [count as a default](routing.md#routes-that-count-as-a-default).
+by `capture_grace`. A reload that moves `overlay` hands the reconciler the new
+overlay with its block too, and its pass judges again which routes
+[count as a default](routing.md#routes-that-count-as-a-default).
 
 A reload also hands the reconciler the prefixes `cap.route` announces, with its
 block, whenever they start or stop making this node an
@@ -295,15 +296,14 @@ this end's own rekey or replacement of it.
 
 A reload is recorded as a `daemon.reload` event that names the file in `path`.
 Its `applied` lists the blocks the reload changed among `auth.aliases.local`,
-`auth.aliases.remote`, `cap.babel`, `cap.border`, `cap.crypto.esp.cipher`,
+`auth.aliases.remote`, `cap.antispoof`, `cap.babel`, `cap.crypto.esp.cipher`,
 `cap.crypto.ike.cipher`, `cap.crypto.ike.kex`, `cap.crypto.ike.prf`, `cap.exit`,
-`cap.route`, `cap.segment`, `cap.table`, `link.listen` and `link.mtu`, comma
-separated, such as `applied=cap.table` for one that changed the table. A reload
-that changed only the trust document or the peers dialed carries no `applied`. A
-refused reload carries `err` instead. `cap.route` is listed when `announce`
-changed, and `cap.border` when its `overlay` did. `cap.transit` is never listed,
-since a reload that would change it is refused, and writing out the value in
-force changes nothing.
+`cap.route`, `cap.segment`, `cap.table`, `link.listen`, `link.mtu` and
+`overlay`, comma separated, such as `applied=cap.table` for one that changed the
+table. A reload that changed only the trust document or the peers dialed carries
+no `applied`. A refused reload carries `err` instead. `cap.route` is listed when
+`announce` changed. `cap.transit` is never listed, since a reload that would
+change it is refused, and writing out the value in force changes nothing.
 
 The speaker records a `babel.config.applied` with the intervals and the cost it
 took, and a `babel.neighbor.extra` for each neighbor whose amount the reload
@@ -345,21 +345,21 @@ created under the families it translated at startup, the advertised ones and
 both beside an egress segment. A new block applied here would leave the host
 holding rules from a configuration nothing is running.
 
-`cap.border` appearing or going is refused with
-`config: cap.border added, restart to apply` or
-`config: cap.border removed, restart to apply`, since the filter and its pass
-are built once at startup, as the translator is. Its `overlay` list reloads in
-place: the reload hands it to the running filter, which rewrites its chain on
-the pass the reload wakes. The reload also hands the new overlay to the
-[forwarding decision](routing.md#transit) at once, which answers an IPv4
-destination no route holds Host Unreachable inside it and Network Unreachable
-outside it. In the same step the decision judges again, for every route the mesh
-holds, whether it
+`overlay` appearing or going is refused with
+`config: overlay added, restart to apply` or
+`config: overlay removed, restart to apply`, since the antispoof filter and its
+pass are built once at startup, as the translator is. A changed `overlay` list
+and `cap.antispoof` reload in place, as
+[the antispoof filter](antispoof.md#reloads) gives. The reload also hands the
+new overlay to the [forwarding decision](routing.md#transit) at once, which
+answers an IPv4 destination no route holds Host Unreachable inside it and
+Network Unreachable outside it. In the same step the decision judges again, for
+every route the mesh holds, whether it
 [counts as a default](routing.md#routes-that-count-as-a-default), which decides
 where an exit [carries a packet out](exit-nodes.md#what-an-exit-carries-out). A
-reload of a node that runs no entry chain, whose host forwards and whose file
-writes no `cap.border`, logs the warning
-[the border filter](border-filter.md#nodes-that-forward-without-it) describes.
+reload of a node that runs no antispoof filter and whose host forwards logs the
+warning [the antispoof filter](antispoof.md#nodes-that-forward-without-it)
+describes.
 
 The daemon reads this node's global unicast and private mesh addresses of each
 family `cap.egress` translates once at startup, among the host prefixes
@@ -393,7 +393,7 @@ an unknown key is refused whole. The checks across blocks run again:
 - the longest `cap.segment` steer list or `cap.exit.via` path must leave the tun
   at 1280 bytes or more
 - a `cap.segment` steer `to` must not count as a default, and `cap.exit.via`
-  needs an IPv6 prefix in `cap.border.overlay` and an outer source inside it, as
+  needs an IPv6 prefix in `overlay` and an outer source inside it, as
   [the configuration reference](configuration-reference.md#capexit) lists with
   its other refusals
 - a `cap.segment.local` SID must not be an address `cap.table` assigns to the
@@ -402,8 +402,8 @@ an unknown key is refused whole. The checks across blocks run again:
   which it would announce whether or not the translation rule is installed
 - an egress segment needs `cap.egress`, and `cap.route` must not announce its
   SID's `/128`
-- an egress segment needs `cap.border` and an `allow` list its `overlay` admits,
-  as [egress segments](segment-routing.md#egress-segments) gives, and a
+- an egress segment needs `overlay` and an `allow` list it admits, as
+  [egress segments](segment-routing.md#egress-segments) gives, and a
   `cap.egress.advertise` entry longer than 0 bits must not overlap the `overlay`
 - `auth.aliases.local` needs at most 1 `link.endpoints` entry in each family,
   and its `keyid` values must not spell an endpoint of another node, as

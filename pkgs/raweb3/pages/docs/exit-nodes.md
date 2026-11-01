@@ -203,13 +203,12 @@ at 99 made after it, still translates it, as
 [sharing a host](coexistence.md#the-packet-filter) describes.
 
 On Linux, a connection an internet host opens to an address of a `none` class
-enters the tun through the exit's
-[entry chain](border-filter.md#the-entry-chain), whose `none4` and `none6` hold
-the class's addresses. A longer class inside it that translates keeps its own
-addresses out, and so does every LAN another node advertises inside the class,
-held or not, so such an exit carries no inbound connection to another node's
-LAN. An exit that advertises a LAN itself, under a `none` class covering it,
-carries that LAN's inbound connections.
+enters the tun through the exit's [entry chain](antispoof.md#the-entry-chain),
+whose `none4` and `none6` hold the class's addresses. A longer class inside it
+that translates keeps its own addresses out, and so does every LAN another node
+advertises inside the class, held or not, so such an exit carries no inbound
+connection to another node's LAN. An exit that advertises a LAN itself, under a
+`none` class covering it, carries that LAN's inbound connections.
 
 ### An address that routes back to this exit
 
@@ -340,18 +339,17 @@ and each address of a prefix a subnet router routes into the mesh holds its own.
 Conntrack reverses the translation before the reply is routed. The reply is then
 addressed to a mesh node, and the forwarding lookup has to find a route to it
 into the tun, which with `cap.table` is in the reconciler's own table. The rules
-the reconciler derives find it there: a reply to an address inside
-`cap.border.overlay` ends as rows L3 to L5 of
+the reconciler derives find it there: a reply to an address inside `overlay`
+ends as rows L3 to L5 of
 [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give, and a reply
 to another address as rows L6 to L12 give, after main's route longer than /0. An
 exit therefore writes the overlay its members' addresses lie in:
 
 ```toml
+overlay = ["203.0.113.0/24", "3fff:a::/36"]
+
 [cap.table]
 id = 200
-
-[cap.border]
-overlay = ["203.0.113.0/24", "3fff:a::/36"]
 ```
 
 Without it, a reply to a member whose address a route of main longer than /0
@@ -411,12 +409,11 @@ the `0.0.0.0/0` and `::/0` it advertises, is egress. The
 into the tun, where the host translates it and forwards it out of its uplink,
 only where 3 checks pass:
 
-- A destination inside `cap.border.overlay` belongs to the mesh. One that no
-  node announces is answered as a destination no route holds, IPv6 code 0 and
-  IPv4 Host Unreachable, and never sent out of the uplink. An exit without
-  `cap.border` has no overlay, so this check passes every packet, and it sends
-  an address no node announces out of the uplink as any other destination
-  outside the mesh.
+- A destination inside `overlay` belongs to the mesh. One that no node announces
+  is answered as a destination no route holds, IPv6 code 0 and IPv4 Host
+  Unreachable, and never sent out of the uplink. An exit without `overlay`
+  passes every packet through this check, and it sends an address no node
+  announces out of the uplink as any other destination outside the mesh.
 - The mesh routes a reply to the packet's source. The decision looks the source
   up as a reply from the packet's destination is routed, so a route announced
   from a source prefix covers the source only where that prefix covers the
@@ -441,7 +438,7 @@ the first 2 checks, and past them goes to the tun with no readiness to wait on,
 since no translation of this node stands behind it. An
 [egress segment](#egress-segments)'s inner packet meets the second check after
 its `allow` list, and is then refused where its destination lies inside
-`cap.border.overlay`, announced or not, or the mesh routes it, as
+`overlay`, announced or not, or the mesh routes it, as
 [segment routing](segment-routing.md#egress-segments) describes.
 
 ## Refusing to advertise
@@ -515,9 +512,9 @@ batch through 1 netlink socket:
   carries no mark and the read address as its source. With strict reverse path
   filtering on the tun, or loose filtering on a tun with no IPv4 address, such
   an exit fails its IPv4 forward lookup first, since the kernel checks the
-  forwarded packet's source against the same route. An exit whose
-  `cap.border.overlay` leaves its members out has no member to read from, so
-  both its lookups are skipped, as the skip below says, and its replies leave as
+  forwarded packet's source against the same route. An exit whose `overlay`
+  leaves its members out has no member to read from, so both its lookups are
+  skipped, as the skip below says, and its replies leave as
   [the return path](#the-return-path) describes.
 
 An address lookup holds its family not ready when it fails or answers a route of
@@ -530,10 +527,10 @@ counts as a failed lookup.
 
 **The source** of the forward and reply lookups is a member's address: the read
 address of a prefix the mesh routes by the tun to another node, inside
-`cap.border.overlay`, overlapping none of this node's own prefixes, taking the
-lowest base address first and then the longest prefix. A correctly configured
-exit routes its members' addresses into the tun, so a lookup from one reads the
-path a real reply takes. Where `cap.table` is written, rows L4 and L5 of
+`overlay`, overlapping none of this node's own prefixes, taking the lowest base
+address first and then the longest prefix. A correctly configured exit routes
+its members' addresses into the tun, so a lookup from one reads the path a real
+reply takes. Where `cap.table` is written, rows L4 and L5 of
 [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give the end of a
 lookup to an overlay address no route of the mesh covers.
 
@@ -550,13 +547,13 @@ inside it fails and holds its family not ready.
 **The skip.** The forward and reply lookups of a family are skipped, and the
 family judged by its table, its forwarding and its classes' addresses alone,
 where the mesh routes no member of it, as before any member is learned, in a
-mesh of 1, or with no `cap.border.overlay` prefix of the family. A prefix
-holding no address the kernel takes, such as `127.0.0.0/8` or `fe80::/10`, has
-its lookup skipped as well, since the kernel forwards nothing to it either way.
-A family whose every prefix is skipped is judged as one with no member. `status`
-and the `egress.ready` event say what was skipped:
+mesh of 1, or with no `overlay` prefix of the family. A prefix holding no
+address the kernel takes, such as `127.0.0.0/8` or `fe80::/10`, has its lookup
+skipped as well, since the kernel forwards nothing to it either way. A family
+whose every prefix is skipped is judged as one with no member. `status` and the
+`egress.ready` event say what was skipped:
 
-- `lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay`
+- `lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay`
 - `lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination`
 
 **The reason** a family is not ready names the lookup, the prefix, the read
@@ -686,8 +683,8 @@ forwarding decision egresses, and the exit writes it into the tun. The kernel
 forwards it by its own routes, translated by the out rules keyed on the tun
 under its source's class. A node with an egress segment translates both
 families, whatever `advertise` holds. An inner packet whose destination lies
-inside `cap.border.overlay`, or that the mesh routes itself, to another node,
-into a hold or to this node, is refused rather than handed to the exit, as
+inside `overlay`, or that the mesh routes itself, to another node, into a hold
+or to this node, is refused rather than handed to the exit, as
 [segment routing](segment-routing.md#egress-segments) describes.
 
 An exit that serves only egress segments writes `cap.egress` with an empty
@@ -695,11 +692,10 @@ An exit that serves only egress segments writes `cap.egress` with an empty
 uses it:
 
 ```toml
+overlay = ["203.0.113.0/24", "3fff:a::/36"]
+
 [cap.egress]
 advertise = []
-
-[cap.border]
-overlay = ["203.0.113.0/24", "3fff:a::/36"]
 
 [[cap.segment.local]]
 sid = "2001:db8:0:6::3"
@@ -708,13 +704,13 @@ deliver = "egress"
 allow = ["203.0.113.0/25", "3fff:a::/64"]
 ```
 
-An egress segment needs [the border filter](border-filter.md). The daemon
-refuses a file with an egress segment and no `cap.border`, or with an `allow`
-list the filter's `overlay` cannot admit, as
+An egress segment needs `overlay`, which turns on
+[the antispoof filter](antispoof.md). The daemon refuses a file with an egress
+segment and no `overlay`, or with an `allow` list the `overlay` cannot admit, as
 [segment routing](segment-routing.md#egress-segments) gives. The outer source
-passes only through an entry inside the overlay, which a host on a link of a
-forwarding node cannot forge past the filter, and an entry outside it admits
-inner sources alone.
+passes only through an entry inside the overlay, which a host on an interface of
+a forwarding node cannot forge past the filter unless that node exempts it, and
+an entry outside it admits inner sources alone.
 
 An egress segment needs no `cap.table`, though its replies need a route back
 into the tun, such as the one `cap.table` gives by the rules of

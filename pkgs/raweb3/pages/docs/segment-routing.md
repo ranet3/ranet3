@@ -48,27 +48,30 @@ included. The daemon refuses that at load, because every packet to that address
 would be taken as a segment.
 
 Every SID acts only on a packet whose outer source lies in the IPv6 prefixes of
-`cap.border.overlay`, the per-node list of RFC 8754 section 5.1, and an
+`overlay`, the per-node list of RFC 8754 section 5.1, and an
 [egress segment](#egress-segments) only on one whose outer source lies in an
 entry of its `allow` list inside the overlay too. Any other counts as refused,
-before its header is read, and is never answered.
-[The border filter](border-filter.md) drops a source inside the overlay arriving
-from outside the mesh, but for the rest of a
-[carve-out](border-filter.md#carve-outs), less the mesh's prefixes inside it, on
-that carve-out's own link. [The entry chain](border-filter.md#the-entry-chain)
-and the [tun read](routing.md#transit) keep that rest out of the mesh as a
-source this node does not own, and a host beyond the mesh reaches no SID through
-a node with the filter, whatever the SID delivers to. On Linux a node that
-forwards without `cap.border` passes on to every SID only a forged source it
-owns, since the entry chain keeps every other out of the tun. On a platform that
-runs no entry chain such a node is only warned at load, and passes on to every
-SID a forged overlay source that no route other than a default sends to another
-node or holds unreachable, since the tun read drops the rest. A steering node's
-`source` has to lie inside the overlay too, or every SID it steers through
-refuses its packets. The loader refuses a local segment without `cap.border`,
-and one beside an overlay holding no IPv6 prefix, which would refuse every
-packet. `cap.border` is Linux only, so a node on another platform holds no local
-segment. A reload that changes the overlay rebuilds the table of SIDs in place.
+before its header is read, and is never answered. The process makes this check
+itself, on every platform. [The antispoof filter](antispoof.md) drops a source
+inside the overlay arriving from outside the mesh, but for the rest of a
+[carve-out](antispoof.md#carve-outs) on that carve-out's own interface and an
+[exemption](antispoof.md#exemptions) on the interfaces it names, less the mesh's
+prefixes inside either. [The entry chain](antispoof.md#the-entry-chain) and the
+[tun read](routing.md#transit) keep that rest out of the mesh as a source this
+node does not own, and a host beyond the mesh reaches no SID through a node with
+the filter, whatever the SID delivers to. On Linux a node that forwards without
+`overlay` passes on to every SID only a forged source it owns, since the entry
+chain keeps every other out of the tun. On a platform that runs no entry chain
+such a node is only warned at load, and passes on to every SID a forged overlay
+source that no route other than a default sends to another node or holds
+unreachable, since the tun read drops the rest. A steering node's `source` has
+to lie inside the overlay too, or every SID it steers through refuses its
+packets. The loader refuses a local segment without `overlay`, and one beside an
+overlay holding no IPv6 prefix, which would refuse every packet. Every platform
+loads `overlay`, so a node on macOS holds `End` and `End.DT46` segments that
+deliver to the mesh, checked by the outer source as on Linux, though no filter
+drops a forged overlay source there before the check. A reload that changes the
+overlay rebuilds the table of SIDs in place.
 
 A node parses a packet only when its destination is one of its SIDs. It accepts
 a reduced header, which leaves out the segment the destination address already
@@ -157,19 +160,18 @@ packet failing any of these checks counts as refused and is never answered. The
 list is required since an exit carrying any source would be an open proxy.
 
 Egress carries nothing for the mesh. Past those checks, an inner packet whose
-destination lies inside `cap.border.overlay`, or that the mesh routes itself,
-counts as refused too and is never answered: the overlay is the mesh's address
-space, whether a node announces the address or not, a destination the mesh
-routes to another node or holds is the mesh's to carry, and one of this node's
-own is the forwarding decision's to deliver. No node whose `cap.border` sets an
-overlay egresses an address inside it through its forwarding decision either.
-Where no node announces one, an exit with `cap.border` whose table selects its
-own route that counts as a default answers it as one no route holds, and a node
-whose table selects that exit's route routes it there. An exit without
-`cap.border` has no overlay, so its decision egresses an address no node
-announces as it egresses any other destination outside the mesh. The SID looks
-the destination up as the forwarding decision would, from the inner source, and
-passes over every route that
+destination lies inside `overlay`, or that the mesh routes itself, counts as
+refused too and is never answered: the overlay is the mesh's address space,
+whether a node announces the address or not, a destination the mesh routes to
+another node or holds is the mesh's to carry, and one of this node's own is the
+forwarding decision's to deliver. No node that writes `overlay` egresses an
+address inside it through its forwarding decision either. Where no node
+announces one, an exit with `overlay` whose table selects its own route that
+counts as a default answers it as one no route holds, and a node whose table
+selects that exit's route routes it there. An exit without `overlay` has its
+decision egress an address no node announces as it egresses any other
+destination outside the mesh. The SID looks the destination up as the forwarding
+decision would, from the inner source, and passes over every route that
 [counts as a default](routing.md#routes-that-count-as-a-default), so a
 destination outside the overlay that only this node's default or another exit's
 covers leaves by the uplink, where its family is
@@ -180,7 +182,7 @@ covers leaves by the uplink, where its family is
 - an IPv4 entry shorter than `/8` or an IPv6 entry shorter than `/12`
 - an entry with bits set past its length, an IPv4 address written as IPv6, or an
   entry written twice
-- an entry outside `cap.border.overlay` in a list with no IPv6 entry inside it
+- an entry outside `overlay` in a list with no IPv6 entry inside it
 
 The domain check of RFC 8754 section 5.1 holds by the outer source alone, which
 always passes through an entry inside the overlay. An entry outside it, such as
@@ -190,7 +192,7 @@ outer one, as
 [the configuration reference](configuration-reference.md#capsegmentlocal) says.
 The order of the list does not matter, and a reload reordering it changes
 nothing. `deliver = "egress"` belongs to `End.DT46` alone, and an egress segment
-needs `cap.egress` and `cap.border`. It needs no `cap.table`, though the replies
+needs `cap.egress` and `overlay`. It needs no `cap.table`, though the replies
 still take the `to` rules [the return path](exit-nodes.md#the-return-path)
 describes, and the exit is not [ready](exit-nodes.md#readiness) while a reply
 would leave by another link. The node originates the SID's `/128` itself while
@@ -212,10 +214,11 @@ route, and the kernel drops a segment routing header addressed to the host while
 ([exthdrs.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/exthdrs.c#L381)).
 A packet from outside addressed to one of this node's own SIDs never reaches the
 tun, since the mirror holds or throws this node's own `/128`, and
-[the border filter](border-filter.md) drops it where its source lies in the
-overlay outside a [carve-out](border-filter.md#carve-outs) on its link. A host
-steers with [`cap.segment.steer`](#steering), which puts the segments on inside
-the mesh, after the checks, since the checks drop the segment routing header an
+[the antispoof filter](antispoof.md) drops it where its source lies in the
+overlay outside a [carve-out](antispoof.md#carve-outs) on its interface and
+outside an [exemption](antispoof.md#exemptions). A host steers with
+[`cap.segment.steer`](#steering), which puts the segments on inside the mesh,
+after the checks, since the checks drop the segment routing header an
 `encap seg6` route on the tun writes
 ([seg6_iptunnel.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/seg6_iptunnel.c#L141)),
 as [interoperation with the Linux kernel](#interoperation-with-the-linux-kernel)
@@ -243,11 +246,11 @@ IPv6 outer header like any other.
 
 [`cap.exit.via`](routing.md#mode-3-on-linux) is one more policy at this node as
 headend, beside the entries: a read off the tun that no entry takes, whose
-destination lies outside `cap.border.overlay` and that the mesh's table answers
-through a route that counts as a default or through none, goes along `via` from
-the path's outer source. The headend cannot check another node's SIDs, since it
-keeps no list of them. That the last SID of a list is an `End.DT46` and the
-others `End` is the operator's to write, as
+destination lies outside `overlay` and that the mesh's table answers through a
+route that counts as a default or through none, goes along `via` from the path's
+outer source. The headend cannot check another node's SIDs, since it keeps no
+list of them. That the last SID of a list is an `End.DT46` and the others `End`
+is the operator's to write, as
 [RFC 8986 section 4.8](https://www.rfc-editor.org/rfc/rfc8986.html#section-4.8)
 asks. An exit drops a packet that reaches its `End.DT46` with segments left, an
 `End` last drops it with none left, and a last SID delivering to the mesh sends

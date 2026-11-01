@@ -196,15 +196,15 @@ The router-id of a family is the first address `cap.table` assigns in it that a
 prefix `cap.route` announces covers, else the first host route of it that
 `cap.route` announces. A prefix covers an address only where it has no source
 prefix and does not
-[count as a default](routing.md#routes-that-count-as-a-default) with the overlay
-`cap.border` writes, which leaves out a default, its 2 halves, a prefix shorter
-than /8 or /16 that the overlay does not cover, such as `fd00::/8` outside it,
-and a source-specific entry. An address no announced prefix covers is not a
-router-id, since the mesh does not route it back to the node and a sender's
-strict check of reverse paths would drop an answer from it. Nor is a loopback or
-link-local address, or one no answer may come from: over IPv4 one in `0.0.0.0/8`
-or `240.0.0.0/4`, and over IPv6 an IPv4 address mapped into it. A network's base
-address is not one either. Over IPv4 it names no host
+[count as a default](routing.md#routes-that-count-as-a-default) with the
+`overlay` the file writes, which leaves out a default, its 2 halves, a prefix
+shorter than /8 or /16 that the overlay does not cover, such as `fd00::/8`
+outside it, and a source-specific entry. An address no announced prefix covers
+is not a router-id, since the mesh does not route it back to the node and a
+sender's strict check of reverse paths would drop an answer from it. Nor is a
+loopback or link-local address, or one no answer may come from: over IPv4 one in
+`0.0.0.0/8` or `240.0.0.0/4`, and over IPv6 an IPv4 address mapped into it. A
+network's base address is not one either. Over IPv4 it names no host
 ([RFC 1812 section 4.2.2.11](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.2.2.11)),
 and over IPv6 it is the Subnet-Router anycast address
 ([RFC 4291 section 2.6.1](https://www.rfc-editor.org/rfc/rfc4291.html#section-2.6.1)).

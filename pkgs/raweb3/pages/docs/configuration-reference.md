@@ -50,15 +50,56 @@ nest the same names. A key not listed here is refused when the file loads.
 
 ## Top level
 
-| Key    | Value | Default  | Meaning                                   |
-| ------ | ----- | -------- | ----------------------------------------- |
-| `node` | name  | required | This node, as the trust document names it |
+| Key       | Value            | Default  | Meaning                                      |
+| --------- | ---------------- | -------- | -------------------------------------------- |
+| `node`    | name             | required | This node, as the trust document names it    |
+| `overlay` | list of prefixes | none     | The prefixes the mesh numbers its nodes from |
 
 - `node` names a node. An endpoint name is refused. This node's endpoints are
   `link.endpoints`.
 - At startup and on every reload, the trust document must name the node. The
   public half of `auth.key` must be the key of the organization block that lists
   the node.
+- `overlay` is a top-level key, so TOML writes it above the first table. Every
+  platform loads it. Written, it turns on [the antispoof filter](antispoof.md),
+  which [`cap.antispoof`](#capantispoof) only exempts from.
+- An empty `overlay` is refused, since the filter would pass every forged mesh
+  source.
+- An `overlay` entry of length 0, an IPv4 entry shorter than `/8`, an IPv6 entry
+  shorter than `/12`, an entry with bits set below its length, an IPv4 address
+  written as IPv6 and an entry written twice are refused. The order does not
+  matter.
+- Every node of the mesh writes the same `overlay`, which covers every exit's
+  `allow` entry that admits an outer source.
+- On an exit, `overlay` enables the kernel lookups of its
+  [readiness](exit-nodes.md#readiness), which read from a member's address
+  inside it. A family with no prefix in it skips them.
+- On an exit, `overlay` also keeps an address inside it off the uplink, as
+  [exit nodes](exit-nodes.md#what-an-exit-carries-out) describe: the forwarding
+  decision egresses none, and an egress segment refuses one. An exit without
+  `overlay` sends an address no node announces out of its uplink as any other
+  destination outside the mesh.
+- With `cap.table` on Linux, each `overlay` prefix gets a policy rule at 5110
+  that reads the mesh's table for its destinations and, unless it holds its
+  family's unspecified address or the mesh cannot carry it, an unreachable hold
+  in that table. A lookup bound to no device for an overlay address then ends as
+  rows L1 to L5 of
+  [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give. A link's
+  network inside a prefix is thrown in place of the hold, as
+  [carve-outs](antispoof.md#carve-outs) describe. macOS installs neither, as
+  [platforms](antispoof.md#platforms) says.
+- A file with a local segment and no `overlay` is refused, and so is one whose
+  `overlay` holds no IPv6 prefix, since every local SID acts only on an outer
+  source in those prefixes. An egress segment's `allow` list the `overlay`
+  cannot admit is refused too, as
+  [egress segments](segment-routing.md#egress-segments) gives.
+- A file with a `cap.egress` translate class of `none` and no `overlay` is
+  refused: a learned route reads alike for a node's own address and for a LAN
+  another node advertises, so only the overlay tells
+  [the entry chain](antispoof.md#the-entry-chain) which `none` destinations to
+  keep.
+- A `cap.border` block is refused at load with
+  `cap.border is refused: the prefixes the mesh numbers its nodes from are the top-level key overlay, and the filter is cap.antispoof, which runs wherever overlay is written and whose block only exempts`.
 
 ## `auth`
 
@@ -239,9 +280,9 @@ nothing but what [`cap.egress`](#capegress) and an egress segment add, as
   as a typo for a default.
 - A prefix that
   [counts as a default](routing.md#routes-that-count-as-a-default), such as one
-  outside `cap.border.overlay` shorter than `/8` for IPv4 or `/16` for IPv6,
-  makes this node an exit for its family. Such an entry other than a default
-  loads with a warning.
+  outside `overlay` shorter than `/8` for IPv4 or `/16` for IPv6, makes this
+  node an exit for its family. Such an entry other than a default loads with a
+  warning.
 - `transit` under `cap.route` is refused at load, with a message naming
   `cap.transit`. That key meant transit on when left out, and a node that relied
   on it carries no transit until it writes `cap.transit.enable = true`.
@@ -369,8 +410,8 @@ configure.
   shared with BIRD needs a metric BIRD does not use.
 - macOS has 1 forwarding table and no route protocol. It refuses at startup an
   `id` or `proto` other than the default. It ignores `metric`.
-- On Linux the reconciler derives its policy rules from `cap.border.overlay`,
-  this node's own prefixes and `cap.exit`, and no key writes a rule.
+- On Linux the reconciler derives its policy rules from `overlay`, this node's
+  own prefixes and `cap.exit`, and no key writes a rule.
   [Routing](routing.md#policy-rules-on-linux) lists them. macOS installs none.
 - An `addresses` entry is assigned when missing and removed at shutdown or when
   a reload drops it. The reconciler removes only addresses it added. Each entry
@@ -419,9 +460,9 @@ The segments this node answers for.
   header and delivers the inner packet, to the mesh's
   [forwarding decision](routing.md#transit) or, with `deliver = "egress"`, to
   the exit, which writes it into the mesh tun for the host to carry out of the
-  mesh, refusing an inner destination inside `cap.border.overlay` or that the
-  mesh routes itself. The decision writes it to the tun, hands it to the exit,
-  forwards it, answers it or drops it, as it does a session's packet and as
+  mesh, refusing an inner destination inside `overlay` or that the mesh routes
+  itself. The decision writes it to the tun, hands it to the exit, forwards it,
+  answers it or drops it, as it does a session's packet and as
   [routing](routing.md#transit) lists. An inner packet an End.DT46 delivers to
   the mesh takes that path whatever `cap.transit` says.
 - `behavior` is read in any case.
@@ -432,18 +473,18 @@ The segments this node answers for.
   shorter than `/8`, an IPv6 entry shorter than `/12`, an entry with bits set
   below its length, an IPv4 address written as IPv6, an entry written twice and
   a list with no IPv6 entry are refused. The order does not matter.
-- Every segment needs `cap.border` with an IPv6 prefix in its `overlay`, and
-  acts only on a packet whose outer source lies in those prefixes.
-- An `allow` entry inside `cap.border.overlay` admits outer and inner sources,
-  and one outside it admits inner sources alone, such as a LAN behind a subnet
-  router, refused where the overlay cannot admit the list, as
+- Every segment needs `overlay` with an IPv6 prefix in it, and acts only on a
+  packet whose outer source lies in those prefixes, on every platform.
+- An `allow` entry inside `overlay` admits outer and inner sources, and one
+  outside it admits inner sources alone, such as a LAN behind a subnet router,
+  refused where the overlay cannot admit the list, as
   [egress segments](segment-routing.md#egress-segments) gives. The exit pairs no
   inner source with an outer one: each node the list admits by its overlay
   address may carry any inner source the list holds, a listed LAN among them. A
   node sends no LAN source it does not own, and the replies go to the node that
   announces the LAN.
 - An egress segment needs `cap.egress`, which may advertise nothing, and
-  `cap.border`. It needs no `cap.table`. `cap.route` may not announce its SID's
+  `overlay`. It needs no `cap.table`. `cap.route` may not announce its SID's
   `/128`, which the node originates while the exit is ready.
 
 ### `cap.segment.steer`
@@ -684,10 +725,10 @@ needs.
   every address its classes name, and, where they run, the kernel's lookups of a
   translated packet and its reply pass.
 - The lookups of a translated packet and its reply read from the address of a
-  mesh member inside `cap.border.overlay`. A node with no `cap.border`, or whose
-  mesh routes no other node's prefix of a family inside the overlay, skips that
-  family's forward and reply lookups and judges it by its table, its forwarding
-  and its classes' addresses alone, and `status` says so.
+  mesh member inside `overlay`. A node with no `overlay`, or whose mesh routes
+  no other node's prefix of a family inside the overlay, skips that family's
+  forward and reply lookups and judges it by its table, its forwarding and its
+  classes' addresses alone, and `status` says so.
 - A node with an egress segment translates both families, whatever `advertise`
   holds.
 - An `advertise` prefix with bits set below its length, written as IPv4-mapped
@@ -736,59 +777,46 @@ needs.
 - The periodic pass reinstalls a removed table and reads the forwarding sysctls
   again. `sweep` also caps the delay between retries of a failed pass. A
   negative `sweep` is refused.
-- With `cap.border` written, an `advertise` entry longer than 0 bits that
-  overlaps an `overlay` entry is refused: the hosts behind this node would
-  arrive on a link outside the mesh with a mesh source, and the filter would
-  drop them. The exit defaults, `0.0.0.0/0` and `::/0`, are left out of the
-  test.
+- With `overlay` written, an `advertise` entry longer than 0 bits that overlaps
+  an `overlay` entry is refused: the hosts behind this node would arrive on a
+  link outside the mesh with a mesh source, and the antispoof filter would drop
+  them, as
+  `config: cap.egress advertise 192.0.2.128/25 overlaps overlay 192.0.2.0/24, so the hosts behind this node arrive on a link outside the mesh with a mesh source and the antispoof filter drops them`.
+  The exit defaults, `0.0.0.0/0` and `::/0`, are left out of the test.
 
-## `cap.border`
+## `cap.antispoof`
 
-Drop what arrives on a link outside the mesh carrying a mesh source, except from
-a link's own network inside the overlay, which it carves out. Linux only, and
-the daemon refuses it at startup on other platforms. The border filter's entry
-chain, which lets into the tun only what
-[its list](border-filter.md#the-entry-chain) passes, runs on every Linux node
-with no key. [The border filter](border-filter.md) describes both.
+The block names the exemptions of [the antispoof filter](antispoof.md), which
+runs wherever [`overlay`](#top-level) is written, with no block: a protection is
+on by default, and its block only exempts.
 
-| Key       | Value            | Default  | Meaning                                      |
-| --------- | ---------------- | -------- | -------------------------------------------- |
-| `overlay` | list of prefixes | required | The prefixes the mesh numbers its nodes from |
+| Key                       | Value            | Default | Meaning                                                                   |
+| ------------------------- | ---------------- | ------- | ------------------------------------------------------------------------- |
+| `exempt`                  | list of prefixes | none    | Overlay prefixes whose sources pass from every interface outside the mesh |
+| `interface.<name>.exempt` | list of prefixes | none    | Overlay prefixes whose sources pass from the interfaces `<name>` matches  |
 
-- An empty list is refused, since the filter would pass every forged mesh
-  source.
-- An entry of length 0, an IPv4 entry shorter than `/8`, an IPv6 entry shorter
-  than `/12`, an entry with bits set below its length, an IPv4 address written
-  as IPv6 and an entry written twice are refused. The order does not matter.
-- Every node of the mesh writes the same list, which covers every exit's `allow`
-  entry that admits an outer source.
-- On an exit, the list enables the kernel lookups of its
-  [readiness](exit-nodes.md#readiness), which read from a member's address
-  inside it. A family with no prefix in it skips them.
-- On an exit, the list also keeps an address inside it off the uplink, as
-  [exit nodes](exit-nodes.md#what-an-exit-carries-out) describe: the forwarding
-  decision egresses none, and an egress segment refuses one. An exit without
-  `cap.border` sends an address no node announces out of its uplink as any other
-  destination outside the mesh.
-- With `cap.table` on Linux, each prefix gets a policy rule at 5110 that reads
-  the mesh's table for its destinations and, unless it holds its family's
-  unspecified address or the mesh cannot carry it, an unreachable hold in that
-  table. A lookup bound to no device for an overlay address then ends as rows L1
-  to L5 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give.
-  A link's network inside a prefix is thrown in place of the hold, as
-  [carve-outs](border-filter.md#carve-outs) describe.
-- A file with a local segment and no `cap.border` is refused, and so is one
-  whose `overlay` holds no IPv6 prefix, since every local SID acts only on an
-  outer source in those prefixes. An egress segment's `allow` list the `overlay`
-  cannot admit is refused too, as
-  [egress segments](segment-routing.md#egress-segments) gives.
-- A file with a `cap.egress` translate class of `none` and no `cap.border` is
-  refused: a learned route reads alike for a node's own address and for a LAN
-  another node advertises, so only the overlay tells
-  [the entry chain](border-filter.md#the-entry-chain) which `none` destinations
-  to keep.
-- The devices it accepts and the carve-outs are derived from the host's links,
-  so neither is a key.
+- `<name>` matches interfaces as [exemptions](antispoof.md#exemptions) give.
+  TOML quotes a name holding `*`.
+- Each prefix lies inside `overlay`, each of its addresses in some entry, as an
+  egress segment's `allow` entry does. One outside is refused, since the filter
+  drops only an overlay source and it would exempt nothing:
+  `egress: cap.antispoof exempt 198.51.100.0/24 lies outside overlay, and the filter drops only an overlay source, so it would exempt nothing`.
+  A prefix with bits set below its length, an IPv4 address written as IPv6 and a
+  prefix written twice in 1 list are refused, as in `overlay`.
+- A `<name>` of `*` alone is refused, since it names every interface, which the
+  shared `exempt` does. A `*` anywhere but last, a second one or an empty name
+  is refused, and so is a name of more than 15 bytes before any `*`, the longest
+  an interface name is. An entry whose `exempt` is empty is refused, and so is a
+  block exempting nothing at all.
+- The block without `overlay` is refused:
+  `config: cap.antispoof is written and overlay is absent, so no filter runs for it to exempt from: write overlay with the prefixes the mesh numbers its nodes from`.
+- A shared `exempt` entry that overlaps a range inside `overlay` that
+  `cap.route` announces is refused:
+  `config: cap.antispoof exempt 203.0.113.0/24 overlaps 203.0.113.0/25, which cap.route announces, and the shared list passes its sources from every interface outside the mesh, the uplink among them: write it under cap.antispoof.interface.<name>.exempt for the interface its hosts are on`.
+- What an exemption carves is in [exemptions](antispoof.md#exemptions).
+- The interfaces it accepts and the carve-outs are derived from the host's
+  interfaces, so neither is a key.
+- A reload applies a change in place, as [reloads](antispoof.md#reloads) gives.
 
 ## `cap.exit`
 
@@ -839,15 +867,16 @@ programs' rules do beside them.
   `kernel: cap.exit lan lists the connected networks that count as the LAN while fallback = "none" refuses the rest, and fallback is not "none": write fallback = "none" or remove lan`.
 - A `lan` entry is refused when it is not a prefix, has bits set below its
   length, spells IPv4 as IPv6 or is written twice, as every list of prefixes is,
-  when it overlaps `cap.border.overlay`, as
-  `config: cap.exit lan 192.0.2.128/25 overlaps cap.border overlay 192.0.2.0/24, whose destinations the mesh carries whatever the LAN holds`,
+  when it overlaps `overlay`, as
+  `config: cap.exit lan 192.0.2.128/25 overlaps overlay 192.0.2.0/24, whose destinations the mesh carries whatever the LAN holds`,
   and when it is as short as a route that
   [counts as a default](routing.md#routes-that-count-as-a-default), as
   `config: cap.exit lan 0.0.0.0/1 counts as capturing the machine, so it would let the host's traffic leave by the uplink as a default does`.
 
 - The file is refused without `cap.table`, whose reconciler writes the mode's
-  rules, and without `cap.border`, whose overlay keeps the mode's sources by
-  main apart from the mesh's.
+  rules, and without `overlay`, which keeps the mode's sources by main apart
+  from the mesh's, as
+  `config: cap.exit is written and overlay is absent, so the mode's rules cannot keep the overlay's sources off the uplink: write overlay with the prefixes the mesh numbers its nodes from`.
 - The file is refused on an exit, with the reason it is one:
   `config: cap.exit sends this node's own traffic out through another exit, and this node is an exit (cap.egress advertises 0.0.0.0/0), whose own traffic and whose egress leave by its own uplink: remove cap.exit, or stop offering the exit`.
   The other reasons read
@@ -867,15 +896,15 @@ programs' rules do beside them.
   list it there. The load cannot check this, since it does not know which node
   serves a segment.
 - The path's outer source is `cap.segment.source` where written, else the first
-  IPv6 address of `cap.table` inside `cap.border.overlay`. The exit's `allow`
-  holds that source and every inner source the host sends, its overlay addresses
-  and any LAN behind it, as [`cap.segment.local`](#capsegmentlocal) gives.
+  IPv6 address of `cap.table` inside `overlay`. The exit's `allow` holds that
+  source and every inner source the host sends, its overlay addresses and any
+  LAN behind it, as [`cap.segment.local`](#capsegmentlocal) gives.
 - `via` is refused with more than 16 segments, a segment written twice, an
   address that cannot be a SID, such as an IPv4, IPv4-mapped or multicast one, a
-  first or last segment of this node's own `cap.segment.local`, a
-  `cap.border.overlay` holding no IPv6 prefix, and with no outer source or one
-  outside the overlay, as
-  `config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside cap.border overlay gives the path an outer source: write cap.segment source`.
+  first or last segment of this node's own `cap.segment.local`, a `overlay`
+  holding no IPv6 prefix, and with no outer source or one outside the overlay,
+  as
+  `config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside overlay gives the path an outer source: write cap.segment source`.
   The loader cannot check that the last segment is an `End.DT46` and the others
   `End`, since it knows no other node's SIDs, as
   [segment routing](segment-routing.md#steering) says.

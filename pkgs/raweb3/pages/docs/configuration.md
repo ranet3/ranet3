@@ -75,10 +75,11 @@ they describe the same node.
 
 ## Structure
 
-The top level says what the node **is**. Everything the node **does** lives
-under `cap`, 1 block per capability. Writing `cap.table`, `cap.segment`,
-`cap.egress`, `cap.border` or `cap.exit` turns that capability on. Writing
-`cap.route`, `cap.babel` or `cap.crypto` changes its defaults. There is no
+The top level says what the node **is**, `overlay` among it. Everything the node
+**does** lives under `cap`, 1 block per capability. Writing `cap.table`,
+`cap.segment`, `cap.egress` or `cap.exit` turns that capability on. Writing
+`cap.route`, `cap.babel` or `cap.crypto` changes its defaults.
+[`cap.antispoof`](antispoof.md) turns nothing on and only exempts. There is no
 `enabled` field.
 
 A node that only joins the mesh writes `node`, `auth`, `link` and `dial`:
@@ -110,25 +111,26 @@ These keys are required:
 
 Every other key has a default. A left-out `cap.route`, `cap.babel` or
 `cap.crypto` runs its defaults. A left-out `cap.table`, `cap.segment`,
-`cap.egress`, `cap.border`, `cap.exit` or
-[`cap.transit`](configuration-reference.md) is off. A node with no `cap.babel`
-sends Hellos every 4 seconds and updates every 16 seconds (RFC 8966 Appendix B).
-A node with no `cap.route` announces nothing but what `cap.egress` and an egress
+`cap.egress`, `cap.exit` or [`cap.transit`](configuration-reference.md) is off,
+and a left-out `cap.antispoof` exempts nothing. A node with no `cap.babel` sends
+Hellos every 4 seconds and updates every 16 seconds (RFC 8966 Appendix B). A
+node with no `cap.route` announces nothing but what `cap.egress` and an egress
 segment add, as [routing](routing.md#what-a-node-announces) describes.
 
-A node that installs the mesh's routes itself adds `cap.table`, and on Linux
-`cap.border` with the prefixes the mesh numbers its nodes from. On Linux the
-reconciler derives its policy rules from that overlay and this node's own
-prefixes, and a lookup bound to no device for an overlay destination ends as
-rows L1 to L5 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)
-give:
+A node that installs the mesh's routes itself adds `cap.table`, and `overlay`
+with the prefixes the mesh numbers its nodes from, which every platform loads
+and TOML takes above the first table. On Linux the reconciler derives its policy
+rules from that overlay and this node's own prefixes, a lookup bound to no
+device for an overlay destination ends as rows L1 to L5 of
+[where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give, and
+[the antispoof filter](antispoof.md) drops an overlay source arriving from
+outside the mesh:
 
 ```toml
+overlay = ["203.0.113.0/24"]
+
 [cap.table]
 addresses = ["203.0.113.10/32"]   # assigned to the tun
-
-[cap.border]
-overlay = ["203.0.113.0/24"]
 ```
 
 A Linux node that sends its own traffic out through the mesh's exit adds
@@ -167,11 +169,10 @@ sources alone:
 
 ```toml
 # the leaf, 203.0.113.10 and 3fff:a::10 on the tun
+overlay = ["203.0.113.0/24", "3fff:a::/36"]
+
 [cap.table]
 addresses = ["203.0.113.10/32", "3fff:a::10/128"]
-
-[cap.border]
-overlay = ["203.0.113.0/24", "3fff:a::/36"]
 
 [cap.route]
 announce = ["203.0.113.10/32", "3fff:a::10/128", "198.51.100.128/28"]
@@ -180,7 +181,7 @@ announce = ["203.0.113.10/32", "3fff:a::10/128", "198.51.100.128/28"]
 via = ["2001:db8:0:6::3"]         # the exit's egress segment
 forward = ["lan0"]                # the LAN's link
 
-# the exit, under the same cap.border
+# the exit, under the same overlay
 [[cap.segment.local]]
 sid = "2001:db8:0:6::3"
 behavior = "End.DT46"
@@ -190,20 +191,20 @@ allow = ["3fff:a::10/128", "203.0.113.10/32", "198.51.100.128/28"]
 
 ### Capabilities
 
-| Block         | What it turns on                                                                                            |
-| ------------- | ----------------------------------------------------------------------------------------------------------- |
-| `cap.route`   | What this node announces                                                                                    |
-| `cap.transit` | Whether this node relays the routes it learns, and so other nodes' traffic                                  |
-| `cap.babel`   | The speaker's timers, link quality estimator and costs                                                      |
-| `cap.table`   | The route reconciler: a routing table, addresses and, on Linux, the policy rules it derives                 |
-| `cap.segment` | Segment routing (RFC 8986): the SIDs this node answers for and what it steers                               |
-| `cap.crypto`  | The transforms, the replay window and the rekey timers                                                      |
-| `cap.egress`  | Source translation for an exit node or a subnet router, Linux only                                          |
-| `cap.border`  | A filter for forged mesh traffic arriving from other links, Linux only                                      |
-| `cap.exit`    | Exit mode: this host's own traffic and its forwarded links out by the mesh's default or `via`'s exit, Linux |
+| Block           | What it turns on                                                                                                                     |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `cap.route`     | What this node announces                                                                                                             |
+| `cap.transit`   | Whether this node relays the routes it learns, and so other nodes' traffic                                                           |
+| `cap.babel`     | The speaker's timers, link quality estimator and costs                                                                               |
+| `cap.table`     | The route reconciler: a routing table, addresses and, on Linux, the policy rules it derives                                          |
+| `cap.segment`   | Segment routing (RFC 8986): the SIDs this node answers for and what it steers                                                        |
+| `cap.crypto`    | The transforms, the replay window and the rekey timers                                                                               |
+| `cap.egress`    | Source translation for an exit node or a subnet router, Linux only                                                                   |
+| `cap.antispoof` | Exemptions from the filter for forged mesh traffic arriving from other interfaces, which runs on Linux wherever `overlay` is written |
+| `cap.exit`      | Exit mode: this host's own traffic and its forwarded links out by the mesh's default or `via`'s exit, Linux                          |
 
 [Routing](routing.md), [segment routing](segment-routing.md),
-[exit nodes](exit-nodes.md) and [the border filter](border-filter.md) describe
+[exit nodes](exit-nodes.md) and [the antispoof filter](antispoof.md) describe
 what the larger blocks do.
 
 ## Names
@@ -275,7 +276,8 @@ itself there:
 - `cap.route` and `cap.babel` are `internal/babel`'s `Routes` and `Config`.
 - `cap.crypto` is `ike`'s `Crypto`.
 - `cap.egress` is `internal/egress`'s `Egress`.
-- `cap.border` is `internal/egress`'s `Border`.
+- `cap.antispoof` is `internal/egress`'s `Antispoof`, and with `overlay` it
+  makes `Border`.
 - `cap.exit` is `internal/kernel`'s `ExitMode`.
 
 `internal/config` holds the node's own keys and the checks that span 2

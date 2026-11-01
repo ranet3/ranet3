@@ -57,9 +57,9 @@ lookup ends while no rule of another program is in the policy database.
 Every underlay socket on Linux carries the mark 0x72 where the process may set
 it, so a lookup of ranet3's own ESP and IKE bound to no device ends at row L1 or
 L2 and never follows the mesh's table into its tun. The endpoint resolver marks
-its query to a nameserver outside `cap.border.overlay` too, where the process
-may set the mark, a nameserver in a subnet another node announces among them, so
-where `cap.table` is written the query ends at row L1 or L2 and never waits on a
+its query to a nameserver outside `overlay` too, where the process may set the
+mark, a nameserver in a subnet another node announces among them, so where
+`cap.table` is written the query ends at row L1 or L2 and never waits on a
 session that only the name it asks for can dial. A nameserver on the host
 itself, such as systemd-resolved's `127.0.0.53`, takes the query at row L1, and
 its own query upstream carries no mark, so it can wait on such a session. Its
@@ -594,9 +594,9 @@ Save the ruleset table by table with `nft list table <family> <name>`, leaving
 out the tables named `ranet3`, which the translator makes again on the pass a
 load wakes.
 
-[The border filter](border-filter.md) adds a third table under the same name,
+[The antispoof filter](antispoof.md) adds a third table under the same name,
 `inet ranet3`, on every Linux node: filter chain `mesh_entry` at postrouting,
-priority `srcnat` + 10 (110), and with `cap.border` filter chain `border` at
+priority `srcnat` + 10 (110), and with `overlay` filter chain `antispoof` at
 prerouting, priority `raw` (-300). The same rules hold: it writes only inside
 its table, replaces its chains and sets in 1 transaction, adopts a table an
 earlier instance left, and removes it at shutdown. Unlike the translator's
@@ -620,11 +620,11 @@ neither changes the source the other reads. A packet it drops meets no chain
 after it at postrouting,
 [the kill switch](routing.md#the-kill-switch-on-linux)'s among them.
 
-`cap.border.overlay` must not hold another overlay's space, such as Tailscale's
-`100.64.0.0/10`: the border would drop that program's peers' sources arriving on
-its own link. Tailscale's sources forwarded from `tailscale0` into the tun are
-dropped by `mesh_entry` unless a masquerade gives them the tun's address, since
-this node owns none of them.
+`overlay` must not hold another overlay's space, such as Tailscale's
+`100.64.0.0/10`: the antispoof filter would drop that program's peers' sources
+arriving on its own interface. Tailscale's sources forwarded from `tailscale0`
+into the tun are dropped by `mesh_entry` unless a masquerade gives them the
+tun's address, since this node owns none of them.
 
 ## What forwarded traffic meets
 
@@ -632,12 +632,12 @@ A node that forwards for others routes a neighbor's packet by its destination,
 and a mesh destination leads into the tun. The host's own kernel, a Docker
 bridge, or a LAN behind a subnet router can put a packet into the tun this way.
 The forwarding decision checks what the tun hands this node before the packet
-enters the mesh, as [the border filter](border-filter.md) checks what arrives on
-the links outside the mesh. A drop sends no answer and counts on the `Transit`
-line, as [metrics](metrics.md#transit-counters) lists. On Linux the border
-filter's [entry chain](border-filter.md#the-entry-chain) meets such a packet
-first, before the tun, and passes only a source this node owns, a reply, a
-destination a `none` class takes, or an IPv6 link-local or multicast
+enters the mesh, as [the antispoof filter](antispoof.md) checks what arrives on
+the interfaces outside the mesh. A drop sends no answer and counts on the
+`Transit` line, as [metrics](metrics.md#transit-counters) lists. On Linux the
+antispoof filter's [entry chain](antispoof.md#the-entry-chain) meets such a
+packet first, before the tun, and passes only a source this node owns, a reply,
+a destination a `none` class takes, or an IPv6 link-local or multicast
 destination, so the checks below read what it passed.
 
 - A read from a source the table routes to another node or holds unreachable,
@@ -667,9 +667,8 @@ names forwards into the tun toward the mesh's default, so the owned-source rule
 decides it. A Docker bridge's IPv4 flows pass, masqueraded to the tun's address.
 A LAN this node announces through `cap.route` or advertises through `cap.egress`
 passes. Any other LAN's packets are dropped and counted `unowned_source`. On
-Linux the [entry chain](border-filter.md#the-entry-chain) drops them before the
-tun, toward any destination but a `none` class's, and counts them as
-`mesh_entry`.
+Linux the [entry chain](antispoof.md#the-entry-chain) drops them before the tun,
+toward any destination but a `none` class's, and counts them as `mesh_entry`.
 
 Replies to the mesh's overlay and to subnets the mesh routes are untouched by
 the owned-source rule: an exit's egress replies, translated back by the kernel,

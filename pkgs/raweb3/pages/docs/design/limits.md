@@ -106,10 +106,10 @@ destination no route covers has no owned-source check but under
 destination outside the overlay is dropped from a source this node does not own,
 as [transit](../routing.md#transit) gives.
 
-## The border filter
+## The antispoof filter
 
 **An untracked reply enters the mesh only by its addresses.** Chain `mesh_entry`
-of [the border filter](../border-filter.md#the-entry-chain) passes a reply by
+of [the antispoof filter](../antispoof.md#the-entry-chain) passes a reply by
 conntrack's direction. A packet a host rule exempts from connection tracking,
 such as a `notrack` rule in a raw chain, has no direction, so it enters the mesh
 only from a source this node owns, toward a destination a `none` class takes, or
@@ -127,12 +127,18 @@ addresses, as an untracked one, and drops it otherwise as no reply. RFC 7045
 section 2.1 asks a forwarding node to discard a packet for its extension headers
 only by a policy it can configure, and this drop is fixed.
 
-**An address of a carve-out that no node announces belongs to the link.** Inside
-a [carve-out](../border-filter.md#carve-outs) the mesh keeps only the prefixes
-its table holds. Every other address of the carve-out leaves by the link, and
-its source arriving on that link is accepted, so a node numbered there that does
-not announce its address is reached as the link's neighbor, not through the
-mesh.
+**An address of a carve-out that no node announces belongs to the interface.**
+Inside a [carve-out](../antispoof.md#carve-outs) the mesh keeps only the
+prefixes its table holds. Every other address of the carve-out leaves by the
+interface, and its source arriving on that interface is accepted, so a node
+numbered there that does not announce its address is reached as the interface's
+neighbor, not through the mesh.
+
+**An exemption trusts every host on the interfaces it names.** A source inside
+an [exemption](../antispoof.md#exemptions) that the exemption does not carve
+passes from those interfaces whoever sends it, so a host there reaches this
+host's services under that source. A range this node announces passes so even
+where another node announces the same range.
 
 ## Who a node dials
 
@@ -196,11 +202,11 @@ does not. A node configuring its routes elsewhere writes no `cap.table`, and a
 rule reading the mark goes wherever those routes do.
 
 On Linux the endpoint resolver marks its query the same way, where the process
-may set the mark, when the nameserver lies outside `cap.border.overlay`. Where
-`cap.table` is written the query then ends at row L1 or L2, on the host or by
-its own routes, so it never waits on a session that only the name it asks for
-can dial. A nameserver in a subnet another node announces outside the overlay
-keeps the mark for that reason, since the subnet is reached through a session. A
+may set the mark, when the nameserver lies outside `overlay`. Where `cap.table`
+is written the query then ends at row L1 or L2, on the host or by its own
+routes, so it never waits on a session that only the name it asks for can dial.
+A nameserver in a subnet another node announces outside the overlay keeps the
+mark for that reason, since the subnet is reached through a session. A
 nameserver on the host itself, such as systemd-resolved's `127.0.0.53`, takes
 the query at row L1, and its own query upstream carries no mark, so it can wait
 on such a session. A query to a nameserver inside the overlay carries no mark,
@@ -252,11 +258,10 @@ refusing it: before the first session is live, after `capture_grace`, while the
 mesh's defaults are retracted, and after the daemon is killed with `SIGKILL` and
 the tun goes with it, whose rules stay until the next start, while every stop
 that withdraws, a failure's included, withdraws them. A family the tun holds no
-overlay address of, an address inside no prefix of `cap.border.overlay` counting
-for none, runs mode off's rules whatever the mesh's table holds, with 5445 and
-5450 beside them under
-[the kill switch](../routing.md#the-kill-switch-on-linux). A lookup of that
-family ends where rows L1 to L12 of
+overlay address of, an address inside no prefix of `overlay` counting for none,
+runs mode off's rules whatever the mesh's table holds, with 5445 and 5450 beside
+them under [the kill switch](../routing.md#the-kill-switch-on-linux). A lookup
+of that family ends where rows L1 to L12 of
 [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, but
 where they give main at 32766 an unmarked lookup of the host's own or of a link
 `forward` names ends at 5450 under the switch, or at 5445 to this node's own

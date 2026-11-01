@@ -254,10 +254,10 @@ packet draws none:
    is answered unreachable. A destination this node holds through a route that
    [counts as a default](#routes-that-count-as-a-default) is egress, which an
    exit carries out as [exit nodes](exit-nodes.md#what-an-exit-carries-out)
-   describe: one inside `cap.border.overlay` is answered as one no entry holds,
-   and any other goes to the exit, or to the tun through a route `cap.route`
-   announces, only where the mesh routes a reply to its source, through a peer,
-   a held prefix, or a network or address of this node's own.
+   describe: one inside `overlay` is answered as one no entry holds, and any
+   other goes to the exit, or to the tun through a route `cap.route` announces,
+   only where the mesh routes a reply to its source, through a peer, a held
+   prefix, or a network or address of this node's own.
 5. With `cap.transit` off, a packet for another node is answered
    administratively prohibited, unless an End.DT46 SID of this node delivering
    to the mesh took it out of its outer header.
@@ -274,15 +274,15 @@ packet draws none:
    or TTL taken down and a TCP SYN's MSS lowered to the next session's, and goes
    on.
 
-| Packet                         | IPv6 answer                     | IPv4 answer                                                                                                                                                                                             |
-| ------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Hop limit or TTL of 1 or less  | Time Exceeded, code 0           | Time Exceeded, code 0                                                                                                                                                                                   |
-| No entry holds the destination | Destination Unreachable, code 0 | Host Unreachable, code 1, inside `cap.border.overlay`, Network Unreachable, code 0, elsewhere                                                                                                           |
-| Inside a held prefix           | Destination Unreachable, code 0 | Host Unreachable, code 1, under a hold that does not [count as a default](#routes-that-count-as-a-default) or inside `cap.border.overlay`, Network Unreachable, code 0, elsewhere under one that counts |
-| `cap.transit` off              | Destination Unreachable, code 1 | Destination Unreachable, code 13                                                                                                                                                                        |
-| Larger than the next session   | Packet Too Big                  | Fragmentation Needed with DF, cut without                                                                                                                                                               |
-| Options that cannot be read    |                                 | Parameter Problem                                                                                                                                                                                       |
-| Link-local source              | Destination Unreachable, code 2 | none                                                                                                                                                                                                    |
+| Packet                         | IPv6 answer                     | IPv4 answer                                                                                                                                                                                  |
+| ------------------------------ | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Hop limit or TTL of 1 or less  | Time Exceeded, code 0           | Time Exceeded, code 0                                                                                                                                                                        |
+| No entry holds the destination | Destination Unreachable, code 0 | Host Unreachable, code 1, inside `overlay`, Network Unreachable, code 0, elsewhere                                                                                                           |
+| Inside a held prefix           | Destination Unreachable, code 0 | Host Unreachable, code 1, under a hold that does not [count as a default](#routes-that-count-as-a-default) or inside `overlay`, Network Unreachable, code 0, elsewhere under one that counts |
+| `cap.transit` off              | Destination Unreachable, code 1 | Destination Unreachable, code 13                                                                                                                                                             |
+| Larger than the next session   | Packet Too Big                  | Fragmentation Needed with DF, cut without                                                                                                                                                    |
+| Options that cannot be read    |                                 | Parameter Problem                                                                                                                                                                            |
+| Link-local source              | Destination Unreachable, code 2 | none                                                                                                                                                                                         |
 
 An answer comes from the node's router-id of the family. With no IPv4 router-id
 it comes from `192.0.0.8`, and with no IPv6 one from the answer SID, the first
@@ -316,15 +316,15 @@ routes to another node or holds unreachable, through a route that does not count
 as a default, or from an overlay source this node does not own (`forged`), one
 carrying an IPv6 routing header the mesh refuses (`routing_header`), one to this
 node's own SIDs (`sid`), or one bound toward an exit's default, or under
-[mode 3](#mode-3-on-linux) toward a destination outside `cap.border.overlay`
-that no entry holds, from a source this node does not own (`unowned_source`).
-Every IPv6 read whose walk ends at an inner IPv4 or IPv6 packet has that packet
-checked one level deep, whatever its destination, since the mesh cannot tell
-another node's SID from any other address, as
-[the limits](design/limits.md#transit) say. An inner packet that is itself
-encapsulated is dropped (`nested`). A read the table answers as this node's own,
-which the mesh could only hand back to the tun, is dropped (`looped`). None of
-these is answered, as [the border filter](border-filter.md) and
+[mode 3](#mode-3-on-linux) toward a destination outside `overlay` that no entry
+holds, from a source this node does not own (`unowned_source`). Every IPv6 read
+whose walk ends at an inner IPv4 or IPv6 packet has that packet checked one
+level deep, whatever its destination, since the mesh cannot tell another node's
+SID from any other address, as [the limits](design/limits.md#transit) say. An
+inner packet that is itself encapsulated is dropped (`nested`). A read the table
+answers as this node's own, which the mesh could only hand back to the tun, is
+dropped (`looped`). None of these is answered, as
+[the antispoof filter](antispoof.md) and
 [segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for the
 mesh's edge.
 
@@ -335,12 +335,12 @@ from the packet's destination, whatever the packet's source, since the tun is
 the one link the packet came by: an uplink address the mesh routes nothing to is
 answered too, unless the check above drops the read as `unowned_source`. It
 draws on the same rate limits. Under [mode 3](#mode-3-on-linux), a read that no
-steering policy takes, whose destination lies outside `cap.border.overlay` and
-that the table answers through an entry that counts as a default or through
-none, is steered along `cap.exit.via` instead. A steered packet goes by its
-first segment, and one whose first segment has no route, or, along `via`, has no
-route of its own as [mode 3](#mode-3-on-linux) gives, is counted and answered as
-one whose destination no entry holds, from its destination into the tun.
+steering policy takes, whose destination lies outside `overlay` and that the
+table answers through an entry that counts as a default or through none, is
+steered along `cap.exit.via` instead. A steered packet goes by its first
+segment, and one whose first segment has no route, or, along `via`, has no route
+of its own as [mode 3](#mode-3-on-linux) gives, is counted and answered as one
+whose destination no entry holds, from its destination into the tun.
 
 `ranet3 status` counts each outcome on its `Transit` line, and
 `ranet3_transit_packets_total` exports the same counts. Each drop they count,
@@ -354,8 +354,8 @@ packet would meet, as [debugging](development/debug.md) describes.
 
 Writing a `cap.table` block turns the reconciler on. It mirrors the mesh's
 selected routes and its holds into a kernel table. Each prefix this node
-originates is a hold there inside `cap.border.overlay`, and outside it a throw
-on Linux and nothing on macOS, but for one that
+originates is a hold there inside `overlay`, and outside it a throw on Linux and
+nothing on macOS, but for one that
 [counts as a default](#routes-that-count-as-a-default), which gets nothing. An
 address `cap.table` assigns gets no route there unless this node originates it
 too, since the host's kernel holds it as one of its own already. On Linux a hold
@@ -378,17 +378,17 @@ Linux it also installs the [policy rules](#policy-rules-on-linux) it derives.
 
 Each entry of the mesh's table becomes:
 
-| Entry in the mesh's table                                                                         | In the kernel table                                                                                                                                                                                                                                                                            |
-| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A learned route                                                                                   | a route out of the tun                                                                                                                                                                                                                                                                         |
-| A learned route that [counts as a default](#routes-that-count-as-a-default)                       | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS with `link.underlay.bind` one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
-| A hold that does not count                                                                        | a hold                                                                                                                                                                                                                                                                                         |
-| A hold that counts, or this node's own prefix that counts                                         | nothing                                                                                                                                                                                                                                                                                        |
-| This node's own prefix outside `cap.border.overlay`                                               | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                             |
-| This node's own prefix inside the overlay                                                         | a hold                                                                                                                                                                                                                                                                                         |
-| An address only `cap.table` assigns                                                               | nothing                                                                                                                                                                                                                                                                                        |
-| Each prefix of `cap.border.overlay` that holds no unspecified address and that the mesh can carry | a hold, on Linux only, since macOS refuses `cap.border`                                                                                                                                                                                                                                        |
-| Each [carve-out](border-filter.md#carve-outs), a link's network inside the overlay                | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself                                                                                                                              |
+| Entry in the mesh's table                                                              | In the kernel table                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A learned route                                                                        | a route out of the tun                                                                                                                                                                                                                                                                         |
+| A learned route that [counts as a default](#routes-that-count-as-a-default)            | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS with `link.underlay.bind` one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
+| A hold that does not count                                                             | a hold                                                                                                                                                                                                                                                                                         |
+| A hold that counts, or this node's own prefix that counts                              | nothing                                                                                                                                                                                                                                                                                        |
+| This node's own prefix outside `overlay`                                               | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                             |
+| This node's own prefix inside the overlay                                              | a hold                                                                                                                                                                                                                                                                                         |
+| An address only `cap.table` assigns                                                    | nothing                                                                                                                                                                                                                                                                                        |
+| Each prefix of `overlay` that holds no unspecified address and that the mesh can carry | a hold, on Linux only, since a hold goes only beside the policy rules, which macOS has none of, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                              |
+| Each [carve-out](antispoof.md#carve-outs), a link's network inside the overlay         | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself                                                                                                                              |
 
 A throw ends the table's lookup, and the rules after the one that looked it up
 decide, as row L10 of [where a lookup ends](#where-a-lookup-ends-on-linux)
@@ -411,24 +411,23 @@ through that exit.
 
 ### Policy rules on Linux
 
-The reconciler derives its policy rules from `cap.border.overlay` and this
-node's own prefixes, and installs them in two blocks at fixed priorities, each
-rule in both families unless it names a prefix, and each carrying
-`cap.table.proto`. At Tailscale's default base the first block sits below its
-rules at 5210 to 5270, and the second above them, as
-[sharing a host](coexistence.md#routes-on-linux) notes. `<table>` is
-`cap.table.id`.
+The reconciler derives its policy rules from `overlay` and this node's own
+prefixes, and installs them in two blocks at fixed priorities, each rule in both
+families unless it names a prefix, and each carrying `cap.table.proto`. At
+Tailscale's default base the first block sits below its rules at 5210 to 5270,
+and the second above them, as [sharing a host](coexistence.md#routes-on-linux)
+notes. `<table>` is `cap.table.id`.
 
-| Priority | Rule                                                                  | What it does                                                                               |
-| -------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 5100     | `fwmark 0x72 goto 5190`                                               | a marked lookup skips 5110                                                                 |
-| 5110     | `to <prefix> lookup <table>`, for each prefix of `cap.border.overlay` | an overlay destination reads the mesh's table, every length counted                        |
-| 5190     | `nop`                                                                 | where the goto at 5100 lands                                                               |
-| 5400     | `fwmark 0x72 goto 5490`                                               | a marked lookup skips 5410 to 5430                                                         |
-| 5410     | `lookup main suppress_prefixlength 0`                                 | main's table, its routes of /0 skipped                                                     |
-| 5420     | `lookup <table> suppress_prefixlength 7` for IPv4, `15` for IPv6      | the mesh's table, its routes of /7 or shorter for IPv4 and /15 or shorter for IPv6 skipped |
-| 5430     | `from <prefix> lookup <table>`, for each of this node's own prefixes  | the mesh's table for a lookup from this node's own prefixes, every length counted          |
-| 5490     | `nop`                                                                 | where the goto at 5400 lands                                                               |
+| Priority | Rule                                                                 | What it does                                                                               |
+| -------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| 5100     | `fwmark 0x72 goto 5190`                                              | a marked lookup skips 5110                                                                 |
+| 5110     | `to <prefix> lookup <table>`, for each prefix of `overlay`           | an overlay destination reads the mesh's table, every length counted                        |
+| 5190     | `nop`                                                                | where the goto at 5100 lands                                                               |
+| 5400     | `fwmark 0x72 goto 5490`                                              | a marked lookup skips 5410 to 5430                                                         |
+| 5410     | `lookup main suppress_prefixlength 0`                                | main's table, its routes of /0 skipped                                                     |
+| 5420     | `lookup <table> suppress_prefixlength 7` for IPv4, `15` for IPv6     | the mesh's table, its routes of /7 or shorter for IPv4 and /15 or shorter for IPv6 skipped |
+| 5430     | `from <prefix> lookup <table>`, for each of this node's own prefixes | the mesh's table for a lookup from this node's own prefixes, every length counted          |
+| 5490     | `nop`                                                                | where the goto at 5400 lands                                                               |
 
 A skipped length skips only a route the lookup found, never an `unreachable`,
 `blackhole` or `prohibit` one.
@@ -440,7 +439,7 @@ one, a prefix `cap.egress` advertises for the hosts behind this node, and an
 announcement with a source, D from S. Under the destination-first ordering of
 [RFC 9079 section 4](https://www.rfc-editor.org/rfc/rfc9079.html#section-4) the
 mesh routes D to this node only for packets from S, so a reply to D from outside
-S would never come back through the mesh. With no `cap.border`, no 5110 rule is
+S would never come back through the mesh. With no `overlay`, no 5110 rule is
 installed.
 
 #### Exit mode on Linux
@@ -462,16 +461,15 @@ packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
 | 5435     | `from <network> iif lo lookup main`, for each connected network shorter than a host prefix and each point-to-point far end of a link `forward` leaves out | a `fib` expression's reverse path check of a reply main routes to such a link finds main's route, not the mesh |
 | 5440     | `iif lo lookup <table>`, and `iif <link> lookup <table>` for each link `forward` expands to                                                               | the mesh's table, every length counted, for the host's own traffic and the forwarded links'                    |
 
-- Neither 5405 nor 5435 selects a source overlapping `cap.border.overlay` or
-  this node's own prefixes, which 5430 sends into the mesh. 5405 comes ahead of
-  5430, so an overlay address on `lo` or on a dummy link, as a host checking the
-  mesh puts one there, or an address in a LAN this node announces, would
-  otherwise leave by main where mode off sends it into the mesh. A selector
-  overlapping either is left out whole, but one a
-  [carve-out](border-filter.md#carve-outs) holds whole and no entry of the
-  mesh's table holds is kept for the overlay, since the link's neighbors hold
-  its addresses. A selector overlapping this node's own prefixes is left out
-  even there.
+- Neither 5405 nor 5435 selects a source overlapping `overlay` or this node's
+  own prefixes, which 5430 sends into the mesh. 5405 comes ahead of 5430, so an
+  overlay address on `lo` or on a dummy link, as a host checking the mesh puts
+  one there, or an address in a LAN this node announces, would otherwise leave
+  by main where mode off sends it into the mesh. A selector overlapping either
+  is left out whole, but one a [carve-out](antispoof.md#carve-outs) holds whole
+  and no entry of the mesh's table holds is kept for the overlay, since the
+  link's neighbors hold its addresses. A selector overlapping this node's own
+  prefixes is left out even there.
 - 5435 reaches a reverse path check only where 5405 to 5430 did not answer it. A
   `/32` or `/128` address is its own network, which 5405 already selects, so it
   takes no rule at 5435. 5405 comes ahead of 5410 to 5430, so a socket bound to
@@ -505,10 +503,10 @@ and
 [in IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/netfilter/nft_fib_ipv6.c?id=940de590b839f71d6dc846160534bf202401b8b7#n89).
 Two more rules close the routing side, in each family:
 
-| Priority | Rule                                                                                                                                      | What it does                                                                                                               |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| 5445     | `to <prefix> lookup main`, for each of this node's own prefixes and each [carve-out](border-filter.md#carve-outs) the mesh's table throws | the host reaches its own prefix beyond the gateway and a carved link's neighbors, which 5440's lookup passes on as a throw |
-| 5450     | `iif lo unreachable`, and `iif <link> unreachable` for each link `forward` expands to                                                     | an unmarked lookup of the host's own or a forwarded link's that no rule above answered fails at once                       |
+| Priority | Rule                                                                                                                                  | What it does                                                                                                               |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 5445     | `to <prefix> lookup main`, for each of this node's own prefixes and each [carve-out](antispoof.md#carve-outs) the mesh's table throws | the host reaches its own prefix beyond the gateway and a carved link's neighbors, which 5440's lookup passes on as a throw |
+| 5450     | `iif lo unreachable`, and `iif <link> unreachable` for each link `forward` expands to                                                 | an unmarked lookup of the host's own or a forwarded link's that no rule above answered fails at once                       |
 
 5450 fails a connect with `ENETUNREACH` at once while the mesh holds no default,
 where a drop after routing would leave it waiting out its retransmissions. A
@@ -614,11 +612,10 @@ counter drop
   `fc00::/7` of [RFC 4193](https://www.rfc-editor.org/rfc/rfc4193), the
   link-local `169.254.0.0/16` and `fe80::/10`, and the prefixes `cap.exit.lan`
   lists. A network holding such a range counts for that range alone. Of a
-  network that shares an address with `cap.border.overlay`, its part outside the
-  overlay counts by the same rules, so a lease wider than an overlay prefix
-  keeps its gateway outside it, and each
-  [carve-out](border-filter.md#carve-outs) less the mesh's prefixes inside it is
-  held. A network as short as a route that
+  network that shares an address with `overlay`, its part outside the overlay
+  counts by the same rules, so a lease wider than an overlay prefix keeps its
+  gateway outside it, and each [carve-out](antispoof.md#carve-outs) less the
+  mesh's prefixes inside it is held. A network as short as a route that
   [counts as a default](#routes-that-count-as-a-default) is left out whole.
   Status names it, and as public a network, or a prefix of its part outside the
   overlay, that the ranges and `cap.exit.lan` leave out in whole or in part.
@@ -641,9 +638,9 @@ process that wrote it:
   `"uplink"` or without `cap.exit` withdraw it with the rules. A start or a
   reload whose file asks for no switch deletes one an earlier instance left.
 - The stop a failed tun causes withdraws the rules, routes and addresses, 5445
-  and mode 3's steered defaults among them, and last the border's table
-  `inet ranet3`, as [the border filter](border-filter.md#where-it-runs) gives
-  for every shutdown. Where `fallback = "none"` is in force, as it is in mode 3
+  and mode 3's steered defaults among them, and last the filter's table
+  `inet ranet3`, as [the antispoof filter](antispoof.md#where-it-runs) gives for
+  every shutdown. Where `fallback = "none"` is in force, as it is in mode 3
   unless `"uplink"` is written, it deletes no `ranet3_fallback`: a table that is
   there it leaves as found, with no rule behind it, whatever the last pass read
   or wrote, and before any pass an earlier instance's. The chains alone then
@@ -793,7 +790,7 @@ A lookup bound to no device:
 | --- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | L1  | an address of the host's own                                                                                                           | any                                                 | the local table at 0, which delivers it on the host                                      |
 | L2  | any other                                                                                                                              | marked                                              | main at 32766, since the gotos at 5100 and 5400 skip every rule reading the mesh's table |
-| L3  | inside `cap.border.overlay`, where the mesh's longest match is a route, a default among them                                           | unmarked                                            | 5110, into the tun                                                                       |
+| L3  | inside `overlay`, where the mesh's longest match is a route, a default among them                                                      | unmarked                                            | 5110, into the tun                                                                       |
 | L4  | inside the overlay, where the mesh's longest match is a hold                                                                           | unmarked                                            | 5110, refused                                                                            |
 | L5  | inside the overlay, where the mesh's longest match is a throw or the table holds nothing for it                                        | unmarked                                            | on through the rows below, as for a destination outside the overlay                      |
 | L6  | outside the overlay, under a route of main longer than /0                                                                              | unmarked                                            | 5410, by main's route, whatever the mesh's table holds for it                            |
@@ -807,10 +804,10 @@ A lookup bound to no device:
 - L3 and L5: every overlay prefix has a hold of its own but one that holds its
   family's unspecified address and one the mesh cannot carry, so only inside
   those can the mesh's longest match be a route shorter than the prefix, a
-  throw, or nothing. Without `cap.border` no destination is inside the overlay.
-- L5: a [carve-out](border-filter.md#carve-outs)'s throw is the mesh's longest
-  match for an address of the carve-out no route of the mesh holds, so a lookup
-  to the link's gateway or neighbor ends at L6 by main's route for the link.
+  throw, or nothing. Without `overlay` no destination is inside the overlay.
+- L5: a [carve-out](antispoof.md#carve-outs)'s throw is the mesh's longest match
+  for an address of the carve-out no route of the mesh holds, so a lookup to the
+  link's gateway or neighbor ends at L6 by main's route for the link.
 - L4, L7 and L9: a skipped length never skips an `unreachable`, `blackhole` or
   `prohibit` route. That is why the reconciler installs no hold of a route that
   counts.
@@ -904,10 +901,10 @@ failed asks none, and it and a pass whose lookups failed keep the last answers.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
-- A reload that changes `cap.table`, the addresses it assigns,
-  `cap.border.overlay` or `cap.exit`, or whose `cap.route` announcements make
-  this node an exit or stop making it one, `ranet3 enable reconciler` and
-  `ranet3 disable reconciler` start a pass too.
+- A reload that changes `cap.table`, the addresses it assigns, `overlay` or
+  `cap.exit`, or whose `cap.route` announcements make this node an exit or stop
+  making it one, `ranet3 enable reconciler` and `ranet3 disable reconciler`
+  start a pass too.
 - A change of a default or an address the network watch reads starts a pass.
   With `cap.exit` a change of links alone, a link coming, going or moving a
   prefix or a far end, starts one too, which expands `forward` again and derives
@@ -923,15 +920,15 @@ them back. Both are refused on a node with no `cap.table`.
 ### Routes that count as a default
 
 Some routes would carry the host's own traffic into the mesh, and they count as
-a default. Such a route lies outside `cap.border.overlay` and is shorter than
-`/8` for IPv4 or `/16` for IPv6, or contains its family's unspecified address
-however long it is. A default and its `/1` halves count, and so do a split
-internet such as four IPv4 `/2`s or `2000::/3`, and a wide prefix such as
-`fd00::/8`, `fc00::/7` or an IPv4 `/7`. A route at or longer than the floor, or
-inside the overlay, is a subnet, unless it contains the unspecified address. A
-route lies inside the overlay when each of its addresses lies in some entry,
-whether one entry holds it or several together do. Without `cap.border`, which
-macOS refuses at startup, no route lies inside the overlay.
+a default. Such a route lies outside `overlay` and is shorter than `/8` for IPv4
+or `/16` for IPv6, or contains its family's unspecified address however long it
+is. A default and its `/1` halves count, and so do a split internet such as four
+IPv4 `/2`s or `2000::/3`, and a wide prefix such as `fd00::/8`, `fc00::/7` or an
+IPv4 `/7`. A route at or longer than the floor, or inside the overlay, is a
+subnet, unless it contains the unspecified address. A route lies inside the
+overlay when each of its addresses lies in some entry, whether one entry holds
+it or several together do. Without `overlay` no route lies inside the overlay,
+and macOS's interface scope judges every route as though none did.
 
 The floors are `/8` and `/16` because a route shorter than either takes a share
 of a host's traffic as a default does, a split internet above all, while the
@@ -1014,7 +1011,7 @@ the rules in full.
 | Policy rules                                       | derived and installed                                                                                   | none                                                                                                                                                                                                              |
 | An underlay datagram                               | marked 0x72, so its lookup ends past the mesh's routes                                                  | names the interface the selection answers, or the source its pin holds, as [the underlay's interface](#the-underlays-interface-on-macos) says                                                                     |
 | This node's own prefix outside the overlay         | throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source | nothing, so a lookup for it from a socket bound to no interface and no address of the utun ends as row D2 of [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) gives                                  |
-| Hold of each overlay prefix                        | installed for each that holds no unspecified address and that the mesh can carry                        | not installed, since macOS refuses `cap.border`                                                                                                                                                                   |
+| Hold of each overlay prefix                        | installed for each that holds no unspecified address and that the mesh can carry                        | not installed, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                  |
 | `where` in the logs                                | `table 200 protocol 155`                                                                                | `interface utun6`, for example                                                                                                                                                                                    |
 
 On both platforms a route that counts as a default, the `/0` default among them,

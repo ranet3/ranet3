@@ -5,7 +5,7 @@
 title: "ranet3"
 description: "What ranet3 is, and where each part of it is documented."
 created: 2026-08-17
-updated: 2026-10-30
+updated: 2026-11-01
 order: 10
 ---
 
@@ -42,23 +42,25 @@ Linux seg6local for SRv6.
 
 ## Capabilities
 
-The top of the config file says what the node is: its name in `node`, its key
-and trust document in `auth`, its port, endpoints and tun in `link`, and its
-peers in `dial`. Everything else it does is a block under `cap`. `cap.table`,
-`cap.segment`, `cap.egress` and `cap.border` are off until the file writes them,
-and `cap.transit` until it writes `enable = true`. `cap.route`, `cap.babel` and
+The top of the config file says what the node is: its name in `node`, the
+prefixes the mesh numbers its nodes from in `overlay`, its key and trust
+document in `auth`, its port, endpoints and tun in `link`, and its peers in
+`dial`. Everything else it does is a block under `cap`. `cap.table`,
+`cap.segment` and `cap.egress` are off until the file writes them, and
+`cap.transit` until it writes `enable = true`. `cap.route`, `cap.babel` and
 `cap.crypto` run with their defaults when the file leaves them out.
+[`cap.antispoof`](antispoof.md) turns nothing on and only exempts.
 
-| Block         | What it does                                                                                                               |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `cap.route`   | Names the prefixes this node announces                                                                                     |
-| `cap.transit` | Relays the routes this node learns, and so carries other nodes' traffic                                                    |
-| `cap.babel`   | Sets the Babel timers, the link quality estimator and the link costs                                                       |
-| `cap.table`   | Runs the route reconciler, which installs routes, addresses and, on Linux, the policy rules it derives in the kernel       |
-| `cap.segment` | Steers traffic by source and destination prefix through SRv6 waypoints, and lists the segments this node answers for       |
-| `cap.egress`  | Translates source addresses for exit nodes and subnet routers, on Linux                                                    |
-| `cap.border`  | Drops what arrives from outside the mesh with a mesh source, except from a link's own network inside the overlay, on Linux |
-| `cap.crypto`  | Chooses and orders the ciphers, PRFs and key exchanges, and sets the rekey intervals and the ESP replay window             |
+| Block           | What it does                                                                                                                                                         |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cap.route`     | Names the prefixes this node announces                                                                                                                               |
+| `cap.transit`   | Relays the routes this node learns, and so carries other nodes' traffic                                                                                              |
+| `cap.babel`     | Sets the Babel timers, the link quality estimator and the link costs                                                                                                 |
+| `cap.table`     | Runs the route reconciler, which installs routes, addresses and, on Linux, the policy rules it derives in the kernel                                                 |
+| `cap.segment`   | Steers traffic by source and destination prefix through SRv6 waypoints, and lists the segments this node answers for                                                 |
+| `cap.egress`    | Translates source addresses for exit nodes and subnet routers, on Linux                                                                                              |
+| `cap.antispoof` | [Drops](antispoof.md) what arrives from outside the mesh with an overlay source, except from an interface's own network inside the overlay or an exemption, on Linux |
+| `cap.crypto`    | Chooses and orders the ciphers, PRFs and key exchanges, and sets the rekey intervals and the ESP replay window                                                       |
 
 ## Running a node
 

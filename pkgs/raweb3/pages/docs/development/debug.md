@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-01
+updated: 2026-11-02
 order: 30
 ---
 
@@ -154,23 +154,24 @@ These commands take flags of their own:
   `cap.exit.via`, `Steered defaults in table <id>` with the path `up`, or `down`
   at the first segment that does not resolve and the mesh's answer, and each
   family's steered default `installed` or `not installed`. Then, on Linux, the
-  border filter's table: when its last pass read it and whether it is ready,
-  then each chain, `border` with `cap.border` and `mesh_entry`, with the hook
-  and priority it is written at and each rule read now with the packets and
-  bytes each drop counted, any rule the table does not hold yet, any rule it
-  holds that the filter did not write, by its comment or as
-  `a rule with no comment`, and each set with the elements the last pass asked
-  for. Then, under `cap.exit.fallback = "none"`, the table `ranet3_fallback` as
-  `Fallback table` with its two chains, their hooks and priority and the
-  switch's state, each line of each chain with the packets and bytes the drop
-  counted, and each named set with its elements, or `not held` where the kernel
-  holds no table. The dump and the chains are each read now through a socket of
-  their own, so an operator who sends a test packet reads the counters of that
-  moment, and neither the reconciler's socket nor the filter's serves a reader.
-  A platform with no policy rules says so. A rule carrying a selector the view
-  keeps no value of, `uidrange`, `ipproto`, `sport`, `dport`, `dscp`,
-  `flowlabel` or `tun_id`, or carrying `suppress_ifgroup`, shows that name among
-  its selectors.
+  [antispoof filter's](../antispoof.md) table: when its last pass read it and
+  whether it is ready, then each chain, `antispoof` with `overlay` and
+  `mesh_entry`, with the hook and priority it is written at and each rule read
+  now with the packets and bytes each drop counted, any rule the table does not
+  hold yet, any rule it holds that the filter did not write, by its comment or
+  as `a rule with no comment`, and each set with the elements the last pass
+  asked for. Another platform with `overlay` written prints
+  `Antispoof filter, not enforced on darwin` there, naming itself. Then, under
+  `cap.exit.fallback = "none"`, the table `ranet3_fallback` as `Fallback table`
+  with its two chains, their hooks and priority and the switch's state, each
+  line of each chain with the packets and bytes the drop counted, and each named
+  set with its elements, or `not held` where the kernel holds no table. The dump
+  and the chains are each read now through a socket of their own, so an operator
+  who sends a test packet reads the counters of that moment, and neither the
+  reconciler's socket nor the filter's serves a reader. A platform with no
+  policy rules says so. A rule carrying a selector the view keeps no value of,
+  `uidrange`, `ipproto`, `sport`, `dport`, `dscp`, `flowlabel` or `tun_id`, or
+  carrying `suppress_ifgroup`, shows that name among its selectors.
 - `debug route <src> <dst> [--iif link | --peer node]` follows one packet to
   where this host sends it: this host's own packet, with `--iif` one arriving on
   that link, or with `--peer` one arriving through a session from that node,
@@ -201,10 +202,10 @@ These commands take flags of their own:
   that the answer calls for. It reads no nftables chain, so a link it names is
   where the route leaves by, not what
   [the kill switch](../routing.md#the-kill-switch-on-linux) lets leave. Nor does
-  it show the border filter's drops: an arrival chain `border` drops from
+  it show the antispoof filter's drops: an arrival chain `antispoof` drops from
   outside the mesh is followed as though the host routed it, and a packet
-  [`mesh_entry`](../border-filter.md#the-entry-chain) drops before the tun reads
-  it is shown entering the tun and meeting the mesh's checks of a read. The drop
+  [`mesh_entry`](../antispoof.md#the-entry-chain) drops before the tun reads it
+  is shown entering the tun and meeting the mesh's checks of a read. The drop
   shows in the filter's counters, in `debug rules` and `ranet3 status`.
   [Route rows](#route-rows) gives each row the view prints. For this host's own
   IPv6 packet to `::`, the unspecified address, the view names no path the
@@ -367,9 +368,9 @@ These commands take flags of their own:
   filter selects, as the node decides it, until `--for` has passed, and then
   exits 0. A record is described below. A packet the forwarding decision never
   sees, such as Babel's own or IKE and ESP on the underlay, never appears, and
-  neither does one the border filter drops, since chain `border` drops it before
-  the host routes it and `mesh_entry` before the tun reads it. With `--json`
-  each line is an object holding a `packet` or a `note`.
+  neither does one the antispoof filter drops, since chain `antispoof` drops it
+  before the host routes it and `mesh_entry` before the tun reads it. With
+  `--json` each line is an object holding a `packet` or a `note`.
 
 ## Route rows
 
@@ -378,25 +379,25 @@ them: the segment's or the mesh's rows before the kernel's for a packet arriving
 through a session, after them for any other. A row with nothing to say is left
 out.
 
-| Row      | What it shows                                                                                                                                                        |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Packet   | the source, the destination and the arrival, and that the lookup left out the source where the platform's lookup does not take one                                   |
-| Segment  | the segment of this node the packet is addressed to, as the file spells it, with an egress segment's part of the exit                                                |
-| Source   | whether the source lies in `cap.border`'s overlay and, for an egress segment, in an entry of its allow list inside the overlay, the order the segment checks them in |
-| Decision | the drop of a source the segment refuses, as a [trace record](#trace-records) names it                                                                               |
-| Then     | what the segment does next with a packet it admits                                                                                                                   |
-| Mesh     | the mesh's decision and its reason as a trace record names them, with the ICMP error an answer carries, or why the walk did not follow the packet                    |
-| Steered  | the policy, or `cap.exit.via`'s path, that steers a read to the first segment of its path                                                                            |
-| Matched  | the table's entry the destination matched, and whether it counts as a default                                                                                        |
-| Session  | the session a packet is held to and the most it carries, the steering's header among it, past which a packet is answered too big or cut                              |
-| Expiring | for a packet arriving through a session, that one arriving with a hop limit of 1 or less is answered expired                                                         |
-| Kernel   | the errno the kernel refused the lookup with and what it means as far as the answer and the settings tell, or that the platform looks up no route                    |
-| Unread   | a rule ahead of the one shown carrying a selector the walk does not read, taken as not taking the packet                                                             |
-| Rule     | the rule a walk of the dumped rules ends on for the answer                                                                                                           |
-| Route    | the route the kernel matched, with its prefix, table and next hops, each marked `dead` or `linkdown` where the kernel marks it, and the packet's type                |
-| Leaves   | where the route leaves by: a link, this host, nowhere, or into the mesh's tun                                                                                        |
-| Socket   | for this host's own IPv6 packet to `::`, that a socket decides where it goes, so the answer may not be its path                                                      |
-| Settings | each setting read to explain the answer, with its value or why it could not be read                                                                                  |
+| Row      | What it shows                                                                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Packet   | the source, the destination and the arrival, and that the lookup left out the source where the platform's lookup does not take one                      |
+| Segment  | the segment of this node the packet is addressed to, as the file spells it, with an egress segment's part of the exit                                   |
+| Source   | whether the source lies in `overlay` and, for an egress segment, in an entry of its allow list inside the overlay, the order the segment checks them in |
+| Decision | the drop of a source the segment refuses, as a [trace record](#trace-records) names it                                                                  |
+| Then     | what the segment does next with a packet it admits                                                                                                      |
+| Mesh     | the mesh's decision and its reason as a trace record names them, with the ICMP error an answer carries, or why the walk did not follow the packet       |
+| Steered  | the policy, or `cap.exit.via`'s path, that steers a read to the first segment of its path                                                               |
+| Matched  | the table's entry the destination matched, and whether it counts as a default                                                                           |
+| Session  | the session a packet is held to and the most it carries, the steering's header among it, past which a packet is answered too big or cut                 |
+| Expiring | for a packet arriving through a session, that one arriving with a hop limit of 1 or less is answered expired                                            |
+| Kernel   | the errno the kernel refused the lookup with and what it means as far as the answer and the settings tell, or that the platform looks up no route       |
+| Unread   | a rule ahead of the one shown carrying a selector the walk does not read, taken as not taking the packet                                                |
+| Rule     | the rule a walk of the dumped rules ends on for the answer                                                                                              |
+| Route    | the route the kernel matched, with its prefix, table and next hops, each marked `dead` or `linkdown` where the kernel marks it, and the packet's type   |
+| Leaves   | where the route leaves by: a link, this host, nowhere, or into the mesh's tun                                                                           |
+| Socket   | for this host's own IPv6 packet to `::`, that a socket decides where it goes, so the answer may not be its path                                         |
+| Settings | each setting read to explain the answer, with its value or why it could not be read                                                                     |
 
 ## Trace records
 
@@ -529,10 +530,11 @@ connections to the reads.
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed                    |
 | `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                               |
 | `egress.refused`                      | a pass read a family's count of packets refused past a source's share move                |
-| `border.pass`                         | a border filter pass that rewrote its table or a set, or failed                           |
-| `border.ready`                        | the border filter's table went ready or not ready, with `ready`                           |
-| `border.dropped`                      | a pass read a drop counter that moved, at most once per pass                              |
-| `border.carve`                        | a carve-out of the overlay for a link came or went                                        |
+| `antispoof.pass`                      | an antispoof filter pass that rewrote its table or a set, or failed                       |
+| `antispoof.ready`                     | the antispoof filter's table went ready or not ready, with `ready`                        |
+| `antispoof.dropped`                   | a pass read a drop counter that moved, at most once per pass                              |
+| `antispoof.carve`                     | a carve-out of the overlay for a link came or went                                        |
+| `antispoof.conflict`                  | another node's prefix came to hold part of an exemption                                   |
 | `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two      |
 | `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                            |
 | `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                 |
@@ -550,7 +552,7 @@ connections to the reads.
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit              |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                    |
 
-`egress.pass`, `egress.ready`, `egress.refused` and the 4 `border` kinds are
+`egress.pass`, `egress.ready`, `egress.refused` and the 5 `antispoof` kinds are
 recorded on Linux alone. `transport.endpoint.unsegmented` is recorded on Linux
 and Android, which build the Linux sockets. `transport.underlay.selected` is
 recorded on macOS alone, because only macOS names each underlay datagram's
@@ -623,10 +625,11 @@ Each kind carries these attributes:
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                              |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                           |
 | `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains)                                                                                 |
-| `border.pass`                                 | `trigger`, `took`, `installed`, `wrote` (`table` or `sets`, where the pass wrote), `err`                                                                                                        |
-| `border.ready`                                | `ready`                                                                                                                                                                                         |
-| `border.dropped`                              | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, each the packets since the pass before                          |
-| `border.carve`                                | `link`, `prefix`, `carved` (true where the carve-out came, false where it went)                                                                                                                 |
+| `antispoof.pass`                              | `trigger`, `took`, `installed`, `wrote` (`table` or `sets`, where the pass wrote), `err`                                                                                                        |
+| `antispoof.ready`                             | `ready`                                                                                                                                                                                         |
+| `antispoof.dropped`                           | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, each the packets since the pass before                          |
+| `antispoof.carve`                             | `link`, `prefix`, `carved` (true where the carve-out came, false where it went)                                                                                                                 |
+| `antispoof.conflict`                          | `exemption`, `interface`, `prefix`, `carved` (the part the carved sets hold), `routed_via` (the peer the mesh routes the prefix through), `router_id` (of the route babel selected for it)      |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, `ipv4_links_added`, `ipv4_links_removed`, `ipv4_links_changed`, the same 7 for `ipv6`, `probed`, `woken`                      |
 | `transport.underlay.selected`                 | `endpoint`, `interface`, empty where no route holds the endpoint, `interface_index`, 0 then                                                                                                     |
 | `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                                                                             |
@@ -644,7 +647,7 @@ Each kind carries these attributes:
 | `netstack.answer.source`                      | `ipv4`, `ipv6`, `sid`, each only where the node holds it                                                                                                                                        |
 
 `err` appears on `daemon.reload`, `control.verb`, `kernel.pass`, `egress.pass`
-and `border.pass` only when the step failed, and on a `control.verb` under a
+and `antispoof.pass` only when the step failed, and on a `control.verb` under a
 session the verb missed it is the reason the answer gives. The `trigger` of a
 `kernel.pass` is `start`, `sweep`, `retry`, `grace`, `disable`, `enable`,
 `reload`, `network` when the network watch delivered a change, `mesh` or
@@ -652,10 +655,10 @@ session the verb missed it is the reason the answer gives. The `trigger` of a
 `disable`, `enable`, `changed` when another writer added, changed or deleted
 part of its tables, or `missed` when the daemon lost nf_tables notifications to
 an overflow or could not read one, whoever's tables they were about. The
-`trigger` of a `border.pass` is `start`, `sweep`, `retry`, `reload`, `routes`
-when the mesh's table changed, `network` when the host's links did or a reload
-stored a new overlay, `changed` when another writer added, changed or deleted
-part of its table, or `missed` as for an `egress.pass`.
+`trigger` of an `antispoof.pass` is `start`, `sweep`, `retry`, `reload`,
+`routes` when the mesh's table changed, `network` when the host's links did,
+`changed` when another writer added, changed or deleted part of its table, or
+`missed` as for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an
