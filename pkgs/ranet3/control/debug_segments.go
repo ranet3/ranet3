@@ -51,8 +51,8 @@ type SegmentEgress struct {
 
 // Steering is the policies deciding which of this node's own packets go
 // through a segment list: Enabled false while they are stopped, Overhead the
-// most any adds, which the tun's MTU leaves room for, and each policy in the
-// order it was written
+// most any adds, cap.exit via's path among them, which the tun's MTU leaves
+// room for, and each cap.segment steer policy in the order it was written
 type Steering struct {
 	Enabled  bool          `json:"enabled"`
 	Overhead int           `json:"overhead"`

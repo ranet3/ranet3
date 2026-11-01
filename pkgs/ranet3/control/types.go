@@ -292,8 +292,9 @@ type Status struct {
 	// segment its delivery and its allow list. It is absent on a
 	// node that configures no segment routing, which is most of them.
 	Segments []string `json:"segments,omitempty"`
-	// Steering is the policies deciding which of this node's own packets go
-	// through a segment list, in the order they were written.
+	// Steering is the cap.segment steer policies deciding which of this node's
+	// own packets go through a segment list, in the order they were written,
+	// cap.exit via's path not among them.
 	Steering []string `json:"steering,omitempty"`
 	// SegmentCounters is always present, zeroes included. Omitting it while
 	// nothing had happened yet would read the same as a node with no segment
@@ -330,10 +331,11 @@ type SegmentCounters struct {
 	Dropped   uint64 `json:"dropped"`
 	// Steered counts this node's own packets a policy encapsulated, Unsteered
 	// the ones a policy claimed and could not, and Unrouted the ones it
-	// encapsulated toward a first segment the mesh had no route to. Both
-	// failures drop the packet, because a policy here selects an exit and the
-	// route it overrides puts the packet out of another node under a source
-	// that node does not announce.
+	// encapsulated toward a first segment the mesh had no route to, or,
+	// along cap.exit via's path, a first segment that has no route of its
+	// own. Both failures drop the packet, because a policy here selects an
+	// exit and the route it overrides puts the packet out of another node
+	// under a source that node does not announce.
 	Steered   uint64 `json:"steered"`
 	Unsteered uint64 `json:"unsteered"`
 	Unrouted  uint64 `json:"unrouted"`
