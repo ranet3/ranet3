@@ -342,7 +342,6 @@ func testPeerRekeyDropsTheRetryOfTheSAItReplaced(t *testing.T) {
 		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, 4*retryDelay
 	}, func(initiator, responder *Session) {
 		initiator.rekeyJitterSource = unjittered
-		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 		allow = refuseEveryRekey(t, initiator, responder)
 	})
 	for deadline := time.Now().Add(answerBudget); childRekeyLines(pair, "ike.rekey.failed") == 0; time.Sleep(recordPoll) {
@@ -381,7 +380,6 @@ func testPeerRekeyAtTheInstantOfTheSAItReplacedDropsTheRetry(t *testing.T) {
 		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
 	}, func(initiator, responder *Session) {
 		initiator.rekeyJitterSource = unjittered
-		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 		allow = refuseEveryRekey(t, initiator, responder)
 	})
 	first, _ := pair.initiator.childEstablishedAt()
@@ -417,7 +415,6 @@ func TestPeerRekeyDropsTheRetryOfTheSAItReplacedWithOrWithoutAnInterval(t *testi
 				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
 			}, func(initiator, responder *Session) {
 				initiator.rekeyJitterSource = unjittered
-				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 				allow = refuseEveryRekey(t, initiator, responder)
 			})
 			askFailing(t, pair)
@@ -457,7 +454,6 @@ func TestRefusedRekeyOfThePeersSAIsRetriedWithOrWithoutAnInterval(t *testing.T) 
 				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
 			}, func(initiator, responder *Session) {
 				initiator.rekeyJitterSource = unjittered
-				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 			})
 			time.Sleep(retryDelay / 2)
 			if err := pair.responder.RekeyChild(); err != nil {
@@ -488,7 +484,6 @@ func testPeerRekeyEndsTheTemporaryFailureRun(t *testing.T) {
 		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
 	}, func(initiator, responder *Session) {
 		initiator.rekeyJitterSource = unjittered
-		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 		// the run of refusals began so long ago that the one at the scheduled rekey leaves it open and one past the retry closes it
 		initiator.temporary = seededStreak(initiator, time.Now().Add(-temporaryFailureSpan+lead+retryDelay))
 		refuseRekeys(initiator, responder)
@@ -536,7 +531,6 @@ func testPeerRekeyEndsTheTemporaryFailureRunOfAForcedRekey(t *testing.T) {
 		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
 	}, func(initiator, responder *Session) {
 		initiator.rekeyJitterSource = unjittered
-		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 		seeded = time.Now()
 		// the run of refusals began so long ago that the forced rekey's refusal leaves it open and one past spanLeft closes it
 		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
@@ -602,7 +596,6 @@ func TestPeerChildSARekeyEndsTheTemporaryFailureRunOfTheIKESA(t *testing.T) {
 				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
 			}, func(initiator, responder *Session) {
 				initiator.rekeyJitterSource = unjittered
-				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 				// the run's span ends half a retry delay after the IKE SA's scheduled rekey falls due, so that rekey's retry closes the run unless the peer's Child SA rekey ended it
 				initiator.temporary = seededStreak(initiator, time.Now().Add(-temporaryFailureSpan+lead+retryDelay/2))
 			})
@@ -650,7 +643,6 @@ func testPeerRekeyEndsTheTemporaryFailureRunBeforeAReloadRekeysItsSA(t *testing.
 		cfg.RekeyRetryInitial, cfg.RekeyRetryMax = retryDelay, retryDelay
 	}, func(initiator, responder *Session) {
 		initiator.rekeyJitterSource = unjittered
-		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 		seeded = time.Now()
 		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
 	})
@@ -703,7 +695,6 @@ func testReloadEndsNoTemporaryFailureRun(t *testing.T) {
 			}
 			return 0, nil
 		}
-		initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 		seeded = time.Now()
 		initiator.temporary = seededStreak(initiator, seeded.Add(-temporaryFailureSpan+spanLeft))
 		refuseRekeys(initiator, responder)

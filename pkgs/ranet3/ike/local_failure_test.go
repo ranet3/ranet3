@@ -65,7 +65,6 @@ func testRefusedWithdrawalAtTheLifetimeDeletesTheIKESA(t *testing.T) {
 	}, func(initiator, responder *Session) {
 		refuseRekeys(initiator, responder)
 		initiator.SetChildRetireHandler(func(uint32) error { return errRefused })
-		initiator.retransmitAfter = quietPeriod / 3
 	})
 	deletedOnFailure(t, pair, "child")
 }

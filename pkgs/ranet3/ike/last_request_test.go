@@ -15,9 +15,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/bubble"
 )
 
-// heldRetransmit spaces the sends of a Delete whose first send is lost, so the session has started ending well before the second
-const heldRetransmit = 500 * time.Millisecond
-
 // RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 // once a Delete of the IKE SA has gone out, a request queued behind it is refused, and neither a probe nor the liveness interval starts a check, so nothing more goes out on that SA
 func TestNothingFollowsADeleteOfTheIKESA(t *testing.T) {
@@ -35,8 +32,6 @@ func testNothingFollowsADeleteOfTheIKESA(t *testing.T) {
 		return true
 	})
 	initiator, responder := dialPaused(t, h, cfg)
-	initiator.retransmitAfter = unansweredRetransmit
-	initiator.dpdEvery, responder.dpdEvery = quietDPD, time.Hour
 	runSession(t, responder)
 	runSession(t, initiator)
 	if !waitUntil(initiator.serving.Load) {
@@ -51,7 +46,7 @@ func testNothingFollowsADeleteOfTheIKESA(t *testing.T) {
 	}
 	initiator.Probe()
 	// a liveness check would fall due an interval after the Delete's answer
-	time.Sleep(quietDPD + quietPeriod)
+	time.Sleep(defaultDPDInterval + quietPeriod)
 	if got := requests.Load() - sent; got != 0 {
 		t.Errorf("%d INFORMATIONAL requests went out after the Delete of the IKE SA, want none", got)
 	}
@@ -98,9 +93,7 @@ func TestSessionEndingBehindADeleteOfTheIKESASendsNoDeleteOfItsOwn(t *testing.T)
 				return true
 			})
 			initiator, responder := dialPaused(t, h, cfg)
-			initiator.retransmitAfter = heldRetransmit
 			initiator.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
-			initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 			runSession(t, responder)
 			run := runSession(t, initiator)
 			if !waitUntil(initiator.serving.Load) {

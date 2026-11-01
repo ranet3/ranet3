@@ -1927,9 +1927,6 @@ func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 			const due = 100 * time.Millisecond
 			s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
 			s.timing.IKERekeyInterval, s.timing.RekeyMargin = time.Hour, time.Hour-due
-			if peerDoes == "stays silent" {
-				s.retransmitAfter = due
-			}
 			var ended error
 			finished := make(chan struct{})
 			go func() { defer close(finished); ended = s.run(context.Background(), why) }()

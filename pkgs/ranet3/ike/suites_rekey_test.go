@@ -1251,7 +1251,6 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 			})
 			initiator, responder := dialPaused(t, h, cfg)
 			initiator.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return c.delay, nil }
-			initiator.retransmitAfter = 200 * time.Millisecond
 			runSession(t, responder)
 			run := runSession(t, initiator)
 			proactive := make(chan error, 1)
@@ -1312,7 +1311,6 @@ func testReplacementPastAChildSALifetimeSendsNoSecondDelete(t *testing.T) {
 	})
 	initiator, responder := dialPaused(t, h, cfg)
 	initiator.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
-	initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 	runSession(t, responder)
 	run := runSession(t, initiator)
 	sha256Only := suitesOf(t, Crypto{IKE: IKESuites{PRF: []string{"sha256"}}})

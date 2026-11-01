@@ -1289,8 +1289,8 @@ func rekeyDue() time.Time { return time.Now().Add(scheduleDue - (rekeyLifetime -
 // the lifetime and margin of the IKE SA a Run test rekeys on its schedule, the lifetime far past the test
 const rekeyLifetime, rekeyMarginOf = time.Hour, time.Hour - time.Second
 
-// the liveness interval of a Run test whose checks fall due within quietPeriod, and of one whose checks never fall due
-const dueDPD, noDPD = 20 * time.Millisecond, time.Hour
+// the liveness interval of a Run test whose checks never fall due
+const noDPD = time.Hour
 
 // the wait a test cuts a peer's chain to, and how long before a chain's deadline a test reads the chain
 const chainWaitCut, beforeDeadline = 50 * time.Millisecond, time.Millisecond
@@ -1373,12 +1373,12 @@ func TestQuietSessionStartsNoLivenessCheck(t *testing.T) {
 func testQuietSessionStartsNoLivenessCheck(t *testing.T) {
 	p, _ := chainPeer(t, time.Now())
 	s := p.session
-	s.dpdEvery = dueDPD
 	s.probes = make(chan struct{}, 1)
 	s.quiet.Store(true)
 	runSession(t, s)
 	s.Probe()
-	if !p.silent(quietPeriod) {
+	// the liveness check falls due within the wait
+	if !p.silent(defaultDPDInterval + quietPeriod) {
 		t.Fatal("the session sent a request while quiet")
 	}
 	s.quiet.Store(false)
@@ -1398,8 +1398,6 @@ func TestRunDropsThePeersChainAtItsDeadline(t *testing.T) {
 func testRunDropsThePeersChainAtItsDeadline(t *testing.T) {
 	p, events := chainPeer(t, time.Now())
 	s := p.session
-	// no liveness check wakes Run in the test
-	s.dpdEvery = noDPD
 	runSession(t, s)
 	peer, request := newPeerRekey(t, hybridOffer, drawnOctets(t, 32))
 	p.request(CREATE_CHILD_SA, 0, request)

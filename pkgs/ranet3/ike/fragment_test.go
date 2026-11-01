@@ -754,7 +754,7 @@ func TestRunStartsARequestsBackoffOverWhenItCutsItAgain(t *testing.T) {
 func testRunStartsARequestsBackoffOverWhenItCutsItAgain(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	mtu := 9000
-	s := &Session{mux: mux, current: testContext(), fragments: true, retransmitAfter: time.Minute, pathMTU: func() (int, error) { return mtu, nil }}
+	s := &Session{mux: mux, current: testContext(), fragments: true, pathMTU: func() (int, error) { return mtu, nil }}
 	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{bulkyStatus(2000)}})
 	if err != nil {
 		t.Fatal(err)
@@ -766,9 +766,9 @@ func testRunStartsARequestsBackoffOverWhenItCutsItAgain(t *testing.T) {
 	mtu = 1280
 	sent := time.Now()
 	s.sendPending(pending)
-	if pending.attempts != 1 || pending.sent != 3 || pending.total < 2 || pending.deadline.After(sent.Add(s.retransmitAfter+time.Second)) {
+	if pending.attempts != 1 || pending.sent != 3 || pending.total < 2 || pending.deadline.After(sent.Add(requestTimeout+time.Second)) {
 		t.Errorf("the send cut again counted %d attempts of %d sends in %d fragments and waits until %s after it, want the first attempt again, cut, and one interval of %s",
-			pending.attempts, pending.sent, pending.total, pending.deadline.Sub(sent), s.retransmitAfter)
+			pending.attempts, pending.sent, pending.total, pending.deadline.Sub(sent), requestTimeout)
 	}
 }
 
@@ -848,7 +848,6 @@ func testProbeCutsTheRequestAgainOnceThePathMTUFalls(t *testing.T) {
 	s, peer := fragmentingSession(t, &recorder{})
 	mtu := 9000
 	s.pathMTU = func() (int, error) { return mtu, nil }
-	s.retransmitAfter = time.Minute
 	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{bulkyStatus(2000)}})
 	if err != nil {
 		t.Fatal(err)
@@ -871,9 +870,9 @@ func testProbeCutsTheRequestAgainOnceThePathMTUFalls(t *testing.T) {
 		if total < 2 || len(inner) != 1 || !bytes.Equal(inner[0].Body, bulkyStatus(2000).Body) {
 			t.Fatalf("probe %d sent payload types %v in %d fragments, want the request cut again", probe+1, payloadTypes(inner), total)
 		}
-		if pending.attempts != 1 || pending.sent != 3 || pending.deadline.After(at.Add(s.retransmitAfter+time.Second)) {
+		if pending.attempts != 1 || pending.sent != 3 || pending.deadline.After(at.Add(requestTimeout+time.Second)) {
 			t.Errorf("after probe %d the request counts %d attempts of %d sends and waits until %s after it, want the first attempt of three sends and one interval of %s",
-				probe+1, pending.attempts, pending.sent, pending.deadline.Sub(at), s.retransmitAfter)
+				probe+1, pending.attempts, pending.sent, pending.deadline.Sub(at), requestTimeout)
 		}
 		if probe == 0 {
 			first = sent
@@ -1082,7 +1081,6 @@ func steppedSession(t *testing.T) *Session {
 	t.Helper()
 	s, _ := fragmentingSession(t, &recorder{})
 	s.pathMTU = pathMTUOf(1500)
-	s.retransmitAfter = time.Minute
 	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{bulkyStatus(2000)}})
 	if err != nil {
 		t.Fatal(err)
@@ -1258,7 +1256,6 @@ func testRunStepsARequestDownToTheFloorAndSendsItThereUntilItsBudgetEnds(t *test
 	s, _ := fragmentingSession(t, &recorder{})
 	mtu := 9000
 	s.pathMTU = func() (int, error) { return mtu, nil }
-	s.retransmitAfter = time.Minute
 	pending, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: []RawPayload{bulkyStatus(2000)}})
 	if err != nil {
 		t.Fatal(err)
@@ -1270,7 +1267,7 @@ func testRunStepsARequestDownToTheFloorAndSendsItThereUntilItsBudgetEnds(t *test
 	}{{1500, 1, true}, {1500, 2, false}, {576, 1, true}} {
 		total, at := pending.total, time.Now()
 		s.sendPending(pending)
-		if pending.threshold != want.threshold || pending.attempts != want.attempts || want.cut != (pending.total > total) || want.attempts == 1 && pending.deadline.After(at.Add(s.retransmitAfter+time.Second)) {
+		if pending.threshold != want.threshold || pending.attempts != want.attempts || want.cut != (pending.total > total) || want.attempts == 1 && pending.deadline.After(at.Add(requestTimeout+time.Second)) {
 			t.Fatalf("send %d went in %d fragments under %d counting %d attempts and waits until %s after it, want %d attempts under %d, cut again %v",
 				send+2, pending.total, pending.threshold, pending.attempts, pending.deadline.Sub(at), want.attempts, want.threshold, want.cut)
 		}
@@ -1297,7 +1294,6 @@ func TestProbesCountNoSendTowardTheStepToTheFloor(t *testing.T) {
 		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := fragmentingSession(t, &recorder{})
 			s.pathMTU = pathMTUOf(1500)
-			s.retransmitAfter = time.Minute
 			_, key := modelKEM(t, ML_KEM_768)
 			pending, err := s.startRequest(&localRequest{exchange: IKE_FOLLOWUP_KE, inner: []RawPayload{{Type: PayloadKE, Body: EncodeKE(ML_KEM_768, key)}, linkPayload([]byte("link1"))}})
 			if err != nil {
@@ -1329,7 +1325,7 @@ func TestProbesCountNoSendTowardTheStepToTheFloor(t *testing.T) {
 			} else {
 				s.sendPending(pending)
 			}
-			if pending.threshold != 576 || pending.total < 2 || pending.attempts != 1 || pending.deadline.After(at.Add(s.retransmitAfter+time.Second)) {
+			if pending.threshold != 576 || pending.total < 2 || pending.attempts != 1 || pending.deadline.After(at.Add(requestTimeout+time.Second)) {
 				t.Fatalf("%s after %d of the backoff went in %d fragments under %d at attempt %d and waits until %s after it, want it cut for the floor of 576 and its backoff started over", name, stepDownSends, pending.total, pending.threshold, pending.attempts, pending.deadline.Sub(at))
 			}
 			wantFits(t, pending.datagrams, floorRoom)
@@ -1638,7 +1634,6 @@ func sendsOf(t *testing.T, mtu func(send int) int) (last, gives time.Duration) {
 	s, _ := fragmentingSession(t, &recorder{})
 	send := 1
 	s.pathMTU = func() (int, error) { return mtu(send), nil }
-	s.retransmitAfter = requestTimeout
 	_, key := modelKEM(t, ML_KEM_768)
 	pending, err := s.startRequest(&localRequest{exchange: IKE_FOLLOWUP_KE, inner: []RawPayload{{Type: PayloadKE, Body: EncodeKE(ML_KEM_768, key)}, linkPayload([]byte("link1"))}})
 	if err != nil {

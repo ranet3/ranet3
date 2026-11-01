@@ -263,7 +263,6 @@ func TestProactiveRekeyOutstandingAtTheChildSALifetime(t *testing.T) {
 			}, func(initiator, responder *Session) {
 				established = initiator.childEstablished
 				late = established.Add(lifetime + answerLate)
-				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 				responder.SetChildHandler(func(ChildSA) error {
 					time.Sleep(time.Until(late))
 					if answer == "fails" {
@@ -862,7 +861,6 @@ func TestSpentSequenceSpaceClosesTheIKESAUnlessARekeyReplacesIt(t *testing.T) {
 				cfg.ChildRekeyInterval = tc.interval
 				cfg.RekeyRetryInitial, cfg.RekeyRetryMax = time.Hour, time.Hour
 			}, func(initiator, responder *Session) {
-				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 				held := time.Now().Add(2 * quietPeriod)
 				switch tc.answer {
 				case "refused before":
@@ -1006,7 +1004,6 @@ func TestSessionKeepsItsSAsAcrossTheirLifetimes(t *testing.T) {
 					return true
 				})
 			}, func(initiator, responder *Session) {
-				initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 				time.Sleep(keptLate)
 			})
 			select {

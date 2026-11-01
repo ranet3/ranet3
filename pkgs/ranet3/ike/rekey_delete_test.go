@@ -281,8 +281,6 @@ func TestDeleteOfTheCurrentIKESAHasTheTeardownBudget(t *testing.T) {
 				return true
 			})
 			initiator, responder := dialPaused(t, h, cfg)
-			initiator.retransmitAfter = unansweredRetransmit
-			initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 			runSession(t, responder)
 			run := runSession(t, initiator)
 			c.deleteIKE(t, initiator, dialing)
@@ -323,9 +321,7 @@ func testLifetimeBehindAnUnansweredDeleteOfAReplacedIKESAStillDeletesTheIKESA(t 
 	})
 	initiator, responder := dialPaused(t, h, cfg)
 	replaced.Store(initiator.currentContext().spiI)
-	initiator.retransmitAfter = time.Second
 	initiator.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
-	initiator.dpdEvery, responder.dpdEvery = time.Hour, time.Hour
 	runSession(t, responder)
 	run := runSession(t, initiator)
 	aes128 := suitesOf(t, Crypto{IKE: IKESuites{Cipher: []string{"aes128gcm"}}})
