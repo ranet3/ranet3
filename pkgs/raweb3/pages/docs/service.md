@@ -77,10 +77,8 @@ between the two, and so does what `openFirewall` opens.
 | `group`              | string                                     | `"ranet3"` on NixOS, `"admin"` on nix-darwin           | The group that may use the control socket. NixOS creates it. nix-darwin creates none, and its default, `admin`, is a group macOS already has. |
 | `logFile`            | absolute path outside the store, or `null` | `null` on NixOS, `"/var/log/ranet3.log"` on nix-darwin | Where the daemon's output goes. `null` keeps it in the journal on NixOS and discards it on nix-darwin.                                        |
 
-Members of `group` may run every subcommand and the read paths of the
-`ranet3 debug` tree. The other debug paths admit only the callers their class
-names, and `--debug-access`, which `extraArgs` passes, changes that as
-[the control socket](control-socket.md) describes.
+Members of `group` run every subcommand, as
+[who may use it](control-socket.md#who-may-use-it) describes.
 
 ## The NixOS unit
 

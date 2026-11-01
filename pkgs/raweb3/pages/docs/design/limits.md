@@ -21,10 +21,10 @@ and the feasibility condition of
 A node that carries transit decrypts other nodes' packets from one session and
 encrypts them again onto the next, so it sees their plaintext.
 
-The one way ranet3 offers to read that plaintext is `ranet3 debug trace`, and it
-is uid 0's alone under every `--debug-access` but `off`, which closes it. A
-trace record shows a packet's headers, and its bytes only where the trace asked
-for them with `--payload`, as [debugging](../development/debug.md#trace-records)
+The one way ranet3 offers to read that plaintext is `ranet3 debug trace`, which
+[the socket's users](../control-socket.md#who-may-use-it) may run. A trace
+record shows a packet's headers, and its bytes only where the trace asked for
+them with `--payload`, as [debugging](../development/debug.md#trace-records)
 describes. A relayed packet never crosses the tun, so `tcpdump` on the tun shows
 none of them. A trace record of a packet its next peer's send budget refused
 follows that packet's `forward` record. A packet the peer's queue drops for its

@@ -28,66 +28,35 @@ event kind, a path or the socket complete in bash, zsh and fish, the shells
 
 ## Who may call it
 
-The socket's mode decides who can connect at all. That is enough for the reads
-and the verbs outside this tree, because each of those acts on something the
-node's own file already decides. A debug path can show or do what the file never
-decides, so debug paths are authorized by who is calling instead.
-
-The daemon asks the kernel for the credentials of every connection it accepts,
-`SO_PEERCRED` on Linux and `LOCAL_PEERCRED` on macOS. Every debug path has a
-class:
-
-- **read**: snapshots that carry no key material, and the event stream. Open to
-  everyone who can open the socket, as `ranet3 status` is.
-- **root**: every debug action. `debug probe` is the only one. Open to uid 0 and
-  to the user the daemon runs as. Each such call is logged at info with the
-  caller's uid and pid.
-- **plaintext**: what the node reads of the packets it handles, other nodes'
-  traffic among them. `debug trace` is the only one. Open to uid 0 alone. Each
-  such call is logged at info with the caller's uid and pid and its query, which
-  holds the filter and the payload length asked for.
+A debug path takes the callers every other path takes, as
+[who may use it](../control-socket.md#who-may-use-it) says. The snapshots carry
+no key material.
 
 The daemon serves 11 debug paths:
 
-| Path                 | Class     | Commands                     |
-| -------------------- | --------- | ---------------------------- |
-| `/v0/debug/egress`   | read      | `debug egress`               |
-| `/v0/debug/events`   | read      | `debug events`, `debug wait` |
-| `/v0/debug/netmon`   | read      | `debug netmon`               |
-| `/v0/debug/pmtu`     | read      | `debug pmtu`                 |
-| `/v0/debug/probe`    | root      | `debug probe`                |
-| `/v0/debug/route`    | read      | `debug route`                |
-| `/v0/debug/rules`    | read      | `debug rules`                |
-| `/v0/debug/runtime`  | read      | `debug runtime`              |
-| `/v0/debug/segments` | read      | `debug segments`             |
-| `/v0/debug/trace`    | plaintext | `debug trace`                |
-| `/v0/debug/updown`   | read      | `debug updown`               |
-
-Profiles are not a debug path. The daemon's `--pprof` serves them on an address
-of its own, and no class covers that address.
-
-The daemon's `--debug-access` sets how far the root class reaches. `root` is the
-default. `group` opens the root class to everyone who can open the socket, and
-`off` refuses every debug path, the read class included. `group` leaves the
-plaintext class to uid 0, since the packets it shows are other nodes' too. The
-modules carry no option of their own for it: `extraArgs` passes the flag. The
-daemon reads the caller's credentials on Linux and macOS only, so on every other
-platform a connection reaches the read class alone under `root` and `group`,
-nothing under `off`, and the root and plaintext classes refuse every call there.
+| Path                 | Commands                     |
+| -------------------- | ---------------------------- |
+| `/v0/debug/egress`   | `debug egress`               |
+| `/v0/debug/events`   | `debug events`, `debug wait` |
+| `/v0/debug/netmon`   | `debug netmon`               |
+| `/v0/debug/pmtu`     | `debug pmtu`                 |
+| `/v0/debug/probe`    | `debug probe`                |
+| `/v0/debug/route`    | `debug route`                |
+| `/v0/debug/rules`    | `debug rules`                |
+| `/v0/debug/runtime`  | `debug runtime`              |
+| `/v0/debug/segments` | `debug segments`             |
+| `/v0/debug/trace`    | `debug trace`                |
+| `/v0/debug/updown`   | `debug updown`               |
 
 A debug request the daemon does not answer with 200 gets one of these statuses:
 
 | Status | When                                                                                                                                                                                                                                                                                                                    |
 | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 400    | an events or trace query, an action body or a `debug route` packet that does not parse, a trace query out of its bounds, a link or a peer `debug route` refuses as the arrival, such as the mesh's tun or a node this node holds no session with, or an action the node refuses, such as `debug probe` while it is down |
-| 403    | the class refuses the caller, and the answer names the rule and the caller's uid or the missing credentials                                                                                                                                                                                                             |
-| 404    | no debug path has that name, except under `off`, which answers 403                                                                                                                                                                                                                                                      |
+| 404    | no debug path has that name                                                                                                                                                                                                                                                                                             |
 | 405    | a read sent with a method other than GET or HEAD, a trace sent with one other than GET, or an action sent with one other than POST                                                                                                                                                                                      |
 | 501    | the server behind the socket does not implement the view, and the answer names it. The `ranet3` daemon implements every view                                                                                                                                                                                            |
 | 503    | the daemon already holds 4 streams, event and trace streams together, or a trace asked for while the daemon stops                                                                                                                                                                                                       |
-
-On a NixOS host and on macOS the daemon runs as root, so the root and plaintext
-classes mean `sudo`. In an `unshare -rn` lab the caller already reads as uid 0.
 
 ## Commands
 
@@ -357,10 +326,9 @@ These commands take flags of their own:
   instead. One with none sends no liveness check while its IKE SA is past its
   lifetime or a Delete of it has gone out, or while a rekey of its own may run
   `IKE_FOLLOWUP_KE` exchanges or waits on the peer's. It is an action, so it
-  takes the root class, and it is recorded as a `control.verb` like the other
-  verbs. It completes to the peers the node dials and the nodes it holds a
-  session with. The daemon refuses it while the node is down, and when no
-  session matches.
+  takes a POST, and it is recorded as a `control.verb` like the other verbs. It
+  completes to the peers the node dials and the nodes it holds a session with.
+  The daemon refuses it while the node is down, and when no session matches.
 - `debug updown` is whether the node is on the mesh and since when, the flag
   that keeps it off through a restart and whether the flag is there, and the
   last move between up and down with its cause, a request or the flag at start.
@@ -397,12 +365,11 @@ These commands take flags of their own:
 - `debug trace [--src P]... [--dst P]... [--proto P] [--decision D] [--peer P] [--rate 1000] [--payload 0] [--for 30s]`
   prints a record of each packet the node's forwarding decision handles and the
   filter selects, as the node decides it, until `--for` has passed, and then
-  exits 0. It needs uid 0, as the plaintext class above says. A record is
-  described below. A packet the forwarding decision never sees, such as Babel's
-  own or IKE and ESP on the underlay, never appears, and neither does one the
-  border filter drops, since chain `border` drops it before the host routes it
-  and `mesh_entry` before the tun reads it. With `--json` each line is an object
-  holding a `packet` or a `note`.
+  exits 0. A record is described below. A packet the forwarding decision never
+  sees, such as Babel's own or IKE and ESP on the underlay, never appears, and
+  neither does one the border filter drops, since chain `border` drops it before
+  the host routes it and `mesh_entry` before the tun reads it. With `--json`
+  each line is an object holding a `packet` or a `note`.
 
 ## Route rows
 
@@ -1016,9 +983,9 @@ left out where the node holds no such address.
 A view is 3 new files, and no file of the tree needs an edit for it:
 
 - `control/debug_<view>.go` holds the wire types, the interface the daemon
-  implements, the path registered from `init` with its class, the text renderer
-  and the client method. `debugRead` registers a snapshot. `registerDebug`
-  registers a view that takes a query or acts, as `pmtu` and `probe` do.
+  implements, the path registered from `init`, the text renderer and the client
+  method. `debugRead` registers a snapshot. `registerDebug` registers a view
+  that takes a query or acts, as `pmtu` and `probe` do.
 - `internal/client/debug_<view>.go` implements that interface on the daemon's
   side.
 - `cmd/ranet3/debug_<view>.go` appends the command to `debugCommands` from
@@ -1031,5 +998,4 @@ every run. The check that no debug answer has room for key material, and the
 property that every wire type survives a trip through JSON, walk each registered
 path's type without being told about a new one. The check passes one field by
 name, a trace record's `payload`, the packet's bytes `--payload` asks for, which
-hold none of the node's keys and which the plaintext class keeps to uid 0. Any
-other field of bytes fails it.
+hold none of the node's keys. Any other field of bytes fails it.

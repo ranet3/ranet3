@@ -34,20 +34,12 @@ with the commands spelled within 2 edits of it.
 | `--control`             | `/var/run/ranet3/control.sock`                        | The control socket to serve. `""` serves none.                                                                                                                                      |
 | `--state-dir`           | `/var/lib/ranet3` on Linux, `/var/db/ranet3` on macOS | The directory for the flag `ranet3 down` leaves, and for the Babel router id and seqno limit in `babel.json`. The daemon makes it at mode 0700 when it is missing. `""` is refused. |
 | `--log-level`           | `info`                                                | The least severe level the log keeps: `debug`, `info`, `warn` or `error`.                                                                                                           |
-| `--debug-access`        | `root`                                                | Who may use the debug paths: `root`, `group` or `off`.                                                                                                                              |
 | `--metrics`             | `""`                                                  | An address to serve `/metrics` on, such as `127.0.0.1:9669`. Empty serves none.                                                                                                     |
 | `--pprof`               | `""`                                                  | An address to serve pprof on, such as `127.0.0.1:6060`. Empty serves none.                                                                                                          |
 | `--contention-profiles` | `false`                                               | Records mutex and blocking profiles while pprof is served. This costs a lot of overhead.                                                                                            |
 
-The `--debug-access` values set who may use the root class of debug paths, such
-as `debug probe`:
-
-- `root` admits uid 0 and the user the daemon runs as.
-- `group` admits everyone who can open the socket.
-- `off` refuses every debug path, the read class included.
-
-`debug trace` reads the packets the node handles, other nodes' traffic among
-them, and takes uid 0 alone under `root` and `group`. `group` does not open it.
+[Who may use it](control-socket.md#who-may-use-it) says who runs the commands
+that ask the daemon.
 
 The daemon logs to standard error. A CPU profile is at `/debug/pprof/profile` on
 the pprof address, and this opens one as a flame graph:
@@ -56,7 +48,7 @@ the pprof address, and this opens one as a flame graph:
 go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 ```
 
-[Control socket](control-socket.md) describes the socket and its debug classes.
+[Control socket](control-socket.md) describes the socket and its paths.
 [Metrics](metrics.md) lists the series.
 
 ### Signals
@@ -215,11 +207,11 @@ it. [Debugging](development/debug.md) describes each command and the events.
   or one arriving on a link that the kernel forwards, goes on through the mesh's
   checks of what it reads off the tun.
 - `debug trace` prints a line for each packet the forwarding decision handles
-  and the filter selects until `--for` has passed, and needs uid 0. `--src` and
-  `--dst` take a prefix or an address and may be repeated, `--proto` a name or a
-  number, and `--decision` one of `deliver`, `forward`, `egress`, `answer` and
-  `drop`. A line shows the packet's headers and no payload unless `--payload`
-  names how many of its bytes to show.
+  and the filter selects until `--for` has passed. `--src` and `--dst` take a
+  prefix or an address and may be repeated, `--proto` a name or a number, and
+  `--decision` one of `deliver`, `forward`, `egress`, `answer` and `drop`. A
+  line shows the packet's headers and no payload unless `--payload` names how
+  many of its bytes to show.
 
 ## Other commands
 
@@ -254,7 +246,7 @@ These complete without a daemon:
 - every command and flag
 - the subsystems of `disable` and `enable`
 - the shells of `completion`
-- the values of `--log-level` and `--debug-access`
+- the values of `--log-level`
 - the methods and paths of `debug socket`
 - `--decision` and `--proto` of `debug trace`
 - a directory for `--state-dir`

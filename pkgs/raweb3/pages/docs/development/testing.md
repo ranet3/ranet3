@@ -1021,9 +1021,12 @@ the restart also waits for the restarted flannel to log that it set up its
 rules.
 
 `integration-reload` boots one machine and no gateway. It runs ranet3 through
-the NixOS module with a trust document that names only itself. The machine has 4
-entries under `specialisation`, and the test script switches to each the way a
-deployment does:
+the NixOS module with a trust document that names only itself. Once the daemon
+is up, the script finds the control socket at mode 0660 in the group `ranet3`. A
+member of that group runs `ranet3 status` and `ranet3 debug runtime`, and a user
+outside it is refused `ranet3 status`. The machine has 4 entries under
+`specialisation`, and the test script switches to each the way a deployment
+does:
 
 ```sh
 nix build .#checks.x86_64-linux.integration-reload -L

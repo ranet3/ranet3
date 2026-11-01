@@ -10,17 +10,8 @@ order: 80
 
 `--control /var/run/ranet3/control.sock` is where the daemon answers, and is the
 default, so a node is askable without having been configured to be.
-`--control ""` turns it off. The socket is mode 0660 in the daemon's group,
-which the unit names, and that mode authorizes every path outside `/v0/debug/`.
-[The verbs](#acting-on-a-running-node) say what keeps it sufficient for them.
-
-The debug paths are authorized by the caller's peer credentials instead. Their
-snapshots and the event stream are open to whoever can open the socket.
-`debug probe`, the only action among them, takes root or the daemon's own user.
-The daemon's `--debug-access` changes this. `group` opens the probe to whoever
-can open the socket, and `off` refuses every debug path, as
-[debugging](development/debug.md) describes. The trace of the packets the node
-handles takes uid 0 alone under `root` and `group`.
+`--control ""` turns it off. The socket is mode 0660, owned by the daemon's
+user, root under both modules, and in the daemon's group, which the unit names.
 
 The daemon bounds each connection by an idle timeout. It also bounds the
 connections open at once across every caller. Each connection costs a
@@ -29,13 +20,43 @@ the daemon closes a new connection as it accepts it. That client learns at once
 that it was refused, and a shutdown never waits for a free place.
 [Limits](#limits) gives the values.
 
+## Who may use it
+
+Whoever can open the socket runs every command, the `ranet3 debug` tree
+included, and nothing past the socket's mode checks the caller. Root, the
+daemon's user and the members of the daemon's group can open it, which makes the
+group root-equivalent for the daemon. A member can:
+
+- take the node off the mesh with `down`, which holds through restarts and
+  reboots until `up`
+- withdraw the kill switch's rule and table with `disable reconciler`, as
+  [the verbs](#acting-on-a-running-node) describe, and stop steering or the
+  responder
+- read in plaintext with `debug trace` the packets the node's forwarding
+  decision handles, up to the trace's rate, other users' and other nodes'
+  traffic among them
+- send probes as the node with `debug probe`
+
+Give the group only to someone who may already act as root on the daemon.
+[Running it as a service](service.md#options) names the group each module uses.
+
+The events `control.verb` and `control.trace.started` carry the caller's uid and
+pid, as [debugging](development/debug.md) lists. They are an in-memory record,
+the last 1024 events of their subsystem, which a restart clears. Each
+`debug probe` and `debug trace` request also writes a `control debug call` line
+at info to the daemon's log, with its path, the caller's uid and pid, and a
+trace's query. That line is the lasting record of who probed and who traced
+while the daemon logs at `info` or `debug` and its log is kept. A `logLevel` of
+`warn` or `error` drops it, and so does nix-darwin's `logFile = null`, which
+discards the daemon's output, as [the options](service.md#options) say.
+
 ## Socket directory
 
-The socket takes the daemon's group on every platform. Each directory the daemon
-makes on the way to the socket gets the same group and mode 0750. Linux gives a
-new file the group of the process that makes it, outside a setgid directory.
-macOS gives a new file the group of its directory, which under `/var/run` is
-`daemon`. The daemon sets the group before the mode lets that group in.
+The socket and each directory the daemon makes on the way to it take the
+daemon's group before their mode lets that group in, whichever group the system
+gives a new file ([Linux](https://man7.org/linux/man-pages/man2/open.2.html),
+[macOS](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/open.2.html)).
+A directory the daemon makes is mode 0750.
 
 A directory that already exists keeps its group and mode. On macOS, a directory
 in the group `daemon` keeps the socket out of reach of the daemon's group. Stop
@@ -182,35 +203,34 @@ fleet then has to firewall.
 ## Endpoints
 
 Every path starts with `/v0`. A read answers GET and HEAD, and a verb answers
-POST. The class says who may call a path. `mode` is anyone the socket's mode
-lets in. `read`, `root` and `plaintext` are the debug classes described above.
+POST.
 
-| Path                 | Method    | Class       | Request                                                            | Answer                              |
-| -------------------- | --------- | ----------- | ------------------------------------------------------------------ | ----------------------------------- |
-| `/v0/status`         | GET, HEAD | `mode`      | none                                                               | the node, a JSON object             |
-| `/v0/neighbors`      | GET, HEAD | `mode`      | none                                                               | Babel neighbors, a JSON list        |
-| `/v0/routes`         | GET, HEAD | `mode`      | none                                                               | Babel routes, a JSON list           |
-| `/v0/sessions`       | GET, HEAD | `mode`      | none                                                               | IKE sessions, a JSON list           |
-| `/v0/peers`          | GET, HEAD | `mode`      | none                                                               | dialed peers, a JSON list           |
-| `/v0/metrics`        | GET, HEAD | `mode`      | none                                                               | the Prometheus text format          |
-| `/v0/disable`        | POST      | `mode`      | `subsystem`                                                        | a result                            |
-| `/v0/enable`         | POST      | `mode`      | `subsystem`                                                        | a result                            |
-| `/v0/redial`         | POST      | `mode`      | `peer` or `all`                                                    | a result                            |
-| `/v0/rekey`          | POST      | `mode`      | `peer` or `all`                                                    | a result                            |
-| `/v0/reload`         | POST      | `mode`      | empty body                                                         | a result                            |
-| `/v0/down`           | POST      | `mode`      | empty body                                                         | a result                            |
-| `/v0/up`             | POST      | `mode`      | empty body                                                         | a result                            |
-| `/v0/debug/events`   | GET, HEAD | `read`      | query `kind`, `peer`, `attr`, `since`, `follow`                    | events, 1 JSON object per line      |
-| `/v0/debug/pmtu`     | GET, HEAD | `read`      | query `peer`                                                       | path MTU view, a JSON object        |
-| `/v0/debug/runtime`  | GET, HEAD | `read`      | none                                                               | process view, a JSON object         |
-| `/v0/debug/updown`   | GET, HEAD | `read`      | none                                                               | up and down view, a JSON object     |
-| `/v0/debug/netmon`   | GET, HEAD | `read`      | none                                                               | network watch view, a JSON object   |
-| `/v0/debug/rules`    | GET, HEAD | `read`      | none                                                               | rules view, a JSON object           |
-| `/v0/debug/route`    | GET, HEAD | `read`      | query `src`, `dst`, `iif`, `peer`                                  | route view, a JSON object           |
-| `/v0/debug/egress`   | GET, HEAD | `read`      | none                                                               | exit view, a JSON object            |
-| `/v0/debug/segments` | GET, HEAD | `read`      | none                                                               | segments view, a JSON object        |
-| `/v0/debug/probe`    | POST      | `root`      | `peer` or `all`                                                    | a result                            |
-| `/v0/debug/trace`    | GET       | `plaintext` | query `src`, `dst`, `proto`, `decision`, `peer`, `rate`, `payload` | trace lines, 1 JSON object per line |
+| Path                 | Method    | Request                                                            | Answer                              |
+| -------------------- | --------- | ------------------------------------------------------------------ | ----------------------------------- |
+| `/v0/status`         | GET, HEAD | none                                                               | the node, a JSON object             |
+| `/v0/neighbors`      | GET, HEAD | none                                                               | Babel neighbors, a JSON list        |
+| `/v0/routes`         | GET, HEAD | none                                                               | Babel routes, a JSON list           |
+| `/v0/sessions`       | GET, HEAD | none                                                               | IKE sessions, a JSON list           |
+| `/v0/peers`          | GET, HEAD | none                                                               | dialed peers, a JSON list           |
+| `/v0/metrics`        | GET, HEAD | none                                                               | the Prometheus text format          |
+| `/v0/disable`        | POST      | `subsystem`                                                        | a result                            |
+| `/v0/enable`         | POST      | `subsystem`                                                        | a result                            |
+| `/v0/redial`         | POST      | `peer` or `all`                                                    | a result                            |
+| `/v0/rekey`          | POST      | `peer` or `all`                                                    | a result                            |
+| `/v0/reload`         | POST      | empty body                                                         | a result                            |
+| `/v0/down`           | POST      | empty body                                                         | a result                            |
+| `/v0/up`             | POST      | empty body                                                         | a result                            |
+| `/v0/debug/events`   | GET, HEAD | query `kind`, `peer`, `attr`, `since`, `follow`                    | events, 1 JSON object per line      |
+| `/v0/debug/pmtu`     | GET, HEAD | query `peer`                                                       | path MTU view, a JSON object        |
+| `/v0/debug/runtime`  | GET, HEAD | none                                                               | process view, a JSON object         |
+| `/v0/debug/updown`   | GET, HEAD | none                                                               | up and down view, a JSON object     |
+| `/v0/debug/netmon`   | GET, HEAD | none                                                               | network watch view, a JSON object   |
+| `/v0/debug/rules`    | GET, HEAD | none                                                               | rules view, a JSON object           |
+| `/v0/debug/route`    | GET, HEAD | query `src`, `dst`, `iif`, `peer`                                  | route view, a JSON object           |
+| `/v0/debug/egress`   | GET, HEAD | none                                                               | exit view, a JSON object            |
+| `/v0/debug/segments` | GET, HEAD | none                                                               | segments view, a JSON object        |
+| `/v0/debug/probe`    | POST      | `peer` or `all`                                                    | a result                            |
+| `/v0/debug/trace`    | GET       | query `src`, `dst`, `proto`, `decision`, `peer`, `rate`, `payload` | trace lines, 1 JSON object per line |
 
 A trace's query takes `src` and `dst` each up to 16 times, a prefix or an
 address, `proto` a protocol number or one of `icmp`, `tcp`, `udp`, `gre`, `esp`,
@@ -271,8 +291,7 @@ when empty, and every counter is always present. Other lists, such as
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 200  | The read or the verb succeeded.                                                                                                                                                                        |
 | 400  | The node refused a verb, a body or query does not parse, a query names more kinds, attributes or prefixes than the limits allow, or a trace's rate or payload is out of its bounds. The body says why. |
-| 403  | The caller may not use this debug path. The body names the rule and the caller's uid.                                                                                                                  |
-| 404  | No such path. Under `--debug-access off`, an unknown debug path answers 403.                                                                                                                           |
+| 404  | No such path.                                                                                                                                                                                          |
 | 405  | The method does not fit the path. `Allow` names the one that does.                                                                                                                                     |
 | 500  | The daemon could not encode its answer. The body says why.                                                                                                                                             |
 | 501  | The program serving the socket does not implement that verb or debug view. The daemon implements them all.                                                                                             |
@@ -315,20 +334,16 @@ A rekey still running goes on, and `ike.rekey.completed` or `ike.rekey.failed`
 tells how it ended. `reload` does what SIGHUP does, so a supervisor is not the
 only way to ask. `down` takes the node off the mesh and `up` puts it back, as
 [taking a node off the mesh](#taking-a-node-off-the-mesh) describes.
-`debug probe` acts as well, under the debug rules above.
+`debug probe` acts as well.
 
 None of them changes the configuration. A node's configuration is its file, and
 that stays its only entry point. What these act on is operational state the file
 already decides: `cap.table`, `cap.segment`'s steering, `link.listen`, the peers
 list and the file itself. `down` asks for no more than a file without peers,
-`link.listen`, `cap.table` or `cap.egress` would. Whoever may edit that file
-could already ask for every one of them, by editing and restarting or by editing
-and sending SIGHUP. The socket's mode therefore grants nothing the file's
-permissions did not. A verb that reached past what the file can express would
-break that, and is refused on those grounds. The subsystem names are a closed
-set for the same reason. The 2 halves are told apart by method rather than by
-path: a read answers GET and HEAD and nothing else, and a verb answers POST
-alone.
+`link.listen`, `cap.table` or `cap.egress` would. No verb reaches past what the
+file can express, such as a peer, a key or an address, and the subsystem names
+are a closed set. The 2 halves are told apart by method rather than by path: a
+read answers GET and HEAD and nothing else, and a verb answers POST alone.
 
 The state lives in the process, apart from the flag `down` leaves. A restart
 starts every subsystem the file names. A reload leaves a stopped subsystem
