@@ -43,7 +43,7 @@ func (s *Session) canReplaceChildLocked(localSPI uint32) error {
 	if s.retiring.LocalSPI != 0 {
 		return fmt.Errorf("ike: Child SA %08x is still awaiting retirement", s.retiring.LocalSPI)
 	}
-	if localSPI == s.Child.LocalSPI {
+	if localSPI == s.child.LocalSPI {
 		return fmt.Errorf("ike: Child SA SPI %08x is already active", localSPI)
 	}
 	for _, retired := range s.retired {
@@ -94,8 +94,8 @@ func (s *Session) replaceKeyedChild(child ChildSA, entry kexEntry) error {
 			return err
 		}
 	}
-	old, oldEnds := s.Child, s.childEstablished.Add(s.childRekeyInterval)
-	s.Child, s.childEstablished, s.childGeneration = child, time.Now(), s.childGeneration+1
+	old, oldEnds := s.child, s.childEstablished.Add(s.childRekeyInterval)
+	s.child, s.childEstablished, s.childGeneration = child, time.Now(), s.childGeneration+1
 	s.childKex = keyedEntry{spi: child.LocalSPI, entry: entry}
 	if old.LocalSPI != 0 {
 		s.retiring, s.retiringEnds = old, oldEnds
@@ -108,10 +108,11 @@ func (s *Session) replaceKeyedChild(child ChildSA, entry kexEntry) error {
 	return nil
 }
 
-func (s *Session) currentChild() ChildSA {
+// Child is the live Child SA, read under the lock a rekey replaces it beneath
+func (s *Session) Child() ChildSA {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
-	return s.Child
+	return s.child
 }
 
 func (s *Session) retiringChild() ChildSA {
@@ -200,7 +201,7 @@ func (s *Session) expireChild(now time.Time) error {
 	for _, sa := range []struct {
 		child ChildSA
 		ends  time.Time
-	}{{s.Child, s.childEstablished.Add(s.childRekeyInterval)}, {s.retiring, s.retiringEnds}} {
+	}{{s.child, s.childEstablished.Add(s.childRekeyInterval)}, {s.retiring, s.retiringEnds}} {
 		spi := sa.child.LocalSPI
 		if spi == 0 || now.Before(sa.ends) || slices.Contains(s.withdrawn, spi) {
 			continue
@@ -229,7 +230,7 @@ func (s *Session) ChildSequenceSpent(spi uint32) {
 	}
 	var out uint32
 	s.childMu.RLock()
-	for _, child := range []ChildSA{s.Child, s.retiring} {
+	for _, child := range []ChildSA{s.child, s.retiring} {
 		if child.LocalSPI == spi {
 			out = child.RemoteSPI
 		}
@@ -249,13 +250,13 @@ func (s *Session) ChildSequenceSpent(spi uint32) {
 func (s *Session) currentChildSpent() bool {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
-	return s.Child.LocalSPI != 0 && s.spentSPI.Load() == s.Child.LocalSPI
+	return s.child.LocalSPI != 0 && s.spentSPI.Load() == s.child.LocalSPI
 }
 
 func (s *Session) childWithdrawn() bool {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
-	return slices.Contains(s.withdrawn, s.Child.LocalSPI)
+	return slices.Contains(s.withdrawn, s.child.LocalSPI)
 }
 
 // childMu is held across the callback and registration change, so an SPI
@@ -335,16 +336,16 @@ func (s *Session) expireRetiredChildren(now time.Time) error {
 func (s *Session) forgetChild(child ChildSA) error {
 	s.childMu.Lock()
 	defer s.childMu.Unlock()
-	if s.Child.LocalSPI == 0 {
+	if s.child.LocalSPI == 0 {
 		return nil
 	}
-	if s.Child.LocalSPI != child.LocalSPI || s.Child.RemoteSPI != child.RemoteSPI {
+	if s.child.LocalSPI != child.LocalSPI || s.child.RemoteSPI != child.RemoteSPI {
 		return fmt.Errorf("ike: Child SA changed while handling CHILD_SA_NOT_FOUND")
 	}
 	if err := s.retireInboundLocked(child.LocalSPI, false); err != nil {
 		return err
 	}
-	s.Child = ChildSA{}
+	s.child = ChildSA{}
 	return nil
 }
 
@@ -360,8 +361,8 @@ func (s *Session) deleteChildren(remoteSPIs []uint32) ([]uint32, error) {
 	for _, remoteSPI := range remoteSPIs {
 		var child *ChildSA
 		switch {
-		case s.Child.LocalSPI != 0 && s.Child.RemoteSPI == remoteSPI:
-			child = &s.Child
+		case s.child.LocalSPI != 0 && s.child.RemoteSPI == remoteSPI:
+			child = &s.child
 		case s.retiring.LocalSPI != 0 && s.retiring.RemoteSPI == remoteSPI:
 			// RFC 7296 section 1.4.1: "If a node receives a delete request for SAs for which it has already issued a delete request, it MUST delete the outgoing SAs while processing the request and the incoming SAs while processing the response. In that case, the responses MUST NOT include Delete payloads for the deleted SAs, since that would result in duplicate deletion and could in theory delete the wrong SA."
 			// its outgoing half stopped carrying traffic when its replacement was installed, and its incoming half goes when this end's own Delete is answered

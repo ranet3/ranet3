@@ -49,7 +49,7 @@ func testChildNegotiationUsesRequestIKEKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := s.currentChild()
+	child := s.Child()
 	if !bytes.Equal(child.OutboundKey, wantOut) || !bytes.Equal(child.InboundKey, wantIn) {
 		t.Fatal("Child SA used the replacement IKE SA's keys instead of its request context")
 	}
@@ -104,7 +104,7 @@ func testReplaceChildDoesNotReuseInstalledSPI(t *testing.T) {
 		if draining {
 			s.retired = []childRetirement{{spi: 42}}
 		} else {
-			s.Child.LocalSPI = 42
+			s.child.LocalSPI = 42
 		}
 		if err := s.replaceChild(ChildSA{LocalSPI: 42}); err == nil {
 			t.Fatal("reused an SPI whose inbound keys are still installed")
@@ -246,7 +246,7 @@ func testChildNotFoundRecoveryCreatesNewChild(t *testing.T) {
 			suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256},
 			skD:   []byte("test child replacement SK_d material"),
 		},
-		Child:    old,
+		child:    old,
 		requests: make(chan *localRequest),
 	}
 	var retired uint32
@@ -312,7 +312,7 @@ func testChildNotFoundRecoveryCreatesNewChild(t *testing.T) {
 	if installed.LocalSPI != newLocalSPI || installed.RemoteSPI != newRemoteSPI {
 		t.Fatalf("installed Child SA = %#v", installed)
 	}
-	if got := s.currentChild(); got.LocalSPI != newLocalSPI || got.RemoteSPI != newRemoteSPI {
+	if got := s.Child(); got.LocalSPI != newLocalSPI || got.RemoteSPI != newRemoteSPI {
 		t.Fatalf("current Child SA = %#v", got)
 	}
 }
@@ -411,7 +411,7 @@ func newRekeyableSession(t *testing.T, old ChildSA) *Session {
 			suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256},
 			skD:   []byte("test child replacement SK_d material"),
 		},
-		Child:    old,
+		child:    old,
 		requests: make(chan *localRequest),
 	}
 	s.SetChildHandler(func(ChildSA) error { return nil })
@@ -443,7 +443,7 @@ func testCrossedChildDeleteStillRetiresReplacedSA(t *testing.T) {
 	}
 
 	// The session has to stay rekeyable, which is the part a latch broke.
-	next := s.currentChild()
+	next := s.Child()
 	if err := driveChildRekey(t, s, next, func(remove *localRequest) {
 		spi := make([]byte, 4)
 		binary.BigEndian.PutUint32(spi, next.RemoteSPI)
@@ -519,7 +519,7 @@ func testReplacedChildSAThePeerNeverDeletesIsDeletedAtTheDeadline(t *testing.T) 
 		t.Fatal(err)
 	}
 	s.childMu.Lock()
-	s.Child = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}
+	s.child = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}
 	s.retiring = replaced
 	s.retiringBy = time.Now().Add(retirementDeadline)
 	s.childMu.Unlock()
@@ -587,7 +587,7 @@ func testRunDeletesTheReplacedChildSAAtItsDeadline(t *testing.T) {
 	peer, s := closingAfterAuth(t)
 	replaced := ChildSA{LocalSPI: 0x11111111, RemoteSPI: 0x33333333}
 	s.requests = make(chan *localRequest, 1)
-	s.Child, s.retiring = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, replaced
+	s.child, s.retiring = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, replaced
 	if err := s.mux.RegisterESP(replaced.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func TestDeleteCrossingThisEndsOwnIsAnsweredWithoutTheSA(t *testing.T) {
 		}},
 		{"at the deadline", func(t *testing.T, s *Session, respond func(*localRequest)) error {
 			s.childMu.Lock()
-			s.Child, s.retiring, s.retiringBy = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, old, time.Now()
+			s.child, s.retiring, s.retiringBy = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, old, time.Now()
 			s.childMu.Unlock()
 			child, ok := s.overdueRetiring(time.Now())
 			if !ok {
@@ -724,7 +724,7 @@ func testRefusedRekeyResponseDeletesTheSAItLeftAtThePeer(t *testing.T) {
 	mux, _ := lifecycleMuxes(t)
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1, RemoteSPI: 2}
 	s := &Session{mux: mux, current: &ikeContext{suite: SASuite{PRFID: PRF_HMAC_SHA2_256}},
-		requests: make(chan *localRequest), Child: old, childRetireDelay: time.Second}
+		requests: make(chan *localRequest), child: old, childRetireDelay: time.Second}
 	if err := mux.RegisterESP(old.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
@@ -831,7 +831,7 @@ func TestRekeyOnTheWireOffersOneCipher(t *testing.T) {
 			}
 			mux, _ := lifecycleMuxes(t)
 			s := &Session{mux: mux, current: &ikeContext{suite: SASuite{PRFID: PRF_HMAC_SHA2_256}},
-				requests: make(chan *localRequest), Child: installed, childRetireDelay: time.Second}
+				requests: make(chan *localRequest), child: installed, childRetireDelay: time.Second}
 			if err := mux.RegisterESP(installed.LocalSPI); err != nil {
 				t.Fatal(err)
 			}
@@ -938,7 +938,7 @@ func testEachChildSAAnswerDrawsItsOwnNonce(t *testing.T) {
 	for range 2 {
 		mux, _ := lifecycleMuxes(t)
 		ctx := testContext()
-		s := &Session{mux: mux, current: ctx, Child: child}
+		s := &Session{mux: mux, current: ctx, child: child}
 		raw, err := s.handleRequest(ctx, &Header{ExchangeType: CREATE_CHILD_SA, MessageID: 5}, nil, childRekeyRequest(child.RemoteSPI))
 		if err != nil {
 			t.Fatal(err)

@@ -26,25 +26,26 @@ import (
 )
 
 // serveSession runs one established IKE SA until it ends, whichever end opened it
+// child is the Child SA its handshake established, which the tunnel installs first
 // dialed says this node did
 // key is the key that verified remote's AUTH
 // the resolution against a competing session happens here
 // the babel registration goes in under the same decision
 // it returns errSessionEstablished when another session already holds the path
 // and that is not a failure
-func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, remote identity.Identity, key ed25519.PublicKey, dialed bool) error {
+func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.ChildSA, local, remote identity.Identity, key ed25519.PublicKey, dialed bool) error {
 	defer sess.Mux().Close()
 	sessionName := identity.Path(remote, local)
-	log.Printf("peer %s: connected (SPI %08x/%08x)", sessionName, sess.Child.LocalSPI, sess.Child.RemoteSPI)
+	// read before adopt publishes the session
+	// after that a rekey may replace the Child SA
+	suite := sess.Suite()
+	log.Printf("peer %s: connected (SPI %08x/%08x)", sessionName, child.LocalSPI, child.RemoteSPI)
 	role := "responder"
 	if dialed {
 		role = "initiator"
 	}
-	// read before adopt publishes the session
-	// after that a rekey may write sess.Child
-	suite := sess.Suite()
 	established := []slog.Attr{slog.String("role", role),
-		slog.String("spi_in", fmt.Sprintf("%08x", sess.Child.LocalSPI)), slog.String("spi_out", fmt.Sprintf("%08x", sess.Child.RemoteSPI)),
+		slog.String("spi_in", fmt.Sprintf("%08x", child.LocalSPI)), slog.String("spi_out", fmt.Sprintf("%08x", child.RemoteSPI)),
 		slog.String("ike", suite.IKE()), slog.String("esp", suite.ESP())}
 
 	tunnel := &tunnel{replayWindow: c.config().Crypto().ReplayWindow(), started: time.Now()}
@@ -60,7 +61,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 	}
 	tunnel.spent = sess.ChildSequenceSpent
 	tunnel.failed = sess.ChildFailed
-	if err := tunnel.install(sess.Child); err != nil {
+	if err := tunnel.install(child); err != nil {
 		closeSession(sess)
 		return err
 	}

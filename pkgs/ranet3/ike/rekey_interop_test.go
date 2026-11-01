@@ -26,7 +26,7 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 				ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 					skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: responder}
 				old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
-				s := &Session{mux: mux, current: ctx, Child: old}
+				s := &Session{mux: mux, current: ctx, child: old}
 				dh, err := GenerateDH(group)
 				if err != nil {
 					t.Fatal(err)
@@ -91,7 +91,7 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 				}
 				// the keys follow the exchange's initiator, not the IKE role
 				keymat := prfPlus(suite.PRFID, ctx.skD, slices.Concat(shared, ni, payloads.nonce.Body), 40)
-				child := s.currentChild()
+				child := s.Child()
 				if !bytes.Equal(child.InboundKey, keymat[:20]) || !bytes.Equal(child.OutboundKey, keymat[20:]) {
 					t.Fatal("Child SA keys do not match peer PFS derivation")
 				}
@@ -442,7 +442,7 @@ func testHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20)}
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
-	s := &Session{mux: mux, current: ctx, Child: old, started: time.Now()}
+	s := &Session{mux: mux, current: ctx, child: old, started: time.Now()}
 
 	rekey := func(msgID uint32, remoteSPI uint32) []RawPayload {
 		raw, err := s.handleChildRekey(ctx, msgID, []RawPayload{
@@ -476,7 +476,7 @@ func testHandleChildRekeyRefusesSecondRekeyInSameInterval(t *testing.T) {
 	s.childMu.Unlock()
 
 	// the second names the current replacement, so only the interval refuses it
-	next := s.currentChild()
+	next := s.Child()
 	notify := findType(rekey(1, next.RemoteSPI), PayloadN)
 	if notify == nil {
 		t.Fatal("a second peer rekey in the same interval was accepted")
@@ -499,7 +499,7 @@ func testChaChaChildRekeyResponseEchoesNoKeyLength(t *testing.T) {
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20)}
 	// a rekey keeps the cipher of the SA it replaces
 	old := ChildSA{EncrID: ENCR_CHACHA20_POLY1305, EncrKeyBits: 256, LocalSPI: 21, RemoteSPI: 22}
-	s := &Session{mux: mux, current: ctx, Child: old, started: time.Now()}
+	s := &Session{mux: mux, current: ctx, child: old, started: time.Now()}
 
 	// a fixed-key cipher offered with no Key Length attribute
 	proposal := Proposal{
@@ -556,7 +556,7 @@ func testLocalFailureAnsweringAChildRekeyIsTemporary(t *testing.T) {
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20)}
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
-	s := &Session{mux: mux, current: ctx, Child: old, started: time.Now()}
+	s := &Session{mux: mux, current: ctx, child: old, started: time.Now()}
 	s.SetChildHandler(func(ChildSA) error { return errors.New("the dataplane is gone") })
 
 	raw, err := s.handleChildRekey(ctx, 0, []RawPayload{

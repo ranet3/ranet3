@@ -34,7 +34,7 @@ func newPeerChildRekey(t testing.TB, s *Session, transforms []Transform, ni []by
 		{Type: PayloadTSi, Body: fullRangeSelectors()},
 		{Type: PayloadTSr, Body: fullRangeSelectors()},
 	}
-	if child := s.currentChild(); child.RemoteSPI != 0 {
+	if child := s.Child(); child.RemoteSPI != 0 {
 		rekey := Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, child.RemoteSPI)}
 		request = append([]RawPayload{{Type: PayloadN, Body: EncodeNotify(rekey)}}, request...)
 	}
@@ -51,7 +51,7 @@ func (p *peerRekey) childKeys(old *ikeContext, each int) (initiator, responder [
 
 // installed reports whether s holds the Child SA the peer's chain or rekey made, of AES-GCM with a 128-bit key
 func (p *peerRekey) installed(s *Session) bool {
-	got := s.currentChild()
+	got := s.Child()
 	return got.EncrID == ENCR_AES_GCM_16 && got.EncrKeyBits == 128 && got.LocalSPI == p.espR && got.RemoteSPI == p.espI
 }
 
@@ -66,9 +66,9 @@ func TestChildSAChainOfAppendixA3AsResponder(t *testing.T) {
 		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := answeringChain(t, modelSuite, Suites{kex: []kexEntry{entry768}})
 			if !rekey {
-				s.Child = ChildSA{}
+				s.child = ChildSA{}
 			}
-			old, ctx := s.currentChild(), s.current
+			old, ctx := s.Child(), s.current
 			offer := slices.Concat([]Transform{encrAES128, dhX25519}, addkeOf(TransADDKE1, mlkem512, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024, private, 0))
 			p, request := newPeerChildRekey(t, s, offer, drawnOctets(t, 32))
 			answer := p.rekey(t, s.handleChildRekey, ctx, request)
@@ -84,7 +84,7 @@ func TestChildSAChainOfAppendixA3AsResponder(t *testing.T) {
 			if findType(answer, PayloadTSi) == nil || findType(answer, PayloadTSr) == nil || len(link1) != followupLinkLen {
 				t.Fatalf("the CREATE_CHILD_SA answer carries %v with the link %x, want TSi, TSr and a link of %d octets", payloadTypes(answer), link1, followupLinkLen)
 			}
-			if got := s.currentChild(); got.LocalSPI != old.LocalSPI {
+			if got := s.Child(); got.LocalSPI != old.LocalSPI {
 				t.Fatal("the responder installed the Child SA before the IKE_FOLLOWUP_KE")
 			}
 			last, err := p.followup(t, s, ctx, ML_KEM_768, link1)
@@ -93,7 +93,7 @@ func TestChildSAChainOfAppendixA3AsResponder(t *testing.T) {
 			}
 			// AES-GCM with a 128-bit key takes 16 octets of key and 4 of salt
 			initiator, responder := p.childKeys(ctx, 16+4)
-			if got := s.currentChild(); !p.installed(s) || !bytes.Equal(got.InboundKey, initiator) || !bytes.Equal(got.OutboundKey, responder) {
+			if got := s.Child(); !p.installed(s) || !bytes.Equal(got.InboundKey, initiator) || !bytes.Equal(got.OutboundKey, responder) {
 				t.Errorf("the responder holds the Child SA of SPIs %08x and %08x, want %08x and %08x keyed by the chain of Appendix A.3", got.LocalSPI, got.RemoteSPI, p.espR, p.espI)
 			}
 			if got := s.Suite().ESP(); got != "aes128gcm/x25519+mlkem768" {
@@ -122,7 +122,7 @@ func TestPeerChildSARekeyKeepsTheEntryOfTheSAItReplaces(t *testing.T) {
 	} {
 		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := answeringChain(t, chainSuite, Suites{kex: test.kex})
-			s.childKex = keyedEntry{spi: s.Child.LocalSPI, entry: test.entry}
+			s.childKex = keyedEntry{spi: s.child.LocalSPI, entry: test.entry}
 			p, request := newPeerChildRekey(t, s, []Transform{encrAES128, dhX25519, dhP256, {Type: TransADDKE1, ID: ML_KEM_768}, {Type: TransADDKE1}}, drawnOctets(t, 32))
 			answer := p.rekey(t, s.handleChildRekey, s.current, request)
 			if findType(answer, PayloadSA) == nil {
@@ -198,7 +198,7 @@ func TestRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *t
 
 func testRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *testing.T) {
 	s, _ := answeringChain(t, chainSuite, chainLists)
-	ctx, old := s.current, s.currentChild()
+	ctx, old := s.current, s.Child()
 	peer, request := newPeerChildRekey(t, s, childOffer, drawnOctets(t, 32))
 	peer.rekey(t, s.handleChildRekey, ctx, request)
 	if len(peer.link) != followupLinkLen {
@@ -212,7 +212,7 @@ func testRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *t
 	if !notified(answer, N_TEMPORARY_FAILURE, nil) || findType(answer, PayloadKE) != nil {
 		t.Errorf("the IKE_FOLLOWUP_KE drew %v, want TEMPORARY_FAILURE alone", payloadTypes(answer))
 	}
-	if got := s.currentChild(); got.LocalSPI != old.LocalSPI || got.RemoteSPI != old.RemoteSPI || peer.installed(s) {
+	if got := s.Child(); got.LocalSPI != old.LocalSPI || got.RemoteSPI != old.RemoteSPI || peer.installed(s) {
 		t.Errorf("the session holds the Child SA of SPIs %08x and %08x, want the one the chain would replace, %08x and %08x", got.LocalSPI, got.RemoteSPI, old.LocalSPI, old.RemoteSPI)
 	}
 	if retiring := s.retiringChild(); retiring.LocalSPI != 0 {
@@ -259,7 +259,7 @@ func TestRekeyOfTheOtherSADuringAPeersChainDrawsTemporaryFailure(t *testing.T) {
 		if answer, err := chain.followup(t, s, ctx, ML_KEM_768, chain.link); err != nil || findType(answer, PayloadKE) == nil {
 			t.Fatalf("the chain's IKE_FOLLOWUP_KE drew %v, %v, want KEr", payloadTypes(answer), err)
 		}
-		if current, _ := s.contexts(); current.spiI != chain.spiI || s.currentChild().LocalSPI != 21 {
+		if current, _ := s.contexts(); current.spiI != chain.spiI || s.Child().LocalSPI != 21 {
 			t.Error("the session does not hold the IKE SA of the chain and the Child SA it had")
 		}
 	}))

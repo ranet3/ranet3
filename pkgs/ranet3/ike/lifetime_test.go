@@ -124,7 +124,7 @@ func TestRekeyOutstandingAtTheLifetime(t *testing.T) {
 							})
 						}
 					}, func(initiator, responder *Session) {
-						established, spiI, old, oldOut = initiator.childEstablished, initiator.current.spiI, initiator.Child.LocalSPI, initiator.Child.RemoteSPI
+						established, spiI, old, oldOut = initiator.childEstablished, initiator.current.spiI, initiator.child.LocalSPI, initiator.child.RemoteSPI
 						if sa == "ike" {
 							established = initiator.current.established
 						}
@@ -414,7 +414,7 @@ type dataplane struct {
 }
 
 func newDataplane(s *Session) *dataplane {
-	d := &dataplane{held: map[uint32]bool{s.Child.LocalSPI: true}}
+	d := &dataplane{held: map[uint32]bool{s.child.LocalSPI: true}}
 	s.SetChildHandler(func(child ChildSA) error { return d.change(child.LocalSPI, false) })
 	s.SetChildRetireHandler(func(spi uint32) error { return d.change(spi, true) })
 	return d
@@ -439,7 +439,7 @@ func (d *dataplane) recorded() []keyChange {
 
 // a Child SA with no lifetime keeps its keys in the dataplane however old it grows
 func TestChildSAWithoutALifetimeKeepsItsKeys(t *testing.T) {
-	s := &Session{Child: ChildSA{LocalSPI: 7}, childEstablished: time.Now()}
+	s := &Session{child: ChildSA{LocalSPI: 7}, childEstablished: time.Now()}
 	keys := newDataplane(s)
 	if err := s.expireChild(time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
@@ -868,10 +868,10 @@ func TestSpentSequenceSpaceClosesTheIKESAUnlessARekeyReplacesIt(t *testing.T) {
 				case "refused before":
 					// the responder expects another cipher and its lists hold that one alone, so it refuses every rekey with NO_PROPOSAL_CHOSEN
 					cipher := "chacha20poly1305"
-					if responder.Child.EncrID == ENCR_AES_GCM_16 {
-						responder.Child.EncrID, responder.Child.EncrKeyBits = ENCR_CHACHA20_POLY1305, 256
+					if responder.child.EncrID == ENCR_AES_GCM_16 {
+						responder.child.EncrID, responder.child.EncrKeyBits = ENCR_CHACHA20_POLY1305, 256
 					} else {
-						responder.Child.EncrID, responder.Child.EncrKeyBits = ENCR_AES_GCM_16, 128
+						responder.child.EncrID, responder.child.EncrKeyBits = ENCR_AES_GCM_16, 128
 						cipher = "aes128gcm"
 					}
 					only := suitesOf(t, Crypto{ESP: ESPSuites{Cipher: []string{cipher}}})
@@ -885,7 +885,7 @@ func TestSpentSequenceSpaceClosesTheIKESAUnlessARekeyReplacesIt(t *testing.T) {
 					})
 				}
 			})
-			spi := pair.initiator.currentChild().LocalSPI
+			spi := pair.initiator.Child().LocalSPI
 			rekeyed := make(chan error, 1)
 			if tc.answer == "refused before" {
 				err := pair.initiator.RekeyChildProactively()
@@ -949,12 +949,12 @@ func testSpentSequenceSpaceIsLoggedOncePerSA(t *testing.T) {
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	mux, _ := lifecycleMuxes(t)
 	first, second := ChildSA{LocalSPI: 0x10203040, RemoteSPI: 0x50607080}, ChildSA{LocalSPI: 0x11213141, RemoteSPI: 0x51617181}
-	s := &Session{mux: mux, Child: first, childSpent: make(chan struct{}, 1),
+	s := &Session{mux: mux, child: first, childSpent: make(chan struct{}, 1),
 		local: identity.MustParse("testorg/client:2"), remote: identity.MustParse("testorg/server:1")}
 	for range 3 {
 		s.ChildSequenceSpent(first.LocalSPI)
 	}
-	s.Child = second
+	s.child = second
 	for range 3 {
 		s.ChildSequenceSpent(second.LocalSPI)
 	}
@@ -1047,7 +1047,7 @@ func testReplacedChildSAKeysLeaveByItsLifetime(t *testing.T) {
 		cfg.ChildRekeyInterval = lifetime
 		cfg.RekeyMargin, cfg.RekeyJitter = lifetime/2, 0
 	}, func(initiator, _ *Session) {
-		established, old = initiator.childEstablished, initiator.Child.LocalSPI
+		established, old = initiator.childEstablished, initiator.child.LocalSPI
 		keys = newDataplane(initiator)
 	})
 	end := established.Add(lifetime)
@@ -1077,7 +1077,7 @@ func testReplacedChildSAAwaitingItsDeleteIsWithdrawnAtItsLifetime(t *testing.T) 
 	if err := mux.RegisterESP(old.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{mux: mux, Child: old, childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + 2*time.Second)}
+	s := &Session{mux: mux, child: old, childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + 2*time.Second)}
 	keys := newDataplane(s)
 	ends := s.childEstablished.Add(time.Hour)
 	if err := s.replaceChild(ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}); err != nil {
@@ -1144,7 +1144,7 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 		if err := mux.RegisterESP(old.LocalSPI); err != nil {
 			t.Fatal(err)
 		}
-		s := &Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest), Child: old, dpdEvery: noDPD,
+		s := &Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest), child: old, dpdEvery: noDPD,
 			childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + left)}
 		keys := newDataplane(s)
 		ends := s.childEstablished.Add(time.Hour)
@@ -1169,7 +1169,7 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 		mux, _ := lifecycleMuxes(t)
 		events := &recorder{}
 		// the rekey falls due at once and fails, since the SA has no outbound half, and its retry is past the test
-		s := &Session{mux: mux, current: chainContext(t, classicalSuite), requests: make(chan *localRequest), Child: ChildSA{LocalSPI: 0x11111111}, dpdEvery: noDPD,
+		s := &Session{mux: mux, current: chainContext(t, classicalSuite), requests: make(chan *localRequest), child: ChildSA{LocalSPI: 0x11111111}, dpdEvery: noDPD,
 			childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + left), rekeyMargin: time.Hour / 2,
 			rekeyRetryInitial: time.Hour, rekeyRetryMax: time.Hour, events: events.record}
 		ends := s.childEstablished.Add(time.Hour)
@@ -1201,7 +1201,7 @@ func testReplacedChildSADeletedPastItsLifetimeIsNotDrained(t *testing.T) {
 	if err := mux.RegisterESP(old.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{mux: mux, Child: old, childRekeyInterval: time.Hour, childRetireDelay: childRetireDelay, childEstablished: time.Now().Add(-time.Hour - time.Second)}
+	s := &Session{mux: mux, child: old, childRekeyInterval: time.Hour, childRetireDelay: childRetireDelay, childEstablished: time.Now().Add(-time.Hour - time.Second)}
 	keys := newDataplane(s)
 	if err := s.replaceChild(ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}); err != nil {
 		t.Fatal(err)

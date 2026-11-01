@@ -28,7 +28,7 @@ func answeringSession(t testing.TB, mux *transport.Mux, suite SASuite, child Chi
 	t.Helper()
 	ctx := &ikeContext{suite: suite, spiI: randUint64Nonzero(), spiR: randUint64Nonzero(), skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
-	s := &Session{mux: mux, current: ctx, Child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: kexEntry{group: group}},
+	s := &Session{mux: mux, current: ctx, child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: kexEntry{group: group}},
 		suites: func() Suites { return lists }, rechecks: make(chan struct{}, 1), started: time.Now()}
 	s.SetChildHandler(func(ChildSA) error { return nil })
 	return s
@@ -57,7 +57,7 @@ func peerRekeyOf(t testing.TB, s *Session, ike bool, proposals []Proposal, keGro
 		{Type: PayloadNonce, Body: EncodeNonce(bytes.Repeat([]byte{4}, 32))},
 	}
 	if !ike {
-		request = append([]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, s.Child.RemoteSPI)})}}, request...)
+		request = append([]RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, s.child.RemoteSPI)})}}, request...)
 		request = append(request, RawPayload{Type: PayloadTSi, Body: fullRangeSelectors()}, RawPayload{Type: PayloadTSr, Body: fullRangeSelectors()})
 	}
 	if keGroup != 0 {

@@ -54,7 +54,7 @@ func TestSessionsCountTheInvalidSPIReportsSent(t *testing.T) {
 		return len(alpha.client.sessions.paths()) == 1 && len(bravo.client.sessions.paths()) == 1
 	})
 	dialed, answered := alpha.client.sessions.snapshot()[0].session, bravo.client.sessions.snapshot()[0].session
-	held, _ := answered.ChildSPIs()
+	held := answered.Child().LocalSPI
 	// the complement of the one SPI bravo holds
 	stray := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, ^held), 1)
 	waitFor(t, convergeBudget, "bravo to record a report and its control socket to count it under the one session", func() bool {

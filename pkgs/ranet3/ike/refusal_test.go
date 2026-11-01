@@ -282,7 +282,7 @@ func TestRefusedChildSADeleteLeavesItsPairHalfClosed(t *testing.T) {
 		}, true},
 		"the replaced SA the peer never deleted": {func(t *testing.T, s *Session) (uint32, error) {
 			s.childMu.Lock()
-			s.Child, s.retiring, s.retiringBy = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, old, time.Now()
+			s.child, s.retiring, s.retiringBy = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, old, time.Now()
 			s.childMu.Unlock()
 			child, ok := s.overdueRetiring(time.Now())
 			if !ok {
@@ -363,7 +363,7 @@ func TestSessionEndsWithoutADeleteWhenThePeerAnswersInvalidSyntax(t *testing.T) 
 			exchange: INFORMATIONAL,
 		},
 		"a Child SA rekey": {
-			prepare: func(s *Session) { s.Child = retiring },
+			prepare: func(s *Session) { s.child = retiring },
 			start: func(t *testing.T, s *Session) <-chan error {
 				done := make(chan error, 1)
 				go func() { done <- s.RekeyChild() }()
@@ -381,7 +381,7 @@ func TestSessionEndsWithoutADeleteWhenThePeerAnswersInvalidSyntax(t *testing.T) 
 		},
 		"a Delete of a replaced Child SA the peer never deleted": {
 			prepare: func(s *Session) {
-				s.Child, s.retiring, s.retiringBy = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, retiring, time.Now()
+				s.child, s.retiring, s.retiringBy = ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}, retiring, time.Now()
 			},
 			start:    func(t *testing.T, s *Session) <-chan error { return nil },
 			exchange: INFORMATIONAL,

@@ -113,7 +113,7 @@ func TestSessionClosingItsIKESARefusesRekeysOfIt(t *testing.T) {
 		t.Run(closer, bubble.Run(func(t *testing.T) {
 			peer, s := closingAfterAuth(t)
 			s.requests = make(chan *localRequest, 1)
-			s.Child = ChildSA{LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+			s.child = ChildSA{LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 			deleted, finished := make(chan error, 1), make(chan struct{})
 			go func() {
 				defer close(finished)
@@ -146,7 +146,7 @@ func TestSessionClosingItsIKESARefusesRekeysOfIt(t *testing.T) {
 			for mid, rekey := range []struct {
 				sa    string
 				inner []RawPayload
-			}{{"IKE", ikeRekeyRequest(t)}, {"Child", childRekeyRequest(s.Child.RemoteSPI)}} {
+			}{{"IKE", ikeRekeyRequest(t)}, {"Child", childRekeyRequest(s.child.RemoteSPI)}} {
 				peer.send(t, Header{ExchangeType: CREATE_CHILD_SA, MessageID: uint32(mid)}, rekey.inner)
 				if answer := peer.answer(t); answer.Header.ExchangeType != CREATE_CHILD_SA || answer.Header.MessageID != uint32(mid) || !notified(answer.inner, N_TEMPORARY_FAILURE, nil) {
 					t.Errorf("the %s SA rekey drew exchange %d Message ID %d carrying %v, want TEMPORARY_FAILURE at %d", rekey.sa, answer.Header.ExchangeType, answer.Header.MessageID, answer.inner, mid)

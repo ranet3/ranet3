@@ -857,7 +857,7 @@ func testSessionRefusesAnSKPayloadInsideAnotherWithInvalidSyntax(t *testing.T) {
 	}
 	defer mux.Close()
 	held := testContext()
-	s := &Session{mux: mux, current: held, Child: ChildSA{LocalSPI: 0x01020304, RemoteSPI: 0x50607080}}
+	s := &Session{mux: mux, current: held, child: ChildSA{LocalSPI: 0x01020304, RemoteSPI: 0x50607080}}
 	if err := mux.RegisterIKE(held.spiI); err != nil {
 		t.Fatal(err)
 	}
@@ -894,8 +894,8 @@ func testSessionRefusesAnSKPayloadInsideAnotherWithInvalidSyntax(t *testing.T) {
 	if err != nil || answer.Header.MessageID != 0 || !notified(inner, N_INVALID_SYNTAX, nil) {
 		t.Errorf("the request drew %v at Message ID %d (%v), want INVALID_SYNTAX at 0", inner, answer.Header.MessageID, err)
 	}
-	if !mux.IsClosed() || s.Child.LocalSPI != 0x01020304 {
-		t.Errorf("the IKE SA is closed %v and the Child SA is %08x, want the IKE SA ended and the Child SA as it was", mux.IsClosed(), s.Child.LocalSPI)
+	if !mux.IsClosed() || s.child.LocalSPI != 0x01020304 {
+		t.Errorf("the IKE SA is closed %v and the Child SA is %08x, want the IKE SA ended and the Child SA as it was", mux.IsClosed(), s.child.LocalSPI)
 	}
 }
 
@@ -969,7 +969,7 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 		if decodeErr != nil || notify.Type != want {
 			t.Errorf("the request drew notify type %d (%v), want %d", notify.Type, decodeErr, want)
 		}
-		if got := s.currentChild(); got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || s.currentContext() != ctx {
+		if got := s.Child(); got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || s.currentContext() != ctx {
 			t.Errorf("the Child SA is %08x and %08x and the IKE SA current %v, want both as they were", got.LocalSPI, got.RemoteSPI, s.currentContext() == ctx)
 		}
 		return notify
@@ -1022,7 +1022,7 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 		t.Run(name, bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := testContext()
-			s := &Session{mux: mux, current: ctx, Child: child}
+			s := &Session{mux: mux, current: ctx, child: child}
 			raw, err := s.handleRequest(ctx, &Header{ExchangeType: CREATE_CHILD_SA, MessageID: 5}, nil, test.inner)
 			notify := answered(t, s, ctx, raw, err, test.want)
 			// section 2.25: "The SA that the initiator attempted to rekey is indicated by the SPI field in the Notify payload, which is copied from the SPI field in the REKEY_SA notification."
@@ -1036,7 +1036,7 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 		t.Run("IKE SA rekey whose SA payload "+name, bubble.Run(func(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := testContext()
-			s := &Session{mux: mux, current: ctx, Child: child}
+			s := &Session{mux: mux, current: ctx, child: child}
 			raw, err := s.handleIKERekey(ctx, 5, replaced(ikeRekey, RawPayload{Type: PayloadSA, Body: body}))
 			answered(t, s, ctx, raw, err, N_INVALID_SYNTAX)
 		}))
@@ -1047,7 +1047,7 @@ func TestSessionAnswersAMalformedCreateChildSAWithInvalidSyntax(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := testContext()
 			ctx.suite.PRFID = PRF_HMAC_SHA2_384
-			s := &Session{mux: mux, current: ctx, Child: child}
+			s := &Session{mux: mux, current: ctx, child: child}
 			raw, err := s.handleRequest(ctx, &Header{ExchangeType: CREATE_CHILD_SA, MessageID: 5}, nil, replaced(replaced(ikeRekey, otherPRF), RawPayload{Type: PayloadNonce, Body: make([]byte, size)}))
 			answered(t, s, ctx, raw, err, N_INVALID_SYNTAX)
 		}))
@@ -1150,7 +1150,7 @@ func testSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 	}
 	defer mux.Close()
 	held := testContext()
-	s := &Session{mux: mux, current: held, Child: ChildSA{LocalSPI: 0x01020304, RemoteSPI: 0x50607080}}
+	s := &Session{mux: mux, current: held, child: ChildSA{LocalSPI: 0x01020304, RemoteSPI: 0x50607080}}
 	if err := mux.RegisterIKE(held.spiI); err != nil {
 		t.Fatal(err)
 	}
@@ -1191,8 +1191,8 @@ func testSessionChangesNothingForTheErrorNotifiesAPeerSends(t *testing.T) {
 	if err != nil || answer.Header.MessageID != 0 || !answer.Header.IsResponse() || len(inner) != 0 {
 		t.Errorf("the INFORMATIONAL request drew %v at Message ID %d (%v), want an empty answer at 0", inner, answer.Header.MessageID, err)
 	}
-	if mux.IsClosed() || s.Child.LocalSPI != 0x01020304 || s.Child.RemoteSPI != 0x50607080 {
-		t.Errorf("the IKE SA is closed %v and the Child SA is %08x and %08x after the notifies, want both as they were", mux.IsClosed(), s.Child.LocalSPI, s.Child.RemoteSPI)
+	if mux.IsClosed() || s.child.LocalSPI != 0x01020304 || s.child.RemoteSPI != 0x50607080 {
+		t.Errorf("the IKE SA is closed %v and the Child SA is %08x and %08x after the notifies, want both as they were", mux.IsClosed(), s.child.LocalSPI, s.child.RemoteSPI)
 	}
 	if told := lines.said(slog.LevelDebug, "ike the peer received ESP on an SPI it holds no Child SA for", "spi"); len(told) != 1 || told[0].String() != "50607080" {
 		t.Errorf("the INVALID_SPI was logged with %v, want once with 50607080", told)
@@ -1454,7 +1454,7 @@ func TestSessionRefusesACreateChildSAMarkingAnUnsupportedPayloadCritical(t *test
 				t.Errorf("the request drew exchange %d Message ID %d carrying %v, want UNSUPPORTED_CRITICAL_PAYLOAD for type %d at 0",
 					answer.Header.ExchangeType, answer.Header.MessageID, inner, unsupportedCritical.Type)
 			}
-			if child := s.currentChild(); child.LocalSPI != 0 || mux.IsClosed() {
+			if child := s.Child(); child.LocalSPI != 0 || mux.IsClosed() {
 				t.Errorf("the refused request left Child SA %08x and the IKE SA closed %v, want no Child SA and the IKE SA open", child.LocalSPI, mux.IsClosed())
 			}
 		}))
@@ -1522,7 +1522,7 @@ func TestChildRequestRejectionNotifications(t *testing.T) {
 		skei:  make([]byte, 20),
 		sker:  make([]byte, 20),
 	}
-	s := &Session{current: ikeCtx, Child: ChildSA{RemoteSPI: 0x50607080}}
+	s := &Session{current: ikeCtx, child: ChildSA{RemoteSPI: 0x50607080}}
 	newSPI := make([]byte, 4)
 	binary.BigEndian.PutUint32(newSPI, 0x90a0b0c0)
 	base := []RawPayload{
@@ -1626,7 +1626,7 @@ func testChildRequestCreatesMissingChild(t *testing.T) {
 	if _, err := decodeChildExchangePayloads(inner, PRF_HMAC_SHA2_256); err != nil {
 		t.Fatalf("invalid Child SA creation response: %v", err)
 	}
-	child := s.currentChild()
+	child := s.Child()
 	if child.LocalSPI == 0 || child.RemoteSPI != 0x50607080 || len(child.InboundKey) == 0 || len(child.OutboundKey) == 0 {
 		t.Fatalf("created Child SA = %#v", child)
 	}
@@ -1654,7 +1654,7 @@ func testInformationalDeletesEveryDesignatedChildSA(t *testing.T) {
 		skei:  make([]byte, 20),
 		sker:  make([]byte, 20),
 	}
-	s := &Session{mux: mux, current: ikeCtx, Child: current, retiring: retiring}
+	s := &Session{mux: mux, current: ikeCtx, child: current, retiring: retiring}
 	var retired []uint32
 	s.SetChildRetireHandler(func(localSPI uint32) error {
 		retired = append(retired, localSPI)
@@ -1693,7 +1693,7 @@ func testInformationalDeletesEveryDesignatedChildSA(t *testing.T) {
 	if len(retired) != 2 || retired[0] != current.LocalSPI || retired[1] != retiring.LocalSPI {
 		t.Fatalf("retired SPIs = %08x", retired)
 	}
-	if got := s.currentChild(); got.LocalSPI != 0 || got.RemoteSPI != 0 {
+	if got := s.Child(); got.LocalSPI != 0 || got.RemoteSPI != 0 {
 		t.Fatalf("current Child SA remains: %#v", got)
 	}
 	if got := s.retiringChild(); got.LocalSPI != 0 || got.RemoteSPI != 0 {

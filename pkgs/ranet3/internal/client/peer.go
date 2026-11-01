@@ -242,7 +242,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 		return fmt.Errorf("handshake: %w", err)
 	}
 	established = true
-	return c.serveSession(ctx, sess, d.localID, ep.ID, remotePub, true)
+	return c.serveSession(ctx, sess, sess.Child(), d.localID, ep.ID, remotePub, true)
 }
 
 // errSessionEstablished means this peer is already reachable over a session

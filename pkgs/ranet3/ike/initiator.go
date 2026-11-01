@@ -166,7 +166,7 @@ type Session struct {
 	invalidSPIReports atomic.Uint64
 
 	childMu          sync.RWMutex
-	Child            ChildSA
+	child            ChildSA
 	childEstablished time.Time
 	// childGeneration counts the Child SAs installed, which tells two apart that one clock reading cannot
 	childGeneration uint64
@@ -1323,15 +1323,6 @@ func (s *Session) Idle() time.Duration {
 		return age
 	}
 	return age - time.Duration(last-1)
-}
-
-// ChildSPIs is the live Child SA's pair, local then remote, under the lock a
-// rekey replaces it beneath. A diagnostic reading the field directly would
-// race with the install that swaps it.
-func (s *Session) ChildSPIs() (local, remote uint32) {
-	s.childMu.RLock()
-	defer s.childMu.RUnlock()
-	return s.Child.LocalSPI, s.Child.RemoteSPI
 }
 
 // allowPeerChildRekey reports whether to take on another peer-initiated Child

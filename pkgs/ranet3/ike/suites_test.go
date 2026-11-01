@@ -403,7 +403,7 @@ func TestResponderRefusesARekeyItsListsDoNotMeet(t *testing.T) {
 			if answer.notify.Type != N_NO_PROPOSAL_CHOSEN {
 				t.Errorf("the refusal carried notify %d, want NO_PROPOSAL_CHOSEN", answer.notify.Type)
 			}
-			if current, _ := s.contexts(); current != ctx || s.currentChild().LocalSPI != old.LocalSPI {
+			if current, _ := s.contexts(); current != ctx || s.Child().LocalSPI != old.LocalSPI {
 				t.Error("a refused rekey replaced the SA it named")
 			}
 			if len(s.rechecks) != 1 {
@@ -454,7 +454,7 @@ func TestChildSAKeyedInAGroupTheListsLeftOutIsUnlisted(t *testing.T) {
 		{kexEntry{group: DH_ECP_256}, ""},
 		{kexEntry{}, ""},
 	} {
-		s := &Session{current: ctx, Child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: test.entry},
+		s := &Session{current: ctx, child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: test.entry},
 			suites: func() Suites { return lists }}
 		if got, ikeSA, _ := s.unlisted(); got != test.want || ikeSA != "" {
 			t.Errorf("a Child SA keyed by %s is unlisted as %q beside an IKE SA unlisted as %q, want %q", kexName(test.entry), got, ikeSA, test.want)
@@ -631,7 +631,7 @@ func TestInitiatorRefusesARekeyAnswerOutsideItsLists(t *testing.T) {
 			if err := <-done; err == nil || !strings.Contains(err.Error(), "unoffered transform") {
 				t.Errorf("the rekey ended with %v, want the answer's cipher refused", err)
 			}
-			if s.currentChild().LocalSPI != old.LocalSPI {
+			if s.Child().LocalSPI != old.LocalSPI {
 				t.Error("a refused answer replaced the Child SA")
 			}
 		}))

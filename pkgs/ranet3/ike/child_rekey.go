@@ -131,7 +131,7 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 	if s.chainKind() != "" {
 		return errors.New("ike: Child SA rekey: the peer's own rekey runs its additional key exchange")
 	}
-	old := s.currentChild()
+	old := s.Child()
 	if old.LocalSPI == 0 && old.RemoteSPI == 0 {
 		return s.negotiateChild(nil)
 	}
@@ -354,7 +354,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		}
 	}
 	s.childMu.RLock()
-	child, childEntry := s.Child, s.childEntryLocked()
+	child, childEntry := s.child, s.childEntryLocked()
 	s.childMu.RUnlock()
 	if !rekeying && (child.LocalSPI != 0 || child.RemoteSPI != 0) {
 		// RFC 7296 section 2.25: "A peer that receives a CHILD_SA_NOT_FOUND notification SHOULD silently delete the Child SA (if it still exists) and send a request to create a new Child SA from scratch (if the Child SA does not yet exist)."

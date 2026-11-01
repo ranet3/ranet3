@@ -520,7 +520,7 @@ func TestPeerChildRekeyKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
 	ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 		skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
-	s := &Session{current: ctx, Child: old}
+	s := &Session{current: ctx, child: old}
 	offer := espProposal(binary.BigEndian.AppendUint32(nil, 32))
 	offer.Transforms = append(offer.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
 	// group 14 is MODP 2048, which this end has no code for
@@ -552,7 +552,7 @@ func TestPeerChildRekeyKEOutsideItsOfferIsAnsweredWithTheGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantInvalidKE(t, notify, DH_ECP_256)
-	if s.currentChild().LocalSPI != old.LocalSPI {
+	if s.Child().LocalSPI != old.LocalSPI {
 		t.Error("a refused rekey replaced the Child SA")
 	}
 }
@@ -604,7 +604,7 @@ func TestPeerRekeyRetriedInTheGroupItWasAskedForIsTaken(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := &ikeContext{suite: suite, spiI: 11, spiR: 12, skD: bytes.Repeat([]byte{1}, 32),
 				skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
-			s := &Session{mux: mux, current: ctx, Child: old, rechecks: make(chan struct{}, 1)}
+			s := &Session{mux: mux, current: ctx, child: old, rechecks: make(chan struct{}, 1)}
 			s.SetChildHandler(func(ChildSA) error { return nil })
 			handle := s.handleChildRekey
 			if test.ike {
@@ -662,7 +662,7 @@ func testPeerChildRekeyOfferingNONEIsAnsweredWithoutAKE(t *testing.T) {
 	old := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
 	lists := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p256"}}})
 	mux, _ := lifecycleMuxes(t)
-	s := &Session{mux: mux, current: ctx, Child: old, suites: func() Suites { return lists }, rechecks: make(chan struct{}, 1)}
+	s := &Session{mux: mux, current: ctx, child: old, suites: func() Suites { return lists }, rechecks: make(chan struct{}, 1)}
 	s.SetChildHandler(func(ChildSA) error { return nil })
 	dh, err := GenerateDH(DH_CURVE25519)
 	if err != nil {
@@ -783,7 +783,7 @@ func TestChildSAProposalNamingSPIZeroIsRefused(t *testing.T) {
 			mux, _ := lifecycleMuxes(t)
 			ctx := &ikeContext{suite: SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256}, spiI: 11, spiR: 12,
 				skD: bytes.Repeat([]byte{1}, 32), skei: bytes.Repeat([]byte{2}, 20), sker: bytes.Repeat([]byte{3}, 20), responder: true}
-			s := &Session{mux: mux, current: ctx, Child: old, rechecks: make(chan struct{}, 1)}
+			s := &Session{mux: mux, current: ctx, child: old, rechecks: make(chan struct{}, 1)}
 			s.SetChildHandler(func(ChildSA) error { return nil })
 			raw, err := s.handleChildRekey(ctx, 0, []RawPayload{
 				{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_REKEY_SA, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, old.RemoteSPI)})},
@@ -798,7 +798,7 @@ func TestChildSAProposalNamingSPIZeroIsRefused(t *testing.T) {
 			if got := takenProposal(t, sealedAnswer(t, ctx, raw.whole)); got != test.taken {
 				t.Errorf("the answer took proposal %d, want %d", got, test.taken)
 			}
-			child := s.currentChild()
+			child := s.Child()
 			switch {
 			case test.taken == 0 && child.LocalSPI != old.LocalSPI:
 				t.Errorf("a refused rekey replaced the Child SA with %+v", child)

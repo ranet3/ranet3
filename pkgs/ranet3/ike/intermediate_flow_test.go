@@ -402,7 +402,7 @@ func (s *scripted) accepted(authMID uint32, method uint16) *Session {
 		s.t.Errorf("the responder's IKE SA answered IKE_AUTH at %d, last answered %d and waits for %d, want %d, %d and %d",
 			ctx.authMID, ctx.lastPeerResponseID, ctx.nextPeerMID, authMID, authMID, authMID+1)
 	}
-	child := session.currentChild()
+	child := session.Child()
 	initiatorKey, responderKey := s.model.childKeys(len(child.InboundKey))
 	if !bytes.Equal(child.InboundKey, initiatorKey) || !bytes.Equal(child.OutboundKey, responderKey) {
 		s.t.Error("the responder's Child SA keys are not KEYMAT from the model's last SK_d")
@@ -1173,7 +1173,7 @@ func TestDialRunsAnExchangeForTheAdditionAgreed(t *testing.T) {
 			if got := session.Suite().IKE(); got != test.suite {
 				t.Errorf("the dial's IKE SA runs %s, want %s", got, test.suite)
 			}
-			child := session.currentChild()
+			child := session.Child()
 			initiatorKey, responderKey := p.model.childKeys(len(child.OutboundKey))
 			if !bytes.Equal(child.OutboundKey, initiatorKey) || !bytes.Equal(child.InboundKey, responderKey) {
 				t.Error("the dial's Child SA keys are not KEYMAT from the model's last SK_d")

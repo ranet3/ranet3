@@ -491,7 +491,7 @@ func TestUnlistedNamesEachSAOutsideTheLists(t *testing.T) {
 		}
 		suites := suitesOf(ht, lists)
 		s := &Session{current: &ikeContext{suite: SASuite{EncrID: encr.ID, EncrKeyBits: encr.KeyLengthBits, PRFID: transformOf(prf).ID, DHGroup: transformOf(group).ID}},
-			Child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: kexEntry{group: childGroupID}}, suites: func() Suites { return suites }}
+			child: child, childKex: keyedEntry{spi: child.LocalSPI, entry: kexEntry{group: childGroupID}}, suites: func() Suites { return suites }}
 		gotChild, gotIKE, gotPRF := s.unlisted()
 		if gotChild != wantChild || gotIKE != wantIKE || gotPRF != wantPRF {
 			ht.Fatalf("lists %+v found the Child SA %q, the IKE SA %q and its PRF %v unlisted, want %q, %q and %v", lists, gotChild, gotIKE, gotPRF, wantChild, wantIKE, wantPRF)

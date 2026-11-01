@@ -200,7 +200,7 @@ func TestRefusedRetirementOfADrainedChildSADeletesTheIKESA(t *testing.T) {
 func testRefusedRetirementOfADrainedChildSADeletesTheIKESA(t *testing.T) {
 	var asked atomic.Int32
 	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
-		replaced := initiator.Child.LocalSPI
+		replaced := initiator.child.LocalSPI
 		initiator.childRetireDelay = quietPeriod / 3
 		initiator.SetChildRetireHandler(func(spi uint32) error {
 			if spi != replaced {
@@ -228,7 +228,7 @@ func testRefusedCloseOfAChildSAThePeerDeletedDeletesTheIKESA(t *testing.T) {
 	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
 		initiator.SetChildRetireHandler(func(uint32) error { return errRefused })
 	})
-	spi := binary.BigEndian.AppendUint32(nil, pair.initiator.currentChild().RemoteSPI)
+	spi := binary.BigEndian.AppendUint32(nil, pair.initiator.Child().RemoteSPI)
 	answer, err := pair.responder.request(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: [][]byte{spi}})}})
 	if err != nil {
 		t.Fatalf("the peer's Delete of the Child SA was not answered: %v", err)
@@ -250,7 +250,7 @@ func testPeerDeleteAnswersTheChildSAClosedBeforeARefusal(t *testing.T) {
 	pair := dialRefusing(t, func(*PeerConfig) {}, func(initiator, _ *Session) {
 		initiator.retiring, initiator.retiringBy = replaced, time.Now().Add(time.Hour)
 		initiator.childRetireDelay = 0
-		current := initiator.Child.LocalSPI
+		current := initiator.child.LocalSPI
 		initiator.SetChildRetireHandler(func(spi uint32) error {
 			if spi == current {
 				return errRefused
@@ -258,7 +258,7 @@ func testPeerDeleteAnswersTheChildSAClosedBeforeARefusal(t *testing.T) {
 			return nil
 		})
 	})
-	spis := [][]byte{binary.BigEndian.AppendUint32(nil, replaced.RemoteSPI), binary.BigEndian.AppendUint32(nil, pair.initiator.currentChild().RemoteSPI)}
+	spis := [][]byte{binary.BigEndian.AppendUint32(nil, replaced.RemoteSPI), binary.BigEndian.AppendUint32(nil, pair.initiator.Child().RemoteSPI)}
 	answer, err := pair.responder.request(INFORMATIONAL, []RawPayload{{Type: PayloadD, Body: EncodeDelete(Delete{Protocol: ProtoESP, SPIs: spis})}})
 	if err != nil {
 		t.Fatalf("the peer's Delete of the two Child SAs was not answered: %v", err)

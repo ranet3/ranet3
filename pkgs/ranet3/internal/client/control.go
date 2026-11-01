@@ -397,7 +397,7 @@ func (c *Client) Sessions() []control.Session {
 	live := c.sessions.snapshot()
 	out := make([]control.Session, 0, len(live))
 	for _, session := range live {
-		local, remote := session.session.ChildSPIs()
+		child := session.session.Child()
 		started := session.session.StartedAt()
 		suite := session.session.Suite()
 		fragments, threshold := session.session.Fragments()
@@ -406,8 +406,8 @@ func (c *Client) Sessions() []control.Session {
 			Peer:                 session.peer.Node().String(),
 			Preferred:            session.preferred,
 			Active:               session.session.Active(),
-			LocalSPI:             local,
-			RemoteSPI:            remote,
+			LocalSPI:             child.LocalSPI,
+			RemoteSPI:            child.RemoteSPI,
 			IKECipher:            suite.IKECipher,
 			IKEPRF:               suite.IKEPRF,
 			IKEKex:               suite.IKEKex,

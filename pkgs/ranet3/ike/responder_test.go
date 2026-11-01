@@ -543,17 +543,17 @@ func testResponderCompletesHandshakeWithInitiator(t *testing.T) {
 		t.Fatalf("the responder reports %x as the key that verified the initiator, want the trust's %x", accepted.Key, h.public)
 	}
 	// each end's outbound key is the other's inbound key, or the first ESP packet decrypts to nothing on a tunnel both ends report up
-	if !bytes.Equal(initiator.Child.OutboundKey, responder.Child.InboundKey) {
+	if !bytes.Equal(initiator.child.OutboundKey, responder.child.InboundKey) {
 		t.Error("initiator outbound key does not match responder inbound key")
 	}
-	if !bytes.Equal(initiator.Child.InboundKey, responder.Child.OutboundKey) {
+	if !bytes.Equal(initiator.child.InboundKey, responder.child.OutboundKey) {
 		t.Error("responder outbound key does not match initiator inbound key")
 	}
-	if initiator.Child.LocalSPI != responder.Child.RemoteSPI || initiator.Child.RemoteSPI != responder.Child.LocalSPI {
+	if initiator.child.LocalSPI != responder.child.RemoteSPI || initiator.child.RemoteSPI != responder.child.LocalSPI {
 		t.Errorf("child SPIs do not mirror: %08x/%08x against %08x/%08x",
-			initiator.Child.LocalSPI, initiator.Child.RemoteSPI, responder.Child.LocalSPI, responder.Child.RemoteSPI)
+			initiator.child.LocalSPI, initiator.child.RemoteSPI, responder.child.LocalSPI, responder.child.RemoteSPI)
 	}
-	if initiator.Child.EncrID != responder.Child.EncrID || initiator.Child.EncrKeyBits != responder.Child.EncrKeyBits {
+	if initiator.child.EncrID != responder.child.EncrID || initiator.child.EncrKeyBits != responder.child.EncrKeyBits {
 		t.Error("the two sides selected different child encryption")
 	}
 	if !responder.current.responder || initiator.current.responder {

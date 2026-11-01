@@ -317,7 +317,7 @@ func testPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 			if err != nil {
 				ht.Fatal(err)
 			}
-			got := s.currentChild()
+			got := s.Child()
 			if !by.installed(s) || !bytes.Equal(got.InboundKey, initKey) || !bytes.Equal(got.OutboundKey, respKey) || s.Suite().ESPKex != kexName(entries[at]) {
 				ht.Fatalf("the session holds the Child SA of SPIs %08x and %08x in %s, want the Child SA of %+v the peer's rekey made", got.LocalSPI, got.RemoteSPI, s.Suite().ESP(), entries[at])
 			}
@@ -444,7 +444,7 @@ func testPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 					break
 				}
 				// the peer deletes the Child SA, which leaves any chain open, and its next Child SA request makes one from scratch
-				deleting := s.currentChild()
+				deleting := s.Child()
 				header := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: INFORMATIONAL}
 				deleted := Delete{Protocol: ProtoESP, SPIs: [][]byte{binary.BigEndian.AppendUint32(nil, deleting.RemoteSPI)}}
 				raw, err := s.handleRequest(ctx, &header, nil, []RawPayload{{Type: PayloadD, Body: EncodeDelete(deleted)}})
@@ -455,7 +455,7 @@ func testPeerChainsAreAnsweredAsTheModelOfTheChain(t *testing.T) {
 				if payload := findType(sealedAnswer(ht, ctx, raw.whole), PayloadD); payload != nil {
 					answered, err = DecodeDelete(payload.Body)
 				}
-				if err != nil || answered.Protocol != ProtoESP || len(answered.SPIs) != 1 || binary.BigEndian.Uint32(answered.SPIs[0]) != deleting.LocalSPI || s.currentChild().LocalSPI != 0 {
+				if err != nil || answered.Protocol != ProtoESP || len(answered.SPIs) != 1 || binary.BigEndian.Uint32(answered.SPIs[0]) != deleting.LocalSPI || s.Child().LocalSPI != 0 {
 					ht.Fatalf("the peer's Delete of the Child SA of SPIs %08x and %08x drew %+v, %v, want the Delete of this end's half and the Child SA gone", deleting.LocalSPI, deleting.RemoteSPI, answered, err)
 				}
 				held = false

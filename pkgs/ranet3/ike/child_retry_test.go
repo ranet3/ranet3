@@ -140,7 +140,7 @@ func TestFailedChildSAExchangeHoldsTheNextOnEveryPath(t *testing.T) {
 		{"replacement", time.Hour, 0, func(t *testing.T, initiator, responder *Session) func() {
 			// as RFC 7296 section 1.4.1 lets the peer do, it deleted the Child SA and kept the IKE SA, so the next exchange makes a new one
 			for _, end := range []*Session{initiator, responder} {
-				if _, err := end.deleteChildren([]uint32{end.Child.RemoteSPI}); err != nil {
+				if _, err := end.deleteChildren([]uint32{end.child.RemoteSPI}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -182,7 +182,7 @@ func TestFailedChildSAExchangeHoldsTheNextOnEveryPath(t *testing.T) {
 			if got := draws.drawn(); len(got) == 0 || slices.Max(got) != retryDelay {
 				t.Errorf("the backoff drew the retry delays %v, want each the %s a single failure gives", got, retryDelay)
 			}
-			if child := pair.initiator.currentChild(); child.LocalSPI == 0 || child.RemoteSPI == 0 {
+			if child := pair.initiator.Child(); child.LocalSPI == 0 || child.RemoteSPI == 0 {
 				t.Errorf("after the retry the session holds Child SA %08x/%08x, want one in place", child.LocalSPI, child.RemoteSPI)
 			}
 			if tc.interval != 0 {

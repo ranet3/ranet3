@@ -156,7 +156,7 @@ func TestIKEAuthTakesESPThatComesBeforeTheAnswer(t *testing.T) {
 		if err := <-ended; err != nil {
 			t.Fatalf("the IKE_AUTH ended with %v", err)
 		}
-		if got := s.currentChild(); got.LocalSPI != spi || got.RemoteSPI != answeredRemoteSPI {
+		if got := s.Child(); got.LocalSPI != spi || got.RemoteSPI != answeredRemoteSPI {
 			t.Errorf("the session holds Child SA %08x/%08x, want %08x/%08x", got.LocalSPI, got.RemoteSPI, spi, answeredRemoteSPI)
 		}
 		tookEarlyESP(t, s, spi)
@@ -199,7 +199,7 @@ func TestIKEAuthThatInstallsNoChildSALetsItsSPIGo(t *testing.T) {
 func TestChildSARekeyTakesESPThatComesBeforeTheAnswer(t *testing.T) {
 	bubble.Run(func(t *testing.T) {
 		s, peer, hub, _ := spiSession(t)
-		s.Child = ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+		s.child = ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 		runSession(t, s)
 		rekeyed := make(chan error, 1)
 		go func() { rekeyed <- s.RekeyChild() }()
@@ -212,7 +212,7 @@ func TestChildSARekeyTakesESPThatComesBeforeTheAnswer(t *testing.T) {
 		if err := <-rekeyed; err != nil {
 			t.Fatalf("the rekey ended with %v", err)
 		}
-		if got := s.currentChild(); got.LocalSPI != spi || got.RemoteSPI != answeredRemoteSPI {
+		if got := s.Child(); got.LocalSPI != spi || got.RemoteSPI != answeredRemoteSPI {
 			t.Errorf("the session holds Child SA %08x/%08x, want %08x/%08x", got.LocalSPI, got.RemoteSPI, spi, answeredRemoteSPI)
 		}
 		tookEarlyESP(t, s, spi)
@@ -236,7 +236,7 @@ func TestChildSARekeyThatInstallsNothingLetsItsSPIGo(t *testing.T) {
 	} {
 		t.Run(test.name, bubble.Run(func(t *testing.T) {
 			s, peer, _, other := spiSession(t)
-			s.Child = ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+			s.child = ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
 			runSession(t, s)
 			rekeyed := make(chan error, 1)
 			go func() { rekeyed <- s.RekeyChild() }()

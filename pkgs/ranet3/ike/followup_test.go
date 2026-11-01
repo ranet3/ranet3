@@ -1119,7 +1119,7 @@ func TestRequestsDuringThisEndsChainAreAnsweredAsUsual(t *testing.T) {
 
 func testRequestsDuringThisEndsChainAreAnsweredAsUsual(t *testing.T) {
 	s, _ := initiatingSession(t, chainSuite, chainLists)
-	s.Child = ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
+	s.child = ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 21, RemoteSPI: 22}
 	s.SetChildHandler(func(ChildSA) error { return nil })
 	old := s.current
 	done := rekeying(s)

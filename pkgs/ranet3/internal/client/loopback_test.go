@@ -562,8 +562,9 @@ func TestRefusedFirstChildSADeletesTheIKESA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess.Child.EncrID = 0
-	if err := alpha.client.serveSession(ctx, sess, d.localID, ep.ID, remotePub, true); err == nil {
+	child := sess.Child()
+	child.EncrID = 0
+	if err := alpha.client.serveSession(ctx, sess, child, d.localID, ep.ID, remotePub, true); err == nil {
 		t.Fatal("alpha served a session whose Child SA its tunnel could not install")
 	}
 	waitFor(t, refusedChildDeleteBudget, "alpha's Delete to end bravo's session", func() bool { return len(recorded(bravo.events, "ike.session.ended")) > 0 })

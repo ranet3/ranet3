@@ -603,13 +603,13 @@ func (s *Session) Suite() Suite {
 	}
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
-	suite.ESPCipher, suite.ESPKex = childSuite(s.Child, s.childEntryLocked())
+	suite.ESPCipher, suite.ESPKex = childSuite(s.child, s.childEntryLocked())
 	return suite
 }
 
 // childEntryLocked is the entry of the key exchanges that keyed the Child SA, or the zero entry, with childMu held
 func (s *Session) childEntryLocked() kexEntry {
-	if s.childKex.spi != s.Child.LocalSPI {
+	if s.childKex.spi != s.child.LocalSPI {
 		return kexEntry{}
 	}
 	return s.childKex.entry
@@ -628,8 +628,8 @@ func (s *Session) unlisted() (child, ikeSA string, prf bool) {
 	}
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
-	if entry := s.childEntryLocked(); s.Child.LocalSPI != 0 && !lists.holdsChild(s.Child, entry) {
-		cipher, kex := childSuite(s.Child, entry)
+	if entry := s.childEntryLocked(); s.child.LocalSPI != 0 && !lists.holdsChild(s.child, entry) {
+		cipher, kex := childSuite(s.child, entry)
 		child = Suite{ESPCipher: cipher, ESPKex: kex}.ESP()
 	}
 	return child, ikeSA, prf

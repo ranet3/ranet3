@@ -96,7 +96,7 @@ func (r *rekeySchedule) replaced() bool {
 func (s *Session) childEstablishedAt() (time.Time, bool) {
 	s.childMu.RLock()
 	defer s.childMu.RUnlock()
-	return s.childEstablished, s.Child.LocalSPI != 0
+	return s.childEstablished, s.child.LocalSPI != 0
 }
 
 func (s *Session) currentChildGeneration() uint64 {

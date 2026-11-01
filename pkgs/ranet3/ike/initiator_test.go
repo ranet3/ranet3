@@ -78,7 +78,7 @@ func testSessionScheduledRekeyFailureRetries(t *testing.T) {
 		mux: mux,
 		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20), skD: []byte("test child rekey SK_d material")},
-		Child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080},
+		child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080},
 		childEstablished: time.Now(),
 		requests:         make(chan *localRequest, 1),
 	}
@@ -202,7 +202,7 @@ func testSessionScheduledRekeyChild(t *testing.T) {
 		mux: mux,
 		current: &ikeContext{suite: suite, spiI: spiI, spiR: spiR, authMID: 1, nextLocalMID: 2,
 			skei: make([]byte, 20), sker: make([]byte, 20), skD: []byte("test child rekey SK_d material")},
-		Child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: oldLocalSPI, RemoteSPI: oldRemoteSPI},
+		child:            ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: oldLocalSPI, RemoteSPI: oldRemoteSPI},
 		childEstablished: time.Now(),
 		requests:         make(chan *localRequest, 1),
 	}
@@ -383,7 +383,7 @@ func testSessionScheduledRekeyChild(t *testing.T) {
 	if child.LocalSPI == oldLocalSPI || child.RemoteSPI != newRemoteSPI || len(child.InboundKey) == 0 || len(child.OutboundKey) == 0 {
 		t.Fatalf("installed child = %#v", child)
 	}
-	if got := s.currentChild(); got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || string(got.InboundKey) != string(child.InboundKey) || string(got.OutboundKey) != string(child.OutboundKey) {
+	if got := s.Child(); got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || string(got.InboundKey) != string(child.InboundKey) || string(got.OutboundKey) != string(child.OutboundKey) {
 		t.Fatalf("current child = %#v, want %#v", got, child)
 	}
 	_ = mux.Close()
@@ -410,7 +410,7 @@ func testSessionRekeyIKE(t *testing.T) {
 	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr, authMID: 1, nextLocalMID: 2,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
-	s := &Session{mux: mux, current: old, Child: child, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
+	s := &Session{mux: mux, current: old, child: child, requests: make(chan *localRequest, 1), suites: func() Suites { return classicalLists }}
 	if err := mux.RegisterIKE(oldSPIi); err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +585,7 @@ func testSessionRekeyIKE(t *testing.T) {
 		stop()
 		t.Fatalf("IKE contexts not promoted and retired: current=%#v old=%#v", current, retained)
 	}
-	if got := s.currentChild(); got.EncrID != child.EncrID || got.EncrKeyBits != child.EncrKeyBits || got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || len(got.InboundKey) != 0 || len(got.OutboundKey) != 0 {
+	if got := s.Child(); got.EncrID != child.EncrID || got.EncrKeyBits != child.EncrKeyBits || got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || len(got.InboundKey) != 0 || len(got.OutboundKey) != 0 {
 		stop()
 		t.Fatalf("Child SA changed during IKE rekey: %#v, want %#v", got, child)
 	}
@@ -625,7 +625,7 @@ func testSessionHandlesPeerIKERekey(t *testing.T) {
 	old := &ikeContext{suite: suite, spiI: oldSPIi, spiR: oldSPIr,
 		skD: []byte("old IKE rekey SK_d material-------"), skei: make([]byte, 20), sker: make([]byte, 20)}
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
-	s := &Session{mux: mux, current: old, Child: child, requests: make(chan *localRequest, 1)}
+	s := &Session{mux: mux, current: old, child: child, requests: make(chan *localRequest, 1)}
 	if err := mux.RegisterIKE(oldSPIi); err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +718,7 @@ func testSessionHandlesPeerIKERekey(t *testing.T) {
 	if current == old || !current.responder || retained != old || current.suite != newSuite || current.spiI != newSPIi || current.spiR != newSPIr || string(current.skD) != string(keys.SKd) || string(current.skei) != string(keys.SKei) || string(current.sker) != string(keys.SKer) {
 		t.Fatalf("peer rekey contexts = current %#v old %#v", current, retained)
 	}
-	if got := s.currentChild(); got.EncrID != child.EncrID || got.EncrKeyBits != child.EncrKeyBits || got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || len(got.InboundKey) != 0 || len(got.OutboundKey) != 0 {
+	if got := s.Child(); got.EncrID != child.EncrID || got.EncrKeyBits != child.EncrKeyBits || got.LocalSPI != child.LocalSPI || got.RemoteSPI != child.RemoteSPI || len(got.InboundKey) != 0 || len(got.OutboundKey) != 0 {
 		t.Fatalf("Child SA changed during peer IKE rekey: %#v, want %#v", got, child)
 	}
 
