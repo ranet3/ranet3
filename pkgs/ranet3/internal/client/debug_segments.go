@@ -10,7 +10,8 @@ import (
 
 // DebugSegments is cap.segment as the mesh holds it now: each local segment,
 // an egress segment with whether its SID is served and the families the mesh
-// hands to the exit, each steering policy, and the counters ranet3 status
+// hands to the exit, each cap.segment steer policy, the overhead the longest
+// list takes, cap.exit via's path among them, and the counters ranet3 status
 // reports
 func (c *Client) DebugSegments() control.SegmentsInfo {
 	info := control.SegmentsInfo{Counters: segmentCounters(c.Mesh.SegmentCounters())}
