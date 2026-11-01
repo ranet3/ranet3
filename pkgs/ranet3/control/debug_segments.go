@@ -10,8 +10,9 @@ import (
 	"strings"
 )
 
-// PathDebugSegments is cap.segment: each local segment, each steering policy,
-// and the node's segment counters
+// PathDebugSegments is cap.segment: each local segment, each cap.segment
+// steer policy, the overhead the longest list takes, cap.exit via's path
+// among them, and the node's segment counters
 const PathDebugSegments = PathDebug + "segments"
 
 func init() {

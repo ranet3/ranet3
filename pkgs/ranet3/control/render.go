@@ -412,8 +412,10 @@ func transitLine(c TransitCounters) string {
 	return line
 }
 
-// steeringLine says "off" on a node that steers nothing, which is most of
-// them, rather than two zeroes a reader has to interpret as an absence.
+// steeringLine says "off" on a node with no cap.segment steer entry, which is
+// most of them, rather than two zeroes a reader has to interpret as an
+// absence. A node whose one policy is cap.exit via's path reads "off" too,
+// its Kernel line carrying the path's counts.
 func steeringLine(s Status) string {
 	if len(s.Steering) == 0 {
 		return "off"

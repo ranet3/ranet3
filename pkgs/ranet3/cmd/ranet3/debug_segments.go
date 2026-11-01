@@ -17,9 +17,10 @@ func (r *reader) segmentsCommand() *cobra.Command {
 		Short: "Show local segments and steering",
 		Long: `The output covers each segment this node answers for, an egress segment
 with whether its SID is announced and the families the mesh hands to the exit
-through it, the steering policies with their selectors, sources, paths and
-overhead, stopped or not, and the node's segment counters as ranet3 status
-reports them.`,
+through it, each cap.segment steer policy with its selector, source, path and
+overhead, stopped or not, the overhead the longest list takes, cap.exit via's
+path among them, and the node's segment counters as ranet3 status reports
+them.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {
