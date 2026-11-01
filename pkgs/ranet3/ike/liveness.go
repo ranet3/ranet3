@@ -529,13 +529,19 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	// until then an expired IKE SA carries that exchange, its answers to the peer and its Delete, and starts nothing else
 	expired := func() bool { return s.ikeExpired(s.currentContext()) }
 	// while this end's rekey may run an additional key exchange, or waits for the peer's, the requests on the IKE SA are the rekey's alone
-	livenessHeld := func() bool { return expired() || deleted || s.quiet.Load() }
+	// and a closing IKE SA keeps its window for its Delete
+	livenessHeld := func() bool { return expired() || deleted || s.quiet.Load() || s.closing.Load() }
 	livenessDue := func() time.Time {
 		if livenessHeld() {
 			return time.Now().Add(s.dpdInterval())
 		}
 		return lastAuthenticated.Add(s.dpdInterval())
 	}
+	// an exchange its IKE SA carries past its lifetime has a silent peer's budget whatever traffic the peer keeps up
+	peerAlive := func(request *pendingRequest) bool {
+		return time.Since(lastAuthenticated) < s.dpdInterval() && !s.ikeExpired(request.context)
+	}
+	closeSignal := s.closingSignal()
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
 	for {
@@ -634,19 +640,28 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 				s.mux.Close()
 				return fmt.Errorf("%w, and its Delete could not be sent: %v", s.endedBy, err)
 			}
-			pending, ender = started, started
+			pending, ender, closeSignal = started, started, nil
 		}
 		if pending == nil {
 			select {
 			case req := <-s.requests:
 				var err error
 				deletes := deletesIKE(req.inner)
+				// the close's own send is for the request outstanding as the close began, so a request taken once it began drops the signal
+				closingSeen := s.closing.Load()
+				if closingSeen {
+					closeSignal = nil
+				}
 				switch {
 				case deleted:
 					err = errors.New("ike: the IKE SA's Delete was sent")
 				// an expired IKE SA still carries its Delete, which while replacing is the replacement's
 				case expired() && !deletes:
 					err = errors.New("ike: the IKE SA is past its lifetime")
+				// a closing IKE SA takes no request but a Delete of an IKE SA, so a rekey holding requestMu gives it up at its next request
+				// unless that request is its Delete of the IKE SA it replaced or of a redundant one, which still goes, section 2.8 making it that SA's last request
+				case closingSeen && !deletes:
+					err = errors.New("ike: the IKE SA is closing")
 				default:
 					pending, err = s.startRequest(req)
 					deleted = err == nil && deletes && pending.context == s.currentContext()
@@ -699,6 +714,12 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		if pending == nil {
 			requests = s.requests
 		}
+		// the window of one keeps the IKE SA's Delete behind the request outstanding as the close begins, so that request's next send goes at once and its answer frees the window within a round trip of the close
+		// a request whose sends are spent keeps its last wait
+		var closeNow <-chan struct{}
+		if pending != nil && !pendingRetransmitsExhausted(pending, peerAlive(pending)) {
+			closeNow = closeSignal
+		}
 		select {
 		case datagram := <-s.mux.IKE():
 			if s.dispatch(datagram.Raw, datagram.Endpoint, &pending) {
@@ -734,6 +755,10 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		case <-s.childRekeyEnded:
 			continue
 		case <-s.childSpent:
+			continue
+		case <-closeNow:
+			closeSignal = nil
+			s.sendPending(pending)
 			continue
 		case err := <-s.childFailed:
 			fail(err)
@@ -790,8 +815,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 		if pending != nil && !time.Now().Before(pending.deadline) {
 			// RFC 7296 section 2.1: "the initiator MUST retransmit a request until it either receives a corresponding response or deems the IKE SA to have failed."
-			// an exchange its IKE SA carries past its lifetime has a silent peer's budget whatever traffic the peer keeps up, and then the IKE SA is deemed failed
-			if pendingRetransmitsExhausted(pending, time.Since(lastAuthenticated) < s.dpdInterval() && !s.ikeExpired(pending.context)) {
+			if pendingRetransmitsExhausted(pending, peerAlive(pending)) {
 				// section 2.1 goes on: "In the latter case, the initiator discards all state associated with the IKE SA and any Child SAs that were negotiated using that IKE SA."
 				// section 2.8: "An IKE SA so created inherits all of the original IKE SA's Child SAs", so a retained IKE SA holds none and is deemed failed alone
 				if s.removeRetainedContext(pending.context) {

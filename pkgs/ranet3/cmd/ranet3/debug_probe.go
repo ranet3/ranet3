@@ -19,9 +19,9 @@ func (r *reader) probeCommand() *cobra.Command {
 		Long: `Each matching session is asked to prove its path at once, as every session
 is after a move of the host's default or one of its addresses. A change of
 links alone probes no session. A session with a request outstanding resends that
-request instead of a liveness check. One with none sends no liveness check
-while its IKE SA is past its lifetime or a Delete of it has gone out, or while
-a rekey of its own may run an IKE_FOLLOWUP_KE exchange or waits on the peer's.
+request instead of a liveness check. One with none sends none while its IKE SA
+is past its lifetime or closing, or while a rekey holds its requests, as the
+debugging page's entry for this command lists.
 Name a peer to probe its sessions, or pass --all to probe every session this
 node holds.`,
 		Args:              peerOrAll(&all),

@@ -1347,7 +1347,8 @@ func TestChainEndingBehindAReplacementSendsNoSecondDelete(t *testing.T) {
 	s.SuitesChanged()
 	awaitRecorded(t, events, "ike.suite.unlisted > sa=ike suite=aes128gcm/sha256/x25519+mlkem768 action=replace")
 	p.reply(IKE_FOLLOWUP_KE, header.MessageID, notifyAnswer(N_STATE_NOT_FOUND))
-	header, deletion := p.next("the replacement's Delete", INFORMATIONAL, false)
+	// the close sends the IKE_FOLLOWUP_KE outstanding as it begins once more
+	header, deletion := p.nextPast(header, "the replacement's Delete", INFORMATIONAL, false)
 	if findType(deletion, PayloadD) == nil {
 		t.Fatalf("the request after the chain carries %v, want the replacement's Delete", payloadTypes(deletion))
 	}

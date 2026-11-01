@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2171,6 +2173,220 @@ func TestLifetimeFoundOnceThePeersDeleteClosedTheMuxRecordsNoClose(t *testing.T)
 func pastLifetime(s *Session) {
 	s.ikeRekeyInterval, s.rekeyMargin = time.Hour, time.Hour-time.Second
 	s.current.established = time.Now().Add(-time.Hour)
+}
+
+// deleteGrace is how long internal/client's closeSession waits for a session's Delete to be answered before it closes the mux
+const deleteGrace = 2 * time.Second
+
+// a close sends the session's Delete within deleteGrace of its start, before the retransmission of a request whose last send was lost would have freed the window
+// the request is a liveness check, one already retransmitted, an INVALID_SPI report, a Child SA rekey's CREATE_CHILD_SA, or an IKE SA rekey's CREATE_CHILD_SA or IKE_FOLLOWUP_KE, the rekeys holding requestMu across their exchanges
+// RFC 7296 section 2.3: "An IKE endpoint MUST wait for a response to each of its messages before sending a subsequent message unless it has received a SET_WINDOW_SIZE Notify message from its peer informing it that the peer is prepared to maintain state for multiple outstanding messages in order to allow greater throughput."
+// so the request goes again as the close begins, and a rekey's next request is refused unless it is an IKE SA rekey's Delete of the IKE SA it replaced, which goes before the session's Delete
+// the close begins at the lost send, as DeleteIKE begins it, and DeleteIKE runs once the request's caller has given requestMu up, since a bubble's clock stands still while a goroutine waits for a mutex
+func TestCloseSendsItsDeleteBeforeALostRequestIsRetransmitted(t *testing.T) {
+	hybrid := Suites{kex: []kexEntry{entry768}}
+	probe := func(initiator, _ *Session) error {
+		initiator.Probe()
+		return nil
+	}
+	// ESP on an SPI the initiator does not hold, which the relay carries from the responder
+	report := func(_, responder *Session) error {
+		return responder.Mux().SendESP(binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, strayedSPI), 1))
+	}
+	rekeyChild := func(initiator, _ *Session) error { return initiator.RekeyChild() }
+	rekeyIKE := func(initiator, _ *Session) error { return initiator.RekeyIKE() }
+	for _, outstanding := range []struct {
+		name     string
+		lists    Suites
+		exchange ExchangeType
+		// lost is how many sends of the request go unanswered, the close beginning at the last of them
+		lost  int
+		start func(initiator, responder *Session) error
+		// informational is how many INFORMATIONAL requests the initiator sends after the request's first send: the session's Delete and, behind an IKE SA rekey that completes, the rekey's Delete of the IKE SA it replaced
+		informational int
+	}{
+		{"a liveness check", classicalLists, INFORMATIONAL, 1, probe, 1},
+		{"a liveness check already retransmitted", classicalLists, INFORMATIONAL, 2, probe, 1},
+		{"an INVALID_SPI report", classicalLists, INFORMATIONAL, 1, report, 1},
+		{"a Child SA rekey", classicalLists, CREATE_CHILD_SA, 1, rekeyChild, 1},
+		{"an IKE SA rekey", classicalLists, CREATE_CHILD_SA, 1, rekeyIKE, 2},
+		{"an IKE SA rekey that runs IKE_FOLLOWUP_KE next", hybrid, CREATE_CHILD_SA, 1, rekeyIKE, 1},
+		{"an IKE SA rekey's IKE_FOLLOWUP_KE", hybrid, IKE_FOLLOWUP_KE, 1, rekeyIKE, 2},
+	} {
+		t.Run(outstanding.name, bubble.Run(func(t *testing.T) {
+			var (
+				closer  atomic.Pointer[Session]
+				mu      sync.Mutex
+				lost    int
+				lostKey [2]uint64
+				closeAt time.Time
+				// the first send of each INFORMATIONAL request after the request's first send, by IKE SA and Message ID
+				after = map[[2]uint64]time.Time{}
+			)
+			h := newResponderHarness(t, nil)
+			lists := outstanding.lists
+			h.lists.Store(&lists)
+			cfg := h.peerConfig()
+			cfg.Suites = func() Suites { return lists }
+			initiator, responder, _, responderRun := dialSuited(t, h, cfg, func(fromInitiator bool, header *Header, _ []byte) bool {
+				if !fromInitiator || header == nil || header.IsResponse() {
+					return true
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				key := [2]uint64{header.SPIInitiator, uint64(header.MessageID)}
+				if s := closer.Load(); s != nil && lost < outstanding.lost && header.ExchangeType == outstanding.exchange && (lost == 0 || key == lostKey) {
+					lost, lostKey = lost+1, key
+					if lost == outstanding.lost {
+						closeAt = time.Now()
+						s.startClosing()
+					}
+					return false
+				}
+				if _, seen := after[key]; !seen && lost > 0 && header.ExchangeType == INFORMATIONAL && key != lostKey {
+					after[key] = time.Now()
+				}
+				return true
+			})
+			closer.Store(initiator)
+			started := make(chan error, 1)
+			go func() { started <- outstanding.start(initiator, responder) }()
+			if !waitUntil(func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				return lost == outstanding.lost
+			}) {
+				t.Fatalf("the initiator did not send the %d %s requests the test loses", outstanding.lost, exchangeName(outstanding.exchange))
+			}
+			endedWithin(t, started, outstanding.name)
+			if err := initiator.DeleteIKE(); err != nil {
+				t.Errorf("the Delete of the IKE SA failed: %v", err)
+			}
+			if err := endedWithin(t, responderRun, "responder"); !errors.Is(err, errPeerDeletedIKE) {
+				t.Errorf("the responder's session ended with %v, want the initiator's Delete, %v", err, errPeerDeletedIKE)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			current := initiator.currentContext().spiI
+			var own []time.Duration
+			for key, at := range after {
+				if key[0] == current {
+					own = append(own, at.Sub(closeAt))
+				}
+			}
+			if len(own) != 1 || own[0] >= deleteGrace {
+				t.Errorf("the initiator sent INFORMATIONAL requests on its current IKE SA %v after the close, want its Delete alone within %v of it", own, deleteGrace)
+			}
+			if len(after) != outstanding.informational {
+				t.Errorf("the initiator sent %d INFORMATIONAL requests after the request's first send, want %d", len(after), outstanding.informational)
+			}
+		}))
+	}
+}
+
+// the close's send of the request outstanding as it begins is one of the request's counted sends, so the backoff goes on from it and the request keeps its budget of maxRetransmits sends
+// and a request whose sends are spent as the close begins takes no send past them
+func TestCloseSendIsOneOfTheRequestsCountedSends(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		closeAt time.Duration
+		// sends is when each send of the liveness check goes, from its first
+		sends []time.Duration
+	}{
+		{"the close in the first wait", time.Second, []time.Duration{0, time.Second, 5 * time.Second, 13 * time.Second, 29 * time.Second}},
+		{"the close after the last send", 31 * time.Second, []time.Duration{0, 2 * time.Second, 6 * time.Second, 14 * time.Second, 30 * time.Second}},
+	} {
+		t.Run(test.name, bubble.Run(func(t *testing.T) {
+			s, peer, _ := probedSession(t)
+			// the retransmissions run on the intervals a session runs
+			s.retransmitAfter = 0
+			ended := runSession(t, s)
+			first := time.Now()
+			s.Probe()
+			go func() {
+				time.Sleep(test.closeAt)
+				s.startClosing()
+			}()
+			var sends []time.Duration
+			buf := make([]byte, 65536)
+			for {
+				if err := peer.SetReadDeadline(time.Now().Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := peer.ReadFromUDP(buf); err != nil {
+					break
+				}
+				sends = append(sends, time.Since(first))
+			}
+			if !slices.Equal(sends, test.sends) {
+				t.Errorf("the liveness check went at %v, want %v", sends, test.sends)
+			}
+			if err := endedWithin(t, ended, "closing"); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts", maxRetransmits)) {
+				t.Errorf("run returned %v, want the peer deemed unresponsive after %d attempts", err, maxRetransmits)
+			}
+		}))
+	}
+}
+
+// a request taken once the close began, as a rekey's Delete of the IKE SA it replaced is, takes no send at the close, so its sends keep their schedule
+func TestRequestTakenOnceTheCloseBeganWaitsItsFirstInterval(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		s, peer, _ := reportingSession(t)
+		replaced := testContext()
+		replaced.spiI, replaced.spiR = 0x2122232425262728, 0x3132333435363738
+		s.stateMu.Lock()
+		s.old, s.oldBy = replaced, time.Now().Add(time.Hour)
+		s.stateMu.Unlock()
+		runSession(t, s)
+		s.startClosing()
+		time.Sleep(quietPeriod)
+		go func() {
+			s.requestMu.Lock()
+			defer s.requestMu.Unlock()
+			_, _ = s.requestOnLocked(replaced, INFORMATIONAL, deleteIKEPayloads())
+		}()
+		if got := peerReads(t, peer, quietPeriod); len(got) != 1 {
+			t.Errorf("the Delete of the replaced IKE SA went %d times within %v of its first send, want once", len(got), quietPeriod)
+		}
+	})(t)
+}
+
+// a close that begins within the first send of a request the session took finds that request outstanding as it began, so the request takes its next send at once
+// the session records the end of a send outage within the send that ends it, on Run's goroutine, and the close begins there
+func TestCloseBegunInATakenRequestsFirstSendSendsItAgainAtOnce(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		s, peer, _ := reportingSession(t)
+		s.sendFailures = 1
+		s.events = onEvent("ike.send.recovered", s.startClosing)
+		runSession(t, s)
+		go func() { _, _ = s.request(INFORMATIONAL, nil) }()
+		if got := peerReads(t, peer, quietPeriod); len(got) != 2 {
+			t.Errorf("the request went %d times within %v of its first send, want its first send and the close's", len(got), quietPeriod)
+		}
+	})(t)
+}
+
+// a closing IKE SA starts no liveness check, not even one a probe asks for, so its window is free for its Delete
+func TestClosingIKESAStartsNoLivenessCheck(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		s, peer, _ := reportingSession(t)
+		runSession(t, s)
+		s.startClosing()
+		s.Probe()
+		if got := peerReads(t, peer, quietPeriod); len(got) != 0 {
+			t.Fatalf("the closing session sent %d datagrams when asked to probe, want none", len(got))
+		}
+		deleted := make(chan error, 1)
+		go func() { deleted <- s.DeleteIKE() }()
+		_, header, inner := readOwnRequest(t, s, peer)
+		if header.ExchangeType != INFORMATIONAL || findType(inner, PayloadD) == nil {
+			t.Errorf("the closing session's first request is exchange %d carrying %v, want its Delete", header.ExchangeType, payloadTypes(inner))
+		}
+		answerOwnRequest(t, s, peer, header, nil)
+		if err := answeredWithin(t, deleted, "the Delete of the IKE SA"); err != nil {
+			t.Errorf("the Delete of the IKE SA failed: %v", err)
+		}
+	})(t)
 }
 
 // The retirement sweep used to be reached by a hundred-millisecond poll that

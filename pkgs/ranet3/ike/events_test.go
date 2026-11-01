@@ -46,6 +46,15 @@ func (r *recorder) recorded() []string {
 	return slices.Clone(r.lines)
 }
 
+// onEvent is a Recorder that runs do where the session records kind, on the goroutine that records it
+func onEvent(kind string, do func()) Recorder {
+	return func(_, _ identity.Identity, recorded string, _ ...slog.Attr) {
+		if recorded == kind {
+			do()
+		}
+	}
+}
+
 // both roles record the ID each resolved and the rekeys they start, with the session's two ends, the SA and how it came out
 // a completed rekey names the suite of the SA that replaced the old one, by the names of the lists
 func TestSessionsRecordTheirRekeys(t *testing.T) { bubble.Run(testSessionsRecordTheirRekeys)(t) }
