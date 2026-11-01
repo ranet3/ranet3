@@ -226,7 +226,7 @@ func runDaemon(opts options) int {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			// the error is the withdrawal failing, which leaves the chain in
+			// the error is the withdrawal failing, which leaves the table in
 			// the host's ruleset and is no clean exit
 			if err := border.Run(borderCtx); err != nil {
 				log.Printf("border: %v", err)
@@ -237,7 +237,7 @@ func runDaemon(opts options) int {
 			cancelBorder()
 			<-done
 		})
-		// a refusal later in the start withdraws the chain on the way out
+		// a refusal later in the start withdraws the table on the way out
 		defer stopBorder()
 		log.Printf("border filter in %s, inside %s", border.Where(), strings.Join(border.Inside(), " "))
 	}

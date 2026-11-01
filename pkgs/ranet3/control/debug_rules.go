@@ -15,7 +15,7 @@ import (
 )
 
 // PathDebugRules is the host's policy rules beside the ones the reconciler
-// derives, and the border filter's chain with its counters
+// derives, and the border filter's table with its counters
 const PathDebugRules = PathDebug + "rules"
 
 func init() {
@@ -28,7 +28,7 @@ type RulesSource interface {
 }
 
 // RulesInfo is every policy rule the kernel holds, the rules the reconciler
-// derives that it does not, and the border filter's chain
+// derives that it does not, and the border filter's table
 type RulesInfo struct {
 	Policy []PolicyRule `json:"policy"`
 	// PolicyErr says why Policy is empty: a platform with no policy rules, or
@@ -175,11 +175,11 @@ type BorderChainRule struct {
 	Bytes   uint64 `json:"bytes"`
 }
 
-// Rules reads the policy rules and the border filter's chain
+// Rules reads the policy rules and the border filter's table
 func (c *Client) Rules() (RulesInfo, error) { return read[RulesInfo](c, PathDebugRules) }
 
 // RenderRules writes the policy rules of each family as a table, the wanted
-// rules the kernel does not hold, then the border filter's chain with the
+// rules the kernel does not hold, then the border filter's table with the
 // packets each drop counted
 func RenderRules(w io.Writer, info RulesInfo) {
 	if info.PolicyErr != "" {
