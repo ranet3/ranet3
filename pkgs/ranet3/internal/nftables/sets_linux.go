@@ -363,6 +363,78 @@ func dataValue(data []byte) []byte {
 	return nil
 }
 
+// VerdictMap is a map of a table whose elements are verdicts, the anonymous
+// one of a rule's vmap or a named one, and the chain each element's goto or
+// jump sends a packet on to
+type VerdictMap struct {
+	Name      string
+	Anonymous bool
+	Chains    []string
+}
+
+// VerdictMaps reads every verdict map of table through conn, with its elements
+func VerdictMaps(conn *Conn, proto uint8, table string) ([]VerdictMap, error) {
+	sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_SET_TABLE, table))
+	if err != nil {
+		return nil, fmt.Errorf("nftables: dump the sets of table %s: %w", table, err)
+	}
+	var out []VerdictMap
+	for _, reply := range sets {
+		set := DecodeSet(reply)
+		if set.Table != table || set.Flags&unix.NFT_SET_MAP == 0 || dataType(reply) != unix.NFT_DATA_VERDICT {
+			continue
+		}
+		elements, err := conn.Dump(Command(unix.NFT_MSG_GETSETELEM), set.elementList(proto))
+		if err != nil {
+			return nil, fmt.Errorf("nftables: dump the elements of map %s: %w", set.Name, err)
+		}
+		out = append(out, VerdictMap{Name: set.Name, Anonymous: set.Flags&unix.NFT_SET_ANONYMOUS != 0, Chains: elementChains(elements)})
+	}
+	return out, nil
+}
+
+// dataType is the type of the data a dumped set maps its keys to, 0 for a set
+// that maps none
+func dataType(message Message) uint32 {
+	for kind, value := range message.Attributes() {
+		if kind == unix.NFTA_SET_DATA_TYPE && len(value) == 4 {
+			return binary.BigEndian.Uint32(value)
+		}
+	}
+	return 0
+}
+
+// elementChains is the chain each verdict of the elements dumps hold sends a
+// packet on to, in the order dumped
+func elementChains(replies []Message) []string {
+	var out []string
+	for _, reply := range replies {
+		for kind, value := range reply.Attributes() {
+			if kind != unix.NFTA_SET_ELEM_LIST_ELEMENTS {
+				continue
+			}
+			for _, item := range Nested(value) {
+				for _, field := range Nested(item.Value) {
+					if field.Kind != unix.NFTA_SET_ELEM_DATA {
+						continue
+					}
+					for _, data := range Nested(field.Value) {
+						if data.Kind != unix.NFTA_DATA_VERDICT {
+							continue
+						}
+						for _, verdict := range Nested(data.Value) {
+							if verdict.Kind == unix.NFTA_VERDICT_CHAIN {
+								out = append(out, unix.ByteSliceToString(verdict.Value))
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
 // ElementFault reads the keys s holds through conn and names how they differ
 // from written, empty where they do not
 func (s Set) ElementFault(conn *Conn, proto uint8, written []Interval) (string, error) {

@@ -6,10 +6,13 @@
 package nftables
 
 import (
+	"encoding/binary"
 	"errors"
 	"net/netip"
 	"slices"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // A prefix's mask reads back with the boolean operation a dump writes for a
@@ -34,6 +37,46 @@ func TestExpressionFaultReadsABitwiseBooleanOperationAsWritten(t *testing.T) {
 	// NFT_BITWISE_LSHIFT
 	if fault := ExpressionFault(written, dumped(1)); fault == "" {
 		t.Error("a mask dumped as a shift reads as written")
+	}
+}
+
+// A source translation to register 1 reads back with the range and the address
+// mapping the kernel gives it, and the limit's dynset with the zero timeout and
+// flags a dump writes and its connlimit nested with no NLA_F_NESTED, as nft_nat
+// and nft_dynset dump them, and each reads as written. Another register's
+// range, another flag, an inversion, a timeout or another count does not.
+func TestExpressionFaultReadsANatAndADynsetAsTheKernelDumpsThem(t *testing.T) {
+	nat := [][]byte{SourceLoad(unix.NFPROTO_IPV4), SourceNAT(unix.NFPROTO_IPV4)}
+	natDumped := func(max, flags uint32) []byte {
+		data := PutAttrBE32(PutAttrBE32(PutAttrBE32(nil, unix.NFTA_NAT_TYPE, unix.NFT_NAT_SNAT), unix.NFTA_NAT_FAMILY, unix.NFPROTO_IPV4), unix.NFTA_NAT_REG_ADDR_MIN, unix.NFT_REG_1)
+		data = PutAttrBE32(PutAttrBE32(data, unix.NFTA_NAT_REG_ADDR_MAX, max), unix.NFTA_NAT_FLAGS, flags)
+		return slices.Concat(SourceLoad(unix.NFPROTO_IPV4), dumped("nat", data))
+	}
+	limit := [][]byte{SourceLoad(unix.NFPROTO_IPV4), ConnectionsOver("flows4", 64)}
+	limitDumped := func(timeout uint64, flags, count uint32) []byte {
+		connlimit := PutAttrBE32(PutAttrBE32(nil, connlimitCount, count), connlimitFlags, connlimitInvert)
+		data := PutAttrBE32(PutAttrBE32(nil, unix.NFTA_DYNSET_SREG_KEY, unix.NFT_REG_1), unix.NFTA_DYNSET_OP, unix.NFT_DYNSET_OP_ADD)
+		data = PutAttr(PutAttrString(data, unix.NFTA_DYNSET_SET_NAME, "flows4"), unix.NFTA_DYNSET_TIMEOUT, binary.BigEndian.AppendUint64(nil, timeout))
+		data = PutAttr(data, unix.NFTA_DYNSET_EXPR, PutAttr(PutAttrString(nil, unix.NFTA_EXPR_NAME, "connlimit"), unix.NFTA_EXPR_DATA, connlimit))
+		return slices.Concat(SourceLoad(unix.NFPROTO_IPV4), dumped("dynset", PutAttrBE32(data, unix.NFTA_DYNSET_FLAGS, flags)))
+	}
+	for _, c := range []struct {
+		name    string
+		written [][]byte
+		held    []byte
+		differs bool
+	}{
+		{"a translation as the kernel dumps it", nat, natDumped(unix.NFT_REG_1, unix.NF_NAT_RANGE_MAP_IPS), false},
+		{"a translation to a range of registers", nat, natDumped(unix.NFT_REG_2, unix.NF_NAT_RANGE_MAP_IPS), true},
+		{"a translation of random ports", nat, natDumped(unix.NFT_REG_1, unix.NF_NAT_RANGE_MAP_IPS|unix.NF_NAT_RANGE_PROTO_RANDOM), true},
+		{"the limit as the kernel dumps it", limit, limitDumped(0, 0, 64), false},
+		{"the limit inverted", limit, limitDumped(0, unix.NFT_DYNSET_F_INV, 64), true},
+		{"the limit with a timeout", limit, limitDumped(1000, 0, 64), true},
+		{"the limit at another count", limit, limitDumped(0, 0, 65), true},
+	} {
+		if fault := ExpressionFault(c.written, c.held); (fault != "") != c.differs {
+			t.Errorf("%s reads back with the fault %q, want one %v", c.name, fault, c.differs)
+		}
 	}
 }
 

@@ -51,9 +51,8 @@ func TestPrefixMaskCoversExactlyThePrefixLength(t *testing.T) {
 	}
 }
 
-// A rule's identity travels in its own comment, so the diff reads back the
-// spelling it wrote rather than re-deriving it from the expressions, and a
-// set's comment travels under a type of its own.
+// A rule's comment reads back as its owner wrote it, and a set's comment
+// travels under a type of its own.
 func TestCommentRoundTripsThroughUserdata(t *testing.T) {
 	const spec = "ipv4 out via ranet0 masquerade"
 	if got := comment(udataComment, userdata(udataComment, spec)); got != spec {
@@ -428,6 +427,7 @@ func TestFilterExpressionsCarryTheAttributesNftWrites(t *testing.T) {
 		}},
 		{"accept", [][]byte{Verdict(Accept)}, []string{"immediate 1=00000000 2{2{1=00000001}}"}},
 		{"counter drop", CountedDrop(), []string{"counter ", "immediate 1=00000000 2{2{1=00000000}}"}},
+		{"goto none", [][]byte{Goto("none")}, []string{`immediate 1=00000000 2{2{1=fffffffc 2="none"}}`}},
 	} {
 		var got []string
 		for _, expression := range c.expressions {
@@ -461,11 +461,18 @@ func dumpedVerdict(code uint32) []byte {
 	return dumped("immediate", PutAttr(PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT), unix.NFTA_IMMEDIATE_DATA, data))
 }
 
+// dumpedGoto is a goto to chain as a dump lists it
+func dumpedGoto(chain string) []byte {
+	data := PutAttr(nil, unix.NFTA_DATA_VERDICT, PutAttrString(PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, gotoCode), unix.NFTA_VERDICT_CHAIN, chain))
+	return dumped("immediate", PutAttr(PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT), unix.NFTA_IMMEDIATE_DATA, data))
+}
+
 // A rule's expressions as a dump lists them read as written where the dump
 // names a lookup's set and not its ID, writes its flags at zero, numbers an
 // anonymous set, counts in a counter and nests without NLA_F_NESTED, and as a
 // fault where a lookup's inversion is dropped or added, a comparison's data or
-// a verdict differs, an expression is gone, or a lookup names another set
+// a verdict differs, a goto names another chain, an expression is gone, or a
+// lookup names another set
 func TestExpressionFaultTellsAnEditFromADumpsSpelling(t *testing.T) {
 	forwarded, lan4 := Set{Name: "forwarded", ID: 1}, Set{Name: "lan4", ID: 2}
 	mark := binary.NativeEndian.AppendUint32(nil, 0x72)
@@ -491,6 +498,8 @@ func TestExpressionFaultTellsAnEditFromADumpsSpelling(t *testing.T) {
 		{"an inversion added", toTheLAN, [][]byte{DestinationLoad(unix.NFPROTO_IPV4), dumpedLookup("lan4", unix.NFT_LOOKUP_F_INV), dumpedVerdict(Accept)}, true},
 		{"another comparison's data", marked, [][]byte{MetaLoad(unix.NFT_META_MARK), dumpedCompare(binary.NativeEndian.AppendUint32(nil, 0x73)), dumpedVerdict(Accept)}, true},
 		{"another verdict", marked, [][]byte{MetaLoad(unix.NFT_META_MARK), dumpedCompare(mark), dumpedVerdict(Drop)}, true},
+		{"a goto as a dump spells it", [][]byte{Goto("none_a")}, [][]byte{dumpedGoto("none_a")}, false},
+		{"a goto to another chain", [][]byte{Goto("none_a")}, [][]byte{dumpedGoto("none_b")}, true},
 		{"an expression gone", notForwarded, [][]byte{dumpedLookup("forwarded", unix.NFT_LOOKUP_F_INV), dumpedVerdict(Accept)}, true},
 		{"another set looked up", toTheLAN, [][]byte{DestinationLoad(unix.NFPROTO_IPV4), dumpedLookup("lan6", 0), dumpedVerdict(Accept)}, true},
 	} {

@@ -16,6 +16,8 @@ const (
 	Accept = 1
 	Drop   = 0
 	Return = 0xfffffffb
+	// gotoCode is NFT_GOTO, the same way
+	gotoCode = 0xfffffffc
 	// nlaTypeMask is NLA_TYPE_MASK, which masks NLA_F_NESTED off on the way
 	// in. libnftnl sets that flag, so it is set on the way out.
 	nlaTypeMask = 0x3fff

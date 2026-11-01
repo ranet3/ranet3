@@ -58,6 +58,51 @@ func Tables(conn *Conn, name string) (map[uint8]uint32, error) {
 	return held, nil
 }
 
+// TableChains is the name of every chain of the table named table in the
+// nf_tables family proto, none where the table is not there. The kernel dumps
+// the chains of every table of the family.
+func TableChains(conn *Conn, proto uint8, table string) ([]string, error) {
+	replies, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), PutNfgenmsg(nil, proto))
+	if err != nil {
+		return nil, fmt.Errorf("nftables: dump chains: %w", err)
+	}
+	var out []string
+	for _, reply := range replies {
+		if held, name, _, _, _ := DecodeChain(reply); held == table {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// TableRules is every rule of every chain of the table named table in the
+// nf_tables family proto, which the kernel filters by the table the request
+// names
+func TableRules(conn *Conn, proto uint8, table string) ([]Installed, error) {
+	replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, table))
+	if err != nil {
+		return nil, fmt.Errorf("nftables: dump rules: %w", err)
+	}
+	var out []Installed
+	for _, reply := range replies {
+		if held, rule := decodeInstalled(reply); held == table {
+			out = append(out, rule)
+		}
+	}
+	return out, nil
+}
+
+// decodeInstalled reads a rule out of a dump, with the table it lives in
+func decodeInstalled(reply Message) (table string, rule Installed) {
+	table, rule.Chain, rule.Spec, rule.Packets, rule.Bytes, rule.Counted = DecodeRule(reply)
+	for kind, value := range reply.Attributes() {
+		if kind == unix.NFTA_RULE_EXPRESSIONS {
+			rule.Expressions = value
+		}
+	}
+	return table, rule
+}
+
 // NewTable creates the table name in the nf_tables family proto if it is
 // absent and adopts it if it is there, which is how a table a previous
 // instance left behind is taken over. It writes the flags as none over
@@ -79,8 +124,9 @@ func tableRequest(command int, flags uint16, proto uint8, name string) Request {
 	return Request{Kind: Command(command), Flags: flags, Body: body}
 }
 
-// Chain is a base chain one owner writes in its table, which accepts what no
-// rule decides
+// Chain is a chain one owner writes in its table: a base chain, which accepts
+// what no rule decides, or with Hook NoHook and no Type a regular chain, which
+// a packet enters by a rule's Goto alone
 type Chain struct {
 	Table    string
 	Name     string
@@ -89,17 +135,32 @@ type Chain struct {
 	Priority int32
 }
 
+// NoHook is the hook DecodeChain reads for a regular chain, one no packet
+// enters at
+const NoHook = ^uint32(0)
+
 // Create writes c's policy over whatever another writer set
 func (c Chain) Create(proto uint8) Request {
-	hooked := PutAttrBE32(nil, unix.NFTA_HOOK_HOOKNUM, c.Hook)
-	hooked = PutAttrBE32(hooked, unix.NFTA_HOOK_PRIORITY, uint32(c.Priority))
 	body := PutNfgenmsg(nil, proto)
 	body = PutAttrString(body, unix.NFTA_CHAIN_TABLE, c.Table)
 	body = PutAttrString(body, unix.NFTA_CHAIN_NAME, c.Name)
-	body = PutAttr(body, unix.NFTA_CHAIN_HOOK|unix.NLA_F_NESTED, hooked)
-	body = PutAttrBE32(body, unix.NFTA_CHAIN_POLICY, Accept)
-	body = PutAttrString(body, unix.NFTA_CHAIN_TYPE, c.Type)
+	if c.Hook != NoHook {
+		hooked := PutAttrBE32(nil, unix.NFTA_HOOK_HOOKNUM, c.Hook)
+		hooked = PutAttrBE32(hooked, unix.NFTA_HOOK_PRIORITY, uint32(c.Priority))
+		body = PutAttr(body, unix.NFTA_CHAIN_HOOK|unix.NLA_F_NESTED, hooked)
+		body = PutAttrBE32(body, unix.NFTA_CHAIN_POLICY, Accept)
+		body = PutAttrString(body, unix.NFTA_CHAIN_TYPE, c.Type)
+	}
 	return Request{Kind: Command(unix.NFT_MSG_NEWCHAIN), Flags: unix.NLM_F_CREATE, Body: body}
+}
+
+// Delete takes the chain's rules with it, and fails while a rule another
+// chain holds sends packets to it
+func (c Chain) Delete(proto uint8) Request {
+	body := PutNfgenmsg(nil, proto)
+	body = PutAttrString(body, unix.NFTA_CHAIN_TABLE, c.Table)
+	body = PutAttrString(body, unix.NFTA_CHAIN_NAME, c.Name)
+	return Request{Kind: Command(unix.NFT_MSG_DELCHAIN), Body: body}
 }
 
 // Flush names no handle, which nf_tables reads as every rule in the chain
@@ -110,12 +171,12 @@ func (c Chain) Flush(proto uint8) Request {
 	return Request{Kind: Command(unix.NFT_MSG_DELRULE), Body: body}
 }
 
-// Rule carries spec as the rule's comment and identity, so a rule reads in
-// `nft list ruleset` exactly as its owner's diff spells it
+// Rule carries spec as the rule's comment, which names the line in `nft list
+// ruleset` and in a readback
 func (c Chain) Rule(proto uint8, spec string, expressions [][]byte) (Request, error) {
 	// a longer comment still lists in `nft list ruleset`, but nft -f will not load that listing back
 	if len(spec) > udataCommentMax {
-		return Request{}, fmt.Errorf("nftables: rule %s does not fit in a %d byte comment, which is its identity on the host", spec, udataCommentMax)
+		return Request{}, fmt.Errorf("nftables: rule %s does not fit in a %d byte comment", spec, udataCommentMax)
 	}
 	body := PutNfgenmsg(nil, proto)
 	body = PutAttrString(body, unix.NFTA_RULE_TABLE, c.Table)
@@ -135,18 +196,26 @@ func (c Chain) Fault(message Message) (fault string, remake bool) {
 	if table != c.Table || chain != c.Name {
 		return "", false
 	}
-	policy := ^uint32(0)
+	// a regular chain carries no policy, which reads as none
+	policy, written := ^uint32(0), ^uint32(0)
 	for attribute, value := range message.Attributes() {
 		if attribute == unix.NFTA_CHAIN_POLICY && len(value) == 4 {
 			policy = binary.BigEndian.Uint32(value)
 		}
 	}
+	if c.Hook != NoHook {
+		written = Accept
+	}
 	remake = kind != c.Type || hook != c.Hook || priority != c.Priority
-	if !remake && policy == Accept {
+	if !remake && policy == written {
 		return "", false
 	}
-	return fmt.Sprintf("its chain reads back as type %q at hook %d, priority %d, policy %d, where a %s chain at hook %d, priority %d, policy accept was written",
-		kind, int32(hook), priority, int32(policy), c.Type, c.Hook, c.Priority), remake
+	want := fmt.Sprintf("a %s chain at hook %d, priority %d, policy accept", c.Type, c.Hook, c.Priority)
+	if c.Hook == NoHook {
+		want = "the regular chain " + c.Name
+	}
+	return fmt.Sprintf("its chain reads back as type %q at hook %d, priority %d, policy %d, where %s was written",
+		kind, int32(hook), priority, int32(policy), want), remake
 }
 
 // Installed is one rule as a dump read it back: the comment it was written
@@ -189,7 +258,7 @@ type Readback struct {
 	// transaction
 	Remake bool
 	// Chains is the name of each chain the table holds, as the dump finds
-	// them, those Contents names among them
+	// them, those Contents names and those it does not
 	Chains []string
 }
 
@@ -283,13 +352,7 @@ func (c Contents) rules(conn *Conn, proto uint8) ([]Installed, error) {
 			return nil, err
 		}
 		for _, reply := range replies {
-			if table, name, spec, packets, bytes, counted := DecodeRule(reply); table == chain.Table && name == chain.Name {
-				installed := Installed{Spec: spec, Chain: name, Packets: packets, Bytes: bytes, Counted: counted}
-				for kind, value := range reply.Attributes() {
-					if kind == unix.NFTA_RULE_EXPRESSIONS {
-						installed.Expressions = value
-					}
-				}
+			if table, installed := decodeInstalled(reply); table == chain.Table && installed.Chain == chain.Name {
 				out = append(out, installed)
 			}
 		}
@@ -298,11 +361,9 @@ func (c Contents) rules(conn *Conn, proto uint8) ([]Installed, error) {
 }
 
 // ExpressionFault names how a rule's expressions as a dump lists them differ
-// from written, empty where they do not. A dump names a lookup's set and not
-// its ID, writes its flags where they are zero, writes a bitwise's boolean
-// operation, numbers an anonymous set, counts in a counter and nests without
-// NLA_F_NESTED, none of which differs.
-// An anonymous set's elements are read apart, by the name LookupSets gives.
+// from written, empty where they do not, leaving out what a dump adds or spells
+// otherwise and what a counter counts. An anonymous set's elements are read
+// apart, by the name LookupSets gives.
 func ExpressionFault(written [][]byte, held []byte) string {
 	want, got := canonical(slices.Concat(written...)), canonical(held)
 	if slices.Equal(want, got) {
@@ -369,6 +430,34 @@ func LookupSets(held []byte) []string {
 	return out
 }
 
+// VerdictChains is the chain each verdict of a dumped rule's expressions sends
+// a packet on to, a goto's or a jump's, in order
+func VerdictChains(held []byte) []string {
+	var out []string
+	for _, element := range Nested(held) {
+		name, data := expressionParts(element.Value)
+		if name != "immediate" {
+			continue
+		}
+		for _, field := range Nested(data) {
+			if field.Kind&nlaTypeMask != unix.NFTA_IMMEDIATE_DATA {
+				continue
+			}
+			for _, inner := range Nested(field.Value) {
+				if inner.Kind&nlaTypeMask != unix.NFTA_DATA_VERDICT {
+					continue
+				}
+				for _, verdict := range Nested(inner.Value) {
+					if verdict.Kind&nlaTypeMask == unix.NFTA_VERDICT_CHAIN {
+						out = append(out, unix.ByteSliceToString(verdict.Value))
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
 func expressionParts(element []byte) (name string, data []byte) {
 	for _, field := range Nested(element) {
 		switch field.Kind & nlaTypeMask {
@@ -403,7 +492,16 @@ const bitwiseOp, bitwiseBool = 6, 0
 
 func canonicalAttributes(name string, data []byte) []string {
 	var out []string
-	for _, field := range Nested(data) {
+	fields := Nested(data)
+	// nft_nat_init takes an address range of one where only its first register
+	// is given, and maps addresses wherever one is
+	var natMin []byte
+	for _, field := range fields {
+		if name == "nat" && field.Kind == unix.NFTA_NAT_REG_ADDR_MIN {
+			natMin = field.Value
+		}
+	}
+	for _, field := range fields {
 		kind := field.Kind & nlaTypeMask
 		value := field.Value
 		switch {
@@ -413,13 +511,26 @@ func canonicalAttributes(name string, data []byte) []string {
 			continue
 		case name == "bitwise" && kind == bitwiseOp && len(value) == 4 && binary.BigEndian.Uint32(value) == bitwiseBool:
 			continue
+		case name == "nat" && kind == unix.NFTA_NAT_REG_ADDR_MAX && natMin != nil && slices.Equal(value, natMin):
+			continue
+		case name == "nat" && kind == unix.NFTA_NAT_FLAGS && natMin != nil && len(value) == 4 && binary.BigEndian.Uint32(value) == unix.NF_NAT_RANGE_MAP_IPS:
+			continue
+		// nft_dynset_dump writes a timeout and flags of zero for a dynset written with neither
+		case name == "dynset" && kind == unix.NFTA_DYNSET_TIMEOUT && len(value) == 8 && binary.BigEndian.Uint64(value) == 0:
+			continue
+		case name == "dynset" && kind == unix.NFTA_DYNSET_FLAGS && len(value) == 4 && binary.BigEndian.Uint32(value) == 0:
+			continue
+		case name == "dynset" && kind == unix.NFTA_DYNSET_EXPR:
+			inner, attributes := expressionParts(value)
+			out = append(out, fmt.Sprintf("%d{%s %s}", kind, inner, strings.Join(canonicalAttributes(inner, attributes), " ")))
+			continue
 		case name == "lookup" && kind == unix.NFTA_LOOKUP_SET:
 			// the kernel completes the anonymous name a rule's own set is made under
 			if value = []byte(unix.ByteSliceToString(value)); strings.HasPrefix(string(value), "__set") {
 				value = []byte("__set")
 			}
-		case nested(name, kind):
-			out = append(out, fmt.Sprintf("%d{%s}", kind, strings.Join(canonicalAttributes("data", value), " ")))
+		case nested(name, kind) != "":
+			out = append(out, fmt.Sprintf("%d{%s}", kind, strings.Join(canonicalAttributes(nested(name, kind), value), " ")))
 			continue
 		}
 		out = append(out, fmt.Sprintf("%d=%x", kind, value))
@@ -428,27 +539,26 @@ func canonicalAttributes(name string, data []byte) []string {
 	return out
 }
 
-// nested is the attributes that hold others in the expressions written here:
-// a comparison's and an immediate's data, a mask, and a verdict within data
-func nested(name string, kind uint16) bool {
-	switch name {
-	case "cmp":
-		return kind == unix.NFTA_CMP_DATA
-	case "immediate":
-		return kind == unix.NFTA_IMMEDIATE_DATA
-	case "bitwise":
-		return kind == unix.NFTA_BITWISE_MASK || kind == unix.NFTA_BITWISE_XOR
-	case "data":
-		return kind == unix.NFTA_DATA_VERDICT
+// nested names what an attribute holding others holds in the expressions
+// written here, data in a comparison's and an immediate's data and in a mask,
+// and a verdict within data, and is empty for any other. A verdict's chain
+// shares its kind with data's verdict, so it is read as a value.
+func nested(name string, kind uint16) string {
+	switch {
+	case name == "cmp" && kind == unix.NFTA_CMP_DATA, name == "immediate" && kind == unix.NFTA_IMMEDIATE_DATA,
+		name == "bitwise" && (kind == unix.NFTA_BITWISE_MASK || kind == unix.NFTA_BITWISE_XOR):
+		return "data"
+	case name == "data" && kind == unix.NFTA_DATA_VERDICT:
+		return "verdict"
 	}
-	return false
+	return ""
 }
 
 // DecodeChain reads where a chain lives and how it is hooked. A chain with no
 // hook is a regular chain, reached by a jump rather than by the packet path,
-// so the absent hook reads as one no packet enters at.
+// so the absent hook reads as NoHook.
 func DecodeChain(message Message) (table, chain, kind string, hook uint32, priority int32) {
-	hook = ^uint32(0)
+	hook = NoHook
 	for attribute, value := range message.Attributes() {
 		switch attribute {
 		case unix.NFTA_CHAIN_TABLE:
@@ -474,12 +584,8 @@ func DecodeChain(message Message) (table, chain, kind string, hook uint32, prior
 	return table, chain, kind, hook, priority
 }
 
-// DecodeRule reads the fields a diff and a report need: where the rule lives,
-// the comment its owner wrote as its identity, and the counter, counted
-// where the rule keeps one. The expressions are walked only far enough to find
-// that counter, because the comment already says what the rule does and
-// re-deriving it from the expressions would be a second encoder to keep in
-// step with the first.
+// DecodeRule reads where a rule lives, the comment its owner wrote, and the
+// counter, counted where the rule keeps one
 func DecodeRule(message Message) (table, chain, spec string, packets, bytes uint64, counted bool) {
 	for kind, value := range message.Attributes() {
 		switch kind {
@@ -725,6 +831,16 @@ func Verdict(code uint32) []byte {
 	data := PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
 	immediate := PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
 	immediate = PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
+	return Expression("immediate", immediate)
+}
+
+// Goto sends the packet on to the regular chain named chain, at whose end the
+// base chain's policy decides it, as at the base chain's own end
+func Goto(chain string) []byte {
+	verdict := PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, gotoCode)
+	verdict = PutAttrString(verdict, unix.NFTA_VERDICT_CHAIN, chain)
+	immediate := PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
+	immediate = PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, verdict))
 	return Expression("immediate", immediate)
 }
 
