@@ -700,7 +700,7 @@ func (s *Speaker) starvedActions(now time.Time) []sendAction {
 		if s.neighbors[request.neighbor.peer.ID] != request.neighbor {
 			continue // the peer was replaced or removed while we held the lock
 		}
-		if !s.allowAsk(request.neighbor, request.key, request.routerID, now) {
+		if !s.allowAsk(request.neighbor, request.key, request.routerID, request.seqno, now) {
 			continue
 		}
 		actions = append(actions, s.seqnoRequestTo(request.neighbor, request.key,
@@ -835,7 +835,7 @@ func (s *Speaker) retryStarvedLocked(now time.Time) []sendAction {
 			if s.routes.route(n, retry.key) == nil {
 				continue
 			}
-			if !s.allowAsk(n, retry.key, retry.routerID, now) {
+			if !s.allowAsk(n, retry.key, retry.routerID, retry.seqno, now) {
 				continue
 			}
 			actions = append(actions, s.seqnoRequestTo(n, retry.key, retry.routerID, retry.seqno, now))
@@ -848,13 +848,15 @@ func (s *Speaker) retryStarvedLocked(now time.Time) []sendAction {
 // and per prefix. The route table can queue the same starve twice, once from
 // the update that made the route unfeasible and once from the selection that
 // followed it, and two neighbors worsening in quick succession re-starve each
-// other's prefixes.
-func (s *Speaker) allowAsk(n *neighborState, key routeKey, routerID [8]byte, now time.Time) bool {
+// other's prefixes. A request for a greater seqno than the one asked inside
+// the window is no repeat, as allowSeqnoRequest has it: a prefix that recovers
+// and starves again needs the seqno past the one it recovered with.
+func (s *Speaker) allowAsk(n *neighborState, key routeKey, routerID [8]byte, seqno uint16, now time.Time) bool {
 	index := askedKey{sourceKey{route: key, routerID: routerID}, n}
-	if at, ok := s.askedSeqno[index]; ok && now.Before(at.Add(seqnoRequestSuppress)) {
+	if asked, ok := s.askedSeqno[index]; ok && now.Before(asked.at.Add(seqnoRequestSuppress)) && !seqnoGT(seqno, asked.seqno) {
 		return false
 	}
-	s.askedSeqno[index] = now
+	s.askedSeqno[index] = askedSeqno{at: now, seqno: seqno}
 	s.noteRequestSweep(now)
 	return true
 }

@@ -162,6 +162,12 @@ type askedKey struct {
 	neighbor *neighborState
 }
 
+// askedSeqno is when this node last asked under an askedKey, and for which seqno
+type askedSeqno struct {
+	at    time.Time
+	seqno uint16
+}
+
 // starveRetry is one prefix waiting for a seqno that has not arrived.
 type starveRetry struct {
 	key      routeKey
@@ -215,7 +221,7 @@ type Speaker struct {
 	// neighbor holding an unfeasible route asked, and pendingSeqno's index has
 	// no neighbor in it, so it cannot tell "already asked this one" from
 	// "already asked somebody".
-	askedSeqno    map[askedKey]time.Time
+	askedSeqno    map[askedKey]askedSeqno
 	starveRetries map[sourceKey]*starveRetry
 	// starveBy is how much of that each neighbor is holding.
 	starveBy    map[string]int
@@ -316,7 +322,7 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 		assigned:       make(map[routeKey]struct{}),
 		pendingSeqno:   make(map[sourceKey]pendingSeqno),
 		pendingByAsker: make(map[string]int),
-		askedSeqno:     make(map[askedKey]time.Time),
+		askedSeqno:     make(map[askedKey]askedSeqno),
 		starveRetries:  make(map[sourceKey]*starveRetry),
 		starveBy:       make(map[string]int),
 		originSeqno:    1,
@@ -1119,12 +1125,12 @@ func (s *Speaker) sweepRequestsLocked(now time.Time) {
 	// keyed by router id, which the peer chooses, and by neighbor pointer, so
 	// an entry left behind pins a retired neighborState and everything it
 	// advertised.
-	for index, at := range s.askedSeqno {
-		if !now.Before(at.Add(seqnoRequestSuppress)) {
+	for index, asked := range s.askedSeqno {
+		if !now.Before(asked.at.Add(seqnoRequestSuppress)) {
 			delete(s.askedSeqno, index)
 			continue
 		}
-		s.noteRequestSweep(at)
+		s.noteRequestSweep(asked.at)
 	}
 }
 

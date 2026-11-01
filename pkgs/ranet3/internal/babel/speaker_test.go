@@ -2742,7 +2742,7 @@ func TestSuppressionWindowIsADeadlineOfItsOwn(t *testing.T) {
 	// The record of what this node asked is kept seqnoRequestSuppress and is
 	// held by the same budget, so it is a deadline the same way.
 	speaker.nextRequestSweep = time.Time{}
-	if !speaker.allowAsk(neighbor, index.route, index.routerID, now) {
+	if !speaker.allowAsk(neighbor, index.route, index.routerID, 1, now) {
 		t.Fatal("the first ask was suppressed")
 	}
 	if got := speaker.deadlineLocked(); got.After(want) {
@@ -2756,7 +2756,7 @@ func TestSuppressionWindowIsADeadlineOfItsOwn(t *testing.T) {
 	// walk past and fold back in, and the ask is the earlier of the two so
 	// that its fold is the one the kept deadline depends on.
 	later := sourceKey{route: routeKey{dest: netip.MustParsePrefix("fd00:9::/64")}, routerID: [8]byte{4}}
-	if !speaker.allowAsk(neighbor, later.route, later.routerID, want) {
+	if !speaker.allowAsk(neighbor, later.route, later.routerID, 1, want) {
 		t.Fatal("the second ask was suppressed")
 	}
 	if !speaker.allowSeqnoRequest(later, 1, neighbor.peer.ID, want.Add(time.Second)) {

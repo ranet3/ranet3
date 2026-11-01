@@ -964,6 +964,38 @@ func TestSourceTableRefusesUnknownOriginWhenFull(t *testing.T) {
 	}
 }
 
+// a prefix that starves, recovers and starves again inside seqnoRequestSuppress of the first request asks for the seqno past the one it recovered with
+// b's route to it turns unfeasible at seqno 1, so a asks b for 2, and b then offers it at 2 and worsens again at 2 within the window
+// d is a leaf a advertises to, which records the feasibility distance each worsened offer falls foul of
+func TestPrefixStarvedAgainInsideTheWindowAsksForTheFreshSeqno(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b", "a-d")
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:c::/48")}
+	start := time.Now()
+	fabric.offer("a", "b", "c", key, 1, 10)
+	fabric.flush("a")
+	fabric.offer("a", "b", "c", key, 1, 900)
+	if asked := seqnoRequestsFor(t, fabric.tlvs("a", "b"), key.dest); len(asked) != 1 || asked[0].Seqno != 2 {
+		t.Fatalf("a asked b %+v when its route turned unfeasible, want one request for seqno 2", asked)
+	}
+	fabric.offer("a", "b", "c", key, 2, 10)
+	if got := fabric.nextHop("a", key); got != "b" {
+		t.Fatalf("a reaches the prefix via %q at seqno 2, want b", got)
+	}
+	fabric.flush("a")
+	fabric.reset()
+	fabric.offer("a", "b", "c", key, 2, 900)
+	if elapsed := time.Since(start); elapsed >= seqnoRequestSuppress {
+		t.Fatalf("the test took %s, past the window it is about", elapsed)
+	}
+	asked := seqnoRequestsFor(t, fabric.tlvs("a", "b"), key.dest)
+	fabric.speakers["a"].mu.Lock()
+	retry := fabric.speakers["a"].starveRetries[sourceKey{route: key, routerID: routerID("c")}]
+	fabric.speakers["a"].mu.Unlock()
+	if (len(asked) != 1 || asked[0].Seqno != 3) && (retry == nil || retry.seqno != 3) {
+		t.Errorf("a starved again inside the window asked b %+v and holds the retry %+v, want a request or a retry for seqno 3", asked, retry)
+	}
+}
+
 // One seqno request is not enough. If it or its reply is lost, the prefix
 // stays starved: nothing asks again, and the unfeasible route that caused the
 // starvation keeps the feasibility distance alive so it never expires either.
@@ -1001,8 +1033,9 @@ func TestSeqnoRequestIsRepeatedWhileStarved(t *testing.T) {
 	}
 	// The retry backoff is longer than the suppression window, so in production
 	// the retry falls outside it. Backdate rather than sleep through it.
-	for index := range speaker.askedSeqno {
-		speaker.askedSeqno[index] = time.Now().Add(-seqnoRequestSuppress - time.Second)
+	for index, asked := range speaker.askedSeqno {
+		asked.at = time.Now().Add(-seqnoRequestSuppress - time.Second)
+		speaker.askedSeqno[index] = asked
 	}
 	retries := speaker.retryStarvedLocked(time.Now())
 	speaker.mu.Unlock()
@@ -1258,8 +1291,9 @@ func TestRunRetriesStarvedSeqnoRequest(t *testing.T) {
 	for _, retry := range speaker.starveRetries {
 		retry.nextAt = past
 	}
-	for index := range speaker.askedSeqno {
-		speaker.askedSeqno[index] = past
+	for index, asked := range speaker.askedSeqno {
+		asked.at = past
+		speaker.askedSeqno[index] = asked
 	}
 	speaker.wake()
 	speaker.mu.Unlock()
@@ -1519,8 +1553,9 @@ func TestRunLoopWakesForStarvationRetry(t *testing.T) {
 	for _, retry := range speaker.starveRetries {
 		retry.nextAt = time.Now().Add(250 * time.Millisecond)
 	}
-	for index := range speaker.askedSeqno {
-		speaker.askedSeqno[index] = time.Now().Add(-seqnoRequestSuppress - time.Second)
+	for index, asked := range speaker.askedSeqno {
+		asked.at = time.Now().Add(-seqnoRequestSuppress - time.Second)
+		speaker.askedSeqno[index] = asked
 	}
 	pending := len(speaker.starveRetries)
 	speaker.mu.Unlock()
