@@ -140,16 +140,39 @@ of RFC 8966 section 3.5.1 keeps the mesh free of loops, and an unfeasible route
 is never selected.
 
 Selection has hysteresis (RFC 8966 Appendix A.3) with a time constant of 3 Hello
-intervals. The speaker leaves the selected route only for one better on both the
-current and the smoothed metric. An equal metric keeps the current next hop.
+intervals. The speaker leaves the selected route only for one with a lower
+metric whose smoothed metric is lower by more than `cap.babel.margin`, 4 by
+default. An equal metric keeps the current next hop, and a margin of 0 asks only
+that both be lower. Where no route is selected, or the selected one is gone,
+unfeasible or unreachable, the route with the lowest metric is selected at once.
 
-When only unfeasible routes remain, the speaker sends a seqno request. It
-repeats the request up to 4 times, the first after 3 seconds. A route is sent
-back toward its own next hop as a retraction, which is split horizon.
+An unfeasible route is kept, though never selected. An update that names an
+origin the source table has no room for creates no route and retracts the one
+its neighbor held, and no seqno request asks about that origin. When only
+unfeasible routes remain, the speaker sends a seqno request. It repeats the
+request up to 4 times, 3, 3, 6 and 12 seconds apart. An unfeasible route that
+selection would take, weighed with every feasible route, if it were feasible
+draws 1 seqno request to its neighbor, not repeated. The speaker holds back a
+second request to a neighbor for the same prefix and origin inside 2 seconds,
+but not one for a newer seqno, and a request it holds back is still repeated. A
+route is sent back toward its own next hop as a retraction, which is split
+horizon.
 
-A route that appears or goes away sends an update at once. So does a change of
-next hop, origin or seqno, and a metric rise of at least `rx`. Any other change
-waits for the next full update.
+A route that appears or goes away sends a triggered update, as do a change of
+origin and a metric rise of at least `rx` (RFC 8966 section 3.7.2). A new seqno
+sends one only where it answers a seqno request this node forwarded in the last
+10 seconds or is still repeating. A change of next hop alone, and any other
+change, waits for the next full update. Triggered updates to one neighbor are
+spaced by the least of 1 second, half the update interval and half the Hello
+interval, and one that falls inside that time goes out at its end.
+
+Every seqno request that asks past this node's own seqno before the next update
+is built shares 1 raise, which that update carries for each prefix asked about.
+The node's other prefixes carry the new seqno in the next full update, and the
+full update a start sends at once carries the seqno it raised. This bounds a
+burst of requests, not a steady requester: a neighbor that asks once a second
+raises the seqno about once a second. A new session is sent the full update at
+once, and the other neighbors are not.
 
 | Limit                               | Value |
 | ----------------------------------- | ----- |

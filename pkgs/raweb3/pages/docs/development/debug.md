@@ -607,7 +607,7 @@ Each kind carries these attributes:
 | `babel.neighbor.fragmented`                   | `size`                                                                                                                                                                                          |
 | `babel.request.sent`                          | none                                                                                                                                                                                            |
 | `babel.neighbor.extra`                        | `from`, `extra`                                                                                                                                                                                 |
-| `babel.config.applied`                        | `hello`, `update`, `quality`, `rx`, `rtt_weight`, `rtt_min`, `rtt_max`                                                                                                                          |
+| `babel.config.applied`                        | `hello`, `update`, `quality`, `rx`, `rtt_weight`, `rtt_min`, `rtt_max`, `margin`                                                                                                                |
 | `babel.own.changed`                           | `set`, and `added`, `removed` and `held` where they name a route                                                                                                                                |
 | `babel.route.selected`                        | `route`, `metric`                                                                                                                                                                               |
 | `babel.route.retracted`                       | `route`                                                                                                                                                                                         |
@@ -799,17 +799,18 @@ woken.
 A `daemon.reload` names in `applied` the capabilities the reload changed in
 place, and carries none when it changed only the trust document or the peers
 dialed. A `babel.config.applied` carries the `hello` and `update` intervals, the
-`quality` and the `rx` and `rtt_weight`, `rtt_min` and `rtt_max` cost the
-speaker now runs, and a `responder.changed` carries `listen` and, in `closed`,
-how many sessions this node had answered and closed with a Delete. A
-`kernel.pass` names what woke the reconciler in `trigger`, and the pass a reload
-causes reads `trigger=reload` and is recorded whether or not it moved anything.
-A reconciler stopped with `disable` runs no pass when it takes a reload, and the
-pass that installs the block once it is enabled again reads `trigger=enable`.
-The same holds for a reconciler `ranet3 down` stopped, until `ranet3 up`. The
-withdrawal such a stop runs records a `kernel.pass` only when it fails, and no
-`kernel.cover` for the cover it takes out. It records a `kernel.taken` with
-`taken=false` for each lookup the reconciler last found taken.
+`quality`, the `rx` and `rtt_weight`, `rtt_min` and `rtt_max` cost and the
+switching `margin` the speaker now runs, and a `responder.changed` carries
+`listen` and, in `closed`, how many sessions this node had answered and closed
+with a Delete. A `kernel.pass` names what woke the reconciler in `trigger`, and
+the pass a reload causes reads `trigger=reload` and is recorded whether or not
+it moved anything. A reconciler stopped with `disable` runs no pass when it
+takes a reload, and the pass that installs the block once it is enabled again
+reads `trigger=enable`. The same holds for a reconciler `ranet3 down` stopped,
+until `ranet3 up`. The withdrawal such a stop runs records a `kernel.pass` only
+when it fails, and no `kernel.cover` for the cover it takes out. It records a
+`kernel.taken` with `taken=false` for each lookup the reconciler last found
+taken.
 
 A `daemon.ttl` is recorded when a reload cannot read the host's default TTL,
 `net.ipv4.ip_default_ttl` on Linux or `net.inet.ip.ttl` on macOS. Its `ttl` is
@@ -875,18 +876,21 @@ rose back, as [segment routing](../segment-routing.md) describes.
 A `babel.seqno.requested` names the neighbor that sent the request as its peer
 and carries the `route` asked about, the seqno it `asked` for, the node's own
 `seqno` when it arrived and whether it `raised` that seqno. A request raises it
-only where it asks past the seqno of a prefix this node originates, and at most
-once per packet. A `babel.seqno.raised` carries its `cause`, `start` or
-`request`, the seqno it went `from` and `to`, and where a state file is kept the
-seqno `limit` the speaker last saved, which a restart starts past. The raise a
-process makes as it starts carries the `router_id` as well, and `drawn` where
-that router id is a new one, saying why: `no state file`,
-`the state file names example/alpha` for a file another node wrote, or
-`the state file is unreadable`. The run of the speaker after `ranet3 up` makes a
-raise with `cause=start` of its own. A `babel.state.unsaved` carries the `limit`
-the speaker could not save, the `seqno` in use and the `err`, and the seqno
-rises all the same. A `babel.state.unreadable` carries the state `file` and the
-`err`, and the node starts under a new router id from seqno 1.
+only where it asks past the seqno of a prefix this node originates, and every
+such request before the next update is built shares 1 raise, as
+[route selection](../routing.md#route-selection) says. A `babel.seqno.raised`
+carries its `cause`, `start` or `request`, with the neighbor of the first
+request it answers as its peer, the seqno it went `from` and `to`, and where a
+state file is kept the seqno `limit` the speaker last saved, which a restart
+starts past. The raise a process makes as it starts carries the `router_id` as
+well, and `drawn` where that router id is a new one, saying why:
+`no state file`, `the state file names example/alpha` for a file another node
+wrote, or `the state file is unreadable`. The run of the speaker after
+`ranet3 up` makes a raise with `cause=start` of its own. A `babel.state.unsaved`
+carries the `limit` the speaker could not save, the `seqno` in use and the
+`err`, and the seqno rises all the same. A `babel.state.unreadable` carries the
+state `file` and the `err`, and the node starts under a new router id from
+seqno 1.
 
 An `ike.id.resolved` is recorded by each end of a handshake under the session's
 path, once that end has verified the peer's AUTH and taken its ID, so it is

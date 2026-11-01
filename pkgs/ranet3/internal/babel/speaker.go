@@ -12,44 +12,9 @@
 // that keeps it is that every finite update leaves through Speaker.advertiseTo,
 // which records the feasibility distance before the packet is built.
 //
-// Deliberate deviations, in RFC 8966 section order:
-//
-//   - 3.2.2: the node's own seqno also rises at every start of the speaker,
-//     and a new process starts past the limit SetOrigin was handed, so the
-//     routes of a restarted node are newer than any a far node still holds.
-//     See seqnoLimitAhead.
-//   - 3.5.3: an update for a key this node originates, or for the host key of
-//     an address cap.table assigns it, creates no entry. Appendix E's stub
-//     prefers the direct route to a directly attached prefix "even when the
-//     prefixes are the same", and every key this node owns is treated so.
-//   - 3.5.4: a hold ends when an expiry timer runs out, not once every
-//     neighbor acknowledged a retraction, the option the section RECOMMENDS.
-//     A retracted route is held until its own expiry. Once it is flushed, or
-//     once a prefix loses its last route any other way, the prefix is held
-//     until the latest time any finite update this node sent for it expires at
-//     a neighbor, if that is later. The section gives the reason itself: "The
-//     former option is simpler".
-//   - 3.7.2: a triggered update or retraction is sent once, not repeated and
-//     not acknowledged. Each link is one ESP tunnel with in-order delivery
-//     rather than lossy multicast, and the periodic dump plus the retraction
-//     hold cover a loss.
-//   - 3.8.1.2: a seqno request is forwarded whenever this node has a route to
-//     the prefix, not only while it is advertising one. The case that most
-//     needs forwarding is exactly the one where every route has become
-//     unfeasible and nothing is being advertised.
-//   - 3.8.1.1 and 3.8.1.2: split horizon applies to replies as well, so a
-//     request for a prefix whose selected next hop is the requester is
-//     answered with a retraction, and a seqno request in that position is
-//     forwarded onwards instead of answered at all.
-//   - 3.8.2.3: a selected route is not refreshed with a route request shortly
-//     before it expires.
-//   - 4: a packet is not made as large as the link's MTU allows. It stays
-//     within the IPv6 minimum MTU with its IPv6 and UDP headers, which every
-//     session carries whatever its path. See defaultPacketSize. A path MTU
-//     probe is the one packet past it, see Speaker.Probe.
-//   - Appendix A.3: the smoothed metric follows an increase immediately and
-//     only damps improvements, so that a selected route which has genuinely
-//     gone bad is left at once. See routeInfo.smooth.
+// The deliberate departures from RFC 8966 and RFC 9616 are listed once, with
+// their reasons, on the protocol deviations page,
+// pkgs/raweb3/pages/docs/design/protocol-deviations.md.
 package babel
 
 import (

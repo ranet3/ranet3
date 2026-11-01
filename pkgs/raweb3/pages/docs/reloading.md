@@ -167,17 +167,17 @@ with, so a restart applies them.
 ## `cap.babel`
 
 A reload hands a changed `cap.babel` to the running speaker, every field of it:
-`hello`, `update`, `quality` and `cost`. The speaker keeps its sequence number
-and the Hello history of every neighbor, computes each link cost again and
-reruns route selection under the new cost. It then sends every neighbor a Hello
-with its IHU and its whole table at once, and runs its timers on the new
-intervals from there. RFC 8966 sections 3.4.1 and 3.4.2 let a node lengthen its
-Hello and IHU intervals only when it sends a Hello announcing them at once. A
-neighbor expires a route at 3.5 times the last update interval it heard (RFC
-8966 Appendix B). Sending everything at once lets every neighbor learn the new
-intervals before the old ones run out. A `cap.babel` that describes the speaker
-already running, an omitted field written out as its default for instance,
-changes nothing and sends nothing.
+`hello`, `update`, `quality`, `margin` and `cost`. The speaker keeps its
+sequence number and the Hello history of every neighbor, computes each link cost
+again and reruns route selection under the new cost and margin. It then sends
+every neighbor a Hello with its IHU and its whole table at once, and runs its
+timers on the new intervals from there. RFC 8966 sections 3.4.1 and 3.4.2 let a
+node lengthen its Hello and IHU intervals only when it sends a Hello announcing
+them at once. A neighbor expires a route at 3.5 times the last update interval
+it heard (RFC 8966 Appendix B). Sending everything at once lets every neighbor
+learn the new intervals before the old ones run out. A `cap.babel` that
+describes the speaker already running, an omitted field written out as its
+default for instance, changes nothing and sends nothing.
 
 A changed `cost.extra` takes the same path. The speaker charges every running
 neighbor the amount the new block selects for it, before selection reruns, so a
@@ -305,15 +305,15 @@ no `applied`. A refused reload carries `err` instead. `cap.route` is listed when
 `announce` changed. `cap.transit` is never listed, since a reload that would
 change it is refused, and writing out the value in force changes nothing.
 
-The speaker records a `babel.config.applied` with the intervals and the cost it
-took, and a `babel.neighbor.extra` for each neighbor whose amount the reload
-changed. Turning `link.listen` on or off records a `responder.changed` with
-`listen`, and its `closed` counts the answered sessions it closed. The
-reconciler's pass after it is a `kernel.pass` with `trigger=reload`, recorded
-whether or not it moved anything. A reconciler stopped with
-`ranet3 disable reconciler` runs no pass when it takes the block, and the pass
-that installs it once the reconciler is started again is recorded with
-`trigger=enable`.
+The speaker records a `babel.config.applied` with the intervals, the cost and
+the margin it took, and a `babel.neighbor.extra` for each neighbor whose amount
+the reload changed. Turning `link.listen` on or off records a
+`responder.changed` with `listen`, and its `closed` counts the answered sessions
+it closed. The reconciler's pass after it is a `kernel.pass` with
+`trigger=reload`, recorded whether or not it moved anything. A reconciler
+stopped with `ranet3 disable reconciler` runs no pass when it takes the block,
+and the pass that installs it once the reconciler is started again is recorded
+with `trigger=enable`.
 
 ## A node that is down
 
