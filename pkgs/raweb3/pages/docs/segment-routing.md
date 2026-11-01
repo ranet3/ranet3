@@ -78,58 +78,74 @@ SIDs in place.
 
 A node parses a packet only when its destination is one of its SIDs. It accepts
 a reduced header, which leaves out the segment the destination address already
-carries, and ignores TLVs after the segment list. It walks up to 7 hop-by-hop
-and destination options headers, in any order and without reading their options,
-to reach the first routing header. It refuses a fragment header among them, a
-routing header behind more, and a list of more than 16 segments.
+carries, and ignores TLVs after the segment list. It walks the extension headers
+in their order, stepping past at most 8 of them, without reading any header's
+options. It passes a hop-by-hop header right behind the IPv6 header, destination
+options and authentication headers, the Fragment header of an atomic fragment,
+one whose offset and M flag are both 0, and a routing header at segments left 0,
+a segment routing header or one of another type. It stops at the first segment
+routing header with segments left, or at the upper-layer header.
 
-Past the source checks above, an `End` and an `End.DT46` answer a segment
-routing header the node reaches as above, and that fits in its packet, with
-Parameter Problem, code 0, pointing at its Segments Left field, where its last
-entry runs past its length, at any segments left, 0 included, or where it holds
-at most 16 segments and its Segments Left runs past its last entry. One that
-holds more than 16 segments is dropped without an answer, whatever its Segments
-Left. An `End` sends a packet on to its next segment, through the session the
-mesh routes that segment to, where the node reaches a segment routing header
-with segments left that describes itself and holds at most 16 segments, and acts
-on that segment in turn where it is a SID of this node, as below. It answers one
-at a hop limit of 1 or less with Time Exceeded, as [steering](#steering)
-describes, answers, cuts or drops one larger than that session carries, and
-drops one where that session has closed or has no room for it, both as
-[waypoints](#waypoints-and-packet-size) describe. It drops every other packet
-without an answer: among them one reached with no segments left whose segment
-routing header describes itself, one with no segment routing header, whether it
-carries a routing header of another type or none, one whose fragment header
-comes ahead of its segment routing header, one whose segment routing header sits
-behind an authentication header or behind 8 or more hop-by-hop and destination
-options headers, one that ends inside its routing header or a header ahead of
-it, one whose segment routing header holds more than 16 segments, with segments
-left and at a hop limit of 1 too, and one whose next segment is no SID of this
-node and that the mesh routes to no other node, or only through a route that
-[counts as a default](routing.md#routes-that-count-as-a-default), since the exit
-behind such a route would carry a next segment outside the overlay out of the
-mesh. An `End.DT46` delivers an IPv4 or IPv6 packet that follows the outer IPv6
-header directly, or follows a segment routing header at segments left 0 that the
-node accepts as above, and an egress segment only one that also passes the
-checks of [egress segments](#egress-segments). It drops every other packet
-without an answer, whichever the SID delivers to: among them a packet reached
-with segments still left, an upper-layer header other than IPv4 or IPv6 wherever
-it sits, a routing header of another type with segments left, a fragment
-wherever its fragment header sits, an atomic fragment included, a packet cut
-short before its inner packet starts, and an IPv4 or IPv6 packet behind a
-hop-by-hop or destination options header with no segment routing header, behind
-a routing header of another type with segments left 0, or behind a destination
-options header after the segment routing header. A SID's answer goes back only
+Past the source checks above, an `End` acts on the segment routing header it
+reaches with segments left. It answers one at a hop limit of 1 or less with Time
+Exceeded, as [steering](#steering) describes, before it reads the rest of the
+header. It answers with Parameter Problem, code 0, one whose last entry runs
+past its length or whose Segments Left runs past its last entry, pointing at its
+Segments Left field, and one that holds more than 16 segments with code 6,
+pointing at its first octet, as RFC 8883 section 2.3 answers a header past a
+processing limit. Otherwise it sends the packet on to its next segment, through
+the session the mesh routes that segment to, and acts on that segment in turn
+where it is a SID of this node, as below. It answers, cuts or drops one larger
+than that session carries, and drops one where that session has closed or has no
+room for it, both as [waypoints](#waypoints-and-packet-size) describe. It
+answers a next segment that the mesh routes to no other node, or only through a
+route that [counts as a default](routing.md#routes-that-count-as-a-default),
+with Destination Unreachable, code 0, but drops without an answer one inside a
+prefix this node originates that counts as no default. It answers a next segment
+at an address `cap.table` assigns to it, which is no SID, with Parameter
+Problem, code 0, pointing at the Routing Type, while segments are left, as RFC
+8754 section 4.3.2 has such an address answer, and drops one at segments left 0
+without an answer. An `End` that reaches the upper-layer header, at segments
+left 0 or with no segment routing header, answers it with Parameter Problem,
+code 4, pointing at that header, since a waypoint processes no upper-layer
+header, ESP and an ICMPv6 echo request included.
+
+An `End.DT46` delivers the IPv4 or IPv6 packet it reaches, with every header in
+front of it removed, and an egress segment only one that also passes the checks
+of [egress segments](#egress-segments). The packet's family is the Next Header
+in front of it. Whichever the SID delivers to, it answers with Parameter Problem
+a segment routing header with segments left, with code 0 pointing at its
+Segments Left field, an upper-layer header other than IPv4 or IPv6, with code 4
+pointing at that header, and a packet behind one of the two that is not of its
+version or is shorter than that version's header, with code 0 pointing at its
+first octet.
+
+Either SID answers with Parameter Problem a header it cannot walk past: a
+routing header of another type with segments left, with code 0 pointing at its
+Routing Type, a hop-by-hop header anywhere but right behind the IPv6 header or
+an extension header of a kind it does not process, with code 1 pointing at the
+Next Header field that names it, a header the packet ends inside, with code 0
+pointing at the header's length, or at the IPv6 Payload Length where the packet
+ends before that or the header is a Fragment header, which has no length field,
+and a ninth header it would step past, with code 8 pointing at that header's
+first octet, as RFC 8883 section 2.5 answers too many extension headers. It
+answers code 8 where a search that steps past at most 16 extension headers ends
+within them without finding an ICMPv6 error message or a Redirect, at any of the
+ends [the search for an error](#waypoints-and-packet-size) lists, and drops the
+packet without an answer where that search ends unfinished or finds one, as RFC
+4443 section 2.4 (e.1) and (e.2) answer neither with an error. It drops a
+fragment of a larger packet without an answer. A SID's answer goes back only
 through the session the mesh routes its destination to, and only while that
 session is open and has room for it, so none reaches a source this node's own
-route reaches, this host or a network behind it. Each answer draws on the ICMP
-rate limits, and none answers a packet no ICMP error may answer, as
-[waypoints](#waypoints-and-packet-size) describe.
-[Protocol deviations](design/protocol-deviations.md#icmp-answers) list the
-requirements these drops and answers depart from. When a list names several SIDs
-of one node in a row, the node acts on all of them in one pass. A TCP SYN or
-SYN-ACK that `End.DT46` delivers has its MSS clamped, as [path MTU](path-mtu.md)
-describes.
+route reaches, this host or a network behind it, but the answers to a segment
+larger than its next session that [waypoints](#waypoints-and-packet-size) write
+into the tun. Each answer draws on the ICMP rate limits, and none answers a
+packet no ICMP error may answer, as [waypoints](#waypoints-and-packet-size)
+describe. [Protocol deviations](design/protocol-deviations.md#icmp-answers) list
+the requirements these drops and answers depart from. When a list names several
+SIDs of one node in a row, the node acts on all of them in one pass. A TCP SYN
+or SYN-ACK that `End.DT46` delivers has its MSS clamped, as
+[path MTU](path-mtu.md) describes.
 
 ## Egress segments
 
@@ -207,13 +223,13 @@ its list.
 
 The mesh is the segment routing domain, and the tun is its edge, as RFC 8754
 section 5.1 asks. A packet read from the tun enters the domain there, and the
-forwarding decision checks it: a routing header of type 0, 1 or 4, or a type the
-mesh does not recognize, is dropped and counted `routing_header`, and one of
-this node's own SIDs is dropped and counted `sid`. A packet arriving on a link
-outside the mesh with a routing header goes by its destination, as RFC 7045
-section 2.1 asks. ranet3 sets no `seg6_enabled` and installs no `seg6local`
-route, and the kernel drops a segment routing header addressed to the host while
-`seg6_enabled` is off
+forwarding decision checks it, past every extension header a SID of the mesh
+walks past: a routing header of type 0, 1 or 4, or a type the mesh does not
+recognize, is dropped and counted `routing_header`, and one of this node's own
+SIDs is dropped and counted `sid`. A packet arriving on a link outside the mesh
+with a routing header goes by its destination, as RFC 7045 section 2.1 asks.
+ranet3 sets no `seg6_enabled` and installs no `seg6local` route, and the kernel
+drops a segment routing header addressed to the host while `seg6_enabled` is off
 ([exthdrs.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/exthdrs.c#L381)).
 A packet from outside addressed to one of this node's own SIDs never reaches the
 tun, since the mirror holds or throws this node's own `/128`, and
@@ -255,9 +271,10 @@ outer source. The headend cannot check another node's SIDs, since it keeps no
 list of them. That the last SID of a list is an `End.DT46` and the others `End`
 is the operator's to write, as
 [RFC 8986 section 4.8](https://www.rfc-editor.org/rfc/rfc8986.html#section-4.8)
-asks. An exit drops a packet that reaches its `End.DT46` with segments left, an
-`End` last drops it with none left, and a last SID delivering to the mesh sends
-the inner packet wherever that node's table does.
+asks. An exit refuses a packet that reaches its `End.DT46` with segments left,
+an `End` last refuses one with none left, each with the Parameter Problem
+[local segments](#local-segments) gives, and a last SID delivering to the mesh
+sends the inner packet wherever that node's table does.
 
 `ranet3 disable steering` stops the steer entries, so a packet one would take
 goes by the route table, as on a node with no steer entry. It leaves
@@ -273,12 +290,19 @@ route lookup, because a steered packet is routed by its next segment.
 
 For an IPv6 packet, the outer header copies the traffic class, flow label and
 hop limit of the packet it carries, as `__seg6_do_srh_encap` does. For an IPv4
-packet, the outer hop limit is 64 and the traffic class and flow label are 0.
-Each waypoint decrements the outer hop limit. The inner packet keeps its own hop
-limit. A waypoint that would take the outer hop limit to 0 answers the outer
-source with ICMP Time Exceeded from the SID the packet reached, an address of
-the waypoint, within the ICMP rate limits below and the checks
-[local segments](#local-segments) describe.
+packet, the outer hop limit is 64, the flow label is 0, and the traffic class
+carries the packet's ECN field alone, RFC 6040's normal mode. An `End.DT46` sets
+the ECN field of the packet it delivers to the cell of RFC 6040 section 4.2's
+Figure 4 for its own field and the outer header's, and drops an inner Not-ECT
+packet that arrived under an outer CE. It counts each packet whose two fields
+the figure marks currently unused, the dropped one among them, in
+`ranet3_segments_ecn_unused_total`, and records `netstack.ecn.unused` at most
+once every 30 seconds with one such packet's IP header, as
+[debugging](development/debug.md#events) lists. Each waypoint decrements the
+outer hop limit. The inner packet keeps its own hop limit. A waypoint that would
+take the outer hop limit to 0 answers the outer source with ICMP Time Exceeded
+from the SID the packet reached, an address of the waypoint, within the ICMP
+rate limits below and the checks [local segments](#local-segments) describe.
 
 A packet a policy claims and this node cannot send is not sent by the ordinary
 route, which would put it out of another exit under a source that exit does not
@@ -306,11 +330,18 @@ headend writes its answer into its tun, each from the address
 [path MTU](path-mtu.md#where-answers-come-from) names. An IPv4 packet without DF
 is cut into fragments that fit, each sent on behind its own copy of the outer
 header and the routing header. One whose options cannot be read is answered with
-Parameter Problem instead, naming the octet at fault, from the same address. A
-waypoint drops a segment, or the fragments it was cut into, and counts them,
-where the session's budget has no room for them, as
-[the dataplane](design/limits.md#dataplane) drops a tun read's packets, or where
-the session has closed.
+Parameter Problem instead, naming the octet at fault, from the same address.
+Where a route of the waypoint's own that counts as no default covers the
+packet's source, the waypoint writes its answer into its own tun instead, from
+the packet's destination, in either family and whatever router-id it holds, as
+the [forwarding decision](routing.md#transit) answers this host. A segment whose
+routing header names something other than the IP packet behind it gets Packet
+Too Big about itself, to its outer source, naming what the session carries, from
+the IPv6 router-id else the SID it reached, or, where such a route covers that
+source, into the tun from its next segment. A waypoint drops a segment, or the
+fragments it was cut into, and counts them, where the session's budget has no
+room for them, as [the dataplane](design/limits.md#dataplane) drops a tun read's
+packets, or where the session has closed.
 
 A waypoint other than a ranet3 node may answer the steered packet itself
 instead, to the headend, as a tunnel's node answers under RFC 2473. A Linux
@@ -321,9 +352,8 @@ discovery through such a waypoint fails, as
 
 These are dropped without an answer:
 
-- a segment whose routing header names something other than the packet behind it
 - an IPv6 packet no ICMP error may answer: an ICMPv6 error or Redirect behind up
-  to 7 hop-by-hop, routing, destination options, authentication and first
+  to 8 hop-by-hop, routing, destination options, authentication and first
   fragment headers, an ICMPv6 header cut short before its type, or a packet from
   the unspecified address or from a multicast address
 - an IPv6 packet to a multicast group, which RFC 4443 lets no error answer but
@@ -339,31 +369,34 @@ These are dropped without an answer:
 - an IPv4 packet without DF that cannot be cut, because its data runs past 65535
   bytes or the session leaves no room for 8 bytes of data behind its header
 - at a waypoint, a packet whose source no session leads back to, where no route
-  covers it, a hold does, or a route of this node's own, and one whose session
-  back has closed or has no room for its answer
+  covers it, a hold does, or only a route of this node's own that counts as a
+  default does, and one whose session back has closed or has no room for its
+  answer
 - a packet that would be answered past the ICMP rate limits
 
-The search for an ICMPv6 error reads at most 8 headers after the IPv6 header,
-and a packet it finds none in is answered: one whose headers lead to another
-upper-layer header, to ESP, to no next header or to a fragment past offset 0,
-one that ends before an extension header's next header and length octets or a
-fragment header's offset, and one with 8 extension headers or more in front of
-its upper-layer header. An ICMPv6 error behind 8 extension headers or more is
-answered too, a departure from RFC 4443 that
-[the deviations](design/protocol-deviations.md#icmp-answers) give the reason
-for.
+The search for an ICMPv6 error steps past at most 8 extension headers after the
+IPv6 header and reads the header behind them, and a packet it finds none in is
+answered: one whose headers lead to another upper-layer header, to ESP, to no
+next header or to a fragment past offset 0, one that ends before an extension
+header's next header and length octets or a fragment header's offset, one with
+an extension header running past the packet's end that names no ICMPv6 header
+next, and one with 9 extension headers or more in front of its upper-layer
+header. An ICMPv6 error behind 9 extension headers or more is answered too, but
+for the code 8 refusal [local segments](#local-segments) describe, a departure
+from RFC 4443 that [the deviations](design/protocol-deviations.md#icmp-answers)
+give the reason for.
 
 [Path MTU](path-mtu.md#packets-that-do-not-fit) gives the ICMP rate limits. The
-Time Exceeded and Parameter Problem a refused segment gets count against the
-bucket of the outer source, the node that steered the packet, and against the
-node's cap. A Parameter Problem for options that cannot be read answers the
-packet the segment carries, and counts against the bucket of that packet's
-source and against the cap. Packet Too Big and fragmentation needed count
-against the cap alone. A packet no ICMP error may answer, or one to a multicast
-group, counts against neither. `status` counts a segment answered or dropped
-this way among the dropped, each answer among the answered, and each fragment of
-a cut segment among the forwarded once its session takes it. The log reports a
-dropped segment at most once every 30 seconds.
+Time Exceeded, Parameter Problem and Destination Unreachable a refused segment
+gets count against the bucket of the outer source, the node that steered the
+packet, and against the node's cap. A Parameter Problem for options that cannot
+be read answers the packet the segment carries, and counts against the bucket of
+that packet's source and against the cap. Packet Too Big and fragmentation
+needed count against neither. A packet no ICMP error may answer, or one to a
+multicast group, counts against neither. `status` counts a segment answered or
+dropped this way among the dropped, each answer among the answered, and each
+fragment of a cut segment among the forwarded once its session takes it. The log
+reports a dropped segment at most once every 30 seconds.
 
 No node fragments the outer packet of a steered packet. What does not fit the
 session it leaves by is answered, cut or dropped as above. The answer names what
@@ -392,18 +425,18 @@ Each change also records a `pmtu.steering` event with `budget`, `need` and
 `status` prints a Segments line and a Steering line. Each says `off` on a node
 that configures none. The Segments line lists the local SIDs, then the node's
 forwarded, delivered and dropped counts, and each of the answered, egressed,
-refused and not ready counts once it is above 0. Refused is a packet a SID
-refused, counted among the dropped and never answered: an outer source outside
-the overlay at any SID, or at an egress segment one of the reasons below. The
-Steering line lists the entries with the steered count, and the count for each
-reason a steered packet was lost once it is above 0. Those counts are the
-totals, `cap.exit.via`'s path among them, and a node whose one policy is that
-path reads `off` there, its Kernel line carrying the path's own counts, as
-[the command line](cli.md#reading-state) gives. `ranet3 debug segments` shows
-each segment and each `cap.segment.steer` policy field by field,
-`ranet3 debug route --peer` whether a segment admits the source of a packet
-arriving through a session, and `ranet3 debug trace` what the packets a segment
-acts on meet, as [debugging](development/debug.md) describes.
+refused, not ready and unused ECN combination counts once it is above 0. Refused
+is a packet a SID refused, counted among the dropped and never answered: an
+outer source outside the overlay at any SID, or at an egress segment one of the
+reasons below. The Steering line lists the entries with the steered count, and
+the count for each reason a steered packet was lost once it is above 0. Those
+counts are the totals, `cap.exit.via`'s path among them, and a node whose one
+policy is that path reads `off` there, its Kernel line carrying the path's own
+counts, as [the command line](cli.md#reading-state) gives.
+`ranet3 debug segments` shows each segment and each `cap.segment.steer` policy
+field by field, `ranet3 debug route --peer` whether a segment admits the source
+of a packet arriving through a session, and `ranet3 debug trace` what the
+packets a segment acts on meet, as [debugging](development/debug.md) describes.
 
 An egress segment's packets are counted 3 ways. Egressed is a packet handed to
 the exit. Refused is a packet whose outer source is outside every entry of the
@@ -425,6 +458,7 @@ It is this node's own state and is not counted among the dropped.
 | `ranet3_segments_egressed_total`     | packets an egress segment handed to the exit                                                                                                                                                                                                                                      |
 | `ranet3_segments_refused_total`      | packets a SID refused, from outside the overlay or an allow list's entries inside it, for an inner source outside the list or one it cannot read, an inner packet no router forwards, the mesh routing no reply to, or an inner destination inside the overlay or the mesh routes |
 | `ranet3_segments_not_ready_total`    | packets an egress segment let through whose family was not ready                                                                                                                                                                                                                  |
+| `ranet3_segments_ecn_unused_total`   | packets an `End.DT46` decapsulated whose ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them                                                                                                                                |
 | `ranet3_steered_total`               | packets a steering policy encapsulated, `cap.exit.via`'s path among them                                                                                                                                                                                                          |
 | `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route`                                                                                                                                                                                                                   |
 

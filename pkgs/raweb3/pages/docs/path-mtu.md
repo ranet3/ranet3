@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-11-01
+updated: 2026-11-02
 order: 65
 ---
 
@@ -135,8 +135,13 @@ sources a node keeps buckets for is ranet3's own:
   so 4,096 sources at random fit with none evicted in all but about 1 run in
   200. In a full shard, the source that drew least recently gives its place to a
   new one, and a source new or returning starts full.
-- **Per node**: every answer, of either family and kind, also draws from 1 cap
-  for the node, 10,000 at once and 10,000 a second.
+- **Per node**: every answer but Packet Too Big and fragmentation needed, of
+  either family, also draws from 1 cap for the node, 10,000 at once and 10,000 a
+  second.
+
+Packet Too Big and fragmentation needed draw from neither, a departure
+[the deviations](design/protocol-deviations.md#icmp-answers) give the reason
+for.
 
 An answer draws from the limits only once its packet is one an error may answer,
 and is built only once it has drawn. A packet no error may answer, such as an
@@ -148,13 +153,8 @@ back spends nothing of its source's bucket. A packet that would be answered past
 either limit is dropped without an answer, and `ranet3_icmp_withheld_total`
 counts it by the limit that held it back.
 
-A sender's flood of expired or refused packets spends only its own bucket and
-never holds back another's path MTU discovery. Packet Too Big and fragmentation
-needed are limited only by the cap, so one sender's packets past their session,
-at the cap's rate, hold back every answer. They draw from no source's bucket
-because one address can stand for many hosts behind a NAT that routes into the
-tun, and a bucket of 6 answers, then 1 a second over IPv4 or 10 over IPv6, would
-hold back path MTU discovery for all of them.
+A sender's flood of expired or refused packets spends only its own bucket, and
+no flood holds back path MTU discovery.
 
 Each answer draws once. A Linux router draws twice for a packet no route holds,
 from the one bucket it keeps for the packet's source: `ip_error` takes 1 second
@@ -184,7 +184,10 @@ node's router-id of the carried packet's family, the address
 names a router by. Where the node holds none, an IPv6 answer comes from the SID
 the segment reached and an IPv4 answer from the address the carried packet was
 going to. A Parameter Problem for options that cannot be read comes from the
-same address as a fragmentation needed would. The
+same address as a fragmentation needed would. Where a route of this node's own
+that counts as no default covers the carried packet's source, the answer goes
+into the tun instead, from the address that packet was going to, in both
+families and whatever router-id the node holds, as a tun read's does. The
 [forwarding decision](routing.md#transit) answers a transit packet too large for
 its next session from the router-id of its family as well. Where the node holds
 none, an IPv6 answer comes from the answer SID below and, with no SID either,

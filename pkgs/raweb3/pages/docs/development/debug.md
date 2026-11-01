@@ -407,24 +407,26 @@ out.
 
 A record names the decision, `deliver`, `forward`, `egress`, `answer` or `drop`,
 and for an answer or a drop its reason, as the `reason` label of
-`ranet3_transit_packets_total` names it, or `budget` for a packet its next
-peer's send budget refused. It names how the packet arrived, `session` with the
-session's path, `tun` for a packet read off the tun, or `none` for one of no
-session, and the next peer's session for a forward. A packet a steering policy
-or `cap.exit.via`'s path sent through a segment carries that first segment, as
-does one answered since the mesh routes it no way to that segment, one an End
-segment of this node sent on carries the next segment, and one a segment of this
-node egressed or dropped carries the segment that did, past any End of this node
-that sent the packet on to it. Then come the source and destination, the
-protocol after the IPv6 extension headers, or an IPv4 packet's, the names of
-those headers or of the IPv4 options, the ports and TCP flags or the ICMP type
-and code where the packet's first fragment carries them, the hop limit or TTL
-and the length, and how many fragments a forward cut the packet into. An answer
-names its ICMP error and what became of it: `sent`, `withheld` by the
-[ICMP rate limits](../path-mtu.md#packets-that-do-not-fit), `unanswered` where
-the node holds no address of the family to send it from, `not_answerable` for a
-packet no ICMP error may answer, or `unsent` for one built for, or due to, a
-source the mesh routes it no way back to, or one its session had no room for.
+`ranet3_transit_packets_total` names it, `budget` for a packet its next peer's
+send budget refused, or `ecn` for an inner Not-ECT packet an `End.DT46` of this
+node dropped since it arrived under an outer CE. It names how the packet
+arrived, `session` with the session's path, `tun` for a packet read off the tun,
+or `none` for one of no session, and the next peer's session for a forward. A
+packet a steering policy or `cap.exit.via`'s path sent through a segment carries
+that first segment, as does one answered since the mesh routes it no way to that
+segment, one an End segment of this node sent on carries the next segment, and
+one a segment of this node egressed or dropped carries the segment that did,
+past any End of this node that sent the packet on to it. Then come the source
+and destination, the protocol after the IPv6 extension headers, or an IPv4
+packet's, the names of those headers or of the IPv4 options, the ports and TCP
+flags or the ICMP type and code where the packet's first fragment carries them,
+the hop limit or TTL and the length, and how many fragments a forward cut the
+packet into. An answer names its ICMP error and what became of it: `sent`,
+`withheld` by the [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit),
+`unanswered` where the node holds no address of the family to send it from,
+`not_answerable` for a packet no ICMP error may answer, or `unsent` for one
+built for, or due to, a source the mesh routes it no way back to, or one its
+session had no room for.
 
 Every field is read from the packet as it arrived, before the node took its hop
 limit down, clamped its MSS or handed it on, except in a `drop` record of reason
@@ -554,6 +556,7 @@ connections to the reads.
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                |
 | `netstack.transit.dropped`            | a drop the transit counters count, but a read counted as multicast, with why              |
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit              |
+| `netstack.ecn.unused`                 | an `End.DT46` took packets out of ECN pairs no tunnel sends, at most every 30 seconds     |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                    |
 
 `egress.pass`, `egress.ready`, `egress.refused` and the 5 `antispoof` kinds are
@@ -648,6 +651,7 @@ Each kind carries these attributes:
 | `netstack.tun.failed`                         | `interface`, `err`                                                                                                                                                                              |
 | `netstack.transit.dropped`                    | `reason`, `src`, `dst`                                                                                                                                                                          |
 | `netstack.icmp.withheld`                      | `interface`, `limit`, `withheld`                                                                                                                                                                |
+| `netstack.ecn.unused`                         | `interface`, `outer`, `inner`, `count` (the packets since the last record), `header` (the recorded one's IP header in hex)                                                                      |
 | `netstack.answer.source`                      | `ipv4`, `ipv6`, `sid`, each only where the node holds it                                                                                                                                        |
 
 `err` appears on `daemon.reload`, `control.verb`, `kernel.pass`, `egress.pass`
@@ -988,6 +992,17 @@ seconds. Each limit is recorded apart from the other. `limit` names it as the
 metric's label does, `source` for the buckets of the sources answered or `node`
 for the node's cap, and `withheld` is how many answers it withheld since its
 last event, this one included. `ranet3_icmp_withheld_total` counts every one.
+
+A `netstack.ecn.unused` is recorded for a packet an `End.DT46` takes its inner
+packet out of whose two ECN fields RFC 6040 section 4.2's Figure 4 marks
+currently unused, where no such record was written in the 30 seconds before. Its
+`outer` and `inner` are that packet's fields, its `header` the inner packet's IP
+header, and its `count` how many such packets arrived since the last record,
+this one included. The same record is written at the debug level as
+`segments arrived at an end.dt46 with an ecn combination no tunnel sends`, and
+`ranet3_segments_ecn_unused_total` counts every one, as
+[segment routing](../segment-routing.md#steering) describes. Only a node on
+Linux holds a local segment, so the event is recorded there alone.
 
 A `netstack.answer.source` is recorded at start where the node holds a router-id
 or a SID, and again each time a reload moves one. Its `ipv4` and `ipv6` are the

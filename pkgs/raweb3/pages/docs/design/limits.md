@@ -74,14 +74,16 @@ the table routes to another node is `forged`. An operator tunneling a LAN
 through the mesh announces the LAN's prefix, which makes its sources the node's
 own, or carries the tunnel in UDP, which the walk does not open.
 
-**The inner check covers what ranet3's own SIDs decapsulate.** The walk stops at
-a fragment header or an authentication header without opening what follows, and
-ranet3's own `End.DT46` decapsulates no packet behind either. An `End.DT46` of
-another implementation processes the extension headers before the upper-layer
-header, as
+**The inner check covers what ranet3's own SIDs decapsulate.** The walk reads
+past every header ranet3's own `End.DT46` passes, an authentication header and
+an atomic fragment's header among them, or drops the packet at a routing header
+the edge refuses, and stops at a fragment of a larger packet, which that SID
+drops. An `End.DT46` of another implementation processes the extension headers
+before the upper-layer header, as
 [RFC 8986 section 4.8](https://www.rfc-editor.org/rfc/rfc8986.html#section-4.8)
-has it, and may decapsulate a packet behind them. A packet carried that way to
-such a SID passes this node with its inner packet unchecked.
+has it, and may decapsulate a packet behind a header the walk does not open. A
+packet carried that way to such a SID passes this node with its inner packet
+unchecked.
 
 **A prefix only one of two nodes announces is dropped at the other.** A packet
 from a subnet two nodes can reach, announced by only one of them, has at the
@@ -915,7 +917,7 @@ such restarts produce.
 | Read buffers of such a socket               | 4 messages of 64 KiB on Linux, 256 KiB                                                                                        | 64 MiB at the cap. A read takes 4 messages at most, and the kernel holds the rest for the next                                                                                                                                              |
 | ICMP errors to 1 source                     | 6 at once, then 1 a second over IPv4 and 1 every 100 milliseconds over IPv6, Packet Too Big and fragmentation needed left out | The error is not sent, and `ranet3_icmp_withheld_total{limit="source"}` counts it                                                                                                                                                           |
 | Sources the ICMP limit keeps a bucket for   | 6,144, in 64 shards of 96 by a seeded hash of the address                                                                     | In a full shard, the source that drew least recently gives its place, and starts full when it returns                                                                                                                                       |
-| ICMP errors of the whole node               | 10,000 at once, then 10,000 a second, of either family and every kind                                                         | The error is not sent, and `ranet3_icmp_withheld_total{limit="node"}` counts it                                                                                                                                                             |
+| ICMP errors of the whole node               | 10,000 at once, then 10,000 a second, of either family and every kind but Packet Too Big and fragmentation needed             | The error is not sent, and `ranet3_icmp_withheld_total{limit="node"}` counts it                                                                                                                                                             |
 | Open flows of 1 mesh source through an exit | `cap.egress.flows_per_source` in each family, 4096 by default                                                                 | The source's next new flow is refused, answered from the exit, and counted in `ranet3_egress_refused_total`, as [its share](../exit-nodes.md#each-sources-share-of-the-flows) gives                                                         |
 | Mesh sources an exit counts flows for       | 65,535 in each family                                                                                                         | A further source's flows go uncounted and unlimited until [the kernel frees a count](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_set_hash.c?id=940de590b839f71d6dc846160534bf202401b8b7#n393) |
 | Flows of 1 mesh source to the node itself   | Not bounded by the share                                                                                                      | Each takes an entry in the host's connection tracking table beside the flows through the exit, uncounted                                                                                                                                    |

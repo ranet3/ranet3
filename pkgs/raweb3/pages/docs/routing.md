@@ -256,9 +256,15 @@ it from its other links, which the checks at the mesh's edge below meet, and, on
 an exit, the egress it hands the host to carry out, as
 [exit nodes](exit-nodes.md#what-an-exit-carries-out) describe. The checks run in
 RFC 1812's order for both families, each before any answer, so a malformed
-packet draws none:
+packet draws none but the first check's:
 
-1. A frame that holds no whole IP packet is dropped with no answer.
+1. A frame that holds no whole IP packet is dropped. An End.DT46's inner IPv6
+   packet whose Payload Length runs past its octets, or is 0 with octets after
+   its header, is answered with Parameter Problem, code 0, pointing at that
+   field, unless its source or destination is one the next 2 checks drop or send
+   to the tun, and any other goes with no answer. A session's own packet that
+   holds no whole IP packet is dropped before its segments or this decision read
+   it.
 2. A multicast, limited broadcast or IPv6 link-local destination goes to the
    tun, whatever the table holds. An IPv4 link-local destination does not, since
    [RFC 3927 section 7](https://www.rfc-editor.org/rfc/rfc3927.html#section-7)
@@ -305,6 +311,7 @@ packet draws none:
 | `cap.transit` off              | Destination Unreachable, code 1 | Destination Unreachable, code 13                                                                                                                                                             |
 | Larger than the next session   | Packet Too Big                  | Fragmentation Needed with DF, cut without                                                                                                                                                    |
 | Options that cannot be read    |                                 | Parameter Problem                                                                                                                                                                            |
+| A Payload Length not its own   | Parameter Problem, code 0       |                                                                                                                                                                                              |
 | Link-local source              | Destination Unreachable, code 2 | none                                                                                                                                                                                         |
 
 An answer comes from the node's router-id of the family. With no IPv4 router-id
