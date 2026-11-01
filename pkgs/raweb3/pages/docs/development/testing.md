@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-10-31
+updated: 2026-11-01
 order: 20
 ---
 
@@ -57,7 +57,7 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress/kernel` has 15 that write into a real packet filter. One
+- `internal/egress/kernel` has 19 that write into a real packet filter. One
   round trips the translator's tables, chains, set and timeout objects, another
   checks that the kernel tells the backend when another writer adds a rule to
   its chain, sets its table dormant or deletes it, and that its own writes tell
@@ -74,18 +74,38 @@ unless run as root.
   set counts under another share, and the ninth reports another writer's nat
   chains at the translator's priority or below and not one above it. The tenth
   takes the address a class translates to off `lo` in each family and reads that
-  family alone not ready, with the address named, until it is back. The other 5
-  round trip the border filter's table, both chains and its sets. One puts it
-  back on the pass another writer wakes by deleting the table, adding a rule or
-  setting the table dormant, and leaves no table behind. One writes it back
-  after another writer adds a rule to it, sets its table dormant, turns a policy
-  to drop, makes a chain again at another priority or as a regular chain, or
-  makes the table again with a flag nf_tables will not clear in place, the last
-  3 by deleting and making the table again. One refills a set another writer
-  flushed on the pass that change wakes, one holds chain `mesh_entry` alone with
-  no `cap.border`, and one kills the filter's process with `SIGKILL` and finds
-  the table still there, still dropping a forged overlay source. It also runs
-  the [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
+  family alone not ready, with the address named, until it is back. Six round
+  trip the border filter's table, both chains and its sets. One puts it back on
+  the pass another writer wakes by deleting the table, adding a rule or setting
+  the table dormant, and leaves no table behind. One writes it back after
+  another writer adds a rule to it, sets its table dormant, turns a policy to
+  drop, makes a chain again at another priority or as a regular chain, or makes
+  the table again with a flag nf_tables will not clear in place, the last 3 by
+  deleting and making the table again. One refills a set another writer flushed,
+  or a chain it emptied, on the pass that change wakes, one holds chain
+  `mesh_entry` alone with no `cap.border`, and one kills the filter's process
+  with `SIGKILL` and finds the table still there with every rule and element,
+  which the next start takes over without a write. That process is the test
+  binary run again as `TestBorderCrashHelper`, which joins the test's namespace
+  by its path and skips when run any other way. The last of the 6 moves a `none`
+  set by one LAN at 10, 1,000 and 10,000 LANs held, and reads at most 6 element
+  notifications for each pass. The other 3 read the translator's rules for
+  debug. One sends a datagram from the mesh address out of the uplink and finds
+  its rule's counter moved while the last pass still counts none. One reads from
+  2 readers at once while one pass follows another, each read and each pass with
+  no error. One reads on while the exit stops, and each read answers the rules
+  or the error a stopped exit answers, which names no descriptor its close
+  released. It also runs the [exit behavior suite](#the-exit-behavior-suite)
+  against the kernel exit.
+- `internal/nftables` has 5 that write into a real packet filter. One checks
+  that each expression the encoder writes acts on the host's own datagrams on
+  loopback as its line says, an interval set's lookup, the mark, the device
+  names and the connection's direction among them, and another that another
+  writer's change to a set's elements wakes the owner and reads back as a fault
+  until the owner fills the set again. One fills a set of 10,000 intervals in
+  one transaction through a socket whose send buffer starts at a fraction of the
+  batch. The other 2 move a set through the intervals that differ, two intervals
+  joined and split again among the moves, and read back the intervals wanted.
 - `transport` has 2 that send through a veth pair to a peer in a second
   namespace, behind a route with a locked path MTU. They check that the kernel
   refuses what the path cannot carry, segmented or single, and reports the path
@@ -198,22 +218,33 @@ unless run as root.
     through lo, nothing crosses once the border is withdrawn and forwarding is
     off, and no table is left behind.
   - `TestTUNBorderKeepsAnOverlappingUplink` runs a leaf whose uplink holds a
-    lease as wide as the overlay in both families. The gateway and a neighbor on
-    the link answer the host, a mesh peer inside the lease stays on the tun, an
-    overlay address no node announces leaves by the link, and a datagram forged
-    from the peer's source never reaches the host's socket and is counted as
-    carved.
+    lease as wide as the overlay in both families, with a mesh peer and a held
+    prefix inside it. The gateway and a neighbor on the link answer the host,
+    the peer stays on the tun, an overlay address no node announces leaves by
+    the link, and of the datagrams sent to the host's socket only the gateway's
+    arrives. One forged from the peer's, the held prefix's or this node's own
+    source inside the lease is counted as carved, and from a second link the
+    peer's is counted as carved and the lease's unannounced address as an
+    overlay source.
+  - `TestTUNBorderCarvesAPointToPointUplinksGateway` runs a leaf whose IPv4
+    uplink is point to point, its gateway's address inside the overlay as a
+    PPPoE peer's can be. The mesh's table throws the gateway's host prefix, the
+    gateway's datagram reaches the host's socket, and one forged from another
+    address of the overlay does not and is counted as an overlay source.
   - The `TestTUNEntry` labs run `mesh_entry` in both families with real sockets.
     At a forwarding host in mode off a stranger's and an unannounced LAN host's
     datagrams stay out of the tun, a container masqueraded at `srcnat` and the
     host's own sockets enter from the tun's address, and a socket bound to the
-    uplink's address meets `EPERM`. At a subnet router in mode 2 beside the kill
-    switch its LAN's datagrams and their replies pass, and neither of the
-    switch's chains drops anything. An exit's `none` classes take a leaf's
-    datagram from the internet and keep another node's LAN out, and a LAN
-    learned inside such a class leaves the set before its route lands. A node
-    killed with `SIGKILL` leaves its table, which keeps dropping a forged
-    overlay source until the next start takes it over.
+    uplink's address meets `EPERM`. A stranger's datagram that a `notrack` rule
+    exempts from connection tracking stays out of the tun too, and is counted.
+    At a subnet router in mode 2 beside the kill switch its LAN's datagrams and
+    their replies pass, and neither of the switch's chains drops anything. An
+    exit's `none` classes take a leaf's datagram from the internet and keep
+    another node's LAN out, and a LAN learned inside such a class leaves the set
+    before its route lands. A node killed with `SIGKILL` leaves its table, which
+    keeps dropping a forged overlay source until the next start takes it over.
+    The node is the test binary run again as `TestEntryLabCrashHelper`, which
+    joins the leaf's namespace by its path and skips when run any other way.
   - `TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter` runs 3
     nodes in a line, each in a namespace of its own, with transit on at the
     middle one, whose kernel forwards neither family and whose tun holds no
@@ -678,16 +709,16 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the 12 `internal/egress/kernel` tests, the exit
-behavior suite and its 2 fakes, the `TestTUN` tests of `internal/netstack` and
-`internal/client`, the 3 `transport` sends, and the 4 `internal/client` tests
-above under `unshare -n`, the `internal/registry` tests whose names start with
-`TestResolver` and the client's resolver test above under `unshare -mn`, and
-every test of the `tun` and `conn` packages of `pkgs/wireguard`. It fails if any
-of them skips. It then checks that no rule, link, xfrm state or policy, or
-nftables table of theirs is left on the host, and that the host's
-`/etc/resolv.conf` is as it was. The `internal/kernel` tests
-`TestNetworkWatchInNetworkNamespace` and
+names start with `TestNetlink`, the 19 `internal/egress/kernel` tests and the 5
+`internal/nftables` tests, the exit behavior suite and its 2 fakes, the
+`TestTUN` tests of `internal/netstack` and `internal/client`, the 3 `transport`
+sends, and the 4 `internal/client` tests above under `unshare -n`, the
+`internal/registry` tests whose names start with `TestResolver` and the client's
+resolver test above under `unshare -mn`, and every test of the `tun` and `conn`
+packages of `pkgs/wireguard`. It fails if any of them skips. It then checks that
+no rule, link, xfrm state or policy, or nftables table of theirs is left on the
+host, and that the host's `/etc/resolv.conf` is as it was. The `internal/kernel`
+tests `TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
 no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
 and the 3 of a session's fallback from its address.

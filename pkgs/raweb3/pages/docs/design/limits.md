@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-10-31
+updated: 2026-11-01
 order: 10
 ---
 
@@ -275,8 +275,8 @@ measures.
 whose section lists the lines that let that traffic leave by the uplink, has
 these costs over the reach that page gives.
 
-- The LAN is only the part of a connected network inside the private and
-  link-local ranges, as
+- Outside the overlay, the LAN is only the part of a connected network inside
+  the private and link-local ranges, as
   [the kill switch](../routing.md#the-kill-switch-on-linux) defines it, and
   `cap.exit.lan` adds a part outside them, but for a link `forward` names, whose
   networks count whole. This closes the LocalNet attack of "Bypassing Tunnels:
@@ -285,10 +285,10 @@ these costs over the reach that page gives.
   its own so a VPN client sends traffic to that prefix in the clear. It leaves
   it open for the private ranges: a hostile network's on-link `10.0.0.0/8` wins
   at 5410 over a mesh subnet inside it at 5420, and the chains pass it as LAN. A
-  host at a public IPv4 address or a global IPv6 address on a link `forward`
-  leaves out, a container's among them, is not passed by the LAN's line until
-  `cap.exit.lan` lists its network, and status names the network public. It gets
-  of the host's own packets only those another line of
+  host at a public IPv4 address or a global IPv6 address outside the overlay, on
+  a link `forward` leaves out, a container's among them, is not passed by the
+  LAN's line until `cap.exit.lan` lists its network, and status names the
+  network public. It gets of the host's own packets only those another line of
   [the list](../routing.md#the-kill-switch-on-linux) passes.
 - While the table does not read back, a route of main longer than /0, such as a
   DHCP option 121 pair of `/1`s (TunnelVision), wins at 5410 as in mode 2 and

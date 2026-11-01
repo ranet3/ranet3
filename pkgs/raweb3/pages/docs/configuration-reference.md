@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-10-31
+updated: 2026-11-01
 order: 35
 ---
 
@@ -800,14 +800,12 @@ programs' rules do beside them.
   lists the lines that let the host's traffic leave by a link outside the mesh,
   and gives the rules, the table it writes, how the kernel takes what each line
   reads, and the switch's reach.
-- The LAN is the part of each connected network that
-  [the kill switch](routing.md#the-kill-switch-on-linux) says counts, by default
-  only the private and link-local ranges and every network of a link `forward`
-  names. A host on the LAN at a public IPv4 address or a global IPv6 address
-  beyond another link is passed by the LAN's line only once `lan` lists its
-  network, such as `lan = ["198.51.100.0/24", "2001:db8:a::/64"]`. An entry
-  takes the part of a connected network it holds and adds no destination no link
-  is connected to. The order does not matter.
+- [The kill switch's list](routing.md#the-kill-switch-on-linux) gives the LAN of
+  each connected network. `lan` adds a network outside the overlay that the
+  list's ranges leave out, such as
+  `lan = ["198.51.100.0/24", "2001:db8:a::/64"]`. An entry takes the part of a
+  connected network it holds and adds no destination no link is connected to.
+  The order does not matter.
 - Each `inbound` entry is `"<port>/<protocol>"` or
   `"<first>-<last>/<protocol>"`, such as `"22/tcp"` or `"60000-61000/udp"`, with
   the protocol `tcp` or `udp`. ICMP echo cannot be listed, so the reply lines

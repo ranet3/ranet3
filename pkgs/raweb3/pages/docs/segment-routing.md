@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-10-31
+updated: 2026-11-01
 order: 60
 ---
 
@@ -49,15 +49,22 @@ Every SID acts only on a packet whose outer source lies in the IPv6 prefixes of
 [egress segment](#egress-segments) only on one whose outer source lies in its
 `allow` list too. Any other counts as refused, before its header is read, and is
 never answered. [The border filter](border-filter.md) drops a source inside the
-overlay arriving from outside the mesh, so a host beyond the mesh reaches no SID
-through a node with the filter, whatever the SID delivers to. A node that
-forwards without `cap.border` is only warned at load, and passes a forged
-overlay source on to every SID. A steering node's `source` has to lie inside the
-overlay too, or every SID it steers through refuses its packets. The loader
-refuses a local segment without `cap.border`, and one beside an overlay holding
-no IPv6 prefix, which would refuse every packet. `cap.border` is Linux only, so
-a node on another platform holds no local segment. A reload that changes the
-overlay rebuilds the table of SIDs in place.
+overlay arriving from outside the mesh, but for the rest of a
+[carve-out](border-filter.md#carve-outs), less the mesh's prefixes inside it, on
+that carve-out's own link. [The entry chain](border-filter.md#the-entry-chain)
+and the [tun read](routing.md#transit) keep that rest out of the mesh as a
+source this node does not own, and a host beyond the mesh reaches no SID through
+a node with the filter, whatever the SID delivers to. On Linux a node that
+forwards without `cap.border` passes on to every SID only a forged source it
+owns, since the entry chain keeps every other out of the tun. On a platform that
+runs no entry chain such a node is only warned at load, and passes on to every
+SID a forged overlay source that no route other than a default sends to another
+node or holds unreachable, since the tun read drops the rest. A steering node's
+`source` has to lie inside the overlay too, or every SID it steers through
+refuses its packets. The loader refuses a local segment without `cap.border`,
+and one beside an overlay holding no IPv6 prefix, which would refuse every
+packet. `cap.border` is Linux only, so a node on another platform holds no local
+segment. A reload that changes the overlay rebuilds the table of SIDs in place.
 
 A node parses a packet only when its destination is one of its SIDs. It accepts
 a reduced header, which leaves out the segment the destination address already

@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-10-31
+updated: 2026-11-01
 order: 30
 ---
 
@@ -148,8 +148,8 @@ exit is live and its table reads back as written. Every stop that withdraws, a
 failure's included, deletes it, and only a stop that withdraws nothing, such as
 `SIGKILL`, leaves it. Its section lists the lines that let the host's traffic
 leave by a link outside the mesh, and the switch's reach. The LAN's line passes
-the private and link-local part of each connected network and every network of a
-link `forward` names, and `lan` adds another:
+what that list gives as the LAN, and `lan` adds a network outside the overlay
+that its ranges leave out:
 
 ```toml
 [cap.exit]
