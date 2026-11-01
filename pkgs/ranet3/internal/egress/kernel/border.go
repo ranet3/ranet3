@@ -23,11 +23,12 @@ import (
 type BorderClass uint8
 
 const (
-	// BorderInside to BorderSource are the border chain's, in the order a
+	// BorderInside to BorderSource are the antispoof chain's, in the order a
 	// packet meets them
 	BorderInside BorderClass = iota
 	BorderCarved
 	BorderCarveOut
+	BorderExempt
 	BorderSource
 	// EntryOutside to EntryDrop are the entry chain's, in that order
 	EntryOutside
@@ -44,10 +45,11 @@ const (
 type BorderRule struct {
 	Class BorderClass
 	// Device is the device an inside rule accepts, the link a carve-out's rule
-	// accepts from, and the tun the entry chain guards
+	// accepts from, the interface or the name ending in * an exemption's rule
+	// accepts from, empty for every one, and the tun the entry chain guards
 	Device string
-	// Source is the overlay prefix a source rule drops and the carve-out a
-	// carve-out's rule accepts
+	// Source is the overlay prefix a source rule drops, the carve-out a
+	// carve-out's rule accepts and the prefix an exemption's rule accepts
 	Source netip.Prefix
 	// Destination is the prefix a link-local rule returns
 	Destination netip.Prefix
@@ -64,6 +66,11 @@ func (r BorderRule) String() string {
 		return "drop " + r.Family() + " source @" + r.Set()
 	case BorderCarveOut:
 		return "accept via " + r.Device + " source " + r.Source.String()
+	case BorderExempt:
+		if r.Device == "" {
+			return "accept exempt source " + r.Source.String()
+		}
+		return "accept exempt via " + r.Device + " source " + r.Source.String()
 	case BorderSource:
 		return "drop " + r.Family() + " source " + r.Source.String()
 	case EntryOutside:
@@ -110,7 +117,7 @@ func (r BorderRule) Set() string {
 // Verdict names the verdict a matching packet meets, accept, return or drop
 func (r BorderRule) Verdict() string {
 	switch r.Class {
-	case BorderInside, BorderCarveOut:
+	case BorderInside, BorderCarveOut, BorderExempt:
 		return "accept"
 	case BorderCarved, BorderSource, EntryDrop:
 		return "drop"
@@ -128,6 +135,8 @@ func (r BorderRule) Reason() string {
 		return "carved_source"
 	case BorderCarveOut:
 		return "carve_out"
+	case BorderExempt:
+		return "exempt"
 	case BorderSource:
 		return "overlay_source"
 	case EntryOutside:
@@ -206,10 +215,10 @@ type borderBackend interface {
 	// rules, each by its comment and by what it does, and each set's elements
 	// against sets
 	Rules(rules []BorderRule, sets borderSets) (chainReadback, error)
-	// Apply writes the table whole in one transaction: the table, the sets
-	// filled with sets, and the chains rewritten to rules, deleting the table
-	// first where remake holds
-	Apply(rules []BorderRule, sets borderSets, remake bool) error
+	// Apply writes the table whole in one transaction: it deletes the table
+	// where the host holds one, with every chain and set in it, then writes the
+	// table, the sets filled with sets, and the chains holding rules
+	Apply(rules []BorderRule, sets borderSets) error
 	// Fill moves each set sets names from the ranges was gives it, which the
 	// table holds, to those sets gives it, in one transaction that sends the
 	// ranges that differ alone and leaves the chains as they are
@@ -228,15 +237,15 @@ type borderBackend interface {
 	Close() error
 }
 
-// BorderFilter owns the table inet ranet3 on one node: its border chain where
-// cap.border is written, its entry chain, their sets, the readback and the
+// BorderFilter owns the table inet ranet3 on one node: its antispoof chain
+// where overlay is written, its entry chain, their sets, the readback and the
 // readiness
 type BorderFilter struct {
 	rt    egress.BorderRuntime
 	be    borderBackend
 	sweep time.Duration
 	// config is replaced whole by SetConfig and read by the run goroutine, nil
-	// where cap.border is not written
+	// where overlay is not written
 	config atomic.Pointer[egress.Border]
 	// stats is the last pass, published whole as Translator.stats is
 	stats atomic.Pointer[egress.BorderStats]
@@ -255,32 +264,29 @@ type BorderFilter struct {
 	dropped   egress.BorderDrops
 	held      borderSets
 	carveOuts []egress.CarveOut
+	conflicts []egress.ExemptConflict
 	last      []BorderRule
 }
 
-// NewBorderFilter validates the capability, nil where cap.border is not
+// NewBorderFilter validates the configuration, nil where overlay is not
 // written, opens the backend and runs the first pass, and refuses the start
 // when that pass cannot install the table and read it back: a node does not
-// run without it. Run keeps it from then on. A platform with no nf_tables
-// returns no filter where cap.border is not written, and refuses it where it
-// is.
+// run without it. Run keeps it from then on. A platform with no backend
+// returns no filter.
 func NewBorderFilter(cfg *egress.Border, rt egress.BorderRuntime) (*BorderFilter, error) {
 	if cfg != nil {
 		if err := cfg.Validate(); err != nil {
 			return nil, err
 		}
 		if len(rt.Inside) == 0 {
-			return nil, errors.New("egress: the border filter needs the devices inside the mesh, the mesh tun at least")
+			return nil, errors.New("egress: the antispoof filter needs the devices inside the mesh, the mesh tun at least")
 		}
-	}
-	if !EntryRuns && cfg == nil {
-		return nil, nil
 	}
 	if rt.Tun == "" {
 		return nil, errors.New("egress: the entry chain needs the mesh's tun")
 	}
 	be, err := newBorderBackend()
-	if err != nil {
+	if err != nil || be == nil {
 		return nil, err
 	}
 	return startBorderFilter(cfg, rt, be)
@@ -291,10 +297,10 @@ func NewBorderFilter(cfg *egress.Border, rt egress.BorderRuntime) (*BorderFilter
 func startBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBackend) (*BorderFilter, error) {
 	f := newBorderFilter(cfg, rt, be)
 	if err := f.reconcile(); err != nil {
-		return nil, errors.Join(fmt.Errorf("egress: the border filter could not be installed in %s: %w", f.Where(), err), f.finish())
+		return nil, errors.Join(fmt.Errorf("egress: the antispoof filter could not be installed in %s: %w", f.Where(), err), f.finish())
 	}
 	if !f.ready {
-		return nil, errors.Join(fmt.Errorf("egress: the border filter in %s is not ready, since %s", f.Where(), f.unready), f.finish())
+		return nil, errors.Join(fmt.Errorf("egress: the antispoof filter in %s is not ready, since %s", f.Where(), f.unready), f.finish())
 	}
 	return f, nil
 }
@@ -304,19 +310,19 @@ func newBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBacke
 	f := &BorderFilter{rt: rt, be: be, sweep: egress.DefaultSweep, wake: make(chan struct{}, 1), trigger: "start"}
 	f.config.Store(cfg)
 	f.finish = sync.OnceValue(func() error {
-		f.setReady(false, "the border filter is stopping")
+		f.setReady(false, "the antispoof filter is stopping")
 		err := f.be.Withdraw()
 		if err != nil {
 			err = fmt.Errorf("withdraw %s: %w", f.Where(), err)
 		} else {
-			slog.Info("border filter withdrawn", "where", f.Where())
+			slog.Info("antispoof filter withdrawn", "where", f.Where())
 		}
 		return errors.Join(err, f.be.Close())
 	})
 	return f
 }
 
-// SetConfig hands the filter the overlay a reload carries, refusing what
+// SetConfig hands the filter the overlay and exemptions a reload carries, refusing what
 // NewBorderFilter refuses before anything changes, and wakes the run goroutine
 // to rewrite the chain
 func (f *BorderFilter) SetConfig(cfg egress.Border) error {
@@ -331,8 +337,8 @@ func (f *BorderFilter) SetConfig(cfg egress.Border) error {
 	return nil
 }
 
-// Capability is the block as the last SetConfig gave it, the zero block where
-// cap.border is not written
+// Capability is the configuration as the last SetConfig gave it, the zero
+// configuration where overlay is not written
 func (f *BorderFilter) Capability() egress.Border {
 	if cfg := f.config.Load(); cfg != nil {
 		return *cfg
@@ -388,7 +394,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 			f.trigger = "missed"
 		}
 		if err := f.reconcile(); err != nil {
-			slog.Warn("border filter pass failed, retrying", "err", err, "retry_in", retry.failed())
+			slog.Warn("antispoof filter pass failed, retrying", "err", err, "retry_in", retry.failed())
 		} else {
 			retry.passed()
 		}
@@ -396,28 +402,38 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 }
 
 // desired is the table the configuration and the sets ask for: the rules in
-// the order a packet meets them, the border chain's ahead of the entry
-// chain's, the sets, and the carve-outs the border chain accepts
-func (f *BorderFilter) desired() ([]BorderRule, borderSets, []egress.CarveOut) {
+// the order a packet meets them, the antispoof chain's ahead of the entry
+// chain's, the sets, and the carve-outs the antispoof chain accepts with the
+// exemptions' conflicts, neither where overlay is not written. The carved
+// drops come ahead of every accept by source, so neither a carve-out nor an
+// exemption lets in a source the carved sets hold.
+func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
+	// the sets and the rules read one configuration, so no pass carves from two
+	cfg := f.config.Load()
 	var derived egress.BorderSets
 	if f.rt.Sets != nil {
-		derived = f.rt.Sets()
+		derived = f.rt.Sets(cfg)
 	}
 	var rules []BorderRule
-	var carveOuts []egress.CarveOut
-	if cfg := f.config.Load(); cfg != nil {
+	var reported egress.BorderSets
+	if cfg != nil {
 		for _, device := range f.rt.Inside {
 			rules = append(rules, BorderRule{Class: BorderInside, Device: device})
 		}
-		carveOuts = derived.CarveOuts
-		// a family with no carve-out holds an empty carved set, so its drop is left out
+		reported = egress.BorderSets{CarveOuts: derived.CarveOuts, Conflicts: derived.Conflicts}
+		carveOuts := derived.CarveOuts
+		// a family Carved gives no prefix of holds an empty carved set, so its drop is left out
+		carved := cfg.Carved(carveOuts)
 		for _, v6 := range []bool{false, true} {
-			if slices.ContainsFunc(carveOuts, func(c egress.CarveOut) bool { return c.Prefix.Addr().Is6() == v6 }) {
+			if slices.ContainsFunc(carved, func(prefix netip.Prefix) bool { return prefix.Addr().Is6() == v6 }) {
 				rules = append(rules, BorderRule{Class: BorderCarved, IPv6: v6})
 			}
 		}
 		for _, carveOut := range carveOuts {
 			rules = append(rules, BorderRule{Class: BorderCarveOut, Device: carveOut.Link, Source: carveOut.Prefix, IPv6: carveOut.Prefix.Addr().Is6()})
+		}
+		for _, exemption := range cfg.Exemptions() {
+			rules = append(rules, BorderRule{Class: BorderExempt, Device: exemption.Interface, Source: exemption.Prefix, IPv6: exemption.Prefix.Addr().Is6()})
 		}
 		for _, prefix := range cfg.Normalized().Overlay {
 			rules = append(rules, BorderRule{Class: BorderSource, Source: prefix.Prefix, IPv6: prefix.Addr().Is6()})
@@ -445,7 +461,7 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, []egress.CarveOut) {
 		}
 		sets[one.name+"4"], sets[one.name+"6"] = ranges[:v6:v6], ranges[v6:]
 	}
-	return rules, sets, carveOuts
+	return rules, sets, reported
 }
 
 // reconcile makes the table what the pass asks for, each rule by its comment
@@ -455,8 +471,10 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, []egress.CarveOut) {
 // pass read back reads nothing.
 func (f *BorderFilter) reconcile() error {
 	started := time.Now()
-	rules, sets, carveOuts := f.desired()
+	rules, sets, reported := f.desired()
+	carveOuts := reported.CarveOuts
 	f.reportCarveOuts(carveOuts)
+	f.reportConflicts(reported.Conflicts)
 	if (f.trigger == "routes" || f.trigger == "network") && f.ready && slices.Equal(rules, f.last) && sets.changed(f.held) == nil {
 		return nil
 	}
@@ -471,13 +489,13 @@ func (f *BorderFilter) reconcile() error {
 	case err != nil:
 		err = fmt.Errorf("list rules: %w", err)
 	case read.fault != "":
-		// a table with no border chain is made again whole, so one an earlier start left goes
-		if applyErr := f.be.Apply(rules, sets, read.remake || f.config.Load() == nil); applyErr != nil {
+		// the table is the filter's whole, so a rewrite makes it again, and a chain the filter does not write goes
+		if applyErr := f.be.Apply(rules, sets); applyErr != nil {
 			f.held = nil
 			err = fmt.Errorf("install rules: %w", applyErr)
 		} else {
 			wrote, f.held = "table", sets
-			slog.Info("border filter installed", "rules", len(rules), "replaced", len(read.rules), "where", f.Where())
+			slog.Info("antispoof filter installed", "rules", len(rules), "replaced", len(read.rules), "where", f.Where())
 		}
 	case changed != nil:
 		// the readback found the table holding want, so the fill sends what differs from it
@@ -521,7 +539,7 @@ func (f *BorderFilter) reconcile() error {
 		if err != nil {
 			attrs = append(attrs, slog.String("err", stats.Err))
 		}
-		f.rt.Events.Emit("border.pass", "", attrs...)
+		f.rt.Events.Emit("antispoof.pass", "", attrs...)
 	}
 	return err
 }
@@ -531,17 +549,50 @@ func (f *BorderFilter) reconcile() error {
 func (f *BorderFilter) reportCarveOuts(now []egress.CarveOut) {
 	for _, carveOut := range now {
 		if !slices.Contains(f.carveOuts, carveOut) {
-			slog.Warn("border carves the overlay for a link that holds part of it", "link", carveOut.Link, "prefix", carveOut.Prefix)
-			f.rt.Events.Emit("border.carve", "", slog.String("link", carveOut.Link), slog.String("prefix", carveOut.Prefix.String()), slog.Bool("carved", true))
+			slog.Warn("antispoof carves the overlay for a link that holds part of it", "link", carveOut.Link, "prefix", carveOut.Prefix)
+			f.rt.Events.Emit("antispoof.carve", "", slog.String("link", carveOut.Link), slog.String("prefix", carveOut.Prefix.String()), slog.Bool("carved", true))
 		}
 	}
 	for _, carveOut := range f.carveOuts {
 		if !slices.Contains(now, carveOut) {
-			slog.Info("border no longer carves the overlay for a link", "link", carveOut.Link, "prefix", carveOut.Prefix)
-			f.rt.Events.Emit("border.carve", "", slog.String("link", carveOut.Link), slog.String("prefix", carveOut.Prefix.String()), slog.Bool("carved", false))
+			slog.Info("antispoof no longer carves the overlay for a link", "link", carveOut.Link, "prefix", carveOut.Prefix)
+			f.rt.Events.Emit("antispoof.carve", "", slog.String("link", carveOut.Link), slog.String("prefix", carveOut.Prefix.String()), slog.Bool("carved", false))
 		}
 	}
 	f.carveOuts = now
+}
+
+// reportConflicts reports each exemption another node's prefix came to
+// overlap since the last pass, once, at warning with an event, and each
+// conflict that ended at info. A conflict is the drop it makes, its
+// exemption, the prefix and the part carved, as a carve-out is its link and
+// its prefix, so the prefix's route moving to another peer or router-id
+// reports nothing.
+func (f *BorderFilter) reportConflicts(now []egress.ExemptConflict) {
+	drops := func(list []egress.ExemptConflict, conflict egress.ExemptConflict) bool {
+		return slices.ContainsFunc(list, func(other egress.ExemptConflict) bool {
+			return other.Exemption == conflict.Exemption && other.Prefix == conflict.Prefix && other.Carved == conflict.Carved
+		})
+	}
+	for i, conflict := range now {
+		// two routes to one prefix from different sources are one drop
+		if drops(f.conflicts, conflict) || drops(now[:i], conflict) {
+			continue
+		}
+		attrs := []slog.Attr{
+			slog.String("exemption", conflict.Exemption.Prefix.String()), slog.String("interface", conflict.Exemption.Interface),
+			slog.String("prefix", conflict.Prefix.String()), slog.String("carved", conflict.Carved.String()),
+			slog.String("routed_via", conflict.Via), slog.String("router_id", conflict.RouterID),
+		}
+		slog.LogAttrs(context.Background(), slog.LevelWarn, "antispoof drops part of an exemption, since another node's prefix holds it", attrs...)
+		f.rt.Events.Emit("antispoof.conflict", "", attrs...)
+	}
+	for i, conflict := range f.conflicts {
+		if !drops(now, conflict) && !drops(f.conflicts[:i], conflict) {
+			slog.Info("antispoof no longer drops part of an exemption for another node's prefix", "exemption", conflict.Exemption.Prefix, "interface", conflict.Exemption.Interface, "prefix", conflict.Prefix)
+		}
+	}
+	f.conflicts = now
 }
 
 // countDrops reads the counters of the drops the table holds and, at most
@@ -561,8 +612,8 @@ func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress
 	moved := dropsSince(now, f.dropped)
 	f.dropped = now
 	if moved != (egress.BorderDrops{}) {
-		slog.LogAttrs(context.Background(), slog.LevelInfo, "border filter dropped packets", dropAttrs(moved)...)
-		f.rt.Events.Emit("border.dropped", "", dropAttrs(moved)...)
+		slog.LogAttrs(context.Background(), slog.LevelInfo, "antispoof filter dropped packets", dropAttrs(moved)...)
+		f.rt.Events.Emit("antispoof.dropped", "", dropAttrs(moved)...)
 	}
 	return now
 }
@@ -579,11 +630,11 @@ func (f *BorderFilter) setReady(ok bool, detail string) {
 	}
 	f.ready = ok
 	if ok {
-		slog.Info("border filter ready", "where", f.Where())
+		slog.Info("antispoof filter ready", "where", f.Where())
 	} else {
-		slog.Warn("border filter not ready", "where", f.Where(), "detail", detail)
+		slog.Warn("antispoof filter not ready", "where", f.Where(), "detail", detail)
 	}
-	f.rt.Events.Emit("border.ready", "", slog.Bool("ready", ok))
+	f.rt.Events.Emit("antispoof.ready", "", slog.Bool("ready", ok))
 }
 
 // Debug reads the table now through a socket of its own, so an operator

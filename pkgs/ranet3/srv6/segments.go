@@ -18,8 +18,7 @@ import (
 // asking a kernel to, so steering works on every platform: darwin has no
 // segment routing and a mobile tunnel provider has no forwarding table at all,
 // and neither needs one when the process carrying the packet is the one acting
-// on the header. A local segment needs cap.border beside it, which only linux
-// runs.
+// on the header. A local segment needs overlay beside it.
 type Segments struct {
 	// Source is the outer source address an encapsulation is sent from, which
 	// the fleet sets once per node with `ip sr tunsrc`. A steering entry
@@ -96,7 +95,7 @@ func (s Segments) Egress() []Segment {
 
 // Validate refuses a capability this node could not act on, through the checks
 // the two tables' constructors run, so there is one set of rules rather than
-// two. The overlay the local table needs belongs to cap.border, so the loader
+// two. The overlay the local table needs is a key of its own, so the loader
 // checks it where it reads both blocks.
 func (s Segments) Validate() error {
 	if s.Source.IsValid() && !Usable(s.Source.Addr) {

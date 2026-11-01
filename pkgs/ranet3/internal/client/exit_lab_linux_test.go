@@ -249,7 +249,7 @@ func (d *exitDaemon) withoutOverlayAddress(t *testing.T, families ...int) {
 func (d *exitDaemon) hand(t *testing.T, table kernel.Table, announced []netip.Prefix) {
 	t.Helper()
 	before := d.reloaded()
-	if err := d.routes.SetTable(table, d.node.config().Overlay(), announced); err != nil {
+	if err := d.routes.SetTable(table, d.node.config().Overlay, announced); err != nil {
 		t.Fatalf("hand the reconciler cap.table with cap.exit %+v: %v", table.Mode(), err)
 	}
 	d.table, d.announced = table, announced

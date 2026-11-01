@@ -301,7 +301,7 @@ func skippedText(v4, v6 judgment) string {
 		}
 	}
 	if len(families) > 0 {
-		parts = append(parts, "lookup skipped, the mesh routes no other node's "+strings.Join(families, " or ")+" prefix inside cap.border.overlay")
+		parts = append(parts, "lookup skipped, the mesh routes no other node's "+strings.Join(families, " or ")+" prefix inside overlay")
 	}
 	switch len(unread) {
 	case 0:

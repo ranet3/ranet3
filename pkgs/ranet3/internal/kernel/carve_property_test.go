@@ -193,7 +193,7 @@ func TestCarvedPrefixesAreTheTablesEntriesInsideACarveOut(t *testing.T) {
 			}
 		}
 		want := slices.SortedFunc(maps.Keys(set), comparePrefixes)
-		if got := CarvedPrefixes(carveOuts, routes.Snapshot()); !slices.Equal(got, want) {
+		if got := CarvedPrefixes(egress.Border{}.Carved(carveOuts), routes.Snapshot()); !slices.Equal(got, want) {
 			ht.Fatalf("inside %v the table holds\n%v\nwant\n%v", carveOuts, got, want)
 		}
 	})
@@ -228,7 +228,7 @@ func TestCarveOutsOfALeaseInsideAroundAndAsWideAsTheOverlay(t *testing.T) {
 	routes.Set(netip.Prefix{}, p("3fff:0:0:5::/64"), netstack.Unreachable)
 	routes.Set(netip.Prefix{}, p("3fff:1::/48"), learned)
 	routes.Set(netip.Prefix{}, p("198.51.100.0/24"), netstack.Local)
-	if got, want := CarvedPrefixes(got, routes.Snapshot()), []netip.Prefix{p("192.0.2.77/32"), p("192.0.2.200/32"), p("3fff:0:0:5::/64")}; !slices.Equal(got, want) {
+	if got, want := CarvedPrefixes(egress.Border{}.Carved(got), routes.Snapshot()), []netip.Prefix{p("192.0.2.77/32"), p("192.0.2.200/32"), p("3fff:0:0:5::/64")}; !slices.Equal(got, want) {
 		t.Errorf("inside the carve-outs the table holds %v, want %v", got, want)
 	}
 }

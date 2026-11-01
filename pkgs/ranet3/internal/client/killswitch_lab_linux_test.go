@@ -286,16 +286,16 @@ type switchLab struct {
 	neighbor netip.Addr
 }
 
-// entry starts the leaf's border filter as the command builds it, its entry chain guarding the tun, and runs it until the lab's
+// entry starts the leaf's antispoof filter as the command builds it, its entry chain guarding the tun, and runs it until the lab's
 // node stops, since the command withdraws the table only once the reconciler and the mesh have stopped
 func (lab *switchLab) entry(t *testing.T) {
 	t.Helper()
 	node := lab.d.node
 	if err := lab.leaf.Do(func() (err error) {
-		lab.border, err = kernelexit.NewBorderFilter(node.config().Cap.Border, node.BorderRuntime())
+		lab.border, err = kernelexit.NewBorderFilter(node.config().Border(), node.BorderRuntime())
 		return err
 	}); err != nil {
-		t.Fatalf("start the leaf's border: %v", err)
+		t.Fatalf("start the leaf's antispoof filter: %v", err)
 	}
 	node.SetBorder(lab.border)
 	lab.bordered = true
@@ -303,7 +303,7 @@ func (lab *switchLab) entry(t *testing.T) {
 	var runs sync.WaitGroup
 	runs.Go(func() {
 		if err := lab.border.Run(ctx); err != nil {
-			t.Errorf("the leaf's border: %v", err)
+			t.Errorf("the leaf's antispoof filter: %v", err)
 		}
 	})
 	lab.stopBorder = sync.OnceFunc(func() {
@@ -417,7 +417,7 @@ func switchMode(t *testing.T, d *exitDaemon, forward, inbound []string, unaddres
 	table.Addresses = slices.DeleteFunc(slices.Clone(table.Addresses), func(address schema.Prefix) bool {
 		return address.Addr().Is4() && unaddressed == 4 || address.Addr().Is6() && unaddressed == 6
 	})
-	if err := d.routes.SetTable(table, cfg.Overlay(), nil); err != nil {
+	if err := d.routes.SetTable(table, cfg.Overlay, nil); err != nil {
 		t.Fatalf("hand the reconciler cap.exit with fallback none: %v", err)
 	}
 }

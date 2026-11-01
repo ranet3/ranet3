@@ -784,6 +784,8 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	}
 	defer hub.Close()
 	c := &Client{speaker: speaker, sessions: newSessionSet(), hub: hub, Mesh: mesh}
+	// New always stores a configuration, which the antispoof status reads
+	c.cfg.Store(&config.Config{})
 	if fillUnclaimedQueue(t, hub) == 0 {
 		t.Fatal("the queue refused nothing, so the counter would read zero either way")
 	}
@@ -1822,6 +1824,8 @@ func TestMetricsLabelsUseOnlyTheEscapesTheFormatDefines(t *testing.T) {
 	handle := speaker.AddPeer(peer, identity.Identity{})
 	defer handle.Close()
 	c := &Client{speaker: speaker, sessions: newSessionSet(), Mesh: mesh}
+	// New always stores a configuration, which the antispoof status reads
+	c.cfg.Store(&config.Config{})
 	// A live session too: the path label is the other value built from a name
 	// a peer chooses, and with no sessions its line is never rendered.
 	c.sessions.close = func(*ike.Session) {}

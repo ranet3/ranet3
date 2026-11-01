@@ -53,14 +53,10 @@ func compareCarveOuts(a, b egress.CarveOut) int {
 }
 
 // CarvedPrefixes is the destination of each entry of the mesh's table that lies
-// inside a carve-out, masked, sorted and each once: learned, held and this
-// node's own alike, since a neighbor on the carved link holds none of them, and
-// a source-specific entry by its destination whole
-func CarvedPrefixes(carveOuts []egress.CarveOut, snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
-	carved := make([]netip.Prefix, 0, len(carveOuts))
-	for _, c := range carveOuts {
-		carved = append(carved, c.Prefix)
-	}
+// inside a prefix of carved, masked, sorted and each once: learned, held and
+// this node's own alike, since a neighbor on a carved link holds none of them,
+// and a source-specific entry by its destination whole
+func CarvedPrefixes(carved []netip.Prefix, snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
 	return carvedOf(carved, tableDestinations(snapshot))
 }
 
@@ -75,6 +71,60 @@ func carvedOf(carved, table []netip.Prefix) []netip.Prefix {
 	}
 	slices.SortFunc(out, comparePrefixes)
 	return slices.Compact(out)
+}
+
+// ExemptCarved gives the ranges the carved sets hold of the exemptions, and each
+// conflict with another node's prefix. A prefix inside the overlay the mesh's
+// table routes via a peer is another node's: of each exemption it overlaps,
+// inside it or covering it, it carves their intersection, less each range of
+// own inside the prefix, which this node's longer route takes. A range this
+// node announces is its own, even where another node announces it too, and is
+// carved for none. Each of addresses, this node's own, inside an exemption is
+// carved. A default route, a prefix wider than the overlay and a prefix held
+// unreachable carve nothing.
+func ExemptCarved(exemptions []egress.Exemption, own, addresses []netip.Prefix, snapshot []sadr.Route[*netstack.Peer], overlay []schema.Prefix) ([]egress.Range, []egress.ExemptConflict) {
+	var carved []egress.Range
+	var conflicts []egress.ExemptConflict
+	for _, entry := range snapshot {
+		destination, ok := canonicalPrefix(entry.Destination)
+		if !ok || entry.Value == nil || entry.Value == netstack.Local || entry.Value == netstack.Assigned || entry.Value == netstack.Unreachable || !schema.InsideOverlay(destination, overlay) {
+			continue
+		}
+		var longer []netip.Prefix
+		for _, prefix := range own {
+			if encloses(destination, prefix) {
+				longer = append(longer, prefix)
+			}
+		}
+		for _, exemption := range exemptions {
+			if !exemption.Prefix.Overlaps(destination) {
+				continue
+			}
+			// two prefixes that overlap are nested, so the longer is their intersection
+			both := destination
+			if exemption.Prefix.Bits() > both.Bits() {
+				both = exemption.Prefix.Masked()
+			}
+			taken := subtract(Ranges([]netip.Prefix{both}), Ranges(longer))
+			if len(taken) == 0 {
+				continue
+			}
+			carved = append(carved, taken...)
+			conflicts = append(conflicts, egress.ExemptConflict{Exemption: exemption, Prefix: destination, Carved: both, Via: entry.Value.ID})
+		}
+	}
+	for _, address := range addresses {
+		if slices.ContainsFunc(exemptions, func(exemption egress.Exemption) bool { return encloses(exemption.Prefix.Masked(), address) }) {
+			carved = append(carved, Ranges([]netip.Prefix{address})...)
+		}
+	}
+	slices.SortFunc(conflicts, compareConflicts)
+	return egress.Union(carved), slices.Compact(conflicts)
+}
+
+func compareConflicts(a, b egress.ExemptConflict) int {
+	return cmp.Or(cmp.Compare(a.Exemption.Interface, b.Exemption.Interface), comparePrefixes(a.Exemption.Prefix, b.Exemption.Prefix),
+		comparePrefixes(a.Prefix, b.Prefix), cmp.Compare(a.Via, b.Via))
 }
 
 // tableDestinations is the destination of each entry of the mesh's table,

@@ -195,14 +195,14 @@
       "taken": false
     }
   ],
-  "border": {
-    "where": "nftables table inet ranet3 chains border and mesh_entry",
+  "antispoof": {
+    "where": "nftables table inet ranet3 chains antispoof and mesh_entry",
     "read_at": "2026-10-19T09:14:02Z",
     "read_ago": "3s",
     "ready": true,
     "chains": [
       {
-        "name": "border",
+        "name": "antispoof",
         "hook": "prerouting",
         "priority": -300,
         "rules": [

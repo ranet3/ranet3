@@ -290,7 +290,7 @@ func TestFamilyWithNoMemberSkipsItsLookupsAndSaysSo(t *testing.T) {
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	const skipped = "lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay"
+	const skipped = "lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay"
 	if stats := tr.lastPass(); !stats.Ready4 || !stats.Ready6 || stats.Skipped != skipped {
 		t.Errorf("with no IPv6 member the pass reports ready %v and %v, skipping %q, want both ready, skipping %q", stats.Ready4, stats.Ready6, stats.Skipped, skipped)
 	}

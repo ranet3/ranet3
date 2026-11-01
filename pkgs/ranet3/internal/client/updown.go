@@ -104,8 +104,8 @@ func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 }
 
 // applyInstalledLocked hands the reconciler and the exit what the node's place on the mesh asks of them
-// a down node holds nothing in the host but the border filter, and an up one what its file and the stopped set say
-// the border stays, since a down node's kernel still forwards and its services still trust mesh sources
+// a down node holds nothing in the host but the antispoof filter, and an up one what its file and the stopped set say
+// the filter stays, since a down node's kernel still forwards and its services still trust mesh sources
 // c.runningMu is held
 func (c *Client) applyInstalledLocked() {
 	up := c.downSince.Load() == nil

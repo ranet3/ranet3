@@ -55,12 +55,12 @@ func rulesFixture() RulesInfo {
 			{Lookup: "underlay", Family: "ipv6", Address: netip.MustParseAddr("2001:db8:400::7"), Source: netip.MustParseAddr("2001:db8:b::10"), Answer: "table main dev eth0"},
 		},
 		Border: &BorderTable{
-			Where:   "nftables table inet ranet3 chains border and mesh_entry",
+			Where:   "nftables table inet ranet3 chains antispoof and mesh_entry",
 			ReadAt:  time.Date(2026, 10, 19, 9, 14, 2, 0, time.UTC),
 			ReadAgo: Duration(3 * time.Second),
 			Ready:   true,
 			Chains: []BorderChain{
-				{Name: "border", Hook: "prerouting", Priority: -300, Rules: []BorderChainRule{
+				{Name: "antispoof", Hook: "prerouting", Priority: -300, Rules: []BorderChainRule{
 					{Spec: "accept via ranet3", Verdict: "accept", Reason: "inside", Held: true},
 					{Spec: "accept via lo", Verdict: "accept", Reason: "inside", Held: true},
 					{Spec: "drop ipv4 source @carved4", Verdict: "drop", Reason: "carved_source", Family: "ipv4", Held: true, Packets: 2, Bytes: 120},
@@ -94,7 +94,8 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	golden(t, "rules.txt", []byte(out.String()))
 	goldenJSON(t, "rules.json", info)
 
-	// darwin has no policy rules and refuses cap.border, and lists the
+	// darwin has no policy rules and runs no antispoof filter, which it says
+	// where overlay is written, and lists the
 	// interface each live session's datagrams name, or the interface of the pin
 	// they carry: the route the selection matched, one address no route holds, a pin
 	// of a session the peer opened, and a link-local zone's
@@ -103,6 +104,7 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 		Policy:    []PolicyRule{},
 		PolicyErr: "this platform has no policy rules",
 		Missing:   []PolicyRule{},
+		Border:    &BorderTable{UnenforcedOn: "darwin"},
 		Lookups: []RuleLookup{
 			{Lookup: "underlay", Family: "ipv4", Prefix: netip.MustParsePrefix("198.51.100.0/24"), Address: netip.MustParseAddr("198.51.100.77"), Answer: "dev en0"},
 			{Lookup: "underlay", Family: "ipv4", Address: netip.MustParseAddr("203.0.113.10"), Answer: "dev en1"},
@@ -176,7 +178,7 @@ func TestRulesRenderTheFallbackTable(t *testing.T) {
 }
 
 // in mode 3 the view lists the two steered defaults of the reconciler's table
-// after the lookups and before the border filter's table, which every Linux
+// after the lookups and before the antispoof filter's table, which every Linux
 // node writes, installed while the path is up and the mesh holds a live
 // session, and withdrawn with the SID that took the path down and the table's
 // answer for it

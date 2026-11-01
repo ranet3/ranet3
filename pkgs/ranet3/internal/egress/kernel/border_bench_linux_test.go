@@ -59,7 +59,7 @@ type benchHost struct {
 func newBenchHost(b *testing.B) *benchHost {
 	b.Helper()
 	if os.Getuid() != 0 {
-		b.Skip("the border's benchmarks need root on linux")
+		b.Skip("the antispoof filter's benchmarks need root on linux")
 	}
 	enterThrowawayNamespace(b)
 	if err := netnstest.BringUp("lo"); err != nil {
@@ -148,14 +148,14 @@ func netInterfaceIndex(name string) (int, error) {
 	return int(ifr.Uint32()), nil
 }
 
-// write starts a border filter over cfg and sets, withdrawn when the benchmark ends
+// write starts an antispoof filter over cfg and sets, withdrawn when the benchmark ends
 func (h *benchHost) write(b *testing.B, cfg *egress.Border, sets egress.BorderSets) *BorderFilter {
 	b.Helper()
 	be, err := newBorderBackend()
 	if err != nil {
 		b.Fatal(err)
 	}
-	rt := egress.BorderRuntime{Tun: benchTun, Inside: []string{benchTun, "lo"}, Sets: func() egress.BorderSets { return sets }}
+	rt := egress.BorderRuntime{Tun: benchTun, Inside: []string{benchTun, "lo"}, Sets: func(*egress.Border) egress.BorderSets { return sets }}
 	f, err := startBorderFilter(cfg, rt, be)
 	if err != nil {
 		b.Fatalf("write the table: %v", err)
@@ -231,7 +231,7 @@ func benchUDP(source, destination netip.Addr) []byte {
 	return append(packet, udp...)
 }
 
-// benchOverlay is a cap.border of an overlay prefix of each family, each
+// benchOverlay is an overlay of a prefix of each family, each
 // holding the uplink's network of its family and neither the far host
 func benchOverlay() *egress.Border {
 	return &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("2001:db8::/48")}}
@@ -473,7 +473,7 @@ func BenchmarkNoneSetMovesByOneLAN(b *testing.B) {
 				all := benchLANs(family, n+1)
 				lans := all
 				f := h.write(b, nil, egress.BorderSets{})
-				f.rt.Sets = func() egress.BorderSets { return egress.BorderSets{None: lans} }
+				f.rt.Sets = func(*egress.Border) egress.BorderSets { return egress.BorderSets{None: lans} }
 				f.trigger = "routes"
 				if err := f.reconcile(); err != nil {
 					b.Fatal(err)
@@ -516,7 +516,7 @@ func (t benchTable) forget(lan netip.Prefix) { t.routes.Remove(netip.Prefix{}, l
 // exitTable is the mesh's table of an exit whose none class is
 // 2001:db8::/32, holding n /64 LANs drawn in it that other nodes advertise,
 // with the sets a pass derives from it as the node derives them
-func exitTable(n int) (benchTable, func() egress.BorderSets) {
+func exitTable(n int) (benchTable, func(*egress.Border) egress.BorderSets) {
 	t := benchTable{
 		routes:  netstack.NewRouteTable(),
 		overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("198.18.0.0/15")},
@@ -530,7 +530,7 @@ func exitTable(n int) (benchTable, func() egress.BorderSets) {
 		binary.BigEndian.PutUint32(raw[4:], random.Uint32())
 		t.set(netip.PrefixFrom(netip.AddrFrom16(raw), 64))
 	}
-	return t, func() egress.BorderSets {
+	return t, func(*egress.Border) egress.BorderSets {
 		snapshot := t.routes.Snapshot()
 		return egress.BorderSets{Owned: meshkernel.OwnedSources(snapshot, t.overlay), None: meshkernel.NoneDestinations(t.classes, snapshot, t.overlay)}
 	}

@@ -401,17 +401,17 @@ func TestNormalizedClassesAreTheClassesTheTranslatorRuns(t *testing.T) {
 }
 
 // The block written in a file and the one sent on the wire are the same
-func TestBorderRoundTripsThroughEverySerialization(t *testing.T) {
-	want := Border{Overlay: prefixes(t, "198.18.0.0/15", "3fff::/20")}
+func TestAntispoofRoundTripsThroughEverySerialization(t *testing.T) {
+	want := Antispoof{Exempt: prefixes(t, "198.18.0.0/24"), Interface: map[string]AntispoofInterface{"wl*": {Exempt: prefixes(t, "3fff::/48")}}}
 	for _, one := range []struct {
 		name    string
 		encode  func(any) ([]byte, error)
 		decode  func([]byte, any) error
 		written string
 	}{
-		{"yaml", yaml.Marshal, yaml.Unmarshal, "overlay:"},
-		{"json", json.Marshal, json.Unmarshal, `"overlay":["198.18.0.0/15","3fff::/20"]`},
-		{"toml", encodeTOML, decodeTOML, `overlay = ["198.18.0.0/15", "3fff::/20"]`},
+		{"yaml", yaml.Marshal, yaml.Unmarshal, "wl*:"},
+		{"json", json.Marshal, json.Unmarshal, `"interface":{"wl*":{"exempt":["3fff::/48"]}}`},
+		{"toml", encodeTOML, decodeTOML, `[interface."wl*"]`},
 	} {
 		t.Run(one.name, func(t *testing.T) {
 			raw, err := one.encode(want)
@@ -421,14 +421,89 @@ func TestBorderRoundTripsThroughEverySerialization(t *testing.T) {
 			if !strings.Contains(string(raw), one.written) {
 				t.Errorf("wrote %s, which does not carry %s", raw, one.written)
 			}
-			var got Border
+			var got Antispoof
 			if err := one.decode(raw, &got); err != nil {
 				t.Fatalf("%s: %v", raw, err)
 			}
-			if !slices.Equal(plain(got.Overlay), plain(want.Overlay)) {
-				t.Errorf("came back as %v, want %v", got.Overlay, want.Overlay)
+			if !slices.Equal(plain(got.Exempt), plain(want.Exempt)) || len(got.Interface) != 1 || !slices.Equal(plain(got.Interface["wl*"].Exempt), plain(want.Interface["wl*"].Exempt)) {
+				t.Errorf("came back as %+v, want %+v", got, want)
 			}
 		})
+	}
+}
+
+// The exemptions are the shared ones first and then each interface's by name,
+// each list sorted, and the carved prefixes are every carve-out's and every
+// exemption's, which is where the mesh's own prefixes are dropped ahead of
+// either accept
+func TestBorderExemptionsAndCarvedPrefixes(t *testing.T) {
+	border := Border{Overlay: prefixes(t, "198.18.0.0/15", "3fff::/20"), Antispoof: Antispoof{
+		Exempt: prefixes(t, "3fff:0:1::/48", "198.18.1.0/24"),
+		Interface: map[string]AntispoofInterface{
+			"wl*":  {Exempt: prefixes(t, "198.18.3.0/24", "198.18.2.0/24")},
+			"eth1": {Exempt: prefixes(t, "198.18.4.0/24")},
+		},
+	}}
+	p := netip.MustParsePrefix
+	want := []Exemption{
+		{Prefix: p("198.18.1.0/24")}, {Prefix: p("3fff:0:1::/48")},
+		{Interface: "eth1", Prefix: p("198.18.4.0/24")},
+		{Interface: "wl*", Prefix: p("198.18.2.0/24")}, {Interface: "wl*", Prefix: p("198.18.3.0/24")},
+	}
+	if got := border.Exemptions(); !slices.Equal(got, want) {
+		t.Errorf("the exemptions read %v, want %v", got, want)
+	}
+	carved := border.Carved([]CarveOut{{Link: "eth0", Prefix: p("198.18.0.0/24")}})
+	if want := []netip.Prefix{p("198.18.0.0/24"), p("198.18.1.0/24"), p("3fff:0:1::/48"), p("198.18.4.0/24"), p("198.18.2.0/24"), p("198.18.3.0/24")}; !slices.Equal(carved, want) {
+		t.Errorf("the carved prefixes read %v, want %v", carved, want)
+	}
+	if got := (Border{Overlay: border.Overlay}).Carved(nil); len(got) != 0 {
+		t.Errorf("with no carve-out and no exemption the carved prefixes read %v, want none", got)
+	}
+}
+
+// The filter refuses an exemption that would exempt nothing or that names no
+// interface it can match, and takes every name with one trailing * or none
+func TestBorderValidateRefusesWhatWouldExemptNothing(t *testing.T) {
+	overlay := prefixes(t, "198.18.0.0/15", "3fff::/20")
+	for name, c := range map[string]struct {
+		antispoof Antispoof
+		says      string
+	}{
+		"a shared prefix outside": {Antispoof{Exempt: prefixes(t, "192.0.2.0/24")}, "egress: cap.antispoof exempt 192.0.2.0/24 lies outside overlay"},
+		"a prefix reaching past":  {Antispoof{Exempt: prefixes(t, "198.16.0.0/14")}, "egress: cap.antispoof exempt 198.16.0.0/14 lies outside overlay"},
+		"an interface's outside": {Antispoof{Interface: map[string]AntispoofInterface{"eth1": {Exempt: prefixes(t, "2001:db8::/32")}}},
+			`egress: cap.antispoof.interface."eth1" exempt 2001:db8::/32 lies outside overlay`},
+		"an empty list":   {Antispoof{Interface: map[string]AntispoofInterface{"eth1": {}}}, `egress: cap.antispoof.interface."eth1" exempts nothing`},
+		"a * alone":       {Antispoof{Interface: map[string]AntispoofInterface{"*": {Exempt: overlay[:1]}}}, `egress: cap.antispoof.interface."*" names every interface`},
+		"a * inside":      {Antispoof{Interface: map[string]AntispoofInterface{"w*n": {Exempt: overlay[:1]}}}, `egress: cap.antispoof.interface."w*n" is not an interface name`},
+		"two *":           {Antispoof{Interface: map[string]AntispoofInterface{"w**": {Exempt: overlay[:1]}}}, `egress: cap.antispoof.interface."w**" is not an interface name`},
+		"no name":         {Antispoof{Interface: map[string]AntispoofInterface{"": {Exempt: overlay[:1]}}}, `egress: cap.antispoof.interface."" is not an interface name`},
+		"a name past 15":  {Antispoof{Interface: map[string]AntispoofInterface{"sixteen-bytes-xy": {Exempt: overlay[:1]}}}, "is 16 bytes before any *, and an interface name is at most 15"},
+		"a written twice": {Antispoof{Exempt: prefixes(t, "198.18.1.0/24", "198.18.1.0/24")}, "egress: cap.antispoof exempt 198.18.1.0/24 is written twice"},
+		"host bits":       {Antispoof{Exempt: prefixes(t, "198.18.1.1/24")}, "egress: cap.antispoof exempt 198.18.1.1/24 has bits set below its prefix length"},
+	} {
+		if err := (Border{Overlay: overlay, Antispoof: c.antispoof}).Validate(); err == nil || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s: refused with %v, want %q", name, err, c.says)
+		}
+	}
+	for _, name := range []string{"eth1", "wl*", "fifteen-bytes-x", "fifteen-bytes-x*", "w"} {
+		if err := (Border{Overlay: overlay, Antispoof: Antispoof{Interface: map[string]AntispoofInterface{name: {Exempt: overlay}}}}).Validate(); err != nil {
+			t.Errorf("%q exempting the whole overlay was refused: %v", name, err)
+		}
+	}
+	// an exemption is inside the overlay where each of its addresses lies in some
+	// entry, so two entries side by side together hold one no entry holds alone,
+	// while one reaching over a gap between them lies outside
+	halves := prefixes(t, "198.18.0.0/16", "198.19.0.0/16", "3fff::/21", "3fff:800::/21", "203.0.113.0/25", "203.0.114.0/24")
+	for _, exempt := range []string{"198.18.0.0/15", "3fff::/20"} {
+		if err := (Border{Overlay: halves, Antispoof: Antispoof{Exempt: prefixes(t, exempt)}}).Validate(); err != nil {
+			t.Errorf("%s, held by two overlay entries together, was refused: %v", exempt, err)
+		}
+	}
+	const straddle = "egress: cap.antispoof exempt 203.0.112.0/22 lies outside overlay"
+	if err := (Border{Overlay: halves, Antispoof: Antispoof{Exempt: prefixes(t, "203.0.112.0/22")}}).Validate(); err == nil || !strings.Contains(err.Error(), straddle) {
+		t.Errorf("an exemption over a gap between overlay entries was refused with %v, want %q", err, straddle)
 	}
 }
 

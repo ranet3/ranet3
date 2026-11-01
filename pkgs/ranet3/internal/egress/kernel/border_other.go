@@ -5,18 +5,10 @@
 
 package kernel
 
-import (
-	"fmt"
-	"runtime"
-)
-
-// errNoBorder refuses cap.border by name where there is no nftables chain to
-// write: a node that accepted the block and filtered nothing would carry
-// forged mesh sources from its other links while its status said otherwise.
-var errNoBorder = fmt.Errorf("egress: cap.border is an nftables chain, which %s does not have, so this node cannot filter what enters the mesh from its other links", runtime.GOOS)
-
 // EntryRuns is whether this platform writes the entry chain, which no
 // platform without nftables has
 const EntryRuns = false
 
-func newBorderBackend() (borderBackend, error) { return nil, errNoBorder }
+// newBorderBackend opens no backend, so this platform runs no antispoof filter
+// and status says it is not enforced
+func newBorderBackend() (borderBackend, error) { return nil, nil }

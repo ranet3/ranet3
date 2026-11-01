@@ -36,7 +36,7 @@ func openNetwork(host kernel.Host, mesh string) (networkSource, error) {
 }
 
 // followNetwork acts on each change of the host's network until ctx ends
-// the route reconciler is handed every change, since the rules of cap.exit follow the links, and the border filter runs a pass for each, since its carve-outs do
+// the route reconciler is handed every change, since the rules of cap.exit follow the links, and the antispoof filter runs a pass for each, since its carve-outs do
 // where a default or an address moved, every socket connected to one peer closes, since it keeps a source the host may have lost or the route no longer picks
 // every session is then asked to prove its path now, and every dialer comes round at once
 // a dialer that finds its session healthy stands down as it does after any wake
@@ -65,11 +65,8 @@ func (c *Client) followNetwork(ctx context.Context) {
 	}
 }
 
-// wakeBorder asks the border filter for a pass, which joins one already asked for
+// wakeBorder asks the antispoof filter for a pass, which joins one already asked for
 func (c *Client) wakeBorder() {
-	if c.borderWoken != nil {
-		c.borderWoken()
-	}
 	select {
 	case c.borderNetwork <- struct{}{}:
 	default:

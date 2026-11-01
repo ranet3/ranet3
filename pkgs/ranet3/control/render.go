@@ -63,9 +63,9 @@ func RenderStatus(w io.Writer, s Status) {
 		{"Transit", transitLine(s.Transit)},
 		{"ESP", espLine(s.ESP)},
 	}
-	// under the egress line, and only on a node that runs the border filter
+	// under the egress line, and only on a node that runs the antispoof filter or writes an overlay
 	if s.Border != nil {
-		rows = slices.Insert(rows, slices.IndexFunc(rows, func(row []string) bool { return row[0] == "Egress" })+1, []string{"Border", borderLine(*s.Border)})
+		rows = slices.Insert(rows, slices.IndexFunc(rows, func(row []string) bool { return row[0] == "Egress" })+1, []string{"Antispoof", borderLine(*s.Border)})
 	}
 	// only on a node running less than its file says, since it would read none on every other
 	if len(s.Disabled) > 0 {
@@ -281,8 +281,12 @@ func conntrackText(count uint64, most *uint64) string {
 
 // borderLine leads with where the chain is and what it accepts, then the drops
 // counted, so an operator who injected a packet finds its count on the line, or
-// says it is not installed and why
+// says it is not installed and why, or not enforced on a platform that runs no
+// filter
 func borderLine(b BorderStatus) string {
+	if b.UnenforcedOn != "" {
+		return fmt.Sprintf("not enforced on %s, %s", b.UnenforcedOn, overlayCount(len(b.Overlay)))
+	}
 	if !b.Ready {
 		why := b.Err
 		if why == "" {
@@ -294,15 +298,19 @@ func borderLine(b BorderStatus) string {
 	if len(b.Overlay) == 0 {
 		return b.Where + ", " + entering
 	}
-	overlay := fmt.Sprintf("%d overlay prefixes", len(b.Overlay))
-	if len(b.Overlay) == 1 {
-		overlay = "1 overlay prefix"
-	}
+	overlay := overlayCount(len(b.Overlay))
 	for _, carveOut := range b.Carved {
 		overlay += fmt.Sprintf(", carving %s on %s", carveOut.Prefix, carveOut.Link)
 	}
 	return fmt.Sprintf("%s, inside %s, %s, dropped %d overlay sources and %d carved sources, %s",
 		b.Where, strings.Join(b.Inside, " "), overlay, b.Dropped.Reason("overlay_source"), b.Dropped.Reason("carved_source"), entering)
+}
+
+func overlayCount(n int) string {
+	if n == 1 {
+		return "1 overlay prefix"
+	}
+	return fmt.Sprintf("%d overlay prefixes", n)
 }
 
 func egressReadyText(ready []string, unready string) string {

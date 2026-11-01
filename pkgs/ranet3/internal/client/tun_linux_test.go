@@ -61,7 +61,7 @@ func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	cfg.Link.MTU = session
 	cfg.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{{SID: schema.AddrFrom(exit), Behavior: srv6.BehaviorEndDT46}}}
 	// holding the headend's outer source below
-	cfg.Cap.Border = borderOf(alpha.prefix.Masked().String())
+	cfg.Overlay = overlayOf(alpha.prefix.Masked().String())
 	segments, _, err := cfg.SegmentTables()
 	if err != nil {
 		t.Fatalf("build bravo's segment table: %v", err)

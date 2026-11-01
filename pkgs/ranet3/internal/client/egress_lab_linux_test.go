@@ -48,7 +48,7 @@ const (
 	// labAheadPriority is a rule's the lab puts ahead of every rule the reconciler derives
 	labAheadPriority = 50
 	// labSkipped6 is the translator's word for an exit whose mesh routes no IPv6 member
-	labSkipped6 = "lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay"
+	labSkipped6 = "lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay"
 )
 
 var (
@@ -158,13 +158,13 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	var routes *kernel.Reconciler
 	var border *kernelexit.BorderFilter
 	if err := exit.Do(func() (err error) {
-		if border, err = kernelexit.NewBorderFilter(cfg.Cap.Border, node.BorderRuntime()); err != nil {
+		if border, err = kernelexit.NewBorderFilter(cfg.Border(), node.BorderRuntime()); err != nil {
 			return err
 		}
 		routes, err = kernel.New(*cfg.Cap.Table, node.KernelRuntime(), node.Mesh.Routes)
 		return err
 	}); err != nil {
-		t.Fatalf("build the border and the reconciler: %v", err)
+		t.Fatalf("build the antispoof filter and the reconciler: %v", err)
 	}
 	translator := labTranslator(t, exit, node, bus)
 	node.SetBorder(border)
@@ -180,7 +180,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 	})
 	runs.Go(func() {
 		if err := border.Run(ctx); err != nil {
-			t.Errorf("the border: %v", err)
+			t.Errorf("the antispoof filter: %v", err)
 		}
 	})
 	// the leaf's prefixes are the members the lookups read from, so a pass skipping them has not read the path at all
@@ -784,7 +784,7 @@ func labRuleToMain(netlink netnstest.Netlink, kind uint16, iif string, to netip.
 }
 
 // labConfig is the reload fixture's node made an exit with the egress segment,
-// cap.egress and a cap.table, whose rule for cap.border's overlay sends the
+// cap.egress and a cap.table, whose rule for the overlay sends the
 // leaves into the mesh table
 func labConfig(t *testing.T) *config.Config {
 	t.Helper()

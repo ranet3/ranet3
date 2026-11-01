@@ -71,7 +71,7 @@ func TestReloadMovesTheRoutesToTheNewMetric(t *testing.T) {
 	}
 }
 
-// the pass after a reload that moves cap.border's overlay holds the rules the new overlay derives and none of the old one's
+// the pass after a reload that moves the overlay holds the rules the new overlay derives and none of the old one's
 func TestReloadMovesTheRulesWithTheOverlay(t *testing.T) {
 	before, after := prefixes(prefix("192.0.2.0/24")), prefixes(prefix("3fff::/20"))
 	r, _, fake := harness(t, Table{}, Runtime{Overlay: before})

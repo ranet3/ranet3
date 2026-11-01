@@ -88,9 +88,9 @@ func TestShutdownWithdrawsTheBorderLast(t *testing.T) {
 		owners.Wait()
 		record("both waited for")
 	}
-	stopInOrder(cancel, wait, func() { record("border withdrew") })
-	if len(order) != 4 || order[2] != "both waited for" || order[3] != "border withdrew" {
-		t.Errorf("the shutdown ran %v, want the border to withdraw after the reconciler and the translator", order)
+	stopInOrder(cancel, wait, func() { record("the antispoof filter withdrew") })
+	if len(order) != 4 || order[2] != "both waited for" || order[3] != "the antispoof filter withdrew" {
+		t.Errorf("the shutdown ran %v, want the antispoof filter to withdraw after the reconciler and the translator", order)
 	}
 }
 

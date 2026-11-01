@@ -170,7 +170,7 @@ func (t Table) Mode() *ExitMode { return t.mode }
 // Runtime holds what the reconciler reads from outside cap.table: the device
 // the mesh actually got and the addresses this node's transport has to keep
 // reaching, which only a running node knows, and what other capabilities
-// write, the prefixes cap.route announces and cap.border's overlay among them.
+// write, the prefixes cap.route announces among them, and the overlay.
 type Runtime struct {
 	// Interface is the TUN device every installed route points at, named as
 	// the kernel named it (netstack.Mesh.Name, not the requested name).
@@ -186,7 +186,7 @@ type Runtime struct {
 	// here, and one schema.CapturesTheMachine counts makes this node an exit.
 	// SetTable replaces it on a reload.
 	Announced []netip.Prefix
-	// Overlay is cap.border's overlay, nil without the block, which
+	// Overlay is the overlay, nil where it is not written, which
 	// schema.CapturesTheMachine reads to tell a route that counts as a default
 	// from a subnet. SetTable replaces it on a reload.
 	Overlay []schema.Prefix
@@ -972,7 +972,7 @@ type accepted struct {
 	addresses []netip.Prefix
 }
 
-// SetTable hands the loop the capability a reload read, with cap.border's overlay and the prefixes cap.route announces, for a pass at once
+// SetTable hands the loop the capability a reload read, with the overlay and the prefixes cap.route announces, for a pass at once
 // it refuses what New refuses and a change of id or proto
 // a refusal changes nothing
 func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []netip.Prefix) error {

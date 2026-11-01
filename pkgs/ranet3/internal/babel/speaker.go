@@ -1182,6 +1182,18 @@ func (s *Speaker) Originated() []OriginatedRoute {
 	return out
 }
 
+// SelectedOrigin is the router-id of the route the speaker selected for dest
+// from any source, false where it selected none
+func (s *Speaker) SelectedOrigin(dest netip.Prefix) ([8]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry := s.routes.entries[routeKey{dest: dest.Masked()}]
+	if entry == nil || entry.selected.neighbor == nil {
+		return [8]byte{}, false
+	}
+	return entry.selected.routerID, true
+}
+
 // compareKey orders two route keys by destination and then by source prefix,
 // on the addresses rather than on their text. Comparing the text puts
 // 10.0.0.0/8 before 9.0.0.0/8, and it allocates two strings per comparison,

@@ -26,7 +26,7 @@ type RouteTable struct {
 	// mu orders the writers, so each entry takes its flags from the overlay and the egress prefixes in force as it enters
 	// and a change of either flags every entry again with no write lost between
 	mu sync.Mutex
-	// overlay is cap.border's overlay as written, nil without cap.border
+	// overlay is the overlay as written, nil where it is not
 	overlay []schema.Prefix
 	// egress is the prefixes cap.egress advertises, masked
 	egress []netip.Prefix
@@ -53,7 +53,7 @@ func (rt *RouteTable) flaggedLocked(src, dst netip.Prefix, peer *Peer) routeEntr
 	}
 }
 
-// SetOverlay flags every entry again under cap.border's overlay as written, nil without cap.border
+// SetOverlay flags every entry again under the overlay as written, nil where it is not
 func (rt *RouteTable) SetOverlay(overlay []schema.Prefix) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -188,7 +188,7 @@ func (rt *RouteTable) RemovePeer(peer *Peer) {
 type Match struct {
 	// Bits is the length of the entry's destination prefix in the bits of the destination's own family, zero when no entry matched
 	Bits int
-	// Counted is an entry whose destination counts as a default with cap.border's overlay, schema.CapturesTheMachine
+	// Counted is an entry whose destination counts as a default with the overlay, schema.CapturesTheMachine
 	// every entry covering such an entry's destination counts too, so a lookup passing over it finds none
 	Counted bool
 	// Egress is this node's own entry for a prefix cap.egress advertises

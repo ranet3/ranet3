@@ -6,52 +6,158 @@ package egress
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// Border is the cap.border capability: this node drops what arrives on a link
-// outside the mesh carrying a mesh source. Writing the block turns it on. The
-// entry chain beside it runs without it.
-type Border struct {
-	// Overlay names the prefixes the mesh numbers its nodes from. A packet
-	// arriving from outside the mesh with a source in one of them is forged,
-	// and every entry of an exit's allow list that admits an outer source lies
-	// inside them.
-	Overlay []schema.Prefix `yaml:"overlay,omitempty" json:"overlay,omitempty" toml:"overlay,omitempty"`
+// Antispoof is the cap.antispoof capability. The filter runs wherever overlay
+// is written, with no block, and the block only exempts: it is the one
+// protection on by default.
+type Antispoof struct {
+	// Exempt is the overlay prefixes whose sources pass from every interface outside the mesh
+	Exempt []schema.Prefix `yaml:"exempt,omitempty" json:"exempt,omitempty" toml:"exempt,omitempty"`
+	// Interface is the prefixes whose sources pass from the interfaces a name
+	// matches, beside Exempt: the name itself, or with one trailing * every
+	// interface whose name starts with what comes before it
+	Interface map[string]AntispoofInterface `yaml:"interface,omitempty" json:"interface,omitempty" toml:"interface,omitempty"`
 }
 
-// Normalized is the capability as the filter runs it: the prefixes in one
+// AntispoofInterface is one entry of cap.antispoof.interface
+type AntispoofInterface struct {
+	Exempt []schema.Prefix `yaml:"exempt" json:"exempt" toml:"exempt"`
+}
+
+// Border is the antispoof filter's configuration: the overlay, the
+// exemptions of cap.antispoof, its zero block where it is not written, and
+// what the exemptions take as this node's own. A pass derives every set it
+// carves from the one Border it runs.
+type Border struct {
+	Overlay   []schema.Prefix
+	Antispoof Antispoof
+	// Own is each range cap.route announces inside the overlay, which an
+	// exemption inside it admits
+	Own []netip.Prefix
+	// Addresses is each address of this node's as a host prefix, which the
+	// filter drops inside any exemption
+	Addresses []netip.Prefix
+}
+
+// Exemption is one prefix the filter passes from the interfaces Interface
+// matches, every one outside the mesh where it is empty
+type Exemption struct {
+	Interface string
+	Prefix    netip.Prefix
+}
+
+// Normalized is the configuration as the filter runs it: each list in one
 // order, an omitted list and an empty one the same. The order is not
-// meaningful, since a packet matches at most one source of a valid list.
+// meaningful: a packet may match nested exemptions, or one prefix in the
+// shared list and an interface's, but every exemption accepts and every
+// overlay prefix drops, so it meets the same verdict in any order.
 func (b Border) Normalized() Border {
-	if len(b.Overlay) == 0 {
-		b.Overlay = nil
-	} else {
-		b.Overlay = slices.SortedFunc(slices.Values(b.Overlay), schema.ComparePrefix)
+	b.Overlay = sortedPrefixes(b.Overlay)
+	b.Antispoof.Exempt = sortedPrefixes(b.Antispoof.Exempt)
+	if len(b.Antispoof.Interface) == 0 {
+		b.Antispoof.Interface = nil
+		return b
 	}
+	byName := make(map[string]AntispoofInterface, len(b.Antispoof.Interface))
+	for name, entry := range b.Antispoof.Interface {
+		byName[name] = AntispoofInterface{Exempt: sortedPrefixes(entry.Exempt)}
+	}
+	b.Antispoof.Interface = byName
 	return b
 }
 
+func sortedPrefixes(list []schema.Prefix) []schema.Prefix {
+	if len(list) == 0 {
+		return nil
+	}
+	return slices.SortedFunc(slices.Values(list), schema.ComparePrefix)
+}
+
+// Exemptions is every exemption, the shared ones first and then each
+// interface's by name, each list in order
+func (b Border) Exemptions() []Exemption {
+	b = b.Normalized()
+	var out []Exemption
+	for _, prefix := range b.Antispoof.Exempt {
+		out = append(out, Exemption{Prefix: prefix.Prefix})
+	}
+	for _, name := range slices.Sorted(maps.Keys(b.Antispoof.Interface)) {
+		for _, prefix := range b.Antispoof.Interface[name].Exempt {
+			out = append(out, Exemption{Interface: name, Prefix: prefix.Prefix})
+		}
+	}
+	return out
+}
+
+// Carved is the prefixes of each carve-out and each exemption, whose families
+// take a carved drop ahead of any accept by source
+func (b Border) Carved(carveOuts []CarveOut) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(carveOuts))
+	for _, carveOut := range carveOuts {
+		out = append(out, carveOut.Prefix)
+	}
+	for _, exemption := range b.Exemptions() {
+		out = append(out, exemption.Prefix)
+	}
+	return out
+}
+
 // Validate refuses an overlay list that would pass a forged mesh source or
-// drop what no mesh numbers from, worded as Egress.Validate words advertise
+// drop what no mesh numbers from, worded as Egress.Validate words advertise,
+// and an exemption that would exempt nothing
 func (b Border) Validate() error {
 	if len(b.Overlay) == 0 {
-		return errors.New("egress: cap.border overlay is empty, so the filter would pass every forged mesh source: name the prefixes the mesh numbers its nodes from")
+		return errors.New("egress: overlay is empty, so the antispoof filter would pass every forged mesh source: name the prefixes the mesh numbers its nodes from")
 	}
-	return schema.CheckPrefixes("egress: cap.border overlay", b.Overlay, func(prefix netip.Prefix) string {
+	if err := schema.CheckPrefixes("egress: overlay", b.Overlay, func(prefix netip.Prefix) string {
 		switch {
 		case prefix.Bits() == 0:
-			return "covers every address of its family, so the filter would drop everything arriving from outside the mesh"
+			return "covers every address of its family, so the antispoof filter would drop everything arriving from outside the mesh"
 		case schema.BelowSourceFloor(prefix):
 			return fmt.Sprintf("is shorter than /%d for IPv4 or /%d for IPv6, the unit IANA delegates to a regional registry, so it holds addresses the mesh does not number from", schema.MinSourceBits4, schema.MinSourceBits6)
 		}
 		return ""
-	})
+	}); err != nil {
+		return err
+	}
+	a := b.Antispoof
+	inside := func(prefix netip.Prefix) string {
+		if !schema.InsideOverlay(prefix, b.Overlay) {
+			return "lies outside overlay, and the filter drops only an overlay source, so it would exempt nothing"
+		}
+		return ""
+	}
+	if err := schema.CheckPrefixes("egress: cap.antispoof exempt", a.Exempt, inside); err != nil {
+		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(a.Interface)) {
+		key := fmt.Sprintf("cap.antispoof.interface.%q", name)
+		pattern := strings.TrimSuffix(name, "*")
+		switch {
+		case name == "*":
+			return fmt.Errorf("egress: %s names every interface, which is cap.antispoof exempt", key)
+		case pattern == "" || strings.Contains(pattern, "*"):
+			return fmt.Errorf("egress: %s is not an interface name, nor one followed by a single trailing *, the only wildcard", key)
+		// IFNAMSIZ less its terminator, on Linux and the BSDs alike
+		case len(pattern) > 15:
+			return fmt.Errorf("egress: %s is %d bytes before any *, and an interface name is at most 15", key, len(pattern))
+		case len(a.Interface[name].Exempt) == 0:
+			return fmt.Errorf("egress: %s exempts nothing: write its exempt, or leave the entry out", key)
+		}
+		if err := schema.CheckPrefixes("egress: "+key+" exempt", a.Interface[name].Exempt, inside); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // BorderRuntime holds what the command resolves at startup for the filter
@@ -60,12 +166,13 @@ type BorderRuntime struct {
 	// only as a reply, toward an IPv6 link-local or multicast destination, from
 	// a source this node owns or toward a destination a none class takes
 	Tun string
-	// Inside names the devices whose traffic the border chain takes whatever
+	// Inside names the devices whose traffic the antispoof chain takes whatever
 	// it carries: the mesh tun and lo
 	Inside []string
-	// Sets derives what the table's sets hold, on each pass. Nil holds them
-	// empty.
-	Sets func() BorderSets
+	// Sets derives what the table's sets hold, on each pass, from the
+	// configuration the pass runs, nil where overlay is not written. Nil holds
+	// them empty.
+	Sets func(cfg *Border) BorderSets
 	// Routes and Network wake a pass on a change of the mesh's table and of
 	// the host's links, nil for neither
 	Routes, Network <-chan struct{}
@@ -81,16 +188,35 @@ type CarveOut struct {
 	Prefix netip.Prefix
 }
 
+// ExemptConflict is an exemption and a prefix another node's, the mesh's
+// table routing it via a peer, that overlaps it: Carved is their
+// intersection, which the carved sets hold, Via the peer and RouterID the
+// selected route's origin, empty where the speaker selected none. The
+// exemption, the prefix and Carved are the drop, and Via and RouterID the
+// route a pass read for it.
+type ExemptConflict struct {
+	Exemption Exemption
+	Prefix    netip.Prefix
+	Carved    netip.Prefix
+	Via       string
+	RouterID  string
+}
+
 // BorderSets holds the carve-outs and the ranges of the table's sets, each of
 // either family
 type BorderSets struct {
-	// CarveOuts is each carve-out of cap.border's overlay, whose sources the
-	// border chain accepts from the carve-out's own link, sorted by link and
-	// then by prefix, each once
+	// CarveOuts is each carve-out of the overlay, whose sources the antispoof
+	// chain accepts from the carve-out's own link, sorted by link and then by
+	// prefix, each once
 	CarveOuts []CarveOut
-	// Carved is the mesh's prefixes inside a carve-out, whose sources the
-	// border chain drops from every link outside the mesh
+	// Carved is the sources the antispoof chain drops from every link outside
+	// the mesh ahead of the carve-outs' and the exemptions' accepts: the mesh's
+	// prefixes inside a carve-out, and of each exemption the part another node's
+	// prefix holds and this node's node addresses inside it
 	Carved []Range
+	// Conflicts is each exemption that another node's prefix overlaps, sorted
+	// and each once
+	Conflicts []ExemptConflict
 	// Owned is the sources this node owns, from which the entry chain lets a
 	// packet into the tun, one of the passes Tun lists
 	Owned []Range

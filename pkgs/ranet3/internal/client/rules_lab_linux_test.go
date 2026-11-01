@@ -25,7 +25,6 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/config"
-	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
@@ -85,7 +84,7 @@ var rulesHost = map[int]struct{ own, uplink, gateway, lan netip.Prefix }{
 	6: {netip.MustParsePrefix("3fff::1/128"), netip.MustParsePrefix("2001:db8:a::10/64"), netip.MustParsePrefix("2001:db8:a::1/64"), netip.MustParsePrefix("2001:db8:a::20/64")},
 }
 
-// rulesOverlay is the leaf's cap.border overlay
+// rulesOverlay is the leaf's overlay
 var rulesOverlay = []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}
 
 // rulesProbe is one socket's first packet to destination, and where it has to go, the socket carrying mark where it is not zero
@@ -389,7 +388,7 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 					}
 				})
 			}
-			if err := routes.SetTable(*cfg.Cap.Table, cfg.Overlay(), arm.announced); err != nil {
+			if err := routes.SetTable(*cfg.Cap.Table, cfg.Overlay, arm.announced); err != nil {
 				t.Fatalf("hand the reconciler the announcements %v: %v", arm.announced, err)
 			}
 			var held string
@@ -527,14 +526,14 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 	})
 }
 
-// rulesConfig is the reload fixture's node with the tun rulesTUN, a cap.table assigning the leaf's own addresses, and cap.border's overlay
+// rulesConfig is the reload fixture's node with the tun rulesTUN, a cap.table assigning the leaf's own addresses, and the overlay
 func rulesConfig(t *testing.T) *config.Config {
 	t.Helper()
 	fixture, _ := reloadFixture(t)
 	cfg := *fixture.config()
 	cfg.Link.TUN = rulesTUN
 	cfg.Cap.Table = &kernel.Table{ID: kernel.DefaultTable, Addresses: []schema.Prefix{schema.PrefixFrom(rulesHost[4].own), schema.PrefixFrom(rulesHost[6].own)}}
-	cfg.Cap.Border = &egress.Border{Overlay: rulesOverlay}
+	cfg.Overlay = rulesOverlay
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the leaf's configuration is refused: %v", err)
 	}

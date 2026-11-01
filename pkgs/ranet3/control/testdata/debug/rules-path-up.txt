@@ -30,8 +30,8 @@ Steered defaults in table 200, path up
   ipv4    0.0.0.0/0  installed
   ipv6    ::/0       installed
 
-Border filter, nftables table inet ranet3 chains border and mesh_entry, read 3 seconds ago, ready
-  chain border, prerouting at priority -300
+Antispoof filter, nftables table inet ranet3 chains antispoof and mesh_entry, read 3 seconds ago, ready
+  chain antispoof, prerouting at priority -300
     accept  via ranet3
     accept  via lo
     drop    ipv4 source @carved4  2 packets, 120 B

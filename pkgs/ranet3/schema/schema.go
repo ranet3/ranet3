@@ -223,7 +223,7 @@ func BelowSourceFloor(prefix netip.Prefix) bool {
 
 // CapturesTheMachine reports a prefix that, routed out of the tun, takes this
 // machine's own traffic rather than a prefix of it, given the overlay
-// cap.border names. Such a prefix counts as a default, and a node advertising
+// a configuration writes. Such a prefix counts as a default, and a node advertising
 // one is an exit for its family. Two arms.
 //
 //   - Outside the overlay and shorter than the family's floor, MinSubnetBits4
@@ -239,7 +239,7 @@ func BelowSourceFloor(prefix netip.Prefix) bool {
 //     to mesh addresses alone, however wide. On linux the policy rule at 5110
 //     looks the overlay up in the mesh's table, ahead of the reconciler's
 //     lookup of main at 5410, and routing.md's "Where a lookup ends on Linux"
-//     gives where such a lookup ends. The border filter reads the overlay as
+//     gives where such a lookup ends. The antispoof filter reads the overlay as
 //     the same union.
 //
 //   - Any prefix containing the family's unspecified address, however small,

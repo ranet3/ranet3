@@ -114,7 +114,7 @@ func (n *natTables) Missed() <-chan struct{} { return n.monitor.Missed() }
 var (
 	// translatorTables is the translator's ip and ip6 tables
 	translatorTables = nftables.Scope{Name: TableName, Families: []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6}}
-	// borderTables is the border filter's inet table, which shares the name
+	// borderTables is the antispoof filter's inet table, which shares the name
 	borderTables = nftables.Scope{Name: TableName, Families: []uint8{unix.NFPROTO_INET}}
 )
 

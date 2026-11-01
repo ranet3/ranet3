@@ -22,16 +22,17 @@ func TestSteerToCountingAsADefaultIsRefused(t *testing.T) {
 		}
 		switch format {
 		case "toml":
-			return ".toml", nodeTOML + "[cap.border]\noverlay = [\"192.0.2.0/24\", \"3fff::/20\"]\n[cap.segment]\nsource = \"3fff::2\"\nsteer = [{ " + selector + `, via = ["3fff:b:0:206::1"] }]` + "\n"
+			return ".toml", "overlay = [\"192.0.2.0/24\", \"3fff::/20\"]\n" + nodeTOML + "[cap.segment]\nsource = \"3fff::2\"\nsteer = [{ " + selector + `, via = ["3fff:b:0:206::1"] }]` + "\n"
 		case "yaml":
-			return ".yaml", nodeYAML + "cap:\n  border: {overlay: [192.0.2.0/24, 3fff::/20]}\n  segment:\n    source: 3fff::2\n    steer: [{" + selector + ", via: [3fff:b:0:206::1]}]\n"
+			return ".yaml", nodeYAML + "overlay: [192.0.2.0/24, 3fff::/20]\ncap:\n  segment:\n    source: 3fff::2\n    steer: [{" + selector + ", via: [3fff:b:0:206::1]}]\n"
 		}
 		return ".json", fmt.Sprintf(`{
   "node": "example/laptop",
   "auth": {"key": "key.pem", "trust": "trust.json"},
   "link": {"port": 13000, "endpoints": [{"serial": "0", "family": "ip4"}]},
   "dial": {"to": ["example/gateway"]},
-  "cap": {"border": {"overlay": ["192.0.2.0/24", "3fff::/20"]}, "segment": {"source": "3fff::2", "steer": [{%s, "via": ["3fff:b:0:206::1"]}]}}
+  "overlay": ["192.0.2.0/24", "3fff::/20"],
+  "cap": {"segment": {"source": "3fff::2", "steer": [{%s, "via": ["3fff:b:0:206::1"]}]}}
 }`, selector)
 	}
 	for _, format := range formats {

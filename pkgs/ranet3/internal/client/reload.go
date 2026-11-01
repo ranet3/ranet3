@@ -168,9 +168,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 		c.Mesh.SetSegments(tun.segments)
 	}
 	if !sameOverlay(old, cfg) {
-		c.Mesh.SetOverlay(cfg.Overlay())
-		// the pass reborder woke may have read its carve-outs from the overlay stored before, so the filter takes another reading this one
-		c.wakeBorder()
+		c.Mesh.SetOverlay(cfg.Overlay)
 	}
 	var tunErr error
 	switch {
@@ -192,7 +190,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	_, nodes := x.Size()
 	applied = changedCapabilities(old, cfg)
 	log.Printf("reloaded %s: %d peers, %d nodes in the trust document", path, len(peers), nodes)
-	warnUnbordered(cfg, forwardingEnabled)
+	warnUnbordered(forwardingEnabled)
 	warnCountedAdvertisements(cfg)
 	return nil
 }
@@ -211,7 +209,7 @@ func (c *Client) retable(old, next *config.Config) error {
 		switch {
 		case !sameTable(old, next):
 		case !sameOverlay(old, next):
-			moved = "cap.border overlay"
+			moved = "overlay"
 		case !sameExitMode(old, next):
 			moved = "cap.exit"
 		case !sameExitPath(old, next):
@@ -221,7 +219,7 @@ func (c *Client) retable(old, next *config.Config) error {
 		}
 		return fmt.Errorf("config: %s changed and no reconciler is running to take it, restart to apply", moved)
 	}
-	return (*set)(*next.ReconcilerTable(), next.Overlay(), next.Routes().Announced())
+	return (*set)(*next.ReconcilerTable(), next.Overlay, next.Routes().Announced())
 }
 
 // changedCapabilities names each capability a reload from old to next applied in place
@@ -243,7 +241,10 @@ func changedCapabilities(old, next *config.Config) []string {
 	is, _ := next.Crypto().Suites()
 	out = append(out, was.Changed(is)...)
 	if !sameOverlay(old, next) {
-		out = append(out, "cap.border")
+		out = append(out, "overlay")
+	}
+	if !sameAntispoof(old, next) {
+		out = append(out, "cap.antispoof")
 	}
 	if !reflect.DeepEqual(old.Routes(), next.Routes()) {
 		out = append(out, "cap.route")
@@ -277,7 +278,7 @@ type tunPlan struct {
 	from, to int
 }
 
-// planTUN builds what a reload from old to next changes on the tun, nothing where cap.segment, cap.border's overlay, cap.exit via's path and link.mtu stay
+// planTUN builds what a reload from old to next changes on the tun, nothing where cap.segment, the overlay, cap.exit via's path and link.mtu stay
 // a move of the device's MTU is refused on a platform that sets the MTU only at the open
 func (c *Client) planTUN(old, next *config.Config) (tunPlan, error) {
 	// the local table admits only an outer source in the overlay, so a moved overlay rebuilds it
@@ -426,30 +427,54 @@ func reloadable(old, next *config.Config) error {
 		return fmt.Errorf("config: cap.segment adds the first egress segment, restart to apply")
 	case len(old.Segments().Egress()) > 0 && len(next.Segments().Egress()) == 0:
 		return fmt.Errorf("config: cap.segment removes the last egress segment, restart to apply")
-	case old.Cap.Border == nil && next.Cap.Border != nil:
-		// the filter and its run goroutine are built once in main, as the translator is
-		return fmt.Errorf("config: cap.border added, restart to apply")
-	case old.Cap.Border != nil && next.Cap.Border == nil:
-		return fmt.Errorf("config: cap.border removed, restart to apply")
+	case old.Border() == nil && next.Border() != nil:
+		// the filter's chain and the readers of the overlay are built once in main, as the translator is
+		return fmt.Errorf("config: overlay added, restart to apply")
+	case old.Border() != nil && next.Border() == nil:
+		return fmt.Errorf("config: overlay removed, restart to apply")
 	}
 	return sameMeshSources(old, next)
 }
 
-// reborder hands the running border filter the overlay next carries, where it
-// moved. The loader ran every check SetConfig runs, so after retable it adds no
-// refusal a file can reach.
+// reborder hands the running antispoof filter the overlay, the exemptions and
+// this node's own prefixes next carries, where any of them moved, before
+// anything is stored, and the pass it wakes carves from them alone. The loader
+// ran every check SetConfig runs, so after retable it adds no refusal a file
+// can reach.
 func (c *Client) reborder(old, next *config.Config) error {
 	f := c.border.Load()
-	if f == nil || next.Cap.Border == nil || sameOverlay(old, next) {
+	if f == nil || next.Border() == nil || sameOverlay(old, next) && sameAntispoof(old, next) && sameOwnPrefixes(old, next) {
 		return nil
 	}
-	return (*f).SetConfig(*next.Cap.Border)
+	return (*f).SetConfig(*next.Border())
 }
 
-// sameOverlay compares cap.border's overlay as the filter runs it, in any order
+// sameAntispoof compares cap.antispoof's exemptions as the filter runs them, in any order
+func sameAntispoof(old, next *config.Config) bool {
+	exemptions := func(cfg *config.Config) []egress.Exemption {
+		if border := cfg.Border(); border != nil {
+			return border.Exemptions()
+		}
+		return nil
+	}
+	return slices.Equal(exemptions(old), exemptions(next))
+}
+
+// sameOwnPrefixes compares what the exemptions take as this node's own, the ranges cap.route announces and the node's addresses, in any order
+func sameOwnPrefixes(old, next *config.Config) bool {
+	sorted := func(cfg *config.Config) ([]netip.Prefix, []netip.Prefix) {
+		ranges, addresses := cfg.OwnPrefixes()
+		return slices.SortedFunc(slices.Values(ranges), netip.Prefix.Compare), slices.SortedFunc(slices.Values(addresses), netip.Prefix.Compare)
+	}
+	oldRanges, oldAddresses := sorted(old)
+	nextRanges, nextAddresses := sorted(next)
+	return slices.Equal(oldRanges, nextRanges) && slices.Equal(oldAddresses, nextAddresses)
+}
+
+// sameOverlay compares the overlay as the filter runs it, in any order
 func sameOverlay(old, next *config.Config) bool {
 	sorted := func(cfg *config.Config) []schema.Prefix {
-		return slices.SortedFunc(slices.Values(cfg.Overlay()), schema.ComparePrefix)
+		return slices.SortedFunc(slices.Values(cfg.Overlay), schema.ComparePrefix)
 	}
 	return slices.Equal(sorted(old), sorted(next))
 }
@@ -559,7 +584,7 @@ func sameExitMode(old, next *config.Config) bool {
 // alone beyond the addresses sameTable compares, so an announcement that counts
 // as no default moves nothing it holds.
 func sameExit(old, next *config.Config) bool {
-	return old.ExitReason(next.Overlay()).Is() == next.ExitReason(next.Overlay()).Is()
+	return old.ExitReason(next.Overlay).Is() == next.ExitReason(next.Overlay).Is()
 }
 
 // sortedEndpoints puts the local endpoints in one order, for the same reason

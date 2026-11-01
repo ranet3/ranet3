@@ -127,22 +127,23 @@ testers.runNixOSTest {
     # hands back for a diff to compare against, is checked here and nowhere
     # else short of the full exit node arm.
     out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged|RefillsAFlushedSet|HoldsTheEntryChainAloneWithNoBorder|OutlivesAKilledOwner)?$|^TestBorderPassSendsAOneLANChangeAsItsDelta$' 2>&1"
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged|RefillsAFlushedSet|HoldsTheEntryChainAloneWithNoBorder|TakesOverATableWithAStrayChain|OutlivesAKilledOwner)?$|^TestBorderPassSendsAOneLANChangeAsItsDelta$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the nftables round trips skipped themselves under root:\n{out}"
-    assert "--- PASS: TestBorderRoundTrip" in out, f"the border filter's round trip did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripPutsBackWhatAnotherWriterChanged" in out, f"the border's readback of another writer's change did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripRefillsAFlushedSet" in out, f"the border's flushed set did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder" in out, f"the entry chain with no border did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripOutlivesAKilledOwner" in out, f"the border's table outliving its owner did not run:\n{out}"
-    assert "--- PASS: TestBorderPassSendsAOneLANChangeAsItsDelta" in out, f"the border's delta of one LAN did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTrip" in out, f"the antispoof filter's round trip did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripPutsBackWhatAnotherWriterChanged" in out, f"the antispoof filter's readback of another writer's change did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripRefillsAFlushedSet" in out, f"the antispoof filter's flushed set did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder" in out, f"the entry chain with no overlay did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripTakesOverATableWithAStrayChain" in out, f"the start over a table with a stray chain did not run:\n{out}"
+    assert "--- PASS: TestBorderRoundTripOutlivesAKilledOwner" in out, f"the antispoof filter's table outliving its owner did not run:\n{out}"
+    assert "--- PASS: TestBorderPassSendsAOneLANChangeAsItsDelta" in out, f"the antispoof filter's delta of one LAN did not run:\n{out}"
     assert "--- PASS: TestNftablesRemakesATableHoldingAStaleTimeout" in out, f"the stale timeout's remake did not run:\n{out}"
     assert "--- PASS: TestNftablesKeepsTheSetsCountsAcrossARewrite" in out, f"the sets' counts across a rewrite did not run:\n{out}"
     assert "--- PASS: TestNftablesRemakesATableWhoseSetCountsAnotherLimit" in out, f"the remake of a set counting another limit did not run:\n{out}"
     assert "--- PASS: TestNftablesReportsTheNatChainsAtItsPriorityOrBelow" in out, f"the report of other nat chains did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 15, f"only {ran} nftables round trips ran:\n{out}"
+    assert ran >= 16, f"only {ran} nftables round trips ran:\n{out}"
 
     # the encoder's sets, their elements, the lookup, ct with a direction and the set messages of the monitor, each
     # acting on loopback's datagrams, and woken by another writer, and a set of ten thousand intervals filled in one batch
@@ -238,12 +239,17 @@ testers.runNixOSTest {
     # and a leaf in mode 3 between two exits, leaving by the one via names, refused while that one's segment is gone and by its uplink under fallback = "uplink",
     # and through a waypoint, refused while the exit behind it is gone
     # and the leaf's status counting the reads the path alone took apart from the totals
+    # and the antispoof filter's exemptions, each from the interfaces it names, and covering the overlay beside the carved drops
+    # and a gateway's site exempt on its own interface, its node address and another node's prefixes inside carved
     out = machine.succeed(
         "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the client's tun round trips skipped themselves under root:\n{out}"
-    assert "--- PASS: TestTUNBorderDropsAForgedSourceAtTheUplink" in out, f"the border's lab did not run:\n{out}"
+    assert "--- PASS: TestTUNBorderDropsAForgedSourceAtTheUplink" in out, f"the antispoof filter's lab did not run:\n{out}"
+    assert "--- PASS: TestTUNAntispoofExemptsFromTheInterfacesItNames" in out, f"the exemptions' lab did not run:\n{out}"
+    assert "--- PASS: TestTUNAntispoofExemptingTheOverlayKeepsTheCarvedDrops" in out, f"the lab of exemptions covering the overlay did not run:\n{out}"
+    assert "--- PASS: TestTUNAntispoofGatewayExemptsItsSiteAndNoOtherNode" in out, f"the gateway's lab did not run:\n{out}"
     assert "--- PASS: TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter" in out, f"the line's lab did not run:\n{out}"
     assert "--- PASS: TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID" in out, f"the line's lab with transit off did not run:\n{out}"
     assert "--- PASS: TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink" in out, f"the exit's lab did not run:\n{out}"
@@ -286,7 +292,7 @@ testers.runNixOSTest {
     assert "--- PASS: TestTUNKillSwitchHoldsInModeThree" in out, f"the kill switch's lab in mode 3 did not run:\n{out}"
     assert "--- PASS: TestTUNStatusCountsTheReadsThePathAloneTook" in out, f"the status's count of the path's reads did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 23, f"only {ran} of the client's tun round trips ran:\n{out}"
+    assert ran >= 26, f"only {ran} of the client's tun round trips ran:\n{out}"
 
     # every datagram sent with DF and the path mtu a refused one reports, against linux itself
     # and a family's socket fragmenting past the path only while a session of the family asks

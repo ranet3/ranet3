@@ -134,7 +134,7 @@ var lanRanges = []netip.Prefix{
 func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []Service, carveOuts []netip.Prefix) fallbackSets {
 	out := fallbackSets{tun: tun, forwarded: slices.Clone(v.forwarded)}
 	slices.Sort(out.forwarded)
-	inOverlay := Ranges(schemaPrefixes(overlay))
+	inOverlay := Ranges(SchemaPrefixes(overlay))
 	var lan []netip.Prefix
 	for _, links := range [][]Link{v.network.IPv4.Links, v.network.IPv6.Links} {
 		for _, link := range links {

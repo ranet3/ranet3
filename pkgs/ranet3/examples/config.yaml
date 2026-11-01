@@ -17,6 +17,12 @@
 # Who this node is, organization/name, a node the document auth.trust names.
 node: example/my-laptop
 
+# The prefixes the mesh numbers its nodes from. Written, they turn on the
+# antispoof filter, which cap.antispoof below only exempts from. Every local
+# segment, cap.exit and every cap.egress class that translates to none needs
+# it, and a segment acts only on an outer source in it.
+# overlay: ["3fff::/20", "203.0.113.0/24"]
+
 # This node's own key, a PKCS8 PEM Ed25519 file, and the document saying who
 # may join, which is a ranet registry.json today.
 auth:
@@ -127,5 +133,6 @@ cap:
   #   return: true
   #   flows_per_source: 4096
   #   sweep: 30s
-  # border:                       # every local segment and every cap.egress class that translates to none needs it, and a segment acts only on an outer source in overlay
-  #   overlay: ["3fff::/20", "203.0.113.0/24"]
+  # antispoof:                    # the filter runs wherever overlay is written, and this block only exempts prefixes inside it
+  #   exempt: ["203.0.113.128/25"]
+  #   interface: { eth1: { exempt: ["3fff:a::/48"] }, "wl*": { exempt: ["203.0.113.64/26"] } }

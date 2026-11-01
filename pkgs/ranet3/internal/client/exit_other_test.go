@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/internal/config"
-	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -20,7 +19,7 @@ import (
 func TestExitModeIsRefusedHereAtTheStartAndAtReload(t *testing.T) {
 	start := func(old *config.Config) {
 		old.Cap.Table = &kernel.Table{}
-		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}}
+		old.Overlay = []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}
 	}
 	cfg, privateKey, reg := runtimeFixture(t)
 	start(cfg)

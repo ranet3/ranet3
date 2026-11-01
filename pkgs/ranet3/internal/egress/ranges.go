@@ -9,7 +9,7 @@ import (
 )
 
 // Range is the addresses of one family from First through Last, both
-// included, the form the border filter's interval sets hold them in
+// included, the form the antispoof filter's interval sets hold them in
 type Range struct {
 	First, Last netip.Addr
 }

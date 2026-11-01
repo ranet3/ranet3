@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -16,8 +17,8 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// borderTable is the border filter's linux backend: the inet table of this
-// tool's name, holding the border chain at prerouting, the entry chain at
+// borderTable is the antispoof filter's linux backend: the inet table of
+// this tool's name, holding the antispoof chain at prerouting, the entry chain at
 // postrouting and their sets. An inet chain sees both families, so every rule
 // matching an address tests the family first (nftables.NFProto).
 type borderTable struct {
@@ -80,7 +81,22 @@ func readBorder(conn *nftables.Conn, rules []BorderRule, sets borderSets) (chain
 			return chainReadback{}, err
 		}
 	}
+	if out.fault == "" {
+		out.fault = strayChain(read.Chains)
+	}
 	return out, nil
+}
+
+// strayChain names a chain of chains, the table's, that the filter does not
+// write, which the readback above passes over since it reads the filter's
+// chains by name. A pass then makes the table again without it.
+func strayChain(chains []string) string {
+	for _, chain := range chains {
+		if chain != BorderChain && chain != EntryChain {
+			return fmt.Sprintf("its table holds the chain %s, which the filter does not write", chain)
+		}
+	}
+	return ""
 }
 
 // borderRulesFault names how either chain holds lines other than rules write,
@@ -105,7 +121,7 @@ func borderRulesFault(rules []BorderRule, held []nftables.Installed) (string, er
 	return "", nil
 }
 
-// prerouting is the border chain
+// prerouting is the antispoof chain
 var prerouting = nftables.Chain{Table: TableName, Name: BorderChain, Type: "filter", Hook: unix.NF_INET_PRE_ROUTING, Priority: rawPriority}
 
 // entry is the entry chain
@@ -145,16 +161,14 @@ func intervals(ranges []egress.Range) []nftables.Interval {
 }
 
 // Apply writes the table in one transaction, so no packet meets half a chain
-// or a set half filled. A remake of a table the host does not hold deletes
-// nothing, since deleting a table that is not there fails the batch.
-func (b *borderTable) Apply(rules []BorderRule, sets borderSets, remake bool) error {
-	if remake {
-		tables, err := nftables.Tables(b.conn, TableName)
-		if err != nil {
-			return err
-		}
-		_, remake = tables[unix.NFPROTO_INET]
+// or a set half filled. It deletes nothing where the host holds no table,
+// since deleting a table that is not there fails the batch.
+func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
+	tables, err := nftables.Tables(b.conn, TableName)
+	if err != nil {
+		return err
 	}
+	_, remake := tables[unix.NFPROTO_INET]
 	requests, err := borderBatch(rules, sets, remake)
 	if err != nil {
 		return err
@@ -268,6 +282,8 @@ func borderLine(rule BorderRule) (nftables.Line, error) {
 			expressions = slices.Concat(expressions, nftables.NFProto(proto), nftables.SourcePrefix(rule.Source))
 		}
 		expressions = append(expressions, accept)
+	case BorderExempt:
+		expressions = slices.Concat(interfaceMatch(rule.Device), nftables.NFProto(proto), nftables.SourcePrefix(rule.Source), [][]byte{accept})
 	case BorderCarved:
 		expressions = slices.Concat(nftables.NFProto(proto), [][]byte{nftables.SourceLoad(proto), nftables.Lookup(borderSet(rule.Set()), false)}, nftables.CountedDrop())
 	case BorderSource:
@@ -289,4 +305,17 @@ func borderLine(rule BorderRule) (nftables.Line, error) {
 		expressions = slices.Concat(nftables.NFProto(proto), nftables.CountedDrop())
 	}
 	return nftables.Line{Spec: rule.String(), Expressions: expressions}, nil
+}
+
+// interfaceMatch matches an exemption's interface: nothing for one that names
+// none, the bytes before the * for a name ending in one, as nft compiles
+// iifname "wl*", and the name over IFNAMSIZ for any other
+func interfaceMatch(name string) [][]byte {
+	if pattern, wildcard := strings.CutSuffix(name, "*"); wildcard {
+		return nftables.MetaCompareValue(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, []byte(pattern))
+	}
+	if name == "" {
+		return nil
+	}
+	return nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, name)
 }

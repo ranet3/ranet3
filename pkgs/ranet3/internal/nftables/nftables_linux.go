@@ -188,6 +188,9 @@ type Readback struct {
 	// place, so its owner deletes the table and makes it again in one
 	// transaction
 	Remake bool
+	// Chains is the name of each chain the table holds, as the dump finds
+	// them, those Contents names among them
+	Chains []string
 }
 
 // Read takes tables as Tables read them
@@ -221,6 +224,9 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 	for _, reply := range chains {
 		for _, chain := range c.Chains {
 			note(chain.Fault(reply))
+		}
+		if table, name, _, _, _ := DecodeChain(reply); len(c.Chains) > 0 && table == c.Chains[0].Table {
+			read.Chains = append(read.Chains, name)
 		}
 	}
 	if len(c.Sets) > 0 {

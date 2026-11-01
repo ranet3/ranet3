@@ -55,8 +55,13 @@ type Config struct {
 	Node identity.Identity `yaml:"node" json:"node" toml:"node"`
 	Auth Auth              `yaml:"auth" json:"auth" toml:"auth"`
 	Link Link              `yaml:"link" json:"link" toml:"link"`
-	Dial Dial              `yaml:"dial,omitempty" json:"dial,omitzero" toml:"dial,omitempty"`
-	Cap  Caps              `yaml:"cap,omitempty" json:"cap,omitzero" toml:"cap,omitempty"`
+	// Overlay is the prefixes the mesh numbers its nodes from, the same on every
+	// node: a packet arriving from outside the mesh with a source in one of them
+	// is forged, every local SID admits an outer source only inside them, and
+	// the antispoof filter runs wherever it is written
+	Overlay []schema.Prefix `yaml:"overlay,omitempty" json:"overlay,omitempty" toml:"overlay,omitempty"`
+	Dial    Dial            `yaml:"dial,omitempty" json:"dial,omitzero" toml:"dial,omitempty"`
+	Cap     Caps            `yaml:"cap,omitempty" json:"cap,omitzero" toml:"cap,omitempty"`
 }
 
 // LocalEndpoints is the identity of each link.endpoints entry, in order
@@ -170,7 +175,9 @@ type Dial struct {
 // Caps is everything this node does. Every member is a pointer and every one
 // is absent by default. Writing a block turns its capability on, so there is no
 // enabled field to forget, except cap.transit, which states its value with
-// enable and is off when left out or written with enable = false.
+// enable and is off when left out or written with enable = false, and
+// cap.antispoof, a protection that runs wherever overlay is written and whose
+// block only exempts.
 type Caps struct {
 	Route *babel.Routes `yaml:"route,omitempty" json:"route,omitempty" toml:"route,omitempty"`
 	// Transit holds enable so that a file written for every node of a fleet says on each which way it goes
@@ -180,8 +187,8 @@ type Caps struct {
 	Segment *srv6.Segments `yaml:"segment,omitempty" json:"segment,omitempty" toml:"segment,omitempty"`
 	Crypto  *ike.Crypto    `yaml:"crypto,omitempty" json:"crypto,omitempty" toml:"crypto,omitempty"`
 	Egress  *egress.Egress `yaml:"egress,omitempty" json:"egress,omitempty" toml:"egress,omitempty"`
-	// Border drops what arrives from outside the mesh carrying a mesh source
-	Border *egress.Border `yaml:"border,omitempty" json:"border,omitempty" toml:"border,omitempty"`
+	// Antispoof exempts prefixes of the overlay from the filter that drops what arrives from outside the mesh carrying a mesh source
+	Antispoof *egress.Antispoof `yaml:"antispoof,omitempty" json:"antispoof,omitempty" toml:"antispoof,omitempty"`
 	// Exit makes the mesh's default this host's default, which the reconciler of cap.table runs, see ReconcilerTable
 	Exit *kernel.ExitMode `yaml:"exit,omitempty" json:"exit,omitempty" toml:"exit,omitempty"`
 }
@@ -223,10 +230,10 @@ func (c *Config) Segments() srv6.Segments {
 }
 
 // SegmentTables is cap.segment's two tables as the dataplane runs them, every
-// local SID admitting only an outer source in cap.border's overlay, and the
+// local SID admitting only an outer source in the overlay, and the
 // steering table holding cap.exit via's path as its default
 func (c *Config) SegmentTables() (*srv6.LocalTable, *srv6.SteerTable, error) {
-	local, steering, err := c.Segments().Tables(c.Overlay())
+	local, steering, err := c.Segments().Tables(c.Overlay)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -240,8 +247,8 @@ func (c *Config) SegmentTables() (*srv6.LocalTable, *srv6.SteerTable, error) {
 
 // ExitPath is cap.exit via as the dataplane steers along it, nil in modes off
 // and 2, with the outer source it is sent from: cap.segment source where
-// written, else the first IPv6 address cap.table writes inside cap.border
-// overlay, and invalid where neither gives one
+// written, else the first IPv6 address cap.table writes inside the overlay,
+// and invalid where neither gives one
 func (c *Config) ExitPath() (netip.Addr, []netip.Addr) {
 	if c.Cap.Exit == nil || len(c.Cap.Exit.Via) == 0 {
 		return netip.Addr{}, nil
@@ -263,9 +270,9 @@ func (c *Config) ExitPath() (netip.Addr, []netip.Addr) {
 	return netip.Addr{}, path
 }
 
-// inOverlay reports an address inside cap.border overlay
+// inOverlay reports an address inside the overlay
 func (c *Config) inOverlay(address netip.Addr) bool {
-	return slices.ContainsFunc(c.Overlay(), func(prefix schema.Prefix) bool { return prefix.Contains(address) })
+	return slices.ContainsFunc(c.Overlay, func(prefix schema.Prefix) bool { return prefix.Contains(address) })
 }
 
 // ExitReason names why this node is an exit under overlay, as the reconciler,
@@ -286,12 +293,43 @@ func (c *Config) Advertised() []netip.Prefix {
 	return out
 }
 
-// Overlay is cap.border's overlay as written, nil without the block
-func (c *Config) Overlay() []schema.Prefix {
-	if c.Cap.Border == nil {
+// Border is the antispoof filter's configuration, overlay with cap.antispoof's
+// exemptions and what OwnPrefixes gives, nil where overlay is not written. An
+// overlay written empty is one the filter refuses, so it is handed on to be
+// refused.
+func (c *Config) Border() *egress.Border {
+	if c.Overlay == nil {
 		return nil
 	}
-	return c.Cap.Border.Overlay
+	border := egress.Border{Overlay: c.Overlay}
+	if c.Cap.Antispoof != nil {
+		border.Antispoof = *c.Cap.Antispoof
+	}
+	border.Own, border.Addresses = c.OwnPrefixes()
+	return &border
+}
+
+// OwnPrefixes gives the prefixes an exemption takes as this node's own: ranges, each
+// prefix cap.route announces inside the overlay that is not one address, which
+// an exemption inside admits, and addresses, each address of this node's as a
+// host prefix, a host prefix cap.route announces or an address cap.table
+// assigns, which the filter drops inside any exemption
+func (c *Config) OwnPrefixes() (ranges, addresses []netip.Prefix) {
+	announced := c.Routes().Announced()
+	for _, prefix := range announced {
+		switch prefix = prefix.Masked(); {
+		case prefix.IsSingleIP():
+			addresses = append(addresses, prefix)
+		case schema.InsideOverlay(prefix, c.Overlay):
+			ranges = append(ranges, prefix)
+		}
+	}
+	if c.Cap.Table != nil {
+		for _, prefix := range c.Cap.Table.Assigned(announced) {
+			addresses = append(addresses, netip.PrefixFrom(prefix.Addr(), prefix.Addr().BitLen()))
+		}
+	}
+	return ranges, addresses
 }
 
 func (c *Config) Crypto() ike.Crypto {
@@ -358,6 +396,9 @@ func decodeTOML(body []byte, c *Config) error {
 			return errRouteTransit
 		}
 	}
+	if _, ok := capabilities["border"]; ok {
+		return errBorder
+	}
 	metadata, err := toml.Decode(string(body), c)
 	if err != nil {
 		return err
@@ -374,6 +415,9 @@ func decodeTOML(body []byte, c *Config) error {
 
 // errRouteTransit refuses cap.route transit by the block that holds the setting, where the strict decode would only call the key unknown
 var errRouteTransit = errors.New("cap.route transit is refused, transit is the block cap.transit with enable = true or false")
+
+// errBorder refuses cap.border by the keys that hold what it held, where the strict decode would only call it unknown
+var errBorder = errors.New("cap.border is refused: the prefixes the mesh numbers its nodes from are the top-level key overlay, and the filter is cap.antispoof, which runs wherever overlay is written and whose block only exempts")
 
 // keyLine is the line a yaml document writes the key at path on, or 0 where it writes none or does not parse, which the strict decode then names
 // keys are read as the decoder reads them, through an alias and from a !!binary spelling
@@ -512,6 +556,9 @@ func decodesItselfTOML(t reflect.Type) bool {
 func decodeYAML(body []byte, c *Config) error {
 	if line := keyLine(body, "cap", "route", "transit"); line != 0 {
 		return fmt.Errorf("line %d: %w", line, errRouteTransit)
+	}
+	if line := keyLine(body, "cap", "border"); line != 0 {
+		return fmt.Errorf("line %d: %w", line, errBorder)
 	}
 	decoder := yaml.NewDecoder(strings.NewReader(string(body)))
 	decoder.KnownFields(true)
@@ -939,45 +986,59 @@ func (c *Config) validateEgressSegments(segments []srv6.Segment) error {
 	return nil
 }
 
-// validateBorder asks cap.border to check itself where it was written, as
-// Validate asks cap.egress, then refuses what the filter and the local
-// segments cannot both mean: a segment no filter guards and no overlay
-// bounds, a none class with no overlay to keep its hosts' addresses in the
-// entry chain's sets, an overlay admitting no outer source, which is always IPv6, an
-// allow entry outside the overlay, which admits an inner source alone, with no
-// IPv6 entry inside it to admit the outer source, and an advertised
-// prefix whose own hosts the filter would drop. The exit default overlaps
-// everything and is left out, since nothing behind an exit is numbered from
-// the mesh.
+// validateBorder asks the antispoof filter's configuration to check itself
+// where overlay is written, then refuses what the overlay, the filter and the
+// local segments cannot both mean: an exemption with no overlay to exempt
+// from or a block exempting nothing, a shared exemption overlapping a range
+// inside the overlay that cap.route announces, which would pass the sources
+// of the hosts behind this node from the uplink too, a segment no overlay
+// bounds, a none class
+// with no overlay to keep its hosts' addresses in the entry chain's sets, an
+// overlay admitting no outer source, which is always IPv6, an allow entry
+// outside the overlay, which admits an inner source alone, with no IPv6 entry
+// inside it to admit the outer source, and an advertised prefix whose own
+// hosts the filter would drop. The exit default overlaps everything and is
+// left out, since nothing behind an exit is numbered from the mesh.
 func (c *Config) validateBorder() error {
 	local := c.Segments().Local
-	border := c.Cap.Border
+	border := c.Border()
 	if border == nil {
+		if c.Cap.Antispoof != nil {
+			return errors.New("config: cap.antispoof is written and overlay is absent, so no filter runs for it to exempt from: write overlay with the prefixes the mesh numbers its nodes from")
+		}
 		if len(local) != 0 {
-			return fmt.Errorf("config: cap.segment local %s is written and cap.border is absent, so nothing bounds the outer sources it acts on and a forged mesh source reaches it through this node's own links: add cap.border", local[0].SID)
+			return fmt.Errorf("config: cap.segment local %s is written and overlay is absent, so nothing bounds the outer sources it acts on: write overlay with the prefixes the mesh numbers its nodes from", local[0].SID)
 		}
 		// a learned route reads the same for a node's own address as for a LAN it advertises, so only the overlay tells them apart
 		if c.Cap.Egress != nil {
 			for _, class := range c.Cap.Egress.Translate {
 				if class.To.None {
-					return fmt.Errorf("config: cap.egress translate class %s is none and cap.border is absent, so the entry chain cannot tell the mesh's node addresses from the LANs other nodes advertise, and would refuse every inbound connection to that class's hosts: add cap.border with the prefixes the mesh numbers its nodes from", class.From)
+					return fmt.Errorf("config: cap.egress translate class %s is none and overlay is absent, so the entry chain cannot tell the mesh's node addresses from the LANs other nodes advertise, and would refuse every inbound connection to that class's hosts: write overlay with the prefixes the mesh numbers its nodes from", class.From)
 				}
 			}
 		}
 		return nil
 	}
+	if a := c.Cap.Antispoof; a != nil && len(a.Exempt) == 0 && len(a.Interface) == 0 {
+		return errors.New("config: cap.antispoof exempts nothing, and the filter runs wherever overlay is written: write exempt or cap.antispoof.interface, or leave the block out")
+	}
 	if err := border.Validate(); err != nil {
 		return err
 	}
+	for _, exempt := range border.Antispoof.Exempt {
+		if at := slices.IndexFunc(border.Own, exempt.Overlaps); at >= 0 {
+			return fmt.Errorf("config: cap.antispoof exempt %s overlaps %s, which cap.route announces, and the shared list passes its sources from every interface outside the mesh, the uplink among them: write it under cap.antispoof.interface.<name>.exempt for the interface its hosts are on", exempt, border.Own[at])
+		}
+	}
 	if len(local) != 0 && !slices.ContainsFunc(border.Overlay, func(prefix schema.Prefix) bool { return prefix.Addr().Is6() }) {
-		return fmt.Errorf("config: cap.border overlay holds no IPv6 prefix, so cap.segment local %s would refuse every packet, whose outer source is always IPv6", local[0].SID)
+		return fmt.Errorf("config: overlay holds no IPv6 prefix, so cap.segment local %s would refuse every packet, whose outer source is always IPv6", local[0].SID)
 	}
 	for _, segment := range c.Segments().Egress() {
 		inside := func(allowed schema.Prefix) bool { return schema.InsideOverlay(allowed.Prefix, border.Overlay) }
 		outside := slices.IndexFunc(segment.Allow, func(allowed schema.Prefix) bool { return !inside(allowed) })
 		ipv6Inside := slices.ContainsFunc(segment.Allow, func(allowed schema.Prefix) bool { return allowed.Addr().Is6() && inside(allowed) })
 		if outside >= 0 && !ipv6Inside {
-			return fmt.Errorf("config: cap.segment local %s allow %s lies outside cap.border overlay, which admits it as an inner source alone, and no IPv6 entry of the list lies inside the overlay to admit an outer source, which is always IPv6", segment.SID, segment.Allow[outside])
+			return fmt.Errorf("config: cap.segment local %s allow %s lies outside overlay, which admits it as an inner source alone, and no IPv6 entry of the list lies inside the overlay to admit an outer source, which is always IPv6", segment.SID, segment.Allow[outside])
 		}
 	}
 	if c.Cap.Egress == nil {
@@ -989,7 +1050,7 @@ func (c *Config) validateBorder() error {
 		}
 		for _, overlay := range border.Overlay {
 			if advertised.Overlaps(overlay.Prefix) {
-				return fmt.Errorf("config: cap.egress advertise %s overlaps cap.border overlay %s, so the hosts behind this node arrive on a link outside the mesh with a mesh source and the filter drops them", advertised, overlay)
+				return fmt.Errorf("config: cap.egress advertise %s overlaps overlay %s, so the hosts behind this node arrive on a link outside the mesh with a mesh source and the antispoof filter drops them", advertised, overlay)
 			}
 		}
 	}
@@ -1005,11 +1066,11 @@ func (c *Config) validateExit() error {
 	if c.Cap.Exit == nil {
 		return nil
 	}
-	switch exit := c.ExitReason(c.Overlay()); {
+	switch exit := c.ExitReason(c.Overlay); {
 	case c.Cap.Table == nil:
 		return errors.New("config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of: add cap.table")
-	case c.Cap.Border == nil:
-		return errors.New("config: cap.exit is written and cap.border is absent, so the mode's rules cannot keep the overlay's sources off the uplink: add cap.border with the prefixes the mesh numbers its nodes from")
+	case len(c.Overlay) == 0:
+		return errors.New("config: cap.exit is written and overlay is absent, so the mode's rules cannot keep the overlay's sources off the uplink: write overlay with the prefixes the mesh numbers its nodes from")
 	case exit.Advertised.IsValid():
 		return exitRefused(fmt.Sprintf("cap.egress advertises %s", exit.Advertised))
 	case exit.Announced.IsValid():
@@ -1017,10 +1078,10 @@ func (c *Config) validateExit() error {
 	case exit.EgressSegment:
 		return exitRefused(fmt.Sprintf("cap.segment local %s delivers to egress", c.Segments().Egress()[0].SID))
 	}
-	overlay := c.Overlay()
+	overlay := c.Overlay
 	if err := schema.CheckPrefixes("config: cap.exit lan", c.Cap.Exit.LAN, func(prefix netip.Prefix) string {
 		if at := slices.IndexFunc(overlay, func(entry schema.Prefix) bool { return entry.Overlaps(prefix) }); at >= 0 {
-			return fmt.Sprintf("overlaps cap.border overlay %s, whose destinations the mesh carries whatever the LAN holds", overlay[at])
+			return fmt.Sprintf("overlaps overlay %s, whose destinations the mesh carries whatever the LAN holds", overlay[at])
 		}
 		if schema.CapturesTheMachine(prefix, overlay) {
 			return "counts as capturing the machine, so it would let the host's traffic leave by the uplink as a default does"
@@ -1040,8 +1101,8 @@ func (c *Config) validateVia() error {
 	if len(via) == 0 {
 		return nil
 	}
-	if !slices.ContainsFunc(c.Overlay(), func(prefix schema.Prefix) bool { return prefix.Addr().Is6() }) {
-		return errors.New("config: cap.exit via is written and cap.border overlay holds no IPv6 prefix, so every segment refuses the path's outer source, which is always IPv6")
+	if !slices.ContainsFunc(c.Overlay, func(prefix schema.Prefix) bool { return prefix.Addr().Is6() }) {
+		return errors.New("config: cap.exit via is written and overlay holds no IPv6 prefix, so every segment refuses the path's outer source, which is always IPv6")
 	}
 	// the mesh routes no packet of this node's to its own first segment, and its own last one would make it an exit
 	for _, segment := range c.Segments().Local {
@@ -1051,9 +1112,9 @@ func (c *Config) validateVia() error {
 	}
 	switch source, _ := c.ExitPath(); {
 	case !source.IsValid():
-		return errors.New("config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside cap.border overlay gives the path an outer source: write cap.segment source")
+		return errors.New("config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside overlay gives the path an outer source: write cap.segment source")
 	case !c.inOverlay(source):
-		return fmt.Errorf("config: cap.segment source %s lies outside cap.border overlay, so every segment of cap.exit via refuses the path's packets by their outer source", source)
+		return fmt.Errorf("config: cap.segment source %s lies outside overlay, so every segment of cap.exit via refuses the path's packets by their outer source", source)
 	}
 	return nil
 }
@@ -1063,11 +1124,11 @@ func exitRefused(because string) error {
 }
 
 // validateSteerTo refuses a cap.segment steer whose to counts as a default
-// under cap.border's overlay, the one predicate every other reader of a
+// under the overlay, the one predicate every other reader of a
 // default uses: steering the internet is cap.exit via's
 func (c *Config) validateSteerTo() error {
 	for _, entry := range c.Segments().Steer {
-		if entry.To.IsValid() && schema.CapturesTheMachine(entry.To.Prefix, c.Overlay()) {
+		if entry.To.IsValid() && schema.CapturesTheMachine(entry.To.Prefix, c.Overlay) {
 			return fmt.Errorf("config: cap.segment steer to %s counts as a default, which is cap.exit via: write the path there", entry.To)
 		}
 	}

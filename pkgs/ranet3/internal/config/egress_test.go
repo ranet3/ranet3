@@ -22,16 +22,12 @@ behavior = "End.DT46"
 deliver = "egress"
 allow = ["203.0.113.0/24", "3fff:a::/36"]
 `
-	egressBorderTOML = `
-[cap.border]
-overlay = ["203.0.113.0/24", "3fff:a::/36"]
-`
-	egressExitTOML = "\n[cap.egress]\n" + egressBorderTOML + egressSegmentTOML
+	overlayTOML    = "overlay = [\"203.0.113.0/24\", \"3fff:a::/36\"]\n"
+	egressExitTOML = "\n[cap.egress]\n" + egressSegmentTOML
 	egressExitYAML = `
+overlay: [203.0.113.0/24, 3fff:a::/36]
 cap:
   egress: {}
-  border:
-    overlay: [203.0.113.0/24, 3fff:a::/36]
   segment:
     local:
       - sid: 3fff:b:0:306::3
@@ -44,9 +40,9 @@ cap:
   "auth": {"key": "key.pem", "trust": "trust.json"},
   "link": {"port": 13000, "endpoints": [{"serial": "0", "family": "ip4"}]},
   "dial": {"to": ["example/gateway"]},
+  "overlay": ["203.0.113.0/24", "3fff:a::/36"],
   "cap": {
     "egress": {},
-    "border": {"overlay": ["203.0.113.0/24", "3fff:a::/36"]},
     "segment": {"local": [{"sid": "3fff:b:0:306::3", "behavior": "End.DT46", "deliver": "egress", "allow": ["203.0.113.0/24", "3fff:a::/36"]}]}
   }
 }`
@@ -55,7 +51,7 @@ cap:
 // egressExits is the exit in each format, by its file's extension
 func egressExits() map[string]struct{ extension, text string } {
 	return map[string]struct{ extension, text string }{
-		"toml": {".toml", nodeTOML + egressExitTOML},
+		"toml": {".toml", overlayTOML + nodeTOML + egressExitTOML},
 		"yaml": {".yaml", nodeYAML + egressExitYAML},
 		"json": {".json", egressExitJSON},
 	}
@@ -87,11 +83,11 @@ func TestEgressSegmentReadsAlikeInEveryFormat(t *testing.T) {
 			}
 		})
 	}
-	written, err := loadTOML(t, nodeTOML+egressBorderTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\ndeliver = \"mesh\"\n")
+	written, err := loadTOML(t, overlayTOML+nodeTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\ndeliver = \"mesh\"\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	omitted, err := loadTOML(t, nodeTOML+egressBorderTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\n")
+	omitted, err := loadTOML(t, overlayTOML+nodeTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +101,7 @@ func TestEgressSegmentReadsAlikeInEveryFormat(t *testing.T) {
 func TestEgressSegmentIsRefusedWithoutWhatCarriesIt(t *testing.T) {
 	exits := egressExits()
 	withoutEgress := map[string]string{
-		"toml": nodeTOML + egressBorderTOML + egressSegmentTOML,
+		"toml": overlayTOML + nodeTOML + egressSegmentTOML,
 		"yaml": strings.Replace(exits["yaml"].text, "  egress: {}\n", "", 1),
 		"json": strings.Replace(exits["json"].text, `"egress": {},`, "", 1),
 	}
@@ -147,8 +143,8 @@ func TestEgressSegmentIsRefusedWithoutWhatCarriesIt(t *testing.T) {
 			t.Errorf("%s was refused: %v", name, err)
 		}
 	}
-	// a segment that delivers to the mesh asks for none of it but cap.border
-	if _, err := loadTOML(t, nodeTOML+egressBorderTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\n"); err != nil {
+	// a segment that delivers to the mesh asks for none of it but overlay
+	if _, err := loadTOML(t, overlayTOML+nodeTOML+"[[cap.segment.local]]\nsid = \"2001:db8::1\"\nbehavior = \"End.DT46\"\n"); err != nil {
 		t.Errorf("a segment delivering to the mesh was refused: %v", err)
 	}
 }

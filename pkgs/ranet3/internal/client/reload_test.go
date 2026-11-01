@@ -182,16 +182,16 @@ func TestReloadHandsAChangedTableToTheReconciler(t *testing.T) {
 	}
 }
 
-// a reload moving cap.border's overlay alone hands the reconciler the table it runs with the new overlay, which decides what counts as a default
+// a reload moving the overlay alone hands the reconciler the table it runs with the new overlay, which decides what counts as a default
 func TestReloadHandsTheReconcilerAMovedOverlay(t *testing.T) {
 	c, path, reconciler, _ := reloadOf(t, func(old *config.Config) {
 		old.Cap.Table = &kernel.Table{}
-		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}}
+		old.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20")}
 	})
 	segmentsOf(t, c)
 	next := *c.config()
 	moved := []schema.Prefix{schema.MustPrefix("3ff0::/12")}
-	next.Cap.Border = &egress.Border{Overlay: moved}
+	next.Overlay = moved
 	writeConfig(t, path, &next)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("the reload was refused: %v", err)
@@ -220,7 +220,7 @@ func TestCountedAdvertisementIsWarnedOf(t *testing.T) {
 		} {
 			t.Run(key+" "+prefix, func(t *testing.T) {
 				cfg := &config.Config{}
-				cfg.Cap.Border = &egress.Border{Overlay: overlay}
+				cfg.Overlay = overlay
 				if key == "cap.route" {
 					cfg.Cap.Route = &babel.Routes{Announce: announce(prefix)}
 				} else {
@@ -292,10 +292,10 @@ func TestReloadLogsAnAdvertisementThatCountsAsADefault(t *testing.T) {
 	}
 }
 
-// the reconciler a node starts is handed cap.border's overlay, which decides what counts as a default
+// the reconciler a node starts is handed the overlay, which decides what counts as a default
 func TestKernelRuntimeCarriesTheOverlay(t *testing.T) {
 	overlay := []schema.Prefix{schema.MustPrefix("3fff::/20")}
-	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { cfg.Cap.Border = &egress.Border{Overlay: overlay} })
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { cfg.Overlay = overlay })
 	c.Mesh = netstack.NewRoutesOnly()
 	if got := c.KernelRuntime().Overlay; !slices.Equal(got, overlay) {
 		t.Errorf("the reconciler's runtime carries the overlay %v, want %v", got, overlay)
@@ -323,22 +323,22 @@ func TestKernelRuntimeCarriesTheEgressLANsAndTheEgressSegment(t *testing.T) {
 	}
 }
 
-// a node with cap.border and no cap.table runs no reconciler, and a reload moving its overlay alone applies with nothing to hand over
+// a node with overlay and no cap.table runs no reconciler, and a reload moving its overlay alone applies with nothing to hand over
 func TestReloadMovesTheOverlayOfANodeWithNoTable(t *testing.T) {
 	c, path, reconciler, _ := reloadOf(t, func(old *config.Config) {
 		old.Cap.Table = nil
-		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}}
+		old.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20")}
 	})
 	segmentsOf(t, c)
 	c.reconcilerTable.Store(nil)
 	next := *c.config()
 	moved := []schema.Prefix{schema.MustPrefix("3ff0::/12")}
-	next.Cap.Border = &egress.Border{Overlay: moved}
+	next.Overlay = moved
 	writeConfig(t, path, &next)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a moved overlay on a node without cap.table was refused: %v", err)
 	}
-	if got := c.config().Overlay(); !slices.Equal(got, moved) {
+	if got := c.config().Overlay; !slices.Equal(got, moved) {
 		t.Errorf("the node runs the overlay %v, want %v", got, moved)
 	}
 	if len(reconciler.tables) != 0 {
@@ -350,15 +350,15 @@ func TestReloadMovesTheOverlayOfANodeWithNoTable(t *testing.T) {
 func TestReloadMovingTheOverlayBeforeTheReconcilerIsHandedOverNamesIt(t *testing.T) {
 	c, path, _, _ := reloadOf(t, func(old *config.Config) {
 		old.Cap.Table = &kernel.Table{}
-		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}}
+		old.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20")}
 	})
 	segmentsOf(t, c)
 	c.reconcilerTable.Store(nil)
 	next := *c.config()
-	next.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3ff0::/12")}}
+	next.Overlay = []schema.Prefix{schema.MustPrefix("3ff0::/12")}
 	writeConfig(t, path, &next)
 	err := c.ReloadFrom(path)
-	if err == nil || !strings.Contains(err.Error(), "cap.border overlay changed and no reconciler is running") {
+	if err == nil || !strings.Contains(err.Error(), "config: overlay changed and no reconciler is running") {
 		t.Errorf("the reload was refused with %v, want it to name the overlay", err)
 	}
 }
@@ -367,7 +367,7 @@ func TestReloadMovingTheOverlayBeforeTheReconcilerIsHandedOverNamesIt(t *testing
 func TestReloadMovingTheTableBeforeTheReconcilerIsHandedOverNamesIt(t *testing.T) {
 	c, path, _, _ := reloadOf(t, func(old *config.Config) {
 		old.Cap.Table = &kernel.Table{}
-		old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20")}}
+		old.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20")}
 	})
 	segmentsOf(t, c)
 	c.reconcilerTable.Store(nil)
@@ -588,7 +588,7 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 		old.Cap.Segment = steering("3fff:b:0:206::1")
 		old.Cap.Table = &kernel.Table{}
 		// the overlay the segment the reload adds needs
-		old.Cap.Border = borderOf("3fff::/20")
+		old.Overlay = overlayOf("3fff::/20")
 	})
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
@@ -789,7 +789,7 @@ func TestReloadInstallsTheSegmentTablesItBuilds(t *testing.T) {
 	c, path, _, bus := reloadOf(t, func(old *config.Config) {
 		old.Cap.Segment = steering("3fff:b:0:206::1")
 		// the overlay the segment the reload adds needs
-		old.Cap.Border = borderOf("3fff::/20")
+		old.Overlay = overlayOf("3fff::/20")
 	})
 	segmentsOf(t, c)
 	c.Mesh.SetSteeringEnabled(false)

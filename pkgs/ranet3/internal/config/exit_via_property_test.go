@@ -14,7 +14,6 @@ import (
 	"hegel.dev/go/hegel"
 
 	"ranet3.com/pkgs/ranet3/identity"
-	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -102,14 +101,14 @@ func TestExitViaPolicyIsThePathFromTheModelsSource(t *testing.T) {
 		source := sources[hegel.Draw(ht, pbt.Spanning(0, len(sources)-1))]
 
 		cfg := Config{
-			Node: identity.MustParse("example/laptop"),
-			Auth: Auth{Key: "key.pem", Trust: "trust.json"},
-			Link: Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}}},
-			Dial: Dial{To: []identity.Identity{identity.MustParse("example/gateway")}},
+			Node:    identity.MustParse("example/laptop"),
+			Auth:    Auth{Key: "key.pem", Trust: "trust.json"},
+			Link:    Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip4"}}},
+			Dial:    Dial{To: []identity.Identity{identity.MustParse("example/gateway")}},
+			Overlay: border,
 			Cap: Caps{
-				Table:  &kernel.Table{Addresses: written},
-				Border: &egress.Border{Overlay: border},
-				Exit:   &kernel.ExitMode{Via: path},
+				Table: &kernel.Table{Addresses: written},
+				Exit:  &kernel.ExitMode{Via: path},
 			},
 		}
 		var written6 netip.Addr

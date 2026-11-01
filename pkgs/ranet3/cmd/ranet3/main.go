@@ -202,10 +202,10 @@ func runDaemon(opts options) int {
 	// the tun, and goes only once the reconciler has withdrawn those routes and
 	// the mesh has closed, so nothing forwards into the mesh while it is gone.
 	// down leaves it running, since the kernel still forwards and the host's
-	// services still trust mesh sources. A platform with no entry chain builds
-	// no filter where cap.border is not written.
+	// services still trust mesh sources. A platform with no backend for it
+	// builds no filter.
 	stopBorder := func() {}
-	border, err := kernelexit.NewBorderFilter(cfg.Cap.Border, node.BorderRuntime())
+	border, err := kernelexit.NewBorderFilter(cfg.Border(), node.BorderRuntime())
 	if err != nil {
 		return refuseToStart(err)
 	}
@@ -218,7 +218,7 @@ func runDaemon(opts options) int {
 			// the error is the withdrawal failing, which leaves the table in
 			// the host's ruleset and is no clean exit
 			if err := border.Run(borderCtx); err != nil {
-				log.Printf("border: %v", err)
+				log.Printf("antispoof: %v", err)
 				failed.Store(true)
 			}
 		}()
@@ -228,7 +228,7 @@ func runDaemon(opts options) int {
 		})
 		// a refusal later in the start withdraws the table on the way out
 		defer stopBorder()
-		log.Printf("border filter in %s, inside %s", border.Where(), strings.Join(border.Inside(), " "))
+		log.Printf("antispoof filter in %s, inside %s", border.Where(), strings.Join(border.Inside(), " "))
 	}
 
 	// A separate listener from pprof: a fleet node wants metrics scraped
@@ -437,7 +437,7 @@ func runDaemon(opts options) int {
 
 // stopInOrder ends a daemon whose mesh has stopped: it cancels the reconciler
 // and the translator, waits for both to withdraw, and only then withdraws the
-// border, so no route into the tun outlives the filter
+// antispoof filter, so no route into the tun outlives it
 func stopInOrder(cancel context.CancelFunc, wait, stopBorder func()) {
 	cancel()
 	wait()

@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-// Package egress holds the cap.egress and cap.border capabilities as a file
+// Package egress holds the cap.egress and cap.antispoof capabilities as a file
 // writes them and the node validates them, the Exit every backend carrying
-// cap.egress sits behind, and the reports the node reads from the border
+// cap.egress sits behind, and the reports the node reads from the antispoof
 // filter. cap.egress is the one action behind an exit node and a subnet
 // router: an exit advertises a default and a subnet router the prefixes behind
 // it, and both end at the same translation. Nothing here makes a system call

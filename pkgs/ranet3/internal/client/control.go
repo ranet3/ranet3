@@ -5,7 +5,7 @@ package client
 
 import (
 	"encoding/hex"
-	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +13,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/version"
@@ -42,7 +43,7 @@ func (c *Client) SetFallbackResolvers(ask func() []kernel.LinkResolver) {
 }
 
 // Forwarding reports whether this host forwards, per family
-// it is exported so the egress capability withholds an advertisement over the answer status and cap.border's warning read
+// it is exported so the egress capability withholds an advertisement over the answer status and the antispoof warning read
 func Forwarding() (v4, v6 bool) { return forwardingEnabled() }
 
 func (c *Client) Status() control.Status {
@@ -287,19 +288,29 @@ func egressStatus(status egress.Status) control.EgressStatus {
 	return out
 }
 
-// borderStatus reports the border filter, and nil on a node that runs none
+// unenforcedOn names this platform where overlay is written and it runs no
+// antispoof filter, empty wherever one runs or no overlay is written
+func (c *Client) unenforcedOn() string {
+	if kernelexit.EntryRuns || c.config().Border() == nil {
+		return ""
+	}
+	return runtime.GOOS
+}
+
+// borderStatus reports the antispoof filter, that it is not enforced on a
+// platform that runs none where overlay is written, and nil on any other node
+// that runs none
 func (c *Client) borderStatus() *control.BorderStatus {
 	f := c.border.Load()
 	if f == nil {
+		if on := c.unenforcedOn(); on != "" {
+			return &control.BorderStatus{UnenforcedOn: on, Overlay: kernel.SchemaPrefixes(c.config().Overlay)}
+		}
 		return nil
 	}
 	border := *f
 	stats := border.Stats()
-	overlay := border.Capability().Normalized().Overlay
-	prefixes := make([]netip.Prefix, 0, len(overlay))
-	for _, entry := range overlay {
-		prefixes = append(prefixes, entry.Prefix)
-	}
+	prefixes := kernel.SchemaPrefixes(border.Capability().Normalized().Overlay)
 	var carved []control.BorderCarveOut
 	for _, carveOut := range stats.CarveOuts {
 		carved = append(carved, control.BorderCarveOut{Link: carveOut.Link, Prefix: carveOut.Prefix})

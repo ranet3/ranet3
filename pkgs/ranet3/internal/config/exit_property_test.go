@@ -61,14 +61,14 @@ func TestExitIsRefusedExactlyOnAnExit(t *testing.T) {
 			announce, exit = append(announce, drawn.prefix), exit || drawn.exit
 		}
 		c := Config{
-			Node: identity.MustParse("example/laptop"),
-			Auth: Auth{Key: "key.pem", Trust: "trust.json"},
-			Link: Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}},
-			Dial: Dial{All: true},
+			Node:    identity.MustParse("example/laptop"),
+			Auth:    Auth{Key: "key.pem", Trust: "trust.json"},
+			Link:    Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}},
+			Dial:    Dial{All: true},
+			Overlay: exitOverlay,
 			Cap: Caps{
-				Table:  &kernel.Table{},
-				Border: &egress.Border{Overlay: exitOverlay},
-				Exit:   &kernel.ExitMode{},
+				Table: &kernel.Table{},
+				Exit:  &kernel.ExitMode{},
 			},
 		}
 		for _, prefix := range announce {

@@ -46,7 +46,7 @@ const (
 	transitTooBig
 	// transitMulticast counts reads off the tun to a multicast destination or the limited broadcast, which the mesh routes none of
 	transitMulticast
-	// transitForged counts reads off the tun from a source the mesh routes to another node or holds through an entry that does not count as a default, or one inside cap.border's overlay this node does not own
+	// transitForged counts reads off the tun from a source the mesh routes to another node or holds through an entry that does not count as a default, or one inside the overlay this node does not own
 	transitForged
 	// transitRoutingHeader counts reads off the tun carrying a routing header of a type the mesh's edge refuses
 	transitRoutingHeader
@@ -90,7 +90,7 @@ var transitReasonNames = [transitReasonCount]string{
 type transitState struct {
 	// transitOn is cap.transit, set once at start since a reload changing it is refused
 	transitOn atomic.Bool
-	// overlay is cap.border's overlay, which a reload may move, nil on a node with no cap.border
+	// overlay is the overlay, which a reload may move, nil on a node that writes none
 	overlay atomic.Pointer[[]schema.Prefix]
 	// transitCounts counts each reason since startup
 	transitCounts [transitReasonCount]atomic.Uint64
@@ -109,7 +109,7 @@ type transitState struct {
 // with it off a packet for another node is answered administratively prohibited, but for one an End.DT46 of this node delivers to the mesh
 func (m *Mesh) SetTransit(on bool) { m.transitOn.Store(on) }
 
-// SetOverlay sets cap.border's overlay as written, the mesh's own address space, nil for none
+// SetOverlay sets the overlay as written, the mesh's own address space, nil for none
 // an IPv4 packet no route reaches inside it is answered host unreachable, since other hosts of the overlay may be reachable
 // and every entry of the table is flagged again for whether it counts as a default with it
 // calls never overlap, the client making them from New and then under reloadMu
@@ -128,7 +128,7 @@ func (m *Mesh) SetOverlay(overlay []schema.Prefix) {
 // a packet egressing through one that counts as a default waits on the readiness SetAdvertisedReady gives its family
 func (m *Mesh) SetEgressPrefixes(advertised []netip.Prefix) { m.Routes.SetEgress(advertised) }
 
-// inOverlay reports whether address lies inside cap.border's overlay
+// inOverlay reports whether address lies inside the overlay
 func (m *Mesh) inOverlay(address netip.Addr) bool {
 	overlay := m.overlay.Load()
 	if overlay == nil {
@@ -467,7 +467,7 @@ type egressCheck struct {
 }
 
 // egressAnswer holds the mesh's answers for a packet's pair of addresses
-// routed is whether it routes a reply, and forMesh, which only an egress segment asks, whether it routes the destination itself or holds it in cap.border's overlay
+// routed is whether it routes a reply, and forMesh, which only an egress segment asks, whether it routes the destination itself or holds it in the overlay
 type egressAnswer struct{ routed, forMesh bool }
 
 // pairAnswer is the mesh's egressAnswer for a packet from source to destination, its forMesh asked where segment says
@@ -475,9 +475,9 @@ type egressAnswer struct{ routed, forMesh bool }
 // a route announced from a source prefix decides each answer, so they are kept per pair rather than per source or destination
 // a reply's route reaches a peer, a hold or this node's own entry, its LAN or an address of its own
 // and the destination's entries counting as a default are passed over, so a destination only this node's default or another exit's covers egresses
-// unless the overlay holds it, which no node whose cap.border sets it egresses
-// where no node announces it, an exit with cap.border whose table selects its own entry counting as a default answers it as no route, and a node whose table selects that exit's entry routes it there
-// an exit without cap.border has no overlay, so its decision egresses such an address as any destination outside the mesh
+// unless the overlay holds it, which no node that writes it egresses
+// where no node announces it, an exit with an overlay whose table selects its own entry counting as a default answers it as no route, and a node whose table selects that exit's entry routes it there
+// an exit with no overlay written has none, so its decision egresses such an address as any destination outside the mesh
 func (m *Mesh) pairAnswer(check *egressCheck, source, destination netip.Addr, segment bool) egressAnswer {
 	pair := [2]netip.Addr{source, destination}
 	for i := range check.kept {

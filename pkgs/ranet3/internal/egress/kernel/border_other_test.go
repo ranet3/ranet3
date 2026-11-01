@@ -6,32 +6,19 @@
 package kernel
 
 import (
-	"runtime"
-	"strings"
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// cap.border is refused by name where there is no nftables, rather than
-// accepted with no chain behind it, since a node whose status read the
-// border as written would carry forged mesh sources from its other links
-func TestBorderIsRefusedOffLinux(t *testing.T) {
-	f, err := NewBorderFilter(&egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15")}}, egress.BorderRuntime{Tun: "utun9", Inside: []string{"utun9", "lo0"}})
-	want := "egress: cap.border is an nftables chain, which " + runtime.GOOS + " does not have"
-	if err == nil || !strings.Contains(err.Error(), want) {
-		t.Fatalf("NewBorderFilter returned %v, want a refusal containing %q", err, want)
-	}
-	if f != nil {
-		t.Error("the refusal handed back a filter")
-	}
-}
-
-// With no cap.border there is no table to write where there is no nftables,
-// so no filter comes back and nothing is refused
-func TestNoBorderIsNoFilterOffLinux(t *testing.T) {
-	if f, err := NewBorderFilter(nil, egress.BorderRuntime{Tun: "utun9", Inside: []string{"utun9", "lo0"}}); f != nil || err != nil {
-		t.Fatalf("NewBorderFilter with no cap.border returned %v and %v, want neither", f, err)
+// Where there is no backend the overlay loads and no filter comes back, with
+// or without one, and nothing is refused, so status can say it is not enforced
+func TestNoFilterRunsOffLinux(t *testing.T) {
+	rt := egress.BorderRuntime{Tun: "utun9", Inside: []string{"utun9", "lo0"}}
+	for _, cfg := range []*egress.Border{nil, {Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15")}}} {
+		if f, err := NewBorderFilter(cfg, rt); f != nil || err != nil {
+			t.Fatalf("NewBorderFilter with %+v returned %v and %v, want neither", cfg, f, err)
+		}
 	}
 }

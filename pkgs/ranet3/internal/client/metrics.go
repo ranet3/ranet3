@@ -108,20 +108,21 @@ func (c *Client) Metrics(w io.Writer) {
 	c.renderBorder(w)
 }
 
-// renderBorder writes the border filter's readiness and the packets each drop
-// counted as its last pass read them, and nothing on a node that runs no filter
+// renderBorder writes the antispoof filter's readiness and the packets each
+// drop counted as its last pass read them, and nothing on a node that runs no
+// filter
 func (c *Client) renderBorder(w io.Writer) {
 	border := c.borderStatus()
-	if border == nil {
+	if border == nil || border.UnenforcedOn != "" {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet3_border_ready Whether the border filter's chains and sets read back as the configuration asks.\n")
-	fmt.Fprint(w, "# TYPE ranet3_border_ready gauge\n")
-	fmt.Fprintf(w, "ranet3_border_ready %d\n", boolValue(border.Ready))
-	fmt.Fprint(w, "# HELP ranet3_border_dropped_packets_total Packets the border filter dropped, arriving from outside the mesh with an overlay source or a mesh source inside a carve-out, or kept out of the tun by the entry chain, as of its last pass. A rewrite of the table starts them from zero.\n")
-	fmt.Fprint(w, "# TYPE ranet3_border_dropped_packets_total counter\n")
+	fmt.Fprint(w, "# HELP ranet3_antispoof_ready Whether the antispoof filter's chains and sets read back as the configuration asks.\n")
+	fmt.Fprint(w, "# TYPE ranet3_antispoof_ready gauge\n")
+	fmt.Fprintf(w, "ranet3_antispoof_ready %d\n", boolValue(border.Ready))
+	fmt.Fprint(w, "# HELP ranet3_antispoof_dropped_packets_total Packets the antispoof filter dropped, arriving from outside the mesh with an overlay source no exemption passes or a mesh source inside a carve-out or an exemption, or kept out of the tun by the entry chain, as of its last pass. A rewrite of the table starts them from zero.\n")
+	fmt.Fprint(w, "# TYPE ranet3_antispoof_dropped_packets_total counter\n")
 	for _, kind := range egress.BorderDropKinds {
-		fmt.Fprintf(w, "ranet3_border_dropped_packets_total{reason=\"%s\",family=\"%s\"} %d\n", kind.Reason, kind.Family, border.Dropped[kind.Name()])
+		fmt.Fprintf(w, "ranet3_antispoof_dropped_packets_total{reason=\"%s\",family=\"%s\"} %d\n", kind.Reason, kind.Family, border.Dropped[kind.Name()])
 	}
 }
 
@@ -258,7 +259,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the exit to leave the mesh.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_egressed_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_egressed_total %d\n", segments.Egressed)
-	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside cap.border overlay or an inner source outside the list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or cap.border overlay holds, which are among the dropped ones and never answered.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, which are among the dropped ones and never answered.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_refused_total %d\n", segments.Refused)
 	fmt.Fprint(w, "# HELP ranet3_segments_not_ready_total Packets an egress segment let through and dropped because their family was not ready.\n")

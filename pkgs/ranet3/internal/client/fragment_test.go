@@ -13,6 +13,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/babel"
+	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
@@ -116,6 +117,8 @@ func TestMetricsNameTheNeighborsThatSendBabelPacketsInFragments(t *testing.T) {
 	speaker.Receive(peers["whole"], babelFrom(netip.MustParseAddr("fe80::3"), 1443))
 
 	c := &Client{speaker: speaker, sessions: newSessionSet(), Mesh: mesh}
+	// New always stores a configuration, which the antispoof status reads
+	c.cfg.Store(&config.Config{})
 	var out bytes.Buffer
 	c.Metrics(&out)
 	var got []string

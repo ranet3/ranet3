@@ -6,3 +6,5 @@ Lookups
   underlay  ipv4    -                203.0.113.70     -       -          no     no route
   underlay  ipv6    ::/0             2001:db8:400::7  -       -          no     dev en0
   underlay  ipv6    -                fe80::9%en0      -       -          no     dev en0
+
+Antispoof filter, not enforced on darwin

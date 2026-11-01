@@ -9,7 +9,7 @@ Forwarding  IPv4 on IPv6 on
 Registry    /etc/ranet3/registry.json, 12 nodes in 1 organizations
 Kernel      table 100, 0 installed, last pass 3 minutes ago
 Egress      off, this node carries no traffic for others
-Border      nftables table inet ranet3 chains border and mesh_entry, inside ranet3 lo dummy0, 5 overlay prefixes, carving 192.0.2.0/25 on eth0, dropped 4 overlay sources and 2 carved sources, dropped 6 entering the mesh
+Antispoof   nftables table inet ranet3 chains antispoof and mesh_entry, inside ranet3 lo dummy0, 5 overlay prefixes, carving 192.0.2.0/25 on eth0, dropped 4 overlay sources and 2 carved sources, dropped 6 entering the mesh
 Dialers     0 running
 Sessions    0
 Neighbors   0, 0 alive
@@ -22,4 +22,6 @@ ESP         0 in, 0 dropped, 0 refused
 
 nftables table inet ranet3 chain mesh_entry, dropped 7 entering the mesh
 not installed, another writer changed its table
-not installed, egress: list the rules of nftables table inet ranet3 chain border: operation not permitted
+not installed, egress: list the rules of nftables table inet ranet3 chain antispoof: operation not permitted
+not enforced on darwin, 1 overlay prefix
+not enforced on darwin, 2 overlay prefixes

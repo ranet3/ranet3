@@ -270,8 +270,8 @@ type Status struct {
 	Registry     RegistryInfo `json:"registry"`
 	Kernel       KernelStatus `json:"kernel"`
 	Egress       EgressStatus `json:"egress"`
-	// Border is absent on a node that writes no cap.border
-	Border    *BorderStatus `json:"border,omitempty"`
+	// Border is absent on a node that runs no antispoof filter and writes no overlay
+	Border    *BorderStatus `json:"antispoof,omitempty"`
 	Counts    Counts        `json:"counts"`
 	ESP       ESPCounters   `json:"esp"`
 	Originate []Originated  `json:"originate"`
@@ -332,7 +332,7 @@ type SegmentCounters struct {
 	Answered uint64 `json:"answered"`
 	// Egressed counts the inner packets an egress segment handed to the exit
 	Egressed uint64 `json:"egressed"`
-	// Refused counts the packets a local SID refused, for an outer source outside cap.border overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside cap.border overlay or an inner source outside the list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or cap.border overlay holds, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
 	// NotReady counts the egress results dropped as not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`
@@ -547,7 +547,7 @@ type EgressStatus struct {
 	// Ready is the families the last pass judged ready, ipv4 and ipv6, by the
 	// route lookups where they ran, and Unready why a family it translates is
 	// not. Skipped names the route lookups the pass left out and why: those of
-	// a family no other node's prefix inside cap.border.overlay gives a source
+	// a family no other node's prefix inside overlay gives a source
 	// to read from, and that of a prefix holding no address to read
 	Ready   []string `json:"ready,omitempty"`
 	Unready string   `json:"unready,omitempty"`
@@ -607,19 +607,23 @@ type EgressClass struct {
 	To   string       `json:"to"`
 }
 
-// BorderStatus is the border filter: the chain border dropping what arrives
-// from outside the mesh carrying a mesh source, under cap.border, and the
-// chain mesh_entry dropping a packet into the tun that none of its lines
-// passes, a reply, an IPv6 link-local or multicast destination, a source this
-// node owns or a destination a none class takes. Status carries one wherever
-// the filter runs.
+// BorderStatus is the antispoof filter: the chain antispoof dropping what
+// arrives from outside the mesh carrying a mesh source no exemption passes,
+// wherever overlay is written, and the chain mesh_entry dropping a packet into
+// the tun that none of its lines passes, a reply, an IPv6 link-local or
+// multicast destination, a source this node owns or a destination a none class
+// takes. Status carries one wherever the filter runs, and where overlay is
+// written on a platform that runs none.
 type BorderStatus struct {
 	// Where names the table and the chains, as the filter spells them
-	Where string `json:"where"`
-	// Inside is the devices whose traffic the border chain accepts whatever it carries
+	Where string `json:"where,omitempty"`
+	// UnenforcedOn names the platform where overlay is written and no filter
+	// runs, empty wherever one does
+	UnenforcedOn string `json:"unenforced_on,omitempty"`
+	// Inside is the devices whose traffic the antispoof chain accepts whatever it carries
 	Inside  []string       `json:"inside"`
 	Overlay []netip.Prefix `json:"overlay"`
-	// Carved is each carve-out the border chain accepts from its own link
+	// Carved is each carve-out the antispoof chain accepts from its own link
 	Carved []BorderCarveOut `json:"carved,omitempty"`
 	// Ready is whether the last pass read the table back as written, and
 	// Unready why it did not

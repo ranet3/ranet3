@@ -112,6 +112,7 @@ func TestLoaderPicksTheDecoderByExtension(t *testing.T) {
 // speaks json describe the same node.
 func TestBothDecodersReadOneNode(t *testing.T) {
 	const capabilitiesYAML = `
+overlay: ["3fff::/20"]
 cap:
   route:
     announce: ["10.66.0.5/32", { prefix: "::/0", from: "2001:db8:1::/48" }]
@@ -130,8 +131,10 @@ cap:
     source: "3fff:b:0:100::1"
     local:
       - { sid: "3fff:b:0:106::1", behavior: "End.DT46" }
-  border:
-    overlay: ["3fff::/20"]
+  antispoof:
+    exempt: ["3fff:a::/32"]
+    interface:
+      "wl*": { exempt: ["3fff:b::/32"] }
   crypto:
     replay: 4096
     rekey: { child: 1h, retry: { first: 5s, max: 5m } }
@@ -156,8 +159,10 @@ addresses = ["10.66.0.5/32"]
 [cap.segment]
 source = "3fff:b:0:100::1"
 local = [{ sid = "3fff:b:0:106::1", behavior = "End.DT46" }]
-[cap.border]
-overlay = ["3fff::/20"]
+[cap.antispoof]
+exempt = ["3fff:a::/32"]
+[cap.antispoof.interface."wl*"]
+exempt = ["3fff:b::/32"]
 [cap.crypto]
 replay = 4096
 rekey = { child = "1h", retry = { first = "5s", max = "5m" } }
@@ -166,7 +171,7 @@ rekey = { child = "1h", retry = { first = "5s", max = "5m" } }
 	if err != nil {
 		t.Fatalf("yaml: %v", err)
 	}
-	fromTOML, err := loadTOML(t, nodeTOML+capabilitiesTOML)
+	fromTOML, err := loadTOML(t, "overlay = [\"3fff::/20\"]\n"+nodeTOML+capabilitiesTOML)
 	if err != nil {
 		t.Fatalf("toml: %v", err)
 	}
@@ -176,7 +181,7 @@ rekey = { child = "1h", retry = { first = "5s", max = "5m" } }
 	// And the capabilities are actually there, so two empty structs cannot
 	// pass the comparison above.
 	if fromYAML.Cap.Route == nil || fromYAML.Cap.Transit == nil || fromYAML.Cap.Babel == nil || fromYAML.Cap.Table == nil ||
-		fromYAML.Cap.Segment == nil || fromYAML.Cap.Crypto == nil {
+		fromYAML.Cap.Segment == nil || fromYAML.Cap.Antispoof == nil || fromYAML.Cap.Crypto == nil || fromYAML.Overlay == nil {
 		t.Fatalf("a capability was dropped: %+v", fromYAML.Cap)
 	}
 	if fromYAML.Transits() || fromYAML.Babel().Quality != babel.LinkQualityNone {
@@ -274,8 +279,8 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asTOML: "[cap.crypto.rekey]\nchild = \"5m\"\n",
 		},
 		"a segment this node also carries as an address": {
-			asYAML: "cap:\n  table:\n    addresses: [\"3fff:b:0:106::1/128\"]\n  segment:\n    local: [{ sid: \"3fff:b:0:106::1\", behavior: End }]\n  border:\n    overlay: [\"3fff::/20\"]\n",
-			asTOML: "[cap.table]\naddresses = [\"3fff:b:0:106::1/128\"]\n[cap.segment]\nlocal = [{ sid = \"3fff:b:0:106::1\", behavior = \"End\" }]\n[cap.border]\noverlay = [\"3fff::/20\"]\n",
+			asYAML: "cap:\n  table:\n    addresses: [\"3fff:b:0:106::1/128\"]\n  segment:\n    local: [{ sid: \"3fff:b:0:106::1\", behavior: End }]\n",
+			asTOML: "[cap.table]\naddresses = [\"3fff:b:0:106::1/128\"]\n[cap.segment]\nlocal = [{ sid = \"3fff:b:0:106::1\", behavior = \"End\" }]\n",
 		},
 		"an exit that advertises nothing": {
 			asYAML: "cap:\n  egress:\n    translate: [{ from: \"0.0.0.0/0\", to: auto }]\n",
@@ -327,11 +332,13 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asTOML: "[cap.egress]\nadvertise = [\"0.0.0.0/0\"]\nflows_per_source = 2147483648\n",
 		},
 	} {
+		// beside an overlay, so a pair writing a local segment is refused for
+		// what it names rather than for the overlay's absence
 		t.Run(name, func(t *testing.T) {
-			if _, err := loadYAML(t, nodeYAML+pair.asYAML); err == nil {
+			if _, err := loadYAML(t, nodeYAML+"overlay: [203.0.113.0/24, 3fff:a::/36]\n"+pair.asYAML); err == nil {
 				t.Errorf("yaml took %q", pair.asYAML)
 			}
-			if _, err := loadTOML(t, nodeTOML+pair.asTOML); err == nil {
+			if _, err := loadTOML(t, overlayTOML+nodeTOML+pair.asTOML); err == nil {
 				t.Errorf("toml took %q", pair.asTOML)
 			}
 		})
@@ -1187,6 +1194,8 @@ func fullConfig() Config {
 			Underlay:  transport.Underlay{Bind: true},
 		},
 		Dial: Dial{All: true, To: []identity.Identity{identity.MustParse("example/gateway:1")}},
+		// covering the egress segment's allow list, which the loader asks of it
+		Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.0.0/8")},
 		Cap: Caps{
 			Route: &babel.Routes{
 				Announce: []schema.Announce{
@@ -1276,8 +1285,10 @@ func fullConfig() Config {
 				FlowsPerSource: 2048,
 				Sweep:          schema.Duration(45 * time.Second),
 			},
-			// covering the egress segment's allow list, which the loader asks of it
-			Border: &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.0.0/8")}},
+			Antispoof: &egress.Antispoof{
+				Exempt:    []schema.Prefix{schema.MustPrefix("203.0.113.0/24")},
+				Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: []schema.Prefix{schema.MustPrefix("3fff:a::/48")}}, "wl*": {Exempt: []schema.Prefix{schema.MustPrefix("203.0.112.0/24")}}},
+			},
 		},
 	}
 }

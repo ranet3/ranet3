@@ -65,11 +65,11 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 			Rule{Family: family, Priority: priorityMeshEnd, action: actionNop},
 			Rule{Family: family, Priority: priorityUnderlayPastOverlay, FWMark: schema.UnderlayMark, action: actionGoto, target: priorityOverlayEnd},
 		)
-		for _, prefix := range familyPrefixes(family, schemaPrefixes(overlay)) {
+		for _, prefix := range familyPrefixes(family, SchemaPrefixes(overlay)) {
 			out = append(out, Rule{Family: family, Priority: priorityOverlay, To: schema.PrefixFrom(prefix), Table: id})
 		}
 		out = append(out, Rule{Family: family, Priority: priorityUnderlayPastMesh, FWMark: schema.UnderlayMark, action: actionGoto, target: priorityMeshEnd})
-		addresses, networks := exit.sources(family, schemaPrefixes(overlay), own)
+		addresses, networks := exit.sources(family, SchemaPrefixes(overlay), own)
 		for _, address := range addresses {
 			out = append(out, Rule{Family: family, Priority: priorityUplinkSource, From: schema.PrefixFrom(address), IIF: loopback, Table: schema.TableMain})
 		}
@@ -201,7 +201,8 @@ func (v exitView) linkHolds(selector netip.Prefix) bool {
 	})
 }
 
-func schemaPrefixes(prefixes []schema.Prefix) []netip.Prefix {
+// SchemaPrefixes is prefixes as netip holds them, in order
+func SchemaPrefixes(prefixes []schema.Prefix) []netip.Prefix {
 	out := make([]netip.Prefix, 0, len(prefixes))
 	for _, prefix := range prefixes {
 		out = append(out, prefix.Prefix)

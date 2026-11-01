@@ -728,17 +728,26 @@ func exits() hegel.Generator[egress.Egress] {
 	})
 }
 
-// overlayPool is the prefixes a drawn cap.border overlay is taken from, each
-// a length the loader takes, together covering every entry of allowPool
+// overlayPool is the prefixes a drawn overlay is taken from, each a length
+// the loader takes, together covering every entry of allowPool
 var overlayPool = []schema.Prefix{
 	schema.MustPrefix("3fff:c::/30"), schema.MustPrefix("3fff:a::/36"),
 	schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("10.0.0.0/8"), schema.MustPrefix("198.18.0.0/15"),
 }
 
-// borders draws cap.border from overlayPool, each entry once, and now and then
-// with one entry added that Validate refuses by name: an IPv4 prefix in the
-// mapped spelling, a zero length, a prefix shorter than its family's floor,
-// host bits below the length, or an entry written twice
+// exemptPool is the prefixes a drawn cap.antispoof exempts, each inside one
+// entry of overlayPool, so an overlay drawn without that entry refuses it
+var exemptPool = []schema.Prefix{
+	schema.MustPrefix("3fff:c::/32"), schema.MustPrefix("3fff:a::/48"), schema.MustPrefix("203.0.113.128/25"), schema.MustPrefix("10.1.0.0/16"),
+}
+
+// borders draws the overlay from overlayPool, each entry once, and now and
+// then with one entry added that Validate refuses by name: an IPv4 prefix in
+// the mapped spelling, a zero length, a prefix shorter than its family's
+// floor, host bits below the length, or an entry written twice. Half the time
+// cap.antispoof exempts prefixes of exemptPool from every interface outside
+// the mesh, from the interfaces a name matches, or both, a name now and then
+// one Validate refuses for a * before its end.
 func borders() hegel.Generator[egress.Border] {
 	refused := hegel.SampledFrom([]schema.Prefix{
 		schema.MustPrefix("::ffff:198.18.0.0/111"), schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0"),
@@ -757,7 +766,32 @@ func borders() hegel.Generator[egress.Border] {
 		case hegel.Draw(tc, hegel.WeightedBooleans(0.05)):
 			overlay = append(overlay, overlay[0])
 		}
-		return egress.Border{Overlay: overlay}
+		border := egress.Border{Overlay: overlay}
+		if !hegel.Draw(tc, hegel.Booleans()) {
+			return border
+		}
+		exempt := func() []schema.Prefix {
+			var list []schema.Prefix
+			for _, prefix := range hegel.Draw(tc, hegel.Lists(hegel.SampledFrom(exemptPool)).MinSize(1).MaxSize(2)) {
+				if !slices.Contains(list, prefix) {
+					list = append(list, prefix)
+				}
+			}
+			return list
+		}
+		switch hegel.Draw(tc, hegel.Integers(0, 2)) {
+		case 0:
+			border.Antispoof.Exempt = exempt()
+		case 1:
+			border.Antispoof.Exempt = exempt()
+			fallthrough
+		default:
+			border.Antispoof.Interface = map[string]egress.AntispoofInterface{}
+			for _, name := range hegel.Draw(tc, hegel.Lists(hegel.SampledFrom([]string{"eth1", "wl*", "br-*", "w*0"})).MinSize(1).MaxSize(2)) {
+				border.Antispoof.Interface[name] = egress.AntispoofInterface{Exempt: exempt()}
+			}
+		}
+		return border
 	})
 }
 
@@ -841,7 +875,12 @@ func configurations() hegel.Generator[Config] {
 			Segment: block(tc, blocks, segments()),
 			Crypto:  block(tc, blocks, cryptos()),
 			Egress:  block(tc, blocks, exits()),
-			Border:  block(tc, blocks, borders()),
+		}
+		if border := block(tc, blocks, borders()); border != nil {
+			c.Overlay = border.Overlay
+			if border.Antispoof.Exempt != nil || border.Antispoof.Interface != nil {
+				c.Cap.Antispoof = &border.Antispoof
+			}
 		}
 		// now and then cost.extra charges the node itself, which Validate refuses
 		if c.Cap.Babel != nil && hegel.Draw(tc, hegel.WeightedBooleans(0.05)) {
@@ -869,7 +908,7 @@ func TestGeneratedConfigurationSurvivesEachEncoder(t *testing.T) {
 	})
 }
 
-// The same for a node whose only block is cap.egress, with the cap.border a
+// The same for a node whose only block is cap.egress, with the overlay a
 // none class loads beside, which draws its classes in each spelling far more
 // often than a whole configuration does. A to in the IPv4-mapped spelling
 // would read back unmapped, one carrying a zone would be refused by the
@@ -882,7 +921,7 @@ func TestValidatedEgressClassesReadBackFromTheirFile(t *testing.T) {
 		exit := hegel.Draw(ht, exits())
 		drawn.Cap.Egress = &exit
 		if slices.ContainsFunc(exit.Translate, func(class egress.Class) bool { return class.To.None }) {
-			drawn.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff:c::/30")}}
+			drawn.Overlay = []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff:c::/30")}
 		}
 		ht.Assume(drawn.Validate() == nil)
 		sameAfterEachEncoder(ht, drawn)
@@ -1024,7 +1063,8 @@ func TestValidatedRouteSpeakerAndSegmentsReadBackFromTheirFile(t *testing.T) {
 		drawn.Dial.All = true
 		route, speaker, segment := hegel.Draw(ht, routes()), hegel.Draw(ht, speakers()), hegel.Draw(ht, segments())
 		// the overlay every local segment needs, covering every allow entry
-		drawn.Cap = Caps{Route: &route, Babel: &speaker, Segment: &segment, Border: &egress.Border{Overlay: overlayPool}}
+		drawn.Cap = Caps{Route: &route, Babel: &speaker, Segment: &segment}
+		drawn.Overlay = overlayPool
 		ht.Assume(drawn.Validate() == nil)
 		if !hegel.Draw(ht, hegel.WeightedBooleans(0.25)) {
 			sameAfterEachEncoder(ht, drawn)

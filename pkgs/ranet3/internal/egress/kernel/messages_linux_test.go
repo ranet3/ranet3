@@ -20,7 +20,7 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-var update = flag.Bool("update", false, "rewrite testdata/messages.golden from what the translator and the border build now")
+var update = flag.Bool("update", false, "rewrite testdata/messages.golden from what the translator and the antispoof filter build now")
 
 // golden is embedded, so a test binary run from any directory reads it
 //
@@ -135,20 +135,24 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		Owned:     ranges("192.0.2.200/32", "2001:db8:1::7/128"),
 		None:      ranges("203.0.113.0/24", "2001:db8:2::/48"),
 	}
-	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func() egress.BorderSets { return sets }}
-	desired, written, _ := newBorderFilter(overlay(t, "192.0.2.0/24", "2001:db8:1::7/128"), rt, &fakeBorder{}).desired()
+	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func(*egress.Border) egress.BorderSets { return sets }}
+	exempted := overlay(t, "192.0.2.0/24", "2001:db8:1::7/128")
+	exempted.Antispoof = egress.Antispoof{Exempt: prefixes(t, "192.0.2.192/26"), Interface: map[string]egress.AntispoofInterface{
+		"eth1": {Exempt: prefixes(t, "2001:db8:1::7/128")}, "wl*": {Exempt: prefixes(t, "192.0.2.128/26")},
+	}}
+	desired, written, _ := newBorderFilter(exempted, rt, &fakeBorder{}).desired()
 	requests, err = borderBatch(desired, written, false)
-	write("border", requests, err)
+	write("antispoof filter", requests, err)
 	requests, err = borderBatch(desired, written, true)
-	write("border remaking its table", requests, err)
+	write("antispoof filter remaking its table", requests, err)
 	// none4 gains a range below its own and grows its own downward, and owned6 empties
 	moved := borderSets{noneSet + "4": ranges("198.51.100.0/24", "203.0.112.0/23"), ownedSet + "6": nil}
 	requests, err = fillBatch(written, moved)
-	write("border moving two sets", requests, err)
+	write("antispoof filter moving two sets", requests, err)
 	desired, written, _ = newBorderFilter(nil, rt, &fakeBorder{}).desired()
 	requests, err = borderBatch(desired, written, true)
-	write("entry chain with no border", requests, err)
-	write("border withdrawal", []nftables.Request{delBorderTable()}, nil)
+	write("entry chain with no antispoof chain", requests, err)
+	write("antispoof filter withdrawal", []nftables.Request{delBorderTable()}, nil)
 
 	path := filepath.Join("testdata", "messages.golden")
 	if *update {

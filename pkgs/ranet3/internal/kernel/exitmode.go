@@ -310,7 +310,7 @@ func (r *Reconciler) exitPass(held []netip.Prefix, snapshot []sadr.Route[*netsta
 			status.Unaddressed = append(status.Unaddressed, family)
 		}
 	}
-	view := exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed, fallback: mode.Refuses(), lan: schemaPrefixes(mode.LAN),
+	view := exitView{on: true, network: network, forwarded: forwarded, unaddressed: status.Unaddressed, fallback: mode.Refuses(), lan: SchemaPrefixes(mode.LAN),
 		carved: read.carved, table: tableDestinations(snapshot)}
 	return view, status
 }

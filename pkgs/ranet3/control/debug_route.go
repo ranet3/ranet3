@@ -95,7 +95,7 @@ type RouteInfo struct {
 // of the packet's source
 type RouteSegment struct {
 	LocalSegment
-	// Overlay is the source lying in cap.border's overlay, which every SID
+	// Overlay is the source lying in the overlay, which every SID
 	// asks first. Allowed is it lying in an entry of an egress segment's allow
 	// list inside the overlay, which only such a segment asks, of a source
 	// Overlay admits.
@@ -318,14 +318,14 @@ func RenderRoute(w io.Writer, info RouteInfo) {
 // segmentRows says what the segment a session's packet is addressed to asks
 // of its source, then the drop of a source it refuses or what it does next
 func segmentRows(info RouteInfo, s RouteSegment) [][]string {
-	source := "outside cap.border's overlay"
+	source := "outside the overlay"
 	switch {
 	case s.Overlay && s.Egress != nil && s.Allowed:
-		source = "inside cap.border's overlay and the allow list"
+		source = "inside the overlay and the allow list"
 	case s.Overlay && s.Egress != nil:
-		source = "inside cap.border's overlay, outside the allow list's entries inside it"
+		source = "inside the overlay, outside the allow list's entries inside it"
 	case s.Overlay:
-		source = "inside cap.border's overlay"
+		source = "inside the overlay"
 	}
 	rows := [][]string{{"Segment", segmentText(s.LocalSegment)}, {"Source", info.Src.String() + " " + source}}
 	if s.Decision != "" {

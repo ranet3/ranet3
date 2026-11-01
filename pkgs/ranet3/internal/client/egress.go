@@ -50,7 +50,7 @@ func lookupRoute(route kernel.MatchedRoute) kernelexit.Route {
 // EgressMembers is the prefixes the egress translator's lookups read from, out
 // of the mesh's table and the overlay in force at each call
 func (c *Client) EgressMembers() []netip.Prefix {
-	return memberPrefixes(c.Mesh.Routes.Snapshot(), c.config().Overlay())
+	return memberPrefixes(c.Mesh.Routes.Snapshot(), c.config().Overlay)
 }
 
 // memberPrefixes is each destination routes sends by the tun to another node:

@@ -60,7 +60,7 @@ type routeModel struct {
 	egress  []netip.Prefix
 }
 
-// reload hands rt cap.border's overlay, the prefixes cap.egress advertises or both, in a drawn order
+// reload hands rt the overlay, the prefixes cap.egress advertises or both, in a drawn order
 // a reload of the config hands the overlay alone, since a change to cap.egress waits for a restart
 // so each setter has to flag the entries again on its own
 func (m *routeModel) reload(tc hegel.TestCase, rt *RouteTable, anchors4, anchors6 []netip.Addr) {
@@ -91,7 +91,7 @@ func (m *routeModel) reload(tc hegel.TestCase, rt *RouteTable, anchors4, anchors
 	}
 }
 
-// drawOverlay draws cap.border's overlay near the anchors and over the destinations held
+// drawOverlay draws the overlay near the anchors and over the destinations held
 // an overlay prefix over a destination held covers or uncovers an entry written before the reload
 // so an entry shorter than the floor changes whether it counts as a default
 func (m *routeModel) drawOverlay(tc hegel.TestCase, anchors4, anchors6 []netip.Addr) []schema.Prefix {

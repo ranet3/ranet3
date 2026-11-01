@@ -228,7 +228,7 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 	var routes *kernel.Reconciler
 	var border *kernelexit.BorderFilter
 	if err := exit.Do(func() (err error) {
-		if border, err = kernelexit.NewBorderFilter(cfg.Cap.Border, node.BorderRuntime()); err != nil {
+		if border, err = kernelexit.NewBorderFilter(cfg.Border(), node.BorderRuntime()); err != nil {
 			return err
 		}
 		rt := node.KernelRuntime()
@@ -237,14 +237,14 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 		routes, err = kernel.New(*cfg.ReconcilerTable(), rt, node.Mesh.Routes)
 		return err
 	}); err != nil {
-		t.Fatalf("build the border and the reconciler: %v", err)
+		t.Fatalf("build the antispoof filter and the reconciler: %v", err)
 	}
 	translator := labTranslator(t, exit, node, bus)
 	node.SetBorder(border)
 	for _, owner := range []struct {
 		name string
 		run  func(context.Context) error
-	}{{"the reconciler", routes.Run}, {"the translator", translator.Run}, {"the border", border.Run}} {
+	}{{"the reconciler", routes.Run}, {"the translator", translator.Run}, {"the antispoof filter", border.Run}} {
 		runs.Go(func() {
 			if err := owner.run(ctx); err != nil {
 				t.Errorf("%s: %v", owner.name, err)

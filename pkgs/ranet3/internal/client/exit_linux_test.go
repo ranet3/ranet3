@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/internal/config"
-	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -19,7 +18,7 @@ import (
 // exitLeafStart is a node running the reconciler and the border, which cap.exit needs
 func exitLeafStart(old *config.Config) {
 	old.Cap.Table = &kernel.Table{}
-	old.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}}
+	old.Overlay = []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}
 }
 
 // a reload adding cap.exit hands the reconciler its table running the mode, and one removing it hands the table in mode off

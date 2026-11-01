@@ -169,7 +169,7 @@ func NewSteerTable(entries []Steer, source schema.Addr) (*SteerTable, error) {
 			}
 			// a zero-length source selects what leaving it out selects, and a
 			// to counting as a default is the loader's to refuse, since that
-			// predicate reads cap.border's overlay
+			// predicate reads the overlay
 			if named.field == "from" && prefix.Bits() == 0 {
 				return nil, fmt.Errorf("srv6: cap.segment steer %s %s selects every address of its family, the same as leaving %s out: name the prefix this entry steers", named.field, prefix, named.field)
 			}

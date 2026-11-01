@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/netip"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
@@ -28,8 +31,8 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// borderRecord is the border filter as the node drives one, recording each
-// overlay a reload hands it
+// borderRecord is the antispoof filter as the node drives one, recording each
+// configuration a reload hands it
 type borderRecord struct {
 	mu      sync.Mutex
 	border  egress.Border
@@ -65,7 +68,7 @@ func (b *borderRecord) calls() int {
 
 func (*borderRecord) Inside() []string { return []string{"ranet3", "lo"} }
 
-func (*borderRecord) Where() string { return "nftables table inet ranet3 chain border" }
+func (*borderRecord) Where() string { return "nftables table inet ranet3 chain antispoof" }
 
 func (b *borderRecord) Stats() egress.BorderStats {
 	if b.missing {
@@ -78,13 +81,47 @@ func (b *borderRecord) Stats() egress.BorderStats {
 
 func (b *borderRecord) Debug() egress.BorderDebug { return b.debug }
 
-// borderOf is a cap.border of the prefixes given
-func borderOf(prefixes ...string) *egress.Border {
-	border := &egress.Border{}
-	for _, prefix := range prefixes {
-		border.Overlay = append(border.Overlay, schema.MustPrefix(prefix))
+// passProbe is the antispoof filter as a reload drives it, deriving at each
+// SetConfig the sets a pass derives from the configuration handed, as the
+// pass the filter's SetConfig wakes may run before the reload stores the file
+type passProbe struct {
+	*borderRecord
+	sets func(*egress.Border) egress.BorderSets
+	mu   sync.Mutex
+	seen []egress.BorderSets
+}
+
+func (p *passProbe) SetConfig(cfg egress.Border) error {
+	if err := p.borderRecord.SetConfig(cfg); err != nil {
+		return err
 	}
-	return border
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.seen = append(p.seen, p.sets(&cfg))
+	return nil
+}
+
+// passes is the sets each pass a SetConfig woke derived, in order
+func (p *passProbe) passes() []egress.BorderSets {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.seen)
+}
+
+// probeBorder hands c a passProbe deriving the sets as c's filter does
+func probeBorder(c *Client) *passProbe {
+	probe := &passProbe{borderRecord: &borderRecord{}, sets: c.BorderRuntime().Sets}
+	c.SetBorder(probe)
+	return probe
+}
+
+// overlayOf is an overlay of the prefixes given
+func overlayOf(prefixes ...string) []schema.Prefix {
+	var overlay []schema.Prefix
+	for _, prefix := range prefixes {
+		overlay = append(overlay, schema.MustPrefix(prefix))
+	}
+	return overlay
 }
 
 // an exit's egress follows the translator alone: with the border's chain
@@ -101,14 +138,14 @@ func TestEgressFollowsTheTranslatorWhileTheBordersChainIsMissing(t *testing.T) {
 	for _, serves := range []bool{true, false, true} {
 		c.SetEgressReady(true, true, serves)
 		if got := sidOriginated(c, sid); got != serves {
-			t.Errorf("with the translator serving %v and the border's chain missing the SID's /128 is originated %v", serves, got)
+			t.Errorf("with the translator serving %v and the antispoof filter's chain missing the SID's /128 is originated %v", serves, got)
 		}
 	}
 	if status := c.exitStatus(); len(status.Ready) != 2 || status.Unready != "" {
-		t.Errorf("with the border's chain missing the egress status reads ready %v, unready %q, want the translator's word alone", status.Ready, status.Unready)
+		t.Errorf("with the antispoof filter's chain missing the egress status reads ready %v, unready %q, want the translator's word alone", status.Ready, status.Unready)
 	}
 	if status := c.borderStatus(); status == nil || status.Ready || status.Unready == "" {
-		t.Errorf("the border's status reads %+v, want not ready and why", status)
+		t.Errorf("the antispoof filter's status reads %+v, want not ready and why", status)
 	}
 }
 
@@ -156,17 +193,17 @@ func TestReloadMovesTheBorderInPlace(t *testing.T) {
 	c.SetBorder(border)
 
 	reordered := *c.config()
-	reordered.Cap.Border = borderOf("203.0.113.0/24", "3fff::/20")
+	reordered.Overlay = overlayOf("203.0.113.0/24", "3fff::/20")
 	writeConfig(t, path, &reordered)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a reordered overlay was refused: %v", err)
 	}
-	if border.calls() != 0 || strings.Contains(lastReload(t, bus)["applied"], "cap.border") {
+	if border.calls() != 0 || strings.Contains(lastReload(t, bus)["applied"], "overlay") {
 		t.Errorf("a reordered overlay handed the filter %d lists and applied %q", border.calls(), lastReload(t, bus)["applied"])
 	}
 
 	grown := *c.config()
-	grown.Cap.Border = borderOf("203.0.113.0/24", "3fff::/20", "2001:db8::/32")
+	grown.Overlay = overlayOf("203.0.113.0/24", "3fff::/20", "2001:db8::/32")
 	writeConfig(t, path, &grown)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a grown overlay was refused: %v", err)
@@ -174,8 +211,36 @@ func TestReloadMovesTheBorderInPlace(t *testing.T) {
 	if got := border.Capability().Normalized(); len(got.Overlay) != 3 || border.calls() != 1 {
 		t.Errorf("after a grown overlay the filter holds %v after %d lists", got.Overlay, border.calls())
 	}
-	if !strings.Contains(lastReload(t, bus)["applied"], "cap.border") {
-		t.Errorf("a grown overlay applied %q, want cap.border among it", lastReload(t, bus)["applied"])
+	if applied := lastReload(t, bus)["applied"]; !strings.Contains(applied, "overlay") || strings.Contains(applied, "cap.antispoof") {
+		t.Errorf("a grown overlay applied %q, want overlay among it and not cap.antispoof", applied)
+	}
+
+	// exemptions moved alone hand the filter the overlay with them, in any order
+	exempting := *c.config()
+	exempting.Cap.Antispoof = &egress.Antispoof{Exempt: overlayOf("203.0.113.128/25"), Interface: map[string]egress.AntispoofInterface{"wl*": {Exempt: overlayOf("3fff:a::/48", "203.0.113.0/26")}}}
+	writeConfig(t, path, &exempting)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("exemptions were refused: %v", err)
+	}
+	want := []egress.Exemption{
+		{Prefix: netip.MustParsePrefix("203.0.113.128/25")},
+		{Interface: "wl*", Prefix: netip.MustParsePrefix("203.0.113.0/26")},
+		{Interface: "wl*", Prefix: netip.MustParsePrefix("3fff:a::/48")},
+	}
+	if got := border.Capability().Exemptions(); !slices.Equal(got, want) || border.calls() != 2 {
+		t.Errorf("after the exemptions the filter exempts %v after %d configurations, want %v after 2", got, border.calls(), want)
+	}
+	if applied := lastReload(t, bus)["applied"]; !strings.Contains(applied, "cap.antispoof") || strings.Contains(applied, "overlay") {
+		t.Errorf("exemptions applied %q, want cap.antispoof among it and not overlay", applied)
+	}
+	reexempting := *c.config()
+	reexempting.Cap.Antispoof = &egress.Antispoof{Exempt: overlayOf("203.0.113.128/25"), Interface: map[string]egress.AntispoofInterface{"wl*": {Exempt: overlayOf("203.0.113.0/26", "3fff:a::/48")}}}
+	writeConfig(t, path, &reexempting)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("reordered exemptions were refused: %v", err)
+	}
+	if border.calls() != 2 || strings.Contains(lastReload(t, bus)["applied"], "cap.antispoof") {
+		t.Errorf("reordered exemptions handed the filter %d configurations in all and applied %q", border.calls(), lastReload(t, bus)["applied"])
 	}
 
 	next := *c.config()
@@ -184,46 +249,182 @@ func TestReloadMovesTheBorderInPlace(t *testing.T) {
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("an egress segment moved to another SID was refused: %v", err)
 	}
-	if border.calls() != 1 {
-		t.Errorf("a SID moved handed the filter %d lists in all, want the grown overlay's alone", border.calls())
+	if border.calls() != 2 {
+		t.Errorf("a SID moved handed the filter %d configurations in all, want the grown overlay's and the exemptions' alone", border.calls())
 	}
 }
 
-// a reload growing the overlay onto a lease the host holds wakes the filter
-// once the overlay is stored, so the pass it runs reads the lease carved, where
-// the pass its SetConfig woke read the overlay stored before. The sets are read
-// at the wake itself, since a pass may run as soon as the wake is sent.
-func TestReloadOntoACarvedLeaseWakesTheBorderAfterTheOverlayIsStored(t *testing.T) {
+// a reload growing the overlay onto a lease the host holds hands the filter
+// the overlay it carves from, so the pass its SetConfig wakes, which may run
+// before the reload stores the file, carves the lease
+func TestReloadOntoACarvedLeaseHandsTheFilterTheOverlayItCarvesFrom(t *testing.T) {
 	c, path, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32")) })
 	segmentsOf(t, c)
 	lease := netip.MustParsePrefix("198.18.0.10/24")
 	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange), current: kernel.NetworkState{IPv4: kernel.NetworkFamily{Links: []kernel.Link{{Name: "eth0", Prefixes: []netip.Prefix{lease}}}}}}
-	// the fixture builds the client by hand, without the wake New makes
-	c.borderNetwork = make(chan struct{}, 1)
-	c.SetBorder(&borderRecord{})
-	rt := c.BorderRuntime()
-	if carved := rt.Sets().CarveOuts; len(carved) != 0 {
-		t.Fatalf("before the reload the border carves %v, want nothing", carved)
+	probe := probeBorder(c)
+	if carved := probe.sets(c.config().Border()).CarveOuts; len(carved) != 0 {
+		t.Fatalf("before the reload the antispoof filter carves %v, want nothing", carved)
 	}
-	var atWake [][]egress.CarveOut
-	c.borderWoken = func() { atWake = append(atWake, rt.Sets().CarveOuts) }
 	grown := *c.config()
-	grown.Cap.Border = borderOf("203.0.113.0/24", "3fff::/20", "198.18.0.0/15")
+	grown.Overlay = overlayOf("203.0.113.0/24", "3fff::/20", "198.18.0.0/15")
 	writeConfig(t, path, &grown)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("an overlay grown onto the lease was refused: %v", err)
 	}
-	select {
-	case <-rt.Network:
-	default:
-		t.Fatal("the reload stored an overlay holding the lease and woke the filter for no pass after it")
-	}
 	want := []egress.CarveOut{{Link: "eth0", Prefix: lease.Masked()}}
-	if len(atWake) == 0 || !slices.Equal(atWake[len(atWake)-1], want) {
-		t.Errorf("at each wake the reload sent the filter read the carve-outs %v, want the last to read %v", atWake, want)
+	passes := probe.passes()
+	if len(passes) == 0 {
+		t.Fatal("the reload grew the overlay onto the lease and handed the filter nothing")
 	}
-	if carved := rt.Sets().CarveOuts; !slices.Equal(carved, want) {
-		t.Errorf("the pass after the reload carves %v, want %v", carved, want)
+	for i, pass := range passes {
+		if !slices.Equal(pass.CarveOuts, want) {
+			t.Errorf("the pass SetConfig %d woke carves %v, want %v", i, pass.CarveOuts, want)
+		}
+	}
+}
+
+// a reload adding an exemption over another node's prefix hands the filter
+// the exemption and the rest it carves from at once, so the pass that writes
+// the exemption's accept, which may run before the reload stores the file,
+// carves the other node's prefix out of it
+func TestReloadOfAnExemptionHandsTheFilterWhatItCarvesFrom(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment("3fff:b:0:106::3", "3fff:a::/32")) })
+	segmentsOf(t, c)
+	another := netip.MustParsePrefix("203.0.113.70/32")
+	c.Mesh.Routes.Set(netip.Prefix{}, another, &netstack.Peer{ID: "example/peer"})
+	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange)}
+	probe := probeBorder(c)
+	if carved := probe.sets(c.config().Border()).Carved; len(carved) != 0 {
+		t.Fatalf("before the reload the antispoof filter carves %v, want nothing", carved)
+	}
+	exempted := *c.config()
+	exempted.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: overlayOf("203.0.113.64/26")}}}
+	writeConfig(t, path, &exempted)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("an exemption was refused: %v", err)
+	}
+	want := kernel.Ranges([]netip.Prefix{another})
+	passes := probe.passes()
+	if len(passes) == 0 {
+		t.Fatal("the reload added an exemption and handed the filter nothing")
+	}
+	for i, pass := range passes {
+		if !slices.Equal(pass.Carved, want) {
+			t.Errorf("the pass SetConfig %d woke carves %v, want %v", i, pass.Carved, want)
+		}
+	}
+}
+
+// a gateway announcing its site's range and exempting it under the site's
+// interface carves, of the routes the speaker learns from a peer, the peer's
+// more specific prefix inside the range and nothing of the peer's prefix
+// covering it, and names the router-id of the route selected for the prefix it
+// carves
+func TestBorderSetsCarveAnotherNodesPrefixAndKeepTheGatewaysRange(t *testing.T) {
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
+		cfg.Overlay = overlayOf("203.0.113.0/24")
+		cfg.Cap.Route = &babel.Routes{Announce: announce("203.0.113.0/25")}
+		cfg.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: overlayOf("203.0.113.0/25")}}}
+	})
+	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange)}
+	// the fixture's speaker writes a table of its own, and this one the node's
+	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, c.Mesh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.speaker = speaker
+	peer := sinkPeer(t, "example/gateway:1@0")
+	defer c.speaker.AddPeer(peer, identity.MustParse("example/gateway:1")).Close()
+	update := func(prefix string) babel.RawTLV {
+		p := netip.MustParsePrefix(prefix)
+		return babel.EncodeUpdate(babel.Update{AE: babel.AEIPv4ViaIPv6, Plen: p.Bits(), Prefix: p.Addr().AsSlice(), Seqno: 1, Metric: 20, Interval: 1000})
+	}
+	c.speaker.Receive(peer, babelPacket(
+		babel.EncodeHello(babel.Hello{Seqno: 1, Interval: 1000}),
+		babel.EncodeIHU(babel.IHU{RxCost: 96, Interval: 1000}),
+		babel.EncodeRouterID([8]byte{1, 2, 3, 4, 5, 6, 7, 8}),
+		update("203.0.113.0/24"),
+		update("203.0.113.96/28"),
+	))
+	sets := c.BorderRuntime().Sets(c.config().Border())
+	if want := kernel.Ranges([]netip.Prefix{netip.MustParsePrefix("203.0.113.96/28")}); !slices.Equal(sets.Carved, want) {
+		t.Errorf("the filter carves %v, want %v alone", sets.Carved, want)
+	}
+	want := []egress.ExemptConflict{{
+		Exemption: egress.Exemption{Interface: "eth1", Prefix: netip.MustParsePrefix("203.0.113.0/25")},
+		Prefix:    netip.MustParsePrefix("203.0.113.96/28"), Carved: netip.MustParsePrefix("203.0.113.96/28"),
+		Via: peer.ID, RouterID: "0102030405060708",
+	}}
+	if !slices.Equal(sets.Conflicts, want) {
+		t.Errorf("the filter reports the conflicts %+v, want %+v", sets.Conflicts, want)
+	}
+}
+
+// a reload that moves only what cap.route announces hands the filter this
+// node's own prefixes, so the pass its SetConfig wakes, which may run before
+// the reload stores the file, carves a node address it announces inside an
+// exemption
+func TestReloadOfAnAnnouncementHandsTheFilterWhatItCarvesFrom(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) {
+		cfg.Overlay = overlayOf("203.0.113.0/24")
+		cfg.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: overlayOf("203.0.113.64/26")}}}
+	})
+	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange)}
+	probe := probeBorder(c)
+	if carved := probe.sets(c.config().Border()).Carved; len(carved) != 0 {
+		t.Fatalf("before the reload the antispoof filter carves %v, want nothing", carved)
+	}
+	announced := *c.config()
+	announced.Cap.Route = &babel.Routes{Announce: announce("203.0.113.65/32")}
+	writeConfig(t, path, &announced)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("an announcement was refused: %v", err)
+	}
+	want := kernel.Ranges([]netip.Prefix{netip.MustParsePrefix("203.0.113.65/32")})
+	passes := probe.passes()
+	if len(passes) == 0 {
+		t.Fatal("the reload moved what cap.route announces and handed the filter nothing")
+	}
+	for i, pass := range passes {
+		if !slices.Equal(pass.Carved, want) {
+			t.Errorf("the pass SetConfig %d woke carves %v, want %v", i, pass.Carved, want)
+		}
+	}
+}
+
+// a gateway announcing 203.0.113.64/26 and exempting it under eth1 carves
+// nothing of another node's 203.0.113.0/24 covering it. A reload that stops
+// announcing the range, and moves nothing else the filter holds, hands the
+// filter this node's own ranges, so the pass its SetConfig wakes carves the
+// exemption as the other node's.
+func TestReloadDroppingAnOwnRangeHandsTheFilterWhatItCarvesFrom(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) {
+		cfg.Overlay = overlayOf("203.0.113.0/24")
+		cfg.Cap.Route = &babel.Routes{Announce: announce("203.0.113.64/26")}
+		cfg.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: overlayOf("203.0.113.64/26")}}}
+	})
+	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange)}
+	c.Mesh.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("203.0.113.0/24"), &netstack.Peer{ID: "example/peer"})
+	probe := probeBorder(c)
+	if carved := probe.sets(c.config().Border()).Carved; len(carved) != 0 {
+		t.Fatalf("while this node announces 203.0.113.64/26 the antispoof filter carves %v, want nothing", carved)
+	}
+	dropped := *c.config()
+	dropped.Cap.Route = nil
+	writeConfig(t, path, &dropped)
+	if err := c.ReloadFrom(path); err != nil {
+		t.Fatalf("a reload that stops announcing 203.0.113.64/26 was refused: %v", err)
+	}
+	want := kernel.Ranges([]netip.Prefix{netip.MustParsePrefix("203.0.113.64/26")})
+	passes := probe.passes()
+	if len(passes) == 0 {
+		t.Fatal("the reload stopped announcing 203.0.113.64/26 and handed the filter nothing, so it keeps the range as this node's own")
+	}
+	for i, pass := range passes {
+		if !slices.Equal(pass.Carved, want) {
+			t.Errorf("the pass SetConfig %d woke carves %v, want %v", i, pass.Carved, want)
+		}
 	}
 }
 
@@ -250,7 +451,7 @@ func TestReloadMovingTheOverlayRebuildsTheLocalTable(t *testing.T) {
 		t.Fatalf("from inside 3fff::/20 the SID returned %v (%v), want a delivery", got.Action, got.Err)
 	}
 	narrowed := *c.config()
-	narrowed.Cap.Border = borderOf("203.0.113.0/24", "3fff:a::/32")
+	narrowed.Overlay = overlayOf("203.0.113.0/24", "3fff:a::/32")
 	writeConfig(t, path, &narrowed)
 	if err := c.ReloadFrom(path); err != nil {
 		t.Fatalf("a narrowed overlay was refused: %v", err)
@@ -261,39 +462,39 @@ func TestReloadMovingTheOverlayRebuildsTheLocalTable(t *testing.T) {
 }
 
 // the filter and its run goroutine are built once in main, so a reload
-// adding cap.border is refused and applies nothing
-func TestReloadRefusesAddingTheBorder(t *testing.T) {
+// adding overlay is refused and applies nothing
+func TestReloadRefusesAddingTheOverlay(t *testing.T) {
 	c, path, _, _ := reloadOf(t, func(*config.Config) {})
 	next := *c.config()
-	next.Cap.Border = borderOf("3fff::/20")
+	next.Overlay = overlayOf("3fff::/20")
 	writeConfig(t, path, &next)
 	err := c.ReloadFrom(path)
-	if err == nil || !strings.Contains(err.Error(), "cap.border added, restart to apply") {
-		t.Errorf("a reload adding cap.border was answered %v", err)
+	if err == nil || !strings.Contains(err.Error(), "config: overlay added, restart to apply") {
+		t.Errorf("a reload adding overlay was answered %v", err)
 	}
-	if c.config().Cap.Border != nil {
-		t.Error("the refused reload stored cap.border")
+	if c.config().Border() != nil {
+		t.Error("the refused reload stored overlay")
 	}
 }
 
 // and a reload removing it is refused, leaving the filter its overlay
-func TestReloadRefusesRemovingTheBorder(t *testing.T) {
-	c, path, _, _ := reloadOf(t, func(cfg *config.Config) { cfg.Cap.Border = borderOf("3fff::/20") })
+func TestReloadRefusesRemovingTheOverlay(t *testing.T) {
+	c, path, _, _ := reloadOf(t, func(cfg *config.Config) { cfg.Overlay = overlayOf("3fff::/20") })
 	border := &borderRecord{}
 	c.SetBorder(border)
 	next := *c.config()
-	next.Cap.Border = nil
+	next.Overlay = nil
 	writeConfig(t, path, &next)
 	err := c.ReloadFrom(path)
-	if err == nil || !strings.Contains(err.Error(), "cap.border removed, restart to apply") {
-		t.Errorf("a reload removing cap.border was answered %v", err)
+	if err == nil || !strings.Contains(err.Error(), "config: overlay removed, restart to apply") {
+		t.Errorf("a reload removing overlay was answered %v", err)
 	}
-	if c.config().Cap.Border == nil || border.calls() != 0 {
-		t.Errorf("the refused reload dropped cap.border or handed the filter %d lists", border.calls())
+	if c.config().Border() == nil || border.calls() != 0 {
+		t.Errorf("the refused reload dropped overlay or handed the filter %d configurations", border.calls())
 	}
 }
 
-// down takes the node off the mesh and leaves the border filter running and
+// down takes the node off the mesh and leaves the antispoof filter running and
 // ready, since the kernel still forwards and the host's services still trust
 // mesh sources
 func TestDownKeepsTheBorder(t *testing.T) {
@@ -306,37 +507,32 @@ func TestDownKeepsTheBorder(t *testing.T) {
 		t.Fatalf("down left the translator at %v", on)
 	}
 	if status := c.Status().Border; status == nil || !status.Ready {
-		t.Errorf("down left the border with status %+v", status)
+		t.Errorf("down left the antispoof filter with status %+v", status)
 	}
 	if _, err := c.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// where no entry chain runs, a node whose host forwards and whose file writes
-// no cap.border is told so at every reload, naming the families, and one
-// writing the block or on a host forwarding nothing is not. Where the entry
-// chain runs no node is told.
+// where no entry chain runs, no antispoof filter runs either, so a node whose
+// host forwards is told so at every reload, naming the families and the
+// platform, overlay written or not, and one on a host forwarding nothing is
+// not. Where the entry chain runs no node is told.
 func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	var lines bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
-	bordered := &config.Config{Cap: config.Caps{Border: borderOf("3fff::/20")}}
 	for _, host := range []struct {
 		v4, v6  bool
 		warning string
 	}{
-		{true, true, "this node forwards IPv4 and IPv6 and holds no cap.border"},
-		{true, false, "this node forwards IPv4 and holds no cap.border"},
-		{false, true, "this node forwards IPv6 and holds no cap.border"},
+		{true, true, "this node forwards IPv4 and IPv6 and " + runtime.GOOS + " runs no antispoof filter"},
+		{true, false, "this node forwards IPv4 and " + runtime.GOOS + " runs no antispoof filter"},
+		{false, true, "this node forwards IPv6 and " + runtime.GOOS + " runs no antispoof filter"},
 		{false, false, ""},
 	} {
 		forwards := func() (bool, bool) { return host.v4, host.v6 }
 		lines.Reset()
-		warnUnbordered(bordered, forwards)
-		if lines.Len() != 0 {
-			t.Errorf("a node with cap.border on a host forwarding %v %v warned:\n%s", host.v4, host.v6, lines.String())
-		}
-		warnUnbordered(&config.Config{}, forwards)
+		warnUnbordered(forwards)
 		if kernelexit.EntryRuns {
 			host.warning = ""
 		}
@@ -344,7 +540,7 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 		case host.warning == "" && got != "":
 			t.Errorf("a node on a host forwarding %v %v, or where the entry chain runs, warned:\n%s", host.v4, host.v6, got)
 		case host.warning != "" && (!strings.Contains(got, host.warning) || !strings.Contains(got, "this host's own services")):
-			t.Errorf("a node with no cap.border on a host forwarding %v %v warned %q, want it to say %q", host.v4, host.v6, got, host.warning)
+			t.Errorf("a node on a host forwarding %v %v warned %q, want it to say %q", host.v4, host.v6, got, host.warning)
 		}
 	}
 
@@ -362,12 +558,12 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	if v4, v6 := forwardingEnabled(); (v4 || v6) && !kernelexit.EntryRuns {
 		want = 1
 	}
-	if n := reloaded.count("holds no cap.border"); n != want {
-		t.Errorf("a reload of a node with no cap.border warned %d times, want %d: %q", n, want, reloaded.lines("cap.border"))
+	if n := reloaded.count("runs no antispoof filter"); n != want {
+		t.Errorf("a reload warned %d times, want %d: %q", n, want, reloaded.lines("antispoof"))
 	}
 }
 
-// the border accepts the mesh tun and lo, and an exit's egress leaves through
+// the antispoof filter accepts the mesh tun and lo, and an exit's egress leaves through
 // the mesh tun, so it adds nothing
 func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 	for name, node := range map[string]struct {
@@ -385,51 +581,62 @@ func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 			})
 			c.Mesh = &netstack.Mesh{Name: "ranet3"}
 			if got := c.BorderInside(); !slices.Equal(got, node.want) {
-				t.Errorf("the border accepts %v, want %v", got, node.want)
+				t.Errorf("the antispoof filter accepts %v, want %v", got, node.want)
 			}
 		})
 	}
 }
 
-// the status carries the filter as it reports itself, and nothing on a node
-// with no cap.border
+// the status carries the filter as it reports itself, nothing on a node
+// writing no overlay, and on one writing it where no filter runs, that it is
+// not enforced there
 func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
 	c := writable(t)
 	if status := c.Status().Border; status != nil {
-		t.Errorf("a node with no border reported %+v", status)
+		t.Errorf("a node with no overlay reported %+v", status)
 	}
-	c.SetBorder(&borderRecord{border: *borderOf("3fff::/20", "198.18.0.0/15")})
+	written := *c.config()
+	written.Overlay = overlayOf("3fff::/20", "198.18.0.0/15")
+	c.cfg.Store(&written)
+	unenforced := c.Status().Border
+	if kernelexit.EntryRuns && unenforced != nil {
+		t.Errorf("a node with overlay and no filter, where the filter runs, reported %+v", unenforced)
+	}
+	if !kernelexit.EntryRuns && (unenforced == nil || unenforced.UnenforcedOn != runtime.GOOS || len(unenforced.Overlay) != 2 || unenforced.Ready) {
+		t.Errorf("a node with overlay on %s, which runs no filter, reported %+v, want it not enforced there", runtime.GOOS, unenforced)
+	}
+	c.SetBorder(&borderRecord{border: egress.Border{Overlay: overlayOf("3fff::/20", "198.18.0.0/15")}})
 	status := c.Status().Border
 	want := control.BorderDrops{
 		"overlay_source_ipv4": 3, "overlay_source_ipv6": 1, "carved_source_ipv4": 4, "carved_source_ipv6": 5,
 		"mesh_entry_ipv4": 6, "mesh_entry_ipv6": 8,
 	}
 	carved := []control.BorderCarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}
-	if status == nil || !status.Ready || status.Installed != 7 || !maps.Equal(status.Dropped, want) || len(status.Overlay) != 2 || len(status.Inside) != 2 || !slices.Equal(status.Carved, carved) {
-		t.Errorf("the border reported %+v", status)
+	if status == nil || !status.Ready || status.Installed != 7 || !maps.Equal(status.Dropped, want) || len(status.Overlay) != 2 || len(status.Inside) != 2 || !slices.Equal(status.Carved, carved) || status.UnenforcedOn != "" {
+		t.Errorf("the antispoof filter reported %+v", status)
 	}
 }
 
-// the scrape carries the border's readiness and a series per kind of drop,
-// and nothing of the border on a node with no cap.border
+// the scrape carries the antispoof filter's readiness and a series per kind of
+// drop, and nothing of the filter on a node running none
 func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 	c := writable(t)
 	var off strings.Builder
 	c.Metrics(&off)
-	if strings.Contains(off.String(), "ranet3_border") {
-		t.Errorf("a node with no border wrote:\n%s", off.String())
+	if strings.Contains(off.String(), "ranet3_antispoof") || strings.Contains(off.String(), "ranet3_border") {
+		t.Errorf("a node with no filter wrote:\n%s", off.String())
 	}
 	c.SetBorder(&borderRecord{})
 	var out strings.Builder
 	c.Metrics(&out)
 	for _, want := range []string{
-		"ranet3_border_ready 1",
-		`ranet3_border_dropped_packets_total{reason="overlay_source",family="ipv4"} 3`,
-		`ranet3_border_dropped_packets_total{reason="overlay_source",family="ipv6"} 1`,
-		`ranet3_border_dropped_packets_total{reason="carved_source",family="ipv4"} 4`,
-		`ranet3_border_dropped_packets_total{reason="carved_source",family="ipv6"} 5`,
-		`ranet3_border_dropped_packets_total{reason="mesh_entry",family="ipv4"} 6`,
-		`ranet3_border_dropped_packets_total{reason="mesh_entry",family="ipv6"} 8`,
+		"ranet3_antispoof_ready 1",
+		`ranet3_antispoof_dropped_packets_total{reason="overlay_source",family="ipv4"} 3`,
+		`ranet3_antispoof_dropped_packets_total{reason="overlay_source",family="ipv6"} 1`,
+		`ranet3_antispoof_dropped_packets_total{reason="carved_source",family="ipv4"} 4`,
+		`ranet3_antispoof_dropped_packets_total{reason="carved_source",family="ipv6"} 5`,
+		`ranet3_antispoof_dropped_packets_total{reason="mesh_entry",family="ipv4"} 6`,
+		`ranet3_antispoof_dropped_packets_total{reason="mesh_entry",family="ipv6"} 8`,
 	} {
 		if !strings.Contains(out.String(), want+"\n") {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
@@ -441,7 +648,8 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 // marks the reconciler's by the protocol cap.table names and the ones the
 // reconciler derived, a goto and a suppress length among them, lists what it
 // derived that the host does not hold, and carries the reconciler's lookups by
-// kind and the border's chain
+// kind and the antispoof filter's chains, or where overlay is written and no
+// filter runs, that it is not enforced there
 func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	const ownProto = kernel.DefaultProtocol + 1
 	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
@@ -501,13 +709,23 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		t.Errorf("debug rules names missing %+v, want %+v alone", info.Missing, missing)
 	}
 	if info.PolicyErr != "" || info.Border != nil {
-		t.Errorf("debug rules reads policy error %q and border %+v on a node with no border", info.PolicyErr, info.Border)
+		t.Errorf("debug rules reads policy error %q and antispoof filter %+v on a node with no overlay", info.PolicyErr, info.Border)
+	}
+	written := *c.config()
+	written.Overlay = overlayOf("3fff::/20")
+	c.cfg.Store(&written)
+	unenforced := c.DebugRules().Border
+	if kernelexit.EntryRuns && unenforced != nil {
+		t.Errorf("debug rules reads antispoof filter %+v on a node with overlay and no filter where the filter runs", unenforced)
+	}
+	if !kernelexit.EntryRuns && (unenforced == nil || unenforced.UnenforcedOn != runtime.GOOS || len(unenforced.Chains) != 0) {
+		t.Errorf("debug rules reads antispoof filter %+v on %s, which runs none, want it not enforced there", unenforced, runtime.GOOS)
 	}
 
 	passed := time.Now().Add(-3 * time.Second)
 	c.SetBorder(&borderRecord{debug: egress.BorderDebug{
-		Where: "nftables table inet ranet3 chains border and mesh_entry", PassAt: passed, Ready: true,
-		Chains: []egress.BorderChainReading{{Name: "border", Hook: "prerouting", Priority: -300,
+		Where: "nftables table inet ranet3 chains antispoof and mesh_entry", PassAt: passed, Ready: true,
+		Chains: []egress.BorderChainReading{{Name: "antispoof", Hook: "prerouting", Priority: -300,
 			Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}}}},
 		Sets: []egress.BorderSetReading{{Name: "owned4", Elements: []egress.Range{{First: netip.MustParseAddr("192.0.2.7"), Last: netip.MustParseAddr("192.0.2.7")}}}},
 	}})

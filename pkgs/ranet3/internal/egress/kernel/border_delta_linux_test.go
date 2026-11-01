@@ -100,7 +100,7 @@ func TestBorderPassSendsAOneLANChangeAsItsDelta(t *testing.T) {
 		for i := range n {
 			lans = append(lans, deltaLAN(2*i))
 		}
-		rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func() egress.BorderSets {
+		rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func(*egress.Border) egress.BorderSets {
 			return egress.BorderSets{None: meshkernel.Ranges(lans)}
 		}}
 		be, err := newBorderBackend()

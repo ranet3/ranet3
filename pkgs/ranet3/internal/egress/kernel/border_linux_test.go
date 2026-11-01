@@ -21,7 +21,7 @@ import (
 // mesh tun ranet3 and lo: its rules in order and the batch writing it
 func encodedTable(t testing.TB, cfg *egress.Border, sets egress.BorderSets) ([]BorderRule, []nftables.Request) {
 	t.Helper()
-	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func() egress.BorderSets { return sets }}
+	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func(*egress.Border) egress.BorderSets { return sets }}
 	rules, written, _ := newBorderFilter(cfg, rt, &fakeBorder{}).desired()
 	requests, err := borderBatch(rules, written, false)
 	if err != nil {
@@ -285,6 +285,48 @@ func TestBorderComparesTheWholeInterfaceName(t *testing.T) {
 	}
 }
 
+// An exemption passes its prefix's sources from the interfaces it names: the
+// shared one from every interface outside the mesh, an interface's from that
+// interface alone, and one ending in * from every interface whose name starts
+// with what comes before it. A source the carved set holds is dropped from
+// each all the same, and the overlay's other sources stay dropped.
+func TestBorderExemptionPassesFromTheInterfacesItNames(t *testing.T) {
+	cfg := overlay(t, "198.18.0.0/15", "3fff::/20")
+	cfg.Antispoof = egress.Antispoof{
+		Exempt: prefixes(t, "198.18.1.0/24"),
+		Interface: map[string]egress.AntispoofInterface{
+			"eth1": {Exempt: prefixes(t, "198.18.2.0/24")},
+			"wl*":  {Exempt: prefixes(t, "3fff:0:2::/48")},
+		},
+	}
+	desired, requests := encodedTable(t, cfg, egress.BorderSets{Carved: ranges("198.18.1.9/32", "3fff:0:2::9/128")})
+	_, written := chainRules(desired, requests, BorderChain)
+	sets := encodedSets(t, requests)
+	for _, one := range []struct {
+		iif, source string
+		accept      bool
+	}{
+		{"eth0", "198.18.1.7", true}, {"eth1", "198.18.1.7", true}, {"wlan0", "198.18.1.7", true},
+		{"eth1", "198.18.2.7", true}, {"eth0", "198.18.2.7", false}, {"eth10", "198.18.2.7", false}, {"eth", "198.18.2.7", false},
+		{"wlan0", "3fff:0:2::7", true}, {"wl", "3fff:0:2::7", true}, {"w", "3fff:0:2::7", false}, {"xwl0", "3fff:0:2::7", false}, {"eth1", "3fff:0:2::7", false},
+		// the mesh's own prefixes inside an exemption
+		{"eth0", "198.18.1.9", false}, {"wlan0", "3fff:0:2::9", false},
+		// the overlay outside every exemption
+		{"eth1", "198.18.3.7", false}, {"wlan0", "3fff:0:3::7", false},
+	} {
+		source := netip.MustParseAddr(one.source)
+		destination := netip.MustParseAddr("192.0.2.1")
+		if source.Is6() {
+			destination = netip.MustParseAddr("2001:db8::2")
+		}
+		wire := drawnPacket{iif: one.iif, source: source, destination: destination}.wire()
+		wire.sets = sets
+		if run := runChain(t, written, wire); run.accept != one.accept {
+			t.Errorf("%s arriving on %s: accepted %v, want %v", one.source, one.iif, run.accept, one.accept)
+		}
+	}
+}
+
 // Another writer deleting or adding the filter's inet table, a chain, a rule
 // or a set in it wakes the filter, a table update setting it dormant among
 // them, and its own writes do not
@@ -325,14 +367,14 @@ func TestBorderIgnoresTheTranslatorsTables(t *testing.T) {
 		for _, command := range []int{unix.NFT_MSG_DELTABLE, unix.NFT_MSG_NEWTABLE} {
 			message := nftables.Message{Kind: nftables.Command(command), Pid: other, Data: nftables.PutAttrString(nftables.PutNfgenmsg(nil, family), unix.NFTA_TABLE_NAME, TableName)}
 			if borderTables.ChangedByAnother(message, own) {
-				t.Errorf("a table %s written by command %d in family %d woke the border filter", TableName, command, family)
+				t.Errorf("a table %s written by command %d in family %d woke the antispoof filter", TableName, command, family)
 			}
 		}
 	}
 }
 
 // Another writer's change to the translator's ip or ip6 table wakes the
-// translator, and its change to the border filter's inet table of the same
+// translator, and its change to the antispoof filter's inet table of the same
 // name does not
 func TestTranslatorIgnoresTheBordersTable(t *testing.T) {
 	const own, other = 7, 9

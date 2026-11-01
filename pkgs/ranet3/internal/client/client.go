@@ -9,6 +9,7 @@ package client
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -112,16 +113,13 @@ type Client struct {
 	egressMu                 sync.Mutex
 	translator4, translator6 bool
 	advertised4, advertised6 bool
-	// border is the border filter, handed over by the command that built it
-	// and nil where the platform runs no entry chain and cap.border is not written
+	// border is the antispoof filter, handed over by the command that built it
+	// and nil where the platform runs none
 	border atomic.Pointer[borderFilter]
-	// borderNetwork carries one coalesced wake to the border filter per change
-	// of the host's network and per overlay a reload stores, either of which
-	// moves the carve-outs
+	// borderNetwork carries one coalesced wake to the antispoof filter per change
+	// of the host's network, which moves the carve-outs. A reload wakes the
+	// filter through its SetConfig.
 	borderNetwork chan struct{}
-	// borderWoken is called as each wake is sent, before the filter can run
-	// the pass it asks for, and nil calls nothing
-	borderWoken func()
 	// ruleDump reads every policy rule the host holds, and nil means kernel.DumpRules
 	ruleDump func() ([]kernel.DumpedRule, error)
 	// routeGet asks the kernel for one packet's route, and nil means kernel.RouteGet
@@ -151,7 +149,7 @@ type Client struct {
 	// cap.table, where the verb is refused by name rather than reported as
 	// having stopped something.
 	reconcilerEnable atomic.Pointer[func(bool)]
-	// reconcilerTable hands the route reconciler a reloaded cap.table and cap.border overlay, supplied as reconcilerEnable is
+	// reconcilerTable hands the route reconciler a reloaded cap.table and overlay, supplied as reconcilerEnable is
 	reconcilerTable atomic.Pointer[func(kernel.Table, []schema.Prefix, []netip.Prefix) error]
 	// reconcilerNetwork wakes the route reconciler for a change of the host's network, supplied as reconcilerEnable is
 	reconcilerNetwork atomic.Pointer[func(kernel.NetworkChange)]
@@ -223,7 +221,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err := validateRuntimeConfig(cfg, privateKey, x); err != nil {
 		return nil, err
 	}
-	warnUnbordered(cfg, forwardingEnabled)
+	warnUnbordered(forwardingEnabled)
 	warnCountedAdvertisements(cfg)
 	// Before the tun exists, so a segment this node could not answer for
 	// refuses the startup without a device to clean up.
@@ -344,7 +342,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 func startDecision(mesh *netstack.Mesh, cfg *config.Config) {
 	// a reload that changes cap.transit is refused, so the decision reads the start's
 	mesh.SetTransit(cfg.Transits())
-	mesh.SetOverlay(cfg.Overlay())
+	mesh.SetOverlay(cfg.Overlay)
 	// a reload that changes cap.egress is refused, so the start's prefixes hold
 	mesh.SetEgressPrefixes(cfg.Advertised())
 }
@@ -490,7 +488,7 @@ func (c *Client) moveMeshEgressLocked() {
 	c.Mesh.SetAdvertisedReady(c.translator4 && c.advertised4, c.translator6 && c.advertised6)
 }
 
-// borderFilter is the border filter as the node reloads and reports it. The
+// borderFilter is the antispoof filter as the node reloads and reports it. The
 // command builds it, since it owns a table in the host's packet filter and
 // this owns the mesh.
 type borderFilter interface {
@@ -502,18 +500,18 @@ type borderFilter interface {
 	Debug() egress.BorderDebug
 }
 
-// SetBorder hands the node the border filter the command built, which a
-// reload hands the overlay and the status reads
+// SetBorder hands the node the antispoof filter the command built, which a
+// reload hands the overlay and the exemptions and the status reads
 func (c *Client) SetBorder(f borderFilter) { c.border.Store(&f) }
 
-// BorderInside is the devices the border filter accepts whatever they carry:
+// BorderInside is the devices the antispoof filter accepts whatever they carry:
 // the mesh tun and lo, through which a packet this host sends to its own
 // address meets prerouting. A reload moves neither of them.
 func (c *Client) BorderInside() []string {
 	return []string{c.Mesh.Name, "lo"}
 }
 
-// BorderRuntime hands the border filter what the node resolves at startup: the
+// BorderRuntime hands the antispoof filter what the node resolves at startup: the
 // mesh tun, the devices inside the mesh, the bus, the sets as the mesh's table
 // and the host's network give them now, and a wake for each of those two. It
 // takes a reader of the mesh's table, so the command calls it once.
@@ -528,22 +526,41 @@ func (c *Client) BorderRuntime() egress.BorderRuntime {
 	}
 }
 
-// borderSets is the border filter's sets now, which it derives on each pass
-func (c *Client) borderSets() egress.BorderSets {
-	cfg := c.config()
-	overlay := cfg.Overlay()
+// borderSets is the antispoof filter's sets now, which it derives on each pass
+// from the configuration the filter holds, border, and from the mesh's table
+// and the host's links. Only cap.egress's classes are read from the file
+// stored, and a reload refuses to move them.
+func (c *Client) borderSets(border *egress.Border) egress.BorderSets {
+	var overlay []schema.Prefix
+	if border != nil {
+		overlay = border.Overlay
+	}
 	snapshot := c.Mesh.Routes.Snapshot()
 	var classes []egress.Class
-	if exit := cfg.Egress(); exit != nil {
+	if exit := c.config().Egress(); exit != nil {
 		classes = exit.Translate
 	}
 	sets := egress.BorderSets{
 		Owned: kernel.OwnedSources(snapshot, overlay),
 		None:  kernel.NoneDestinations(classes, snapshot, overlay),
 	}
-	if cfg.Cap.Border != nil {
+	if border != nil {
 		sets.CarveOuts = kernel.CarveOuts(c.networkState(), overlay)
-		sets.Carved = kernel.Ranges(kernel.CarvedPrefixes(sets.CarveOuts, snapshot))
+		carveOuts := make([]netip.Prefix, 0, len(sets.CarveOuts))
+		for _, carveOut := range sets.CarveOuts {
+			carveOuts = append(carveOuts, carveOut.Prefix)
+		}
+		exempt, conflicts := kernel.ExemptCarved(border.Exemptions(), border.Own, border.Addresses, snapshot, overlay)
+		sets.Carved = egress.Union(append(kernel.Ranges(kernel.CarvedPrefixes(carveOuts, snapshot)), exempt...))
+		for i, conflict := range conflicts {
+			if c.speaker == nil {
+				break
+			}
+			if origin, ok := c.speaker.SelectedOrigin(conflict.Prefix); ok {
+				conflicts[i].RouterID = hex.EncodeToString(origin[:])
+			}
+		}
+		sets.Conflicts = conflicts
 	}
 	return sets
 }
@@ -552,7 +569,7 @@ func (c *Client) borderSets() egress.BorderSets {
 // capability: the device the mesh actually got and the addresses the
 // transport has to keep reaching, which only a running node knows, the
 // link.underlay.bind the configuration sets, and what other capabilities
-// write, the prefixes cap.route announces and cap.border's overlay.
+// write, the prefixes cap.route announces and the overlay.
 //
 // It is assembled here rather than in the command because most of it is this
 // client's own and the rest is the configuration it runs. The command builds
@@ -563,7 +580,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		Interface:     c.Mesh.Name,
 		Underlay:      c.Underlay,
 		Announced:     cfg.Routes().Announced(),
-		Overlay:       cfg.Overlay(),
+		Overlay:       cfg.Overlay,
 		Advertised:    cfg.Advertised(),
 		EgressSegment: len(cfg.Segments().Egress()) > 0,
 		Sessions:      c.LiveSessions,

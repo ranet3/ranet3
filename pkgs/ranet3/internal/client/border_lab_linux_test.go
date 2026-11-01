@@ -52,7 +52,7 @@ type borderLab struct {
 }
 
 // The border in two namespaces. The exit runs a node
-// started through New with cap.table, cap.border and an egress segment whose
+// started through New with cap.table, overlay and an egress segment whose
 // leaves' addresses are a none class, which mesh_entry lets in, with
 // the reconciler and the border built as main builds them, and an uplink of a
 // veth pair to a far host in a namespace of its own.
@@ -186,7 +186,7 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 	lab.written(t)
 	lab.itself(t)
 
-	t.Run("forwarding off with the border withdrawn", func(t *testing.T) {
+	t.Run("forwarding off with the antispoof filter withdrawn", func(t *testing.T) {
 		lab.stopBorder()
 		lab.withoutTable(t)
 		if err := lab.exit.Do(func() error {
@@ -297,11 +297,11 @@ func startBorderLab(t *testing.T, classes ...egress.Class) *borderLab {
 		if routes, err = kernel.New(*cfg.Cap.Table, lab.node.KernelRuntime(), lab.node.Mesh.Routes); err != nil {
 			return err
 		}
-		lab.border, err = kernelexit.NewBorderFilter(cfg.Cap.Border, lab.node.BorderRuntime())
+		lab.border, err = kernelexit.NewBorderFilter(cfg.Border(), lab.node.BorderRuntime())
 		return err
 	}); err != nil {
 		lab.node.Close()
-		t.Fatalf("build the reconciler and the border: %v", err)
+		t.Fatalf("build the reconciler and the antispoof filter: %v", err)
 	}
 	lab.node.SetBorder(lab.border)
 	borderCtx, cancelBorder := context.WithCancel(context.Background())
@@ -309,7 +309,7 @@ func startBorderLab(t *testing.T, classes ...egress.Class) *borderLab {
 	go func() {
 		defer close(borderDone)
 		if err := lab.border.Run(borderCtx); err != nil {
-			t.Errorf("the border: %v", err)
+			t.Errorf("the antispoof filter: %v", err)
 		}
 	}()
 	lab.stopBorder = sync.OnceFunc(func() {
@@ -507,7 +507,7 @@ func borderDropped(t *testing.T, exit *netnstest.Thread, border *kernelexit.Bord
 		return nil
 	})
 	if debug.Err != "" {
-		t.Fatalf("read the border's chain: %s", debug.Err)
+		t.Fatalf("read the antispoof filter's chain: %s", debug.Err)
 	}
 	var rules []egress.BorderReading
 	for _, chain := range debug.Chains {
@@ -515,7 +515,7 @@ func borderDropped(t *testing.T, exit *netnstest.Thread, border *kernelexit.Bord
 	}
 	index := slices.IndexFunc(rules, func(rule egress.BorderReading) bool { return rule.Spec == spec })
 	if index < 0 || !rules[index].Held {
-		t.Fatalf("the border's table holds no %q in %+v", spec, rules)
+		t.Fatalf("the antispoof filter's table holds no %q in %+v", spec, rules)
 	}
 	return rules[index].Packets
 }
@@ -523,7 +523,7 @@ func borderDropped(t *testing.T, exit *netnstest.Thread, border *kernelexit.Bord
 // counts waits for the border's rule spec to count a packet past before
 func (lab *borderLab) counts(t *testing.T, spec string, before uint64) {
 	t.Helper()
-	waitFor(t, convergeBudget, "the border to count a packet on "+spec, func() bool { return lab.dropped(t, spec) > before })
+	waitFor(t, convergeBudget, "the antispoof filter to count a packet on "+spec, func() bool { return lab.dropped(t, spec) > before })
 }
 
 // quiet sends once and fails the test if the capture reads a packet match

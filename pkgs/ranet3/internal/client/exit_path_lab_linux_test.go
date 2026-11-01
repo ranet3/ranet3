@@ -89,7 +89,7 @@ var (
 )
 
 // pathLab is the two-exit lab: the four nodes, the far host on each uplink with a capture of it, the leaf's two neighbors,
-// the leaf's reconciler, each node's border filter, and each exit's translator
+// the leaf's reconciler, each node's antispoof filter, and each exit's translator
 type pathLab struct {
 	nodes      []*labNode
 	captures   map[int]int
@@ -121,7 +121,7 @@ func pathSpecs(via ...netip.Addr) []labSpec {
 	exit := func(sids ...netip.Addr) func(*config.Config) {
 		return func(cfg *config.Config) {
 			cfg.Cap.Egress = &egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0")}}
-			cfg.Cap.Border = &egress.Border{Overlay: overlay()}
+			cfg.Overlay = overlay()
 			cfg.Cap.Segment = &srv6.Segments{}
 			for _, sid := range sids {
 				cfg.Cap.Segment.Local = append(cfg.Cap.Segment.Local, egressSegment(sid.String(), append([]string{rulesHost[4].own.String(), rulesHost[6].own.String()}, pathLANPrefixes...)...))
@@ -130,7 +130,7 @@ func pathSpecs(via ...netip.Addr) []labSpec {
 	}
 	leaf := labSpec{announce: append(hosts(pathLeaf), pathLANPrefixes...), dial: []int{pathExitB, pathWaypoint}, forwards: true, change: func(cfg *config.Config) {
 		cfg.Cap.Table = &kernel.Table{ID: kernel.DefaultTable, Addresses: []schema.Prefix{schema.PrefixFrom(rulesHost[4].own), schema.PrefixFrom(rulesHost[6].own)}}
-		cfg.Cap.Border = &egress.Border{Overlay: overlay()}
+		cfg.Overlay = overlay()
 		cfg.Cap.Exit = &kernel.ExitMode{Forward: []string{pathForwarded, pathLAN}}
 		for _, sid := range via {
 			cfg.Cap.Exit.Via = append(cfg.Cap.Exit.Via, schema.AddrFrom(sid))
@@ -145,7 +145,7 @@ func pathSpecs(via ...netip.Addr) []labSpec {
 		rx := uint16(512)
 		cfg.Cap.Babel.Cost.Rx = &rx
 		// the End segment admits an outer source inside the overlay alone, as every SID does
-		cfg.Cap.Border = &egress.Border{Overlay: overlay()}
+		cfg.Overlay = overlay()
 		cfg.Cap.Segment = &srv6.Segments{Local: []srv6.Segment{{SID: schema.AddrFrom(pathSIDW), Behavior: srv6.BehaviorEnd}}}
 	}}
 	return []labSpec{leaf, a, b, w}
@@ -255,22 +255,22 @@ func pathNeighbor(t *testing.T, leaf *labNode, name string, ends [2][2]netip.Pre
 // pathPlace is the lab place node's name carries, as startLab names it
 func pathPlace(node *labNode) int { return int(node.name[len("lab-")] - 'a') }
 
-// pathBorder builds and runs node's border filter as the command builds it, until the test ends, and answers it
+// pathBorder builds and runs node's antispoof filter as the command builds it, until the test ends, and answers it
 func pathBorder(t *testing.T, node *labNode) *kernelexit.BorderFilter {
 	t.Helper()
 	var border *kernelexit.BorderFilter
 	if err := node.ns.Do(func() (err error) {
-		border, err = kernelexit.NewBorderFilter(node.client.config().Cap.Border, node.client.BorderRuntime())
+		border, err = kernelexit.NewBorderFilter(node.client.config().Border(), node.client.BorderRuntime())
 		return err
 	}); err != nil {
-		t.Fatalf("build %s's border: %v", node.name, err)
+		t.Fatalf("build %s's antispoof filter: %v", node.name, err)
 	}
 	node.client.SetBorder(border)
 	ctx, cancel := context.WithCancel(context.Background())
 	var runs sync.WaitGroup
 	runs.Go(func() {
 		if err := border.Run(ctx); err != nil {
-			t.Errorf("%s's border: %v", node.name, err)
+			t.Errorf("%s's antispoof filter: %v", node.name, err)
 		}
 	})
 	t.Cleanup(func() {

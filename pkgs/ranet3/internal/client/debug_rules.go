@@ -37,8 +37,8 @@ func (c *Client) lookups() []kernel.Lookup {
 	return nil
 }
 
-// DebugRules reads every policy rule the kernel holds and the border filter's
-// chain, each through a socket of its own, so neither the reconciler's nor the
+// DebugRules reads every policy rule the kernel holds and the antispoof
+// filter's chains, each through a socket of its own, so neither the reconciler's nor the
 // filter's run goroutine shares one with a reader. Where the transport names
 // each underlay datagram's interface, on darwin, it lists beside them the
 // interface each live session's datagrams name, or the interface of the pin
@@ -86,6 +86,8 @@ func (c *Client) DebugRules() control.RulesInfo {
 	info.Steered = steeredDefaults(status)
 	if f := c.border.Load(); f != nil {
 		info.Border = borderTable((*f).Debug())
+	} else if on := c.unenforcedOn(); on != "" {
+		info.Border = &control.BorderTable{UnenforcedOn: on}
 	}
 	if exit := status.Exit; exit != nil && exit.Fallback != nil {
 		info.Fallback = c.fallbackTable(*exit.Fallback)
@@ -190,7 +192,7 @@ func policyRule(rule kernel.DumpedRule) control.PolicyRule {
 	return policy
 }
 
-// borderTable is the border filter's table as the wire carries it
+// borderTable is the antispoof filter's table as the wire carries it
 func borderTable(debug egress.BorderDebug) *control.BorderTable {
 	table := &control.BorderTable{
 		Where: debug.Where, Ready: debug.Ready, Unready: debug.Unready, Err: debug.Err,

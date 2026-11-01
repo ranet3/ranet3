@@ -19,6 +19,16 @@
 # uppercase hex digits, a space in a name as %20.
 node = "example/my-laptop"
 
+# The prefixes the mesh numbers its nodes from, which a packet arriving from
+# outside the mesh carries as its source only when forged. Every platform loads
+# it. Written, it turns on the antispoof filter, which drops such a packet and
+# which cap.antispoof below only exempts from. A local segment needs it with an
+# IPv6 prefix, since a segment acts only on an outer source inside one, an
+# egress segment needs it to admit its allow list as well, and cap.exit and a
+# none class under cap.egress translate need it too. A prefix cap.egress
+# advertises, a default aside, may not overlap it.
+# overlay = ["3fff::/20", "203.0.113.0/24"]
+
 [auth]
 # This node's own key, a PKCS8 PEM Ed25519 file, and the document saying who
 # may join, which is a ranet registry.json today.
@@ -183,7 +193,7 @@ update = "16s"
 # capture_grace = "10s"            # how long an announced default outlives the last live session, 1s floor
 #
 # On linux the reconciler derives its policy rules, at priorities 5100 to 5490
-# and carrying the protocol above, from cap.border's overlay and this node's own
+# and carrying the protocol above, from overlay and this node's own
 # prefixes, which are the addresses above and what cap.route announces that
 # counts as no default, and under cap.exit from the links outside the mesh too.
 # A packet carrying the underlay's mark skips every lookup
@@ -203,9 +213,9 @@ update = "16s"
 # to the tun, hands it to the exit, sends it on, answers it or drops it,
 # whatever cap.transit says. The spelling is the one
 # `ip route ... encap seg6local action` takes. A local segment needs
-# cap.border below, which makes it linux only. It acts only on a packet whose
-# outer source lies in the overlay's IPv6 prefixes, which means a host beyond
-# the mesh reaches none of them through a node that writes cap.border.
+# overlay above. It acts only on a packet whose outer source lies in the
+# overlay's IPv6 prefixes, which means a host beyond the mesh reaches none of
+# them through a node whose antispoof filter runs.
 # [cap.segment]
 # source = "3fff:b:0:100::1"       # the outer source, as `ip sr tunsrc` sets it
 #
@@ -213,10 +223,10 @@ update = "16s"
 # the mesh tun and out of this node's uplink under cap.egress's source
 # translation, so a leaf picks this exit by naming its SID. allow is required:
 # a packet passes only when its outer source is inside an entry that lies
-# inside cap.border's overlay and its inner source is inside any entry, so the
+# inside overlay and its inner source is inside any entry, so the
 # exit is no open proxy. An entry outside the overlay, such as a LAN behind a
 # subnet router, admits inner sources alone. It needs cap.egress, which may
-# advertise nothing, and cap.border below with an overlay that admits allow, as
+# advertise nothing, and overlay above admitting allow, as
 # the segment routing page's "Egress segments" gives. The node announces the
 # SID's /128 itself while the exit is ready, so cap.route does not. linux only.
 # local = [
@@ -347,16 +357,23 @@ update = "16s"
 # forwarding sysctls. Omitted it is 30s.
 # sweep = "30s"
 
-# Drop a source in the prefixes the mesh numbers its nodes from arriving from
-# outside the mesh, which only a forger sends, but where a link's own network
-# overlaps them: there the link's neighbors keep their addresses, and a mesh
-# prefix inside that network is still dropped. The devices inside the mesh are
-# derived: the tun and lo. The entry chain, which lets into the tun only a
-# reply, an owned source, an IPv6 link-local or multicast destination or what a
-# none class takes, runs on every linux node without this block. A local
-# segment needs it, with an IPv6 prefix in overlay, an egress segment an
-# overlay that admits its allow list as well, and a none class under cap.egress
-# translate. A prefix cap.egress advertises, a default aside, may not overlap
-# overlay. linux only, refused by name elsewhere.
-# [cap.border]
-# overlay = ["3fff::/20", "203.0.113.0/24"]
+# The antispoof filter drops a source in overlay arriving from outside the
+# mesh, which only a forger sends, and runs wherever overlay is written, so
+# this block only exempts. Where a link's own network overlaps the overlay the
+# filter carves it out on its own: there the link's neighbors keep their
+# addresses. The interfaces inside the mesh are derived: the tun and lo. exempt
+# passes a source in its prefixes from every interface outside the mesh, and
+# the exempt of cap.antispoof.interface.<name> passes one from the interfaces
+# <name> matches: that name, or with one trailing *, every name starting with
+# what comes before it. Each prefix lies inside overlay. A prefix the mesh's
+# table holds inside a carve-out or an exemption is still dropped. The entry
+# chain, which lets into the tun only a reply, an owned source, an IPv6
+# link-local or multicast destination or what a none class takes, runs on every
+# linux node with or without overlay. The filter runs on linux, and darwin
+# loads overlay and this block and enforces neither yet, as status says.
+# [cap.antispoof]
+# exempt = ["203.0.113.128/25"]
+# [cap.antispoof.interface.eth1]
+# exempt = ["3fff:a::/48"]
+# [cap.antispoof.interface."wl*"]
+# exempt = ["203.0.113.64/26"]

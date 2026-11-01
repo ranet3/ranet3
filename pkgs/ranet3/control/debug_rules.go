@@ -15,20 +15,20 @@ import (
 )
 
 // PathDebugRules is the host's policy rules beside the ones the reconciler
-// derives, and the border filter's table with its counters
+// derives, and the antispoof filter's table with its counters
 const PathDebugRules = PathDebug + "rules"
 
 func init() {
 	debugRead(PathDebugRules, "rules", RulesSource.DebugRules)
 }
 
-// RulesSource is a Source that reads the host's policy rules and the border filter
+// RulesSource is a Source that reads the host's policy rules and the antispoof filter
 type RulesSource interface {
 	DebugRules() RulesInfo
 }
 
 // RulesInfo is every policy rule the kernel holds, the rules the reconciler
-// derives that it does not, and the border filter's table
+// derives that it does not, and the antispoof filter's table
 type RulesInfo struct {
 	Policy []PolicyRule `json:"policy"`
 	// PolicyErr says why Policy is empty: a platform with no policy rules, or
@@ -42,9 +42,9 @@ type RulesInfo struct {
 	// Steered is mode 3's two defaults in the reconciler's table, absent
 	// outside mode 3
 	Steered *SteeredDefaults `json:"steered,omitempty"`
-	// Border is absent where no border filter runs, which every Linux node
-	// runs for its entry chain
-	Border *BorderTable `json:"border,omitempty"`
+	// Border is absent where no antispoof filter runs and no overlay is
+	// written, and every Linux node runs one for its entry chain
+	Border *BorderTable `json:"antispoof,omitempty"`
 	// Fallback is absent on a node whose cap.exit asks for no fallback = "none"
 	Fallback *FallbackTable `json:"fallback,omitempty"`
 }
@@ -149,10 +149,13 @@ type PolicyRule struct {
 	Wanted bool `json:"wanted"`
 }
 
-// BorderTable is the border filter's table as a debug read finds it: its
+// BorderTable is the antispoof filter's table as a debug read finds it: its
 // chains and its sets
 type BorderTable struct {
-	Where string `json:"where"`
+	Where string `json:"where,omitempty"`
+	// UnenforcedOn names the platform where overlay is written and no filter
+	// runs, empty wherever one does
+	UnenforcedOn string `json:"unenforced_on,omitempty"`
 	// ReadAt is the last pass, whose readback Ready and Unready report, and
 	// ReadAgo how long before the answer it ran
 	ReadAt  time.Time     `json:"read_at,omitzero"`
@@ -195,11 +198,11 @@ type BorderChainRule struct {
 	Bytes   uint64 `json:"bytes"`
 }
 
-// Rules reads the policy rules and the border filter's table
+// Rules reads the policy rules and the antispoof filter's table
 func (c *Client) Rules() (RulesInfo, error) { return read[RulesInfo](c, PathDebugRules) }
 
 // RenderRules writes the policy rules of each family as a table, the wanted
-// rules the kernel does not hold, then the border filter's table with the
+// rules the kernel does not hold, then the antispoof filter's table with the
 // packets each drop counted
 func RenderRules(w io.Writer, info RulesInfo) {
 	if info.PolicyErr != "" {
@@ -314,9 +317,14 @@ func renderFallback(w io.Writer, table *FallbackTable) {
 	indented(w, func(w io.Writer) { pairs(w, rows) })
 }
 
-// renderBorder writes the border filter's table: each chain with the packets
-// each drop counted, then each set's elements
+// renderBorder writes the antispoof filter's table: each chain with the
+// packets each drop counted, then each set's elements, or one line where no
+// filter runs for the overlay
 func renderBorder(w io.Writer, border *BorderTable) {
+	if border.UnenforcedOn != "" {
+		fmt.Fprintf(w, "\nAntispoof filter, not enforced on %s\n", border.UnenforcedOn)
+		return
+	}
 	state := "ready"
 	if !border.Ready {
 		state = "not ready, " + border.Unready
@@ -325,7 +333,7 @@ func renderBorder(w io.Writer, border *BorderTable) {
 	if !border.ReadAt.IsZero() {
 		read = "read " + sinceText(time.Duration(border.ReadAgo)) + " ago"
 	}
-	fmt.Fprintf(w, "\nBorder filter, %s, %s, %s\n", border.Where, read, state)
+	fmt.Fprintf(w, "\nAntispoof filter, %s, %s, %s\n", border.Where, read, state)
 	if border.Err != "" {
 		fmt.Fprintf(w, "  read now: %s\n", border.Err)
 	}

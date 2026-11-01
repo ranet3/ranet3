@@ -250,7 +250,7 @@ func TestTUNReadFromASourceOfAnotherNodeIsForged(t *testing.T) {
 	}
 }
 
-// the overlay rule needs cap.border's overlay written, and without it an overlay address no route holds is no node's and passes
+// the overlay rule needs the overlay written, and without it an overlay address no route holds is no node's and passes
 // while the table rule needs none, for a source routed to another node and for one held alike
 func TestTUNReadWithNoOverlayIsForgedByTheTableAlone(t *testing.T) {
 	for _, family := range []int{4, 6} {

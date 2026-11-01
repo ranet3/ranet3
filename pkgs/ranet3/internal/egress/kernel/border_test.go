@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -23,7 +24,7 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// fakeBorder stands in for the kernel under the border filter, as fakeBackend
+// fakeBorder stands in for the kernel under the antispoof filter, as fakeBackend
 // does under the translator
 type fakeBorder struct {
 	mu        sync.Mutex
@@ -39,10 +40,9 @@ type fakeBorder struct {
 	// garble makes a host that holds the last rule written under a comment cut short
 	garble bool
 	// fault is how the table or the chain differs from what Apply writes. An
-	// apply clears it unless stuck holds it, or remake does and the apply
-	// does not delete the table first.
-	fault         string
-	remake, stuck bool
+	// apply, which makes the table again, clears it unless stuck holds it.
+	fault string
+	stuck bool
 	// sets is each set's prefixes as the last Apply or Fill left them, which a
 	// readback against other prefixes reads as a fault
 	sets borderSets
@@ -71,7 +71,7 @@ func (f *fakeBorder) readback(rules []BorderRule, sets borderSets) chainReadback
 	for i := range out {
 		out[i].Packets = f.counts[out[i].Spec]
 	}
-	read := chainReadback{rules: out, fault: f.fault, remake: f.fault != "" && f.remake}
+	read := chainReadback{rules: out, fault: f.fault}
 	if name := slices.Sorted(maps.Keys(sets.changed(f.sets))); sets != nil && read.fault == "" && len(name) > 0 {
 		read.fault = "its set " + name[0] + " holds other elements"
 	}
@@ -119,21 +119,16 @@ func (f *fakeBorder) Fill(was, sets borderSets) error {
 	return nil
 }
 
-// Apply logs remake for an apply that deletes the table first
-func (f *fakeBorder) Apply(rules []BorderRule, sets borderSets, remake bool) error {
+func (f *fakeBorder) Apply(rules []BorderRule, sets borderSets) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	entry := "apply"
-	if remake {
-		entry = "remake"
-	}
-	f.log = append(f.log, entry)
+	f.log = append(f.log, "apply")
 	if f.failApply {
 		return errors.New("no")
 	}
 	f.applied++
-	if !f.stuck && (remake || !f.remake) {
-		f.fault, f.remake = "", false
+	if !f.stuck {
+		f.fault = ""
 	}
 	f.held = nil
 	for _, rule := range rules {
@@ -209,7 +204,7 @@ const entryRules = 10
 // readyMoves is each move of the filter's readiness bus recorded, in order
 func readyMoves(bus *events.Bus) []string {
 	var out []string
-	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.ready" }, 0) {
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.ready" }, 0) {
 		out = append(out, event.Attrs["ready"])
 	}
 	return out
@@ -245,19 +240,19 @@ func runBorder(t *testing.T, f *BorderFilter) {
 	})
 }
 
-// waitForPass waits for a border.pass event woken by trigger
+// waitForPass waits for an antispoof.pass event woken by trigger
 func waitForPass(t *testing.T, bus *events.Bus, trigger string) {
 	t.Helper()
 	for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
 		var triggers []string
-		for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.pass" }, 0) {
+		for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.pass" }, 0) {
 			triggers = append(triggers, event.Attrs["trigger"])
 		}
 		if slices.Contains(triggers, trigger) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the border filter recorded passes woken by %q, none by %s", triggers, trigger)
+			t.Fatalf("the antispoof filter recorded passes woken by %q, none by %s", triggers, trigger)
 		}
 	}
 }
@@ -292,9 +287,8 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 // The entry chain lets a packet leave by the tun only as a reply, toward a
 // link-local or multicast IPv6 destination, from a source this node owns or
 // toward a none class's destination, family by family, and drops the rest,
-// counted. A node with no cap.border holds the entry chain alone and its
-// table is made again whole on every rewrite, so a border chain an earlier
-// start left goes with it.
+// counted. A node with no overlay holds the entry chain alone, and the table
+// is made again whole on every rewrite with or without one.
 func TestEntryChainRunsWithAndWithoutTheBorder(t *testing.T) {
 	want := []string{
 		"return via other than ranet0",
@@ -321,13 +315,13 @@ func TestEntryChainRunsWithAndWithoutTheBorder(t *testing.T) {
 			}
 		}
 		if !slices.Equal(entry, want) {
-			t.Errorf("with cap.border %v the entry chain holds %q, want %q", cfg, entry, want)
+			t.Errorf("with overlay %v the entry chain holds %q, want %q", cfg, entry, want)
 		}
 		if bordered := len(be.specs()) != 0; bordered != (cfg != nil) {
-			t.Errorf("with cap.border %v the border chain holds %q", cfg, be.specs())
+			t.Errorf("with overlay %v the antispoof chain holds %q", cfg, be.specs())
 		}
-		if remade := be.entries()[1] == "remake"; remade != (cfg == nil) || !f.ready {
-			t.Errorf("with cap.border %v the start went %q", cfg, be.entries())
+		if be.entries()[1] != "apply" || !f.ready {
+			t.Errorf("with overlay %v the start went %q", cfg, be.entries())
 		}
 	}
 }
@@ -340,7 +334,7 @@ func TestEntryChainRunsWithAndWithoutTheBorder(t *testing.T) {
 func TestBorderRefillsTheSetsThatMovedAlone(t *testing.T) {
 	derived := egress.BorderSets{Owned: ranges("192.0.2.1/32")}
 	rt := borderRuntime(nil)
-	rt.Sets = func() egress.BorderSets { return derived }
+	rt.Sets = func(*egress.Border) egress.BorderSets { return derived }
 	be := &fakeBorder{}
 	f, err := startBorderFilter(nil, rt, be)
 	if err != nil {
@@ -370,8 +364,40 @@ func TestBorderRefillsTheSetsThatMovedAlone(t *testing.T) {
 	if err := f.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := be.entries()[mark:], []string{"rules", "remake", "rules"}; !slices.Equal(got, want) || !f.ready {
+	if got, want := be.entries()[mark:], []string{"rules", "apply", "rules"}; !slices.Equal(got, want) || !f.ready {
 		t.Errorf("a pass after another writer emptied a set went %q, ready %v, want %q", got, f.ready, want)
+	}
+}
+
+// Each pass derives its sets from the configuration it writes the rules
+// from, the one the last SetConfig handed the filter, nil where overlay is
+// not written
+func TestBorderDerivesTheSetsFromTheConfigurationItRuns(t *testing.T) {
+	var read []*egress.Border
+	rt := borderRuntime(nil)
+	rt.Sets = func(cfg *egress.Border) egress.BorderSets {
+		read = append(read, cfg)
+		return egress.BorderSets{}
+	}
+	if _, err := startBorderFilter(nil, rt, &fakeBorder{}); err != nil || len(read) != 1 || read[0] != nil {
+		t.Fatalf("with no overlay the start derived the sets from %v, %v", read, err)
+	}
+	read = nil
+	f, err := startBorderFilter(overlay(t), rt, &fakeBorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := *overlay(t)
+	next.Antispoof = egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: prefixes(t, "198.18.1.0/24")}}}
+	next.Own, next.Addresses = []netip.Prefix{netip.MustParsePrefix("198.18.1.0/25")}, []netip.Prefix{netip.MustParsePrefix("198.18.1.200/32")}
+	if err := f.SetConfig(next); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 2 || read[1] == nil || !reflect.DeepEqual(*read[1], next) {
+		t.Errorf("the pass after SetConfig derived the sets from %+v, want %+v", read, next)
 	}
 }
 
@@ -386,7 +412,7 @@ func TestBorderCarveOutIsAcceptedFromItsLinkAndReportedOnce(t *testing.T) {
 	lease := egress.CarveOut{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}
 	derived := egress.BorderSets{CarveOuts: []egress.CarveOut{lease}, Carved: ranges("198.18.0.5/32")}
 	rt := borderRuntime(bus)
-	rt.Sets = func() egress.BorderSets { return derived }
+	rt.Sets = func(*egress.Border) egress.BorderSets { return derived }
 	be := &fakeBorder{}
 	f, err := startBorderFilter(overlay(t), rt, be)
 	if err != nil {
@@ -417,15 +443,212 @@ func TestBorderCarveOutIsAcceptedFromItsLinkAndReportedOnce(t *testing.T) {
 		t.Errorf("with the carve-out gone the chain holds %q, its carved drop among them", got)
 	}
 	var got []string
-	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.carve" }, 0) {
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.carve" }, 0) {
 		got = append(got, event.Attrs["link"]+" "+event.Attrs["prefix"]+" "+event.Attrs["carved"])
 	}
 	if want := []string{"eth0 198.18.0.0/24 true", "eth0 198.18.0.0/24 false"}; !slices.Equal(got, want) {
-		t.Errorf("recorded border.carve %q, want %q", got, want)
+		t.Errorf("recorded antispoof.carve %q, want %q", got, want)
 	}
-	if strings.Count(lines.String(), "level=WARN msg=\"border carves the overlay for a link that holds part of it\"") != 1 ||
-		strings.Count(lines.String(), "level=INFO msg=\"border no longer carves the overlay for a link\"") != 1 {
+	if strings.Count(lines.String(), "level=WARN msg=\"antispoof carves the overlay for a link that holds part of it\"") != 1 ||
+		strings.Count(lines.String(), "level=INFO msg=\"antispoof no longer carves the overlay for a link\"") != 1 {
 		t.Errorf("the carve-out was not logged once each way:\n%s", lines.String())
+	}
+}
+
+// Another node's prefix coming to overlap an exemption is reported once, at
+// warning with an event naming the exemption, the prefix, its part the carved
+// sets take, the peer it is routed via and the selected route's router-id,
+// and its end at info with no event
+func TestBorderExemptionConflictIsReportedOnce(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	bus := events.New()
+	p := netip.MustParsePrefix
+	conflict := egress.ExemptConflict{Exemption: egress.Exemption{Interface: "eth1", Prefix: p("198.18.0.0/25")}, Prefix: p("198.18.0.64/28"), Carved: p("198.18.0.64/28"), Via: "example/peer", RouterID: "0102030405060708"}
+	derived := egress.BorderSets{Carved: ranges("198.18.0.64/28"), Conflicts: []egress.ExemptConflict{conflict}}
+	rt := borderRuntime(bus)
+	rt.Sets = func(*egress.Border) egress.BorderSets { return derived }
+	cfg := overlay(t)
+	cfg.Antispoof = egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: []schema.Prefix{schema.MustPrefix("198.18.0.0/25")}}}}
+	f, err := startBorderFilter(cfg, rt, &fakeBorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.reconcile()
+	derived = egress.BorderSets{}
+	f.reconcile()
+	f.reconcile()
+	var got []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.conflict" }, 0) {
+		got = append(got, strings.Join([]string{event.Attrs["exemption"], event.Attrs["interface"], event.Attrs["prefix"], event.Attrs["carved"], event.Attrs["routed_via"], event.Attrs["router_id"]}, " "))
+	}
+	if want := []string{"198.18.0.0/25 eth1 198.18.0.64/28 198.18.0.64/28 example/peer 0102030405060708"}; !slices.Equal(got, want) {
+		t.Errorf("recorded antispoof.conflict %q, want %q", got, want)
+	}
+	if strings.Count(lines.String(), "level=WARN msg=\"antispoof drops part of an exemption, since another node's prefix holds it\"") != 1 ||
+		strings.Count(lines.String(), "level=INFO msg=\"antispoof no longer drops part of an exemption for another node's prefix\"") != 1 {
+		t.Errorf("the conflict was not logged once each way:\n%s", lines.String())
+	}
+}
+
+// A conflict read through routes from two sources at once, whose route then
+// moves to another peer and another router-id between two passes, and which a
+// second source joins again, drops what it dropped, so the filter reports it
+// once, the event naming the first route it read, and logs its end once, when
+// the carved sets no longer hold it
+func TestBorderExemptionConflictMovingItsRouteIsReportedOnce(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	bus := events.New()
+	p := netip.MustParsePrefix
+	conflict := egress.ExemptConflict{Exemption: egress.Exemption{Interface: "eth1", Prefix: p("198.18.0.0/25")}, Prefix: p("198.18.0.64/28"), Carved: p("198.18.0.64/28"), Via: "example/peer-a", RouterID: "0102030405060708"}
+	// the same drop the first pass reads through a route from another source too
+	alongside := conflict
+	alongside.Via = "example/peer-c"
+	derived := egress.BorderSets{Carved: ranges("198.18.0.64/28"), Conflicts: []egress.ExemptConflict{conflict, alongside}}
+	rt := borderRuntime(bus)
+	rt.Sets = func(*egress.Border) egress.BorderSets { return derived }
+	cfg := overlay(t)
+	cfg.Antispoof = egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: []schema.Prefix{schema.MustPrefix("198.18.0.0/25")}}}}
+	f, err := startBorderFilter(cfg, rt, &fakeBorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := conflict
+	moved.Via, moved.RouterID = "example/peer-b", "0807060504030201"
+	derived.Conflicts = []egress.ExemptConflict{moved}
+	f.reconcile()
+	f.reconcile()
+	if strings.Contains(lines.String(), "antispoof no longer drops part of an exemption") {
+		t.Errorf("the filter logged the end of a drop whose route moved while the carved sets hold it:\n%s", lines.String())
+	}
+	joined := moved
+	joined.Via = "example/peer-c"
+	derived.Conflicts = []egress.ExemptConflict{moved, joined}
+	f.reconcile()
+	derived = egress.BorderSets{}
+	f.reconcile()
+	var got []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.conflict" }, 0) {
+		got = append(got, event.Attrs["routed_via"]+" "+event.Attrs["router_id"])
+	}
+	if want := []string{"example/peer-a 0102030405060708"}; !slices.Equal(got, want) {
+		t.Errorf("recorded antispoof.conflict %q for one drop whose route moved, want %q", got, want)
+	}
+	if strings.Count(lines.String(), "level=WARN msg=\"antispoof drops part of an exemption, since another node's prefix holds it\"") != 1 ||
+		strings.Count(lines.String(), "level=INFO msg=\"antispoof no longer drops part of an exemption for another node's prefix\"") != 1 {
+		t.Errorf("a drop whose route moved was not logged once each way:\n%s", lines.String())
+	}
+}
+
+// Another node's prefix inside one exemption written under two interfaces is
+// two drops, each reported once, and the end of one is logged while the other
+// stays
+func TestBorderExemptionConflictUnderTwoInterfacesIsTwoReports(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	bus := events.New()
+	p := netip.MustParsePrefix
+	on := func(name string) egress.ExemptConflict {
+		return egress.ExemptConflict{Exemption: egress.Exemption{Interface: name, Prefix: p("198.18.0.0/25")}, Prefix: p("198.18.0.64/28"), Carved: p("198.18.0.64/28"), Via: "example/peer"}
+	}
+	derived := egress.BorderSets{Carved: ranges("198.18.0.64/28"), Conflicts: []egress.ExemptConflict{on("eth1"), on("eth2")}}
+	rt := borderRuntime(bus)
+	rt.Sets = func(*egress.Border) egress.BorderSets { return derived }
+	cfg := overlay(t)
+	cfg.Antispoof = egress.Antispoof{Interface: map[string]egress.AntispoofInterface{
+		"eth1": {Exempt: []schema.Prefix{schema.MustPrefix("198.18.0.0/25")}},
+		"eth2": {Exempt: []schema.Prefix{schema.MustPrefix("198.18.0.0/25")}},
+	}}
+	f, err := startBorderFilter(cfg, rt, &fakeBorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.conflict" }, 0) {
+		got = append(got, event.Attrs["interface"])
+	}
+	if want := []string{"eth1", "eth2"}; !slices.Equal(got, want) {
+		t.Errorf("one prefix under the exemption of eth1 and of eth2 recorded antispoof.conflict for %q, want %q", got, want)
+	}
+	started := lines.Len()
+	derived.Conflicts = []egress.ExemptConflict{on("eth1")}
+	f.reconcile()
+	var ends []string
+	for _, line := range strings.Split(lines.String()[started:], "\n") {
+		if strings.Contains(line, "antispoof no longer drops part of an exemption") {
+			ends = append(ends, line)
+		}
+	}
+	if len(ends) != 1 || !strings.Contains(ends[0], "interface=eth2 prefix=198.18.0.64/28") {
+		t.Errorf("eth2's drop went while eth1's stayed and the filter logged the ends %q:\n%s", ends, lines.String())
+	}
+}
+
+// The chain accepts the inside, drops the carved sets' sources of each family
+// with a carve-out or an exemption, accepts the carve-outs and then the
+// exemptions, the shared ones first and then each interface's by name, each
+// list in one order whatever order it was written in, and drops the overlay
+// last. A family exempted with no carve-out holds its carved drop, and one
+// neither carved nor exempted holds none.
+func TestBorderAcceptsExemptionsBehindTheCarvedDropAndTheCarveOuts(t *testing.T) {
+	cfg := overlay(t, "198.18.0.0/15", "3fff::/20")
+	cfg.Antispoof = egress.Antispoof{
+		Exempt: prefixes(t, "3fff:0:1::/48", "198.18.1.0/24"),
+		Interface: map[string]egress.AntispoofInterface{
+			"wl*":  {Exempt: prefixes(t, "198.18.3.0/24", "198.18.2.0/24")},
+			"eth1": {Exempt: prefixes(t, "198.18.4.0/24")},
+		},
+	}
+	lease := egress.CarveOut{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}
+	rt := borderRuntime(nil)
+	rt.Sets = func(*egress.Border) egress.BorderSets { return egress.BorderSets{CarveOuts: []egress.CarveOut{lease}} }
+	be := &fakeBorder{}
+	f, err := startBorderFilter(cfg, rt, be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"accept via ranet0",
+		"accept via lo",
+		"drop ipv4 source @carved4",
+		"drop ipv6 source @carved6",
+		"accept via eth0 source 198.18.0.0/24",
+		"accept exempt source 198.18.1.0/24",
+		"accept exempt source 3fff:0:1::/48",
+		"accept exempt via eth1 source 198.18.4.0/24",
+		"accept exempt via wl* source 198.18.2.0/24",
+		"accept exempt via wl* source 198.18.3.0/24",
+		"drop ipv4 source 198.18.0.0/15",
+		"drop ipv6 source 3fff::/20",
+	}
+	if got := be.specs(); !slices.Equal(got, want) || !f.ready {
+		t.Errorf("installed %q, ready %v, want %q", got, f.ready, want)
+	}
+	for _, chain := range f.Debug().Chains {
+		for _, rule := range chain.Rules {
+			if strings.HasPrefix(rule.Spec, "accept exempt") && (rule.Verdict != "accept" || rule.Reason != "exempt") {
+				t.Errorf("%s reads verdict %q and reason %q, want accept and exempt", rule.Spec, rule.Verdict, rule.Reason)
+			}
+		}
+	}
+	// an IPv6 exemption alone carves IPv6 alone
+	cfg = overlay(t, "198.18.0.0/15", "3fff::/20")
+	cfg.Antispoof = egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: prefixes(t, "3fff:0:1::/48")}}}
+	be = &fakeBorder{}
+	if _, err := startBorderFilter(cfg, borderRuntime(nil), be); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{
+		"accept via ranet0",
+		"accept via lo",
+		"drop ipv6 source @carved6",
+		"accept exempt via eth1 source 3fff:0:1::/48",
+		"drop ipv4 source 198.18.0.0/15",
+		"drop ipv6 source 3fff::/20",
+	}
+	if got := be.specs(); !slices.Equal(got, want) {
+		t.Errorf("with an IPv6 exemption alone installed %q, want %q", got, want)
 	}
 }
 
@@ -439,7 +662,7 @@ func TestBorderFollowsTheHostsLinksBetweenSweeps(t *testing.T) {
 	derived := egress.BorderSets{}
 	network := make(chan struct{}, 1)
 	rt := borderRuntime(nil)
-	rt.Sets = func() egress.BorderSets {
+	rt.Sets = func(*egress.Border) egress.BorderSets {
 		mu.Lock()
 		defer mu.Unlock()
 		return derived
@@ -484,7 +707,7 @@ func TestBorderRefusesWhatWouldNotFilter(t *testing.T) {
 		cfg  *egress.Border
 		want string
 	}{
-		{"an empty overlay", &egress.Border{}, "overlay is empty, so the filter would pass every forged mesh source"},
+		{"an empty overlay", &egress.Border{}, "overlay is empty, so the antispoof filter would pass every forged mesh source"},
 		{"an entry that is not a prefix", &egress.Border{Overlay: []schema.Prefix{{}}}, "is not a prefix"},
 		{"bits below the length", &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.1/15")}}, "has bits set below its prefix length"},
 		{"an IPv4 prefix written as IPv6", overlay(t, "::ffff:198.18.0.0/111"), "written as IPv6, so write it as 198.18.0.0/15"},
@@ -532,7 +755,7 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 		be   *fakeBorder
 		want string
 	}{
-		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains border and mesh_entry: install rules: no"},
+		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains antispoof and mesh_entry: install rules: no"},
 		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chains read back other than they were written"},
 	} {
 		t.Run(one.name, func(t *testing.T) {
@@ -548,7 +771,7 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 				t.Errorf("the refused start withdrew %d times, want once", one.be.withdrawn)
 			}
 			if moves := readyMoves(bus); slices.Contains(moves, "true") {
-				t.Errorf("the refused start reported the border ready: %q", moves)
+				t.Errorf("the refused start reported the antispoof filter ready: %q", moves)
 			}
 		})
 	}
@@ -575,7 +798,7 @@ func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 	be.failApply = true
 	f.reconcile()
 	var got [][]string
-	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.pass" }, 0) {
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.pass" }, 0) {
 		if event.Attrs["took"] == "" || event.Attrs["trigger"] != "sweep" {
 			t.Errorf("a pass was recorded without its trigger or duration: %+v", event)
 		}
@@ -583,7 +806,7 @@ func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 	}
 	// the two inside accepts and the overlay's two drops, with no carve-out and so no carved drop
 	if want := [][]string{{fmt.Sprint(4 + entryRules), ""}, {"0", "install rules: no"}}; !slices.EqualFunc(got, want, slices.Equal) {
-		t.Errorf("the border filter recorded %q, want %q", got, want)
+		t.Errorf("the antispoof filter recorded %q, want %q", got, want)
 	}
 }
 
@@ -596,7 +819,7 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	be := &fakeBorder{}
 	// an IPv4 carve-out, so the chain holds the IPv4 carved drop
 	rt := borderRuntime(bus)
-	rt.Sets = func() egress.BorderSets {
+	rt.Sets = func(*egress.Border) egress.BorderSets {
 		return egress.BorderSets{CarveOuts: []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}}
 	}
 	f := newBorderFilter(overlay(t), rt, be)
@@ -614,7 +837,7 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	be.mu.Unlock()
 	f.reconcile()
 	var got []string
-	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.dropped" }, 0) {
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.dropped" }, 0) {
 		var counts []string
 		for _, kind := range egress.BorderDropKinds {
 			counts = append(counts, event.Attrs[kind.Name()])
@@ -622,9 +845,9 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 		got = append(got, strings.Join(counts, " "))
 	}
 	if want := []string{"3 0 0 0 0 0", "2 2 1 0 0 4"}; !slices.Equal(got, want) {
-		t.Errorf("recorded border.dropped %q, want %q", got, want)
+		t.Errorf("recorded antispoof.dropped %q, want %q", got, want)
 	}
-	if n := strings.Count(lines.String(), "border filter dropped packets"); n != 2 {
+	if n := strings.Count(lines.String(), "antispoof filter dropped packets"); n != 2 {
 		t.Errorf("logged the drops %d times, want twice:\n%s", n, lines.String())
 	}
 	if want := (egress.BorderDrops{5, 2, 1, 0, 0, 4}); f.Stats().Dropped != want {
@@ -661,10 +884,10 @@ func TestAnotherWritersChangeTakesTheBorderDownUntilThePassRestoresIt(t *testing
 	be.changed <- struct{}{}
 	waitForPass(t, bus, "changed")
 	if got, want := be.entries()[mark:], []string{"rules", "apply", "rules"}; !slices.Equal(got, want) {
-		t.Errorf("after the change the border filter went %q, want %q", got, want)
+		t.Errorf("after the change the antispoof filter went %q, want %q", got, want)
 	}
 	if got, want := readyMoves(bus), []string{"true", "false", "true"}; !slices.Equal(got, want) {
-		t.Errorf("the border's readiness moved %q, want %q", got, want)
+		t.Errorf("the antispoof filter's readiness moved %q, want %q", got, want)
 	}
 }
 
@@ -690,7 +913,7 @@ func TestBorderRewritesWhatReadsBackOtherThanWritten(t *testing.T) {
 		{"a rule with no comment at the tail of the chain", func() { be.held = append(be.held, Installed{}) }, []string{"rules", "apply", "rules"}},
 		{"the chain's rules in another order", func() { slices.Reverse(be.held) }, []string{"rules", "apply", "rules"}},
 		{"a table set dormant", func() { be.fault = dormant }, []string{"rules", "apply", "rules"}},
-		{"the chain made again at another priority", func() { be.fault, be.remake = "its chain reads back at priority 0", true }, []string{"rules", "remake", "rules"}},
+		{"the chain made again at another priority", func() { be.fault = "its chain reads back at priority 0" }, []string{"rules", "apply", "rules"}},
 	} {
 		be.mu.Lock()
 		change.apply()
@@ -734,7 +957,7 @@ func TestMissedNotificationsWakeTheBorderAndLeaveItReady(t *testing.T) {
 	be.missed <- struct{}{}
 	waitForPass(t, bus, "missed")
 	if got, want := be.entries()[mark:], []string{"rules", "apply", "rules"}; !slices.Equal(got, want) {
-		t.Errorf("after the lost notifications the border filter went %q, want %q", got, want)
+		t.Errorf("after the lost notifications the antispoof filter went %q, want %q", got, want)
 	}
 }
 
@@ -824,10 +1047,10 @@ func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {
 		}
 		entries := be.entries()
 		if got := entries[len(entries)-1]; got != "withdraw" {
-			t.Errorf("the border filter stopped by %q, want the withdrawal", got)
+			t.Errorf("the antispoof filter stopped by %q, want the withdrawal", got)
 		}
 		if got, want := readyMoves(bus), []string{"true", "false"}; !slices.Equal(got, want) {
-			t.Errorf("the border's readiness moved %q, want %q", got, want)
+			t.Errorf("the antispoof filter's readiness moved %q, want %q", got, want)
 		}
 	}
 }
@@ -849,7 +1072,7 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	be.held = append(be.held, Installed{Spec: "drop ipv4 source 192.0.2.0/24"}, Installed{})
 	be.mu.Unlock()
 	debug := f.Debug()
-	if debug.Where != "nftables table inet ranet3 chains border and mesh_entry" || !debug.Ready {
+	if debug.Where != "nftables table inet ranet3 chains antispoof and mesh_entry" || !debug.Ready {
 		t.Errorf("the debug read reports %+v", debug)
 	}
 	var got []string
@@ -863,7 +1086,7 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 		got = append(got, fmt.Sprintf("set %s %v", set.Name, set.Elements))
 	}
 	want := []string{
-		"chain border prerouting -300",
+		"chain antispoof prerouting -300",
 		"accept via ranet0|accept|inside||true|0",
 		"accept via lo|accept|inside||false|0",
 		"drop ipv4 source 198.18.0.0/15|drop|overlay_source|ipv4|true|12",

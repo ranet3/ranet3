@@ -251,7 +251,7 @@ func addressIn(tc hegel.TestCase, prefix netip.Prefix) netip.Addr {
 	return out
 }
 
-// overlays draws cap.border's overlay: up to two prefixes, each as long as
+// overlays draws the overlay: up to two prefixes, each as long as
 // Border.Validate takes or longer, MinSourceBits4 or MinSourceBits6, mostly of
 // mesh space and now and then one holding its family's unspecified address or
 // one the mesh cannot carry, neither of which gets a hold

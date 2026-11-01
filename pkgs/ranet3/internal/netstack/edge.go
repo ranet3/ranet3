@@ -16,7 +16,7 @@ type sourceAnswer struct {
 	verdict Verdict
 	// counted is the matched entry counting as a default, which the checks pass over, so another exit's default or halves make no source another node's
 	counted bool
-	// overlay is the source lying inside cap.border's overlay
+	// overlay is the source lying inside the overlay
 	overlay bool
 }
 

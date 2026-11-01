@@ -474,16 +474,18 @@ type drawnSets struct {
 	Carved, Owned, None []netip.Prefix
 }
 
-func (d drawnSets) borderSets() egress.BorderSets {
+func (d drawnSets) borderSets(*egress.Border) egress.BorderSets {
 	return egress.BorderSets{CarveOuts: d.CarveOuts, Carved: meshkernel.Ranges(d.Carved), Owned: meshkernel.Ranges(d.Owned), None: meshkernel.Ranges(d.None)}
 }
 
 // borderModel gives the verdict the chain means for a packet, as 2.2 and 2.6
 // write it: whatever arrives on a device inside the mesh passes, and from
-// outside it a source the mesh's table holds inside a carve-out is dropped, a
-// source in a carve-out passes on that carve-out's link alone, any other
-// source in the overlay is dropped, each drop under its reason, and anything
-// else passes
+// outside it a source the carved sets hold is dropped, a source in a
+// carve-out passes on that carve-out's link alone, a source in an exemption
+// passes on an interface its name matches, the name itself or with a
+// trailing * every name starting with what comes before it, and on every
+// interface for the shared list, any other source in the overlay is dropped,
+// each drop under its reason, and anything else passes
 func borderModel(inside []string, cfg egress.Border, sets drawnSets, p drawnPacket) (accept bool, reason string) {
 	if slices.Contains(inside, p.iif) {
 		return true, ""
@@ -492,6 +494,15 @@ func borderModel(inside []string, cfg egress.Border, sets drawnSets, p drawnPack
 		return false, "carved_source"
 	}
 	if slices.ContainsFunc(sets.CarveOuts, func(c egress.CarveOut) bool { return c.Link == p.iif && c.Prefix.Contains(p.source) }) {
+		return true, ""
+	}
+	matches := func(name string) bool {
+		if pattern, wildcard := strings.CutSuffix(name, "*"); wildcard {
+			return strings.HasPrefix(p.iif, pattern)
+		}
+		return name == "" || name == p.iif
+	}
+	if slices.ContainsFunc(cfg.Exemptions(), func(e egress.Exemption) bool { return matches(e.Interface) && e.Prefix.Contains(p.source) }) {
 		return true, ""
 	}
 	for _, prefix := range cfg.Overlay {
@@ -602,11 +613,14 @@ func overlayPrefixes() hegel.Generator[[]schema.Prefix] {
 // For a drawn configuration and each of up to 16 drawn packets, the encoded
 // chain, executed byte by byte by the interpreter above, passes or drops the
 // packet as the model does and counts a drop under the model's reason, never
-// an accept. The inside names share prefixes with each other and with the
-// devices a packet arrives on, and the sources sit on either side of each
-// overlay prefix's edges, among them IPv6 sources whose bytes 4 to 7 spell an
-// address inside an IPv4 carved or overlay prefix, which an IPv4 rule with no
-// family test would read.
+// an accept. The inside names and the exemptions' interface names, exact and
+// ending in *, share prefixes with each other and with the devices a packet
+// arrives on, the carved prefixes lie inside the carve-outs and the
+// exemptions, and the sources sit on either side of each overlay prefix's,
+// carve-out's, exemption's and carved prefix's edges, among them IPv6 sources
+// whose bytes 4 to 7 spell an address inside an IPv4 carved or overlay prefix,
+// which an IPv4 rule with no family test would read. A third of the packets
+// aim at an exemption, from inside it on an interface its name matches.
 func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		inside := []string{"ranet3"}
@@ -631,6 +645,46 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 				drawn.Carved = append(drawn.Carved, hegel.Draw(ht, insidePrefix(carveOut.Prefix)))
 			}
 		}
+		// exemptions inside the overlay, none an IPv4 prefix written as IPv6,
+		// shared and on interfaces named exactly or with a trailing *, the names
+		// sharing prefixes with each other and with the devices a packet arrives
+		// on, and carved prefixes inside each
+		var names []string
+		for _, prefix := range cfg.Overlay {
+			if !hegel.Draw(ht, hegel.Booleans()) {
+				continue
+			}
+			exempt := schema.PrefixFrom(hegel.Draw(ht, hegel.Filter(insidePrefix(prefix.Prefix), func(p netip.Prefix) bool { return !p.Addr().Is4In6() })))
+			name := ""
+			if hegel.Draw(ht, hegel.WeightedBooleans(2.0/3)) {
+				size := hegel.Draw(ht, pbt.Spanning(1, unix.IFNAMSIZ-1))
+				name = hegel.Draw(ht, hegel.Text().Alphabet("eth1").MinSize(size).MaxSize(size))
+				if hegel.Draw(ht, hegel.Booleans()) {
+					name += "*"
+				}
+			}
+			if name == "" {
+				if !slices.Contains(cfg.Antispoof.Exempt, exempt) {
+					cfg.Antispoof.Exempt = append(cfg.Antispoof.Exempt, exempt)
+				}
+			} else {
+				if cfg.Antispoof.Interface == nil {
+					cfg.Antispoof.Interface = map[string]egress.AntispoofInterface{}
+				}
+				entry := cfg.Antispoof.Interface[name]
+				if !slices.Contains(entry.Exempt, exempt) {
+					entry.Exempt = append(entry.Exempt, exempt)
+				}
+				cfg.Antispoof.Interface[name] = entry
+				names = append(names, name)
+			}
+			for range hegel.Draw(ht, pbt.Spanning(0, 2)) {
+				drawn.Carved = append(drawn.Carved, hegel.Draw(ht, insidePrefix(exempt.Prefix)))
+			}
+		}
+		if err := cfg.Validate(); err != nil {
+			ht.Fatalf("drew exemptions Validate refuses: %v", err)
+		}
 		all, sets, _ := newBorderFilter(&cfg, egress.BorderRuntime{Tun: "ranet3", Inside: inside, Sets: drawn.borderSets}, &fakeBorder{}).desired()
 		requests, err := borderBatch(all, sets, false)
 		refused := slices.ContainsFunc(inside, func(name string) bool { return len(name) >= unix.IFNAMSIZ })
@@ -643,7 +697,8 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		desired, rules := chainRules(all, requests, BorderChain)
 		held := encodedSets(ht, requests)
 		arrivals := []string{"eth0", "eth1", "eth", "ranet3a1b2"}
-		for _, name := range inside {
+		for _, name := range slices.Concat(inside, names) {
+			name = strings.TrimSuffix(name, "*")
 			arrivals = append(arrivals, name, name[:len(name)-1])
 			if len(name) < unix.IFNAMSIZ-1 {
 				arrivals = append(arrivals, name+"a")
@@ -651,13 +706,26 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 		}
 		arrivals = slices.DeleteFunc(arrivals, func(name string) bool { return name == "" })
 
+		exemptions := cfg.Exemptions()
 		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
+			// now and then a packet aimed at an exemption: from inside it, on an
+			// interface its name matches, past a wildcard's bytes as well
+			var aimed *egress.Exemption
+			if len(exemptions) != 0 && hegel.Draw(ht, hegel.WeightedBooleans(1.0/3)) {
+				aimed = &exemptions[hegel.Draw(ht, pbt.Spanning(0, len(exemptions)-1))]
+			}
 			v4 := hegel.Draw(ht, hegel.Booleans())
+			if aimed != nil {
+				v4 = aimed.Prefix.Addr().Is4()
+			}
 			edges := edgesOf(v4, schemaPrefixesOf(cfg.Overlay)...)
 			for _, carveOut := range drawn.CarveOuts {
 				edges = append(edges, edgesOf(v4, carveOut.Prefix)...)
 			}
 			edges = append(edges, edgesOf(v4, drawn.Carved...)...)
+			for _, exemption := range cfg.Exemptions() {
+				edges = append(edges, edgesOf(v4, exemption.Prefix)...)
+			}
 			var p drawnPacket
 			random := hegel.IPAddresses().IPv6()
 			if v4 {
@@ -683,12 +751,20 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 			}
 			p.destination = hegel.Draw(ht, random)
 			p.iif = hegel.Draw(ht, hegel.SampledFrom(arrivals))
+			if aimed != nil {
+				p.source = hegel.Draw(ht, hegel.SampledFrom(endsOf(v4, hegel.Draw(ht, insidePrefix(aimed.Prefix)))))
+				if pattern, wildcard := strings.CutSuffix(aimed.Interface, "*"); wildcard {
+					p.iif = pattern + hegel.Draw(ht, hegel.Text().Alphabet("a1").MaxSize(unix.IFNAMSIZ-1-len(pattern)))
+				} else if aimed.Interface != "" {
+					p.iif = aimed.Interface
+				}
+			}
 
 			wire := p.wire()
 			wire.sets = held
 			run := runChain(ht, rules, wire)
 			accept, reason := borderModel(inside, cfg, drawn, p)
-			where := fmt.Sprintf("a packet %+v through inside %q, overlay %v and carve-outs %+v", p, inside, cfg.Overlay, drawn)
+			where := fmt.Sprintf("a packet %+v through inside %q, overlay %v, exemptions %+v and carve-outs %+v", p, inside, cfg.Overlay, cfg.Exemptions(), drawn)
 			switch {
 			case run.accept != accept:
 				ht.Fatalf("%s: the chain accepted %v at rule %d, the model %v for %q", where, run.accept, run.rule, accept, reason)
@@ -696,7 +772,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 				ht.Fatalf("%s: dropped by %s, counted %v, want counted as %s", where, desired[run.rule], run.counted, reason)
 			case accept && run.counted:
 				ht.Fatalf("%s: accepted by a rule carrying a counter", where)
-			case accept && run.rule != -1 && !strings.HasPrefix(desired[run.rule].String(), "accept via "):
+			case accept && run.rule != -1 && !strings.HasPrefix(desired[run.rule].String(), "accept via ") && !strings.HasPrefix(desired[run.rule].String(), "accept exempt "):
 				ht.Fatalf("%s: accepted by %s", where, desired[run.rule])
 			}
 		}

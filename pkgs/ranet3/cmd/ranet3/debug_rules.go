@@ -14,9 +14,9 @@ func init() { debugCommands = append(debugCommands, (*reader).rulesCommand) }
 func (r *reader) rulesCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "rules",
-		Short: "Show the host's policy rules, the border filter's table and the kill switch's table",
+		Short: "Show the host's policy rules, the antispoof filter's table and the kill switch's table",
 		Long: `The output covers every policy rule the kernel holds, whoever wrote it, the
-rules the reconciler derives that the kernel does not hold, and the border
+rules the reconciler derives that the kernel does not hold, and the antispoof
 filter's table on every Linux node, its chains with the packets each rule
 counted and its sets. Under cap.exit.fallback = "none" it also covers the table
 ranet3_fallback, each line of each chain with the packets and bytes the drop

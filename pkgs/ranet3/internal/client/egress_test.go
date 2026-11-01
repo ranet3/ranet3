@@ -15,7 +15,7 @@ import (
 
 // The members the egress translator reads from are the prefixes the mesh routes
 // by the tun to another node, with no source prefix, each inside an entry of
-// cap.border.overlay and overlapping none of this node's own entries. A hold, a
+// overlay and overlapping none of this node's own entries. A hold, a
 // prefix of this node's, one reaching past the overlay and one routed from a
 // source are none, and a default this node originates for what it carries out
 // of the mesh leaves every member in place

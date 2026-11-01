@@ -269,7 +269,7 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 		},
 		{
 			Advertise: advertise, Ready: []string{"ipv4", "ipv6"}, Announced: advertise,
-			Skipped: "lookup skipped, the mesh routes no other node's ipv6 prefix inside cap.border.overlay",
+			Skipped: "lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay",
 		},
 		{
 			Advertise: linkLocal, Ready: []string{"ipv4", "ipv6"}, Announced: linkLocal,
@@ -293,14 +293,15 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	golden(t, "status-egress.txt", []byte(out.String()))
 }
 
-// the border row follows the egress row, naming where the table is, what it
+// the antispoof row follows the egress row, naming where the table is, what it
 // accepts, what it carves and what its drops counted, the entry chain's drops
-// alone on a node with no cap.border, or that it is not installed and why
+// alone on a node with no overlay, that it is not installed and why, or on a
+// platform running no filter, that the overlay it loaded is not enforced there
 func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
 	status.Border = &BorderStatus{
-		Where:  "nftables table inet ranet3 chains border and mesh_entry",
+		Where:  "nftables table inet ranet3 chains antispoof and mesh_entry",
 		Inside: []string{"ranet3", "lo", "dummy0"},
 		Overlay: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
@@ -319,11 +320,13 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	RenderStatus(&out, status)
 	goldenJSON(t, "status-border.json", status.Border)
 	out.WriteString("\n")
-	where := "nftables table inet ranet3 chains border and mesh_entry"
+	where := "nftables table inet ranet3 chains antispoof and mesh_entry"
 	for _, border := range []BorderStatus{
 		{Where: "nftables table inet ranet3 chain mesh_entry", Inside: []string{"ranet3", "lo"}, Ready: true, Dropped: BorderDrops{"mesh_entry_ipv6": 7}},
 		{Where: where, Unready: "another writer changed its table"},
-		{Where: where, Unready: "the readback differs", Err: "egress: list the rules of nftables table inet ranet3 chain border: operation not permitted"},
+		{Where: where, Unready: "the readback differs", Err: "egress: list the rules of nftables table inet ranet3 chain antispoof: operation not permitted"},
+		{UnenforcedOn: "darwin", Overlay: []netip.Prefix{netip.MustParsePrefix("3fff:a::/36")}},
+		{UnenforcedOn: "darwin", Overlay: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("3fff:a::/36")}},
 	} {
 		out.WriteString(borderLine(border) + "\n")
 	}

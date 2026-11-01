@@ -14,10 +14,10 @@ const (
 	ChainName = "postrouting"
 	// LimitChain is the table's filter forward base chain beside it
 	LimitChain = "forward"
-	// BorderChain is the border filter's chain at prerouting, in the inet
+	// BorderChain is the antispoof filter's chain at prerouting, in the inet
 	// table of the same name, so the translator's ip and ip6 tables and the
 	// filter's table never hold each other's chains
-	BorderChain = "border"
+	BorderChain = "antispoof"
 	// EntryChain is the chain beside it that lets a packet into the mesh's
 	// tun only as a reply, toward an IPv6 link-local or multicast destination,
 	// from a source this node owns or toward a destination a none class takes
@@ -30,7 +30,7 @@ const (
 	// minRetryInterval is the first delay after a failed pass, and it doubles up
 	// to the sweep interval, as in internal/kernel.
 	minRetryInterval = time.Second
-	// rawPriority is NF_IP_PRI_RAW, the hook priority the border chain runs
+	// rawPriority is NF_IP_PRI_RAW, the hook priority the antispoof chain runs
 	// at: after defragmentation at -400 and before conntrack at -200, so a
 	// forged packet creates no connection entry
 	rawPriority = -300

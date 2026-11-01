@@ -18,11 +18,11 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// borderStep is the host under one pass of the border filter
+// borderStep is the host under one pass of the antispoof filter
 type borderStep struct {
 	held                         []Installed
 	fault                        string
-	remake, stuck                bool
+	stuck                        bool
 	failRules, failApply, garble bool
 }
 
@@ -30,8 +30,8 @@ type borderStep struct {
 // filter asks for half the time and some of them otherwise, now and then
 // reversed, and now and then another writer's rule among them, at the tail
 // half the time, with no spelling or one the filter never writes. The table or
-// the chain now and then reads back with a setting a rewrite puts back in
-// place, one only a remade table puts back, or one nothing puts back, and a
+// the chain now and then reads back with a setting a rewrite in place would
+// put back, one only a remade table puts back, or one nothing puts back, and a
 // listing or an apply now and then fails, or the chain comes back garbled.
 func borderSteps(desired []BorderRule) hegel.Generator[borderStep] {
 	foreign := []string{"", "drop ipv4 source 192.0.2.0/24"}
@@ -63,7 +63,6 @@ func borderSteps(desired []BorderRule) hegel.Generator[borderStep] {
 		}
 		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
 			s.fault = hegel.Draw(tc, hegel.SampledFrom(faults))
-			s.remake = hegel.Draw(tc, hegel.Booleans())
 			s.stuck = hegel.Draw(tc, hegel.WeightedBooleans(1.0/4))
 		}
 		return s
@@ -74,8 +73,8 @@ func borderSteps(desired []BorderRule) hegel.Generator[borderStep] {
 // applies it makes in order, the chain the host holds after it, the rules the
 // pass counts and its readiness with the reason it is not ready. The pass
 // rewrites the chain when the readback carries a fault or its spellings are
-// not the desired ones in order, deleting the table first where the fault says
-// only that puts it back, and reads ready when the readback after it carries
+// not the desired ones in order, the table made again whatever the fault, and
+// reads ready when the readback after it carries
 // no fault and every desired spelling in order with nothing else.
 func borderPassAfter(now borderStep, desired []BorderRule) (log, chain []string, installed int, ready bool, unready string) {
 	want := make([]string, 0, len(desired))
@@ -92,11 +91,7 @@ func borderPassAfter(now borderStep, desired []BorderRule) (log, chain []string,
 	if now.fault == "" && slices.Equal(chain, want) {
 		return log, chain, len(chain), true, ""
 	}
-	if now.fault != "" && now.remake {
-		log = append(log, "remake")
-	} else {
-		log = append(log, "apply")
-	}
+	log = append(log, "apply")
 	if now.failApply {
 		return log, chain, len(chain), false, "a pass failed: install rules: no"
 	}
@@ -114,10 +109,10 @@ func borderPassAfter(now borderStep, desired []BorderRule) (log, chain []string,
 	return log, chain, len(chain), true, ""
 }
 
-// Over a run of passes on a host drawn anew for each, the border filter lists,
+// Over a run of passes on a host drawn anew for each, the antispoof filter lists,
 // rewrites and reads back as borderPassAfter does, leaves the host holding the
 // model's chain, and reports the model's readiness and reason in Stats and
-// in a border.ready event, recorded only on a change.
+// in an antispoof.ready event, recorded only on a change.
 func TestBorderReadinessFollowsWhatThePassReadBack(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		be := &fakeBorder{}
@@ -132,7 +127,7 @@ func TestBorderReadinessFollowsWhatThePassReadBack(t *testing.T) {
 		for range hegel.Draw(ht, pbt.Spanning(1, 5)) {
 			now := hegel.Draw(ht, borderSteps(desired))
 			be.mu.Lock()
-			be.held, be.fault, be.remake, be.stuck = slices.Clone(now.held), now.fault, now.remake, now.stuck
+			be.held, be.fault, be.stuck = slices.Clone(now.held), now.fault, now.stuck
 			be.failRules, be.failApply, be.garble = now.failRules, now.failApply, now.garble
 			be.log = nil
 			be.mu.Unlock()

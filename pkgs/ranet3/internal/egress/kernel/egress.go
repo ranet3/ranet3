@@ -46,17 +46,17 @@
 // internal/client warns about for transit, read from the same place, and acted
 // on here because this end is the only one that knows.
 //
-// # The border filter
+// # The antispoof filter
 //
 // An exit's allow list says which sources it carries out of the mesh, and
-// it is authorization rather than a border: a host on any link of a forwarding
+// it is authorization rather than a filter: a host on any link of a forwarding
 // node can send that node a packet with a mesh source, which chain mesh_entry
-// keeps out of the mesh on every Linux node and chain border keeps off the
+// keeps out of the mesh on every Linux node and chain antispoof keeps off the
 // host's own services. BorderFilter owns a second table of this tool's name,
-// inet rather than ip and ip6, on every Linux node: chain border, written only
-// under cap.border, drops a source in the overlay or a carved one arriving
-// from outside the mesh, before conntrack, and chain mesh_entry, written with
-// or without the block, lets into the tun from another device only a reply, a
+// inet rather than ip and ip6, on every Linux node: chain antispoof, written
+// wherever overlay is, drops a source in the overlay or a carved one arriving
+// from outside the mesh that no exemption passes, before conntrack, and chain
+// mesh_entry, written with or without an overlay, lets into the tun from another device only a reply, a
 // source this node owns, an IPv6 link-local or multicast destination, or a
 // destination a none class takes. desired lists each chain's rules in order.
 //
@@ -113,7 +113,7 @@ type Runtime struct {
 	// system call of its own.
 	Lookup func([]Lookup) ([]Answer, error)
 	Sysctl func(path string) string
-	// Members is the prefixes inside cap.border.overlay that this node's table
+	// Members is the prefixes inside overlay that this node's table
 	// routes by the tun to other nodes, none of them overlapping one of this
 	// node's own, read on each pass. A family's forward lookups read from a
 	// member's address, and a family with no member skips them. Nil reads none.
@@ -392,8 +392,8 @@ func (r Rule) String() string {
 type Installed struct {
 	Spec string
 	// Family places a rule another writer put in a chain, which reads back with
-	// no spelling, in its family's readback. The border's one inet table leaves
-	// it 0.
+	// no spelling, in its family's readback. The antispoof filter's one inet
+	// table leaves it 0.
 	Family uint8
 	// Chain is the chain it was read from, and Counted whether it keeps a
 	// counter, which say what a rule another writer put there counts

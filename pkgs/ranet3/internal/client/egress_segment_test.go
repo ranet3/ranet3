@@ -35,11 +35,11 @@ func egressSegment(sid string, allow ...string) srv6.Segment {
 }
 
 // egressNode makes cfg a SID-only exit answering at the segments given, with
-// the cap.egress and the cap.border they need. The overlay covers every allow
+// the cap.egress and the overlay they need. The overlay covers every allow
 // list these tests write.
 func egressNode(cfg *config.Config, segments ...srv6.Segment) {
 	cfg.Cap.Egress = &egress.Egress{}
-	cfg.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.113.0/24")}}
+	cfg.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("203.0.113.0/24")}
 	cfg.Cap.Segment = &srv6.Segments{Local: segments}
 }
 

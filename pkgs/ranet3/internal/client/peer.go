@@ -202,7 +202,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 	}()
 	cfg, x := c.config(), c.index()
 	crypto := cfg.Crypto()
-	ep, remoteIP, err := resolveEndpoint(ctx, x, cfg.Overlay(), d.peer, d.local.Family, &c.unresolved)
+	ep, remoteIP, err := resolveEndpoint(ctx, x, cfg.Overlay, d.peer, d.local.Family, &c.unresolved)
 	if err != nil {
 		return err
 	}

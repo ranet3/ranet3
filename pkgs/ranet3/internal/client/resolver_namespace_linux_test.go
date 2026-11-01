@@ -14,7 +14,6 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/dnstest"
-	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -26,7 +25,7 @@ const handoverDials = 30 * time.Second
 // A dial resolving its peer's endpoint name, whether it names the endpoint or
 // the node, hands the query the overlay of the config in force at that dial: a
 // query to a nameserver inside it carries no mark, and once the config in force
-// has no cap.border, as a restart without it leaves it, the next dial's query
+// has no overlay, as a restart without it leaves it, the next dial's query
 // carries the underlay's. Go's resolver reads the resolv.conf this test binds
 // in its own mount namespace, a nameserver of each family on lo, the IPv6 one
 // also with a zone. It runs as root under unshare -rmn.
@@ -37,10 +36,10 @@ func TestEndpointQueryFollowsTheOverlayInForceAcrossReloads(t *testing.T) {
 	name := "gateway.example."
 	reg[0].Nodes[1].Endpoints[0].Address = &name
 	inside := *cfg
-	inside.Cap.Border = &egress.Border{Overlay: []schema.Prefix{
+	inside.Overlay = []schema.Prefix{
 		schema.PrefixFrom(netip.MustParsePrefix("127.0.0.0/8")),
 		schema.PrefixFrom(netip.MustParsePrefix("::1/128")),
-	}}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), handoverDials)
 	defer cancel()
 	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, sessions: newSessionSet(), events: events.New()}
@@ -49,14 +48,14 @@ func TestEndpointQueryFollowsTheOverlayInForceAcrossReloads(t *testing.T) {
 	// the endpoint and its node, which resolveEndpoint resolves on two paths
 	for _, peer := range []identity.Identity{inside.Dial.To[0], inside.Dial.To[0].Node()} {
 		d := dialTo(t, &inside, peer)
-		// each step stores its config as the one in force, the one without cap.border as a restart leaves it, since a reload refuses dropping the block
+		// each step stores its config as the one in force, the one without overlay as a restart leaves it, since a reload refuses dropping it
 		for _, step := range []struct {
 			name string
 			cfg  *config.Config
 			want uint32
 		}{
 			{"with the overlay in force", &inside, 0},
-			{"after a reload dropping cap.border", cfg, schema.UnderlayMark},
+			{"after a reload dropping the overlay", cfg, schema.UnderlayMark},
 			{"after a reload naming the overlay again", &inside, 0},
 		} {
 			c.cfg.Store(step.cfg)

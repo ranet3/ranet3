@@ -159,15 +159,15 @@ func entryMoved(t *testing.T, before, after, want map[int]uint64) {
 	}
 }
 
-// entryBorder starts node's border filter in ns as main builds it, and runs it until the test ends
+// entryBorder starts node's antispoof filter in ns as main builds it, and runs it until the test ends
 func entryBorder(t *testing.T, ns *netnstest.Thread, node *Client) *kernelexit.BorderFilter {
 	t.Helper()
 	var border *kernelexit.BorderFilter
 	if err := ns.Do(func() (err error) {
-		border, err = kernelexit.NewBorderFilter(node.config().Cap.Border, node.BorderRuntime())
+		border, err = kernelexit.NewBorderFilter(node.config().Border(), node.BorderRuntime())
 		return err
 	}); err != nil {
-		t.Fatalf("start the border: %v", err)
+		t.Fatalf("start the antispoof filter: %v", err)
 	}
 	entryRun(t, border)
 	return border
@@ -181,7 +181,7 @@ func entryRun(t *testing.T, border *kernelexit.BorderFilter) {
 	go func() {
 		defer close(done)
 		if err := border.Run(ctx); err != nil {
-			t.Errorf("the border: %v", err)
+			t.Errorf("the antispoof filter: %v", err)
 		}
 	}()
 	t.Cleanup(func() {
@@ -210,8 +210,8 @@ func entrySetHolds(border *kernelexit.BorderFilter, name string, address netip.A
 // entryCaughtUp waits until the border's last pass asked for the owned and none sets node derives now
 func entryCaughtUp(t *testing.T, border *kernelexit.BorderFilter, node *Client) {
 	t.Helper()
-	waitFor(t, rulesSettle, "the border's sets to follow the mesh's table", func() bool {
-		derived := node.borderSets()
+	waitFor(t, rulesSettle, "the antispoof filter's sets to follow the mesh's table", func() bool {
+		derived := node.borderSets(node.config().Border())
 		for name, ranges := range map[string][]egress.Range{"owned": derived.Owned, "none": derived.None} {
 			for _, family := range []int{4, 6} {
 				want := slices.DeleteFunc(slices.Clone(ranges), func(r egress.Range) bool { return r.First.Is4() != (family == 4) })
@@ -689,7 +689,7 @@ func entryNoneClasses() []egress.Class {
 	return out
 }
 
-// the labs' exit with its none classes, written without cap.border and so with no local segment, advertising the defaults
+// the labs' exit with its none classes, written without overlay and so with no local segment, advertising the defaults
 // instead, is refused at load for its first none class: without the overlay its none sets would leave out the leaves' own
 // addresses, which the mesh's table holds learned as it holds another node's LAN
 func TestEntryLabsExitIsRefusedWithoutTheBorder(t *testing.T) {
@@ -697,10 +697,10 @@ func TestEntryLabsExitIsRefusedWithoutTheBorder(t *testing.T) {
 	exit := *cfg.Cap.Egress
 	exit.Advertise = []schema.Prefix{schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0")}
 	exit.Translate = entryNoneClasses()
-	cfg.Cap.Egress, cfg.Cap.Border, cfg.Cap.Segment = &exit, nil, nil
-	const says = "config: cap.egress translate class 203.0.113.0/24 is none and cap.border is absent"
+	cfg.Cap.Egress, cfg.Overlay, cfg.Cap.Segment = &exit, nil, nil
+	const says = "config: cap.egress translate class 203.0.113.0/24 is none and overlay is absent"
 	if err := cfg.Validate(); err == nil || !strings.HasPrefix(err.Error(), says) {
-		t.Fatalf("the labs' exit without cap.border was refused with %v, want %q", err, says)
+		t.Fatalf("the labs' exit without overlay was refused with %v, want %q", err, says)
 	}
 }
 
@@ -909,7 +909,7 @@ func TestEntryLabCrashHelper(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = kernelexit.NewBorderFilter(cfg.Cap.Border, node.BorderRuntime())
+		_, err = kernelexit.NewBorderFilter(cfg.Border(), node.BorderRuntime())
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -1024,7 +1024,7 @@ func TestTUNEntryTableOutlivesAKilledNode(t *testing.T) {
 		if node, err = New(rulesConfig(t), bus); err != nil {
 			return err
 		}
-		border, err = kernelexit.NewBorderFilter(node.config().Cap.Border, node.BorderRuntime())
+		border, err = kernelexit.NewBorderFilter(node.config().Border(), node.BorderRuntime())
 		return err
 	}); err != nil {
 		if node != nil {
@@ -1033,7 +1033,7 @@ func TestTUNEntryTableOutlivesAKilledNode(t *testing.T) {
 		t.Fatalf("start the node again: %v", err)
 	}
 	t.Cleanup(node.Close)
-	if passes := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "border.pass" }, 0); len(passes) != 0 {
+	if passes := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.pass" }, 0); len(passes) != 0 {
 		t.Errorf("the start over the table a killed node left wrote it: %v", passes)
 	}
 	entryRun(t, border)

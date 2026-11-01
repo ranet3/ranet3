@@ -12,6 +12,7 @@ import (
 	"log"
 	"maps"
 	"net/netip"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -28,7 +29,7 @@ import (
 )
 
 // refuseExitModeHere refuses cap.exit where this platform has no exit mode, and fallback = "none" where it has no filter
-// the start checks it ahead of every other capability's platform refusal, so a host writing cap.exit beside cap.border is told about cap.exit
+// the start checks it ahead of every other capability's platform refusal, so a host writing cap.exit beside overlay is told about cap.exit
 // fallback goes first, so a host asking for the switch is told the switch is missing rather than only the mode
 func refuseExitModeHere(cfg *config.Config) error {
 	if cfg.Cap.Exit == nil {
@@ -190,12 +191,12 @@ func assignedAddresses(cfg *config.Config) []netip.Addr {
 
 // answerSources is the router-id of each family, RFC 1812 section 2.2.7, a cap.table address before a host prefix cap.route announces
 // and the End SID of cap.segment local that transit's IPv6 errors come from
-// each the first address of its kind a router forwards packets from, as InvalidSource says, that is no IPv4 address mapped into IPv6 and that an announced prefix with no source, and that does not count as a default with cap.border's overlay, covers
+// each the first address of its kind a router forwards packets from, as InvalidSource says, that is no IPv4 address mapped into IPv6 and that an announced prefix with no source, and that does not count as a default with the overlay, covers
 // a sender's strict reverse path check drops an answer from any other, which the mesh does not route back to this node
 // it walks the node's addresses apart from MeshAddresses, which takes host prefixes alone and the announced ones first
 // since a cap.table address leads, whatever the length of the prefix it is assigned in
 func answerSources(cfg *config.Config) netstack.AnswerSources {
-	routes, overlay := cfg.Routes(), cfg.Overlay()
+	routes, overlay := cfg.Routes(), cfg.Overlay
 	covered := func(address netip.Addr) bool {
 		return !packet.InvalidSource(address) && !address.Is4In6() && slices.ContainsFunc(routes.Announce, func(entry schema.Announce) bool {
 			return !entry.From.IsValid() && !schema.CapturesTheMachine(entry.Prefix.Prefix, overlay) && entry.Prefix.Contains(address)
@@ -325,17 +326,16 @@ func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies m
 	return refuse, skip
 }
 
-// warnUnbordered says so when the host forwards where no entry chain runs and
-// the file writes no cap.border. The tun read drops a source the mesh routes to
-// another node or holds unreachable, through a route that does not count as a
-// default, so a host on any of this node's links reaches the host's own
-// services under a mesh source, and the mesh under a source no such route
-// covers.
+// warnUnbordered says so when the host forwards where no antispoof filter
+// runs. The tun read drops a source the mesh routes to another node or holds
+// unreachable, through a route that does not count as a default, so a host on
+// any of this node's links reaches the host's own services under a mesh
+// source, and the mesh under a source no such route covers.
 //
 // a warning rather than a refusal, since forwarding moves under a running node
 // and darwin, which forwards with no filter to offer, would otherwise not start at all
-func warnUnbordered(cfg *config.Config, forwards func() (v4, v6 bool)) {
-	if kernelexit.EntryRuns || cfg.Cap.Border != nil {
+func warnUnbordered(forwards func() (v4, v6 bool)) {
+	if kernelexit.EntryRuns {
 		return
 	}
 	v4, v6 := forwards()
@@ -349,8 +349,8 @@ func warnUnbordered(cfg *config.Config, forwards func() (v4, v6 bool)) {
 	if len(on) == 0 {
 		return
 	}
-	log.Printf("config: this node forwards %s and holds no cap.border, so a host on any of its links can reach this host's own services under a mesh source",
-		strings.Join(on, " and "))
+	log.Printf("config: this node forwards %s and %s runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source",
+		strings.Join(on, " and "), runtime.GOOS)
 }
 
 // warnCountedAdvertisements names each advertisement in cap.route or
@@ -359,7 +359,7 @@ func warnUnbordered(cfg *config.Config, forwards func() (v4, v6 bool)) {
 // loads all the same.
 func warnCountedAdvertisements(cfg *config.Config) {
 	warn := func(key, verb string, prefix netip.Prefix) {
-		if prefix.Bits() > 0 && schema.CapturesTheMachine(prefix, cfg.Overlay()) {
+		if prefix.Bits() > 0 && schema.CapturesTheMachine(prefix, cfg.Overlay) {
 			log.Printf("config: %s %s %s, outside the overlay and shorter than /%d for IPv4 or /%d for IPv6 or holding the unspecified address, which counts as a default and makes this node an exit for its family, as routing.md says",
 				key, verb, prefix, schema.MinSubnetBits4, schema.MinSubnetBits6)
 		}

@@ -327,6 +327,33 @@ func TestSpeakerSADR(t *testing.T) {
 	}
 }
 
+// SelectedOrigin gives the router-id of the route the speaker selected for a
+// destination, by the destination masked, and nothing for one it holds no
+// route to
+func TestSelectedOriginIsTheRouterIDOfTheSelectedRoute(t *testing.T) {
+	_, _, speakerA, _ := wireSpeakerPair(t, Config{})
+	n := speakerA.neighbors["b"]
+	if n == nil {
+		t.Fatal("peer \"b\" not registered")
+	}
+	makeNeighborReachable(n)
+	dest := netip.MustParsePrefix("192.0.2.64/26")
+	id := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	pkt := buildPacket(netip.MustParseAddr("fe80::b"), multicastGroup, EncodePacket([]RawTLV{
+		EncodeRouterID(id),
+		EncodeUpdate(Update{AE: updateAE(dest), Plen: dest.Bits(), Interval: 200, Seqno: 1, Metric: 64, Prefix: net.IP(dest.Addr().AsSlice())}),
+	}))
+	speakerA.handlePacket(n, pkt[ipv6HeaderLen+udpHeaderLen:])
+	for _, asked := range []string{"192.0.2.64/26", "192.0.2.70/26"} {
+		if got, ok := speakerA.SelectedOrigin(netip.MustParsePrefix(asked)); !ok || got != id {
+			t.Errorf("SelectedOrigin(%s) = %x, %v, want %x", asked, got, ok, id)
+		}
+	}
+	if got, ok := speakerA.SelectedOrigin(netip.MustParsePrefix("198.51.100.0/24")); ok {
+		t.Errorf("SelectedOrigin of a destination with no route = %x, want none", got)
+	}
+}
+
 func TestSpeakerRetractsRouteOnNeighborDown(t *testing.T) {
 	fast := Config{Hello: dur(30 * time.Millisecond), Update: dur(60 * time.Millisecond)}
 	meshA, _, speakerA, speakerB := wireSpeakerPair(t, fast)

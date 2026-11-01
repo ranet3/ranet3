@@ -4,7 +4,7 @@
 package schema
 
 // The shortest prefix a list of the mesh's own sources takes, per family, an
-// egress segment's allow list and the border filter's overlay alike. The floor
+// egress segment's allow list and the overlay alike. The floor
 // is the unit IANA delegates to a regional registry, so a shorter entry holds
 // addresses the mesh has nothing to do with.
 const (

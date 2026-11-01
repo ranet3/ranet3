@@ -1,5 +1,5 @@
 {
-  "where": "nftables table inet ranet3 chains border and mesh_entry",
+  "where": "nftables table inet ranet3 chains antispoof and mesh_entry",
   "inside": [
     "ranet3",
     "lo",

@@ -40,5 +40,12 @@
       "answer": "dev en0",
       "taken": false
     }
-  ]
+  ],
+  "antispoof": {
+    "unenforced_on": "darwin",
+    "read_ago": "0s",
+    "ready": false,
+    "chains": null,
+    "sets": null
+  }
 }

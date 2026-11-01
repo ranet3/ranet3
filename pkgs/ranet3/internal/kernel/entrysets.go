@@ -52,7 +52,7 @@ func ownedEntries(snapshot []sadr.Route[*netstack.Peer], overlay []schema.Prefix
 // takes it, so a longer class inside a none class that is not none takes its
 // addresses out. Empty where no class is none. Only the overlay tells a node's
 // own address from a LAN, since a route learned for either reads alike, so the
-// loader refuses a none class without cap.border.
+// loader refuses a none class without overlay.
 func NoneDestinations(classes []egress.Class, snapshot []sadr.Route[*netstack.Peer], overlay []schema.Prefix) []egress.Range {
 	var none []egress.Range
 	for _, class := range classes {
@@ -79,7 +79,7 @@ func NoneDestinations(classes []egress.Class, snapshot []sadr.Route[*netstack.Pe
 		}
 		learned = append(learned, destination)
 	}
-	lans := subtract(Ranges(learned), Ranges(schemaPrefixes(overlay)))
+	lans := subtract(Ranges(learned), Ranges(SchemaPrefixes(overlay)))
 	return subtract(egress.Union(none), lans)
 }
 

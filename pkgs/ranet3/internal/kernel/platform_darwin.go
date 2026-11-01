@@ -612,7 +612,8 @@ func (p *routePlatform) scopeRoute(r Route) bool {
 	if p.rt.BoundUnderlay {
 		return coversAny(r.Destination, p.underlay)
 	}
-	// cap.border, and with it an overlay, is refused on this platform
+	// the platform keeps the runtime it opened with, which carries no overlay
+	// a reload moves, so it decides with none
 	return schema.CapturesTheMachine(r.Destination, nil) || coversAny(r.Destination, p.underlay)
 }
 

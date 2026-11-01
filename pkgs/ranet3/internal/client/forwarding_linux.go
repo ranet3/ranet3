@@ -12,7 +12,7 @@ import (
 
 // forwardingEnabled reports whether this host forwards, per family
 // an exit egresses only a family its kernel forwards, while the mesh forwards transit itself
-// it is read here alone, so the egress capability, status and cap.border's warning answer alike
+// it is read here alone, so the egress capability, status and the antispoof warning answer alike
 func forwardingEnabled() (v4, v6 bool) {
 	return sysctlIsOne("/proc/sys/net/ipv4/ip_forward"),
 		sysctlIsOne("/proc/sys/net/ipv6/conf/all/forwarding")

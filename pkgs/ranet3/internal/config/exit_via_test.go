@@ -13,7 +13,7 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// viaNode is a node writing cap.table's addresses, cap.border's overlay, cap.segment's source and End segments where given, and cap.exit via
+// viaNode is a node writing overlay, cap.table's addresses, cap.segment's source and End segments where given, and cap.exit via
 type viaNode struct {
 	addresses, overlay []string
 	source             string
@@ -40,7 +40,7 @@ func (n viaNode) file(format string) (string, string) {
 	}
 	switch format {
 	case "toml":
-		body := nodeTOML + "[cap.table]\naddresses = " + list(n.addresses, `"`) + "\n[cap.border]\noverlay = " + list(n.overlay, `"`) + "\n"
+		body := "overlay = " + list(n.overlay, `"`) + "\n" + nodeTOML + "[cap.table]\naddresses = " + list(n.addresses, `"`) + "\n"
 		if n.source != "" || len(n.local) != 0 {
 			body += "[cap.segment]\n"
 			if n.source != "" {
@@ -52,7 +52,7 @@ func (n viaNode) file(format string) (string, string) {
 		}
 		return ".toml", body + "[cap.exit]\nvia = " + list(n.via, `"`) + "\n"
 	case "yaml":
-		body := nodeYAML + "cap:\n  table: {addresses: " + list(n.addresses, "") + "}\n  border: {overlay: " + list(n.overlay, "") + "}\n"
+		body := nodeYAML + "overlay: " + list(n.overlay, "") + "\ncap:\n  table: {addresses: " + list(n.addresses, "") + "}\n"
 		if n.source != "" || len(n.local) != 0 {
 			body += "  segment:\n"
 			if n.source != "" {
@@ -87,8 +87,9 @@ func (n viaNode) file(format string) (string, string) {
   "auth": {"key": "key.pem", "trust": "trust.json"},
   "link": {"port": 13000, "endpoints": [{"serial": "0", "family": "ip4"}]},
   "dial": {"to": ["example/gateway"]},
-  "cap": {"table": {"addresses": %s}, "border": {"overlay": %s}, %s"exit": {"via": %s}}
-}`, list(n.addresses, `"`), list(n.overlay, `"`), segmentBlock, list(n.via, `"`))
+  "overlay": %s,
+  "cap": {"table": {"addresses": %s}, %s"exit": {"via": %s}}
+}`, list(n.overlay, `"`), list(n.addresses, `"`), segmentBlock, list(n.via, `"`))
 }
 
 var formats = []string{"toml", "yaml", "json"}
@@ -172,7 +173,7 @@ func TestExitViaRefusalsReachTheLoader(t *testing.T) {
 		},
 		"no IPv6 overlay": {
 			func() viaNode { n := viaFixture("3fff:b:0:306::3"); n.overlay = []string{"192.0.2.0/24"}; return n }(),
-			"config: cap.exit via is written and cap.border overlay holds no IPv6 prefix, so every segment refuses the path's outer source, which is always IPv6",
+			"config: cap.exit via is written and overlay holds no IPv6 prefix, so every segment refuses the path's outer source, which is always IPv6",
 		},
 		"no outer source": {
 			func() viaNode {
@@ -180,11 +181,11 @@ func TestExitViaRefusalsReachTheLoader(t *testing.T) {
 				n.addresses = []string{"192.0.2.2/24", "2001:db8::2/64"}
 				return n
 			}(),
-			"config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside cap.border overlay gives the path an outer source: write cap.segment source",
+			"config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside overlay gives the path an outer source: write cap.segment source",
 		},
 		"a source outside the overlay": {
 			func() viaNode { n := viaFixture("3fff:b:0:306::3"); n.source = "2001:db8::2"; return n }(),
-			"config: cap.segment source 2001:db8::2 lies outside cap.border overlay, so every segment of cap.exit via refuses the path's packets by their outer source",
+			"config: cap.segment source 2001:db8::2 lies outside overlay, so every segment of cap.exit via refuses the path's packets by their outer source",
 		},
 	} {
 		for _, format := range formats {

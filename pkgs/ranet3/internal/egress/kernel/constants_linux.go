@@ -6,7 +6,7 @@
 package kernel
 
 // EntryRuns is whether this platform writes the entry chain, which runs on
-// every node holding a tun with cap.border written or not
+// every node holding a tun with overlay written or not
 const EntryRuns = true
 
 const (

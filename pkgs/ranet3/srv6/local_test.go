@@ -316,7 +316,7 @@ func TestEverySIDRefusesAnOuterSourceOutsideTheOverlay(t *testing.T) {
 		})
 	}
 	if _, err := NewLocalTable(segments, []schema.Prefix{schema.MustPrefix("198.18.0.0/15")}); err == nil ||
-		err.Error() != "srv6: cap.segment local 3fff:b:0:106::2 would refuse every packet, since cap.border overlay holds no IPv6 prefix to admit an outer source from" {
+		err.Error() != "srv6: cap.segment local 3fff:b:0:106::2 would refuse every packet, since overlay holds no IPv6 prefix to admit an outer source from" {
 		t.Errorf("a table under an overlay of IPv4 alone was built with %v", err)
 	}
 	if table, err := NewLocalTable(nil, nil); table != nil || err != nil {

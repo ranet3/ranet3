@@ -756,7 +756,7 @@ func TestEgressRefusalAllocatesOnceMoreThanADelivery(t *testing.T) {
 
 // past the reply check an egress segment refuses an inner packet whose destination the mesh routes itself, in either family
 // to another node, into a hold, to a prefix of this node's own or to an address cap.table assigns it, or by a route announced from a source prefix holding the packet's source
-// and one inside cap.border's overlay that only another exit's halves cover, which this node's decision routes to that exit, whose own decision answers it as no route where its cap.border sets the overlay and egresses it where it has no cap.border
+// and one inside the overlay that only another exit's halves cover, which this node's decision routes to that exit, whose own decision answers it as no route where it writes the overlay and egresses it where it writes none
 // counted refused and dropped, with no answer and nothing at any peer
 // a destination only another exit's halves cover egresses, and so does one the source-prefixed route covers from a source outside its prefix
 // a packet for a destination the mesh routes that the martian test or the reply check refuses first is counted once

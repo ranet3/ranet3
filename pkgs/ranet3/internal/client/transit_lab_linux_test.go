@@ -706,7 +706,7 @@ func TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID(t *testing.T
 			t.Errorf("a datagram inside b's overlay that b holds no route for drew type %d code %d from %s, want host unreachable from %s", got.kind, got.code, got.from, lineB[4])
 		}
 		moved := *b.cfg
-		moved.Cap.Border = &egress.Border{Overlay: []schema.Prefix{schema.PrefixFrom(labOverlay[1])}}
+		moved.Overlay = []schema.Prefix{schema.PrefixFrom(labOverlay[1])}
 		writeConfig(t, b.configPath, &moved)
 		if err := b.ns.Do(func() error { return b.client.ReloadFrom(b.configPath) }); err != nil {
 			t.Fatalf("b's reload moving its overlay off IPv4 was refused: %v", err)
@@ -1263,11 +1263,11 @@ func labForwardingNeighbor(t *testing.T, node *labNode, name string, nodePlace, 
 	return host
 }
 
-// labBorder writes labOverlay as cfg's cap.border overlay
+// labBorder writes labOverlay as cfg's overlay
 func labBorder(cfg *config.Config) {
-	cfg.Cap.Border = &egress.Border{}
+	cfg.Overlay = nil
 	for _, prefix := range labOverlay {
-		cfg.Cap.Border.Overlay = append(cfg.Cap.Border.Overlay, schema.PrefixFrom(prefix))
+		cfg.Overlay = append(cfg.Overlay, schema.PrefixFrom(prefix))
 	}
 }
 

@@ -72,7 +72,7 @@ type Segment struct {
 	// RFC 8986 section 4.8 gives the behavior
 	Deliver Delivery `yaml:"deliver,omitempty" json:"deliver,omitempty" toml:"deliver,omitempty"`
 	// Allow holds the sources a segment delivering to egress carries, and is
-	// refused with any other delivery. An entry inside cap.border overlay admits
+	// refused with any other delivery. An entry inside the overlay admits
 	// outer and inner sources, and one outside it inner sources alone.
 	Allow []schema.Prefix `yaml:"allow,omitempty" json:"allow,omitempty" toml:"allow,omitempty"`
 }
@@ -108,7 +108,7 @@ var ErrSourceRefused = errors.New("srv6: the segment does not admit the packet's
 
 // errOutsideOverlay is ErrSourceRefused for an outer source outside the
 // overlay, made once so a refused packet allocates nothing
-var errOutsideOverlay = fmt.Errorf("%w: its outer source lies outside cap.border overlay", ErrSourceRefused)
+var errOutsideOverlay = fmt.Errorf("%w: its outer source lies outside overlay", ErrSourceRefused)
 
 // String is the segment as the file spells it, its delivery and allow list
 // only where it writes them
@@ -175,7 +175,7 @@ func (s Segment) checkAllow() error {
 // method below works on one so a caller never has to ask first.
 type LocalTable struct {
 	entries map[netip.Addr]localSegment
-	// overlay is the IPv6 prefixes of cap.border's overlay, the only outer
+	// overlay is the IPv6 prefixes of the overlay, the only outer
 	// sources any SID of entries acts on
 	overlay []netip.Prefix
 }
@@ -187,12 +187,13 @@ type LocalTable struct {
 //
 // Every SID refuses a packet whose outer source lies outside overlay's IPv6
 // prefixes, the per-node list of RFC 8754 section 5.1 item 2. A node writing
-// cap.border drops a source inside overlay arriving from outside the mesh, but
-// for the rest of a carve-out, less the mesh's prefixes inside it, on that
-// carve-out's own link, as border-filter.md's "Carve-outs" gives. Its entry
+// overlay drops a source inside it arriving from outside the mesh on Linux,
+// but for the rest of a carve-out or an exemption, less the mesh's prefixes
+// inside either, on the interfaces it is accepted from, as antispoof.md's
+// "Carve-outs" and "Exemptions" give. Its entry
 // chain and its tun read keep that rest out of the mesh as a source it does
 // not own, and a host beyond the mesh reaches no SID through it, whatever the
-// SID delivers to. On linux a node that forwards without cap.border passes on
+// SID delivers to. On linux a node that forwards without overlay passes on
 // to every SID only a forged source it owns, since its entry chain keeps every
 // other out of the tun. On a platform with no entry chain such a node is only
 // warned at load, and passes on to every SID a forged overlay source that no
@@ -211,7 +212,7 @@ func NewLocalTable(segments []Segment, overlay []schema.Prefix) (*LocalTable, er
 		}
 	}
 	if len(table.overlay) == 0 {
-		return nil, fmt.Errorf("srv6: cap.segment local %s would refuse every packet, since cap.border overlay holds no IPv6 prefix to admit an outer source from", segments[0].SID)
+		return nil, fmt.Errorf("srv6: cap.segment local %s would refuse every packet, since overlay holds no IPv6 prefix to admit an outer source from", segments[0].SID)
 	}
 	for sid, segment := range checked {
 		entry := localSegment{Segment: segment}

@@ -50,7 +50,7 @@
   # "fragment" dials x25519+mlkem768 and then p384+mlkem1024, over IPv6 on a link of MTU 1280 and then over IPv4 on one of 576
   mlkem ? null,
   # beside runs another program's own daemon on the client at the version nixpkgs pins, "docker", "tailscale" or "k3s"
-  # with cap.table and cap.border.overlay, so ranet3's rules and its lookups of them meet that program's rules
+  # with cap.table and overlay, so ranet3's rules and its lookups of them meet that program's rules
   beside ? null,
 }:
 
@@ -114,8 +114,8 @@ let
   # Inside the gateway's tunnel prefix and held by nobody, so the client's mesh
   # routes it to the gateway and the egress segment refuses it.
   meshDestination = "fd00:99::5";
-  # Mesh sources behind forges from the client's link, inside the border's
-  # overlay and owned by nobody on the mesh.
+  # Mesh sources behind forges from the client's link, inside the overlay and
+  # owned by nobody on the mesh.
   borderForged4 = "10.99.0.77";
   borderForged6 = "fd00:99::77";
   # A segment behind's routing header names, in the prefix it routes through
@@ -891,6 +891,16 @@ testers.runNixOSTest {
             dial = pkgs.lib.mkIf (!responder) {
               to = [ "testorg/server:1" ];
             };
+            # a local segment needs the overlay, which covers both tunnel
+            # prefixes, so every outer source the gateway sends from and the
+            # egress segment's allow list
+            # and beside another program the reconciler holds each overlay prefix and looks up an address of it
+            overlay = pkgs.lib.mkIf (segments || beside != null) [
+              "fd00:88::/32"
+              "fd00:99::/32"
+              "10.88.0.0/16"
+              "10.99.0.0/16"
+            ];
             cap = {
               route.announce = [
                 "${clientTunnel}/128"
@@ -946,18 +956,6 @@ testers.runNixOSTest {
                     to = "${gatewayBehind}/128";
                     via = [ gatewaySID ];
                   }
-                ];
-              };
-              # a local segment needs the border, whose overlay covers both
-              # tunnel prefixes, so every outer source the gateway sends from
-              # and the egress segment's allow list
-              # and beside another program the reconciler holds each overlay prefix and looks up an address of it
-              border = pkgs.lib.mkIf (segments || beside != null) {
-                overlay = [
-                  "fd00:88::/32"
-                  "fd00:99::/32"
-                  "10.88.0.0/16"
-                  "10.99.0.0/16"
                 ];
               };
               # an exit for an egress segment alone advertises nothing, so the
@@ -1260,14 +1258,14 @@ testers.runNixOSTest {
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
             # Only this tree's own tables exist: the translator's in the families
-            # it was asked for, and the border filter's inet table, which holds
-            # chain mesh_entry alone on a node with no cap.border. Anything else
+            # it was asked for, and the antispoof filter's inet table, which holds
+            # chain mesh_entry alone on a node with no overlay. Anything else
             # here would be a rule written outside what the ownership rules allow.
             client.wait_until_succeeds("nft list table ip ranet3", timeout=timeout)
             tables = sorted(t for t in client.succeed("nft list tables").splitlines() if t.strip())
             assert tables == ["table inet ranet3", "table ip ranet3", "table ip6 ranet3"], tables
             chains = [line.split()[1] for line in client.succeed("nft list table inet ranet3").splitlines() if line.strip().startswith("chain ")]
-            assert chains == ["mesh_entry"], f"table inet ranet3 holds the chains {chains}, where a node with no cap.border holds mesh_entry alone"
+            assert chains == ["mesh_entry"], f"table inet ranet3 holds the chains {chains}, where a node with no overlay holds mesh_entry alone"
             ruleset = client.succeed("nft list ruleset")
             print(ruleset)
             for want in ["chain postrouting", "type nat hook postrouting", "masquerade",
@@ -1323,7 +1321,7 @@ testers.runNixOSTest {
                 "ranet3 status --json | jq -e '.egress.announced | length == 2'", timeout=timeout)
             gateway.wait_until_succeeds("ip -4 route show ${exitNetV4} | grep -q swan0", timeout=timeout)
 
-            # Shutdown takes the tables with it, the border filter's inet table
+            # Shutdown takes the tables with it, the antispoof filter's inet table
             # among them. A rule left behind would go on translating for a
             # process that is no longer running.
             client.succeed("systemctl stop ranet3.service")
@@ -1438,11 +1436,11 @@ testers.runNixOSTest {
             assert after["egressed"] == before["egressed"], f"an inner packet for the mesh was egressed: {after}"
 
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics")
-            for want in ['ranet3_egress_ready{family="ipv4"} 1', 'ranet3_egress_ready{family="ipv6"} 1', "ranet3_border_ready 1"]:
+            for want in ['ranet3_egress_ready{family="ipv4"} 1', 'ranet3_egress_ready{family="ipv6"} 1', "ranet3_antispoof_ready 1"]:
                 assert want in metrics, f"the scrape does not carry {want}:\n{metrics}"
 
             # behind is on the client's link and outside the mesh, so a mesh source arriving from it is
-            # dropped at the client's border and counted there. A type 4 routing header from its own
+            # dropped by the client's antispoof filter and counted there. A type 4 routing header from its own
             # address to a segment the mesh routes takes the tun's route, where mesh_entry drops it, a
             # source the client does not own, before the tun read sees it, and a packet to the client's
             # own SID meets the hold the mirror keeps for it. So neither moves the tun read's counters,
@@ -1453,12 +1451,12 @@ testers.runNixOSTest {
                 "ip -6 route add fd00:99::/64 via ${exitV6}",
                 "ip route add 10.99.0.0/24 via ${exitV4}",
                 "ip -6 route add ${clientEgressSID}/128 via ${exitV6}",
-                # the outer header leaves from an address outside the overlay, so the border passes it and mesh_entry drops it as a source the client does not own
+                # the outer header leaves from an address outside the overlay, so the antispoof filter passes it and mesh_entry drops it as a source the client does not own
                 "ip sr tunsrc set ${behindV6}",
             )
             before = counters()
             transit = status()["transit"]
-            entered = status()["border"]["dropped"]["mesh_entry_ipv6"]
+            entered = status()["antispoof"]["dropped"]["mesh_entry_ipv6"]
             gateway.succeed("rm -f /tmp/border.pcap /tmp/border.log")
             gateway.execute(
                 "tcpdump -Uni swan0 -Q in -w /tmp/border.pcap"
@@ -1470,27 +1468,27 @@ testers.runNixOSTest {
             # the segment lies outside the encap route, which would otherwise take its own outer header again
             behind.succeed("ip -6 route add ${gatewayTunnel}/128 encap seg6 mode encap segs ${borderSegment} via ${exitV6} dev eth1")
             behind.fail("ping -c 3 -i 0.3 -W 1 -I ${behindV6} ${gatewayTunnel}")
-            # the counters reach the scrape at the border's next pass, one sweep at most
+            # the counters reach the scrape at the antispoof filter's next pass, one sweep at most
             for family in ["ipv6", "ipv4"]:
-                series = 'ranet3_border_dropped_packets_total{reason="overlay_source",family="' + family + '"}'
+                series = 'ranet3_antispoof_dropped_packets_total{reason="overlay_source",family="' + family + '"}'
                 client.wait_until_succeeds(
                     "curl -sf http://127.0.0.1:9669/metrics | awk -v want='" + series + "' '$1 == want && $2 >= 3 { found = 1 } END { exit !found }'",
                     timeout=dt.timedelta(seconds=90))
             client.wait_until_succeeds(
-                f"ranet3 status --json | jq -e '.border.dropped.mesh_entry_ipv6 >= {entered + 3}'",
+                f"ranet3 status --json | jq -e '.antispoof.dropped.mesh_entry_ipv6 >= {entered + 3}'",
                 timeout=dt.timedelta(seconds=90))
             gateway.succeed("pkill -x tcpdump")
             gateway.wait_until_fails("pgrep -x tcpdump", timeout=timeout)
             capture = gateway.succeed("tcpdump -nr /tmp/border.pcap 2>/dev/null").strip()
-            assert capture == "", f"a packet behind sent across the client's border reached the gateway:\n{capture}"
+            assert capture == "", f"a packet behind sent across the client's antispoof filter reached the gateway:\n{capture}"
             after = counters()
             assert after["egressed"] == before["egressed"] and after["refused"] == before["refused"], f"a dropped packet reached the egress segment: {before} then {after}"
             now = status()["transit"]
             assert (now["routing_header"], now["sid"]) == (transit["routing_header"], transit["sid"]), f"a packet behind sent reached the tun read: {transit} then {now}"
             print(client.succeed("ranet3 debug rules"))
             rules = json.loads(client.succeed("ranet3 debug rules --json"))
-            assert rules["border"]["ready"], f"the border reads not ready: {rules['border']}"
-            assert status()["border"]["ready"], "the status reports the border not ready"
+            assert rules["antispoof"]["ready"], f"the antispoof filter reads not ready: {rules['antispoof']}"
+            assert status()["antispoof"]["ready"], "the status reports the antispoof filter not ready"
             behind.succeed(
                 "ip -6 route del ${gatewayTunnel}/128",
                 "ip -6 route del ${clientEgressSID}/128",
@@ -1509,7 +1507,7 @@ testers.runNixOSTest {
             client.wait_until_succeeds("ranet3 status --json | jq -e '.egress.ready | length == 2'", timeout=timeout)
             gateway.wait_until_succeeds("ping -c 1 -W 2 -I ${gatewayTunnel} ${behindV6}", timeout=timeout)
 
-            # shutdown takes the tables with it, the border filter's inet table among them
+            # shutdown takes the tables with it, the antispoof filter's inet table among them
             client.succeed("systemctl stop ranet3.service")
             assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
             left = client.succeed("nft list tables").strip()

@@ -232,7 +232,7 @@ func (o Organization) publicKey() (ed25519.PublicKey, error) {
 // unreachable otherwise holds the dialer for the resolver's own timeout, and
 // the client waits for every dialer before it returns.
 //
-// overlay is cap.border.overlay as the dial reads it, which a reload moves,
+// overlay is the overlay as the dial reads it, which a reload moves,
 // and on linux, where the process may set the mark, decides which nameservers
 // the query reaches unmarked.
 func (e Endpoint) ResolveRemote(ctx context.Context, overlay []schema.Prefix) (net.IP, error) {

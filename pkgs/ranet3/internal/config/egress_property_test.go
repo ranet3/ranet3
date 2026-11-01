@@ -33,13 +33,13 @@ func egressExit(count int) Config {
 		})
 	}
 	return Config{
-		Node: identity.MustParse("example/exit"),
-		Auth: Auth{Key: "key.pem", Trust: "trust.json"},
-		Link: Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}},
-		Dial: Dial{All: true},
+		Node:    identity.MustParse("example/exit"),
+		Auth:    Auth{Key: "key.pem", Trust: "trust.json"},
+		Link:    Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}},
+		Dial:    Dial{All: true},
+		Overlay: []schema.Prefix{schema.MustPrefix("3fff:c::/30")},
 		Cap: Caps{
 			Egress:  &egress.Egress{},
-			Border:  &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("3fff:c::/30")}},
 			Segment: &srv6.Segments{Local: segments},
 		},
 	}

@@ -15,20 +15,21 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// exitLeaf is a node writing cap.table, cap.border and cap.exit in each format, cap.exit's body given as each format spells it
+// exitLeaf is a node writing overlay, cap.table and cap.exit in each format, cap.exit's body given as each format spells it
 func exitLeaf(format, exit string) (string, string) {
 	switch format {
 	case "toml":
-		return ".toml", nodeTOML + "[cap.table]\n[cap.border]\noverlay = [\"192.0.2.0/24\", \"3fff::/20\"]\n[cap.exit]\n" + exit
+		return ".toml", "overlay = [\"192.0.2.0/24\", \"3fff::/20\"]\n" + nodeTOML + "[cap.table]\n[cap.exit]\n" + exit
 	case "yaml":
-		return ".yaml", nodeYAML + "cap:\n  table: {}\n  border:\n    overlay: [192.0.2.0/24, 3fff::/20]\n  exit: " + exit + "\n"
+		return ".yaml", nodeYAML + "overlay: [192.0.2.0/24, 3fff::/20]\ncap:\n  table: {}\n  exit: " + exit + "\n"
 	}
 	return ".json", fmt.Sprintf(`{
   "node": "example/laptop",
   "auth": {"key": "key.pem", "trust": "trust.json"},
   "link": {"port": 13000, "endpoints": [{"serial": "0", "family": "ip4"}]},
   "dial": {"to": ["example/gateway"]},
-  "cap": {"table": {}, "border": {"overlay": ["192.0.2.0/24", "3fff::/20"]}, "exit": %s}
+  "overlay": ["192.0.2.0/24", "3fff::/20"],
+  "cap": {"table": {}, "exit": %s}
 }`, exit)
 }
 
@@ -74,37 +75,37 @@ func exitLeafBody(format, exit string) string {
 }
 
 // cap.exit is refused with no cap.table, whose reconciler writes the mode's
-// rules, and with no cap.border, whose overlay those rules keep off the uplink,
+// rules, and with no overlay, which those rules keep off the uplink,
 // in each format, and fallback by its value when it is neither "uplink" nor
 // "none".
 func TestExitRefusalsReachTheLoader(t *testing.T) {
 	const (
-		noTable  = "config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of: add cap.table"
-		noBorder = "config: cap.exit is written and cap.border is absent, so the mode's rules cannot keep the overlay's sources off the uplink: add cap.border with the prefixes the mesh numbers its nodes from"
+		noTable   = "config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of: add cap.table"
+		noOverlay = "config: cap.exit is written and overlay is absent, so the mode's rules cannot keep the overlay's sources off the uplink: write overlay with the prefixes the mesh numbers its nodes from"
 	)
 	for _, c := range []struct {
-		format, fallback      string
-		dropTable, dropBorder func(string) string
+		format, fallback       string
+		dropTable, dropOverlay func(string) string
 	}{
 		{
 			"toml", "fallback = \"lan\"\n",
 			func(body string) string { return strings.Replace(body, "[cap.table]\n", "", 1) },
 			func(body string) string {
-				return strings.Replace(body, "[cap.border]\noverlay = [\"192.0.2.0/24\", \"3fff::/20\"]\n", "", 1)
+				return strings.Replace(body, "overlay = [\"192.0.2.0/24\", \"3fff::/20\"]\n", "", 1)
 			},
 		},
 		{
 			"yaml", "{fallback: lan}",
 			func(body string) string { return strings.Replace(body, "  table: {}\n", "", 1) },
 			func(body string) string {
-				return strings.Replace(body, "  border:\n    overlay: [192.0.2.0/24, 3fff::/20]\n", "", 1)
+				return strings.Replace(body, "overlay: [192.0.2.0/24, 3fff::/20]\n", "", 1)
 			},
 		},
 		{
 			"json", `{"fallback": "lan"}`,
 			func(body string) string { return strings.Replace(body, `"table": {}, `, "", 1) },
 			func(body string) string {
-				return strings.Replace(body, `"border": {"overlay": ["192.0.2.0/24", "3fff::/20"]}, `, "", 1)
+				return strings.Replace(body, `"overlay": ["192.0.2.0/24", "3fff::/20"],`, "", 1)
 			},
 		},
 	} {
@@ -112,9 +113,9 @@ func TestExitRefusalsReachTheLoader(t *testing.T) {
 			bare := map[string]string{"toml": "", "yaml": "{}", "json": "{}"}[c.format]
 			extension, body := exitLeaf(c.format, bare)
 			for name, refused := range map[string]struct{ body, says string }{
-				"no cap.table":  {c.dropTable(body), noTable},
-				"no cap.border": {c.dropBorder(body), noBorder},
-				"fallback":      {exitLeafBody(c.format, c.fallback), `kernel: cap.exit fallback "lan" is neither "uplink" nor "none"`},
+				"no cap.table": {c.dropTable(body), noTable},
+				"no overlay":   {c.dropOverlay(body), noOverlay},
+				"fallback":     {exitLeafBody(c.format, c.fallback), `kernel: cap.exit fallback "lan" is neither "uplink" nor "none"`},
 			} {
 				if _, err := load(t, extension, refused.body); err == nil || !strings.Contains(err.Error(), refused.says) {
 					t.Errorf("%s was refused with %v, want %q", name, err, refused.says)
@@ -281,7 +282,7 @@ func TestFallbackAndInboundRefusals(t *testing.T) {
 
 // lan is refused unless fallback is "none", and an entry is refused when it is
 // not a prefix, has host bits, spells IPv4 as IPv6, is written twice, overlaps
-// cap.border overlay or counts as capturing the machine. A prefix one bit past
+// overlay or counts as capturing the machine. A prefix one bit past
 // the capturing floor and one beside the overlay are taken.
 func TestLANRefusals(t *testing.T) {
 	lan := func(fallback string, entries ...string) string {
@@ -300,8 +301,8 @@ func TestLANRefusals(t *testing.T) {
 		"host bits":            {lan("none", "198.51.100.1/24"), "kernel: cap.exit lan 198.51.100.1/24 has bits set below its prefix length"},
 		"IPv4 as IPv6":         {lan("none", "::ffff:198.51.100.0/120"), "kernel: cap.exit lan ::ffff:198.51.100.0/120 is an IPv4 prefix written as IPv6, so write it as 198.51.100.0/24"},
 		"twice":                {lan("none", "198.51.100.0/24", "2001:db8:a::/64", "198.51.100.0/24"), "kernel: cap.exit lan 198.51.100.0/24 is written twice"},
-		"inside the overlay":   {lan("none", "192.0.2.128/25"), "config: cap.exit lan 192.0.2.128/25 overlaps cap.border overlay 192.0.2.0/24, whose destinations the mesh carries whatever the LAN holds"},
-		"holding the overlay":  {lan("none", "3ff0::/12"), "config: cap.exit lan 3ff0::/12 overlaps cap.border overlay 3fff::/20, whose destinations the mesh carries whatever the LAN holds"},
+		"inside the overlay":   {lan("none", "192.0.2.128/25"), "config: cap.exit lan 192.0.2.128/25 overlaps overlay 192.0.2.0/24, whose destinations the mesh carries whatever the LAN holds"},
+		"holding the overlay":  {lan("none", "3ff0::/12"), "config: cap.exit lan 3ff0::/12 overlaps overlay 3fff::/20, whose destinations the mesh carries whatever the LAN holds"},
 		"half a split default": {lan("none", "0.0.0.0/1"), "config: cap.exit lan 0.0.0.0/1 " + captures},
 		"short of the floor":   {lan("none", "198.0.0.0/7"), "config: cap.exit lan 198.0.0.0/7 " + captures},
 		"IPv6 short of floor":  {lan("none", "2000::/15"), "config: cap.exit lan 2000::/15 " + captures},

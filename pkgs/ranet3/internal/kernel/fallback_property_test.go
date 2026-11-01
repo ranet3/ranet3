@@ -498,7 +498,7 @@ func (c switchConfig) destinations() []netip.Addr {
 			}
 		}
 	}
-	for _, prefix := range slices.Concat(c.view.own, c.view.lan, switchPrivate, schemaPrefixes(exitPassOverlay)) {
+	for _, prefix := range slices.Concat(c.view.own, c.view.lan, switchPrivate, SchemaPrefixes(exitPassOverlay)) {
 		out = append(out, prefixEdges(prefix)...)
 	}
 	for _, local := range append(slices.Clone(linkLocal4), linkLocal6...) {
