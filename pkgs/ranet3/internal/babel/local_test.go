@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
@@ -444,6 +445,45 @@ func TestAssignedAddressesWakeTheRunningSpeaker(t *testing.T) {
 	}
 	if len(updates) != 1 || updates[0].Metric != MetricInfinity {
 		t.Errorf("a sent b %v within %v of being assigned an address it had relayed, want one retraction", updates, assignedWakeWait)
+	}
+}
+
+// a session added to a running speaker is sent the whole table at once, and the neighbors it already has are sent nothing for it
+func TestNewSessionIsOwedItsDumpAlone(t *testing.T) {
+	fabric := newMeshFabric(t, Config{Hello: dur(quietInterval), Update: dur(quietInterval)}, "a-b")
+	dest := netip.MustParsePrefix("2001:db8:7::/48")
+	a := fabric.speakers["a"]
+	a.Originate(dest)
+	fabric.flush("a")
+	select {
+	case <-a.changed:
+	default:
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = a.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	for deadline := time.Now().Add(assignedWakeWait); a.Passes() == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the speaker never ran its first pass, so this proves nothing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	fabric.reset()
+
+	newcomer := newHeldPeer(t, "c", nil)
+	defer a.AddPeer(newcomer.Peer, identity.Identity{}).Close()
+	var updates []Update
+	for deadline := time.Now().Add(assignedWakeWait); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if updates = updatesIn(t, newcomer.sent(t), dest); len(updates) != 0 {
+			break
+		}
+	}
+	if len(updates) != 1 {
+		t.Fatalf("a sent its new session %v within %v, want one update for %s", updates, assignedWakeWait, dest)
+	}
+	if got := updatesFor(t, fabric.tlvs("a", "b"), dest); len(got) != 0 {
+		t.Errorf("a sent b, which already had its table, %v for the new session", got)
 	}
 }
 

@@ -410,7 +410,10 @@ func (s *Speaker) AddPeer(peer *netstack.Peer, remote identity.Identity) *PeerHa
 		advertised: make(map[routeKey]struct{}), owed: make(map[routeKey]struct{})}
 	s.chargeLocked(n)
 	s.neighbors[peer.ID] = n
-	s.updatePending = true
+	// the newcomer alone lacks the table, and it goes as a triggered update to it alone
+	for _, key := range s.advertisableKeys() {
+		n.owed[key] = struct{}{}
+	}
 	s.wake()
 	return &PeerHandle{speaker: s, state: n}
 }
