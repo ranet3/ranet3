@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: CC-BY-4.0
 title: "Debugging a running node"
-description: "The debug tree: who may call it, what it promises, its commands and how a view is added."
+description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
 updated: 2026-11-01
 order: 30
@@ -26,7 +26,7 @@ one without having to interrupt it. Arguments and flags that name a peer, an
 event kind, a path or the socket complete in bash, zsh and fish, the shells
 `ranet3 completion` writes for.
 
-## Who may call it
+## Debug paths
 
 A debug path takes the callers every other path takes, as
 [who may use it](../control-socket.md#who-may-use-it) says. The snapshots carry

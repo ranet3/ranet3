@@ -55,8 +55,8 @@ first, at startup and on a reload, with
 so a Mac has no kill switch, nor do the BSDs. On Android and iOS no reconciler
 runs, and the platform's own setting holds the host's traffic to the tunnel:
 Android's always-on VPN with blocking, and iOS's include-all-networks, which
-only the user can turn on. The caller's credentials decide who may use the debug
-paths beyond the read paths.
+only the user can turn on. The caller's credentials only name who asked, in the
+records [who may use it](control-socket.md#who-may-use-it) describes.
 
 The exit a build carries is chosen when it is built, and no setting names it. A
 Linux build carries the kernel exit, which writes what it carries into the tun
@@ -191,8 +191,8 @@ On a platform other than Linux, macOS, iOS and Android:
   steering that moves the tun needs a restart. A reload applies one that leaves
   the tun where it was.
 - The node assumes the host forwards both families.
-- The node reads no caller credentials, so the debug tree answers only on its
-  read paths.
+- The node reads no caller credentials, so its records of who asked name no
+  caller.
 - Datagrams leave without DF, as [path MTU](#path-mtu) below describes.
 - Answers leave from the kernel's choice of source, not the address the request
   reached.
@@ -423,5 +423,4 @@ the host's and the routers' fragmenting.
 The control surface is an HTTP handler that serves JSON over any listener. The
 `control` package binds it to a Unix socket. On Linux and macOS, and on iOS and
 Android, it also reads each caller's credentials from that socket. Elsewhere it
-reads none, and the debug tree answers a caller it cannot name only on its read
-paths.
+reads none, and its records of who asked name no caller.
