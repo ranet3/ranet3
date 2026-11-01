@@ -168,7 +168,7 @@ func journaling(t *testing.T) *lockedBuffer {
 	return logged
 }
 
-// journaledLine is the last line logged holds for path, or empty
+// journaledLine is the last logged line that names path, or empty
 func journaledLine(logged *lockedBuffer, path string) string {
 	var line string
 	for candidate := range strings.Lines(logged.String()) {

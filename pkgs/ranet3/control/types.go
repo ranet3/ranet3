@@ -43,10 +43,8 @@
 //
 // The socket's mode is the only check. Whoever can open the socket reads
 // every path and asks every verb, the paths under [PathDebug] included, so a
-// group the socket is shared with controls the daemon as root does: Down
-// keeps the node off the mesh until Up, disabling the reconciler withdraws
-// the kill switch's rules, a trace reads in plaintext the packets the node's
-// forwarding decision handles, and a probe sends from the node.
+// group the socket is shared with controls the daemon as root does, as "Who
+// may use it" on the control socket page describes.
 //
 // Each verb acts on something the file already decides (cap.table,
 // cap.segment's steering, link.listen, the peers list, and the file itself),

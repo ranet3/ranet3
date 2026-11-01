@@ -8,5 +8,5 @@ package control
 import "net"
 
 // peerCred reports nothing on a platform this tree reads no peer credentials on
-// a request there carries no caller for an event to name
+// a request there carries no caller, so neither an event nor the probe and trace journal line has a uid or pid to give
 func peerCred(*net.UnixConn) (Caller, bool) { return Caller{}, false }
