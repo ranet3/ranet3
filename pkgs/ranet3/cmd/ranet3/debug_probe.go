@@ -21,7 +21,7 @@ is after a move of the host's default or one of its addresses. A change of
 links alone probes no session. A session with a request outstanding resends that
 request instead of a liveness check. One with none sends no liveness check
 while its IKE SA is past its lifetime or a Delete of it has gone out, or while
-a rekey of its own may run IKE_FOLLOWUP_KE exchanges or waits on the peer's.
+a rekey of its own may run an IKE_FOLLOWUP_KE exchange or waits on the peer's.
 Name a peer to probe its sessions, or pass --all to probe every session this
 node holds.`,
 		Args:              peerOrAll(&all),

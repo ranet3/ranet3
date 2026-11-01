@@ -45,7 +45,7 @@ func newPeerChildRekey(t testing.TB, s *Session, transforms []Transform, ni []by
 // RFC 9370 section 2.2.4: "KEYMAT = prf+ (SK_d, SK(0) | Ni | Nr | SK(1) |  ... SK(n))"
 // RFC 7296 section 2.17: "All keys for SAs carrying data from the initiator to the responder are taken before SAs going from the responder to the initiator."
 func (p *peerRekey) childKeys(old *ikeContext, each int) (initiator, responder []byte) {
-	stream := modelPRFPlus(sha512.New384, old.skD, concat(slices.Concat([][]byte{p.shared, p.ni, p.nr}, p.secrets)...), 2*each)
+	stream := modelPRFPlus(sha512.New384, old.skD, concat(p.shared, p.ni, p.nr, p.added), 2*each)
 	return stream[:each], stream[each:]
 }
 
@@ -56,14 +56,15 @@ func (p *peerRekey) installed(s *Session) bool {
 }
 
 // RFC 9370 Appendix A.3's offer made for a Child SA, with ML-KEM-768 for PQ_KEM_2, ML-KEM-1024 for PQ_KEM_5, ML-KEM-512 for PQ_KEM_1 and a private use ID for PQ_KEM_6, which this end lacks, in a peer's rekey of the Child SA and in its creation of one
-// the CREATE_CHILD_SA answer and the first IKE_FOLLOWUP_KE answer each carry a link of their own, the last answer none, and the Child SA is installed only at that last exchange, keyed by every secret of the chain
+// A.3 answers PQ_KEM_5 in ADDKE2 as well, which an entry of one join leaves out, so the answer takes the NONE A.3 offers there and runs A.3's first IKE_FOLLOWUP_KE and no second
+// the CREATE_CHILD_SA answer carries a link, the IKE_FOLLOWUP_KE answer none, and the Child SA is installed only at that exchange, keyed by both secrets of the chain
 // RFC 9370 section 2.2.4: "With multiple key exchanges, the SAs are not yet created when the CREATE_CHILD_SA is completed. Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
 // RFC 9370 section 2.2.4: "KEYMAT = prf+ (SK_d, SK(0) | Ni | Nr | SK(1) |  ... SK(n))"
 func TestChildSAChainOfAppendixA3AsResponder(t *testing.T) {
 	const mlkem512, private = 35, 1025
 	for name, rekey := range map[string]bool{"a rekey of the Child SA": true, "a creation of the Child SA": false} {
 		t.Run(name, bubble.Run(func(t *testing.T) {
-			s, _ := answeringChain(t, modelSuite, Suites{kex: []kexEntry{entry768And1024}})
+			s, _ := answeringChain(t, modelSuite, Suites{kex: []kexEntry{entry768}})
 			if !rekey {
 				s.Child = ChildSA{}
 			}
@@ -76,30 +77,26 @@ func TestChildSAChainOfAppendixA3AsResponder(t *testing.T) {
 				t.Fatalf("the responder answered %v, want an SA", payloadTypes(answer))
 			}
 			proposals, err := DecodeSA(sa.Body)
-			if want := slices.Concat([]Transform{encrAES128, esnNone, dhX25519}, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)); err != nil || len(proposals) != 1 || !slices.Equal(proposals[0].Transforms, want) {
+			if want := slices.Concat([]Transform{encrAES128, esnNone, dhX25519}, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, 0)); err != nil || len(proposals) != 1 || !slices.Equal(proposals[0].Transforms, want) {
 				t.Fatalf("the responder answered %+v, %v, want %+v", proposals, err, want)
 			}
 			link1 := p.link
 			if findType(answer, PayloadTSi) == nil || findType(answer, PayloadTSr) == nil || len(link1) != followupLinkLen {
 				t.Fatalf("the CREATE_CHILD_SA answer carries %v with the link %x, want TSi, TSr and a link of %d octets", payloadTypes(answer), link1, followupLinkLen)
 			}
-			first, err := p.followup(t, s, ctx, ML_KEM_768, link1)
-			if err != nil || len(first) != 2 || first[0].Type != PayloadKE || len(p.link) != followupLinkLen || bytes.Equal(p.link, link1) {
-				t.Fatalf("the first IKE_FOLLOWUP_KE drew %v with the link %x, %v, want KEr and a link of its own", payloadTypes(first), p.link, err)
-			}
 			if got := s.currentChild(); got.LocalSPI != old.LocalSPI {
-				t.Fatal("the responder installed the Child SA before the last IKE_FOLLOWUP_KE")
+				t.Fatal("the responder installed the Child SA before the IKE_FOLLOWUP_KE")
 			}
-			last, err := p.followup(t, s, ctx, ML_KEM_1024, p.link)
+			last, err := p.followup(t, s, ctx, ML_KEM_768, link1)
 			if err != nil || len(last) != 1 || last[0].Type != PayloadKE {
-				t.Fatalf("the last IKE_FOLLOWUP_KE drew %v, %v, want KEr alone", payloadTypes(last), err)
+				t.Fatalf("the IKE_FOLLOWUP_KE drew %v, %v, want KEr alone", payloadTypes(last), err)
 			}
 			// AES-GCM with a 128-bit key takes 16 octets of key and 4 of salt
 			initiator, responder := p.childKeys(ctx, 16+4)
 			if got := s.currentChild(); !p.installed(s) || !bytes.Equal(got.InboundKey, initiator) || !bytes.Equal(got.OutboundKey, responder) {
 				t.Errorf("the responder holds the Child SA of SPIs %08x and %08x, want %08x and %08x keyed by the chain of Appendix A.3", got.LocalSPI, got.RemoteSPI, p.espR, p.espI)
 			}
-			if got := s.Suite().ESP(); got != "aes128gcm/x25519+mlkem768+mlkem1024" {
+			if got := s.Suite().ESP(); got != "aes128gcm/x25519+mlkem768" {
 				t.Errorf("the Child SA is named %s, want its entry after its cipher", got)
 			}
 			if retiring := s.retiringChild(); retiring.LocalSPI != old.LocalSPI {
@@ -121,7 +118,7 @@ func TestPeerChildSARekeyKeepsTheEntryOfTheSAItReplaces(t *testing.T) {
 	}{
 		"a Child SA of x25519+mlkem768 under kex listing x25519 first": {entry768, []kexEntry{entryX25519, entry768}, true},
 		"a Child SA of x25519 under kex listing x25519+mlkem768 first": {entryX25519, []kexEntry{entry768, entryX25519}, false},
-		"a Child SA of p256+mlkem768 under a KE payload in x25519":     {kexEntry{group: DH_ECP_256, additions: [addkeTypes]uint16{ML_KEM_768}}, []kexEntry{entryX25519, {group: DH_ECP_256, additions: [addkeTypes]uint16{ML_KEM_768}}}, false},
+		"a Child SA of p256+mlkem768 under a KE payload in x25519":     {kexEntry{group: DH_ECP_256, addition: ML_KEM_768}, []kexEntry{entryX25519, {group: DH_ECP_256, addition: ML_KEM_768}}, false},
 	} {
 		t.Run(name, bubble.Run(func(t *testing.T) {
 			s, _ := answeringChain(t, chainSuite, Suites{kex: test.kex})
@@ -192,7 +189,7 @@ func testRequestsDuringAPeersChildChainAreAnsweredAsUsual(t *testing.T) {
 	}
 }
 
-// a peer's Child SA chain whose Child SA the dataplane refuses at the last IKE_FOLLOWUP_KE is answered TEMPORARY_FAILURE rather than the ciphertext, so the peer makes no SA either, and the session keeps the Child SA the chain would replace
+// a peer's Child SA chain whose Child SA the dataplane refuses at the IKE_FOLLOWUP_KE is answered TEMPORARY_FAILURE rather than the ciphertext, so the peer makes no SA either, and the session keeps the Child SA the chain would replace
 // RFC 7296 section 1.3.1: "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA"
 // RFC 9370 section 2.2.4: "Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
 func TestRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *testing.T) {
@@ -213,7 +210,7 @@ func testRefusedInstallAtAChildChainsLastExchangeIsAnsweredTemporaryFailure(t *t
 		t.Fatalf("the refused install ended the IKE SA: %v", err)
 	}
 	if !notified(answer, N_TEMPORARY_FAILURE, nil) || findType(answer, PayloadKE) != nil {
-		t.Errorf("the last IKE_FOLLOWUP_KE drew %v, want TEMPORARY_FAILURE alone", payloadTypes(answer))
+		t.Errorf("the IKE_FOLLOWUP_KE drew %v, want TEMPORARY_FAILURE alone", payloadTypes(answer))
 	}
 	if got := s.currentChild(); got.LocalSPI != old.LocalSPI || got.RemoteSPI != old.RemoteSPI || peer.installed(s) {
 		t.Errorf("the session holds the Child SA of SPIs %08x and %08x, want the one the chain would replace, %08x and %08x", got.LocalSPI, got.RemoteSPI, old.LocalSPI, old.RemoteSPI)

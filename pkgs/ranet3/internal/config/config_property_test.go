@@ -540,7 +540,7 @@ func defective(tc hegel.TestCase, list cryptoList, kind string) ([]string, strin
 	case "chained":
 		joined := hegel.Draw(tc, hegel.Lists(hegel.SampledFrom(slices.Concat(postQuantum, kexNames))).MinSize(2).MaxSize(3))
 		entry := strings.Join(slices.Concat([]string{hegel.Draw(tc, hegel.SampledFrom(kexNames))}, joined), "+")
-		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q joins %d key exchanges after its first, and an entry joins one", entry, len(joined))
+		return insert(entry), fmt.Sprintf("cap.crypto ike kex entry %q joins %d key exchanges after its first, and an entry holds one additional key exchange", entry, len(joined))
 	case "stranger":
 		// a name no list takes, joined after a classical key exchange or leading one an entry joins
 		stranger := hegel.Draw(tc, hegel.SampledFrom(strangers))

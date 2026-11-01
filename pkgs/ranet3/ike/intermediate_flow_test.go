@@ -173,9 +173,9 @@ func ikeOffer(transforms ...[]Transform) []Proposal {
 }
 
 var (
-	entry768        = kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}
-	entry768And1024 = kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768, ML_KEM_1024}}
-	entryX25519     = kexEntry{group: DH_CURVE25519}
+	entry768    = kexEntry{group: DH_CURVE25519, addition: ML_KEM_768}
+	entry1024   = kexEntry{group: DH_CURVE25519, addition: ML_KEM_1024}
+	entryX25519 = kexEntry{group: DH_CURVE25519}
 )
 
 // scripted is a scripted initiator's half of a setup with h's responder, every key and IntAuth the model's
@@ -380,8 +380,8 @@ func (s *scripted) authenticate(mid, authMID uint32) (Header, []RawPayload) {
 	return header, answer
 }
 
-// accepted is the session h's responder handed over, checked against the model's last generation, the methods it ran and its IKE_AUTH at authMID
-func (s *scripted) accepted(authMID uint32, methods []uint16) *Session {
+// accepted is the session h's responder handed over, checked against the model's last generation, the method of the additional key exchange it ran or zero, and its IKE_AUTH at authMID
+func (s *scripted) accepted(authMID uint32, method uint16) *Session {
 	s.t.Helper()
 	var session *Session
 	select {
@@ -395,8 +395,8 @@ func (s *scripted) accepted(authMID uint32, methods []uint16) *Session {
 	if got := [5][]byte{ctx.skD, ctx.skei, ctx.sker, ctx.skpi, ctx.skpr}; !slices.EqualFunc(got[:], s.model.keys[:], bytes.Equal) {
 		s.t.Error("the responder's IKE SA keys are not those of the model's last generation")
 	}
-	if got := ctx.suite.entry().added(); !slices.Equal(got, methods) {
-		s.t.Errorf("the responder's IKE SA ran additions %v, want %v", got, methods)
+	if got := ctx.suite.Addition; got != method {
+		s.t.Errorf("the responder's IKE SA ran the addition %d, want %d", got, method)
 	}
 	if ctx.authMID != authMID || ctx.lastPeerResponseID != authMID || ctx.nextPeerMID != authMID+1 {
 		s.t.Errorf("the responder's IKE SA answered IKE_AUTH at %d, last answered %d and waits for %d, want %d, %d and %d",
@@ -410,14 +410,16 @@ func (s *scripted) accepted(authMID uint32, methods []uint16) *Session {
 	return session
 }
 
-// the responder answers an offer of additional key exchanges by the entry it lists, NONE in each ADDKE type the entry leaves, and runs an IKE_INTERMEDIATE exchange at Message IDs from 1 for each method it answered
+// the responder answers an offer of additional key exchanges by the entry it lists, its method in the earliest ADDKE type offering it and NONE in each other, and runs one IKE_INTERMEDIATE exchange at Message ID 1 where it answered a method
 // IKE_AUTH follows at the next Message ID, signed with IntAuth under the keys of the last generation, and its Child SA takes KEYMAT from that generation's SK_d
 // an offer it answers NONE in every ADDKE type runs no IKE_INTERMEDIATE exchange, and IKE_AUTH at Message ID 1 signs the octets of RFC 7296
 // the offers are RFC 9370 Appendix A.1 and A.2 with HMAC-SHA2-384 for PRF_HMAC_SHA2_512, ML-KEM-768 for PQ_KEM_2, ML-KEM-1024 for PQ_KEM_5, ML-KEM-512 for PQ_KEM_1 and private use IDs for the others, which this end lacks
+// the answer A.1 shows runs two additional key exchanges, which no entry holds, so its offer is answered as A.1's text lets a responder answer it with NONE for all but one
+// RFC 9370 Appendix A.1: "Therefore, the responder can choose NONE for some or all of the additional exchanges if the proposed key exchange methods are not supported or for whatever reasons the responder decides not to perform the additional key exchange."
 // RFC 9370 section 2.2.2: "For each additional key exchange agreed to in the IKE_SA_INIT exchange, the initiator and the responder perform an IKE_INTERMEDIATE exchange, as described in [RFC9242]."
 // RFC 9242 section 3.2: "The Message ID for the first pair of IKE_AUTH messages is one more than the value used in the last IKE_INTERMEDIATE exchange."
 // RFC 9242 section 3.1: "If the responder also supports this exchange, it includes this notification in the response message."
-func TestResponderRunsAnExchangeForEachAdditionItAnswers(t *testing.T) {
+func TestResponderRunsAnExchangeForTheAdditionItAnswers(t *testing.T) {
 	const mlkem512, private1, private2, private3 = 35, 1025, 1026, 1027
 	appendixA1 := ikeOffer(addkeOf(TransADDKE1, mlkem512, ML_KEM_768, 0), addkeOf(TransADDKE1+1, private1, private2, 0), addkeOf(TransADDKE1+2, ML_KEM_1024, private3, 0))
 	appendixA2 := ikeOffer(addkeOf(TransADDKE1, mlkem512, ML_KEM_768, 0), addkeOf(TransADDKE1+1, private1, private2, 0))
@@ -425,18 +427,23 @@ func TestResponderRunsAnExchangeForEachAdditionItAnswers(t *testing.T) {
 		entries []kexEntry
 		offer   []Proposal
 		answer  []Transform
-		methods []uint16
+		method  uint16
 		suite   string
 	}{
-		"RFC 9370 Appendix A.1 to x25519+mlkem768+mlkem1024": {
-			entries: []kexEntry{entry768And1024}, offer: appendixA1,
-			answer:  slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, 0), addkeOf(TransADDKE1+2, ML_KEM_1024)),
-			methods: []uint16{ML_KEM_768, ML_KEM_1024}, suite: "aes256gcm/sha384/x25519+mlkem768+mlkem1024",
+		"RFC 9370 Appendix A.1 to x25519+mlkem768": {
+			entries: []kexEntry{entry768}, offer: appendixA1,
+			answer: slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, 0), addkeOf(TransADDKE1+2, 0)),
+			method: ML_KEM_768, suite: "aes256gcm/sha384/x25519+mlkem768",
+		},
+		"RFC 9370 Appendix A.1 to x25519+mlkem1024": {
+			entries: []kexEntry{entry1024}, offer: appendixA1,
+			answer: slices.Concat(modelBase, addkeOf(TransADDKE1, 0), addkeOf(TransADDKE1+1, 0), addkeOf(TransADDKE1+2, ML_KEM_1024)),
+			method: ML_KEM_1024, suite: "aes256gcm/sha384/x25519+mlkem1024",
 		},
 		"RFC 9370 Appendix A.2 to the default lists": {
-			offer:   appendixA2,
-			answer:  slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, 0)),
-			methods: []uint16{ML_KEM_768}, suite: "aes256gcm/sha384/x25519+mlkem768",
+			offer:  appendixA2,
+			answer: slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, 0)),
+			method: ML_KEM_768, suite: "aes256gcm/sha384/x25519+mlkem768",
 		},
 		"RFC 9370 Appendix A.2 to the classical entries": {
 			entries: classicalLists.kex, offer: appendixA2,
@@ -445,8 +452,8 @@ func TestResponderRunsAnExchangeForEachAdditionItAnswers(t *testing.T) {
 		},
 		"ML-KEM-768 to x25519+mlkem768": {
 			entries: []kexEntry{entry768}, offer: ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)),
-			answer:  slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)),
-			methods: []uint16{ML_KEM_768}, suite: "aes256gcm/sha384/x25519+mlkem768",
+			answer: slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)),
+			method: ML_KEM_768, suite: "aes256gcm/sha384/x25519+mlkem768",
 		},
 	} {
 		t.Run(name, bubble.Run(func(t *testing.T) {
@@ -462,12 +469,10 @@ func TestResponderRunsAnExchangeForEachAdditionItAnswers(t *testing.T) {
 			if !carriesNotify(s.answer, N_INTERMEDIATE_EXCHANGE_SUPPORTED) {
 				t.Error("the IKE_SA_INIT answer carries no INTERMEDIATE_EXCHANGE_SUPPORTED")
 			}
-			var suite SASuite
-			for n, method := range test.methods {
-				s.intermediate(uint32(n+1), method)
-				suite.Additions[n] = method
+			if test.method != 0 {
+				s.intermediate(1, test.method)
 			}
-			authMID := suite.authMID()
+			authMID := SASuite{Addition: test.method}.authMID()
 			header, answer := s.authenticate(authMID, authMID)
 			if header.ExchangeType != IKE_AUTH || !header.IsResponse() || header.MessageID != authMID {
 				t.Fatalf("the responder answered IKE_AUTH with exchange %d at Message ID %d, want IKE_AUTH at %d", header.ExchangeType, header.MessageID, authMID)
@@ -475,7 +480,7 @@ func TestResponderRunsAnExchangeForEachAdditionItAnswers(t *testing.T) {
 			if findType(answer, PayloadAUTH) == nil || findType(answer, PayloadSA) == nil {
 				t.Fatalf("the IKE_AUTH answer carries payload types %v, want AUTH and the Child SA", payloadTypes(answer))
 			}
-			if got := s.accepted(authMID, test.methods).Suite().IKE(); got != test.suite {
+			if got := s.accepted(authMID, test.method).Suite().IKE(); got != test.suite {
 				t.Errorf("the responder's IKE SA runs %s, want %s", got, test.suite)
 			}
 		}))
@@ -498,7 +503,7 @@ func TestOfferNoEntryMeetsDrawsNoProposalChosen(t *testing.T) {
 		answered uint8
 	}{
 		"RFC 9370 Appendix A.4": {
-			entries: []kexEntry{entry768, {group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}, entryX25519},
+			entries: []kexEntry{entry768, {group: DH_CURVE25519, addition: ML_KEM_1024}, entryX25519},
 			offer:   ikeOffer(addkeOf(TransADDKE1, mlkem512, private1), addkeOf(TransADDKE1+1, ML_KEM_768, ML_KEM_1024, 0)), notify: true,
 		},
 		"an addition the responder lists, without the notify":                              {entries: []kexEntry{entry768}, offer: hybrid},
@@ -528,7 +533,7 @@ func TestOfferNoEntryMeetsDrawsNoProposalChosen(t *testing.T) {
 	}
 }
 
-// the responder answers each IKE_INTERMEDIATE at the next Message ID and drops one at any other, and a bitwise identical repeat of the last draws the response it kept while another at its Message ID draws nothing
+// the responder answers the IKE_INTERMEDIATE at Message ID 1 and drops one at any other, and a bitwise identical repeat of it draws the response it kept while another at its Message ID draws nothing
 // RFC 9242 section 3.2: "Implementations MUST verify that Message IDs in the IKE_INTERMEDIATE messages they receive actually follow this rule."
 // RFC 7296 section 2.1: "A retransmission from the initiator MUST be bitwise identical to the original request."
 func TestResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
@@ -537,8 +542,8 @@ func TestResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
 
 func testResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
 	h := newResponderHarness(t, nil)
-	h.lists.Store(&Suites{kex: []kexEntry{entry768And1024}})
-	s, refused := openScripted(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), true)
+	h.lists.Store(&Suites{kex: []kexEntry{entry768}})
+	s, refused := openScripted(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), true)
 	if s == nil {
 		t.Fatalf("the responder refused the offer with notify %d", refused)
 	}
@@ -564,11 +569,10 @@ func testResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
 	if !s.silent() {
 		t.Error("a request at Message ID 1 that is not its repeat drew an answer")
 	}
-	s.intermediate(2, ML_KEM_1024)
-	if header, _ := s.authenticate(3, 3); header.ExchangeType != IKE_AUTH || header.MessageID != 3 {
-		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 3", header.ExchangeType, header.MessageID)
+	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
+		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(3, []uint16{ML_KEM_768, ML_KEM_1024})
+	s.accepted(2, ML_KEM_768)
 }
 
 // the responder answers an IKE_INTERMEDIATE and a repeat of it at the address and port they came from, though IKE_SA_INIT came from another, and refuses one there too
@@ -598,7 +602,7 @@ func TestResponderAnswersAnIntermediateWhereItCameFrom(t *testing.T) {
 					t.Error("a repeat of the request from the second endpoint drew an answer at the first")
 				}
 				s.authenticate(2, 2)
-				s.accepted(2, []uint16{ML_KEM_768})
+				s.accepted(2, ML_KEM_768)
 				return
 			}
 			s.send(IKE_INTERMEDIATE, 1, []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INITIAL_CONTACT})}})
@@ -1123,25 +1127,24 @@ func (p *played) ended() (*Session, error) {
 	return p.session, p.err
 }
 
-// a dial whose lists hold a + entry asks for IKE_INTERMEDIATE, runs an exchange at Message IDs from 1 for each method the answer agreed on, and signs IKE_AUTH at the next Message ID with IntAuth under the keys of the last generation
+// a dial whose lists hold a + entry asks for IKE_INTERMEDIATE, runs one exchange at Message ID 1 where the answer agreed on the entry's method, and signs IKE_AUTH at the next Message ID with IntAuth under the keys of that exchange's generation
 // its Child SA takes KEYMAT from that generation's SK_d and its next request takes the Message ID after IKE_AUTH
 // an answer of the classical entry runs none, and a dial of classical lists asks for none
 // RFC 9370 section 2.2.1: "If the initiator includes any ADDKE Transform Types into the SA payload in the IKE_SA_INIT exchange request message, then it MUST also negotiate the use of the IKE_INTERMEDIATE exchange, as described in [RFC9242] by including an INTERMEDIATE_EXCHANGE_SUPPORTED notification in the same message."
 // RFC 9242 section 3.3.1: "Every subsequent IKE_INTERMEDIATE exchange uses the most recently calculated IKE SA keys before this exchange is started."
-func TestDialRunsAnExchangeForEachAdditionAgreed(t *testing.T) {
+func TestDialRunsAnExchangeForTheAdditionAgreed(t *testing.T) {
 	for name, test := range map[string]struct {
 		entries []kexEntry
 		number  uint8
 		answer  []Transform
 		asks    bool
-		methods []uint16
+		method  uint16
 		suite   string
 	}{
 		"x25519+mlkem768": {entries: []kexEntry{entry768}, number: 1, answer: slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)),
-			asks: true, methods: []uint16{ML_KEM_768}, suite: "aes256gcm/sha384/x25519+mlkem768"},
-		"x25519+mlkem768+mlkem1024": {entries: []kexEntry{entry768And1024}, number: 1,
-			answer: slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)),
-			asks:   true, methods: []uint16{ML_KEM_768, ML_KEM_1024}, suite: "aes256gcm/sha384/x25519+mlkem768+mlkem1024"},
+			asks: true, method: ML_KEM_768, suite: "aes256gcm/sha384/x25519+mlkem768"},
+		"x25519+mlkem1024": {entries: []kexEntry{entry1024}, number: 1, answer: slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_1024)),
+			asks: true, method: ML_KEM_1024, suite: "aes256gcm/sha384/x25519+mlkem1024"},
 		"x25519 answered beside x25519+mlkem768": {entries: []kexEntry{entry768, entryX25519}, number: 2, answer: modelBase, asks: true, suite: "aes256gcm/sha384/x25519"},
 		"x25519 alone":                           {entries: []kexEntry{entryX25519}, number: 1, answer: modelBase, suite: "aes256gcm/sha384/x25519"},
 	} {
@@ -1151,12 +1154,10 @@ func TestDialRunsAnExchangeForEachAdditionAgreed(t *testing.T) {
 				t.Errorf("the IKE_SA_INIT request carries INTERMEDIATE_EXCHANGE_SUPPORTED %v, want %v", got, test.asks)
 			}
 			p.answerSAInit(test.number, test.answer, test.asks)
-			var suite SASuite
-			for n, method := range test.methods {
-				p.answerIntermediate(uint32(n+1), method, nil)
-				suite.Additions[n] = method
+			if test.method != 0 {
+				p.answerIntermediate(1, test.method, nil)
 			}
-			authMID := suite.authMID()
+			authMID := SASuite{Addition: test.method}.authMID()
 			p.answerAuth(authMID, nil)
 			session, err := p.ended()
 			if err != nil {
@@ -1197,7 +1198,7 @@ func testDialWaitsPastAnIntermediateResponseThatDoesNotDecrypt(t *testing.T) {
 	}
 }
 
-// a dial refuses an answer agreeing on additional key exchanges that carries no INTERMEDIATE_EXCHANGE_SUPPORTED, and sends nothing more
+// a dial refuses an answer agreeing on an additional key exchange that carries no INTERMEDIATE_EXCHANGE_SUPPORTED, and sends nothing more
 // RFC 9370 section 2.2.1: "If the IKE_INTERMEDIATE exchange is not negotiated, then the peers MUST treat any ADDKE Transform Types in the IKE_SA_INIT exchange messages as unknown transform types and skip the proposals they appear in."
 func TestDialRefusesAdditionsAgreedWithoutTheNotify(t *testing.T) {
 	bubble.Run(testDialRefusesAdditionsAgreedWithoutTheNotify)(t)
@@ -1236,7 +1237,7 @@ func TestIntermediateNotifyWithDataNegotiatesTheExchange(t *testing.T) {
 		if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 			t.Fatalf("the responder answered IKE_AUTH with exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
-		s.accepted(2, []uint16{ML_KEM_768})
+		s.accepted(2, ML_KEM_768)
 	}))
 	t.Run("dial", bubble.Run(func(t *testing.T) {
 		p := dialPlayed(t, Suites{kex: []kexEntry{entry768}}, nil)
@@ -1249,7 +1250,7 @@ func TestIntermediateNotifyWithDataNegotiatesTheExchange(t *testing.T) {
 	}))
 }
 
-// a dial refuses an IKE_INTERMEDIATE response whose KE payload is missing, names another method or holds a ciphertext of another length, records ike.kex.rejected naming the exchange, the method and the ciphertext, and sends neither the next IKE_INTERMEDIATE nor IKE_AUTH
+// a dial refuses an IKE_INTERMEDIATE response whose KE payload is missing, names another method or holds a ciphertext of another length, records ike.kex.rejected naming the exchange, the method and the ciphertext, and sends no IKE_AUTH
 // a response of an error notify, or one marking a payload of an unassigned type critical, fails the dial so and records no rejection
 // RFC 7296 section 2.5: "If the critical flag is set and the payload type is unrecognized, the message MUST be rejected"
 // draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the check fails, the initiator MUST reject the ciphertext and MUST fail the exchange, log the error, and stop creating the SA (i.e. not initiate IKE_AUTH or next IKE_INTERMEDIATE)."
@@ -1277,8 +1278,8 @@ func TestDialRejectsAnIntermediateResponseItCannotTake(t *testing.T) {
 	} {
 		t.Run(name, bubble.Run(func(t *testing.T) {
 			dialed := &recorder{}
-			p := dialPlayed(t, Suites{kex: []kexEntry{entry768And1024}}, dialed.record)
-			p.answerSAInit(1, slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), true)
+			p := dialPlayed(t, Suites{kex: []kexEntry{entry768}}, dialed.record)
+			p.answerSAInit(1, slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768)), true)
 			p.answerIntermediate(1, ML_KEM_768, test.shape)
 			if !p.quiet() {
 				t.Error("the dial sent another request after a response it refuses")
@@ -1358,15 +1359,15 @@ func testCancelDuringAnIntermediateExchangeEndsTheDialAtOnce(t *testing.T) {
 	}
 }
 
-// two ends listing x25519+mlkem768+mlkem1024 run both exchanges at Message IDs 1 and 2 and IKE_AUTH at 3, and hold the same keys after it
-// the dial's next request, a rekey of the Child SA, goes at Message ID 4 and completes
-func TestTwoEndsOfTwoAdditionsAgreeOnEveryGeneration(t *testing.T) {
-	bubble.Run(testTwoEndsOfTwoAdditionsAgreeOnEveryGeneration)(t)
+// two ends listing x25519+mlkem1024 run its exchange at Message ID 1 and IKE_AUTH at 2, and hold the same keys after it
+// the dial's next request, a rekey of the Child SA, goes at Message ID 3 and completes
+func TestTwoEndsOfAnAdditionAgreeOnEveryGeneration(t *testing.T) {
+	bubble.Run(testTwoEndsOfAnAdditionAgreeOnEveryGeneration)(t)
 }
 
-func testTwoEndsOfTwoAdditionsAgreeOnEveryGeneration(t *testing.T) {
+func testTwoEndsOfAnAdditionAgreeOnEveryGeneration(t *testing.T) {
 	h := newResponderHarness(t, nil)
-	lists := Suites{kex: []kexEntry{entry768And1024, entryX25519}}
+	lists := Suites{kex: []kexEntry{entry1024, entryX25519}}
 	h.lists.Store(&lists)
 	var mu sync.Mutex
 	var requests []string
@@ -1391,19 +1392,19 @@ func testTwoEndsOfTwoAdditionsAgreeOnEveryGeneration(t *testing.T) {
 		t.Error("the two ends hold different IKE SA keys")
 	}
 	for _, s := range []*Session{initiator, responder} {
-		if got := s.Suite().IKE(); got != "aes256gcm/sha384/x25519+mlkem768+mlkem1024" {
-			t.Errorf("an end runs %s, want aes256gcm/sha384/x25519+mlkem768+mlkem1024", got)
+		if got := s.Suite().IKE(); got != "aes256gcm/sha384/x25519+mlkem1024" {
+			t.Errorf("an end runs %s, want aes256gcm/sha384/x25519+mlkem1024", got)
 		}
 	}
 	runSession(t, initiator)
 	runSession(t, responder)
 	if err := initiator.RekeyChild(); err != nil {
-		t.Fatalf("the Child SA rekey after IKE_AUTH at 3 failed: %v", err)
+		t.Fatalf("the Child SA rekey after IKE_AUTH at 2 failed: %v", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	// the old Child SA's Delete may follow
-	if want := []string{"IKE_SA_INIT 0", "IKE_INTERMEDIATE 1", "IKE_INTERMEDIATE 2", "IKE_AUTH 3", "CREATE_CHILD_SA 4"}; len(requests) < len(want) || !slices.Equal(requests[:len(want)], want) {
+	if want := []string{"IKE_SA_INIT 0", "IKE_INTERMEDIATE 1", "IKE_AUTH 2", "CREATE_CHILD_SA 3"}; len(requests) < len(want) || !slices.Equal(requests[:len(want)], want) {
 		t.Errorf("the dial sent requests %q, want %q first", requests, want)
 	}
 }

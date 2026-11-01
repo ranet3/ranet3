@@ -600,8 +600,8 @@ type authRequest struct {
 	source transport.Endpoint
 }
 
-// awaitAuthRequest waits for the initiator's IKE_AUTH, answering a repeat of the IKE_SA_INIT request with the response it sent and first the IKE_INTERMEDIATE exchange of each additional key exchange the suite runs
-// it returns IntAuth's chain over those
+// awaitAuthRequest waits for the initiator's IKE_AUTH, answering a repeat of the IKE_SA_INIT request with the response it sent and first the IKE_INTERMEDIATE exchange of the additional key exchange the suite runs, where it runs one
+// it returns IntAuth's chain over that exchange
 // RFC 7296 section 2.1: "It is not sufficient to use the initiator's SPI and/or IP address to differentiate between these three cases because two different peers behind a single NAT could choose the same initiator SPI."
 // so a repeat is matched on the whole packet, which also keeps a bare header naming a live SPIi, which anyone who opened one knows, from drawing the response at whatever source it claims
 // RFC 9242 section 3.2: "Implementations MUST verify that Message IDs in the IKE_INTERMEDIATE messages they receive actually follow this rule."
@@ -609,7 +609,12 @@ type authRequest struct {
 // RFC 9242 section 5: "Specifications utilizing the Intermediate Exchange MUST NOT allow an unlimited number of these exchanges to take place at the initiator's discretion."
 func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte, deadline time.Time) (*authRequest, intAuth, error) {
 	ctx := s.current
-	methods := ctx.suite.entry().added()
+	method := ctx.suite.Addition
+	// exchanges is how many IKE_INTERMEDIATE exchanges the suite runs, one for its additional key exchange
+	var exchanges uint32
+	if method != 0 {
+		exchanges = 1
+	}
 	var chain intAuth
 	// answered counts the IKE_INTERMEDIATE exchanges run, and ctx.lastPeer holds the request of the last one
 	var answered uint32
@@ -665,11 +670,11 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 		}
 		request := &authRequest{opened: *message, source: source}
 		switch {
-		case header.ExchangeType == IKE_AUTH && int(answered) == len(methods):
+		case header.ExchangeType == IKE_AUTH && answered == exchanges:
 			return request, chain, nil
-		case header.ExchangeType == IKE_INTERMEDIATE && int(answered) < len(methods):
+		case header.ExchangeType == IKE_INTERMEDIATE && answered < exchanges:
 			key := ctx.peerEncryptionKey()
-			response, next, err := s.answerIntermediate(chain, request, methods[answered], ni, nr)
+			response, next, err := s.answerIntermediate(chain, request, method, ni, nr)
 			if err != nil {
 				return nil, intAuth{}, err
 			}
@@ -682,7 +687,7 @@ func (s *Session) awaitAuthRequest(saInitRequest, saInitResponse, ni, nr []byte,
 			if response, err := s.responseNotify(ctx, header.MessageID, header.ExchangeType, N_INVALID_SYNTAX); err == nil {
 				s.answer(response, request.form, source)
 			}
-			return nil, intAuth{}, fmt.Errorf("ike: %d IKE_INTERMEDIATE exchanges ran of %d, and the initiator sent exchange type %d at Message ID %d", answered, len(methods), header.ExchangeType, header.MessageID)
+			return nil, intAuth{}, fmt.Errorf("ike: %d IKE_INTERMEDIATE exchanges ran of %d, and the initiator sent exchange type %d at Message ID %d", answered, exchanges, header.ExchangeType, header.MessageID)
 		}
 	}
 }
@@ -1203,6 +1208,6 @@ func chooseIKE(proposals []Proposal, ciphers, prfs []Transform, entries []kexEnt
 	chosen := met[at]
 	chosen.transforms = slices.Concat(chosen.transforms[:2], []Transform{kex.dh}, chosen.transforms[2:], kex.additions)
 	entry := kex.entry()
-	chosen.suite.DHGroup, chosen.suite.Additions = entry.group, entry.additions
+	chosen.suite.DHGroup, chosen.suite.Addition = entry.group, entry.addition
 	return chosen, 0, true
 }

@@ -104,61 +104,62 @@ func (e *kexRejection) attrs() []slog.Attr {
 	}
 }
 
-// runIntermediates runs an IKE_INTERMEDIATE exchange for each additional key exchange of the SA's entry, at Message IDs from 1, and leaves the SA under the keys of the last
-// it returns IntAuth's chain over them
+// runIntermediate runs the IKE_INTERMEDIATE exchange of the additional key exchange of the SA's entry at Message ID 1, where the entry holds one, and leaves the SA under that exchange's keys
+// it returns IntAuth's chain over it, empty where the entry holds none
 // RFC 9370 section 2.2.2: "For each additional key exchange agreed to in the IKE_SA_INIT exchange, the initiator and the responder perform an IKE_INTERMEDIATE exchange, as described in [RFC9242]."
 // RFC 9242 section 3.3.1: "Every subsequent IKE_INTERMEDIATE exchange uses the most recently calculated IKE SA keys before this exchange is started."
-func (s *Session) runIntermediates(ni, nr []byte) (intAuth, error) {
+func (s *Session) runIntermediate(ni, nr []byte) (intAuth, error) {
 	ctx := s.current
-	var chain intAuth
-	for n, method := range ctx.suite.entry().added() {
-		mid := uint32(n + 1)
-		pair, err := generateKEM(method)
-		if err != nil {
-			return intAuth{}, err
-		}
-		inner := []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, pair.PublicBytes())}}
-		hdr := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: mid}
-		sent, err := s.sealRequest(ctx, hdr, inner)
-		if err != nil {
-			return intAuth{}, err
-		}
-		raw, response, answer, plaintext, err := s.encryptedExchange(ctx, sent, maxRetransmits, nil)
-		if err != nil {
-			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, err)
-		}
-		if unsupported, found := firstUnsupportedCritical(response.Payloads, answer); found {
-			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d response marks unsupported payload type %d critical", mid, unsupported)
-		}
-		// RFC 9242 section 3.4 on the error handling of RFC 7296 sections 2.21.1 and 2.21.2: "these considerations are also applied to the IKE_INTERMEDIATE exchange"
-		if err := refusal(exchangeName(IKE_INTERMEDIATE), answer); err != nil {
-			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, err)
-		}
-		ciphertext, err := keData(answer, method)
-		var secret []byte
-		if err == nil {
-			secret, err = pair.SharedSecret(ciphertext)
-		}
-		if err != nil {
-			// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the check fails, the initiator MUST reject the ciphertext and MUST fail the exchange, log the error, and stop creating the SA (i.e. not initiate IKE_AUTH or next IKE_INTERMEDIATE)."
-			rejected := &kexRejection{exchange: exchangeName(IKE_INTERMEDIATE), method: method, side: "ciphertext", err: err}
-			slog.Warn("ike rejected the responder's ML-KEM ciphertext", "mid", mid, "err", rejected)
-			s.emit("ike.kex.rejected", rejected.attrs()...)
-			return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, rejected)
-		}
-		// RFC 9242 section 3.3.2: "The prf calculations MUST be applied to whole messages only, before possible IKE fragmentation."
-		requestChunk, err := intAuthChunk(sent.message.whole, HeaderLen, sent.message.inner)
-		if err != nil {
-			return intAuth{}, err
-		}
-		responseChunk, err := intAuthChunk(raw, response.skHeaderOffset, plaintext)
-		if err != nil {
-			return intAuth{}, err
-		}
-		chain = chain.add(ctx.suite.PRFID, ctx.skpi, ctx.skpr, requestChunk, responseChunk)
-		if err := ctx.nextGeneration(secret, ni, nr); err != nil {
-			return intAuth{}, err
-		}
+	method := ctx.suite.Addition
+	if method == 0 {
+		return intAuth{}, nil
+	}
+	const mid = 1
+	pair, err := generateKEM(method)
+	if err != nil {
+		return intAuth{}, err
+	}
+	inner := []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, pair.PublicBytes())}}
+	hdr := Header{SPIInitiator: ctx.spiI, SPIResponder: ctx.spiR, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: mid}
+	sent, err := s.sealRequest(ctx, hdr, inner)
+	if err != nil {
+		return intAuth{}, err
+	}
+	raw, response, answer, plaintext, err := s.encryptedExchange(ctx, sent, maxRetransmits, nil)
+	if err != nil {
+		return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, err)
+	}
+	if unsupported, found := firstUnsupportedCritical(response.Payloads, answer); found {
+		return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d response marks unsupported payload type %d critical", mid, unsupported)
+	}
+	// RFC 9242 section 3.4 on the error handling of RFC 7296 sections 2.21.1 and 2.21.2: "these considerations are also applied to the IKE_INTERMEDIATE exchange"
+	if err := refusal(exchangeName(IKE_INTERMEDIATE), answer); err != nil {
+		return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, err)
+	}
+	ciphertext, err := keData(answer, method)
+	var secret []byte
+	if err == nil {
+		secret, err = pair.SharedSecret(ciphertext)
+	}
+	if err != nil {
+		// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the check fails, the initiator MUST reject the ciphertext and MUST fail the exchange, log the error, and stop creating the SA (i.e. not initiate IKE_AUTH or next IKE_INTERMEDIATE)."
+		rejected := &kexRejection{exchange: exchangeName(IKE_INTERMEDIATE), method: method, side: "ciphertext", err: err}
+		slog.Warn("ike rejected the responder's ML-KEM ciphertext", "mid", mid, "err", rejected)
+		s.emit("ike.kex.rejected", rejected.attrs()...)
+		return intAuth{}, fmt.Errorf("ike: IKE_INTERMEDIATE %d: %w", mid, rejected)
+	}
+	// RFC 9242 section 3.3.2: "The prf calculations MUST be applied to whole messages only, before possible IKE fragmentation."
+	requestChunk, err := intAuthChunk(sent.message.whole, HeaderLen, sent.message.inner)
+	if err != nil {
+		return intAuth{}, err
+	}
+	responseChunk, err := intAuthChunk(raw, response.skHeaderOffset, plaintext)
+	if err != nil {
+		return intAuth{}, err
+	}
+	chain := intAuth{}.add(ctx.suite.PRFID, ctx.skpi, ctx.skpr, requestChunk, responseChunk)
+	if err := ctx.nextGeneration(secret, ni, nr); err != nil {
+		return intAuth{}, err
 	}
 	return chain, nil
 }
@@ -167,7 +168,7 @@ func (s *Session) runIntermediates(ni, nr []byte) (intAuth, error) {
 // that is the SKEYSEED of an IKE SA rekey, with the nonces of IKE_SA_INIT and the PRF kept
 // RFC 9370 section 2.2.2: "Both the initiator and the responder use these updated key values in the next exchange (IKE_INTERMEDIATE or IKE_AUTH)."
 func (ctx *ikeContext) nextGeneration(secret, ni, nr []byte) error {
-	keys, err := DeriveRekeyedIKEKeys(ctx.suite.PRFID, ctx.skD, ctx.suite, secret, ni, nr, ctx.spiI, ctx.spiR)
+	keys, err := DeriveRekeyedIKEKeys(ctx.suite.PRFID, ctx.skD, ctx.suite, secret, ni, nr, ctx.spiI, ctx.spiR, nil)
 	if err != nil {
 		return err
 	}

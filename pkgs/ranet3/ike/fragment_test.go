@@ -370,7 +370,7 @@ func TestResponderCutsAnAnswerOnlyWhereTheInitiatorSaidItSupportsFragments(t *te
 			if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 				t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 			}
-			s.accepted(2, []uint16{ML_KEM_768})
+			s.accepted(2, ML_KEM_768)
 		}))
 	}
 }
@@ -415,7 +415,7 @@ func TestResponderAnswersARequestInItsFormWhereTheAnswerFits(t *testing.T) {
 					t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 				}
 				inForm("IKE_AUTH")
-				s.accepted(2, []uint16{ML_KEM_768})
+				s.accepted(2, ML_KEM_768)
 			}))
 		}
 	}
@@ -448,7 +448,7 @@ func testResponderTakesFragmentsCutFor1280OverIPv4AndCutsItsOwnFor576(t *testing
 	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(2, []uint16{ML_KEM_768})
+	s.accepted(2, ML_KEM_768)
 }
 
 // a responder under a path MTU of 1500 answers an ML-KEM-1024 request strongSwan cut for 1280 octets in fragments no larger than the request's, where its path alone would have it send one of 1500
@@ -458,7 +458,6 @@ func TestResponderAnswersARequestCutFor1280WithinItsDatagrams(t *testing.T) {
 }
 
 func testResponderAnswersARequestCutFor1280WithinItsDatagrams(t *testing.T) {
-	entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(1500) })
 	h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
@@ -475,7 +474,7 @@ func testResponderAnswersARequestCutFor1280WithinItsDatagrams(t *testing.T) {
 	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(2, []uint16{ML_KEM_1024})
+	s.accepted(2, ML_KEM_1024)
 }
 
 // in Run and in the wait after IKE_AUTH the first answer to a request in fragments is kept under the threshold of the request's largest datagram, never under the floor's, where the path is wider
@@ -527,7 +526,7 @@ func testIKEAuthAnswerKeepsTheRequestsThresholdOnceThePathFalls(t *testing.T) {
 	s.cut = 300
 	s.authenticate(2, 2)
 	request, answer := s.sent, s.got
-	session := s.accepted(2, []uint16{ML_KEM_768})
+	session := s.accepted(2, ML_KEM_768)
 	if kept := session.current.lastPeer.response; kept == nil || kept.threshold != max(576, largest(request)+20+8+NonESPMarkerLen) {
 		t.Fatalf("IKE_AUTH in %d fragments of at most %d octets drew %d datagrams, want the answer kept under the threshold of the request's largest datagram or the floor's", len(request), largest(request), len(answer))
 	}
@@ -570,10 +569,10 @@ func testIKEAuthAnswerOfALongIdentityGoesWithinTheRequestsDatagrams(t *testing.T
 	if len(s.got) < 2 || largest(s.got) > largest(s.sent) {
 		t.Errorf("the IKE_AUTH answer went in %d datagrams of at most %d octets, over a path of 9000, want fragments within the request's %d", len(s.got), largest(s.got), largest(s.sent))
 	}
-	s.accepted(2, []uint16{ML_KEM_768})
+	s.accepted(2, ML_KEM_768)
 }
 
-// two ends on an IPv4 path that knows no path MTU cut each IKE_INTERMEDIATE message, larger than 576 octets carries, into fragments that fit it, send IKE_SA_INIT and IKE_AUTH whole, and agree on every key
+// two ends of x25519+mlkem1024 on an IPv4 path that knows no path MTU cut each IKE_INTERMEDIATE message, larger than 576 octets carries, into fragments that fit it, send IKE_SA_INIT and IKE_AUTH whole, and agree on every key
 // the dialing end records how many fragments each of its messages took and the threshold it cut them for, and a half-open SA records nothing
 // the Child SA rekey after IKE_AUTH completes
 func TestTwoEndsCutEachMessageThePathCannotCarryAndAgree(t *testing.T) {
@@ -583,7 +582,7 @@ func TestTwoEndsCutEachMessageThePathCannotCarryAndAgree(t *testing.T) {
 func testTwoEndsCutEachMessageThePathCannotCarryAndAgree(t *testing.T) {
 	dialed, answered := &recorder{}, &recorder{}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = noPathMTU }, answered.record)
-	lists := Suites{kex: []kexEntry{entry768And1024, entryX25519}}
+	lists := Suites{kex: []kexEntry{entry1024, entryX25519}}
 	h.lists.Store(&lists)
 	var mu sync.Mutex
 	fragments := map[string]int{}
@@ -613,21 +612,18 @@ func testTwoEndsCutEachMessageThePathCannotCarryAndAgree(t *testing.T) {
 	capacity := floorRoom - HeaderLen - genericPayloadHeaderLen - 4 - 8 - 1 - 16
 	cut := func(octets int) int { return (genericPayloadHeaderLen + 4 + octets + capacity - 1) / capacity }
 	want := map[string]int{
-		"IKE_INTERMEDIATE 1 response false": cut(kemSizes[ML_KEM_768][0]), "IKE_INTERMEDIATE 1 response true": cut(kemSizes[ML_KEM_768][1]),
-		"IKE_INTERMEDIATE 2 response false": cut(kemSizes[ML_KEM_1024][0]), "IKE_INTERMEDIATE 2 response true": cut(kemSizes[ML_KEM_1024][1]),
+		"IKE_INTERMEDIATE 1 response false": cut(kemSizes[ML_KEM_1024][0]), "IKE_INTERMEDIATE 1 response true": cut(kemSizes[ML_KEM_1024][1]),
 	}
 	mu.Lock()
 	if !maps.Equal(fragments, want) || largest > floorRoom {
 		t.Errorf("the ends sent fragments %v of at most %d octets, want %v of at most %d", fragments, largest, want, floorRoom)
 	}
 	mu.Unlock()
-	for mid, method := range []uint16{ML_KEM_768, ML_KEM_1024} {
-		line := fmt.Sprintf("exchange=IKE_INTERMEDIATE message_id=%d fragments=%d threshold=576", mid+1, cut(kemSizes[method][0]))
-		if !slices.ContainsFunc(dialed.recorded(), func(recorded string) bool {
-			return strings.HasPrefix(recorded, "ike.message.fragmented testorg/client:2>testorg/server:1 ") && strings.HasSuffix(recorded, line)
-		}) {
-			t.Errorf("the dialing end recorded %q, want ike.message.fragmented with %s", dialed.recorded(), line)
-		}
+	line := fmt.Sprintf("exchange=IKE_INTERMEDIATE message_id=1 fragments=%d threshold=576", cut(kemSizes[ML_KEM_1024][0]))
+	if !slices.ContainsFunc(dialed.recorded(), func(recorded string) bool {
+		return strings.HasPrefix(recorded, "ike.message.fragmented testorg/client:2>testorg/server:1 ") && strings.HasSuffix(recorded, line)
+	}) {
+		t.Errorf("the dialing end recorded %q, want ike.message.fragmented with %s", dialed.recorded(), line)
 	}
 	if recordedKind(answered, "ike.message.fragmented") != 0 {
 		t.Errorf("the answering end recorded %q before it took the initiator in", answered.recorded())
@@ -1839,7 +1835,7 @@ func TestOnlyFragmentOneOfAnAnsweredRequestDrawsTheAnswerAgain(t *testing.T) {
 		if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 			t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
-		s.accepted(2, []uint16{ML_KEM_768})
+		s.accepted(2, ML_KEM_768)
 	}))
 }
 
@@ -1922,7 +1918,7 @@ func TestKeptAnswerGoesAgainCutForThePathAtItsSend(t *testing.T) {
 		if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 			t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
-		s.accepted(2, []uint16{ML_KEM_768})
+		s.accepted(2, ML_KEM_768)
 	}))
 }
 
@@ -2006,7 +2002,6 @@ func TestKeptAnswerIsCutAgainWithinASmallerRepeatAndNoFurther(t *testing.T) {
 		}))
 	}
 	t.Run("half-open wait", bubble.Run(func(t *testing.T) {
-		entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 		h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(9000) })
 		h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
 		s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
@@ -2041,7 +2036,7 @@ func TestKeptAnswerIsCutAgainWithinASmallerRepeatAndNoFurther(t *testing.T) {
 		if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 			t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
-		s.accepted(2, []uint16{ML_KEM_1024})
+		s.accepted(2, ML_KEM_1024)
 	}))
 }
 
@@ -2158,7 +2153,7 @@ func testHalfOpenRepeatFromAnotherAddressDrawsNoMoreOctetsThanItSent(t *testing.
 	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(2, []uint16{ML_KEM_768})
+	s.accepted(2, ML_KEM_768)
 }
 
 // octetsOf is the octets of IKE message datagrams carry in all
@@ -2179,7 +2174,6 @@ func wireOf(datagrams [][]byte) int {
 // the answer, cut for the responder's threshold, takes more octets on the wire than the repeat, so the repeat draws nothing there, and the next repeat draws the answer, never more octets on the wire in all than the repeats sent
 // RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
 func TestMovedSetDrawsNoMoreOctetsThanItSent(t *testing.T) {
-	entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 	for _, test := range []struct {
 		name   string
 		entry  kexEntry
@@ -2205,7 +2199,7 @@ func TestMovedSetDrawsNoMoreOctetsThanItSent(t *testing.T) {
 			if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 				t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 			}
-			s.accepted(2, []uint16{test.method})
+			s.accepted(2, test.method)
 		}))
 	}
 }
@@ -2217,7 +2211,6 @@ func TestMovedWholeRepeatDrawsNoMoreOctetsThanItSent(t *testing.T) {
 }
 
 func testMovedWholeRepeatDrawsNoMoreOctetsThanItSent(t *testing.T) {
-	entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(1500) })
 	h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
@@ -2232,7 +2225,7 @@ func testMovedWholeRepeatDrawsNoMoreOctetsThanItSent(t *testing.T) {
 	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(2, []uint16{ML_KEM_1024})
+	s.accepted(2, ML_KEM_1024)
 }
 
 // in the half-open wait under a path MTU of 1500 the origin's fragment 1 of the request cut finer than it came cuts the answer again within it, into datagrams that carry fewer octets of IKE message than the request whole and take more on the wire
@@ -2282,7 +2275,7 @@ func testMovedWholeRepeatIsReadOnTheWire(t *testing.T) {
 	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(2, []uint16{ML_KEM_768})
+	s.accepted(2, ML_KEM_768)
 }
 
 // movedRepeats sends request, whose answer went as answer and takes more octets on the wire, three times from another address, and checks that the first send there draws nothing, the second and the third the answer, and the address never more octets on the wire than it sent
@@ -2325,7 +2318,6 @@ func TestMovedFinerSetIsReadAgainstTheAnswerCutAgain(t *testing.T) {
 }
 
 func testMovedFinerSetIsReadAgainstTheAnswerCutAgain(t *testing.T) {
-	entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = pathMTUOf(1500) })
 	h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
 	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
@@ -2367,48 +2359,7 @@ func testMovedFinerSetIsReadAgainstTheAnswerCutAgain(t *testing.T) {
 	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(2, []uint16{ML_KEM_1024})
-}
-
-// in the half-open wait the octets another address sent repeating a request count in that exchange alone
-// at the IPv4 floor a moved initiator's repeat of the first IKE_INTERMEDIATE request draws nothing there, its answer taking more octets on the wire, and neither does its repeat of the second, which the octets of both would cover
-func TestOctetsFromAnotherAddressCountInTheirExchangeAlone(t *testing.T) {
-	bubble.Run(testOctetsFromAnotherAddressCountInTheirExchangeAlone)(t)
-}
-
-func testOctetsFromAnotherAddressCountInTheirExchangeAlone(t *testing.T) {
-	h := newConfiguredResponderHarness(t, map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, nil, func(cfg *ResponderConfig) { cfg.pathMTU = noPathMTU })
-	h.lists.Store(&Suites{kex: []kexEntry{entry768And1024}})
-	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
-	if s == nil {
-		t.Fatalf("the responder refused the offer with notify %d", refused)
-	}
-	s.cut = 4000
-	place, sent := s.moved(), 0
-	for i, method := range []uint16{ML_KEM_768, ML_KEM_1024} {
-		mid := uint32(i + 1)
-		s.intermediate(mid, method)
-		if wireOf(s.got) <= wireOf(s.sent) || i > 0 && wireOf(s.got) > sent+wireOf(s.sent) {
-			t.Fatalf("the request at %d took %d octets on the wire and the answer %d, want the answer larger, and within the octets sent from the other address in all from the second on", mid, wireOf(s.sent), wireOf(s.got))
-		}
-		for _, raw := range s.sent {
-			if err := place.SendIKE(raw); err != nil {
-				t.Fatal(err)
-			}
-		}
-		sent += wireOf(s.sent)
-		if got := heard(place); len(got) != 0 {
-			t.Errorf("the request at %d, %d octets from another address, drew %d datagrams there, %d octets, want nothing", mid, octetsOf(s.sent), len(got), octetsOf(got))
-		}
-	}
-	if !s.silent() {
-		t.Error("the repeats from another address drew an answer at the one the IKE SA was set up from")
-	}
-	s.cut = 0
-	if header, _ := s.authenticate(3, 3); header.ExchangeType != IKE_AUTH || header.MessageID != 3 {
-		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 3", header.ExchangeType, header.MessageID)
-	}
-	s.accepted(3, []uint16{ML_KEM_768, ML_KEM_1024})
+	s.accepted(2, ML_KEM_1024)
 }
 
 // in the half-open wait a moved initiator repeats its IKE_INTERMEDIATE request of ML-KEM-1024 at the IPv4 floor, whole or cut again for the floor, and an observer replays one captured datagram of it from a third address after each of the initiator's
@@ -2416,7 +2367,6 @@ func testOctetsFromAnotherAddressCountInTheirExchangeAlone(t *testing.T) {
 // and the third address draws no more octets on the wire than it sent
 // RFC 7296 section 2.11: "MUST respond to the address and port from which the request was received."
 func TestReplayFromAThirdAddressHoldsNoMovedInitiator(t *testing.T) {
-	entry1024 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}}
 	for _, c := range []struct {
 		name       string
 		refragment int
@@ -2469,7 +2419,7 @@ func TestReplayFromAThirdAddressHoldsNoMovedInitiator(t *testing.T) {
 					t.Error("the repeats from other addresses drew an answer at the one the IKE SA was set up from")
 				}
 				s.authenticate(2, 2)
-				s.accepted(2, []uint16{ML_KEM_1024})
+				s.accepted(2, ML_KEM_1024)
 			}))
 		}
 	}
@@ -2634,97 +2584,79 @@ func TestRepeatsFromTwoAddressesAreGatheredApart(t *testing.T) {
 // arrivalGap is how long a test waits between sends from two sockets, so the responder takes them in the order they went
 const arrivalGap = 50 * time.Millisecond
 
-// in the half-open wait a repeat of the answered IKE_INTERMEDIATE request from another address, a moved initiator's late repeat or a replay, that arrives among the fragments of the next request leaves them be
-// a fragment of the request is dropped, the request whole is taken as a repeat, and the next request, a second IKE_INTERMEDIATE or IKE_AUTH, draws its answer once its last fragment arrives
+// in the half-open wait a repeat of the answered IKE_INTERMEDIATE request from another address, a moved initiator's late repeat or a replay, that arrives among the fragments of the IKE_AUTH request leaves them be
+// a fragment of the request is dropped, the request whole is taken as a repeat, and IKE_AUTH draws its answer once its last fragment arrives
 func TestRepeatFromAnotherAddressKeepsTheNextRequest(t *testing.T) {
-	for name, methods := range map[string][]uint16{"IKE_INTERMEDIATE": {ML_KEM_768, ML_KEM_1024}, "IKE_AUTH": {ML_KEM_768}} {
-		// the number of the request's fragment repeated, zero for the request whole
-		for number, repeat := range []string{"the request whole", "fragment 1", "fragment 2"} {
-			t.Run(fmt.Sprintf("%s after %s", name, repeat), bubble.Run(func(t *testing.T) {
-				h := newResponderHarness(t, nil)
-				entry, offer := entry768, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768))
-				if len(methods) == 2 {
-					entry, offer = entry768And1024, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024))
+	// the number of the request's fragment repeated, zero for the request whole
+	for number, repeat := range []string{"the request whole", "fragment 1", "fragment 2"} {
+		t.Run("IKE_AUTH after "+repeat, bubble.Run(func(t *testing.T) {
+			h := newResponderHarness(t, nil)
+			h.lists.Store(&Suites{kex: []kexEntry{entry768}})
+			s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768)), []RawPayload{fragmentationSupported}, true)
+			if s == nil {
+				t.Fatalf("the responder refused the offer with notify %d", refused)
+			}
+			if number > 0 {
+				s.cut = 500
+			}
+			s.intermediate(1, ML_KEM_768)
+			answered, place := s.sent, s.moved()
+			s.between = func() {
+				time.Sleep(arrivalGap)
+				if err := place.SendIKE(answered[max(number, 1)-1]); err != nil {
+					t.Fatal(err)
 				}
-				h.lists.Store(&Suites{kex: []kexEntry{entry}})
-				s, refused := openScriptedWith(t, h, offer, []RawPayload{fragmentationSupported}, true)
-				if s == nil {
-					t.Fatalf("the responder refused the offer with notify %d", refused)
-				}
-				if number > 0 {
-					s.cut = 500
-				}
-				s.intermediate(1, ML_KEM_768)
-				answered, place := s.sent, s.moved()
-				s.between = func() {
-					time.Sleep(arrivalGap)
-					if err := place.SendIKE(answered[max(number, 1)-1]); err != nil {
-						t.Fatal(err)
-					}
-					time.Sleep(arrivalGap)
-				}
-				authMID := uint32(len(methods) + 1)
-				if len(methods) == 2 {
-					s.cut = 500
-					s.intermediate(2, ML_KEM_1024)
-					s.between = nil
-				} else {
-					s.cut = 100
-				}
-				if header, _ := s.authenticate(authMID, authMID); header.ExchangeType != IKE_AUTH || header.MessageID != authMID {
-					t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at %d", header.ExchangeType, header.MessageID, authMID)
-				}
-				s.accepted(authMID, methods)
-			}))
-		}
+				time.Sleep(arrivalGap)
+			}
+			s.cut = 100
+			if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
+				t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
+			}
+			s.accepted(2, ML_KEM_768)
+		}))
 	}
 }
 
-// in the half-open wait the repeats of a request that the address the IKE SA was set up from sends draw the answer at most maxRetransmitsWhileBusy times in each exchange, the most sends this end makes of one request
+// in the half-open wait the repeats of the IKE_INTERMEDIATE request that the address the IKE SA was set up from sends draw the answer at most maxRetransmitsWhileBusy times, the most sends this end makes of one request
 // the repeat is the shortest fragment 1 that authenticates, which a request that came whole lets through, and the answer it draws is cut for the family's floor and no smaller
-func TestHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeatsOfEachExchange(t *testing.T) {
-	bubble.Run(testHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeatsOfEachExchange)(t)
+func TestHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeats(t *testing.T) {
+	bubble.Run(testHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeats)(t)
 }
 
-func testHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeatsOfEachExchange(t *testing.T) {
+func testHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeats(t *testing.T) {
 	h := newResponderHarness(t, nil)
-	h.lists.Store(&Suites{kex: []kexEntry{entry768And1024}})
-	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
+	h.lists.Store(&Suites{kex: []kexEntry{entry1024}})
+	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
 	if s == nil {
 		t.Fatalf("the responder refused the offer with notify %d", refused)
 	}
-	methods := []uint16{ML_KEM_768, ML_KEM_1024}
-	for i, method := range methods {
-		mid := uint32(i + 1)
-		key, answerKey := s.model.keys[1], s.model.keys[2]
-		s.intermediate(mid, method)
-		_, answer, _, _ := assembled(t, modelSuite, answerKey, s.got)
-		shortest, err := sealedFragment(modelSuite, key, Header{SPIInitiator: s.spiI, SPIResponder: s.spiR, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: mid}, nil, PayloadNone, 0, 1, 1, nil)
-		if err != nil {
+	key, answerKey := s.model.keys[1], s.model.keys[2]
+	s.intermediate(1, ML_KEM_1024)
+	_, answer, _, _ := assembled(t, modelSuite, answerKey, s.got)
+	shortest, err := sealedFragment(modelSuite, key, Header{SPIInitiator: s.spiI, SPIResponder: s.spiR, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: 1}, nil, PayloadNone, 0, 1, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for repeat := range maxRetransmitsWhileBusy + 1 {
+		if err := s.mux.SendIKE(shortest); err != nil {
 			t.Fatal(err)
 		}
-		for repeat := range maxRetransmitsWhileBusy + 1 {
-			if err := s.mux.SendIKE(shortest); err != nil {
-				t.Fatal(err)
+		if repeat == maxRetransmitsWhileBusy {
+			if !s.silent() {
+				t.Errorf("repeat %d drew the answer, want at most %d", repeat+1, maxRetransmitsWhileBusy)
 			}
-			if repeat == maxRetransmitsWhileBusy {
-				if !s.silent() {
-					t.Errorf("repeat %d at %d drew the answer, want at most %d", repeat+1, mid, maxRetransmitsWhileBusy)
-				}
-				continue
-			}
-			again := collect(t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
-			wantFits(t, again, floorRoom)
-			if _, inner, _, _ := assembled(t, modelSuite, answerKey, again); !samePayloads(inner, answer) {
-				t.Fatalf("repeat %d at %d drew payload types %v, want the answer again", repeat+1, mid, payloadTypes(inner))
-			}
+			continue
+		}
+		again := collect(t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
+		wantFits(t, again, floorRoom)
+		if _, inner, _, _ := assembled(t, modelSuite, answerKey, again); !samePayloads(inner, answer) {
+			t.Fatalf("repeat %d drew payload types %v, want the answer again", repeat+1, payloadTypes(inner))
 		}
 	}
-	authMID := uint32(len(methods) + 1)
-	if header, _ := s.authenticate(authMID, authMID); header.ExchangeType != IKE_AUTH || header.MessageID != authMID {
-		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at %d", header.ExchangeType, header.MessageID, authMID)
+	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
+		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(authMID, methods)
+	s.accepted(2, ML_KEM_1024)
 }
 
 // in the half-open wait of a responder whose initiator did not say it supports IKE fragmentation, all of the request in fragments from another address draws nothing however often it comes
@@ -2760,47 +2692,7 @@ func testHalfOpenRepeatInFragmentsFromAnotherAddressIsDiscardedWithoutTheNotify(
 	if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 	}
-	s.accepted(2, []uint16{ML_KEM_768})
-}
-
-// in the half-open wait a fragment of a repeat of the first IKE_INTERMEDIATE request from another address, left alone when the second request comes whole, keeps out no repeat of the second in fragments
-// all of the second request in fragments from a place of its own draws the answer there
-func TestRepeatLeftIncompleteKeepsOutNoRepeatOfTheNextExchange(t *testing.T) {
-	bubble.Run(testRepeatLeftIncompleteKeepsOutNoRepeatOfTheNextExchange)(t)
-}
-
-func testRepeatLeftIncompleteKeepsOutNoRepeatOfTheNextExchange(t *testing.T) {
-	h := newResponderHarness(t, nil)
-	h.lists.Store(&Suites{kex: []kexEntry{entry768And1024}})
-	s, refused := openScriptedWith(t, h, ikeOffer(addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), []RawPayload{fragmentationSupported}, true)
-	if s == nil {
-		t.Fatalf("the responder refused the offer with notify %d", refused)
-	}
-	s.cut = 500
-	s.intermediate(1, ML_KEM_768)
-	if err := s.moved().SendIKE(s.sent[0]); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(arrivalGap)
-	key, answerKey := s.model.keys[1], s.model.keys[2]
-	s.cut = 0
-	s.intermediate(2, ML_KEM_1024)
-	_, inner, _, _ := assembled(t, modelSuite, key, s.sent)
-	_, answer, _, _ := assembled(t, modelSuite, answerKey, s.got)
-	place := s.moved()
-	for _, raw := range cutInto(t, modelSuite, key, Header{SPIInitiator: s.spiI, SPIResponder: s.spiR, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: 2}, inner, 700) {
-		if err := place.SendIKE(raw); err != nil {
-			t.Fatal(err)
-		}
-	}
-	again := collect(t, func() ([]byte, error) { return place.RecvIKEUntil(time.Now().Add(answerBudget)) })
-	if _, got, _, _ := assembled(t, modelSuite, answerKey, again); !samePayloads(got, answer) {
-		t.Errorf("all of the second request in fragments from another address drew payload types %v, want its answer", payloadTypes(got))
-	}
-	if header, _ := s.authenticate(3, 3); header.ExchangeType != IKE_AUTH || header.MessageID != 3 {
-		t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 3", header.ExchangeType, header.MessageID)
-	}
-	s.accepted(3, []uint16{ML_KEM_768, ML_KEM_1024})
+	s.accepted(2, ML_KEM_768)
 }
 
 // after a request that came in fragments is answered, a repeat of its fragment 1 in more fragments draws the answer again, and one in fewer, or the request whole, draws nothing, in Run, in the wait after IKE_AUTH and in the half-open wait
@@ -2881,7 +2773,7 @@ func TestRepeatIsReadAgainstTheTotalFragmentsOfTheAnsweredRequest(t *testing.T) 
 		if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
 			t.Fatalf("the responder answered exchange %d at Message ID %d, want IKE_AUTH at 2", header.ExchangeType, header.MessageID)
 		}
-		s.accepted(2, []uint16{ML_KEM_768})
+		s.accepted(2, ML_KEM_768)
 	}))
 }
 

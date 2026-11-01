@@ -710,7 +710,7 @@ func testSessionHandlesPeerIKERekey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys, err := DeriveRekeyedIKEKeys(old.suite.PRFID, old.skD, newSuite, shared, ni, nonce.Body, newSPIi, newSPIr)
+	keys, err := DeriveRekeyedIKEKeys(old.suite.PRFID, old.skD, newSuite, shared, ni, nonce.Body, newSPIi, newSPIr, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -944,7 +944,7 @@ func testSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 			t.Errorf("derive peer shared secret: %v", err)
 			return
 		}
-		collisionKeys, err := DeriveRekeyedIKEKeys(old.suite.PRFID, old.skD, suite, shared, peerNonce, collisionNR.Body, peerSPIi, peerSPIr)
+		collisionKeys, err := DeriveRekeyedIKEKeys(old.suite.PRFID, old.skD, suite, shared, peerNonce, collisionNR.Body, peerSPIi, peerSPIr, nil)
 		if err != nil {
 			t.Errorf("derive collision keys: %v", err)
 			return

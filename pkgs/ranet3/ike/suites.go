@@ -62,29 +62,26 @@ type Suites struct {
 	kex                          []kexEntry
 }
 
-// kexEntry is one entry of cap.crypto ike kex, the key exchange IKE_SA_INIT runs and the additional ones of RFC 9370 after it
+// kexEntry is one entry of cap.crypto ike kex, the key exchange IKE_SA_INIT runs and the one additional key exchange of RFC 9370 after it
 type kexEntry struct {
 	group uint16
-	// additions holds the method of each additional key exchange in the order they run, zero past the last
-	additions [addkeTypes]uint16
+	// addition is the method of the additional key exchange, zero for none
+	addition uint16
 }
 
-func (e kexEntry) classical() bool { return e.additions[0] == 0 }
-
-func (e kexEntry) added() []uint16 {
-	n := slices.Index(e.additions[:], 0)
-	if n < 0 {
-		n = len(e.additions)
-	}
-	return e.additions[:n]
-}
+func (e kexEntry) classical() bool { return e.addition == 0 }
 
 // entry is the kex entry whose key exchanges made an SA of suite
-func (s SASuite) entry() kexEntry { return kexEntry{group: s.DHGroup, additions: s.Additions} }
+func (s SASuite) entry() kexEntry { return kexEntry{group: s.DHGroup, addition: s.Addition} }
 
-// authMID is the Message ID of the IKE_AUTH that makes an SA of suite, one IKE_INTERMEDIATE exchange for each additional key exchange ahead of it
+// authMID is the Message ID of the IKE_AUTH that makes an SA of suite, one IKE_INTERMEDIATE exchange ahead of it where it runs an additional key exchange
 // RFC 9242 section 3.2: "The Message ID for the first pair of IKE_AUTH messages is one more than the value used in the last IKE_INTERMEDIATE exchange."
-func (s SASuite) authMID() uint32 { return uint32(len(s.entry().added())) + 1 }
+func (s SASuite) authMID() uint32 {
+	if s.Addition != 0 {
+		return 2
+	}
+	return 1
+}
 
 // Suites resolves the four lists, refusing a list no session could negotiate from by the field and the name an operator wrote
 func (c Crypto) Suites() (Suites, error) {
@@ -159,7 +156,7 @@ func resolveKex(list []string) ([]kexEntry, error) {
 				entry, parts[0], parts[0])
 		}
 		if len(parts) > 2 {
-			return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins %d key exchanges after its first, and an entry joins one", entry, len(parts)-1)
+			return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins %d key exchanges after its first, and an entry holds one additional key exchange", entry, len(parts)-1)
 		}
 		resolved := kexEntry{group: kexNames[slices.Index(classical, parts[0])].transform.ID}
 		if len(parts) == 2 {
@@ -168,7 +165,7 @@ func resolveKex(list []string) ([]kexEntry, error) {
 				return nil, fmt.Errorf("ike: cap.crypto ike kex entry %q joins %s, and an entry joins only an ML-KEM method after its first, one of %s",
 					entry, joined, spelled(postQuantum))
 			}
-			resolved.additions[0] = postQuantumNames[slices.Index(postQuantum, joined)].transform.ID
+			resolved.addition = postQuantumNames[slices.Index(postQuantum, joined)].transform.ID
 		}
 		out = append(out, resolved)
 	}
@@ -194,7 +191,7 @@ func (s Suites) espCiphers() []Transform { return listed(s.espCipher, cipherName
 // defaultKex is the kex list a node that writes none runs, x25519+mlkem768 and then each classical key exchange alone
 // so a peer without ML-KEM meets a classical entry in a proposal after the first
 func defaultKex() []kexEntry {
-	all := []kexEntry{{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}}
+	all := []kexEntry{{group: DH_CURVE25519, addition: ML_KEM_768}}
 	for _, named := range kexNames {
 		all = append(all, kexEntry{group: named.transform.ID})
 	}
@@ -209,7 +206,7 @@ func (s Suites) kexEntries() []kexEntry {
 }
 
 // rekeyable is the kex entries a rekey of an IKE SA the key exchanges of current made may run
-// while kex holds current, only those that keep each of its additional key exchanges, since the session proved the peer runs them
+// while kex holds current, only those that keep its additional key exchange, since the session proved the peer runs it
 // a reload that removed current leaves the rekey every entry, as the operator chose
 func (s Suites) rekeyable(current kexEntry) []kexEntry {
 	entries := s.kexEntries()
@@ -219,9 +216,9 @@ func (s Suites) rekeyable(current kexEntry) []kexEntry {
 	return slices.DeleteFunc(slices.Clone(entries), func(entry kexEntry) bool { return !entry.keeps(current) })
 }
 
-// keeps reports whether e runs each additional key exchange other runs
+// keeps reports whether e runs the additional key exchange other runs
 func (e kexEntry) keeps(other kexEntry) bool {
-	return !slices.ContainsFunc(other.added(), func(method uint16) bool { return !slices.Contains(e.added(), method) })
+	return other.addition == 0 || e.addition == other.addition
 }
 
 func listed(list []Transform, names []suiteName) []Transform {
@@ -284,11 +281,8 @@ func (s Suites) entryProposals(entries []kexEntry, prfs []Transform, spi []byte)
 	proposals := make([]Proposal, len(entries))
 	for i, entry := range entries {
 		transforms := slices.Concat(s.ikeCiphers(), prfs, []Transform{{Type: TransDH, ID: entry.group}})
-		for at, method := range entry.additions {
-			if method == 0 {
-				break
-			}
-			transforms = append(transforms, Transform{Type: TransADDKE1 + TransformType(at), ID: method})
+		if entry.addition != 0 {
+			transforms = append(transforms, Transform{Type: TransADDKE1, ID: entry.addition})
 		}
 		proposals[i] = Proposal{Protocol: ProtoIKE, SPI: spi, Transforms: transforms}
 	}
@@ -426,11 +420,9 @@ type kexChoice struct {
 // entry is the key exchanges the choice runs
 func (c kexChoice) entry() kexEntry {
 	entry := kexEntry{group: c.dh.ID}
-	at := 0
 	for _, addition := range c.additions {
 		if addition.ID != 0 {
-			entry.additions[at] = addition.ID
-			at++
+			entry.addition = addition.ID
 		}
 	}
 	return entry
@@ -453,7 +445,7 @@ func chooseKex(offers [][]Transform, entries []kexEntry, keGroup uint16, groupOp
 					offersNone = offersNone || transform == (Transform{Type: TransDH})
 				}
 			}
-			additions, ok := takeAdditions(transforms, nil)
+			additions, ok := takeAddition(transforms, 0)
 			switch {
 			case !ok:
 			case offersNone:
@@ -475,7 +467,7 @@ func chooseKex(offers [][]Transform, entries []kexEntry, keGroup uint16, groupOp
 			if !slices.Contains(transforms, group) {
 				continue
 			}
-			additions, ok := takeAdditions(transforms, entry.added())
+			additions, ok := takeAddition(transforms, entry.addition)
 			if !ok {
 				continue
 			}
@@ -493,13 +485,13 @@ func chooseKex(offers [][]Transform, entries []kexEntry, keGroup uint16, groupOp
 	return 0, kexChoice{}, 0, false
 }
 
-// takeAdditions is one transform of each ADDKE type transforms hold, in type order, carrying methods over those types in order and NONE in the rest
-// where methods could sit in more than one way the earlier types carry them
+// takeAddition is one transform of each ADDKE type transforms hold, in type order, method in one of those types and NONE in the rest, or NONE in each for a method of zero
+// where method could sit in more than one type the earliest carries it
 // RFC 9370 section 2.2.1: "On the other hand, if the initiator includes any ADDKE Transform Type in the proposal, the responder MUST select one of the algorithms proposed using this type."
 // RFC 9370 section 2.2.1: "However, for the ADDKE Transform Types, the responder's choice MUST NOT contain duplicated algorithms (those with an identical Transform ID and attributes), except for the Transform ID of NONE."
-// a kex entry repeats no method, so no answer from one does
+// an answer carrying one method in one type duplicates none
 // RFC 9370 section 2.2.1: "The responder MUST treat all of the omitted ADDKE transforms as if they were proposed with Transform ID NONE."
-func takeAdditions(transforms []Transform, methods []uint16) ([]Transform, bool) {
+func takeAddition(transforms []Transform, method uint16) ([]Transform, bool) {
 	var types []TransformType
 	for _, transform := range transforms {
 		if additional(transform.Type) && !slices.Contains(types, transform.Type) {
@@ -507,31 +499,29 @@ func takeAdditions(transforms []Transform, methods []uint16) ([]Transform, bool)
 		}
 	}
 	slices.Sort(types)
-	var take func(at int, left []uint16) ([]Transform, bool)
-	take = func(at int, left []uint16) ([]Transform, bool) {
-		if at == len(types) {
-			return nil, len(left) == 0
-		}
-		candidates := []uint16{0}
-		if len(left) > 0 {
-			candidates = []uint16{left[0], 0}
-		}
-		for _, method := range candidates {
-			chosen := Transform{Type: types[at], ID: method}
-			if !slices.Contains(transforms, chosen) {
-				continue
+	choice := func(carrier int) ([]Transform, bool) {
+		var chosen []Transform
+		for at, kind := range types {
+			taken := Transform{Type: kind}
+			if at == carrier {
+				taken.ID = method
 			}
-			rest := left
-			if method != 0 {
-				rest = left[1:]
+			if !slices.Contains(transforms, taken) {
+				return nil, false
 			}
-			if tail, ok := take(at+1, rest); ok {
-				return append([]Transform{chosen}, tail...), true
-			}
+			chosen = append(chosen, taken)
 		}
-		return nil, false
+		return chosen, true
 	}
-	return take(0, methods)
+	if method == 0 {
+		return choice(-1)
+	}
+	for carrier := range types {
+		if chosen, ok := choice(carrier); ok {
+			return chosen, true
+		}
+	}
+	return nil, false
 }
 
 // holdsIKE reports whether the lists still hold every transform of an IKE SA's suite, the entry of all its key exchanges among them
@@ -667,11 +657,11 @@ func ikeSuite(suite SASuite) Suite {
 
 // RFC 9370 section 2.2.1: "The allowed Transform IDs for these transform types are the same as the IDs for Transform Type 4, so they all share a single IANA registry for Transform IDs."
 func kexName(entry kexEntry) string {
-	names := []string{transformName(Transform{Type: TransDH, ID: entry.group})}
-	for _, method := range entry.added() {
-		names = append(names, transformName(Transform{Type: TransDH, ID: method}))
+	name := transformName(Transform{Type: TransDH, ID: entry.group})
+	if entry.addition == 0 {
+		return name
 	}
-	return strings.Join(names, "+")
+	return name + "+" + transformName(Transform{Type: TransDH, ID: entry.addition})
 }
 
 // childSuite is a Child SA's cipher by its cap.crypto name, and the kex entry of key exchanges of its own

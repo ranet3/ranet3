@@ -129,7 +129,7 @@ func (s *Session) rekeyChild(alreadyRunningIsSuccess bool) (err error) {
 	// RFC 7296 section 2.25.2: "If a peer receives a request to create or rekey a Child SA when it is currently rekeying the IKE SA, it SHOULD reply with TEMPORARY_FAILURE."
 	// and a peer's creation or rekey of the Child SA replaces the SA this one would, so this end starts neither while the peer's chain is open, and the schedule retries after its backoff
 	if s.chainKind() != "" {
-		return errors.New("ike: Child SA rekey: the peer's own rekey runs its additional key exchanges")
+		return errors.New("ike: Child SA rekey: the peer's own rekey runs its additional key exchange")
 	}
 	old := s.currentChild()
 	if old.LocalSPI == 0 && old.RemoteSPI == 0 {
@@ -454,16 +454,16 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	entry := kexChoice{dh: selected.dh, additions: selected.additions}.entry()
 	made := &peerChild{encr: encr, localSPI: binary.BigEndian.Uint32(spi[:]), remoteSPI: selected.remoteSPI, entry: entry}
 	// RFC 9370 section 2.2.4: "With multiple key exchanges, the SAs are not yet created when the CREATE_CHILD_SA is completed. Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
-	// so the Child SA waits for the last of them, and nothing is installed until then
-	if added := entry.added(); len(added) > 0 {
-		c := newFollowupChain(ctx, made, added, sharedSecret, ni, nr)
+	// so the Child SA waits for the one IKE_FOLLOWUP_KE of its additional key exchange, and nothing is installed until then
+	if entry.addition != 0 {
+		c := newFollowupChain(ctx, made, entry.addition, sharedSecret, ni, nr)
 		s.stateMu.Lock()
 		// the chain dropped above was the last one open, since only Run's goroutine opens one
 		s.peerChain = c
 		s.stateMu.Unlock()
 		return s.response(ctx, msgID, CREATE_CHILD_SA, append(responsePayloads, c.linkPayload()))
 	}
-	if _, err := made.install(s, ctx, [][]byte{sharedSecret}, ni, nr); err != nil {
+	if _, err := made.install(s, ctx, sharedSecret, nil, ni, nr); err != nil {
 		return fail(err)
 	}
 	return s.response(ctx, msgID, CREATE_CHILD_SA, responsePayloads)

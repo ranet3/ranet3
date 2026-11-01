@@ -110,7 +110,7 @@ func TestIntAuthChunkIsTheSameAtBothEnds(t *testing.T) {
 	})
 }
 
-// the keys of every generation of a setup equal the chain RFC 9370 and RFC 7296 give, computed with crypto/hmac
+// the keys of each generation of a setup, the IKE_SA_INIT's and the IKE_INTERMEDIATE's where one runs, equal the chain RFC 9370 and RFC 7296 give, computed with crypto/hmac
 // RFC 7296 section 2.14: "SKEYSEED = prf(Ni | Nr, g^ir)"
 // RFC 9370 section 2.2.2: "SKEYSEED(n) = prf(SK_d(n-1), SK(n) | Ni | Nr)"
 // RFC 9370 section 2.2.2: "{SK_d(n) | SK_ai(n) | SK_ar(n) | SK_ei(n) | SK_er(n) | SK_pi(n) | SK_pr(n)} = prf+ (SKEYSEED(n), Ni | Nr | SPIi | SPIr)"
@@ -139,13 +139,13 @@ func TestSetupKeysFollowTheChainOfRFC9370(t *testing.T) {
 			ht.Fatal(err)
 		}
 		want := modelKeys(newHash, prf(concat(ni, nr), shared), seed, keyLen)
-		for n := range hegel.Draw(ht, pbt.Spanning(0, addkeTypes)) {
+		for n := range hegel.Draw(ht, pbt.Spanning(1, 2)) {
 			got := [5][]byte{keys.SKd, keys.SKei, keys.SKer, keys.SKpi, keys.SKpr}
 			if !slices.EqualFunc(got[:], want[:], bytes.Equal) {
 				ht.Fatalf("generation %d holds %x, the chain %x", n, got, want)
 			}
 			secret := hegel.Draw(ht, hegel.Binary(32, 32))
-			if keys, err = DeriveRekeyedIKEKeys(suite.PRFID, keys.SKd, suite, secret, ni, nr, spiI, spiR); err != nil {
+			if keys, err = DeriveRekeyedIKEKeys(suite.PRFID, keys.SKd, suite, secret, ni, nr, spiI, spiR, nil); err != nil {
 				ht.Fatal(err)
 			}
 			want = modelKeys(newHash, prf(want[0], concat(secret, ni, nr)), seed, keyLen)

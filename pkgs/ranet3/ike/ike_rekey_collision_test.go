@@ -255,7 +255,7 @@ func (p *collisionPeer) collide() bool {
 		t.Errorf("derive the surviving candidate's shared secret: %v", err)
 		return false
 	}
-	if p.winner, err = DeriveRekeyedIKEKeys(PRF_HMAC_SHA2_256, old.skD, suite, shared, collisionPeerNonce, findType(inner, PayloadNonce).Body, collisionPeerSPIi, p.winnerSPIr); err != nil {
+	if p.winner, err = DeriveRekeyedIKEKeys(PRF_HMAC_SHA2_256, old.skD, suite, shared, collisionPeerNonce, findType(inner, PayloadNonce).Body, collisionPeerSPIi, p.winnerSPIr, nil); err != nil {
 		t.Errorf("derive the surviving candidate's keys: %v", err)
 		return false
 	}
@@ -278,7 +278,7 @@ func (p *collisionPeer) collide() bool {
 		t.Errorf("derive the losing candidate's shared secret: %v", err)
 		return false
 	}
-	if p.loser, err = DeriveRekeyedIKEKeys(PRF_HMAC_SHA2_256, old.skD, suite, shared, collisionLocalNonce, collisionAnswerNonce, p.localSPIi, collisionLoserSPIr); err != nil {
+	if p.loser, err = DeriveRekeyedIKEKeys(PRF_HMAC_SHA2_256, old.skD, suite, shared, collisionLocalNonce, collisionAnswerNonce, p.localSPIi, collisionLoserSPIr, nil); err != nil {
 		t.Errorf("derive the losing candidate's keys: %v", err)
 		return false
 	}

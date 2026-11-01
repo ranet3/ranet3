@@ -27,7 +27,7 @@ func (e *saEnding) Unwrap() error { return e.err }
 // RekeyIKE replaces the IKE SA while retaining the current Child SAs
 // Run must be serving the IKE requests it sends
 // a failure it returns as a *saEnding ends the IKE SA with a Delete
-// it fails while the peer's rekey of either SA runs its additional key exchanges
+// it fails while the peer's rekey of either SA runs its additional key exchange
 func (s *Session) RekeyIKE() (err error) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
@@ -40,7 +40,7 @@ func (s *Session) RekeyIKE() (err error) {
 	}()
 	// the peer refuses this end's rekey while its own rekey of either SA runs its chain, for the reasons handleIKERekey refuses the peer's, so this end starts none then and the schedule retries after its backoff
 	if s.chainKind() != "" {
-		return errors.New("ike: IKE SA rekey: the peer's own rekey runs its additional key exchanges")
+		return errors.New("ike: IKE SA rekey: the peer's own rekey runs its additional key exchange")
 	}
 	ni := make([]byte, nonceLen)
 	if err := s.fillIKERekeyNonce(ni); err != nil {
@@ -88,7 +88,7 @@ func (s *Session) RekeyIKE() (err error) {
 		offer    []Proposal
 		dh       *DHKeyPair
 		response []RawPayload
-		// answered is when the answer came, which the peer's wait for a first IKE_FOLLOWUP_KE runs from
+		// answered is when the answer came, which the peer's wait for the IKE_FOLLOWUP_KE runs from
 		answered time.Time
 	)
 	for attempt := range 2 {
@@ -145,10 +145,10 @@ func (s *Session) RekeyIKE() (err error) {
 		return s.refusedIKERekey(local, err)
 	}
 	chained := answer.link != nil
-	// candidate is the SA this end's exchange made at the peer, which an answer running additional key exchanges makes only at the last of them
+	// candidate is the SA this end's exchange made at the peer, which an answer running an additional key exchange makes only at its IKE_FOLLOWUP_KE
 	var candidate *ikeContext
 	if !chained {
-		if candidate, err = rekeyedContext(old, answer.suite, [][]byte{answer.shared}, ni, answer.nonce, spiI, answer.spiR, false); err != nil {
+		if candidate, err = rekeyedContext(old, answer.suite, answer.shared, nil, ni, answer.nonce, spiI, answer.spiR, false); err != nil {
 			return fmt.Errorf("ike: derive IKE SA rekey keys: %w", err)
 		}
 	}
@@ -180,7 +180,7 @@ func (s *Session) RekeyIKE() (err error) {
 			return err
 		}
 		// RFC 9370 section 2.2.4: "if additional key exchanges are negotiated in the CREATE_CHILD_SA exchange in which the smallest nonce is used, then, because there is nothing to delete yet, the initiator of this exchange just stops the rekeying process, and it MUST NOT initiate the IKE_FOLLOWUP_KE exchange."
-		// the winner is the peer's chain, which makes its SA at its last exchange, and Run starts nothing on old until then, since strongSwan destroys an IKE SA that takes any other request while it waits for IKE_FOLLOWUP_KE
+		// the winner is the peer's chain, which makes its SA at its IKE_FOLLOWUP_KE, and Run starts nothing on old until then, since strongSwan destroys an IKE SA that takes any other request while it waits for IKE_FOLLOWUP_KE
 		s.quiet.Store(true)
 		return s.awaitPeerRekey(old, chain)
 	}
@@ -188,16 +188,16 @@ func (s *Session) RekeyIKE() (err error) {
 		// RFC 7296 section 2.8.2: "The new IKE SA containing the lowest nonce SHOULD be deleted by the node that created it, and the other surviving new IKE SA MUST inherit all the Child SAs."
 		// the peer created the redundant SA here, and a Delete of it from this end as well would cross the peer's, whose answer from this end retires the SA its own Delete runs on
 		// it stays registered for the peer's Delete to be answered, and expireRetainedContexts gives up on a Delete that never comes
-		// a peer's chain that lost stops before its first IKE_FOLLOWUP_KE, and Run drops it once this end's SA is current
+		// a peer's chain that lost stops before its IKE_FOLLOWUP_KE, and Run drops it once this end's SA is current
 		slog.Info("ike simultaneous rekey selected local candidate")
 	}
 	replacement := candidate
 	if chained {
-		additional, err := s.followups(answer.suite.entry().added(), answer.link, answered)
+		added, err := s.followup(answer.suite.Addition, answer.link, answered)
 		if err != nil {
 			return err
 		}
-		if replacement, err = rekeyedContext(old, answer.suite, append([][]byte{answer.shared}, additional...), ni, answer.nonce, spiI, answer.spiR, false); err != nil {
+		if replacement, err = rekeyedContext(old, answer.suite, answer.shared, added, ni, answer.nonce, spiI, answer.spiR, false); err != nil {
 			return &saEnding{reason: "local failure", err: fmt.Errorf("ike: derive IKE SA rekey keys: %w", err)}
 		}
 	}
@@ -225,7 +225,7 @@ func (s *Session) RekeyIKE() (err error) {
 }
 
 // yieldIKERekey ends this end's rekey of old in favor of a peer's rekey of it, making winner current where it is the SA the peer's exchange made
-// candidate is the SA this end's exchange made at the peer, nil where its additional key exchanges never ran, and it goes with a Delete of its own
+// candidate is the SA this end's exchange made at the peer, nil where its additional key exchange never ran, and it goes with a Delete of its own
 func (s *Session) yieldIKERekey(old, candidate, winner *ikeContext) error {
 	if candidate != nil {
 		if err := s.mux.RegisterIKE(candidate.spiI); err != nil {
@@ -272,58 +272,46 @@ func (s *Session) sendOwnDeleteLocked(ctx *ikeContext) error {
 	return err
 }
 
-// rekeyedContext is the IKE SA a rekey of old makes in suite between spiI and spiR, keyed by the secrets of its key exchanges in the order they ran, the responder's where responder holds
-func rekeyedContext(old *ikeContext, suite SASuite, secrets [][]byte, ni, nr []byte, spiI, spiR uint64, responder bool) (*ikeContext, error) {
-	keys, err := DeriveRekeyedIKEKeys(old.suite.PRFID, old.skD, suite, secrets[0], ni, nr, spiI, spiR, secrets[1:]...)
+// rekeyedContext is the IKE SA a rekey of old makes in suite between spiI and spiR, keyed by the shared secret of its CREATE_CHILD_SA and added, that of its additional key exchange or nil, the responder's where responder holds
+func rekeyedContext(old *ikeContext, suite SASuite, shared, added, ni, nr []byte, spiI, spiR uint64, responder bool) (*ikeContext, error) {
+	keys, err := DeriveRekeyedIKEKeys(old.suite.PRFID, old.skD, suite, shared, ni, nr, spiI, spiR, added)
 	if err != nil {
 		return nil, err
 	}
 	return &ikeContext{suite: suite, skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr, spiI: spiI, spiR: spiR, responder: responder, established: time.Now()}, nil
 }
 
-// followups runs an IKE_FOLLOWUP_KE exchange for each of methods, the first echoing link of the answer that came at answered, and returns their secrets in order
-// RFC 9370 section 2.2.4: "Each additional key exchange method MUST be fully completed before the next one is started."
-func (s *Session) followups(methods []uint16, link []byte, answered time.Time) ([][]byte, error) {
-	var secrets [][]byte
-	for n, method := range methods {
-		pair, err := generateKEM(method)
-		if err != nil {
-			return nil, &saEnding{reason: "local failure", err: err}
-		}
-		// RFC 9370 section 2.2.4: "The initiator MUST send back this notification intact in the request message of the next IKE_FOLLOWUP_KE exchange."
-		// the peer's wait runs from the answer before, and followupWait is scaled to the timeout Run resends on
-		result := s.awaitLocked(&localRequest{exchange: IKE_FOLLOWUP_KE, inner: []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, pair.PublicBytes())}, linkPayload(link)},
-			context: s.currentContext(), result: make(chan requestResult, 1), lateFrom: answered.Add(s.retransmitTimeout() * (followupWait / requestTimeout))})
-		if result.err != nil {
-			return nil, fmt.Errorf("ike: IKE_FOLLOWUP_KE %d: %w", n+1, result.err)
-		}
-		answered = time.Now()
-		answer := result.inner
-		if err := refusal("IKE_FOLLOWUP_KE", answer); err != nil {
-			return nil, s.refusedFollowup(err, result.late)
-		}
-		ciphertext, err := keData(answer, method)
-		var secret []byte
-		if err == nil {
-			secret, err = pair.SharedSecret(ciphertext)
-		}
-		if err != nil {
-			// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the error occurs in the CREATE_CHILD_SA or IKE_FOLLOWUP_KE exchanges, the initiator MUST delete the existing IKE SA and send a Delete payload in a new INFORMATIONAL exchange for the responder to also remove it."
-			// a missing KE and another method end it alike, since the two ends then hold different state
-			rejected := &kexRejection{exchange: exchangeName(IKE_FOLLOWUP_KE), method: method, side: "ciphertext", err: err}
-			slog.Warn("ike rejected the responder's ML-KEM ciphertext", "err", rejected)
-			s.emit("ike.kex.rejected", rejected.attrs()...)
-			return nil, &saEnding{reason: "kex rejected", err: rejected}
-		}
-		secrets = append(secrets, secret)
-		if n+1 == len(methods) {
-			break
-		}
-		if link, _ = linkOf(answer); link == nil {
-			return nil, &saEnding{reason: "rekey answer refused", err: fmt.Errorf("ike: IKE_FOLLOWUP_KE %d response links no next exchange", n+1)}
-		}
+// followup runs the IKE_FOLLOWUP_KE exchange of method, echoing link of the answer that came at answered, and returns its secret
+func (s *Session) followup(method uint16, link []byte, answered time.Time) ([]byte, error) {
+	pair, err := generateKEM(method)
+	if err != nil {
+		return nil, &saEnding{reason: "local failure", err: err}
 	}
-	return secrets, nil
+	// RFC 9370 section 2.2.4: "The initiator MUST send back this notification intact in the request message of the next IKE_FOLLOWUP_KE exchange."
+	// the peer's wait runs from the answer, and followupWait is scaled to the timeout Run resends on
+	result := s.awaitLocked(&localRequest{exchange: IKE_FOLLOWUP_KE, inner: []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, pair.PublicBytes())}, linkPayload(link)},
+		context: s.currentContext(), result: make(chan requestResult, 1), lateFrom: answered.Add(s.retransmitTimeout() * (followupWait / requestTimeout))})
+	if result.err != nil {
+		return nil, fmt.Errorf("ike: IKE_FOLLOWUP_KE: %w", result.err)
+	}
+	answer := result.inner
+	if err := refusal("IKE_FOLLOWUP_KE", answer); err != nil {
+		return nil, s.refusedFollowup(err, result.late)
+	}
+	ciphertext, err := keData(answer, method)
+	var secret []byte
+	if err == nil {
+		secret, err = pair.SharedSecret(ciphertext)
+	}
+	if err != nil {
+		// draft-ietf-ipsecme-ikev2-mlkem-09 section 2.2: "If the error occurs in the CREATE_CHILD_SA or IKE_FOLLOWUP_KE exchanges, the initiator MUST delete the existing IKE SA and send a Delete payload in a new INFORMATIONAL exchange for the responder to also remove it."
+		// a missing KE and another method end it alike, since the two ends then hold different state
+		rejected := &kexRejection{exchange: exchangeName(IKE_FOLLOWUP_KE), method: method, side: "ciphertext", err: err}
+		slog.Warn("ike rejected the responder's ML-KEM ciphertext", "err", rejected)
+		s.emit("ike.kex.rejected", rejected.attrs()...)
+		return nil, &saEnding{reason: "kex rejected", err: rejected}
+	}
+	return secret, nil
 }
 
 // refusedFollowup is how a rekey ends whose IKE_FOLLOWUP_KE the peer refused with err, late where the refusal came after a send past the peer's wait
@@ -373,7 +361,7 @@ type ikeRekeyAnswer struct {
 	nonce  []byte
 	spiR   uint64
 	shared []byte
-	// link is the data of the answer's ADDITIONAL_KEY_EXCHANGE notify, which the first IKE_FOLLOWUP_KE echoes, nil without one
+	// link is the data of the answer's ADDITIONAL_KEY_EXCHANGE notify, which the IKE_FOLLOWUP_KE echoes, nil without one
 	link []byte
 }
 
@@ -442,7 +430,7 @@ func readIKERekeyAnswer(response []RawPayload, offer []Proposal, group uint16, d
 	// and after an answer with no additional key exchange none is expected
 	added := !suite.entry().classical()
 	if added && link == nil {
-		return refuse(errors.New("ike: IKE SA rekey answer selected additional key exchanges and carried no ADDITIONAL_KEY_EXCHANGE"))
+		return refuse(errors.New("ike: IKE SA rekey answer selected an additional key exchange and carried no ADDITIONAL_KEY_EXCHANGE"))
 	}
 	if !added && link != nil {
 		return refuse(errors.New("ike: IKE SA rekey answer carried ADDITIONAL_KEY_EXCHANGE and selected no additional key exchange"))
@@ -459,7 +447,7 @@ func selectsAddition(body []byte) bool {
 }
 
 // handleIKERekey answers a peer's IKE SA rekey under ctx
-// the new context is current from the answer on, or from the last IKE_FOLLOWUP_KE of a rekey with additional key exchanges
+// the new context is current from the answer on, or from the IKE_FOLLOWUP_KE of a rekey with an additional key exchange
 // ctx stays until the peer deletes it
 func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPayload) (*outbound, error) {
 	s.stateMu.RLock()
@@ -557,9 +545,9 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	}
 	made := &peerIKE{suite: suite, spiI: spiI, spiR: spiR}
 	// RFC 9370 section 2.2.4: "If the initiator includes any ADDKE Transform Types in the SA payload (along with Transform Type 4), and if the responder agrees to perform additional key exchanges, then the additional key exchanges are performed in a series of new IKE_FOLLOWUP_KE exchanges that follow the CREATE_CHILD_SA exchange."
-	// so the new SA waits for the last of them, and nothing is registered or switched until then
-	if added := suite.entry().added(); len(added) > 0 {
-		c := newFollowupChain(ctx, made, added, shared, ni, nr)
+	// so the new SA waits for the one IKE_FOLLOWUP_KE of its additional key exchange, and nothing is registered or switched until then
+	if suite.Addition != 0 {
+		c := newFollowupChain(ctx, made, suite.Addition, shared, ni, nr)
 		s.stateMu.Lock()
 		// this end's own rekey may have completed its CREATE_CHILD_SA while the answer was made
 		if s.ownChainLocked(ctx) {
@@ -571,7 +559,7 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 		s.stateMu.Unlock()
 		return s.response(ctx, msgID, CREATE_CHILD_SA, append(answer, c.linkPayload()))
 	}
-	placed, err := made.install(s, ctx, [][]byte{shared}, ni, nr)
+	placed, err := made.install(s, ctx, shared, nil, ni, nr)
 	if err != nil {
 		slog.Warn("ike cannot answer a peer IKE rekey", "err", err)
 		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TEMPORARY_FAILURE)
@@ -582,13 +570,13 @@ func (s *Session) handleIKERekey(ctx *ikeContext, msgID uint32, inner []RawPaylo
 	return s.response(ctx, msgID, CREATE_CHILD_SA, answer)
 }
 
-// ownChainLocked reports whether this end's own rekey of ctx runs its additional key exchanges, its CREATE_CHILD_SA completed, with stateMu held
+// ownChainLocked reports whether this end's own rekey of ctx runs its additional key exchange, its CREATE_CHILD_SA completed, with stateMu held
 func (s *Session) ownChainLocked(ctx *ikeContext) bool {
 	return s.localRekey != nil && s.localRekey.old == ctx && s.localRekey.chain
 }
 
 // placePeerIKELocked makes made, the IKE SA a peer's rekey of ctx made with the nonces ni and nr, current, or holds it as the collision's candidate while this end's own rekey of ctx waits on its answer
-// it reports false while this end's own rekey of ctx runs its additional key exchanges, and then places nothing and releases made's SPI
+// it reports false while this end's own rekey of ctx runs its additional key exchange, and then places nothing and releases made's SPI
 // it must be called with stateMu held
 func (s *Session) placePeerIKELocked(ctx, made *ikeContext, ni, nr []byte) bool {
 	switch local := s.localRekey; {

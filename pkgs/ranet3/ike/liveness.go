@@ -521,7 +521,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	// this end keeps one request outstanding whatever window the peer offers, so the Delete that closes an expired SA waits on the exchange outstanding at its lifetime
 	// until then an expired IKE SA carries that exchange, its answers to the peer and its Delete, and starts nothing else
 	expired := func() bool { return s.ikeExpired(s.currentContext()) }
-	// while this end's rekey may run additional key exchanges, or waits for the peer's, the requests on the IKE SA are the rekey's alone
+	// while this end's rekey may run an additional key exchange, or waits for the peer's, the requests on the IKE SA are the rekey's alone
 	livenessHeld := func() bool { return expired() || deleted || s.quiet.Load() }
 	livenessDue := func() time.Time {
 		if livenessHeld() {

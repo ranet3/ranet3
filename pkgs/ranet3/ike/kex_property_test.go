@@ -17,13 +17,15 @@ import (
 // the Transform Type 4 IDs the properties draw a key exchange from, the classical groups and the two ML-KEM methods
 var kexMethods = []uint16{DH_CURVE25519, DH_ECP_384, DH_ECP_256, ML_KEM_768, ML_KEM_1024}
 
-// drawnEntries draws a kex list of distinct entries, each a group and up to three methods after it, none repeated within the entry
+// drawnEntries draws a kex list of distinct entries, each a group and at most one method after it
 func drawnEntries(tc hegel.TestCase, classical bool) []kexEntry {
 	var entries []kexEntry
 	for range hegel.Draw(tc, pbt.Spanning(1, 4)) {
 		entry := kexEntry{group: hegel.Draw(tc, hegel.SampledFrom(kexMethods[:3]))}
 		if !classical {
-			copy(entry.additions[:], pbt.Subset(tc, kexMethods, 0, 3))
+			if added := pbt.Subset(tc, kexMethods, 0, 1); len(added) == 1 {
+				entry.addition = added[0]
+			}
 		}
 		if !slices.Contains(entries, entry) {
 			entries = append(entries, entry)
@@ -34,7 +36,7 @@ func drawnEntries(tc hegel.TestCase, classical bool) []kexEntry {
 
 // drawnIKEProposal draws a peer's IKE SA proposal numbered number
 // most of the time it aims at entries[aim], or at an entry it draws where aim is out of range
-// a proposal aiming at an entry holds its group and its methods over ADDKE types in order, with gaps between them and NONE beside them at times
+// a proposal aiming at an entry holds its group and its method in ADDKE1 or ADDKE2, with NONE beside it at times
 // beside that it holds ciphers, PRFs and groups in any order and number, more IDs in any ADDKE type with NONE and every method among them, and at times a type this end does not know
 func drawnIKEProposal(tc hegel.TestCase, number uint8, entries []kexEntry, aim int) Proposal {
 	var groups []Transform
@@ -45,31 +47,29 @@ func drawnIKEProposal(tc hegel.TestCase, number uint8, entries []kexEntry, aim i
 		pbt.Subset(tc, listed(nil, cipherNames), 1, 3),
 		pbt.Subset(tc, listed(nil, prfNames), 1, 2),
 		pbt.Subset(tc, groups, 0, 3))
-	var offered [addkeTypes][]uint16
+	var offered [TransADDKE7 - TransADDKE1 + 1][]uint16
 	pool := append([]uint16{0}, kexMethods...)
 	if hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)) {
 		if aim < 0 || aim >= len(entries) {
 			aim = hegel.Draw(tc, hegel.Integers(0, len(entries)-1))
 		}
 		entry := entries[aim]
-		// half the time the other types draw from NONE and the entry's own methods, which gives a method more than one type to sit in
+		// half the time the other types draw from NONE and the entry's own method, which gives the method more than one type to sit in
 		if hegel.Draw(tc, hegel.Booleans()) {
-			pool = append([]uint16{0}, entry.added()...)
+			pool = []uint16{0}
+			if entry.addition != 0 {
+				pool = append(pool, entry.addition)
+			}
 		}
 		if !slices.Contains(transforms, Transform{Type: TransDH, ID: entry.group}) {
 			transforms = append(transforms, Transform{Type: TransDH, ID: entry.group})
 		}
-		at := 0
-		for _, method := range entry.added() {
-			at += hegel.Draw(tc, pbt.Spanning(0, 1))
-			if at >= addkeTypes {
-				break
-			}
-			offered[at] = append(offered[at], method)
+		if entry.addition != 0 {
+			at := hegel.Draw(tc, pbt.Spanning(0, 1))
+			offered[at] = append(offered[at], entry.addition)
 			if hegel.Draw(tc, hegel.Booleans()) {
 				offered[at] = append(offered[at], 0)
 			}
-			at++
 		}
 	}
 	for t := range offered {
@@ -102,9 +102,13 @@ func drawnIKEProposal(tc hegel.TestCase, number uint8, entries []kexEntry, aim i
 	return Proposal{Number: number, Protocol: ProtoIKE, Transforms: transforms}
 }
 
-// modelAdditions is every way to take one transform of each ADDKE type the proposal holds, in type order, whose methods other than NONE run as methods do
-// earlier types carrying the methods come first
-func modelAdditions(transforms []Transform, methods []uint16) [][]Transform {
+// modelAdditions is every way to take one transform of each ADDKE type the proposal holds, in type order, whose methods other than NONE are method alone, or none for a method of zero
+// earlier types carrying the method come first
+func modelAdditions(transforms []Transform, method uint16) [][]Transform {
+	var methods []uint16
+	if method != 0 {
+		methods = []uint16{method}
+	}
 	var types []TransformType
 	for t := TransADDKE1; t <= TransADDKE7; t++ {
 		if slices.ContainsFunc(transforms, func(transform Transform) bool { return transform.Type == t }) {
@@ -176,7 +180,7 @@ func modelChoice(proposals []Proposal, ciphers, prfs []Transform, entries []kexE
 			if !counts(proposal) || !slices.Contains(proposal.Transforms, group) {
 				continue
 			}
-			ways := modelAdditions(proposal.Transforms, entry.added())
+			ways := modelAdditions(proposal.Transforms, entry.addition)
 			if len(ways) == 0 {
 				continue
 			}
@@ -357,11 +361,11 @@ func TestIKEAnswerIsTakenOnlyAsTheSingleChoiceOfAnOfferedProposal(t *testing.T) 
 				return
 			}
 		case 5:
-			if len(entry.added()) == 0 {
+			if entry.addition == 0 {
 				return
 			}
-			// a second ADDKE type running a method the answer runs already
-			mutated.Transforms = append(mutated.Transforms, Transform{Type: TransADDKE1 + TransformType(len(entry.added())), ID: entry.added()[0]})
+			// a second ADDKE type running the method the answer runs already
+			mutated.Transforms = append(mutated.Transforms, Transform{Type: TransADDKE1 + 1, ID: entry.addition})
 		case 6:
 			mutated.Protocol = ProtoESP
 		}
@@ -374,8 +378,8 @@ func TestIKEAnswerIsTakenOnlyAsTheSingleChoiceOfAnOfferedProposal(t *testing.T) 
 // entryProposalKex is the key exchange transforms a proposal offering entry holds
 func entryProposalKex(entry kexEntry) []Transform {
 	kex := []Transform{{Type: TransDH, ID: entry.group}}
-	for at, method := range entry.added() {
-		kex = append(kex, Transform{Type: TransADDKE1 + TransformType(at), ID: method})
+	if entry.addition != 0 {
+		kex = append(kex, Transform{Type: TransADDKE1, ID: entry.addition})
 	}
 	return kex
 }

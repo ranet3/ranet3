@@ -134,7 +134,7 @@ func TestListsRefuseWhatNoSessionNegotiates(t *testing.T) {
 		{Crypto{IKE: IKESuites{Kex: []string{"x25519+p256"}}},
 			`cap.crypto ike kex entry "x25519+p256" joins p256, and an entry joins only an ML-KEM method after its first, one of mlkem768 and mlkem1024`},
 		{Crypto{IKE: IKESuites{Kex: []string{"p384+mlkem768+mlkem768"}}},
-			`cap.crypto ike kex entry "p384+mlkem768+mlkem768" joins 2 key exchanges after its first, and an entry joins one`},
+			`cap.crypto ike kex entry "p384+mlkem768+mlkem768" joins 2 key exchanges after its first, and an entry holds one additional key exchange`},
 		{Crypto{IKE: IKESuites{Kex: []string{"p384+mlkem1024+mlkem512"}}},
 			`cap.crypto ike kex entry "p384+mlkem1024+mlkem512" names "mlkem512", which is not one of x25519, p384, p256, mlkem768 and mlkem1024`},
 		{Crypto{IKE: IKESuites{Kex: []string{"x25519+mlkem512"}}},
@@ -171,9 +171,9 @@ func TestListsRefuseWhatNoSessionNegotiates(t *testing.T) {
 func TestListsTakeEntriesJoiningMLKEM1024(t *testing.T) {
 	suites := suitesOf(t, Crypto{IKE: IKESuites{Kex: []string{"p384+mlkem1024", "x25519+mlkem1024", "x25519+mlkem768", "p256"}}})
 	want := []kexEntry{
-		{group: DH_ECP_384, additions: [addkeTypes]uint16{ML_KEM_1024}},
-		{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_1024}},
-		{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}},
+		{group: DH_ECP_384, addition: ML_KEM_1024},
+		{group: DH_CURVE25519, addition: ML_KEM_1024},
+		{group: DH_CURVE25519, addition: ML_KEM_768},
 		{group: DH_ECP_256},
 	}
 	if got := suites.kexEntries(); !slices.Equal(got, want) {
@@ -217,7 +217,7 @@ func TestSuiteNamesTransformsAsTheListsDo(t *testing.T) {
 	if got := (Suite{ESPCipher: cipher, ESPKex: kex}).ESP(); got != "chacha20poly1305/x25519" {
 		t.Errorf("a Child SA keyed by its own X25519 exchange is named %s", got)
 	}
-	cipher, kex = childSuite(ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1}, kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}})
+	cipher, kex = childSuite(ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1}, kexEntry{group: DH_CURVE25519, addition: ML_KEM_768})
 	if got := (Suite{ESPCipher: cipher, ESPKex: kex}).ESP(); got != "aes128gcm/x25519+mlkem768" {
 		t.Errorf("a Child SA keyed by its own X25519 and ML-KEM-768 exchanges is named %s", got)
 	}
@@ -449,8 +449,8 @@ func TestChildSAKeyedInAGroupTheListsLeftOutIsUnlisted(t *testing.T) {
 		want  string
 	}{
 		{kexEntry{group: DH_CURVE25519}, "aes128gcm/x25519"},
-		{kexEntry{group: DH_ECP_256, additions: [addkeTypes]uint16{ML_KEM_768}}, "aes128gcm/p256+mlkem768"},
-		{kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}, ""},
+		{kexEntry{group: DH_ECP_256, addition: ML_KEM_768}, "aes128gcm/p256+mlkem768"},
+		{kexEntry{group: DH_CURVE25519, addition: ML_KEM_768}, ""},
 		{kexEntry{group: DH_ECP_256}, ""},
 		{kexEntry{}, ""},
 	} {
@@ -467,7 +467,7 @@ func TestChildSAKeyedInAGroupTheListsLeftOutIsUnlisted(t *testing.T) {
 // RFC 7296 section 3.3: "If there is more than one, they MUST be ordered from most preferred to least preferred."
 // RFC 7296 section 3.4: "SHOULD match the Diffie-Hellman group in the first group in the first proposal, if such exists."
 func TestOfferLeadsWithOneProposalInTheKEGroup(t *testing.T) {
-	joined := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}
+	joined := kexEntry{group: DH_CURVE25519, addition: ML_KEM_768}
 	x25519, p384, p256 := kexEntry{group: DH_CURVE25519}, kexEntry{group: DH_ECP_384}, kexEntry{group: DH_ECP_256}
 	spi := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	for name, test := range map[string]struct {
@@ -494,8 +494,10 @@ func TestOfferLeadsWithOneProposalInTheKEGroup(t *testing.T) {
 				switch {
 				case transform.Type == TransDH:
 					entry.group = transform.ID
+				case transform.Type == TransADDKE1:
+					entry.addition = transform.ID
 				case additional(transform.Type):
-					entry.additions[transform.Type-TransADDKE1] = transform.ID
+					t.Errorf("%s: proposal %d offers ADDKE type %d, want ADDKE1 alone", name, i+1, transform.Type)
 				}
 			}
 			got = append(got, entry)

@@ -88,7 +88,7 @@ type ikeContext struct {
 	ownDelete bool
 	// answeredAuth marks the SA whose IKE_AUTH this end answered, where the peer's request at authMID+1 is the INFORMATIONAL exchange immediately following it
 	answeredAuth bool
-	// authMID is the Message ID of the IKE_AUTH that made the SA, one past its IKE_INTERMEDIATE exchanges, and zero for an SA a rekey made
+	// authMID is the Message ID of the IKE_AUTH that made the SA, one past its IKE_INTERMEDIATE exchange where it ran one, and zero for an SA a rekey made
 	// RFC 9242 section 3.2: "The Message ID for the first pair of IKE_AUTH messages is one more than the value used in the last IKE_INTERMEDIATE exchange."
 	authMID uint32
 	sendIV  atomic.Uint64
@@ -129,11 +129,11 @@ type Session struct {
 	collisionBy   time.Time
 	localRekey    *ikeRekey
 	ikeRekeyNonce func([]byte) error
-	// peerChain is the peer's rekey whose additional key exchanges this end answers, nil while none is open, and stateMu guards it
+	// peerChain is the peer's rekey whose additional key exchange this end answers, nil while none is open, and stateMu guards it
 	peerChain *followupChain
 	// stateNotFounds counts the IKE SA rekeys in a row whose IKE_FOLLOWUP_KE the peer answered STATE_NOT_FOUND, and requestMu guards it
 	stateNotFounds int
-	// quiet is set while this end's IKE SA rekey may run additional key exchanges, or waits for the peer's after losing a simultaneous rekey, and Run starts no request of its own meanwhile
+	// quiet is set while this end's IKE SA rekey may run an additional key exchange, or waits for the peer's after losing a simultaneous rekey, and Run starts no request of its own meanwhile
 	// strongSwan destroys an IKE SA that takes any other request while it waits for IKE_FOLLOWUP_KE (ike_rekey.c)
 	quiet atomic.Bool
 
@@ -256,7 +256,7 @@ type ikeRekey struct {
 	nonce             []byte
 	peerNonce         []byte
 	peerResponseNonce []byte
-	// chain is set once the rekey's CREATE_CHILD_SA selected additional key exchanges this end then runs, and lost once the rekey lost a simultaneous rekey and stopped
+	// chain is set once the rekey's CREATE_CHILD_SA selected an additional key exchange this end then runs, and lost once the rekey lost a simultaneous rekey and stopped
 	chain, lost bool
 }
 
@@ -523,11 +523,11 @@ func randUint32Nonzero() uint32 {
 	}
 }
 
-// Initiate runs IKE_SA_INIT, an IKE_INTERMEDIATE exchange for each
-// additional key exchange of RFC 9370 the responder took, then IKE_AUTH
+// Initiate runs IKE_SA_INIT, an IKE_INTERMEDIATE exchange for the
+// additional key exchange of RFC 9370 where the responder took one, then IKE_AUTH
 // against cfg.RemoteAddr:RemotePort and returns an established Session with
 // one Child SA. It implements exactly RFC 7815's minimal-initiator surface
-// plus those additional key exchanges and what ranet's strongSwan deployments
+// plus that additional key exchange and what ranet's strongSwan deployments
 // require: raw Ed25519 signature auth and unconditional UDP encapsulation on
 // that one explicit port. Every IKE message, from IKE_SA_INIT onward, carries
 // the non-ESP marker. There is no NAT-T floating to a separate port,
@@ -761,7 +761,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 		pathMTU:   cfg.pathMTU,
 	}
 	// a cancel during IKE_INTERMEDIATE closes the mux under it, as one during IKE_SA_INIT does, since the responder holds a half-open SA alone
-	chain, err := sess.runIntermediates(ni, nr)
+	chain, err := sess.runIntermediate(ni, nr)
 	if err != nil {
 		mux.Close()
 		return nil, err
@@ -862,15 +862,18 @@ func suiteFromProposal(p Proposal, offered []Proposal, addke bool) (SASuite, err
 			return SASuite{}, fmt.Errorf("ike: incomplete selected IKE proposal, without transform type %d", transform.Type)
 		}
 	}
-	suite := SASuite{EncrID: selected[TransEncr].ID, EncrKeyBits: selected[TransEncr].KeyLengthBits, PRFID: selected[TransPRF].ID, DHGroup: selected[TransDH].ID}
-	added := 0
-	for t := TransADDKE1; t <= TransADDKE7; t++ {
-		if addition, ok := selected[t]; ok && addition.ID != 0 {
-			suite.Additions[added] = addition.ID
-			added++
-		}
+	// a proposal of entryProposals offers one additional key exchange at most, in ADDKE1, so the answer selects one at most, and the answer chooseIKE gives selects one in whichever type carries it
+	var addition uint16
+	if at := slices.IndexFunc(p.Transforms, func(transform Transform) bool { return additional(transform.Type) && transform.ID != 0 }); at >= 0 {
+		addition = p.Transforms[at].ID
 	}
-	return suite, nil
+	return SASuite{
+		EncrID:      selected[TransEncr].ID,
+		EncrKeyBits: selected[TransEncr].KeyLengthBits,
+		PRFID:       selected[TransPRF].ID,
+		DHGroup:     selected[TransDH].ID,
+		Addition:    addition,
+	}, nil
 }
 
 func transformsOf(proposals []Proposal) []Transform {

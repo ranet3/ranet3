@@ -135,9 +135,6 @@ const (
 	TransADDKE7 TransformType = 12
 )
 
-// addkeTypes is how many ADDKE Transform Types there are, and so how many additional key exchanges one IKE SA can run
-const addkeTypes = int(TransADDKE7-TransADDKE1) + 1
-
 // RFC 9370 section 2.2.1: "The allowed Transform IDs for these transform types are the same as the IDs for Transform Type 4, so they all share a single IANA registry for Transform IDs."
 func additional(t TransformType) bool { return t >= TransADDKE1 && t <= TransADDKE7 }
 

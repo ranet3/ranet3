@@ -110,7 +110,7 @@ func answerADDKEOffer(t *testing.T, auth, ike bool, offer []Proposal) (Proposal,
 }
 
 // hybrid is the kex list x25519+mlkem768, p256
-var hybrid = Suites{kex: []kexEntry{{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}, {group: DH_ECP_256}}}
+var hybrid = Suites{kex: []kexEntry{{group: DH_CURVE25519, addition: ML_KEM_768}, {group: DH_ECP_256}}}
 
 // kexOf is the key exchange transforms of a proposal in the order it holds them
 func kexOf(proposal Proposal) []Transform {
@@ -123,17 +123,17 @@ func TestEntriesAreComparedWhole(t *testing.T) {
 	if got := hybrid.Changed(classical); !slices.Equal(got, []string{"cap.crypto.ike.kex"}) {
 		t.Errorf("dropping mlkem768 from x25519+mlkem768 changed %q", got)
 	}
-	keyed := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 256, PRFID: PRF_HMAC_SHA2_384, DHGroup: DH_CURVE25519, Additions: [addkeTypes]uint16{ML_KEM_768}}
+	keyed := SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 256, PRFID: PRF_HMAC_SHA2_384, DHGroup: DH_CURVE25519, Addition: ML_KEM_768}
 	if !hybrid.holdsIKE(keyed) || classical.holdsIKE(keyed) {
 		t.Errorf("an IKE SA of x25519+mlkem768 is held by x25519+mlkem768 %v and by x25519 %v, want true and false", hybrid.holdsIKE(keyed), classical.holdsIKE(keyed))
 	}
-	keyed.Additions = [addkeTypes]uint16{}
+	keyed.Addition = 0
 	if hybrid.holdsIKE(keyed) || !classical.holdsIKE(keyed) {
 		t.Errorf("an IKE SA of x25519 is held by x25519+mlkem768 %v and by x25519 %v, want false and true", hybrid.holdsIKE(keyed), classical.holdsIKE(keyed))
 	}
 	// a Child SA's own key exchanges are held by their whole entry as well
 	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 1}
-	joined, x25519, p256 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}, kexEntry{group: DH_CURVE25519}, kexEntry{group: DH_ECP_256}
+	joined, x25519, p256 := kexEntry{group: DH_CURVE25519, addition: ML_KEM_768}, kexEntry{group: DH_CURVE25519}, kexEntry{group: DH_ECP_256}
 	if hybrid.holdsChild(child, x25519) || !hybrid.holdsChild(child, p256) || !hybrid.holdsChild(child, joined) || classical.holdsChild(child, joined) {
 		t.Errorf("a Child SA keyed in x25519 is held by x25519+mlkem768 %v, one in p256 by p256 %v, one in x25519+mlkem768 by x25519+mlkem768 %v and by x25519 %v, want false, true, true and false",
 			hybrid.holdsChild(child, x25519), hybrid.holdsChild(child, p256), hybrid.holdsChild(child, joined), classical.holdsChild(child, joined))
@@ -141,7 +141,7 @@ func TestEntriesAreComparedWhole(t *testing.T) {
 }
 
 // the responder answers its first kex entry a proposal meets, from the first proposal meeting it, after R304
-// the entry's methods sit in the earliest ADDKE types offering them in order, each other type the proposal holds answered NONE, and a type left out counts as NONE
+// the entry's method sits in the earliest ADDKE type offering it where each other type the proposal holds offers NONE, which answers them, and a type left out counts as NONE
 // RFC 9370 section 2.2.1: "The responder MUST treat all of the omitted ADDKE transforms as if they were proposed with Transform ID NONE."
 func TestIKEAnswerRunsTheFirstEntryMetInTheEarliestTypes(t *testing.T) {
 	type offered struct {
@@ -157,8 +157,8 @@ func TestIKEAnswerRunsTheFirstEntryMetInTheEarliestTypes(t *testing.T) {
 		}
 		return Proposal{Protocol: ProtoIKE, Transforms: transforms}
 	}
-	hybrid768 := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768}}
-	both := kexEntry{group: DH_CURVE25519, additions: [addkeTypes]uint16{ML_KEM_768, ML_KEM_1024}}
+	hybrid768 := kexEntry{group: DH_CURVE25519, addition: ML_KEM_768}
+	hybrid1024 := kexEntry{group: DH_CURVE25519, addition: ML_KEM_1024}
 	x25519, p256 := kexEntry{group: DH_CURVE25519}, kexEntry{group: DH_ECP_256}
 	for name, test := range map[string]struct {
 		entries []kexEntry
@@ -180,9 +180,9 @@ func TestIKEAnswerRunsTheFirstEntryMetInTheEarliestTypes(t *testing.T) {
 			[]kexEntry{hybrid768}, []Proposal{proposal(DH_CURVE25519, offered{TransADDKE1, []uint16{0}}, offered{TransADDKE1 + 1, []uint16{ML_KEM_768}})},
 			1, []Transform{dhX25519, {Type: TransADDKE1, ID: 0}, {Type: TransADDKE1 + 1, ID: ML_KEM_768}}, hybrid768,
 		},
-		"two methods over two types offering both": {
-			[]kexEntry{both}, []Proposal{proposal(DH_CURVE25519, offered{TransADDKE1, []uint16{ML_KEM_1024, ML_KEM_768}}, offered{TransADDKE1 + 1, []uint16{ML_KEM_1024, ML_KEM_768}})},
-			1, []Transform{dhX25519, {Type: TransADDKE1, ID: ML_KEM_768}, {Type: TransADDKE1 + 1, ID: ML_KEM_1024}}, both,
+		"ML-KEM-1024 in the second of two types offering a method each or NONE": {
+			[]kexEntry{hybrid1024}, []Proposal{proposal(DH_CURVE25519, offered{TransADDKE1, []uint16{ML_KEM_768, 0}}, offered{TransADDKE1 + 1, []uint16{ML_KEM_1024, 0}})},
+			1, []Transform{dhX25519, {Type: TransADDKE1, ID: 0}, {Type: TransADDKE1 + 1, ID: ML_KEM_1024}}, hybrid1024,
 		},
 		"the first entry in a later proposal": {
 			[]kexEntry{hybrid768, p256}, []Proposal{proposal(DH_ECP_256), proposal(DH_CURVE25519, offered{TransADDKE1, []uint16{ML_KEM_768}})},

@@ -22,7 +22,7 @@ import (
 )
 
 // chainSuite is an IKE SA of x25519+mlkem768 under AES-GCM with a 128-bit key and HMAC-SHA2-256
-var chainSuite = SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519, Additions: [addkeTypes]uint16{ML_KEM_768}}
+var chainSuite = SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519, Addition: ML_KEM_768}
 
 // classicalSuite is chainSuite with no additional key exchange
 var classicalSuite = SASuite{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, PRFID: PRF_HMAC_SHA2_256, DHGroup: DH_CURVE25519}
@@ -209,7 +209,7 @@ func (p *peerRekey) answerFollowup(t *testing.T, request []RawPayload, method ui
 		t.Fatalf("the IKE_FOLLOWUP_KE request carries no key of method %d: %v", method, err)
 	}
 	secret, ciphertext := modelEncapsulate(t, method, key)
-	p.secrets = append(p.secrets, secret)
+	p.added = secret
 	answer := []RawPayload{{Type: PayloadKE, Body: EncodeKE(method, ciphertext)}}
 	if link != nil {
 		answer = append(answer, linkPayload(link))
@@ -226,8 +226,9 @@ type peerRekey struct {
 	espI, espR uint32
 	shared     []byte
 	// link is the one the last answer carried, nil after an answer without one
-	link    []byte
-	secrets [][]byte
+	link []byte
+	// added is the secret of the IKE_FOLLOWUP_KE, nil before one ran
+	added []byte
 }
 
 // newPeerRekey is a peer's rekey offering transforms, with its KE payload in X25519 and Ni ni
@@ -309,7 +310,7 @@ func (p *peerRekey) take(t testing.TB, answer []RawPayload, method uint16, decap
 		if err != nil {
 			t.Fatalf("the answer's ciphertext of %d octets does not decapsulate: %v", len(ciphertext), err)
 		}
-		p.secrets = append(p.secrets, secret)
+		p.added = secret
 		link, err := linkOf(answer)
 		if err != nil {
 			t.Fatal(err)
@@ -334,16 +335,16 @@ func (p *peerRekey) followup(t testing.TB, s *Session, ctx *ikeContext, method u
 // keys is the new SA's keys as the peer derives them, under old and in suite
 func (p *peerRekey) keys(t testing.TB, old *ikeContext, suite SASuite) [5][]byte {
 	t.Helper()
-	keys, err := DeriveRekeyedIKEKeys(old.suite.PRFID, old.skD, suite, p.shared, p.ni, p.nr, p.spiI, p.spiR, p.secrets...)
+	keys, err := DeriveRekeyedIKEKeys(old.suite.PRFID, old.skD, suite, p.shared, p.ni, p.nr, p.spiI, p.spiR, p.added)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return keysOf(keys)
 }
 
-// appendixA3Keys is the keys of the new SA computed with crypto/hmac from RFC 9370 section 2.2.4 and RFC 7296 sections 2.13, 2.14 and 2.18, under modelSuite
-func appendixA3Keys(old *ikeContext, shared, ni, nr []byte, spiI, spiR uint64, secrets [][]byte) [5][]byte {
-	skeyseed := modelPRF(old.skD, concat(slices.Concat([][]byte{shared, ni, nr}, secrets)...))
+// appendixA3Keys is the keys of the new SA computed with crypto/hmac from RFC 9370 section 2.2.4 and RFC 7296 sections 2.13, 2.14 and 2.18, under modelSuite, added the secret of the one IKE_FOLLOWUP_KE
+func appendixA3Keys(old *ikeContext, shared, ni, nr []byte, spiI, spiR uint64, added []byte) [5][]byte {
+	skeyseed := modelPRF(old.skD, concat(shared, ni, nr, added))
 	var spis [16]byte
 	binary.BigEndian.PutUint64(spis[:8], spiI)
 	binary.BigEndian.PutUint64(spis[8:], spiR)
@@ -407,50 +408,43 @@ func testHybridIKESARekeyEchoesTheLinkAndSwitchesAfterTheFollowup(t *testing.T) 
 	awaitRecorded(t, events, "ike.rekey.completed > sa=ike suite=aes128gcm/sha256/x25519+mlkem768")
 }
 
-// RFC 9370 Appendix A.3 with ML-KEM-768 for PQ_KEM_2 and ML-KEM-1024 for PQ_KEM_5: an IKE SA of X25519 alone rekeyed into one of x25519+mlkem768+mlkem1024
-// the first IKE_FOLLOWUP_KE runs ML-KEM-768 and echoes link1 of the CREATE_CHILD_SA answer, the second runs ML-KEM-1024 and echoes link2 of the first one's answer
-// a send of each from followupWait after the answer before it on is late, the peer free to drop its chain then
-// the new SA's keys are SKEYSEED = prf(SK_d, SK(0) | Ni | Nr | SK(1) | SK(2)) through prf+, computed with crypto/hmac
+// RFC 9370 Appendix A.3 with ML-KEM-768 for PQ_KEM_2: an IKE SA of X25519 alone rekeyed into one of x25519+mlkem768
+// A.3 offers PQ_KEM_5, PQ_KEM_6 or NONE in ADDKE2 as well, which an entry of one join leaves out, so the rekey offers ADDKE1 alone and runs A.3's first IKE_FOLLOWUP_KE and no second
+// the IKE_FOLLOWUP_KE runs ML-KEM-768 and echoes link1 of the CREATE_CHILD_SA answer, and a send of it from followupWait after that answer on is late, the peer free to drop its chain then
+// the new SA's keys are SKEYSEED = prf(SK_d, SK(0) | Ni | Nr | SK(1)) through prf+, computed with crypto/hmac
 // RFC 9370 section 2.2.4: "The former "Diffie-Hellman Group Num" (now called "Key Exchange Method") field in the KEi(n) and KEr(n) payloads MUST match the n-th negotiated additional key exchange."
 func TestIKESARekeyOfAppendixA3AsInitiator(t *testing.T) {
 	bubble.Run(testIKESARekeyOfAppendixA3AsInitiator)(t)
 }
 
 func testIKESARekeyOfAppendixA3AsInitiator(t *testing.T) {
-	s, _ := initiatingSession(t, modelSuite, Suites{ikeCipher: []Transform{encrAES256}, kex: []kexEntry{entry768And1024}})
+	s, _ := initiatingSession(t, modelSuite, Suites{ikeCipher: []Transform{encrAES256}, kex: []kexEntry{entry768}})
 	old := s.current
 	done := rekeying(s)
 	create := requested(t, s, done, CREATE_CHILD_SA)
-	if offer := offerOf(t, create.inner); len(offer) != 1 || !slices.Equal(kexOf(offer[0]), []Transform{dhX25519, {Type: TransADDKE1, ID: ML_KEM_768}, {Type: TransADDKE1 + 1, ID: ML_KEM_1024}}) {
-		t.Fatalf("the rekey offered %+v, want x25519+mlkem768+mlkem1024 alone", offer)
+	if offer := offerOf(t, create.inner); len(offer) != 1 || !slices.Equal(kexOf(offer[0]), []Transform{dhX25519, {Type: TransADDKE1, ID: ML_KEM_768}}) {
+		t.Fatalf("the rekey offered %+v, want x25519+mlkem768 alone", offer)
 	}
-	link1, link2 := []byte("link1"), []byte("link2")
+	link1 := []byte("link1")
 	answer, peer := answerRekey(t, create.inner, 0, link1, nil)
 	handed := time.Now()
 	create.result <- requestResult{inner: answer}
-	for _, step := range []struct {
-		method       uint16
-		echoed, next []byte
-	}{{ML_KEM_768, link1, link2}, {ML_KEM_1024, link2, nil}} {
-		followup := requested(t, s, done, IKE_FOLLOWUP_KE)
-		if len(followup.inner) != 2 || followup.inner[0].Type != PayloadKE || followup.context != old {
-			t.Fatalf("the IKE_FOLLOWUP_KE of method %d carries %v, want KEi and the link on the old SA", step.method, payloadTypes(followup.inner))
-		}
-		if got, err := linkOf(followup.inner); err != nil || !bytes.Equal(got, step.echoed) {
-			t.Errorf("the IKE_FOLLOWUP_KE of method %d echoed %q, %v, want %q", step.method, got, err, step.echoed)
-		}
-		if followup.lateFrom.Before(handed.Add(followupWait)) || followup.lateFrom.After(time.Now().Add(followupWait)) {
-			t.Errorf("the IKE_FOLLOWUP_KE of method %d counts its sends late from %s after the answer before it, want followupWait of %s", step.method, followup.lateFrom.Sub(handed), followupWait)
-		}
-		reply := peer.answerFollowup(t, followup.inner, step.method, step.next)
-		handed = time.Now()
-		followup.result <- requestResult{inner: reply}
+	followup := requested(t, s, done, IKE_FOLLOWUP_KE)
+	if len(followup.inner) != 2 || followup.inner[0].Type != PayloadKE || followup.context != old {
+		t.Fatalf("the IKE_FOLLOWUP_KE carries %v, want KEi and the link on the old SA", payloadTypes(followup.inner))
 	}
+	if got, err := linkOf(followup.inner); err != nil || !bytes.Equal(got, link1) {
+		t.Errorf("the IKE_FOLLOWUP_KE echoed %q, %v, want %q", got, err, link1)
+	}
+	if followup.lateFrom.Before(handed.Add(followupWait)) || followup.lateFrom.After(time.Now().Add(followupWait)) {
+		t.Errorf("the IKE_FOLLOWUP_KE counts its sends late from %s after the answer, want followupWait of %s", followup.lateFrom.Sub(handed), followupWait)
+	}
+	followup.result <- requestResult{inner: peer.answerFollowup(t, followup.inner, ML_KEM_768, nil)}
 	deletion := requested(t, s, done, INFORMATIONAL)
 	current, _ := s.contexts()
-	want := appendixA3Keys(old, peer.shared, peer.ni, peer.nr, peer.spiI, peer.spiR, peer.secrets)
-	if current == old || current.suite.Additions != entry768And1024.additions || !sameKeys(current, want) {
-		t.Errorf("the session is current on an SA in %+v, want x25519+mlkem768+mlkem1024 keyed by the chain of Appendix A.3", current.suite)
+	want := appendixA3Keys(old, peer.shared, peer.ni, peer.nr, peer.spiI, peer.spiR, peer.added)
+	if current == old || current.suite.Addition != ML_KEM_768 || !sameKeys(current, want) {
+		t.Errorf("the session is current on an SA in %+v, want x25519+mlkem768 keyed by the chain of Appendix A.3", current.suite)
 	}
 	deletion.result <- requestResult{}
 	if err := ended(t, s, done); err != nil {
@@ -459,7 +453,8 @@ func testIKESARekeyOfAppendixA3AsInitiator(t *testing.T) {
 }
 
 // RFC 9370 Appendix A.3 as the responder answers it, with ML-KEM-768 for PQ_KEM_2, ML-KEM-1024 for PQ_KEM_5, ML-KEM-512 for PQ_KEM_1 and a private use ID for PQ_KEM_6, which this end lacks
-// the CREATE_CHILD_SA answer and the first IKE_FOLLOWUP_KE answer each carry a link of their own, the last answer none, and the SA is not replaced until that last exchange
+// A.3 answers PQ_KEM_5 in ADDKE2 as well, which an entry of one join leaves out, so the answer takes the NONE A.3 offers there and runs A.3's first IKE_FOLLOWUP_KE and no second
+// the CREATE_CHILD_SA answer carries a link, the IKE_FOLLOWUP_KE answer none, and the SA is not replaced until that exchange
 // RFC 9370 section 2.2.4: "The responder MUST include this notification in a CREATE_CHILD_SA or IKE_FOLLOWUP_KE response message in case the next IKE_FOLLOWUP_KE exchange is expected, filling it with some data that would allow linking the current exchange to the next one."
 func TestIKESARekeyOfAppendixA3AsResponder(t *testing.T) {
 	bubble.Run(testIKESARekeyOfAppendixA3AsResponder)(t)
@@ -467,33 +462,29 @@ func TestIKESARekeyOfAppendixA3AsResponder(t *testing.T) {
 
 func testIKESARekeyOfAppendixA3AsResponder(t *testing.T) {
 	const mlkem512, private = 35, 1025
-	s, _ := answeringChain(t, modelSuite, Suites{kex: []kexEntry{entry768And1024}})
+	s, _ := answeringChain(t, modelSuite, Suites{kex: []kexEntry{entry768}})
 	ctx := s.current
 	p, request := newPeerRekey(t, ikeOffer(addkeOf(TransADDKE1, mlkem512, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024, private, 0))[0].Transforms, drawnOctets(t, 32))
 	answer := p.rekey(t, s.handleIKERekey, ctx, request)
 	proposals, err := DecodeSA(findType(answer, PayloadSA).Body)
-	if want := slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)); err != nil || len(proposals) != 1 || !slices.Equal(proposals[0].Transforms, want) {
+	if want := slices.Concat(modelBase, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, 0)); err != nil || len(proposals) != 1 || !slices.Equal(proposals[0].Transforms, want) {
 		t.Fatalf("the responder answered %+v, %v, want %+v", proposals, err, want)
 	}
 	link1 := p.link
 	if len(link1) != followupLinkLen {
 		t.Fatalf("the CREATE_CHILD_SA answer carries the link %x, want %d octets", link1, followupLinkLen)
 	}
-	first, err := p.followup(t, s, ctx, ML_KEM_768, link1)
-	if err != nil || len(first) != 2 || first[0].Type != PayloadKE || len(p.link) != followupLinkLen || bytes.Equal(p.link, link1) {
-		t.Fatalf("the first IKE_FOLLOWUP_KE drew %v with the link %x, %v, want KEr and a link of its own", payloadTypes(first), p.link, err)
-	}
 	if current, _ := s.contexts(); current != ctx {
-		t.Fatal("the responder replaced the SA before the last IKE_FOLLOWUP_KE")
+		t.Fatal("the responder replaced the SA before the IKE_FOLLOWUP_KE")
 	}
-	last, err := p.followup(t, s, ctx, ML_KEM_1024, p.link)
+	last, err := p.followup(t, s, ctx, ML_KEM_768, link1)
 	if err != nil || len(last) != 1 || last[0].Type != PayloadKE {
-		t.Fatalf("the last IKE_FOLLOWUP_KE drew %v, %v, want KEr alone", payloadTypes(last), err)
+		t.Fatalf("the IKE_FOLLOWUP_KE drew %v, %v, want KEr alone", payloadTypes(last), err)
 	}
 	current, retained := s.contexts()
-	want := appendixA3Keys(ctx, p.shared, p.ni, p.nr, p.spiI, p.spiR, p.secrets)
-	if current == ctx || retained != ctx || current.suite.Additions != entry768And1024.additions || !sameKeys(current, want) {
-		t.Errorf("the responder is current on an SA in %+v and retains the old one is %v, want x25519+mlkem768+mlkem1024 keyed by the chain of Appendix A.3", current.suite, retained == ctx)
+	want := appendixA3Keys(ctx, p.shared, p.ni, p.nr, p.spiI, p.spiR, p.added)
+	if current == ctx || retained != ctx || current.suite.Addition != ML_KEM_768 || !sameKeys(current, want) {
+		t.Errorf("the responder is current on an SA in %+v and retains the old one is %v, want x25519+mlkem768 keyed by the chain of Appendix A.3", current.suite, retained == ctx)
 	}
 }
 
@@ -594,26 +585,6 @@ func TestRejectedFollowupCiphertextEndsTheIKESA(t *testing.T) {
 	}
 }
 
-// an IKE_FOLLOWUP_KE answer that a further exchange follows and that carries no link ends the IKE SA with a Delete, since the peer may hold a chain waiting on this end
-// RFC 9370 section 2.2.4: "The responder MUST include this notification in a CREATE_CHILD_SA or IKE_FOLLOWUP_KE response message in case the next IKE_FOLLOWUP_KE exchange is expected, filling it with some data that would allow linking the current exchange to the next one."
-func TestFollowupAnswerWithoutTheNextLinkEndsTheIKESA(t *testing.T) {
-	bubble.Run(testFollowupAnswerWithoutTheNextLinkEndsTheIKESA)(t)
-}
-
-func testFollowupAnswerWithoutTheNextLinkEndsTheIKESA(t *testing.T) {
-	s, _ := initiatingSession(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entry768And1024}})
-	done := rekeying(s)
-	create := requested(t, s, done, CREATE_CHILD_SA)
-	answer, peer := answerRekey(t, create.inner, 0, []byte("link1"), nil)
-	create.result <- requestResult{inner: answer}
-	followup := requested(t, s, done, IKE_FOLLOWUP_KE)
-	followup.result <- requestResult{inner: peer.answerFollowup(t, followup.inner, ML_KEM_768, nil)}
-	err := ended(t, s, done)
-	if ending, ok := errors.AsType[*saEnding](err); !ok || ending.reason != "rekey answer refused" {
-		t.Errorf("the rekey ended with %v, want the IKE SA ended", err)
-	}
-}
-
 // a rekey whose IKE_FOLLOWUP_KE draws STATE_NOT_FOUND fails and keeps the old SA, which its schedule rekeys again after its backoff
 // the third series in a row to draw it ends the IKE SA with a Delete, and a series that fails otherwise starts the count again
 // RFC 9370 section 2.2.4: "If the initiator receives this notification in response to an IKE_FOLLOWUP_KE exchange performing an additional key exchange, it MUST cancel this exchange and MUST treat the whole series of exchanges started from the CREATE_CHILD_SA exchange as having failed."
@@ -647,7 +618,7 @@ func testStateNotFoundFailsTheSeriesAndTheThirdInARowEndsTheIKESA(t *testing.T) 
 	}
 }
 
-// a peer's rekey that crosses this end's, both with additional key exchanges or one of them, is settled on the four nonces before any IKE_FOLLOWUP_KE
+// a peer's rekey that crosses this end's, both with an additional key exchange or one of them, is settled on the four nonces before any IKE_FOLLOWUP_KE
 // the end whose CREATE_CHILD_SA holds the lowest nonce sends no IKE_FOLLOWUP_KE and deletes the SA its exchange made, where it made one
 // and while it waits for the peer's chain it starts no request of its own, the waiting rekey ending once the peer's SA is current
 // a peer that sends its IKE_FOLLOWUP_KE all the same after losing is answered TEMPORARY_FAILURE and its chain dropped
@@ -818,7 +789,7 @@ func TestPeerChainEndingBeforeThisEndsAnswerIsHeldAsTheCollision(t *testing.T) {
 	}
 }
 
-// a peer's rekey of the IKE SA while this end's own chain runs is answered TEMPORARY_FAILURE, one with additional key exchanges and one without, and this end's chain goes on
+// a peer's rekey of the IKE SA while this end's own chain runs is answered TEMPORARY_FAILURE, one with an additional key exchange and one without, and this end's chain goes on
 // RFC 9370 section 2.2.4: "a situation may occur when, due to packet loss, one of the peers receives the CREATE_CHILD_SA message requesting the rekey of an SA that is already being rekeyed by this peer (i.e., the CREATE_CHILD_SA exchange initiated by this peer has already been completed, and the series of IKE_FOLLOWUP_KE exchanges is in progress). In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
 func TestPeerRekeyDuringThisEndsChainDrawsTemporaryFailure(t *testing.T) {
 	bubble.Run(testPeerRekeyDuringThisEndsChainDrawsTemporaryFailure)(t)
@@ -1057,37 +1028,6 @@ func testPeerChainIsDroppedAtFollowupWait(t *testing.T) {
 	}
 	if answer, err := peer.followup(t, s, ctx, ML_KEM_768, peer.link); err != nil || !notified(answer, N_STATE_NOT_FOUND, nil) {
 		t.Errorf("the IKE_FOLLOWUP_KE after the chain was dropped drew %v, %v, want STATE_NOT_FOUND", payloadTypes(answer), err)
-	}
-}
-
-// each answer that links a further exchange restarts followupWait and draws a link of its own
-// RFC 9370 section 2.2.4: "The responder MUST handle this situation gracefully and delete the associated state if it does not receive the next expected IKE_FOLLOWUP_KE request after some reasonable period of time."
-func TestEachChainAnswerRestartsFollowupWait(t *testing.T) {
-	bubble.Run(testEachChainAnswerRestartsFollowupWait)(t)
-}
-
-func testEachChainAnswerRestartsFollowupWait(t *testing.T) {
-	s, _ := answeringChain(t, classicalSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entry768And1024}})
-	ctx := s.current
-	peer, request := newPeerRekey(t, slices.Concat(classicalOffer, addkeOf(TransADDKE1, ML_KEM_768), addkeOf(TransADDKE1+1, ML_KEM_1024)), drawnOctets(t, 32))
-	peer.rekey(t, s.handleIKERekey, ctx, request)
-	// the chain has waited most of its time when the first IKE_FOLLOWUP_KE comes
-	s.stateMu.Lock()
-	s.peerChain.deadline = time.Now().Add(chainWaitCut)
-	first := slices.Clone(s.peerChain.link[:])
-	s.stateMu.Unlock()
-	answered := time.Now()
-	if answer, err := peer.followup(t, s, ctx, ML_KEM_768, peer.link); err != nil || findType(answer, PayloadKE) == nil {
-		t.Fatalf("the first IKE_FOLLOWUP_KE drew %v, %v, want KEr", payloadTypes(answer), err)
-	}
-	s.stateMu.RLock()
-	deadline, link := s.peerChain.deadline, slices.Clone(s.peerChain.link[:])
-	s.stateMu.RUnlock()
-	if deadline.Before(answered.Add(followupWait)) {
-		t.Errorf("the chain waits until %s after the answer, want followupWait of %s", deadline.Sub(answered), followupWait)
-	}
-	if bytes.Equal(link, first) || !bytes.Equal(link, peer.link) {
-		t.Errorf("the answer linked %x, the chain waits on %x after %x, want a new link the chain waits on", peer.link, link, first)
 	}
 }
 
@@ -1725,7 +1665,7 @@ func testRunClosingWhileALostRekeyWaitsSendsItsDeleteAtOnce(t *testing.T) {
 	}
 }
 
-// a peer's rekey answered while this end's own rekey completes its CREATE_CHILD_SA and starts its chain is answered TEMPORARY_FAILURE, one with additional key exchanges and one without, and this end's chain goes on
+// a peer's rekey answered while this end's own rekey completes its CREATE_CHILD_SA and starts its chain is answered TEMPORARY_FAILURE, one with an additional key exchange and one without, and this end's chain goes on
 // the chain starts after the answer first looked at this end's rekey and before it would open the peer's chain or place the peer's SA
 // RFC 9370 section 2.2.4: "In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
 func TestPeerRekeyAnsweredAsThisEndsChainStartsDrawsTemporaryFailure(t *testing.T) {
@@ -1736,7 +1676,7 @@ func TestPeerRekeyAnsweredAsThisEndsChainStartsDrawsTemporaryFailure(t *testing.
 		// proposal is the one of this end's offer the answer to it takes
 		proposal int
 	}{
-		"a peer's rekey with additional key exchanges": {suite: chainSuite, lists: chainLists, peerOffer: hybridOffer},
+		"a peer's rekey with an additional key exchange": {suite: chainSuite, lists: chainLists, peerOffer: hybridOffer},
 		"a peer's classical rekey": {
 			suite: classicalSuite, lists: Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryX25519, entry768}}, peerOffer: classicalOffer, proposal: 1,
 		},
@@ -1793,7 +1733,7 @@ func TestIKESARekeyKeepsTheSAsGroupWhileAnOfferedEntryHasIt(t *testing.T) {
 }
 
 func testIKESARekeyKeepsTheSAsGroupWhileAnOfferedEntryHasIt(t *testing.T) {
-	entryP256And768 := kexEntry{group: DH_ECP_256, additions: [addkeTypes]uint16{ML_KEM_768}}
+	entryP256And768 := kexEntry{group: DH_ECP_256, addition: ML_KEM_768}
 	s, _ := initiatingSession(t, chainSuite, Suites{ikeCipher: []Transform{encrAES128}, kex: []kexEntry{entryP256And768, entry768}})
 	done := rekeying(s)
 	create := requested(t, s, done, CREATE_CHILD_SA)
@@ -1994,7 +1934,7 @@ func TestRefusedRekeyAdoptsOnlyThePeersSAHeldForIt(t *testing.T) {
 }
 
 // a refusal of this end's IKE SA rekey ends the rekey with the decision it takes, adopting or not
-// so the last IKE_FOLLOWUP_KE of the peer's rekey of the same SA, coming after a decision that adopted nothing, makes the peer's SA current, as the peer makes it on reading the answer
+// so the IKE_FOLLOWUP_KE of the peer's rekey of the same SA, coming after a decision that adopted nothing, makes the peer's SA current, as the peer makes it on reading the answer
 // and a peer rekey of the SA the decision adopted is refused until the peer's Delete of the SA it replaced, as a rekey of any SA that replaced another is
 // RFC 9370 section 2.2.4: "In this case, a TEMPORARY_FAILURE notification MUST be sent in response to such a request."
 func TestRefusedRekeyEndsAtItsDecision(t *testing.T) {
@@ -2292,7 +2232,7 @@ func TestRefusedRekeyAdoptsThePeersSAHeldAsTheCollision(t *testing.T) {
 	}
 }
 
-// a success answering a resend of the last IKE_FOLLOWUP_KE past the peer's wait completes the rekey on the SA the peer made, keyed as the peer keys it, and the old SA's Delete takes the next Message ID
+// a success answering a resend of the IKE_FOLLOWUP_KE past the peer's wait completes the rekey on the SA the peer made, keyed as the peer keys it, and the old SA's Delete takes the next Message ID
 // RFC 7296 section 2.1: "IKE is a reliable protocol: the initiator MUST retransmit a request until it either receives a corresponding response or deems the IKE SA to have failed."
 func TestLateAnswerToTheLastFollowupCompletesTheRekey(t *testing.T) {
 	bubble.Run(testLateAnswerToTheLastFollowupCompletesTheRekey)(t)

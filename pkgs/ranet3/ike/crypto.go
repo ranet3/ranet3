@@ -13,7 +13,6 @@ import (
 	"crypto/sha512"
 	"fmt"
 	"hash"
-	"slices"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -175,8 +174,8 @@ type SASuite struct {
 	EncrKeyBits uint16
 	PRFID       uint16
 	DHGroup     uint16
-	// Additions holds the method of each additional key exchange of RFC 9370 in the order they ran, zero past the last
-	Additions [addkeTypes]uint16
+	// Addition is the method of the additional key exchange of RFC 9370 the SA ran, zero for none
+	Addition uint16
 }
 
 type IKEKeys struct {
@@ -196,13 +195,13 @@ func DeriveIKEKeys(suite SASuite, sharedSecret, ni, nr []byte, spiI, spiR uint64
 
 // DeriveRekeyedIKEKeys derives keys for an IKE-SA rekey. RFC 7296 section
 // 2.18 uses the previous SA's PRF and SK_d to produce SKEYSEED.
-// additional holds the secrets of the additional key exchanges in the order they ran
+// added is the secret of the additional key exchange, nil where none ran
 // RFC 9370 section 2.2.4: "SKEYSEED = prf(SK_d, SK(0) | Ni | Nr | SK(1) | ... SK(n))"
-func DeriveRekeyedIKEKeys(oldPRFID uint16, oldSKd []byte, suite SASuite, sharedSecret, ni, nr []byte, spiI, spiR uint64, additional ...[]byte) (*IKEKeys, error) {
+func DeriveRekeyedIKEKeys(oldPRFID uint16, oldSKd []byte, suite SASuite, sharedSecret, ni, nr []byte, spiI, spiR uint64, added []byte) (*IKEKeys, error) {
 	if PRFOutputLen(oldPRFID) == 0 {
 		return nil, fmt.Errorf("ike: unsupported previous PRF %d", oldPRFID)
 	}
-	skeyseed := prf(oldPRFID, oldSKd, concat(slices.Concat([][]byte{sharedSecret, ni, nr}, additional)...))
+	skeyseed := prf(oldPRFID, oldSKd, concat(sharedSecret, ni, nr, added))
 	return deriveIKEKeys(suite, skeyseed, ni, nr, spiI, spiR)
 }
 
@@ -247,17 +246,18 @@ func putUint64(b []byte, v uint64) {
 // with no PFS: KEYMAT = prf+(SK_d, Ni | Nr), RFC 7296 section 2.17. The returned
 // slice holds, in order, the initiator's key||salt then the responder's.
 func ChildSAKeymat(prfID uint16, skD, ni, nr []byte, encrID uint16, encrKeyBits uint16) (initiatorKey, responderKey []byte, err error) {
-	return childSAKeymat(prfID, skD, nil, ni, nr, encrID, encrKeyBits)
+	return childSAKeymat(prfID, skD, nil, ni, nr, encrID, encrKeyBits, nil)
 }
 
 // With PFS the fresh DH secret precedes both nonces (RFC 7296 section 2.17).
+// added is the secret of the additional key exchange, nil where none ran
 // RFC 9370 section 2.2.4: "KEYMAT = prf+ (SK_d, SK(0) | Ni | Nr | SK(1) |  ... SK(n))"
-func childSAKeymat(prfID uint16, skD, sharedSecret, ni, nr []byte, encrID uint16, encrKeyBits uint16, additional ...[]byte) (initiatorKey, responderKey []byte, err error) {
+func childSAKeymat(prfID uint16, skD, sharedSecret, ni, nr []byte, encrID uint16, encrKeyBits uint16, added []byte) (initiatorKey, responderKey []byte, err error) {
 	ap, err := aeadParams(encrID, encrKeyBits)
 	if err != nil {
 		return nil, nil, err
 	}
 	each := ap.KeyLen + ap.SaltLen
-	stream := prfPlus(prfID, skD, concat(slices.Concat([][]byte{sharedSecret, ni, nr}, additional)...), 2*each)
+	stream := prfPlus(prfID, skD, concat(sharedSecret, ni, nr, added), 2*each)
 	return stream[:each], stream[each:], nil
 }
