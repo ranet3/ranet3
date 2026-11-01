@@ -79,6 +79,9 @@ func (c *Client) syncPeers() (stopped []*dialer) {
 func (c *Client) ReloadFrom(path string) (err error) {
 	c.reloadMu.Lock()
 	defer c.reloadMu.Unlock()
+	if err := c.refuseWhileStopping("reload"); err != nil {
+		return err
+	}
 	var applied []string
 	defer func() {
 		attrs := []slog.Attr{slog.String("path", path)}
@@ -195,15 +198,9 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	return nil
 }
 
-// SetReconcilerTable hands the reload path the route reconciler's SetTable, as SetReconcilerEnable hands the write path its stop and start
-func (c *Client) SetReconcilerTable(set func(kernel.Table, []schema.Prefix, []netip.Prefix) error) {
-	c.reconcilerTable.Store(&set)
-}
-
-// retable refuses a move made before main hands the reconciler over, which
-// would otherwise be lost to the reconciler built from what it read first
+// retable refuses a move where no reconciler was handed over to take it
 func (c *Client) retable(old, next *config.Config) error {
-	set := c.reconcilerTable.Load()
+	set := c.reconcilerNow().Table
 	if set == nil {
 		moved := "cap.table"
 		switch {
@@ -219,7 +216,7 @@ func (c *Client) retable(old, next *config.Config) error {
 		}
 		return fmt.Errorf("config: %s changed and no reconciler is running to take it, restart to apply", moved)
 	}
-	return (*set)(*next.ReconcilerTable(), next.Overlay, next.Routes().Announced())
+	return set(*next.ReconcilerTable(), next.Overlay, next.Routes().Announced())
 }
 
 // changedCapabilities names each capability a reload from old to next applied in place

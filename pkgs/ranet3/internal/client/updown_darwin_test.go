@@ -85,8 +85,7 @@ func tryDownable(t *testing.T, host *recordedKernel, stateDir string) (*daemon, 
 	if err != nil {
 		t.Fatalf("the reconciler this node described was refused: %v", err)
 	}
-	node.SetReconcilerEnable(routes.SetEnabled)
-	node.SetReconcilerTable(routes.SetTable)
+	node.SetReconciler(Reconciler{Enable: routes.SetEnabled, Table: routes.SetTable})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -264,13 +263,12 @@ cap:
 		node.Close()
 		t.Fatalf("the reconciler this node described was refused: %v", err)
 	}
-	node.SetReconcilerEnable(routes.SetEnabled)
-	node.SetReconcilerTable(routes.SetTable)
+	node.SetReconciler(Reconciler{Enable: routes.SetEnabled, Table: routes.SetTable})
 	routesCtx, stopRoutes := context.WithCancel(context.Background())
 	meshCtx, stopMesh := context.WithCancel(context.Background())
-	withdrawn, left := make(chan error, 1), make(chan error, 1)
+	withdrawn, left := make(chan error, 1), make(chan struct{})
 	go func() { withdrawn <- routes.Run(routesCtx) }()
-	go func() { left <- node.Run(meshCtx) }()
+	go func() { node.Run(meshCtx); close(left) }()
 	u := &utunNode{node: node, routes: routes}
 	u.stop = sync.OnceFunc(func() {
 		stopRoutes()
@@ -284,10 +282,7 @@ cap:
 		}
 		stopMesh()
 		select {
-		case err := <-left:
-			if err != nil && !isCanceled(err) {
-				t.Errorf("the node stopped with %v", err)
-			}
+		case <-left:
 		case <-time.After(utunBudget):
 			t.Error("the node did not stop")
 		}

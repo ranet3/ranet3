@@ -24,9 +24,9 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(*config.Config) {})
 	c.sessions = newSessionSet()
 	switchState := &control.KernelFallback{State: "holding", Dropped: 3, DroppedBytes: 180}
-	c.SetKernelStatus(func() control.KernelStatus {
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
 		return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{Fallback: switchState}}
-	})
+	}})
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return nil, nil }
 	debug := kernel.FallbackDebug{
 		Where: "nftables table inet ranet3_fallback chain fallback", Hook: "postrouting", Priority: 2147483646, Held: true,
@@ -59,7 +59,7 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 		t.Errorf("debug rules carries the table %+v after a read that failed, want its error", got)
 	}
 
-	c.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{}} })
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus { return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{}} }})
 	if got := c.Status().Kernel.Exit.Fallback; got != nil {
 		t.Errorf("under uplink the status names the switch as %+v", got)
 	}
@@ -74,16 +74,15 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 func TestOnlyAStatusReadAsksSystemdResolved(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(*config.Config) {})
 	c.sessions = newSessionSet()
-	c.SetKernelStatus(func() control.KernelStatus {
-		return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{Fallback: &control.KernelFallback{State: "holding"}}}
-	})
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return nil, nil }
 	c.fallbackRead = func() (kernel.FallbackDebug, error) { return kernel.FallbackDebug{Held: true}, nil }
 	asked := 0
-	c.SetFallbackResolvers(func() []kernel.LinkResolver {
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
+		return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{Fallback: &control.KernelFallback{State: "holding"}}}
+	}, Resolvers: func() []kernel.LinkResolver {
 		asked++
 		return []kernel.LinkResolver{{Link: "eth0", Address: netip.MustParseAddr("203.0.113.53")}}
-	})
+	}})
 	c.Metrics(io.Discard)
 	c.DebugRules()
 	if asked != 0 {

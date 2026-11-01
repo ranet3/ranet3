@@ -163,9 +163,9 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 	}
 
 	pass := time.Date(2026, 9, 21, 19, 3, 0, 0, time.UTC)
-	c.SetKernelStatus(func() control.KernelStatus {
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
 		return control.KernelStatus{Enabled: true, Installed: 150, Skipped: 8, PassAt: pass, Err: "list routes: bad"}
-	})
+	}})
 	var kernel strings.Builder
 	c.renderKernel(&kernel)
 	for _, want := range []string{
@@ -181,7 +181,7 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 
 	// A node whose reconciler is off writes none of it, rather than four
 	// zeroes that read as a reconciler installing nothing.
-	c.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{} })
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus { return control.KernelStatus{} }})
 	var off strings.Builder
 	c.renderKernel(&off)
 	if off.Len() != 0 {
@@ -190,7 +190,7 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 
 	// And a reconciler that has not finished a pass reports zero rather than
 	// a timestamp two millennia before the epoch.
-	c.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{Enabled: true} })
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus { return control.KernelStatus{Enabled: true} }})
 	var first strings.Builder
 	c.renderKernel(&first)
 	if !strings.Contains(first.String(), "ranet3_kernel_pass_timestamp_seconds 0") {
@@ -203,13 +203,14 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 // it did not ask
 func TestMetricsCountTheLookupsTakenInEachFamilyAsked(t *testing.T) {
 	c := &Client{Mesh: &netstack.Mesh{Routes: netstack.NewRouteTable()}}
-	c.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{Enabled: true} })
+	status := func() control.KernelStatus { return control.KernelStatus{Enabled: true} }
+	c.SetReconciler(Reconciler{Status: status})
 	var none strings.Builder
 	c.renderKernel(&none)
 	if strings.Contains(none.String(), "_taken") {
 		t.Errorf("a reconciler that asked nothing wrote a taken series:\n%s", none.String())
 	}
-	c.SetReconcilerLookups(func() []kernel.Lookup {
+	c.SetReconciler(Reconciler{Status: status, Lookups: func() []kernel.Lookup {
 		return []kernel.Lookup{
 			{Family: kernel.FamilyIPv4, Prefix: netip.MustParsePrefix("192.0.2.0/24"), Taken: true},
 			{Family: kernel.FamilyIPv4, Prefix: netip.MustParsePrefix("198.51.100.0/24")},
@@ -218,7 +219,7 @@ func TestMetricsCountTheLookupsTakenInEachFamilyAsked(t *testing.T) {
 			{Family: kernel.FamilyIPv4, Address: netip.MustParseAddr("203.0.113.70"), Taken: true},
 			{Family: kernel.FamilyIPv4, Address: netip.MustParseAddr("203.0.113.71")},
 		}
-	})
+	}})
 	var taken strings.Builder
 	c.renderKernel(&taken)
 	for _, want := range []string{

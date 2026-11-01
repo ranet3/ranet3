@@ -3,7 +3,10 @@
 // SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
 // Package client owns the mesh runtime: peer reconnection, IKE/ESP lifetimes,
-// and Babel registration. The command only handles flags, signals and logging.
+// Babel registration, reload, down and up, and the readiness the exit and the
+// antispoof filter hand it. cmd/ranet3 builds the antispoof filter, the route
+// reconciler, the exit and the listeners around it, and orders their start and
+// stop.
 package client
 
 import (
@@ -89,10 +92,9 @@ type Client struct {
 	// nanoseconds, so a diagnostic can tell a registry that reloaded from one
 	// that has been the same since startup.
 	regReadAt atomic.Int64
-	// kernelStatus is the route reconciler's own view, supplied by the command
-	// that built it. Nil until then, and nil forever on a node whose routes
-	// are configured externally.
-	kernelStatus atomic.Pointer[func() control.KernelStatus]
+	// reconciler is the route reconciler SetReconciler took, nil until then
+	// and nil forever on a node whose routes are configured externally
+	reconciler atomic.Pointer[Reconciler]
 	// exit carries cap.egress, handed over by the command that built it and
 	// nil on a node with no cap.egress. Its announcement is read on every
 	// republication rather than captured, because an exit withholds a family
@@ -127,14 +129,8 @@ type Client struct {
 	// sysctl reads a setting by its path under /proc/sys, the empty string
 	// where it cannot, and nil means Sysctl
 	sysctl func(path string) string
-	// reconcilerRules reads the rules the route reconciler derived, supplied as kernelStatus is and nil on a node with no cap.table
-	reconcilerRules atomic.Pointer[func() []kernel.DumpedRule]
-	// reconcilerLookups reads the lookups the route reconciler's last pass whose batch answered asked, supplied as reconcilerRules is
-	reconcilerLookups atomic.Pointer[func() []kernel.Lookup]
 	// fallbackRead reads the table ranet3_fallback, and nil means kernel.ReadFallback
 	fallbackRead func() (kernel.FallbackDebug, error)
-	// fallbackResolvers asks systemd-resolved for the DNS servers beyond the switch's LAN, supplied as kernelStatus is
-	fallbackResolvers atomic.Pointer[func() []kernel.LinkResolver]
 	// unresolved is each endpoint name whose last lookup failed
 	unresolved names
 
@@ -144,21 +140,15 @@ type Client struct {
 	// status reports this map and a second write compares against it.
 	runningMu sync.Mutex
 	running   map[control.Subsystem]bool
-	// reconcilerEnable stops and starts the route reconciler, supplied by the
-	// command that built it as SetKernelStatus is. Nil on a node with no
-	// cap.table, where the verb is refused by name rather than reported as
-	// having stopped something.
-	reconcilerEnable atomic.Pointer[func(bool)]
-	// reconcilerTable hands the route reconciler a reloaded cap.table and overlay, supplied as reconcilerEnable is
-	reconcilerTable atomic.Pointer[func(kernel.Table, []schema.Prefix, []netip.Prefix) error]
-	// reconcilerNetwork wakes the route reconciler for a change of the host's network, supplied as reconcilerEnable is
-	reconcilerNetwork atomic.Pointer[func(kernel.NetworkChange)]
 	// configPath is where the daemon read this node's configuration, so the
 	// reload verb re-reads the same file SIGHUP does. Empty on a client a test
 	// built by hand, where the verb says so rather than guessing at a path.
 	configPath atomic.Pointer[string]
 	// reloadMu runs one reload at a time, so the reconciler takes each cap.table in the order the node stores the files
 	reloadMu sync.Mutex
+	// stopBegun is set once the daemon's stop has begun, ahead of reloadMu, and up, reload, redial and Run's first dial each
+	// read it once they hold reloadMu
+	stopBegun atomic.Bool
 
 	// events is the daemon's bus, nil on a Client a test built by hand
 	events *events.Bus
@@ -347,9 +337,10 @@ func startDecision(mesh *netstack.Mesh, cfg *config.Config) {
 	mesh.SetEgressPrefixes(cfg.Advertised())
 }
 
-// Run is called once. It returns only after peer handshakes, IKE sessions, ESP
-// workers and Babel timers have stopped, including cancellation during dialing.
-func (c *Client) Run(ctx context.Context) error {
+// Run is called once, and runs until ctx ends or Close is called. It returns
+// only after peer handshakes, IKE sessions, ESP workers and Babel timers have
+// stopped, including cancellation during dialing.
+func (c *Client) Run(ctx context.Context) {
 	// Tell every peer before the sessions go, rather than leaving each of them
 	// sending ESP into an SPI we no longer accept until its own dead peer
 	// detection expires. It runs before c.cancel because a canceled session
@@ -367,14 +358,46 @@ func (c *Client) Run(ctx context.Context) error {
 	if c.network != nil {
 		c.peers.Go(func() { c.followNetwork(c.ctx) })
 	}
-	c.syncMesh()
+	c.firstDial()
 	<-c.ctx.Done()
 	// Done before the hub closes, so a dialer reads the session ending as
 	// this node stopping. See stopping.
 	_ = c.hub.Close()
 	c.stopDialers()
 	c.peers.Wait()
-	return c.ctx.Err()
+}
+
+// firstDial puts the node on the mesh as up does, under reloadMu, and dials
+// nothing once the stop has begun
+func (c *Client) firstDial() {
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
+	if c.refuseWhileStopping("dial") == nil {
+		c.syncMesh()
+	}
+}
+
+// MarkStopping refuses up, reload and redial from here on and returns at
+// once, for the cancel that ends the daemon's run, which must not wait on a
+// verb
+func (c *Client) MarkStopping() { c.stopBegun.Store(true) }
+
+// BeginStop refuses up, reload and redial from here on, then returns once one
+// that held reloadMu as the stop began has returned
+func (c *Client) BeginStop() {
+	c.stopBegun.Store(true)
+	// a verb that takes the lock after this one reads the flag set above
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
+}
+
+// refuseWhileStopping is the answer up, reload and redial get once the daemon's stop has begun, and nil before
+// c.reloadMu is held
+func (c *Client) refuseWhileStopping(verb string) error {
+	if !c.stopBegun.Load() {
+		return nil
+	}
+	return fmt.Errorf("control: this node is stopping, so it cannot %s", verb)
 }
 
 // leave closes every session, then stops the loops and waits for them

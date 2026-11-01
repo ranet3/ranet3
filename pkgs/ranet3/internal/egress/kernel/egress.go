@@ -465,6 +465,9 @@ type chainReadback struct {
 	rules  []Installed
 	fault  string
 	remake bool
+	// held is whether the table is there at all, which the antispoof filter's
+	// readback alone sets
+	held bool
 }
 
 // backend is the kernel surface a translator drives. Everything above it is
@@ -767,6 +770,8 @@ func (t *Translator) Run(ctx context.Context) error {
 	t.publish(nil)
 	return errors.Join(t.withdraw(), t.be.Close())
 }
+
+func (t *Translator) Close() error { return t.be.Close() }
 
 func stopTimer(timer *time.Timer) {
 	if !timer.Stop() {

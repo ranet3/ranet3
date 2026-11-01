@@ -59,7 +59,7 @@ func reloadOf(t *testing.T, start func(*config.Config)) (*Client, string, *recon
 	c, path := reloadFixture(t)
 	start(c.config())
 	reconciler, bus := &reconcilerStandIn{}, events.New()
-	c.SetReconcilerTable(reconciler.setTable)
+	c.SetReconciler(Reconciler{Table: reconciler.setTable})
 	c.events = bus
 	return c, path, reconciler, bus
 }
@@ -330,7 +330,7 @@ func TestReloadMovesTheOverlayOfANodeWithNoTable(t *testing.T) {
 		old.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20")}
 	})
 	segmentsOf(t, c)
-	c.reconcilerTable.Store(nil)
+	c.reconciler.Store(nil)
 	next := *c.config()
 	moved := []schema.Prefix{schema.MustPrefix("3ff0::/12")}
 	next.Overlay = moved
@@ -353,7 +353,7 @@ func TestReloadMovingTheOverlayBeforeTheReconcilerIsHandedOverNamesIt(t *testing
 		old.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20")}
 	})
 	segmentsOf(t, c)
-	c.reconcilerTable.Store(nil)
+	c.reconciler.Store(nil)
 	next := *c.config()
 	next.Overlay = []schema.Prefix{schema.MustPrefix("3ff0::/12")}
 	writeConfig(t, path, &next)
@@ -370,7 +370,7 @@ func TestReloadMovingTheTableBeforeTheReconcilerIsHandedOverNamesIt(t *testing.T
 		old.Overlay = []schema.Prefix{schema.MustPrefix("3fff::/20")}
 	})
 	segmentsOf(t, c)
-	c.reconcilerTable.Store(nil)
+	c.reconciler.Store(nil)
 	next := *c.config()
 	next.Cap.Table = &kernel.Table{Metric: 64}
 	writeConfig(t, path, &next)
@@ -490,7 +490,7 @@ func TestOverlappingReloadsLeaveTheReconcilerOnTheStoredTable(t *testing.T) {
 	var running kernel.Table
 	calls := 0
 	entered, release := make(chan struct{}), make(chan struct{})
-	c.SetReconcilerTable(func(table kernel.Table, _ []schema.Prefix, _ []netip.Prefix) error {
+	c.SetReconciler(Reconciler{Table: func(table kernel.Table, _ []schema.Prefix, _ []netip.Prefix) error {
 		mu.Lock()
 		running, calls = table, calls+1
 		hold := calls == 1
@@ -500,7 +500,7 @@ func TestOverlappingReloadsLeaveTheReconcilerOnTheStoredTable(t *testing.T) {
 			<-release
 		}
 		return nil
-	})
+	}})
 	done := make(chan error, 2)
 	go func() { done <- c.ReloadFrom(first) }()
 	<-entered

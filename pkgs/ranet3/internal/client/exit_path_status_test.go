@@ -19,10 +19,10 @@ func TestStatusAndDebugRulesCarryTheExitPath(t *testing.T) {
 	c, _ := reloadFixture(t)
 	// the reconciler's half carries counts the mesh does not hold, which status replaces with the mesh's
 	path := &control.KernelExitPath{Via: []string{"3fff:b:0:306::3"}, Source: "3fff::2", State: "down", Down: "3fff:b:0:306::3", Verdict: "held", Installed: []string{"ipv6"}, Steered: 7, Unrouted: 5}
-	c.SetKernelStatus(func() control.KernelStatus {
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
 		copied := *path
 		return control.KernelStatus{Enabled: true, Table: 200, ExitPath: &copied}
-	})
+	}})
 	status := c.kernel()
 	counts := c.Mesh.PathCounters()
 	if status.ExitPath == nil || status.ExitPath.Steered != counts.Steered || status.ExitPath.Unrouted != counts.Unrouted || status.ExitPath.Down != path.Down {
@@ -37,7 +37,7 @@ func TestStatusAndDebugRulesCarryTheExitPath(t *testing.T) {
 		t.Errorf("debug rules lists the steered defaults as %+v, want %+v", steered, want)
 	}
 
-	c.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{Enabled: true, Table: 200} })
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus { return control.KernelStatus{Enabled: true, Table: 200} }})
 	if status := c.kernel(); status.ExitPath != nil {
 		t.Errorf("mode 2 reports the path %+v", status.ExitPath)
 	}

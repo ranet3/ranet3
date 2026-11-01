@@ -16,23 +16,12 @@ import (
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
-// SetReconcilerRules hands the debug view the rules the route reconciler derived, as SetKernelStatus hands it the reconciler's status
-func (c *Client) SetReconcilerRules(read func() []kernel.DumpedRule) {
-	c.reconcilerRules.Store(&read)
-}
-
-// SetReconcilerLookups hands the status, the debug view and the metrics the
-// lookups the route reconciler's last pass whose batch answered asked, as
-// SetReconcilerRules hands its rules
-func (c *Client) SetReconcilerLookups(read func() []kernel.Lookup) {
-	c.reconcilerLookups.Store(&read)
-}
-
-// lookups reads the lookups through the reader SetReconcilerLookups took, and
-// none on a node with no cap.table
+// lookups reads the lookups the reconciler's last pass whose batch answered
+// asked, for the status, the debug view and the metrics, and none on a node
+// with no cap.table
 func (c *Client) lookups() []kernel.Lookup {
-	if read := c.reconcilerLookups.Load(); read != nil {
-		return (*read)()
+	if read := c.reconcilerNow().Lookups; read != nil {
+		return read()
 	}
 	return nil
 }

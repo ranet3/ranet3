@@ -345,19 +345,15 @@ func preferenceOf(node *loopbackNode) (bool, bool) {
 	return false, false
 }
 
-func isCanceled(err error) bool {
-	return err == context.Canceled || err == context.DeadlineExceeded
-}
-
 // run starts each node and returns a stop that cancels and waits for every one
 // of them. Waiting matters: a client left unwinding keeps its dialers retrying
 // and its hub bound, and the next test would then be sharing a port with it.
 func run(t *testing.T, nodes ...*loopbackNode) (context.Context, func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan error, len(nodes))
+	stopped := make(chan struct{}, len(nodes))
 	for _, node := range nodes {
-		go func() { stopped <- node.client.Run(ctx) }()
+		go func() { node.client.Run(ctx); stopped <- struct{}{} }()
 	}
 	var once sync.Once
 	stop := func() {
@@ -365,10 +361,7 @@ func run(t *testing.T, nodes ...*loopbackNode) (context.Context, func()) {
 			cancel()
 			for range nodes {
 				select {
-				case err := <-stopped:
-					if err != nil && !isCanceled(err) {
-						t.Errorf("a node stopped with %v", err)
-					}
+				case <-stopped:
 				case <-time.After(convergeBudget):
 					t.Error("a node did not stop after its context was canceled")
 				}

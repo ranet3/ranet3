@@ -76,7 +76,8 @@ func (c *Client) Down(ctx context.Context) (result control.Result, err error) {
 		Detail: fmt.Sprintf("This node is off the mesh with %d session(s) closed, and it stays off through a restart until ranet3 up", len(closed))}, nil
 }
 
-// Up removes the flag and puts the node back on the mesh as a start would, a subsystem somebody disabled staying disabled
+// Up removes the flag and puts the node back on the mesh, a subsystem somebody disabled staying disabled
+// it dials at once, and the kill switch's table follows on the reconciler's next pass, which up wakes
 func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 	defer func() { c.noteVerb(ctx, "up", "", control.Result{}, err) }()
 	if c.stateDir == "" {
@@ -84,6 +85,9 @@ func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 	}
 	c.reloadMu.Lock()
 	defer c.reloadMu.Unlock()
+	if err := c.refuseWhileStopping("go up"); err != nil {
+		return control.Result{}, err
+	}
 	if c.downSince.Load() == nil {
 		return control.Result{Detail: "This node was already up"}, nil
 	}
@@ -109,8 +113,8 @@ func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 // c.runningMu is held
 func (c *Client) applyInstalledLocked() {
 	up := c.downSince.Load() == nil
-	if set := c.reconcilerEnable.Load(); set != nil {
-		(*set)(up && c.running[control.SubsystemReconciler])
+	if set := c.reconcilerNow().Enable; set != nil {
+		set(up && c.running[control.SubsystemReconciler])
 	}
 	if exit := c.exit.Load(); exit != nil {
 		(*exit).SetEnabled(up)

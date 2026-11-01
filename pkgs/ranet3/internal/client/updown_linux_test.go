@@ -64,42 +64,13 @@ var (
 // the first call reads the namespace and brings its loopback up, which the two nodes reach each other over
 func kernelNamespace(t *testing.T) {
 	t.Helper()
-	namespaceOnce.Do(func() { namespaceSkip, namespaceErr = claimNamespace() })
+	namespaceOnce.Do(func() { namespaceSkip, namespaceErr = netnstest.ClaimProcess() })
 	if namespaceSkip != "" {
 		t.Skip(namespaceSkip)
 	}
 	if namespaceErr != nil {
 		t.Fatal(namespaceErr)
 	}
-}
-
-// claimNamespace takes the namespace for these tests when every link in it is down without an address and it holds no route
-// a loaded tunnel module puts a fallback device in every new namespace, down and without an address, so a link's name proves nothing
-func claimNamespace() (string, error) {
-	if os.Getuid() != 0 {
-		return "writing tuns, routes and rules needs root, as unshare -rn gives in a network namespace of its own", nil
-	}
-	links, err := net.Interfaces()
-	if err != nil {
-		return "", fmt.Errorf("list the links: %w", err)
-	}
-	for _, link := range links {
-		addresses, err := link.Addrs()
-		if err != nil {
-			return "", fmt.Errorf("list the addresses of %s: %w", link.Name, err)
-		}
-		if link.Flags&net.FlagUp != 0 || len(addresses) != 0 {
-			return "", fmt.Errorf("refusing to start: %s is up or carries an address, so this network namespace was not made for this process, and unshare -rn makes one that was", link.Name)
-		}
-	}
-	routes, err := dumpRoutes()
-	if err != nil {
-		return "", err
-	}
-	if len(routes) != 0 {
-		return "", fmt.Errorf("refusing to start: this network namespace holds %d routes, so it was not made for this process, and unshare -rn makes one that was", len(routes))
-	}
-	return "", netnstest.BringUp("lo")
 }
 
 // kernelRoute is one route a dump of the namespace reads back
@@ -390,13 +361,12 @@ func (n *kernelNode) start(t *testing.T) {
 		node.Close()
 		t.Fatalf("%s's reconciler: %v", n.name, err)
 	}
-	node.SetReconcilerEnable(routes.SetEnabled)
-	node.SetReconcilerTable(routes.SetTable)
+	node.SetReconciler(Reconciler{Enable: routes.SetEnabled, Table: routes.SetTable})
 	routesCtx, stopRoutes := context.WithCancel(context.Background())
 	meshCtx, stopMesh := context.WithCancel(context.Background())
-	withdrawn, left := make(chan error, 1), make(chan error, 1)
+	withdrawn, left := make(chan error, 1), make(chan struct{})
 	go func() { withdrawn <- routes.Run(routesCtx) }()
-	go func() { left <- node.Run(meshCtx) }()
+	go func() { node.Run(meshCtx); close(left) }()
 	n.client, n.routes = node, routes
 	n.stop = sync.OnceFunc(func() {
 		stopRoutes()
@@ -410,10 +380,7 @@ func (n *kernelNode) start(t *testing.T) {
 		}
 		stopMesh()
 		select {
-		case err := <-left:
-			if err != nil && !isCanceled(err) {
-				t.Errorf("%s stopped with %v", n.name, err)
-			}
+		case <-left:
 		case <-time.After(convergeBudget):
 			t.Errorf("%s did not stop", n.name)
 		}

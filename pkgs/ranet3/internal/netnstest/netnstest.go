@@ -60,9 +60,46 @@ func EnterEmptyNetwork() error {
 	if after.Ino == before.Ino {
 		return errors.New("refusing to continue: the network namespace did not change")
 	}
+	if err := holdsNoRoute(); err != nil {
+		return err
+	}
+	return BringUp("lo")
+}
+
+// ClaimProcess takes the network namespace the whole process runs in for a test whose goroutines open sockets, tuns and netlink
+// from whatever thread they run on, which no one thread can be moved into a namespace for
+// it answers why the test skips without root, and refuses a namespace with a link up or carrying an address or holding a
+// route, which unshare -rn would not have made for this process
+// it then brings the loopback up
+// a loaded tunnel module puts a fallback device in every new namespace, down and without an address, so a link's name proves nothing
+func ClaimProcess() (skip string, err error) {
+	if os.Getuid() != 0 {
+		return "writing tuns, routes and rules needs root, as unshare -rn gives in a network namespace of its own", nil
+	}
+	links, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("list the links: %w", err)
+	}
+	for _, link := range links {
+		addresses, err := link.Addrs()
+		if err != nil {
+			return "", fmt.Errorf("list the addresses of %s: %w", link.Name, err)
+		}
+		if link.Flags&net.FlagUp != 0 || len(addresses) != 0 {
+			return "", fmt.Errorf("refusing to start: %s is up or carries an address, so this network namespace was not made for this process, and unshare -rn makes one that was", link.Name)
+		}
+	}
+	if err := holdsNoRoute(); err != nil {
+		return "", err
+	}
+	return "", BringUp("lo")
+}
+
+// holdsNoRoute refuses a network namespace that holds a route
+func holdsNoRoute() error {
 	rib, err := syscall.NetlinkRIB(syscall.RTM_GETROUTE, syscall.AF_UNSPEC)
 	if err != nil {
-		return fmt.Errorf("dump the routes of the new namespace: %w", err)
+		return fmt.Errorf("dump the routes of the namespace: %w", err)
 	}
 	messages, err := syscall.ParseNetlinkMessage(rib)
 	if err != nil {
@@ -73,7 +110,7 @@ func EnterEmptyNetwork() error {
 			return errors.New("refusing to continue: this network namespace already holds routes")
 		}
 	}
-	return BringUp("lo")
+	return nil
 }
 
 // BringUp sets the up flag of the link name, as netstack does for a tun it opens

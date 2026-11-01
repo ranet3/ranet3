@@ -47,8 +47,8 @@ func (c *Client) followNetwork(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case change := <-c.network.Changes():
-			if wake := c.reconcilerNetwork.Load(); wake != nil {
-				(*wake)(change)
+			if wake := c.reconcilerNow().Network; wake != nil {
+				wake(change)
 			}
 			c.wakeBorder()
 			probed, woken := 0, 0
@@ -71,11 +71,6 @@ func (c *Client) wakeBorder() {
 	case c.borderNetwork <- struct{}{}:
 	default:
 	}
-}
-
-// SetReconcilerNetwork hands followNetwork the route reconciler's wake for a change of the host's network, as SetReconcilerTable hands the reload path its SetTable
-func (c *Client) SetReconcilerNetwork(wake func(kernel.NetworkChange)) {
-	c.reconcilerNetwork.Store(&wake)
 }
 
 // networkState is the host's network as the watch last read it, the zero state where no watch runs

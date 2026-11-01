@@ -198,7 +198,7 @@ func startExitDaemon(t *testing.T, leaf *netnstest.Thread) *exitDaemon {
 	}); err != nil {
 		t.Fatalf("build the reconciler: %v", err)
 	}
-	d.node.SetReconcilerNetwork(d.routes.NetworkChanged)
+	d.node.SetReconciler(Reconciler{Network: d.routes.NetworkChanged})
 	ctx, cancel := context.WithCancelCause(context.Background())
 	var runs sync.WaitGroup
 	var once sync.Once

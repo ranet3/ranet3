@@ -34,6 +34,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/client"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
@@ -103,7 +104,22 @@ profile is at /debug/pprof/profile, and this opens one as a flamegraph:
 go tool pprof -http=:8081 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
 
 The --contention-profiles flag adds mutex and blocking profiles while
-pprof is served, at a high cost in overhead.`,
+pprof is served, at a high cost in overhead.
+
+The daemon builds everything it can refuse before it runs any of it: the
+config, the pprof, metrics and control listeners, the tun, the state
+directory, the antispoof filter, the exit and the route reconciler. The
+tun, the node's sockets, the network watch and the parts' monitors start
+their own workers as they are built, and the antispoof filter writes its
+table, but nothing dials or serves before the build ends. A refusal, or
+SIGINT or SIGTERM before the build ends, undoes what was built and starts
+nothing: the antispoof filter's table goes where the start made it, and
+stays where an earlier instance left it, as the kill switch's does. The
+egress translator's stay in the families the file translates, since
+building the exit removes one in a family the file no longer translates.
+SIGHUP, SIGINT, SIGTERM and SIGUSR1 are taken from the start on, a second
+SIGINT or SIGTERM exits at once, and a SIGHUP or SIGUSR1 that comes before
+the node dials is acted on once it does.`,
 		Args: noArguments,
 		RunE: func(*cobra.Command, []string) error {
 			if err := o.level.UnmarshalText([]byte(logLevel)); err != nil {
@@ -156,155 +172,291 @@ func refuseToStart(err error) int {
 // stopped cleanly when it did not, and the route withdrawal at shutdown is one
 // of the things that reports this way.
 func runDaemon(opts options) int {
-	configPath, pprofAddr := &opts.configPath, &opts.pprofAddr
-	metricsAddr, contentionProfiles := &opts.metricsAddr, &opts.contentionProfiles
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: opts.level})))
+	return startDaemon(opts, production)
+}
 
-	// Set by anything that fails on a goroutine or after runDaemon has
-	// committed to a clean shutdown. It returns nonzero if any of them did.
-	var failed atomic.Bool
+// stages holds the constructor of each part of the daemon that can refuse,
+// and the exit a second stop signal forces, each of which a test replaces
+type stages struct {
+	load   func(path string) (*config.Config, error)
+	node   func(*config.Config, *events.Bus) (*client.Client, error)
+	border func(*egress.Border, egress.BorderRuntime) (*kernelexit.BorderFilter, error)
+	exit   func(*config.Config, *client.Client, *events.Bus) (egress.Exit, error)
+	kernel func(kernel.Table, kernel.Runtime, kernel.RouteSource) (*kernel.Reconciler, error)
+	force  func()
+}
 
-	if *pprofAddr != "" {
-		if *contentionProfiles {
-			runtime.SetMutexProfileFraction(1)
-			runtime.SetBlockProfileRate(1)
+var production = stages{
+	load: config.Load, node: client.New, border: kernelexit.NewBorderFilter, exit: newExit, kernel: kernel.New,
+	force: func() { os.Exit(1) },
+}
+
+type daemonSignals struct {
+	stop, reload, dump chan os.Signal
+}
+
+// notifySignals registers every signal the daemon takes, each of which
+// otherwise ends the process, or for SIGUSR1 goes unread
+func notifySignals() daemonSignals {
+	s := daemonSignals{stop: make(chan os.Signal, 2), reload: make(chan os.Signal, 1), dump: make(chan os.Signal, 1)}
+	// one registration and one reader for the stop, so a burst of two signals
+	// is held by the buffer: the first stops and the second forces the exit
+	signal.Notify(s.stop, os.Interrupt, syscall.SIGTERM)
+	// SIGHUP reconciles rather than restarts. The registry is rewritten every
+	// time any node joins the mesh, and a restart to pick that up would drop
+	// every SA this node is carrying.
+	signal.Notify(s.reload, syscall.SIGHUP)
+	// SIGUSR1 dumps the current mesh route table to the log, the fastest way
+	// to see what babel has actually installed without wiring up a separate
+	// debug endpoint.
+	signal.Notify(s.dump, syscall.SIGUSR1)
+	return s
+}
+
+func (s daemonSignals) close() {
+	signal.Stop(s.stop)
+	signal.Stop(s.reload)
+	signal.Stop(s.dump)
+}
+
+// startDaemon builds the daemon from s and runs it, and answers the process
+// status. Its signals are registered before anything is built, and the stop
+// signals are read from then on, the first closing asked and the second
+// forcing the exit, through the build and its undo too.
+func startDaemon(opts options, s stages) int {
+	signals := notifySignals()
+	defer signals.close()
+	returned, asked := make(chan struct{}), make(chan struct{})
+	defer close(returned)
+	go watchSignals(returned, signals.stop, func() { close(asked) }, s.force)
+	d, err := assemble(opts, s)
+	if err != nil {
+		return refuseToStart(err)
+	}
+	select {
+	case <-asked:
+		log.Print("stopping while the start builds, so it undoes what it built")
+		if d.close() {
+			return 1
 		}
-		go func() {
-			log.Printf("pprof listening on http://%s/debug/pprof/", *pprofAddr)
-			if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
-				log.Printf("pprof: %v", err)
-				failed.Store(true)
-			}
-		}()
+		return 0
+	default:
 	}
+	return d.run(asked, signals)
+}
 
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		return refuseToStart(err)
+// daemon holds the parts a start built, each nil where the flags or the file
+// ask for none
+type daemon struct {
+	opts                    options
+	cfg                     *config.Config
+	bus                     *events.Bus
+	node                    *client.Client
+	pprof, metrics, control net.Listener
+	border                  *kernelexit.BorderFilter
+	exit                    egress.Exit
+	routes                  *kernel.Reconciler
+}
+
+// assemble builds every part of the daemon that can refuse and hands the node
+// the antispoof filter, the exit and the reconciler. It runs none of them, but
+// the constructors start the workers of their own, the tun's, the hub's, the
+// network watch and the parts' monitors, and the antispoof filter's first pass
+// writes its table. A refusal closes what was built, which stops and waits
+// for each of those workers. Nothing dials or serves before it returns.
+func assemble(opts options, s stages) (*daemon, error) {
+	d := &daemon{opts: opts}
+	if err := d.build(s); err != nil {
+		d.close()
+		return nil, err
 	}
-	bus := events.New()
-	node, err := client.New(cfg, bus)
-	if err != nil {
-		return refuseToStart(err)
+	if d.border != nil {
+		d.node.SetBorder(d.border)
 	}
-	defer node.Close()
-	mesh := node.Mesh
+	if d.exit != nil {
+		d.node.SetExit(d.exit)
+	}
+	if d.routes != nil {
+		d.node.SetReconciler(client.ReconcilerOf(d.routes))
+	}
+	return d, nil
+}
+
+// build makes each part of d in turn and stops at the first refusal
+func (d *daemon) build(s stages) (err error) {
+	if d.cfg, err = s.load(d.opts.configPath); err != nil {
+		return err
+	}
+	// an address an operator named that cannot be bound refuses the start
+	if d.opts.pprofAddr != "" {
+		if d.pprof, err = net.Listen("tcp", d.opts.pprofAddr); err != nil {
+			return fmt.Errorf("pprof: %w", err)
+		}
+	}
+	if d.opts.metricsAddr != "" {
+		if d.metrics, err = net.Listen("tcp", d.opts.metricsAddr); err != nil {
+			return fmt.Errorf("metrics: %w", err)
+		}
+	}
+	if d.control, err = bindControl(d.opts.controlPath); err != nil {
+		return err
+	}
+	d.bus = events.New()
+	if d.node, err = s.node(d.cfg, d.bus); err != nil {
+		return err
+	}
 	// The reload verb re-reads the file this daemon was started with, so the
 	// socket and SIGHUP ask for the same thing rather than the socket guessing
 	// at a default path.
-	node.SetConfigPath(*configPath)
-	// read before either switch is handed over and before the socket serves, so neither sees a node starting down as up
-	if err := node.SetStateDir(opts.stateDir); err != nil {
-		return refuseToStart(err)
+	d.node.SetConfigPath(d.opts.configPath)
+	// read before either switch is handed over, so neither sees a node starting down as up
+	if err = d.node.SetStateDir(d.opts.stateDir); err != nil {
+		return err
 	}
-
 	// The table inet ranet3 is on before the reconciler routes anything into
 	// the tun, and goes only once the reconciler has withdrawn those routes and
 	// the mesh has closed, so nothing forwards into the mesh while it is gone.
 	// down leaves it running, since the kernel still forwards and the host's
 	// services still trust mesh sources. A platform with no backend for it
 	// builds no filter.
-	stopBorder := func() {}
-	border, err := kernelexit.NewBorderFilter(cfg.Border(), node.BorderRuntime())
-	if err != nil {
-		return refuseToStart(err)
+	if d.border, err = s.border(d.cfg.Border(), d.node.BorderRuntime()); err != nil {
+		return err
 	}
-	if border != nil {
-		node.SetBorder(border)
-		borderCtx, cancelBorder := context.WithCancel(context.Background())
+	// Each platform's build carries one exit, or refuses cap.egress here.
+	if d.cfg.Egress() != nil {
+		if d.exit, err = s.exit(d.cfg, d.node, d.bus); err != nil {
+			return err
+		}
+	}
+	// The reconciler is one capability, so a deployment that configures its
+	// device externally writes no cap.table and gets none of this. The half
+	// the file could not say is the node's own to answer, so the node answers
+	// it (see client.KernelRuntime).
+	if table := d.cfg.ReconcilerTable(); table != nil {
+		if d.routes, err = s.kernel(*table, d.node.KernelRuntime(), d.node.Mesh.Routes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// close undoes what build built, with none of it run: the reconciler, the
+// exit and the antispoof filter close without a withdrawal, but for an
+// antispoof table the first pass made, and then the node closes its tun and
+// the listeners close. The antispoof filter's and the kill switch's tables an
+// earlier instance left stay, and the translator's stay in the families the
+// file translates, since building the exit removed one in any other. No close
+// reads another part, so the order sets nothing. It reports whether a close
+// failed.
+func (d *daemon) close() (failed bool) {
+	if d.routes != nil {
+		failed = logged("kernel", d.routes.Close()) || failed
+	}
+	if d.exit != nil {
+		failed = logged("egress", d.exit.Close()) || failed
+	}
+	if d.border != nil {
+		failed = logged("antispoof", d.border.Close()) || failed
+	}
+	if d.node != nil {
+		d.node.Close()
+	}
+	d.closeListeners()
+	return failed
+}
+
+func (d *daemon) closeListeners() {
+	for _, listener := range []net.Listener{d.control, d.metrics, d.pprof} {
+		if listener != nil {
+			_ = listener.Close()
+		}
+	}
+}
+
+func logged(name string, err error) bool {
+	if err != nil {
+		log.Printf("%s: %v", name, err)
+	}
+	return err != nil
+}
+
+func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
+	// Set by anything that fails on a goroutine or after the daemon has
+	// committed to a clean shutdown. It returns nonzero if any of them did.
+	var failed atomic.Bool
+	ctx, cancelFor := context.WithCancelCause(context.Background())
+	stop := stopFor(d.node.MarkStopping, cancelFor)
+	cancel := func() { stop(nil) }
+	defer cancel()
+	defer d.node.Close()
+	mesh := d.node.Mesh
+	go func() {
+		select {
+		case <-asked:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	// the supervisor restarts the node on the exit status
+	go cancelOnMeshFailure(ctx, mesh.Failed(), &failed, stop)
+
+	var served sync.WaitGroup
+	defer func() {
+		d.closeListeners()
+		served.Wait()
+	}()
+	serve := func(name string, listener net.Listener, on func(net.Listener) error) {
+		served.Go(func() {
+			if err := on(listener); err != nil && !errors.Is(err, net.ErrClosed) {
+				log.Printf("%s: %v", name, err)
+				failed.Store(true)
+			}
+		})
+	}
+	if d.pprof != nil {
+		if d.opts.contentionProfiles {
+			runtime.SetMutexProfileFraction(1)
+			runtime.SetBlockProfileRate(1)
+		}
+		log.Printf("pprof listening on http://%s/debug/pprof/", d.pprof.Addr())
+		serve("pprof", d.pprof, func(l net.Listener) error { return http.Serve(l, nil) })
+	}
+	// A separate listener from pprof: a fleet node wants metrics scraped
+	// without exposing a profiler, and a profiling run wants the profiler
+	// without rewiring monitoring.
+	if d.metrics != nil {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", d.node.MetricsHandler())
+		log.Printf("metrics listening on http://%s/metrics", d.metrics.Addr())
+		serve("metrics", d.metrics, func(l net.Listener) error { return http.Serve(l, mux) })
+	}
+
+	stopBorder := func(error) {}
+	if d.border != nil {
+		borderCtx, cancelBorder := context.WithCancelCause(context.Background())
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
 			// the error is the withdrawal failing, which leaves the table in
 			// the host's ruleset and is no clean exit
-			if err := border.Run(borderCtx); err != nil {
+			if err := d.border.Run(borderCtx); err != nil {
 				log.Printf("antispoof: %v", err)
 				failed.Store(true)
 			}
 		}()
-		stopBorder = sync.OnceFunc(func() {
-			cancelBorder()
+		stopBorder = func(cause error) {
+			cancelBorder(cause)
 			<-done
-		})
-		// a refusal later in the start withdraws the table on the way out
-		defer stopBorder()
-		log.Printf("antispoof filter in %s, inside %s", border.Where(), strings.Join(border.Inside(), " "))
+		}
+		log.Printf("antispoof filter in %s, inside %s", d.border.Where(), strings.Join(d.border.Inside(), " "))
 	}
 
-	// A separate listener from pprof: a fleet node wants metrics scraped
-	// without exposing a profiler, and a profiling run wants the profiler
-	// without rewiring monitoring.
-	if *metricsAddr != "" {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", node.MetricsHandler())
-		server := &http.Server{Addr: *metricsAddr, Handler: mux}
-		go func() {
-			log.Printf("metrics listening on http://%s/metrics", *metricsAddr)
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("metrics: %v", err)
-				failed.Store(true)
-			}
-		}()
-		defer server.Close()
-	}
-
-	// One registration and one reader, rather than signal.NotifyContext plus a
-	// second channel registered after it cancels. Shutdown closes every
-	// session with a grace period, withdraws the installed routes and waits
-	// for every dialer, and while that is slow an operator pressing Ctrl-C
-	// again has nothing to press. The second signal answers that.
-	//
-	// Registering the second channel only after the first signal leaves a
-	// window in which a signal reaches nobody: NotifyContext has stopped
-	// reading its own channel and the replacement does not exist yet. Two
-	// signals with no gap lose the second there. Registering it up front
-	// instead delivers the first signal to both, and then the first Ctrl-C
-	// forces an exit rather than shutting down, which is the failure the
-	// window was introduced to fix. Reading both from one channel in order has
-	// neither: the first cancels, the second forces, and a burst of two is
-	// held by the buffer.
-	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
-	ctx, cancelFor := context.WithCancelCause(context.Background())
-	cancel := func() { cancelFor(nil) }
-	defer cancel()
-	go watchSignals(signals, cancel, func() { os.Exit(1) })
-	// the supervisor restarts the node on the exit status
-	go cancelOnMeshFailure(ctx, mesh.Failed(), &failed, cancelFor)
-
-	// SIGHUP reconciles rather than restarts. The registry is rewritten every
-	// time any node joins the mesh, and a restart to pick that up would drop
-	// every SA this node is carrying.
-	reload := make(chan os.Signal, 1)
-	signal.Notify(reload, syscall.SIGHUP)
-	defer signal.Stop(reload)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-reload:
-				if err := node.ReloadFrom(*configPath); err != nil {
-					log.Printf("reload: %v", err)
-				}
-			}
-		}
-	}()
-
-	// The reconciler is one capability, so a deployment that configures its
-	// device externally writes no cap.table and gets none of this.
-	var reconciler sync.WaitGroup
-	if table := cfg.ReconcilerTable(); table != nil {
-		// The half the file could not say is the node's own to answer, so the
-		// node answers it (see client.KernelRuntime).
-		routes, err := kernel.New(*table, node.KernelRuntime(), mesh.Routes)
-		if err != nil {
-			return refuseToStart(err)
-		}
-		// handed over before the first pass, so a node starting down installs nothing
-		node.SetReconcilerEnable(routes.SetEnabled)
-		reconciler.Go(func() {
+	// the reconciler's run here and the exit's after the wait, each withdrawing what it holds once ctx ends
+	var withdrawals sync.WaitGroup
+	var firstPass <-chan struct{}
+	if routes := d.routes; routes != nil {
+		withdrawals.Go(func() {
 			// This error is the withdrawal failing as often as it is the
 			// reconcile: routes left behind in the kernel after shutdown are
 			// exactly what an operator must not be told was a clean exit.
@@ -318,21 +470,8 @@ func runDaemon(opts options) int {
 		// a platform that has no tables at all.
 		log.Printf("tun device %s ready with %d queues, reconciling its routes into %s",
 			mesh.Name, mesh.QueueCount(), routes.Where())
-		node.SetKernelStatus(func() control.KernelStatus { return client.KernelStatus(routes) })
-		node.SetFallbackResolvers(routes.FallbackResolvers)
-		node.SetReconcilerRules(routes.DerivedRules)
-		node.SetReconcilerLookups(func() []kernel.Lookup { return routes.Stats().Lookups })
-		node.SetReconcilerTable(routes.SetTable)
-		node.SetReconcilerNetwork(routes.NetworkChanged)
-		if mode := table.Mode(); mode != nil && mode.Refuses() {
-			// a session is dialed once the reconciler's first pass has ended, which writes the switch's table where it does not
-			// fail, a stop arrives or firstPassWait passes
-			select {
-			case <-routes.FirstPass():
-			case <-ctx.Done():
-			case <-time.After(firstPassWait):
-				slog.Warn("kernel's first pass has not ended, so sessions are dialed before the fallback table is written", "waited", firstPassWait)
-			}
+		if mode := d.cfg.ReconcilerTable().Mode(); mode != nil && mode.Refuses() {
+			firstPass = routes.FirstPass()
 		}
 	} else {
 		// no reconciler runs to delete a table an earlier instance left, which holds the host's traffic whatever this file asks
@@ -340,19 +479,11 @@ func runDaemon(opts options) int {
 		log.Printf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",
 			mesh.Name, mesh.QueueCount())
 	}
-
-	// cap.egress is written or absent the same way, and is built after the
-	// reconciler because the two share a shutdown order: the exit withdraws
-	// what it holds while the tun still exists, as the reconciler withdraws
-	// its routes. Each platform's build carries one exit, or refuses here.
-	if block := cfg.Egress(); block != nil {
-		exit, err := newExit(cfg, node, bus)
-		if err != nil {
-			return refuseToStart(err)
-		}
-		// handed over before the first pass, as the reconciler's is
-		node.SetExit(exit)
-		reconciler.Go(func() {
+	dials := awaitFirstPass(ctx, firstPass, firstPassWait)
+	// The exit withdraws what it holds while the tun still exists, as the
+	// reconciler withdraws its routes, so the two share the wait below.
+	if exit := d.exit; exit != nil {
+		withdrawals.Go(func() {
 			// As with the reconciler, this error is the withdrawal failing as
 			// often as the pass: a translation rule left in the host's packet
 			// filter after shutdown must never be reported to an operator as a
@@ -362,21 +493,7 @@ func runDaemon(opts options) int {
 				failed.Store(true)
 			}
 		})
-		log.Printf("egress translating for %d prefixes in %s", len(block.Advertise), exit.Status().Where)
-	}
-
-	// The control socket is bound rather than served here, so a path an
-	// operator named and this node cannot bind refuses the startup instead of
-	// leaving a node nobody has a way to ask anything. The default path is the
-	// one case that warns and carries on: it is on without being asked for, so
-	// a node whose unit cannot reach /var/run would otherwise stop starting on
-	// upgrade over a diagnostic it never requested. --control "" is the opt-out.
-	listener, err := serveControl(opts, node, &failed)
-	if err != nil {
-		return refuseToStart(err)
-	}
-	if listener != nil {
-		defer listener.Close()
+		log.Printf("egress translating for %d prefixes in %s", len(d.cfg.Egress().Advertise), exit.Status().Where)
 	}
 
 	// The reconciler has to finish withdrawing while the TUN still exists,
@@ -387,94 +504,144 @@ func runDaemon(opts options) int {
 	defer stopMesh()
 	go func() {
 		<-ctx.Done()
-		bus.Emit("daemon.stopping", "")
-		// the subscriptions end as the shutdown starts rather than at exit
-		// so every stream writes its closing line while the process still has seconds to run
-		bus.Close()
-		reconciler.Wait()
+		announceStop(d.node.BeginStop, d.bus)
+		withdrawals.Wait()
 		stopMesh()
 	}()
 
-	// SIGUSR1 dumps the current mesh route table to the log, the fastest
-	// way to see what babel has actually installed without wiring up a
-	// separate debug endpoint. Route installs/retractions and neighbor
-	// up/down transitions are also logged as they happen.
-	dumpRoutes := make(chan os.Signal, 1)
-	signal.Notify(dumpRoutes, syscall.SIGUSR1)
-	defer signal.Stop(dumpRoutes)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-dumpRoutes:
-				routes := mesh.Routes.Debug()
-				if len(routes) == 0 {
-					log.Printf("routes: (none installed)")
-					continue
-				}
-				log.Printf("routes:")
-				for _, r := range routes {
-					log.Printf("  %s", r)
-				}
-			}
+	if dials {
+		// The control socket is served once the node may dial, so no verb
+		// reaches the node before then. Reads answer until it closes.
+		if d.control != nil {
+			log.Printf("control socket listening on %s", d.opts.controlPath)
+			serve("control", d.control, func(l net.Listener) error { return control.Serve(l, d.node) })
 		}
-	}()
-
-	bus.Emit("daemon.started", "", slog.String("version", version.String()), slog.String("config", *configPath))
-	if err := node.Run(meshCtx); err != nil && ctx.Err() == nil {
-		log.Printf("client: %v", err)
-		failed.Store(true)
+		// a SIGHUP that came during the start is read here, once the node may dial
+		go read(ctx, signals.reload, func() {
+			if err := d.node.ReloadFrom(d.opts.configPath); err != nil {
+				log.Printf("reload: %v", err)
+			}
+		})
+		// Route installs and retractions and neighbor up and down transitions
+		// are also logged as they happen.
+		go read(ctx, signals.dump, func() {
+			routes := mesh.Routes.Debug()
+			if len(routes) == 0 {
+				log.Printf("routes: (none installed)")
+				return
+			}
+			log.Printf("routes:")
+			for _, r := range routes {
+				log.Printf("  %s", r)
+			}
+		})
+		d.bus.Emit("daemon.started", "", slog.String("version", version.String()), slog.String("config", d.opts.configPath))
+		// Run dials nothing where the stop began since the wait ended
+		d.node.Run(meshCtx)
 	}
 	// Whichever side stopped first, stop the other, then let the reconciler
 	// finish withdrawing before the process exits.
-	stopInOrder(cancel, reconciler.Wait, stopBorder)
+	stopInOrder(cancel, withdrawals.Wait, func() { stopBorder(context.Cause(ctx)) })
 	if failed.Load() {
 		return 1
 	}
 	return 0
 }
 
+// awaitFirstPass reports whether the start goes on to dial. firstPass is nil
+// where the capability asks for no wait, and the pass writes the kill
+// switch's table where it does not fail.
+func awaitFirstPass(ctx context.Context, firstPass <-chan struct{}, wait time.Duration) bool {
+	if firstPass != nil {
+		select {
+		case <-firstPass:
+		case <-ctx.Done():
+		case <-time.After(wait):
+			slog.Warn("kernel's first pass has not ended, so sessions are dialed before the fallback table is written", "waited", wait)
+		}
+	}
+	return ctx.Err() == nil
+}
+
+func read(ctx context.Context, signals <-chan os.Signal, act func()) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signals:
+			act()
+		}
+	}
+}
+
 // stopInOrder ends a daemon whose mesh has stopped: it cancels the reconciler
-// and the translator, waits for both to withdraw, and only then withdraws the
-// antispoof filter, so no route into the tun outlives it
+// and the translator, waits for both to withdraw, and only then stops the
+// antispoof filter, so no route into the tun outlives it. The filter
+// withdraws its table then, and leaves it where the stop is for the mesh's
+// failure.
 func stopInOrder(cancel context.CancelFunc, wait, stopBorder func()) {
 	cancel()
 	wait()
 	stopBorder()
 }
 
-// serveControl binds the socket opts names and answers it for node
-// a nil listener and no error is a node running without a socket, for the reasons runDaemon gives
-func serveControl(opts options, node *client.Client, failed *atomic.Bool) (net.Listener, error) {
-	if opts.controlPath == "" {
+// stopFor ends the run's context for a cause once refuse has set the node
+// refusing up, reload and redial, so none starts as the stop withdraws
+func stopFor(refuse func(), cancel context.CancelCauseFunc) context.CancelCauseFunc {
+	return func(cause error) {
+		refuse()
+		cancel(cause)
+	}
+}
+
+// announceStop has the node refuse up, reload and redial and wait out the
+// one running before daemon.stopping tells the stream, so a caller that reads
+// it meets the refusal. The subscriptions end as the stop starts rather than
+// at exit, so every stream writes its closing line while the process still has
+// seconds to run.
+func announceStop(beginStop func(), bus *events.Bus) {
+	beginStop()
+	bus.Emit("daemon.stopping", "")
+	bus.Close()
+}
+
+// bindControl binds the socket path names, so a path an operator named and
+// this node cannot bind refuses the startup instead of leaving a node nobody
+// has a way to ask anything. The default path is the one case that warns and
+// carries on: it is on without being asked for, so a node whose unit cannot
+// reach /var/run would otherwise stop starting on upgrade over a diagnostic it
+// never requested. --control "" is the opt-out.
+// a nil listener and no error is a node running without a socket
+func bindControl(path string) (net.Listener, error) {
+	if path == "" {
 		return nil, nil
 	}
-	listener, err := control.Listen(opts.controlPath)
+	listener, err := control.Listen(path)
 	switch {
-	case err != nil && opts.controlPath == control.DefaultSocket:
+	case err != nil && path == control.DefaultSocket:
 		slog.Warn("running without a control socket, so the subcommands have nothing to read", "err", err)
 		return nil, nil
 	case err != nil:
 		return nil, err
 	}
-	go func() {
-		log.Printf("control socket listening on %s", opts.controlPath)
-		if err := control.Serve(listener, node); err != nil {
-			log.Printf("control: %v", err)
-			failed.Store(true)
-		}
-	}()
 	return listener, nil
 }
 
 // watchSignals starts the shutdown on the first signal and gives up on the
-// second. Both come off one channel in order, which keeps a signal from
-// reaching nobody. See the registration above.
-func watchSignals(signals <-chan os.Signal, cancel context.CancelFunc, force func()) {
-	<-signals
+// second, until done is closed as the start returns. Both come off one channel
+// in order, which keeps a signal from reaching nobody. See notifySignals.
+func watchSignals(done <-chan struct{}, signals <-chan os.Signal, cancel context.CancelFunc, force func()) {
+	select {
+	case <-signals:
+	case <-done:
+		return
+	}
 	cancel()
-	<-signals
+	select {
+	case <-signals:
+	case <-done:
+		return
+	}
 	log.Print("second signal, exiting without finishing shutdown")
 	force()
 }

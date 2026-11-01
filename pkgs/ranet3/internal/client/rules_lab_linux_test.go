@@ -332,8 +332,8 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("build the reconciler: %v", err)
 	}
-	node.SetKernelStatus(func() control.KernelStatus { return control.KernelStatus{Enabled: true, Where: routes.Where()} })
-	node.SetReconcilerLookups(func() []kernel.Lookup { return routes.Stats().Lookups })
+	node.SetReconciler(Reconciler{Status: func() control.KernelStatus { return control.KernelStatus{Enabled: true, Where: routes.Where()} },
+		Lookups: func() []kernel.Lookup { return routes.Stats().Lookups }})
 	ctx, cancel := context.WithCancel(context.Background())
 	var runs sync.WaitGroup
 	stop := sync.OnceFunc(func() {

@@ -187,9 +187,9 @@ func TestTUNStatusCountsTheReadsThePathAloneTook(t *testing.T) {
 	mesh.SetSteering(steering)
 	c, _ := reloadFixture(t)
 	c.Mesh = mesh
-	c.SetKernelStatus(func() control.KernelStatus {
+	c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
 		return control.KernelStatus{Enabled: true, Table: 200, ExitPath: &control.KernelExitPath{Via: []string{"3fff:b:0:306::3"}, State: "up", Steered: 7, Unrouted: 5}}
-	})
+	}})
 	for _, to := range []netip.Prefix{internet, entry} {
 		conn, err := net.Dial("udp4", netip.AddrPortFrom(to.Addr().Next(), 9).String())
 		if err != nil {

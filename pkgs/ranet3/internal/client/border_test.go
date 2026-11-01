@@ -661,7 +661,6 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		{Family: kernel.FamilyIPv4, Priority: 5190, Action: "nop", Protocol: ownProto},
 		{Family: kernel.FamilyIPv6, Priority: 5410, Action: "lookup", Table: 254, Suppress: kernel.SuppressUpTo(0), Protocol: ownProto},
 	}
-	c.SetReconcilerRules(func() []kernel.DumpedRule { return derived })
 	held := []kernel.DumpedRule{
 		{Family: kernel.FamilyIPv4, Priority: 0, Action: "lookup", Table: 255, Protocol: 2},
 		derived[0], derived[1], derived[2],
@@ -673,12 +672,12 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		{Family: kernel.FamilyIPv6, Priority: 5410, Action: "lookup", Table: 254, Protocol: 4},
 	}
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return held, nil }
-	c.SetReconcilerLookups(func() []kernel.Lookup {
+	c.SetReconciler(Reconciler{Rules: func() []kernel.DumpedRule { return derived }, Lookups: func() []kernel.Lookup {
 		return []kernel.Lookup{
 			{Family: kernel.FamilyIPv4, Prefix: netip.MustParsePrefix("192.0.2.0/24"), Address: netip.MustParseAddr("192.0.2.2"), Answer: "table 51820 dev wg0", Taken: true},
 			{Family: kernel.FamilyIPv6, Address: netip.MustParseAddr("2001:db8:400::7"), Answer: "table main dev eth0"},
 		}
-	})
+	}})
 	info := c.DebugRules()
 	lookups := []control.RuleLookup{
 		{Lookup: "overlay", Family: "ipv4", Prefix: netip.MustParsePrefix("192.0.2.0/24"), Address: netip.MustParseAddr("192.0.2.2"), Answer: "table 51820 dev wg0", Taken: true},

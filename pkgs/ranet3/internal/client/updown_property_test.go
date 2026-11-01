@@ -149,7 +149,7 @@ func (r *upDownRig) start(model upDownModel) {
 	}
 	flag := filepath.Join(r.dir, downFlag)
 	r.reconciler, r.translator = &switchRecord{flag: flag}, &switchRecord{flag: flag}
-	c.SetReconcilerEnable(r.reconciler.set)
+	c.SetReconciler(Reconciler{Enable: r.reconciler.set})
 	c.SetExit(&fakeExit{enable: r.translator.set})
 	r.sessions = holdSessions(c)
 	ctx, cancel := context.WithCancel(context.Background())

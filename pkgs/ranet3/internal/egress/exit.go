@@ -22,6 +22,9 @@ type Exit interface {
 	// backend holds nothing. It is called once, and its error is the
 	// withdrawal's.
 	Run(ctx context.Context) error
+	// Close closes the backend of an exit whose Run was never called and
+	// withdraws nothing, so the tables it holds stay for the next start
+	Close() error
 	// SetEnabled withdraws everything while Run runs, in the order Run's end
 	// takes, and restores it, for a node taken off the mesh and put back. It
 	// returns before the backend has caught up, which Status then reports.

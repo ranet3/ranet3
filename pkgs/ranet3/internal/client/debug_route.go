@@ -290,8 +290,8 @@ func (c *Client) ruleOwners() (uint8, []kernel.DumpedRule) {
 		proto = table.Normalized().Proto
 	}
 	var wanted []kernel.DumpedRule
-	if read := c.reconcilerRules.Load(); read != nil {
-		wanted = (*read)()
+	if read := c.reconcilerNow().Rules; read != nil {
+		wanted = read()
 	}
 	return proto, wanted
 }

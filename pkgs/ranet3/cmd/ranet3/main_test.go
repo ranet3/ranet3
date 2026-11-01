@@ -18,9 +18,13 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/client"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
+
+// stopWithin bounds a wait on a part of the daemon's start or stop, long past one that ends
+const stopWithin = 5 * time.Second
 
 // The first signal starts the shutdown and the second gives up on it. An
 // earlier shape registered the second channel only after the first signal had
@@ -36,7 +40,7 @@ func TestFirstSignalShutsDownAndTheSecondGivesUp(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			forced := make(chan struct{})
-			go watchSignals(signals, cancel, func() { close(forced) })
+			go watchSignals(make(chan struct{}), signals, cancel, func() { close(forced) })
 
 			signals <- os.Interrupt
 			if gap {
@@ -128,6 +132,73 @@ func TestMeshFailureCancelsForItsCause(t *testing.T) {
 	}
 }
 
+// The node refuses up, reload and redial before the run's context ends for the stop, so none starts as the stop withdraws,
+// and the cause reaches the context
+func TestStopRefusesTheVerbsBeforeTheContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	var refused, endedFirst bool
+	stopFor(func() { refused, endedFirst = true, ctx.Err() != nil }, cancel)(kernel.ErrMeshFailed)
+	if !refused || endedFirst {
+		t.Errorf("the node refused the verbs %v, after the run's context ended %v, want before", refused, endedFirst)
+	}
+	if cause := context.Cause(ctx); cause != kernel.ErrMeshFailed {
+		t.Errorf("the stop ended the context for %v, want %v", cause, kernel.ErrMeshFailed)
+	}
+}
+
+// The stop begins on the node, a verb running ended and the rest refused, before daemon.stopping reaches the stream, and the
+// stream ends after it
+func TestStopBeginsBeforeItIsAnnounced(t *testing.T) {
+	bus := events.New()
+	announced := func() int {
+		return len(bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "daemon.stopping" }, 0))
+	}
+	begun := -1
+	announceStop(func() { begun = announced() }, bus)
+	if begun != 0 {
+		t.Errorf("the stop began with daemon.stopping recorded %d times, want none yet", begun)
+	}
+	if got := announced(); got != 1 {
+		t.Errorf("daemon.stopping was recorded %d times, want once", got)
+	}
+}
+
+// The start dials once the first pass it waits for has ended, at once where it waits for none, and never once its stop has
+// begun, whether the stop came during the wait or before it
+func TestFirstPassWaitDialsOnlyWhileTheStartRuns(t *testing.T) {
+	ended := make(chan struct{})
+	close(ended)
+	for name, arm := range map[string]struct {
+		firstPass <-chan struct{}
+		stopped   bool
+		dials     bool
+	}{
+		"the pass ended":                 {ended, false, true},
+		"no pass waited for":             {nil, false, true},
+		"a stop in the wait":             {make(chan struct{}), true, false},
+		"a stop with no pass waited for": {nil, true, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if arm.stopped {
+				cancel()
+			}
+			answered := make(chan bool, 1)
+			go func() { answered <- awaitFirstPass(ctx, arm.firstPass, firstPassWait) }()
+			select {
+			case dials := <-answered:
+				if dials != arm.dials {
+					t.Errorf("the start dials %v, want %v", dials, arm.dials)
+				}
+			case <-time.After(stopWithin):
+				t.Fatal("the wait did not end")
+			}
+		})
+	}
+}
+
 // `ranet3 daemon config.yaml`, one missing dash, otherwise starts against
 // the default path and reports nothing: the node comes up with a
 // configuration nobody asked for. An unreadable --log-level is the same shape.
@@ -204,12 +275,12 @@ func TestServeControlAnswersTheDebugPaths(t *testing.T) {
 	if err := daemon.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	var failed atomic.Bool
-	listener, err := serveControl(parsed, &client.Client{}, &failed)
+	listener, err := bindControl(parsed.controlPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer listener.Close()
+	go control.Serve(listener, &client.Client{})
 	response, err := control.Dial(socket).Raw(t.Context(), http.MethodGet, control.PathDebugRuntime, nil)
 	if err != nil {
 		t.Fatal(err)

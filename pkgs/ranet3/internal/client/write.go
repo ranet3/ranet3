@@ -43,21 +43,6 @@ func startedSubsystems() map[control.Subsystem]bool {
 	return running
 }
 
-// SetReconcilerEnable hands the write path the route reconciler's own stop and
-// start, as SetKernelStatus hands it the reconciler's view of itself and for
-// the same reason: the command builds the reconciler because it owns the
-// kernel, and this owns the mesh. Without it the verb refuses by name, which
-// is the honest answer for a node configuring its routes externally.
-// a node that starts down hands the reconciler its stop here, before its first pass
-func (c *Client) SetReconcilerEnable(set func(bool)) {
-	c.runningMu.Lock()
-	defer c.runningMu.Unlock()
-	c.reconcilerEnable.Store(&set)
-	if c.downSince.Load() != nil {
-		set(false)
-	}
-}
-
 // SetConfigPath records where this node's configuration was read from, so the
 // reload verb re-reads the file SIGHUP re-reads. The daemon sets it. A client a
 // test built by hand has none and reloads through ReloadFrom with its own path.
@@ -134,7 +119,8 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 func (c *Client) subsystemRuns(name control.Subsystem) error {
 	switch name {
 	case control.SubsystemReconciler:
-		if c.reconcilerEnable.Load() == nil {
+		// a node configuring its routes externally refuses the verb by name
+		if c.reconcilerNow().Enable == nil {
 			return errors.New("control: this node reconciles no routes, so there is nothing to stop: it writes no cap.table block and its routes are configured outside it")
 		}
 	case control.SubsystemSteering:
@@ -160,8 +146,8 @@ func (c *Client) subsystemRuns(name control.Subsystem) error {
 func (c *Client) applySubsystem(name control.Subsystem, on bool) {
 	switch name {
 	case control.SubsystemReconciler:
-		if set := c.reconcilerEnable.Load(); set != nil {
-			(*set)(on)
+		if set := c.reconcilerNow().Enable; set != nil {
+			set(on)
 		}
 	case control.SubsystemSteering:
 		c.Mesh.SetSteeringEnabled(on)
@@ -210,6 +196,11 @@ func (c *Client) Redial(ctx context.Context, peer string, all bool) (result cont
 	defer func() { c.noteVerb(ctx, "redial", peer, result, err, slog.Bool("all", all)) }()
 	if all == (peer != "") {
 		return control.Result{}, errors.New("control: redial takes either a peer or every peer, not both and not neither")
+	}
+	c.reloadMu.Lock()
+	defer c.reloadMu.Unlock()
+	if err := c.refuseWhileStopping("redial"); err != nil {
+		return control.Result{}, err
 	}
 	if err := c.refuseWhileDown("redial"); err != nil {
 		return control.Result{}, err

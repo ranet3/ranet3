@@ -222,8 +222,9 @@ type borderBackend interface {
 	// table holds, to those sets gives it, in one transaction that sends the
 	// ranges that differ alone and leaves the chains as they are
 	Fill(was, sets borderSets) error
-	// Withdraw removes the filter's table, and a table already gone is success
-	Withdraw() error
+	// Withdraw removes the filter's table and reports whether it removed one,
+	// a table already gone being success
+	Withdraw() (removed bool, err error)
 	// Changed carries one coalesced wake-up per batch of another writer's
 	// changes to the filter's table
 	Changed() <-chan struct{}
@@ -251,12 +252,16 @@ type BorderFilter struct {
 	// wake carries a SetConfig to the run goroutine
 	wake chan struct{}
 	// finish withdraws the table and closes the backend once, at the end of
-	// Run or of a start that failed
+	// Run or at Close where the first pass made the table
 	finish func() error
 
 	// the rest belong to the run goroutine, and to NewBorderFilter before it
-	// starts. held is nil where no write's sets are known, and last is the
-	// rules of the last pass that read the table back as written.
+	// starts. held is nil where no write's sets are known, last is the rules
+	// of the last pass that read the table back as written, made is whether
+	// the first pass's read found no table, so any table there is this
+	// start's, and found whether that read found one.
+	made      bool
+	found     bool
 	trigger   string
 	ready     bool
 	unready   string
@@ -292,16 +297,32 @@ func NewBorderFilter(cfg *egress.Border, rt egress.BorderRuntime) (*BorderFilter
 }
 
 // startBorderFilter runs the first pass over a backend that is open, and
-// withdraws and closes it when the pass does not leave the table read back
+// closes it as Close does when the pass does not leave the table read back
 func startBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBackend) (*BorderFilter, error) {
 	f := newBorderFilter(cfg, rt, be)
 	if err := f.reconcile(); err != nil {
-		return nil, errors.Join(fmt.Errorf("egress: the antispoof filter could not be installed in %s: %w", f.Where(), err), f.finish())
+		return nil, errors.Join(fmt.Errorf("egress: the antispoof filter could not be installed in %s: %w", f.Where(), err), f.Close())
 	}
 	if !f.ready {
-		return nil, errors.Join(fmt.Errorf("egress: the antispoof filter in %s is not ready, since %s", f.Where(), f.unready), f.finish())
+		return nil, errors.Join(fmt.Errorf("egress: the antispoof filter in %s is not ready, since %s", f.Where(), f.unready), f.Close())
 	}
 	return f, nil
+}
+
+// Close ends a filter whose Run was never called and reports it not ready.
+// Where the first read found no table it withdraws the one the pass made,
+// logging it withdrawn only where one was there to remove, and it leaves any
+// other for the next start: one the first read found, adopted or rewritten,
+// and whatever is there where that read failed, which it names nothing of.
+func (f *BorderFilter) Close() error {
+	if f.made {
+		return f.finish()
+	}
+	f.setReady(false, "the antispoof filter is stopping")
+	if f.found {
+		slog.Info("antispoof filter is leaving the table it found", "where", f.Where())
+	}
+	return f.be.Close()
 }
 
 // newBorderFilter is a filter over a backend that is already open, before its first pass
@@ -310,10 +331,11 @@ func newBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBacke
 	f.config.Store(cfg)
 	f.finish = sync.OnceValue(func() error {
 		f.setReady(false, "the antispoof filter is stopping")
-		err := f.be.Withdraw()
-		if err != nil {
+		removed, err := f.be.Withdraw()
+		switch {
+		case err != nil:
 			err = fmt.Errorf("withdraw %s: %w", f.Where(), err)
-		} else {
+		case removed:
 			slog.Info("antispoof filter withdrawn", "where", f.Where())
 		}
 		return errors.Join(err, f.be.Close())
@@ -483,6 +505,10 @@ func (f *BorderFilter) reconcile() error {
 	}
 	wrote := ""
 	read, err := f.be.Rules(rules, want)
+	if f.trigger == "start" {
+		// a failed read tells nothing of the table, which is then left
+		f.made, f.found = err == nil && !read.held, err == nil && read.held
+	}
 	changed := sets.changed(want)
 	switch {
 	case err != nil:

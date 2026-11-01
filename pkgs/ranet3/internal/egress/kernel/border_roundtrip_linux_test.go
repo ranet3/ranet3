@@ -192,14 +192,14 @@ func TestBorderRoundTrip(t *testing.T) {
 	if inetTables(t, conn) != 0 {
 		t.Error("the inet table outlived the filter")
 	}
-	// a withdrawal of nothing is not an error
+	// a withdrawal of nothing is not an error, and removes nothing
 	again, err := newBorderBackend()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = again.Close() })
-	if err := again.Withdraw(); err != nil {
-		t.Errorf("withdrawing from a host holding no table failed: %v", err)
+	if removed, err := again.Withdraw(); err != nil || removed {
+		t.Errorf("withdrawing from a host holding no table answered %t, %v, want nothing removed", removed, err)
 	}
 }
 
@@ -350,8 +350,12 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	// withdrawn twice beside another writer's inet table, the second finds no
 	// table of this tool's name and deletes nothing
 	for i := range 2 {
-		if err := be.Withdraw(); err != nil {
+		removed, err := be.Withdraw()
+		if err != nil {
 			t.Fatalf("withdrawal %d beside another writer's inet table: %v", i+1, err)
+		}
+		if removed != (i == 0) {
+			t.Errorf("withdrawal %d beside another writer's inet table reported a table removed %t", i+1, removed)
 		}
 	}
 	if listing := run("list", "table", "inet", "other"); !strings.Contains(listing, `iifname "eth0" accept comment "accept via ranet3"`) {

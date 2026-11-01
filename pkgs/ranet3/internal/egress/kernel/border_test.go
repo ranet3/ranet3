@@ -71,7 +71,8 @@ func (f *fakeBorder) readback(rules []BorderRule, sets borderSets) chainReadback
 	for i := range out {
 		out[i].Packets = f.counts[out[i].Spec]
 	}
-	read := chainReadback{rules: out, fault: f.fault}
+	// a table read back with no rule and no fault is one nobody wrote
+	read := chainReadback{rules: out, fault: f.fault, held: len(f.held) != 0 || f.fault != ""}
 	if name := slices.Sorted(maps.Keys(sets.changed(f.sets))); sets != nil && read.fault == "" && len(name) > 0 {
 		read.fault = "its set " + name[0] + " holds other elements"
 	}
@@ -142,16 +143,18 @@ func (f *fakeBorder) Apply(rules []BorderRule, sets borderSets) error {
 	return nil
 }
 
-func (f *fakeBorder) Withdraw() error {
+// Withdraw reports a table removed where a read would find one
+func (f *fakeBorder) Withdraw() (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "withdraw")
 	if f.failWithdraw {
-		return errors.New("no")
+		return false, errors.New("no")
 	}
 	f.withdrawn++
+	removed := len(f.held) != 0 || f.fault != ""
 	f.held = nil
-	return nil
+	return removed, nil
 }
 
 func (f *fakeBorder) Changed() <-chan struct{} { return f.changed }
@@ -748,17 +751,28 @@ func TestBorderNeedsTheDevicesInsideTheMesh(t *testing.T) {
 
 // A node that asked for the filter does not start without it: the first pass
 // runs before NewBorderFilter returns, and a chain that will not install or
-// does not read back as written refuses the start and leaves no table behind
+// does not read back as written refuses the start, which withdraws a table the
+// pass made and leaves any other: one it found, which the log names as left,
+// and whatever is there where the first read failed, which it names nothing of.
+// The log names a table withdrawn only where one went, which a first write
+// that failed on a host with none leaves out.
 func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 	for _, one := range []struct {
-		name string
-		be   *fakeBorder
-		want string
+		name      string
+		be        *fakeBorder
+		want      string
+		withdrawn int
+		named     bool
+		gone      bool
 	}{
-		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains antispoof and mesh_entry: install rules: no"},
-		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chains read back other than they were written"},
+		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains antispoof and mesh_entry: install rules: no", 1, false, false},
+		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chains read back other than they were written", 1, false, true},
+		{"a found table the host will not let be rewritten", &fakeBorder{failApply: true, fault: "its table holds no chain"}, "install rules: no", 0, true, false},
+		{"a table the first read cannot list", &fakeBorder{failRules: true}, "list rules: no", 0, false, false},
 	} {
 		t.Run(one.name, func(t *testing.T) {
+			var lines strings.Builder
+			logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
 			bus := events.New()
 			f, err := startBorderFilter(overlay(t), borderRuntime(bus), one.be)
 			if err == nil || !strings.Contains(err.Error(), one.want) {
@@ -767,8 +781,14 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 			if f != nil {
 				t.Error("a refused start handed back a filter")
 			}
-			if one.be.withdrawn != 1 {
-				t.Errorf("the refused start withdrew %d times, want once", one.be.withdrawn)
+			if one.be.withdrawn != one.withdrawn {
+				t.Errorf("the refused start withdrew %d times, want %d", one.be.withdrawn, one.withdrawn)
+			}
+			if named := strings.Contains(lines.String(), "antispoof filter is leaving the table it found"); named != one.named {
+				t.Errorf("the refused start named a table it found as left %t, want %t:\n%s", named, one.named, lines.String())
+			}
+			if gone := strings.Contains(lines.String(), "antispoof filter withdrawn"); gone != one.gone {
+				t.Errorf("the refused start named a table withdrawn %t, want %t:\n%s", gone, one.gone, lines.String())
 			}
 			if moves := readyMoves(bus); slices.Contains(moves, "true") {
 				t.Errorf("the refused start reported the antispoof filter ready: %q", moves)
@@ -782,6 +802,44 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 	}
 	if got, moves := be.entries(), readyMoves(bus); !slices.Equal(got, []string{"rules", "apply", "rules"}) || !slices.Equal(moves, []string{"true"}) {
 		t.Errorf("the start went %q with readiness moving %q, want a pass that installs and reads back, then ready", got, moves)
+	}
+}
+
+// A filter closed before it ran reports itself not ready, withdraws the table
+// its first pass made, and leaves one the pass found, whether it took that
+// over as it was or rewrote it
+func TestBorderClosedBeforeItRanLeavesOnlyTheTableItFound(t *testing.T) {
+	for _, one := range []struct {
+		name      string
+		found     func(*fakeBorder)
+		withdrawn int
+	}{
+		{"none found", func(*fakeBorder) {}, 1},
+		{"one taken over", func(be *fakeBorder) {
+			if _, err := startBorderFilter(overlay(t), borderRuntime(nil), be); err != nil {
+				t.Fatal(err)
+			}
+		}, 0},
+		{"one rewritten", func(be *fakeBorder) { be.fault = "its table holds no chain" }, 0},
+	} {
+		t.Run(one.name, func(t *testing.T) {
+			be := &fakeBorder{}
+			one.found(be)
+			bus := events.New()
+			f, err := startBorderFilter(overlay(t), borderRuntime(bus), be)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if be.withdrawn != one.withdrawn {
+				t.Errorf("the filter closed before it ran withdrew %d times, want %d", be.withdrawn, one.withdrawn)
+			}
+			if got, want := readyMoves(bus), []string{"true", "false"}; !slices.Equal(got, want) {
+				t.Errorf("the antispoof filter's readiness moved %q, want %q", got, want)
+			}
+		})
 	}
 }
 

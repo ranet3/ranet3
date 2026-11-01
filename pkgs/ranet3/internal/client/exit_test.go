@@ -29,6 +29,8 @@ func (f *fakeExit) Run(ctx context.Context) error {
 	return nil
 }
 
+func (f *fakeExit) Close() error { return nil }
+
 func (f *fakeExit) SetEnabled(on bool) {
 	if f.enable != nil {
 		f.enable(on)

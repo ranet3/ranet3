@@ -82,7 +82,7 @@ func downable(t *testing.T, dir string) (*Client, *switchRecord, *switchRecord) 
 		t.Fatal(err)
 	}
 	reconciler, translator := &switchRecord{flag: flagOf(c)}, &switchRecord{flag: flagOf(c)}
-	c.SetReconcilerEnable(reconciler.set)
+	c.SetReconciler(Reconciler{Enable: reconciler.set})
 	c.SetExit(&fakeExit{enable: translator.set})
 	return c, reconciler, translator
 }
@@ -600,4 +600,110 @@ func TestReloadWhileDownDialsANewPeerOnlyAfterUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, convergeBudget, "a's session with the peer the reload added", func() bool { return held(a, c) != nil })
+}
+
+// queuedWait is how long a test lets a goroutine park on reloadMu, and watches for what must not happen while it holds
+const queuedWait = 200 * time.Millisecond
+
+// stoppingMesh is a node a with its session with b, the file its next reload reads naming c too, and the verbs a stop
+// refuses, each on a
+func stoppingMesh(t *testing.T) (a, b, c *listenNode, verbs map[string]func() error) {
+	a, b, c = &listenNode{name: "a", listen: true}, &listenNode{name: "b", listen: true}, &listenNode{name: "c", listen: true}
+	a.dials = []*listenNode{b}
+	listenMesh(t, a, b, c)
+	if err := a.client.SetStateDir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	runListen(t, a, b, c)
+	waitFor(t, convergeBudget, "a's session with b", func() bool { return held(a, b) != nil })
+	a.dials = append(a.dials, c)
+	writeListenConfig(t, a, true)
+	return a, b, c, map[string]func() error{
+		"up":     func() error { _, err := a.client.Up(context.Background()); return err },
+		"reload": func() error { return a.client.ReloadFrom(a.configPath) },
+		"redial": func() error { _, err := a.client.Redial(context.Background(), "", true); return err },
+	}
+}
+
+// unmoved fails t where a dials c, which a reload would add, or replaced its session with b, which a redial would
+func unmoved(t *testing.T, a, b, c *listenNode, session *ike.Session) {
+	t.Helper()
+	if hasDialer(a.client, pathTo(c)) {
+		t.Error("the stopping node dials the peer the refused reload names")
+	}
+	if now := held(a, b); now != session {
+		t.Error("the stopping node replaced its session, which the refused redial asks for")
+	}
+}
+
+// once the daemon's stop has begun, up, reload and redial each refuse, naming the stop: a node that is up dials no peer the
+// reload names and keeps its session, and a node taken down stays off the mesh
+func TestUpReloadAndRedialRefuseOnceTheStopHasBegun(t *testing.T) {
+	a, b, c, verbs := stoppingMesh(t)
+	session := held(a, b)
+	a.client.BeginStop()
+	for verb, ask := range verbs {
+		if err := ask(); err == nil || !strings.Contains(err.Error(), "is stopping") {
+			t.Errorf("%s once the stop has begun answered %v", verb, err)
+		}
+	}
+	unmoved(t, a, b, c, session)
+	if _, err := a.client.Down(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := verbs["up"](); err == nil || !strings.Contains(err.Error(), "is stopping") {
+		t.Errorf("up on the node taken down once the stop had begun answered %v", err)
+	}
+	if what := offTheMesh(a.client); what != "" {
+		t.Errorf("after up the stopping node runs %s", what)
+	}
+}
+
+// a verb that holds reloadMu as the stop begins ends before BeginStop returns, and each verb queued on the lock is refused
+// once it takes it, whichever of them and BeginStop queued first
+func TestBeginStopWaitsOutTheVerbRunningAndRefusesTheQueued(t *testing.T) {
+	a, b, c, verbs := stoppingMesh(t)
+	session := held(a, b)
+	// the verb running
+	a.client.reloadMu.Lock()
+	answers := make(map[string]chan error, len(verbs))
+	for verb, ask := range verbs {
+		answered := make(chan error, 1)
+		answers[verb] = answered
+		go func() { answered <- ask() }()
+	}
+	time.Sleep(queuedWait)
+	begun := make(chan struct{})
+	go func() {
+		a.client.BeginStop()
+		close(begun)
+	}()
+	select {
+	case <-begun:
+		t.Error("BeginStop returned while a verb held reloadMu")
+	case <-time.After(queuedWait):
+	}
+	a.client.reloadMu.Unlock()
+	select {
+	case <-begun:
+	case <-time.After(convergeBudget):
+		t.Fatal("BeginStop did not return once the verb running had")
+	}
+	for verb, answered := range answers {
+		if err := <-answered; err == nil || !strings.Contains(err.Error(), "is stopping") {
+			t.Errorf("%s queued as the stop began answered %v", verb, err)
+		}
+	}
+	unmoved(t, a, b, c, session)
+}
+
+// a node whose stop began before it ran dials nothing, answers nothing and speaks no Babel
+func TestRunDialsNothingOnceTheStopHasBegun(t *testing.T) {
+	alpha, _ := newLoopbackMesh(t)
+	alpha.client.MarkStopping()
+	run(t, alpha)
+	time.Sleep(queuedWait)
+	if what := offTheMesh(alpha.client); what != "" {
+		t.Errorf("the node whose stop began before it ran runs %s", what)
+	}
 }

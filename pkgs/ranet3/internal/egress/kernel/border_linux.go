@@ -76,6 +76,7 @@ func readBorder(conn *nftables.Conn, rules []BorderRule, sets borderSets) (chain
 		return chainReadback{}, fmt.Errorf("egress: read table inet %s: %w", TableName, err)
 	}
 	out := readback(read, 0)
+	_, out.held = tables[unix.NFPROTO_INET]
 	if rules != nil && out.fault == "" {
 		if out.fault, err = borderRulesFault(rules, read.Rules); err != nil {
 			return chainReadback{}, err
@@ -238,15 +239,16 @@ func fillBatch(was, sets borderSets) ([]nftables.Request, error) {
 
 // Withdraw lists first, since deleting a table that is not there fails the
 // batch
-func (b *borderTable) Withdraw() error {
+func (b *borderTable) Withdraw() (bool, error) {
 	tables, err := nftables.Tables(b.conn, TableName)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if _, held := tables[unix.NFPROTO_INET]; !held {
-		return nil
+		return false, nil
 	}
-	return b.conn.Batch([]nftables.Request{delBorderTable()})
+	err = b.conn.Batch([]nftables.Request{delBorderTable()})
+	return err == nil, err
 }
 
 func delBorderTable() nftables.Request { return nftables.DeleteTable(unix.NFPROTO_INET, TableName) }

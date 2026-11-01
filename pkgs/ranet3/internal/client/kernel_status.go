@@ -4,16 +4,72 @@
 package client
 
 import (
+	"net/netip"
+
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// KernelStatus is the reconciler as the control surface reports it: what it
+// Reconciler is the route reconciler as the node reads and drives it. The
+// command builds the reconciler, since it owns the kernel and this owns the
+// mesh, and hands it over whole through SetReconciler. A field a test leaves
+// nil reads as a node with no reconciler.
+type Reconciler struct {
+	// Status is its own view of its last pass, the status's and the metrics'
+	Status func() control.KernelStatus
+	// Enable stops and starts it, for the write path and for down and up
+	Enable func(bool)
+	// Table hands it a reloaded cap.table with the overlay and the prefixes cap.route announces
+	Table func(kernel.Table, []schema.Prefix, []netip.Prefix) error
+	// Network wakes it for a change of the host's network
+	Network func(kernel.NetworkChange)
+	// Rules reads the rules it derived, for the rules and route views
+	Rules func() []kernel.DumpedRule
+	// Lookups reads the lookups its last pass whose batch answered asked
+	Lookups func() []kernel.Lookup
+	// Resolvers asks systemd-resolved for the DNS servers beyond the switch's LAN, which a status read asks and a metrics scrape and debug rules do not
+	Resolvers func() []kernel.LinkResolver
+}
+
+// ReconcilerOf is routes as the node reads and drives it, every field set
+func ReconcilerOf(routes *kernel.Reconciler) Reconciler {
+	return Reconciler{
+		Status:    func() control.KernelStatus { return kernelStatus(routes) },
+		Enable:    routes.SetEnabled,
+		Table:     routes.SetTable,
+		Network:   routes.NetworkChanged,
+		Rules:     routes.DerivedRules,
+		Lookups:   func() []kernel.Lookup { return routes.Stats().Lookups },
+		Resolvers: routes.FallbackResolvers,
+	}
+}
+
+// SetReconciler hands the node the reconciler the command built, before the
+// socket serves, SIGHUP reloads or Run starts. A node that starts down hands
+// it its stop here, before its first pass.
+func (c *Client) SetReconciler(r Reconciler) {
+	c.runningMu.Lock()
+	defer c.runningMu.Unlock()
+	c.reconciler.Store(&r)
+	if r.Enable != nil && c.downSince.Load() != nil {
+		r.Enable(false)
+	}
+}
+
+// reconcilerNow is the reconciler SetReconciler took, the zero value before it or on a node with no cap.table
+func (c *Client) reconcilerNow() Reconciler {
+	if r := c.reconciler.Load(); r != nil {
+		return *r
+	}
+	return Reconciler{}
+}
+
+// kernelStatus is the reconciler as the control surface reports it: what it
 // was configured to own and what its last pass did. The configuration half
 // comes from the capability the reconciler resolved rather than from the file,
-// so the defaults it filled in are the ones reported. The command hands it to
-// SetKernelStatus, and the root labs hand it the same way.
-func KernelStatus(routes *kernel.Reconciler) control.KernelStatus {
+// so the defaults it filled in are the ones reported.
+func kernelStatus(routes *kernel.Reconciler) control.KernelStatus {
 	table, stats := routes.Table(), routes.Stats()
 	return control.KernelStatus{
 		Enabled:   true,

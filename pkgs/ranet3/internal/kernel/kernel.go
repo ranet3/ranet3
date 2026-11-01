@@ -1146,6 +1146,11 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	return errors.Join(r.withdraw(context.Cause(ctx)), r.plat.Close())
 }
 
+// Close closes the netlink sockets and the monitors of a reconciler whose Run
+// was never called, and withdraws nothing, so the table ranet3_fallback and
+// the routes and rules an earlier instance left stay for the next start
+func (r *Reconciler) Close() error { return r.plat.Close() }
+
 // settle waits out a fixed window, discarding further wake-ups, so a burst of
 // babel changes and the notifications of the reconciler's own writes collapse
 // into one pass.

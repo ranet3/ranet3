@@ -23,6 +23,8 @@ func (e *takenExit) Run(ctx context.Context) error {
 	return nil
 }
 
+func (e *takenExit) Close() error { return nil }
+
 func (e *takenExit) SetEnabled(bool) {}
 
 func (e *takenExit) Egress(frames [][]byte) {

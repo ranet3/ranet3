@@ -118,6 +118,8 @@ func (f *fakeExit) Run(ctx context.Context) error {
 }
 
 // SetEnabled is no part of what a fake stands in for, and no test that builds one calls it
+func (f *fakeExit) Close() error { return nil }
+
 func (f *fakeExit) SetEnabled(bool) {}
 
 func (f *fakeExit) Egress(frames [][]byte) { f.host.Write(frames) }

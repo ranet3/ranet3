@@ -202,11 +202,8 @@ func (lab *pathLab) startRoutes(t *testing.T) {
 		t.Fatalf("build the leaf's reconciler: %v", err)
 	}
 	routes := lab.routes
-	leaf.client.SetKernelStatus(func() control.KernelStatus { return KernelStatus(routes) })
-	leaf.client.SetReconcilerRules(routes.DerivedRules)
-	leaf.client.SetReconcilerLookups(func() []kernel.Lookup { return routes.Stats().Lookups })
-	leaf.client.SetReconcilerTable(routes.SetTable)
-	leaf.client.SetReconcilerNetwork(routes.NetworkChanged)
+	leaf.client.SetReconciler(Reconciler{Status: func() control.KernelStatus { return kernelStatus(routes) }, Rules: routes.DerivedRules,
+		Lookups: func() []kernel.Lookup { return routes.Stats().Lookups }, Table: routes.SetTable, Network: routes.NetworkChanged})
 	ctx, cancel := context.WithCancel(context.Background())
 	var runs sync.WaitGroup
 	lab.stopRoutes = sync.OnceFunc(func() {

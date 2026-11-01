@@ -60,7 +60,7 @@ func writable(t *testing.T) *Client {
 	}
 	c.cfg.Store(&config.Config{Node: identity.MustParse("example/node"), Link: config.Link{Listen: true}})
 	c.storeIndex(trust(t, registry.Registry{}))
-	c.SetReconcilerEnable(func(bool) {})
+	c.SetReconciler(Reconciler{Enable: func(bool) {}})
 	return c
 }
 
@@ -71,7 +71,7 @@ func writable(t *testing.T) *Client {
 func TestSubsystemStopsAndStartsWhatItNames(t *testing.T) {
 	c := writable(t)
 	var reconciler []bool
-	c.SetReconcilerEnable(func(on bool) { reconciler = append(reconciler, on) })
+	c.SetReconciler(Reconciler{Enable: func(on bool) { reconciler = append(reconciler, on) }})
 
 	if _, err := c.SetSubsystem(context.Background(), control.SubsystemSteering, false); err != nil {
 		t.Fatal(err)

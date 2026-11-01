@@ -26,22 +26,6 @@ import (
 //
 // Nothing here writes. The verbs that do are in write.go and updown.go.
 
-// SetKernelStatus hands the control surface the route reconciler's own view of
-// its last pass. The reconciler is built by the command rather than here,
-// because it owns the kernel and this owns the mesh, so the command supplies
-// the reader once it exists. Without it the reconciler reports as off, which
-// is the honest answer for a node configuring its routes externally.
-func (c *Client) SetKernelStatus(read func() control.KernelStatus) {
-	c.kernelStatus.Store(&read)
-}
-
-// SetFallbackResolvers hands the status the reconciler's question to
-// systemd-resolved, which a status read asks and a metrics scrape and debug
-// rules, which show no resolver, do not
-func (c *Client) SetFallbackResolvers(ask func() []kernel.LinkResolver) {
-	c.fallbackResolvers.Store(&ask)
-}
-
 // Forwarding reports whether this host forwards, per family
 // it is exported so the egress capability withholds an advertisement over the answer status and the antispoof warning read
 func Forwarding() (v4, v6 bool) { return forwardingEnabled() }
@@ -182,15 +166,17 @@ func segmentText(table *srv6.LocalTable) []string {
 }
 
 // kernel reports the reconciler, or that there is none. The configured half
-// comes from the command through SetKernelStatus as well, because a config
+// comes from the reconciler SetReconciler took as well, because a config
 // block that failed validation never became a reconciler and reporting its
-// fields would describe a table nobody is writing.
+// fields would describe a table nobody is writing. Without one the reconciler
+// reports as off, which is the honest answer for a node configuring its routes
+// externally.
 func (c *Client) kernel() control.KernelStatus {
-	read := c.kernelStatus.Load()
+	read := c.reconcilerNow().Status
 	if read == nil {
 		return control.KernelStatus{}
 	}
-	status := (*read)()
+	status := read()
 	if status.ExitPath != nil {
 		counts := c.Mesh.PathCounters()
 		status.ExitPath.Steered, status.ExitPath.Unrouted = counts.Steered, counts.Unrouted
@@ -223,12 +209,12 @@ func (c *Client) kernel() control.KernelStatus {
 // systemd-resolved names at this read, where the switch is asked for
 func (c *Client) kernelWithResolvers() control.KernelStatus {
 	status := c.kernel()
-	ask := c.fallbackResolvers.Load()
+	ask := c.reconcilerNow().Resolvers
 	if ask == nil || status.Exit == nil || status.Exit.Fallback == nil {
 		return status
 	}
 	// kernel copied the switch's status, so this writes nothing of the reconciler's
-	for _, resolver := range (*ask)() {
+	for _, resolver := range ask() {
 		status.Exit.Fallback.Resolvers = append(status.Exit.Fallback.Resolvers, control.KernelResolver{Link: resolver.Link, Address: resolver.Address.String()})
 	}
 	return status

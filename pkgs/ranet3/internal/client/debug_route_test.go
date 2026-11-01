@@ -51,7 +51,7 @@ func routeClient(t *testing.T, answer kernel.MatchedRoute, err error, settings m
 	c.Mesh.Name = "ranet0"
 	c.routeGet = func(netip.Addr, netip.Addr, string) (kernel.MatchedRoute, error) { return answer, err }
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return routeDump(), nil }
-	c.SetReconcilerRules(func() []kernel.DumpedRule { return routeDump()[2:4] })
+	c.SetReconciler(Reconciler{Rules: func() []kernel.DumpedRule { return routeDump()[2:4] }})
 	var read []string
 	c.sysctl = func(path string) string {
 		read = append(read, path)
