@@ -48,9 +48,15 @@ func (m *Mesh) ExplainSegment(src, dst netip.Addr) (srv6.Admission, Explanation,
 // a packet to a SID of this node meets ExplainSegment's segment instead, so raw is never the inner packet an End.DT46 grants transit to, and a forward here needs cap.transit
 func (m *Mesh) Explain(raw []byte) Explanation {
 	var e Explanation
+	frame := raw
 	raw, version := packet.Payload(raw)
 	if version == 0 {
-		return e.decided(sessionSite(nil, TraceDrop, transitInvalid))
+		site := sessionSite(nil, TraceDrop, transitInvalid)
+		// as decide answers an IPv6 packet whose Payload Length does not describe its octets
+		if lengthAnswered(frame) {
+			site = sessionSite(nil, TraceAnswer, transitInvalid).answered(answerParameter, TraceNoAnswer)
+		}
+		return e.decided(site)
 	}
 	src, dst := addressesOf(raw, version)
 	if linkScoped(dst) {

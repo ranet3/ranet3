@@ -217,6 +217,12 @@ func (rt *RouteTable) Resolve(src, dst netip.Addr) (*Peer, Verdict, Match) {
 	return entry.peer, RoutePeer, match
 }
 
+// assigned reports whether the entry Resolve matches for a packet from src to dst holds Assigned, which it answers RouteLocal as it does Local
+func (rt *RouteTable) assigned(src, dst netip.Addr) bool {
+	entry, _, ok := rt.table.LookupBits(src, dst)
+	return ok && entry.peer == Assigned
+}
+
 func (rt *RouteTable) Debug() []string {
 	var out []string
 	for route := range rt.table.All() {

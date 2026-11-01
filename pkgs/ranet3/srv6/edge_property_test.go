@@ -16,24 +16,25 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
-// edgeRead are the hop-by-hop, routing and destination options headers the model's walk reads, edgeBound how many of them at most
+// edgeRead are the hop-by-hop, routing, destination options, authentication and fragment headers the model's walk reads, edgeBound how many of them at most
 // and edgeForwarded the routing types RFC 7045 section 2.1 has it forward
 var (
-	edgeRead      = []byte{0, 43, 60}
+	edgeRead      = []byte{0, 43, 60, 51, 44}
 	edgeForwarded = []byte{2, 3, 253, 254}
 )
 
 const edgeBound = 16
 
 // edge is the model's verdict on the walk of a packet entering the mesh, of p.length octets, RFC 8200 section 4
-// the walk reads the edgeRead headers, edgeBound at most, and stops at the first header of any other kind or at what ends the chain
+// the walk reads the edgeRead headers, edgeBound at most, and stops at the first header of any other kind, at a fragment header other than an atomic fragment's whole one
+// or at what ends the chain
 // a header it reads that the packet ends inside is invalid, the one past the bound it would read is invalid, and a routing header of a type outside edgeForwarded is refused
 // on a pass it gives the header the walk stopped at and where that header starts
 func (p laidPacket) edge() (EdgeVerdict, byte, int) {
 	start := ipv6HeaderLen
 	for i, h := range p.headers {
 		switch {
-		case !slices.Contains(edgeRead, h.kind):
+		case !slices.Contains(edgeRead, h.kind), h.kind == 44 && (h.more || p.length < start+h.octets):
 			return EdgePass, h.kind, start
 		case i == edgeBound || p.length < start+h.octets:
 			return EdgeInvalid, h.kind, start
@@ -56,13 +57,13 @@ func checkEdgeLaid(tb testing.TB, p laidPacket) {
 	}
 }
 
-// edgeLasts end a laid packet's chain: a TCP, UDP or ICMPv6 header, no next header, ESP, a later fragment, AH, or an encapsulated IPv4 or IPv6 packet
-var edgeLasts = []byte{6, 17, 58, 59, 50, 44, 51, 4, 41}
+// edgeLasts end a laid packet's chain: a TCP, UDP or ICMPv6 header, no next header, ESP, a later fragment, or an encapsulated IPv4 or IPv6 packet
+var edgeLasts = []byte{6, 17, 58, 59, 50, 44, 4, 41}
 
-// edgeKinds are the headers a laid chain holds, the three the walk reads and the two that stop it, a fragment header at offset 0 and AH
-var edgeKinds = slices.Concat(edgeRead, []byte{44, 51})
+// edgeKinds are the headers a laid chain holds, the five the walk reads, a fragment header with its M flag set among them, and a Mobility header, which stops it
+var edgeKinds = slices.Concat(edgeRead, []byte{135})
 
-// any chain of hop-by-hop, routing and destination options headers, with fragment and authentication headers among them, every routing type and any length
+// any chain of hop-by-hop, routing, destination options, authentication and fragment headers, with a header the walk does not read among them, every routing type and any length
 // cut anywhere or near where a header starts, is walked as the model of RFC 8200 section 4 with RFC 7045 section 2.1's routing types walks it
 // every routing type behind each kind of header, every length of each, every cut through a short chain, and chains of the headers the walk reads from one short of its bound to two past it are tried first, which meets each in every run
 func TestEdgeWalkFollowsTheModelOfTheChain(t *testing.T) {
@@ -107,7 +108,7 @@ func TestEdgeWalkFollowsTheModelOfTheChain(t *testing.T) {
 }
 
 // decapsulable draws a packet an End.DT46 may decapsulate: an encapsulation through any path walked to its last segment, or an IPv4 or IPv6 packet behind the fixed header alone
-// either now and then behind hop-by-hop and destination options headers, and a quarter of the time mangled as the parsers' properties mangle a packet
+// either now and then behind the headers frontHeaders lays, and a quarter of the time mangled as the parsers' properties mangle a packet
 func decapsulable() hegel.Generator[[]byte] {
 	return hegel.Composite(func(tc hegel.TestCase) []byte {
 		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
@@ -133,13 +134,68 @@ func decapsulable() hegel.Generator[[]byte] {
 			copy(raw[24:], addr16(hegel.Draw(tc, usableAddresses())))
 			raw = append(raw, inner...)
 		}
-		for range hegel.Draw(tc, hegel.Integers(0, 2)) {
-			header := []byte{raw[6], 0, 1, 4, 0, 0, 0, 0}
-			raw = slices.Concat(raw[:ipv6HeaderLen], header, raw[ipv6HeaderLen:])
-			raw[6] = hegel.Draw(tc, hegel.SampledFrom([]byte{nextHeaderHopByHop, nextHeaderDestOpts}))
+		return frontHeaders(tc, raw)
+	})
+}
+
+// frontHeaders puts up to 2 extension headers of 8 octets between the fixed header of raw and what follows it
+// a hop-by-hop or destination options header holding a PadN option, an authentication header or an atomic fragment's header, which a SID's walk passes
+// and now and then a later fragment's, which it does not
+func frontHeaders(tc hegel.TestCase, raw []byte) []byte {
+	for range hegel.Draw(tc, hegel.Integers(0, 2)) {
+		kind := hegel.Draw(tc, hegel.SampledFrom([]byte{nextHeaderHopByHop, nextHeaderDestOpts, nextHeaderAuth, nextHeaderFragment}))
+		header := []byte{raw[6], 0, 1, 4, 0, 0, 0, 0}
+		if kind == nextHeaderFragment {
+			header[2], header[3] = 0, 0
+			if hegel.Draw(tc, hegel.WeightedBooleans(1.0/8)) {
+				header[3] = 1
+			}
 		}
-		binary.BigEndian.PutUint16(raw[4:], uint16(len(raw)-ipv6HeaderLen))
-		return raw
+		raw = slices.Concat(raw[:ipv6HeaderLen], header, raw[ipv6HeaderLen:])
+		raw[6] = kind
+	}
+	binary.BigEndian.PutUint16(raw[4:], uint16(len(raw)-ipv6HeaderLen))
+	return raw
+}
+
+// steerable draws a packet an End may act on: an encapsulation through any path of 2 segments or more, walked none or some of the way, behind the headers frontHeaders lays
+// and a quarter of the time mangled as the parsers' properties mangle a packet
+func steerable() hegel.Generator[[]byte] {
+	return hegel.Composite(func(tc hegel.TestCase) []byte {
+		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/4)) {
+			return hegel.Draw(tc, hegel.OneOf(mangledPackets(), lyingLengths(), boundaryFields()))
+		}
+		path := hegel.Draw(tc, usablePaths())
+		if len(path) < 2 {
+			path = append(path, hegel.Draw(tc, usableAddresses()))
+		}
+		raw, err := Encapsulate(hegel.Draw(tc, innerPackets()), hegel.Draw(tc, usableAddresses()), path)
+		if err != nil {
+			tc.Errorf("a packet and a path drawn to be accepted were refused: %v", err)
+		}
+		for range hegel.Draw(tc, hegel.Integers(0, len(path)-2)) {
+			if _, err := End(raw); err != nil {
+				break
+			}
+		}
+		return frontHeaders(tc, raw)
+	})
+}
+
+// every packet End sends on is one the walk refuses, a routing header of type 4 among the headers it reads
+// so a segment list a waypoint of another node would act on never passes the walk unread, RFC 8754 section 5.1 level 1
+func TestEdgeWalkRefusesEveryPacketAWaypointSendsOn(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		raw := slices.Clip(hegel.Draw(ht, steerable()))
+		if len(raw) < ipv6HeaderLen || raw[0]>>4 != 6 {
+			return
+		}
+		if _, err := End(slices.Clone(raw)); err != nil {
+			return
+		}
+		if verdict, next, offset := WalkEdge(raw); verdict == EdgePass {
+			ht.Fatalf("End sends on a packet of %d octets the walk passed at next header %d offset %d", len(raw), next, offset)
+		}
 	})
 }
 

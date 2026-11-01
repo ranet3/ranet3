@@ -29,14 +29,11 @@ func behindRouting(t *testing.T, headers int, kind byte) []byte {
 	return afterRouting(t, nextHeaderDestOpts, append(tail, message(kind))...)
 }
 
-// afterRouting is segmentRouted's packet with what follows its routing header replaced by the headers of tail, the first of which next names
+// afterRouting is segmentRouted's packet with what follows its routing header, right behind the fixed header, replaced by the headers of tail, the first of which next names
 func afterRouting(t *testing.T, next byte, tail ...[]byte) []byte {
 	t.Helper()
 	raw := segmentRouted(t)
-	offset, err := findRouting(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
+	offset := ipv6HeaderLen
 	end := offset + srhFixedLen + extensionUnit*int(raw[offset+1])
 	raw = append(raw[:end:end], slices.Concat(tail...)...)
 	raw[offset] = next
@@ -136,7 +133,7 @@ func TestLargeOffendingPacketIsQuotedUpToTheMinimumMTU(t *testing.T) {
 	sid := addr("3fff:b:0:106::2")
 	offending := append(segmentRouted(t), make([]byte, 2000)...)
 	binary.BigEndian.PutUint16(offending[4:], uint16(len(offending)-ipv6HeaderLen))
-	answer := ParameterProblem(offending, sid, always)
+	answer := ParameterProblem(offending, sid, &Refusal{Code: icmpErroneousHeader, Pointer: ipv6HeaderLen + segmentsLeftInHeader}, always)
 	if answer == nil {
 		t.Fatal("a header this node refused was not answered")
 	}
@@ -157,12 +154,12 @@ func TestLargeOffendingPacketIsQuotedUpToTheMinimumMTU(t *testing.T) {
 // No error this package builds answers one, and none asks the rate limit an
 // answer would draw from.
 //
-// The walk finds an ICMPv6 error or a redirect behind every header it steps
+// The search finds an ICMPv6 error or a redirect behind every header it steps
 // over, and the packets it shows no error in are answered by every error,
 // each asking the rate limit once: an informational message, a later
 // fragment, no next header, ESP or another protocol, a header the packet ends
-// inside the octets the walk reads of, and a chain past the headers the walk
-// reads.
+// inside the octets the search reads of, and a chain past the headers the
+// search steps past.
 func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 	sid := addr("3fff:b:0:106::2")
 	damaged := func(damage func(raw []byte)) []byte {
@@ -191,7 +188,8 @@ func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 		{"an icmp error behind a first fragment", afterRouting(t, nextHeaderFragment, fragment(icmpv6Next, 0), message(anError)), false},
 		{"an icmp error behind an authentication header", afterRouting(t, nextHeaderAuth, authentication(icmpv6Next), message(anError)), false},
 		{"an icmp error behind a first fragment and destination options", afterRouting(t, nextHeaderFragment, fragment(nextHeaderDestOpts, 0), options(icmpv6Next), message(anError)), false},
-		{"an icmp error behind 7 extension headers, the last header the walk reads", behindRouting(t, maxExtensionHeaders-2, anError), false},
+		{"an icmp error behind 7 extension headers", behindRouting(t, maxExtensionHeaders-2, anError), false},
+		{"an icmp error behind 8 extension headers, the most the search steps past", behindRouting(t, maxExtensionHeaders-1, anError), false},
 		{"a redirect", behindRouting(t, 0, icmpRedirect), false},
 		{"a redirect behind destination options", behindRouting(t, 2, icmpRedirect), false},
 		{"an icmpv6 header with no type", behindRouting(t, 0, 128)[:end], false},
@@ -201,7 +199,7 @@ func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 
 		{"an echo request", behindRouting(t, 0, 128), true},
 		{"an echo request behind destination options", behindRouting(t, 1, 128), true},
-		{"an echo request behind 7 extension headers", behindRouting(t, maxExtensionHeaders-2, 128), true},
+		{"an echo request behind 8 extension headers", behindRouting(t, maxExtensionHeaders-1, 128), true},
 		{"an echo request behind hop-by-hop", withHopByHop(behindRouting(t, 0, 128)), true},
 		{"an echo request behind a first fragment", afterRouting(t, nextHeaderFragment, fragment(icmpv6Next, 0), message(128)), true},
 		{"an echo request behind an authentication header", afterRouting(t, nextHeaderAuth, authentication(icmpv6Next), message(128)), true},
@@ -212,7 +210,7 @@ func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 		{"an extension header the packet ends inside the octets the walk reads of", behindRouting(t, 1, anError)[:end+1], true},
 		{"a fragment header the packet ends before the offset of", afterRouting(t, nextHeaderFragment, fragment(icmpv6Next, 0), message(anError))[:end+3], true},
 		{"an extension header behind one running past the end of the packet", runningPast(behindRouting(t, 2, anError)), true},
-		{"an icmp error behind 8 extension headers, past what the walk reads", behindRouting(t, maxExtensionHeaders-1, anError), true},
+		{"an icmp error behind 9 extension headers, past what the search steps past", behindRouting(t, maxExtensionHeaders, anError), true},
 	} {
 		for _, builder := range errorBuilders {
 			asked := 0
@@ -224,10 +222,58 @@ func TestNoErrorAnswersWhatWouldMultiply(t *testing.T) {
 	}
 }
 
-// a segment End refuses for its hop limit gets Time Exceeded behind as many headers in front of its routing header as findRouting walks past
-// the walk then reads its routing header as the last header it reads, and answers what lies past it
-func TestExpiredSegmentIsAnsweredBehindEveryHeaderFindRoutingWalks(t *testing.T) {
-	for front := range maxExtensionHeaders {
+// RFC 4443 section 2.4 (e.1): "An ICMPv6 error message MUST NOT be originated as a result of receiving ... An ICMPv6 error message."
+// End refuses an ICMPv6 error behind 8 extension headers with code 4 at it, which the search of every answer reaches, so it goes unanswered
+// a code 8 refusal lies past that search, so its own steps past as many as 16 extension headers
+// and it is answered where that one ends within them without finding an error or a redirect, at an upper-layer header, at ESP or at a fragment other than the first
+// TCP behind 9 or 16 headers, an echo request or ESP behind 9, and an ICMPv6 error behind a later fragment behind 9, are answered with code 8 at the 9th header
+// and an ICMPv6 error behind 9, or TCP behind 17, goes unanswered
+func TestBoundRefusalIsAnsweredOnlyWhereTheSearchFindsNoError(t *testing.T) {
+	sid, tcp := addr("3fff:b:0:206::1"), make([]byte, 20)
+	behind := func(headers int, last byte, upper []byte) []byte {
+		chain := make([][]byte, headers)
+		for i := range chain {
+			chain[i] = options(nextHeaderDestOpts)
+		}
+		chain[headers-1][0] = last
+		return chained(64, nextHeaderDestOpts, append(chain, upper)...)
+	}
+	ninth := ipv6HeaderLen + extensionUnit*maxExtensionHeaders
+	for _, c := range []struct {
+		name     string
+		raw      []byte
+		want     refusal
+		answered bool
+	}{
+		{"an icmp error behind 8 headers", behind(8, icmpv6Next, message(icmpTimeExceeded)), refusal{icmpUpperLayer, ninth}, false},
+		{"tcp behind 9 headers", behind(9, 6, tcp), refusal{icmpTooManyHeaders, ninth}, true},
+		{"tcp behind 16 headers", behind(16, 6, tcp), refusal{icmpTooManyHeaders, ninth}, true},
+		{"an echo request behind 9 headers", behind(9, icmpv6Next, message(128)), refusal{icmpTooManyHeaders, ninth}, true},
+		{"esp behind 9 headers", behind(9, 50, make([]byte, 16)), refusal{icmpTooManyHeaders, ninth}, true},
+		{"an icmp error behind a later fragment behind 9 headers", behind(9, nextHeaderFragment, slices.Concat(fragment(icmpv6Next, 1), message(icmpTimeExceeded))), refusal{icmpTooManyHeaders, ninth}, true},
+		{"an icmp error behind 9 headers", behind(9, icmpv6Next, message(icmpTimeExceeded)), refusal{icmpTooManyHeaders, ninth}, false},
+		{"tcp behind 17 headers", behind(17, 6, tcp), refusal{icmpTooManyHeaders, ninth}, false},
+	} {
+		_, err := End(bytes.Clone(c.raw))
+		got, ok := errors.AsType[*Refusal](err)
+		if !ok || got.Code != c.want.code || got.Pointer != c.want.pointer {
+			t.Fatalf("%s: End returned %v, want code %d at %d", c.name, err, c.want.code, c.want.pointer)
+		}
+		answer := ParameterProblem(c.raw, sid, got, always)
+		if (answer != nil) != c.answered {
+			t.Errorf("%s: the code %d refusal was answered %t, want %t", c.name, got.Code, answer != nil, c.answered)
+			continue
+		}
+		if answer != nil && (answer[ipv6HeaderLen+1] != c.want.code || binary.BigEndian.Uint32(answer[ipv6HeaderLen+4:]) != uint32(c.want.pointer)) {
+			t.Errorf("%s: the answer carries code %d pointer %d, want %d at %d", c.name, answer[ipv6HeaderLen+1], binary.BigEndian.Uint32(answer[ipv6HeaderLen+4:]), c.want.code, c.want.pointer)
+		}
+	}
+}
+
+// a segment End refuses for its hop limit gets Time Exceeded behind as many headers in front of its routing header as walk steps past
+// the search then steps past its routing header too, or ends there unfinished, and answers what lies past it
+func TestExpiredSegmentIsAnsweredBehindEveryHeaderWalkStepsPast(t *testing.T) {
+	for front := range maxExtensionHeaders + 1 {
 		raw := expiring(t, front)
 		if TimeExceeded(raw, netip.AddrFrom16([16]byte(raw[24:40])), always) == nil {
 			t.Errorf("a segment with %d headers in front of its routing header got no Time Exceeded", front)
@@ -271,10 +317,6 @@ func TestBuildersAskAllowOnlyBeforeAnAnswer(t *testing.T) {
 			}
 		}
 	}
-	asked := false
-	if answer := ParameterProblem(innerV6("payload"), sid, func() bool { asked = true; return true }); answer != nil || asked {
-		t.Errorf("a parameter problem with no routing header to point at was built %t, and allow was asked %t", answer != nil, asked)
-	}
 }
 
 // errorBuilder is one of the errors this package answers with and the type and code it writes
@@ -287,7 +329,9 @@ type errorBuilder struct {
 // errorBuilders are every ICMPv6 error this package builds, packet too big carrying 1280
 var errorBuilders = []errorBuilder{
 	{"time exceeded", 3, 0, TimeExceeded},
-	{"parameter problem", 4, 0, ParameterProblem},
+	{"parameter problem", 4, 0, func(raw []byte, source netip.Addr, allow func() bool) []byte {
+		return ParameterProblem(raw, source, &Refusal{Code: icmpErroneousHeader, Pointer: ipv6HeaderLen + segmentsLeftInHeader}, allow)
+	}},
 	{"packet too big", 2, 0, func(raw []byte, source netip.Addr, allow func() bool) []byte {
 		return PacketTooBig(raw, source, MinimumIPv6MTU, allow)
 	}},

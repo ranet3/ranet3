@@ -97,11 +97,11 @@ func mangledPackets() hegel.Generator[[]byte] {
 		}
 		// Hop-by-hop and destination options headers in front of the
 		// routing header, each pointing on to the next: mostly one or two,
-		// and now and then the most findRouting walks past or one more than
-		// that, with the odd fragment header among them, which ends the walk
-		// wherever it sits. lengths is where each header's length octet
-		// sits, the routing header's first.
-		chain := hegel.OneOf(hegel.Integers(0, 2), hegel.SampledFrom([]int{maxExtensionHeaders - 1, maxExtensionHeaders}))
+		// and now and then the most walk steps past in front of it or one
+		// more than that, with the odd fragment header among them, which ends
+		// the walk wherever it sits. lengths is where each header's length
+		// octet sits, the routing header's first.
+		chain := hegel.OneOf(hegel.Integers(0, 2), hegel.SampledFrom([]int{maxExtensionHeaders, maxExtensionHeaders + 1}))
 		lengths := []int{ipv6HeaderLen + 1}
 		for range hegel.Draw(tc, chain) {
 			kind := hegel.Draw(tc, hegel.SampledFrom([]byte{nextHeaderHopByHop, nextHeaderDestOpts}))
@@ -150,9 +150,8 @@ func mangledPackets() hegel.Generator[[]byte] {
 // claims a length the packet may not hold. The claim is drawn from 0 to 255,
 // and half the time from the four lengths at the end of the packet: the
 // header ending one unit short of it, at or just inside it, and one and two
-// units past it. Those are where findRouting and Parse decide between a
-// header they can read and one they must refuse, and mangledPackets reaches
-// them only now and then. Where there is an extension header, the one in
+// units past it. Those are where walk decides between a header it can read
+// and one it must refuse, and mangledPackets reaches them only now and then. Where there is an extension header, the one in
 // front of the routing header is the one lying in at least half the draws,
 // since only its length carries the walk on to the routing header.
 func lyingLengths() hegel.Generator[[]byte] {
@@ -203,7 +202,7 @@ func lyingLengths() hegel.Generator[[]byte] {
 // segment past what that length holds. Otherwise Segments Left is set to zero
 // and the packet cut where the routing header ends, an exit with nothing after
 // the header to deliver. Segments Left takes two draws in five, since only the
-// second of its two values is one Parse refuses. An encapsulation writes the
+// second of its two values is one End refuses. An encapsulation writes the
 // value on the near side of each edge, so every other shape draws those, and
 // damage drawn anywhere in a header lands on the far ones only by luck.
 func boundaryFields() hegel.Generator[[]byte] {
@@ -235,18 +234,16 @@ func boundaryFields() hegel.Generator[[]byte] {
 	})
 }
 
-// Parse, End and Decap read bytes a peer chose, and a waypoint or an exit runs
-// them on every packet addressed to one of its segments, so no input may make
-// them panic: each answers with an error or with a value inside the packet it
-// was given. A header Parse accepts describes itself, with its segment list,
-// the segment it points at and the length it claims all inside the packet,
-// and the segment list inside that length, since End and Decap index the
-// packet by them and the payload starts where that length ends. The ICMP
+// End and Decap read bytes a peer chose, and a waypoint or an exit runs them
+// on every packet addressed to one of its segments, so no input may make them
+// panic: each answers with an error or with a value inside the packet it was
+// given. An SRH walk finds lies whole inside the packet, since End indexes the
+// packet by its segments and carriedPacket reads past its length. The ICMP
 // answers to a refused packet read the same bytes and are held to the same.
 // Every one of them is handed the packet with no capacity past its length, so
 // reading past its end panics here, where in a dataplane buffer it would read
 // whatever followed the packet.
-func TestParseNeverPanicsOnArbitraryBytes(t *testing.T) {
+func TestEndAndDecapNeverPanicOnArbitraryBytes(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		raw := slices.Clip(hegel.Draw(ht, hegel.OneOf(
 			hegel.Composite(func(tc hegel.TestCase) []byte { return []byte(payloads(tc, 1500)) }),
@@ -255,32 +252,29 @@ func TestParseNeverPanicsOnArbitraryBytes(t *testing.T) {
 			boundaryFields(),
 		)))
 
-		if header, err := Parse(raw); err == nil {
-			end := header.Offset + srhFixedLen + addrLen*len(header.Segments)
-			switch {
-			case len(header.Segments) == 0 || len(header.Segments) > MaxSegments:
-				ht.Fatalf("Parse accepted %d segments", len(header.Segments))
-			case int(header.SegmentsLeft) > len(header.Segments):
-				ht.Fatalf("Parse accepted segments left %d past %d segments", header.SegmentsLeft, len(header.Segments))
-			case header.Offset < ipv6HeaderLen || end > len(raw):
-				ht.Fatalf("Parse placed %d segments at %d in a %d byte packet", len(header.Segments), header.Offset, len(raw))
-			case header.Offset+srhFixedLen+extensionUnit*int(raw[header.Offset+1]) > len(raw):
-				ht.Fatalf("Parse accepted a routing header at %d claiming %d units in a %d byte packet",
-					header.Offset, raw[header.Offset+1], len(raw))
-			case end > header.Offset+srhFixedLen+extensionUnit*int(raw[header.Offset+1]):
-				ht.Fatalf("Parse accepted %d segments in a routing header claiming %d units",
-					len(header.Segments), raw[header.Offset+1])
+		if len(raw) >= ipv6HeaderLen && raw[0]>>4 == 6 {
+			if srh, _, _, err := walk(raw); err == nil && srh != 0 && (srh < ipv6HeaderLen || srh+srhFixedLen+extensionUnit*int(raw[srh+1]) > len(raw)) {
+				ht.Fatalf("walk found an SRH at %d claiming %d units in a %d byte packet", srh, raw[srh+1], len(raw))
 			}
 		}
-		End(slices.Clip(bytes.Clone(raw)))
-		if inner, family, err := Decap(slices.Clip(bytes.Clone(raw))); err == nil {
+		_, endErr := End(slices.Clip(bytes.Clone(raw)))
+		inner, family, decapErr := Decap(slices.Clip(bytes.Clone(raw)))
+		if decapErr == nil {
 			if len(inner) == 0 || family != NextHeaderIPv4 && family != NextHeaderIPv6 {
 				ht.Fatalf("Decap delivered %d bytes of family %d", len(inner), family)
 			}
 		}
 		from := addr("3fff:b:0:106::2")
 		TimeExceeded(raw, from, always)
-		ParameterProblem(raw, from, always)
+		// a refusal points into the packet, or just past it at an upper-layer header the packet ends before
+		for _, err := range []error{endErr, decapErr} {
+			if refusal, ok := errors.AsType[*Refusal](err); ok {
+				if refusal.Pointer < 0 || refusal.Pointer > len(raw) {
+					ht.Fatalf("%v points at %d of a %d byte packet", refusal, refusal.Pointer, len(raw))
+				}
+				ParameterProblem(raw, from, refusal, always)
+			}
+		}
 	})
 }
 
@@ -353,12 +347,12 @@ func (p laidPacket) whole() (raw []byte, starts []int) {
 	return raw, starts
 }
 
-// refused is the model's verdict on a packet of length octets: the walk reads 8 headers past the fixed one at most, so it reaches the item ending the chain only behind 7 extension headers or fewer
+// refused is the model's verdict on a packet of length octets: the search steps past 8 extension headers at most, so it reaches the item ending the chain only behind 8 or fewer
 // it steps over a laid header only when the packet holds the octets saying what follows, the first 2, and the first 4 of a fragment header, whose offset they hold
 // and it refuses only an ICMPv6 message it reaches whose type is an error's, below 128, or a redirect's, 137, or which the packet ends before the type of
 func (p laidPacket) refused() bool {
-	const read = 8
-	if len(p.headers) >= read {
+	const steps = 8
+	if len(p.headers) > steps {
 		return false
 	}
 	start := 40
@@ -411,8 +405,8 @@ func checkLaid(tb testing.TB, p laidPacket) {
 
 // any chain of the headers the walk steps over, in any order and with lengths across their whole range, ending in an ICMPv6 message of any type, a later fragment, no next header, ESP or another protocol
 // and cut anywhere or near where a header starts, gets Time Exceeded and Packet Too Big exactly when the model of its layout finds no ICMPv6 error or redirect, RFC 4443 section 2.4 (e.1) and (e.2)
-// every ICMPv6 type behind each kind of header, every length of each, every cut through each and its ICMPv6 header, and chains of each as long as the walk reads and either side, are tried first, which meets each in every run
-func TestWalkRefusesExactlyWhatTheModelFindsAnError(t *testing.T) {
+// every ICMPv6 type behind each kind of header, every length of each, every cut through each and its ICMPv6 header, and chains of each as long as the search steps past and either side, are tried first, which meets each in every run
+func TestSearchRefusesExactlyWhatTheModelFindsAnError(t *testing.T) {
 	for _, kind := range laidKinds {
 		for icmp := range 256 {
 			checkLaid(t, laidPacket{headers: []laidHeader{laid(kind, 0, 0xff)}, last: 58, icmp: byte(icmp), length: math.MaxInt})
@@ -429,7 +423,7 @@ func TestWalkRefusesExactlyWhatTheModelFindsAnError(t *testing.T) {
 				checkLaid(t, p)
 			}
 		}
-		for count := 6; count <= 9; count++ {
+		for count := 7; count <= 10; count++ {
 			for _, icmp := range []byte{1, 128} {
 				checkLaid(t, laidPacket{headers: slices.Repeat([]laidHeader{laid(kind, 0, 0xff)}, count), last: 58, icmp: icmp, length: math.MaxInt})
 			}
@@ -443,8 +437,8 @@ func TestWalkRefusesExactlyWhatTheModelFindsAnError(t *testing.T) {
 			later:  hegel.Draw(ht, pbt.Spanning[uint16](1, 1<<13-1)),
 			length: math.MaxInt,
 		}
-		// mostly a few headers, and often as many as the walk reads or more
-		for range hegel.Draw(ht, hegel.OneOf(pbt.Spanning(0, 3), hegel.SampledFrom([]int{6, 7, 8, 9}))) {
+		// mostly a few headers, and often as many as the search steps past or more
+		for range hegel.Draw(ht, hegel.OneOf(pbt.Spanning(0, 3), hegel.SampledFrom([]int{7, 8, 9, 10}))) {
 			kind := hegel.Draw(ht, hegel.SampledFrom(laidKinds))
 			p.headers = append(p.headers, laid(kind, hegel.Draw(ht, pbt.Spanning(0, 255)), hegel.Draw(ht, hegel.Integers[byte](0, 255))))
 		}
@@ -457,10 +451,254 @@ func TestWalkRefusesExactlyWhatTheModelFindsAnError(t *testing.T) {
 	})
 }
 
+// chainHeader is one extension header of a packet the SIDs' model lays out, RFC 8200 section 4
+// units is the length octet of a hop-by-hop, destination options, routing or authentication header, routing and left a routing header's type and segments left
+// and offset and more a fragment header's Fragment Offset and M flag
+type chainHeader struct {
+	kind          byte
+	units         int
+	routing, left byte
+	offset        uint16
+	more          bool
+}
+
+// octets is the size of h, 8 octets and 8 more a unit, an authentication header's 8 and 4 more a unit by RFC 4302 section 2.2, and a fragment header's 8, section 4.5
+func (h chainHeader) octets() int {
+	switch h.kind {
+	case 44:
+		return 8
+	case 51:
+		return 4 * (h.units + 2)
+	}
+	return 8 * (h.units + 1)
+}
+
+// chainPacket is a packet the SIDs' model lays out: its extension headers, the protocol ending their chain, and how much of it is kept
+type chainPacket struct {
+	headers []chainHeader
+	last    byte
+	length  int
+}
+
+// the segments an SRH with segments left carries in the model, in wire order
+var chainSegments = []netip.Addr{addr("3fff:b:0:506::1"), addr("3fff:b:0:406::1")}
+
+// bytes lays the packet out to 3fff:b:0:206::1 at hop limit 64, and gives where each header starts and then where the item ending the chain does
+// an SRH with segments left holds the two chainSegments and a Last Entry of 1, and an IPv6 or IPv4 packet ends the chain where last names one
+func (p chainPacket) bytes() (raw []byte, starts []int) {
+	raw = make([]byte, 40)
+	raw[0], raw[7] = 0x60, 64
+	copy(raw[8:], addr16(addr("3fff:a::1")))
+	copy(raw[24:], addr16(addr("3fff:b:0:206::1")))
+	raw[6] = p.last
+	for i, h := range p.headers {
+		if i == 0 {
+			raw[6] = h.kind
+		}
+		header := make([]byte, h.octets())
+		header[0] = p.last
+		if i+1 < len(p.headers) {
+			header[0] = p.headers[i+1].kind
+		}
+		switch h.kind {
+		case 44:
+			binary.BigEndian.PutUint16(header[2:], h.offset<<3)
+			if h.more {
+				header[3] |= 1
+			}
+		case 43:
+			header[1], header[2], header[3] = byte(h.units), h.routing, h.left
+			if h.routing == 4 && h.left != 0 {
+				header[4] = 1
+				copy(header[8:], addr16(chainSegments[0]))
+				copy(header[24:], addr16(chainSegments[1]))
+			}
+		default:
+			header[1] = byte(h.units)
+		}
+		starts = append(starts, len(raw))
+		raw = append(raw, header...)
+	}
+	starts = append(starts, len(raw))
+	switch p.last {
+	case 41:
+		raw = append(raw, innerV6("payload")...)
+	case 4:
+		raw = append(raw, innerV4("payload")...)
+	default:
+		raw = append(raw, 0, 0, 0, 1, 0, 0, 0, 1)
+	}
+	raw = raw[:min(p.length, len(raw))]
+	binary.BigEndian.PutUint16(raw[4:], uint16(len(raw)-40))
+	return raw, starts
+}
+
+// chainVerdict names the end the model has a SID's walk meet: a Parameter Problem of code at pointer, a fragment of a larger packet, an SRH with segments left at srh, or else the upper-layer header next at upper
+type chainVerdict struct {
+	refused    bool
+	code       uint8
+	pointer    int
+	fragment   bool
+	srh, upper int
+	next       byte
+}
+
+// model walks p's headers as RFC 8200 section 4, RFC 8754 section 4.3.1.1 and RFC 8883 section 2.5 have a SID walk them, in the order they come
+// section 4: a node proceeds past a header it processes, and answers code 1 at "the offset of the unrecognized value" for a kind it does not, Mobility, HIP, Shim6, 253 and 254 among them
+// section 4.1: a hop-by-hop options header comes only "immediately after the IPv6 header", and code 1 at the Next Header naming it answers one anywhere else
+// section 4.4 and RFC 8754 section 4.3.1.1: a routing header at segments left 0 is passed, an SRH with segments left is the one acted on, and another type with segments left is code 0 at its Routing Type
+// section 4.5: an atomic fragment's header is passed, and any other fragment waits for reassembly
+// RFC 4443 section 3.4: a header the packet ends inside is code 0, at its length, or at the IPv6 Payload Length where the packet ends before that or the header is a fragment header, which has none
+// RFC 8883 section 2.5: past 8 extension headers, the limit, code 8 at "the first octet of the first extension header that is beyond the limit"
+func (p chainPacket) model(starts []int) chainVerdict {
+	refuse := func(code uint8, pointer int) chainVerdict {
+		return chainVerdict{refused: true, code: code, pointer: pointer}
+	}
+	naming := 6
+	for i, h := range p.headers {
+		start := starts[i]
+		switch {
+		case p.length < start+2:
+			return refuse(0, 4)
+		case p.length < start+h.octets() && h.kind == 44:
+			return refuse(0, 4)
+		case p.length < start+h.octets():
+			return refuse(0, start+1)
+		case h.kind == 0 && i > 0:
+			return refuse(1, naming)
+		case h.kind == 43 && h.left != 0 && h.routing == 4:
+			return chainVerdict{srh: start}
+		case h.kind == 43 && h.left != 0:
+			return refuse(0, start+2)
+		case h.kind == 44 && (h.offset != 0 || h.more):
+			return chainVerdict{fragment: true}
+		case i == 8:
+			return refuse(8, start)
+		}
+		naming = start
+	}
+	switch p.last {
+	case 135, 139, 140, 253, 254:
+		return refuse(1, naming)
+	}
+	return chainVerdict{upper: starts[len(starts)-1], next: p.last}
+}
+
+// chainKinds are the extension headers the model lays out, hop-by-hop, destination options, AH, routing and fragment headers
+var chainKinds = []byte{0, 60, 51, 43, 44}
+
+// checkChain holds End and Decap on p to the model
+// End forwards to the segment an SRH with segments left names and refuses an upper-layer header with code 4 at it, RFC 8986 section 4.1.1 S04
+// and Decap refuses the SRH with code 0 at its Segments Left, delivers an IPv4 or IPv6 packet whole behind the chain, and answers code 4 or code 0 at it otherwise, section 4.8
+func checkChain(tb testing.TB, p chainPacket) {
+	tb.Helper()
+	raw, starts := p.bytes()
+	p.length = len(raw)
+	want := p.model(starts)
+	holds := func(err error, want chainVerdict) bool {
+		if want.fragment {
+			return errors.Is(err, errFragment)
+		}
+		return refusedWith(err, want.code, want.pointer)
+	}
+	endWant, decapWant := want, want
+	switch {
+	case want.refused || want.fragment:
+	case want.srh != 0:
+		decapWant = chainVerdict{refused: true, code: 0, pointer: want.srh + 3}
+	default:
+		endWant = chainVerdict{refused: true, code: 4, pointer: want.upper}
+		decapWant = chainVerdict{}
+		inner := raw[want.upper:]
+		switch {
+		case want.next != 4 && want.next != 41:
+			decapWant = chainVerdict{refused: true, code: 4, pointer: want.upper}
+		case want.next == 4 && (len(inner) < 20 || inner[0]>>4 != 4), want.next == 41 && (len(inner) < 40 || inner[0]>>4 != 6):
+			decapWant = chainVerdict{refused: true, code: 0, pointer: want.upper}
+		}
+	}
+	next, err := End(bytes.Clone(raw))
+	if endWant.srh != 0 {
+		segment := chainSegments[raw[endWant.srh+3]-1]
+		if err != nil || next != segment {
+			tb.Fatalf("End on %+v returned %v, %v, want a forward to %v", p, next, err, segment)
+		}
+	} else if !holds(err, endWant) {
+		tb.Fatalf("End on %+v returned %v, want %+v", p, err, endWant)
+	}
+	inner, _, err := Decap(raw)
+	if decapWant.refused || decapWant.fragment {
+		if !holds(err, decapWant) {
+			tb.Fatalf("Decap on %+v returned %v, want %+v", p, err, decapWant)
+		}
+	} else if err != nil || !bytes.Equal(inner, raw[want.upper:]) {
+		tb.Fatalf("Decap on %+v returned %d octets, %v, want the packet at %d", p, len(inner), err, want.upper)
+	}
+}
+
+// chainHeaders draws an extension header of any of chainKinds: lengths across their range, a routing header of any type and segments left, an SRH with segments left holding two segments, and a fragment at any offset and M, an atomic one half the time
+func chainHeaders() hegel.Generator[chainHeader] {
+	return hegel.Composite(func(tc hegel.TestCase) chainHeader {
+		h := chainHeader{kind: hegel.Draw(tc, hegel.SampledFrom(chainKinds)), units: hegel.Draw(tc, hegel.OneOf(pbt.Spanning(0, 3), pbt.Spanning(0, 255)))}
+		switch h.kind {
+		case 43:
+			h.routing = hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]byte{0, 2, 3, 4, 4, 253}), hegel.Integers[byte](0, 255)))
+			h.left = hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]byte{0, 0, 1}), hegel.Integers[byte](0, 255)))
+			if h.routing == 4 && h.left != 0 {
+				h.units, h.left = 4, 1+h.left%2
+			}
+		case 44:
+			if hegel.Draw(tc, hegel.Booleans()) {
+				h.offset, h.more = hegel.Draw(tc, pbt.Spanning[uint16](0, 1<<13-1)), hegel.Draw(tc, hegel.Booleans())
+			}
+		}
+		return h
+	})
+}
+
+// the walk at End and at Decap meets every chain of hop-by-hop, destination options, AH, routing and fragment headers as the model of RFC 8200 section 4, RFC 8754 section 4.3.1.1 and RFC 8883 section 2.5 has it
+// in any order and with lengths across their range, a hop-by-hop header in any place, routing headers of any type and segments left, fragments at any offset and M
+// ending in an IPv6 or IPv4 packet, another protocol, ESP, an ICMPv6 message or a kind the walk does not process, and cut anywhere or near where a header starts
+// chains of 6 to 9 headers of each kind, about the limit of 8 the walk steps past, ending in each protocol and in an SRH at segments left 0 or 1, are tried first, which meets each in every run
+func TestWalkMeetsEveryChainAsTheModelHasIt(t *testing.T) {
+	lasts := []byte{41, 4, 6, 17, 59, 50, 58, 135, 139, 140, 253, 254}
+	for _, kind := range chainKinds {
+		for count := 6; count <= 9; count++ {
+			chain := slices.Repeat([]chainHeader{{kind: kind}}, count)
+			for _, last := range lasts {
+				checkChain(t, chainPacket{headers: chain, last: last, length: math.MaxInt})
+			}
+			for _, left := range []byte{0, 1} {
+				srh := chainHeader{kind: 43, units: 4, routing: 4, left: left}
+				checkChain(t, chainPacket{headers: append(slices.Clone(chain), srh), last: 41, length: math.MaxInt})
+			}
+		}
+	}
+	pbt.Check(t, func(ht *hegel.T) {
+		p := chainPacket{last: hegel.Draw(ht, hegel.SampledFrom(lasts)), length: math.MaxInt}
+		// mostly a few headers, and often as many as the walk steps past and either side
+		for range hegel.Draw(ht, hegel.OneOf(pbt.Spanning(0, 3), hegel.SampledFrom([]int{6, 7, 8, 9}))) {
+			p.headers = append(p.headers, hegel.Draw(ht, chainHeaders()))
+		}
+		// half the packets are cut anywhere, most of them a few octets past where a header or the item ending the chain starts
+		if hegel.Draw(ht, hegel.Booleans()) {
+			raw, starts := p.bytes()
+			p.length = hegel.Draw(ht, pbt.Spanning(40, len(raw)))
+			if hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
+				p.length = hegel.Draw(ht, hegel.SampledFrom(starts)) + hegel.Draw(ht, pbt.Spanning(0, 4))
+			}
+		}
+		checkChain(ht, p)
+	})
+}
+
 // A packet encapsulated over any path this node accepts reads back as that
-// path: Parse gives the segments in the order the packet visits them, with
-// the first one active and on the outer header, and the inner packet follows
-// the routing header byte for byte. Each waypoint then moves it to the next
+// path: the SRH sits behind the fixed header, where walk finds it with segments
+// left or, for a path of one segment, proceeds past it to the inner packet, its
+// segments read back in the order the packet visits them, with the first one
+// active and on the outer header, and the inner packet follows the routing
+// header byte for byte. Each
+// waypoint then moves it to the next
 // segment, writing that segment into the outer destination, until the exit
 // hands back the inner packet and its family, as the tail of the outer packet
 // rather than a copy of it. The outer header copies the
@@ -471,7 +709,7 @@ func TestWalkRefusesExactlyWhatTheModelFindsAnError(t *testing.T) {
 // A reversal or an offset wrong in any one of these sends traffic through the
 // waypoints in the wrong order, or delivers something other than what was
 // sent.
-func TestEncapsulationParsesBackToItsPath(t *testing.T) {
+func TestEncapsulationReadsBackAsItsPath(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		inner := hegel.Draw(ht, innerPackets())
 		source := hegel.Draw(ht, usableAddresses())
@@ -481,25 +719,33 @@ func TestEncapsulationParsesBackToItsPath(t *testing.T) {
 		if err != nil {
 			ht.Fatalf("Encapsulate refused %d bytes over %v: %v", len(inner), path, err)
 		}
-		header, err := Parse(raw)
-		if err != nil {
-			ht.Fatalf("Parse refused what Encapsulate wrote: %v", err)
+		// a path of one segment is at segments left 0, which walk proceeds past to the inner packet
+		srh, upper, _, err := walk(raw)
+		if err != nil || len(path) > 1 && srh != ipv6HeaderLen || len(path) == 1 && upper != Overhead(1) {
+			ht.Fatalf("walk found the SRH at %d and the upper-layer header at %d, %v, for a path of %d", srh, upper, err, len(path))
 		}
+		// the SRH's segments, in the order the packet visits them, the reverse of the wire's
+		count := int(raw[ipv6HeaderLen+lastEntryInHeader]) + 1
+		read := make([]netip.Addr, 0, count)
+		for i := count - 1; i >= 0; i-- {
+			at := ipv6HeaderLen + srhFixedLen + addrLen*i
+			read = append(read, netip.AddrFrom16([16]byte(raw[at:at+addrLen])))
+		}
+		left := int(raw[ipv6HeaderLen+segmentsLeftInHeader])
 		// an IPv4 packet's ECN field, the low bits of its TOS octet, goes to the low bits of the traffic class, RFC 6040 section 4.1's normal mode
 		family, hops, word := uint8(NextHeaderIPv4), uint8(DefaultHopLimit), []byte{0x60, (inner[1] & 0b11) << 4, 0, 0}
 		if inner[0]>>4 == 6 {
 			family, hops, word = NextHeaderIPv6, inner[7], inner[:4]
 		}
-		switch active, ok := header.Active(); {
-		case !slices.Equal(header.Path(), path):
-			ht.Fatalf("the path read back as %v, want %v", header.Path(), path)
-		case int(header.SegmentsLeft) != len(path)-1:
-			ht.Fatalf("segments left is %d for a path of %d", header.SegmentsLeft, len(path))
-		case !ok || active != path[0]:
-			ht.Fatalf("the active segment is %v, %v, want %v", active, ok, path[0])
-		case header.NextHeader != family || header.Offset != ipv6HeaderLen:
-			ht.Fatalf("the routing header at %d announces %d, want one at %d announcing %d",
-				header.Offset, header.NextHeader, ipv6HeaderLen, family)
+		switch active := ipv6HeaderLen + srhFixedLen + addrLen*left; {
+		case !slices.Equal(read, path):
+			ht.Fatalf("the path read back as %v, want %v", read, path)
+		case left != len(path)-1:
+			ht.Fatalf("segments left is %d for a path of %d", left, len(path))
+		case netip.AddrFrom16([16]byte(raw[active:active+addrLen])) != path[0]:
+			ht.Fatalf("the active segment is %v, want %v", netip.AddrFrom16([16]byte(raw[active:active+addrLen])), path[0])
+		case raw[ipv6HeaderLen] != family || raw[ipv6HeaderLen+routingTypeInHeader] != routingTypeSegment:
+			ht.Fatalf("the routing header of type %d announces %d, want an SRH announcing %d", raw[ipv6HeaderLen+routingTypeInHeader], raw[ipv6HeaderLen], family)
 		case netip.AddrFrom16([16]byte(raw[24:40])) != path[0] || netip.AddrFrom16([16]byte(raw[8:24])) != source:
 			ht.Fatalf("the outer header runs from %v to %v", netip.AddrFrom16([16]byte(raw[8:24])), netip.AddrFrom16([16]byte(raw[24:40])))
 		case int(binary.BigEndian.Uint16(raw[4:])) != len(raw)-ipv6HeaderLen || raw[7] != hops:
@@ -507,7 +753,7 @@ func TestEncapsulationParsesBackToItsPath(t *testing.T) {
 				binary.BigEndian.Uint16(raw[4:]), raw[7], len(raw)-ipv6HeaderLen, hops)
 		case !bytes.Equal(raw[:4], word):
 			ht.Fatalf("the outer header opens with %x, want %x", raw[:4], word)
-		case !bytes.Equal(raw[header.Offset+srhFixedLen+addrLen*len(header.Segments):], inner):
+		case !bytes.Equal(raw[ipv6HeaderLen+srhFixedLen+addrLen*count:], inner):
 			ht.Fatal("the bytes after the routing header are not the inner packet")
 		}
 

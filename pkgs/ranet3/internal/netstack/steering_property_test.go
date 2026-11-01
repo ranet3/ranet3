@@ -73,12 +73,12 @@ func TestSteeringLeavesTheReadAsItWasRead(t *testing.T) {
 				continue
 			}
 			steered++
-			header, err := srv6.Parse(sent)
-			if err != nil {
-				ht.Fatalf("steered packet %d carries no routing header: %v", i, err)
+			path := steeredPath(sent)
+			if path == nil {
+				ht.Fatalf("steered packet %d carries no routing header", i)
 			}
-			if source := netip.AddrFrom16([16]byte(sent[8:24])); source != policy.Source || !slices.Equal(header.Path(), policy.Path) {
-				ht.Fatalf("steered packet %d leaves from %s through %v, want %s through %v", i, source, header.Path(), policy.Source, policy.Path)
+			if source := netip.AddrFrom16([16]byte(sent[8:24])); source != policy.Source || !slices.Equal(path, policy.Path) {
+				ht.Fatalf("steered packet %d leaves from %s through %v, want %s through %v", i, source, path, policy.Source, policy.Path)
 			}
 			if len(sent) != overhead+len(packet) || !bytes.Equal(sent[overhead:], packet) {
 				ht.Fatalf("steered packet %d carries %d bytes behind its %d byte header that are not the %d it was read as", i, len(sent)-overhead, overhead, len(packet))

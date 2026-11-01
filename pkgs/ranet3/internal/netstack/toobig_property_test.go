@@ -109,7 +109,7 @@ func TestPacketsPastTheirSessionAreAnsweredOrCut(t *testing.T) {
 // with packet too big or fragmentation needed carrying the session's MTU less the headers in front of the packet
 // the answer to the segment's own source would reach the node that steered it, which has nothing to tell
 // and the IPv4 one without DF goes on as fragments that each fit the session, each behind those headers
-// those headers take each shape srv6.Parse walks, with hop-by-hop and destination options in front of the routing header and TLVs after its list
+// those headers take each shape End's walk steps past, with hop-by-hop, destination options, an atomic fragment or a routing header at segments left 0 in front of the routing header and TLVs after its list
 // each family, with and without DF and router-ids, one byte either side of the session's MTU, is tried with each shape before anything is drawn
 func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 	check := func(tb testing.TB, family, segments, mtu, excess int, df bool, shape headerShape, held map[int]bool) {
@@ -166,8 +166,8 @@ func TestSegmentsPastTheirNextSessionAreAnsweredOrCut(t *testing.T) {
 		}
 		checkFragments(tb, sent, forwarded[:overhead], inner, mtu)
 	}
-	fronts := [][]byte{nil, {hopByHop}, {destinationOptions}, {hopByHop, destinationOptions}}
-	shapes := []headerShape{{}, {front: fronts[1]}, {front: fronts[2]}, {tlv: 8}, {front: fronts[3], tlv: 16}}
+	fronts := [][]byte{nil, {hopByHop}, {destinationOptions}, {hopByHop, destinationOptions}, {atomicFragment}, {routingAtZero}}
+	shapes := []headerShape{{}, {front: fronts[1]}, {front: fronts[2]}, {tlv: 8}, {front: fronts[3], tlv: 16}, {front: fronts[4]}, {front: fronts[5]}}
 	for _, family := range []int{4, 6} {
 		for _, segments := range []int{1, 3} {
 			for _, shape := range shapes {

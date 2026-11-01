@@ -102,6 +102,14 @@ func withDestinationOptions(raw []byte) []byte {
 	return withHeader(raw, destinationOptions, 1, 4, 0, 0, 0, 0)
 }
 
+// withAuthentication is withHeader with an authentication header of 8 octets, its length octet 0, RFC 4302 section 2.2
+func withAuthentication(raw []byte) []byte { return withHeader(raw, 51, 0, 0, 0, 0, 0, 0) }
+
+// withFragment is withHeader with a fragment header at offset, in 8-octet units, and its M flag 0, so an atomic fragment's at offset 0, RFC 8200 section 4.5
+func withFragment(raw []byte, offset uint16) []byte {
+	return withHeader(raw, 44, byte(offset>>5), byte(offset<<3), 0, 0, 0, 1)
+}
+
 // edgeOtherSID is an End.DT46 SID of another node's, which a learned route carries to the peer, and edgeOwnSID one of this node's
 var edgeOtherSID, edgeOwnSID = segAddr("3fff:7::46"), segAddr("3fff:6::1")
 
@@ -121,7 +129,8 @@ func carriedLeaf(tb testing.TB) (*Mesh, *Peer) {
 // a packet an IPv6 read off the tun carries to another node's End.DT46 SID meets the read's checks with its own source, destination and answer
 // though the read comes from this node's own address, the carried packet is dropped from a forged source, toward a default from a host on its LAN
 // behind a routing header the edge refuses and to this node's own SID, while one from this node's own address passes, in each family it applies to
-// a carried packet behind a destination options header or a type 2 routing header of the read, which the walk passes, meets the same checks
+// a carried packet behind a destination options header, a type 2 routing header, an authentication header or an atomic fragment's header of the read
+// which the walk passes as an End.DT46 does, meets the same checks
 func TestTUNReadCarriedPacketMeetsTheChecksOfTheRead(t *testing.T) {
 	type carriedCase struct {
 		name string
@@ -131,6 +140,7 @@ func TestTUNReadCarriedPacketMeetsTheChecksOfTheRead(t *testing.T) {
 		want  TransitCounters
 	}
 	typeTwo := func(raw []byte) []byte { return withRouting(raw, 2) }
+	atomic := func(raw []byte) []byte { return withFragment(raw, 0) }
 	for _, family := range []int{4, 6} {
 		own, forged := udpPacket(transitOwn[family], transitFar[family], 100, false), udpPacket(transitSender[family], transitFar[family], 100, false)
 		cases := []carriedCase{
@@ -142,6 +152,10 @@ func TestTUNReadCarriedPacketMeetsTheChecksOfTheRead(t *testing.T) {
 			{"from another node's address behind the read's destination options header", withDestinationOptions, forged, TransitCounters{Forged: 1}},
 			{"from this node's own address behind the read's type 2 routing header", typeTwo, own, TransitCounters{}},
 			{"from another node's address behind the read's type 2 routing header", typeTwo, forged, TransitCounters{Forged: 1}},
+			{"from this node's own address behind the read's authentication header", withAuthentication, own, TransitCounters{}},
+			{"from another node's address behind the read's authentication header", withAuthentication, forged, TransitCounters{Forged: 1}},
+			{"from this node's own address behind the read's atomic fragment header", atomic, own, TransitCounters{}},
+			{"from another node's address behind the read's atomic fragment header", atomic, forged, TransitCounters{Forged: 1}},
 		}
 		if family == 6 {
 			cases = append(cases,
@@ -435,6 +449,8 @@ func TestTUNReadAnswersFromTheTableAsItIsAtTheRead(t *testing.T) {
 // a tun read carrying a routing header of a type the mesh's edge refuses is dropped and counted, behind other headers as well
 // one of type 2 passes, and a chain the walk cannot finish is counted invalid
 // the walk comes first, so an SRH from another node's address or to a SID of this node's is counted for its routing header
+// an SRH behind an authentication header or an atomic fragment's header, which a SID's walk passes, is refused the same way
+// and one behind a fragment of a larger packet, which a SID drops, passes unexamined
 func TestTUNReadWithARoutingHeaderIsDropped(t *testing.T) {
 	m, peer := edgeMesh(t)
 	sid := segAddr("3fff:6::1")
@@ -453,11 +469,15 @@ func TestTUNReadWithARoutingHeaderIsDropped(t *testing.T) {
 		cut,
 		withRouting(udpPacket(transitSender[6], transitFar[6], 100, false), 4),
 		withRouting(udpPacket(transitOwn[6], sid, 100, false), 4),
+		withAuthentication(withRouting(plain, 4)),
+		withFragment(withRouting(plain, 4), 0),
+		withFragment(withRouting(plain, 4), 1),
 	)
-	if want := []*Peer{nil, nil, peer, nil, nil, nil}; !slices.Equal(went, want) {
-		t.Errorf("reads with an SRH, a type 0 behind a type 2, a type 2, a chain cut short, an SRH from another node's address and one to this node's SID went to %v, want %v", went, want)
+	if want := []*Peer{nil, nil, peer, nil, nil, nil, nil, nil, peer}; !slices.Equal(went, want) {
+		t.Errorf("reads with an SRH, a type 0 behind a type 2, a type 2, a chain cut short, an SRH from another node's address, one to this node's SID, "+
+			"and an SRH behind an authentication header, an atomic fragment's header and a later fragment's went to %v, want %v", went, want)
 	}
-	if got := m.TransitCounters(); got != (TransitCounters{RoutingHeader: 4, Invalid: 1}) {
+	if got := m.TransitCounters(); got != (TransitCounters{RoutingHeader: 6, Invalid: 1}) {
 		t.Errorf("the read counted %+v", got)
 	}
 }

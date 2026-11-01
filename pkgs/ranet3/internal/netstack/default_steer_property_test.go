@@ -155,9 +155,8 @@ func TestDefaultSteerTakesExactlyWhatTheModelSends(t *testing.T) {
 				if b.peers[i] != waypoint {
 					ht.Fatalf("a packet to %s the model steers went to %v under %v", destination, b.peers[i], m.Routes.Debug())
 				}
-				header, err := srv6.Parse(b.packets[i])
-				if err != nil || netip.AddrFrom16([16]byte(b.packets[i][8:24])) != pathSource || !slices.Equal(header.Path(), pathVia) || !bytes.Equal(b.packets[i][srv6.Overhead(len(pathVia)):], raw) {
-					ht.Fatalf("a packet to %s the model steers left as %x, %v", destination, b.packets[i], err)
+				if netip.AddrFrom16([16]byte(b.packets[i][8:24])) != pathSource || !slices.Equal(steeredPath(b.packets[i]), pathVia) || !bytes.Equal(b.packets[i][srv6.Overhead(len(pathVia)):], raw) {
+					ht.Fatalf("a packet to %s the model steers left as %x", destination, b.packets[i])
 				}
 				continue
 			}

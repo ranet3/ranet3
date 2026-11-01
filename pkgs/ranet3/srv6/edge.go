@@ -15,27 +15,37 @@ const (
 	EdgeInvalid
 )
 
-// WalkEdge walks raw, an IPv6 packet entering the SR domain, past its hop-by-hop, destination options and routing headers, RFC 8200 section 4
-// and refuses a routing header of the deprecated types 0 and 1, of type 4, the SRH, which RFC 8754 section 5.1 drops at the domain's edge
+// WalkEdge walks raw, an IPv6 packet entering the SR domain, past its hop-by-hop, destination options, routing and authentication headers, RFC 8200 section 4
+// and the header of an atomic fragment, so it reads every header a SID of this node's walk proceeds past
+// it refuses a routing header of the deprecated types 0 and 1, of type 4, the SRH, which RFC 8754 section 5.1 drops at the domain's edge
 // or of a type this node does not recognize, which can steer a packet as the SRH does
-// it reports where the walk stopped, the next header there and its offset, a fragment, AH, ESP or any other header passing unexamined as RFC 7045 section 2.1 asks
+// it reports where the walk stopped, the next header there and its offset, any other fragment header, ESP or header of another kind passing unexamined as RFC 7045 section 2.1 asks
 // raw holds at least the fixed header
 func WalkEdge(raw []byte) (verdict EdgeVerdict, next byte, offset int) {
 	next, offset = raw[6], ipv6HeaderLen
-	for read := 0; next == nextHeaderHopByHop || next == nextHeaderDestOpts || next == nextHeaderRouting; read++ {
-		if read == maxEdgeHeaders {
+	for steps := 0; ; steps++ {
+		switch next {
+		case nextHeaderHopByHop, nextHeaderDestOpts, nextHeaderRouting, nextHeaderAuth:
+		case nextHeaderFragment:
+			// a SID walks past no Fragment header but an atomic fragment's whole 8 octets, so the walk leaves any other unexamined
+			if len(raw) < offset+extensionUnit || !atomicFragment(raw, offset) {
+				return EdgePass, next, offset
+			}
+		default:
+			return EdgePass, next, offset
+		}
+		if steps == maxEdgeHeaders {
 			return EdgeInvalid, next, offset
 		}
 		following, end, ok := StepExtension(raw, next, offset)
 		if !ok || end > len(raw) {
 			return EdgeInvalid, next, offset
 		}
-		if next == nextHeaderRouting && !forwardedRouting(raw[offset+2]) {
+		if next == nextHeaderRouting && !forwardedRouting(raw[offset+routingTypeInHeader]) {
 			return EdgeRoutingHeader, next, offset
 		}
 		next, offset = following, end
 	}
-	return EdgePass, next, offset
 }
 
 // forwardedRouting reports a routing type the edge forwards, the standardized and undeprecated ones RFC 7045 section 2.1 names

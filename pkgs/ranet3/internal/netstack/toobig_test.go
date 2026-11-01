@@ -5,6 +5,7 @@ package netstack
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/binary"
 	"fmt"
 	"net/netip"
@@ -312,17 +313,31 @@ const (
 	destinationOptions = 60
 )
 
+// and two a node proceeds past wherever they stand, an atomic fragment, RFC 8200 section 4.5, and a routing header at segments left 0, RFC 8200 section 4.4
+const (
+	atomicFragment = 44
+	routingAtZero  = 43
+)
+
 // size is the bytes the shape puts into a segment
 func (s headerShape) size() int { return 8*len(s.front) + s.tlv }
 
 // around is outer, whose routing header follows its fixed header, with the shape's headers put in and its payload length counting them
-// each header in front is 8 bytes holding one PadN option, RFC 8200 section 4.2, and each TLV is a PadN of 2 bytes, RFC 8754 section 2.1.1.2
+// each header in front is 8 bytes, an options header holding one PadN option, RFC 8200 section 4.2, a fragment header at offset 0 with M clear and a routing header of type 2
+// and each TLV is a PadN of 2 bytes, RFC 8754 section 2.1.1.2
 func (s headerShape) around(outer []byte) []byte {
 	routing := 8 + 8*int(outer[41])
 	var front []byte
 	next := outer[6]
 	for _, kind := range slices.Backward(s.front) {
-		front = append([]byte{next, 0, 1, 4, 0, 0, 0, 0}, front...)
+		header := []byte{next, 0, 1, 4, 0, 0, 0, 0}
+		switch kind {
+		case atomicFragment:
+			header = []byte{next, 0, 0, 0, 0, 0, 0, 7}
+		case routingAtZero:
+			header = []byte{next, 0, 2, 0, 0, 0, 0, 0}
+		}
+		front = append(header, front...)
 		next = kind
 	}
 	out := slices.Concat(outer[:40], front, outer[40:40+routing], bytes.Repeat([]byte{4, 2, 0, 0}, s.tlv/4), outer[40+routing:])
@@ -440,12 +455,107 @@ func TestTooBigAnswerCountsOnlyOnceQueued(t *testing.T) {
 	}
 }
 
-// a segment too large for its next session is answered only about the IP packet its routing header names
-// a whole packet behind a header naming none, a transport, hop-by-hop or the other family is dropped with no answer
-// since nothing says those bytes are a packet with a source to tell
-// and so is a tail that is no whole IP packet behind a header naming either family or hop-by-hop
+// a packet a segment too large for its next session carries, from a host behind an entry of this node's own that counts as no default, is answered into the tun from its destination
+// in either family and whatever router-id the node holds, as the forwarding decision answers that host
+// with packet too big and fragmentation needed past every limit, and the parameter problem for options the cut refuses within the bucket of the packet's source and the node's cap
+// so a burst of one more such segment than a bucket holds, from one host, gets a size answer each, or as many parameter problems as the source's bucket holds, whatever the destination's holds
+// each answer counts among the waypoint's answers, and a size answer among those to packets past their session
+// a host only this node's own default reaches, or one under a hold, gets none, since no session leads back to it either
+func TestSegmentCarryingAPacketOfAHostOfThisNodeIsAnsweredIntoTheTun(t *testing.T) {
+	after := segAddr("3fff:b:0:206::1")
+	packets := map[int][]byte{4: udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, true), 6: udpPacket(tooBigSource[6], tooBigDestination[6], DefaultMTU, false)}
+	// the size answer of each family, packet too big and fragmentation needed
+	sizeKind := map[int]byte{4: 3, 6: 2}
+	everyone := map[int]netip.Prefix{4: segPrefix("0.0.0.0/0"), 6: segPrefix("::/0")}
+	type burst struct {
+		name   string
+		family int
+		inner  []byte
+		// own is the entry of this node's own holding value that the packet's source reaches, its own host route by default
+		own   netip.Prefix
+		value *Peer
+		held  bool
+		// spent is an address whose bucket is spent before the burst
+		spent    netip.Addr
+		kind     byte
+		answers  int
+		withheld uint64
+		tooBig   int
+	}
+	var cases []burst
+	for _, family := range []int{4, 6} {
+		inner, kind := packets[family], sizeKind[family]
+		cases = append(cases,
+			burst{name: fmt.Sprintf("ipv%d", family), family: family, inner: inner, kind: kind, answers: icmpSourceBurst + 1, tooBig: icmpSourceBurst + 1},
+			burst{name: fmt.Sprintf("ipv%d and a router-id of each family", family), family: family, inner: inner, held: true, kind: kind, answers: icmpSourceBurst + 1, tooBig: icmpSourceBurst + 1},
+			burst{name: fmt.Sprintf("ipv%d, only this node's own default reaching the host", family), family: family, inner: inner, own: everyone[family], kind: kind},
+			burst{name: fmt.Sprintf("ipv%d, the host under a hold", family), family: family, inner: inner, value: Unreachable, kind: kind},
+		)
+	}
+	cases = append(cases,
+		burst{name: "ipv4 without DF, its options refused", family: 4, inner: misframed, kind: 12, answers: icmpSourceBurst, withheld: 1},
+		burst{name: "ipv4 without DF, its options refused, the destination's bucket spent", family: 4, inner: misframed, spent: tooBigDestination[4], kind: 12, answers: icmpSourceBurst, withheld: 1},
+		burst{name: "ipv4 without DF, its options refused, the source's bucket spent", family: 4, inner: misframed, spent: tooBigSource[4], kind: 12, withheld: icmpSourceBurst + 1},
+	)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			source, destination := tooBigSource[c.family], tooBigDestination[c.family]
+			session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
+			m, sender := waypointOf(t, after, session)
+			dev := &recordingDevice{writes: make(chan recordedWrite, 2*(icmpSourceBurst+1))}
+			m.setDevice(dev)
+			m.SetAnswerSources(holding(map[int]bool{4: c.held, 6: c.held}))
+			own, value := cmp.Or(c.own, hostPrefix(source)), cmp.Or(c.value, Local)
+			m.Routes.Remove(netip.Prefix{}, hostPrefix(source))
+			m.Routes.Set(netip.Prefix{}, own, value)
+			if c.spent.IsValid() {
+				for range icmpSourceBurst {
+					if !m.takeICMPToken(c.spent) {
+						t.Fatalf("a fresh bucket of %s held fewer than %d answers", c.spent, icmpSourceBurst)
+					}
+				}
+			}
+			burst := make([][]byte, icmpSourceBurst+1)
+			for i := range burst {
+				burst[i] = steeredThrough(t, c.inner, after)
+			}
+			if left, _ := m.applySegments(framed(burst...), DefaultMTU, nil); len(left) != 0 {
+				t.Fatalf("%d segments reached the tun as segments", len(left))
+			}
+			var answers [][]byte
+			for _, write := range tunWrites(dev) {
+				answers = append(answers, write...)
+			}
+			if len(answers) != c.answers {
+				t.Fatalf("%d segments were answered into the tun %d times, want %d", len(burst), len(answers), c.answers)
+			}
+			for i, raw := range answers {
+				if answer := readAnswer(t, raw); answer.from != destination || answer.to != source || answer.kind != c.kind {
+					t.Errorf("answer %d is type %d from %s to %s, want type %d from %s to %s", i, answer.kind, answer.from, answer.to, c.kind, destination, source)
+				}
+			}
+			if back, sent := sender.packets(t), next.packets(t); len(back)+len(sent) != 0 {
+				t.Errorf("%d answers went back through the mesh and %d segments went on, want none", len(back), len(sent))
+			}
+			if bySource, byNode := m.ICMPWithheld(); bySource != c.withheld || byNode != 0 {
+				t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want %d and 0", bySource, byNode, c.withheld)
+			}
+			if counters := m.SegmentCounters(); counters.Answered != uint64(c.answers) {
+				t.Errorf("the waypoint counted %d answers, want the %d it wrote into the tun", counters.Answered, c.answers)
+			}
+			if got := m.TooBigAnswered(); got != uint64(c.tooBig) {
+				t.Errorf("the waypoint counted %d answers to packets past their session, want %d", got, c.tooBig)
+			}
+		})
+	}
+}
+
+// RFC 4443 section 3.2: "A Packet Too Big MUST be sent by a router in response to a packet that it cannot forward because the packet is larger than the MTU of the outgoing link"
+// so a segment too large for its next session whose routing header names no IP packet behind it is answered about itself, to its outer source, with the session's MTU
+// a whole packet behind a header naming none, a transport, hop-by-hop or the other family, since nothing says those bytes are a packet with a source to tell
+// and a tail that is no whole IP packet behind a header naming either family or hop-by-hop
 // shorter than an IPv4 or an IPv6 header, or claiming a length it does not have, where reading it as a packet runs past its end
-func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *testing.T) {
+func TestSegmentPastItsNextSessionNamingNoPacketIsAnsweredAboutItself(t *testing.T) {
 	after := segAddr("3fff:b:0:206::1")
 	// next is the routing header's next header, RFC 8754 section 2, and behind what follows the routing header
 	// a segment steered with a whole packet carries it, and any other is steered with an IPv6 one of which only behind is left
@@ -466,9 +576,11 @@ func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *
 			cases = append(cases, carried{next, tail, false})
 		}
 	}
+	mtu := srv6.MinimumIPv6MTU + srv6.Overhead(2)
 	for _, c := range cases {
-		session, sent := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
+		session, sent := sessionOf(t, mtu)
 		m, sender := waypointOf(t, after, session)
+		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(steeredFrom, 128), sender.sender)
 		var outer []byte
 		if c.whole {
 			outer = steeredThrough(t, c.behind, after)
@@ -481,16 +593,75 @@ func TestSegmentPastItsNextSessionIsAnsweredOnlyAboutThePacketItsHeaderNames(t *
 			copy(outer[len(outer)-len(c.behind):], c.behind)
 		}
 		outer[40] = c.next
+		// the answer quotes the segment as End rewrote it
+		rewritten := bytes.Clone(outer)
+		if _, err := srv6.End(rewritten); err != nil {
+			t.Fatal(err)
+		}
 		// no room past its end, so a read past the tail fails rather than finds spare capacity
 		if left, _ := m.applySegments(framed(outer), DefaultMTU, nil); len(left) != 0 {
 			t.Fatalf("%d segments reached the tun", len(left))
 		}
-		if answers, forwarded := sender.packets(t), sent.packets(t); len(answers) != 0 || len(forwarded) != 0 {
-			t.Errorf("a segment naming %d in front of %d bytes starting %x past its next session was answered %d times and went on as %d packets", c.next, len(c.behind), c.behind[:8], len(answers), len(forwarded))
+		answers, forwarded := sender.packets(t), sent.packets(t)
+		if len(answers) != 1 || len(forwarded) != 0 {
+			t.Fatalf("a segment naming %d in front of %d bytes starting %x past its next session was answered %d times and went on as %d packets, want one answer", c.next, len(c.behind), c.behind[:8], len(answers), len(forwarded))
 		}
-		if counters := m.SegmentCounters(); counters.Dropped != 1 || counters.Answered != 0 {
-			t.Errorf("a segment naming %d in front of %d bytes starting %x counted %+v, want it dropped and nothing answered", c.next, len(c.behind), c.behind[:8], counters)
+		checkICMPv6(t, answers[0], rewritten, thisWaypoint, 2, 0, uint32(mtu))
+		if counters := m.SegmentCounters(); counters.Dropped != 1 || counters.Answered != 1 {
+			t.Errorf("a segment naming %d in front of %d bytes starting %x counted %+v, want it dropped and answered", c.next, len(c.behind), c.behind[:8], counters)
 		}
+	}
+}
+
+// a segment too large for its next session that names no packet, from a source behind an entry of this node's own that counts as no default, is answered about itself into the tun
+// from its destination as End rewrote it, the next segment, whatever router-id the node holds, as the forwarding decision answers a packet of this host
+// a source only this node's own default reaches, or one under a hold, gets none, since no session leads back to it either
+func TestSegmentNamingNoPacketFromAHostOfThisNodeIsAnsweredIntoTheTun(t *testing.T) {
+	after := segAddr("3fff:b:0:206::1")
+	mtu := srv6.MinimumIPv6MTU + srv6.Overhead(2)
+	for _, c := range []struct {
+		name    string
+		own     netip.Prefix
+		value   *Peer
+		held    bool
+		answers int
+	}{
+		{"a source of this node's own", hostPrefix(steeredFrom), Local, false, 1},
+		{"a source of this node's own and an ipv6 router-id", hostPrefix(steeredFrom), Local, true, 1},
+		{"a source only this node's own default reaches", segPrefix("::/0"), Local, false, 0},
+		{"a source under a hold", hostPrefix(steeredFrom), Unreachable, false, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			session, next := sessionOf(t, mtu)
+			m, sender := waypointOf(t, after, session)
+			dev := &recordingDevice{writes: make(chan recordedWrite, 2)}
+			m.setDevice(dev)
+			m.SetAnswerSources(holding(map[int]bool{6: c.held}))
+			m.Routes.Set(netip.Prefix{}, c.own, c.value)
+			outer := steeredThrough(t, udpPacket(tooBigSource[6], tooBigDestination[6], DefaultMTU, false), after)
+			// no next header, RFC 8200 section 4.7, so nothing behind the routing header is a packet with a source to tell
+			outer[40] = 59
+			rewritten := bytes.Clone(outer)
+			if _, err := srv6.End(rewritten); err != nil {
+				t.Fatal(err)
+			}
+			if left, _ := m.applySegments(framed(outer), DefaultMTU, nil); len(left) != 0 {
+				t.Fatalf("%d segments reached the tun as segments", len(left))
+			}
+			answers := slices.Concat(tunWrites(dev)...)
+			if len(answers) != c.answers {
+				t.Fatalf("a segment naming no packet was answered into the tun %d times, want %d", len(answers), c.answers)
+			}
+			for _, answer := range answers {
+				checkICMPv6(t, answer, rewritten, after, 2, 0, uint32(mtu))
+			}
+			if back, sent := sender.packets(t), next.packets(t); len(back)+len(sent) != 0 {
+				t.Errorf("%d answers went back through the mesh and %d segments went on, want none", len(back), len(sent))
+			}
+			if counters, tooBig := m.SegmentCounters(), m.TooBigAnswered(); counters.Answered != uint64(c.answers) || tooBig != uint64(c.answers) {
+				t.Errorf("the waypoint counted %d answers and %d to packets past their session, want the %d it wrote into the tun", counters.Answered, tooBig, c.answers)
+			}
+		})
 	}
 }
 

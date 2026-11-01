@@ -45,19 +45,17 @@
 // pair from it. Its scalars come from
 // [ranet3.com/pkgs/ranet3/schema].
 //
-// [Parse] reads a routing header on its own, and [TimeExceeded] and
-// [ParameterProblem] build the ICMPv6 errors RFC 8986's pseudocode answers a
-// refused packet with, which is how a waypoint stays visible to traceroute.
-// Whether such an answer is sent, and how often, stays with the caller.
+// [TimeExceeded] and [ParameterProblem] build the ICMPv6 errors RFC 8986's
+// pseudocode answers a refused packet with, which is how a waypoint stays
+// visible to traceroute.
+// [ParameterProblem] takes its code and pointer from the [Refusal] an
+// [End] or a [Decap] returns. Whether such an answer is sent, and how often,
+// stays with the caller.
 //
 // # What it does not read
 //
-// A routing header is found behind hop-by-hop and destination options headers
-// in any order, and behind no other kind, so one behind an authentication
-// header is not found, where ipv6_find_hdr walks past an authentication header
-// to it. Neither kind's options are read. A packet whose routing header lies
-// behind a fragment header is refused rather than reassembled, and so is one
-// with more extension headers ahead of it than this package walks.
+// [End] and [Decap] read no option of a hop-by-hop or destination options
+// header. A fragment of a larger packet is dropped rather than reassembled.
 //
 // [RFC 8754]: https://www.rfc-editor.org/rfc/rfc8754
 // [RFC 8986]: https://www.rfc-editor.org/rfc/rfc8986
@@ -84,20 +82,38 @@ const (
 	// Next Header values, from the IANA protocol registry. Routing is the
 	// SRH's own, and the two below it announce an encapsulated inner packet.
 	nextHeaderRouting = 43
-	// The kinds findRouting passes on its way to a routing header, which
-	// RFC 8200 section 4.1's order puts ahead of it, and the fragment header,
-	// which it refuses rather than walks.
+	// The kinds RFC 8200 section 4.1's order puts ahead of a routing header,
+	// and the fragment header, whose packet walk proceeds past only as an
+	// atomic fragment.
 	nextHeaderHopByHop = 0
 	nextHeaderDestOpts = 60
 	nextHeaderFragment = 44
 	extensionUnit      = 8
-	// maxExtensionHeaders bounds the headers findRouting and carriesUnanswerable read of one packet, so a sender sets no cost per packet past it
+	// maxExtensionHeaders bounds the extension headers walk and carriesUnanswerable step past in one packet, so a sender sets no cost per packet past it
 	maxExtensionHeaders = 8
-	// maxEdgeHeaders bounds the hop-by-hop, destination options and routing headers WalkEdge reads of a packet entering the mesh, four times the most RFC 8200 section 4.1 has one packet carry, a hop-by-hop, two destination options and a routing header
+	// maxEdgeHeaders bounds the extension headers WalkEdge steps past in a packet entering the mesh, and the error search of a packet walk refuses past maxExtensionHeaders
+	// it is at least maxExtensionHeaders, so the edge steps past every header a SID's walk does
 	maxEdgeHeaders = 16
 	// nextHeaderAuth is the authentication header of RFC 4302, which may sit
 	// between the routing header and the upper-layer header.
 	nextHeaderAuth = 51
+	// The extension headers of the IANA registry RFC 8200 section 4 points to
+	// that walk does not process: Mobility, HIP, Shim6, and the two of RFC 3692
+	// for experiments. ESP is not among them: End and End.DT46 do not process
+	// it either, and walk returns it as the upper-layer header.
+	nextHeaderMobility = 135
+	nextHeaderHIP      = 139
+	nextHeaderShim6    = 140
+	nextHeaderTesting1 = 253
+	nextHeaderTesting2 = 254
+	// The fields a refusal points at: the IPv6 header's Payload Length and Next
+	// Header, RFC 8200 section 3, and a routing header's Routing Type, Segments
+	// Left and Last Entry, RFC 8754 section 2.
+	payloadLengthInIPv6  = 4
+	nextHeaderInIPv6     = 6
+	routingTypeInHeader  = 2
+	segmentsLeftInHeader = 3
+	lastEntryInHeader    = 4
 	// NextHeaderIPv4 and NextHeaderIPv6 name what H.Encaps put inside, which
 	// an End.DT46 has to read to know which stack to deliver to.
 	NextHeaderIPv4 = 4
@@ -125,66 +141,30 @@ var (
 	// ErrNotSegmentRouted is returned for a packet with no SRH, which is the
 	// ordinary case on a mesh where most traffic is not steered.
 	ErrNotSegmentRouted = errors.New("srv6: packet carries no segment routing header")
-	// ErrExhausted is an End reached with no segment left to move to. RFC 8986
-	// section 4.1 S03 hands the packet to whatever the next header names, but this
-	// drops it, as linux does by passing IP6_FH_F_SKIP_RH and then finding no
-	// header left to act on, because a waypoint SID is not an address this
-	// node terminates traffic on.
-	ErrExhausted = errors.New("srv6: End reached the last segment and there is nowhere to forward to")
-	// ErrHopLimit and ErrHeaderInvalid name the two refusals RFC 8986 section
-	// 4.1 answers with an ICMP message rather than with silence, S06 and S10.
-	// A caller that can reach the sender tells them apart with errors.Is and
-	// builds the answer with TimeExceeded or ParameterProblem.
-	ErrHopLimit      = errors.New("srv6: the hop limit reached zero at this waypoint")
-	ErrHeaderInvalid = errors.New("srv6: the routing header does not describe itself")
+	// ErrHopLimit is the refusal RFC 8986 section 4.1 S06 answers with a Time
+	// Exceeded, which TimeExceeded builds.
+	ErrHopLimit = errors.New("srv6: the hop limit reached zero at this waypoint")
+	// errFragment is a fragment of a larger packet, which RFC 8200 section 4.5
+	// leaves to reassembly at the destination, and a SID drops. The header of
+	// an atomic fragment is one walk proceeds past.
+	errFragment = errors.New("srv6: a fragment of a larger packet, which this node does not reassemble")
 )
 
-// Header is one segment routing header as this package reads and writes it.
-//
-// Segments are held in wire order, which is the reverse of the path: the first
-// segment a packet visits is the last element. That is the order RFC 8754
-// section 2 defines and the order the kernel and every other implementation
-// puts on the wire, so keeping it here means a decode and an encode are
-// inverses rather than two places that each flip it.
-type Header struct {
-	// SegmentsLeft indexes Segments for the destination the packet is
-	// currently heading to, so Segments[SegmentsLeft] and the outer
-	// destination address agree while the packet is in flight. A reduced
-	// header of RFC 8754 section 4.1.1 leaves the segment it is heading to
-	// out of the list, since the destination already carries it, and there
-	// SegmentsLeft is len(Segments).
-	SegmentsLeft uint8
-	Segments     []netip.Addr
-	Flags        uint8
-	Tag          uint16
-	// NextHeader names whatever follows the SRH, which for an encapsulated
-	// packet is NextHeaderIPv4 or NextHeaderIPv6.
-	NextHeader uint8
-	// Offset is where the routing header starts, which is not always straight
-	// after the fixed header: hop-by-hop and destination options headers may
-	// come ahead of it, as RFC 8200 section 4.1's order puts them.
-	Offset int
+// Refusal is a header field that keeps a packet from being processed, which
+// RFC 4443 section 3.4 answers with a Parameter Problem of Code pointing at
+// the octet Pointer of the packet.
+type Refusal struct {
+	Code    uint8
+	Pointer int
+	what    string
 }
 
-// Path is the segment list in the order a packet visits it, which is how an
-// operator writes one and the reverse of how it goes on the wire. A reduced
-// header carries every segment but the first, so its path starts one hop in.
-func (h Header) Path() []netip.Addr {
-	path := make([]netip.Addr, 0, len(h.Segments))
-	for _, segment := range slices.Backward(h.Segments) {
-		path = append(path, segment)
-	}
-	return path
+func (r *Refusal) Error() string {
+	return fmt.Sprintf("srv6: %s, parameter problem code %d at octet %d", r.what, r.Code, r.Pointer)
 }
 
-// Active is the segment this packet is on its way to, which is also the outer
-// destination address of a well-formed packet in flight. A reduced header does
-// not carry it, so this reports false and the caller reads the destination.
-func (h Header) Active() (netip.Addr, bool) {
-	if int(h.SegmentsLeft) >= len(h.Segments) {
-		return netip.Addr{}, false
-	}
-	return h.Segments[h.SegmentsLeft], true
+func refuse(code uint8, pointer int, what string) *Refusal {
+	return &Refusal{Code: code, Pointer: pointer, what: what}
 }
 
 // Encapsulate is H.Encaps, RFC 8986 section 5.1: it puts inner inside a new
@@ -306,7 +286,7 @@ func writeOuter(out, inner []byte, innerNext uint8, source netip.Addr, path []ne
 	out[7] = hopLimit
 	copy(out[8:], addr16(source))
 	// The outer destination is the first segment of the path, which the wire's
-	// list holds last, as Segments[SegmentsLeft].
+	// list holds last, at the index Segments Left names.
 	copy(out[24:], addr16(path[0]))
 
 	srh := out[ipv6HeaderLen:]
@@ -330,105 +310,129 @@ func writeOuter(out, inner []byte, innerNext uint8, source netip.Addr, path []ne
 // so a segment list that loops dies at the same count anything else does.
 const DefaultHopLimit = 64
 
-// Parse reads the routing header of an IPv6 packet, and reports
-// ErrNotSegmentRouted for one that has none, which is most of them.
+// segmentsLeft is the Segments Left of the SRH at srh, whose Hdr Ext Len lies
+// within raw, once it is checked as RFC 8754 section 4.3.1.1 checks it with
+// segments left: Last Entry within Hdr Ext Len and Segments Left at most Last
+// Entry+1, either refused with code 0 at Segments Left. A list past the cap of
+// MaxSegments is a header past this node's processing limit, refused with
+// RFC 8883 section 2.3's code 6 at the header's first octet.
 //
-// Everything it accepts is something this node is willing to act on. A routing
-// type it does not implement, a length that disagrees with the segment count,
-// and a Segments Left past the end of the list are each refused by name rather
-// than clamped: a packet whose header does not describe itself is one this
-// node cannot know the intent of, and guessing at it is how a forwarding loop
-// starts.
-func Parse(raw []byte) (Header, error) {
-	if len(raw) < ipv6HeaderLen {
-		return Header{}, ErrNotSegmentRouted
-	}
-	if raw[0]>>4 != 6 {
-		return Header{}, ErrNotSegmentRouted
-	}
-	offset, err := findRouting(raw)
-	if err != nil {
-		return Header{}, err
-	}
-	srh := raw[offset:]
-	if len(srh) < srhFixedLen {
-		return Header{}, errors.New("srv6: the routing header is shorter than its fixed part")
-	}
-	if srh[2] != routingTypeSegment {
-		return Header{}, ErrNotSegmentRouted
-	}
-	// Hdr Ext Len is in 8-octet units after the first eight, so the header is
-	// 8*(1+len) bytes.
-	extLen := int(srh[1])
-	total := srhFixedLen + 8*extLen
-	if len(srh) < total {
-		return Header{}, fmt.Errorf("srv6: the routing header claims %d bytes and %d are present", total, len(srh))
-	}
-	// Last Entry gives the segment count, and RFC 8754 section 2.1 puts any
-	// TLVs after the list: they are present exactly when Hdr Ext Len is
-	// greater than (Last Entry+1)*2, and the same section requires a type this
-	// node does not recognize to be ignored rather than refused. So the
-	// segments have to fit and everything past them is somebody else's.
-	count := int(srh[4]) + 1
+// Last Entry gives the segment count, and RFC 8754 section 2.1 puts any TLVs
+// after the list: they are present exactly when Hdr Ext Len is greater than
+// (Last Entry+1)*2, and the same section requires a type this node does not
+// recognize to be ignored rather than refused. So the segments have to fit
+// and everything past them is somebody else's. RFC 8754 section 4.1.1 lets a
+// source leave out the segment the destination address already carries, so a
+// Segments Left of Last Entry+1 is a reduced header rather than an error.
+func segmentsLeft(raw []byte, srh int) (uint8, error) {
+	left, count, extLen := raw[srh+segmentsLeftInHeader], int(raw[srh+lastEntryInHeader])+1, int(raw[srh+1])
 	if 2*count > extLen {
-		return Header{}, fmt.Errorf("%w: last entry %d needs %d bytes of segments and the header carries %d", ErrHeaderInvalid, srh[4], addrLen*count, 8*extLen)
+		return 0, refuse(icmpErroneousHeader, srh+segmentsLeftInHeader, "a routing header's last entry needs more segments than its length holds")
+	}
+	if int(left) > count {
+		return 0, refuse(icmpErroneousHeader, srh+segmentsLeftInHeader, "a routing header's segments left is past its last entry")
 	}
 	if count > MaxSegments {
-		return Header{}, fmt.Errorf("srv6: %d segments is more than the %d this node will act on", count, MaxSegments)
+		return 0, refuse(icmpHeaderTooBig, srh, "a routing header holds more segments than this node acts on")
 	}
-	header := Header{
-		NextHeader:   srh[0],
-		SegmentsLeft: srh[3],
-		Flags:        srh[5],
-		Tag:          binary.BigEndian.Uint16(srh[6:]),
-		Offset:       offset,
-	}
-	header.Segments = make([]netip.Addr, 0, count)
-	for i := range count {
-		var segment [16]byte
-		copy(segment[:], srh[srhFixedLen+addrLen*i:])
-		header.Segments = append(header.Segments, netip.AddrFrom16(segment))
-	}
-	// RFC 8986 section 4.1 S09 makes only a Segments Left past Last Entry+1 an
-	// error, because RFC 8754 section 4.1.1 lets a source leave out the
-	// segment the destination address already carries. That reduced header is
-	// what a kernel writes for `encap.red`, so refusing it black-holes a path
-	// rather than rejecting a malformed packet.
-	if int(header.SegmentsLeft) > count {
-		return Header{}, fmt.Errorf("%w: segments left %d is past the last entry %d", ErrHeaderInvalid, header.SegmentsLeft, count-1)
-	}
-	return header, nil
+	return left, nil
 }
 
-// findRouting walks the extension header chain to the routing header. It
-// passes hop-by-hop and destination options headers, the kinds RFC 8200
-// section 4.1's order puts ahead of it, in any order, and no other kind, so a
-// routing header behind an authentication header, say, is not found.
+// walk reads the extension headers of raw, an IPv6 packet of at least its
+// fixed header, to the first one a SID acts on: an SRH with segments left at
+// srh, or the upper-layer header next at upper where srh is 0. It proceeds
+// past the headers RFC 8200 section 4 has a node proceed past, and refuses
+// any other with the Parameter Problem RFC 8200, RFC 4443 section 3.4 and RFC
+// 8883 give it, a fragment of a larger packet being errFragment. A Fragment
+// header the packet ends inside is refused at the IPv6 Payload Length, since
+// the header has no length field of its own.
 //
-// A fragment is refused rather than walked past, because a segment list spread
-// across fragments needs reassembly this package does not do. The number of
-// headers walked is bounded here rather than by the packet, so a peer cannot
-// choose how much of this node's time one packet costs. The routing header is
-// the last of the maxExtensionHeaders headers it reads, as the upper-layer
-// header is in carriesUnanswerable.
-func findRouting(raw []byte) (int, error) {
-	next, offset := raw[6], ipv6HeaderLen
-	for range maxExtensionHeaders {
+// It steps past at most maxExtensionHeaders headers, so a sender sets no cost
+// per packet past them. One more it would step past is refused with RFC 8883
+// section 2.5's code 8 at its first octet, and any other header in that place
+// is met as in the places before it.
+func walk(raw []byte) (srh, upper int, next byte, err error) {
+	next, offset, field := raw[6], ipv6HeaderLen, nextHeaderInIPv6
+	for steps := 0; ; steps++ {
+		step, following, end := stepHeader(raw, next, offset)
+		switch step {
+		case stepUpper:
+			switch next {
+			case nextHeaderMobility, nextHeaderHIP, nextHeaderShim6, nextHeaderTesting1, nextHeaderTesting2:
+				return 0, 0, 0, refuse(icmpUnrecognizedNext, field, "an extension header of a kind this node does not process")
+			}
+			return 0, offset, next, nil
+		case stepShort:
+			return 0, 0, 0, refuse(icmpErroneousHeader, payloadLengthInIPv6, "the packet ends inside an extension header's length")
+		case stepLong:
+			if next == nextHeaderFragment {
+				return 0, 0, 0, refuse(icmpErroneousHeader, payloadLengthInIPv6, "the packet ends inside a fragment header")
+			}
+			return 0, 0, 0, refuse(icmpErroneousHeader, offset+1, "an extension header runs past the packet's end")
+		case stepFragment:
+			return 0, 0, 0, errFragment
+		}
 		switch next {
+		case nextHeaderHopByHop:
+			if offset != ipv6HeaderLen {
+				return 0, 0, 0, refuse(icmpUnrecognizedNext, field, "a hop-by-hop options header past the first place")
+			}
 		case nextHeaderRouting:
-			return offset, nil
-		case nextHeaderHopByHop, nextHeaderDestOpts:
-		case nextHeaderFragment:
-			return 0, fmt.Errorf("%w: a fragment carries no segment list this node can act on", ErrHeaderInvalid)
-		default:
-			return 0, ErrNotSegmentRouted
+			if raw[offset+segmentsLeftInHeader] != 0 {
+				if raw[offset+routingTypeInHeader] == routingTypeSegment {
+					return offset, 0, 0, nil
+				}
+				return 0, 0, 0, refuse(icmpErroneousHeader, offset+routingTypeInHeader, "a routing header of a type this node does not process with segments left")
+			}
 		}
-		var ok bool
-		if next, offset, ok = StepExtension(raw, next, offset); !ok || offset > len(raw) {
-			return 0, ErrNotSegmentRouted
+		if steps == maxExtensionHeaders {
+			return 0, 0, 0, refuse(icmpTooManyHeaders, offset, "more extension headers than this node steps past")
 		}
+		next, offset, field = following, end, offset
 	}
-	return 0, fmt.Errorf("%w: more extension headers than this node walks", ErrHeaderInvalid)
+}
+
+// stepping names the kind of header stepHeader finds
+type stepping uint8
+
+const (
+	// stepPast is an extension header within the packet, which a walk may step past to the one following it
+	stepPast stepping = iota
+	// stepUpper is a header of a kind stepHeader does not read, the upper-layer header or an extension header no walk steps past
+	stepUpper
+	// stepFragment is the Fragment header, within the packet, of a fragment of a larger packet
+	stepFragment
+	// stepShort is a header the packet ends inside before its length, and stepLong one running past the packet's end
+	stepShort
+	stepLong
+)
+
+// stepHeader reads the header of kind at offset in raw, as walk and the error search step through one, for what it is, the header following it and where that one starts
+// the kinds it reads are those RFC 8200 section 4 has a node proceed past, the hop-by-hop options, destination options, routing and authentication headers
+// and the Fragment header, whose packet section 4.5 has processed as a whole where it is an atomic fragment
+func stepHeader(raw []byte, kind byte, offset int) (step stepping, following byte, end int) {
+	switch kind {
+	case nextHeaderHopByHop, nextHeaderDestOpts, nextHeaderRouting, nextHeaderAuth, nextHeaderFragment:
+	default:
+		return stepUpper, 0, 0
+	}
+	following, end, ok := StepExtension(raw, kind, offset)
+	switch {
+	case !ok:
+		return stepShort, 0, 0
+	case end > len(raw):
+		return stepLong, following, end
+	case kind == nextHeaderFragment && !atomicFragment(raw, offset):
+		return stepFragment, following, end
+	}
+	return stepPast, following, end
+}
+
+// atomicFragment reports the Fragment header at offset, whose 8 octets raw
+// holds, as an atomic fragment's, RFC 8200 section 4.5: its Fragment Offset's
+// 13 bits and its M flag all 0.
+func atomicFragment(raw []byte, offset int) bool {
+	return binary.BigEndian.Uint16(raw[offset+2:])&0xfff9 == 0
 }
 
 // StepExtension reads the extension header of type kind at offset, RFC 8200
@@ -458,23 +462,50 @@ func StepExtension(raw []byte, kind byte, offset int) (next byte, end int, ok bo
 //
 // The hop limit is decremented, RFC 8986 section 4.1 S12, which bounds a
 // segment list that points back at an earlier node.
+//
+// It acts on the SRH with segments left that walk finds, and checks it in
+// section 4.1's order: the hop limit, S05 to S07, before Last Entry and
+// Segments Left, S08 to S11. A packet with no such SRH reaches its upper-layer
+// header, which a waypoint SID's local configuration allows none of, so it is
+// refused with code 4 at that header, section 4.1.1 S04.
 func End(raw []byte) (netip.Addr, error) {
-	header, err := Parse(raw)
-	if err != nil {
-		return netip.Addr{}, err
+	next, _, err := waypoint(raw)
+	return next, err
+}
+
+// waypoint is End, reporting as well where the SRH it acted on starts in raw
+func waypoint(raw []byte) (netip.Addr, int, error) {
+	if len(raw) < ipv6HeaderLen || raw[0]>>4 != 6 {
+		return netip.Addr{}, 0, ErrNotSegmentRouted
 	}
-	if header.SegmentsLeft == 0 {
-		return netip.Addr{}, ErrExhausted
+	srh, upper, _, err := walk(raw)
+	if err != nil {
+		return netip.Addr{}, 0, err
+	}
+	if srh == 0 {
+		return netip.Addr{}, 0, refuse(icmpUpperLayer, upper, "End reached an upper-layer header, which a waypoint SID does not process")
 	}
 	if raw[7] <= 1 {
-		return netip.Addr{}, ErrHopLimit
+		return netip.Addr{}, 0, ErrHopLimit
+	}
+	left, err := segmentsLeft(raw, srh)
+	if err != nil {
+		return netip.Addr{}, 0, err
 	}
 	raw[7]--
-	srh := raw[header.Offset:]
-	srh[3] = header.SegmentsLeft - 1
-	next := header.Segments[srh[3]]
-	copy(raw[24:], addr16(next))
-	return next, nil
+	raw[srh+segmentsLeftInHeader] = left - 1
+	segment := srh + srhFixedLen + addrLen*int(left-1)
+	copy(raw[24:40], raw[segment:segment+addrLen])
+	return netip.AddrFrom16([16]byte(raw[24:40])), srh, nil
+}
+
+// AtLocalInterface is RFC 8754 section 4.3.2 for the SRH at srh in raw, a packet whose destination is an address of this node that is no SID
+// it is nil at segments left 0, where the node goes on to the next header, and otherwise the Parameter Problem, code 0, at the Routing Type that section answers with
+func AtLocalInterface(raw []byte, srh int) *Refusal {
+	if raw[srh+segmentsLeftInHeader] == 0 {
+		return nil
+	}
+	return refuse(icmpErroneousHeader, srh+routingTypeInHeader, "a routing header with segments left at an address of this node that is no SID")
 }
 
 // Decap is the exit behavior of RFC 8986 section 4.8, End.DT46: the outer IPv6
@@ -493,32 +524,38 @@ func End(raw []byte) (netip.Addr, error) {
 // write the packet's next framing into. The two-table half of the RFC's
 // End.DT46, choosing a lookup table per family, is the caller's: this package
 // takes bytes and returns bytes.
+//
+// The upper-layer header is the one walk finds, behind every header it
+// proceeds past, and an SRH with segments left is refused with code 0 at its
+// Segments Left, section 4.8 S02 to S04. An upper-layer header other than IPv4
+// or IPv6 is refused with code 4 at it, S09 to S10 and section 4.1.1 S04, and
+// a packet behind one of the two that is not of its version, or shorter than
+// that version's header, with code 0 at its first octet, RFC 4443 section 3.4.
+// So family, the Next Header, is always the inner packet's version.
 func Decap(raw []byte) (inner []byte, family uint8, err error) {
 	if len(raw) < ipv6HeaderLen || raw[0]>>4 != 6 {
 		return nil, 0, ErrNotSegmentRouted
 	}
-	offset, upper := ipv6HeaderLen, raw[6]
-	switch header, err := Parse(raw); {
-	case err == nil:
-		if header.SegmentsLeft != 0 {
-			// RFC 8986 section 4.8 runs End.DT46 on the last segment. Reaching
-			// it with segments still to go means the packet was addressed to
-			// an exit in the middle of its own path, which is a segment list
-			// that does not describe what it wants.
-			return nil, 0, fmt.Errorf("srv6: an exit was reached with %d segments still to go", header.SegmentsLeft)
-		}
-		offset = header.Offset + srhFixedLen + extensionUnit*int(raw[header.Offset+1])
-		upper = header.NextHeader
-	case !errors.Is(err, ErrNotSegmentRouted):
+	srh, upper, next, err := walk(raw)
+	if err != nil {
 		return nil, 0, err
 	}
-	if upper != NextHeaderIPv4 && upper != NextHeaderIPv6 {
-		return nil, 0, fmt.Errorf("srv6: an exit cannot deliver next header %d, only an encapsulated IPv4 or IPv6 packet", upper)
+	if srh != 0 {
+		return nil, 0, refuse(icmpErroneousHeader, srh+segmentsLeftInHeader, "an exit was reached with segments still to go")
 	}
-	if len(raw) <= offset {
-		return nil, 0, errors.New("srv6: the packet ends where its payload should start")
+	inner = raw[upper:]
+	version, shortest := byte(6), ipv6HeaderLen
+	switch next {
+	case NextHeaderIPv6:
+	case NextHeaderIPv4:
+		version, shortest = 4, ipv4HeaderLen
+	default:
+		return nil, 0, refuse(icmpUpperLayer, upper, "an exit delivers only an encapsulated IPv4 or IPv6 packet")
 	}
-	return raw[offset:], upper, nil
+	if len(inner) < shortest || inner[0]>>4 != version {
+		return nil, 0, refuse(icmpErroneousHeader, upper, "the octets behind an exit's next header are no packet of its version")
+	}
+	return inner, next, nil
 }
 
 // innerNextHeader is the protocol number announcing what an encapsulation is

@@ -495,6 +495,38 @@ func TestTraceFiltersByThePacketItsForwardShowed(t *testing.T) {
 	})
 }
 
+// an IPv4 read is recorded as it came in the budget drop of a tun share its peer's budget refused, whatever its octets 6, 41 and 42 hold
+// a fragment with MF set at an offset of 0x0b00 units reads 43 at octet 6, as an IPv6 packet with a policy's SRH would, and 4 at octet 42 reads as that SRH's type
+// its octet 41 then puts such an SRH past the packet's end, or puts an IPv4 packet of another destination behind it
+func TestTraceRecordsTheBudgetDropOfAnIPv4ReadAsItCame(t *testing.T) {
+	owned, decoy := segAddr("192.0.2.128"), segAddr("198.51.100.7")
+	for name, octets := range map[string]func(raw []byte){
+		"an srh past the packet's end": func(raw []byte) { raw[41], raw[42] = 255, 4 },
+		"an srh with a packet behind it": func(raw []byte) {
+			raw[40], raw[41], raw[42] = 4, 0, 4
+			copy(raw[48:], udpPacket(owned, decoy, len(raw)-48, false))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, _, _ := classifyRead(t, classifyArm{family: 4, count: 1, sources: 1, shape: classifyPlain})
+			m.outboundJobs = make(chan *outboundBatch, 1)
+			routeClosed(m, hostPrefix(transitFar[4]))
+			raw := udpPacket(owned, transitFar[4], 100, false)
+			octets(raw)
+			raw[6], raw[7] = 0x2b, 0
+			read := newOutboundBatch(1)
+			fill(read, withTTL(raw, 64))
+			feed := openTrace(t, m, TraceFilter{Destinations: []netip.Prefix{hostPrefix(transitFar[4])}}, 0, control.TraceRateMax)
+			m.classify(read)
+			m.dispatchOutbound(read)
+			records := queued(feed)
+			if len(records) != 2 || records[1].Decision != TraceDrop || records[1].Reason != "budget" || records[1].Destination != transitFar[4] {
+				t.Errorf("the feed took %+v, want the read's forward and its budget drop to %s", records, transitFar[4])
+			}
+		})
+	}
+}
+
 // a client selecting drops alone at the least rate spends none of it on the forwards beside them
 // decide's held forward before the drop, or after the drop spent the rate, and End's forward in the batch of a drop
 func TestTraceForwardsSpendNoRateOfAClientOfDrops(t *testing.T) {

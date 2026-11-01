@@ -275,14 +275,98 @@ func TestDecisionDropsWhatIsNotOneIPPacket(t *testing.T) {
 	truncated := udpPacket(transitSender[4], transitFar[4], 200, true)
 	binary.BigEndian.PutUint16(truncated[2:], 300)
 	truncated = withTTL(truncated, 64)
-	short6 := udpPacket(transitSender[6], transitFar[6], 200, false)
-	binary.BigEndian.PutUint16(short6[4:], 300)
-	tun, out, back := n.deliver(t, []byte{0x45, 0, 0}, truncated, short6, []byte{0x10, 1, 2, 3})
+	tun, out, back := n.deliver(t, []byte{0x45, 0, 0}, truncated, []byte{0x60, 0, 0, 0}, []byte{0x10, 1, 2, 3})
 	if len(tun)+len(out)+len(back) != 0 {
 		t.Errorf("packets that are not one IP packet reached the tun %x, the next hop %x and the sender %x", tun, out, back)
 	}
 	if got := n.m.TransitCounters(); got != (TransitCounters{Invalid: 4}) {
 		t.Errorf("four packets that are not one IP packet counted %+v", got)
+	}
+}
+
+// lengthOf is an IPv6 UDP packet of 200 octets from source to destination whose Payload Length is length
+func lengthOf(source, destination netip.Addr, length uint16) []byte {
+	raw := udpPacket(source, destination, 200, false)
+	binary.BigEndian.PutUint16(raw[4:], length)
+	return raw
+}
+
+// RFC 8200 section 3: Payload Length is the "Length of the IPv6 payload, i.e., the rest of the packet following this IPv6 header, in octets"
+// and RFC 4443 section 3.4 has a node that "finds a problem with a field in the IPv6 header" answer with a Parameter Problem
+// so an IPv6 packet whose Payload Length runs past its frame, or is 0 with octets behind its header, is dropped, counted invalid and answered with code 0 at that field
+// back through the mesh from the router-id, and into the tun from the packet's destination for a sender this host is
+// one from a source no router forwards, or to a link-scoped destination, is dropped with no answer
+// a source no router forwards that the mesh routes all the same among them, and a multicast destination, which a trace records as a drop rather than as an answer the builder refused
+// the decision takes such a frame where an End.DT46 of this node took it out of a segment, since a session drops a packet of its own of such a length before the decision reads it
+func TestDecisionAnswersAnIPv6PayloadLengthThatIsNotItsOwn(t *testing.T) {
+	for _, intoTheTun := range []bool{false, true} {
+		for name, raw := range map[string][]byte{
+			"a payload length past the frame":                     lengthOf(transitSender[6], transitFar[6], 300),
+			"a payload length of 0 with octets behind the header": lengthOf(transitSender[6], transitFar[6], 0),
+		} {
+			t.Run(fmt.Sprintf("%s into the tun %t", name, intoTheTun), func(t *testing.T) {
+				n := newTransitNode(t, DefaultMTU)
+				from := transitOwn[6]
+				if intoTheTun {
+					n.m.Routes.Set(netip.Prefix{}, hostPrefix(transitSender[6]), Local)
+					from = transitFar[6]
+				}
+				tun, out, back := n.deliver(t, bytes.Clone(raw))
+				answers := back
+				if intoTheTun {
+					answers = tun
+				}
+				if len(out) != 0 || len(answers) != 1 || len(tun)+len(back) != 1 {
+					t.Fatalf("the next hop was sent %x, the sender %x and the tun took %x, want one answer through the tun %t", out, back, tun, intoTheTun)
+				}
+				checkICMPv6(t, answers[0], raw, from, parameterType[6], 0, 4)
+				if counters := n.m.TransitCounters(); counters != (TransitCounters{Invalid: 1, Answered: 1}) {
+					t.Errorf("the answer counted %+v", counters)
+				}
+			})
+		}
+	}
+	n := newTransitNode(t, DefaultMTU)
+	tun, out, back := n.deliver(t, lengthOf(segAddr("::1"), transitFar[6], 300), lengthOf(transitSender[6], segAddr("fe80::1"), 300), lengthOf(transitSender[6], segAddr("ff02::1"), 0))
+	if len(tun)+len(out)+len(back) != 0 {
+		t.Errorf("packets of a martian source or a link-scoped destination reached the tun %x, the next hop %x and the sender %x", tun, out, back)
+	}
+	if got := n.m.TransitCounters(); got != (TransitCounters{Invalid: 3}) {
+		t.Errorf("three packets drawing no answer counted %+v", got)
+	}
+	t.Run("from a loopback source the mesh routes", func(t *testing.T) {
+		n := newTransitNode(t, DefaultMTU)
+		n.m.Routes.Set(netip.Prefix{}, hostPrefix(segAddr("::1")), n.fromPeer)
+		if tun, out, back := n.deliver(t, lengthOf(segAddr("::1"), transitFar[6], 300)); len(tun)+len(out)+len(back) != 0 {
+			t.Errorf("the tun took %x, the next hop %x and the sender %x, want no answer", tun, out, back)
+		}
+	})
+	t.Run("to a multicast destination, traced", func(t *testing.T) {
+		n := newTransitNode(t, DefaultMTU)
+		feed := openTrace(t, n.m, TraceFilter{}, 0, control.TraceRateMax)
+		if tun, out, back := n.deliver(t, lengthOf(transitSender[6], segAddr("ff02::1"), 300)); len(tun)+len(out)+len(back) != 0 {
+			t.Errorf("the tun took %x, the next hop %x and the sender %x, want no answer", tun, out, back)
+		}
+		if records := queued(feed); len(records) != 1 || records[0].Decision != TraceDrop || records[0].Reason != "invalid" {
+			t.Errorf("the feed took %+v, want one drop of reason invalid", records)
+		}
+	})
+}
+
+// the Payload Length answer draws on the bucket of the answered packet's source and on the node's cap, as the decision's other answers do
+// so a burst of one more such frame than a bucket holds, from one sender, gets the bucket's burst answered and one withheld by source
+func TestPayloadLengthAnswersDrawOnTheBucketOfTheirSource(t *testing.T) {
+	n := newTransitNode(t, DefaultMTU)
+	var frames [][]byte
+	for range icmpSourceBurst + 1 {
+		frames = append(frames, lengthOf(transitSender[6], transitFar[6], 300))
+	}
+	tun, out, back := n.deliver(t, frames...)
+	if len(tun)+len(out) != 0 || len(back) != icmpSourceBurst {
+		t.Errorf("the tun took %d, the next hop %d and the sender %d answers, want %d to the sender", len(tun), len(out), len(back), icmpSourceBurst)
+	}
+	if source, node := n.m.ICMPWithheld(); source != 1 || node != 0 {
+		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want 1 and 0", source, node)
 	}
 }
 

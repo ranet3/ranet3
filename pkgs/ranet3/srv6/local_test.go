@@ -100,31 +100,29 @@ func TestWaypointAndExitActOnTheirOwnSegments(t *testing.T) {
 }
 
 // A packet addressed to one of this node's segments that cannot be acted on is
-// dropped with a reason rather than written to the tun, where it would arrive
+// dropped with its refusal rather than written to the tun, where it would arrive
 // as an undeliverable IPv6 packet addressed to an address of ours.
-func TestSegmentsOfOursThatCannotBeActedOnAreDropped(t *testing.T) {
+// RFC 8986 section 4.1.1 S04: "Send an ICMP Parameter Problem to the Source Address with Code 4 (SR Upper-layer Header Error) and Pointer set to the offset of the Upper-Layer header"
+// for an upper-layer header local configuration does not allow, which at a waypoint is every one, with no routing header or past one at segments left 0
+// section 4.8 S03: "Send an ICMP Parameter Problem to the Source Address with Code 0 (Erroneous header field encountered) and Pointer set to the Segments Left field" for an exit reached with segments left
+func TestSegmentsOfOursThatCannotBeActedOnAreRefusedAtTheirField(t *testing.T) {
 	sid := addr("3fff:b:0:106::2")
 	waypoint, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(sid), Behavior: BehaviorEnd}}, everySource)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Addressed to our waypoint with no routing header at all.
 	plain := innerV6("payload")
 	copy(plain[24:], addr16(sid))
-	result := waypoint.Handle(plain)
-	if result.Action != ActionDrop || !errors.Is(result.Err, ErrNotSegmentRouted) {
-		t.Errorf("a plain packet to a waypoint returned %v (%v)", result.Action, result.Err)
+	if result := waypoint.Handle(plain); result.Action != ActionDrop || !refusedWith(result.Err, icmpUpperLayer, ipv6HeaderLen) {
+		t.Errorf("a plain packet to a waypoint returned %v (%v), want code 4 at its upper-layer header", result.Action, result.Err)
 	}
-
-	// Addressed to our waypoint having already reached its last segment.
 	arrived := segmentRouted(t)
 	copy(arrived[24:], addr16(sid))
-	if result := waypoint.Handle(arrived); result.Action != ActionDrop || !errors.Is(result.Err, ErrExhausted) {
-		t.Errorf("a finished path at a waypoint returned %v (%v)", result.Action, result.Err)
+	if result := waypoint.Handle(arrived); result.Action != ActionDrop || !refusedWith(result.Err, icmpUpperLayer, ipv6HeaderLen+srhFixedLen+2*addrLen) {
+		t.Errorf("a finished path at a waypoint returned %v (%v), want code 4 at the inner packet", result.Action, result.Err)
 	}
 
-	// An exit reached with segments still to go, from sources an egress
-	// segment allows, which is dropped and neither refused nor answered.
+	// from sources an egress segment allows
 	exitSID, source := addr("3fff:b:0:206::1"), addr("3fff:b:0:100::1")
 	for name, segment := range map[string]Segment{
 		"delivering to the mesh": {SID: schema.AddrFrom(exitSID), Behavior: BehaviorEndDT46},
@@ -141,8 +139,8 @@ func TestSegmentsOfOursThatCannotBeActedOnAreDropped(t *testing.T) {
 				t.Fatal(err)
 			}
 			result := exit.Handle(midPath)
-			if result.Action != ActionDrop || errors.Is(result.Err, ErrSourceRefused) || errors.Is(result.Err, ErrHeaderInvalid) || errors.Is(result.Err, ErrHopLimit) {
-				t.Errorf("an exit in the middle of a path returned %v (%v), want a drop that is neither refused nor answered", result.Action, result.Err)
+			if result.Action != ActionDrop || !refusedWith(result.Err, icmpErroneousHeader, ipv6HeaderLen+segmentsLeftInHeader) {
+				t.Errorf("an exit in the middle of a path returned %v (%v), want code 0 at Segments Left", result.Action, result.Err)
 			}
 		})
 	}
@@ -231,10 +229,11 @@ func TestExitDecapsulatesTheECNFieldByRFC6040(t *testing.T) {
 }
 
 // An egress segment hands egress only a packet whose outer and inner
-// sources both lie in its allow list, so it is never an open proxy. The inner
-// source is the one the host's stack reads, by the packet's own version, and
-// a sender outside the list is refused before its header is parsed, so it is
-// never answered about the header.
+// sources both lie in its allow list, so it is never an open proxy. A packet
+// not of the version the Next Header in front of it names is refused at its
+// first octet rather than read for a source, and a sender outside the list is
+// refused before its header is parsed, so it is never answered about the
+// header.
 func TestEgressSegmentCarriesOnlyTheSourcesItAllows(t *testing.T) {
 	exit := addr("3fff:b:0:206::3")
 	table, err := NewLocalTable([]Segment{{SID: schema.AddrFrom(exit), Behavior: BehaviorEndDT46, Deliver: DeliverEgress, Allow: []schema.Prefix{
@@ -270,20 +269,24 @@ func TestEgressSegmentCarriesOnlyTheSourcesItAllows(t *testing.T) {
 	for name, c := range map[string]struct {
 		raw    []byte
 		family uint8
+		// answered is a refusal at the inner packet's first octet
+		answered bool
 	}{
-		"a v6 packet from inside":     {encapsulated(listed, innerV6("payload")), NextHeaderIPv6},
-		"a v4 packet from inside":     {encapsulated(listed, innerV4("payload")), NextHeaderIPv4},
-		"an outer source outside":     {encapsulated(unlisted, innerV6("payload")), 0},
-		"a v6 inner source outside":   {encapsulated(listed, sourced(innerV6("payload"), addr("3fff:b::1"))), 0},
-		"a v4 inner source outside":   {encapsulated(listed, sourced(innerV4("payload"), addr("198.51.100.1"))), 0},
-		"a v6 packet announced as v4": {announced, 0},
-		"an unlisted broken header":   {broken, 0},
+		"a v6 packet from inside":     {encapsulated(listed, innerV6("payload")), NextHeaderIPv6, false},
+		"a v4 packet from inside":     {encapsulated(listed, innerV4("payload")), NextHeaderIPv4, false},
+		"an outer source outside":     {encapsulated(unlisted, innerV6("payload")), 0, false},
+		"a v6 inner source outside":   {encapsulated(listed, sourced(innerV6("payload"), addr("3fff:b::1"))), 0, false},
+		"a v4 inner source outside":   {encapsulated(listed, sourced(innerV4("payload"), addr("198.51.100.1"))), 0, false},
+		"a v6 packet announced as v4": {announced, 0, true},
+		"an unlisted broken header":   {broken, 0, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			inner := slices.Clone(c.raw[Overhead(1):])
 			result := table.Handle(c.raw)
 			switch {
-			case c.family == 0 && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
+			case c.answered && (result.Action != ActionDrop || !refusedWith(result.Err, icmpErroneousHeader, Overhead(1))):
+				t.Errorf("Handle returned %v (%v), want a refusal at the inner packet's first octet, %d", result.Action, result.Err, Overhead(1))
+			case c.family == 0 && !c.answered && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
 				t.Errorf("Handle returned %v (%v), want a refusal of the source", result.Action, result.Err)
 			case c.family != 0 && (result.Action != ActionEgress || result.Family != c.family || !bytes.Equal(result.Inner, inner)):
 				t.Errorf("Handle returned %v of family %d (%v), want the inner packet of family %d for egress",

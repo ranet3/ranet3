@@ -259,6 +259,19 @@ func hopLimit(raw []byte, version byte) byte {
 	return raw[7]
 }
 
+// payloadLengthInIPv6 is the octet of the IPv6 header's Payload Length, RFC 8200 section 3
+const payloadLengthInIPv6 = 4
+
+// lengthAnswered reports raw, a frame packet.Payload found no packet in, as an IPv6 header whose Payload Length does not describe the octets behind it
+// from a source and to a destination the decision answers a packet of, neither a martian nor a link-scoped destination
+func lengthAnswered(raw []byte) bool {
+	if len(raw) < 40 || raw[0]>>4 != 6 {
+		return false
+	}
+	src, dst := addressesOf(raw, 6)
+	return !linkScoped(dst) && !martian(src, dst)
+}
+
 // hasOptions reports an IPv4 header longer than its fixed 20 bytes, the one kind ForwardOptions has work for
 // it inlines, so a packet without options pays one comparison and no clock read
 func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
@@ -267,7 +280,7 @@ func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
 // granted marks the frames an End.DT46 delivering to the mesh took out of their outer headers, which go on whatever cap.transit says, nil where there are none
 // from is the peer of the session they came through, nil for frames of no session
 // it returns the frames for the tun in the order they came, filtered in place, and hands egress the ones through a prefix cap.egress advertises that counts as a default
-// the checks run in RFC 1812's order for IPv6 as for IPv4, each before any answer, so a malformed packet draws none
+// the checks run in RFC 1812's order for IPv6 as for IPv4, each before any answer, so a malformed packet draws none but the Payload Length answer of the first
 func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 	trace := m.tracer.Load()
 	transit := m.transitOn.Load()
@@ -288,6 +301,15 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 		if version == 0 {
 			// RFC 1812 section 5.2.2 has a router answer a truncated IPv4 packet with a parameter problem, which ip_rcv_core does not
 			m.dropTransit(&tally, transitInvalid, netip.Addr{}, netip.Addr{})
+			// an IPv6 packet whose Payload Length does not describe its octets is answered with code 0 at that field, RFC 4443 section 3.4
+			if offending := frame[TUNHeadroom:]; lengthAnswered(offending) {
+				if trace != nil {
+					trace.answered(m, from, transitInvalid, answerParameter, payloadLengthInIPv6, offending, 6)
+				} else {
+					m.answer(offending, 6, answerParameter, payloadLengthInIPv6)
+				}
+				continue
+			}
 			if trace != nil {
 				trace.session(from, TraceDrop, transitInvalid, frame[TUNHeadroom:])
 			}
@@ -368,7 +390,7 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 			reason := unroutedReason(verdict)
 			m.dropTransit(&tally, reason, src, dst)
 			if kind := m.unreachable(verdict, match, dst); trace != nil {
-				trace.answered(m, from, reason, kind, raw, version)
+				trace.answered(m, from, reason, kind, 0, raw, version)
 			} else {
 				m.answer(raw, version, kind, 0)
 			}
@@ -377,7 +399,7 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 		if !transit && (granted == nil || !granted[i]) {
 			m.dropTransit(&tally, transitRefused, src, dst)
 			if trace != nil {
-				trace.answered(m, from, transitRefused, answerProhibited, raw, version)
+				trace.answered(m, from, transitRefused, answerProhibited, 0, raw, version)
 			} else {
 				m.answer(raw, version, answerProhibited, 0)
 			}
@@ -387,7 +409,7 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 		if hopLimit(raw, version) <= 1 {
 			m.dropTransit(&tally, transitExpired, src, dst)
 			if trace != nil {
-				trace.answered(m, from, transitExpired, answerExpired, raw, version)
+				trace.answered(m, from, transitExpired, answerExpired, 0, raw, version)
 			} else {
 				m.answer(raw, version, answerExpired, 0)
 			}
@@ -654,7 +676,7 @@ const (
 	answerProhibited
 	// answerExpired is time exceeded, RFC 4443 section 3.3 and RFC 1812 section 5.3.1
 	answerExpired
-	// answerParameter is an IPv4 parameter problem, its pointer naming the octet at fault
+	// answerParameter is a parameter problem, its pointer naming the octet at fault, of code 0 over IPv6, RFC 4443 section 3.4
 	answerParameter
 	// answerTooBig is packet too big, RFC 4443 section 3.2, and fragmentation needed, RFC 1191 section 4, carrying the next hop's MTU
 	answerTooBig
@@ -677,6 +699,8 @@ func buildAnswer(raw []byte, version byte, kind answerKind, value int, source ne
 			return srv6.TimeExceeded(raw, source, allow)
 		case answerTooBig:
 			return srv6.PacketTooBig(raw, source, value, allow)
+		case answerParameter:
+			return srv6.ParameterProblem(raw, source, &srv6.Refusal{Code: 0, Pointer: value}, allow)
 		}
 		return nil
 	}

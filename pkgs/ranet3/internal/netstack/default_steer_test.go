@@ -57,17 +57,34 @@ func classifiedBatch(m *Mesh, packets ...[]byte) *outboundBatch {
 // checkAlongPath fails unless sent is raw encapsulated along pathVia from pathSource, its routing header pushed for every segment, RFC 8986 section 5.1
 func checkAlongPath(tb testing.TB, sent, raw []byte) {
 	tb.Helper()
-	header, err := srv6.Parse(sent)
-	if err != nil {
-		tb.Fatalf("the packet sent is no segment routed packet: %v", err)
+	path := steeredPath(sent)
+	if path == nil {
+		tb.Fatal("the packet sent is no segment routed packet")
 	}
 	source, destination := netip.AddrFrom16([16]byte(sent[8:24])), netip.AddrFrom16([16]byte(sent[24:40]))
-	if source != pathSource || destination != pathVia[0] || !slices.Equal(header.Path(), pathVia) {
-		tb.Fatalf("the packet went from %s to %s along %v, want from %s along %v", source, destination, header.Path(), pathSource, pathVia)
+	if source != pathSource || destination != pathVia[0] || !slices.Equal(path, pathVia) {
+		tb.Fatalf("the packet went from %s to %s along %v, want from %s along %v", source, destination, path, pathSource, pathVia)
 	}
 	if !bytes.Equal(sent[len(sent)-len(raw):], raw) || len(sent) != len(raw)+srv6.Overhead(len(pathVia)) {
 		tb.Fatal("the packet sent does not carry the packet read whole behind the path's header")
 	}
+}
+
+// steeredPath is the segment list of sent, a packet this node encapsulated, in the order the packet visits it
+// it reads the SRH an encapsulation writes behind the fixed header, RFC 8754 section 2, and is nil for a packet carrying none there
+func steeredPath(sent []byte) []netip.Addr {
+	if len(sent) < 48 || sent[0]>>4 != 6 || sent[6] != 43 || sent[42] != 4 {
+		return nil
+	}
+	count := int(sent[44]) + 1
+	if len(sent) < 48+16*count {
+		return nil
+	}
+	path := make([]netip.Addr, 0, count)
+	for i := count - 1; i >= 0; i-- {
+		path = append(path, netip.AddrFrom16([16]byte(sent[48+16*i:])))
+	}
+	return path
 }
 
 // a host packet toward the internet that no entry covers, or only an entry counting as a default, an exit's default, a /1 half, a /2, one held or one from a source prefix

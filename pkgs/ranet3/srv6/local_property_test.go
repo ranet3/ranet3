@@ -106,11 +106,12 @@ func listed(allow []netip.Prefix, address netip.Addr) bool {
 
 // An egress segment at the end of a segment list of any length hands
 // egress exactly the packets whose outer and inner sources the allow
-// list holds, the inner one as its own version spells it, and refuses every
-// other with ErrSourceRefused. The sources are drawn on both sides of every
-// edge of the list's prefixes, in both families, the outer one now and then as
-// a v4-mapped address no v4 prefix may admit, and now and then the routing
-// header announces the family the inner packet is not.
+// list holds, and refuses every other with ErrSourceRefused, but for one from
+// a listed outer source whose routing header announces the family the inner
+// packet is not, refused at the inner packet's first octet. The sources are
+// drawn on both sides of every edge of the list's prefixes, in both families,
+// the outer one now and then as a v4-mapped address no v4 prefix may admit,
+// and now and then the routing header announces the other family.
 func TestEgressNeverCarriesASourceOutsideItsAllowList(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		allow := hegel.Draw(ht, allowLists())
@@ -156,11 +157,15 @@ func TestEgressNeverCarriesASourceOutsideItsAllowList(t *testing.T) {
 
 		result := table.Handle(raw)
 		carried := listed(allow, outer) && listed(allow, from) && !mislabeled
+		answered := listed(allow, outer) && mislabeled
 		switch {
 		case carried && (result.Action != ActionEgress || result.Family != family || !bytes.Equal(result.Inner, inner)):
 			ht.Fatalf("from %s and %s inside %v, Handle returned %v of family %d (%v), want the inner packet of family %d for egress",
 				outer, from, allow, result.Action, result.Family, result.Err, family)
-		case !carried && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
+		case answered && (result.Action != ActionDrop || !refusedWith(result.Err, icmpErroneousHeader, len(raw)-len(inner))):
+			ht.Fatalf("from %s inside %v, announced as %d, Handle returned %v (%v), want a refusal at the inner packet's first octet",
+				outer, allow, raw[ipv6HeaderLen], result.Action, result.Err)
+		case !carried && !answered && (result.Action != ActionDrop || !errors.Is(result.Err, ErrSourceRefused)):
 			ht.Fatalf("from %s and %s against %v, announced as %d, Handle returned %v (%v), want a refusal of the source",
 				outer, from, allow, raw[ipv6HeaderLen], result.Action, result.Err)
 		}

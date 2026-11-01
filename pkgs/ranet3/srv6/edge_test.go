@@ -17,7 +17,10 @@ type edgeHeader struct{ kind, routing byte }
 var (
 	hopByHop = edgeHeader{kind: nextHeaderHopByHop}
 	destOpts = edgeHeader{kind: nextHeaderDestOpts}
-	fragHead = edgeHeader{kind: nextHeaderFragment}
+	authHead = edgeHeader{kind: nextHeaderAuth}
+	// fragHead is an atomic fragment's header, and laterFrag one at offset 32, its offset's high octet where a routing header's type sits
+	fragHead  = edgeHeader{kind: nextHeaderFragment}
+	laterFrag = edgeHeader{kind: nextHeaderFragment, routing: 1}
 )
 
 func routingOf(kind byte) edgeHeader { return edgeHeader{kind: nextHeaderRouting, routing: kind} }
@@ -26,7 +29,8 @@ func routingOf(kind byte) edgeHeader { return edgeHeader{kind: nextHeaderRouting
 const edgeUDP = 17
 
 // edgeChain is an IPv6 packet whose extension headers are headers, 8 octets each and each naming the next, then a UDP header of 8 octets
-// a hop-by-hop or destination options header is Pad1 options, a routing header has segments left 0, and a fragment header offset 0
+// a hop-by-hop or destination options header is Pad1 options, a routing header has segments left 0, an authentication header has its length octet 0
+// and a fragment header the offset routing's high octet gives it and its M flag 0
 func edgeChain(headers ...edgeHeader) []byte {
 	raw := make([]byte, ipv6HeaderLen, ipv6HeaderLen+extensionUnit*(len(headers)+1))
 	raw[0], raw[6], raw[7] = 0x60, edgeUDP, 64
@@ -56,8 +60,9 @@ func checkEdge(tb testing.TB, name string, raw []byte, want EdgeVerdict, next by
 	}
 }
 
-// a routing header behind one the walk passes is read as the first is, so a type 0 cannot hide behind a type 2, a hop-by-hop or destination options header
-// and one behind a fragment header passes unexamined, the walk stopping at the fragment
+// a routing header behind one the walk passes is read as the first is, so a type 0 cannot hide behind a type 2, a hop-by-hop, destination options
+// or authentication header, or an atomic fragment's header, each of which a SID's walk passes too
+// and one behind a fragment of a larger packet, which a SID does not walk past, passes unexamined, the walk stopping at the fragment
 func TestEdgeReadsEveryRoutingHeaderOfTheChain(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -73,8 +78,12 @@ func TestEdgeReadsEveryRoutingHeaderOfTheChain(t *testing.T) {
 		{"a type 0 behind a hop-by-hop header", []edgeHeader{hopByHop, routingOf(0)}, EdgeRoutingHeader, 0, 0},
 		{"a type 0 behind destination options", []edgeHeader{destOpts, routingOf(0)}, EdgeRoutingHeader, 0, 0},
 		{"a type 4 behind both and a type 2", []edgeHeader{hopByHop, destOpts, routingOf(2), destOpts, routingOf(4)}, EdgeRoutingHeader, 0, 0},
-		{"a type 0 behind a fragment header", []edgeHeader{fragHead, routingOf(0)}, EdgePass, nextHeaderFragment, ipv6HeaderLen},
-		{"a type 0 behind a type 2 and a fragment header", []edgeHeader{routingOf(2), fragHead, routingOf(0)}, EdgePass, nextHeaderFragment, ipv6HeaderLen + extensionUnit},
+		{"a type 4 behind an authentication header", []edgeHeader{authHead, routingOf(4)}, EdgeRoutingHeader, 0, 0},
+		{"a type 0 behind an atomic fragment's header", []edgeHeader{fragHead, routingOf(0)}, EdgeRoutingHeader, 0, 0},
+		{"a type 4 behind a type 2, an authentication header and an atomic fragment's", []edgeHeader{routingOf(2), authHead, fragHead, routingOf(4)}, EdgeRoutingHeader, 0, 0},
+		{"UDP behind an authentication header and an atomic fragment's", []edgeHeader{authHead, fragHead}, EdgePass, edgeUDP, ipv6HeaderLen + 2*extensionUnit},
+		{"a type 0 behind a later fragment's header", []edgeHeader{laterFrag, routingOf(0)}, EdgePass, nextHeaderFragment, ipv6HeaderLen},
+		{"a type 0 behind a type 2 and a later fragment's header", []edgeHeader{routingOf(2), laterFrag, routingOf(0)}, EdgePass, nextHeaderFragment, ipv6HeaderLen + extensionUnit},
 		{"no extension header", nil, EdgePass, edgeUDP, ipv6HeaderLen},
 	} {
 		checkEdge(t, c.name, edgeChain(c.headers...), c.want, c.next, c.offset)
@@ -86,7 +95,9 @@ func TestEdgeReadsEveryRoutingHeaderOfTheChain(t *testing.T) {
 func TestEdgeBoundCountsEveryHeaderItReads(t *testing.T) {
 	atBound := slices.Repeat([]edgeHeader{hopByHop, destOpts, routingOf(2), routingOf(253)}, maxEdgeHeaders/4)
 	checkEdge(t, "17 destination options headers", edgeChain(slices.Repeat([]edgeHeader{destOpts}, maxEdgeHeaders+1)...), EdgeInvalid, 0, 0)
-	checkEdge(t, "16 headers and a fragment header", edgeChain(append(atBound, fragHead)...), EdgePass, nextHeaderFragment, ipv6HeaderLen+extensionUnit*maxEdgeHeaders)
+	checkEdge(t, "16 headers and a later fragment's header", edgeChain(append(atBound, laterFrag)...), EdgePass, nextHeaderFragment, ipv6HeaderLen+extensionUnit*maxEdgeHeaders)
+	checkEdge(t, "16 headers and an atomic fragment's header", edgeChain(append(atBound, fragHead)...), EdgeInvalid, 0, 0)
+	checkEdge(t, "16 headers and an authentication header", edgeChain(append(atBound, authHead)...), EdgeInvalid, 0, 0)
 }
 
 // a header the walk reads that claims more octets than the packet holds is invalid

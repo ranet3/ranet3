@@ -342,7 +342,7 @@ const (
 	ActionPass Action = iota
 	// ActionForward is a waypoint's result. The packet was rewritten in place
 	// and goes to Result.Next. Result.SID is the segment of this node it was
-	// addressed to.
+	// addressed to, and Result.SRH where the SRH End acted on starts.
 	ActionForward
 	// ActionDeliver is the result of an exit that delivers to the mesh.
 	// Result.Inner is the packet that was inside and Result.Family says which
@@ -368,6 +368,7 @@ type Result struct {
 	Action Action
 	Next   netip.Addr
 	SID    netip.Addr
+	SRH    int
 	Inner  []byte
 	Family uint8
 	Err    error
@@ -400,11 +401,11 @@ func (t *LocalTable) Handle(raw []byte) Result {
 	}
 	switch segment.Behavior {
 	case BehaviorEnd:
-		next, err := End(raw)
+		next, srh, err := waypoint(raw)
 		if err != nil {
 			return Result{Action: ActionDrop, Err: err}
 		}
-		return Result{Action: ActionForward, Next: next, SID: destination}
+		return Result{Action: ActionForward, Next: next, SID: destination, SRH: srh}
 	case BehaviorEndDT46:
 		egress := segment.Deliver == DeliverEgress
 		inner, family, err := Decap(raw)
@@ -413,7 +414,7 @@ func (t *LocalTable) Handle(raw []byte) Result {
 		}
 		action := ActionDeliver
 		if egress {
-			if source, ok := innerSource(inner, family); !ok || !segment.allows(source) {
+			if !segment.allows(innerSource(inner, family)) {
 				return Result{Action: ActionDrop, Err: ErrSourceRefused}
 			}
 			action = ActionEgress
@@ -433,11 +434,7 @@ func (t *LocalTable) Handle(raw []byte) Result {
 var ErrECNDropped = errors.New("srv6: an outer CE mark over an inner Not-ECT packet")
 
 // decapsulateECN writes into inner, the packet Decap took out of outer, the ECN field of RFC 6040 section 4.2's Figure 4 for the two, and reports the cell's drop and unused
-// an inner packet shorter than its version's header, or of neither version, is left as it came
 func decapsulateECN(outer, inner []byte) (drop, unused bool) {
-	if _, err := innerNextHeader(inner); err != nil {
-		return false, false
-	}
 	field := packet.ECNOf(inner)
 	out, drop, unused := packet.Decapsulate(field, packet.ECNOf(outer))
 	if !drop && out != field {
@@ -446,14 +443,10 @@ func decapsulateECN(outer, inner []byte) (drop, unused bool) {
 	return drop, unused
 }
 
-// innerSource reads the source the host's stack will read off the tun, which
-// takes the family from the version nibble rather than from the next header
-func innerSource(inner []byte, family uint8) (netip.Addr, bool) {
-	if version, err := innerNextHeader(inner); err != nil || version != family {
-		return netip.Addr{}, false
-	}
+// innerSource is the source of inner, the packet of family Decap returned
+func innerSource(inner []byte, family uint8) netip.Addr {
 	if family == NextHeaderIPv4 {
-		return netip.AddrFrom4([4]byte(inner[12:16])), true
+		return netip.AddrFrom4([4]byte(inner[12:16]))
 	}
-	return netip.AddrFrom16([16]byte(inner[8:24])), true
+	return netip.AddrFrom16([16]byte(inner[8:24]))
 }

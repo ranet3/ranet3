@@ -526,13 +526,13 @@ func (t *tracer) session(from *Peer, decision TraceDecision, reason transitReaso
 	t.record(sessionSite(from, decision, reason), raw)
 }
 
-// answered answers raw, one packet of version from's session delivered, with kind for reason as m.answer does, and records it with the answer's fate
+// answered answers raw, one packet of version from's session delivered, with kind and value for reason as m.answer does, and records it with the answer's fate
 // a site that answers calls it in place of m.answer, which draws through no answerDraw
 //
 //go:noinline
-func (t *tracer) answered(m *Mesh, from *Peer, reason transitReason, kind answerKind, raw []byte, version byte) {
+func (t *tracer) answered(m *Mesh, from *Peer, reason transitReason, kind answerKind, value int, raw []byte, version byte) {
 	var draw answerDraw
-	fate := m.answerDrawn(raw, version, kind, 0, &draw)
+	fate := m.answerDrawn(raw, version, kind, value, &draw)
 	t.record(sessionSite(from, TraceAnswer, reason).answered(kind, fate), raw)
 }
 
@@ -835,10 +835,12 @@ func (t *tracer) selects(site *traceSite) bool {
 // and nil for a packet whose addresses and protocol, which the filter reads, are those its forward record showed
 // a tun read carrying a segment routing header of its own is dropped before it is queued, so a tun batch's packet that carries one was steered
 func (b *outboundBatch) steeredRead(queued []byte) []byte {
-	if !b.tun {
+	// a policy writes its SRH, RFC 8754 section 2's routing type 4, behind the fixed header, and a reduced policy of one segment writes none
+	// an IPv4 read is queued as it came, whatever its octets 6 and 42 hold
+	if !b.tun || len(queued) < 48 || queued[0]>>4 != 6 || queued[6] != 43 || queued[42] != 4 {
 		return nil
 	}
-	if offset, ok := carriedPacket(queued); ok {
+	if offset, ok := carriedPacket(queued, 40); ok {
 		return queued[offset:]
 	}
 	return nil

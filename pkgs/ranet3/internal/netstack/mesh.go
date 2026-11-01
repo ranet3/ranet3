@@ -530,13 +530,13 @@ func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src,
 // an answer goes into the tun, whichever side of it the source sits
 func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, nextHeader byte, mtu int, take takeAnswer) (int, int, answerKind, TraceOutcome) {
 	inner := raw[overhead:]
-	answer, cut := m.answerTooBig(inner, mtu-overhead, false, netip.Addr{}, take)
+	answer, cut, _ := m.answerTooBig(inner, mtu-overhead, false, netip.Addr{}, take)
 	if cut {
 		count, bytes, fault := b.cut.add(peer, nextHeader, raw[:overhead], inner, mtu)
 		if fault == 0 {
 			return count, bytes, 0, TraceNoAnswer
 		}
-		if answer = m.answerOptions(inner, fault, false, take); answer == nil {
+		if answer, _ = m.answerOptions(inner, fault, false, take); answer == nil {
 			return count, bytes, answerParameter, TraceNotAnswerable
 		}
 		m.writeHostPacket(answer)

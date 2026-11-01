@@ -66,21 +66,21 @@ func TestEncapsulationPutsTheFirstSegmentOnTheOuterHeader(t *testing.T) {
 		t.Errorf("hop limit is %d, want the default when none was given", out[7])
 	}
 
-	header, err := Parse(out)
-	if err != nil {
-		t.Fatal(err)
+	if srh, _, _, err := walk(out); err != nil || srh != ipv6HeaderLen {
+		t.Fatalf("walk found the SRH at %d, %v, want it behind the fixed header", srh, err)
 	}
-	if !slices.Equal(header.Path(), path) {
-		t.Errorf("the path read back as %v, want %v", header.Path(), path)
+	next, left, read := routingAt(t, out, ipv6HeaderLen)
+	if !slices.Equal(read, path) {
+		t.Errorf("the path read back as %v, want %v", read, path)
 	}
-	if int(header.SegmentsLeft) != len(path)-1 {
-		t.Errorf("segments left is %d, want %d", header.SegmentsLeft, len(path)-1)
+	if int(left) != len(path)-1 {
+		t.Errorf("segments left is %d, want %d", left, len(path)-1)
 	}
-	if active, ok := header.Active(); !ok || active != path[0] {
-		t.Errorf("the active segment is %s (%v), want the outer destination", active, ok)
+	if active := ipv6HeaderLen + srhFixedLen + addrLen*int(left); netip.AddrFrom16([16]byte(out[active:active+addrLen])) != path[0] {
+		t.Errorf("the segment Segments Left names is %s, want the outer destination", netip.AddrFrom16([16]byte(out[active:active+addrLen])))
 	}
-	if header.NextHeader != NextHeaderIPv6 {
-		t.Errorf("next header is %d, want the encapsulated family", header.NextHeader)
+	if next != NextHeaderIPv6 {
+		t.Errorf("next header is %d, want the encapsulated family", next)
 	}
 	// The payload length has to describe the routing header and the inner
 	// packet together, or every receiver truncates one or the other.
@@ -99,15 +99,12 @@ func TestEncapsulationHandlesASingleSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header, err := Parse(out)
-	if err != nil {
-		t.Fatal(err)
+	next, left, read := routingAt(t, out, ipv6HeaderLen)
+	if left != 0 || !slices.Equal(read, []netip.Addr{exit}) {
+		t.Fatalf("a single segment read back as %v at segments left %d", read, left)
 	}
-	if header.SegmentsLeft != 0 || len(header.Segments) != 1 || header.Segments[0] != exit {
-		t.Fatalf("a single segment read back as %+v", header)
-	}
-	if header.NextHeader != NextHeaderIPv4 {
-		t.Errorf("next header is %d, want IPv4 for an encapsulated v4 packet", header.NextHeader)
+	if next != NextHeaderIPv4 {
+		t.Errorf("next header is %d, want IPv4 for an encapsulated v4 packet", next)
 	}
 	inner, family, err := Decap(out)
 	if err != nil {
@@ -147,8 +144,8 @@ func TestWaypointsWalkThePathInOrder(t *testing.T) {
 		}
 	}
 
-	if _, err := End(out); !errors.Is(err, ErrExhausted) {
-		t.Errorf("a fourth waypoint on a three-segment path returned %v", err)
+	if _, err := End(out); !refusedWith(err, icmpUpperLayer, ipv6HeaderLen+srhFixedLen+3*addrLen) {
+		t.Errorf("a fourth waypoint on a three-segment path returned %v, want code 4 at the inner packet", err)
 	}
 	delivered, family, err := Decap(out)
 	if err != nil {
@@ -159,27 +156,32 @@ func TestWaypointsWalkThePathInOrder(t *testing.T) {
 	}
 }
 
-// A packet with no routing header is the ordinary case on this mesh, so it is
-// reported as such rather than as a malformed one: the caller asks every
-// packet and acts on the few that answer.
+// A packet that is not IPv6 is no packet a SID acts on, so End and Decap
+// report it as such rather than as a malformed one. An IPv6 packet with no
+// routing header is the ordinary case on this mesh, and another routing type
+// at segments left 0 is somebody else's header, not a broken one: walk finds
+// no SRH in either.
 func TestPlainPacketsAreNotSegmentRouted(t *testing.T) {
 	for name, raw := range map[string][]byte{
-		"an ipv6 packet": innerV6("payload"),
 		"an ipv4 packet": innerV4("payload"),
 		"a short buffer": {0x60, 0, 0, 0},
 		"an empty one":   {},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Parse(raw); !errors.Is(err, ErrNotSegmentRouted) {
-				t.Errorf("Parse returned %v, want ErrNotSegmentRouted", err)
+			if _, err := End(raw); !errors.Is(err, ErrNotSegmentRouted) {
+				t.Errorf("End returned %v, want ErrNotSegmentRouted", err)
+			}
+			if _, _, err := Decap(raw); !errors.Is(err, ErrNotSegmentRouted) {
+				t.Errorf("Decap returned %v, want ErrNotSegmentRouted", err)
 			}
 		})
 	}
-	// Another routing type is somebody else's header, not a broken one.
 	routed := segmentRouted(t)
 	routed[ipv6HeaderLen+2] = 0
-	if _, err := Parse(routed); !errors.Is(err, ErrNotSegmentRouted) {
-		t.Errorf("routing type 0 returned %v, want ErrNotSegmentRouted", err)
+	for name, raw := range map[string][]byte{"an ipv6 packet": innerV6("payload"), "routing type 0 at segments left 0": routed} {
+		if srh, _, _, err := walk(raw); srh != 0 || err != nil {
+			t.Errorf("%s: walk found an SRH at %d, %v, want none", name, srh, err)
+		}
 	}
 }
 
@@ -195,14 +197,12 @@ func TestMalformedHeadersAreRefusedByName(t *testing.T) {
 		"a zero length":                       func(raw []byte) { raw[ipv6HeaderLen+1] = 0 },
 	} {
 		t.Run(name, func(t *testing.T) {
-			raw := segmentRouted(t)
+			raw := steered(t)
 			damage(raw)
-			header, err := Parse(raw)
-			if err == nil {
-				t.Fatalf("%s was accepted as %+v", name, header)
-			}
-			if errors.Is(err, ErrNotSegmentRouted) {
-				t.Errorf("%s was reported as an ordinary packet", name)
+			if next, err := End(raw); err == nil {
+				t.Fatalf("%s was forwarded to %s", name, next)
+			} else if _, ok := errors.AsType[*Refusal](err); !ok {
+				t.Errorf("%s was refused with %v, want a Parameter Problem", name, err)
 			}
 		})
 	}
@@ -285,16 +285,36 @@ func TestWaypointRefusesToForwardAtTheLastHop(t *testing.T) {
 
 func segmentRouted(t *testing.T) []byte {
 	t.Helper()
-	path := []netip.Addr{addr("3fff:b:0:206::2"), addr("3fff:b:0:506::1")}
-	out, err := Encapsulate(innerV6("payload"), addr("3fff:b:0:100::1"), path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	out := steered(t)
 	// Walked to its exit, which is the state an End.DT46 sees.
 	if _, err := End(out); err != nil {
 		t.Fatal(err)
 	}
 	return out
+}
+
+// steered is a packet encapsulated over a waypoint and an exit, at segments left 1, the state the waypoint's End sees
+func steered(t *testing.T) []byte {
+	t.Helper()
+	path := []netip.Addr{addr("3fff:b:0:206::2"), addr("3fff:b:0:506::1")}
+	out, err := Encapsulate(innerV6("payload"), addr("3fff:b:0:100::1"), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// routingAt is the SRH at offset in raw read back: its Next Header, its Segments Left and its segments in the order the packet visits them
+func routingAt(t *testing.T, raw []byte, offset int) (next, left byte, path []netip.Addr) {
+	t.Helper()
+	if len(raw) < offset+srhFixedLen || raw[offset+routingTypeInHeader] != routingTypeSegment {
+		t.Fatalf("no SRH at %d of a %d octet packet", offset, len(raw))
+	}
+	for i := int(raw[offset+lastEntryInHeader]); i >= 0; i-- {
+		at := offset + srhFixedLen + addrLen*i
+		path = append(path, netip.AddrFrom16([16]byte(raw[at:at+addrLen])))
+	}
+	return raw[offset], raw[offset+segmentsLeftInHeader], path
 }
 
 // A reduced header of RFC 8754 section 4.1.1 leaves out the segment the
@@ -307,12 +327,8 @@ func TestReducedHeaderIsForwarded(t *testing.T) {
 	s2, s3 := addr("3fff:b:0:406::2"), addr("3fff:b:0:506::1")
 	raw := reducedHeader(t, addr("3fff:b:0:206::2"), []netip.Addr{s3, s2})
 
-	header, err := Parse(raw)
-	if err != nil {
-		t.Fatalf("a reduced header was refused: %v", err)
-	}
-	if int(header.SegmentsLeft) != len(header.Segments) {
-		t.Fatalf("segments left is %d against %d segments", header.SegmentsLeft, len(header.Segments))
+	if _, left, read := routingAt(t, raw, ipv6HeaderLen); int(left) != len(read) {
+		t.Fatalf("segments left is %d against %d segments", left, len(read))
 	}
 	next, err := End(raw)
 	if err != nil {
@@ -338,12 +354,8 @@ func TestTLVAfterTheSegmentsIsIgnored(t *testing.T) {
 	withTLV[ipv6HeaderLen+1]++
 	binary.BigEndian.PutUint16(withTLV[4:], uint16(len(withTLV)-ipv6HeaderLen))
 
-	header, err := Parse(withTLV)
-	if err != nil {
-		t.Fatalf("a header carrying a padding TLV was refused: %v", err)
-	}
-	if len(header.Segments) != 1 || header.Segments[0] != exit {
-		t.Fatalf("the segment list read back as %v", header.Segments)
+	if _, _, read := routingAt(t, withTLV, ipv6HeaderLen); !slices.Equal(read, []netip.Addr{exit}) {
+		t.Fatalf("the segment list read back as %v", read)
 	}
 	delivered, family, err := Decap(withTLV)
 	if err != nil {
@@ -428,8 +440,8 @@ func TestRoutingHeaderLongerThanItsPacketIsRefused(t *testing.T) {
 	raw[ipv6HeaderLen+1] = 40 // 328 bytes of header in a packet that has far less
 	raw[ipv6HeaderLen+4] = 15 // a last entry the header would have room for
 	raw[ipv6HeaderLen+3] = 15
-	if _, err := Parse(raw); err == nil {
-		t.Fatal("a routing header running past its packet was accepted")
+	if _, err := End(raw); !refusedWith(err, icmpErroneousHeader, ipv6HeaderLen+1) {
+		t.Fatalf("a routing header running past its packet was answered %v, want code 0 at its length", err)
 	}
 }
 
@@ -441,8 +453,8 @@ func TestSegmentListPastTheCapIsRefused(t *testing.T) {
 		segments[i] = addr("3fff:b:0:506::1")
 	}
 	raw := reducedHeader(t, addr("3fff:b:0:206::2"), segments)
-	if _, err := Parse(raw); err == nil {
-		t.Fatalf("a %d segment header was accepted", len(segments))
+	if _, err := End(raw); !refusedWith(err, icmpHeaderTooBig, ipv6HeaderLen) {
+		t.Fatalf("a %d segment header was answered %v, want code 6 at its first octet", len(segments), err)
 	}
 }
 
@@ -486,9 +498,9 @@ func oversizedV6() []byte {
 // in a packet a kernel acts on, and refuses it as addressed to one of this
 // node's own segments with nothing in it.
 func TestRoutingHeaderIsFoundBehindAnotherExtensionHeader(t *testing.T) {
-	exit := addr("3fff:b:0:206::1")
+	waypoint, exit := addr("3fff:b:0:206::2"), addr("3fff:b:0:206::1")
 	inner := innerV6("payload")
-	plain, err := Encapsulate(inner, addr("3fff:b:0:100::1"), []netip.Addr{exit})
+	plain, err := Encapsulate(inner, addr("3fff:b:0:100::1"), []netip.Addr{waypoint, exit})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -499,15 +511,14 @@ func TestRoutingHeaderIsFoundBehindAnotherExtensionHeader(t *testing.T) {
 	behind[6] = nextHeaderHopByHop
 	binary.BigEndian.PutUint16(behind[4:], uint16(len(behind)-ipv6HeaderLen))
 
-	header, err := Parse(behind)
-	if err != nil {
-		t.Fatalf("a routing header behind a hop-by-hop header was not found: %v", err)
+	if srh, _, _, err := walk(behind); err != nil || srh != ipv6HeaderLen+len(hopByHop) {
+		t.Fatalf("walk found the routing header behind a hop-by-hop header at %d, %v, want %d", srh, err, ipv6HeaderLen+len(hopByHop))
 	}
-	if header.Offset != ipv6HeaderLen+len(hopByHop) {
-		t.Errorf("the routing header was found at %d", header.Offset)
+	if _, _, read := routingAt(t, behind, ipv6HeaderLen+len(hopByHop)); !slices.Equal(read, []netip.Addr{waypoint, exit}) {
+		t.Fatalf("the segment list read back as %v", read)
 	}
-	if len(header.Segments) != 1 || header.Segments[0] != exit {
-		t.Fatalf("the segment list read back as %v", header.Segments)
+	if next, err := End(behind); err != nil || next != exit {
+		t.Fatalf("the waypoint moved the packet to %s, %v, want the exit", next, err)
 	}
 	delivered, family, err := Decap(behind)
 	if err != nil {
@@ -546,7 +557,7 @@ func TestExtensionHeaderWalkRefusesWhatAPeerCanChoose(t *testing.T) {
 			return raw
 		},
 		"a routing header one unit shorter than its segments": func() []byte {
-			raw := segmentRouted(t)
+			raw := steered(t)
 			raw[ipv6HeaderLen+1]--
 			return raw
 		},
@@ -570,40 +581,64 @@ func TestExtensionHeaderWalkRefusesWhatAPeerCanChoose(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			raw := build()
 			binary.BigEndian.PutUint16(raw[4:], uint16(len(raw)-ipv6HeaderLen))
-			if header, err := Parse(raw); err == nil {
-				t.Errorf("%s was accepted as %+v", name, header)
+			if next, err := End(bytes.Clone(raw)); err == nil {
+				t.Errorf("%s was forwarded to %s", name, next)
+			}
+			if inner, _, err := Decap(raw); err == nil {
+				t.Errorf("%s was delivered as %d octets", name, len(inner))
 			}
 		})
 	}
 }
 
-// findRouting reads 8 headers past the fixed one, the routing header among them, so it finds a routing header behind 6 or 7 destination options headers
-// and refuses one behind 8 or 9 as more than it walks, the counts written out so a walk one header longer or shorter fails here
-func TestRoutingHeaderIsFoundBehindSevenHeadersAndRefusedBehindEight(t *testing.T) {
+// behindOptions is raw with front destination options headers between its fixed header and the header after it
+func behindOptions(raw []byte, front int) []byte {
+	chain := []byte(nil)
+	for range front {
+		chain = append(chain, options(nextHeaderDestOpts)...)
+	}
+	chain[len(chain)-extensionUnit] = raw[6]
+	out := slices.Concat(raw[:ipv6HeaderLen], chain, raw[ipv6HeaderLen:])
+	out[6] = nextHeaderDestOpts
+	binary.BigEndian.PutUint16(out[4:], uint16(len(out)-ipv6HeaderLen))
+	return out
+}
+
+// walk steps past 8 extension headers at most, so an exit delivers the packet behind 7 destination options headers and an SRH at segments left 0, the SRH the 8th
+// and refuses one behind 8 or 9 with RFC 8883 section 2.5's code 8 at the 9th header, the first beyond the limit, while End acts on an SRH with segments left that is the 9th
+// the counts are written out so a walk one header longer or shorter fails here
+func TestWalkStepsPastEightHeadersAndRefusesTheNinth(t *testing.T) {
+	ninth := ipv6HeaderLen + extensionUnit*maxExtensionHeaders
 	for front := 6; front <= 9; front++ {
-		routed := segmentRouted(t)
-		chain := []byte(nil)
-		for range front {
-			chain = append(chain, options(nextHeaderDestOpts)...)
+		_, _, err := Decap(behindOptions(segmentRouted(t), front))
+		if delivered := err == nil; delivered != (front <= 7) || !delivered && !refusedWith(err, icmpTooManyHeaders, ninth) {
+			t.Errorf("an exit behind %d destination options headers and an SRH answered %v, want delivery %t and otherwise code 8 at %d", front, err, front <= 7, ninth)
 		}
-		chain[len(chain)-8] = routed[6]
-		raw := slices.Concat(routed[:ipv6HeaderLen], chain, routed[ipv6HeaderLen:])
-		raw[6] = nextHeaderDestOpts
-		_, err := findRouting(raw)
-		if found := err == nil; found != (front <= 7) {
-			t.Errorf("the routing header behind %d destination options headers was found %t, with %v", front, found, err)
-		}
-		if front >= 8 && !errors.Is(err, ErrHeaderInvalid) {
-			t.Errorf("the routing header behind %d destination options headers was refused with %v, want ErrHeaderInvalid", front, err)
+		_, err = End(behindOptions(steered(t), front))
+		if forwarded := err == nil; forwarded != (front <= 8) || !forwarded && !refusedWith(err, icmpTooManyHeaders, ninth) {
+			t.Errorf("a waypoint behind %d destination options headers answered %v, want a forward %t and otherwise code 8 at %d", front, err, front <= 8, ninth)
 		}
 	}
 }
 
-// Every byte Parse, End and Decap read comes from a peer, and the bounds are
+// walk passes an authentication header by the length RFC 4302 section 2.2 gives it, in 4-octet units less 2
+// so it finds the SRH behind one of 16 octets, a 4-octet ICV after its SPI and sequence number
+func TestWalkFindsTheSRHBehindAnAuthenticationHeader(t *testing.T) {
+	routed := steered(t)
+	ah := []byte{routed[6], 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0}
+	raw := slices.Concat(routed[:ipv6HeaderLen], ah, routed[ipv6HeaderLen:])
+	raw[6] = nextHeaderAuth
+	binary.BigEndian.PutUint16(raw[4:], uint16(len(raw)-ipv6HeaderLen))
+	if srh, _, _, err := walk(raw); err != nil || srh != ipv6HeaderLen+len(ah) {
+		t.Errorf("walk returned the SRH at %d, %v, want it at %d", srh, err, ipv6HeaderLen+len(ah))
+	}
+}
+
+// Every byte End and Decap read comes from a peer, and the bounds are
 // arithmetic on fields the peer chose, so the one thing none of them may do is
 // panic. The corpus holds well formed packets, so the mutations start near the
 // shapes that reach the interesting code.
-func FuzzParseNeverPanics(f *testing.F) {
+func FuzzEndAndDecapNeverPanic(f *testing.F) {
 	f.Add(innerV6("payload"))
 	f.Add(innerV4("payload"))
 	raw, err := Encapsulate(innerV6("payload"), addr("3fff:b:0:100::1"),
@@ -615,13 +650,13 @@ func FuzzParseNeverPanics(f *testing.F) {
 	f.Add(reducedHeader(&testing.T{}, addr("3fff:b:0:206::2"), []netip.Addr{addr("3fff:b:0:506::1")}))
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
-		header, err := Parse(raw)
-		if err == nil && int(header.SegmentsLeft) > len(header.Segments) {
-			t.Fatalf("segments left %d past %d segments was accepted", header.SegmentsLeft, len(header.Segments))
-		}
-		End(bytes.Clone(raw))
-		Decap(bytes.Clone(raw))
+		_, endErr := End(bytes.Clone(raw))
+		_, _, decapErr := Decap(bytes.Clone(raw))
 		TimeExceeded(raw, addr("3fff:b:0:106::2"), always)
-		ParameterProblem(raw, addr("3fff:b:0:106::2"), always)
+		for _, err := range []error{endErr, decapErr} {
+			if refusal, ok := errors.AsType[*Refusal](err); ok {
+				ParameterProblem(raw, addr("3fff:b:0:106::2"), refusal, always)
+			}
+		}
 	})
 }

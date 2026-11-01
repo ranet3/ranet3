@@ -620,21 +620,30 @@ func TestWaypointDropsASegmentTheTableAnswersHeldOrLocal(t *testing.T) {
 }
 
 // An answer to a source the table answers held or this node's goes to no peer,
-// though a covering route leads back to the node that sent the segment.
-func TestAnswerGoesNowhereTheTableAnswersHeldOrLocal(t *testing.T) {
+// though a covering route leads back to the node that sent the segment. One to
+// this node's own goes into the tun instead, and one to a held source nowhere.
+func TestAnswerGoesToNoPeerTheTableAnswersHeldOrLocal(t *testing.T) {
 	after := segAddr("3fff:b:0:206::1")
 	source := tooBigSource[6]
-	for _, value := range []*Peer{Unreachable, Local, Assigned} {
+	for _, test := range []struct {
+		value *Peer
+		tun   int
+	}{{Unreachable, 0}, {Local, 1}, {Assigned, 1}} {
 		session, _ := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 		m, sender := waypointOf(t, after, session)
+		dev := &recordingDevice{writes: make(chan recordedWrite, 1)}
+		m.setDevice(dev)
 		m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), sender.sender)
-		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, 128), value)
+		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(source, 128), test.value)
 		m.applySegments(framed(steeredThrough(t, udpPacket(source, tooBigDestination[6], DefaultMTU, false), after)), DefaultMTU, nil)
 		if answers := sender.packets(t); len(answers) != 0 {
-			t.Errorf("an answer to a source that is %s went back by the covering route", value.ID)
+			t.Errorf("an answer to a source that is %s went back by the covering route", test.value.ID)
 		}
-		if got := m.TooBigAnswered(); got != 0 {
-			t.Errorf("an answer to a source that is %s counted %d sent", value.ID, got)
+		if written := len(slices.Concat(tunWrites(dev)...)); written != test.tun {
+			t.Errorf("an answer to a source that is %s went into the tun %d times, want %d", test.value.ID, written, test.tun)
+		}
+		if got := m.TooBigAnswered(); got != uint64(test.tun) {
+			t.Errorf("an answer to a source that is %s counted %d sent, want %d", test.value.ID, got, test.tun)
 		}
 	}
 }

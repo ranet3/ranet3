@@ -154,7 +154,8 @@ func TestReservationHoldsTheBytesItSends(t *testing.T) {
 		m.forwardSegments([]forwardedSegment{
 			{raw: udpPacket(tooBigSource[6], tooBigDestination[6], 2000, false)},
 			{raw: udpPacket(tooBigSource[6], tooBigDestination[6], 1900, false)},
-			{raw: steeredThrough(t, udpPacket(tooBigSource[4], tooBigDestination[4], 4000, false), segAddr("3fff:b:0:206::1"))},
+			// the SRH Encapsulate writes is behind the fixed header
+			{raw: steeredThrough(t, udpPacket(tooBigSource[4], tooBigDestination[4], 4000, false), segAddr("3fff:b:0:206::1")), srh: 40},
 		}, nil, nil, nil)
 		var sent int
 		select {

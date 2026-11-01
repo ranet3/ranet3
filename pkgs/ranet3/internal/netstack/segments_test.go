@@ -219,6 +219,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 
 // An End whose next segment only a route counting as a default reaches drops and counts the packet as one with no route to it, since a
 // next segment through a default would leave the mesh, which no segment means, for a next segment outside the overlay and one inside,
+// and answers it with the Destination Unreachable, code 0, of RFC 4443 section 3.1 to its source, which only the default reaches here
 // and sends the same packet on where a route counting as no default, the next segment's /64, stands beside the default
 func TestEndDropsAPacketWhoseNextSegmentOnlyADefaultReaches(t *testing.T) {
 	waypoint := segAddr("3fff:b:0:106::2")
@@ -237,7 +238,8 @@ func TestEndDropsAPacketWhoseNextSegmentOnlyADefaultReaches(t *testing.T) {
 			if nextHop := hop.peer(t, "next"); routed {
 				mesh.Routes.Set(netip.Prefix{}, netip.PrefixFrom(next, 64).Masked(), nextHop)
 			}
-			outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), segAddr("3fff:b:0:100::1"), []netip.Addr{waypoint, next})
+			source := segAddr("3fff:b:0:100::1")
+			outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), source, []netip.Addr{waypoint, next})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -247,9 +249,11 @@ func TestEndDropsAPacketWhoseNextSegmentOnlyADefaultReaches(t *testing.T) {
 			wantHop, wantForwarded, wantDropped := 0, uint64(0), uint64(1)
 			if routed {
 				wantHop, wantForwarded, wantDropped = 1, 1, 0
-			}
-			if got := len(exit.packets(t)); got != 0 {
-				t.Errorf("toward %s, under its /64 %v, the End sent %d packets by the default", next, routed, got)
+				if got := len(exit.packets(t)); got != 0 {
+					t.Errorf("toward %s, under its /64 %v, the End sent %d packets by the default", next, routed, got)
+				}
+			} else {
+				oneAnswer(t, exit, 1, 0, waypoint, source)
 			}
 			if got := len(hop.packets(t)); got != wantHop {
 				t.Errorf("toward %s, under its /64 %v, the End sent %d packets by that route, want %d", next, routed, got, wantHop)
@@ -535,6 +539,7 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	refusal := &srv6.Refusal{Code: 0, Pointer: 43}
 	for _, c := range []struct {
 		name   string
 		spend  func(m *Mesh)
@@ -543,7 +548,7 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 		{"a refused packet past its source's bucket", func(m *Mesh) {
 			for m.takeICMPToken(from) {
 			}
-		}, func(m *Mesh) bool { m.answerRefused(outer, srv6.ErrHeaderInvalid); return false }},
+		}, func(m *Mesh) bool { m.answerRefused(outer, refusal); return false }},
 		{"a refused packet past the cap", func(m *Mesh) { capHolding(m, 0) }, func(m *Mesh) bool { m.answerRefused(outer, srv6.ErrHopLimit); return false }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -556,6 +561,102 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 				t.Errorf("%s cost %.0f allocations and was answered %t, want none and no answer", c.name, allocs, answered)
 			}
 		})
+	}
+}
+
+// an End's destination unreachable for a next segment no route carries draws on the bucket of the segment's source and on the node's cap
+// so a segment from a sender whose bucket is spent, or with the cap spent, is dropped with no answer, while a fresh sender's beside a spent one is answered
+func TestUnroutedNextSegmentIsAnsweredWithinItsSendersBucketAndTheCap(t *testing.T) {
+	waypoint, nowhere := segAddr("3fff:b:0:106::2"), segAddr("3fff:c::1")
+	spent, fresh := segAddr("3fff:b:0:100::1"), segAddr("3fff:b:0:100::2")
+	spendBucket := func(m *Mesh) {
+		for m.takeICMPToken(spent) {
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		from    netip.Addr
+		spend   func(m *Mesh)
+		answers int
+	}{
+		{"from a sender whose bucket is spent", spent, spendBucket, 0},
+		{"from a fresh sender with the node's cap spent", fresh, func(m *Mesh) { capHolding(m, 0) }, 0},
+		{"from a fresh sender beside a spent one", fresh, spendBucket, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := &recordingPeer{}
+			m := &Mesh{Routes: NewRouteTable()}
+			m.startSegmentReports()
+			m.SetSegments(table)
+			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:100::/56"), recorder.peer(t, "sender"))
+			c.spend(m)
+			outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), c.from, []netip.Addr{waypoint, nowhere})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.applySegments(framed(outer), DefaultMTU, nil)
+			sent := recorder.packets(t)
+			if len(sent) != c.answers || c.answers != 0 && sent[0][40] != 1 {
+				t.Errorf("%d packets went back, want %d destination unreachable", len(sent), c.answers)
+			}
+		})
+	}
+}
+
+// an End's parameter problem for a next segment at an address cap.table assigns this node, with segments left, draws on the bucket of the segment's source and on the node's cap
+// so a segment from a sender whose bucket is spent, or with the cap spent, is dropped with no answer, while a fresh sender's beside a spent one is answered
+func TestAssignedNextSegmentIsAnsweredWithinItsSendersBucketAndTheCap(t *testing.T) {
+	waypoint, assigned, beyond := segAddr("3fff:b:0:106::2"), segAddr("3fff:b:0:106::9"), segAddr("3fff:b:0:206::1")
+	spent, fresh := segAddr("3fff:b:0:100::1"), segAddr("3fff:b:0:100::2")
+	spendBucket := func(m *Mesh) {
+		for m.takeICMPToken(spent) {
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		from    netip.Addr
+		spend   func(m *Mesh)
+		answers int
+	}{
+		{"from a sender whose bucket is spent", spent, spendBucket, 0},
+		{"from a fresh sender with the node's cap spent", fresh, func(m *Mesh) { capHolding(m, 0) }, 0},
+		{"from a fresh sender beside a spent one", fresh, spendBucket, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			table, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(waypoint), Behavior: srv6.BehaviorEnd}}, everySource)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := &recordingPeer{}
+			m := &Mesh{Routes: NewRouteTable()}
+			m.startSegmentReports()
+			m.SetSegments(table)
+			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:100::/56"), recorder.peer(t, "sender"))
+			m.Routes.Set(netip.Prefix{}, hostPrefix(assigned), Assigned)
+			c.spend(m)
+			outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), c.from, []netip.Addr{waypoint, assigned, beyond})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.applySegments(framed(outer), DefaultMTU, nil)
+			sent := recorder.packets(t)
+			if len(sent) != c.answers || c.answers != 0 && sent[0][40] != 4 {
+				t.Errorf("%d packets went back, want %d parameter problems", len(sent), c.answers)
+			}
+		})
+	}
+}
+
+// carriedPacket reports no packet behind an SRH whose Hdr Ext Len runs past the end of raw, reading nothing past it
+func TestCarriedPacketFindsNoneBehindAnSRHRunningPastItsPacket(t *testing.T) {
+	raw := udpPacket(segAddr("3fff:a::1"), segAddr("3fff:a::2"), 60, false)
+	raw[6], raw[40], raw[41], raw[42] = 43, 4, 255, 4
+	if offset, ok := carriedPacket(raw, 40); ok {
+		t.Errorf("carriedPacket found a packet at %d behind an SRH of 255 units in a %d byte packet", offset, len(raw))
 	}
 }
 
@@ -637,12 +738,12 @@ func TestPacketsNoErrorAnswersLeaveTheLimitsUntouched(t *testing.T) {
 			m.startSegmentReports()
 			m.SetAnswerTTL(64)
 			for range stream {
-				if answer, cut := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken); answer != nil || cut {
+				if answer, cut, _ := m.answerTooBig(c.offending, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken); answer != nil || cut {
 					t.Fatalf("a packet no error may answer was answered %t or cut %t", answer != nil, cut)
 				}
 			}
 			untouched(t, m)
-			if answer, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken); answer == nil {
+			if answer, _, _ := m.answerTooBig(c.answerable, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken); answer == nil {
 				t.Error("an answerable packet after the stream was not answered")
 			}
 		})
