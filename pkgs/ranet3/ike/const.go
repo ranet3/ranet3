@@ -210,14 +210,10 @@ const (
 	N_ADDITIONAL_KEY_EXCHANGE NotifyType = 16441
 )
 
-// Hash algorithm IDs for the SIGNATURE_HASH_ALGORITHMS notify data (RFC 7427
-// section 3). HashIdentity is RFC 8420's addition for signature algorithms that hash
-// the message themselves, which is how EdDSA is advertised.
-const (
-	HashSHA2_256 uint16 = 2
-	HashSHA2_384 uint16 = 3
-	HashIdentity uint16 = 5
-)
+// HashIdentity is RFC 8420's hash algorithm ID for the SIGNATURE_HASH_ALGORITHMS
+// notify data (RFC 7427 section 3), for signature algorithms that hash the
+// message themselves, which is how EdDSA is advertised.
+const HashIdentity uint16 = 5
 
 // Authentication methods, RFC 7296 section 3.8, extended by RFC 7427.
 const (
@@ -237,8 +233,3 @@ const (
 )
 
 const NonESPMarkerLen = 4
-
-const (
-	IKEPortInitial = 500
-	IKEPortNATT    = 4500
-)
