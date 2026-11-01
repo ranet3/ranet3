@@ -39,9 +39,6 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 		slog.Warn("babel bad packet", "err", err)
 		return nil, nil
 	}
-	// Reset per packet: the sequence number this node originates rises at most
-	// once for the whole of it, however many requests it carries.
-	s.raisedSeqno = false
 	recvTS := uint32(now.UnixMicro())
 	var helloTxTS uint32
 	var haveHelloTS bool
@@ -349,8 +346,8 @@ func (s *Speaker) routeReply(n *neighborState, request RouteRequest, now time.Ti
 // it one hop along a route toward the origin.
 func (s *Speaker) seqnoReply(n *neighborState, request SeqnoRequest, now time.Time) []sendAction {
 	key := routeKey{source: request.SourcePrefix, dest: request.Prefix}
-	if request.RouterID == s.routerID {
-		s.seqnoRequestedLocked(n, key, request.Seqno)
+	if request.RouterID == s.routerID && s.seqnoRequestedLocked(n, key, request.Seqno) {
+		return nil // the triggered update the raise owes the prefix answers it
 	}
 	if _, local := s.originate[key]; local {
 		advertised, spent := s.advertiseTo(n, key, true, now)

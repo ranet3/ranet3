@@ -388,6 +388,8 @@ func (s *Speaker) helloAction(n *neighborState, now time.Time) sendAction {
 	if n.heard && !n.isAlive(now) {
 		rxcost = MetricInfinity
 	}
+	// RFC 9616 section 3.2 takes one round-trip sample from each Hello and IHU
+	// pair a node receives, so an IHU goes with every Hello.
 	ihu := IHU{RxCost: rxcost, Interval: centis}
 	if n.haveTheirHello {
 		ihu.OriginTS, ihu.ReceiveTS, ihu.HasTS = n.theirHelloTxTS, n.theirHelloRxTS, true
@@ -629,6 +631,7 @@ func (s *Speaker) oweAgain(n *neighborState, undo tlvUndo) {
 // neighbor was told is reachable, which is exactly the set that still needs
 // retracting.
 func (s *Speaker) updateActions(now time.Time) []sendAction {
+	s.raiseOwedLocked()
 	keys := s.advertisableKeys()
 	s.routes.takeDirty()
 	for _, n := range s.neighbors {
@@ -640,6 +643,7 @@ func (s *Speaker) updateActions(now time.Time) []sendAction {
 // triggeredActions covers RFC 8966 section 3.7.2. Selection changes are
 // collected by the route table and flushed by Run rather than sent from the
 // receive path, so a burst of updates in one packet produces one advertisement.
+// A neighbor sent one waits triggerPace for the next.
 func (s *Speaker) triggeredActions(now time.Time) []sendAction {
 	for _, key := range s.routes.takeDirty() {
 		for _, n := range s.neighbors {
@@ -648,9 +652,10 @@ func (s *Speaker) triggeredActions(now time.Time) []sendAction {
 	}
 	var actions []sendAction
 	for _, n := range s.neighbors {
-		if len(n.owed) == 0 {
+		if len(n.owed) == 0 || now.Before(n.nextTriggered) {
 			continue
 		}
+		s.raiseOwedLocked()
 		keys := slices.Collect(maps.Keys(n.owed))
 		clear(n.owed)
 		// "Whenever it changes the selected router-id for a given destination,
@@ -663,9 +668,21 @@ func (s *Speaker) triggeredActions(now time.Time) []sendAction {
 		if len(tlvs) == 0 {
 			continue
 		}
+		n.nextTriggered = now.Add(s.triggerPace())
 		actions = append(actions, sendAction{neighbor: n, dest: multicastGroup, priority: priorityDump, tlvs: tlvs, rollback: rollback})
 	}
 	return actions
+}
+
+// triggerPace is the least time between two triggered updates to one neighbor.
+// Section 3.7.2 makes the update for a changed router-id urgent, and section
+// 3.8.1.2 the update that answers a forwarded request, and Appendix B
+// RECOMMENDS an urgent timeout of 0.2 s. Such an update that follows another
+// inside the pace waits for it, so a route that flaps costs each neighbor one
+// update a pace. Half the Hello interval keeps every other TLV inside the time
+// section 3.1 gives it.
+func (s *Speaker) triggerPace() time.Duration {
+	return min(maxTriggerPace, s.update/2, s.hello/2)
 }
 
 // starvedActions turns the route table's pending seqno requests into unicast

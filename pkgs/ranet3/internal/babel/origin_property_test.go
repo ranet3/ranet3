@@ -207,13 +207,16 @@ func (r *originRig) use(id [8]byte, seqno uint16) {
 	}
 }
 
-// request delivers one seqno request asking for the seqno in use and ahead more, reporting false where the process ended
+// request delivers one seqno request asking for the seqno in use and ahead more, then builds the update that makes the raise it owes, reporting false where the process ended
 func (r *originRig) request(ahead uint16) bool {
 	p := r.process
 	origin, held := p.speaker.Origin()
 	packet := EncodePacket([]RawTLV{EncodeSeqnoRequest(SeqnoRequest{
 		AE: AEIPv6, Prefix: originPrefix, Seqno: held + ahead, HopCount: 64, RouterID: origin.RouterID})})
-	if !r.survives(func() { p.speaker.handlePacket(p.neighbor, packet) }) {
+	if !r.survives(func() {
+		p.speaker.handlePacket(p.neighbor, packet)
+		p.speaker.flushUpdates()
+	}) {
 		return false
 	}
 	_, seqno := p.speaker.Origin()

@@ -56,28 +56,39 @@ func (s *Speaker) startRunLocked() {
 	s.ran = true
 }
 
-// seqnoRequestedLocked takes a seqno request naming this node's own router id and records it
-// one asking past the seqno of a prefix this node originates raises the seqno, RFC 8966 section 3.8.1.2
-// the raise comes at most once per packet, since a peer chooses how many requests one carries and eighty fit
-// and each raise owes every neighbor a triggered update of everything this node originates
-func (s *Speaker) seqnoRequestedLocked(n *neighborState, key routeKey, asked uint16) {
+// seqnoRequestedLocked takes a seqno request naming this node's own router id, records it, and reports whether a raise answers it
+// one asking past the seqno of a prefix this node originates owes a raise, RFC 8966 section 3.8.1.2, and owes the prefix a triggered update
+// the raise is made once, as the next update is built, however many requests owe it
+// a peer chooses how many requests it sends, and the section allows one request to move the seqno by one at most
+func (s *Speaker) seqnoRequestedLocked(n *neighborState, key routeKey, asked uint16) bool {
 	seqno := s.originSeqno
 	_, local := s.originate[key]
-	raise := local && seqnoGT(asked, seqno) && !s.raisedSeqno
+	raise := local && seqnoGT(asked, seqno)
 	s.events.Emit("babel.seqno.requested", n.peer.ID, slog.String("route", describeRoute(key)),
 		slog.Int("asked", int(asked)), slog.Int("seqno", int(seqno)), slog.Bool("raised", raise))
 	if raise {
-		s.raisedSeqno = true
-		s.raiseSeqnoLocked(raisedByRequest, n.peer.ID)
+		if s.raiseOwedTo == "" {
+			s.raiseOwedTo = n.peer.ID
+		}
+		s.routes.dirty[key] = struct{}{}
+	}
+	return raise
+}
+
+// raiseOwedLocked makes the raise the requests since the last one owe, before a triggered update or a dump is built
+func (s *Speaker) raiseOwedLocked() {
+	if s.raiseOwedTo != "" {
+		s.raiseSeqnoLocked(raisedByRequest, s.raiseOwedTo)
 	}
 }
 
-// raiseSeqnoLocked moves this node's own seqno on by one, which every prefix it originates then carries
+// raiseSeqnoLocked moves this node's own seqno on by one, which every prefix it originates then carries, and answers every request owing a raise
 // a seqno past the saved limit is used only once persist has saved a limit seqnoLimitAhead past it
 // a save that fails is logged and recorded, and the seqno moves on, since a neighbor starved for it stays starved without the raise
 // the next raise past the saved limit tries the save again
-// peer is the neighbor whose request it answers, empty for a start
+// peer is the neighbor whose request it answers first, empty for a start
 func (s *Speaker) raiseSeqnoLocked(cause, peer string, attrs ...slog.Attr) {
+	s.raiseOwedTo = ""
 	from := s.originSeqno
 	s.originSeqno++
 	if s.persist != nil && seqnoGT(s.originSeqno, s.seqnoLimit) {
@@ -90,9 +101,6 @@ func (s *Speaker) raiseSeqnoLocked(cause, peer string, attrs ...slog.Attr) {
 		} else {
 			s.seqnoLimit = limit
 		}
-	}
-	for origin := range s.originate {
-		s.routes.dirty[origin] = struct{}{}
 	}
 	attrs = append(attrs, slog.String("cause", cause), slog.Int("from", int(from)), slog.Int("to", int(s.originSeqno)))
 	if s.persist != nil {

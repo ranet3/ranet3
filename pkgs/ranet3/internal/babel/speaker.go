@@ -226,8 +226,10 @@ type Speaker struct {
 	persist func(Origin) error
 	// ran marks a speaker whose Run has started, see startRunLocked
 	ran bool
-	// raisedSeqno bounds originSeqno to one raise per received packet.
-	raisedSeqno   bool
+	// raiseOwedTo is the neighbor whose seqno request first owed a raise not
+	// yet made, see seqnoRequestedLocked, and empty where none is owed. A peer
+	// ID is never empty: it is a session's identity.Path.
+	raiseOwedTo   string
 	updatePending bool
 	// routeChanges and routeLogged bound the selection-change log, see
 	// routeLogInterval. Both are touched only under s.mu, with installRoute.
@@ -364,8 +366,14 @@ func (s *Speaker) SetConfig(cfg Config) {
 	}
 	s.applyEffective(effective)
 	s.extra = cfg.Cost.Extra
+	// A pace set under the old intervals ends no later than the new pace from
+	// now, so a shorter Hello interval bounds the next triggered update at once.
+	pace := now.Add(s.triggerPace())
 	for _, n := range s.neighbors {
 		s.chargeLocked(n)
+		if n.nextTriggered.After(pace) {
+			n.nextTriggered = pace
+		}
 	}
 	s.sweepExpiredLocked(now)
 	actions := make([]sendAction, 0, 2*len(s.neighbors))
@@ -846,6 +854,9 @@ func (s *Speaker) deadlineLocked() time.Time {
 		if n.haveReportedCost {
 			deadline = earlier(deadline, n.ihuExpiry)
 		}
+		if len(n.owed) != 0 {
+			deadline = earlier(deadline, n.nextTriggered)
+		}
 		// Carried separately from ihuExpiry, because the two only move
 		// together while RTT samples keep arriving. A neighbor that stops
 		// sending Timestamp sub-TLVs, or whose clock steps so
@@ -884,6 +895,9 @@ func (s *Speaker) Run(ctx context.Context) error {
 		s.applyLostLocked()
 		s.sweepExpiredLocked(now)
 		var actions []sendAction
+		// RFC 8966 section 3.1's jitter and spacing are left out: each link is
+		// one ESP session to one neighbor, with no medium shared with other
+		// speakers whose sends could fall into step or collide.
 		helloDue := !now.Before(s.nextHello)
 		if helloDue {
 			s.nextHello = now.Add(s.hello)

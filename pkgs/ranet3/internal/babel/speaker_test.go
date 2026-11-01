@@ -580,6 +580,10 @@ func TestOriginRequestsAndUpdateSplitting(t *testing.T) {
 	speaker.handlePacket(neighbor, EncodePacket([]RawTLV{EncodeSeqnoRequest(SeqnoRequest{
 		AE: AEIPv4, Prefix: first, Seqno: 9, HopCount: 64, RouterID: routerID,
 	})}))
+	if replies := packets.sent(); len(replies) != 0 || speaker.originSeqno != 1 {
+		t.Fatalf("Seqno Request produced %d replies and seqno %d before the triggered update", len(replies), speaker.originSeqno)
+	}
+	speaker.sendTriggered(time.Now())
 	if replies := packets.sent(); len(replies) != 1 || speaker.originSeqno != 2 {
 		t.Fatalf("Seqno Request produced %d replies and seqno %d", len(replies), speaker.originSeqno)
 	}

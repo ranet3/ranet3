@@ -19,6 +19,9 @@ const defaultPacketSize = srv6.MinimumIPv6MTU - ipv6HeaderLen - udpHeaderLen
 // defaultMargin is cap.babel.margin where the file leaves it out
 const defaultMargin = 4
 
+// maxTriggerPace is the longest triggerPace spaces two triggered updates to one neighbor
+const maxTriggerPace = time.Second
+
 // probeInterval is the Interval a probe's Ack Request names, the longest the field holds
 // a receiver answers before it elapses, RFC 8966 section 4.6.3
 // the caller of Speaker.Probe counts a probe lost on a timer of its own

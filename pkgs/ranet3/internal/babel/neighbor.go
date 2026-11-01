@@ -60,6 +60,8 @@ type neighborState struct {
 	// wake for as long as one was congested. Bounded by the route table, like
 	// advertised.
 	owed map[routeKey]struct{}
+	// nextTriggered is the earliest the next triggered update to this neighbor goes, see triggeredActions
+	nextTriggered time.Time
 
 	reportedCost     uint16
 	haveReportedCost bool

@@ -158,6 +158,22 @@ func (f *meshFabric) flush(nodes ...string) {
 	}
 }
 
+// trigger sends from each named node, in order, what a pass of the run loop that makes no periodic dump sends: the triggered updates its neighbors are owed and are due
+func (f *meshFabric) trigger(nodes ...string) {
+	for _, node := range nodes {
+		f.speakers[node].sendTriggered(time.Now())
+		f.deliver()
+	}
+}
+
+// sendTriggered builds and sends at now the triggered updates the neighbors are owed and are due, as a pass of the run loop that makes no periodic dump does
+func (s *Speaker) sendTriggered(now time.Time) {
+	s.mu.Lock()
+	send := s.emitLocked(s.triggeredActions(now))
+	s.mu.Unlock()
+	send()
+}
+
 func (f *meshFabric) deliver() {
 	f.t.Helper()
 	for {
@@ -378,6 +394,7 @@ func TestSeqnoRequestIsForwardedOnceTowardOrigin(t *testing.T) {
 	// relay nor the reply can satisfy the repeat either.
 	request := EncodeSeqnoRequest(SeqnoRequest{AE: AEIPv6, Prefix: dest, Seqno: 5, HopCount: 64, RouterID: routerID("c")})
 	fabric.inject("b", "a", request)
+	fabric.trigger("c")
 
 	forwarded := seqnoRequestsFor(t, fabric.tlvs("b", "c"), dest)
 	if len(forwarded) != 1 {
@@ -456,6 +473,34 @@ func TestOwnLowerRequestLeavesTheForwardedAskersRepeatToGoOn(t *testing.T) {
 					len(got), ownSeqno, own, entry)
 			}
 		})
+	}
+}
+
+// the answer to a forwarded request comes back one paced hop at a time, so it can reach the relay past the window that suppresses a repeat
+// the relay still sends it on as a triggered update, RFC 8966 section 3.8.1.2
+func TestLateAnswerToAForwardedRequestIsRelayed(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b", "b-c")
+	dest := netip.MustParsePrefix("fd00:c:1::/64")
+	key := routeKey{dest: dest}
+	fabric.speakers["c"].Originate(dest)
+	fabric.flush("c", "b", "a")
+	_, seqno := fabric.speakers["c"].Origin()
+	fabric.inject("b", "a", EncodeSeqnoRequest(SeqnoRequest{AE: AEIPv6, Prefix: dest, Seqno: seqno + 1, HopCount: 64, RouterID: routerID("c")}))
+	relay := fabric.speakers["b"]
+	relay.mu.Lock()
+	pending, ok := relay.pendingSeqno[sourceKey{route: key, routerID: routerID("c")}]
+	if ok {
+		pending.sentAt = pending.sentAt.Add(-seqnoRequestSuppress - 100*time.Millisecond)
+		relay.pendingSeqno[sourceKey{route: key, routerID: routerID("c")}] = pending
+	}
+	relay.mu.Unlock()
+	if !ok {
+		t.Fatal("b forwarded nothing, so this proves nothing")
+	}
+	fabric.reset()
+	fabric.trigger("c", "b")
+	if got := updatesFor(t, fabric.tlvs("b", "a"), dest); len(got) != 1 || got[0].Seqno != seqno+1 {
+		t.Errorf("past the suppression window b sent a %+v for %s, want the answer at seqno %d", got, dest, seqno+1)
 	}
 }
 
@@ -1231,44 +1276,214 @@ func TestRunRetriesStarvedSeqnoRequest(t *testing.T) {
 	}
 }
 
-// A peer chooses how many Seqno Requests to put in one packet, and eighty fit.
-// RFC 8966 section 3.2.2 asks a node not to raise its own sequence number
-// spontaneously, and every raise re-dirties everything it originates.
-func TestOriginSeqnoRisesAtMostOncePerPacket(t *testing.T) {
-	fabric := newMeshFabric(t, Config{}, "a-b")
-	speaker := fabric.speakers["a"]
+// coalescedRequests is how many seqno requests arrive inside one pacing window below
+const coalescedRequests = 40
+
+// a peer chooses how many seqno requests it sends, eighty to a packet, and RFC 8966 section 3.2.2 asks a node not to raise its own seqno unasked
+// one packet of eighty requests asking ever further past the seqno raises it once, made as the triggered update is built
+// that update goes at once, and forty more requests in packets of their own inside the pacing window that follows raise it once more, at the window's end, in the update sent then
+func TestSeqnoRequestsInOneWindowRaiseTheSeqnoOnce(t *testing.T) {
+	speaker, neighbor, packets := captureSpeaker(t, Config{})
 	dest := netip.MustParsePrefix("fd00:a::/64")
 	speaker.Originate(dest)
-	speaker.mu.Lock()
-	before := speaker.originSeqno
-	speaker.mu.Unlock()
-
+	ask := func(seqno uint16) RawTLV {
+		return EncodeSeqnoRequest(SeqnoRequest{AE: AEIPv6, Prefix: dest, RouterID: speaker.routerID, Seqno: seqno, HopCount: 3})
+	}
+	seqno := func() uint16 {
+		speaker.mu.Lock()
+		defer speaker.mu.Unlock()
+		return speaker.originSeqno
+	}
+	before := seqno()
 	requests := make([]RawTLV, 0, 80)
 	for i := range 80 {
-		requests = append(requests, EncodeSeqnoRequest(SeqnoRequest{
-			AE: AEIPv6, Prefix: dest, RouterID: routerID("a"),
-			Seqno: before + uint16(i) + 1, HopCount: 3,
-		}))
+		requests = append(requests, ask(before+uint16(i)+1))
 	}
-	fabric.inject("a", "b", requests...)
-
-	speaker.mu.Lock()
-	raised := speaker.originSeqno - before
-	speaker.mu.Unlock()
-	if raised != 1 {
-		t.Errorf("one packet of %d requests raised the origin sequence number by %d, want 1", len(requests), raised)
+	speaker.handlePacket(neighbor, EncodePacket(requests))
+	start := time.Now()
+	packets.reset()
+	speaker.sendTriggered(start)
+	if raised := seqno() - before; raised != 1 || len(updatesIn(t, packets.sent(), dest)) != 1 {
+		t.Fatalf("a packet of %d requests raised the seqno by %d and sent %d updates at once, want 1 and 1",
+			len(requests), raised, len(updatesIn(t, packets.sent(), dest)))
 	}
 
-	// A later packet can still raise it, or a genuine request goes unanswered.
-	fabric.inject("a", "b", EncodeSeqnoRequest(SeqnoRequest{
-		AE: AEIPv6, Prefix: dest, RouterID: routerID("a"),
-		Seqno: speaker.originSeqno + 1, HopCount: 3,
-	}))
+	packets.reset()
+	pace := speaker.triggerPace()
+	for i := range coalescedRequests {
+		speaker.handlePacket(neighbor, EncodePacket([]RawTLV{ask(seqno() + 1)}))
+		speaker.sendTriggered(start.Add(time.Duration(i) * pace / coalescedRequests))
+	}
+	if raised, sent := seqno()-before, len(packets.sent()); raised != 1 || sent != 0 {
+		t.Fatalf("%d requests inside the window raised the seqno to %d past the start and sent %d packets, want 1 and none", coalescedRequests, raised, sent)
+	}
+	speaker.sendTriggered(start.Add(pace))
+	updates := updatesIn(t, packets.sent(), dest)
+	if raised := seqno() - before; raised != 2 || len(updates) != 1 || updates[0].Seqno != before+2 {
+		t.Errorf("the window's end raised the seqno to %d past the start and sent %+v, want 2 and one update carrying it", raised, updates)
+	}
+}
+
+// updatesIn is every Update for dest the packets carry, oldest first
+func updatesIn(t *testing.T, packets [][]byte, dest netip.Prefix) []Update {
+	t.Helper()
+	var tlvs []RawTLV
+	for _, raw := range packets {
+		decoded, err := DecodePacket(raw[ipv6HeaderLen+udpHeaderLen:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		tlvs = append(tlvs, decoded...)
+	}
+	return updatesFor(t, tlvs, dest)
+}
+
+// a neighbor's triggered update goes at once, and the next no sooner than MIN(1 s, update / 2, hello / 2) after it, whatever it carries
+// a prefix, a retraction and a metric rise owed inside the window go together at the window's end and none before it
+func TestTriggeredUpdatesToANeighborAreSpacedByThePace(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cfg  Config
+		pace time.Duration
+	}{
+		{"the defaults", Config{}, time.Second},
+		{"an update interval of 1s", Config{Update: dur(time.Second)}, 500 * time.Millisecond},
+		{"a hello interval of 1s", Config{Hello: dur(time.Second), Update: dur(16 * time.Second)}, 500 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fabric := newMeshFabric(t, test.cfg, "a-b", "a-c")
+			a := fabric.speakers["a"]
+			first, second := netip.MustParsePrefix("fd00:b::/64"), netip.MustParsePrefix("fd00:b:1::/64")
+			retracted, rising := routeKey{dest: netip.MustParsePrefix("fd00:b:2::/64")}, routeKey{dest: netip.MustParsePrefix("fd00:b:3::/64")}
+			a.Originate(first)
+			a.Originate(second)
+			fabric.offer("a", "c", "c", retracted, 1, 100)
+			fabric.offer("a", "c", "c", rising, 1, 100)
+			fabric.flush("a")
+			if got := fabric.nextHop("b", rising); got != "a" {
+				t.Fatalf("b reaches %s via %q, want a", rising.dest, got)
+			}
+			owe := func(dest netip.Prefix) {
+				a.mu.Lock()
+				a.routes.dirty[routeKey{dest: dest}] = struct{}{}
+				a.mu.Unlock()
+			}
+			send := func(at time.Time) []RawTLV {
+				fabric.reset()
+				a.sendTriggered(at)
+				return fabric.tlvs("a", "b")
+			}
+			start := time.Now()
+			owe(first)
+			if got := len(updatesFor(t, send(start), first)); got != 1 {
+				t.Fatalf("the first triggered update sent %d updates for %s at once, want 1", got, first)
+			}
+			owe(first)
+			if got := len(updatesFor(t, send(start), first)); got != 0 {
+				t.Fatalf("a second trigger at once sent %d updates for %s", got, first)
+			}
+			owe(second)
+			fabric.offer("a", "c", "c", retracted, 1, MetricInfinity)
+			fabric.offer("a", "c", "c", rising, 1, 100+2*DefaultCostParams().RxCost)
+			for _, at := range []time.Duration{test.pace / 2, test.pace - time.Nanosecond} {
+				if sent := send(start.Add(at)); len(sent) != 0 {
+					t.Errorf("%s past the first update, inside the window of %s, b was sent %d TLVs", at, test.pace, len(sent))
+				}
+			}
+			a.mu.Lock()
+			deadline := a.deadlineLocked()
+			a.mu.Unlock()
+			if deadline.IsZero() || deadline.After(start.Add(test.pace)) {
+				t.Errorf("the run loop sleeps until %s past the first update, past the window's end", deadline.Sub(start))
+			}
+			sent := send(start.Add(test.pace))
+			if got := len(updatesFor(t, sent, second)); got != 1 {
+				t.Errorf("the window's end sent %d updates for %s, want 1", got, second)
+			}
+			if got := updatesFor(t, sent, retracted.dest); len(got) != 1 || got[0].Metric != MetricInfinity {
+				t.Errorf("the window's end sent %+v for %s, want its retraction", got, retracted.dest)
+			}
+			if got := updatesFor(t, sent, rising.dest); len(got) != 1 || got[0].Metric <= 100 {
+				t.Errorf("the window's end sent %+v for %s, want its risen metric", got, rising.dest)
+			}
+			if owed := len(fabric.neighbor("a", "b").owed); owed != 0 {
+				t.Errorf("b is still owed %d prefixes after the window's end", owed)
+			}
+		})
+	}
+}
+
+// once a neighbor is owed nothing its pace is no deadline, so the run loop does not wake again and again for a window that has ended
+func TestPaceThatHasEndedIsNoDeadline(t *testing.T) {
+	speaker, neighbor, _ := captureSpeaker(t, Config{})
+	dest := netip.MustParsePrefix("fd00:b:4::/64")
+	speaker.Originate(dest)
+	speaker.flushUpdates()
+	sent := time.Now().Add(-time.Minute)
 	speaker.mu.Lock()
-	total := speaker.originSeqno - before
+	speaker.routes.dirty[routeKey{dest: dest}] = struct{}{}
 	speaker.mu.Unlock()
-	if total != 2 {
-		t.Errorf("a second packet raised the origin sequence number to %d above the start, want 2", total)
+	speaker.sendTriggered(sent)
+	speaker.mu.Lock()
+	defer speaker.mu.Unlock()
+	if len(neighbor.owed) != 0 || !neighbor.nextTriggered.After(sent) {
+		t.Fatalf("the triggered update left %d prefixes owed and the pace at %s, so this proves nothing", len(neighbor.owed), neighbor.nextTriggered)
+	}
+	speaker.nextHello, speaker.nextUpdate = time.Now().Add(time.Hour), time.Now().Add(time.Hour)
+	if deadline := speaker.deadlineLocked(); !deadline.IsZero() && !deadline.After(time.Now()) {
+		t.Errorf("with nothing owed the run loop is due at %s, %s ago", deadline, time.Since(deadline))
+	}
+}
+
+// a reload to a shorter Hello interval shortens a pace the update before it set, so the next triggered update leaves within half the new interval, RFC 8966 section 3.1
+// a neighbor never paced stays unpaced, and one whose pace has already ended keeps it ended
+func TestReloadToAShorterHelloShortensThePace(t *testing.T) {
+	speaker, neighbor, packets := captureSpeaker(t, Config{})
+	other := newHeldPeer(t, "other", nil)
+	speaker.AddPeer(other.Peer, identity.Identity{})
+	unpaced := speaker.neighbors[other.ID]
+	third := newHeldPeer(t, "third", nil)
+	speaker.AddPeer(third.Peer, identity.Identity{})
+	done := speaker.neighbors[third.ID]
+	first, second := netip.MustParsePrefix("fd00:b:6::/64"), netip.MustParsePrefix("fd00:b:7::/64")
+	speaker.Originate(first)
+	speaker.Originate(second)
+	speaker.flushUpdates()
+	owe := func(dest netip.Prefix) {
+		speaker.mu.Lock()
+		speaker.routes.dirty[routeKey{dest: dest}] = struct{}{}
+		speaker.mu.Unlock()
+	}
+	start := time.Now()
+	owe(first)
+	speaker.sendTriggered(start)
+	ended := start.Add(-time.Second)
+	speaker.mu.Lock()
+	clear(unpaced.owed)
+	unpaced.nextTriggered = time.Time{}
+	clear(done.owed)
+	done.nextTriggered = ended
+	speaker.mu.Unlock()
+	speaker.SetConfig(Config{Hello: dur(100 * time.Millisecond)})
+	speaker.mu.Lock()
+	pace := speaker.triggerPace()
+	paced, never, still := neighbor.nextTriggered, unpaced.nextTriggered, done.nextTriggered
+	speaker.mu.Unlock()
+	if paced.After(time.Now().Add(pace)) {
+		t.Errorf("after the reload the pace runs until %s, past the new pace %s from now", paced, pace)
+	}
+	if !never.IsZero() {
+		t.Errorf("a neighbor never paced is paced until %s after the reload", never)
+	}
+	if !still.Equal(ended) {
+		t.Errorf("a pace that ended at %s runs until %s after the reload", ended, still)
+	}
+	packets.reset()
+	owe(second)
+	at := time.Now().Add(pace)
+	speaker.sendTriggered(at)
+	if got := len(updatesIn(t, packets.sent(), second)); got != 1 {
+		t.Errorf("%s after the last triggered update, with the pace now %s, the next sent %d updates for %s", at.Sub(start), pace, got, second)
 	}
 }
 
