@@ -1453,7 +1453,7 @@ testers.runNixOSTest {
                 "ip -6 route add fd00:99::/64 via ${exitV6}",
                 "ip route add 10.99.0.0/24 via ${exitV4}",
                 "ip -6 route add ${clientEgressSID}/128 via ${exitV6}",
-                # the outer header leaves from an address outside the overlay, so the header alone drops it
+                # the outer header leaves from an address outside the overlay, so the border passes it and mesh_entry drops it as a source the client does not own
                 "ip sr tunsrc set ${behindV6}",
             )
             before = counters()
