@@ -694,7 +694,10 @@ func TestNftablesRemakesATableWhoseSetCountsAnotherLimit(t *testing.T) {
 
 // Another writer's nat chains at the source translation hook are reported at
 // natPriority and below, where they may translate a flow ahead of the exit's,
-// and not at srcnat, past it, in each family
+// and not at srcnat, past it, in each family and in inet, which hooks both. One
+// in the exit's own table beside its chain, and one under the exit's chain's
+// name in an inet table of the exit's table's name, are reported as another
+// writer's.
 func TestNftablesReportsTheNatChainsAtItsPriorityOrBelow(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -711,9 +714,25 @@ func TestNftablesReportsTheNatChainsAtItsPriorityOrBelow(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = be.Close() })
 	requireEmptyRuleset(t, be)
-	var want []string
-	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
-		name := tableFamilyName(family)
+	if err := be.Apply(newTranslator(egress.Egress{}, rt, be).desired(), nil); err != nil {
+		t.Fatalf("install the translator's rules: %v", err)
+	}
+	sneak := fmt.Sprintf("{ type nat hook postrouting priority %d ; }", natPriority-49)
+	if out, err := exec.Command(nft, "add", "chain", "ip", TableName, "sneak", sneak).CombinedOutput(); err != nil {
+		t.Fatalf("make another writer's chain in the translator's ip table: %v\n%s", err, out)
+	}
+	want := []string{fmt.Sprintf("ip table %s chain sneak at priority %d", TableName, natPriority-49)}
+	// the exit's own chain's name in an inet table of its own table's name, as
+	// the border's is, hooks both families and is another writer's
+	inet := fmt.Sprintf("{ type nat hook postrouting priority %d ; }", natPriority)
+	if out, err := exec.Command(nft, "add", "table", "inet", TableName).CombinedOutput(); err != nil {
+		t.Fatalf("make an inet table named %s: %v\n%s", TableName, err, out)
+	}
+	if out, err := exec.Command(nft, "add", "chain", "inet", TableName, ChainName, inet).CombinedOutput(); err != nil {
+		t.Fatalf("make another writer's chain %s in the inet table %s: %v\n%s", ChainName, TableName, err, out)
+	}
+	want = append(want, fmt.Sprintf("inet table %s chain %s at priority %d", TableName, ChainName, natPriority))
+	for _, name := range []string{"ip", "ip6", "inet"} {
 		if out, err := exec.Command(nft, "add", "table", name, "other").CombinedOutput(); err != nil {
 			t.Fatalf("make another writer's %s table: %v\n%s", name, err, out)
 		}

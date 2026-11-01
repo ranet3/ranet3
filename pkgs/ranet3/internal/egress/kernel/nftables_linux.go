@@ -323,14 +323,14 @@ func (n *natTables) removeTables(match func(uint8) bool) error {
 }
 
 // Conflicts names the other source translation this node's traffic can meet
-// first: a nat chain at the postrouting hook in a table this tool did not
-// create, at natPriority or below. One past natPriority runs after this tool's
-// chain, which has bound every flow it takes by then. They are reported rather
-// than removed. Several such chains coexist, the first to translate a
-// connection keeps it, and a tool that deleted its neighbors' rules to win
-// that race would break docker, an SD-WAN agent or the operator's own ruleset,
-// which is exactly the failure internal/kernel's ownership rules exist to
-// avoid.
+// first: every nat chain at the postrouting hook, at natPriority or below, of
+// a family this node translates or of inet, which hooks both, but this tool's
+// own chain. One past natPriority runs after this tool's chain, which has bound
+// every flow it takes by then. They are reported rather than removed. Several
+// such chains coexist, the first to translate a connection keeps it, and a tool
+// that deleted its neighbors' rules to win that race would break docker, an
+// SD-WAN agent or the operator's own ruleset, which is exactly the failure
+// internal/kernel's ownership rules exist to avoid.
 //
 // A host still running legacy iptables rather than iptables-nft is invisible
 // here, because the two are separate registries in the kernel. An iptables-nft
@@ -345,26 +345,23 @@ func (n *natTables) Conflicts() ([]string, error) {
 		if len(reply.Data) < nftables.SizeofNfgenmsg {
 			continue
 		}
-		var family uint8
-		switch reply.Data[0] {
-		case unix.NFPROTO_IPV4:
-			family = egress.FamilyIPv4
-		case unix.NFPROTO_IPV6:
-			family = egress.FamilyIPv6
+		var name string
+		switch proto := reply.Data[0]; {
+		case proto == unix.NFPROTO_INET:
+			name = "inet"
+		case proto == unix.NFPROTO_IPV4 && slices.Contains(n.families, egress.FamilyIPv4):
+			name = tableFamilyName(egress.FamilyIPv4)
+		case proto == unix.NFPROTO_IPV6 && slices.Contains(n.families, egress.FamilyIPv6):
+			name = tableFamilyName(egress.FamilyIPv6)
 		default:
-			// An inet, bridge, arp or netdev chain cannot carry a nat hook
-			// this node's forwarded traffic would meet before its own.
-			continue
-		}
-		if !slices.Contains(n.families, family) {
 			continue
 		}
 		table, chain, kind, hook, priority := nftables.DecodeChain(reply)
-		if table == TableName || kind != "nat" || hook != unix.NF_INET_POST_ROUTING || priority > natPriority {
+		own := name != "inet" && table == TableName && chain == ChainName
+		if own || kind != "nat" || hook != unix.NF_INET_POST_ROUTING || priority > natPriority {
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s table %s chain %s at priority %d",
-			tableFamilyName(family), table, chain, priority))
+		out = append(out, fmt.Sprintf("%s table %s chain %s at priority %d", name, table, chain, priority))
 	}
 	slices.Sort(out)
 	return out, nil
