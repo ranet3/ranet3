@@ -1956,6 +1956,223 @@ func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 	}
 }
 
+// Run returns the first reason the session ended for
+// a peer's Delete of the IKE SA keeps its reason against a request at the same Message ID after it that would end the IKE SA for another reason, and against the lifetime Run finds after it
+// a lifetime keeps its reason against the peer's Delete crossing this end's own
+// a local failure keeps its reason against a peer that then leaves the request outstanding unanswered, and a peer's Delete against a request, a probe or an INVALID_SPI report Run takes after it on a spent Message ID space
+// a request Run takes once the mux closed from outside leaves the mux's own reason
+// RFC 7296 section 2.21.2: "In an IKE_AUTH exchange, or in the INFORMATIONAL exchange immediately following it (in case an error happened when processing a response to IKE_AUTH), the UNSUPPORTED_CRITICAL_PAYLOAD, INVALID_SYNTAX, and AUTHENTICATION_FAILED notifications are the only ones to cause the IKE SA to be deleted or not created, without a Delete payload."
+func TestRunReturnsTheFirstReasonItClosedFor(t *testing.T) {
+	authFailed := []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_AUTHENTICATION_FAILED})}}
+	t.Run("the peer's Delete, then a request for another reason", bubble.Run(func(t *testing.T) {
+		s := firstReasonSession(t)
+		for _, inner := range [][]RawPayload{deleteIKEPayloads(), authFailed} {
+			dispatchPeerRequest(t, s, inner)
+			if !s.mux.IsClosed() {
+				t.Fatalf("the request carrying %v left the session open", inner)
+			}
+		}
+		if err := s.Run(context.Background()); !errors.Is(err, errPeerDeletedIKE) {
+			t.Errorf("run returned %v, want the peer's Delete, %v", err, errPeerDeletedIKE)
+		}
+	}))
+	t.Run("the peer's Delete, then a lifetime", bubble.Run(func(t *testing.T) {
+		s := firstReasonSession(t)
+		dispatchPeerRequest(t, s, deleteIKEPayloads())
+		pastLifetime(s)
+		if err := s.Run(context.Background()); !errors.Is(err, errPeerDeletedIKE) {
+			t.Errorf("run returned %v, want the peer's Delete, %v", err, errPeerDeletedIKE)
+		}
+	}))
+	t.Run("a lifetime, then the peer's Delete", bubble.Run(func(t *testing.T) {
+		peer, s := closingAfterAuth(t)
+		pastLifetime(s)
+		ended := runSession(t, s)
+		if own := peer.read(t); own.Header.IsResponse() || findType(own.inner, PayloadD) == nil {
+			t.Fatalf("the peer got exchange %d response %v carrying %v, want the Delete of the IKE SA", own.Header.ExchangeType, own.Header.IsResponse(), payloadTypes(own.inner))
+		}
+		peer.send(t, Header{ExchangeType: INFORMATIONAL, MessageID: 0}, deleteIKEPayloads())
+		if err := endedWithin(t, ended, "closing"); err == nil || errors.Is(err, errPeerDeletedIKE) || !strings.Contains(err.Error(), "reached its lifetime") {
+			t.Errorf("run returned %v, want the lifetime it reached first", err)
+		}
+	}))
+	t.Run("a local failure, then a silent peer", bubble.Run(func(t *testing.T) {
+		s, _, _ := probedSession(t)
+		// the liveness check runs out of sends on the intervals a session runs
+		s.retransmitAfter = 0
+		s.childFailed = make(chan error, 1)
+		ended := runSession(t, s)
+		s.Probe()
+		time.Sleep(time.Second)
+		why := errors.New("the reason to delete")
+		s.childFailed <- why
+		select {
+		case err := <-ended:
+			if !errors.Is(err, why) {
+				t.Errorf("run returned %v, want the local failure it closed for, %v", err, why)
+			}
+		case <-time.After(5 * time.Minute):
+			t.Fatal("run went on after the liveness check ran out of sends")
+		}
+	}))
+	t.Run("the peer's Delete, then a request on a spent Message ID space", bubble.Run(func(t *testing.T) {
+		s := firstReasonSession(t)
+		dispatchPeerRequest(t, s, deleteIKEPayloads())
+		s.current.nextLocalMID = maxMessageID
+		s.requests = make(chan *localRequest, 1)
+		s.requests <- &localRequest{exchange: INFORMATIONAL, result: make(chan requestResult, 1)}
+		if err := s.Run(context.Background()); !errors.Is(err, errPeerDeletedIKE) {
+			t.Errorf("run returned %v, want the peer's Delete, %v", err, errPeerDeletedIKE)
+		}
+	}))
+	// the closed mux's Done is ready beside the probe and the report, and select takes either, so each runs selectRuns times
+	t.Run("the peer's Delete, then a probe on a spent Message ID space", bubble.Run(func(t *testing.T) {
+		for range selectRuns {
+			s := firstReasonSession(t)
+			dispatchPeerRequest(t, s, deleteIKEPayloads())
+			s.current.nextLocalMID = maxMessageID
+			s.probes = make(chan struct{}, 1)
+			s.Probe()
+			if err := s.Run(context.Background()); !errors.Is(err, errPeerDeletedIKE) {
+				t.Fatalf("run returned %v, want the peer's Delete, %v", err, errPeerDeletedIKE)
+			}
+		}
+	}))
+	t.Run("the peer's Delete, then an INVALID_SPI report on a spent Message ID space", bubble.Run(func(t *testing.T) {
+		for range selectRuns {
+			s, peer, _ := reportingSession(t)
+			s.current.answeredAuth, s.current.authMID, s.current.nextPeerMID = true, 1, 2
+			strayESP(t, s, peer, strayedSPI)
+			time.Sleep(quietPeriod)
+			if held := len(s.mux.InvalidSPI()); held != 1 {
+				t.Fatalf("ESP on an unknown SPI left %d reports for the session, want 1", held)
+			}
+			dispatchPeerRequest(t, s, deleteIKEPayloads())
+			s.current.nextLocalMID = maxMessageID
+			if err := s.Run(context.Background()); !errors.Is(err, errPeerDeletedIKE) {
+				t.Fatalf("run returned %v, want the peer's Delete, %v", err, errPeerDeletedIKE)
+			}
+		}
+	}))
+	t.Run("an outside close, then the peer's Delete", bubble.Run(func(t *testing.T) {
+		s := firstReasonSession(t)
+		s.mux.Close()
+		dispatchPeerRequest(t, s, deleteIKEPayloads())
+		if err, closed := s.Run(context.Background()), s.mux.Err(); err == nil || err.Error() != closed.Error() {
+			t.Errorf("run returned %v, want the mux's own %v", err, closed)
+		}
+	}))
+}
+
+// selectRuns is how often a case runs whose Run takes one of two ready select cases, so a wrong one goes unseen once in 2^20
+const selectRuns = 20
+
+// firstReasonSession holds an IKE SA past IKE_AUTH on a mux to a peer socket, and runs no loop
+func firstReasonSession(t *testing.T) *Session {
+	t.Helper()
+	peer := listenPeer(t)
+	peerAddr := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := testNetwork(t).Dial(peerAddr.IP, peerAddr.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	held := testContext()
+	held.answeredAuth, held.authMID, held.nextPeerMID = true, 1, 2
+	return &Session{mux: mux, current: held}
+}
+
+// dispatchPeerRequest has s take a request of the peer's carrying inner at the Message ID after IKE_AUTH
+func dispatchPeerRequest(t *testing.T, s *Session, inner []RawPayload) {
+	t.Helper()
+	held := s.current
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, MessageID: held.authMID + 1}
+	request, err := EncryptMessage(held.suite, held.sker, header, nil, inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending *pendingRequest
+	if !s.dispatch(request, s.mux.Endpoint(), &pending) {
+		t.Fatalf("the request carrying %v was not taken as a fresh authenticated request", inner)
+	}
+}
+
+// a message Run takes once the peer's Delete closed the mux records no ike.sa.closed, since the session ends for the Delete
+// the fragments of one message past reassemblyLimit and an INVALID_SYNTAX answer to the request outstanding each record one while the mux is open
+func TestMessageTakenOnceThePeersDeleteClosedTheMuxRecordsNoClose(t *testing.T) {
+	t.Run("fragments past the limit", bubble.Run(func(t *testing.T) {
+		events := &recorder{}
+		s, _ := fragmentingSession(t, events)
+		s.current.answeredAuth, s.current.authMID, s.current.nextPeerMID = true, 1, 2
+		dispatchPeerRequest(t, s, deleteIKEPayloads())
+		if !s.mux.IsClosed() {
+			t.Fatal("the peer's Delete left the session open")
+		}
+		before := len(events.recorded())
+		var pending *pendingRequest
+		taken := false
+		for _, raw := range peerRequest(t, s, s.current.nextPeerMID, reassemblyLimit, 4000) {
+			taken = s.dispatch(raw, s.mux.Endpoint(), &pending) || taken
+		}
+		if !taken {
+			t.Fatal("no fragment past the limit was taken")
+		}
+		if got := events.recorded()[before:]; len(got) != 0 {
+			t.Errorf("fragments past the limit taken once the peer's Delete closed the mux recorded %q, want nothing", got)
+		}
+	}))
+	t.Run("an INVALID_SYNTAX answer", bubble.Run(func(t *testing.T) {
+		s, _, events := probedSession(t)
+		s.current.answeredAuth, s.current.authMID, s.current.nextPeerMID = true, 1, 2
+		pending, err := s.startLiveness()
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatchPeerRequest(t, s, deleteIKEPayloads())
+		if !s.mux.IsClosed() {
+			t.Fatal("the peer's Delete left the session open")
+		}
+		before := len(events.recorded())
+		held := s.current
+		answer, err := EncryptMessage(held.suite, held.peerEncryptionKey(), Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: pending.msgID}, nil, invalidSyntaxAnswer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !s.dispatch(answer, s.mux.Endpoint(), &pending) {
+			t.Fatal("the INVALID_SYNTAX answer was not taken as the answer to the liveness check")
+		}
+		if got := events.recorded()[before:]; len(got) != 0 {
+			t.Errorf("an INVALID_SYNTAX answer taken once the peer's Delete closed the mux recorded %q, want nothing", got)
+		}
+	}))
+}
+
+// a lifetime Run finds once the peer's Delete closed the mux records no ike.sa.closed, since the session ends for the Delete
+func TestLifetimeFoundOnceThePeersDeleteClosedTheMuxRecordsNoClose(t *testing.T) {
+	bubble.Run(func(t *testing.T) {
+		events := &recorder{}
+		s := firstReasonSession(t)
+		s.events = events.record
+		dispatchPeerRequest(t, s, deleteIKEPayloads())
+		if !s.mux.IsClosed() {
+			t.Fatal("the peer's Delete left the session open")
+		}
+		pastLifetime(s)
+		if err := s.Run(context.Background()); !errors.Is(err, errPeerDeletedIKE) {
+			t.Errorf("run returned %v, want the peer's Delete, %v", err, errPeerDeletedIKE)
+		}
+		if closed := recordedKind(events, "ike.sa.closed"); closed != 0 {
+			t.Errorf("a lifetime Run found once the peer's Delete closed the mux recorded %q, want no ike.sa.closed", events.recorded())
+		}
+	})(t)
+}
+
+// pastLifetime puts s's IKE SA at its lifetime of an hour
+func pastLifetime(s *Session) {
+	s.ikeRekeyInterval, s.rekeyMargin = time.Hour, time.Hour-time.Second
+	s.current.established = time.Now().Add(-time.Hour)
+}
+
 // The retirement sweep used to be reached by a hundred-millisecond poll that
 // this series removed, so the loop's own deadline is now the only thing that
 // brings it around. Everything else the loop waits for on an idle session is

@@ -1286,6 +1286,7 @@ func TestReloadDuringAPacketCountRekeyChecksTheChildSAItMade(t *testing.T) {
 }
 
 // a Child SA reaching its lifetime while the Delete of an IKE SA whose PRF a reload removed is unanswered leaves that Delete the last request the session sends
+// and the session ends with the replacement's err, which internal/client dials again at once for, not the lifetime's of the ike.sa.closed before it
 // RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 func TestReplacementPastAChildSALifetimeSendsNoSecondDelete(t *testing.T) {
 	bubble.Run(testReplacementPastAChildSALifetimeSendsNoSecondDelete)(t)
@@ -1320,8 +1321,8 @@ func testReplacementPastAChildSALifetimeSendsNoSecondDelete(t *testing.T) {
 	awaitRecorded(t, dialed, "ike.suite.unlisted "+dialedPair+" sa=ike suite=aes256gcm/sha384/x25519 action=replace")
 	awaitRecorded(t, dialed, "ike.sa.closed "+dialedPair+" sa=child reason=lifetime")
 	released.Store(true)
-	if err := endedWithin(t, run, "dialing"); !errors.Is(err, ErrPRFUnlisted) {
-		t.Errorf("the session ended with %v, want its IKE SA deleted for a new handshake", err)
+	if err := endedWithin(t, run, "dialing"); !errors.Is(err, ErrPRFUnlisted) || strings.Contains(err.Error(), "reached its lifetime") {
+		t.Errorf("the session ended with %v, want its IKE SA deleted for a new handshake, not the lifetime the ike.sa.closed before it told of", err)
 	}
 	// a request sent as the session ended reaches the relay after it
 	time.Sleep(quietPeriod)

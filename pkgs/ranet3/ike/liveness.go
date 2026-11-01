@@ -25,6 +25,8 @@ var errMessageIDExhausted = errors.New("ike: Message ID space exhausted")
 
 var errAnsweredInvalidSyntax = errors.New("ike: the peer answered INVALID_SYNTAX, which ends the IKE SA without a Delete")
 
+var errPeerDeletedIKE = errors.New("ike: the peer deleted the IKE SA")
+
 type localRequest struct {
 	exchange ExchangeType
 	inner    []RawPayload
@@ -332,6 +334,7 @@ func (s *Session) Run(ctx context.Context) error { return s.run(ctx, nil) }
 
 func (s *Session) run(ctx context.Context, ending error) (err error) {
 	if ending != nil {
+		s.keepReason(ending)
 		s.startClosing()
 	}
 	var rekeys sync.WaitGroup
@@ -395,9 +398,13 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	}()
 	end := func(schedule *rekeySchedule, reason string, err error) {
 		ending = err
+		s.keepReason(err)
 		s.startClosing()
 		slog.Warn("ike deleting the IKE SA", "sa", schedule.name, "reason", reason, "err", err)
-		s.emit("ike.sa.closed", slog.String("sa", schedule.sa), slog.String("reason", reason), slog.String("err", err.Error()))
+		// a reason Run finds once the mux has closed did not end the session, which ended as the mux closed
+		if !s.mux.IsClosed() {
+			s.emit("ike.sa.closed", slog.String("sa", schedule.sa), slog.String("reason", reason), slog.String("err", err.Error()))
+		}
 	}
 	// RFC 7296 section 2.4: "In this case, an IKE endpoint SHOULD send a Delete payload indicating that it has closed the IKE SA unless the other endpoint is no longer responding."
 	fail := func(err error) {
@@ -534,7 +541,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	for {
 		if ender != nil && pending != ender {
 			s.mux.Close()
-			return ending
+			return s.endedBy
 		}
 		// the sweeps and the lifetime and retirement deadlines of a pass take this one reading, so a lifetime a sweep did not reach is one the wait below is offered
 		// every other reading in the pass takes time.Now itself, where a stale reading would do no harm
@@ -618,14 +625,14 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		// it follows every check that can start the ending in the same pass, a lifetime among them, so an ending started there sends none either
 		if ending != nil && deleted && pending == nil && !replacing {
 			s.mux.Close()
-			return ending
+			return s.endedBy
 		}
 		// the replacement's Delete ends the IKE SA in place of this one
 		if ending != nil && running == nil && pending == nil && ender == nil && !replacing {
 			started, err := s.startRequest(&localRequest{exchange: INFORMATIONAL, inner: deleteIKEPayloads(), result: make(chan requestResult, 1), teardown: true})
 			if err != nil {
 				s.mux.Close()
-				return fmt.Errorf("%w, and its Delete could not be sent: %v", ending, err)
+				return fmt.Errorf("%w, and its Delete could not be sent: %v", s.endedBy, err)
 			}
 			pending, ender = started, started
 		}
@@ -648,6 +655,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 					req.result <- requestResult{err: err}
 					if errors.Is(err, errMessageIDExhausted) {
 						s.mux.Close()
+						if s.endedBy != nil {
+							return s.endedBy
+						}
 						return err
 					}
 				}
@@ -697,19 +707,19 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 				s.noteActive()
 			}
 			if s.answeredInvalidSyntax {
-				if ending != nil {
-					return ending
+				if s.endedBy != nil {
+					return s.endedBy
 				}
 				return errAnsweredInvalidSyntax
 			}
 			continue
 		case <-s.mux.Done():
 			err := s.mux.Err()
+			if s.endedBy != nil {
+				err = s.endedBy
+			}
 			if pending != nil {
 				pending.result <- requestResult{err: err}
-			}
-			if ending != nil {
-				return ending
 			}
 			return err
 		// the top of the loop takes these two, and the cases wake it for them
@@ -736,6 +746,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			probed, err := s.probe(pending)
 			if err != nil {
 				s.mux.Close()
+				if s.endedBy != nil {
+					return s.endedBy
+				}
 				return err
 			}
 			pending = probed
@@ -750,6 +763,9 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 			reported, err := s.startLiveness(invalidSPINotify(spi))
 			if err != nil {
 				s.mux.Close()
+				if s.endedBy != nil {
+					return s.endedBy
+				}
 				return err
 			}
 			s.invalidSPIReports.Add(1)
@@ -784,8 +800,8 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 					continue
 				}
 				s.mux.Close()
-				if pending == ender {
-					return ending
+				if s.endedBy != nil {
+					return s.endedBy
 				}
 				return fmt.Errorf("ike: peer unresponsive after %d attempts", pending.sent)
 			}
@@ -1055,7 +1071,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 	// RFC 7296 section 2.2: "In the unlikely event that Message IDs grow too large to fit in 32 bits, the IKE SA MUST be closed or rekeyed."
 	// a request at the last Message ID leaves no next one to expect, so the IKE SA closes rather than take it
 	if matching == nil && nextPeerMID == maxMessageID {
-		s.mux.Close()
+		s.closeFor(errMessageIDExhausted)
 		return true
 	}
 	// RFC 7296 section 2.23: "SHOULD send all packets (including retransmission packets) to the IP address and port in the validated packet, and SHOULD store this as the new address and port combination for the SA"
@@ -1084,7 +1100,7 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		// RFC 7296 section 2.21.3: "If a peer parsing a request notices that it is badly formatted (after it has passed the message authentication code checks and window checks) and it returns an INVALID_SYNTAX notification, then this error notification is considered fatal in both peers, meaning that the IKE SA is deleted without needing an explicit Delete payload."
 		// section 2.21.3 on a response with errors: "Because sending such error messages as an INFORMATIONAL exchange might lead to further errors that could cause loops, such errors SHOULD NOT be sent."
 		// and: "If errors are seen that indicate that the peers do not have the same state, it might be good to delete the IKE SA to clean up state and start over."
-		s.mux.Close()
+		s.closeFor(fmt.Errorf("ike: the peer's message at Message ID %d does not decode: %w", hdr.MessageID, err))
 		return true
 	}
 	if matching != nil {
@@ -1120,12 +1136,12 @@ func (s *Session) dispatch(raw []byte, source transport.Endpoint, pending **pend
 		if _, refused := errors.AsType[invalidSyntaxSent](err); refused && s.removeRetainedContext(ctx) {
 			return true
 		}
-		s.mux.Close()
+		s.closeFor(err)
 		return true
 	}
 	sent, err := s.keepAnswer(ctx, hdr.MessageID, response, message)
 	if err != nil {
-		s.mux.Close()
+		s.closeFor(fmt.Errorf("ike: keep the answer at Message ID %d: %w", hdr.MessageID, err))
 		return true
 	}
 	// a failed reply keeps the session, since the peer retransmits and is answered from the reply kept above
@@ -1140,10 +1156,27 @@ func (s *Session) fragmentLimit(ctx *ikeContext, mid uint32, err error) {
 	if s.removeRetainedContext(ctx) {
 		return
 	}
-	if !s.closing.Load() {
+	// an IKE SA this end is closing has its end told already, and one whose mux has closed ends for the reason that closed it
+	if !s.closing.Load() && !s.mux.IsClosed() {
 		s.emit("ike.sa.closed", slog.String("sa", "ike"), slog.String("reason", "fragment limit"), slog.String("err", err.Error()))
 	}
+	s.closeFor(err)
+}
+
+// closeFor closes the mux for err, which Run returns unless an earlier reason is kept
+// a message Run's goroutine takes once the mux has closed says nothing of why the session ended
+func (s *Session) closeFor(err error) {
+	if !s.mux.IsClosed() {
+		s.keepReason(err)
+	}
 	s.mux.Close()
+}
+
+// keepReason keeps err as why the session ended where no earlier reason is kept
+func (s *Session) keepReason(err error) {
+	if s.endedBy == nil {
+		s.endedBy = err
+	}
 }
 
 func (s *Session) contextForHeader(hdr *Header) *ikeContext {
@@ -1195,7 +1228,7 @@ func (s *Session) handleRequest(ctx *ikeContext, hdr *Header, cleartext, inner [
 				if s.removeRetainedContext(ctx) || s.adoptCollisionOnPeerDelete(ctx) {
 					return response, nil
 				}
-				return response, fmt.Errorf("peer deleted IKE SA")
+				return response, errPeerDeletedIKE
 			}
 		}
 		var responseSPIs [][]byte
@@ -1267,8 +1300,8 @@ func (s *Session) endAtInvalidSyntax(ctx *ikeContext, request *pendingRequest, a
 		return
 	}
 	request.result <- requestResult{err: errAnsweredInvalidSyntax}
-	// an IKE SA this end is closing has its end told already
-	if !s.closing.Load() {
+	// an IKE SA this end is closing has its end told already, and one whose mux has closed ends for the reason that closed it
+	if !s.closing.Load() && !s.mux.IsClosed() {
 		s.emit("ike.sa.closed", slog.String("sa", "ike"), slog.String("reason", "invalid syntax"), slog.String("err", errAnsweredInvalidSyntax.Error()))
 	}
 	s.answeredInvalidSyntax = true

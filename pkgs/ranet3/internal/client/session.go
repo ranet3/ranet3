@@ -8,7 +8,6 @@ import (
 	"cmp"
 	"context"
 	"crypto/ed25519"
-	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -95,7 +94,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, local, rem
 
 	emit := c.inboundEmit(sessionName, sess.NoteTraffic, peer)
 	results := make(chan sessionResult, 2)
-	go func() { results <- sessionResult{"IKE control", sess.Run(ctx)} }()
+	go func() { results <- sessionResult{ikeControl, sess.Run(ctx)} }()
 	go func() {
 		results <- sessionResult{"ESP receive", receiveESP(sess.Mux(), c.workers, tunnel.decryptBatch, emit)}
 	}()
@@ -158,13 +157,15 @@ func (c *Client) inboundEmit(path string, noteTraffic func(), peer *netstack.Pee
 }
 
 // endOf picks which of its two halves' ends a session reports, first being the half that ended first
-// the IKE SA's replacement for a new handshake ended the session whichever half saw the mux close first
+// ESP receive ends only as the mux closes, so the IKE control half's end says why the session ended, the IKE SA's replacement for a new handshake among them, whichever half saw the close first
 func endOf(first, second sessionResult) sessionResult {
-	if errors.Is(second.err, ike.ErrPRFUnlisted) {
+	if second.component == ikeControl {
 		return second
 	}
 	return first
 }
+
+const ikeControl = "IKE control"
 
 // sessionResult is how one of a session's two halves ended, IKE's control loop or ESP's receive
 type sessionResult struct {

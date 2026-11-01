@@ -156,6 +156,8 @@ type Session struct {
 	sendFailures int
 	// answeredInvalidSyntax is set once the peer answers a request on the current IKE SA with INVALID_SYNTAX, after which Run returns, and only Run's goroutine touches it
 	answeredInvalidSyntax bool
+	// endedBy is the first reason the session ended for, an ending of Run's own or a message of the peer's that closed the mux, which Run returns in place of the mux's own error, and only Run's goroutine touches it
+	endedBy error
 	// fragments tells whether both ends sent IKEV2_FRAGMENTATION_SUPPORTED in the IKE_SA_INIT that opened the session, which each IKE SA a rekey makes inherits
 	fragments bool
 	// pathMTU stands in for the mux's PathMTU, and nil reads the mux

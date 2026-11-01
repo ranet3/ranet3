@@ -588,20 +588,20 @@ func TestReloadTakesABabelDefaultWrittenOut(t *testing.T) {
 	}
 }
 
-// a session whose IKE SA was replaced for a new handshake reports the replacement
-// whichever half saw the mux close first
+// a session reports its IKE control half's end whichever half saw the mux close first, the replacement of its IKE SA for a new handshake among them
 // a dialer dials again at once only on that report
-func TestSessionEndReportsTheReplacementOfItsIKESA(t *testing.T) {
+func TestSessionEndReportsItsIKEControlEnd(t *testing.T) {
 	closed := sessionResult{"ESP receive", errors.New("transport: closed")}
-	replaced := sessionResult{"IKE control", fmt.Errorf("%w, so the session deleted the IKE SA for a new handshake", ike.ErrPRFUnlisted)}
-	for _, ends := range [][2]sessionResult{{closed, replaced}, {replaced, closed}} {
-		if got := endOf(ends[0], ends[1]); got != replaced {
-			t.Errorf("a session whose %s half ended first reported the %s half's %v", ends[0].component, got.component, got.err)
+	for _, why := range []sessionResult{
+		{ikeControl, fmt.Errorf("%w, so the session deleted the IKE SA for a new handshake", ike.ErrPRFUnlisted)},
+		{ikeControl, errors.New("ike: the peer deleted the IKE SA")},
+		{ikeControl, errors.New("ike: peer unresponsive after 5 attempts")},
+	} {
+		for _, ends := range [][2]sessionResult{{closed, why}, {why, closed}} {
+			if got := endOf(ends[0], ends[1]); got != why {
+				t.Errorf("a session whose %s half ended first reported the %s half's %v, want %v", ends[0].component, got.component, got.err, why.err)
+			}
 		}
-	}
-	other := sessionResult{"IKE control", errors.New("ike: peer unresponsive after 5 attempts")}
-	if got := endOf(other, closed); got != other {
-		t.Errorf("a session whose IKE half ended first reported the %s half's %v", got.component, got.err)
 	}
 }
 
