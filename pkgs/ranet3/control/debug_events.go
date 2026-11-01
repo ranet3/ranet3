@@ -23,7 +23,7 @@ import (
 // PathDebugEvents is the event recorder, and with follow the events after it
 const PathDebugEvents = PathDebug + "events"
 
-func init() { registerDebug(PathDebugEvents, classRead, reflect.TypeFor[Event](), serveEvents) }
+func init() { registerDebug(PathDebugEvents, reflect.TypeFor[Event](), serveEvents) }
 
 // EventSource is a Source that records events
 type EventSource interface {

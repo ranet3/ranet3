@@ -14,7 +14,7 @@ import (
 const PathDebugNetmon = PathDebug + "netmon"
 
 func init() {
-	debugRead(PathDebugNetmon, classRead, "netmon", NetmonSource.DebugNetmon)
+	debugRead(PathDebugNetmon, "netmon", NetmonSource.DebugNetmon)
 }
 
 // NetmonSource is a Source that watches the host's network

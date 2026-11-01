@@ -18,7 +18,7 @@ import (
 // PathDebugPMTU is link.mtu, the tun's MTU and each session's search of its path MTU
 const PathDebugPMTU = PathDebug + "pmtu"
 
-func init() { registerDebug(PathDebugPMTU, classRead, reflect.TypeFor[PMTUInfo](), servePMTU) }
+func init() { registerDebug(PathDebugPMTU, reflect.TypeFor[PMTUInfo](), servePMTU) }
 
 // PMTUSource is a Source whose sessions search their path MTU
 type PMTUSource interface {

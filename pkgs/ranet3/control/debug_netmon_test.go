@@ -73,40 +73,35 @@ func (s *netmonSource) DebugProbe(_ context.Context, peer string, all bool) (Res
 	return Result{Acted: []string{"example/gateway:1@0"}, Detail: "Asked 1 session(s) to prove their path now"}, nil
 }
 
-// the netmon view is a snapshot without key material, so a caller the root class refuses still reads it
-func TestNetmonIsReadByACallerTheRootClassRefuses(t *testing.T) {
-	server := injected(t, &netmonSource{}, Caller{UID: 4242})
+// the netmon view reads the host's network as the watch holds it, and a POST to it is refused
+func TestNetmonReadsTheNetworkWatch(t *testing.T) {
+	server := served(t, &netmonSource{})
 	if status, body := get(t, server.Client(), server.URL+PathDebugNetmon); status != http.StatusOK || !strings.Contains(body, `"eth1"`) {
-		t.Errorf("uid 4242 asking for the netmon view was answered %d %q", status, body)
+		t.Errorf("the netmon view was answered %d %q", status, body)
 	}
 	if refused := post(t, server.URL+PathDebugNetmon, ""); refused.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("a POST to the netmon view was answered %s", refused.Status)
 	}
 }
 
-// a probe is an action of the root class that takes a POST with a peer or every session
+// a probe is an action that takes a POST with a peer or every session
 // a source without sessions to probe says so by name
-func TestProbeIsARootActionThatTakesAPost(t *testing.T) {
-	refused := injected(t, &netmonSource{}, Caller{UID: 4242})
-	if answer := post(t, refused.URL+PathDebugProbe, `{"all":true}`); answer.StatusCode != http.StatusForbidden {
-		t.Errorf("uid 4242 asking for a probe was answered %s", answer.Status)
-	}
-
+func TestProbeIsAnActionThatTakesAPost(t *testing.T) {
 	source := &netmonSource{}
-	root := injected(t, source, Caller{UID: 0})
-	if status, body := get(t, root.Client(), root.URL+PathDebugProbe); status != http.StatusMethodNotAllowed {
+	server := served(t, source)
+	if status, body := get(t, server.Client(), server.URL+PathDebugProbe); status != http.StatusMethodNotAllowed {
 		t.Errorf("a GET of the probe was answered %d %q", status, body)
 	}
-	answer := post(t, root.URL+PathDebugProbe, `{"peer":"example/gateway"}`)
+	answer := post(t, server.URL+PathDebugProbe, `{"peer":"example/gateway"}`)
 	body, _ := io.ReadAll(answer.Body)
 	if answer.StatusCode != http.StatusOK || source.peer != "example/gateway" || source.all || !strings.Contains(string(body), "example/gateway:1@0") {
 		t.Errorf("a probe of one peer was answered %s %q and reached the source as %+v", answer.Status, body, source)
 	}
-	if answer := post(t, root.URL+PathDebugProbe, `{"all":true}`); answer.StatusCode != http.StatusOK || !source.all {
+	if answer := post(t, server.URL+PathDebugProbe, `{"all":true}`); answer.StatusCode != http.StatusOK || !source.all {
 		t.Errorf("a probe of every session was answered %s and reached the source as %+v", answer.Status, source)
 	}
 
-	bare := injected(t, fakeSource{}, Caller{UID: 0})
+	bare := served(t, fakeSource{})
 	if answer := post(t, bare.URL+PathDebugProbe, `{"all":true}`); answer.StatusCode != http.StatusNotImplemented {
 		t.Errorf("a probe of a source without sessions was answered %s", answer.Status)
 	}

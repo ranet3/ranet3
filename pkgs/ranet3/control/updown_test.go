@@ -127,17 +127,17 @@ type upDownSource struct{ fakeSource }
 
 func (upDownSource) DebugUpDown() UpDownInfo { return upDownFixture() }
 
-// the view discloses what the status already does, so a caller the root class refuses still reads it
+// the view reads whether the node is down and the flag that keeps it so, and a POST is refused
 // a source that cannot go down says so by name
-func TestUpDownIsReadByACallerTheRootClassRefuses(t *testing.T) {
-	server := injected(t, upDownSource{}, Caller{UID: 4242})
+func TestUpDownReadsTheFlag(t *testing.T) {
+	server := served(t, upDownSource{})
 	if status, body := get(t, server.Client(), server.URL+PathDebugUpDown); status != http.StatusOK || !strings.Contains(body, `"/var/lib/ranet3/down"`) {
-		t.Errorf("uid 4242 asking for the updown view was answered %d %q", status, body)
+		t.Errorf("the updown view was answered %d %q", status, body)
 	}
 	if refused := post(t, server.URL+PathDebugUpDown, ""); refused.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("a POST to the updown view was answered %s", refused.Status)
 	}
-	bare := injected(t, fakeSource{}, Caller{UID: 0})
+	bare := served(t, fakeSource{})
 	if status, body := get(t, bare.Client(), bare.URL+PathDebugUpDown); status != http.StatusNotImplemented {
 		t.Errorf("a source that cannot go down answered %d %q", status, body)
 	}

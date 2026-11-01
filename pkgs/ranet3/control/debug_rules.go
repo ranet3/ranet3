@@ -19,7 +19,7 @@ import (
 const PathDebugRules = PathDebug + "rules"
 
 func init() {
-	debugRead(PathDebugRules, classRead, "rules", RulesSource.DebugRules)
+	debugRead(PathDebugRules, "rules", RulesSource.DebugRules)
 }
 
 // RulesSource is a Source that reads the host's policy rules and the border filter

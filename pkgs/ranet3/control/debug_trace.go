@@ -26,7 +26,7 @@ import (
 const PathDebugTrace = PathDebug + "trace"
 
 func init() {
-	registerDebug(PathDebugTrace, classPlaintext, reflect.TypeFor[TraceLine](), serveTrace)
+	registerDebug(PathDebugTrace, reflect.TypeFor[TraceLine](), serveTrace)
 }
 
 // TraceDecisions is every decision a trace query may select, as a record names it
@@ -281,6 +281,7 @@ func (*traceFeed[R]) Note(event Event) TraceLine { return TraceLine{Note: &event
 func (f *traceFeed[R]) Close(why string) { f.records.Close(why) }
 
 func serveTrace(d *debugServer, w http.ResponseWriter, r *http.Request) {
+	journal(r, "query", r.URL.RawQuery)
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		http.Error(w, "a trace is a stream, so it takes a GET", http.StatusMethodNotAllowed)

@@ -19,7 +19,7 @@ import (
 // rule and route for it, and why the kernel refuses it where it does
 const PathDebugRoute = PathDebug + "route"
 
-func init() { registerDebug(PathDebugRoute, classRead, reflect.TypeFor[RouteInfo](), serveRoute) }
+func init() { registerDebug(PathDebugRoute, reflect.TypeFor[RouteInfo](), serveRoute) }
 
 // the arrivals of a packet debug route follows
 const (

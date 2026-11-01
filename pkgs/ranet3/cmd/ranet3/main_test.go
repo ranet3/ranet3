@@ -157,43 +157,11 @@ func TestDaemonRefusesWhatItCannotActOn(t *testing.T) {
 	}
 }
 
-// a --debug-access the daemon does not know is refused before the node runs
-// Off differs from off in its case alone, and a script passes an empty value for a variable it never set
-func TestUnknownDebugAccessNeverRunsTheNode(t *testing.T) {
-	for _, access := range []string{"Off", "everyone", ""} {
-		ran := false
-		daemon := daemonCommand(func(options) int {
-			ran = true
-			return 0
-		})
-		var out strings.Builder
-		daemon.SetOut(&out)
-		daemon.SetErr(&out)
-		daemon.SetArgs([]string{"--debug-access", access})
-		if err := daemon.Execute(); err == nil || !strings.Contains(err.Error(), "--debug-access") || ran {
-			t.Errorf("--debug-access %q ended with %v and ran the node %v", access, err, ran)
-		}
-	}
-}
-
-// a daemon started without --debug-access keeps the root class to root and its own user
-// neither module passes the flag, which makes this the access every deployment runs under
-func TestDaemonServesDebugUnderRootByDefault(t *testing.T) {
-	var parsed options
-	ran := false
-	daemon := daemonCommand(func(o options) int {
-		parsed, ran = o, true
-		return 0
-	})
-	var out strings.Builder
-	daemon.SetOut(&out)
-	daemon.SetErr(&out)
-	daemon.SetArgs([]string{})
-	if err := daemon.Execute(); err != nil || !ran {
-		t.Fatalf("a daemon given no flags ended with %v and ran the node %v, writing %q", err, ran, out.String())
-	}
-	if parsed.debugAccess != control.DebugRoot {
-		t.Errorf("a daemon given no flags serves its debug paths under %q, want %q", parsed.debugAccess, control.DebugRoot)
+// no flag of the command tree decides who may use the debug paths, so the daemon refuses --debug-access as unknown
+// the empty --state-dir refuses the start before the node runs, should the flag ever be taken
+func TestDebugAccessIsAnUnknownFlag(t *testing.T) {
+	if _, err := execute(t, "daemon", "--debug-access", "root", "--state-dir", ""); err == nil || !strings.Contains(err.Error(), "unknown flag: --debug-access") {
+		t.Errorf("daemon --debug-access root ended with %v", err)
 	}
 }
 
@@ -224,35 +192,30 @@ func TestStartupRefusalsSurviveAProductionLogLevel(t *testing.T) {
 	}
 }
 
-// --debug-access reaches the socket the daemon serves
-// off refuses every debug path, and the other two let a socket user read one
-func TestDebugAccessReachesTheControlSocket(t *testing.T) {
-	for access, want := range map[string]int{"off": http.StatusForbidden, "root": http.StatusOK, "group": http.StatusOK} {
-		t.Run(access, func(t *testing.T) {
-			var parsed options
-			daemon := daemonCommand(func(o options) int {
-				parsed = o
-				return 0
-			})
-			socket := socketPath(t)
-			daemon.SetArgs([]string{"--debug-access", access, "--control", socket})
-			if err := daemon.Execute(); err != nil {
-				t.Fatal(err)
-			}
-			var failed atomic.Bool
-			listener, err := serveControl(parsed, &client.Client{}, &failed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer listener.Close()
-			response, err := control.Dial(socket).Raw(t.Context(), http.MethodGet, control.PathDebugRuntime, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response.Body.Close()
-			if response.StatusCode != want {
-				t.Errorf("a daemon started with --debug-access %s answered a debug read with %s, want %d", access, response.Status, want)
-			}
-		})
+// the socket the daemon serves answers the node's debug paths
+func TestServeControlAnswersTheDebugPaths(t *testing.T) {
+	var parsed options
+	daemon := daemonCommand(func(o options) int {
+		parsed = o
+		return 0
+	})
+	socket := socketPath(t)
+	daemon.SetArgs([]string{"--control", socket})
+	if err := daemon.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var failed atomic.Bool
+	listener, err := serveControl(parsed, &client.Client{}, &failed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	response, err := control.Dial(socket).Raw(t.Context(), http.MethodGet, control.PathDebugRuntime, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Errorf("the daemon's socket answered a debug read with %s", response.Status)
 	}
 }

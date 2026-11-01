@@ -16,7 +16,7 @@ import (
 const PathDebugSegments = PathDebug + "segments"
 
 func init() {
-	debugRead(PathDebugSegments, classRead, "segments", SegmentsSource.DebugSegments)
+	debugRead(PathDebugSegments, "segments", SegmentsSource.DebugSegments)
 }
 
 // SegmentsSource is a Source that reads its cap.segment

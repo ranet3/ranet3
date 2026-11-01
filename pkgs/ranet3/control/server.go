@@ -259,11 +259,6 @@ func scrape(mux *http.ServeMux, path string, src Source) {
 // anything but GET and HEAD. POST rather than PUT because none of the verbs is
 // idempotent, a second rekey being a second exchange rather than the same one
 // restated.
-//
-// The authorization story is the socket's mode and stays that way: nothing
-// here inspects a credential, because every verb acts on state the node's own
-// file already decides. See the package doc for the line that keeps a verb
-// from needing one.
 func act(mux *http.ServeMux, path string, sink Sink, run func(context.Context, Sink, Request) (Result, error)) {
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 		if !writing(w, r) {

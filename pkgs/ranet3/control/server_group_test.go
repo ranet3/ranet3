@@ -73,8 +73,9 @@ func listenUnderForeignGroup(t *testing.T, parent string, foreign int) {
 				if gid != os.Getegid() {
 					t.Errorf("%s is in group %d, want the effective %d rather than %d from the directory it was made in", path, gid, os.Getegid(), foreign)
 				}
-				if mode.IsDir() && mode.Perm() != dirMode {
-					t.Errorf("%s is mode %o, want %o so the group can traverse it", path, mode.Perm(), dirMode)
+				// the literal rather than dirMode, so a looser constant fails here
+				if mode.IsDir() && mode.Perm() != 0o750 {
+					t.Errorf("%s is mode %o, want 750 so the group and nobody else can traverse it", path, mode.Perm())
 				}
 			}
 		})

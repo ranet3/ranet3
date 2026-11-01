@@ -12,7 +12,7 @@ import (
 // PathDebugProbe asks sessions to prove their path now, the way a move of the host's default or one of its addresses asks every one
 const PathDebugProbe = PathDebug + "probe"
 
-func init() { registerDebug(PathDebugProbe, classRoot, reflect.TypeFor[Result](), serveProbe) }
+func init() { registerDebug(PathDebugProbe, reflect.TypeFor[Result](), serveProbe) }
 
 // ProbeSource is a Source whose sessions can be asked to prove their path
 type ProbeSource interface {
@@ -22,6 +22,7 @@ type ProbeSource interface {
 
 // serveProbe is an action, so it takes a POST and the body a write takes
 func serveProbe(d *debugServer, w http.ResponseWriter, r *http.Request) {
+	journal(r)
 	if !writing(w, r) {
 		return
 	}

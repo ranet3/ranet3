@@ -4,78 +4,20 @@
 package control
 
 import (
-	"fmt"
 	"iter"
 	"log/slog"
 	"maps"
 	"net/http"
-	"os"
 	"reflect"
-	"slices"
-	"strings"
 	"time"
 )
 
 // PathDebug is the prefix every debug path sits under
 const PathDebug = "/v0/debug/"
 
-// DebugAccess is who may use the debug paths, which the daemon's --debug-access sets
-type DebugAccess string
-
-const (
-	// DebugRoot keeps the root class to uid 0 and the daemon's own user
-	DebugRoot DebugAccess = "root"
-	// DebugGroup opens the root class to everyone who can open the socket
-	DebugGroup DebugAccess = "group"
-	// DebugOff refuses every debug path
-	DebugOff DebugAccess = "off"
-)
-
-// DebugAccesses is every --debug-access value, the one list the parser, the flag and the tests read
-var DebugAccesses = []DebugAccess{DebugRoot, DebugGroup, DebugOff}
-
-// DebugAccessNames is the same set as plain strings, for the refusal that names them and for shell completion
-func DebugAccessNames() []string {
-	out := make([]string, 0, len(DebugAccesses))
-	for _, access := range DebugAccesses {
-		out = append(out, string(access))
-	}
-	return out
-}
-
-// UnmarshalText reads a --debug-access value
-func (a *DebugAccess) UnmarshalText(text []byte) error {
-	if access := DebugAccess(text); slices.Contains(DebugAccesses, access) {
-		*a = access
-		return nil
-	}
-	return fmt.Errorf("debug access is one of %s", strings.Join(DebugAccessNames(), ", "))
-}
-
-// DebugAccessor is a Source that chooses its debug access
-// one that does not implement it serves under DebugRoot
-type DebugAccessor interface {
-	DebugAccess() DebugAccess
-}
-
-// debugClass sorts debug paths by what they disclose or do, which decides who may call them
-type debugClass int
-
-const (
-	// classRead is a snapshot without key material, or the event stream
-	// status and sessions already disclose that kind of thing to the socket's group
-	classRead debugClass = iota
-	// classRoot is every action, which is the probe
-	classRoot
-	// classPlaintext shows the packets the node handles, other nodes' traffic among them, so uid 0 alone may read it
-	// --debug-access group does not open it
-	classPlaintext
-)
-
 // debugRoute is one debug path
 // wire is the type its answer carries, which the key material check walks
 type debugRoute struct {
-	class debugClass
 	wire  reflect.Type
 	serve func(*debugServer, http.ResponseWriter, *http.Request)
 }
@@ -84,16 +26,16 @@ type debugRoute struct {
 // registration ends before main starts, so a server reads the map without a lock
 var debugRoutes = map[string]debugRoute{}
 
-func registerDebug(path string, class debugClass, wire reflect.Type, serve func(*debugServer, http.ResponseWriter, *http.Request)) {
+func registerDebug(path string, wire reflect.Type, serve func(*debugServer, http.ResponseWriter, *http.Request)) {
 	if _, taken := debugRoutes[path]; taken {
 		panic("control: two debug views registered " + path)
 	}
-	debugRoutes[path] = debugRoute{class: class, wire: wire, serve: serve}
+	debugRoutes[path] = debugRoute{wire: wire, serve: serve}
 }
 
 // debugRead registers a read the source answers through its debug interface I
-func debugRead[I, T any](path string, class debugClass, view string, read func(I) T) {
-	registerDebug(path, class, reflect.TypeFor[T](), func(d *debugServer, w http.ResponseWriter, r *http.Request) {
+func debugRead[I, T any](path string, view string, read func(I) T) {
+	registerDebug(path, reflect.TypeFor[T](), func(d *debugServer, w http.ResponseWriter, r *http.Request) {
 		if !reading(w, r) {
 			return
 		}
@@ -115,64 +57,33 @@ func implements[I any](d *debugServer, w http.ResponseWriter, view string) (I, b
 
 // debugServer serves the paths under PathDebug for one source
 type debugServer struct {
-	src    Source
-	access DebugAccess
-	// euid is the daemon's own user, which the root class admits beside uid 0
-	euid uint32
+	src Source
 	// streams holds a place for every stream open, see place
 	streams                 chan struct{}
 	budget, heartbeat, tick time.Duration
 }
 
 func newDebugServer(src Source) *debugServer {
-	access := DebugRoot
-	if accessor, ok := src.(DebugAccessor); ok {
-		access = accessor.DebugAccess()
-	}
-	return &debugServer{src: src, access: access, euid: uint32(os.Geteuid()),
-		streams: make(chan struct{}, maxStreams), budget: streamBudget, heartbeat: streamHeartbeat, tick: streamTick}
+	return &debugServer{src: src, streams: make(chan struct{}, maxStreams), budget: streamBudget, heartbeat: streamHeartbeat, tick: streamTick}
 }
 
 func (d *debugServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route, found := debugRoutes[r.URL.Path]
-	if !found && d.access != DebugOff {
+	if !found {
 		http.Error(w, "no debug path is called "+r.URL.Path+" on this daemon", http.StatusNotFound)
 		return
-	}
-	caller, known := CallerOf(r.Context())
-	if why := refusal(d.access, route.class, caller, known, d.euid); why != "" {
-		http.Error(w, why, http.StatusForbidden)
-		return
-	}
-	switch route.class {
-	case classRoot:
-		slog.Info("control debug call", "path", r.URL.Path, "uid", caller.UID, "pid", caller.PID)
-	case classPlaintext:
-		slog.Info("control debug call", "path", r.URL.Path, "uid", caller.UID, "pid", caller.PID, "query", r.URL.RawQuery)
 	}
 	route.serve(d, w, r)
 }
 
-// refusal is why caller may not use a path of class, or empty where it may
-// a connection without credentials reaches the read class alone
-func refusal(access DebugAccess, class debugClass, caller Caller, known bool, euid uint32) string {
-	who := "the connection carries no credentials to name the caller"
-	if known {
-		who = fmt.Sprintf("the caller is uid %d", caller.UID)
+// journal logs a probe or a trace request with its path and its caller where the socket names one
+// the log outlives the event ring, which a restart clears and the caller's own verbs can push the record out of
+func journal(r *http.Request, attrs ...any) {
+	line := []any{"path", r.URL.Path}
+	if caller, known := CallerOf(r.Context()); known {
+		line = append(line, "uid", caller.UID, "pid", caller.PID)
 	}
-	switch {
-	case access == DebugOff:
-		return "this daemon runs with --debug-access off, which refuses every debug path, and " + who
-	case class == classRead:
-		return ""
-	case !known:
-		return "this debug path is for a caller the socket can name, and " + who
-	case class == classPlaintext && caller.UID != 0:
-		return "this debug path reads packets other nodes sent, which is for uid 0 alone under every --debug-access, and " + who
-	case class == classPlaintext || access == DebugGroup || caller.UID == 0 || caller.UID == euid:
-		return ""
-	}
-	return fmt.Sprintf("this debug path is for uid 0 or the daemon's own uid %d under --debug-access root, and %s", euid, who)
+	slog.Info("control debug call", append(line, attrs...)...)
 }
 
 // DebugPaths is every debug path this build serves

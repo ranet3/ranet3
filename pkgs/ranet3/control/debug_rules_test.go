@@ -205,11 +205,10 @@ type rulesSource struct{ fakeSource }
 
 func (*rulesSource) DebugRules() RulesInfo { return rulesFixture() }
 
-// the rules view discloses rules and counters, which status already discloses
-// to the socket's group, so a caller the root class refuses still reads it
-func TestRulesAreReadByACallerTheRootClassRefuses(t *testing.T) {
-	server := injected(t, &rulesSource{}, Caller{UID: 4242})
+// the rules view reads the host's rules and the border's counters
+func TestRulesReadTheRulesAndTheBorder(t *testing.T) {
+	server := served(t, &rulesSource{})
 	if status, body := get(t, server.Client(), server.URL+PathDebugRules); status != http.StatusOK || !strings.Contains(body, `"drop ipv4 source 203.0.113.0/24"`) {
-		t.Errorf("uid 4242 asking for the rules view was answered %d %q", status, body)
+		t.Errorf("the rules view was answered %d %q", status, body)
 	}
 }

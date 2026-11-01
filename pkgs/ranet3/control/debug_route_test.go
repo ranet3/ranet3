@@ -364,15 +364,14 @@ func (*routeSource) DebugRoute(src, dst netip.Addr, iif, peer string) (RouteInfo
 	return RouteInfo{Src: src, Dst: dst, IIF: iif, Peer: peer, Arrival: ArrivalLink}, nil
 }
 
-// the route view discloses what the kernel and the rule dump tell any user,
-// so a caller the root class refuses still reads it, and the packet reaches
-// the source as asked
-func TestRouteIsReadByACallerTheRootClassRefuses(t *testing.T) {
-	server := injected(t, &routeSource{}, Caller{UID: 4242})
+// the route view reads the packet it is asked about, which reaches the source
+// as asked
+func TestRouteReadsThePacketAsAsked(t *testing.T) {
+	server := served(t, &routeSource{})
 	query := url.Values{"src": {"0.0.0.0"}, "dst": {"203.0.113.1"}, "iif": {"lan0"}}
 	status, body := get(t, server.Client(), server.URL+PathDebugRoute+"?"+query.Encode())
 	if status != http.StatusOK || !strings.Contains(body, `"dst":"203.0.113.1"`) || !strings.Contains(body, `"iif":"lan0"`) || strings.Contains(body, `"src"`) {
-		t.Errorf("uid 4242 asking for the route view was answered %d %q", status, body)
+		t.Errorf("the route view was answered %d %q", status, body)
 	}
 	query.Del("iif")
 	query.Set("peer", "example/gateway")

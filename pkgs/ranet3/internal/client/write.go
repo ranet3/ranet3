@@ -24,9 +24,8 @@ import (
 // the file and SIGHUP. What they act on is whether a subsystem the file
 // already describes is running right now, which session this node holds for a
 // peer, and when the next Child SA is negotiated. Every one of those is
-// reversible, bounded and already in the file's gift, so the socket's mode
-// stays the whole authorization story. See the control package doc for the
-// line a new verb would have to stay inside.
+// reversible, bounded and already in the file's gift. See the control package
+// doc for who may ask for them.
 //
 // The state lives here and nowhere else. A restart starts everything the file
 // names, and a reload leaves it alone: the trust document is rewritten every

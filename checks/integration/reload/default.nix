@@ -91,6 +91,13 @@ testers.runNixOSTest {
       inherit settings;
     };
 
+    # a member of the socket's group and a user outside it
+    users.users.member = {
+      isNormalUser = true;
+      extraGroups = [ "ranet3" ];
+    };
+    users.users.outsider.isNormalUser = true;
+
     specialisation = {
       applied.configuration.networking.ranet3.settings = lib.mkForce applied;
       # what a reload refuses, since the socket is bound once
@@ -152,6 +159,16 @@ testers.runNixOSTest {
       assert state["registry"]["nodes"] == 1, state["registry"]
       assert state["port"] == 14000, state["port"]
       machine.wait_until_succeeds(listening(14000), timeout=timeout)
+
+      # /run/ranet3, which systemd makes 0750 in the unit's group, refuses outsider
+      # before the socket is reached, so the stat line alone holds the socket's
+      # 0660, and a member reaches the debug tree as well as the reads
+      socket = machine.succeed("stat --format '%a %G' /run/ranet3/control.sock").strip()
+      assert socket == "660 ranet3", f"the socket is {socket}"
+      machine.succeed("runuser -u member -- ranet3 status")
+      machine.succeed("runuser -u member -- ranet3 debug runtime")
+      refused = machine.fail("runuser -u outsider -- ranet3 status 2>&1")
+      assert "cannot be opened by this user" in refused, refused
 
       # a change a reload applies reaches the running daemon, which keeps its
       # process and so every SA it carries

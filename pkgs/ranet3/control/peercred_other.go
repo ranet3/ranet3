@@ -8,5 +8,5 @@ package control
 import "net"
 
 // peerCred reports nothing on a platform this tree reads no peer credentials on
-// every debug path of the root and plaintext classes is refused there
+// a request there carries no caller for an event to name
 func peerCred(*net.UnixConn) (Caller, bool) { return Caller{}, false }

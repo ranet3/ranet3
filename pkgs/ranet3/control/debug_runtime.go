@@ -13,7 +13,7 @@ import (
 const PathDebugRuntime = PathDebug + "runtime"
 
 func init() {
-	debugRead(PathDebugRuntime, classRead, "runtime", RuntimeSource.DebugRuntime)
+	debugRead(PathDebugRuntime, "runtime", RuntimeSource.DebugRuntime)
 }
 
 // RuntimeSource is a Source that reports its own process

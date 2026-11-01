@@ -146,8 +146,9 @@ func TestListenClearsStaleSocketAndRefusesLiveOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mode := info.Mode().Perm(); mode != socketMode {
-		t.Errorf("the socket is mode %o, want %o so the daemon's group can read it", mode, socketMode)
+	// the literal rather than socketMode, so a looser constant fails here
+	if mode := info.Mode().Perm(); mode != 0o660 {
+		t.Errorf("the socket is mode %o, want 660 so the daemon's group and nobody else can open it", mode)
 	}
 
 	if _, err := Listen(path); err == nil {

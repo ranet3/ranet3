@@ -69,7 +69,6 @@ type options struct {
 	stateDir           string
 	contentionProfiles bool
 	level              slog.Level
-	debugAccess        control.DebugAccess
 }
 
 // daemonCommand is the node itself. Its flags are its own rather than the
@@ -79,7 +78,7 @@ type options struct {
 // run starts the node from the options the flags came to, runDaemon unless a test reads them instead
 func daemonCommand(run func(options) int) *cobra.Command {
 	var o options
-	var logLevel, debugAccess string
+	var logLevel string
 	cmd := &cobra.Command{
 		Use:   "daemon",
 		Short: "Run the ranet3 node",
@@ -95,13 +94,8 @@ seqno limit a restart starts from. A node that starts with the flag
 there stays off the mesh. The daemon makes the directory with mode 0700
 when it is missing.
 
-The --debug-access flag decides who may use the debug paths. The read
-class is open to everyone who can open the socket. The root class, debug
-probe, admits uid 0 and the user the daemon runs as when the value is
-root, and everyone who can open the socket when it is group. The
-plaintext class, debug trace, admits uid 0 alone under both. The value
-off refuses every debug path. Profiles are no debug path, since --pprof
-serves them on an address of its own.
+Whoever can open the control socket runs every command, the debug
+commands included.
 
 The --pprof flag serves pprof on an address such as 127.0.0.1:6060. A CPU
 profile is at /debug/pprof/profile, and this opens one as a flamegraph:
@@ -114,9 +108,6 @@ pprof is served, at a high cost in overhead.`,
 		RunE: func(*cobra.Command, []string) error {
 			if err := o.level.UnmarshalText([]byte(logLevel)); err != nil {
 				return fmt.Errorf("invalid --log-level %q: log level is one of %s", logLevel, strings.Join(logLevelNames(), ", "))
-			}
-			if err := o.debugAccess.UnmarshalText([]byte(debugAccess)); err != nil {
-				return fmt.Errorf("invalid --debug-access %q: %w", debugAccess, err)
 			}
 			if o.stateDir == "" {
 				return errors.New(`invalid --state-dir "": ranet3 down needs a directory to keep its flag in`)
@@ -135,10 +126,8 @@ pprof is served, at a high cost in overhead.`,
 	f.StringVar(&o.controlPath, "control", control.DefaultSocket, "Control socket to serve or empty for none")
 	f.StringVar(&o.stateDir, "state-dir", defaultStateDir, "Directory for state that outlives the process")
 	f.StringVar(&logLevel, "log-level", defaultLogLevel, "Minimum log level")
-	f.StringVar(&debugAccess, "debug-access", string(control.DebugRoot), "Who may use the debug commands")
 	cmd.MarkFlagDirname("state-dir")
 	cmd.RegisterFlagCompletionFunc("log-level", cobra.FixedCompletions(logLevelNames(), cobra.ShellCompDirectiveNoFileComp))
-	cmd.RegisterFlagCompletionFunc("debug-access", cobra.FixedCompletions(control.DebugAccessNames(), cobra.ShellCompDirectiveNoFileComp))
 	return cmd
 }
 
@@ -455,15 +444,7 @@ func stopInOrder(cancel context.CancelFunc, wait, stopBorder func()) {
 	stopBorder()
 }
 
-// debugNode is the node under the --debug-access it was started with
-type debugNode struct {
-	*client.Client
-	access control.DebugAccess
-}
-
-func (n debugNode) DebugAccess() control.DebugAccess { return n.access }
-
-// serveControl binds the socket opts names and answers it for node, the debug paths under opts' --debug-access
+// serveControl binds the socket opts names and answers it for node
 // a nil listener and no error is a node running without a socket, for the reasons runDaemon gives
 func serveControl(opts options, node *client.Client, failed *atomic.Bool) (net.Listener, error) {
 	if opts.controlPath == "" {
@@ -479,7 +460,7 @@ func serveControl(opts options, node *client.Client, failed *atomic.Bool) (net.L
 	}
 	go func() {
 		log.Printf("control socket listening on %s", opts.controlPath)
-		if err := control.Serve(listener, debugNode{node, opts.debugAccess}); err != nil {
+		if err := control.Serve(listener, node); err != nil {
 			log.Printf("control: %v", err)
 			failed.Store(true)
 		}

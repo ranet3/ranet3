@@ -8,8 +8,8 @@ import (
 	"net"
 )
 
-// Caller is the process on the other end of a control connection
-// the kernel reported it when the connection was accepted
+// Caller is the process on the other end of a control connection, which the probe and trace journal line, control.verb and control.trace.started name
+// the kernel reports it once, when the connection is accepted
 type Caller struct {
 	UID uint32
 	// PID is zero where the platform reports none

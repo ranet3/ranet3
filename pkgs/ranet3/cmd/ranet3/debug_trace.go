@@ -33,8 +33,7 @@ func (r *reader) traceCommand() *cobra.Command {
 		Long: `A record is one packet the node decided: how it arrived, what the node
 did with it and why, and its headers as it arrived. Relayed packets are
 other nodes' traffic, so a record carries none of a packet's bytes
-unless --payload asks for them, and only uid 0 may trace, under every
---debug-access but off. It prints records until --for has passed. A
+unless --payload asks for them. It prints records until --for has passed. A
 packet the forwarding decision does not see, such as Babel's own or IKE
 and ESP on the underlay, never appears. A peer is named by its path, by
 org/name:serial, by org/name or by name.`,

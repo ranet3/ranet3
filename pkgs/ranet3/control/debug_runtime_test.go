@@ -49,17 +49,16 @@ func TestRuntimeRendersAsTheGoldenFiles(t *testing.T) {
 	golden(t, "runtime-bare.txt", []byte(out.String()))
 }
 
-// plainRuntime serves the runtime view and names no access, so it serves under DebugRoot
+// plainRuntime serves the runtime view
 type plainRuntime struct{ fakeSource }
 
 func (plainRuntime) DebugRuntime() RuntimeInfo { return runtimeFixture() }
 
-// the runtime is a snapshot without key material, so a caller the root class refuses still reads it
-// it is a read, so a POST is refused
-func TestRuntimeIsReadByACallerTheRootClassRefuses(t *testing.T) {
-	server := injected(t, plainRuntime{}, Caller{UID: 4242})
+// the runtime view reads the daemon's process, and it is a read, so a POST is refused
+func TestRuntimeReadsTheProcess(t *testing.T) {
+	server := served(t, plainRuntime{})
 	if status, body := get(t, server.Client(), server.URL+PathDebugRuntime); status != http.StatusOK {
-		t.Errorf("uid 4242 asking a daemon under --debug-access root for the runtime was answered %d %q", status, body)
+		t.Errorf("the runtime view was answered %d %q", status, body)
 	}
 	if refused := post(t, server.URL+PathDebugRuntime, ""); refused.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("a POST to the runtime was answered %s", refused.Status)

@@ -74,16 +74,20 @@ func (s pmtuSource) DebugPMTU(peer string) PMTUInfo {
 	return pmtuFixture()
 }
 
-// the view is a snapshot without key material, so a caller the root class refuses still reads it
-// the peer named reaches the source as it was written, and a POST is refused
-func TestPMTUIsReadByACallerTheRootClassRefuses(t *testing.T) {
+// the view reads the named peer's path MTU search, the peer reaching the source as it was written, and a POST is refused
+func TestPMTUReadsTheNamedPeer(t *testing.T) {
 	source := pmtuSource{asked: make(chan string, 1)}
-	server := injected(t, source, Caller{UID: 4242})
+	server := served(t, source)
 	if status, body := get(t, server.Client(), server.URL+PathDebugPMTU+"?peer=example%2Fbravo"); status != http.StatusOK {
-		t.Errorf("uid 4242 asking a daemon under --debug-access root for the pmtu view was answered %d %q", status, body)
+		t.Errorf("the pmtu view was answered %d %q", status, body)
 	}
-	if peer := <-source.asked; peer != "example/bravo" {
-		t.Errorf("the source was asked for %q, want example/bravo", peer)
+	select {
+	case peer := <-source.asked:
+		if peer != "example/bravo" {
+			t.Errorf("the source was asked for %q, want example/bravo", peer)
+		}
+	case <-time.After(testWait):
+		t.Error("the source was never asked for the pmtu view")
 	}
 	if refused := post(t, server.URL+PathDebugPMTU, ""); refused.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("a POST to the pmtu view was answered %s", refused.Status)

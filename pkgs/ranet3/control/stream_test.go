@@ -124,7 +124,7 @@ type probeStreamer interface {
 }
 
 func init() {
-	registerDebug(pathProbeStream, classRead, reflect.TypeFor[Event](), func(d *debugServer, w http.ResponseWriter, r *http.Request) {
+	registerDebug(pathProbeStream, reflect.TypeFor[Event](), func(d *debugServer, w http.ResponseWriter, r *http.Request) {
 		if !reading(w, r) {
 			return
 		}

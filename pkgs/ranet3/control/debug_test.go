@@ -4,61 +4,37 @@
 package control
 
 import (
+	"cmp"
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
-// probe views stand in for a read view, a root view and a view no source serves
+// probeView stands in for a view no source serves
 type probeView struct {
 	Name string `json:"name"`
 }
 
-type (
-	probeReader    interface{ ProbeRead() probeView }
-	probeRooter    interface{ ProbeRoot() probeView }
-	probePlaintext interface{ ProbePlaintext() probeView }
-	probeAbsent    interface{ ProbeAbsent() probeView }
-)
+type probeAbsent interface{ ProbeAbsent() probeView }
 
-const (
-	pathProbeRead      = PathDebug + "probe-read"
-	pathProbeRoot      = PathDebug + "probe-root"
-	pathProbePlaintext = PathDebug + "probe-plaintext"
-	pathProbeAbsent    = PathDebug + "probe-absent"
-)
+const pathProbeAbsent = PathDebug + "probe-absent"
 
 func init() {
-	debugRead(pathProbeRead, classRead, "probe read", probeReader.ProbeRead)
-	debugRead(pathProbeRoot, classRoot, "probe root", probeRooter.ProbeRoot)
-	debugRead(pathProbePlaintext, classPlaintext, "probe plaintext", probePlaintext.ProbePlaintext)
-	debugRead(pathProbeAbsent, classRead, "probe absent", probeAbsent.ProbeAbsent)
+	debugRead(pathProbeAbsent, "probe absent", probeAbsent.ProbeAbsent)
 }
-
-// debugSource serves the probe views it implements under the access it names
-type debugSource struct {
-	fakeSource
-	access DebugAccess
-}
-
-func (debugSource) ProbeRead() probeView { return probeView{Name: "read"} }
-
-func (debugSource) ProbeRoot() probeView { return probeView{Name: "root"} }
-
-func (debugSource) ProbePlaintext() probeView { return probeView{Name: "plaintext"} }
-
-func (s debugSource) DebugAccess() DebugAccess { return s.access }
 
 // get answers one GET with its status and body
 func get(t *testing.T, client *http.Client, url string) (int, string) {
@@ -75,6 +51,14 @@ func get(t *testing.T, client *http.Client, url string) (int, string) {
 	return response.StatusCode, string(body)
 }
 
+// served serves src as a daemon would, to connections that name no caller
+func served(t *testing.T, src Source) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(Handler(src))
+	t.Cleanup(server.Close)
+	return server
+}
+
 // injected serves src as a daemon would, with every connection reporting caller
 func injected(t *testing.T, src Source, caller Caller) *httptest.Server {
 	t.Helper()
@@ -85,175 +69,184 @@ func injected(t *testing.T, src Source, caller Caller) *httptest.Server {
 	return server
 }
 
-// the caller is this test's own process, which is the daemon's own user to the server
-// so both classes answer over a real socket
-func TestDebugPathsTakeRootOrTheDaemonsOwnUser(t *testing.T) {
-	path := socketPath(t)
-	listener, err := Listen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	go Serve(listener, debugSource{access: DebugRoot})
+// egressSource and segmentsSource serve their views empty
+type (
+	egressSource   struct{ fakeSource }
+	segmentsSource struct{ fakeSource }
+)
 
-	client := Dial(path).http
-	for want, debugPath := range map[string]string{"read": pathProbeRead, "root": pathProbeRoot} {
-		status, body := get(t, client, "http://control"+debugPath)
-		if status != http.StatusOK || !strings.Contains(body, `"name":"`+want+`"`) {
-			t.Errorf("%s answered %d %q to the daemon's own user", debugPath, status, body)
+func (egressSource) DebugEgress() EgressInfo { return EgressInfo{} }
+
+func (segmentsSource) DebugSegments() SegmentsInfo { return SegmentsInfo{} }
+
+// debugCall is how a test asks one debug path, of a source that serves it
+type debugCall struct {
+	src                 Source
+	method, query, body string
+}
+
+// whoever can open the socket reaches every debug path, so a caller other than root is refused none
+// each path the daemon serves answers it from its source, and a path this package's tests register answers anything but a refusal or a 404
+// a registered path that is neither fails, so a new daemon path joins the map
+func TestEveryDebugPathAnswersACallerOtherThanRoot(t *testing.T) {
+	daemon := map[string]debugCall{
+		PathDebugEgress:   {src: egressSource{}},
+		PathDebugEvents:   {src: &eventSource{}},
+		PathDebugNetmon:   {src: &netmonSource{}},
+		PathDebugPMTU:     {src: pmtuSource{asked: make(chan string, 1)}, query: "peer=example%2Fbravo"},
+		PathDebugProbe:    {src: &netmonSource{}, method: http.MethodPost, body: `{"all":true}`},
+		PathDebugRoute:    {src: &routeSource{}, query: "src=0.0.0.0&dst=203.0.113.1&iif=lan0"},
+		PathDebugRules:    {src: &rulesSource{}},
+		PathDebugRuntime:  {src: plainRuntime{}},
+		PathDebugSegments: {src: segmentsSource{}},
+		PathDebugTrace:    {src: newTraceSource()},
+		PathDebugUpDown:   {src: upDownSource{}},
+	}
+	paths := maps.Clone(daemon)
+	for path := range DebugPaths() {
+		switch _, listed := paths[path]; {
+		case listed:
+		case path == pathProbeAbsent || path == pathProbeStream:
+			paths[path] = debugCall{src: fakeSource{}}
+		default:
+			t.Errorf("%s is registered, and the walk lists it neither as a daemon path nor as a test's", path)
+		}
+	}
+	for path, call := range paths {
+		server := injected(t, call.src, Caller{UID: 4242})
+		ctx, cancel := context.WithCancel(t.Context())
+		url := server.URL + path
+		if call.query != "" {
+			url += "?" + call.query
+		}
+		request, err := http.NewRequestWithContext(ctx, cmp.Or(call.method, http.MethodGet), url, strings.NewReader(call.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := server.Client().Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		cancel()
+		_, daemonPath := daemon[path]
+		switch {
+		case response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusNotFound:
+			t.Errorf("%s refused uid 4242 with %s", path, response.Status)
+		case daemonPath && response.StatusCode != http.StatusOK:
+			t.Errorf("%s answered uid 4242 with %s", path, response.Status)
 		}
 	}
 }
 
-// uid 0 reaches the root class of a daemon that runs as another user
-func TestDebugAdmitsRootToADaemonOfAnotherUser(t *testing.T) {
-	request := httptest.NewRequest(http.MethodGet, pathProbeRoot, nil)
-	request = request.WithContext(withCaller(request.Context(), Caller{UID: 0}))
-	answer := httptest.NewRecorder()
-	server := &debugServer{src: debugSource{access: DebugRoot}, access: DebugRoot, euid: 4242}
-	server.ServeHTTP(answer, request)
-	if answer.Code != http.StatusOK {
-		t.Errorf("uid 0 was refused a root path of a daemon at uid 4242 with %d %q", answer.Code, answer.Body)
-	}
+// probingTraceSource opens traces as traceSource does and takes netmonSource's probe beside them
+// it hands over what the log held when the probe reached it
+type probingTraceSource struct {
+	*traceSource
+	probe  *netmonSource
+	logged *lockedBuffer
+	held   chan string
 }
 
-// a source that names no access serves its debug paths under root
-func TestDebugAccessDefaultsToRoot(t *testing.T) {
-	if access := newDebugServer(fakeSource{}).access; access != DebugRoot {
-		t.Errorf("a source naming no access serves under %q", access)
-	}
+func newProbingTraceSource(logged *lockedBuffer) probingTraceSource {
+	return probingTraceSource{traceSource: newTraceSource(), probe: &netmonSource{}, logged: logged, held: make(chan string, 1)}
 }
 
-// another user is refused the root class with the rule and its own uid
-// it still reads what the socket's group reads
-// a root call let in by --debug-access group is logged with its uid and pid
-func TestDebugRefusesAnotherUserTheRootClass(t *testing.T) {
-	server := injected(t, debugSource{access: DebugRoot}, Caller{UID: 4242, PID: 77})
-	status, body := get(t, server.Client(), server.URL+pathProbeRoot)
-	if status != http.StatusForbidden {
-		t.Fatalf("uid 4242 reached a root path with %d %q", status, body)
+func (s probingTraceSource) DebugProbe(ctx context.Context, peer string, all bool) (Result, error) {
+	select {
+	case s.held <- s.logged.String():
+	default:
 	}
-	for _, want := range []string{"uid 4242", "--debug-access root"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the refusal reads %q, want it to carry %q", body, want)
-		}
-	}
-	if status, body := get(t, server.Client(), server.URL+pathProbeRead); status != http.StatusOK {
-		t.Errorf("uid 4242 was refused a read path with %d %q", status, body)
-	}
+	return s.probe.DebugProbe(ctx, peer, all)
+}
 
+// journaling sends the default logger to a buffer for the test's span
+func journaling(t *testing.T) *lockedBuffer {
+	t.Helper()
 	logged := &lockedBuffer{}
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(logged, nil)))
-	group := injected(t, debugSource{access: DebugGroup}, Caller{UID: 4242, PID: 77})
-	if status, body := get(t, group.Client(), group.URL+pathProbeRoot); status != http.StatusOK {
-		t.Fatalf("--debug-access group refused uid 4242 a root path with %d %q", status, body)
-	}
-	for _, want := range []string{"path=" + pathProbeRoot, "uid=4242", "pid=77"} {
-		if !strings.Contains(logged.String(), want) {
-			t.Errorf("the root call logged %q, want it to carry %q", logged.String(), want)
-		}
-	}
+	return logged
 }
 
-// a connection without credentials cannot be told from anybody
-// so it reads what the group reads and nothing more
-func TestDebugRefusesTheRootClassWithoutCredentials(t *testing.T) {
-	for _, access := range []DebugAccess{DebugRoot, DebugGroup} {
-		server := httptest.NewServer(Handler(debugSource{access: access}))
-		defer server.Close()
-		status, body := get(t, server.Client(), server.URL+pathProbeRoot)
-		if status != http.StatusForbidden || !strings.Contains(body, "no credentials") {
-			t.Errorf("under %s a connection without credentials reached a root path with %d %q", access, status, body)
-		}
-		if status, body := get(t, server.Client(), server.URL+pathProbeRead); status != http.StatusOK {
-			t.Errorf("under %s a connection without credentials was refused a read with %d %q", access, status, body)
+// journaledLine is the last line logged holds for path, or empty
+func journaledLine(logged *lockedBuffer, path string) string {
+	var line string
+	for candidate := range strings.Lines(logged.String()) {
+		if slices.Contains(strings.Fields(candidate), "path="+path) {
+			line = candidate
 		}
 	}
+	return line
 }
 
-// the plaintext class takes uid 0 alone under root and group, the daemon's own uid and a caller group lets onto the root class refused by their uid
-// a call it takes is logged with its query, which holds the filter and the payload length asked for
-func TestDebugPlaintextTakesUIDZeroAlone(t *testing.T) {
-	logged := &lockedBuffer{}
-	logtest.SetDefault(t, slog.New(slog.NewTextHandler(logged, nil)))
-	const euid = 4242
-	for _, access := range []DebugAccess{DebugRoot, DebugGroup} {
-		for _, c := range []struct {
-			uid      uint32
-			admitted bool
-		}{{0, true}, {euid, false}, {77, false}} {
-			request := httptest.NewRequest(http.MethodGet, pathProbePlaintext+"?dst=192.0.2.0/24&payload=64", nil)
-			request = request.WithContext(withCaller(request.Context(), Caller{UID: c.uid, PID: 99}))
-			answer := httptest.NewRecorder()
-			server := &debugServer{src: debugSource{access: access}, access: access, euid: euid}
-			server.ServeHTTP(answer, request)
-			if got := answer.Code == http.StatusOK; got != c.admitted {
-				t.Errorf("under %s uid %d of a daemon at uid %d answered %d %q, want admitted %v", access, c.uid, euid, answer.Code, answer.Body, c.admitted)
-			}
-			if !c.admitted && !strings.Contains(answer.Body.String(), fmt.Sprintf("uid %d", c.uid)) {
-				t.Errorf("the refusal of uid %d reads %q, which does not name it", c.uid, answer.Body)
+// a probe and a trace are each journaled with their path and the caller's uid and pid, and a trace with its query too
+// the probe's line is written by the time the source is asked
+func TestProbeAndTraceAreJournaledWithTheirCaller(t *testing.T) {
+	logged := journaling(t)
+	src := newProbingTraceSource(logged)
+	server := injected(t, src, Caller{UID: 4242, PID: 77})
+	if answer := post(t, server.URL+PathDebugProbe, `{"all":true}`); answer.StatusCode != http.StatusOK || !src.probe.all {
+		t.Errorf("uid 4242 asking for a probe was answered %s and reached the source as %+v", answer.Status, src.probe)
+	}
+	select {
+	case held := <-src.held:
+		if !strings.Contains(held, "path="+PathDebugProbe) {
+			t.Errorf("the probe reached its source while the log held %q", held)
+		}
+	case <-time.After(testWait):
+		t.Error("the probe never reached its source")
+	}
+	if response := open(t, server, PathDebugTrace+"?dst=192.0.2.0/24&payload=64"); response.StatusCode != http.StatusOK {
+		t.Fatalf("uid 4242 opening a trace was answered %s", response.Status)
+	}
+	src.nextTrace(t)
+	for path, wants := range map[string][]string{
+		PathDebugProbe: {"uid=4242", "pid=77"},
+		PathDebugTrace: {"uid=4242", "pid=77", "dst=192.0.2.0/24&payload=64"},
+	} {
+		line := journaledLine(logged, path)
+		for _, want := range wants {
+			if !strings.Contains(line, want) {
+				t.Errorf("%s was journaled as %q, want it to carry %q", path, line, want)
 			}
 		}
 	}
-	for _, want := range []string{"path=" + pathProbePlaintext, "uid=0", "pid=99", "dst=192.0.2.0/24&payload=64"} {
-		if !strings.Contains(logged.String(), want) {
-			t.Errorf("the plaintext call logged %q, want it to carry %q", logged.String(), want)
-		}
+}
+
+// a probe or a trace is journaled before the route's own checks, so one refused for its method or its query leaves its line too
+func TestProbeAndTraceAreJournaledBeforeTheirChecks(t *testing.T) {
+	logged := journaling(t)
+	server := injected(t, newProbingTraceSource(logged), Caller{UID: 4242, PID: 77})
+	if status, _ := get(t, server.Client(), server.URL+PathDebugProbe); status != http.StatusMethodNotAllowed {
+		t.Errorf("a GET of the probe was answered %d", status)
 	}
-	for _, access := range []DebugAccess{DebugRoot, DebugGroup} {
-		answer := httptest.NewRecorder()
-		server := &debugServer{src: debugSource{access: access}, access: access, euid: euid}
-		server.ServeHTTP(answer, httptest.NewRequest(http.MethodGet, pathProbePlaintext, nil))
-		if answer.Code != http.StatusForbidden || !strings.Contains(answer.Body.String(), "no credentials") {
-			t.Errorf("under %s a connection without credentials reached the plaintext class with %d %q", access, answer.Code, answer.Body)
+	if status, _ := get(t, server.Client(), server.URL+PathDebugTrace+"?dst=nowhere"); status != http.StatusBadRequest {
+		t.Errorf("a trace of dst=nowhere was answered %d", status)
+	}
+	for path, want := range map[string]string{PathDebugProbe: "uid=4242", PathDebugTrace: "dst=nowhere"} {
+		if line := journaledLine(logged, path); !strings.Contains(line, want) {
+			t.Errorf("%s, refused, was journaled as %q, want it to carry %q", path, line, want)
 		}
 	}
 }
 
-// a view the source does not serve is named, which a 404 would not do
-func TestDebugNamesAViewTheSourceDoesNotServe(t *testing.T) {
-	server := injected(t, debugSource{access: DebugRoot}, Caller{UID: 0})
-	status, body := get(t, server.Client(), server.URL+pathProbeAbsent)
-	if status != http.StatusNotImplemented || !strings.Contains(body, "probe absent view") {
-		t.Errorf("a missing view answered %d %q", status, body)
+// a request on a connection that named no caller is journaled with its path, and a trace's query, and no uid or pid, rather than as uid 0
+func TestUnnamedCallerIsJournaledWithoutUIDOrPID(t *testing.T) {
+	logged := journaling(t)
+	src := newProbingTraceSource(logged)
+	server := served(t, src)
+	if answer := post(t, server.URL+PathDebugProbe, `{"all":true}`); answer.StatusCode != http.StatusOK {
+		t.Errorf("an unnamed caller asking for a probe was answered %s", answer.Status)
 	}
-	status, body = get(t, server.Client(), server.URL+PathDebug+"nothing-here")
-	if status != http.StatusNotFound || !strings.Contains(body, "nothing-here") {
-		t.Errorf("an unknown debug path answered %d %q", status, body)
+	if response := open(t, server, PathDebugTrace+"?dst=192.0.2.0/24"); response.StatusCode != http.StatusOK {
+		t.Fatalf("an unnamed caller opening a trace was answered %s", response.Status)
 	}
-}
-
-// a raw call hands back the daemon's own answer, a redirect included, rather than the answer it leads to
-func TestRawHandsBackARedirect(t *testing.T) {
-	path := socketPath(t)
-	listener, err := Listen(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	go Serve(listener, debugSource{access: DebugRoot})
-	response, err := Dial(path).Raw(t.Context(), http.MethodGet, strings.TrimSuffix(PathDebug, "/"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode/100 != 3 {
-		t.Errorf("a path the daemon redirects answered %s through a raw call", response.Status)
-	}
-}
-
-// --debug-access off refuses every path under the prefix, an unknown one too
-// root is no exception
-func TestDebugAccessOffRefusesEveryPath(t *testing.T) {
-	server := injected(t, debugSource{access: DebugOff}, Caller{UID: 0})
-	for _, path := range []string{pathProbeRead, pathProbeRoot, PathDebug + "nothing-here"} {
-		status, body := get(t, server.Client(), server.URL+path)
-		if status != http.StatusForbidden || !strings.Contains(body, "--debug-access off") {
-			t.Errorf("%s answered %d %q under --debug-access off", path, status, body)
+	src.nextTrace(t)
+	for path, want := range map[string]string{PathDebugProbe: "path=" + PathDebugProbe, PathDebugTrace: "dst=192.0.2.0/24"} {
+		line := journaledLine(logged, path)
+		if !strings.Contains(line, want) || strings.Contains(line, "uid=") || strings.Contains(line, "pid=") {
+			t.Errorf("%s from an unnamed caller was journaled as %q, want it to carry %q and no uid or pid", path, line, want)
 		}
-	}
-	if status, _ := get(t, server.Client(), server.URL+PathStatus); status != http.StatusOK {
-		t.Errorf("--debug-access off reached past the debug paths: status answered %d", status)
 	}
 }
 
@@ -273,6 +266,38 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.text.String()
+}
+
+// a view the source does not serve is named, which a 404 would not do
+func TestDebugNamesAViewTheSourceDoesNotServe(t *testing.T) {
+	server := served(t, fakeSource{})
+	status, body := get(t, server.Client(), server.URL+pathProbeAbsent)
+	if status != http.StatusNotImplemented || !strings.Contains(body, "probe absent view") {
+		t.Errorf("a missing view answered %d %q", status, body)
+	}
+	status, body = get(t, server.Client(), server.URL+PathDebug+"nothing-here")
+	if status != http.StatusNotFound || !strings.Contains(body, "nothing-here") {
+		t.Errorf("an unknown debug path answered %d %q", status, body)
+	}
+}
+
+// a raw call hands back the daemon's own answer, a redirect included, rather than the answer it leads to
+func TestRawHandsBackARedirect(t *testing.T) {
+	path := socketPath(t)
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go Serve(listener, fakeSource{})
+	response, err := Dial(path).Raw(t.Context(), http.MethodGet, strings.TrimSuffix(PathDebug, "/"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode/100 != 3 {
+		t.Errorf("a path the daemon redirects answered %s through a raw call", response.Status)
+	}
 }
 
 // keyMaterialRoom says where under typ key material could sit, or nothing
@@ -298,7 +323,7 @@ func keyMaterialRoom(typ reflect.Type, seen map[reflect.Type]bool) string {
 		return keyMaterialRoom(typ.Elem(), seen)
 	case reflect.Struct:
 		for field := range typ.Fields() {
-			// a trace's payload is the bytes of the packets it asked for, which hold none of this node's keys, and the plaintext class keeps it to uid 0
+			// a trace's payload is the bytes of the packets it asked for, which hold none of this node's keys
 			// it is exempt by name, so any other field of bytes still fails
 			if !field.IsExported() || typ == reflect.TypeFor[TracePacket]() && field.Name == "Payload" {
 				continue

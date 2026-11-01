@@ -16,7 +16,7 @@ import (
 const PathDebugEgress = PathDebug + "egress"
 
 func init() {
-	debugRead(PathDebugEgress, classRead, "egress", EgressSource.DebugEgress)
+	debugRead(PathDebugEgress, "egress", EgressSource.DebugEgress)
 }
 
 // EgressSource is a Source that reads its cap.egress

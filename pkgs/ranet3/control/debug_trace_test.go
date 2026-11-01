@@ -7,8 +7,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -79,20 +77,12 @@ func (s *traceSource) nextTrace(t *testing.T) *traceRecords {
 	}
 }
 
-// traceServer serves src to uid 0 through a debug server shape changes
+// traceServer serves src through a debug server shape changes
 func traceServer(t *testing.T, src Source, shape func(*debugServer)) *httptest.Server {
-	t.Helper()
-	return traceServerFor(t, src, Caller{UID: 0}, shape)
-}
-
-// traceServerFor serves src to caller through a debug server shape changes
-func traceServerFor(t *testing.T, src Source, caller Caller, shape func(*debugServer)) *httptest.Server {
 	t.Helper()
 	d := newDebugServer(src)
 	shape(d)
-	server := httptest.NewUnstartedServer(d)
-	server.Config.ConnContext = func(ctx context.Context, _ net.Conn) context.Context { return withCaller(ctx, caller) }
-	server.Start()
+	server := httptest.NewServer(d)
 	t.Cleanup(server.Close)
 	return server
 }
@@ -110,22 +100,6 @@ func open(t *testing.T, server *httptest.Server, path string) *http.Response {
 	}
 	t.Cleanup(func() { response.Body.Close() })
 	return response
-}
-
-// the trace is of the plaintext class, so --debug-access group does not open it to the daemon's own uid, and it opens nothing for the uid it refuses
-func TestTraceIsForUIDZeroAlone(t *testing.T) {
-	src := newTraceSource()
-	server := traceServerFor(t, src, Caller{UID: 4242}, func(d *debugServer) { d.access, d.euid = DebugGroup, 4242 })
-	response := open(t, server, PathDebugTrace)
-	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("the daemon's own uid under --debug-access group was answered %s", response.Status)
-	}
-	if body, err := io.ReadAll(response.Body); err != nil || !strings.Contains(string(body), "uid 4242") {
-		t.Errorf("the refusal read %q, %v, naming no uid 4242", body, err)
-	}
-	if len(src.traces) != 0 {
-		t.Error("a refused caller opened a trace")
-	}
 }
 
 // every query is read into the trace it asks for, and each value that does not parse or lies out of bounds is refused with 400, naming it

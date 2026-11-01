@@ -14,7 +14,7 @@ import (
 const PathDebugUpDown = PathDebug + "updown"
 
 func init() {
-	debugRead(PathDebugUpDown, classRead, "updown", UpDownSource.DebugUpDown)
+	debugRead(PathDebugUpDown, "updown", UpDownSource.DebugUpDown)
 }
 
 // UpDownSource is a Source that can be taken off the mesh

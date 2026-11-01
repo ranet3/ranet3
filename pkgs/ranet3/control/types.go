@@ -41,20 +41,17 @@
 // link.listen, cap.table or cap.egress would, and none of the other verbs
 // holds state of its own past the process.
 //
-// A node's configuration comes from its file, so the socket's mode is the
-// whole authorization story for the reads and the verbs, and every verb here
-// stays inside it. Each one
-// acts on something the file already decides (cap.table, cap.segment's
-// steering, link.listen, the peers list, and the file itself), so whoever
-// may edit the file could already ask for it, by editing and restarting if
-// not by editing and sending SIGHUP. The socket grants nothing the file's
-// permissions did not.
+// The socket's mode is the only check. Whoever can open the socket reads
+// every path and asks every verb, the paths under [PathDebug] included, so a
+// group the socket is shared with controls the daemon as root does: Down
+// keeps the node off the mesh until Up, disabling the reconciler withdraws
+// the kill switch's rules, a trace reads in plaintext the packets the node's
+// forwarding decision handles, and a probe sends from the node.
 //
-// That is the line a verb has to stay inside. One that changed something the
-// file cannot express, a new peer or a key or an address, would put a grant
-// on the socket the file's permissions do not carry, and it is refused on
-// those grounds rather than admitted with an authorization check of its own.
-// [Subsystem] is a closed set for the same reason.
+// Each verb acts on something the file already decides (cap.table,
+// cap.segment's steering, link.listen, the peers list, and the file itself),
+// and none adds what the file cannot express, such as a peer, a key or an
+// address. [Subsystem] is a closed set for the same reason.
 //
 // The two halves are told apart by method rather than by path. A read answers
 // GET and HEAD and nothing else, so a caller that reaches a write path with a
@@ -63,13 +60,6 @@
 //
 // # Debug paths
 //
-// the paths under [PathDebug] sit outside the file's argument
-// a probe or a trace of the packets the node handles is nothing the file can express
-// so the caller's peer credentials authorize them instead
-// a read class path is open to whoever can open the socket
-// a root class path takes uid 0 or the daemon's own user
-// a plaintext class path shows the packets the node handles and takes uid 0 alone
-// [DebugAccess] opens the root class to the socket's group or closes every debug path
 // a debug path may change or go in any revision
 //
 // # Versioning
