@@ -326,10 +326,11 @@ func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies m
 }
 
 // warnUnbordered says so when the host forwards where no entry chain runs and
-// the file writes no cap.border. tun-checks drops a mesh source forged into the
-// tun, and the entry chain one the host forwards into it, so what is left is
-// the host's own services, which a host on any of this node's links reaches
-// under a mesh source.
+// the file writes no cap.border. The tun read drops a source the mesh routes to
+// another node or holds unreachable, through a route that does not count as a
+// default, so a host on any of this node's links reaches the host's own
+// services under a mesh source, and the mesh under a source no such route
+// covers.
 //
 // a warning rather than a refusal, since forwarding moves under a running node
 // and darwin, which forwards with no filter to offer, would otherwise not start at all
