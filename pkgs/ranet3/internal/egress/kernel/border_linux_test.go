@@ -199,7 +199,8 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 // the translator's only as the chains it creates. Another type, hook,
 // priority or policy, or a regular chain of its name, is a fault, all but the
 // policy one nf_tables will not change in place, and a chain of another name
-// or in another table is none of the filter's business.
+// or in another table is none of the filter's business. A class of none's
+// chain held as a base chain is a fault nf_tables will not change in place.
 func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
 	requests, err := borderBatch(rules, sets, false)
@@ -212,7 +213,7 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 		}
 	}
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
-		for _, written := range translatorChains {
+		for _, written := range translatorChains(family, underNone(family)) {
 			if fault, remake := written.Fault(nftables.Message{Data: written.Create(nftFamily(family)).Body}); fault != "" || remake {
 				t.Errorf("the translator's %s chain %s reads back with the fault %q, remade %v", egress.FamilyName(family), written.Name, fault, remake)
 			}
@@ -249,6 +250,10 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 		if (fault != "") != c.fault || remake != c.remake {
 			t.Errorf("a chain %s reads back faulted %v and remade %v, want %v and %v", name, fault != "", remake, c.fault, c.remake)
 		}
+	}
+	none := regularChain("none_192_0_2_0_24")
+	if fault, remake := none.Fault(chain(TableName, none.Name, "filter", unix.NF_INET_FORWARD, 0, nftables.Accept)); fault == "" || !remake {
+		t.Errorf("a class of none's chain held as a base chain reads back with the fault %q, remade %v, want a fault that remakes the table", fault, remake)
 	}
 }
 

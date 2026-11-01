@@ -127,7 +127,7 @@ testers.runNixOSTest {
     # hands back for a diff to compare against, is checked here and nowhere
     # else short of the full exit node arm.
     out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow|RewritesALineEditedUnderItsComment)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged|RefillsAFlushedSet|HoldsTheEntryChainAloneWithNoBorder|TakesOverATableWithAStrayChain|OutlivesAKilledOwner)?$|^TestBorderPassSendsAOneLANChangeAsItsDelta$' 2>&1"
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow|RewritesALineEditedUnderItsComment|ReadsTheChainsOfClassesOfNoneBack|NamesTheChainThatKeepsAStrayChainOfNone)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged|RefillsAFlushedSet|HoldsTheEntryChainAloneWithNoBorder|TakesOverATableWithAStrayChain|OutlivesAKilledOwner)?$|^TestBorderPassSendsAOneLANChangeAsItsDelta$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the nftables round trips skipped themselves under root:\n{out}"
@@ -143,8 +143,10 @@ testers.runNixOSTest {
     assert "--- PASS: TestNftablesRemakesATableWhoseSetCountsAnotherLimit" in out, f"the remake of a set counting another limit did not run:\n{out}"
     assert "--- PASS: TestNftablesReportsTheNatChainsAtItsPriorityOrBelow" in out, f"the report of other nat chains did not run:\n{out}"
     assert "--- PASS: TestNftablesRewritesALineEditedUnderItsComment" in out, f"the rewrite of a line edited under its comment did not run:\n{out}"
+    assert "--- PASS: TestNftablesReadsTheChainsOfClassesOfNoneBack" in out, f"the readback of the chains of classes of none did not run:\n{out}"
+    assert "--- PASS: TestNftablesNamesTheChainThatKeepsAStrayChainOfNone" in out, f"the chain keeping a stray chain of none did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 17, f"only {ran} nftables round trips ran:\n{out}"
+    assert ran >= 19, f"only {ran} nftables round trips ran:\n{out}"
 
     # the encoder's sets, their elements, the lookup, ct with a direction and the set messages of the monitor, each
     # acting on loopback's datagrams, and woken by another writer, and a set of ten thousand intervals filled in one batch

@@ -12,9 +12,9 @@ const (
 	// DefaultSweep is the periodic pass a capability that names none takes.
 	DefaultSweep = 30 * time.Second
 	// DefaultFlowsPerSource is the share of an exit's flows a capability that
-	// names none gives each mesh source address in each family, every
-	// backend's, so that the open flows one source holds through the exit take
-	// at most that much of the host's connection table.
+	// names none gives each mesh source address under a class that translates,
+	// in each family, every backend's (exit-nodes.md, "Each source's share of
+	// the flows").
 	DefaultFlowsPerSource = 4096
 	// MaxFlowsPerSource is the largest share a capability may name. A share is
 	// part of the host's connection table, whose size the kernel takes from

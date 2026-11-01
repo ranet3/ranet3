@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"reflect"
 	"slices"
@@ -95,7 +96,7 @@ func (f *fakeBackend) Rules(desired []Rule) (map[uint8]chainReadback, error) {
 
 // Read is Rules for a debug read, which logs no listing and leaves a readback
 // an apply made due as it is
-func (f *fakeBackend) Read() (map[uint8]chainReadback, error) {
+func (f *fakeBackend) Read([]Rule) (map[uint8]chainReadback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads++
@@ -150,8 +151,7 @@ func (f *fakeBackend) Apply(rules []Rule, remake []uint8) error {
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		for _, rule := range rules {
 			if rule.Family == family {
-				kind := rule.kind()
-				f.held = append(f.held, Installed{Spec: rule.String(), Family: family, Chain: kind.chain(), Counted: kind.counted()})
+				f.held = append(f.held, Installed{Spec: rule.String(), Family: family, Chain: rule.chain(), Counted: rule.kind().counted()})
 			}
 		}
 	}
@@ -308,20 +308,18 @@ func TestConfiguredSourceReplacesTheHostsOwnChoice(t *testing.T) {
 }
 
 // Each family's rules open, in IPv4, with the drops of Source Quench and
-// Information Request and Reply out of the mesh and into it, then those taking
-// a packet out of the mesh no flow is tracked for, which drop it under a class
-// that translates and pass it under none, a rule for each class up to the last
-// of none, the longest From first, then one from every source, the limit on
-// each source's flows, which no class changes, and for DCCP and then UDP-Lite
-// the same walk of the classes as for what no flow is tracked for, refusing
-// under a class that translates and passing under none. Each class's rules come together, the longest From first
-// since the first translation ends the chain. A class that translates attaches
-// the exit's timeouts first, by a rule for UDP, for TCP and for the family's
-// ICMP, keyed as its translation is, and a class of none binds its sources to
-// themselves alone, so its flows keep the host's timeouts. A family no class
-// covers whole ends in the rules of auto. Each of this node's own mesh
-// addresses but the link-local one takes the class it falls in, in rules after
-// those a leaf's packet meets.
+// Information Request and Reply out of the mesh and into it. A class of none's
+// pass follows, then from every source the rule taking what no flow is tracked
+// for, the refusals of DCCP and UDP-Lite and the limit. The chain of the class
+// of none comes next, with the same 4 rules from the sources of the classes
+// that translate inside it, matched as one set. Each class's translation rules come
+// together, the longest From first since the first translation ends the chain.
+// A class that translates attaches the exit's timeouts first, by a rule for
+// UDP, for TCP and for the family's ICMP, keyed as its translation is, and a
+// class of none binds its sources to themselves alone, so its flows keep the
+// host's timeouts. A family no class covers whole ends in the rules of auto.
+// Each of this node's own mesh addresses but the link-local one takes the class
+// it falls in, in rules after those a leaf's packet meets.
 func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 	cfg := egress.Egress{
 		Advertise: prefixes(t, "0.0.0.0/0", "::/0"),
@@ -344,16 +342,15 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 		"out via ranet0 ipv4 icmp information dropped",
 		"in via ranet0 ipv4 icmp source quench dropped",
 		"in via ranet0 ipv4 icmp information dropped",
-		"out via ranet0 ipv4 from 192.0.2.128/25 untracked dropped",
-		"out via ranet0 ipv4 from 192.0.2.0/24 untracked passed",
+		"out via ranet0 ipv4 from 192.0.2.0/24 passed",
 		"out via ranet0 ipv4 untracked dropped",
-		"out via ranet0 ipv4 limit 4096",
-		"out via ranet0 ipv4 from 192.0.2.128/25 dccp refused",
-		"out via ranet0 ipv4 from 192.0.2.0/24 dccp passed",
 		"out via ranet0 ipv4 dccp refused",
-		"out via ranet0 ipv4 from 192.0.2.128/25 udplite refused",
-		"out via ranet0 ipv4 from 192.0.2.0/24 udplite passed",
 		"out via ranet0 ipv4 udplite refused",
+		"out via ranet0 ipv4 limit 4096",
+		"out via ranet0 ipv4 translated inside 192.0.2.0/24 untracked dropped",
+		"out via ranet0 ipv4 translated inside 192.0.2.0/24 dccp refused",
+		"out via ranet0 ipv4 translated inside 192.0.2.0/24 udplite refused",
+		"out via ranet0 ipv4 translated inside 192.0.2.0/24 limit 4096",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts udp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts tcp",
 		"out via ranet0 ipv4 from 192.0.2.128/25 timeouts icmp",
@@ -369,9 +366,9 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 		"local via ranet0 ipv4 from 192.0.2.200/32 timeouts icmp",
 		"local via ranet0 ipv4 from 192.0.2.200/32 masquerade",
 		"out via ranet0 ipv6 untracked dropped",
-		"out via ranet0 ipv6 limit 4096",
 		"out via ranet0 ipv6 dccp refused",
 		"out via ranet0 ipv6 udplite refused",
+		"out via ranet0 ipv6 limit 4096",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts udp",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts tcp",
 		"out via ranet0 ipv6 from 3fff::/20 timeouts icmpv6",
@@ -387,6 +384,63 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 	}
 	if got := be.specs(); !slices.Equal(got, want) {
 		t.Errorf("installed %q, want %q", got, want)
+	}
+}
+
+// The limit counts the flows of a class that translates alone. A class of none
+// sends its sources on to its own chain ahead of every limit of the limit's
+// chain, a class that translates inside it counts its flows in that chain, by
+// the 4 rules taking the sources of every such class as one set, one inside
+// that class at that class's limit alone, so the set holds the class and not
+// the one inside it, and one inside no class of none, as a source no class
+// takes, at the limit from every source.
+func TestOnlyTranslatedClassesCountAgainstTheLimit(t *testing.T) {
+	cfg := egress.Egress{
+		Advertise: prefixes(t, "0.0.0.0/0"),
+		Translate: []egress.Class{
+			{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
+			{From: schema.MustPrefix("192.0.2.0/26"), To: egress.Translation{Auto: true}},
+			{From: schema.MustPrefix("192.0.2.128/25"), To: egress.Translation{Auto: true}},
+			{From: schema.MustPrefix("192.0.2.192/26"), To: egress.Translation{Addr: netip.MustParseAddr("203.0.113.8")}},
+			{From: schema.MustPrefix("198.51.100.0/25"), To: egress.Translation{Addr: netip.MustParseAddr("203.0.113.7")}},
+		},
+	}
+	be := &fakeBackend{}
+	tr := translator(t, cfg, Runtime{}, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	members := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/26"), netip.MustParsePrefix("192.0.2.128/25")}
+	for _, rule := range tr.desired() {
+		got := rule.Sources.Prefixes()
+		same := len(got) == len(members) && !slices.ContainsFunc(members, func(p netip.Prefix) bool { return !slices.Contains(got, p) })
+		if rule.chain() == "none_192_0_2_0_24" && !same {
+			t.Errorf("the chain of the class of none holds %s taking the sources %v, want %v", rule, got, members)
+		}
+	}
+	want := map[string][]string{
+		LimitChain: {
+			"out via ranet0 ipv4 from 192.0.2.0/24 passed",
+			"out via ranet0 ipv4 untracked dropped",
+			"out via ranet0 ipv4 dccp refused",
+			"out via ranet0 ipv4 udplite refused",
+			"out via ranet0 ipv4 limit 4096",
+		},
+		"none_192_0_2_0_24": {
+			"out via ranet0 ipv4 translated inside 192.0.2.0/24 untracked dropped",
+			"out via ranet0 ipv4 translated inside 192.0.2.0/24 dccp refused",
+			"out via ranet0 ipv4 translated inside 192.0.2.0/24 udplite refused",
+			"out via ranet0 ipv4 translated inside 192.0.2.0/24 limit 4096",
+		},
+	}
+	got := map[string][]string{}
+	for _, rule := range be.held {
+		if rule.Chain != ChainName && !strings.Contains(rule.Spec, " icmp ") {
+			got[rule.Chain] = append(got[rule.Chain], rule.Spec)
+		}
+	}
+	if !maps.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("installed the limit's chain and the class of none's %q, want %q", got, want)
 	}
 }
 
@@ -509,7 +563,7 @@ func TestReturnDirectionAttachesTheExitsTimeouts(t *testing.T) {
 
 // Under return the limit's chain drops a packet into the mesh no flow is
 // tracked for from each advertised prefix, since the In rules translate
-// whatever they take, after the drops out of the mesh and ahead of the limit,
+// whatever they take, after the rules out of the mesh, the limit among them,
 // and Status counts what it drops with them
 func TestReturnDropsWhatNoFlowIsTrackedForIntoTheMesh(t *testing.T) {
 	cfg := egress.Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24", "0.0.0.0/0", "2001:db8:1::/48")}
@@ -521,12 +575,12 @@ func TestReturnDropsWhatNoFlowIsTrackedForIntoTheMesh(t *testing.T) {
 	}
 	want := []string{
 		"out via ranet0 ipv4 untracked dropped",
+		"out via ranet0 ipv4 limit 4096",
 		"in via ranet0 ipv4 from 198.51.100.0/24 untracked dropped",
 		"in via ranet0 ipv4 untracked dropped",
-		"out via ranet0 ipv4 limit 4096",
 		"out via ranet0 ipv6 untracked dropped",
-		"in via ranet0 ipv6 from 2001:db8:1::/48 untracked dropped",
 		"out via ranet0 ipv6 limit 4096",
+		"in via ranet0 ipv6 from 2001:db8:1::/48 untracked dropped",
 	}
 	forward := slices.DeleteFunc(be.specs(), func(spec string) bool {
 		return !strings.Contains(spec, " untracked ") && !strings.Contains(spec, " limit ")
@@ -1124,9 +1178,8 @@ func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 		// and the own address, each with its three timeout rules, each rule but a
 		// timeout rule and the pass, which have no counter, read back with the
 		// three flows the fake host counts. The counts of ip's ICMP drops and of
-		// each family's refusals of DCCP and UDP-Lite, ip's pass of none's among
-		// them, reach no field.
-		Rules: &egress.Rules{Installed: 43, Flows: 15, Untranslated: 6, ConntrackCount: &count, ConntrackMax: &most, Conflicts: be.conflicts},
+		// each family's refusals of DCCP and UDP-Lite reach no field.
+		Rules: &egress.Rules{Installed: 41, Flows: 15, Untranslated: 6, ConntrackCount: &count, ConntrackMax: &most, Conflicts: be.conflicts},
 	}
 	if got := tr.Status(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Status is\n%+v\nwant\n%+v", got, want)

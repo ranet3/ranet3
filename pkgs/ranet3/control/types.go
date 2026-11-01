@@ -562,8 +562,9 @@ type EgressStatus struct {
 	Advertise []netip.Prefix `json:"advertise,omitempty"`
 	Announced []netip.Prefix `json:"announced,omitempty"`
 	// FlowsPerSource is cap.egress flows_per_source in force, the most flows
-	// one source address of one family holds open through this node, and
-	// Refused the packets refused past it, each retry of a refused flow counted.
+	// one source address of one family under a class that translates holds
+	// open through this node, and Refused the packets refused past it, each
+	// retry of a refused flow counted.
 	// Dropped is the packets out of the mesh, and into it under return,
 	// dropped for want of a tracked flow, which a rule that translates would
 	// otherwise send on under their own source.

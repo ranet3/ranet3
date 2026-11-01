@@ -60,18 +60,31 @@ func encodedSets(t testing.TB, requests []nftables.Request) map[string][]nftable
 	held := map[string][]element{}
 	for _, request := range requests {
 		if request.Kind == nftables.Command(unix.NFT_MSG_NEWSET) {
-			name := nftables.DecodeSet(nftables.Message{Data: request.Body}).Name
-			held[name] = append(held[name], []element{}...)
+			var name string
+			var id []byte
+			for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
+				switch kind {
+				case unix.NFTA_SET_NAME:
+					name = unix.ByteSliceToString(value)
+				case unix.NFTA_SET_ID:
+					id = value
+				}
+			}
+			key := setKey(name, id)
+			held[key] = append(held[key], []element{}...)
 		}
 		if request.Kind != nftables.Command(unix.NFT_MSG_NEWSETELEM) {
 			continue
 		}
 		var name string
+		var id []byte
 		var elements []element
 		for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
 			switch kind {
 			case unix.NFTA_SET_ELEM_LIST_SET:
 				name = unix.ByteSliceToString(value)
+			case unix.NFTA_SET_ELEM_LIST_SET_ID:
+				id = value
 			case unix.NFTA_SET_ELEM_LIST_ELEMENTS:
 				for _, item := range nftables.Nested(value) {
 					var e element
@@ -87,7 +100,8 @@ func encodedSets(t testing.TB, requests []nftables.Request) map[string][]nftable
 				}
 			}
 		}
-		held[name] = append(held[name], elements...)
+		key := setKey(name, id)
+		held[key] = append(held[key], elements...)
 	}
 	out := map[string][]nftables.Interval{}
 	for name, elements := range held {
@@ -116,9 +130,21 @@ func encodedSets(t testing.TB, requests []nftables.Request) map[string][]nftable
 	return out
 }
 
+// setKey is the name sets keys a set by: its own, or for an anonymous one,
+// which the kernel names at its commit, the name it is written under and its
+// ID in the transaction
+func setKey(name string, id []byte) string {
+	if strings.HasPrefix(name, "__set") {
+		return fmt.Sprintf("%s %x", name, id)
+	}
+	return name
+}
+
 // chainRun records the verdict an interpreted chain gave one packet
 type chainRun struct {
-	// rule is the index of the rule whose verdict the packet met, -1 for the policy
+	// rule is the index of the rule whose verdict the packet met, -1 for the
+	// policy, and the last goto's for the policy at the end of the chain that
+	// goto named
 	rule    int
 	accept  bool
 	counted bool
@@ -143,36 +169,58 @@ type translation struct {
 // ruleRun records one interpreted rule's work on a packet: the verdict of one
 // it decided, and the timeout object one attached, decided or not
 type ruleRun struct {
-	code        uint32
+	code uint32
+	// chain is the chain a goto names
+	chain       string
 	counted     bool
 	translation translation
 	timeouts    string
 	rejected    uint8
 }
 
+// nftGoto is NFT_GOTO as the kernel's 32 bit verdict code carries it
+const nftGoto = 0xfffffffc
+
 // runChain evaluates the encoded rules in order against packet, as
-// nf_tables does: the first rule to reach a verdict decides, and a packet no
-// rule decides meets the chain's accept policy. A rule attaching a timeout
-// object attaches it on the way, the last one to attach overriding those
-// before it.
+// nf_tables does, from the base chain the first rule names: the first rule to
+// reach a verdict decides, a goto goes on with the rules of the chain it
+// names, and a packet no rule decides meets the base chain's accept policy. A
+// rule attaching a timeout object attaches it on the way, the last one to
+// attach overriding those before it.
 func runChain(t testing.TB, rules []nftables.Request, packet chainPacket) chainRun {
 	t.Helper()
-	var timeouts string
-	for i, rule := range rules {
-		run, decided := runRule(t, rule.Body, packet)
+	chainOf := func(rule nftables.Request) string {
+		_, chain, _, _, _, _ := nftables.DecodeRule(nftables.Message{Data: rule.Body})
+		return chain
+	}
+	var timeouts, chain string
+	if len(rules) > 0 {
+		chain = chainOf(rules[0])
+	}
+	sent := -1
+	for i := 0; i < len(rules); i++ {
+		if chainOf(rules[i]) != chain {
+			continue
+		}
+		run, decided := runRule(t, rules[i].Body, packet)
 		if run.timeouts != "" {
 			timeouts = run.timeouts
 		}
 		if !decided {
 			continue
 		}
+		if run.code == nftGoto {
+			// the scan starts over, taking the named chain's rules alone
+			chain, sent, i = run.chain, i, -1
+			continue
+		}
 		if run.code != nftables.Accept && run.code != nftables.Drop && run.code != nftables.Return {
-			t.Fatalf("rule %d ends with verdict %d, neither accept, drop nor return", i, run.code)
+			t.Fatalf("rule %d ends with verdict %d, neither accept, drop, return nor goto", i, run.code)
 		}
 		// a return from a base chain meets the chain's accept policy
 		return chainRun{rule: i, accept: run.code != nftables.Drop, counted: run.counted, translation: run.translation, timeouts: timeouts, rejected: run.rejected}
 	}
-	return chainRun{rule: -1, accept: true, timeouts: timeouts}
+	return chainRun{rule: sent, accept: true, timeouts: timeouts}
 }
 
 // runRule executes one rule's expression bytes against packet over register
@@ -310,7 +358,7 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 				}
 			case "lookup":
 				requireRegister(t, name, fields, unix.NFTA_LOOKUP_SREG)
-				set, ok := packet.sets[unix.ByteSliceToString(fields[unix.NFTA_LOOKUP_SET])]
+				set, ok := packet.sets[setKey(unix.ByteSliceToString(fields[unix.NFTA_LOOKUP_SET]), fields[unix.NFTA_LOOKUP_SET_ID])]
 				if !ok {
 					t.Fatalf("a lookup reads set %s, which no request of the batch fills", fields[unix.NFTA_LOOKUP_SET])
 				}
@@ -340,11 +388,17 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 					if data.Kind != unix.NFTA_DATA_VERDICT {
 						continue
 					}
+					found := false
 					for _, field := range nftables.Nested(data.Value) {
-						if field.Kind == unix.NFTA_VERDICT_CODE {
-							run.code = be32(t, field.Value)
-							return run, true
+						switch field.Kind {
+						case unix.NFTA_VERDICT_CODE:
+							run.code, found = be32(t, field.Value), true
+						case unix.NFTA_VERDICT_CHAIN:
+							run.chain = unix.ByteSliceToString(field.Value)
 						}
+					}
+					if found {
+						return run, true
 					}
 				}
 				t.Fatal("immediate carries no verdict code")

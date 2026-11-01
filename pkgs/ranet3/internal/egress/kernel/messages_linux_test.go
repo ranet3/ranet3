@@ -32,23 +32,30 @@ var golden []byte
 // under none, into the mesh from a prefix with a timeout rule, from one host and from anywhere,
 // and from this node's own address under the host's address and under none,
 // with a timeout rule of each protocol keyed out of the mesh and from this
-// node's own address, each family's limit, and the rules taking what no flow
-// is tracked for, out of the mesh a pass from a class of none and a drop from a
-// class and from every source, and into it a drop from a prefix and from
-// every source, the ICMP drops of each message out of the mesh and into it, and
-// the refusals of each protocol out of the mesh, a pass from a class of none, a
-// refusal from a class and from every source, and into it from a prefix and
+// node's own address, each family's limit from every source and in the chain of
+// a class of none from the classes inside it as one set, a class of none's pass
+// to its chain ahead of the limit and one inside it in that chain, the rules
+// taking what no flow is tracked for, out of the mesh a drop from a class, from
+// the classes inside a class of none and from every source, and
+// into it a drop from a prefix and from every source, the ICMP drops of each
+// message out of the mesh and into it, and the refusals of each protocol out of
+// the mesh, from a class and from every source, and into it from a prefix and
 // from every source
 func everyTranslation() []Rule {
 	v4, v6 := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("2001:db8::1")
 	return []Rule{
-		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/25"), None: true, Untracked: true},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/26"), Passes: true,
+			Under: netip.MustParsePrefix("198.51.100.128/25")},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("198.51.100.192/27"), netip.MustParsePrefix("198.51.100.224/27")}),
+			Limit: egress.DefaultFlowsPerSource, Under: netip.MustParsePrefix("198.51.100.128/25")},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("198.51.100.192/27")}),
+			Untracked: true, Under: netip.MustParsePrefix("198.51.100.128/25")},
+		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/25"), Passes: true},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Untracked: true},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Untracked: true},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Drops: SourceQuench},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", Drops: Information},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Limit: egress.DefaultFlowsPerSource},
-		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.128/25"), None: true, Protocol: dccp},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3", Protocol: dccp},
 		{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet3", From: netip.MustParsePrefix("198.51.100.0/24"), Protocol: udpLite},
 		{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet3"},
@@ -95,23 +102,31 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		}
 	}
 	both, rules, limit := []uint8{egress.FamilyIPv4, egress.FamilyIPv6}, everyTranslation(), egress.DefaultFlowsPerSource
-	requests, err := translatorBatch(both, limit, rules, nil)
+	requests, err := translatorBatch(both, limit, rules, nil, nil)
 	write("translator in both families", requests, err)
-	requests, err = translatorBatch(both, limit, rules, both)
+	requests, err = translatorBatch(both, limit, rules, both, nil)
 	write("translator remaking both families", requests, err)
-	requests, err = translatorBatch([]uint8{egress.FamilyIPv6}, limit, rules, []uint8{egress.FamilyIPv6})
+	requests, err = translatorBatch([]uint8{egress.FamilyIPv6}, limit, rules, []uint8{egress.FamilyIPv6}, nil)
 	write("translator remaking ipv6 alone", requests, err)
-	requests, err = translatorBatch([]uint8{egress.FamilyIPv4}, limit, nil, nil)
+	requests, err = translatorBatch([]uint8{egress.FamilyIPv4}, limit, nil, nil, nil)
 	write("translator in ipv4 with no rule", requests, err)
+	// a table holding three chains of classes of none no rule names, one of
+	// which a goto of another names and one a rule of another writer's chain
+	// goes to, which stays
+	stray := map[uint8][]noneStray{egress.FamilyIPv4: {{name: "none_198_51_100_0_24"}, {name: "none_198_51_100_0_25"}, {name: "none_203_0_113_0_24", heldBy: "chain other"}}}
+	requests, err = translatorBatch([]uint8{egress.FamilyIPv4}, limit, nil, nil, stray)
+	write("translator in ipv4 deleting the chains of classes of none it no longer writes", requests, err)
 	write("translator withdrawal", []nftables.Request{delTable(egress.FamilyIPv4), delTable(egress.FamilyIPv6)}, nil)
 	// what a pass writes for the default capability and for one of each kind of
-	// class, without return and under it
+	// class, one that translates inside one of none among them, without return
+	// and under it
 	node := Runtime{Interface: "ranet3", MeshAddresses: []netip.Addr{netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("3fff::2")}}
 	classes := egress.Egress{
 		Advertise: prefixes(t, "198.51.100.0/24", "::/0"),
 		Translate: []egress.Class{
 			{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: netip.MustParseAddr("198.51.100.7")}},
 			{From: schema.MustPrefix("192.0.2.0/24"), To: egress.Translation{None: true}},
+			{From: schema.MustPrefix("192.0.2.0/26"), To: egress.Translation{Auto: true}},
 			{From: schema.MustPrefix("3fff::/20"), To: egress.Translation{Auto: true}},
 		},
 	}
@@ -125,7 +140,7 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		{"translator of a capability of classes", classes},
 		{"translator of that capability under return", returned},
 	} {
-		requests, err = translatorBatch(both, limit, newTranslator(c.cfg, node, &fakeBackend{}).desired(), nil)
+		requests, err = translatorBatch(both, limit, newTranslator(c.cfg, node, &fakeBackend{}).desired(), nil, nil)
 		write(c.name, requests, err)
 	}
 

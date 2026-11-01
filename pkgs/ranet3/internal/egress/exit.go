@@ -77,9 +77,10 @@ type Status struct {
 	Translate []Class
 	Return    bool
 	// FlowsPerSource is the limit in force on the flows one source address of
-	// one family holds open, and Refused4 and Refused6 the packets refused past
-	// it in each family, each retry of a refused flow counted, from zero again
-	// wherever the backend wrote what counts them anew
+	// one family under a class that translates holds open, and Refused4 and
+	// Refused6 the packets refused past it in each family, each retry of a
+	// refused flow counted, from zero again wherever the backend wrote what
+	// counts them anew
 	FlowsPerSource     int
 	Refused4, Refused6 uint64
 	// Dropped4 and Dropped6 are the packets out of the mesh, and into it under

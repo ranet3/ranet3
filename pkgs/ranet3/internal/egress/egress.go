@@ -53,13 +53,14 @@ type Egress struct {
 	// that advertises a prefix the far end does not hold a route for. An exit
 	// node does not: nothing sits behind it to start a flow.
 	Return bool `yaml:"return,omitempty" json:"return,omitempty" toml:"return,omitempty"`
-	// FlowsPerSource is the most flows one mesh source address holds open
-	// through this node in each family, every protocol's, past which its next
-	// new flow is refused, RFC 6888 REQ-4, and each address of a routed prefix
-	// holds a share of its own. Zero uses DefaultFlowsPerSource. A host whose
-	// connection table holds less than a share for each source it serves takes
-	// a smaller one, and an exit serving a leaf that translates a LAN behind
-	// its one mesh address a larger.
+	// FlowsPerSource is the most flows one mesh source address under a class
+	// that translates holds open through this node in each family, every
+	// protocol's, past which its next new flow is refused, RFC 6888 REQ-4, and
+	// each address of a routed prefix holds a share of its own. A source under
+	// none holds none. Zero uses DefaultFlowsPerSource. A host whose connection
+	// table holds less than a share for each source it serves takes a smaller
+	// one, and an exit serving a leaf that translates a LAN behind its one mesh
+	// address a larger.
 	FlowsPerSource uint32 `yaml:"flows_per_source,omitempty" json:"flows_per_source,omitempty" toml:"flows_per_source,omitempty"`
 	// Sweep is the periodic pass. It reinstalls a table somebody removed and
 	// reads the forwarding sysctls and the route lookups again, the parts of

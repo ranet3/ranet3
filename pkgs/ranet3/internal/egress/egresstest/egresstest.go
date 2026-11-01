@@ -41,6 +41,10 @@ const (
 	// None is the leaf's own address, which the network routes back to the
 	// exit
 	None
+	// Inside is Address for the leaf's address alone, inside None for the rest
+	// of the overlay prefix, the spare address's among it. Only row 6 runs
+	// under it.
+	Inside
 )
 
 func (c Class) String() string {
@@ -49,13 +53,16 @@ func (c Class) String() string {
 		return "address"
 	case None:
 		return "none"
+	case Inside:
+		return "address inside none"
 	}
 	return "auto"
 }
 
 // classes is the capability's translate under c: no class for Auto, an
-// address from every source of each family for Address, and none from the
-// leaf's overlay prefix of each family for None
+// address from every source of each family for Address, none from the leaf's
+// overlay prefix of each family for None, and for Inside that none and an
+// address from the leaf's own address
 func (c Class) classes(families ...Family) []egress.Class {
 	var out []egress.Class
 	for _, family := range families {
@@ -64,6 +71,10 @@ func (c Class) classes(families ...Family) []egress.Class {
 			out = append(out, egress.Class{From: schema.PrefixFrom(every(family.Overlay)), To: egress.Translation{Addr: family.Class}})
 		case None:
 			out = append(out, egress.Class{From: schema.PrefixFrom(family.Overlay), To: egress.Translation{None: true}})
+		case Inside:
+			out = append(out,
+				egress.Class{From: schema.PrefixFrom(family.Overlay), To: egress.Translation{None: true}},
+				egress.Class{From: schema.PrefixFrom(netip.PrefixFrom(family.Leaf, family.Leaf.BitLen())), To: egress.Translation{Addr: family.Class}})
 		}
 	}
 	return out
@@ -72,13 +83,16 @@ func (c Class) classes(families ...Family) []egress.Class {
 // seen is the address the server reads family's packets from under c
 func (c Class) seen(family Family) netip.Addr {
 	switch c {
-	case Address:
+	case Address, Inside:
 		return family.Class
 	case None:
 		return family.Leaf
 	}
 	return family.Uplink
 }
+
+// spareUnderNone is whether the spare address's flows leave under none
+func (c Class) spareUnderNone() bool { return c == None || c == Inside }
 
 // Family is a network's addresses and links in one address family
 type Family struct {
@@ -253,7 +267,8 @@ func every(prefix netip.Prefix) netip.Prefix {
 
 // Run holds arm to every row and step in both families under each of its
 // classes, each on a network of its own that build makes, and to row 6 again
-// under its first class at a share its capability names. Row 6 comes last in a
+// under its first class at a share its capability names, and, for an arm that
+// carries Address and None, under Inside at that share. Row 6 comes last in a
 // family, since it leaves the spare address at its limit.
 func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 	if err := arm.check(); err != nil {
@@ -311,6 +326,21 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 		exit := start(t, network, arm, class, namedLimit)
 		for _, v6 := range []bool{false, true} {
 			r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
+			t.Run(r.family.Name, r.sourceLimit)
+		}
+		t.Run("stop", exit.stop)
+	})
+	if !slices.Contains(arm.Classes, Address) || !slices.Contains(arm.Classes, None) {
+		return
+	}
+	// the limit of a class that translates inside a class of none sits in the
+	// chain that class's pass goes on to, and counts none of that class's
+	// sources
+	t.Run("a class that translates inside one of none", func(t *testing.T) {
+		network := build(t)
+		exit := start(t, network, arm, Inside, namedLimit)
+		for _, v6 := range []bool{false, true} {
+			r := &rows{network: network, family: network.Family(v6), class: Inside, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
 			t.Run(r.family.Name, r.sourceLimit)
 		}
 		t.Run("stop", exit.stop)

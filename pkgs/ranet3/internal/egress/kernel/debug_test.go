@@ -91,10 +91,9 @@ func TestDebugNamesWhatEachCounterCounts(t *testing.T) {
 		{Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Timeouts: UDPTimeouts}, ""},
 		{Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Limit: 100}, "packets"},
 		{Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Untracked: true}, "packets"},
-		{Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Untracked: true, None: true}, ""},
+		{Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Passes: true}, ""},
 		{Rule{Family: egress.FamilyIPv4, Direction: In, Interface: "ranet0", Drops: Information}, "packets"},
 		{Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Protocol: dccp}, "packets"},
-		{Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", None: true, Protocol: udpLite}, ""},
 	} {
 		kind := c.rule.kind()
 		if got := counterUnit(kind.chain(), kind.counted()); got != c.want {

@@ -14,6 +14,9 @@ const (
 	ChainName = "postrouting"
 	// LimitChain is the table's filter forward base chain beside it
 	LimitChain = "forward"
+	// NoneChain starts the name of each of the table's regular chains, one for
+	// each class of none, the class's prefix ending it
+	NoneChain = "none_"
 	// BorderChain is the antispoof filter's chain at prerouting, in the inet
 	// table of the same name, so the translator's ip and ip6 tables and the
 	// filter's table never hold each other's chains

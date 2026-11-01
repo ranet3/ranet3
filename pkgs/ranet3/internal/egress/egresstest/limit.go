@@ -20,8 +20,10 @@ import (
 // sourceLimit is row 6, RFC 6888 REQ-4 and REQ-11: a source holds at most the
 // share Status says the capability runs, a new flow past it is refused from the
 // exit and dropped while the flows it holds and another source's go on, and
-// Status counts each refusal. The row will not fill conntrack's table where
-// Status reads it.
+// Status counts each refusal. A source under none is held to no share: the
+// exit translates none of its flows, so its flow past the share is carried and
+// counted in Status.Untranslated, never as a refusal. The row will not fill
+// conntrack's table where Status reads it.
 func (r *rows) sourceLimit(t *testing.T) {
 	status := r.exit.Status()
 	limit := status.FlowsPerSource
@@ -44,6 +46,10 @@ func (r *rows) sourceLimit(t *testing.T) {
 	to, refusedTo := netip.AddrPortFrom(r.family.Server, limitPort), netip.AddrPortFrom(r.family.Server, limitRefusedPort)
 	server, refusedServer := r.listenUDP(t, to), r.listenUDP(t, refusedTo)
 	if !t.Run("flows up to the limit", func(t *testing.T) { r.fill(t, server, to, limit) }) {
+		return
+	}
+	if r.class.spareUnderNone() {
+		t.Run("the next flow carried under none", func(t *testing.T) { r.carriedPast(t, refusedServer, refusedTo, before) })
 		return
 	}
 	refused := []byte("past the limit over " + r.family.Name)
@@ -150,6 +156,28 @@ func (r *rows) connectionRefused(t *testing.T) {
 		t.Errorf("a connection from %s to %s past its limit got %v, want %v", r.family.Spare, to, err, want)
 	case took > reconnectBudget:
 		t.Errorf("the connection from %s past its limit failed after %s, past %s, so its first SYN went unanswered", r.family.Spare, took, reconnectBudget)
+	}
+}
+
+// carriedPast sends the spare address's flow past its share, which reaches the
+// server at to under the spare address with no answer from the exit, and a
+// pass that has read the chain since counts no refusal past before
+func (r *rows) carriedPast(t *testing.T, server *net.UDPConn, to netip.AddrPort, before uint64) {
+	data := []byte("past the share under none over " + r.family.Name)
+	sent := datagram(netip.AddrPortFrom(r.family.Spare, spareRefusedPort), to, leafTTL, data)
+	back := len(r.network.Back())
+	sentAt := time.Now()
+	if from := receiveFrom(t, udpReader(server), data, func() { r.exit.hand([][]byte{sent}) }); from.Addr() != r.family.Spare {
+		t.Errorf("the server read the flow past the share from %s, want the spare address %s", from, r.family.Spare)
+	}
+	for _, packet := range r.network.Back()[back:] {
+		if a, ok := readAnswer(packet); ok && quotes(a.quote, sent) {
+			t.Errorf("the flow past the share under none was answered with type %d code %d from %s", a.kind, a.code, a.from)
+		}
+	}
+	r.exit.awaitStatus(t, "a pass after the flow past the share", func(s egress.Status) bool { return s.PassAt.After(sentAt) })
+	if got := r.refused(r.exit.Status()); got != before {
+		t.Errorf("Status counts %d refused in %s, want the %d before the row, since no flow under none is refused", got, r.family.Name, before)
 	}
 }
 
