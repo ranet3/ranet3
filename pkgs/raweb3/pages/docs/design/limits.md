@@ -393,9 +393,9 @@ these costs over the reach that page gives.
   failing at once: an IPv6 connect bound to no address beyond the LAN while no
   exit is live, whose second lookup passes 5450, and every connect bound to the
   uplink's address or device. An IPv4 connect bound to no address meets 5450's
-  `ENETUNREACH` at once, but after the failed tun's stop, which
-  [the switch's lifetime](../routing.md#the-kill-switch-on-linux) gives as
-  leaving the table without 5450, it waits as well.
+  `ENETUNREACH` at once where 5450 is there, which
+  [the switch's lifetime](../routing.md#the-kill-switch-on-linux) gives for each
+  stop.
 - A source-specific announcement of this node's, D from S, gets no 5445, so the
   host's own unmarked lookup to D the mesh's table passes on fails at 5450.
 

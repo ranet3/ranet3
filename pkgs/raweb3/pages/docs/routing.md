@@ -652,10 +652,13 @@ process that wrote it:
   the own prefixes' line, what the mesh's default or the steered defaults
   carried meets the drop unless another line passes it, and a connect they
   refuse waits out its retransmissions rather than meeting 5450's `ENETUNREACH`.
-  Where no table is there the host's traffic leaves by its routes. Either way it
+  Where no table is there the host's traffic leaves by its routes. It
   [logs a warning](#watching-it) that says whether a listing found the table,
-  found none, or failed. Where the file in force asks for no switch it deletes
-  the table as the stops above do. The daemon exits 1 for
+  found none, or failed, but where the table was deleted or found absent since
+  the last pass that asked for it, as after `ranet3 down`,
+  `ranet3 disable reconciler` or a pass under `"uplink"`, the stop lists nothing
+  and logs nothing. Where the file in force asks for no switch it deletes the
+  table as the stops above do. The daemon exits 1 for
   [the supervisor's restart](service.md#restarts-and-the-network). While ranet3
   stays down, the operator removes a table left with
   `nft delete table inet ranet3_fallback`.
