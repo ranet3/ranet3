@@ -969,7 +969,7 @@ func TestSessionSetReportsEstablishedPath(t *testing.T) {
 	set := newSessionSet()
 	set.close = func(*ike.Session) {}
 	set.active = func(*ike.Session) bool { return true }
-	if set.holds("path") {
+	if set.holds("path", false) {
 		t.Fatal("an empty set reports a session, so neither end would ever dial")
 	}
 	sess := &ike.Session{}
@@ -977,11 +977,11 @@ func TestSessionSetReportsEstablishedPath(t *testing.T) {
 	if !adopted {
 		t.Fatal("the first session was not adopted")
 	}
-	if !set.holds("path") {
+	if !set.holds("path", true) {
 		t.Error("a live session is not reported, so the peer's dialer keeps opening more")
 	}
 	release()
-	if set.holds("path") {
+	if set.holds("path", false) {
 		t.Error("the path is still held after the session ended, so nothing would redial")
 	}
 }
@@ -1037,7 +1037,8 @@ func TestStaleIncumbentDoesNotStandDialerDown(t *testing.T) {
 	if _, adopted := set.adoptPreferred("path", stale, true, nil); !adopted {
 		t.Fatal("the first session was not adopted")
 	}
-	if set.holds("path") {
+	// the dial is the one both ends prefer, which adopt takes over the stale entry
+	if set.holds("path", true) {
 		t.Fatal("a session that has stopped proving the peer is there still stops our dialer")
 	}
 	// The dialer then opens one, and this end prefers it because it is the one
@@ -1048,8 +1049,15 @@ func TestStaleIncumbentDoesNotStandDialerDown(t *testing.T) {
 	if live := set.live["path"]; live == nil || live.session != fresh {
 		t.Error("the stale session is still the live one")
 	}
-	if !set.holds("path") {
+	if !set.holds("path", true) {
 		t.Error("the replacement does not stand the dialer down")
+	}
+	// an incumbent neither end prefers is one adopt replaces with any dial, so once stale it stands down none, the dial neither end prefers included
+	if _, adopted := set.adoptPreferred("unpreferred", stale, false, nil); !adopted {
+		t.Fatal("the session neither end prefers was not adopted on a free path")
+	}
+	if set.holds("unpreferred", false) {
+		t.Error("a stale session neither end prefers stops a dial neither end prefers")
 	}
 }
 
@@ -1639,7 +1647,7 @@ func TestSessionLandingAfterSweepIsToldToGo(t *testing.T) {
 	if len(closed) != 1 || closed[0] != late {
 		t.Errorf("the late session was dropped without telling its peer: closed %d", len(closed))
 	}
-	if set.holds("path") {
+	if set.holds("path", false) {
 		t.Error("the set holds a path after the node has gone")
 	}
 }
@@ -1683,6 +1691,55 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 	}
 	if failed := recorded(c.events, "dial.failed"); len(failed) != 0 {
 		t.Errorf("standing down for the peer's session was recorded as a failed dial: %+v", failed)
+	}
+}
+
+// a session both ends prefer stands the dialer down where this end's dial would not be preferred, whether or not the session still proves the peer is there, since adopt keeps it against that dial
+// the dialer dials again once the session ends
+// the gateway's name comes first, so the SA it dials is the one both ends prefer
+func TestDialerStandsDownBehindAPreferredSessionUntilItEnds(t *testing.T) {
+	cfg, privateKey, reg := runtimeFixture(t)
+	loopback := "127.0.0.1"
+	// a port nothing listens on, so the dial once the session ends fails without a session
+	reg[0].Nodes[1].Endpoints[0].Address = &loopback
+	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
+	c.cfg.Store(cfg)
+	c.storeIndex(trust(t, reg))
+	c.sessions.close = func(*ike.Session) {}
+	// the session the gateway dialed has stopped proving the gateway is there, as after the gateway restarted
+	c.sessions.active = func(*ike.Session) bool { return false }
+	d := dialTo(t, cfg, cfg.Dial.To[0])
+	if preferInitiator(d.localID, identity.MustParse("example/gateway:1")) {
+		t.Fatal("the fixture's own name comes first, so its dial is the preferred one and this proves nothing")
+	}
+	release, adopted := c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, true, nil)
+	if !adopted {
+		t.Fatal("the session the gateway dialed was not adopted")
+	}
+	for range 3 {
+		if err := c.connectPeer(ctx, d); !errors.Is(err, errSessionEstablished) {
+			t.Fatalf("the dialer reported %v behind the preferred session, want the stand-down", err)
+		}
+	}
+	if attempts := recorded(c.events, "dial.attempt"); len(attempts) != 0 {
+		t.Errorf("the dialer dialed %d times behind the preferred session, want none: %+v", len(attempts), attempts)
+	}
+	release()
+	dialing, stop := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer stop()
+	if err := c.connectPeer(dialing, d); errors.Is(err, errSessionEstablished) {
+		t.Fatal("the dialer stood down once the preferred session ended")
+	}
+	if attempts := recorded(c.events, "dial.attempt"); len(attempts) != 1 {
+		t.Errorf("the dialer dialed %d times once the preferred session ended, want once", len(attempts))
 	}
 }
 

@@ -201,7 +201,7 @@ func TestStoppedResponderKeepsTheSessionsItHolds(t *testing.T) {
 	if c.subsystemRunning(control.SubsystemResponder) {
 		t.Error("a stopped responder still serves what it answers")
 	}
-	if !c.sessions.holds("example/gateway:1@0") {
+	if !c.sessions.holds("example/gateway:1@0", true) {
 		t.Error("stopping the responder dropped a session this node already held")
 	}
 }
@@ -238,7 +238,7 @@ func TestRedialDropsSessionsAndWakesDialers(t *testing.T) {
 		t.Errorf("redial closed %d sessions, want the one held for the peer", len(closed))
 	}
 	closedMu.Unlock()
-	if c.sessions.holds("example/gateway:1@0") {
+	if c.sessions.holds("example/gateway:1@0", false) {
 		t.Error("the session is still in the set, so the woken dialer stands down behind it")
 	}
 	select {

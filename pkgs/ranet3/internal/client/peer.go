@@ -212,7 +212,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 	}
 	sessionName := identity.Path(ep.ID, d.localID)
 	path = sessionName
-	if c.sessions.holds(sessionName) {
+	if c.sessions.holds(sessionName, preferInitiator(d.localID, ep.ID)) {
 		// a second SA over this pair of endpoints would only be resolved away
 		return errSessionEstablished
 	}

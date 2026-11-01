@@ -243,6 +243,9 @@ type liveSession struct {
 	pmtu *pathDriver
 }
 
+// keptAgainst reports whether adopt keeps l against a session for its path that preferred tells whether both ends prefer
+func (l *liveSession) keptAgainst(preferred bool) bool { return l.preferred && !preferred }
+
 func newSessionSet() *sessionSet {
 	return &sessionSet{
 		live:      make(map[string]*liveSession),
@@ -310,7 +313,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, lo
 		return func() {}, false
 	}
 	previous := s.live[path]
-	if previous != nil && previous.session != sess && previous.preferred && !preferred {
+	if previous != nil && previous.session != sess && previous.keptAgainst(preferred) {
 		s.mu.Unlock()
 		log.Printf("peer %s: keeping the session the other end also prefers", path)
 		s.events.Emit("ike.session.resolved", path, slog.String("kept", "the session already held"))
@@ -384,16 +387,21 @@ func (s *sessionSet) snapshot() []liveSessionView {
 	return out
 }
 
-// holds reports whether a session that has recently proved the peer is there
-// serves this path, which lets a dialer stand down instead of opening a second
-// one that would only be resolved away. A session that has stopped proving it
-// does not count, so a dialer takes over from a dead one instead of waiting
-// out dead peer detection behind it.
-func (s *sessionSet) holds(path string) bool {
+// holds reports whether a session serves this path that a dial of this end's
+// would only be resolved away against, which lets a dialer stand down instead
+// of opening it. dialPreferred is whether adopt would prefer that dial. A
+// session that has recently proved the peer is there counts, and so does a
+// session both ends prefer while the dial would not be preferred, which adopt
+// keeps against the dial whether or not it still proves the peer. Behind that
+// one a dialer waits out its dead peer detection, or the preferred end's dial
+// replacing it. Any other session that has stopped proving the peer does not
+// count, so a dialer takes over from a dead one instead of waiting out dead
+// peer detection behind it.
+func (s *sessionSet) holds(path string, dialPreferred bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	live := s.live[path]
-	return live != nil && s.active(live.session)
+	return live != nil && (s.active(live.session) || live.keptAgainst(dialPreferred))
 }
 
 // relink hands every live session's search the link.mtu a reload stored and the steering table in force after the reload
@@ -446,8 +454,8 @@ func (s *sessionSet) moved(path string) {
 }
 
 // liveCount is how many paths a session that has recently proved its peer is
-// there serves, which is the same test holds applies to one path. A Client
-// built by hand in a test carries no set and reports none.
+// there serves. A Client built by hand in a test carries no set and reports
+// none.
 func (s *sessionSet) liveCount() int {
 	if s == nil {
 		return 0
