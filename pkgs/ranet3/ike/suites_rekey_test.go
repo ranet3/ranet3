@@ -46,7 +46,7 @@ func peerRekeyOf(t testing.TB, s *Session, ike bool, proposals []Proposal, keGro
 	for i := range proposals {
 		proposals[i].Number = uint8(i + 1)
 		proposals[i].Protocol = ProtoESP
-		proposals[i].SPI = binary.BigEndian.AppendUint32(nil, randUint32Nonzero())
+		proposals[i].SPI = binary.BigEndian.AppendUint32(nil, newChildSPI(0))
 		if ike {
 			proposals[i].Protocol = ProtoIKE
 			proposals[i].SPI = binary.BigEndian.AppendUint64(nil, randUint64Nonzero())

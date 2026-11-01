@@ -26,7 +26,7 @@ func newPeerChildRekey(t testing.TB, s *Session, transforms []Transform, ni []by
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &peerRekey{dh: dh, ni: ni, espI: randUint32Nonzero()}
+	p := &peerRekey{dh: dh, ni: ni, espI: newChildSPI(0)}
 	request := []RawPayload{
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{{Number: 1, Protocol: ProtoESP, SPI: binary.BigEndian.AppendUint32(nil, p.espI), Transforms: slices.Concat(transforms, []Transform{esnNone})}})},
 		{Type: PayloadNonce, Body: EncodeNonce(ni)},
@@ -45,7 +45,7 @@ func newPeerChildRekey(t testing.TB, s *Session, transforms []Transform, ni []by
 // RFC 9370 section 2.2.4: "KEYMAT = prf+ (SK_d, SK(0) | Ni | Nr | SK(1) |  ... SK(n))"
 // RFC 7296 section 2.17: "All keys for SAs carrying data from the initiator to the responder are taken before SAs going from the responder to the initiator."
 func (p *peerRekey) childKeys(old *ikeContext, each int) (initiator, responder []byte) {
-	stream := modelPRFPlus(sha512.New384, old.skD, concat(p.shared, p.ni, p.nr, p.added), 2*each)
+	stream := modelPRFPlus(sha512.New384, old.skD, slices.Concat(p.shared, p.ni, p.nr, p.added), 2*each)
 	return stream[:each], stream[each:]
 }
 

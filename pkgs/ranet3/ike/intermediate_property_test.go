@@ -38,8 +38,8 @@ func sealed(t *hegel.T, suite SASuite, key []byte, hdr Header, cleartext []RawPa
 		hdr.NextPayload = cleartext[0].Type
 	}
 	hdr.Length = uint32(HeaderLen + len(unprotected) + len(sk) + params.IVLen + len(plain) + params.ICVLen)
-	head := concat(hdr.encode(), unprotected, sk)
-	return concat(head, iv, aead.Seal(nil, concat(key[params.KeyLen:], iv), plain, head))
+	head := slices.Concat(hdr.encode(), unprotected, sk)
+	return slices.Concat(head, iv, aead.Seal(nil, slices.Concat(key[params.KeyLen:], iv), plain, head))
 }
 
 // the IntAuth chunks the sender takes from the octets it sent and the inner payloads it encrypted equal those the receiver takes from the octets it got and the plaintext it decrypted
@@ -77,7 +77,7 @@ func TestIntAuthChunkIsTheSameAtBothEnds(t *testing.T) {
 		}
 		p := encodePayloadChain(inner)
 		pad := hegel.Draw(ht, pbt.Spanning(0, 16))
-		plain := concat(p, make([]byte, pad), []byte{byte(pad)})
+		plain := slices.Concat(p, make([]byte, pad), []byte{byte(pad)})
 		flags := hegel.Draw(ht, hegel.Integers[byte](0, 0xff))
 		hdr := Header{SPIInitiator: 1, SPIResponder: 2, ExchangeType: IKE_INTERMEDIATE, Flags: FlagInitiator, MessageID: hegel.Draw(ht, pbt.Spanning[uint32](1, 7))}
 		raw := sealed(ht, suite, key, hdr, cleartext, innerFirst, flags, plain, iv)
@@ -101,7 +101,7 @@ func TestIntAuthChunkIsTheSameAtBothEnds(t *testing.T) {
 		if !bytes.Equal(sent, got) {
 			ht.Fatalf("the sender's chunk %x is not the receiver's %x", sent, got)
 		}
-		want := concat(raw[:skOffset+genericPayloadHeaderLen], p)
+		want := slices.Concat(raw[:skOffset+genericPayloadHeaderLen], p)
 		binary.BigEndian.PutUint32(want[24:28], uint32(len(want)))
 		binary.BigEndian.PutUint16(want[skOffset+2:skOffset+4], uint16(genericPayloadHeaderLen+len(p)))
 		if !bytes.Equal(got, want) {
@@ -127,7 +127,7 @@ func TestSetupKeysFollowTheChainOfRFC9370(t *testing.T) {
 		var spis [16]byte
 		binary.BigEndian.PutUint64(spis[:8], spiI)
 		binary.BigEndian.PutUint64(spis[8:], spiR)
-		seed := concat(ni, nr, spis[:])
+		seed := slices.Concat(ni, nr, spis[:])
 		prf := func(key, data []byte) []byte {
 			mac := hmac.New(newHash, key)
 			mac.Write(data)
@@ -138,7 +138,7 @@ func TestSetupKeysFollowTheChainOfRFC9370(t *testing.T) {
 		if err != nil {
 			ht.Fatal(err)
 		}
-		want := modelKeys(newHash, prf(concat(ni, nr), shared), seed, keyLen)
+		want := modelKeys(newHash, prf(slices.Concat(ni, nr), shared), seed, keyLen)
 		for n := range hegel.Draw(ht, pbt.Spanning(1, 2)) {
 			got := [5][]byte{keys.SKd, keys.SKei, keys.SKer, keys.SKpi, keys.SKpr}
 			if !slices.EqualFunc(got[:], want[:], bytes.Equal) {
@@ -148,7 +148,7 @@ func TestSetupKeysFollowTheChainOfRFC9370(t *testing.T) {
 			if keys, err = DeriveRekeyedIKEKeys(suite.PRFID, keys.SKd, suite, secret, ni, nr, spiI, spiR, nil); err != nil {
 				ht.Fatal(err)
 			}
-			want = modelKeys(newHash, prf(want[0], concat(secret, ni, nr)), seed, keyLen)
+			want = modelKeys(newHash, prf(want[0], slices.Concat(secret, ni, nr)), seed, keyLen)
 		}
 	})
 }

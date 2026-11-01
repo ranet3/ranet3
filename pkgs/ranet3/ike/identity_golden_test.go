@@ -475,13 +475,13 @@ func TestEachEndVerifiesAUTHOverTheIDPayloadAsItArrived(t *testing.T) {
 
 // goldenInitiatorAuth is the AUTH payload body, in hex, of the golden initiator signing an IDi whose body is idi
 func goldenInitiatorAuth(idi []byte) string {
-	signed := concat(goldenMessage1, goldenNr, prf(goldenSuite.PRFID, goldenContext(false).skpi, idi))
+	signed := slices.Concat(goldenMessage1, goldenNr, prf(goldenSuite.PRFID, goldenContext(false).skpi, idi))
 	return hex.EncodeToString(BuildAuth(goldenInitiatorKey, signed))
 }
 
 // goldenResponderAuth is the AUTH payload body, in hex, of the golden responder signing an IDr whose body is idr
 func goldenResponderAuth(idr []byte) string {
-	signed := concat(goldenMessage2, goldenNi, prf(goldenSuite.PRFID, goldenContext(false).skpr, idr))
+	signed := slices.Concat(goldenMessage2, goldenNi, prf(goldenSuite.PRFID, goldenContext(false).skpr, idr))
 	return hex.EncodeToString(BuildAuth(goldenResponderKey, signed))
 }
 

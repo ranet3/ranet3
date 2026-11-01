@@ -11,8 +11,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
+	"encoding/binary"
 	"fmt"
 	"hash"
+	"slices"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -201,7 +203,7 @@ func DeriveRekeyedIKEKeys(oldPRFID uint16, oldSKd []byte, suite SASuite, sharedS
 	if PRFOutputLen(oldPRFID) == 0 {
 		return nil, fmt.Errorf("ike: unsupported previous PRF %d", oldPRFID)
 	}
-	skeyseed := prf(oldPRFID, oldSKd, concat(sharedSecret, ni, nr, added))
+	skeyseed := prf(oldPRFID, oldSKd, slices.Concat(sharedSecret, ni, nr, added))
 	return deriveIKEKeys(suite, skeyseed, ni, nr, spiI, spiR)
 }
 
@@ -215,9 +217,9 @@ func deriveIKEKeys(suite SASuite, skeyseed, ni, nr []byte, spiI, spiR uint64) (*
 		return nil, fmt.Errorf("ike: unsupported PRF %d", suite.PRFID)
 	}
 	var spiBuf [16]byte
-	putUint64(spiBuf[0:8], spiI)
-	putUint64(spiBuf[8:16], spiR)
-	seed := concat(ni, nr, spiBuf[:])
+	binary.BigEndian.PutUint64(spiBuf[0:8], spiI)
+	binary.BigEndian.PutUint64(spiBuf[8:16], spiR)
+	seed := slices.Concat(ni, nr, spiBuf[:])
 
 	skLen := ap.KeyLen + ap.SaltLen
 	total := prfLen /*SK_d*/ + 2*skLen /*SK_ei,SK_er*/ + 2*prfLen /*SK_pi,SK_pr*/
@@ -233,13 +235,6 @@ func deriveIKEKeys(suite SASuite, skeyseed, ni, nr []byte, spiI, spiR uint64) (*
 		SKpi:  take(prfLen),
 		SKpr:  take(prfLen),
 	}, nil
-}
-
-func putUint64(b []byte, v uint64) {
-	for i := 7; i >= 0; i-- {
-		b[i] = byte(v)
-		v >>= 8
-	}
 }
 
 // ChildSAKeymat expands SK_d into the ESP keying material for a Child SA
@@ -258,6 +253,6 @@ func childSAKeymat(prfID uint16, skD, sharedSecret, ni, nr []byte, encrID uint16
 		return nil, nil, err
 	}
 	each := ap.KeyLen + ap.SaltLen
-	stream := prfPlus(prfID, skD, concat(sharedSecret, ni, nr, added), 2*each)
+	stream := prfPlus(prfID, skD, slices.Concat(sharedSecret, ni, nr, added), 2*each)
 	return stream[:each], stream[each:], nil
 }

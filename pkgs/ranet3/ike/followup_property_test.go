@@ -77,7 +77,7 @@ func TestRekeyedIKEKeysFollowTheChainOfRFC9370(t *testing.T) {
 		var spis [16]byte
 		binary.BigEndian.PutUint64(spis[:8], spiI)
 		binary.BigEndian.PutUint64(spis[8:], spiR)
-		want := modelKeys(in.newHash, mac.Sum(nil), concat(in.ni, in.nr, spis[:]), int(suite.EncrKeyBits)/8+4)
+		want := modelKeys(in.newHash, mac.Sum(nil), slices.Concat(in.ni, in.nr, spis[:]), int(suite.EncrKeyBits)/8+4)
 		got := [5][]byte{keys.SKd, keys.SKei, keys.SKer, keys.SKpi, keys.SKpr}
 		if !slices.EqualFunc(got[:], want[:], bytes.Equal) {
 			ht.Fatalf("a rekey with the additional secret %x derived %x, the chain %x", in.added, got, want)

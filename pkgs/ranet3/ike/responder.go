@@ -507,7 +507,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, err)
 	}
 	macedIDForI := prf(ctx.suite.PRFID, ctx.skpi, idiPayload.Body)
-	if err := VerifyAuth(peerKey, concat(realMessage1, nr, macedIDForI, chain.octets(ctx.authMID)), authPayload.Body); err != nil {
+	if err := VerifyAuth(peerKey, slices.Concat(realMessage1, nr, macedIDForI, chain.octets(ctx.authMID)), authPayload.Body); err != nil {
 		return Accepted{}, false, s.rejectAuth(got.form, N_AUTHENTICATION_FAILED, nil, err)
 	}
 	// RFC 7296 section 3.5 has the identity "used for policy lookup" and "to perform access control decisions"
@@ -531,7 +531,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 		r.cfg.Events(localID, peerID, "ike.id.resolved", peer.attrs(idrBody)...)
 	}
 	macedIDForR := prf(ctx.suite.PRFID, ctx.skpr, idrBody)
-	authBody := BuildAuth(r.cfg.LocalPrivateKey, concat(realMessage2, ni, macedIDForR, chain.octets(ctx.authMID)))
+	authBody := BuildAuth(r.cfg.LocalPrivateKey, slices.Concat(realMessage2, ni, macedIDForR, chain.octets(ctx.authMID)))
 
 	// RFC 7296 section 2.21.2: "If authentication has succeeded in the IKE_AUTH exchange, the IKE SA is established"
 	// and: "Specifically, a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
@@ -941,7 +941,7 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 	return responderChild{
 		sa: ChildSA{
 			EncrID: selection.encryption.ID, EncrKeyBits: selection.encryption.KeyLengthBits,
-			LocalSPI: randUint32Nonzero(), RemoteSPI: selection.remoteSPI,
+			LocalSPI: newChildSPI(0), RemoteSPI: selection.remoteSPI,
 			InboundKey: initiatorKey, OutboundKey: responderKey,
 		},
 		number:     selection.proposal.Number,

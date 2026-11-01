@@ -90,7 +90,7 @@ func TestPeerChildRekeyWithPFS(t *testing.T) {
 					t.Fatal(err)
 				}
 				// the keys follow the exchange's initiator, not the IKE role
-				keymat := prfPlus(suite.PRFID, ctx.skD, concat(shared, ni, payloads.nonce.Body), 40)
+				keymat := prfPlus(suite.PRFID, ctx.skD, slices.Concat(shared, ni, payloads.nonce.Body), 40)
 				child := s.currentChild()
 				if !bytes.Equal(child.InboundKey, keymat[:20]) || !bytes.Equal(child.OutboundKey, keymat[20:]) {
 					t.Fatal("Child SA keys do not match peer PFS derivation")

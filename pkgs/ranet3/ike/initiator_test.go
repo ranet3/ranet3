@@ -1195,7 +1195,7 @@ func testIKEAuthAuthenticatesBeforeChildFailure(t *testing.T, remoteOrganization
 
 			idr := idBody(remoteOrganization + "/responder:2")
 			macedID := prf(suite.PRFID, s.current.skpr, idr)
-			auth := BuildAuth(remotePrivate, concat(realMessage2, ni, macedID))
+			auth := BuildAuth(remotePrivate, slices.Concat(realMessage2, ni, macedID))
 			response, err := EncryptMessage(suite, s.current.sker, Header{
 				SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH,
 				Flags: FlagResponse, MessageID: 1,
@@ -1363,7 +1363,7 @@ func testAuthenticatedSAIsDeletedAgainWhenItsMuxClosesUnderTheDelete(t *testing.
 				return fmt.Errorf("read IKE_AUTH request: %w", err)
 			}
 			idr := idBody("ranet-test/responder:2")
-			auth := BuildAuth(remotePrivate, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, idr)))
+			auth := BuildAuth(remotePrivate, slices.Concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, idr)))
 			response, err := EncryptMessage(suite, s.current.sker, Header{
 				SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagResponse, MessageID: 1,
 			}, nil, []RawPayload{
@@ -1620,7 +1620,7 @@ func TestInitiatorRefusesWrongIKEAuthAnswers(t *testing.T) {
 					if test.signed != nil {
 						signed = test.signed
 					}
-					auth := BuildAuth(signer, concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, signed)))
+					auth := BuildAuth(signer, slices.Concat(realMessage2, ni, prf(suite.PRFID, s.current.skpr, signed)))
 					payloads := []RawPayload{{Type: PayloadIDr, Body: idr}, {Type: PayloadAUTH, Body: auth}}
 					if test.alone != nil {
 						payloads = test.alone
@@ -1962,7 +1962,7 @@ func dialPlayedResponder(t *testing.T, shape func(exchange ExchangeType, payload
 	header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagResponse, MessageID: 1}
 	answer := sealedEdited(t, suite, keys.SKer, header, shape(IKE_AUTH, []RawPayload{
 		{Type: PayloadIDr, Body: idr},
-		{Type: PayloadAUTH, Body: BuildAuth(remotePrivate, concat(message2, ni, prf(suite.PRFID, keys.SKpr, idr)))},
+		{Type: PayloadAUTH, Body: BuildAuth(remotePrivate, slices.Concat(message2, ni, prf(suite.PRFID, keys.SKpr, idr)))},
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
 		{Type: PayloadTSi, Body: fullRangeSelectors()},
 		{Type: PayloadTSr, Body: fullRangeSelectors()},

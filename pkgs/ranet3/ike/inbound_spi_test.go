@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"net"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -125,7 +126,7 @@ func newAuthPeer(t *testing.T) authPeer {
 
 // authenticated is the peer's IDr and AUTH for s's IKE_AUTH, the IKE_SA_INIT response and initiator nonce it signs being what the tests pass doIKEAuth
 func (p authPeer) authenticated(s *Session) []RawPayload {
-	signed := concat([]byte("the IKE_SA_INIT response"), make([]byte, 32), prf(s.current.suite.PRFID, s.current.skpr, p.idr))
+	signed := slices.Concat([]byte("the IKE_SA_INIT response"), make([]byte, 32), prf(s.current.suite.PRFID, s.current.skpr, p.idr))
 	return []RawPayload{{Type: PayloadIDr, Body: p.idr}, {Type: PayloadAUTH, Body: BuildAuth(p.private, signed)}}
 }
 

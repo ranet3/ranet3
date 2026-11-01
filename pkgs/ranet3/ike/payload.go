@@ -88,29 +88,44 @@ func encodePayloadChainBefore(payloads []RawPayload, following PayloadType) []by
 // decodePayloadChain walks a Next-Payload chain within a flat byte slice
 // (used to parse the decrypted contents of an SK payload).
 func decodePayloadChain(first PayloadType, b []byte) ([]RawPayload, error) {
+	out, _, err := walkPayloads(first, b, false)
+	return out, err
+}
+
+// walkPayloads walks the Next-Payload chain from first through b, ending it at an SK or SKF payload where encrypted holds, and returns that payload's offset in b, or -1 where the chain held none
+// RFC 7383 section 2.5: "As is the case for the Encrypted payload, the Encrypted Fragment payload, if present in a message, MUST be the last payload in the message."
+func walkPayloads(first PayloadType, b []byte, encrypted bool) ([]RawPayload, int, error) {
 	var out []RawPayload
 	next := first
 	rest := b
 	for next != PayloadNone {
 		if len(rest) < genericPayloadHeaderLen {
-			return nil, fmt.Errorf("ike: truncated payload header")
+			return nil, 0, fmt.Errorf("ike: truncated payload header")
 		}
 		plLen := binary.BigEndian.Uint16(rest[2:4])
 		if int(plLen) < genericPayloadHeaderLen || int(plLen) > len(rest) {
-			return nil, fmt.Errorf("ike: invalid payload length %d", plLen)
+			return nil, 0, fmt.Errorf("ike: invalid payload length %d", plLen)
 		}
-		out = append(out, RawPayload{
+		p := RawPayload{
 			Type:     next,
 			Critical: rest[1]&0x80 != 0,
 			Body:     rest[genericPayloadHeaderLen:plLen],
-		})
+		}
+		at := len(b) - len(rest)
+		out = append(out, p)
 		next = PayloadType(rest[0])
 		rest = rest[plLen:]
+		if encrypted && (p.Type == PayloadSK || p.Type == PayloadSKF) {
+			if len(rest) != 0 {
+				return nil, 0, fmt.Errorf("ike: %d trailing bytes after SK payload", len(rest))
+			}
+			return out, at, nil
+		}
 	}
 	if len(rest) != 0 {
-		return nil, fmt.Errorf("ike: %d trailing bytes after payload chain", len(rest))
+		return nil, 0, fmt.Errorf("ike: %d trailing bytes after payload chain", len(rest))
 	}
-	return out, nil
+	return out, -1, nil
 }
 
 // DecodeMessage parses an IKE header and its payload chain, and leaves the SK or SKF payload that ends it encrypted, its Body the IV, ciphertext and ICV, after Fragment Number and Total Fragments for SKF
@@ -125,48 +140,15 @@ func DecodeMessage(b []byte) (*Message, error) {
 	if int(h.Length) != len(b) {
 		return nil, fmt.Errorf("ike: header length %d does not match packet size %d", h.Length, len(b))
 	}
-	m := &Message{Header: *h}
-	rest := b[HeaderLen:h.Length]
-	next := h.NextPayload
-	for next != PayloadNone {
-		if len(rest) < genericPayloadHeaderLen {
-			return nil, fmt.Errorf("ike: truncated payload header")
-		}
-		plLen := binary.BigEndian.Uint16(rest[2:4])
-		if int(plLen) < genericPayloadHeaderLen || int(plLen) > len(rest) {
-			return nil, fmt.Errorf("ike: invalid payload length %d", plLen)
-		}
-		p := RawPayload{
-			Type:     next,
-			Critical: rest[1]&0x80 != 0,
-			Body:     rest[genericPayloadHeaderLen:plLen],
-		}
-		// RFC 7383 section 2.5: "As is the case for the Encrypted payload, the Encrypted Fragment payload, if present in a message, MUST be the last payload in the message."
-		encrypted := p.Type == PayloadSK || p.Type == PayloadSKF
-		if encrypted {
-			m.skHeaderOffset = int(h.Length) - len(rest)
-		}
-		next = PayloadType(rest[0])
-		m.Payloads = append(m.Payloads, p)
-		rest = rest[plLen:]
-		if encrypted {
-			if len(rest) != 0 {
-				return nil, fmt.Errorf("ike: %d trailing bytes after SK payload", len(rest))
-			}
-			break
-		}
+	payloads, at, err := walkPayloads(h.NextPayload, b[HeaderLen:h.Length], true)
+	if err != nil {
+		return nil, err
 	}
-	if next == PayloadNone && len(rest) != 0 {
-		return nil, fmt.Errorf("ike: %d trailing bytes after payload chain", len(rest))
+	m := &Message{Header: *h, Payloads: payloads}
+	if at >= 0 {
+		m.skHeaderOffset = HeaderLen + at
 	}
 	return m, nil
 }
 
-func (m *Message) find(t PayloadType) *RawPayload {
-	for i := range m.Payloads {
-		if m.Payloads[i].Type == t {
-			return &m.Payloads[i]
-		}
-	}
-	return nil
-}
+func (m *Message) find(t PayloadType) *RawPayload { return findType(m.Payloads, t) }

@@ -88,7 +88,7 @@ func sealMessage(suite SASuite, key []byte, hdr Header, cleartext []RawPayload, 
 	h.Length = uint32(HeaderLen + len(cleartextBytes) + len(skHdr) + ap.IVLen + ciphertextLen)
 	headerBytes := h.encode()
 
-	aad := concat(headerBytes, cleartextBytes, skHdr)
+	aad := slices.Concat(headerBytes, cleartextBytes, skHdr)
 	ciphertext := aead.Seal(nil, nonce, plain, aad)
 
 	out := make([]byte, 0, int(h.Length))

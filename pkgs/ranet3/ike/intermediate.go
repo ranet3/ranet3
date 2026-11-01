@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 )
 
 // intAuthChunk is IntAuth_[i/r]*A followed by IntAuth_[i/r]*P of one IKE_INTERMEDIATE message
@@ -39,8 +40,8 @@ type intAuth struct {
 // RFC 9242 section 3.3.2: "Note that if keys are updated, then for any given IKE_INTERMEDIATE exchange, the keys SK_e[i/r] and SK_a[i/r] used for protection of its messages (see Section 3.3.1) and the key SK_p[i/r] for its authentication are always from the same generation."
 func (a intAuth) add(prfID uint16, skpi, skpr, request, response []byte) intAuth {
 	return intAuth{
-		i: prf(prfID, skpi, concat(a.i, request)),
-		r: prf(prfID, skpr, concat(a.r, response)),
+		i: prf(prfID, skpi, slices.Concat(a.i, request)),
+		r: prf(prfID, skpr, slices.Concat(a.r, response)),
 	}
 }
 
@@ -52,7 +53,7 @@ func (a intAuth) octets(authMID uint32) []byte {
 	if a.i == nil {
 		return nil
 	}
-	return binary.BigEndian.AppendUint32(concat(a.i, a.r), authMID)
+	return binary.BigEndian.AppendUint32(slices.Concat(a.i, a.r), authMID)
 }
 
 // keData is the KE data of the one KE payload of an IKE_INTERMEDIATE or IKE_FOLLOWUP_KE message, which names method

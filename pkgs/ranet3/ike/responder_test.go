@@ -2185,7 +2185,7 @@ func ikeAuthPayloads(key ed25519.PrivateKey, held *ikeContext, message1, nr []by
 	return []RawPayload{
 		{Type: PayloadIDi, Body: idiBody},
 		{Type: PayloadIDr, Body: idBody(idr)},
-		{Type: PayloadAUTH, Body: BuildAuth(key, concat(message1, nr, prf(held.suite.PRFID, held.skpi, idiBody)))},
+		{Type: PayloadAUTH, Body: BuildAuth(key, slices.Concat(message1, nr, prf(held.suite.PRFID, held.skpi, idiBody)))},
 		{Type: PayloadSA, Body: EncodeSA([]Proposal{child})},
 		{Type: PayloadTSi, Body: fullRangeSelectors()},
 		{Type: PayloadTSr, Body: fullRangeSelectors()},

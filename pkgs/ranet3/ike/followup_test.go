@@ -344,11 +344,11 @@ func (p *peerRekey) keys(t testing.TB, old *ikeContext, suite SASuite) [5][]byte
 
 // appendixA3Keys is the keys of the new SA computed with crypto/hmac from RFC 9370 section 2.2.4 and RFC 7296 sections 2.13, 2.14 and 2.18, under modelSuite, added the secret of the one IKE_FOLLOWUP_KE
 func appendixA3Keys(old *ikeContext, shared, ni, nr []byte, spiI, spiR uint64, added []byte) [5][]byte {
-	skeyseed := modelPRF(old.skD, concat(shared, ni, nr, added))
+	skeyseed := modelPRF(old.skD, slices.Concat(shared, ni, nr, added))
 	var spis [16]byte
 	binary.BigEndian.PutUint64(spis[:8], spiI)
 	binary.BigEndian.PutUint64(spis[8:], spiR)
-	return modelKeys(sha512.New384, skeyseed, concat(ni, nr, spis[:]), modelKeyLen)
+	return modelKeys(sha512.New384, skeyseed, slices.Concat(ni, nr, spis[:]), modelKeyLen)
 }
 
 // an IKE SA rekey of an SA of x25519+mlkem768 offers only that entry while the lists hold it, though they hold p256 as well

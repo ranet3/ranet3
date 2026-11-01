@@ -4,18 +4,6 @@
 
 package ike
 
-func concat(parts ...[]byte) []byte {
-	var n int
-	for _, p := range parts {
-		n += len(p)
-	}
-	out := make([]byte, 0, n)
-	for _, p := range parts {
-		out = append(out, p...)
-	}
-	return out
-}
-
 // Ed25519AlgorithmIdentifier is the DER SEQUENCE{OID 1.3.101.112} of RFC 8410, without parameters
 // it is both the RFC 7427 signature AlgorithmIdentifier and the one inside a SubjectPublicKeyInfo
 func Ed25519AlgorithmIdentifier() []byte {

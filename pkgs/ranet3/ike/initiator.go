@@ -514,12 +514,14 @@ func randUint64Nonzero() uint64 {
 	}
 }
 
-func randUint32Nonzero() uint32 {
+// newChildSPI draws the inbound SPI of a Child SA this end makes, other than replaced, the inbound SPI of the SA it replaces, which is 0 where it replaces none
+// RFC 4303 section 2.1: "The set of SPI values in the range 1 through 255 are reserved by the Internet Assigned Numbers Authority (IANA) for future use" and "The SPI value of zero (0) is reserved for local, implementation-specific use and MUST NOT be sent on the wire."
+func newChildSPI(replaced uint32) uint32 {
 	for {
 		var b [4]byte
 		rand.Read(b[:])
 		v := binary.BigEndian.Uint32(b[:])
-		if v > 255 {
+		if v > 255 && v != replaced {
 			return v
 		}
 	}
@@ -1065,7 +1067,7 @@ func (s *Session) answerAgain(ctx *ikeContext, hdr *Header, raw []byte, m *Messa
 
 // doIKEAuth reports true once it accepts the responder's AUTH and IDr in an answer carrying none of the notifies that leave the IKE SA uncreated, and returns an *authRefusal for a decrypted answer it refuses before then, other than one failed at the responder
 func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr []byte, chain intAuth) (bool, error) {
-	mySPI := randUint32Nonzero()
+	mySPI := newChildSPI(0)
 	spiBuf := make([]byte, 4)
 	binary.BigEndian.PutUint32(spiBuf, mySPI)
 	// the responder holds the Child SA once it answers and may send on it before the answer arrives
@@ -1110,7 +1112,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	}
 
 	macedIDForI := prf(s.current.suite.PRFID, s.current.skpi, idiBody)
-	signedOctets := concat(realMessage1, nr, macedIDForI, chain.octets(s.current.authMID))
+	signedOctets := slices.Concat(realMessage1, nr, macedIDForI, chain.octets(s.current.authMID))
 	authBody := BuildAuth(cfg.LocalPrivateKey, signedOctets)
 
 	offer := s.lists().espProposal(spiBuf)
@@ -1162,7 +1164,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		return false, refuse(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: incomplete IKE_AUTH response"))
 	}
 	macedIDForR := prf(s.current.suite.PRFID, s.current.skpr, idrRecv.Body)
-	responderSigned := concat(realMessage2, ni, macedIDForR, chain.octets(s.current.authMID))
+	responderSigned := slices.Concat(realMessage2, ni, macedIDForR, chain.octets(s.current.authMID))
 	if err := VerifyAuth(cfg.RemotePublicKey, responderSigned, authRecv.Body); err != nil {
 		return false, refuse(N_AUTHENTICATION_FAILED, nil, err)
 	}

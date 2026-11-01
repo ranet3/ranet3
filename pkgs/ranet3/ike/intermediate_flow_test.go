@@ -35,7 +35,7 @@ func modelPRFPlus(newHash func() hash.Hash, key, seed []byte, n int) []byte {
 	var stream, last []byte
 	for i := byte(1); len(stream) < n; i++ {
 		mac := hmac.New(newHash, key)
-		mac.Write(concat(last, seed, []byte{i}))
+		mac.Write(slices.Concat(last, seed, []byte{i}))
 		last = mac.Sum(nil)
 		stream = append(stream, last...)
 	}
@@ -74,14 +74,14 @@ type setupModel struct {
 // RFC 7296 section 2.14: "SKEYSEED = prf(Ni | Nr, g^ir)"
 func newSetupModel(ni, nr []byte, spiI, spiR uint64, shared []byte) *setupModel {
 	m := &setupModel{ni: ni, nr: nr, spis: binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64(nil, spiI), spiR)}
-	m.keys = modelKeys(sha512.New384, modelPRF(concat(ni, nr), shared), concat(ni, nr, m.spis), modelKeyLen)
+	m.keys = modelKeys(sha512.New384, modelPRF(slices.Concat(ni, nr), shared), slices.Concat(ni, nr, m.spis), modelKeyLen)
 	return m
 }
 
 // modelChunk is one IKE_INTERMEDIATE message's IntAuth chunk, its octets up to the generic header of the Encrypted payload at offset with both lengths adjusted, then its inner payloads
 // RFC 9242 section 3.3.2: "In other words, the Length field in the IKE Header (denoted as Adjusted Length in Figure 1) is set to the sum of the lengths of IntAuth_[i/r]*A and IntAuth_[i/r]*P, and the Payload Length field in the Encrypted payload header (denoted as Adjusted Payload Length in Figure 1) is set to the length of IntAuth_[i/r]*P plus the size of the Encrypted payload header (four octets)."
 func modelChunk(raw []byte, offset int, inner []byte) []byte {
-	chunk := concat(raw[:offset+4], inner)
+	chunk := slices.Concat(raw[:offset+4], inner)
 	binary.BigEndian.PutUint32(chunk[24:28], uint32(len(chunk)))
 	binary.BigEndian.PutUint16(chunk[offset+2:offset+4], uint16(4+len(inner)))
 	return chunk
@@ -91,18 +91,18 @@ func modelChunk(raw []byte, offset int, inner []byte) []byte {
 // RFC 9242 section 3.3.2: "IntAuth_iN = prf(SK_piN, IntAuth_iN-1 | IntAuth_iNA [| IntAuth_iNP])" and "IntAuth_rN = prf(SK_prN, IntAuth_rN-1 | IntAuth_rNA [| IntAuth_rNP])"
 // RFC 9370 section 2.2.2: "SKEYSEED(n) = prf(SK_d(n-1), SK(n) | Ni | Nr)"
 func (m *setupModel) exchanged(request, requestInner, response, responseInner, secret []byte) {
-	m.i = modelPRF(m.keys[3], concat(m.i, modelChunk(request, HeaderLen, requestInner)))
-	m.r = modelPRF(m.keys[4], concat(m.r, modelChunk(response, HeaderLen, responseInner)))
-	m.keys = modelKeys(sha512.New384, modelPRF(m.keys[0], concat(secret, m.ni, m.nr)), concat(m.ni, m.nr, m.spis), modelKeyLen)
+	m.i = modelPRF(m.keys[3], slices.Concat(m.i, modelChunk(request, HeaderLen, requestInner)))
+	m.r = modelPRF(m.keys[4], slices.Concat(m.r, modelChunk(response, HeaderLen, responseInner)))
+	m.keys = modelKeys(sha512.New384, modelPRF(m.keys[0], slices.Concat(secret, m.ni, m.nr)), slices.Concat(m.ni, m.nr, m.spis), modelKeyLen)
 }
 
 // signed is the octets an end's AUTH covers, from its first message, the other end's nonce, its SK_p and its ID payload's body, with IntAuth at authMID once an IKE_INTERMEDIATE exchange ran
 // RFC 7296 section 2.15: "InitiatorSignedOctets = RealMessage1 | NonceRData | MACedIDForI"
 // RFC 9242 section 3.3.2: "InitiatorSignedOctets = RealMsg1 | NonceRData | MACedIDForI | IntAuth" and "IntAuth =  IntAuth_iN | IntAuth_rN | IKE_AUTH_MID"
 func (m *setupModel) signed(message, nonce, skp, id []byte, authMID uint32) []byte {
-	octets := concat(message, nonce, modelPRF(skp, id))
+	octets := slices.Concat(message, nonce, modelPRF(skp, id))
 	if m.i != nil {
-		octets = concat(octets, m.i, m.r, binary.BigEndian.AppendUint32(nil, authMID))
+		octets = slices.Concat(octets, m.i, m.r, binary.BigEndian.AppendUint32(nil, authMID))
 	}
 	return octets
 }
@@ -110,7 +110,7 @@ func (m *setupModel) signed(message, nonce, skp, id []byte, authMID uint32) []by
 // childKeys is the initiator's and the responder's key of the Child SA IKE_AUTH makes, each octets long
 // RFC 7296 section 2.17: "KEYMAT = prf+(SK_d, Ni | Nr)"
 func (m *setupModel) childKeys(each int) (initiator, responder []byte) {
-	stream := modelPRFPlus(sha512.New384, m.keys[0], concat(m.ni, m.nr), 2*each)
+	stream := modelPRFPlus(sha512.New384, m.keys[0], slices.Concat(m.ni, m.nr), 2*each)
 	return stream[:each], stream[each:]
 }
 
@@ -668,7 +668,7 @@ func TestResponderEndsAHandshakeOutOfItsExchangeOrder(t *testing.T) {
 func TestResponderRefusesAnAuthOverOtherOctets(t *testing.T) {
 	for name, signed := range map[string]func(s *scripted, skpi0 []byte) []byte{
 		"the octets of RFC 7296 alone": func(s *scripted, _ []byte) []byte {
-			return concat(s.message1, s.model.nr, modelPRF(s.model.keys[3], scriptedIDi))
+			return slices.Concat(s.message1, s.model.nr, modelPRF(s.model.keys[3], scriptedIDi))
 		},
 		"IKE_AUTH_MID 1": func(s *scripted, _ []byte) []byte {
 			return s.model.signed(s.message1, s.model.nr, s.model.keys[3], scriptedIDi, 1)
@@ -1306,7 +1306,7 @@ func TestDialRejectsAnIntermediateResponseItCannotTake(t *testing.T) {
 func TestDialRefusesAResponderAuthOverOtherOctets(t *testing.T) {
 	for name, signed := range map[string]func(p *played, skpr0 []byte) []byte{
 		"the octets of RFC 7296 alone": func(p *played, _ []byte) []byte {
-			return concat(p.message2, p.model.ni, modelPRF(p.model.keys[4], playedIDr))
+			return slices.Concat(p.message2, p.model.ni, modelPRF(p.model.keys[4], playedIDr))
 		},
 		"IKE_AUTH_MID 1": func(p *played, _ []byte) []byte {
 			return p.model.signed(p.message2, p.model.ni, p.model.keys[4], playedIDr, 1)

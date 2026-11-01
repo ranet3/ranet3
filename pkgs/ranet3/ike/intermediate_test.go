@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"slices"
 	"testing"
 )
 
@@ -30,9 +31,9 @@ func TestIntAuthChainsEveryExchangeAndEndsInTheAuthMessageID(t *testing.T) {
 	var i, r []byte
 	for n := range chunks {
 		chain = chain.add(PRF_HMAC_SHA2_256, keys[n][0], keys[n][1], chunks[n][0], chunks[n][1])
-		i, r = prf(keys[n][0], concat(i, chunks[n][0])), prf(keys[n][1], concat(r, chunks[n][1]))
+		i, r = prf(keys[n][0], slices.Concat(i, chunks[n][0])), prf(keys[n][1], slices.Concat(r, chunks[n][1]))
 	}
-	want := concat(i, r, []byte{0, 0, 0, 3})
+	want := slices.Concat(i, r, []byte{0, 0, 0, 3})
 	if got := chain.octets(3); !bytes.Equal(got, want) {
 		t.Errorf("IntAuth after two exchanges is %x, want %x", got, want)
 	}

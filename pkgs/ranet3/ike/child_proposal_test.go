@@ -922,7 +922,7 @@ func answerIKEAuth(t testing.TB, h *responderHarness, lists Suites, children ...
 	header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
 	request, err := EncryptMessage(suite, ctx.skei, header, nil, []RawPayload{
 		{Type: PayloadIDi, Body: idi},
-		{Type: PayloadAUTH, Body: BuildAuth(h.private, concat(message1, nr, prf(suite.PRFID, ctx.skpi, idi)))},
+		{Type: PayloadAUTH, Body: BuildAuth(h.private, slices.Concat(message1, nr, prf(suite.PRFID, ctx.skpi, idi)))},
 		{Type: PayloadSA, Body: EncodeSA(children)},
 		{Type: PayloadTSi, Body: fullRangeSelectors()},
 		{Type: PayloadTSr, Body: fullRangeSelectors()},
@@ -992,7 +992,7 @@ func TestRefusedIKEAuthWhoseAnswerCannotGoEndsWithTheAnswersError(t *testing.T) 
 			header := Header{SPIInitiator: spiI, SPIResponder: spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
 			inner := []RawPayload{
 				{Type: PayloadIDi, Body: idi},
-				{Type: PayloadAUTH, Body: BuildAuth(h.private, concat(message1, nr, prf(suite.PRFID, ctx.skpi, idi)))},
+				{Type: PayloadAUTH, Body: BuildAuth(h.private, slices.Concat(message1, nr, prf(suite.PRFID, ctx.skpi, idi)))},
 				{Type: PayloadSA, Body: EncodeSA([]Proposal{espProposal([]byte{0, 0, 0, 0})})},
 				{Type: PayloadTSi, Body: fullRangeSelectors()},
 				{Type: PayloadTSr, Body: fullRangeSelectors()},

@@ -65,7 +65,7 @@ func openFragment(suite SASuite, key, raw []byte, offset int) ([]byte, error) {
 		return nil, errors.New("no IV")
 	}
 	body := raw[offset+genericPayloadHeaderLen+4:]
-	return aead.Open(nil, concat(key[params.KeyLen:], body[:params.IVLen]), body[params.IVLen:], raw[:offset+genericPayloadHeaderLen+4])
+	return aead.Open(nil, slices.Concat(key[params.KeyLen:], body[:params.IVLen]), body[params.IVLen:], raw[:offset+genericPayloadHeaderLen+4])
 }
 
 // cutInto is the message of header carrying inner under suite and key as IKE Fragment messages of size octets of plaintext each, the last one shorter
@@ -162,7 +162,7 @@ func assembled(t *testing.T, suite SASuite, key []byte, datagrams [][]byte) (Hea
 	if err != nil {
 		t.Fatalf("the fragments' content does not decode: %v", err)
 	}
-	whole := concat(datagrams[0][:HeaderLen], []byte{byte(next), datagrams[0][HeaderLen+1], 0, 0})
+	whole := slices.Concat(datagrams[0][:HeaderLen], []byte{byte(next), datagrams[0][HeaderLen+1], 0, 0})
 	whole[16] = byte(PayloadSK)
 	return first.Header, inner, whole, len(datagrams)
 }

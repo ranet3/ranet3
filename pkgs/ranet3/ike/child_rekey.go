@@ -159,10 +159,11 @@ func (s *Session) negotiateChild(old *ChildSA) error {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
 	context := s.currentContext()
-	localSPI := randUint32Nonzero()
-	for old != nil && localSPI == old.LocalSPI {
-		localSPI = randUint32Nonzero()
+	var replaced uint32
+	if old != nil {
+		replaced = old.LocalSPI
 	}
+	localSPI := newChildSPI(replaced)
 	spi := make([]byte, 4)
 	binary.BigEndian.PutUint32(spi, localSPI)
 	nonce := make([]byte, nonceLen)
@@ -420,12 +421,12 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		localPublic = dh.PublicBytes()
 	}
 	encr := selected.encryption
-	var spi [4]byte
-	for binary.BigEndian.Uint32(spi[:]) == 0 {
-		if _, err := rand.Read(spi[:]); err != nil {
-			return fail(err)
-		}
+	var replaced uint32
+	if expected != nil {
+		replaced = expected.LocalSPI
 	}
+	localSPI := newChildSPI(replaced)
+	spi := binary.BigEndian.AppendUint32(nil, localSPI)
 	nr := make([]byte, nonceLen)
 	if _, err := rand.Read(nr); err != nil {
 		return fail(err)
@@ -437,7 +438,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 		// and ChaCha20-Poly1305 is offered with no Key Length, which canonicalEncryptionTransform fills in
 		responseEncr.KeyLengthBits = 0
 	}
-	response := Proposal{Number: selected.proposal.Number, Protocol: ProtoESP, SPI: spi[:], Transforms: []Transform{responseEncr, {Type: TransESN, ID: ESN_NO}}}
+	response := Proposal{Number: selected.proposal.Number, Protocol: ProtoESP, SPI: spi, Transforms: []Transform{responseEncr, {Type: TransESN, ID: ESN_NO}}}
 	// RFC 7296 section 2.7: "The accepted cryptographic suite MUST contain exactly one transform of each type included in the proposal."
 	if selected.integ.Type != 0 {
 		response.Transforms = append(response.Transforms, selected.integ)
@@ -452,7 +453,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	}
 	responsePayloads = append(responsePayloads, RawPayload{Type: PayloadTSi, Body: payloads.tsi.Body}, RawPayload{Type: PayloadTSr, Body: payloads.tsr.Body})
 	entry := kexChoice{dh: selected.dh, additions: selected.additions}.entry()
-	made := &peerChild{encr: encr, localSPI: binary.BigEndian.Uint32(spi[:]), remoteSPI: selected.remoteSPI, entry: entry}
+	made := &peerChild{encr: encr, localSPI: localSPI, remoteSPI: selected.remoteSPI, entry: entry}
 	// RFC 9370 section 2.2.4: "With multiple key exchanges, the SAs are not yet created when the CREATE_CHILD_SA is completed. Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."
 	// so the Child SA waits for the one IKE_FOLLOWUP_KE of its additional key exchange, and nothing is installed until then
 	if entry.addition != 0 {
