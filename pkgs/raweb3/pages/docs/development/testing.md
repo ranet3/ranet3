@@ -57,7 +57,7 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress/kernel` has 19 that write into a real packet filter. One
+- `internal/egress/kernel` has 23 that write into a real packet filter. One
   round trips the translator's tables, chains, set and timeout objects, another
   checks that the kernel tells the backend when another writer adds a rule to
   its chain, sets its table dormant or deletes it, and that its own writes tell
@@ -74,31 +74,45 @@ unless run as root.
   set counts under another share, and the ninth reports another writer's nat
   chains at the translator's priority or below and not one above it. The tenth
   takes the address a class translates to off `lo` in each family and reads that
-  family alone not ready, with the address named, until it is back. Seven round
-  trip the antispoof filter's table, both chains and its sets, one with an
-  exemption of each kind. One puts it back on the pass another writer wakes by
-  deleting the table, adding a rule or setting the table dormant, and leaves no
-  table behind. One writes it back after another writer adds a rule to it, sets
-  its table dormant, turns a policy to drop, makes a chain again at another
-  priority or as a regular chain, or makes the table again with a flag nf_tables
-  will not clear in place, the last 3 by deleting and making the table again.
-  One refills a set another writer flushed, or a chain it emptied, on the pass
-  that change wakes, one holds chain `mesh_entry` alone with no `overlay`, one
-  starts over a table holding a chain the filter does not write and finds the
-  table made again without that chain, with and without `overlay`, and one kills
-  the filter's process with `SIGKILL` and finds the table still there with every
-  rule and element, which the next start takes over without a write. That
-  process is the test binary run again as `TestBorderCrashHelper`, which joins
-  the test's namespace by its path and skips when run any other way. The last of
-  the 7 moves a `none` set by one LAN at 10, 1,000 and 10,000 LANs held, and
-  reads at most 6 element notifications for each pass. The other 3 read the
-  translator's rules for debug. One sends a datagram from the mesh address out
-  of the uplink and finds its rule's counter moved while the last pass still
-  counts none. One reads from 2 readers at once while one pass follows another,
-  each read and each pass with no error. One reads on while the exit stops, and
-  each read answers the rules or the error a stopped exit answers, which names
-  no descriptor its close released. It also runs the
-  [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
+  family alone not ready, with the address named, until it is back. The eleventh
+  makes a line of each chain of each family an accept under the comment it was
+  written with, and reads that family alone at a fault naming the line until the
+  next pass writes it back. The twelfth reads a class of `none`'s set of 2
+  classes back ready, with a second pass rewriting nothing, does the same to a
+  line of that class's chain, writes such a line again under its comment over a
+  set holding an element more or missing its second, adds a chain named as a
+  class of `none`'s that no class writes, and deletes a class's chain once its
+  rule in the limit chain is an accept, and reads the ip family alone at a fault
+  naming the line or the chain until the next pass writes the line back, deletes
+  the chain or writes it again. The thirteenth adds such a chain with another
+  writer's chain going to it by a goto, then by a vmap, then with an element of
+  a named map going to it, and reads the ip family alone at a fault naming that
+  chain or map, the pass failing nothing, until the rule or the element goes and
+  the next pass deletes the chain. Seven round trip the antispoof filter's
+  table, both chains and its sets, one with an exemption of each kind. One puts
+  it back on the pass another writer wakes by deleting the table, adding a rule
+  or setting the table dormant, and leaves no table behind. One writes it back
+  after another writer adds a rule to it, sets its table dormant, turns a policy
+  to drop, makes a chain again at another priority or as a regular chain, or
+  makes the table again with a flag nf_tables will not clear in place, the last
+  3 by deleting and making the table again. One refills a set another writer
+  flushed, or a chain it emptied, on the pass that change wakes, one holds chain
+  `mesh_entry` alone with no `overlay`, one starts over a table holding a chain
+  the filter does not write and finds the table made again without that chain,
+  with and without `overlay`, and one kills the filter's process with `SIGKILL`
+  and finds the table still there with every rule and element, which the next
+  start takes over without a write. That process is the test binary run again as
+  `TestBorderCrashHelper`, which joins the test's namespace by its path and
+  skips when run any other way. The last of the 7 moves a `none` set by one LAN
+  at 10, 1,000 and 10,000 LANs held, and reads at most 6 element notifications
+  for each pass. The other 3 read the translator's rules for debug. One sends a
+  datagram from the mesh address out of the uplink and finds its rule's counter
+  moved while the last pass still counts none. One reads from 2 readers at once
+  while one pass follows another, each read and each pass with no error. One
+  reads on while the exit stops, and each read answers the rules or the error a
+  stopped exit answers, which names no descriptor its close released. It also
+  runs the [exit behavior suite](#the-exit-behavior-suite) against the kernel
+  exit.
 - `internal/nftables` has 5 that write into a real packet filter. One checks
   that each expression the encoder writes acts on the host's own datagrams on
   loopback as its line says, an interval set's lookup, the mark, the device
@@ -511,9 +525,16 @@ own, and each row in both families:
    from the exit, its datagram never reaching the server. A later datagram of
    the first flow passes right after, a further flow is refused, a TCP
    connection from the address fails at once, and the leaf's own address opens
-   its flow. `Status` counts every refused packet. The row reads the host's
-   connection table against its maximum where the backend reports them, and
-   refuses to run where its flows would reach the maximum.
+   its flow. `Status` counts every refused packet. Under `none` the next flow
+   reaches the server from the address with no answer from the exit, and
+   `Status` counts no refusal, since such a source holds
+   [no share](../exit-nodes.md#each-sources-share-of-the-flows). The row reads
+   the host's connection table against its maximum where the backend reports
+   them, and refuses to run where its flows would reach the maximum. For an arm
+   that carries an address and `none`, the row runs once more with the leaf's
+   own address under an address inside a class of `none` that holds the second
+   address, whose next flow is carried as under `none`, though the address
+   class's limit sits in the chain the pass of the class of `none` goes on to.
 
 In each family the suite also calls `Egress` from several goroutines at once, as
 each session's receive path does, and the server reads every datagram. Then the
@@ -767,7 +788,7 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the 19 `internal/egress/kernel` tests and the 5
+names start with `TestNetlink`, the 23 `internal/egress/kernel` tests and the 5
 `internal/nftables` tests, the exit behavior suite and its 2 fakes, the
 `TestTUN` tests of `internal/netstack` and `internal/client`, the 3 `transport`
 sends, and the 4 `internal/client` tests above under `unshare -n`, the

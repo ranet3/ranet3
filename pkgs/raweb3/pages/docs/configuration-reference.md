@@ -707,7 +707,7 @@ needs.
 | `advertise`        | list of prefixes | none    | Prefixes this node offers to carry                                  |
 | `translate`        | list of classes  | none    | What the source of a packet leaving the mesh becomes, by its source |
 | `return`           | boolean          | `false` | Also translate traffic from the advertised prefixes into the mesh   |
-| `flows_per_source` | integer          | `4096`  | The most flows 1 mesh source address holds open in a family         |
+| `flows_per_source` | integer          | `4096`  | The most flows 1 translated source address holds open in a family   |
 | `sweep`            | duration         | `"30s"` | Interval of the periodic pass                                       |
 
 - `advertise` is required unless the node has an egress segment, where it may be
@@ -722,11 +722,7 @@ needs.
   node an exit for its family, as under `cap.route`, and loads with a warning
   unless it is a default.
 - A prefix is announced only while its family is
-  [ready](exit-nodes.md#readiness): its 2 chains, its set and its timeout
-  objects read back exactly as written, with no other writer's rule in its
-  chains and in a table with no flags, the host forwards that family and holds
-  every address its classes name, and, where they run, the kernel's lookups of a
-  translated packet and its reply pass.
+  [ready](exit-nodes.md#readiness).
 - The lookups of a translated packet and its reply read from the address of a
   mesh member inside `overlay`. A node with no `overlay`, or whose mesh routes
   no other node's prefix of a family inside the overlay, skips that family's
@@ -770,13 +766,13 @@ needs.
   is `auto` or absent needs exactly 1 global unicast or private mesh address of
   that family. The daemon refuses to start with none or with more than 1, and
   asks for the address as that class's `to`.
-- `flows_per_source` is each mesh source address's share of the flows through
-  this node in each family, every protocol's together, past which its next new
-  flow is refused, as
-  [exit nodes](exit-nodes.md#each-sources-share-of-the-flows) describes. `0` or
-  leaving it out is the default, and a value past 2147483647 is refused. The
-  shares come out of the host's connection tracking table, which ranet3 never
-  sizes, so size the two together.
+- `flows_per_source` is
+  [each source's share of the flows](exit-nodes.md#each-sources-share-of-the-flows)
+  through this node, in each family, every protocol's together, past which its
+  next new flow is refused. A source under `none` holds none. `0` or leaving it
+  out is the default, and a value past 2147483647 is refused. The shares come
+  out of the host's connection tracking table, which ranet3 never sizes, so size
+  the two together.
 - The periodic pass reinstalls a removed table and reads the forwarding sysctls
   again. `sweep` also caps the delay between retries of a failed pass. A
   negative `sweep` is refused.

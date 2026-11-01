@@ -510,21 +510,29 @@ tunnel is using.
 creates 1 nftables table named after this tool for each address family it
 translates, the advertised ones and both beside an egress segment, `ip ranet3`
 and `ip6 ranet3`. Each holds a nat chain at postrouting, a filter chain at
-forward, the set that chain counts each mesh source's flows in and the timeout
-objects of the flows it translates. That name is the whole of its ownership
-claim, as `rt_proto` is the reconciler's. It writes only inside those tables and
-reads back every rule of its 2 chains, with the tables' flags, the chains' type,
-hook, priority and policy, the set's key, flags, size and comment and the
-objects' values, so a rule another writer puts in one or a table it sets
+forward with
+[a chain for each class of `none`](exit-nodes.md#the-nftables-tables) beside it,
+the set that chain counts flows in for
+[each source's share](exit-nodes.md#each-sources-share-of-the-flows), the
+anonymous sets the screens of a class of `none`'s chain take their sources from,
+and the timeout objects of the flows it translates. That name is the whole of
+its ownership claim, as `rt_proto` is the reconciler's. It writes only inside
+those tables and reads them back as
+[refusing to advertise](exit-nodes.md#refusing-to-advertise) lists, so a rule
+another writer puts in one of its chains or edits there, or a table it sets
 dormant, which changes what the chain does to a packet, is undone by the next
 pass. It does not read back the set's counts, so a count another writer changes
-or removes stays as that writer left it, and another chain in its table is
-neither read nor removed until the table is made again. It reads other writers'
-tables, chains and rules to find its own and to report conflicts, and writes,
-replaces or deletes nothing outside its own tables. It replaces the chains'
-rules in 1 transaction, so no packet is ever evaluated against half a ruleset,
-and deletes and makes a table again in that transaction where nf_tables will not
-change it in place, any chain another writer put in the table with it.
+or removes stays as that writer left it. Every chain in its table whose name
+starts `none_` is its own and read back. One no class writes is emptied and
+deleted, or kept empty while another writer's rule or map element goes to it, as
+[refusing to advertise](exit-nodes.md#refusing-to-advertise) describes. Another
+chain in its table is neither read nor removed until the table is made again. It
+reads other writers' tables, chains and rules to find its own and to report
+conflicts, and writes, replaces or deletes nothing outside its own tables. It
+replaces the chains' rules in 1 transaction, so no packet is ever evaluated
+against half a ruleset, and deletes and makes a table again in that transaction
+where nf_tables will not change it in place, any chain another writer put in the
+table with it.
 
 It removes its tables at shutdown and at `ranet3 down`, with any chain another
 writer put in them. A table left behind by an earlier instance carries the same
@@ -549,8 +557,8 @@ writes a chain below 99, or one at 99
 [made after the translator's](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n147).
 A flow such a chain translates leaves without this node's translation, its
 timeouts and its count of translated flows, and the limit still holds it to its
-source's share. Deleting a neighbor's rule instead would break whatever
-installed it.
+source's [share](exit-nodes.md#each-sources-share-of-the-flows). Deleting a
+neighbor's rule instead would break whatever installed it.
 
 `status` and the log name the other chains instead and leave them alone. Their
 rules and this one are usually disjoint, since this one matches on the mesh
@@ -558,8 +566,10 @@ device in both directions.
 
 The scrape counts the other chains as `ranet3_egress_conflicts`. The report
 covers nat postrouting chains at priority 99 or below, which can run ahead of
-the translator's, in `ip` and `ip6` tables of the families it translates. It
-leaves out chains in `inet` tables and chains past 99, which run after it.
+the translator's, in `ip` and `ip6` tables of the families it translates and in
+`inet` tables, whose chains hook both families, another writer's chain in the
+translator's own table among them. It leaves out chains past 99, which run after
+it.
 
 A class of `none` binds its flows to the source they carry in the translator's
 chain, at priority 99, so a host's masquerade at `srcnat` or after leaves them
@@ -568,11 +578,12 @@ translates them, as [for every mesh flow above](#the-packet-filter).
 
 The filter chain at forward, priority 0, runs beside the host's own filter
 chains at that hook: a packet passes only where no chain drops it, so its
-refusal of a flow past its source's share, and its drop of a packet no flow is
-tracked for out of the mesh under a class that translates or into it under
-`return`, end that packet whatever the others say. A packet a host rule exempts
-from connection tracking, such as a `notrack` in a raw chain, counts as one no
-flow is tracked for, and leaves the mesh only under a class of `none`.
+refusal of a flow past its source's
+[share](exit-nodes.md#each-sources-share-of-the-flows), and its drop of a packet
+no flow is tracked for out of the mesh under a class that translates or into it
+under `return`, end that packet whatever the others say. A packet a host rule
+exempts from connection tracking, such as a `notrack` in a raw chain, counts as
+one no flow is tracked for, and leaves the mesh only under a class of `none`.
 
 The kernel settings an exit's traffic crosses stay the host's, but for the
 connection tracking timeouts of the flows it translates. The translator writes

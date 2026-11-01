@@ -61,8 +61,9 @@ records [who may use it](control-socket.md#who-may-use-it) describes.
 The exit a build carries is chosen when it is built, and no setting names it. A
 Linux build carries the kernel exit, which writes what it carries into the tun
 and translates it with nftables on the way out of the host: every class of
-`translate`, `none` among them, the timeouts of the flows it translates and each
-mesh source's share of the flows. Every other build carries none and refuses
+`translate`, `none` among them, the timeouts of the flows it translates and
+[the share of the flows](exit-nodes.md#each-sources-share-of-the-flows) of each
+source under a class that translates. Every other build carries none and refuses
 `cap.egress` at startup with
 `egress: cap.egress asks this node to carry other nodes' traffic out of the mesh, and this build for darwin carries no exit`,
 naming its own platform where this one names `darwin`. The loader is the same on

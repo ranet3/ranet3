@@ -50,13 +50,10 @@ the answers and their codes.
 
 [`cap.egress`](../exit-nodes.md) still reads the host's forwarding, for what an
 exit sends out of its uplink. A prefix an exit node offers to carry is
-advertised only while its family's 2 chains, its set and its timeout objects
-read back exactly as written, with no other writer's rule in its chains and in a
-table with no flags, the host forwards the family, holds every address its
-classes name and, where they run, the kernel's lookups of a translated packet
-and its reply pass. It is retracted on the first pass that finds any of them
-untrue. A pass runs every 30 seconds unless `cap.egress.sweep` names another
-interval.
+advertised only while its family is [ready](../exit-nodes.md#readiness), which
+takes the host's forwarding among the rest, and is retracted on the first pass
+that finds it not ready. A pass runs every 30 seconds unless `cap.egress.sweep`
+names another interval.
 
 With transit off, a node advertises only the prefixes it announces and never
 relays one it learned. A packet for another node that reaches it all the same is
@@ -930,7 +927,7 @@ such restarts produce.
 | ICMP errors to 1 source                     | 6 at once, then 1 a second over IPv4 and 1 every 100 milliseconds over IPv6, Packet Too Big and fragmentation needed left out | The error is not sent, and `ranet3_icmp_withheld_total{limit="source"}` counts it                                                                                                                                                           |
 | Sources the ICMP limit keeps a bucket for   | 6,144, in 64 shards of 96 by a seeded hash of the address                                                                     | In a full shard, the source that drew least recently gives its place, and starts full when it returns                                                                                                                                       |
 | ICMP errors of the whole node               | 10,000 at once, then 10,000 a second, of either family and every kind                                                         | The error is not sent, and `ranet3_icmp_withheld_total{limit="node"}` counts it                                                                                                                                                             |
-| Open flows of 1 mesh source through an exit | `cap.egress.flows_per_source` in each family, 4096 by default                                                                 | The source's next new flow is refused, answered from the exit, and counted in `ranet3_egress_refused_total`                                                                                                                                 |
+| Open flows of 1 mesh source through an exit | `cap.egress.flows_per_source` in each family, 4096 by default                                                                 | The source's next new flow is refused, answered from the exit, and counted in `ranet3_egress_refused_total`, as [its share](../exit-nodes.md#each-sources-share-of-the-flows) gives                                                         |
 | Mesh sources an exit counts flows for       | 65,535 in each family                                                                                                         | A further source's flows go uncounted and unlimited until [the kernel frees a count](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_set_hash.c?id=940de590b839f71d6dc846160534bf202401b8b7#n393) |
 | Flows of 1 mesh source to the node itself   | Not bounded by the share                                                                                                      | Each takes an entry in the host's connection tracking table beside the flows through the exit, uncounted                                                                                                                                    |
 
