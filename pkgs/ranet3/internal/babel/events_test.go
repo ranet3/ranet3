@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -50,8 +52,10 @@ func TestSpeakerRecordsNeighborsAndSelections(t *testing.T) {
 	}
 }
 
-// a live neighbor whose session another replaces, or whose session ends, is recorded going down
+// a live neighbor whose session another replaces, or whose session ends, is recorded going down, in the log as in the events
 func TestSpeakerRecordsANeighborLeavingWithItsSession(t *testing.T) {
+	var said strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&said, nil)))
 	bus := events.New()
 	speaker, neighbor, _ := captureSpeaker(t, Config{}, Runtime{Events: bus})
 	hello := EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: 1, Interval: 100})})
@@ -69,6 +73,16 @@ func TestSpeakerRecordsANeighborLeavingWithItsSession(t *testing.T) {
 	up, asked, down := "babel.neighbor.up "+neighbor.peer.ID, "babel.request.sent "+neighbor.peer.ID, "babel.neighbor.down "+neighbor.peer.ID
 	if want := []string{up, asked, down, up, asked, down}; !slices.Equal(got, want) {
 		t.Errorf("a neighbor replaced and then closed recorded %q, want %q", got, want)
+	}
+	var lines []string
+	for line := range strings.Lines(said.String()) {
+		if strings.Contains(line, "msg=\"babel neighbor") {
+			lines = append(lines, line[strings.Index(line, "msg="):])
+		}
+	}
+	upLine, downLine := "msg=\"babel neighbor up\" peer="+neighbor.peer.ID+"\n", "msg=\"babel neighbor down\" peer="+neighbor.peer.ID+"\n"
+	if want := []string{upLine, downLine, upLine, downLine}; !slices.Equal(lines, want) {
+		t.Errorf("a neighbor replaced and then closed logged %q, want %q", lines, want)
 	}
 }
 

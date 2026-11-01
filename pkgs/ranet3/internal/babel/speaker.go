@@ -408,7 +408,7 @@ func (s *Speaker) AddPeer(peer *netstack.Peer, remote identity.Identity) *PeerHa
 	if old := s.neighbors[peer.ID]; old != nil {
 		// a live neighbor replaced with its session goes down here, since no sweep sees it again
 		if old.alive {
-			s.events.Emit("babel.neighbor.down", old.peer.ID)
+			s.neighborDownLocked(old)
 		}
 		s.routes.expireNeighbor(old, time.Now())
 	}
@@ -442,7 +442,7 @@ func (s *Speaker) removePeer(n *neighborState) {
 	delete(s.neighbors, n.peer.ID)
 	// a live neighbor leaving with its session goes down here, since no sweep sees it again
 	if n.alive {
-		s.events.Emit("babel.neighbor.down", n.peer.ID)
+		s.neighborDownLocked(n)
 	}
 	// Dropping this neighbor's suppression entries with it keeps a retired
 	// neighborState from being pinned until the next sweep, and lets the next
@@ -1000,6 +1000,14 @@ func describeRoute(key routeKey) string {
 	return key.dest.String()
 }
 
+// neighborDownLocked takes a live neighbor down, whether its Hellos stopped or its session went
+func (s *Speaker) neighborDownLocked(n *neighborState) {
+	slog.Info("babel neighbor down", "peer", n.peer.ID)
+	s.events.Emit("babel.neighbor.down", n.peer.ID)
+	n.alive, n.haveReportedCost = false, false
+	n.forgetLink()
+}
+
 func (s *Speaker) sweepExpiredLocked(now time.Time) {
 	for _, n := range s.neighbors {
 		// The timer half of RFC 8966 Appendix A.1, before liveness, so a
@@ -1013,10 +1021,7 @@ func (s *Speaker) sweepExpiredLocked(now time.Time) {
 			n.nextHelloDue = n.nextHelloDue.Add(n.helloInterval)
 		}
 		if n.alive && !n.isAlive(now) {
-			slog.Info("babel neighbor down", "peer", n.peer.ID)
-			s.events.Emit("babel.neighbor.down", n.peer.ID)
-			n.alive, n.haveReportedCost = false, false
-			n.forgetLink()
+			s.neighborDownLocked(n)
 		}
 		if n.haveReportedCost && !now.Before(n.ihuExpiry) {
 			n.haveReportedCost = false
