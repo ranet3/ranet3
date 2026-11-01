@@ -512,9 +512,8 @@ func (lab *switchLab) crash(t *testing.T, arm switchArm) {
 	}
 }
 
-// fail starts the lab's own node again, whose first pass in mode off removes what an earlier arm or helper left, with the leaf's
-// border where the lab runs one, runs the arm with the defaults present until the switch passes, deletes the tun, and once the mesh
-// reads failed stops the node as the daemon does, the reconciler for the mesh's failure and then the border
+// fail starts the lab's own node again, whose first pass in mode off removes what an earlier arm or helper left, so the table the
+// arm reads is the one the failed node's stop left
 func (lab *switchLab) fail(t *testing.T, arm switchArm) {
 	t.Helper()
 	lab.d.stop()

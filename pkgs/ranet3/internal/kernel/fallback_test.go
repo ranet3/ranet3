@@ -176,8 +176,8 @@ func TestFallbackTableWhoseDeleteFailedGoesAtTheWithdrawal(t *testing.T) {
 	}
 }
 
-// runThroughFirstPass runs reconciler until its first pass has ended and
-// answers the stop that cancels it for a cause and waits for it to return
+// runThroughFirstPass waits out the first pass, so the stop it returns meets
+// what a pass left
 func runThroughFirstPass(t *testing.T, reconciler *Reconciler) func(cause error) {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(context.Background())

@@ -498,8 +498,7 @@ func watchSignals(signals <-chan os.Signal, cancel context.CancelFunc, force fun
 	force()
 }
 
-// cancelOnMeshFailure returns once meshFailed closes or ctx ends, and where it reads meshFailed's close it marks the exit status
-// failed and cancels for kernel.ErrMeshFailed, which keeps the cause of a cancel before it
+// cancelOnMeshFailure keeps the cause of a cancel before the mesh's failure, since a context's first cancel wins
 func cancelOnMeshFailure(ctx context.Context, meshFailed <-chan struct{}, failed *atomic.Bool, cancel context.CancelCauseFunc) {
 	select {
 	case <-meshFailed:
