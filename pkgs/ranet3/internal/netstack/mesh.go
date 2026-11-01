@@ -510,7 +510,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 // the answer is the one unreachable gives, from dst, and goes back into the tun, the one link the packet came by, whatever src is
 // answer's reply route is a session's, and would send the answer to a host packet from an uplink address out through the mesh or nowhere
 // verdict is RouteNone or RouteHeld, since the caller has taken a read the table answers with a peer or as this node's own
-// a steered read whose first segment the table reaches by no route is answered as RouteNone, RFC 4443 section 3.1 having the originating node's IPv6 layer answer it
+// a steered read whose first segment firstUnrouted finds unrouted is answered as RouteNone, RFC 4443 section 3.1 having the originating node's IPv6 layer answer it
 // it draws through take, and reports the kind of the answer and its fate as answerTaking does
 func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src, dst netip.Addr, take takeAnswer) (answerKind, TraceOutcome) {
 	kind := m.unreachable(verdict, match, dst)

@@ -47,7 +47,8 @@ func (m *Mesh) Steering() *srv6.SteerTable { return m.steerTable.Load() }
 // exactly as the table pointer does.
 func (m *Mesh) SetSteeringEnabled(on bool) { m.steerStopped.Store(!on) }
 
-// SteeringEnabled reports whether the policies are being acted on.
+// SteeringEnabled reports whether cap.segment steer's entries are being acted
+// on.
 func (m *Mesh) SteeringEnabled() bool { return !m.steerStopped.Load() }
 
 // steerPolicy is the policy of table that claims a read off the tun from source to destination, nil for one none claims, and whether it is cap.exit via's path
@@ -130,8 +131,9 @@ type SegmentCounters struct {
 	Dropped   uint64
 	// Steered counts this node's own packets that a policy encapsulated,
 	// Unsteered the ones a policy claimed and this node could not, and
-	// Unrouted the ones it encapsulated and the mesh had no route to the
-	// first segment of. Both failures drop the packet rather than send it by
+	// Unrouted the ones it encapsulated toward a first segment the mesh had
+	// no route to, or, along cap.exit via's path, a first segment that has no
+	// route of its own. Both failures drop the packet rather than send it by
 	// the route the policy exists to override, and both are this node's own
 	// steering rather than anything a peer did, so neither is counted in
 	// Dropped.
