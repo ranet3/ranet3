@@ -344,8 +344,9 @@ const (
 	// stack it belongs to.
 	ActionDeliver
 	// ActionEgress is the result of an egress segment, for a packet whose
-	// outer and inner sources both lie in its allow list, with Result.Inner
-	// and Result.Family as for ActionDeliver.
+	// outer source lies in an entry of its allow list inside the overlay and
+	// whose inner source lies in the list, with Result.Inner and
+	// Result.Family as for ActionDeliver.
 	ActionEgress
 	// ActionDrop is a packet addressed to one of this node's segments that it
 	// will not act on, with Result.Err saying why.

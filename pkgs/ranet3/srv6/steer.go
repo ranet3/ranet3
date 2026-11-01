@@ -234,9 +234,9 @@ func anyDestination(source netip.Prefix) netip.Prefix {
 	return netip.PrefixFrom(netip.AddrFrom16([16]byte{}), 0)
 }
 
-// Lookup is the policy for one packet, or nil for one this node does not
-// steer. It reads the same immutable trie snapshot the forwarding table reads,
-// without locking.
+// Lookup is the entry's policy for one packet, or nil for one no entry
+// steers, the default policy aside. It reads the same immutable trie
+// snapshot the forwarding table reads, without locking.
 func (t *SteerTable) Lookup(source, destination netip.Addr) *Policy {
 	if t == nil {
 		return nil
@@ -274,7 +274,8 @@ func (t *SteerTable) Default() *Policy {
 	return t.path
 }
 
-// Overhead is the most any entry here adds in front of a packet.
+// Overhead is the most any entry or the default policy here adds in front of
+// a packet.
 func (t *SteerTable) Overhead() int {
 	if t == nil {
 		return 0
@@ -310,8 +311,8 @@ func (t *SteerTable) CheckMTU(device int) (int, error) {
 // LeastMTU is the least MTU that carries a packet of the minimum IPv6 requires behind the longest segment list
 func (t *SteerTable) LeastMTU() int { return MinimumIPv6MTU + t.Overhead() }
 
-// Policies is every policy in the order it was configured, each a copy, for a
-// diagnostic to print field by field
+// Policies is every entry's policy in the order it was configured, each a
+// copy, the default policy aside, for a diagnostic to print field by field
 func (t *SteerTable) Policies() []Policy {
 	if t == nil {
 		return nil
