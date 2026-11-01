@@ -699,7 +699,7 @@ func buildAnswer(raw []byte, version byte, kind answerKind, value int, source ne
 // an untraced answer takes (*Mesh).takeICMPToken itself, and a traced one an answerDraw's take
 type takeAnswer func(m *Mesh, sender netip.Addr) bool
 
-// allowAnswer is the draw an answer to a packet from sender makes through take, on sender's bucket and the node's cap, and on the cap alone for the zero Addr
+// allowAnswer is the draw an answer to a packet from sender makes through take, on sender's bucket and the node's cap, and on neither for the zero Addr
 func (m *Mesh) allowAnswer(take takeAnswer, sender netip.Addr) func() bool {
 	return func() bool { return take(m, sender) }
 }
@@ -750,7 +750,7 @@ func (m *Mesh) answerForward(raw []byte, version byte, kind answerKind, value in
 // it reports the answer's fate, TraceNotAnswerable where buildAnswer builds none, a draw the limits withheld among them
 func (m *Mesh) answerTaking(raw []byte, version byte, kind answerKind, value int, take takeAnswer) TraceOutcome {
 	src, dst := addressesOf(raw, version)
-	// packet too big and fragmentation needed draw under the node's cap alone, as answerTooBig's do
+	// packet too big and fragmentation needed draw on no limit, as answerTooBig's do
 	sender := src
 	if kind == answerTooBig {
 		sender = netip.Addr{}

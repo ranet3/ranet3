@@ -544,7 +544,7 @@ func carriedPacket(raw []byte) (int, bool) {
 }
 
 // answerTooBig answers inner, a packet larger than mtu, the largest its next link carries
-// IPv6 with packet too big and IPv4 with DF with fragmentation needed, under the node's cap alone, which the builder draws from as answerRefused's does
+// IPv6 with packet too big and IPv4 with DF with fragmentation needed, which no limit holds back
 // cut reports IPv4 without DF, which a router cuts into fragments rather than answers
 // end is a packet a forwarded segment carries to End, which matched sid, and otherwise inner was read off the tun
 // End answers from the router-id of inner's family, else over IPv6 from sid as RFC 4443 section 2.2 (b) asks and over IPv4 from inner's destination
@@ -630,7 +630,7 @@ func (m *Mesh) sendThrough(peer *Peer, raw []byte, nextHeader byte) bool {
 }
 
 // takeICMPToken reports whether this node may send one more ICMP error to sender, the source of the packet it answers
-// sender is the zero Addr for packet too big and fragmentation needed, which only the node's cap holds back
+// sender is the zero Addr for packet too big and fragmentation needed, which no limit holds back
 func (m *Mesh) takeICMPToken(sender netip.Addr) bool {
 	now := int64(time.Since(m.segmentsStarted))
 	verdict := m.icmpLimit.take(now, sender)

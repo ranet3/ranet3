@@ -529,20 +529,11 @@ func TestHopLimitRunningOutAtAWaypointIsAnsweredWithTimeExceeded(t *testing.T) {
 }
 
 // a refused packet past its source's bucket, or past the node's cap, costs no answer built, since the builder draws before it builds
-// and so do packets past their session past the cap, of either family
 func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 	from := segAddr("3fff:b:0:100::1")
 	outer, err := srv6.Encapsulate(plainV6(segAddr("3fff:a::1"), segAddr("3fff:a::2"), "payload"), from, []netip.Addr{segAddr("3fff:b:0:106::2")})
 	if err != nil {
 		t.Fatal(err)
-	}
-	tooBig6 := udpPacket(tooBigSource[6], tooBigDestination[6], DefaultMTU, false)
-	tooBig4 := udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, true)
-	answerTooBig := func(inner []byte) func(m *Mesh) bool {
-		return func(m *Mesh) bool {
-			answer, _ := m.answerTooBig(inner, srv6.MinimumIPv6MTU, false, netip.Addr{}, (*Mesh).takeICMPToken)
-			return answer != nil
-		}
 	}
 	for _, c := range []struct {
 		name   string
@@ -554,8 +545,6 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 			}
 		}, func(m *Mesh) bool { m.answerRefused(outer, srv6.ErrHeaderInvalid); return false }},
 		{"a refused packet past the cap", func(m *Mesh) { capHolding(m, 0) }, func(m *Mesh) bool { m.answerRefused(outer, srv6.ErrHopLimit); return false }},
-		{"packet too big past the cap", func(m *Mesh) { capHolding(m, 0) }, answerTooBig(tooBig6)},
-		{"fragmentation needed past the cap", func(m *Mesh) { capHolding(m, 0) }, answerTooBig(tooBig4)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := &Mesh{Routes: NewRouteTable()}

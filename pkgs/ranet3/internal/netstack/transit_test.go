@@ -200,6 +200,7 @@ func checkError(tb testing.TB, raw, offending []byte, from netip.Addr, kind, cod
 var (
 	noRouteType    = map[int]byte{4: 3, 6: 1}
 	expiredType    = map[int]byte{4: 11, 6: 3}
+	parameterType  = map[int]byte{4: 12, 6: 4}
 	prohibitedCode = map[int]byte{4: 13, 6: 1}
 )
 
@@ -815,16 +816,17 @@ func TestDecisionAnswersThisHostIntoTheTun(t *testing.T) {
 	}
 }
 
-// every answer of the decision draws on the bucket of the answered packet's source and on the node's cap, back through a session and into the tun alike
+// every answer of the decision but packet too big and fragmentation needed draws on the bucket of the answered packet's source and on the node's cap, back through a session and into the tun alike
 // so a burst of expired packets from one sender gets its bucket's burst answered, the bucket withholding the rest, while another sender's is answered
-// and a burst of packets too big from the first is answered whole, since packet too big and fragmentation needed draw under the cap alone
+// a burst of packets a parameter problem answers, from a third, is held to its own bucket's burst alike
+// and a burst of packets too big from the first is answered whole, since those two draw on no limit
 func TestDecisionAnswersDrawOnTheBucketOfTheirSource(t *testing.T) {
 	const session = 1300
-	other := segAddr("192.0.2.6")
+	other, optioned := segAddr("192.0.2.6"), segAddr("192.0.2.7")
 	for _, intoTheTun := range []bool{false, true} {
 		t.Run(fmt.Sprintf("into the tun %t", intoTheTun), func(t *testing.T) {
 			n := newTransitNode(t, session)
-			for _, sender := range []netip.Addr{transitSender[4], other} {
+			for _, sender := range []netip.Addr{transitSender[4], other, optioned} {
 				if intoTheTun {
 					n.m.Routes.Set(netip.Prefix{}, hostPrefix(sender), Local)
 				} else {
@@ -840,30 +842,37 @@ func TestDecisionAnswersDrawOnTheBucketOfTheirSource(t *testing.T) {
 			for range burst {
 				packets = append(packets, udpPacket(transitSender[4], transitFar[4], session+100, true))
 			}
+			// a record route pointing before its first slot, which TestDecisionProcessesIPv4Options has answered with a parameter problem
+			for range burst {
+				packets = append(packets, withPaddedOptions(udpPacket(optioned, transitFar[4], 100, true), []byte{7, 7, 3, 0, 0, 0, 0}))
+			}
 			tun, _, back := n.deliver(t, packets...)
 			answers := back
 			if intoTheTun {
 				answers = tun
 			}
-			var expired, tooBig, toOther int
+			var expired, tooBig, toOther, parameter int
 			for _, raw := range answers {
 				answer := readAnswer(t, raw)
 				switch {
 				case answer.to == other:
 					toOther++
+				case answer.to == optioned && answer.kind == parameterType[4]:
+					parameter++
 				case answer.kind == expiredType[4]:
 					expired++
 				case answer.kind == noRouteType[4] && answer.code == 4:
 					tooBig++
 				}
 			}
-			if expired != icmpSourceBurst || toOther != 1 || tooBig != burst || len(answers) != icmpSourceBurst+1+burst {
-				t.Errorf("%d answers: %d expired to the first sender, %d to the other and %d fragmentation needed, want %d, 1 and %d", len(answers), expired, toOther, tooBig, icmpSourceBurst, burst)
+			if expired != icmpSourceBurst || toOther != 1 || parameter != icmpSourceBurst || tooBig != burst || len(answers) != 2*icmpSourceBurst+1+burst {
+				t.Errorf("%d answers: %d expired to the first sender, %d to the other, %d parameter problems to the third and %d fragmentation needed, want %d, 1, %d and %d",
+					len(answers), expired, toOther, parameter, tooBig, icmpSourceBurst, icmpSourceBurst, burst)
 			}
-			if source, node := n.m.ICMPWithheld(); source != burst-icmpSourceBurst || node != 0 {
-				t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want %d and 0", source, node, burst-icmpSourceBurst)
+			if source, node := n.m.ICMPWithheld(); source != 2*(burst-icmpSourceBurst) || node != 0 {
+				t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want %d and 0", source, node, 2*(burst-icmpSourceBurst))
 			}
-			if got := n.m.TransitCounters(); got.Expired != burst+1 || got.TooBig != burst || got.Answered != uint64(len(answers)) || n.m.TooBigAnswered() != burst {
+			if got := n.m.TransitCounters(); got.Expired != burst+1 || got.Invalid != burst || got.TooBig != burst || got.Answered != uint64(len(answers)) || n.m.TooBigAnswered() != burst {
 				t.Errorf("%d answers counted %+v and %d too-big answers", len(answers), got, n.m.TooBigAnswered())
 			}
 		})

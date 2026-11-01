@@ -157,7 +157,7 @@ func (c *Client) renderPathMTU(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_packet_too_big_sent_total counter\n")
 	fmt.Fprintf(w, "ranet3_packet_too_big_sent_total %d\n", c.Mesh.TooBigAnswered())
 	source, node := c.Mesh.ICMPWithheld()
-	fmt.Fprint(w, "# HELP ranet3_icmp_withheld_total ICMP errors this node did not send, by the limit that withheld them: the bucket of the source of the packet answered, or the cap over every answer.\n")
+	fmt.Fprint(w, "# HELP ranet3_icmp_withheld_total ICMP errors this node did not send, by the limit that withheld them: the bucket of the source of the packet answered, or the cap over every answer but packet too big and fragmentation needed.\n")
 	fmt.Fprint(w, "# TYPE ranet3_icmp_withheld_total counter\n")
 	fmt.Fprintf(w, "ranet3_icmp_withheld_total{limit=\"source\"} %d\n", source)
 	fmt.Fprintf(w, "ranet3_icmp_withheld_total{limit=\"node\"} %d\n", node)

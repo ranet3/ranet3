@@ -48,37 +48,38 @@ func newICMPModel() *icmpModel {
 	return &icmpModel{node: modelCredit{credit: int64(time.Second)}, sources: map[netip.Addr]*modelSource{}}
 }
 
-// take is the model's verdict on an answer to a packet from source, the zero Addr for packet too big and fragmentation needed
+// take is the model's verdict on an answer to a packet from source, the zero Addr for packet too big and fragmentation needed, which no limit holds back
 func (m *icmpModel) take(now int64, source netip.Addr) icmpVerdict {
+	if !source.IsValid() {
+		return icmpAllowed
+	}
 	// 10000 a second with a burst of 10000 is a second of credit at 100 microseconds an answer
 	const nodeCost = int64(100 * time.Microsecond)
 	m.node.earn(now, int64(time.Second))
 	if m.node.credit < nodeCost {
 		return icmpByNode
 	}
-	if source.IsValid() {
-		interval := int64(100 * time.Millisecond)
-		if source.Is4() {
-			interval = int64(time.Second)
-		}
-		shard := &m.shards[icmpShardOf(source)]
-		entry := m.sources[source]
-		if entry == nil {
-			if shard.held == icmpSources/icmpShards {
-				m.evict(shard)
-			}
-			entry = &modelSource{credit: modelCredit{credit: 6 * interval, last: now}}
-			m.sources[source] = entry
-			shard.held++
-		}
-		entry.latest = len(shard.draws)
-		shard.draws = append(shard.draws, source)
-		entry.credit.earn(now, 6*interval)
-		if entry.credit.credit < interval {
-			return icmpBySource
-		}
-		entry.credit.credit -= interval
+	interval := int64(100 * time.Millisecond)
+	if source.Is4() {
+		interval = int64(time.Second)
 	}
+	shard := &m.shards[icmpShardOf(source)]
+	entry := m.sources[source]
+	if entry == nil {
+		if shard.held == icmpSources/icmpShards {
+			m.evict(shard)
+		}
+		entry = &modelSource{credit: modelCredit{credit: 6 * interval, last: now}}
+		m.sources[source] = entry
+		shard.held++
+	}
+	entry.latest = len(shard.draws)
+	shard.draws = append(shard.draws, source)
+	entry.credit.earn(now, 6*interval)
+	if entry.credit.credit < interval {
+		return icmpBySource
+	}
+	entry.credit.credit -= interval
 	m.node.credit -= nodeCost
 	return icmpAllowed
 }
@@ -147,10 +148,11 @@ func runICMPSteps(steps []icmpStep, take func(now int64, source netip.Addr) bool
 
 // drawn runs of answers of drawn kinds from drawn sources, at drawn instants on a fake clock, get the model's verdicts, each naming the limit that withheld it
 // and each shard holds as many sources as the model's, every source of it that has drawn from a bucket up to the limit's share, in the order of their latest draws
-// and three statements hold that need no model
-// over any span of instants the answers let out number at most the cap's burst and what the span earns it
+// and four statements hold that need no model
+// every answer of packet too big and fragmentation needed goes out
+// over any span of instants the other answers let out number at most the cap's burst and what the span earns it
 // with no spray step, which keeps the cap from withholding and every source in the table, one source's answers get the same verdicts with every other source's answers taken out of the run
-// and the answers other than packet too big and fragmentation needed the same verdicts with those taken out, while every too-big answer goes out
+// and the other answers the same verdicts with packet too big and fragmentation needed taken out
 // a source that draws between two sprays, which keeps its place only by the draw moving it to the front, is tried before anything is drawn
 // and so are a source drawing last before its shard fills, and a cap spent at one instant, which the drawn runs reach only now and then
 func TestICMPLimitMatchesTheKernelsModel(t *testing.T) {
@@ -170,10 +172,10 @@ func TestICMPLimitMatchesTheKernelsModel(t *testing.T) {
 		{spray: 3, homed: true},
 		{source: 0, count: 6},
 	}, true)
-	// a spray spending the cap at one instant, then a source's answer the cap withholds before that source's bucket is read
+	// a spray spending the cap at one instant with the 10000 of its 15000 answers that are not too-big answers, then a source's answer the cap withholds before that source's bucket is read
 	// an answer a nanosecond before the cap earns its next token and one at that instant, and the source's whole burst once the cap holds it
 	checkICMPSteps(t, []icmpStep{
-		{spray: 10000, source: 2, count: 1},
+		{spray: 15000, source: 2, count: 1},
 		{at: int64(100*time.Microsecond) - 1, source: 3, count: 1},
 		{at: int64(100 * time.Microsecond), source: 3, count: 1},
 		{at: int64(800 * time.Microsecond), source: 2, count: 6},
@@ -195,7 +197,7 @@ func TestICMPLimitMatchesTheKernelsModel(t *testing.T) {
 				count:  hegel.Draw(ht, pbt.Spanning(0, 20)),
 			}
 			if hegel.Draw(ht, pbt.Spanning(0, 15)) == 0 {
-				steps[i].spray = hegel.Draw(ht, pbt.Spanning(1, 10500))
+				steps[i].spray = hegel.Draw(ht, pbt.Spanning(1, 15750))
 				sprayed = true
 			}
 		}
@@ -216,7 +218,10 @@ func checkICMPSteps(tb testing.TB, steps []icmpStep, sprayed bool) {
 	var l icmpLimit
 	model := newICMPModel()
 	answer := 0
+	// sized[k] is whether answer k is packet too big or fragmentation needed
+	var sized []bool
 	verdicts := runICMPSteps(steps, func(now int64, source netip.Addr) bool {
+		sized = append(sized, !source.IsValid())
 		got, want := l.take(now, source), model.take(now, source)
 		if got != want {
 			tb.Fatalf("answer %d to %s at %d was decided %d, the model says %d", answer, source, now, got, want)
@@ -246,11 +251,16 @@ func checkICMPSteps(tb testing.TB, steps []icmpStep, sprayed bool) {
 		tb.Fatalf("the table holds %d sources after the run, want the model's %d", got, want)
 	}
 
+	for k, out := range verdicts {
+		if sized[k] && !out {
+			tb.Fatalf("answer %d, packet too big or fragmentation needed, was withheld", k)
+		}
+	}
 	for i := range steps {
 		let := int64(0)
 		for j := i; j < len(steps); j++ {
-			for _, out := range verdicts[offsets[j]:offsets[j+1]] {
-				if out {
+			for k := offsets[j]; k < offsets[j+1]; k++ {
+				if verdicts[k] && !sized[k] {
 					let++
 				}
 			}
@@ -285,11 +295,4 @@ func checkICMPSteps(tb testing.TB, steps []icmpStep, sprayed bool) {
 		rerun(func(step icmpStep) bool { return step.source == source }, "of "+addr.String()+"'s answers alone")
 	}
 	rerun(func(step icmpStep) bool { return !step.tooBig }, "with the too-big answers taken out")
-	for i, step := range steps {
-		for _, out := range verdicts[offsets[i]:offsets[i+1]] {
-			if step.tooBig && !out {
-				tb.Fatalf("a too-big answer of step %d to %s was withheld while the cap withheld nothing", i, icmpPool[step.source])
-			}
-		}
-	}
 }

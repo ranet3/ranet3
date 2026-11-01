@@ -23,8 +23,9 @@ var icmpSeed = func() [2]uint64 {
 }()
 
 // icmpLimit decides which of the ICMP errors this node would send go out, as the kernel's icmp_global_allow and inet_peer_xrlim_allow decide
-// every answer draws one from the node's cap, and every answer but packet too big and fragmentation needed one from the bucket of its offending packet's source
-// so one source's flood of expired or refused packets spends its own bucket, while one sender's packets past their session at the cap's rate hold back every answer
+// every answer but packet too big and fragmentation needed draws one from the node's cap and one from the bucket of its offending packet's source
+// so one source's flood of expired or refused packets spends its own bucket
+// packet too big and fragmentation needed draw on neither, as icmpv4_mask_allow and the default icmpv6 ratemask leave them out of both
 // the sources lie in shards by a seeded mix of their address, each with its own lock, order and share of the table, and the cap takes no lock
 // a draw holds at most one shard's lock and takes no other
 // the zero value holds no source and a full cap
@@ -65,7 +66,7 @@ type icmpShard struct {
 	sources map[netip.Addr]*list.Element
 	order   list.List
 	// withheld counts by source and by node, indexed by the verdict less icmpBySource
-	// a draw the cap withholds before any bucket is read, and a too-big draw, which no shard's bucket holds, count on the shard their clock reading picks
+	// a draw the cap withholds before any bucket is read counts on the shard its clock reading picks
 	withheld [2]atomic.Uint64
 	_        [linePad]byte
 }
@@ -116,18 +117,15 @@ func (c *icmpCap) spend(now int64) bool {
 }
 
 // take decides whether an answer to a packet from source may go out at now, nanoseconds on a monotonic clock, spends its cost if so and counts it if not
-// source is the zero Addr for packet too big and fragmentation needed, which only the cap holds back
+// source is the zero Addr for packet too big and fragmentation needed, which no limit holds back
 // the cap is read first and with no lock, so a draw it withholds waits for nothing and spends nothing of its source's bucket
 // such a draw counts on the shard its clock reading picks, so it computes no mix of its address
 func (l *icmpLimit) take(now int64, source netip.Addr) icmpVerdict {
+	if !source.IsValid() {
+		return icmpAllowed
+	}
 	if _, _, ok := l.node.holds(now); !ok {
 		return l.counter(now).withhold(icmpByNode)
-	}
-	if !source.IsValid() {
-		if !l.node.spend(now) {
-			return l.counter(now).withhold(icmpByNode)
-		}
-		return icmpAllowed
 	}
 	interval := int64(icmpSourceInterval6)
 	if source.Is4() {

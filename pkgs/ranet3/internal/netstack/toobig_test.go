@@ -332,7 +332,7 @@ func (s headerShape) around(outer []byte) []byte {
 	return out
 }
 
-// emptyBuckets spends the buckets of the sources the packets above come from, leaving the node's cap all but full
+// emptyBuckets spends the buckets of the sources the packets above come from, and then the node's cap
 func emptyBuckets(tb testing.TB, m *Mesh) {
 	tb.Helper()
 	for _, source := range tooBigSource {
@@ -342,19 +342,30 @@ func emptyBuckets(tb testing.TB, m *Mesh) {
 			}
 		}
 	}
+	capHolding(m, 0)
 }
 
-// a waypoint answers the segments too large for the session to their next segment under the node's cap alone
-// a flood of them, carrying IPv6 and IPv4 with DF in turn from sources whose buckets other errors emptied, gets as many answers as the cap holds, of both families
-// the cap withholds the rest and no source's bucket any
+// stillLimited fails unless an answer of another kind, to a source with a full bucket, is withheld by the node's cap
+func stillLimited(tb testing.TB, m *Mesh) {
+	tb.Helper()
+	if m.takeICMPToken(freshSource(0)) {
+		tb.Error("an answer to a fresh source went out past the spent cap")
+	}
+	if source, node := m.ICMPWithheld(); source != 0 || node != 1 {
+		tb.Errorf("the limits withheld %d answers by source and %d by the node's cap, want only the last answer withheld, by the cap", source, node)
+	}
+}
+
+// RFC 4443 section 2.4 (f): "an IPv6 node MUST limit the rate of ICMPv6 error messages it originates", from which packet too big and fragmentation needed depart as Linux's icmpv4_mask_allow and default icmpv6 ratemask do
+// a waypoint answers every segment too large for the session to its next segment, a flood of them carrying IPv6 and IPv4 with DF in turn from sources whose buckets other errors emptied, with the node's cap spent too
+// no limit withholds any of them, while an answer of another kind stays withheld
 // and each answer goes to the source of the packet the segment carries rather than to the node that steered it
-func TestSegmentsPastTheirNextSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
-	const flood, left = 64, 10
+func TestSegmentsPastTheirNextSessionAreAnsweredPastEveryLimit(t *testing.T) {
+	const flood = 64
 	after := segAddr("3fff:b:0:206::1")
 	session, next := sessionOf(t, srv6.MinimumIPv6MTU+srv6.Overhead(2))
 	m, sender := waypointOf(t, after, session)
 	emptyBuckets(t, m)
-	capHolding(m, left)
 	batch := make([][]byte, flood)
 	for i := range batch {
 		family := []int{4, 6}[i%2]
@@ -364,12 +375,10 @@ func TestSegmentsPastTheirNextSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 		t.Fatalf("%d segments reached the tun", len(left))
 	}
 	answers := sender.packets(t)
-	if len(answers) != left {
-		t.Errorf("%d segments past their next session were answered %d times with %d answers left in the cap, want %d", flood, len(answers), left, left)
+	if len(answers) != flood {
+		t.Errorf("%d segments past their next session were answered %d times past every limit, want each one", flood, len(answers))
 	}
-	if source, node := m.ICMPWithheld(); source != 0 || node != flood-left {
-		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want 0 and %d", source, node, flood-left)
-	}
+	stillLimited(t, m)
 	to4 := 0
 	for i, answer := range answers {
 		_, to, _ := packet.Addrs(answer)
@@ -380,7 +389,7 @@ func TestSegmentsPastTheirNextSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 			to4++
 		}
 	}
-	if to4 != left/2 {
+	if to4 != flood/2 {
 		t.Errorf("%d of %d answers carry fragmentation needed, want half, since the families take turns", to4, len(answers))
 	}
 	if sent := next.packets(t); len(sent) != 0 {
@@ -617,18 +626,17 @@ func TestBatchCutsEveryReadIntoTheStorageOfItsFirst(t *testing.T) {
 	}
 }
 
-// the node's cap alone holds back the answers to packets read off the tun past their session
-// a read full of them, IPv6 and IPv4 with DF in turn from sources whose buckets other errors emptied, gets as many answers as the cap holds
-// the cap withholds the rest and no source's bucket any, and nothing reaches the peer
-func TestPacketsPastTheirSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
-	const flood, left = 64, 10
+// no limit holds back the answers to packets read off the tun past their session, as RFC 4443 section 2.4 (f) departs for them in Linux
+// a read full of them, IPv6 and IPv4 with DF in turn from sources whose buckets other errors emptied, with the node's cap spent too, gets an answer for each
+// while an answer of another kind stays withheld, and nothing reaches the peer
+func TestPacketsPastTheirSessionAreAnsweredPastEveryLimit(t *testing.T) {
+	const flood = 64
 	dev := &recordingDevice{writes: make(chan recordedWrite, flood)}
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 	m.setDevice(dev)
 	m.startSegmentReports()
 	m.SetAnswerTTL(64)
 	emptyBuckets(t, m)
-	capHolding(m, left)
 	peer := (&recordingPeer{}).peer(t, "peer")
 	peer.SetMTU(srv6.MinimumIPv6MTU)
 	m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
@@ -643,12 +651,10 @@ func TestPacketsPastTheirSessionAreAnsweredUnderTheCapAlone(t *testing.T) {
 	fill(b, packets...)
 	m.classify(b)
 	answered := len(dev.writes)
-	if answered != left {
-		t.Errorf("%d packets past their session were answered %d times with %d answers left in the cap, want %d", flood, answered, left, left)
+	if answered != flood {
+		t.Errorf("%d packets past their session were answered %d times past every limit, want each one", flood, answered)
 	}
-	if source, node := m.ICMPWithheld(); source != 0 || node != flood-left {
-		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want 0 and %d", source, node, flood-left)
-	}
+	stillLimited(t, m)
 	if got := m.TooBigAnswered(); got != uint64(answered) {
 		t.Errorf("the mesh counted %d answers, want the %d it wrote into the tun", got, answered)
 	}

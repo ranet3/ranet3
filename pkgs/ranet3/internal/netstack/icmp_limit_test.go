@@ -74,17 +74,42 @@ func held(tb testing.TB, l *icmpLimit) int {
 // decided is how many of a run of answers the limit let out and how many each of its limits withheld
 type decided struct{ allowed, bySource, byNode int }
 
+func (d *decided) count(verdict icmpVerdict) {
+	switch verdict {
+	case icmpAllowed:
+		d.allowed++
+	case icmpBySource:
+		d.bySource++
+	case icmpByNode:
+		d.byNode++
+	}
+}
+
 // draws counts the limit's decisions on count answers to packets from source at now, the zero Addr drawing as packet too big
 func draws(l *icmpLimit, now time.Duration, source netip.Addr, count int) decided {
 	var got decided
 	for range count {
-		switch l.take(int64(now), source) {
-		case icmpAllowed:
-			got.allowed++
-		case icmpBySource:
-			got.bySource++
-		case icmpByNode:
-			got.byNode++
+		got.count(l.take(int64(now), source))
+	}
+	return got
+}
+
+// spendCap counts the limit's decisions on count answers at now, one to each fresh IPv6 source from the from-th on, so the node's cap alone can withhold them
+func spendCap(l *icmpLimit, now time.Duration, from, count int) decided {
+	var got decided
+	for i := range count {
+		got.count(l.take(int64(now), freshSource(2*(from+i))))
+	}
+	return got
+}
+
+// spendCapBeside is spendCap with the fresh sources lying in the shard of kept left out, so its draws evict no source of that shard
+func spendCapBeside(l *icmpLimit, now time.Duration, kept netip.Addr, from, count int) decided {
+	var got decided
+	for i := from; count > 0; i++ {
+		if source := freshSource(2 * i); icmpShardOf(source) != icmpShardOf(kept) {
+			got.count(l.take(int64(now), source))
+			count--
 		}
 	}
 	return got
@@ -149,7 +174,7 @@ func TestICMPLimitJudgesATrailingDrawAsOfTheLast(t *testing.T) {
 }
 
 // one source's flood spends its own bucket, and a second source of either family draws its whole burst after it
-// packet too big and fragmentation needed, which draw from no source's bucket, go out after it, as the kernel answered them while another source flooded
+// packet too big and fragmentation needed, which draw on no limit, go out after it, as the kernel answered them while another source flooded
 func TestOneSourcesFloodLeavesTheOthersAndPathMTU(t *testing.T) {
 	var l icmpLimit
 	flooder := segAddr("2001:db8:1::2")
@@ -166,7 +191,7 @@ func TestOneSourcesFloodLeavesTheOthersAndPathMTU(t *testing.T) {
 	}
 }
 
-// the cap holds every answer of either family and kind to 10000 at once and 10000 a second after, the kernel's icmp_msgs_burst and icmp_msgs_per_sec
+// the cap holds every answer of either family to a source to 10000 at once and 10000 a second after, the kernel's icmp_msgs_burst and icmp_msgs_per_sec
 // an answer it withholds costs its source's bucket nothing, since the kernel reads the cap before the source
 func TestNodeCapBoundsEveryAnswer(t *testing.T) {
 	var l icmpLimit
@@ -174,10 +199,10 @@ func TestNodeCapBoundsEveryAnswer(t *testing.T) {
 	if got := draws(&l, 0, kept, 5); got.allowed != 5 {
 		t.Fatalf("a fresh source drew %d of 5 answers, want every one", got.allowed)
 	}
-	if got := draws(&l, 0, netip.Addr{}, 9995); got.allowed != 9995 {
-		t.Fatalf("the cap let %d of the 9995 too-big answers left of its burst out, want every one", got.allowed)
+	if got := spendCapBeside(&l, 0, kept, 0, 9995); got.allowed != 9995 {
+		t.Fatalf("the cap let %d of the 9995 answers left of its burst out, want every one", got.allowed)
 	}
-	for _, source := range []netip.Addr{kept, freshSource(0), {}} {
+	for _, source := range []netip.Addr{kept, freshSource(1)} {
 		if got := l.take(0, source); got != icmpByNode {
 			t.Errorf("answer 10001, to %s, was decided %d, want withheld by the cap", source, got)
 		}
@@ -189,16 +214,12 @@ func TestNodeCapBoundsEveryAnswer(t *testing.T) {
 	if got := l.take(int64(200*time.Microsecond), kept); got != icmpBySource {
 		t.Errorf("a source's seventh answer within a second was decided %d, want withheld by its bucket", got)
 	}
-	if got := draws(&l, time.Millisecond, netip.Addr{}, 20); got != (decided{allowed: 9, byNode: 11}) {
+	if got := spendCapBeside(&l, time.Millisecond, kept, 20000, 20); got != (decided{allowed: 9, byNode: 11}) {
 		t.Errorf("of 20 answers 900 microseconds after the cap was last spent %+v, want 9 let out and 11 withheld by the cap", got)
 	}
 	total := 0
 	for i := range 10001 {
-		source := freshSource(i)
-		if i%3 == 0 {
-			source = netip.Addr{}
-		}
-		total += draws(&l, time.Hour, source, 1).allowed
+		total += draws(&l, time.Hour, freshSource(i), 1).allowed
 	}
 	if total != 10000 {
 		t.Errorf("a refilled cap let %d of 10001 answers out at once, want 10000", total)
@@ -243,16 +264,16 @@ func decidedUnderLock(t *testing.T, l *icmpLimit, held ...heldDraw) []icmpVerdic
 	return got
 }
 
-// once the cap is spent, a draw of either kind before it earns its next token comes back withheld by it while another goroutine holds every shard's lock
-// and a draw at the instant it earns that token lets one answer out
+// once the cap is spent, a source's draw before it earns its next token comes back withheld by it while another goroutine holds every shard's lock
+// a too-big draw there comes back let out, since no limit holds it back, and a draw at the instant the cap earns that token lets one answer out
 func TestSpentCapWithholdsWithoutTheLock(t *testing.T) {
 	var l icmpLimit
 	at, cost := time.Hour, icmpNodeCost
-	if got := draws(&l, at, netip.Addr{}, icmpNodeBurst+1); got != (decided{allowed: icmpNodeBurst, byNode: 1}) {
+	if got := spendCap(&l, at, 0, icmpNodeBurst+1); got != (decided{allowed: icmpNodeBurst, byNode: 1}) {
 		t.Fatalf("of the cap's burst and one more answer %+v, want the burst let out and 1 withheld by the cap", got)
 	}
-	if got := decidedUnderLock(t, &l, heldDraw{at, netip.Addr{}}, heldDraw{at + cost - 1, freshSource(1)}); !slices.Equal(got, []icmpVerdict{icmpByNode, icmpByNode}) {
-		t.Errorf("a too-big answer and a source's answer on a spent cap were decided %v, want both withheld by the cap", got)
+	if got := decidedUnderLock(t, &l, heldDraw{at + cost - 1, freshSource(1)}, heldDraw{at, netip.Addr{}}); !slices.Equal(got, []icmpVerdict{icmpByNode, icmpAllowed}) {
+		t.Errorf("a source's answer and a too-big answer on a spent cap were decided %v, want the first withheld by the cap and the second let out", got)
 	}
 	if got := l.take(int64(at+cost), freshSource(1)); got != icmpAllowed {
 		t.Errorf("the source's answer at the instant the cap earned a token was decided %d, want let out", got)
@@ -264,14 +285,14 @@ func TestSpentCapWithholdsWithoutTheLock(t *testing.T) {
 func TestTrailingDrawOnASpentCapIsJudgedAsOfItsLastAnswer(t *testing.T) {
 	var l icmpLimit
 	at, cost := time.Hour, icmpNodeCost
-	if got := draws(&l, at, netip.Addr{}, icmpNodeBurst); got != (decided{allowed: icmpNodeBurst}) {
+	if got := spendCap(&l, at, 0, icmpNodeBurst); got != (decided{allowed: icmpNodeBurst}) {
 		t.Fatalf("of the cap's burst %+v, want every answer let out", got)
 	}
 	// the last token went at at, and a draw that read the clock 10 tokens' time earlier reaches the cap only now
-	if got := l.take(int64(at-10*cost), netip.Addr{}); got != icmpByNode {
+	if got := l.take(int64(at-10*cost), freshSource(1)); got != icmpByNode {
 		t.Fatalf("the trailing draw on a spent cap was decided %d, want withheld by the cap", got)
 	}
-	if got := decidedUnderLock(t, &l, heldDraw{at, netip.Addr{}}); !slices.Equal(got, []icmpVerdict{icmpByNode}) {
+	if got := decidedUnderLock(t, &l, heldDraw{at, freshSource(3)}); !slices.Equal(got, []icmpVerdict{icmpByNode}) {
 		t.Errorf("a draw at the instant the cap spent its last token was decided %v, want withheld by the cap", got)
 	}
 }
@@ -308,10 +329,10 @@ func TestCapLetsItsBurstOutToConcurrentDraws(t *testing.T) {
 	var l icmpLimit
 	var allowed, byNode atomic.Int64
 	var wg sync.WaitGroup
-	for range goroutines {
+	for g := range goroutines {
 		wg.Go(func() {
-			for range each {
-				switch l.take(int64(time.Hour), netip.Addr{}) {
+			for i := range each {
+				switch l.take(int64(time.Hour), freshSource(2*(g*each+i))) {
 				case icmpAllowed:
 					allowed.Add(1)
 				case icmpByNode:
@@ -331,17 +352,17 @@ func TestCapLetsItsBurstOutToConcurrentDraws(t *testing.T) {
 func TestCapHoldsItsBurstAtTheClocksEnd(t *testing.T) {
 	var l icmpLimit
 	end := time.Duration(math.MaxInt64)
-	if got := draws(&l, end, netip.Addr{}, icmpNodeBurst+1); got.allowed != icmpNodeBurst || got.byNode != 1 {
+	if got := spendCap(&l, end, 0, icmpNodeBurst+1); got.allowed != icmpNodeBurst || got.byNode != 1 {
 		t.Errorf("of %d draws at the clock's end %d were let out and %d withheld by the cap, want %d and 1", icmpNodeBurst+1, got.allowed, got.byNode, icmpNodeBurst)
 	}
 }
 
-// emitters drawing at one instant, each for sources of its own and for too-big answers, let out the cap's burst and not one more
+// emitters drawing at one instant, each for sources of its own and for too-big answers, let out the cap's burst of the sources' answers and not one more, and every too-big answer
 // every draw is let out or withheld once, and ICMPWithheld sums what each limit withheld over every shard
 // a source's bucket has spent its answers let out and nothing more, and one whose every draw the cap withheld is not in the table
 // since a draw the cap withholds spends nothing of its source and leaves the table as it found it
 func TestConcurrentDrawsKeepTheCapExactAndTheBucketsTheirOwn(t *testing.T) {
-	const emitters, sourcesEach, drawsEach, tooBigEach = 16, 64, 10, 500
+	const emitters, sourcesEach, drawsEach, tooBigEach = 16, 128, 10, 500
 	type tally struct{ allowed, bySource, byNode int }
 	m := &Mesh{Routes: NewRouteTable()}
 	at := int64(time.Hour)
@@ -375,7 +396,9 @@ func TestConcurrentDrawsKeepTheCapExactAndTheBucketsTheirOwn(t *testing.T) {
 	wg.Wait()
 	var allowed, bySource, byNode int
 	for e := range emitters {
-		allowed, byNode = allowed+tooBig[e].allowed, byNode+tooBig[e].byNode
+		if tooBig[e] != (tally{allowed: tooBigEach}) {
+			t.Errorf("emitter %d's too-big answers were decided %+v, want all %d let out", e, tooBig[e], tooBigEach)
+		}
 		for k, got := range tallies[e] {
 			source := freshSource(e*sourcesEach + k)
 			allowed, bySource, byNode = allowed+got.allowed, bySource+got.bySource, byNode+got.byNode
@@ -400,7 +423,7 @@ func TestConcurrentDrawsKeepTheCapExactAndTheBucketsTheirOwn(t *testing.T) {
 		}
 	}
 	if allowed != icmpNodeBurst {
-		t.Errorf("%d answers went out at one instant, want the cap's %d", allowed, icmpNodeBurst)
+		t.Errorf("%d answers to sources went out at one instant, want the cap's %d", allowed, icmpNodeBurst)
 	}
 	if source, node := m.ICMPWithheld(); source != uint64(bySource) || node != uint64(byNode) {
 		t.Errorf("ICMPWithheld reads %d by source and %d by the cap, want the %d and %d the draws were decided", source, node, bySource, byNode)
@@ -545,7 +568,7 @@ func TestICMPLimitTakesConcurrentAnswers(t *testing.T) {
 		if i%2 == 1 {
 			interval = time.Second
 		}
-		// every fourth draw is a too-big answer, which only the cap holds back
+		// every fourth draw is a too-big answer, which no limit holds back
 		least := icmpRaceDraws/4 + 6
 		most := least + int(elapsed/interval)
 		if got < least || got > most {

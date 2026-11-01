@@ -130,7 +130,7 @@ const (
 	icmpSources = 6144
 	// icmpShards is how many shards the sources lie in, more than the emitters drawing at once so draws for distinct sources rarely wait on one lock
 	icmpShards = 64
-	// icmpNodeRate and icmpNodeBurst are the cap over every answer, icmp_msgs_per_sec and icmp_msgs_burst
+	// icmpNodeRate and icmpNodeBurst are the cap over every answer but packet too big and fragmentation needed, icmp_msgs_per_sec and icmp_msgs_burst
 	icmpNodeRate  = 10000
 	icmpNodeBurst = 10000
 	// icmpNodeCost is the time the cap takes to earn one answer back
