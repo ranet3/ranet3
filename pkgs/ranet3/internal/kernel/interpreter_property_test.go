@@ -450,6 +450,11 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	var own, sources, assigned []netip.Prefix
 	for _, entry := range routes.Snapshot() {
 		destination := entry.Destination.Masked()
+		// Advertised is the LANs cap.egress advertises, which the daemon passes from its configuration whatever entry the
+		// table holds for the prefix
+		if advertised[destination] {
+			rt.Advertised = append(rt.Advertised, destination)
+		}
 		switch entry.Value {
 		case netstack.Assigned:
 			sources, assigned = append(sources, destination), append(assigned, entry.Destination)
@@ -461,9 +466,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 			if entry.Source.IsValid() {
 				sources = append(sources, entry.Source.Masked())
 			}
-			if advertised[destination] {
-				rt.Advertised = append(rt.Advertised, destination)
-			} else {
+			if !advertised[destination] {
 				rt.Announced = append(rt.Announced, destination)
 			}
 			// D from S routes D to this node only from S, and a LAN cap.egress advertises holds hosts behind it
@@ -955,7 +958,9 @@ func TestRuleWalkNamedCases(t *testing.T) {
 	}
 	for name, c := range map[string]struct {
 		entries []mirrorEntry
-		tailnet bool
+		// advertised is the LANs cap.egress advertises
+		advertised map[netip.Prefix]bool
+		tailnet    bool
 		// overlay stands in for the one above where it is set
 		overlay       []schema.Prefix
 		mode          exitView
@@ -1148,12 +1153,20 @@ func TestRuleWalkNamedCases(t *testing.T) {
 				from("2001:db8:a::10", "2001:db8:c::1"): "eth0",
 			},
 		},
+		// the table holds the address cap.table assigns in place of the LAN's entry, and the LAN stays advertised, no
+		// prefix of this node's own, so 5430 takes no lookup from it and main sends one toward the learned half
+		"an advertised LAN whose prefix cap.table assigns": {
+			entries:    []mirrorEntry{at(netstack.Local, "10.0.0.0/32"), at(netstack.Assigned, "10.0.0.0/32"), learnedAt("128.0.0.0/1")},
+			advertised: map[netip.Prefix]bool{prefix("10.0.0.0/32"): true},
+			overlay:    []schema.Prefix{schema.MustPrefix("10.0.0.0/8")},
+			packets:    map[fibPacket]string{from("10.0.0.0", "128.0.0.0"): "eth0"},
+		},
 	} {
 		border := overlay
 		if c.overlay != nil {
 			border = c.overlay
 		}
-		h := interpret(t, border, c.entries, nil, c.egressSegment, true, plainHost(c.tailnet), c.mode)
+		h := interpret(t, border, c.entries, c.advertised, c.egressSegment, true, plainHost(c.tailnet), c.mode)
 		for p, want := range c.packets {
 			if got := h.kernel.walk(p); got != want {
 				t.Errorf("%s: %s went to %s, want %s\nthe mirror:\n%v", name, p, got, want, h.desired)
