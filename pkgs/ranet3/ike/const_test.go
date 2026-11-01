@@ -20,6 +20,7 @@ func TestNotifyTypesAreRegistryValues(t *testing.T) {
 		"INVALID_KE_PAYLOAD":           {N_INVALID_KE_PAYLOAD, 17},
 		"AUTHENTICATION_FAILED":        {N_AUTHENTICATION_FAILED, 24},
 		"NO_ADDITIONAL_SAS":            {N_NO_ADDITIONAL_SAS, 35},
+		"TS_UNACCEPTABLE":              {N_TS_UNACCEPTABLE, 38},
 		"TEMPORARY_FAILURE":            {N_TEMPORARY_FAILURE, 43},
 		"CHILD_SA_NOT_FOUND":           {N_CHILD_SA_NOT_FOUND, 44},
 		"STATE_NOT_FOUND":              {N_STATE_NOT_FOUND, 47},

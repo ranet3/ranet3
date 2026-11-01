@@ -796,6 +796,12 @@ func narrowSelectors() []byte {
 		StartAddr: net.IPv4(10, 0, 0, 1).To4(), EndAddr: net.IPv4(10, 0, 0, 1).To4()}})
 }
 
+// packetFirstSelectors is a TS payload an initiator sends for a packet from or to addr at port over TCP, that packet's selector first and the two full ranges after it
+func packetFirstSelectors(addr net.IP, port uint16) []byte {
+	return EncodeTS([]TrafficSelector{{Type: TS_IPV4_ADDR_RANGE, Protocol: 6, StartPort: port, EndPort: port,
+		StartAddr: addr.To4(), EndAddr: addr.To4()}, FullRangeV4(), FullRangeV6()})
+}
+
 // offeredChildSPI reads the SPI a Child SA request proposes for this end's
 // inbound half.
 func offeredChildSPI(t *testing.T, inner []RawPayload) uint32 {
@@ -959,5 +965,40 @@ func testEachChildSAAnswerDrawsItsOwnNonce(t *testing.T) {
 	}
 	if bytes.Equal(nonces[0], nonces[1]) {
 		t.Errorf("two Child SA rekeys were answered with the same nonce %x", nonces[0])
+	}
+}
+
+// a Child SA rekey whose TSi and TSr hold the two full ranges behind a first selector is taken as TestResponderTakesTheFullRangesBehindAFirstSelector's IKE_AUTH is, and answered with the two full ranges
+func TestChildSARekeyTakesTheFullRangesBehindAFirstSelector(t *testing.T) {
+	bubble.Run(testChildSARekeyTakesTheFullRangesBehindAFirstSelector)(t)
+}
+
+func testChildSARekeyTakesTheFullRangesBehindAFirstSelector(t *testing.T) {
+	child := ChildSA{EncrID: ENCR_AES_GCM_16, EncrKeyBits: 128, LocalSPI: 0x10203040, RemoteSPI: 0x50607080}
+	mux, _ := lifecycleMuxes(t)
+	ctx := testContext()
+	s := &Session{mux: mux, current: ctx, child: child}
+	request := childRekeyRequest(child.RemoteSPI)
+	findType(request, PayloadTSi).Body = packetFirstSelectors(net.IPv4(198, 51, 100, 43), 40000)
+	findType(request, PayloadTSr).Body = packetFirstSelectors(net.IPv4(203, 0, 113, 7), 443)
+	raw, err := s.handleRequest(ctx, &Header{ExchangeType: CREATE_CHILD_SA, MessageID: 5}, nil, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := DecodeMessage(raw.whole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := DecryptMessage(ctx.suite, ctx.skei, raw.whole, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findType(inner, PayloadSA) == nil {
+		t.Fatalf("the Child SA rekey drew %v and no SA payload", payloadTypes(inner))
+	}
+	for _, kind := range []PayloadType{PayloadTSi, PayloadTSr} {
+		if ts := findType(inner, kind); ts == nil || !bytes.Equal(ts.Body, fullRangeSelectors()) {
+			t.Errorf("the Child SA rekey's answer of type %d is %v, want the two full ranges", kind, ts)
+		}
 	}
 }

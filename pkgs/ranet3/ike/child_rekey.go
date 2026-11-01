@@ -374,8 +374,8 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	}
 	// the peer runs one creation or rekey of the Child SA at a time, so a new one ends the chain of the last
 	s.dropChain(superseded)
-	if err := validateFullRangeSelectors(payloads.tsi, payloads.tsr); err != nil {
-		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_NO_PROPOSAL_CHOSEN)
+	if err := acceptSelectors(payloads.tsi, payloads.tsr); err != nil {
+		return s.responseNotify(ctx, msgID, CREATE_CHILD_SA, N_TS_UNACCEPTABLE)
 	}
 	lists := s.lists()
 	ciphers, entries := lists.espCiphers(), lists.kexEntries()
@@ -451,7 +451,7 @@ func (s *Session) handleChildRekey(ctx *ikeContext, msgID uint32, inner []RawPay
 	if localPublic != nil {
 		responsePayloads = append(responsePayloads, RawPayload{Type: PayloadKE, Body: EncodeKE(selected.dh.ID, localPublic)})
 	}
-	responsePayloads = append(responsePayloads, RawPayload{Type: PayloadTSi, Body: payloads.tsi.Body}, RawPayload{Type: PayloadTSr, Body: payloads.tsr.Body})
+	responsePayloads = append(responsePayloads, RawPayload{Type: PayloadTSi, Body: fullRangeSelectors()}, RawPayload{Type: PayloadTSr, Body: fullRangeSelectors()})
 	entry := kexChoice{dh: selected.dh, additions: selected.additions}.entry()
 	made := &peerChild{encr: encr, localSPI: localSPI, remoteSPI: selected.remoteSPI, entry: entry}
 	// RFC 9370 section 2.2.4: "With multiple key exchanges, the SAs are not yet created when the CREATE_CHILD_SA is completed. Instead, they would be created only after the series of IKE_FOLLOWUP_KE exchanges is finished."

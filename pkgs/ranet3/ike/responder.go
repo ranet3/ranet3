@@ -514,10 +514,14 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	child, err := s.selectResponderChild(request, ni, nr)
 	if err != nil {
 		// no KE payload follows in IKE_AUTH, so no INVALID_KE_PAYLOAD could be acted on
+		refusal := N_NO_PROPOSAL_CHOSEN
+		if errors.Is(err, errSelectors) {
+			refusal = N_TS_UNACCEPTABLE
+		}
 		response, buildErr := s.response(ctx, ctx.authMID, IKE_AUTH, []RawPayload{
 			{Type: PayloadIDr, Body: idrBody},
 			{Type: PayloadAUTH, Body: authBody},
-			{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_NO_PROPOSAL_CHOSEN})},
+			{Type: PayloadN, Body: EncodeNotify(Notify{Type: refusal})},
 		})
 		if buildErr != nil {
 			return Accepted{}, false, buildErr
@@ -899,7 +903,7 @@ func (s *Session) selectResponderChild(request *Message, ni, nr []byte) (respond
 	if saPayload == nil || tsi == nil || tsr == nil {
 		return responderChild{}, fmt.Errorf("ike: IKE_AUTH request has no Child SA")
 	}
-	if err := validateFullRangeSelectors(tsi, tsr); err != nil {
+	if err := acceptSelectors(tsi, tsr); err != nil {
 		return responderChild{}, err
 	}
 	// RFC 7296 section 1.2: "Thus, the SA payloads in the IKE_AUTH exchange cannot contain Transform Type 4 (Diffie-Hellman group) with any value other than NONE."

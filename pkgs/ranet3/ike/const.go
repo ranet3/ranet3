@@ -187,6 +187,7 @@ const (
 	N_NO_PROPOSAL_CHOSEN           NotifyType = 14
 	N_INVALID_KE_PAYLOAD           NotifyType = 17
 	N_NO_ADDITIONAL_SAS            NotifyType = 35
+	N_TS_UNACCEPTABLE              NotifyType = 38
 	N_TEMPORARY_FAILURE            NotifyType = 43
 	N_CHILD_SA_NOT_FOUND           NotifyType = 44
 	// RFC 9370 section 2.2.4 of STATE_NOT_FOUND: "Its Notify Message Type value is 47, its Protocol ID and SPI Size are both set to 0, and the data is empty."

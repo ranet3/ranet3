@@ -2032,6 +2032,97 @@ func testResponderDeletesTheIKESAWhoseChildSAItRefused(t *testing.T) {
 	awaitHandshakeEnd(t, h, refused, held.spiI)
 }
 
+// RFC 7296 section 2.9: "If the responder's policy does not allow it to accept any part of the proposed Traffic Selectors, it responds with a TS_UNACCEPTABLE Notify message."
+// section 1.2 names TS_UNACCEPTABLE and NO_PROPOSAL_CHOSEN among the notifies in IKE_AUTH "that do not prevent an IKE SA from being set up", so either goes beside the responder's AUTH
+// a TSi or a TSr that does not hold the two full ranges draws TS_UNACCEPTABLE, and a Child SA offer this end cannot take NO_PROPOSAL_CHOSEN
+func TestResponderRefusesSelectorsItTakesNoPartOfWithTSUnacceptable(t *testing.T) {
+	for name, test := range map[string]struct {
+		tsi, tsr []byte
+		dh       bool
+		want     NotifyType
+	}{
+		"a TSi narrower than the full ranges":    {narrowSelectors(), fullRangeSelectors(), false, N_TS_UNACCEPTABLE},
+		"a TSr narrower than the full ranges":    {fullRangeSelectors(), narrowSelectors(), false, N_TS_UNACCEPTABLE},
+		"an offer naming a Diffie-Hellman group": {fullRangeSelectors(), fullRangeSelectors(), true, N_NO_PROPOSAL_CHOSEN},
+	} {
+		t.Run(name, bubble.Run(func(t *testing.T) {
+			refused := &recorder{}
+			h := childRefusedHarness(t, refused.record)
+			mux := childRefusedMux(t, h)
+			held, message1, nr := initHalfOpen(t, mux, nil)
+			child := espProposal([]byte{0, 0, 0, 9})
+			if test.dh {
+				child.Transforms = append(child.Transforms, Transform{Type: TransDH, ID: DH_ECP_256})
+			}
+			payloads := ikeAuthPayloads(h.private, held, message1, nr, child, "testorg/client:2", "testorg/server:1")
+			findType(payloads, PayloadTSi).Body = test.tsi
+			findType(payloads, PayloadTSr).Body = test.tsr
+			header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+			request, err := EncryptMessage(held.suite, held.skei, header, nil, payloads)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mux.SendIKE(request); err != nil {
+				t.Fatal(err)
+			}
+			answer, inner, _ := responderMessage(t, mux, held)
+			if answer.ExchangeType != IKE_AUTH || !answer.IsResponse() || findType(inner, PayloadAUTH) == nil || findType(inner, PayloadSA) != nil || notifyIn(t, inner) != test.want {
+				t.Fatalf("the IKE_AUTH drew exchange %d response %v carrying %v, want the responder's AUTH and notify %d with no Child SA",
+					answer.ExchangeType, answer.IsResponse(), inner, test.want)
+			}
+			deletion, inner, _ := responderMessage(t, mux, held)
+			wantIKEDelete(t, deletion, inner)
+			response, err := EncryptMessage(held.suite, held.skei, Header{SPIInitiator: held.spiI, SPIResponder: held.spiR,
+				ExchangeType: INFORMATIONAL, Flags: FlagResponse | FlagInitiator, MessageID: 0}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := mux.SendIKE(response); err != nil {
+				t.Fatal(err)
+			}
+			awaitHandshakeEnd(t, h, refused, held.spiI)
+		}))
+	}
+}
+
+// RFC 7296 section 2.9: "if the initiator has requested the SA due to a data packet, the initiator SHOULD include as the first Traffic Selector in each of TSi and TSr a very specific Traffic Selector including the addresses in the packet triggering the request."
+// and: "If the responder's policy allows it to accept the first selector of TSi and TSr, then the responder MUST narrow the Traffic Selectors to a subset that includes the initiator's first choices."
+// a TSi and a TSr holding the two full ranges behind a first selector are taken, and answered with the two full ranges, which hold the first selector
+func TestResponderTakesTheFullRangesBehindAFirstSelector(t *testing.T) {
+	bubble.Run(testResponderTakesTheFullRangesBehindAFirstSelector)(t)
+}
+
+func testResponderTakesTheFullRangesBehindAFirstSelector(t *testing.T) {
+	h := newResponderHarness(t, nil)
+	mux, err := h.initiator.NewMux(net.ParseIP("127.0.0.1"), h.remotePort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { mux.Close() })
+	held, message1, nr := initHalfOpen(t, mux, nil)
+	payloads := ikeAuthPayloads(h.private, held, message1, nr, espProposal([]byte{0, 0, 0, 9}), "testorg/client:2", "testorg/server:1")
+	findType(payloads, PayloadTSi).Body = packetFirstSelectors(net.IPv4(198, 51, 100, 43), 40000)
+	findType(payloads, PayloadTSr).Body = packetFirstSelectors(net.IPv4(203, 0, 113, 7), 443)
+	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: IKE_AUTH, Flags: FlagInitiator, MessageID: 1}
+	request, err := EncryptMessage(held.suite, held.skei, header, nil, payloads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendIKE(request); err != nil {
+		t.Fatal(err)
+	}
+	answer, answered, _ := responderMessage(t, mux, held)
+	if answer.ExchangeType != IKE_AUTH || findType(answered, PayloadSA) == nil {
+		t.Fatalf("the IKE_AUTH drew exchange %d carrying %v, want the responder's Child SA", answer.ExchangeType, answered)
+	}
+	for _, kind := range []PayloadType{PayloadTSi, PayloadTSr} {
+		if ts := findType(answered, kind); ts == nil || !bytes.Equal(ts.Body, fullRangeSelectors()) {
+			t.Errorf("the IKE_AUTH answer's payload of type %d is %v, want the two full ranges", kind, ts)
+		}
+	}
+	carriedForward(t, h)
+}
+
 // RFC 7296 section 2.25.2: "If a peer receives a request to close an IKE SA that it is currently trying to close, it SHOULD reply as usual, and forget about its own close request."
 // a ranet3 initiator deletes the IKE SA after the same refusal, so the two Deletes cross, and the initiator's is answered and ends the responder's
 func TestResponderAnswersTheDeleteCrossingItsOwn(t *testing.T) {

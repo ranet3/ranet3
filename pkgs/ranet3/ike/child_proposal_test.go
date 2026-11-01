@@ -150,6 +150,32 @@ func TestValidateFullRangeSelectors(t *testing.T) {
 	}
 }
 
+// a responder takes a TSi and a TSr that each hold the two full ranges, and refuses either side without them, one of either range alone among them, with errSelectors, which it answers TS_UNACCEPTABLE
+func TestAcceptSelectorsRefusesEachSideWithoutTheFullRanges(t *testing.T) {
+	full, first := fullRangeSelectors(), packetFirstSelectors(net.IPv4(198, 51, 100, 43), 40000)
+	narrow, narrow6 := EncodeTS([]TrafficSelector{FullRangeV4()}), EncodeTS([]TrafficSelector{FullRangeV6()})
+	for name, test := range map[string]struct {
+		tsi, tsr *RawPayload
+		refused  bool
+	}{
+		"the two full ranges":                     {&RawPayload{Body: full}, &RawPayload{Body: full}, false},
+		"the full ranges behind a first selector": {&RawPayload{Body: first}, &RawPayload{Body: first}, false},
+		"a TSi of the IPv4 range alone":           {&RawPayload{Body: narrow}, &RawPayload{Body: full}, true},
+		"a TSr of the IPv4 range alone":           {&RawPayload{Body: full}, &RawPayload{Body: narrow}, true},
+		"a TSi of the IPv6 range alone":           {&RawPayload{Body: narrow6}, &RawPayload{Body: full}, true},
+		"a TSr of the IPv6 range alone":           {&RawPayload{Body: full}, &RawPayload{Body: narrow6}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := acceptSelectors(test.tsi, test.tsr); errors.Is(err, errSelectors) != test.refused || (err != nil) != test.refused {
+				t.Errorf("acceptSelectors answered %v, want refused %v with errSelectors", err, test.refused)
+			}
+		})
+	}
+	if err := acceptSelectors(nil, &RawPayload{Body: full}); err == nil || errors.Is(err, errSelectors) {
+		t.Errorf("acceptSelectors answered %v to a request with no TSi, want an error other than errSelectors", err)
+	}
+}
+
 // RFC 7296 section 2.10: a nonce "MUST be at least 128 bits in size, and MUST
 // be at least half the key size of the negotiated pseudorandom function". The
 // second half was missing, so a 16 byte nonce was taken under HMAC-SHA2-384,

@@ -6,6 +6,7 @@ package ike
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"slices"
 )
@@ -14,6 +15,43 @@ func fullRangeSelectors() []byte {
 	return EncodeTS([]TrafficSelector{FullRangeV4(), FullRangeV6()})
 }
 
+// errSelectors is a TS payload a responder takes no part of, one that does not hold both full ranges, which it refuses with TS_UNACCEPTABLE
+var errSelectors = errors.New("ike: traffic selectors that do not hold the full IPv4 and IPv6 ranges")
+
+// acceptSelectors is a responder's check of a Child SA request's TSi and TSr, each of which holds the full IPv4 and IPv6 ranges among its selectors
+// the answer then carries the two ranges alone, which cover the traffic of every selector the request holds
+func acceptSelectors(tsi, tsr *RawPayload) error {
+	if tsi == nil || tsr == nil {
+		return fmt.Errorf("ike: Child SA exchange is missing traffic selectors")
+	}
+	if !holdsFullRanges(tsi.Body) {
+		return fmt.Errorf("%w: the initiator's", errSelectors)
+	}
+	if !holdsFullRanges(tsr.Body) {
+		return fmt.Errorf("%w: the responder's", errSelectors)
+	}
+	return nil
+}
+
+// holdsFullRanges reports whether body, a TS payload, decodes and holds the full IPv4 range and the full IPv6 range among its selectors
+func holdsFullRanges(body []byte) bool {
+	selectors, err := DecodeTS(body)
+	if err != nil {
+		return false
+	}
+	var v4, v6 bool
+	for _, selector := range selectors {
+		switch {
+		case fullRange(selector, TS_IPV4_ADDR_RANGE, FullRangeV4()):
+			v4 = true
+		case fullRange(selector, TS_IPV6_ADDR_RANGE, FullRangeV6()):
+			v6 = true
+		}
+	}
+	return v4 && v6
+}
+
+// validateFullRangeSelectors is an initiator's check of the TSi and TSr a responder answered with, the two full ranges and nothing else
 func validateFullRangeSelectors(tsi, tsr *RawPayload) error {
 	if tsi == nil || tsr == nil {
 		return fmt.Errorf("ike: Child SA exchange is missing traffic selectors")
@@ -36,31 +74,26 @@ func isFullRangeSelectors(body []byte) bool {
 	}
 	var v4, v6 bool
 	for _, selector := range selectors {
-		var expected TrafficSelector
-		switch selector.Type {
-		case TS_IPV4_ADDR_RANGE:
-			if v4 {
-				return false
-			}
-			v4, expected = true, FullRangeV4()
-		case TS_IPV6_ADDR_RANGE:
-			if v6 {
-				return false
-			}
-			v6, expected = true, FullRangeV6()
+		switch {
+		case !v4 && fullRange(selector, TS_IPV4_ADDR_RANGE, FullRangeV4()):
+			v4 = true
+		case !v6 && fullRange(selector, TS_IPV6_ADDR_RANGE, FullRangeV6()):
+			v6 = true
 		default:
-			return false
-		}
-		// slices.Equal rather than net.IP.Equal: DecodeTS has already fixed the
-		// width to the selector type, and net.IP.Equal would fold a 4-in-6
-		// address onto its IPv4 form, which is a different selector on the
-		// wire and must not compare equal to one.
-		if selector.Protocol != 0 || selector.StartPort != 0 || selector.EndPort != 0xffff ||
-			!slices.Equal(selector.StartAddr, expected.StartAddr) || !slices.Equal(selector.EndAddr, expected.EndAddr) {
 			return false
 		}
 	}
 	return v4 && v6
+}
+
+// fullRange reports whether selector is full, the range of every address, protocol and port of kind
+func fullRange(selector TrafficSelector, kind uint8, full TrafficSelector) bool {
+	// slices.Equal rather than net.IP.Equal: DecodeTS has already fixed the
+	// width to the selector type, and net.IP.Equal would fold a 4-in-6
+	// address onto its IPv4 form, which is a different selector on the
+	// wire and must not compare equal to one.
+	return selector.Type == kind && selector.Protocol == 0 && selector.StartPort == 0 && selector.EndPort == 0xffff &&
+		slices.Equal(selector.StartAddr, full.StartAddr) && slices.Equal(selector.EndAddr, full.EndAddr)
 }
 
 type childExchangePayloads struct {
