@@ -1074,7 +1074,7 @@ func (c *Config) validateSteerTo() error {
 	return nil
 }
 
-// validateSteeredMTU refuses a link.mtu the longest cap.segment steer list takes under the 1280 bytes IPv6 requires of every link
+// validateSteeredMTU refuses a link.mtu the longest cap.segment steer list or cap.exit via path takes under the 1280 bytes IPv6 requires of every link
 // the device runs at link.mtu less that list
 // the daemon makes the device with the same call, so a file this takes is one the daemon starts on
 func (c *Config) validateSteeredMTU() error {
