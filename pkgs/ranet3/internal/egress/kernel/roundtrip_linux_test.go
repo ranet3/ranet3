@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -82,16 +83,19 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 
 	// The whole round trip in one assertion: the kernel took every expression,
 	// kept the rules in the order they were written, and handed back the
-	// spelling this package wrote into each one's comment. A mismatch here is
-	// a ruleset the reconcile loop would rewrite on every pass forever. Each
-	// table, its two chains, its set and its objects read back as written.
-	read, err := be.Rules()
+	// spelling this package wrote into each one's comment and the expressions
+	// it encoded, as a dump spells them. A mismatch here is a ruleset the
+	// reconcile loop would rewrite on every pass forever. Each table, its two
+	// chains, its set and its objects read back as written.
+	read, err := be.Rules(desired)
 	if err != nil {
 		t.Fatalf("read the rules back: %v", err)
 	}
 	held, faulted, remake := flatten(read)
-	if faulted || len(remake) != 0 {
-		t.Errorf("the tables read back as %+v, want both as written", read)
+	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
+		if read[family].fault != "" || len(remake) != 0 {
+			t.Errorf("the %s table reads back with the fault %q and remake %v, want it as written", tableFamilyName(family), read[family].fault, remake)
+		}
 	}
 	want := make([]string, 0, len(desired))
 	for _, rule := range desired {
@@ -104,7 +108,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("the kernel holds %q, want %q", got, want)
 	}
-	if !sameRules(held, desired) {
+	if faulted {
 		t.Error("a pass would rewrite rules the kernel already holds")
 	}
 	// each table holds the timeout objects its rules name, every state at the
@@ -126,7 +130,7 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if out, err := exec.Command(nft, "insert", "rule", "ip", TableName, ChainName, "accept").CombinedOutput(); err != nil {
 		t.Fatalf("insert another writer's rule: %v\n%s", err, out)
 	}
-	read, err = be.Rules()
+	read, err = be.Rules(desired)
 	if err != nil {
 		t.Fatalf("read the rules back beside another writer's: %v", err)
 	}
@@ -145,8 +149,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if !slices.Equal(got, slices.Insert(slices.Clone(want), forwardRules, "")) {
 		t.Errorf("with another writer's uncommented rule at the head of the ip chain the readback holds %q, want it ahead of the ip translation's rules in %q", got, want)
 	}
-	if v4, v6 := sameFamilyRules(withOther, desired, egress.FamilyIPv4), sameFamilyRules(withOther, desired, egress.FamilyIPv6); v4 || !v6 {
-		t.Errorf("with another writer's rule in the ip chain alone the ip readback reads as written %v and the ip6 one %v, want false and true", v4, v6)
+	if v4, v6 := read[egress.FamilyIPv4].fault, read[egress.FamilyIPv6].fault; v4 == "" || v6 != "" {
+		t.Errorf("with another writer's rule in the ip chain alone the ip readback reads the fault %q and the ip6 one %q, want one and none", v4, v6)
 	}
 
 	// A counter in every rule but the timeout rules and the pass, at zero, since nothing has
@@ -174,8 +178,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if err := be.Apply(desired, nil); err != nil {
 		t.Fatalf("reinstall the rules: %v", err)
 	}
-	read, err = be.Rules()
-	if held, _, _ = flatten(read); err != nil || len(held) != len(desired) {
+	read, err = be.Rules(desired)
+	if held, faulted, _ = flatten(read); err != nil || faulted || len(held) != len(desired) {
 		t.Fatalf("a second install left %d rules (%v), want %d", len(held), err, len(desired))
 	}
 
@@ -199,8 +203,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	if err := steered.Apply(only, nil); err != nil {
 		t.Fatalf("install %d rules: %v", len(only), err)
 	}
-	read, err = steered.Rules()
-	if held, _, _ = flatten(read); err != nil || !sameRules(held, only) {
+	read, err = steered.Rules(only)
+	if held, faulted, _ = flatten(read); err != nil || faulted || len(held) != len(only) {
 		t.Fatalf("the kernel holds %v (%v), want %v", held, err, only)
 	}
 	tables, err := nftables.Tables(steered.(*natTables).conn, TableName)
@@ -367,7 +371,7 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	if err := another.Batch([]nftables.Request{counted, anotherWritersAccept(unix.NFPROTO_IPV4, LimitChain)}); err != nil {
 		t.Fatalf("insert another writer's accept rules: %v", err)
 	}
-	read, err := be.Rules()
+	read, err := be.Rules(tr.desired())
 	for family, want := range map[uint8]Installed{
 		egress.FamilyIPv4: {Family: egress.FamilyIPv4, Chain: LimitChain},
 		egress.FamilyIPv6: {Family: egress.FamilyIPv6, Chain: ChainName, Counted: true},
@@ -422,6 +426,74 @@ func TestNftablesRewritesAnotherWritersRuleInItsChain(t *testing.T) {
 	}
 }
 
+// A line another writer replaces in place with an accept under the comment it
+// was written with, in either chain of either family, reads back as a fault of
+// its family alone that names the line, and the next pass writes the line back
+// and reads both families ready
+func TestNftablesRewritesALineEditedUnderItsComment(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real nftables path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	run := nftRun(t)
+	rt := Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }, Sysctl: readsNothing}
+	be, err := newBackend(egress.Egress{}, rt)
+	if err != nil {
+		t.Fatalf("open the nftables backend: %v", err)
+	}
+	t.Cleanup(func() { _ = be.Close() })
+	requireEmptyRuleset(t, be)
+	tr := newTranslator(egress.Egress{}, rt, be)
+	if err := tr.reconcile(); err != nil {
+		t.Fatalf("the first pass: %v", err)
+	}
+	desired := tr.desired()
+	for _, edit := range []struct {
+		family uint8
+		chain  string
+		rule   Rule
+		// kept is a part of nft's listing of the line as it was written
+		kept string
+	}{
+		{egress.FamilyIPv4, ChainName, Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0"}, "masquerade"},
+		{egress.FamilyIPv4, LimitChain, Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Limit: egress.DefaultFlowsPerSource}, "ct count over"},
+		{egress.FamilyIPv6, ChainName, Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0"}, "masquerade"},
+		{egress.FamilyIPv6, LimitChain, Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", Untracked: true}, "ct state invalid,untracked"},
+	} {
+		spec, family := edit.rule.String(), tableFamilyName(edit.family)
+		if !slices.ContainsFunc(desired, func(rule Rule) bool { return rule.String() == spec }) {
+			t.Fatalf("the translator writes no line %q", spec)
+		}
+		listing := run("-a", "list", "chain", family, TableName, edit.chain)
+		handle := regexp.MustCompile(`comment "` + regexp.QuoteMeta(spec) + `" # handle (\d+)`).FindStringSubmatch(listing)
+		if handle == nil {
+			t.Fatalf("no line of the %s chain %s is commented %q in:\n%s", family, edit.chain, spec, listing)
+		}
+		accepted := fmt.Sprintf("counter accept comment %q", spec)
+		run(append([]string{"replace", "rule", family, TableName, edit.chain, "handle", handle[1]}, strings.Fields(accepted)...)...)
+		read, err := be.Rules(desired)
+		other := egress.FamilyIPv6
+		if edit.family == other {
+			other = egress.FamilyIPv4
+		}
+		if err != nil || !strings.Contains(read[edit.family].fault, spec) || read[edit.family].remake || read[other].fault != "" {
+			t.Errorf("%q made an accept: the %s table reads the fault %q, remake %v, and the other the fault %q (%v), want the %s table alone at a fault naming the line",
+				spec, family, read[edit.family].fault, read[edit.family].remake, read[other].fault, err, family)
+		}
+		if err := tr.reconcile(); err != nil {
+			t.Fatalf("%q made an accept: the pass: %v", spec, err)
+		}
+		if s := tr.lastPass(); !s.Ready4 || !s.Ready6 {
+			t.Errorf("%q made an accept: after the pass the translator reads %+v, want both families ready", spec, s)
+		}
+		listing = run("list", "chain", family, TableName, edit.chain)
+		line := regexp.MustCompile(`(?m)^.*comment "` + regexp.QuoteMeta(spec) + `"$`).FindString(listing)
+		if !strings.Contains(line, edit.kept) || strings.Contains(line, "accept") {
+			t.Errorf("%q made an accept: after the pass nft lists the line %q, want it as written, with %q:\n%s", spec, line, edit.kept, listing)
+		}
+	}
+}
+
 // A timeout object the table holds with other seconds than this build writes,
 // as an earlier build may have left it, reads back as a fault that remakes the
 // table, since nf_tables changes no ct timeout in place, and after the pass
@@ -448,7 +520,7 @@ func TestNftablesRemakesATableHoldingAStaleTimeout(t *testing.T) {
 	if err := another.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_IPV4, TableName), stale.Create(unix.NFPROTO_IPV4)}); err != nil {
 		t.Fatalf("leave a stale timeout object: %v", err)
 	}
-	if read, err := be.Rules(); err != nil || read[egress.FamilyIPv4].fault == "" || !read[egress.FamilyIPv4].remake {
+	if read, err := be.Rules(newTranslator(egress.Egress{}, rt, be).desired()); err != nil || read[egress.FamilyIPv4].fault == "" || !read[egress.FamilyIPv4].remake {
 		t.Errorf("with a stale timeout object the ip table reads back as %+v (%v), want a fault that remakes it", read[egress.FamilyIPv4], err)
 	}
 	tr := newTranslator(egress.Egress{}, rt, be)
@@ -511,7 +583,7 @@ func TestNftablesKeepsTheSetsCountsAcrossARewrite(t *testing.T) {
 		run("add", "element", tableFamilyName(c.family), TableName, flowSet(c.family, egress.DefaultFlowsPerSource).Name, "{ "+c.source+" }")
 	}
 	run("add", "set", "ip6", TableName, flowSet(egress.FamilyIPv6, egress.DefaultFlowsPerSource).Name, "{ type ipv6_addr; size 100; flags dynamic; }")
-	read, err := be.Rules()
+	read, err := be.Rules(tr.desired())
 	if err != nil || read[egress.FamilyIPv6].fault == "" || read[egress.FamilyIPv6].remake || read[egress.FamilyIPv4].fault != "" {
 		t.Errorf("with the ip6 set resized the tables read back as %+v (%v), want the ip6 table alone at fault, with no remake", read, err)
 	}
@@ -522,8 +594,8 @@ func TestNftablesKeepsTheSetsCountsAcrossARewrite(t *testing.T) {
 	if got := tableHandles(t, another); len(got) != 2 || !maps.Equal(got, handles) {
 		t.Errorf("after the pass wrote the set back the tables have the handles %v, want the ones they had, %v", got, handles)
 	}
-	read, err = be.Rules()
-	if held, faulted, remake := flatten(read); err != nil || faulted || len(remake) != 0 || !sameRules(held, tr.desired()) {
+	read, err = be.Rules(tr.desired())
+	if _, faulted, remake := flatten(read); err != nil || faulted || len(remake) != 0 {
 		t.Errorf("after the pass the tables read back as %+v (%v), want both as written", read, err)
 	}
 	for _, c := range counted {
@@ -580,7 +652,7 @@ func TestNftablesRemakesATableWhoseSetCountsAnotherLimit(t *testing.T) {
 		t.Fatalf("open the nftables backend again: %v", err)
 	}
 	t.Cleanup(func() { _ = be.Close() })
-	read, err := be.Rules()
+	read, err := be.Rules(newTranslator(later, rt, be).desired())
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		if err != nil || !strings.Contains(read[family].fault, "limit 64") || !read[family].remake {
 			t.Errorf("with the earlier instance's set the %s table reads back as %+v (%v), want a fault naming its limit that remakes it", tableFamilyName(family), read[family], err)
@@ -605,8 +677,8 @@ func TestNftablesRemakesATableWhoseSetCountsAnotherLimit(t *testing.T) {
 			t.Errorf("after the pass the %s table has the handle %d it had, so it was not remade", tableFamilyName(family), handle)
 		}
 	}
-	read, err = be.Rules()
-	if held, faulted, remake := flatten(read); err != nil || faulted || len(remake) != 0 || !sameRules(held, tr.desired()) {
+	read, err = be.Rules(tr.desired())
+	if _, faulted, remake := flatten(read); err != nil || faulted || len(remake) != 0 {
 		t.Errorf("after the pass the tables read back as %+v (%v), want both as written", read, err)
 	}
 	for family, source := range counted {
@@ -804,9 +876,9 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 		mark := len(entries())
 		run(change.command)
 		moved(change.name, mark, "ready false false", "ready true true")
-		read, err := check.Rules()
-		held, faulted, remake := flatten(read)
-		if err != nil || faulted || len(remake) != 0 || !sameRules(held, desired) {
+		read, err := check.Rules(desired)
+		_, faulted, remake := flatten(read)
+		if err != nil || faulted || len(remake) != 0 {
 			t.Errorf("%s: after the pass the tables read back as %+v (%v), want %v as written", change.name, read, err, desired)
 		}
 		if listing := run("list", "table", change.family, TableName); strings.Contains(listing, change.gone) {
@@ -961,7 +1033,7 @@ func requireEmptyRuleset(t *testing.T, be backend) {
 	if len(tables) != 0 {
 		t.Fatalf("the namespace holds %d tables named %s", len(tables), TableName)
 	}
-	read, err := be.Rules()
+	read, err := be.Read()
 	if err != nil {
 		t.Fatalf("list rules: %v", err)
 	}

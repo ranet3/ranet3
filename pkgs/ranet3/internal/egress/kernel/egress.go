@@ -193,10 +193,9 @@ func (t Timeouts) String() string {
 }
 
 // Rule is one rule this node installs, a translation, the timeouts ahead of
-// one or the limit on each source's flows, and simultaneously the diff key: the
-// backend writes String into the rule's own comment and reads it back, so two
-// rules with equal fields are the same rule whatever the kernel does to the
-// expressions in between.
+// one or the limit on each source's flows. The backend writes String as the
+// rule's comment, which names the line in a readback, and reads the line back
+// by its comment and by what it does.
 type Rule struct {
 	Family    uint8
 	Direction Direction
@@ -352,9 +351,9 @@ func counterUnit(chain string, counted bool) string {
 	return "packets"
 }
 
-// String is the rule as an operator reads it in `nft list ruleset` and as the
-// diff compares it. Every field that changes what the rule does is in it, so a
-// changed source or prefix reads back as a different rule and is replaced.
+// String is the rule as an operator reads it in `nft list ruleset`. Every
+// field that changes what the rule does is in it, so two lines of a chain never
+// share a comment.
 func (r Rule) String() string {
 	action := "masquerade"
 	switch kind := r.kind(); {
@@ -419,11 +418,13 @@ type chainReadback struct {
 // against a fake.
 type backend interface {
 	// Rules reads back this tool's own chains and the table holding them in
-	// each family it owns, keyed by family.
-	Rules() (map[uint8]chainReadback, error)
-	// Read is Rules through a socket of its own, for a reader off the run
-	// goroutine, which owns the backend's socket, one reader at a time. After
-	// Close it reads nothing and answers an error of its own.
+	// each family it owns, keyed by family, each chain's lines against desired
+	// by their comments and their expressions.
+	Rules(desired []Rule) (map[uint8]chainReadback, error)
+	// Read is Rules with no lines to read against, through a socket of its own,
+	// for a reader off the run goroutine, which owns the backend's socket, one
+	// reader at a time. After Close it reads nothing and answers an error of
+	// its own.
 	Read() (map[uint8]chainReadback, error)
 	// Apply brings this tool's own chains to rules, deleting the table of each
 	// family in remake first. It replaces the chains' contents in one
@@ -759,24 +760,26 @@ func (t *Translator) reconcile() error {
 	started := time.Now()
 	desired := t.desired()
 	applied := false
-	read, err := t.be.Rules()
+	read, err := t.be.Rules(desired)
 	unread := err != nil
+	listed := !unread
 	held, faulted, remake := flatten(read)
 	if err != nil {
 		err = fmt.Errorf("list rules: %w", err)
-	} else if faulted || !sameRules(held, desired) {
+	} else if faulted {
 		if applyErr := t.be.Apply(desired, remake); applyErr != nil {
 			err = fmt.Errorf("install rules: %w", applyErr)
 		} else {
 			applied = true
 			slog.Info("egress rules installed", "rules", len(desired), "replaced", len(held), "where", t.where())
 			// Read back rather than assumed. The counters below are the
-			// host's, and a rule the kernel accepted under a spelling other
-			// than the one asked for has to fail the readiness test rather
-			// than pass it on this pass and fail on the next.
-			if read, err = t.be.Rules(); err != nil {
+			// host's, and a rule the kernel holds other than it was written
+			// has to fail the readiness test rather than pass it on this pass
+			// and fail on the next.
+			if read, err = t.be.Rules(desired); err != nil {
 				err = fmt.Errorf("list rules: %w", err)
 			}
+			listed = err == nil
 			held, _, _ = flatten(read)
 		}
 	}
@@ -798,10 +801,10 @@ func (t *Translator) reconcile() error {
 	unwritten := map[uint8]string{}
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		switch {
+		case !listed:
+			unwritten[family] = "its chains could not be read back"
 		case read[family].fault != "":
 			unwritten[family] = read[family].fault
-		case !sameFamilyRules(held, desired, family):
-			unwritten[family] = "its chains do not read back as written"
 		}
 	}
 	judged := t.judge(unwritten, forwards)
@@ -904,23 +907,6 @@ func (t *Translator) reportRefused(last, now passStats) {
 	}
 }
 
-// sameRules compares what the host holds against what the configuration asks
-// for, by the spelling the backend reads back rather than by the expressions
-// it encoded them into. Order counts: a chain is read top to bottom, and the
-// counters are deliberately outside the comparison so that a pass does not
-// rewrite the ruleset over a packet having arrived.
-func sameRules(held []Installed, desired []Rule) bool {
-	if len(held) != len(desired) {
-		return false
-	}
-	for i, rule := range desired {
-		if held[i].Spec != rule.String() {
-			return false
-		}
-	}
-	return true
-}
-
 // flatten is every family's rules in the order desired groups them, whether
 // any family's table or chain reads back with a fault, and the families whose
 // table Apply deletes and makes again
@@ -933,14 +919,6 @@ func flatten(read map[uint8]chainReadback) (held []Installed, faulted bool, rema
 		}
 	}
 	return held, faulted, remake
-}
-
-// sameFamilyRules is sameRules over family's table alone, so a rule another
-// writer put in one family's chain leaves the other family's readback whole
-func sameFamilyRules(held []Installed, desired []Rule, family uint8) bool {
-	held = slices.DeleteFunc(slices.Clone(held), func(rule Installed) bool { return rule.Family != family })
-	desired = slices.DeleteFunc(slices.Clone(desired), func(rule Rule) bool { return rule.Family != family })
-	return sameRules(held, desired)
 }
 
 // desired is the rules this configuration asks for, grouped by family and

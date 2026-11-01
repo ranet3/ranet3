@@ -148,14 +148,17 @@ func nftFamily(family uint8) uint8 {
 
 // Rules reads back the chains this tool owns in each family's table, with the
 // table, the set and the timeout objects, the rules in the order desired writes
-// them with the family each was read from and the counter it has carried. A
-// rule another writer put in one of this tool's chains changes what the chain
-// does to a packet, so it is read back too, one with no comment as an empty
-// spec. Its family is not ready while it stays, and the next pass rewrites the
-// chain without it. A rule in any other table or chain is skipped. This
-// backend never removes one in another table, and one in another chain of its
-// table goes with the table whenever the table is removed whole.
-func (n *natTables) Rules() (map[uint8]chainReadback, error) { return n.read(n.conn) }
+// them with the family each was read from and the counter it has carried, and
+// each chain's lines against desired. A rule another writer put in one of this
+// tool's chains changes what the chain does to a packet, so it is read back
+// too, one with no comment as an empty spec. Its family is not ready while it
+// stays, and the next pass rewrites the chain without it. A rule in any other
+// table or chain is skipped. This backend never removes one in another table,
+// and one in another chain of its table goes with the table whenever the table
+// is removed whole.
+func (n *natTables) Rules(desired []Rule) (map[uint8]chainReadback, error) {
+	return n.read(n.conn, desired)
+}
 
 func (n *natTables) Read() (map[uint8]chainReadback, error) {
 	n.readMu.Lock()
@@ -163,10 +166,12 @@ func (n *natTables) Read() (map[uint8]chainReadback, error) {
 	if n.closed {
 		return nil, errClosed
 	}
-	return n.read(n.reads)
+	return n.read(n.reads, nil)
 }
 
-func (n *natTables) read(conn *nftables.Conn) (map[uint8]chainReadback, error) {
+// read reads each family's table, its chains' lines against desired where it
+// is not nil
+func (n *natTables) read(conn *nftables.Conn, desired []Rule) (map[uint8]chainReadback, error) {
 	tables, err := nftables.Tables(conn, TableName)
 	if err != nil {
 		return nil, err
@@ -179,9 +184,37 @@ func (n *natTables) read(conn *nftables.Conn) (map[uint8]chainReadback, error) {
 		if err != nil {
 			return nil, fmt.Errorf("egress: read table %s %s: %w", tableFamilyName(family), TableName, err)
 		}
-		out[family] = readback(read, family)
+		held := readback(read, family)
+		if desired != nil && held.fault == "" {
+			if held.fault, err = translatorRulesFault(family, desired, read.Rules); err != nil {
+				return nil, err
+			}
+		}
+		out[family] = held
 	}
 	return out, nil
+}
+
+// translatorRulesFault names how either chain of family's table holds lines
+// other than desired writes there, empty where neither does
+func translatorRulesFault(family uint8, desired []Rule, held []nftables.Installed) (string, error) {
+	for _, chain := range translatorChains {
+		var want []nftables.Line
+		for _, rule := range desired {
+			if rule.Family != family || rule.kind().chain() != chain.Name {
+				continue
+			}
+			line, err := translatorLine(rule)
+			if err != nil {
+				return "", err
+			}
+			want = append(want, line)
+		}
+		if fault, err := nftables.ChainFault(chain.Name, want, held); fault != "" || err != nil {
+			return fault, err
+		}
+	}
+	return "", nil
 }
 
 // readback is a chain as read, its rules placed in family
@@ -365,10 +398,22 @@ func flowSet(family uint8, limit int) nftables.Set {
 	return set
 }
 
-// newRule's expressions come in the order `nft list ruleset` prints them
 func newRule(rule Rule) (nftables.Request, error) {
-	if err := nftables.DeviceName(rule.Interface); err != nil {
+	line, err := translatorLine(rule)
+	if err != nil {
 		return nftables.Request{}, err
+	}
+	chain := postrouting
+	if rule.kind().chain() == forward.Name {
+		chain = forward
+	}
+	return chain.Rule(nftFamily(rule.Family), line.Spec, line.Expressions)
+}
+
+// translatorLine's expressions come in the order `nft list ruleset` prints them
+func translatorLine(rule Rule) (nftables.Line, error) {
+	if err := nftables.DeviceName(rule.Interface); err != nil {
+		return nftables.Line{}, err
 	}
 	// a rule reading the flow's state reads it first, and one taking a protocol
 	// reads that first, so a packet of an established flow fails the rule at its
@@ -450,11 +495,7 @@ func newRule(rule Rule) (nftables.Request, error) {
 	case screening, admitting:
 		expressions = append(expressions, action)
 	}
-	chain := postrouting
-	if kind.chain() == forward.Name {
-		chain = forward
-	}
-	return chain.Rule(proto, rule.String(), expressions)
+	return nftables.Line{Spec: rule.String(), Expressions: expressions}, nil
 }
 
 // protocolRule is, for a rule taking a packet by its protocol, the expressions

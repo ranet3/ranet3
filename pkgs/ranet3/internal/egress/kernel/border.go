@@ -39,9 +39,8 @@ const (
 	EntryDrop
 )
 
-// BorderRule is one rule of the table and its own diff key, as Rule is the
-// translator's: the backend writes String into the rule's comment and reads
-// it back
+// BorderRule is one rule of the table. The backend writes String as the rule's
+// comment, which names the line in a readback.
 type BorderRule struct {
 	Class BorderClass
 	// Device is the device an inside rule accepts, the link a carve-out's rule

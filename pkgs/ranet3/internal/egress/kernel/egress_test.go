@@ -70,7 +70,9 @@ func (f *fakeBackend) entries() []string {
 	return slices.Clone(f.log)
 }
 
-func (f *fakeBackend) Rules() (map[uint8]chainReadback, error) {
+// Rules reads each family's rules against desired by comment, as the kernel's
+// readback reads each line by its comment and its expressions
+func (f *fakeBackend) Rules(desired []Rule) (map[uint8]chainReadback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "rules")
@@ -79,7 +81,16 @@ func (f *fakeBackend) Rules() (map[uint8]chainReadback, error) {
 	if f.failRules || f.failReadback && readback {
 		return nil, errors.New("no")
 	}
-	return f.holding(), nil
+	out := f.holding()
+	for family, read := range out {
+		wanted := slices.DeleteFunc(slices.Clone(desired), func(rule Rule) bool { return rule.Family != family })
+		same := slices.EqualFunc(read.rules, wanted, func(held Installed, rule Rule) bool { return held.Spec == rule.String() })
+		if read.fault == "" && !same {
+			read.fault = "its chains read back other than they were written"
+			out[family] = read
+		}
+	}
+	return out, nil
 }
 
 // Read is Rules for a debug read, which logs no listing and leaves a readback
@@ -707,6 +718,28 @@ func TestRemovedRuleIsReinstalledAndTheAdvertisementWaits(t *testing.T) {
 	}
 }
 
+// A pass that cannot read the chains back, before it writes them or after,
+// reads neither family ready and announces nothing, since it cannot tell what
+// the chains do
+func TestUnreadChainsHoldBothFamiliesNotReady(t *testing.T) {
+	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
+	for _, c := range []struct {
+		name string
+		be   *fakeBackend
+	}{
+		{"a listing that fails", &fakeBackend{failRules: true}},
+		{"a listing that fails after the rewrite", &fakeBackend{failReadback: true}},
+	} {
+		tr := translator(t, cfg, Runtime{}, c.be)
+		if err := tr.reconcile(); err == nil {
+			t.Errorf("%s: the pass reported no error", c.name)
+		}
+		if s := tr.lastPass(); s.Ready4 || s.Ready6 || s.Unready != "its chains could not be read back" || len(tr.Announce()) != 0 {
+			t.Errorf("%s: the pass reads ready %v and %v (%q) and announces %v, want neither family ready for its chains", c.name, s.Ready4, s.Ready6, s.Unready, tr.Announce())
+		}
+	}
+}
+
 // Another writer's rule at the head of a family's chain, which a host refusing
 // the rewrite leaves there, holds that family not ready and its prefixes
 // withheld although every rule the translator wrote still reads back, since
@@ -730,7 +763,7 @@ func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
 	if got := be.specs(); !slices.Equal(got, append([]string{""}, written...)) {
 		t.Fatalf("the host holds %q, want another writer's rule ahead of every rule the translator wrote, %q", got, written)
 	}
-	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Unready != "its chains do not read back as written" {
+	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Unready != "its chains read back other than they were written" {
 		t.Errorf("with another writer's rule in the ip chain the pass reports ready %v and %v with the reason %q, want IPv4 alone not ready for its chain",
 			stats.Ready4, stats.Ready6, stats.Unready)
 	}
