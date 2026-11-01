@@ -20,7 +20,8 @@ import (
 type Border struct {
 	// Overlay names the prefixes the mesh numbers its nodes from. A packet
 	// arriving from outside the mesh with a source in one of them is forged,
-	// and every exit's allow list lies inside them.
+	// and every entry of an exit's allow list that admits an outer source lies
+	// inside them.
 	Overlay []schema.Prefix `yaml:"overlay,omitempty" json:"overlay,omitempty" toml:"overlay,omitempty"`
 }
 
