@@ -176,11 +176,18 @@ type LocalTable struct {
 //
 // Every SID refuses a packet whose outer source lies outside overlay's IPv6
 // prefixes, the per-node list of RFC 8754 section 5.1 item 2. A node writing
-// cap.border drops those sources arriving from outside the mesh, so a host
-// beyond the mesh reaches no SID through it, whatever the SID delivers to. A
-// node that forwards without cap.border is only warned at load, and passes a
-// forged overlay source on to every SID. An outer source is always IPv6, so a
-// table holding a SID and no IPv6 prefix of overlay is refused.
+// cap.border drops a source inside overlay arriving from outside the mesh, but
+// for the rest of a carve-out, less the mesh's prefixes inside it, on that
+// carve-out's own link, as border-filter.md's "Carve-outs" gives. Its entry
+// chain and its tun read keep that rest out of the mesh as a source it does
+// not own, and a host beyond the mesh reaches no SID through it, whatever the
+// SID delivers to. On linux a node that forwards without cap.border passes on
+// to every SID only a forged source it owns, since its entry chain keeps every
+// other out of the tun. On a platform with no entry chain such a node is only
+// warned at load, and passes on to every SID a forged overlay source that no
+// route other than a default sends to another node or holds unreachable, since
+// its tun read drops the rest. An outer source is always IPv6, so a table
+// holding a SID and no IPv6 prefix of overlay is refused.
 func NewLocalTable(segments []Segment, overlay []schema.Prefix) (*LocalTable, error) {
 	entries, err := localEntries(segments)
 	if err != nil || entries == nil {

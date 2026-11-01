@@ -609,7 +609,7 @@ type BorderStatus struct {
 	Overlay []netip.Prefix `json:"overlay"`
 	// Carved is each carve-out the border chain accepts from its own link
 	Carved []BorderCarveOut `json:"carved,omitempty"`
-	// Ready is whether the last pass read the chain back as written, and
+	// Ready is whether the last pass read the table back as written, and
 	// Unready why it did not
 	Ready   bool   `json:"ready"`
 	Unready string `json:"unready,omitempty"`

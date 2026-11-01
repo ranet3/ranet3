@@ -123,7 +123,7 @@ type BorderDrops [len(BorderDropKinds)]uint64
 type BorderStats struct {
 	At    time.Time
 	Ready bool
-	// Unready says why the chain is not ready, empty while it is
+	// Unready says why the table is not ready, empty while it is
 	Unready   string
 	Installed int
 	// Dropped is the counters as the last pass read them, kept from the pass
