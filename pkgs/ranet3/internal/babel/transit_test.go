@@ -964,6 +964,171 @@ func TestSourceTableRefusesUnknownOriginWhenFull(t *testing.T) {
 	}
 }
 
+// an update naming an origin the full source table has no room for creates no route, and retracts the route its neighbor held, selected or not
+// none of it is asked about, nor is a route kept from before the table filled whose origin the table holds no distance for, since neither has a recorded distance a new seqno would pass
+// b is selected, z holds a dearer route and w a dearer one still under an origin never recorded, then the table fills
+// z and then b offer a cheaper route from an origin there is no room for, and y the same with no route before it
+func TestOfferTheFullSourceTableRefusesDrawsNoRequest(t *testing.T) {
+	now := time.Now()
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:8::/48")}
+	b, w, y, z := &neighborState{peer: &netstack.Peer{ID: "b"}}, &neighborState{peer: &netstack.Peer{ID: "w"}},
+		&neighborState{peer: &netstack.Peer{ID: "y"}}, &neighborState{peer: &netstack.Peer{ID: "z"}}
+	for _, n := range []*neighborState{b, w, y, z} {
+		makeNeighborReachable(n)
+	}
+	rt := newRouteTable(func(routeKey, routeSelection) {})
+	known, early := [8]byte{0xff}, [8]byte{0xfd}
+	rt.observe(key, advertisement{routerID: known, seqno: 1, metric: 400}, "b", now)
+	rt.update(b, key, advertisement{routerID: known, seqno: 1, metric: 100}, time.Hour, now)
+	rt.update(z, key, advertisement{routerID: known, seqno: 1, metric: 300}, time.Hour, now)
+	rt.update(w, key, advertisement{routerID: early, seqno: 1, metric: 500}, time.Hour, now)
+	if got := rt.entries[key].selected.neighbor; got != b {
+		t.Fatalf("selected %v, want b", got)
+	}
+	elsewhere := routeKey{dest: netip.MustParsePrefix("fd00:9::/64")}
+	for i := range maxSources {
+		var id [8]byte
+		binary.BigEndian.PutUint64(id[:], uint64(i))
+		rt.observe(elsewhere, advertisement{routerID: id, seqno: 1, metric: 64}, "filler", now)
+	}
+	rt.takeStarved()
+
+	fresh := [8]byte{0xfe}
+	rt.update(z, key, advertisement{routerID: fresh, seqno: 1, metric: 10}, time.Hour, now)
+	rt.update(y, key, advertisement{routerID: fresh, seqno: 1, metric: 10}, time.Hour, now)
+	if got := rt.takeStarved(); len(got) != 0 {
+		t.Errorf("offers the source table had no room for drew %+v", got)
+	}
+	if _, kept := rt.entries[key].routes[y]; kept {
+		t.Error("y's refused offer was kept as a candidate")
+	}
+	if route := rt.entries[key].routes[z]; route == nil || route.routerID != known || route.rxMetric != MetricInfinity {
+		t.Errorf("z's refused offer left its route %+v, want the route it held retracted", route)
+	}
+	if got := rt.entries[key].selected.neighbor; got != b {
+		t.Errorf("selected %v after the refused offers, want b", got)
+	}
+
+	// b's refused offer retracts the selected route, and the loss asks nothing
+	rt.update(b, key, advertisement{routerID: fresh, seqno: 1, metric: 10}, time.Hour, now)
+	if route := rt.entries[key].routes[b]; route == nil || route.routerID != known || route.rxMetric != MetricInfinity {
+		t.Errorf("b's refused offer left its route %+v, want the selected route retracted", route)
+	}
+	if got := rt.entries[key].selected.neighbor; got != nil {
+		t.Errorf("selected %v after b's refused offer, want none", got)
+	}
+	if got := rt.takeStarved(); len(got) != 0 {
+		t.Errorf("the loss of b's route drew %+v, for origins the table holds no distance for", got)
+	}
+}
+
+// RFC 8966 section 3.8.2.2: an unfeasible update from a neighbor that is not selected, whose route would win the selection were it feasible, draws one seqno request to that neighbor, not repeated
+// b's link grows dear after a selects it, c offers the same origin and seqno cheaper but above the distance a advertised, and d offers it inside the margin of b's
+func TestPreferableUnfeasibleOfferDrawsOneRequest(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b", "a-c", "a-d")
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:d::/48")}
+	fabric.offer("a", "b", "o", key, 1, 100)
+	fabric.flush("a")
+	fabric.cost("a", "b", 1000)
+	fabric.offer("a", "b", "o", key, 1, 100)
+	if got := fabric.selected("a", key); fabric.nextHop("a", key) != "b" || got.cost != 1100 {
+		t.Fatalf("a selected %+v, want b at 1100", got)
+	}
+	fabric.reset()
+
+	fabric.offer("a", "c", "o", key, 1, 140)
+	asked := seqnoRequestsFor(t, fabric.tlvs("a", "c"), key.dest)
+	if len(asked) != 1 || asked[0].Seqno != 2 || asked[0].RouterID != routerID("o") {
+		t.Fatalf("a asked c %+v for an offer at 172 against b's 1100, want one request for seqno 2", asked)
+	}
+	a := fabric.speakers["a"]
+	a.mu.Lock()
+	retries := len(a.starveRetries)
+	a.mu.Unlock()
+	if retries != 0 {
+		t.Errorf("a holds %d retries for a request it sends once", retries)
+	}
+
+	fabric.offer("a", "d", "o", key, 1, 1100-reachableLinkCost-defaultMargin+1)
+	if asked := seqnoRequestsFor(t, fabric.tlvs("a", "d"), key.dest); len(asked) != 0 {
+		t.Errorf("a asked d %+v for an offer within the margin of the selected route, which would not win", asked)
+	}
+}
+
+// the selected route lost inside seqnoRequestSuppress of a one-off request starves on the candidate that drew it, RFC 8966 section 3.8.2.1
+// the starvation request repeats the one-off one and is held back, and its retry is recorded all the same
+func TestLossAfterAOneOffRequestKeepsARetry(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b", "a-c", "a-d")
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:d:1::/64")}
+	start := time.Now()
+	fabric.offer("a", "b", "o", key, 1, 100)
+	fabric.flush("a")
+	fabric.cost("a", "b", 1000)
+	fabric.offer("a", "b", "o", key, 1, 100)
+	fabric.reset()
+	fabric.offer("a", "c", "o", key, 1, 140)
+	if once := seqnoRequestsFor(t, fabric.tlvs("a", "c"), key.dest); len(once) != 1 {
+		t.Fatalf("a asked c %+v, want the one-off request", once)
+	}
+	fabric.offer("a", "b", "o", key, 1, MetricInfinity)
+	if elapsed := time.Since(start); elapsed >= seqnoRequestSuppress {
+		t.Fatalf("the test took %s, past the window it is about", elapsed)
+	}
+	if got := fabric.nextHop("a", key); got != "" {
+		t.Fatalf("a still reaches the prefix via %q", got)
+	}
+	a := fabric.speakers["a"]
+	a.mu.Lock()
+	retry := a.starveRetries[sourceKey{route: key, routerID: routerID("o")}]
+	a.mu.Unlock()
+	if retry == nil || retry.seqno != 2 {
+		t.Errorf("a starved on c's candidate and holds the retry %+v, want one for seqno 2", retry)
+	}
+}
+
+// an unfeasible offer through a link with no cost wins nothing, so it draws no request even with nothing selected
+func TestUnfeasibleOfferOverADeadLinkDrawsNoRequest(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b", "a-c", "a-d")
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:f::/48")}
+	fabric.offer("a", "b", "o", key, 1, 100)
+	fabric.flush("a")
+	fabric.offer("a", "b", "o", key, 1, MetricInfinity)
+	fabric.reset()
+	fabric.neighbor("a", "c").haveReportedCost = false
+	fabric.offer("a", "c", "o", key, 1, 140)
+	if asked := seqnoRequestsFor(t, fabric.tlvs("a", "c"), key.dest); len(asked) != 0 {
+		t.Errorf("a asked c %+v for an offer over a link with no cost", asked)
+	}
+	fabric.offer("a", "d", "o", key, 1, 140)
+	if asked := seqnoRequestsFor(t, fabric.tlvs("a", "d"), key.dest); len(asked) != 1 {
+		t.Errorf("a asked d %+v for the same offer over a live link with nothing selected, want one request, so the case above proves nothing", asked)
+	}
+}
+
+// a route lost while an unfeasible candidate is left starves on that candidate, asking its neighbor and repeating
+// c's offer is above the distance a advertised when it arrives, and b's route then goes
+func TestLostRouteWithAnUnfeasibleCandidateAsksItsNeighbor(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b", "a-c", "a-d")
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:e::/48")}
+	fabric.offer("a", "b", "o", key, 1, 100)
+	fabric.flush("a")
+	fabric.offer("a", "c", "o", key, 1, 140)
+	fabric.reset()
+
+	fabric.offer("a", "b", "o", key, 1, MetricInfinity)
+	if got := fabric.nextHop("a", key); got != "" {
+		t.Fatalf("a still reaches the prefix via %q", got)
+	}
+	asked := seqnoRequestsFor(t, fabric.tlvs("a", "c"), key.dest)
+	a := fabric.speakers["a"]
+	a.mu.Lock()
+	retry := a.starveRetries[sourceKey{route: key, routerID: routerID("o")}]
+	a.mu.Unlock()
+	if len(asked) != 1 || asked[0].Seqno != 2 || retry == nil {
+		t.Errorf("a lost its route and asked c %+v with the retry %+v, want one request for seqno 2 and its retry", asked, retry)
+	}
+}
+
 // a prefix that starves, recovers and starves again inside seqnoRequestSuppress of the first request asks for the seqno past the one it recovered with
 // b's route to it turns unfeasible at seqno 1, so a asks b for 2, and b then offers it at 2 and worsens again at 2 within the window
 // d is a leaf a advertises to, which records the feasibility distance each worsened offer falls foul of
@@ -991,8 +1156,98 @@ func TestPrefixStarvedAgainInsideTheWindowAsksForTheFreshSeqno(t *testing.T) {
 	fabric.speakers["a"].mu.Lock()
 	retry := fabric.speakers["a"].starveRetries[sourceKey{route: key, routerID: routerID("c")}]
 	fabric.speakers["a"].mu.Unlock()
-	if (len(asked) != 1 || asked[0].Seqno != 3) && (retry == nil || retry.seqno != 3) {
-		t.Errorf("a starved again inside the window asked b %+v and holds the retry %+v, want a request or a retry for seqno 3", asked, retry)
+	if len(asked) != 1 || asked[0].Seqno != 3 || retry == nil || retry.seqno != 3 {
+		t.Errorf("a starved again inside the window asked b %+v and holds the retry %+v, want a request at once for seqno 3 and its retry", asked, retry)
+	}
+}
+
+// a prefix that starves, recovers through another route at the same seqno and starves again inside seqnoRequestSuppress repeats its request, RFC 8966 section 3.8.2.1
+// the second request, for the seqno a asked b for moments before, is held back as a repeat, and its retry is recorded all the same
+// e is a leaf a advertises to
+func TestPrefixStarvedAgainAtTheSameSeqnoKeepsItsRetry(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b", "a-c", "a-e")
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:c:1::/64")}
+	start := time.Now()
+	fabric.offer("a", "b", "o", key, 1, 10)
+	fabric.flush("a")
+	fabric.offer("a", "b", "o", key, 1, 900)
+	if asked := seqnoRequestsFor(t, fabric.tlvs("a", "b"), key.dest); len(asked) != 1 || asked[0].Seqno != 2 {
+		t.Fatalf("a asked b %+v when its route turned unfeasible, want one request for seqno 2", asked)
+	}
+	fabric.offer("a", "c", "o", key, 1, 5)
+	if got := fabric.nextHop("a", key); got != "c" {
+		t.Fatalf("a reaches the prefix via %q, want c", got)
+	}
+	a := fabric.speakers["a"]
+	id := sourceKey{route: key, routerID: routerID("o")}
+	a.mu.Lock()
+	a.retryStarvedLocked(time.Now())
+	recovered := a.starveRetries[id]
+	a.mu.Unlock()
+	if recovered != nil {
+		t.Fatal("the pass after the recovery kept the retry, so this proves nothing")
+	}
+	fabric.reset()
+	fabric.offer("a", "c", "o", key, 1, MetricInfinity)
+	if elapsed := time.Since(start); elapsed >= seqnoRequestSuppress {
+		t.Fatalf("the test took %s, past the window it is about", elapsed)
+	}
+	a.mu.Lock()
+	retry := a.starveRetries[id]
+	a.mu.Unlock()
+	if retry == nil || retry.seqno != 2 {
+		t.Errorf("a starved again at seqno 2 inside the window and holds the retry %+v, want one for seqno 2", retry)
+	}
+}
+
+// a prefix selected again and lost before a pass of the run loop has forgotten its retry starts a new series of repeats, though the retry of the first loss has spent its own
+// a prefix that stays starved keeps its series, and is repeated seqnoRequestRetries times however often the unfeasible route is refreshed
+func TestPrefixStarvedAgainAfterItsRepeatsAreSpentStartsANewSeries(t *testing.T) {
+	fabric := newMeshFabric(t, Config{}, "a-b", "a-c", "a-e")
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:c:2::/64")}
+	fabric.offer("a", "b", "o", key, 1, 10)
+	fabric.flush("a")
+	fabric.offer("a", "b", "o", key, 1, 900)
+	a := fabric.speakers["a"]
+	id := sourceKey{route: key, routerID: routerID("o")}
+	a.mu.Lock()
+	retry := a.starveRetries[id]
+	if retry != nil {
+		retry.attempts = seqnoRequestRetries // its repeats spent, rather than waiting out 24 s of them
+	}
+	a.mu.Unlock()
+	if retry == nil {
+		t.Fatal("the first starvation holds no retry, so this proves nothing")
+	}
+	fabric.offer("a", "c", "o", key, 1, 5)
+	if got := fabric.nextHop("a", key); got != "c" {
+		t.Fatalf("a reaches the prefix via %q, want c", got)
+	}
+	fabric.offer("a", "c", "o", key, 1, MetricInfinity)
+	if got := fabric.nextHop("a", key); got != "" {
+		t.Fatalf("a still reaches the prefix via %q", got)
+	}
+
+	// the walk asks b once a retry is due, until its repeats are spent, with b's unfeasible route refreshed in between
+	asks := 0
+	at := time.Now()
+	for range seqnoRequestRetries + 2 {
+		at = at.Add(seqnoRetryInitial * 8)
+		a.mu.Lock()
+		for _, action := range a.retryStarvedLocked(at) {
+			if action.neighbor.peer.ID == "b" {
+				asks++
+			}
+		}
+		a.mu.Unlock()
+		fabric.offer("a", "b", "o", key, 1, 900)
+	}
+	a.mu.Lock()
+	kept := a.starveRetries[id]
+	a.mu.Unlock()
+	if asks != seqnoRequestRetries || kept != nil {
+		t.Errorf("starved again after its repeats were spent, a repeated its request to b %d times and holds the retry %+v, want %d repeats and no retry left",
+			asks, kept, seqnoRequestRetries)
 	}
 }
 

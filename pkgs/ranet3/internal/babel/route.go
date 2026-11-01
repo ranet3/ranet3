@@ -75,6 +75,8 @@ type starveRequest struct {
 	neighbor *neighborState
 	routerID [8]byte
 	seqno    uint16
+	// once is a request the Speaker does not repeat
+	once bool
 }
 
 // Speaker.mu owns the route table, the source table AND forwarding-table
@@ -175,15 +177,28 @@ func (rt *routeTable) update(n *neighborState, key routeKey, adv advertisement, 
 		rt.forgetRetraction(n)
 	}
 	feasible := rt.feasible(key, adv, n.peer.ID)
+	// An unfeasible update has a distance recorded for its source, or was
+	// refused because the source table had no room for one. A refused update
+	// leaves no route from its neighbor: it creates none, and it retracts the
+	// route it replaces.
+	refused := !feasible && rt.sources[sourceKey{route: key, routerID: adv.routerID}] == nil
 	entry := rt.entries[key]
 	var route *routeInfo
 	if entry != nil {
 		route = entry.routes[n]
 	}
+	switch {
+	case refused && route != nil:
+		adv, feasible = advertisement{routerID: route.routerID, seqno: route.seqno, metric: MetricInfinity}, true
+	case refused:
+		return
+	}
 	if route == nil {
-		// An unfeasible update, a retraction for a route we do not know about,
-		// and an update that expires on arrival all create nothing.
-		if !feasible || adv.metric == MetricInfinity || hold <= 0 {
+		// A retraction for a route we do not know about and an update that
+		// expires on arrival create nothing. Any other unfeasible update is
+		// kept as a candidate, which a later loss of the selected route
+		// starves on.
+		if adv.metric == MetricInfinity || hold <= 0 {
 			return
 		}
 		if entry == nil {
@@ -227,6 +242,63 @@ func (rt *routeTable) update(n *neighborState, key routeKey, adv advertisement, 
 		rt.starve(key, n, adv)
 	}
 	rt.selectRoute(key, entry, now)
+	// Section 3.8.2.2 again: an unfeasible update from another neighbor whose
+	// route selection would take were it feasible draws one request, not
+	// repeated.
+	if !feasible && !selected && rt.wouldWin(key, entry, n, now) {
+		rt.starved = append(rt.starved, starveRequest{
+			key: key, neighbor: n, routerID: adv.routerID, seqno: rt.requestSeqno(key, adv), once: true,
+		})
+	}
+}
+
+// wouldWin reports whether selection would take n's route for key were it
+// feasible, weighed with every feasible route selectRoute weighs, by the same
+// order and the same rule.
+func (rt *routeTable) wouldWin(key routeKey, entry *keyEntry, n *neighborState, now time.Time) bool {
+	route := entry.routes[n]
+	cost := route.cost(n, now, rt.cost)
+	if cost == MetricInfinity {
+		return false
+	}
+	best, bestCost, bestSmoothed := n, cost, route.smoothed
+	var incumbent *routeInfo
+	var incumbentCost uint16
+	for other, candidate := range entry.routes {
+		if other == n {
+			continue
+		}
+		cost := candidate.cost(other, now, rt.cost)
+		if cost == MetricInfinity || !rt.feasible(key, candidate.advertised(), other.peer.ID) {
+			continue
+		}
+		if other == entry.selected.neighbor {
+			incumbent, incumbentCost = candidate, cost
+		}
+		if goesBefore(other, cost, best, bestCost) {
+			best, bestCost, bestSmoothed = other, cost, candidate.smoothed
+		}
+	}
+	return best == n && rt.wins(bestCost, bestSmoothed, incumbent, incumbentCost)
+}
+
+// onlyCandidates reports whether every route entry holds for key is
+// unfeasible, a candidate kept to starve on rather than a route selection may
+// take as soon as its link carries it.
+func (rt *routeTable) onlyCandidates(key routeKey, entry *keyEntry) bool {
+	for n, route := range entry.routes {
+		if rt.feasible(key, route.advertised(), n.peer.ID) {
+			return false
+		}
+	}
+	return true
+}
+
+// goesBefore reports whether n's route at cost comes before best's at bestCost
+// in the order selection weighs routes in: the lower cost first, and a tie to
+// the peer ID that sorts first, so map iteration cannot affect the choice.
+func goesBefore(n *neighborState, cost uint16, best *neighborState, bestCost uint16) bool {
+	return best == nil || cost < bestCost || cost == bestCost && n.peer.ID < best.peer.ID
 }
 
 // Every change uses the same selection procedure, including a metric increase
@@ -237,12 +309,14 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	var bestCost, incumbentCost uint16
 	var bestSmoothed float64
 	var unfeasible []*neighborState
+	flushed := false
 	for n, route := range entry.routes {
 		if !now.Before(route.expiresAt) {
 			// Section 3.5.3: a route expires to infinity first, which holds the
 			// prefix (section 3.5.4), and the next expiry flushes it.
 			if route.rxMetric == MetricInfinity {
 				delete(entry.routes, n)
+				flushed = true
 				continue
 			}
 			route.rxMetric = MetricInfinity
@@ -276,8 +350,7 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 		if n == entry.selected.neighbor {
 			incumbent, incumbentRoute, incumbentCost = n, route, cost
 		}
-		// Break ties by peer ID so map iteration cannot affect the choice.
-		if best == nil || cost < bestCost || (cost == bestCost && n.peer.ID < best.peer.ID) {
+		if goesBefore(n, cost, best, bestCost) {
 			best, bestCost, bestSmoothed = n, cost, route.smoothed
 		}
 	}
@@ -326,6 +399,19 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	if len(entry.routes) == 0 {
 		delete(rt.entries, key)
 		rt.dirty[key] = struct{}{} // a flushed prefix may still need retracting
+		rt.lose(key, now)
+	} else if flushed {
+		rt.loseToCandidates(key, entry, now)
+	}
+}
+
+// loseToCandidates settles the forwarding entry of a key with no route selected
+// whose routes are now all unfeasible candidates, as lose does when the last
+// route goes. A retracted route still in its hold counts as a route, so a key
+// beside one is left alone until that route is flushed. The candidates are kept
+// to starve on, and the hold ends as the sweep ends it, through onlyCandidates.
+func (rt *routeTable) loseToCandidates(key routeKey, entry *keyEntry, now time.Time) {
+	if entry.selected.neighbor == nil && rt.onlyCandidates(key, entry) {
 		rt.lose(key, now)
 	}
 }
@@ -445,7 +531,13 @@ func (r *routeInfo) smooth(cost uint16, now time.Time, tau time.Duration) {
 	r.smoothed, r.smoothedAt = max(r.smoothed, float64(cost)), now
 }
 
+// starve asks n's origin for a seqno past the distance the source table holds
+// for it. A route kept from before the table filled, whose origin the table
+// has no distance for, has no seqno to ask past.
 func (rt *routeTable) starve(key routeKey, n *neighborState, adv advertisement) {
+	if rt.sources[sourceKey{route: key, routerID: adv.routerID}] == nil {
+		return
+	}
 	rt.starved = append(rt.starved, starveRequest{
 		key: key, neighbor: n, routerID: adv.routerID, seqno: rt.requestSeqno(key, adv),
 	})
@@ -477,6 +569,9 @@ func (rt *routeTable) expireNeighbor(n *neighborState, now time.Time) {
 		if _, ok := entry.routes[n]; ok {
 			delete(entry.routes, n)
 			rt.selectRoute(key, entry, now)
+			if rt.entries[key] != nil {
+				rt.loseToCandidates(key, entry, now)
+			}
 		}
 	}
 }
@@ -532,8 +627,9 @@ func (rt *routeTable) sweepExpired(now time.Time) {
 		}
 		delete(rt.held, key)
 		// a key with routes keeps the entry their selection wrote, until the
-		// last of them goes
-		if rt.entries[key] == nil {
+		// last of them goes, but unfeasible candidates kept to starve on do
+		// not lengthen the hold
+		if entry := rt.entries[key]; entry == nil || rt.onlyCandidates(key, entry) {
 			rt.flush(key)
 		}
 	}

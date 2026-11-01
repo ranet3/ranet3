@@ -700,15 +700,18 @@ func (s *Speaker) starvedActions(now time.Time) []sendAction {
 		if s.neighbors[request.neighbor.peer.ID] != request.neighbor {
 			continue // the peer was replaced or removed while we held the lock
 		}
+		// Recorded whether or not this particular packet goes out, so a prefix
+		// starved inside the window of an earlier request, a one-off one or one
+		// for the same seqno, still gets a retry rather than never being asked
+		// about again.
+		if !request.once {
+			s.rememberStarved(request.key, request.routerID, request.seqno, request.neighbor.peer.ID, now)
+		}
 		if !s.allowAsk(request.neighbor, request.key, request.routerID, request.seqno, now) {
 			continue
 		}
 		actions = append(actions, s.seqnoRequestTo(request.neighbor, request.key,
 			request.routerID, request.seqno, now))
-		// Recorded whether or not this particular packet went out, so a prefix
-		// starved inside the window of a request we forwarded moments earlier
-		// still gets a retry rather than never being asked about again.
-		s.rememberStarved(request.key, request.routerID, request.seqno, request.neighbor.peer.ID, now)
 	}
 	return actions
 }
@@ -776,6 +779,11 @@ func aeFor(p netip.Prefix) uint8 {
 func (s *Speaker) rememberStarved(key routeKey, routerID [8]byte, seqno uint16, asker string, now time.Time) {
 	id := sourceKey{route: key, routerID: routerID}
 	if retry, ok := s.starveRetries[id]; ok {
+		// A starvation follows a loss of the prefix's selection, so one that
+		// finds the retry of an earlier loss, the prefix selected and lost again
+		// before a pass forgot it, starts a new series. A prefix that stays
+		// starved starves no more and keeps the series it has.
+		retry.attempts = 0
 		retry.seqno, retry.nextAt = seqno, now.Add(seqnoRetryInitial)
 		s.nextStarveRetry = earlier(s.nextStarveRetry, retry.nextAt)
 		return

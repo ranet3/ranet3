@@ -7,6 +7,7 @@ package babel
 import (
 	"math"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 
@@ -150,8 +151,8 @@ func TestUnfeasibleUpdateIsNeverSelected(t *testing.T) {
 	rt.observe(key, advertisement{routerID: origin, seqno: 1, metric: 40}, "peer", now)
 
 	rt.update(n, key, advertisement{routerID: origin, seqno: 1, metric: 40}, time.Minute, now)
-	if len(rt.entries) != 0 {
-		t.Fatal("an unfeasible update created a route")
+	if entry := rt.entries[key]; entry == nil || entry.selected.neighbor != nil {
+		t.Fatal("an unfeasible update was selected or not kept as a candidate")
 	}
 	rt.update(n, key, advertisement{routerID: origin, seqno: 1, metric: 39}, time.Minute, now)
 	if rt.entries[key].selected.neighbor != n {
@@ -220,6 +221,53 @@ func TestHysteresisIgnoresFlappingChallenger(t *testing.T) {
 	rt.sweepExpired(now.Add(15 * time.Second))
 	if got := rt.entries[key].selected.neighbor; got != flappy {
 		t.Fatal("a consistently better route never took over")
+	}
+}
+
+// an unfeasible offer draws a request only where selection would take it were it feasible, weighed with every feasible route, not with the selected one alone, and not with another unfeasible one
+// b is selected, c is cheaper but was dear a moment ago, so its smoothed metric keeps b, and z beats b but not c
+// were z feasible selection would weigh c first and still keep b, so z draws no request
+func TestUnfeasibleOfferIsWeighedWithEveryFeasibleRoute(t *testing.T) {
+	now := time.Now()
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:7::/48")}
+	b, c, z := &neighborState{peer: &netstack.Peer{ID: "b"}}, &neighborState{peer: &netstack.Peer{ID: "c"}}, &neighborState{peer: &netstack.Peer{ID: "z"}}
+	for _, n := range []*neighborState{b, c, z} {
+		makeNeighborReachable(n)
+	}
+	rt := newRouteTable(func(routeKey, routeSelection) {})
+	rt.tau, rt.margin = marginTau, defaultMargin
+	feasibleOrigin, unfeasibleOrigin := [8]byte{1}, [8]byte{2}
+	rt.observe(key, advertisement{routerID: unfeasibleOrigin, seqno: 1, metric: 10}, "z", now)
+	rt.update(b, key, advertisement{routerID: feasibleOrigin, seqno: 1, metric: 100}, time.Hour, now)
+	rt.update(c, key, advertisement{routerID: feasibleOrigin, seqno: 1, metric: 300}, time.Hour, now)
+	rt.update(c, key, advertisement{routerID: feasibleOrigin, seqno: 1, metric: 50}, time.Hour, now)
+	if got := rt.entries[key].selected.neighbor; got != b {
+		t.Fatalf("selected %v, want b, whose smoothed metric is the lowest", got)
+	}
+	rt.takeStarved()
+	rt.update(z, key, advertisement{routerID: unfeasibleOrigin, seqno: 1, metric: 60}, time.Hour, now)
+	for _, request := range rt.takeStarved() {
+		if request.neighbor == z {
+			t.Errorf("z's offer, which c goes before, drew %+v", request)
+		}
+	}
+
+	// without c in the way the same offer draws its request
+	rt.update(c, key, advertisement{routerID: feasibleOrigin, seqno: 1, metric: MetricInfinity}, time.Hour, now)
+	rt.takeStarved()
+	rt.update(z, key, advertisement{routerID: unfeasibleOrigin, seqno: 1, metric: 60}, time.Hour, now)
+	if got := rt.takeStarved(); len(got) != 1 || got[0].neighbor != z || !got[0].once {
+		t.Errorf("with c gone z's offer drew %+v, want one request to z, so the case above proves nothing", got)
+	}
+
+	// x's cheaper candidate is unfeasible, so selection could never take it, and z still draws its request
+	x := &neighborState{peer: &netstack.Peer{ID: "x"}}
+	makeNeighborReachable(x)
+	rt.update(x, key, advertisement{routerID: unfeasibleOrigin, seqno: 1, metric: 40}, time.Hour, now)
+	rt.takeStarved()
+	rt.update(z, key, advertisement{routerID: unfeasibleOrigin, seqno: 1, metric: 60}, time.Hour, now)
+	if got := rt.takeStarved(); len(got) != 1 || got[0].neighbor != z || !got[0].once {
+		t.Errorf("with x's unfeasible candidate cheaper still z's offer drew %+v, want one request to z", got)
 	}
 }
 
@@ -447,6 +495,144 @@ func TestRepeatedRetractionsNeitherExtendNorCutTheHold(t *testing.T) {
 	rt.sweepExpired(now.Add(time.Second))
 	if len(rt.entries) != 1 {
 		t.Error("a retraction carrying its own short interval cut the hold, so the prefix falls through at once")
+	}
+}
+
+// a prefix that lost its last route is held until every update this node sent for it has expired at a neighbor, unless a route for it is selected first
+// an unfeasible candidate that arrives inside the hold is never selected, so the hold still ends when it was due to
+func TestUnfeasibleCandidateDoesNotLengthenTheHold(t *testing.T) {
+	now := time.Now()
+	key := routeKey{dest: netip.MustParsePrefix("10.0.2.0/24")}
+	a, b := &neighborState{peer: &netstack.Peer{ID: "a"}}, &neighborState{peer: &netstack.Peer{ID: "b"}}
+	makeNeighborReachable(a)
+	makeNeighborReachable(b)
+	var released []bool
+	rt := newRouteTable(func(routeKey, routeSelection) {})
+	rt.forget = func(_ routeKey, held bool) { released = append(released, held) }
+	rt.updateExpiry = 10 * time.Minute
+	const hold = time.Minute
+	origin := advertisement{routerID: [8]byte{1}, seqno: 1, metric: 1}
+	rt.update(a, key, origin, hold, now)
+	rt.observe(key, origin, "a", now)
+	rt.noteAdvertised(key, now)
+	until := rt.advertisedUntil[key]
+	rt.update(a, key, advertisement{routerID: origin.routerID, seqno: 1, metric: MetricInfinity}, hold, now)
+	rt.sweepExpired(now.Add(hold + time.Second))
+	if rt.entries[key] != nil || !slices.Equal(released, []bool{true}) {
+		t.Fatalf("the flushed route left the entry %v and wrote %v, want it held", rt.entries[key] != nil, released)
+	}
+	rt.update(b, key, advertisement{routerID: origin.routerID, seqno: 1, metric: 50}, time.Hour, now.Add(hold+2*time.Second))
+	if entry := rt.entries[key]; entry == nil || entry.selected.neighbor != nil {
+		t.Fatal("the unfeasible offer was selected or not kept, so this proves nothing")
+	}
+	rt.sweepExpired(until.Add(time.Second))
+	if !slices.Equal(released, []bool{true, false}) {
+		t.Errorf("with a candidate kept the hold wrote %v, want it held and then released when it was due", released)
+	}
+}
+
+// a prefix whose last route that could carry it goes while an unfeasible candidate kept before is left is held as one that lost its last route, and released when every update this node sent for it has expired
+// the route goes by its flush at the end of its hold, or with its neighbor's session
+func TestCandidateKeptBeforeTheLossDoesNotLengthenTheHold(t *testing.T) {
+	for _, how := range []string{"flushed", "neighbor gone"} {
+		t.Run(how, func(t *testing.T) {
+			now := time.Now()
+			key := routeKey{dest: netip.MustParsePrefix("10.0.3.0/24")}
+			a, b := &neighborState{peer: &netstack.Peer{ID: "a"}}, &neighborState{peer: &netstack.Peer{ID: "b"}}
+			makeNeighborReachable(a)
+			makeNeighborReachable(b)
+			var released []bool
+			rt := newRouteTable(func(routeKey, routeSelection) {})
+			rt.forget = func(_ routeKey, held bool) { released = append(released, held) }
+			rt.updateExpiry = 10 * time.Minute
+			const hold = time.Minute
+			origin := advertisement{routerID: [8]byte{1}, seqno: 1, metric: 1}
+			rt.update(a, key, origin, hold, now)
+			// the distance this node advertised through a, which b's offer does not beat
+			rt.observe(key, advertisement{routerID: origin.routerID, seqno: 1, metric: 30}, "a", now)
+			rt.noteAdvertised(key, now)
+			until := rt.advertisedUntil[key]
+			rt.update(b, key, advertisement{routerID: origin.routerID, seqno: 1, metric: 50}, time.Hour, now)
+			if entry := rt.entries[key]; entry.selected.neighbor != a || entry.routes[b] == nil {
+				t.Fatal("b's offer was selected or not kept, so this proves nothing")
+			}
+			if how == "flushed" {
+				rt.update(a, key, advertisement{routerID: origin.routerID, seqno: 1, metric: MetricInfinity}, hold, now)
+				rt.sweepExpired(now.Add(hold + time.Second))
+			} else {
+				rt.expireNeighbor(a, now.Add(hold+time.Second))
+			}
+			if !slices.Equal(released, []bool{true}) {
+				t.Fatalf("once a's route went the forwarding writes were %v, want it held", released)
+			}
+			rt.sweepExpired(until.Add(time.Second))
+			if !slices.Equal(released, []bool{true, false}) || rt.entries[key] == nil {
+				t.Errorf("with b's candidate kept the forwarding writes were %v and the entry kept %v, want it held, released when due, and the candidate kept",
+					released, rt.entries[key] != nil)
+			}
+		})
+	}
+}
+
+// a's flush leaves c's retracted route still held at infinity, which counts as a route, so the forwarding entry stays unreachable until it too is flushed
+func TestFlushBesideARetractedRouteStillHeldWritesNothing(t *testing.T) {
+	now := time.Now()
+	key := routeKey{dest: netip.MustParsePrefix("10.0.4.0/24")}
+	a, c := &neighborState{peer: &netstack.Peer{ID: "a"}}, &neighborState{peer: &netstack.Peer{ID: "c"}}
+	makeNeighborReachable(a)
+	makeNeighborReachable(c)
+	var released []bool
+	rt := newRouteTable(func(routeKey, routeSelection) {})
+	rt.forget = func(_ routeKey, held bool) { released = append(released, held) }
+	rt.updateExpiry = time.Second
+	origin := [8]byte{1}
+	rt.update(a, key, advertisement{routerID: origin, seqno: 1, metric: 1}, time.Minute, now)
+	rt.update(c, key, advertisement{routerID: origin, seqno: 1, metric: 5}, 2*time.Minute, now)
+	rt.update(c, key, advertisement{routerID: origin, seqno: 1, metric: MetricInfinity}, 0, now)
+	rt.update(a, key, advertisement{routerID: origin, seqno: 1, metric: MetricInfinity}, 0, now)
+	rt.sweepExpired(now.Add(time.Minute + time.Second))
+	if entry := rt.entries[key]; entry == nil || entry.routes[a] != nil || entry.routes[c] == nil {
+		t.Fatal("a's route was not flushed or c's went with it, so this proves nothing")
+	}
+	if len(released) != 0 {
+		t.Errorf("a's flush, with c's retracted route still held, wrote %v, want the unreachable entry kept", released)
+	}
+	rt.sweepExpired(now.Add(2*time.Minute + time.Second))
+	if !slices.Equal(released, []bool{false}) || rt.entries[key] != nil {
+		t.Errorf("once c's route was flushed too the writes were %v and the entry kept %v, want it released", released, rt.entries[key] != nil)
+	}
+}
+
+// a route that goes by its flush or with its neighbor's session, beside a feasible route selection moves to, writes nothing over the forwarding entry that selection installed
+func TestRouteGoneBesideASelectedOneWritesNoUnreachable(t *testing.T) {
+	for _, how := range []string{"flushed", "neighbor gone"} {
+		t.Run(how, func(t *testing.T) {
+			now := time.Now()
+			key := routeKey{dest: netip.MustParsePrefix("10.0.6.0/24")}
+			a, c := &neighborState{peer: &netstack.Peer{ID: "a"}}, &neighborState{peer: &netstack.Peer{ID: "c"}}
+			makeNeighborReachable(a)
+			makeNeighborReachable(c)
+			var released []bool
+			rt := newRouteTable(func(routeKey, routeSelection) {})
+			rt.forget = func(_ routeKey, held bool) { released = append(released, held) }
+			rt.updateExpiry = 10 * time.Minute
+			origin := [8]byte{1}
+			rt.update(a, key, advertisement{routerID: origin, seqno: 1, metric: 1}, 10*time.Second, now)
+			rt.update(c, key, advertisement{routerID: origin, seqno: 1, metric: 5}, time.Hour, now)
+			rt.noteAdvertised(key, now)
+			if how == "flushed" {
+				rt.update(a, key, advertisement{routerID: origin, seqno: 1, metric: MetricInfinity}, 0, now)
+				rt.sweepExpired(now.Add(11 * time.Second))
+			} else {
+				rt.expireNeighbor(a, now.Add(time.Second))
+			}
+			if entry := rt.entries[key]; entry == nil || entry.selected.neighbor != c || entry.routes[a] != nil {
+				t.Fatal("c is not selected or a's route is still there, so this proves nothing")
+			}
+			if len(released) != 0 {
+				t.Errorf("a's route going beside c's selected one wrote %v over c's forwarding entry", released)
+			}
+		})
 	}
 }
 

@@ -268,12 +268,15 @@ func sourceSpecificUpdateTLV(dest netip.Prefix, source netip.Prefix, metric uint
 	return RawTLV{Type: TLVUpdate, Body: body}
 }
 
+// reachableLinkCost is the link cost makeNeighborReachable leaves, which a route's cost adds to what its neighbor advertised
+const reachableLinkCost = 32
+
 func makeNeighborReachable(n *neighborState) {
 	n.alive = true
 	n.lastHelloTime = time.Now()
 	n.helloInterval = time.Minute
 	n.haveReportedCost = true
-	n.reportedCost = 32
+	n.reportedCost = reachableLinkCost
 	n.ihuExpiry = time.Now().Add(time.Minute)
 }
 

@@ -16,9 +16,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
-// the link cost makeNeighborReachable leaves, which a route's cost adds to what its neighbor advertised
-const reachableLinkCost = 32
-
 // the largest finite cost and smoothed cost
 const mostFinite = int64(MetricInfinity) - 1
 
