@@ -214,6 +214,10 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 			asYAML: "cap:\n  babel:\n    quality: best\n",
 			asTOML: "[cap.babel]\nquality = \"best\"\n",
 		},
+		"a switching margin of infinity": {
+			asYAML: "cap:\n  babel:\n    margin: 65535\n",
+			asTOML: "[cap.babel]\nmargin = 65535\n",
+		},
 		"an oversized replay window": {
 			asYAML: "cap:\n  crypto:\n    replay: 1048577\n",
 			asTOML: "[cap.crypto]\nreplay = 1048577\n",
@@ -1159,7 +1163,7 @@ func pointerScalars(ty reflect.Type, prefix string) []string {
 // the round trip below goes through the loader rather than through a decoder alone
 func fullConfig() Config {
 	transits := false
-	rxcost, weight := uint16(96), uint16(1024)
+	rxcost, weight, switching := uint16(96), uint16(1024), uint16(6)
 	rttMin, rttMax := schema.Duration(10*time.Millisecond), schema.Duration(1024*time.Millisecond)
 	replay := uint32(2048)
 	child, rekeyIKE := schema.Duration(90*time.Minute), schema.Duration(150*time.Minute)
@@ -1217,6 +1221,7 @@ func fullConfig() Config {
 					Org:     map[string]uint16{"other": 2048, "example": 5},
 					Node:    map[string]uint16{"example/gateway": 300},
 				}},
+				Margin: &switching,
 			},
 			Table: &kernel.Table{
 				ID:              200,

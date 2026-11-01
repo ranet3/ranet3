@@ -1462,17 +1462,20 @@ func TestDefaultsMatchFleetTheyReplace(t *testing.T) {
 	}
 }
 
-// The route table's hysteresis and its trigger threshold are configuration,
-// not constants, and both are wired up once in New. With tau at zero the
+// The route table's hysteresis, its switching margin and its trigger threshold
+// are configuration, not constants, and all three are wired up in New. With tau at zero the
 // smoothed metric of RFC 8966 Appendix A.3 follows the instantaneous one
 // exactly, so a flapping challenger takes the route on its first good sample.
 // With the trigger at zero every metric fluctuation earns a triggered update.
 func TestRouteTableTakesHysteresisFromConfig(t *testing.T) {
-	rx, max := uint16(77), dur(time.Second)
-	cfg := Config{Hello: dur(3 * time.Second), Cost: CostOptions{Rx: &rx, RTT: RTTOptions{Max: &max}}}
+	rx, max, margin := uint16(77), dur(time.Second), uint16(11)
+	cfg := Config{Hello: dur(3 * time.Second), Cost: CostOptions{Rx: &rx, RTT: RTTOptions{Max: &max}}, Margin: &margin}
 	speaker, err := New(cfg, Routes{}, Runtime{}, &netstack.Mesh{Routes: netstack.NewRouteTable()})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if speaker.routes.margin != margin {
+		t.Errorf("the switching margin is %d, want the %d cap.babel.margin writes", speaker.routes.margin, margin)
 	}
 	if want := 3 * cfg.HelloInterval(); speaker.routes.tau != want {
 		t.Errorf("the smoothing time constant is %s, want %s, three hello intervals", speaker.routes.tau, want)

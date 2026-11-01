@@ -33,6 +33,26 @@ func TestValidateRefusesALinkQualityWithNoSpelling(t *testing.T) {
 	}
 }
 
+// a margin left out is 4, one written is taken as written, 0 included, and 65535 is refused
+func TestMarginDefaultsToFourAndStopsShortOfInfinity(t *testing.T) {
+	if got := (Config{}).MarginEffective(); got != 4 {
+		t.Errorf("a margin left out is %d, want 4", got)
+	}
+	for _, margin := range []uint16{0, 1, MetricInfinity - 1} {
+		config := Config{Margin: &margin}
+		if got := config.MarginEffective(); got != margin {
+			t.Errorf("a margin written as %d is %d", margin, got)
+		}
+		if err := config.Validate(); err != nil {
+			t.Errorf("a margin of %d was refused: %v", margin, err)
+		}
+	}
+	infinity := uint16(MetricInfinity)
+	if err := (Config{Margin: &infinity}).Validate(); err == nil || !strings.Contains(err.Error(), "margin") {
+		t.Errorf("a margin of %d was refused with %v, want a refusal naming the margin", infinity, err)
+	}
+}
+
 // a link quality written as a list or a mapping is refused with its line
 // the scalar half took the empty text such a node leaves for the default, so quality: [none] ran as etx
 func TestQualityWrittenAsAListOrAMappingIsRefused(t *testing.T) {

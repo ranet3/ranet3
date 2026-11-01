@@ -223,6 +223,54 @@ func TestHysteresisIgnoresFlappingChallenger(t *testing.T) {
 	}
 }
 
+// marginTau is the hysteresis time constant the speaker runs at the default hello interval
+const marginTau = 12 * time.Second
+
+// twoEqualRoutes is a table at margin holding one prefix through a and b at the same cost, a selected
+func twoEqualRoutes(t *testing.T, margin uint16, now time.Time) (*routeTable, routeKey, *neighborState, *neighborState) {
+	t.Helper()
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8:5::/48")}
+	a, b := &neighborState{peer: &netstack.Peer{ID: "a"}}, &neighborState{peer: &netstack.Peer{ID: "b"}}
+	makeNeighborReachable(a)
+	makeNeighborReachable(b)
+	rt := newRouteTable(func(routeKey, routeSelection) {})
+	rt.tau, rt.margin = marginTau, margin
+	for _, n := range []*neighborState{a, b} {
+		rt.update(n, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 68}, time.Hour, now)
+	}
+	if got := rt.entries[key].selected.neighbor; got != a {
+		t.Fatalf("the tie went to %v, want a", got)
+	}
+	return rt, key, a, b
+}
+
+// a one-unit rise on the selected route keeps it at the default margin, where with no margin the route at the old cost took over at once
+// a challenger better by more than the margin on both measures takes over once its smoothed cost has come down that far
+func TestOneUnitRiseKeepsTheSelectedRouteAndAClearlyBetterOneTakesOver(t *testing.T) {
+	now := time.Now()
+	rt, key, a, b := twoEqualRoutes(t, defaultMargin, now)
+	rt.update(a, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 69}, time.Hour, now.Add(4*time.Second))
+	if got := rt.entries[key].selected.neighbor; got != a {
+		t.Fatalf("a one-unit rise moved the prefix to %q", got.peer.ID)
+	}
+
+	rt.update(b, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 58}, time.Hour, now.Add(5*time.Second))
+	rt.sweepExpired(now.Add(6 * time.Second))
+	if got := rt.entries[key].selected.neighbor; got != a {
+		t.Fatalf("a route 11 cheaper took over a second after it fell, before its smoothed cost was %d below, via %q", defaultMargin, got.peer.ID)
+	}
+	rt.sweepExpired(now.Add(5*time.Second + marginTau))
+	if got := rt.entries[key].selected.neighbor; got != b {
+		t.Fatal("a route 11 cheaper for a time constant never took over")
+	}
+
+	rt, key, a, _ = twoEqualRoutes(t, 0, now)
+	rt.update(a, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 69}, time.Hour, now.Add(4*time.Second))
+	if got := rt.entries[key].selected.neighbor; got == a {
+		t.Error("with no margin a one-unit rise kept the selected route, so the case above proves nothing")
+	}
+}
+
 // RFC 8966 section 3.5.4 holds a retracted prefix for its whole interval, so a
 // packet for it is answered rather than sent down a covering route. The hold
 // has to run from the retraction: one arriving just before the deadline of the

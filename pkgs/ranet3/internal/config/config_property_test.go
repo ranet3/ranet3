@@ -337,6 +337,7 @@ func speakers() hegel.Generator[babel.Config] {
 					Node:    amounts(tc, nodeKeys),
 				},
 			},
+			Margin: hegel.Draw(tc, hegel.Optional(edges[uint16](0, babel.MetricInfinity-1))),
 		}
 	})
 }

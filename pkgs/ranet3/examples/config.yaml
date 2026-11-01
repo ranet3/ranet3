@@ -92,6 +92,7 @@ cap:
     hello: 4s
     update: 16s
     # quality: etx
+    # margin: 4   # a route replaces the selected one where its cost is lower and its smoothed cost lower by more than this
     # cost:
     #   rx: 96
     #   rtt: { weight: 1024, min: 10ms, max: 1024ms }

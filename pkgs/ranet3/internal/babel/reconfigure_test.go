@@ -301,10 +301,27 @@ func TestReloadedCapBabelIsRecordedWithItsIntervalsAndCost(t *testing.T) {
 		t.Fatalf("the change was recorded %d times, want once", len(got))
 	}
 	for key, want := range map[string]string{"hello": "3s", "update": "5m0s", "rx": "200", "quality": "etx",
-		"rtt_weight": "1024", "rtt_min": "10ms", "rtt_max": "1.024s"} {
+		"rtt_weight": "1024", "rtt_min": "10ms", "rtt_max": "1.024s", "margin": "4"} {
 		if got[0].Attrs[key] != want {
 			t.Errorf("the event carries %s=%q, want %q", key, got[0].Attrs[key], want)
 		}
+	}
+}
+
+// a reload that changes the switching margin alone is a change, which selection takes and the event records
+func TestReloadedMarginAloneIsApplied(t *testing.T) {
+	bus := events.New()
+	speaker, _, _ := captureSpeaker(t, Config{}, Runtime{Events: bus})
+	margin := uint16(9)
+	speaker.SetConfig(Config{Margin: &margin})
+	got := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "babel.config.applied" }, 0)
+	if len(got) != 1 || got[0].Attrs["margin"] != "9" {
+		t.Fatalf("a margin of 9 was recorded as %+v, want one event carrying it", got)
+	}
+	speaker.mu.Lock()
+	defer speaker.mu.Unlock()
+	if speaker.routes.margin != margin {
+		t.Errorf("selection runs on a margin of %d after the reload, want %d", speaker.routes.margin, margin)
 	}
 }
 

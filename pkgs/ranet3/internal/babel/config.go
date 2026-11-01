@@ -33,6 +33,11 @@ type Config struct {
 	// of the four numbers keeps the speaker's default on its own, so writing one
 	// of them leaves the other three alone.
 	Cost CostOptions `yaml:"cost,omitempty" json:"cost,omitzero" toml:"cost,omitempty"`
+	// Margin is the switching margin: a route replaces the selected one only
+	// where its cost is lower and its smoothed cost is lower by more than
+	// Margin. It is a pointer because 0 is a margin a file writes and the
+	// default is not.
+	Margin *uint16 `yaml:"margin,omitempty" json:"margin,omitempty" toml:"margin,omitempty"`
 }
 
 // Runtime is the half the speaker is handed rather than told: the router id
@@ -97,6 +102,15 @@ func (c Config) CostEffective() CostParams {
 	return cost
 }
 
+// MarginEffective is the switching margin in force, defaultMargin where the
+// file left it out.
+func (c Config) MarginEffective() uint16 {
+	if c.Margin == nil {
+		return defaultMargin
+	}
+	return *c.Margin
+}
+
 // Effective is the speaker a block describes, every omitted field filled in.
 // A reload compares two configurations through this rather than as they were
 // written, since an omitted field and one spelled out as its own default
@@ -105,10 +119,11 @@ type Effective struct {
 	Hello  time.Duration
 	Update time.Duration
 	Cost   CostParams
+	Margin uint16
 }
 
 func (c Config) Effective() Effective {
-	return Effective{Hello: c.HelloInterval(), Update: c.UpdateInterval(), Cost: c.CostEffective()}
+	return Effective{Hello: c.HelloInterval(), Update: c.UpdateInterval(), Cost: c.CostEffective(), Margin: c.MarginEffective()}
 }
 
 // Validate checks the capability, defaults included, so a bad rx cost fails
@@ -144,6 +159,9 @@ func (c Config) Validate() error {
 	if cost.RxCost == 0 || saturatingAdd(cost.RxCost, cost.RTT.Weight) == MetricInfinity {
 		return fmt.Errorf("babel: cap.babel cost rx %d plus rtt weight %d must be between 1 and %d",
 			cost.RxCost, cost.RTT.Weight, MetricInfinity-1)
+	}
+	if margin := c.MarginEffective(); margin == MetricInfinity {
+		return fmt.Errorf("babel: cap.babel margin %d is more than %d", margin, MetricInfinity-1)
 	}
 	return c.Cost.Extra.Validate()
 }

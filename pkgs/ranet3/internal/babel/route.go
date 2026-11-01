@@ -110,6 +110,8 @@ type routeTable struct {
 	// worse a selected route must get before it is worth a triggered update.
 	tau     time.Duration
 	trigger uint16
+	// margin is cap.babel.margin, see wins
+	margin uint16
 	// cost carries the round-trip parameters into selection, since RFC 9616
 	// section 4.2 feeds its penalty to the metric computation a node runs on
 	// its own routes rather than to what it advertises.
@@ -226,8 +228,9 @@ func (rt *routeTable) update(n *neighborState, key routeKey, adv advertisement, 
 // on the selected route, a link-cost change, expiry, and neighbor removal.
 func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) {
 	var best, incumbent *neighborState
+	var incumbentRoute *routeInfo
 	var bestCost, incumbentCost uint16
-	var bestSmoothed, incumbentSmoothed float64
+	var bestSmoothed float64
 	var unfeasible []*neighborState
 	for n, route := range entry.routes {
 		if !now.Before(route.expiresAt) {
@@ -266,7 +269,7 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 			continue
 		}
 		if n == entry.selected.neighbor {
-			incumbent, incumbentCost, incumbentSmoothed = n, cost, route.smoothed
+			incumbent, incumbentRoute, incumbentCost = n, route, cost
 		}
 		// Break ties by peer ID so map iteration cannot affect the choice.
 		if best == nil || cost < bestCost || (cost == bestCost && n.peer.ID < best.peer.ID) {
@@ -277,12 +280,7 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 	var selected routeSelection
 	switch {
 	case best == nil:
-	case incumbent == nil || best == incumbent:
-		selected = entry.selectionFor(best, bestCost)
-	case bestCost < incumbentCost && bestSmoothed < incumbentSmoothed:
-		// Appendix A.3: leave the selected route only when the challenger is
-		// better on both the instantaneous and the smoothed metric. Equal cost
-		// therefore keeps the current next hop.
+	case best == incumbent || rt.wins(bestCost, bestSmoothed, incumbentRoute, incumbentCost):
 		selected = entry.selectionFor(best, bestCost)
 	default:
 		selected = entry.selectionFor(incumbent, incumbentCost)
@@ -325,6 +323,16 @@ func (rt *routeTable) selectRoute(key routeKey, entry *keyEntry, now time.Time) 
 		rt.dirty[key] = struct{}{} // a flushed prefix may still need retracting
 		rt.lose(key, now)
 	}
+}
+
+// wins reports whether a route at cost and smoothed takes the selection from
+// incumbent, the selected route at incumbentCost, or nil where none is
+// selectable. Appendix A.3 leaves the selected route only for one better on
+// both the instantaneous and the smoothed metric, and section 3.6 lets this
+// node ask the smoothed one to be better by more than the margin, so two routes
+// whose costs jitter around one value stop trading places.
+func (rt *routeTable) wins(cost uint16, smoothed float64, incumbent *routeInfo, incumbentCost uint16) bool {
+	return incumbent == nil || cost < incumbentCost && smoothed+float64(rt.margin) < incumbent.smoothed
 }
 
 // lose settles the forwarding entry of a key that has just lost its last

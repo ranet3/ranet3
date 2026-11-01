@@ -313,7 +313,7 @@ func (s *Speaker) applyEffective(effective Effective) {
 	s.hello = effective.Hello
 	s.lostMu.Unlock()
 	s.update, s.cost = effective.Update, effective.Cost
-	s.routes.cost = s.cost
+	s.routes.cost, s.routes.margin = s.cost, effective.Margin
 	// RFC 8966 Appendix A.3 recommends a hysteresis time constant of a small
 	// multiple of the Hello interval. One link's base cost is the scale at
 	// which a metric change is worth a triggered update rather than a wait for
@@ -333,12 +333,12 @@ func (s *Speaker) applyEffective(effective Effective) {
 // otherwise every neighbor is sent a Hello with its IHU and the whole table at once
 // so a longer Hello or IHU interval is announced before it is in force, RFC 8966 sections 3.4.1 and 3.4.2
 // and a longer update interval reaches a neighbor before the route expiry it last derived runs out, Appendix B
-// the sequence number and every neighbor's Hello history are kept, and selection reruns on the new cost, sections 3.4.3 and 3.6
+// the sequence number and every neighbor's Hello history are kept, and selection reruns on the new cost and margin, sections 3.4.3 and 3.6
 func (s *Speaker) SetConfig(cfg Config) {
 	effective := cfg.Effective()
 	now := time.Now()
 	s.mu.Lock()
-	if effective == (Effective{Hello: s.hello, Update: s.update, Cost: s.cost}) && cfg.Cost.Extra.Equal(s.extra) {
+	if effective == (Effective{Hello: s.hello, Update: s.update, Cost: s.cost, Margin: s.routes.margin}) && cfg.Cost.Extra.Equal(s.extra) {
 		s.mu.Unlock()
 		return
 	}
@@ -361,7 +361,8 @@ func (s *Speaker) SetConfig(cfg Config) {
 		slog.Duration("hello", s.hello), slog.Duration("update", s.update),
 		slog.String("quality", s.cost.Quality.String()), slog.Int("rx", int(s.cost.RxCost)),
 		slog.Int("rtt_weight", int(s.cost.RTT.Weight)),
-		slog.Duration("rtt_min", s.cost.RTT.Min.Duration()), slog.Duration("rtt_max", s.cost.RTT.Max.Duration()))
+		slog.Duration("rtt_min", s.cost.RTT.Min.Duration()), slog.Duration("rtt_max", s.cost.RTT.Max.Duration()),
+		slog.Int("margin", int(s.routes.margin)))
 	s.mu.Unlock()
 	send()
 }
