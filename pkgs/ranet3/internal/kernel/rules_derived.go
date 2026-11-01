@@ -27,6 +27,8 @@ import (
 //
 // Mode 2 (exit.on) adds 5405, 5435 and 5440 to each family the tun holds an
 // overlay address of, and a family it holds none of runs mode off's rules.
+// Mode 3 sets exit.on too, so every rule this comment gives for mode 2 holds
+// for it.
 // Neither 5405 nor 5435 selects a source overlapping the overlay or this
 // node's own prefixes: 5405 comes ahead of 5430, so an overlay address on lo,
 // or an address in a LAN this node announces, would otherwise leave by main
@@ -104,15 +106,15 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 	return out
 }
 
-// exitView is mode 2 as a pass derives its rules: the host's links outside the
-// mesh as the network watch reads them, the names forward expands to among them
-// (see expandForward), the carve-outs of those links, the destinations of the
-// mesh's table, and each family the tun holds no overlay address of. The zero
-// value is mode off, whatever it holds beside. fallback is cap.exit fallback =
-// "none", own is the prefixes the mesh's table throws (see thrown), which a
-// pass reads only under it, lan is the prefixes cap.exit lan lists, and unheld
-// is the table ranet3_fallback not holding, which a pass reads only under
-// fallback.
+// exitView is mode 2 or 3 as a pass derives its rules: the host's links
+// outside the mesh as the network watch reads them, the names forward expands
+// to among them (see expandForward), the carve-outs of those links, the
+// destinations of the mesh's table, and each family the tun holds no overlay
+// address of. The zero value is mode off, whatever it holds beside. fallback
+// is cap.exit fallback = "none", written or unwritten in mode 3, own is the
+// prefixes the mesh's table throws (see thrown), which a pass reads only under
+// it, lan is the prefixes cap.exit lan lists, and unheld is the table
+// ranet3_fallback not holding, which a pass reads only under fallback.
 type exitView struct {
 	on          bool
 	network     NetworkState

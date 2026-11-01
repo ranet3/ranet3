@@ -530,7 +530,7 @@ func (m *routeMonitor) run() {
 
 // reconcilerWakes takes a notification touching what the reconciler owns
 // a rule is woken on only when it goes, since the pass that follows puts it back
-// an address is woken on only where it is the tun's, whoever wrote it, since mode 2's rules follow the tun's overlay addresses
+// an address is woken on only where it is the tun's, whoever wrote it, since the rules of modes 2 and 3 follow the tun's overlay addresses
 func reconcilerWakes(table uint32, proto uint8, tun uint32) func(nlMessage) bool {
 	return func(message nlMessage) bool {
 		switch message.Kind {

@@ -45,8 +45,8 @@ const (
 	// priorityUnderlayPastMesh is the goto the underlay's mark matches, to
 	// priorityMeshEnd.
 	priorityUnderlayPastMesh = 5400
-	// priorityUplinkSource looks main up, in mode 2, for the host's own packet
-	// from an address of a link outside the mesh.
+	// priorityUplinkSource looks main up, in modes 2 and 3, for the host's own
+	// packet from an address of a link outside the mesh.
 	priorityUplinkSource = 5405
 	// priorityMain looks main up for every route of it longer than /0, and
 	// for an unreachable, blackhole or prohibit /0, which suppression never
@@ -58,20 +58,20 @@ const (
 	priorityMesh = 5420
 	// priorityOwn looks the mesh's table up for a source among this node's own prefixes.
 	priorityOwn = 5430
-	// priorityLinkSource looks main up, in mode 2, for the host's own lookup
-	// from a connected network of a link forward leaves out, which a fib
-	// expression's reverse path check makes.
+	// priorityLinkSource looks main up, in modes 2 and 3, for the host's own
+	// lookup from a connected network of a link forward leaves out, which a
+	// fib expression's reverse path check makes.
 	priorityLinkSource = 5435
-	// priorityCatchAll looks the mesh's table up, in mode 2, for the host's own
-	// traffic and for what it forwards from the links forward names.
+	// priorityCatchAll looks the mesh's table up, in modes 2 and 3, for the
+	// host's own traffic and for what it forwards from the links forward names.
 	priorityCatchAll = 5440
-	// priorityOwnPastMesh looks main up, in mode 2 under fallback = "none", to
-	// each of this node's own prefixes the mesh's table throws, which 5440's
-	// lookup passes on.
+	// priorityOwnPastMesh looks main up, in modes 2 and 3 under fallback =
+	// "none", to each of this node's own prefixes the mesh's table throws,
+	// which 5440's lookup passes on.
 	priorityOwnPastMesh = 5445
-	// priorityRefused fails, in mode 2 under fallback = "none", every unmarked
-	// lookup of the host's own traffic and of what it forwards from the links
-	// forward names that no rule above answered.
+	// priorityRefused fails, in modes 2 and 3 under fallback = "none", every
+	// unmarked lookup of the host's own traffic and of what it forwards from
+	// the links forward names that no rule above answered.
 	priorityRefused = 5450
 	// priorityMeshEnd is the nop the second block's goto jumps to.
 	priorityMeshEnd = 5490

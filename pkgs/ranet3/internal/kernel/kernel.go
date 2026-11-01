@@ -1293,7 +1293,7 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], network p
 	if r.rules == nil {
 		return nil
 	}
-	// mode 2 cannot tell which families the tun holds an overlay address of without the listing, so the rules stay as they are
+	// modes 2 and 3 cannot tell which families the tun holds an overlay address of without the listing, so the rules stay as they are
 	// the address step's error has the pass retried
 	if r.table.Mode() != nil && !listed {
 		return nil
@@ -1842,7 +1842,7 @@ func compareSourceSpecificity(a, b netip.Prefix) int {
 // removes are recorded in owned: an address on the link that is not configured
 // and not recorded belongs to somebody else. It returns the link's addresses
 // as the pass leaves them, another writer's among them, and whether it listed
-// them: mode 2 reads them even where cap.table assigns nothing.
+// them: modes 2 and 3 read them even where cap.table assigns nothing.
 func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err error) {
 	if len(r.addresses) == 0 && len(r.owned) == 0 && r.table.Mode() == nil {
 		return nil, false, nil
