@@ -24,19 +24,14 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 	cfg := c.config()
 	crypto := cfg.Crypto()
 	responder, err := ike.NewResponder(ike.ResponderConfig{
-		Hub:                c.hub,
-		Local:              cfg.LocalFamilies(),
-		LocalPrivateKey:    c.privateKey,
-		Trust:              liveTrust{c},
-		Aliases:            func() ike.Aliases { return c.config().Auth.Aliases },
-		ChildRekeyInterval: crypto.ChildInterval(),
-		IKERekeyInterval:   crypto.IKEInterval(),
-		RekeyMargin:        crypto.Margin(),
-		RekeyJitter:        crypto.Jitter(),
-		RekeyRetryInitial:  crypto.RetryFirst(),
-		RekeyRetryMax:      crypto.RetryMax(),
-		Suites:             c.suites,
-		Events:             c.ikeEvent,
+		Hub:             c.hub,
+		Local:           cfg.LocalFamilies(),
+		LocalPrivateKey: c.privateKey,
+		Trust:           liveTrust{c},
+		Aliases:         func() ike.Aliases { return c.config().Auth.Aliases },
+		RekeyTiming:     crypto.Timing(),
+		Suites:          c.suites,
+		Events:          c.ikeEvent,
 	})
 	if err != nil {
 		return 0, err

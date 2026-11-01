@@ -979,8 +979,8 @@ func TestFollowupOnAClosingIKESADrawsTemporaryFailure(t *testing.T) {
 			return func() { s.closing.Store(false) }
 		},
 		"an IKE SA past its lifetime": func(s *Session, ctx *ikeContext) func() {
-			s.ikeRekeyInterval, ctx.established = rekeyLifetime, time.Now().Add(-rekeyLifetime)
-			return func() { s.ikeRekeyInterval = 0 }
+			s.timing.IKERekeyInterval, ctx.established = rekeyLifetime, time.Now().Add(-rekeyLifetime)
+			return func() { s.timing.IKERekeyInterval = 0 }
 		},
 	} {
 		t.Run(name, bubble.Run(func(t *testing.T) {
@@ -1283,7 +1283,7 @@ func (p *collisionPeer) silent(d time.Duration) bool {
 	return false
 }
 
-// rekeyDue is when a session's IKE SA was established whose scheduled rekey under rekeyLifetime and rekeyMargin falls due scheduleDue into the test
+// rekeyDue is when a session's IKE SA was established whose scheduled rekey under rekeyLifetime and rekeyMarginOf falls due scheduleDue into the test
 func rekeyDue() time.Time { return time.Now().Add(scheduleDue - (rekeyLifetime - rekeyMarginOf)) }
 
 // the lifetime and margin of the IKE SA a Run test rekeys on its schedule, the lifetime far past the test
@@ -1307,7 +1307,7 @@ func TestStateNotFoundAtTheLimitDeletesTheIKESA(t *testing.T) {
 func testStateNotFoundAtTheLimitDeletesTheIKESA(t *testing.T) {
 	p, events := chainPeer(t, rekeyDue())
 	s := p.session
-	s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
+	s.timing.IKERekeyInterval, s.timing.RekeyMargin = rekeyLifetime, rekeyMarginOf
 	s.stateNotFounds = stateNotFoundLimit - 1
 	run := runSession(t, s)
 	header, create := p.next("the rekey", CREATE_CHILD_SA, false)
@@ -1332,7 +1332,7 @@ func testStateNotFoundAtTheLimitDeletesTheIKESA(t *testing.T) {
 func TestChainEndingBehindAReplacementSendsNoSecondDelete(t *testing.T) {
 	p, events := chainPeer(t, rekeyDue())
 	s := p.session
-	s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
+	s.timing.IKERekeyInterval, s.timing.RekeyMargin = rekeyLifetime, rekeyMarginOf
 	s.stateNotFounds = stateNotFoundLimit - 1
 	var lists atomic.Pointer[Suites]
 	lists.Store(&chainLists)
@@ -1449,7 +1449,7 @@ func TestInvalidSyntaxForAFollowupEndsTheIKESAWithoutADelete(t *testing.T) {
 	t.Run("rekeying", bubble.Run(func(t *testing.T) {
 		p, _ := chainPeer(t, rekeyDue())
 		s := p.session
-		s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
+		s.timing.IKERekeyInterval, s.timing.RekeyMargin = rekeyLifetime, rekeyMarginOf
 		run := runSession(t, s)
 		header, create := p.next("the rekey", CREATE_CHILD_SA, false)
 		answer, _ := answerRekey(t, create, 0, []byte("link1"), nil)
@@ -1639,7 +1639,7 @@ func testRunClosingWhileALostRekeyWaitsSendsItsDeleteAtOnce(t *testing.T) {
 	below, above, own, answered := bytes.Repeat([]byte{2}, 32), bytes.Repeat([]byte{4}, 32), bytes.Repeat([]byte{5}, 32), bytes.Repeat([]byte{6}, 32)
 	p, _ := chainPeer(t, rekeyDue())
 	s := p.session
-	s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
+	s.timing.IKERekeyInterval, s.timing.RekeyMargin = rekeyLifetime, rekeyMarginOf
 	s.childFailed = make(chan error, 1)
 	drawsInTurn(s, below, own)
 	run := runSession(t, s)
@@ -1814,10 +1814,10 @@ func TestFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted(t *testi
 func testFollowupIsResentUntilAnsweredAndALateStateNotFoundIsNotCounted(t *testing.T) {
 	p, events := chainPeer(t, rekeyDue())
 	s := p.session
-	s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
+	s.timing.IKERekeyInterval, s.timing.RekeyMargin = rekeyLifetime, rekeyMarginOf
 	// no liveness check falls due, so Run counts the peer alive throughout and resends on the busy budget
 	s.retransmitAfter, s.dpdEvery = followupRetransmit, noDPD
-	s.rekeyRetryInitial, s.rekeyRetryMax = followupRetry, followupRetry
+	s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = followupRetry, followupRetry
 	s.stateNotFounds = stateNotFoundLimit - 1
 	run := runSession(t, s)
 	header, create := p.next("the rekey", CREATE_CHILD_SA, false)
@@ -2242,7 +2242,7 @@ func TestLateAnswerToTheLastFollowupCompletesTheRekey(t *testing.T) {
 func testLateAnswerToTheLastFollowupCompletesTheRekey(t *testing.T) {
 	p, events := chainPeer(t, rekeyDue())
 	s := p.session
-	s.ikeRekeyInterval, s.rekeyMargin = rekeyLifetime, rekeyMarginOf
+	s.timing.IKERekeyInterval, s.timing.RekeyMargin = rekeyLifetime, rekeyMarginOf
 	// no liveness check falls due, so Run counts the peer alive throughout and resends on the busy budget
 	s.retransmitAfter, s.dpdEvery = followupRetransmit, noDPD
 	runSession(t, s)

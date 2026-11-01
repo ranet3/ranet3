@@ -94,7 +94,7 @@ func (s *Session) replaceKeyedChild(child ChildSA, entry kexEntry) error {
 			return err
 		}
 	}
-	old, oldEnds := s.child, s.childEstablished.Add(s.childRekeyInterval)
+	old, oldEnds := s.child, s.childEstablished.Add(s.timing.ChildRekeyInterval)
 	s.child, s.childEstablished, s.childGeneration = child, time.Now(), s.childGeneration+1
 	s.childKex = keyedEntry{spi: child.LocalSPI, entry: entry}
 	if old.LocalSPI != 0 {
@@ -193,7 +193,7 @@ type childRetirement struct {
 // the SA's keys leave the dataplane at its lifetime whatever exchange is outstanding, and its SPI stays registered until a Delete, its rekey's or the IKE SA's, closes the pair
 // each SPI and the start of its lifetime are read under one lock, so a rekey's swap never pairs one SA's SPI with the other's start
 func (s *Session) expireChild(now time.Time) error {
-	if s.childRekeyInterval == 0 {
+	if s.timing.ChildRekeyInterval == 0 {
 		return nil
 	}
 	s.childMu.Lock()
@@ -201,12 +201,12 @@ func (s *Session) expireChild(now time.Time) error {
 	for _, sa := range []struct {
 		child ChildSA
 		ends  time.Time
-	}{{s.child, s.childEstablished.Add(s.childRekeyInterval)}, {s.retiring, s.retiringEnds}} {
+	}{{s.child, s.childEstablished.Add(s.timing.ChildRekeyInterval)}, {s.retiring, s.retiringEnds}} {
 		spi := sa.child.LocalSPI
 		if spi == 0 || now.Before(sa.ends) || slices.Contains(s.withdrawn, spi) {
 			continue
 		}
-		slog.Warn("ike stopping ESP on a Child SA past its lifetime", "spi", spi, "lifetime", s.childRekeyInterval)
+		slog.Warn("ike stopping ESP on a Child SA past its lifetime", "spi", spi, "lifetime", s.timing.ChildRekeyInterval)
 		s.handlerMu.RLock()
 		fn := s.onRetire
 		s.handlerMu.RUnlock()
@@ -271,7 +271,7 @@ func (s *Session) retireInboundLocked(spi uint32, replaced bool) error {
 	// a replaced SA drains no longer than its lifetime, which the drains of later SAs end after, so the list stays in order
 	if replaced && s.childRetireDelay > 0 {
 		until := time.Now().Add(s.childRetireDelay)
-		if s.childRekeyInterval > 0 && s.retiringEnds.Before(until) {
+		if s.timing.ChildRekeyInterval > 0 && s.retiringEnds.Before(until) {
 			until = s.retiringEnds
 		}
 		if time.Now().Before(until) {
@@ -313,7 +313,7 @@ func (s *Session) nextRetirement(now time.Time) (time.Time, bool) {
 	if s.retiring.LocalSPI != 0 && !s.retiringDeleting {
 		sooner(s.retiringBy)
 	}
-	if s.retiring.LocalSPI != 0 && s.childRekeyInterval > 0 && !slices.Contains(s.withdrawn, s.retiring.LocalSPI) && now.Before(s.retiringEnds) {
+	if s.retiring.LocalSPI != 0 && s.timing.ChildRekeyInterval > 0 && !slices.Contains(s.withdrawn, s.retiring.LocalSPI) && now.Before(s.retiringEnds) {
 		sooner(s.retiringEnds)
 	}
 	return earliest, !earliest.IsZero()

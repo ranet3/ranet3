@@ -109,7 +109,7 @@ func (s *Session) ikeEstablishedAt() (time.Time, bool) { return s.currentContext
 
 // an IKE SA past its lifetime is one this end is closing
 func (s *Session) ikeExpired(ctx *ikeContext) bool {
-	return s.ikeRekeyInterval > 0 && !time.Now().Before(ctx.established.Add(s.ikeRekeyInterval))
+	return s.timing.IKERekeyInterval > 0 && !time.Now().Before(ctx.established.Add(s.timing.IKERekeyInterval))
 }
 
 // temporaryStreak is a run of TEMPORARY_FAILURE refusals, with the IKE SA and the Child SA generation it began under
@@ -164,11 +164,11 @@ func (s *Session) drawRekeyJitter() (time.Duration, error) {
 	if source == nil {
 		source = randomRekeyJitter
 	}
-	jitter, err := source(s.rekeyJitter)
+	jitter, err := source(s.timing.RekeyJitter)
 	if err != nil {
 		return 0, fmt.Errorf("ike: generate rekey jitter: %w", err)
 	}
-	if jitter < 0 || jitter > s.rekeyJitter {
+	if jitter < 0 || jitter > s.timing.RekeyJitter {
 		return 0, fmt.Errorf("ike: invalid rekey jitter %s", jitter)
 	}
 	return jitter, nil
@@ -180,7 +180,7 @@ func (s *Session) rekeyDue(interval time.Duration, established time.Time) (time.
 	if err != nil {
 		return time.Time{}, err
 	}
-	lead := interval - s.rekeyMargin - jitter
+	lead := interval - s.timing.RekeyMargin - jitter
 	if lead <= 0 {
 		return time.Time{}, fmt.Errorf("ike: nonpositive rekey delay")
 	}
@@ -207,10 +207,10 @@ func (s *Session) scheduledDelay(r *rekeySchedule) (time.Duration, error) {
 // difference that caused the collision and collides again, forever. RFC 7296
 // section 2.8.1 asks for the jitter for that reason.
 func (s *Session) rekeyRetryDelay(failures uint) time.Duration {
-	delay := s.rekeyRetryInitial
+	delay := s.timing.RekeyRetryInitial
 	for failures > 1 {
-		if delay >= s.rekeyRetryMax/2 {
-			delay = s.rekeyRetryMax
+		if delay >= s.timing.RekeyRetryMax/2 {
+			delay = s.timing.RekeyRetryMax
 			break
 		}
 		delay *= 2
@@ -348,16 +348,16 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	defer s.serving.Store(false)
 	lastAuthenticated := time.Now()
 	s.noteActive()
-	if s.rekeyRetryInitial == 0 && s.rekeyRetryMax == 0 {
-		s.rekeyRetryInitial = DefaultRetryFirst
-		s.rekeyRetryMax = DefaultRetryMax
+	if s.timing.RekeyRetryInitial == 0 && s.timing.RekeyRetryMax == 0 {
+		s.timing.RekeyRetryInitial = DefaultRetryFirst
+		s.timing.RekeyRetryMax = DefaultRetryMax
 	}
 	var pending *pendingRequest
 	var ender *pendingRequest
 	// RFC 7296 section 2.8: "the Delete payload to delete itself MUST be the last request sent over the old IKE SA."
 	deleted := false
 	childCurrent := func() any { return s.currentChildGeneration() }
-	childSchedule, err := s.newRekeySchedule("Child SA", "child", s.childRekeyInterval, s.RekeyChild, s.childEstablishedAt, childCurrent)
+	childSchedule, err := s.newRekeySchedule("Child SA", "child", s.timing.ChildRekeyInterval, s.RekeyChild, s.childEstablishedAt, childCurrent)
 	if err != nil {
 		return err
 	}
@@ -368,7 +368,7 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 	}
 	defer childSchedule.timer.Stop()
 	ikeCurrent := func() any { return s.currentContext() }
-	ikeSchedule, err := s.newRekeySchedule("IKE SA", "ike", s.ikeRekeyInterval, s.RekeyIKE, s.ikeEstablishedAt, ikeCurrent)
+	ikeSchedule, err := s.newRekeySchedule("IKE SA", "ike", s.timing.IKERekeyInterval, s.RekeyIKE, s.ikeEstablishedAt, ikeCurrent)
 	if err != nil {
 		return err
 	}

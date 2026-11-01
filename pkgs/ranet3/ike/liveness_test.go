@@ -7,6 +7,7 @@ package ike
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/bubble"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/transport"
@@ -98,8 +100,7 @@ func TestSupportedPayloadTypeNamesEveryTypeThisEndUnderstands(t *testing.T) {
 
 func TestRekeyRetryDelay(t *testing.T) {
 	s := &Session{
-		rekeyRetryInitial: 5 * time.Second,
-		rekeyRetryMax:     time.Minute,
+		timing:            RekeyTiming{RekeyRetryInitial: 5 * time.Second, RekeyRetryMax: time.Minute},
 		rekeyJitterSource: func(time.Duration) (time.Duration, error) { return 0, nil },
 	}
 	for _, test := range []struct {
@@ -122,7 +123,7 @@ func TestRekeyRetryDelay(t *testing.T) {
 // Two ends of a simultaneous rekey fail at the same instant and reset the same
 // backoff, so an unjittered retry collides again on every attempt.
 func TestRekeyRetryDelayIsSpreadOverUpperHalfOfWindow(t *testing.T) {
-	s := &Session{rekeyRetryInitial: 5 * time.Second, rekeyRetryMax: time.Minute}
+	s := &Session{timing: RekeyTiming{RekeyRetryInitial: 5 * time.Second, RekeyRetryMax: time.Minute}}
 	seen := make(map[time.Duration]bool)
 	for range 64 {
 		got := s.rekeyRetryDelay(3)
@@ -1791,24 +1792,43 @@ func TestInitialResponseHeaderValidation(t *testing.T) {
 	}
 }
 
-func TestSetRekeyRetry(t *testing.T) {
-	s := new(Session)
-	if err := s.SetRekeyRetry(5*time.Second, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if s.rekeyRetryInitial != 5*time.Second || s.rekeyRetryMax != time.Minute {
-		t.Fatalf("retry delays = %s, %s", s.rekeyRetryInitial, s.rekeyRetryMax)
-	}
-	for _, delays := range [][2]time.Duration{{0, time.Second}, {time.Second, 0}, {-time.Second, time.Second}, {time.Minute, time.Second}} {
-		if err := s.SetRekeyRetry(delays[0], delays[1]); err == nil {
-			t.Fatalf("SetRekeyRetry(%s, %s) succeeded", delays[0], delays[1])
+// a timing a session could not run is refused by either end before any packet, and the ones it could run are taken
+func TestRekeyTimingIsRefusedBeforeAnyPacket(t *testing.T) {
+	bubble.Run(testRekeyTimingIsRefusedBeforeAnyPacket)(t)
+}
+
+func testRekeyTimingIsRefusedBeforeAnyPacket(t *testing.T) {
+	for _, timing := range []RekeyTiming{{}, {ChildRekeyInterval: time.Hour, IKERekeyInterval: 4 * time.Hour, RekeyMargin: time.Minute, RekeyJitter: time.Minute,
+		RekeyRetryInitial: 5 * time.Second, RekeyRetryMax: time.Minute}} {
+		if err := timing.validate(); err != nil {
+			t.Errorf("%+v is refused: %v", timing, err)
 		}
 	}
-	if err := s.SetRekeyRetry(0, 0); err != nil {
-		t.Fatalf("SetRekeyRetry(0, 0) refused: %v", err)
-	}
-	if s.rekeyRetryInitial != 0 || s.rekeyRetryMax != 0 {
-		t.Errorf("after SetRekeyRetry(0, 0) the retry delays are %s, %s, want both zero", s.rekeyRetryInitial, s.rekeyRetryMax)
+	hub := listenHub(t)
+	for _, timing := range []RekeyTiming{
+		{ChildRekeyInterval: -time.Second},
+		{IKERekeyInterval: -time.Second},
+		{RekeyMargin: -time.Second},
+		{RekeyJitter: -time.Second},
+		{ChildRekeyInterval: time.Hour, RekeyMargin: time.Hour},
+		{IKERekeyInterval: time.Hour, RekeyMargin: 30 * time.Minute, RekeyJitter: 30 * time.Minute},
+		{RekeyRetryMax: time.Second},
+		{RekeyRetryInitial: time.Second},
+		{RekeyRetryInitial: -time.Second, RekeyRetryMax: time.Second},
+		{RekeyRetryInitial: time.Minute, RekeyRetryMax: time.Second},
+	} {
+		refused := timing.validate()
+		if refused == nil {
+			t.Errorf("%+v is accepted", timing)
+			continue
+		}
+		if _, err := InitiateContext(context.Background(), PeerConfig{Hub: hub, RemoteAddr: net.IPv4(127, 0, 0, 1), RemotePort: 500, RekeyTiming: timing}); err == nil || err.Error() != refused.Error() {
+			t.Errorf("an initiator with %+v ends with %v, want %v", timing, err, refused)
+		}
+		if _, err := NewResponder(ResponderConfig{Hub: hub, LocalPrivateKey: make(ed25519.PrivateKey, ed25519.PrivateKeySize), Trust: trustsNobody,
+			Local: map[identity.Identity]Family{identity.MustParse("testorg/server:1"): IPv4}, RekeyTiming: timing}); err == nil || err.Error() != refused.Error() {
+			t.Errorf("a responder with %+v starts with %v, want %v", timing, err, refused)
+		}
 	}
 }
 
@@ -1906,12 +1926,7 @@ func TestRunEndingReturnsWhyItDeletedTheIKESA(t *testing.T) {
 			s.requests, s.events = make(chan *localRequest, 1), events.record
 			const due = 100 * time.Millisecond
 			s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
-			if err := s.SetRekeyIntervals(0, time.Hour); err != nil {
-				t.Fatal(err)
-			}
-			if err := s.SetRekeyTiming(time.Hour-due, 0); err != nil {
-				t.Fatal(err)
-			}
+			s.timing.IKERekeyInterval, s.timing.RekeyMargin = time.Hour, time.Hour-due
 			if peerDoes == "stays silent" {
 				s.retransmitAfter = due
 			}
@@ -2171,7 +2186,7 @@ func TestLifetimeFoundOnceThePeersDeleteClosedTheMuxRecordsNoClose(t *testing.T)
 
 // pastLifetime puts s's IKE SA at its lifetime of an hour
 func pastLifetime(s *Session) {
-	s.ikeRekeyInterval, s.rekeyMargin = time.Hour, time.Hour-time.Second
+	s.timing.IKERekeyInterval, s.timing.RekeyMargin = time.Hour, time.Hour-time.Second
 	s.current.established = time.Now().Add(-time.Hour)
 }
 

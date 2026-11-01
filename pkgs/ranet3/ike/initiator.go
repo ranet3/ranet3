@@ -43,12 +43,7 @@ type PeerConfig struct {
 	RemotePort int // ranet registry endpoint port (often non-standard, e.g. 13000), the only port ever used, IKE and ESP alike
 	Hub        *transport.Hub
 
-	ChildRekeyInterval time.Duration
-	IKERekeyInterval   time.Duration
-	RekeyMargin        time.Duration
-	RekeyJitter        time.Duration
-	RekeyRetryInitial  time.Duration
-	RekeyRetryMax      time.Duration
+	RekeyTiming
 
 	// Suites gives the lists in force
 	// the session reads them at each exchange
@@ -222,13 +217,8 @@ type Session struct {
 	// lastPeerIKERekey is the same for the IKE SA. See minPeerIKERekeyInterval.
 	lastPeerIKERekey atomic.Int64
 
-	childRekeyInterval time.Duration
-	ikeRekeyInterval   time.Duration
-	rekeyMargin        time.Duration
-	rekeyJitter        time.Duration
-	rekeyRetryInitial  time.Duration
-	rekeyRetryMax      time.Duration
-	rekeyJitterSource  func(time.Duration) (time.Duration, error)
+	timing            RekeyTiming
+	rekeyJitterSource func(time.Duration) (time.Duration, error)
 	// clock is time.Now where nil, read once for each pass of Run's loop
 	clock func() time.Time
 	// temporary is run's alone
@@ -297,7 +287,7 @@ func (s *Session) retainOldLocked(ctx *ikeContext) {
 // a retained IKE SA waits for the peer's Delete no longer than its lifetime, and one this end deletes is kept for that Delete
 func (s *Session) retainedUntil(ctx *ikeContext, now time.Time) time.Time {
 	by := now.Add(retainedContextDeadline)
-	if ends := ctx.established.Add(s.ikeRekeyInterval); s.ikeRekeyInterval > 0 && !ctx.ownDelete && ends.Before(by) {
+	if ends := ctx.established.Add(s.timing.IKERekeyInterval); s.timing.IKERekeyInterval > 0 && !ctx.ownDelete && ends.Before(by) {
 		return ends
 	}
 	return by
@@ -374,7 +364,7 @@ func (s *Session) expireRetainedContexts(now time.Time) {
 	s.stateMu.Unlock()
 	for _, ctx := range dropped {
 		if s.ikeExpired(ctx) {
-			slog.Warn("ike dropping a replaced IKE SA at its lifetime", "spi", ctx.spiI, "lifetime", s.ikeRekeyInterval)
+			slog.Warn("ike dropping a replaced IKE SA at its lifetime", "spi", ctx.spiI, "lifetime", s.timing.IKERekeyInterval)
 			continue
 		}
 		slog.Warn("ike dropping an IKE SA the peer never deleted",
@@ -445,53 +435,25 @@ func (s *Session) contextRetired(ctx *ikeContext) bool {
 	return ctx != s.current && ctx != s.old && ctx != s.collision
 }
 
-// SetRekeyIntervals sets the Child and IKE SA lifetimes, which each SA's
-// scheduled rekey runs ahead of. Zero disables both for that SA. It must be
-// called before Run.
-func (s *Session) SetRekeyIntervals(child, ike time.Duration) error {
-	if child < 0 || ike < 0 {
-		return fmt.Errorf("ike: rekey intervals must be nonnegative when set")
+// newSession is the session on mux holding current, under timing and the lists suites gives, both ends of it having said whether they support IKE fragmentation in fragments
+// pathMTU stands in for the mux's PathMTU, and nil reads the mux
+func newSession(mux *transport.Mux, current *ikeContext, timing RekeyTiming, suites func() Suites, fragments bool, pathMTU func() (int, error)) *Session {
+	return &Session{
+		started:          time.Now(),
+		childRetireDelay: childRetireDelay,
+		mux:              mux,
+		current:          current,
+		requests:         make(chan *localRequest, 1),
+		probes:           make(chan struct{}, 1),
+		childRekeyEnded:  make(chan struct{}, 1),
+		childSpent:       make(chan struct{}, 1),
+		childFailed:      make(chan error, 1),
+		suites:           suites,
+		rechecks:         make(chan struct{}, 1),
+		fragments:        fragments,
+		pathMTU:          pathMTU,
+		timing:           timing,
 	}
-	if !validRekeyTiming(child, s.rekeyMargin, s.rekeyJitter) || !validRekeyTiming(ike, s.rekeyMargin, s.rekeyJitter) {
-		return fmt.Errorf("ike: rekey margin plus jitter must be less than each enabled interval")
-	}
-	s.childRekeyInterval = child
-	s.ikeRekeyInterval = ike
-	return nil
-}
-
-// SetRekeyTiming configures when scheduled rekeys run relative to their
-// intervals. Zero intervals remain disabled.
-func (s *Session) SetRekeyTiming(margin, jitter time.Duration) error {
-	if margin < 0 || jitter < 0 {
-		return fmt.Errorf("ike: rekey margin and jitter must be nonnegative")
-	}
-	if !validRekeyTiming(s.childRekeyInterval, margin, jitter) || !validRekeyTiming(s.ikeRekeyInterval, margin, jitter) {
-		return fmt.Errorf("ike: rekey margin plus jitter must be less than each enabled interval")
-	}
-	s.rekeyMargin = margin
-	s.rekeyJitter = jitter
-	return nil
-}
-
-// SetRekeyRetry configures the capped exponential backoff after a failed
-// rekey, which for the Child SA holds back the next exchange whichever path
-// asks for it, and zero for both leaves Run to take the defaults. It must be
-// called before Run.
-func (s *Session) SetRekeyRetry(initial, max time.Duration) error {
-	if (initial != 0 || max != 0) && (initial <= 0 || max <= 0) {
-		return fmt.Errorf("ike: rekey retry delays must be positive")
-	}
-	if initial > max {
-		return fmt.Errorf("ike: initial rekey retry delay must not exceed maximum")
-	}
-	s.rekeyRetryInitial = initial
-	s.rekeyRetryMax = max
-	return nil
-}
-
-func validRekeyTiming(interval, margin, jitter time.Duration) bool {
-	return interval == 0 || (margin < interval && jitter < interval-margin)
 }
 
 // NoteTraffic records successfully authenticated ESP traffic for the DPD
@@ -546,6 +508,9 @@ func Initiate(cfg PeerConfig) (*Session, error) {
 // a cancel once IKE_AUTH is under way waits canceledAuthWait for the answer and deletes the SA an answer in that time established
 func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := cfg.RekeyTiming.validate(); err != nil {
 		return nil, err
 	}
 	local := ""
@@ -745,25 +710,12 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	}
 
 	authMID := suite.authMID()
-	sess := &Session{
-		started:          time.Now(),
-		childRetireDelay: childRetireDelay,
-		mux:              mux,
-		current: &ikeContext{suite: suite,
-			skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
-			spiI: spiI, spiR: spiR, authMID: authMID, nextLocalMID: authMID + 1, established: time.Now()},
-		requests:        make(chan *localRequest, 1),
-		probes:          make(chan struct{}, 1),
-		childRekeyEnded: make(chan struct{}, 1),
-		childSpent:      make(chan struct{}, 1),
-		childFailed:     make(chan error, 1),
-		suites:          cfg.Suites,
-		rechecks:        make(chan struct{}, 1),
-		events:          cfg.Events, local: cfg.Local, remote: cfg.Remote,
-		// RFC 7383 section 2.3: "If the responder also supports this extension and is willing to use it, it includes this notification in the response message."
-		fragments: carriesNotify(resp, N_IKEV2_FRAGMENTATION_SUPPORTED),
-		pathMTU:   cfg.pathMTU,
-	}
+	current := &ikeContext{suite: suite,
+		skD: keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
+		spiI: spiI, spiR: spiR, authMID: authMID, nextLocalMID: authMID + 1, established: time.Now()}
+	// RFC 7383 section 2.3: "If the responder also supports this extension and is willing to use it, it includes this notification in the response message."
+	sess := newSession(mux, current, cfg.RekeyTiming, cfg.Suites, carriesNotify(resp, N_IKEV2_FRAGMENTATION_SUPPORTED), cfg.pathMTU)
+	sess.events, sess.local, sess.remote = cfg.Events, cfg.Local, cfg.Remote
 	// a cancel during IKE_INTERMEDIATE closes the mux under it, as one during IKE_SA_INIT does, since the responder holds a half-open SA alone
 	chain, err := sess.runIntermediate(ni, nr)
 	if err != nil {
@@ -781,18 +733,6 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	stopWait := context.AfterFunc(ctx, endWait)
 	defer stopWait()
 	if err := sess.completeIKEAuth(cfg, req, respRaw, ni, nr, chain); err != nil {
-		mux.Close()
-		return nil, err
-	}
-	if err := sess.SetRekeyTiming(cfg.RekeyMargin, cfg.RekeyJitter); err != nil {
-		mux.Close()
-		return nil, err
-	}
-	if err := sess.SetRekeyIntervals(cfg.ChildRekeyInterval, cfg.IKERekeyInterval); err != nil {
-		mux.Close()
-		return nil, err
-	}
-	if err := sess.SetRekeyRetry(cfg.RekeyRetryInitial, cfg.RekeyRetryMax); err != nil {
 		mux.Close()
 		return nil, err
 	}

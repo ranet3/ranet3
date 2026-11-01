@@ -298,7 +298,7 @@ func testLosingCandidateIsKeptPastItsLifetimeForItsDelete(t *testing.T) {
 	p := newCollisionPeer(t, time.Now().Add(scheduleDue-(lifetime-margin)))
 	s, suite := p.session, p.old.suite
 	events := &recorder{}
-	s.events, s.ikeRekeyInterval, s.rekeyMargin = events.record, lifetime, margin
+	s.events, s.timing.IKERekeyInterval, s.timing.RekeyMargin = events.record, lifetime, margin
 
 	p.play(func(p *collisionPeer) {
 		del, raw, ok := p.read("the Delete of the losing candidate")

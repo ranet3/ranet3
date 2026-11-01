@@ -87,15 +87,8 @@ func testSessionScheduledRekeyFailureRetries(t *testing.T) {
 	}
 	// the rekey is due a millisecond in and the Child SA lives an hour, so the retry falls inside its lifetime
 	s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
-	if err := s.SetRekeyIntervals(time.Hour, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetRekeyTiming(time.Hour-time.Millisecond, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetRekeyRetry(10*time.Millisecond, time.Second); err != nil {
-		t.Fatal(err)
-	}
+	s.timing.ChildRekeyInterval, s.timing.RekeyMargin = time.Hour, time.Hour-time.Millisecond
+	s.timing.RekeyRetryInitial, s.timing.RekeyRetryMax = 10*time.Millisecond, time.Second
 
 	retried := make(chan struct{})
 	peerLoop(t, peer, func() {
@@ -156,7 +149,7 @@ func testSessionScheduledRekeyFailureRetries(t *testing.T) {
 }
 
 func TestRekeyDelay(t *testing.T) {
-	s := &Session{rekeyMargin: 5 * time.Minute, rekeyJitter: time.Minute}
+	s := &Session{timing: RekeyTiming{RekeyMargin: 5 * time.Minute, RekeyJitter: time.Minute}}
 	var limits []time.Duration
 	s.rekeyJitterSource = func(max time.Duration) (time.Duration, error) {
 		limits = append(limits, max)
@@ -211,12 +204,7 @@ func testSessionScheduledRekeyChild(t *testing.T) {
 	}
 	// the rekey falls due at once, long before the Child SA's lifetime
 	s.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return 0, nil }
-	if err := s.SetRekeyIntervals(time.Hour, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetRekeyTiming(time.Hour-25*time.Millisecond, 0); err != nil {
-		t.Fatal(err)
-	}
+	s.timing.ChildRekeyInterval, s.timing.RekeyMargin = time.Hour, time.Hour-25*time.Millisecond
 	installed := make(chan ChildSA, 1)
 	s.SetChildHandler(func(child ChildSA) error {
 		installed <- child

@@ -220,22 +220,17 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 	c.events.Emit("dial.attempt", sessionName, slog.String("remote", net.JoinHostPort(remoteIP.String(), strconv.Itoa(int(ep.Port)))))
 
 	ikeCfg := ike.PeerConfig{
-		Local:              d.localID,
-		LocalPrivateKey:    c.privateKey,
-		Remote:             ep.ID,
-		RemotePublicKey:    remotePub,
-		RemoteAddr:         remoteIP,
-		RemotePort:         int(ep.Port),
-		Aliases:            cfg.Auth.Aliases,
-		Hub:                c.hub,
-		ChildRekeyInterval: crypto.ChildInterval(),
-		IKERekeyInterval:   crypto.IKEInterval(),
-		RekeyMargin:        crypto.Margin(),
-		RekeyJitter:        crypto.Jitter(),
-		RekeyRetryInitial:  crypto.RetryFirst(),
-		RekeyRetryMax:      crypto.RetryMax(),
-		Suites:             c.suites,
-		Events:             c.ikeEvent,
+		Local:           d.localID,
+		LocalPrivateKey: c.privateKey,
+		Remote:          ep.ID,
+		RemotePublicKey: remotePub,
+		RemoteAddr:      remoteIP,
+		RemotePort:      int(ep.Port),
+		Aliases:         cfg.Auth.Aliases,
+		Hub:             c.hub,
+		RekeyTiming:     crypto.Timing(),
+		Suites:          c.suites,
+		Events:          c.ikeEvent,
 	}
 	sess, err := ike.InitiateContext(ctx, ikeCfg)
 	if err != nil {

@@ -1077,7 +1077,7 @@ func testReplacedChildSAAwaitingItsDeleteIsWithdrawnAtItsLifetime(t *testing.T) 
 	if err := mux.RegisterESP(old.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{mux: mux, child: old, childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + 2*time.Second)}
+	s := &Session{mux: mux, child: old, timing: RekeyTiming{ChildRekeyInterval: time.Hour}, childEstablished: time.Now().Add(-time.Hour + 2*time.Second)}
 	keys := newDataplane(s)
 	ends := s.childEstablished.Add(time.Hour)
 	if err := s.replaceChild(ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}); err != nil {
@@ -1145,7 +1145,7 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := &Session{mux: mux, current: &ikeContext{}, requests: make(chan *localRequest), child: old, dpdEvery: noDPD,
-			childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + left)}
+			timing: RekeyTiming{ChildRekeyInterval: time.Hour}, childEstablished: time.Now().Add(-time.Hour + left)}
 		keys := newDataplane(s)
 		ends := s.childEstablished.Add(time.Hour)
 		if err := s.replaceChild(ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}); err != nil {
@@ -1170,8 +1170,8 @@ func TestLifetimeEndingWhileAPassRunsIsWaitedFor(t *testing.T) {
 		events := &recorder{}
 		// the rekey falls due at once and fails, since the SA has no outbound half, and its retry is past the test
 		s := &Session{mux: mux, current: chainContext(t, classicalSuite), requests: make(chan *localRequest), child: ChildSA{LocalSPI: 0x11111111}, dpdEvery: noDPD,
-			childRekeyInterval: time.Hour, childEstablished: time.Now().Add(-time.Hour + left), rekeyMargin: time.Hour / 2,
-			rekeyRetryInitial: time.Hour, rekeyRetryMax: time.Hour, events: events.record}
+			timing:           RekeyTiming{ChildRekeyInterval: time.Hour, RekeyMargin: time.Hour / 2, RekeyRetryInitial: time.Hour, RekeyRetryMax: time.Hour},
+			childEstablished: time.Now().Add(-time.Hour + left), events: events.record}
 		ends := s.childEstablished.Add(time.Hour)
 		clockShortOf(s, ends)
 		runSession(t, s)
@@ -1201,7 +1201,7 @@ func testReplacedChildSADeletedPastItsLifetimeIsNotDrained(t *testing.T) {
 	if err := mux.RegisterESP(old.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
-	s := &Session{mux: mux, child: old, childRekeyInterval: time.Hour, childRetireDelay: childRetireDelay, childEstablished: time.Now().Add(-time.Hour - time.Second)}
+	s := &Session{mux: mux, child: old, timing: RekeyTiming{ChildRekeyInterval: time.Hour}, childRetireDelay: childRetireDelay, childEstablished: time.Now().Add(-time.Hour - time.Second)}
 	keys := newDataplane(s)
 	if err := s.replaceChild(ChildSA{LocalSPI: 0x22222222, RemoteSPI: 0x44444444}); err != nil {
 		t.Fatal(err)
@@ -1231,7 +1231,7 @@ func TestReplacedIKESAIsDroppedAtItsLifetime(t *testing.T) {
 			if err := mux.RegisterIKE(old.spiI); err != nil {
 				t.Fatal(err)
 			}
-			s := &Session{mux: mux, current: &ikeContext{spiI: 0x2122232425262728, spiR: 0x3132333435363738, established: now}, ikeRekeyInterval: time.Hour}
+			s := &Session{mux: mux, current: &ikeContext{spiI: 0x2122232425262728, spiR: 0x3132333435363738, established: now}, timing: RekeyTiming{IKERekeyInterval: time.Hour}}
 			ends, deadline := old.established.Add(time.Hour), now.Add(retainedContextDeadline)
 			s.stateMu.Lock()
 			s.retainOldLocked(old)

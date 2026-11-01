@@ -4,7 +4,7 @@
 package ike
 
 import (
-	"strings"
+	"fmt"
 	"testing"
 	"time"
 
@@ -77,6 +77,12 @@ func TestConfiguredCryptoReachesEveryTimer(t *testing.T) {
 			t.Errorf("%s is %s, want %s", name, got.have, got.want)
 		}
 	}
+	want := RekeyTiming{ChildRekeyInterval: 2 * time.Hour, IKERekeyInterval: 8 * time.Hour, RekeyMargin: 10 * time.Minute, RekeyJitter: 2 * time.Minute,
+		RekeyRetryInitial: 3 * time.Second, RekeyRetryMax: 30 * time.Second}
+	s := newSession(nil, nil, crypto.Timing(), nil, false, nil)
+	if s.timing != want {
+		t.Errorf("a session built with the configured timing runs %+v, want %+v", s.timing, want)
+	}
 	// A rekey runs interval minus margin minus jitter, so a disabled interval
 	// has no schedule for either to fit inside and neither is contradictory.
 	disabled := Crypto{Rekey: Rekey{
@@ -96,14 +102,19 @@ func TestCryptoRefusesAZeroMarginBesideALifetime(t *testing.T) {
 		value := schema.Duration(d)
 		return &value
 	}
-	for name, rekey := range map[string]Rekey{
-		"a child lifetime":      {Child: interval(5 * time.Second), IKE: interval(0), Margin: interval(0), Jitter: interval(0)},
-		"an ike lifetime":       {Child: interval(0), IKE: interval(15 * time.Second), Margin: interval(0), Jitter: interval(0)},
-		"the default lifetimes": {Margin: interval(0)},
+	for name, test := range map[string]struct {
+		rekey Rekey
+		// beside is the interval the refusal names, the child one where both are set
+		beside string
+	}{
+		"a child lifetime":      {Rekey{Child: interval(5 * time.Second), IKE: interval(0), Margin: interval(0), Jitter: interval(0)}, "child"},
+		"an ike lifetime":       {Rekey{Child: interval(0), IKE: interval(15 * time.Second), Margin: interval(0), Jitter: interval(0)}, "ike"},
+		"the default lifetimes": {Rekey{Margin: interval(0)}, "child"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := (Crypto{Rekey: rekey}).Validate(); err == nil || !strings.Contains(err.Error(), "rekey margin must be positive") {
-				t.Errorf("a zero margin beside %s was answered %v, want it refused by name", name, err)
+			want := fmt.Sprintf("ike: cap.crypto rekey margin must be positive beside rekey %s, since a rekey due at the end of the SA's lifetime can never replace it", test.beside)
+			if err := (Crypto{Rekey: test.rekey}).Validate(); err == nil || err.Error() != want {
+				t.Errorf("a zero margin beside %s was answered %v, want %q", name, err, want)
 			}
 		})
 	}
@@ -120,24 +131,27 @@ func TestCryptoRefusesTimingsASessionCannotRun(t *testing.T) {
 		return &value
 	}
 	oversized := esp.MaxReplayWindow + 1
-	for name, crypto := range map[string]Crypto{
-		"a replay window past the cap": {Replay: &oversized},
-		"a negative child rekey":       {Rekey: Rekey{Child: interval(-time.Second)}},
-		"a negative ike rekey":         {Rekey: Rekey{IKE: interval(-time.Second)}},
-		"a negative margin":            {Rekey: Rekey{Margin: interval(-time.Second)}},
-		"a negative jitter":            {Rekey: Rekey{Jitter: interval(-time.Second)}},
-		"a zero first retry":           {Rekey: Rekey{Retry: Retry{First: interval(0)}}},
-		"a zero retry maximum":         {Rekey: Rekey{Retry: Retry{Max: interval(0)}}},
-		"a negative first retry":       {Rekey: Rekey{Retry: Retry{First: interval(-time.Second)}}},
-		"a first retry past the max": {Rekey: Rekey{Retry: Retry{
+	for name, test := range map[string]struct {
+		crypto Crypto
+		want   string
+	}{
+		"a replay window past the cap": {Crypto{Replay: &oversized}, fmt.Sprintf("ike: cap.crypto replay must not exceed %d", esp.MaxReplayWindow)},
+		"a negative child rekey":       {Crypto{Rekey: Rekey{Child: interval(-time.Second)}}, "ike: cap.crypto rekey child must be nonnegative when set"},
+		"a negative ike rekey":         {Crypto{Rekey: Rekey{IKE: interval(-time.Second)}}, "ike: cap.crypto rekey ike must be nonnegative when set"},
+		"a negative margin":            {Crypto{Rekey: Rekey{Margin: interval(-time.Second)}}, "ike: cap.crypto rekey margin must be nonnegative when set"},
+		"a negative jitter":            {Crypto{Rekey: Rekey{Jitter: interval(-time.Second)}}, "ike: cap.crypto rekey jitter must be nonnegative when set"},
+		"a zero first retry":           {Crypto{Rekey: Rekey{Retry: Retry{First: interval(0)}}}, "ike: cap.crypto rekey retry first must be positive when set"},
+		"a zero retry maximum":         {Crypto{Rekey: Rekey{Retry: Retry{Max: interval(0)}}}, "ike: cap.crypto rekey retry max must be positive when set"},
+		"a negative first retry":       {Crypto{Rekey: Rekey{Retry: Retry{First: interval(-time.Second)}}}, "ike: cap.crypto rekey retry first must be positive when set"},
+		"a first retry past the max": {Crypto{Rekey: Rekey{Retry: Retry{
 			First: interval(time.Minute), Max: interval(5 * time.Second),
-		}}},
-		"a child rekey shorter than its margin": {Rekey: Rekey{Child: interval(5 * time.Minute)}},
-		"an ike rekey shorter than its margin":  {Rekey: Rekey{IKE: interval(6 * time.Minute)}},
+		}}}, "ike: cap.crypto rekey retry first must not exceed retry max"},
+		"a child rekey shorter than its margin": {Crypto{Rekey: Rekey{Child: interval(5 * time.Minute)}}, "ike: cap.crypto rekey margin plus jitter must be less than rekey child"},
+		"an ike rekey shorter than its margin":  {Crypto{Rekey: Rekey{IKE: interval(6 * time.Minute)}}, "ike: cap.crypto rekey margin plus jitter must be less than rekey ike"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := crypto.Validate(); err == nil {
-				t.Error("a session that could not run these timers was accepted")
+			if err := test.crypto.Validate(); err == nil || err.Error() != test.want {
+				t.Errorf("a session that could not run these timers was answered %v, want %q", err, test.want)
 			}
 		})
 	}

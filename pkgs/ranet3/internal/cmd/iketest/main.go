@@ -62,15 +62,14 @@ func main() {
 	flag.Parse()
 
 	cfg := ike.PeerConfig{
-		Local:              identity.MustParse("testorg/client:2"),
-		LocalPrivateKey:    loadPriv(*privPath),
-		Remote:             identity.MustParse("testorg/server:1"),
-		RemotePublicKey:    loadPub(*pubPath),
-		LocalAddr:          net.ParseIP(*localAddr),
-		RemoteAddr:         net.ParseIP(*remoteAddr),
-		RemotePort:         *remotePort,
-		ChildRekeyInterval: *childRekey,
-		IKERekeyInterval:   *ikeRekey,
+		Local:           identity.MustParse("testorg/client:2"),
+		LocalPrivateKey: loadPriv(*privPath),
+		Remote:          identity.MustParse("testorg/server:1"),
+		RemotePublicKey: loadPub(*pubPath),
+		LocalAddr:       net.ParseIP(*localAddr),
+		RemoteAddr:      net.ParseIP(*remoteAddr),
+		RemotePort:      *remotePort,
+		RekeyTiming:     ike.RekeyTiming{ChildRekeyInterval: *childRekey, IKERekeyInterval: *ikeRekey},
 	}
 
 	sess, err := ike.Initiate(cfg)

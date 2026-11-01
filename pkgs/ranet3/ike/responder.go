@@ -91,12 +91,7 @@ type ResponderConfig struct {
 	// established SA. Zero uses handshakeTimeout.
 	HandshakeTimeout time.Duration
 
-	ChildRekeyInterval time.Duration
-	IKERekeyInterval   time.Duration
-	RekeyMargin        time.Duration
-	RekeyJitter        time.Duration
-	RekeyRetryInitial  time.Duration
-	RekeyRetryMax      time.Duration
+	RekeyTiming
 
 	// Suites gives the lists in force
 	// each handshake and each answered session read them at each exchange
@@ -170,6 +165,9 @@ func NewResponder(cfg ResponderConfig) (*Responder, error) {
 	}
 	if cfg.Trust == nil {
 		return nil, fmt.Errorf("ike: responder needs a trust")
+	}
+	if err := cfg.RekeyTiming.validate(); err != nil {
+		return nil, err
 	}
 	r := &Responder{cfg: cfg, local: make(map[identity.Identity][]byte, len(cfg.Local)), started: time.Now(),
 		failureReported: make(map[netip.Addr]time.Duration, handshakeFailureSources),
@@ -375,28 +373,15 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	}
 
 	authMID := suite.authMID()
-	session := &Session{
-		started:          time.Now(),
-		childRetireDelay: childRetireDelay,
-		mux:              mux,
-		current: &ikeContext{
-			suite: suite,
-			skD:   keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
-			spiI: spiI, spiR: spiR, responder: true, answeredAuth: true, established: time.Now(),
-			authMID: authMID,
-			// with no EAP the initiator's next request is the one after IKE_AUTH, and this end has made no request of its own
-			nextPeerMID: authMID + 1, nextLocalMID: 0,
-		},
-		requests:        make(chan *localRequest, 1),
-		probes:          make(chan struct{}, 1),
-		childRekeyEnded: make(chan struct{}, 1),
-		childSpent:      make(chan struct{}, 1),
-		childFailed:     make(chan error, 1),
-		suites:          r.cfg.Suites,
-		rechecks:        make(chan struct{}, 1),
-		fragments:       fragments,
-		pathMTU:         r.cfg.pathMTU,
+	current := &ikeContext{
+		suite: suite,
+		skD:   keys.SKd, skei: keys.SKei, sker: keys.SKer, skpi: keys.SKpi, skpr: keys.SKpr,
+		spiI: spiI, spiR: spiR, responder: true, answeredAuth: true, established: time.Now(),
+		authMID: authMID,
+		// with no EAP the initiator's next request is the one after IKE_AUTH, and this end has made no request of its own
+		nextPeerMID: authMID + 1, nextLocalMID: 0,
 	}
+	session := newSession(mux, current, r.cfg.RekeyTiming, r.cfg.Suites, fragments, r.cfg.pathMTU)
 
 	accepted, created, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)
 	if err != nil {
@@ -405,15 +390,6 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 			// an IKE SA carries nothing here without its Child SA, so the IKE SA goes with a Delete
 			_ = session.run(ctx, err)
 		}
-		return nil, Accepted{}, err
-	}
-	if err := session.SetRekeyTiming(r.cfg.RekeyMargin, r.cfg.RekeyJitter); err != nil {
-		return nil, Accepted{}, err
-	}
-	if err := session.SetRekeyIntervals(r.cfg.ChildRekeyInterval, r.cfg.IKERekeyInterval); err != nil {
-		return nil, Accepted{}, err
-	}
-	if err := session.SetRekeyRetry(r.cfg.RekeyRetryInitial, r.cfg.RekeyRetryMax); err != nil {
 		return nil, Accepted{}, err
 	}
 	session.events, session.local, session.remote = r.cfg.Events, accepted.Local, accepted.Peer

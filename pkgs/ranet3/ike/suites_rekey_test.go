@@ -1036,8 +1036,8 @@ func testForcedDelayAPacketCountRekeyOvertookStartsNothing(t *testing.T) {
 	cfg, dialing := listedConfig(h, dialed.record)
 	cfg.RekeyJitter = forcedJitter
 	initiator, responder := dialPaused(t, h, cfg)
-	if initiator.childRekeyInterval != 0 {
-		t.Fatalf("the Child SA rekeys every %s, want no interval", initiator.childRekeyInterval)
+	if initiator.timing.ChildRekeyInterval != 0 {
+		t.Fatalf("the Child SA rekeys every %s, want no interval", initiator.timing.ChildRekeyInterval)
 	}
 	initiator.rekeyJitterSource = func(time.Duration) (time.Duration, error) { return forcedDelay, nil }
 	runSession(t, responder)

@@ -62,6 +62,48 @@ func (c Crypto) Jitter() time.Duration        { return interval(c.Rekey.Jitter, 
 func (c Crypto) RetryFirst() time.Duration    { return interval(c.Rekey.Retry.First, DefaultRetryFirst) }
 func (c Crypto) RetryMax() time.Duration      { return interval(c.Rekey.Retry.Max, DefaultRetryMax) }
 
+// Timing is the rekey schedule a session runs under c
+func (c Crypto) Timing() RekeyTiming {
+	return RekeyTiming{ChildRekeyInterval: c.ChildInterval(), IKERekeyInterval: c.IKEInterval(), RekeyMargin: c.Margin(), RekeyJitter: c.Jitter(),
+		RekeyRetryInitial: c.RetryFirst(), RekeyRetryMax: c.RetryMax()}
+}
+
+// RekeyTiming is a session's rekey schedule: each SA's lifetime, which its scheduled rekey runs ahead of by the margin and a jitter drawn up to RekeyJitter, zero for an SA with no scheduled rekey,
+// and the capped exponential backoff after a failed rekey, which for the Child SA holds back the next exchange whichever path asks for it, zero for both delays leaving Run the defaults
+type RekeyTiming struct {
+	ChildRekeyInterval time.Duration
+	IKERekeyInterval   time.Duration
+	RekeyMargin        time.Duration
+	RekeyJitter        time.Duration
+	RekeyRetryInitial  time.Duration
+	RekeyRetryMax      time.Duration
+}
+
+// validate refuses a timing a session could not run, which InitiateContext and NewResponder check before any packet
+func (t RekeyTiming) validate() error {
+	if t.ChildRekeyInterval < 0 || t.IKERekeyInterval < 0 {
+		return fmt.Errorf("ike: rekey intervals must be nonnegative when set")
+	}
+	if t.RekeyMargin < 0 || t.RekeyJitter < 0 {
+		return fmt.Errorf("ike: rekey margin and jitter must be nonnegative")
+	}
+	if !validRekeyTiming(t.ChildRekeyInterval, t.RekeyMargin, t.RekeyJitter) || !validRekeyTiming(t.IKERekeyInterval, t.RekeyMargin, t.RekeyJitter) {
+		return fmt.Errorf("ike: rekey margin plus jitter must be less than each enabled interval")
+	}
+	if (t.RekeyRetryInitial != 0 || t.RekeyRetryMax != 0) && (t.RekeyRetryInitial <= 0 || t.RekeyRetryMax <= 0) {
+		return fmt.Errorf("ike: rekey retry delays must be positive")
+	}
+	if t.RekeyRetryInitial > t.RekeyRetryMax {
+		return fmt.Errorf("ike: rekey retry first must not exceed rekey retry max")
+	}
+	return nil
+}
+
+// validRekeyTiming reports whether a rekey of an SA whose lifetime is interval, run margin and up to jitter ahead of it, falls within the lifetime, which an interval of zero, with no scheduled rekey, always does
+func validRekeyTiming(interval, margin, jitter time.Duration) bool {
+	return interval == 0 || (margin < interval && jitter < interval-margin)
+}
+
 func interval(configured *schema.Duration, fallback time.Duration) time.Duration {
 	if configured == nil {
 		return fallback
@@ -105,16 +147,15 @@ func (c Crypto) Validate() error {
 		name     string
 		interval time.Duration
 	}{{"child", c.ChildInterval()}, {"ike", c.IKEInterval()}} {
-		interval := named.interval
-		if interval == 0 {
-			continue
-		}
-		if c.Margin() == 0 {
+		if named.interval != 0 && c.Margin() == 0 {
 			return fmt.Errorf("ike: cap.crypto rekey margin must be positive beside rekey %s, since a rekey due at the end of the SA's lifetime can never replace it", named.name)
 		}
-		if !(c.Margin() < interval && c.Jitter() < interval-c.Margin()) {
+		if !validRekeyTiming(named.interval, c.Margin(), c.Jitter()) {
 			return fmt.Errorf("ike: cap.crypto rekey margin plus jitter must be less than rekey %s", named.name)
 		}
+	}
+	if err := c.Timing().validate(); err != nil {
+		return err
 	}
 	_, err := c.Suites()
 	return err
