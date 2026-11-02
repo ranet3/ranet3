@@ -599,7 +599,7 @@ func (m *Mesh) noteDeviceGone(err error) {
 	})
 }
 
-// reportedCount counts one kind of trouble on the tun's reads and spaces the reports about it, a warning or an event, an interval apart
+// reportedCount counts one kind of trouble in the packets the mesh handles and spaces the reports about it, a warning or an event, an interval apart
 // the forwarding decision's drop report spaces its reports with claim alone, its counters keeping the count
 // and each ICMP limit's report with claim and since, the limit's shards keeping the count
 type reportedCount struct {

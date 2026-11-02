@@ -146,7 +146,7 @@ type SegmentCounters struct {
 	Answered uint64
 	// Egressed counts the inner packets an egress segment handed to the exit
 	Egressed uint64
-	// Refused counts the packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, a part of Dropped never answered
 	Refused uint64
 	// NotReady counts the egress results dropped as not ready for their family
 	// it is this node's own state, so it is not in Dropped
@@ -592,7 +592,6 @@ func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer 
 	return 0, 0
 }
 
-// sendTooBig sends answer, segmentTooBig's, into the tun where tun is set, as answerFrom sets it, and otherwise as sendBack sends it, and counts it answered
 func (m *Mesh) sendTooBig(answer []byte, tun bool) bool {
 	if !tun {
 		return m.sendBack(answer)
@@ -604,7 +603,6 @@ func (m *Mesh) sendTooBig(answer []byte, tun bool) bool {
 
 // carriedPacket is the offset of the IP packet behind the SRH at srh in raw, which runs to raw's end
 // raw holds the SRH's first 2 octets
-// it reports false for an SRH running past raw's end or naming anything else next, and for a packet other than the one it names
 func carriedPacket(raw []byte, srh int) (int, bool) {
 	// RFC 8754 section 2, a routing header is 8 bytes and Hdr Ext Len units of 8 more
 	offset := srh + 8 + 8*int(raw[srh+1])
@@ -656,8 +654,8 @@ func (m *Mesh) answerOptions(inner []byte, fault int, end bool, take takeAnswer)
 // a tun read is answered into the tun from its destination, the one source every check of the sending host takes
 // the host drops a packet arriving from one of its own addresses, under nftables' fib in either family and over IPv4 by fib_validate_source unless accept_local is set
 // and its strict reverse path check drops one from an address it routes out of another link, a SID or a router-id it routes elsewhere among them
-// so End answers into the tun from inner's destination too where the reply's lookup reaches inner's source by an entry of this node's own that counts as no default, this host or a network behind it, as the forwarding decision answers it
-// and any other packet through the mesh, from the router-id of inner's family, else over IPv6 from sid as RFC 4443 section 2.2 (b) asks and over IPv4 from inner's destination
+// so an answer to this host or a network behind it comes from inner's destination too, as the forwarding decision's does
+// with no router-id an IPv6 answer comes from sid, as RFC 4443 section 2.2 (b) asks
 func (m *Mesh) answerFrom(inner []byte, end bool, sid netip.Addr) (netip.Addr, bool) {
 	version := inner[0] >> 4
 	src, dst := addressesOf(inner, version)

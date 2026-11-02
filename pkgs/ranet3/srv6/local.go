@@ -23,7 +23,9 @@ import (
 // decrypted the packet. Here the same decision is made one step earlier, on
 // the decrypted packet before it reaches the tun, which is the only place the
 // other three platforms have. The two interoperate: a packet this node
-// encapsulates is the same bytes the kernel would have produced.
+// encapsulates is the same bytes the kernel would have produced, but for an
+// IPv4 packet's ECN field, which RFC 6040 section 4.1's normal mode copies
+// into the outer traffic class where __seg6_do_srh_encap writes 0.
 
 // Behavior names the action a node takes on a packet addressed to one of its
 // own segments, RFC 8986. Only the two this mesh uses are implemented, and a
@@ -103,8 +105,8 @@ func (d Delivery) String() string {
 
 // ErrSourceRefused is a local SID's refusal of a packet for its source: at
 // every SID an outer source outside the overlay, and at an egress segment an
-// outer source outside its allow list's entries inside the overlay, an inner
-// source outside its allow list, or an inner source it cannot read
+// outer source outside its allow list's entries inside the overlay or an inner
+// source outside its allow list
 var ErrSourceRefused = errors.New("srv6: the segment does not admit the packet's source")
 
 // errOutsideOverlay is ErrSourceRefused for an outer source outside the
@@ -443,7 +445,7 @@ func decapsulateECN(outer, inner []byte) (drop, unused bool) {
 	return drop, unused
 }
 
-// innerSource is the source of inner, the packet of family Decap returned
+// inner is a packet Decap returned, so it holds the whole header of family
 func innerSource(inner []byte, family uint8) netip.Addr {
 	if family == NextHeaderIPv4 {
 		return netip.AddrFrom4([4]byte(inner[12:16]))

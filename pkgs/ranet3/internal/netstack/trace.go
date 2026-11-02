@@ -351,10 +351,9 @@ func within(prefixes []netip.Prefix, address netip.Addr) bool {
 
 // traceSite holds the decision's action on one packet, as its site knows it
 type traceSite struct {
-	arrival  TraceArrival
-	from     *Peer
-	decision TraceDecision
-	// reason is a transitReason, traceBudget or traceECN
+	arrival   TraceArrival
+	from      *Peer
+	decision  TraceDecision
 	reason    transitReason
 	next      *Peer
 	segment   netip.Addr
