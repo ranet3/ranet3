@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -279,7 +280,8 @@ type switchLab struct {
 	tunCapture, farCapture int
 	probe, ping            int
 	border                 *kernelexit.BorderFilter
-	stopBorder             func()
+	// stopBorder stops the leaf's node and then its antispoof filter for cause, as the command does, once
+	stopBorder func(cause error)
 	// bordered is a lab that runs the leaf's border, which fail starts again with the node
 	bordered bool
 	// neighbor is the address the next arm that solicits solicits
@@ -299,19 +301,22 @@ func (lab *switchLab) entry(t *testing.T) {
 	}
 	node.SetBorder(lab.border)
 	lab.bordered = true
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	var runs sync.WaitGroup
 	runs.Go(func() {
 		if err := lab.border.Run(ctx); err != nil {
 			t.Errorf("the leaf's antispoof filter: %v", err)
 		}
 	})
-	lab.stopBorder = sync.OnceFunc(func() {
-		lab.d.stop()
-		cancel()
-		runs.Wait()
-	})
-	t.Cleanup(lab.stopBorder)
+	var once sync.Once
+	lab.stopBorder = func(cause error) {
+		once.Do(func() {
+			lab.d.stop()
+			cancel(cause)
+			runs.Wait()
+		})
+	}
+	t.Cleanup(func() { lab.stopBorder(nil) })
 }
 
 func newSwitchLab(t *testing.T) *switchLab {
@@ -516,7 +521,20 @@ func (lab *switchLab) crash(t *testing.T, arm switchArm) {
 // arm reads is the one the failed node's stop left
 func (lab *switchLab) fail(t *testing.T, arm switchArm) {
 	t.Helper()
+	lab.restart(t)
+	arm.state = switchPresent
+	lab.settle(t, arm)
+	lab.failMesh(t)
+}
+
+// restart stops the lab's own node and an antispoof filter still running, starts the node again with its filter where the lab
+// runs one, and waits for its first pass
+func (lab *switchLab) restart(t *testing.T) {
+	t.Helper()
 	lab.d.stop()
+	if lab.stopBorder != nil {
+		lab.stopBorder(nil)
+	}
 	lab.d = startExitDaemon(t, lab.leaf)
 	if lab.bordered {
 		lab.entry(t)
@@ -526,8 +544,12 @@ func (lab *switchLab) fail(t *testing.T, arm switchArm) {
 	case <-time.After(rulesSettle):
 		t.Fatalf("the node's first pass did not end within %s", rulesSettle)
 	}
-	arm.state = switchPresent
-	lab.settle(t, arm)
+}
+
+// failMesh deletes the tun, waits for the mesh to fail and stops the lab's own node and its antispoof filter for that cause, as the
+// command does
+func (lab *switchLab) failMesh(t *testing.T) {
+	t.Helper()
 	if err := lab.leaf.Do(func() error { return netnstest.DelLink(rulesTUN) }); err != nil {
 		t.Fatalf("delete the tun: %v", err)
 	}
@@ -538,7 +560,7 @@ func (lab *switchLab) fail(t *testing.T, arm switchArm) {
 	}
 	lab.d.stopFor(kernel.ErrMeshFailed)
 	if lab.bordered {
-		lab.stopBorder()
+		lab.stopBorder(kernel.ErrMeshFailed)
 		lab.border = nil
 	}
 }
@@ -952,15 +974,15 @@ func TestTUNKillSwitchKeepsEachSocketOffTheUplink(t *testing.T) {
 	}
 }
 
-// cleanStop stops the lab's own node and checks it left no table or rule
+// cleanStop stops the lab's own node and its antispoof filter and checks they left no table or rule
 func (lab *switchLab) cleanStop(t *testing.T) {
 	t.Run("a clean stop", func(t *testing.T) {
 		lab.d.stop()
 		if lab.stopBorder != nil {
-			lab.stopBorder()
+			lab.stopBorder(nil)
 			lab.border = nil
 		}
-		var tables map[uint8]uint32
+		tables := map[string]map[uint8]uint32{}
 		var rules []kernelRule
 		if err := lab.leaf.Do(func() error {
 			conn, err := nftables.Dial()
@@ -968,16 +990,20 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 				return err
 			}
 			defer conn.Close()
-			if tables, err = nftables.Tables(conn, kernel.FallbackTable); err != nil {
-				return err
+			for _, name := range []string{kernel.FallbackTable, kernelexit.TableName} {
+				if tables[name], err = nftables.Tables(conn, name); err != nil {
+					return err
+				}
 			}
 			rules, err = dumpRules()
 			return err
 		}); err != nil {
 			t.Fatalf("read the leaf back: %v", err)
 		}
-		if len(tables) > 0 {
-			t.Errorf("the stop left the table %s in the families %v", kernel.FallbackTable, tables)
+		for name, families := range tables {
+			if len(families) > 0 {
+				t.Errorf("the stop left the table %s in the families %v", name, families)
+			}
 		}
 		for _, rule := range rules {
 			if rule.protocol == kernel.DefaultProtocol {
@@ -985,6 +1011,53 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 			}
 		}
 	})
+}
+
+// failedBorder starts the leaf's node and antispoof filter with no route of the mesh's, fails the mesh and stops both for it,
+// checks that the stop left the filter's table, has the far host send the leaf a datagram forged from an overlay source in each
+// family while no node runs, starts the node and filter again, which adopt the table without a write, its drops holding the
+// forged datagrams, and stops them as asked, which withdraws it. A start whose sets differ from the table's rewrites it in 1
+// transaction.
+func (lab *switchLab) failedBorder(t *testing.T) {
+	lab.restart(t)
+	lab.failMesh(t)
+	var left map[uint8]uint32
+	if err := lab.leaf.Do(func() error {
+		conn, err := nftables.Dial()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		left, err = nftables.Tables(conn, kernelexit.TableName)
+		return err
+	}); err != nil {
+		t.Fatalf("read the leaf's tables: %v", err)
+	}
+	if _, held := left[unix.NFPROTO_INET]; !held {
+		t.Fatalf("the stop for the mesh's failure left the table %s in the families %v, want inet", kernelexit.TableName, left)
+	}
+	forged := map[int]netip.Addr{4: netip.MustParseAddr("192.0.2.77"), 6: netip.MustParseAddr("3fff::77")}
+	if err := lab.far.Do(func() error {
+		for family, from := range forged {
+			if err := carveSend(from, rulesHost[family].uplink.Addr(), "forged from "+from.String()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("send to the leaf from the uplink: %v", err)
+	}
+	lab.d = startExitDaemon(t, lab.leaf)
+	lab.entry(t)
+	if passes := lab.d.node.events.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.pass" }, 0); len(passes) != 0 {
+		t.Errorf("the start over the table the stop for the mesh's failure left wrote it: %v", passes)
+	}
+	for family := range forged {
+		if got := borderDropped(t, lab.leaf, lab.border, carveOverlayDrop(family)); got == 0 {
+			t.Errorf("the adopted table's %q counted nothing, want the datagram forged while no node ran", carveOverlayDrop(family))
+		}
+	}
+	lab.cleanStop(t)
 }
 
 // switchService is one ask of the leaf's services on the uplink's address from the internet host, and how it is met
@@ -1416,6 +1489,7 @@ func TestTUNKillSwitchHoldsInModeThree(t *testing.T) {
 			}
 		})
 	}
+	t.Run("the antispoof filter's table the stop for the mesh's failure leaves", lab.failedBorder)
 }
 
 // a leaf in mode 2 with fallback = "none" under NAT at output, in each state: a packet the host addressed to its own uplink address, translated

@@ -838,3 +838,41 @@ func TestDaemonRefusesUpReloadAndRedialOnceItStops(t *testing.T) {
 	}
 	leftNothing(t, f, was)
 }
+
+// The mesh failing, its tun deleted under it, stops the daemon for that cause with 1, leaving the antispoof filter's table
+// and the kill switch's: the next start takes the antispoof filter's over without a write, and its SIGTERM withdraws both
+func TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable(t *testing.T) {
+	claimNamespace(t)
+	f := writeDaemon(t, leafCaps)
+	was := before(t)
+	var failed atomic.Pointer[events.Bus]
+	code := runAsync(f, watched(&failed))
+	waitTill(t, "the start", func() bool { return recorded(&failed, "daemon.started") != 0 })
+	if err := netnstest.DelLink(daemonTUN); err != nil {
+		t.Fatalf("delete the tun: %v", err)
+	}
+	if got := exited(t, code); got != 1 {
+		t.Errorf("the daemon whose mesh failed exited %d", got)
+	}
+	nft, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{kernelexit.TableName, kernel.FallbackTable} {
+		if held, err := nftables.Tables(nft, name); err != nil || len(held) == 0 {
+			t.Errorf("the stop for the mesh's failure left the table %s in the families %v (%v), want it held", name, held, err)
+		}
+	}
+	_ = nft.Close()
+	var again atomic.Pointer[events.Bus]
+	code = runAsync(f, watched(&again))
+	waitTill(t, "the next start", func() bool { return recorded(&again, "daemon.started") != 0 })
+	if passes := recorded(&again, "antispoof.pass"); passes != 0 {
+		t.Errorf("the next start wrote the antispoof filter's table in %d passes, want it taken over as it was left", passes)
+	}
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("the next start exited %d after SIGTERM", got)
+	}
+	leftNothing(t, f, was)
+}

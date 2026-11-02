@@ -12,6 +12,7 @@
 # and so does transport's send through a path whose mtu is locked
 # and the tun and conn packages of pkgs/wireguard
 # and internal/registry's and internal/client's tests of the endpoint resolver's mark, through a resolv.conf of their own
+# and cmd/ranet3's start and stop, whose parts write a tun, rules and tables
 {
   lib,
   iproute2,
@@ -35,6 +36,7 @@ let
       go test -c -o client-tests ./internal/client/
       go test -c -o transport-tests ./transport/
       go test -c -o registry-tests ./internal/registry/
+      go test -c -o daemon-tests ./cmd/ranet3/
     '';
     installPhase = ''
       install -Dm755 netlink-tests "$out/bin/netlink-tests"
@@ -45,6 +47,7 @@ let
       install -Dm755 client-tests "$out/bin/client-tests"
       install -Dm755 transport-tests "$out/bin/transport-tests"
       install -Dm755 registry-tests "$out/bin/registry-tests"
+      install -Dm755 daemon-tests "$out/bin/daemon-tests"
     '';
   });
   wireguardTests = wireguard.overrideAttrs (prev: {
@@ -241,6 +244,7 @@ testers.runNixOSTest {
     # inside them, and in the table a killed node leaves
     # and a leaf in mode 3 between two exits, leaving by the one via names, refused while that one's segment is gone and by its uplink under fallback = "uplink",
     # and through a waypoint, refused while the exit behind it is gone
+    # and the leaf's antispoof filter's table, which the stop for the mesh's failure leaves dropping, the next start adopts and an asked stop withdraws
     # and the leaf's status counting the reads the path alone took apart from the totals
     # and the antispoof filter's exemptions, each from the interfaces it names, and covering the overlay beside the carved drops
     # and a gateway's site exempt on its own interface, its node address and another node's prefixes inside carved
@@ -293,6 +297,7 @@ testers.runNixOSTest {
         assert f"--- PASS: {name}" in out, f"mesh_entry's lab {name} did not run:\n{out}"
     assert "--- PASS: TestTUNExitPathLeavesByTheNamedExitAndNoOther" in out, f"mode 3's two-exit lab did not run:\n{out}"
     assert "--- PASS: TestTUNKillSwitchHoldsInModeThree" in out, f"the kill switch's lab in mode 3 did not run:\n{out}"
+    assert "--- PASS: TestTUNKillSwitchHoldsInModeThree/the_antispoof_filter's_table_the_stop_for_the_mesh's_failure_leaves" in out, f"the antispoof filter's table after the stop for the mesh's failure did not run:\n{out}"
     assert "--- PASS: TestTUNStatusCountsTheReadsThePathAloneTook" in out, f"the status's count of the path's reads did not run:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 26, f"only {ran} of the client's tun round trips ran:\n{out}"
@@ -320,6 +325,32 @@ testers.runNixOSTest {
     assert "SKIP" not in out, f"the client's round trips in a namespace of their own skipped themselves under root:\n{out}"
     ran = out.count("--- PASS")
     assert ran >= 4, f"only {ran} of the client's round trips in a namespace of their own ran:\n{out}"
+
+    # the daemon refused at each part it builds, and stopped by SIGTERM or SIGINT while it builds and while it waits for the
+    # first pass, leaving nothing running or bound, a second signal of the build and of its undo forcing the exit, the
+    # antispoof filter's and the kill switch's tables an earlier instance left kept by a start that ends in its build, a
+    # SIGHUP and a SIGUSR1 of the start applied once it dials, up, reload and redial refused once the stop began, and the
+    # antispoof filter's table the stop for the mesh's failure leaves, which the next start takes over and its SIGTERM
+    # withdraws, the whole process in a namespace of its own
+    out = machine.succeed(
+        "unshare -n ${netlinkTests}/bin/daemon-tests -test.v -test.run '^TestDaemon(RefusedAtEachPartLeavesNothingRunningOrBound|StoppedWhileItBuildsStartsNothing|ForcedOutOfItsBuildByASecondSignal|EndedInItsBuildLeavesTheTablesItFound|StoppedInTheFirstPassWaitDialsNothing|ActsOnTheSignalsOfTheStartOnceItDials|RefusesUpReloadAndRedialOnceItStops|StoppedForTheMeshsFailureLeavesTheAntispoofTable)$' 2>&1"
+    )
+    print(out)
+    assert "SKIP" not in out, f"the daemon's start and stop skipped themselves under root:\n{out}"
+    for name in [
+        "TestDaemonRefusedAtEachPartLeavesNothingRunningOrBound",
+        "TestDaemonStoppedWhileItBuildsStartsNothing/SIGTERM",
+        "TestDaemonStoppedWhileItBuildsStartsNothing/SIGINT",
+        "TestDaemonForcedOutOfItsBuildByASecondSignal/in_the_build",
+        "TestDaemonForcedOutOfItsBuildByASecondSignal/in_the_undo",
+        "TestDaemonEndedInItsBuildLeavesTheTablesItFound/refused_at_the_reconciler",
+        "TestDaemonEndedInItsBuildLeavesTheTablesItFound/stopped_while_it_builds",
+        "TestDaemonStoppedInTheFirstPassWaitDialsNothing",
+        "TestDaemonActsOnTheSignalsOfTheStartOnceItDials",
+        "TestDaemonRefusesUpReloadAndRedialOnceItStops",
+        "TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable",
+    ]:
+        assert f"--- PASS: {name}" in out, f"the daemon's start and stop {name} did not run:\n{out}"
 
     # the endpoint resolver's sockets carrying the underlay's mark, and its query marked by the overlay a lookup is handed
     # and a dial's query following the overlay of the config in force across reloads
