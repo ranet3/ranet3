@@ -502,31 +502,31 @@ func (s *Speaker) OriginateFrom(dest, source netip.Prefix) {
 		s.noteOwnLocked("originated", []routeKey{key}, nil, nil)
 	}
 	s.originate[key] = struct{}{}
-	s.adoptOwnLocked(key)
+	s.adoptOwnLocked(key, time.Now())
 	s.updatePending = true
 	s.wake()
 }
 
 // adoptOwnLocked takes over a key this node now owns, a prefix it
-// announces or an address cap.table assigns it. Whatever it had
-// learned for the key goes. A learned route left selected keeps advertiseTo's
-// split horizon comparing its next hop against nil, so it never fires and the
-// node advertises the prefix at metric 0 back to the neighbor it is still
-// forwarding to, which is a loop until the entry expires. An entry left in the
-// route table would also write its next selection over the forwarding entry,
-// and its flush would remove it.
+// announces or an address cap.table assigns it. What it had learned for the
+// key leaves the route table for the key's offers. A learned route left
+// selected keeps advertiseTo's split horizon comparing its next hop against
+// nil, so it never fires and the node advertises the prefix at metric 0 back
+// to the neighbor it is still forwarding to, which is a loop until the entry
+// expires. An entry left in the route table would also write its next
+// selection over the forwarding entry, and its flush would remove it.
 //
 // The forwarding entry is this node's whether or not anything was learned, and
-// receive drops every later update for the key, so no learned route replaces
-// it. With no entry at all, a packet for an address in the prefix falls
-// through to a covering route, and on a node holding one that is straight back
-// out to a neighbor which learned this prefix from here at metric 0 and
-// returns it.
+// receive keeps every later update for the key among its offers, so no
+// learned route replaces it. With no entry at all, a packet for an address in
+// the prefix falls through to a covering route, and on a node holding one that
+// is straight back out to a neighbor which learned this prefix from here at
+// metric 0 and returns it.
 //
 // a host prefix takes with it every route learned to the same address from a source, which receive drops from then on
 // since the host delivers its own address whatever the source
-func (s *Speaker) adoptOwnLocked(key routeKey) {
-	delete(s.routes.entries, key)
+func (s *Speaker) adoptOwnLocked(key routeKey, now time.Time) {
+	s.routes.setAside(key, now)
 	if key.dest.IsSingleIP() {
 		for learned := range s.routes.entries {
 			if learned.dest == key.dest {
@@ -541,13 +541,19 @@ func (s *Speaker) adoptOwnLocked(key routeKey) {
 // releaseOwnLocked gives a key back once this node owns it in neither way, so
 // a route to it can be learned from a neighbor again rather than staying
 // behind the entry adoptOwnLocked installed, and reports whether the key is
-// held. A key given back loses its last route, and is held until the latest
+// held. A key given back takes its offers as its routes, selected at once.
+// With none selected it loses its last route, and is held until the latest
 // time any finite update this node sent for it expires at a neighbor, however
 // long ago it stopped being announced. A key this node still owns the other
 // way keeps an entry of this node's, the one ownEntryLocked names for it now.
+// A key to a host address this node still holds drops its offers, as receive
+// drops what a neighbor sends for it.
 func (s *Speaker) releaseOwnLocked(key routeKey, now time.Time) bool {
 	if !s.ownsLocked(key) {
-		return s.routes.lose(key, now)
+		if key.dest.IsSingleIP() && s.ownsHostLocked(key.dest) {
+			delete(s.routes.offers, key)
+		}
+		return !s.routes.restore(key, now) && s.routes.lose(key, now)
 	}
 	s.mesh.Routes.Set(key.source, key.dest, s.ownEntryLocked(key))
 	return false
@@ -621,7 +627,7 @@ func (s *Speaker) SetOriginated(routes []OriginatedRoute) {
 	defer s.mu.Unlock()
 	previous := s.originate
 	s.originate = wanted
-	s.replaceOwnLocked("originated", previous, wanted)
+	s.replaceOwnLocked("originated", previous, wanted, time.Now())
 }
 
 // SetAssigned replaces the addresses cap.table assigns this node. Each is this
@@ -638,7 +644,7 @@ func (s *Speaker) SetAssigned(addresses []netip.Addr) {
 	defer s.mu.Unlock()
 	previous := s.assigned
 	s.assigned = wanted
-	s.replaceOwnLocked("assigned", previous, wanted)
+	s.replaceOwnLocked("assigned", previous, wanted, time.Now())
 }
 
 // replaceOwnLocked carries out the change of one set of this node's own keys,
@@ -647,11 +653,10 @@ func (s *Speaker) SetAssigned(addresses []netip.Addr) {
 // hears the retraction the next advertisement carries, since advertiseTo
 // reports an unknown route as infinity. Each key of wanted is adopted. The
 // change is recorded once, and the same set again changes nothing.
-func (s *Speaker) replaceOwnLocked(set string, previous, wanted map[routeKey]struct{}) {
+func (s *Speaker) replaceOwnLocked(set string, previous, wanted map[routeKey]struct{}, now time.Time) {
 	if maps.Equal(previous, wanted) {
 		return
 	}
-	now := time.Now()
 	var added, removed, held []routeKey
 	for key := range previous {
 		if _, kept := wanted[key]; !kept {
@@ -665,7 +670,7 @@ func (s *Speaker) replaceOwnLocked(set string, previous, wanted map[routeKey]str
 		if _, known := previous[key]; !known {
 			added = append(added, key)
 		}
-		s.adoptOwnLocked(key)
+		s.adoptOwnLocked(key, now)
 	}
 	s.noteOwnLocked(set, added, removed, held)
 	s.updatePending = true
@@ -969,6 +974,7 @@ func (s *Speaker) neighborDownLocked(n *neighborState) {
 	s.events.Emit("babel.neighbor.down", n.peer.ID)
 	n.alive, n.haveReportedCost = false, false
 	n.forgetLink()
+	s.routes.dropOffersOf(n)
 }
 
 func (s *Speaker) sweepExpiredLocked(now time.Time) {
@@ -1226,7 +1232,7 @@ func (s *Speaker) Originated() []OriginatedRoute {
 }
 
 // SelectedOrigin is the router-id of the route the speaker selected for dest
-// from any source, false where it selected none
+// with no source prefix, false where it selected none
 func (s *Speaker) SelectedOrigin(dest netip.Prefix) ([8]byte, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1235,6 +1241,24 @@ func (s *Speaker) SelectedOrigin(dest netip.Prefix) ([8]byte, bool) {
 		return [8]byte{}, false
 	}
 	return entry.selected.routerID, true
+}
+
+// OfferedOrigin is the router-id of an offer a neighbor holds for dest with no
+// source prefix, a key this node owns, that has not expired, false where none
+// has: of several, the one selection weighs first
+func (s *Speaker) OfferedOrigin(dest netip.Prefix) ([8]byte, bool) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best *neighborState
+	var bestCost uint16
+	var origin [8]byte
+	for n, offer := range s.routes.offers[routeKey{dest: dest.Masked()}] {
+		if cost := offer.cost(n, now, s.routes.cost); now.Before(offer.expiresAt) && goesBefore(n, cost, best, bestCost) {
+			best, bestCost, origin = n, cost, offer.routerID
+		}
+	}
+	return origin, best != nil
 }
 
 // compareKey orders two route keys by destination and then by source prefix,

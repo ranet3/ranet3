@@ -239,26 +239,32 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 			// node treats every key it holds as its own the same way.
 			// a host address of this node's is delivered whatever the source, as the host's kernel delivers it
 			// so no neighbor's route to it from a source takes its packets by RFC 9079 section 4's order
-			if s.ownsLocked(key) || dest.IsSingleIP() && s.ownsHostLocked(dest) {
+			owned := s.ownsLocked(key)
+			if !owned && dest.IsSingleIP() && s.ownsHostLocked(dest) {
+				continue
+			}
+			if !haveRouterID && u.Metric != MetricInfinity {
 				continue
 			}
 			adv := advertisement{routerID: routerID, seqno: u.Seqno, metric: u.Metric}
-			if !haveRouterID {
-				if u.Metric != MetricInfinity {
-					continue
-				}
-				// A retraction can arrive with no router-id in the packet's
-				// parser state (RFC 8966 section 4.5). It retracts whatever
-				// this neighbor last advertised, so the entry keeps its origin.
+			if u.Metric == MetricInfinity || routerID == s.routerID {
+				// RFC 8966 section 4.6.9: of a retraction "the router-id, next
+				// hop, and seqno are not used", and one can arrive with no
+				// router-id in the packet's parser state (section 4.5). An
+				// update under this node's own router-id says the neighbor's
+				// route is this node's own. Either takes out whatever this
+				// neighbor last advertised, so the entry keeps its origin.
+				adv.metric = MetricInfinity
 				if route := s.routes.route(n, key); route != nil {
 					adv.routerID, adv.seqno = route.routerID, route.seqno
 				}
-			} else if routerID == s.routerID {
-				// Our own router-id only ever reaches us back through the mesh,
-				// and we never re-advertise it, so this is a reflection.
+			}
+			hold := deadTimeout(time.Duration(u.Interval) * 10 * time.Millisecond)
+			if owned {
+				s.routes.offer(n, key, adv, hold, now)
 				continue
 			}
-			s.routes.update(n, key, adv, deadTimeout(time.Duration(u.Interval)*10*time.Millisecond), now)
+			s.routes.update(n, key, adv, hold, now)
 
 		case TLVAckReq:
 			if nonce, err := DecodeAckReq(t.Body); err == nil && n.addr.IsValid() {

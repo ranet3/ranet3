@@ -220,8 +220,8 @@ func TestAssignedAddressIsThisNodesAndNeverAnnounced(t *testing.T) {
 }
 
 // An address cap.table stops assigning is given back, so the route a neighbor
-// offers for it is learned again rather than left behind this node's own entry
-// for the life of the process.
+// offered for it while it was assigned is selected at once rather than left
+// behind this node's own entry for the life of the process.
 func TestUnassignedAddressCanBeLearnedAgain(t *testing.T) {
 	fabric := newMeshFabric(t, Config{}, "a-b")
 	address := netip.MustParseAddr("2001:db8:5::1")
@@ -234,12 +234,8 @@ func TestUnassignedAddressCanBeLearnedAgain(t *testing.T) {
 	}
 
 	fabric.speakers["a"].SetAssigned(nil)
-	if value, ok := entryAt(fabric.meshes["a"], key); ok {
-		t.Fatalf("%s still holds %s once it is no longer assigned", key.dest, peerName(value))
-	}
-	fabric.flush("b")
 	if got := fabric.forwards("a", address); got != "b" {
-		t.Errorf("a reaches %s via %q once it is no longer assigned, want b", address, got)
+		t.Errorf("a reaches %s via %q once it is no longer assigned, want b, whose offer it kept", address, got)
 	}
 }
 
@@ -350,10 +346,10 @@ func TestRetractedPrefixInsideThisNodesOwnIsHeld(t *testing.T) {
 	}
 }
 
-// an exit whose egress readiness withdraws its default holds it as it holds any key it releases, RFC 8966 section 3.5.4
-// so its transit for the internet resolves held through an entry of length 0, which the forwarding decision answers network unreachable
-// another exit's default is no route of the exit's while it originates its own, since receive drops every update for an own key
-// so the transit moves to that exit at that exit's next update, and with no other default the hold lasts until this node's last update expires at a neighbor
+// another exit's default is no route of an exit's while it originates its own, and is kept as an offer
+// so the exit whose egress readiness withdraws its default moves its transit for the internet to that exit at once
+// with no other default it holds its own as it holds any key it releases, RFC 8966 section 3.5.4, until this node's last update expires at a neighbor
+// so its transit resolves held through an entry of length 0, which the forwarding decision answers network unreachable
 func TestExitWithdrawingItsDefaultHoldsItsTransit(t *testing.T) {
 	sender, internet := netip.MustParseAddr("3fff:1::1"), netip.MustParseAddr("2001:db8:ff::1")
 	whole := routeKey{dest: netip.MustParsePrefix("::/0")}
@@ -376,15 +372,14 @@ func TestExitWithdrawingItsDefaultHoldsItsTransit(t *testing.T) {
 				t.Errorf("the exit learned a default while it originates its own")
 			}
 			e.SetOriginated(nil)
-			if _, verdict, match := routes.Resolve(sender, internet); verdict != netstack.RouteHeld || match.Bits != 0 {
-				t.Fatalf("once its readiness withdraws its default the exit resolves the internet as verdict %d through %d bits, want held through the default", verdict, match.Bits)
-			}
 			if another {
-				fabric.flush("x")
 				if peer, verdict, _ := routes.Resolve(sender, internet); verdict != netstack.RoutePeer || peer.ID != "x" {
-					t.Errorf("after the other exit's next update the exit resolves the internet as verdict %d through %s, want x", verdict, peerName(peer))
+					t.Errorf("once its readiness withdraws its default the exit resolves the internet as verdict %d through %s, want x at once", verdict, peerName(peer))
 				}
 				return
+			}
+			if _, verdict, match := routes.Resolve(sender, internet); verdict != netstack.RouteHeld || match.Bits != 0 {
+				t.Fatalf("once its readiness withdraws its default the exit resolves the internet as verdict %d through %d bits, want held through the default", verdict, match.Bits)
 			}
 			e.mu.Lock()
 			end := e.routes.advertisedUntil[whole]

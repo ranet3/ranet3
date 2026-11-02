@@ -7,6 +7,7 @@ package babel
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/netip"
 	"time"
@@ -89,11 +90,17 @@ type starveRequest struct {
 // sends must pass through observe.
 type routeTable struct {
 	entries map[routeKey]*keyEntry
+	// offers is, for each key this node owns, the route each neighbor offers
+	// for it, kept outside selection: while the key is owned none is selected,
+	// installed or advertised. Its keys and those of entries count together
+	// against maxRouteKeys, so moving a key's offers into entries never
+	// overfills the table.
+	offers  map[routeKey]map[*neighborState]*routeInfo
 	sources map[sourceKey]*sourceEntry
-	// retracted is the neighbors whose routes are all at infinity already, so
-	// a repeated wildcard retraction costs a map lookup rather than a walk of
-	// the whole table. Bounded by the neighbor count, and cleared wherever one
-	// advertises a finite metric again.
+	// retracted is the neighbors whose routes are all at infinity already and
+	// who hold no offer, so a repeated wildcard retraction costs a map lookup
+	// rather than a walk of the whole table. Bounded by the neighbor count, and
+	// cleared wherever one advertises a finite metric again.
 	retracted map[*neighborState]bool
 	// originsPerKey is how many distinct origins each prefix has spent of
 	// maxOriginsPerPrefix, so one prefix cannot fill the whole source table.
@@ -157,6 +164,7 @@ type routeTable struct {
 func newRouteTable(install func(routeKey, routeSelection)) *routeTable {
 	return &routeTable{
 		entries:         make(map[routeKey]*keyEntry),
+		offers:          make(map[routeKey]map[*neighborState]*routeInfo),
 		sources:         make(map[sourceKey]*sourceEntry),
 		retracted:       make(map[*neighborState]bool),
 		originsPerKey:   make(map[routeKey]int),
@@ -203,7 +211,7 @@ func (rt *routeTable) update(n *neighborState, key routeKey, adv advertisement, 
 			return
 		}
 		if entry == nil {
-			if len(rt.entries) >= maxRouteKeys {
+			if rt.full() {
 				// A peer chooses how many prefixes it sends, and each key
 				// costs a map of its own plus a trie node and a source entry.
 				// Without a ceiling one misbehaving or compromised neighbor
@@ -251,6 +259,87 @@ func (rt *routeTable) update(n *neighborState, key routeKey, adv advertisement, 
 			key: key, neighbor: n, routerID: adv.routerID, seqno: rt.requestSeqno(key, adv), once: true,
 		})
 	}
+}
+
+func (rt *routeTable) full() bool { return len(rt.entries)+len(rt.offers) >= maxRouteKeys }
+
+// RFC 8966 section 3.5.3
+func (rt *routeTable) offer(n *neighborState, key routeKey, adv advertisement, hold time.Duration, now time.Time) {
+	offers := rt.offers[key]
+	if adv.metric == MetricInfinity {
+		if delete(offers, n); len(offers) == 0 {
+			delete(rt.offers, key)
+		}
+		return
+	}
+	rt.forgetRetraction(n)
+	route := offers[n]
+	if route == nil {
+		if hold <= 0 {
+			return
+		}
+		if offers == nil {
+			if rt.full() {
+				rt.overfull(key)
+				return
+			}
+			offers = make(map[*neighborState]*routeInfo)
+			rt.offers[key] = offers
+		}
+		route = &routeInfo{}
+		offers[n] = route
+	}
+	route.routerID, route.seqno, route.rxMetric = adv.routerID, adv.seqno, adv.metric
+	route.hold, route.expiresAt = hold, now.Add(hold)
+}
+
+func (rt *routeTable) dropOffers(gone func(*neighborState, *routeInfo) bool) {
+	for key, offers := range rt.offers {
+		if maps.DeleteFunc(offers, gone); len(offers) == 0 {
+			delete(rt.offers, key)
+		}
+	}
+}
+
+func (rt *routeTable) dropOffersOf(n *neighborState) {
+	rt.dropOffers(func(neighbor *neighborState, _ *routeInfo) bool { return neighbor == n })
+}
+
+func (rt *routeTable) setAside(key routeKey, now time.Time) {
+	entry := rt.entries[key]
+	if entry == nil {
+		return
+	}
+	delete(rt.entries, key)
+	if maps.DeleteFunc(entry.routes, func(_ *neighborState, route *routeInfo) bool {
+		return route.rxMetric == MetricInfinity || !now.Before(route.expiresAt)
+	}); len(entry.routes) != 0 {
+		rt.offers[key] = entry.routes
+	}
+}
+
+// restore makes the offers for key, which this node no longer owns, that have
+// not expired its routes and runs selection on them at once, and reports
+// whether it selected one. With none selected, each unfeasible one is asked
+// for a seqno: this node has lost its own route, RFC 8966 section 3.8.2.1.
+func (rt *routeTable) restore(key routeKey, now time.Time) bool {
+	routes := rt.offers[key]
+	delete(rt.offers, key)
+	if maps.DeleteFunc(routes, func(_ *neighborState, route *routeInfo) bool { return !now.Before(route.expiresAt) }); len(routes) == 0 {
+		return false
+	}
+	entry := &keyEntry{routes: routes}
+	rt.entries[key] = entry
+	rt.selectRoute(key, entry, now)
+	if entry.selected.neighbor != nil {
+		return true
+	}
+	for n, route := range routes {
+		if !rt.feasible(key, route.advertised(), n.peer.ID) {
+			rt.starve(key, n, route.advertised())
+		}
+	}
+	return false
 }
 
 // wouldWin reports whether selection would take n's route for key were it
@@ -560,12 +649,13 @@ func (rt *routeTable) recomputeNeighbor(n *neighborState, now time.Time) {
 	}
 }
 
-// expireNeighbor discards a neighbor's routes outright. It is for a peer that
-// is gone, not for one that merely stopped answering: an unreachable neighbor
-// keeps its routes, which an infinite link cost already makes unselectable,
-// until their own expiry timers run out.
+// expireNeighbor discards a neighbor's routes and offers outright. It is for a
+// peer that is gone, not for one that merely stopped answering: an unreachable
+// neighbor keeps its routes, which an infinite link cost already makes
+// unselectable, until their own expiry timers run out.
 func (rt *routeTable) expireNeighbor(n *neighborState, now time.Time) {
 	delete(rt.retracted, n)
+	rt.dropOffersOf(n)
 	for key, entry := range rt.entries {
 		if _, ok := entry.routes[n]; ok {
 			delete(entry.routes, n)
@@ -580,20 +670,19 @@ func (rt *routeTable) expireNeighbor(n *neighborState, now time.Time) {
 // retractNeighbor applies a wildcard retraction, RFC 8966 section 4.6.9 read
 // with RFC 9079 section 5.2: every route from this neighbor,
 // whatever its source prefix, goes to infinity through the ordinary
-// acquisition path, so the prefixes are held rather than vanishing.
+// acquisition path, so the prefixes are held rather than vanishing, and
+// every offer it holds goes.
 //
 // It is a walk of the whole route table, and a neighbor can put a hundred and
 // twelve wildcard retractions in one packet: the TLV is twelve bytes. After
 // the first, every route from that neighbor is already at infinity and the
 // walk finds nothing to do, so the repeat is remembered rather than redone.
-// Measured at 403 ms of the speaker lock per packet at maxRouteKeys routes,
-// which is every neighbor's receive path, the hello emitter and route
-// selection held behind one peer.
 func (rt *routeTable) retractNeighbor(n *neighborState, now time.Time) {
 	if rt.retracted[n] {
 		return
 	}
 	rt.retracted[n] = true
+	rt.dropOffersOf(n)
 	for key, entry := range rt.entries {
 		if route, ok := entry.routes[n]; ok {
 			// The same rule as update's: the hold starts at the retraction
@@ -639,6 +728,7 @@ func (rt *routeTable) sweepExpired(now time.Time) {
 			delete(rt.advertisedUntil, key)
 		}
 	}
+	rt.dropOffers(func(_ *neighborState, offer *routeInfo) bool { return !now.Before(offer.expiresAt) })
 	rt.sweepSources(now)
 }
 

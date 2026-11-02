@@ -20,7 +20,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
-// ownsHost reports a host prefix one of own holds under any source, for which a node drops every route a neighbor offers whatever its source
+// ownsHost reports a host prefix one of own holds under any source, for which a node forwards by no route a neighbor offers whatever its source
 func ownsHost(own []routeKey, dest netip.Prefix) bool {
 	return dest.IsSingleIP() && slices.ContainsFunc(own, func(key routeKey) bool { return key.dest == dest })
 }
