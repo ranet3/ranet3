@@ -523,8 +523,7 @@ another writer puts in one of its chains or edits there, or a table it sets
 dormant, which changes what the chain does to a packet, is undone by the next
 pass. It does not read back the set's counts, so a count another writer changes
 or removes stays as that writer left it. Every chain in its table whose name
-starts `none_` is its own and read back. One no class writes is emptied and
-deleted, or kept empty while another writer's rule or map element goes to it, as
+starts `none_` is its own, as
 [refusing to advertise](exit-nodes.md#refusing-to-advertise) describes. Another
 chain in its table is neither read nor removed until the table is made again. It
 reads other writers' tables, chains and rules to find its own and to report
@@ -612,13 +611,13 @@ prerouting, priority `raw` (-300). The same rules hold: it writes only inside
 its table and replaces its chains and sets in 1 transaction.
 [Its lifetime](antispoof.md#where-it-runs) says when the table is taken over,
 kept and removed. The conflict report above leaves its chains out, since they
-are in an `inet` table and translate nothing. Another base chain at the same
-hook, such as a firewall's own raw chain, runs beside it: both see every packet,
-and only a drop in either ends the hook. A firewall reload that flushes the
-whole ruleset deletes the table, and the filter puts it back on the pass the
-deletion wakes. A table or chain another writer changed in a way nf_tables will
-not undo in place is deleted and made again in 1 transaction, any chain another
-writer put in the table with it.
+are filter chains and translate nothing. Another base chain at the same hook,
+such as a firewall's own raw chain, runs beside it: both see every packet, and
+only a drop in either ends the hook. A firewall reload that flushes the whole
+ruleset deletes the table, and the filter puts it back on the pass the deletion
+wakes. A table or chain another writer changed in a way nf_tables will not undo
+in place is deleted and made again in 1 transaction, any chain another writer
+put in the table with it.
 
 For a firewall's author, `mesh_entry` reads the source a packet leaves by the
 tun with, after every source translation: each NAT chain at postrouting runs

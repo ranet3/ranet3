@@ -579,10 +579,8 @@ that ranet3 counts stay within 20 however it is cut, and a probe that cuts
 nothing resends it without counting it. A close cuts a wait short too: once the
 IKE SA starts to close, for any reason its lifetime included, the request
 outstanding then takes its next counted send at once, from its own budget, as
-[limits](limits.md#ike) gives. The window of 1 that section 2.3 holds this end
-to then frees within a round trip, so the Delete leaves before the node stops
-waiting for it, at the cost of 1 datagram a close and no send past the request's
-budget.
+[limits](limits.md#ike) gives. The RFC 7296 section 2.4 row on retransmission
+times, in the table at the top of this page, gives the reason.
 
 A responder takes section 2.5.1's "may use the maximum size of the received IKE
 Fragment message IP datagrams as a threshold when constructing a fragmented

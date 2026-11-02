@@ -329,11 +329,11 @@ These commands take flags of their own:
   may run an `IKE_FOLLOWUP_KE` exchange or, having lost a simultaneous rekey to
   the peer's, waits on the peer's `IKE_FOLLOWUP_KE`, a wait that ends when the
   peer's rekey replaces the IKE SA or is dropped, or when the IKE SA starts to
-  close. The same holds keep back the liveness checks its schedule sends. It is
-  an action, so it takes a POST, and it is recorded as a `control.verb` like the
-  other verbs. It completes to the peers the node dials and the nodes it holds a
-  session with. The daemon refuses it while the node is down, and when no
-  session matches.
+  close. The schedule holds back its liveness checks under the same conditions.
+  It is an action, so it takes a POST, and it is recorded as a `control.verb`
+  like the other verbs. It completes to the peers the node dials and the nodes
+  it holds a session with. The daemon refuses it while the node is down, and
+  when no session matches.
 - `debug updown` is whether the node is on the mesh and since when, the flag
   that keeps it off through a restart and whether the flag is there, and the
   last move between up and down with its cause, a request or the flag at start.

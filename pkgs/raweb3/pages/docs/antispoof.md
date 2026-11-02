@@ -368,7 +368,7 @@ daemon lost, which another table's large transaction can overflow its socket
 with, wake a pass too and leave readiness as it was, since that pass reads the
 table back.
 
-The table's lifetime, which the other pages link here for:
+The table's lifetime:
 
 - The start writes it with the filter's first pass, before the reconciler routes
   anything into the tun. A table an earlier instance left is taken over: a first

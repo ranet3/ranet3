@@ -77,42 +77,44 @@ unless run as root.
   family alone not ready, with the address named, until it is back. The eleventh
   makes a line of each chain of each family an accept under the comment it was
   written with, and reads that family alone at a fault naming the line until the
-  next pass writes it back. The twelfth reads a class of `none`'s set of 2
-  classes back ready, with a second pass rewriting nothing, does the same to a
-  line of that class's chain, writes such a line again under its comment over a
-  set holding an element more or missing its second, adds a chain named as a
-  class of `none`'s that no class writes, and deletes a class's chain once its
-  rule in the limit chain is an accept, and reads the ip family alone at a fault
-  naming the line or the chain until the next pass writes the line back, deletes
-  the chain or writes it again. The thirteenth adds such a chain with another
-  writer's chain going to it by a goto, then by a vmap, then with an element of
-  a named map going to it, and reads the ip family alone at a fault naming that
-  chain or map, the pass failing nothing, until the rule or the element goes and
-  the next pass deletes the chain. Seven round trip the antispoof filter's
-  table, both chains and its sets, one with an exemption of each kind. One puts
-  it back on the pass another writer wakes by deleting the table, adding a rule
-  or setting the table dormant, and leaves no table behind. One writes it back
-  after another writer adds a rule to it, sets its table dormant, turns a policy
-  to drop, makes a chain again at another priority or as a regular chain, or
-  makes the table again with a flag nf_tables will not clear in place, the last
-  3 by deleting and making the table again. One refills a set another writer
-  flushed, or a chain it emptied, on the pass that change wakes, one holds chain
-  `mesh_entry` alone with no `overlay`, one starts over a table holding a chain
-  the filter does not write and finds the table made again without that chain,
-  with and without `overlay`, and one kills the filter's process with `SIGKILL`
-  and finds the table still there with every rule and element, which the next
-  start takes over without a write. That process is the test binary run again as
-  `TestBorderCrashHelper`, which joins the test's namespace by its path and
-  skips when run any other way. The last of the 7 moves a `none` set by one LAN
-  at 10, 1,000 and 10,000 LANs held, and reads at most 6 element notifications
-  for each pass. The other 3 read the translator's rules for debug. One sends a
-  datagram from the mesh address out of the uplink and finds its rule's counter
-  moved while the last pass still counts none. One reads from 2 readers at once
-  while one pass follows another, each read and each pass with no error. One
-  reads on while the exit stops, and each read answers the rules or the error a
-  stopped exit answers, which names no descriptor its close released. It also
-  runs the [exit behavior suite](#the-exit-behavior-suite) against the kernel
-  exit.
+  next pass writes it back. The twelfth,
+  `TestNftablesReadsTheChainsOfClassesOfNoneBack`, reads a class of `none`'s set
+  of 2 classes back ready, with a second pass rewriting nothing. It then makes 5
+  edits, each read on its own: a line of that class's chain made an accept under
+  its comment, such a line written again under its comment over a set holding an
+  element more, another over a set missing its second, a chain added that is
+  named as a class of `none`'s and that no class writes, and a class's chain
+  deleted once its rule in the limit chain is an accept. After each it reads the
+  ip family alone at a fault naming the line or the chain, until the next pass
+  writes the line back, deletes the chain or writes it again. The thirteenth
+  adds such a chain with another writer's chain going to it by a goto, then by a
+  vmap, then with an element of a named map going to it, and reads the ip family
+  alone at a fault naming that chain or map, the pass failing nothing, until the
+  rule or the element goes and the next pass deletes the chain. Seven round trip
+  the antispoof filter's table, both chains and its sets, one with an exemption
+  of each kind. One puts it back on the pass another writer wakes by deleting
+  the table, adding a rule or setting the table dormant, and leaves no table
+  behind. One writes it back after another writer adds a rule to it, sets its
+  table dormant, turns a policy to drop, makes a chain again at another priority
+  or as a regular chain, or makes the table again with a flag nf_tables will not
+  clear in place, the last 3 by deleting and making the table again. One refills
+  a set another writer flushed, or a chain it emptied, on the pass that change
+  wakes, one holds chain `mesh_entry` alone with no `overlay`, one starts over a
+  table holding a chain the filter does not write and finds the table made again
+  without that chain, with and without `overlay`, and one kills the filter's
+  process with `SIGKILL` and finds the table still there with every rule and
+  element, which the next start takes over without a write. That process is the
+  test binary run again as `TestBorderCrashHelper`, which joins the test's
+  namespace by its path and skips when run any other way. The last of the 7
+  moves a `none` set by one LAN at 10, 1,000 and 10,000 LANs held, and reads at
+  most 6 element notifications for each pass. The other 3 read the translator's
+  rules for debug. One sends a datagram from the mesh address out of the uplink
+  and finds its rule's counter moved while the last pass still counts none. One
+  reads from 2 readers at once while one pass follows another, each read and
+  each pass with no error. One reads on while the exit stops, and each read
+  answers the rules or the error a stopped exit answers, which names no
+  descriptor its close released. It also runs the
+  [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
 - `internal/nftables` has 5 that write into a real packet filter. One checks
   that each expression the encoder writes acts on the host's own datagrams on
   loopback as its line says, an interval set's lookup, the mark, the device
@@ -479,26 +481,26 @@ start the daemon as `ranet3 daemon` does, so they take the namespace the same
 way. `TestDaemonRefusedAtEachPartLeavesNothingRunningOrBound` refuses the start
 at each part it builds, the listeners on an address already held and the control
 socket at a path under a file, `TestDaemonStoppedWhileItBuildsStartsNothing`
-sends SIGTERM and SIGINT while it builds and
-`TestDaemonStoppedInTheFirstPassWaitDialsNothing` SIGTERM while it waits for the
-reconciler's first pass, and each finds no goroutine of the start running and no
-listener, socket, port, tun, table, rule or route of it left, with nothing
-dialed and no part logged as started. Each reads the listeners and the control
-socket as soon as the start returns, before the garbage collector can close a
-leaked one. `TestDaemonEndedInItsBuildLeavesTheTablesItFound` writes the
-antispoof filter's table and the kill switch's as an earlier instance leaves
+sends `SIGTERM` and `SIGINT` while it builds and
+`TestDaemonStoppedInTheFirstPassWaitDialsNothing` `SIGTERM` while it waits for
+the reconciler's first pass, and each finds the process as before the start: its
+goroutines ended, its listeners, socket, port, tun, tables, rules and routes
+gone, and no peer dialed or part logged as started. Each reads the listeners and
+the control socket as soon as the start returns, before the garbage collector
+can close a leaked one. `TestDaemonEndedInItsBuildLeavesTheTablesItFound` writes
+the antispoof filter's table and the kill switch's as an earlier instance leaves
 them, refuses the start at the reconciler or stops it while it builds, and finds
 both tables still there. `TestDaemonActsOnTheSignalsOfTheStartOnceItDials` finds
-a SIGHUP and a SIGUSR1 sent while the daemon builds applied once each, after the
-first pass. `TestDaemonForcedOutOfItsBuildByASecondSignal` finds a second
-SIGTERM forcing the exit in the build, with no root, and in the undo of a build
-the first SIGTERM stopped, sent from the exit's close.
+a `SIGHUP` and a `SIGUSR1` sent while the daemon builds applied once each, after
+the first pass. `TestDaemonForcedOutOfItsBuildByASecondSignal` finds a second
+`SIGTERM` forcing the exit in the build, with no root, and in the undo of a
+build the first `SIGTERM` stopped, sent from the exit's close.
 `TestDaemonRefusesUpReloadAndRedialOnceItStops` holds the exit's withdrawal and
 finds `up`, `reload` and `redial` refused and `status` answered while the stop
 waits for it. `TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable`
 deletes the tun under a running daemon, finds the antispoof filter's table and
 the kill switch's left after it exits 1, and a next start that takes the
-filter's over with no write and leaves nothing after SIGTERM:
+filter's over with no write and leaves nothing after `SIGTERM`:
 
 ```sh
 unshare -rn go test ./cmd/ranet3 -run '^TestDaemon'

@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-01
+updated: 2026-11-02
 order: 50
 ---
 
@@ -471,22 +471,23 @@ run, the kernel routes a translated packet of it and its reply, as
 its timeout objects, and the elements of each set a screen of a class of
 `none`'s chain takes its sources from. Every chain whose name starts `none_` is
 the exit's: one no class writes is read as a fault and deleted. Another chain in
-the table is neither read nor removed until the table is made again, and one at
-the source translation hook is named as a [conflict](#watching-it). Each pass
-first rewrites a chain that reads back otherwise, such as one missing a rule,
-holding another writer's, a rule edited under the comment it was written with or
-in a dormant table, writes a class of `none`'s chain that is missing and deletes
-a `none_` chain no class writes. Where a rule of another writer's chain goes to
-that chain, by a goto, a jump or its vmap, or an element of a named map does,
-nf_tables will not delete it, so the pass empties it and writes the rest, and
-the family stays not ready with that chain or map named until the rule or the
-element goes. nf_tables clears no table flag in place but dormant, and changes
-no chain's type, hook or priority, no set's key, flags or comment and no timeout
-object's values, so when one of those differs the pass deletes the family's
-table, and any chain another writer put in it, then makes it again in the same
-transaction. When the table still does not read back as written, the host stops
-forwarding the family or a lookup fails, that pass retracts the prefix. A pass
-runs at least every `sweep` (30 seconds by default).
+the table is neither read nor removed until the table is made again, and a nat
+chain at the source translation hook at priority 99 or below is named as a
+[conflict](#watching-it). Each pass first rewrites a chain that reads back
+otherwise, such as one missing a rule, holding another writer's, a rule edited
+under the comment it was written with or in a dormant table, writes a class of
+`none`'s chain that is missing and deletes a `none_` chain no class writes.
+Where a rule of another writer's chain goes to that chain, by a goto, a jump or
+its vmap, or an element of a named map does, nf_tables will not delete it, so
+the pass empties it and writes the rest, and the family stays not ready with
+that chain or map named until the rule or the element goes. nf_tables clears no
+table flag in place but dormant, and changes no chain's type, hook or priority,
+no set's key, flags or comment and no timeout object's values, so when one of
+those differs the pass deletes the family's table, and any chain another writer
+put in it, then makes it again in the same transaction. When the table still
+does not read back as written, the host stops forwarding the family or a lookup
+fails, that pass retracts the prefix. A pass runs at least every `sweep` (30
+seconds by default).
 
 The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on,
@@ -600,9 +601,9 @@ Another writer adding, changing or deleting part of the `ranet3` tables, such as
 a `nftables.service` reload that flushes the ruleset, a rule put in a `ranet3`
 chain or a table set dormant, holds both families not ready until the pass it
 wakes restores them, rather than until the next sweep. A chain another writer
-adds to a `ranet3` table is not read, but for one whose name starts `none_`, so
-that pass reads the family ready with the chain still in place. The daemon's own
-writes wake nothing. Notifications the daemon lost, which another table's large
+adds to a `ranet3` table is not read unless its name starts `none_`. That pass
+reads the family ready with the chain still in place. The daemon's own writes
+wake nothing. Notifications the daemon lost, which another table's large
 transaction can overflow its socket with, wake a pass too and leave readiness as
 it was, since that pass reads the rules back. A pass that reads another writer's
 change back and cannot undo it holds that family not ready, with the change
@@ -616,13 +617,13 @@ and `ip6`: each advertised family, and both beside an egress segment, whatever
 holds 2 base chains, a regular chain for each class of `none`, a set and 3
 timeout objects:
 
-| Property | Translation        | Limit        | Class of `none`                                    |
-| -------- | ------------------ | ------------ | -------------------------------------------------- |
-| Name     | `postrouting`      | `forward`    | `none_192_0_2_0_24` for `192.0.2.0/24`             |
-| Type     | `nat`              | `filter`     | none                                               |
-| Hook     | `postrouting`      | `forward`    | none, entered by its class's rule in a chain above |
-| Priority | 99, below `srcnat` | 0 (`filter`) | none                                               |
-| Policy   | `accept`           | `accept`     | none, the limit chain's at its end                 |
+| Property | Translation        | Limit        | Class of `none`                                       |
+| -------- | ------------------ | ------------ | ----------------------------------------------------- |
+| Name     | `postrouting`      | `forward`    | `none_192_0_2_0_24` for `192.0.2.0/24`                |
+| Type     | `nat`              | `filter`     | no type                                               |
+| Hook     | `postrouting`      | `forward`    | no hook, entered by its class's rule in a chain above |
+| Priority | 99, below `srcnat` | 0 (`filter`) | no priority                                           |
+| Policy   | `accept`           | `accept`     | no policy, the limit chain's at its end               |
 
 The translation chain holds each class's rules together, the longest `from`
 first, since the first rule that translates a connection ends the chain: for a
@@ -644,17 +645,21 @@ longest `from` first. The class's chain holds those rules of the classes of
 the sources of every such class as 1 set, and a packet that reaches its end goes
 on by the limit chain's policy. The limit chain's screens for every source
 follow its classes of `none`'s rules, then under `return` those for each
-advertised prefix of the family into the mesh, with no limit. So a packet under
-a class that translates meets 1 limit, one under a class of `none` meets none,
-as [each source's share](#each-sources-share-of-the-flows) describes, one
-outside a class of `none` meets 1 rule for it, whatever classes it covers, and
-one under a class of `none` that directly holds a class that translates meets 4
-screens in its chain, whatever their count, and none under one that directly
-holds none. The set the limit counts each source's flows in, `flows4` or
-`flows6`, carries the share as its comment, `limit 4096`. Each count keeps the
-share in force when it began, so a set read back under another share, as an
-instance stopped without withdrawing under another one leaves it, makes the pass
-delete the table and make it again.
+advertised prefix of the family into the mesh, with no limit. A packet:
+
+- under a class that translates meets 1 limit.
+- under a class of `none` meets no limit, as
+  [each source's share](#each-sources-share-of-the-flows) describes.
+- outside a class of `none` meets 1 rule for it, whatever classes it covers.
+- under a class of `none` that directly holds a class that translates meets the
+  4 screens in its chain, whatever their count, and none under one that directly
+  holds none.
+
+The set the limit counts each source's flows in, `flows4` or `flows6`, carries
+the share as its comment, `limit 4096`. Each count keeps the share in force when
+it began. A set read back under another share, as an instance stopped without
+withdrawing under another one leaves it, makes the pass delete the table and
+make it again.
 
 A pass replaces the chains' rules in 1 transaction and leaves the set, its
 counts and the objects as they are. Each rule carries a comment that names it,
@@ -827,7 +832,7 @@ zero whether or not it read them back.
 
 | Metric                                   | Meaning                                                                                                                  |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `ranet3_egress_rules_installed`          | rules the host holds in this node's limit and translation chains as of its last pass                                     |
+| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as of its last pass                                                           |
 | `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                               |
 | `ranet3_egress_flows_total`              | connections the rules have translated                                                                                    |
 | `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                           |
