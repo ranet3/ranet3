@@ -57,7 +57,7 @@ unshares a network namespace, refuses to continue unless it is empty, and skips
 unless run as root.
 
 - `internal/kernel` has tests that write to a real routing table.
-- `internal/egress/kernel` has 23 that write into a real packet filter. One
+- `internal/egress/kernel` has 25 that write into a real packet filter. One
   round trips the translator's tables, chains, set and timeout objects, another
   checks that the kernel tells the backend when another writer adds a rule to
   its chain, sets its table dormant or deletes it, and that its own writes tell
@@ -107,13 +107,19 @@ unless run as root.
   test binary run again as `TestBorderCrashHelper`, which joins the test's
   namespace by its path and skips when run any other way. The last of the 7
   moves a `none` set by one LAN at 10, 1,000 and 10,000 LANs held, and reads at
-  most 6 element notifications for each pass. The other 3 read the translator's
-  rules for debug. One sends a datagram from the mesh address out of the uplink
-  and finds its rule's counter moved while the last pass still counts none. One
-  reads from 2 readers at once while one pass follows another, each read and
-  each pass with no error. One reads on while the exit stops, and each read
-  answers the rules or the error a stopped exit answers, which names no
-  descriptor its close released. It also runs the
+  most 6 element notifications for each pass. Two more send datagrams through 2
+  veth pairs to a gateway whose site interface is the carve-out of the range it
+  announces and exempts under that interface, and read the carved set the pass
+  asks for. One finds a site host's source passed from that interface and
+  dropped from another as an overlay source, and one adds an interface whose
+  network lies inside the range, which no exemption names, and finds a
+  neighbor's source there dropped at the carved drop. The other 3 read the
+  translator's rules for debug. One sends a datagram from the mesh address out
+  of the uplink and finds its rule's counter moved while the last pass still
+  counts none. One reads from 2 readers at once while one pass follows another,
+  each read and each pass with no error. One reads on while the exit stops, and
+  each read answers the rules or the error a stopped exit answers, which names
+  no descriptor its close released. It also runs the
   [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
 - `internal/nftables` has 5 that write into a real packet filter. One checks
   that each expression the encoder writes acts on the host's own datagrams on
@@ -825,7 +831,7 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
 
 The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the 23 `internal/egress/kernel` tests and the 5
+names start with `TestNetlink`, the 25 `internal/egress/kernel` tests and the 5
 `internal/nftables` tests, the exit behavior suite and its 2 fakes, the
 `TestTUN` tests of `internal/netstack` and `internal/client`, the 3 `transport`
 sends, the 4 `internal/client` tests and the 8 `cmd/ranet3` tests above under

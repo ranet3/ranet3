@@ -134,10 +134,14 @@ numbered there that does not announce its address is reached as the interface's
 neighbor, not through the mesh.
 
 **An exemption trusts every host on the interfaces it names.** A source inside
-an [exemption](../antispoof.md#exemptions) that the exemption does not carve
-passes from those interfaces whoever sends it, so a host there reaches this
-host's services under that source. A range this node announces passes so even
-where another node announces the same range.
+an [exemption](../antispoof.md#exemptions) that neither the exemption nor a
+carve-out's carved drop holds passes from those interfaces whoever sends it, so
+a host there reaches this host's services under that source. A range this node
+announces, and a held or learned prefix inside it, stays carved where a
+carve-out holding it is on an interface no exemption holding it names, and
+[the carve-outs](../antispoof.md#carve-outs) give what else a carve-out keeps
+carved. A range this node announces passes so even where another node announces
+the same range.
 
 ## Who a node dials
 

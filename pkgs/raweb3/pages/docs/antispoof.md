@@ -82,13 +82,13 @@ line, not among the filter's drops.
 Each packet arriving on an interface outside the mesh meets chain `antispoof`'s
 rules in this order, and the first that matches decides:
 
-| Rule                                          | Does                                                                                                       | Family |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ |
-| 1 per interface inside                        | accepts what arrives on it                                                                                 | both   |
-| 1 per family with a carve-out or an exemption | drops a source in `carved4` or `carved6`, the mesh's prefixes inside a carve-out and what exemptions carve | its    |
-| 1 per carve-out                               | accepts a source inside the carve-out arriving on its own interface                                        | its    |
-| 1 per exemption                               | accepts a source inside it arriving on an interface its name matches, or on any for the shared list        | its    |
-| 1 per `overlay` prefix                        | drops a source inside the prefix                                                                           | its    |
+| Rule                                          | Does                                                                                                | Family |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------ |
+| 1 per interface inside                        | accepts what arrives on it                                                                          | both   |
+| 1 per family with a carve-out or an exemption | drops a source in `carved4` or `carved6`, which the carve-outs and the exemptions carve             | its    |
+| 1 per carve-out                               | accepts a source inside the carve-out arriving on its own interface                                 | its    |
+| 1 per exemption                               | accepts a source inside it arriving on an interface its name matches, or on any for the shared list | its    |
+| 1 per `overlay` prefix                        | drops a source inside the prefix                                                                    | its    |
 
 A packet matching none passes. A drop sends no ICMP error, as
 [the deviations](design/protocol-deviations.md#drops-with-no-answer) explain.
@@ -127,13 +127,21 @@ where the network or far end holds it. The filter follows the host's interfaces,
 so a lease that comes or goes moves the carve-outs on the next pass.
 
 - `carved4` and `carved6` hold every prefix of the mesh's table inside a
-  carve-out, learned, held or this node's own, and what
-  [the exemptions](#exemptions) carve, and the chain drops such a source from
-  any interface, the carve-out's own among them. A neighbor on the leased
-  network cannot reach the host as a mesh peer or as this node.
+  carve-out, learned, held or this node's own, but for what the next bullet
+  lifts, and what [the exemptions](#exemptions) carve. The chain drops such a
+  source from any interface, the carve-out's own among them, so a neighbor on
+  the leased network cannot reach the host as a mesh peer or as this node.
+- An address of a range this node announces leaves them where, for each
+  carve-out holding it, an exemption under [a name](#exemptions) matching the
+  carve-out's interface holds it too. The sets are one for every interface, so
+  where any carve-out holding the address is on an interface no such exemption
+  names, the address stays carved and is dropped from every interface. This
+  node's node addresses and another node's prefix inside the range stay carved,
+  as [the exemptions](#exemptions) give.
 - The carve-out's own accept then passes the rest of the carve-out from its own
   interface alone, so the gateway and the network's other neighbors reach the
-  host. The same addresses from any other interface meet the overlay's drop.
+  host. The same addresses from any other interface meet the overlay's drop,
+  unless an exemption passes them from that interface.
 - With `cap.table` the reconciler throws the carve-out in the mesh's table in
   place of an equal overlay hold, so the host reaches the network's neighbors by
   main, and a route of the mesh inside the lease still wins by its length, as
@@ -249,10 +257,14 @@ exempt = ["203.0.113.0/25"]
 - A node that starts announcing a more specific prefix, such as
   `203.0.113.112/29`, is carved out on the pass its route wakes.
 
-Where `eth1`'s own network holds the site's range instead, `eth1` is a
-[carve-out](#carve-outs), and its carved drop takes G's own `203.0.113.0/25`
-too, ahead of the exemption's accept, so the site's sources are dropped on
-`eth1` as well.
+Where `eth1`'s own network holds the site's range instead, such as
+`203.0.113.126/25`, `eth1` is a carve-out of `203.0.113.0/25`, and the exemption
+under `eth1` lifts the range out of `carved4`, as [the carve-outs](#carve-outs)
+give. The site's host passes from `eth1` by
+`accept via eth1 source 203.0.113.0/25`, the carve-out's accept, and meets
+`drop ipv4 source 203.0.113.0/24` on `eth0` as above, while G's own address and
+the other node's prefix stay carved. Without the exemption on `eth1`, the carved
+drop takes the range too, and the site's sources are dropped on `eth1` as well.
 
 ## The entry chain
 
