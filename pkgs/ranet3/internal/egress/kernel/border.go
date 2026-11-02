@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	meshkernel "ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
 // BorderClass names the packets one rule of the table matches
@@ -385,8 +386,10 @@ func (f *BorderFilter) Stats() egress.BorderStats {
 }
 
 // Run keeps the table until ctx is canceled, then reports it not ready,
-// withdraws the table and closes the backend. NewBorderFilter ran the first
-// pass. Run returns the withdrawal error, never a pass's.
+// withdraws the table and closes the backend. Where ctx's cause is
+// internal/kernel's ErrMeshFailed it leaves the table for the next start to
+// take over. NewBorderFilter ran the first pass. Run returns the withdrawal's
+// or the close's error, never a pass's.
 func (f *BorderFilter) Run(ctx context.Context) error {
 	ticker := time.NewTicker(f.sweep)
 	defer ticker.Stop()
@@ -395,6 +398,11 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			if errors.Is(context.Cause(ctx), meshkernel.ErrMeshFailed) {
+				f.setReady(false, "the antispoof filter is stopping")
+				slog.Warn("antispoof filter is leaving its table after the mesh failed", "where", f.Where())
+				return f.be.Close()
+			}
 			return f.finish()
 		case <-ticker.C:
 			f.trigger = "sweep"

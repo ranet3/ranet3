@@ -1113,6 +1113,30 @@ func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {
 	}
 }
 
+// A filter stopped for the mesh's failure reports itself not ready and leaves
+// its table, and one stopped for any other cause withdraws it
+func TestBorderLeavesItsTableOnlyWhenStoppedForTheMeshsFailure(t *testing.T) {
+	for _, cause := range []error{meshkernel.ErrMeshFailed, fmt.Errorf("stop: %w", meshkernel.ErrMeshFailed), nil, errors.New("another cause")} {
+		bus := events.New()
+		be := &fakeBorder{}
+		f, err := startBorderFilter(overlay(t), borderRuntime(bus), be)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(cause)
+		if err := f.Run(ctx); err != nil {
+			t.Errorf("a filter stopped for %v returned %v", cause, err)
+		}
+		if left, want := be.withdrawn == 0, errors.Is(cause, meshkernel.ErrMeshFailed); left != want {
+			t.Errorf("a filter stopped for %v left its table %v, want %v", cause, left, want)
+		}
+		if got, want := readyMoves(bus), []string{"true", "false"}; !slices.Equal(got, want) {
+			t.Errorf("the antispoof filter's readiness moved %q for %v, want %q", got, cause, want)
+		}
+	}
+}
+
 // A debug read lays the table held now beside the one the configuration asks
 // for: each chain with its hook and priority, each desired rule with its
 // counters or as not held yet, then any rule held that the configuration does
