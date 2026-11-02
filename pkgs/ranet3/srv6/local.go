@@ -188,18 +188,21 @@ type LocalTable struct {
 // Every SID refuses a packet whose outer source lies outside overlay's IPv6
 // prefixes, the per-node list of RFC 8754 section 5.1 item 2. A node writing
 // overlay drops a source inside it arriving from outside the mesh on Linux,
-// but for the rest of a carve-out or an exemption, less the mesh's prefixes
-// inside either, on the interfaces it is accepted from, as antispoof.md's
-// "Carve-outs" and "Exemptions" give. Its entry
-// chain and its tun read keep that rest out of the mesh as a source it does
-// not own, and a host beyond the mesh reaches no SID through it, whatever the
-// SID delivers to. On linux a node that forwards without overlay passes on
-// to every SID only a forged source it owns, since its entry chain keeps every
-// other out of the tun. On a platform with no entry chain such a node is only
-// warned at load, and passes on to every SID a forged overlay source that no
-// route other than a default sends to another node or holds unreachable, since
-// its tun read drops the rest. An outer source is always IPv6, so a table
-// holding a SID and no IPv6 prefix of overlay is refused.
+// but for the rest of a carve-out or an exemption, less what each carves, on
+// the interfaces it is accepted from, as antispoof.md's "Carve-outs" and
+// "Exemptions" give. Its entry chain and its tun read keep a source of that
+// rest out of the mesh where the node does not own it, so a host beyond the
+// mesh reaches no SID through it from a source outside every range the node
+// owns, whatever the SID delivers to. An exemption inside a range the node
+// announces admits that range's sources as the node's own, and they reach the
+// SIDs any source it owns reaches. On linux a node that forwards without
+// overlay passes on to every SID only a forged source it owns, since its entry
+// chain keeps every other out of the tun. On a platform with no entry chain
+// such a node is only warned at load, and passes on to every SID a forged
+// overlay source that no route other than a default sends to another node or
+// holds unreachable, since its tun read drops the rest. An outer source is
+// always IPv6, so a table holding a SID and no IPv6 prefix of overlay is
+// refused.
 func NewLocalTable(segments []Segment, overlay []schema.Prefix) (*LocalTable, error) {
 	checked, err := localEntries(segments)
 	if err != nil || checked == nil {
