@@ -259,7 +259,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the exit to leave the mesh.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_egressed_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_egressed_total %d\n", segments.Egressed)
-	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner source it cannot read, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, which are among the dropped ones and never answered.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, which are among the dropped ones and never answered.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_refused_total %d\n", segments.Refused)
 	fmt.Fprint(w, "# HELP ranet3_segments_not_ready_total Packets an egress segment let through and dropped because their family was not ready.\n")
