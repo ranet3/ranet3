@@ -206,18 +206,23 @@ type CarveOut struct {
 	Prefix netip.Prefix
 }
 
-// ExemptConflict is an exemption and a prefix another node's, the mesh's
-// table routing it via a peer, that overlaps it: Carved is their
+// ExemptConflict is an exemption and a prefix that overlaps it, inside it or
+// covering it, which another router announces. Where Own is false the prefix
+// is another node's, the mesh's table routing it via a peer: Carved is their
 // intersection, which the carved sets hold, Via the peer and RouterID the
-// selected route's origin, empty where the speaker selected none. The
-// exemption, the prefix and Carved are the drop, and Via and RouterID the
-// route a pass read for it.
+// selected route's origin, empty where the speaker selected none. Where Own is
+// true the prefix is a range this node announces that babel holds another
+// router's offer for, which the exemption admits as this node's own: Carved
+// and Via are empty and RouterID is the offer's origin. The exemption, the
+// prefix and Carved are the conflict, and Via and RouterID the route a pass
+// read for it.
 type ExemptConflict struct {
 	Exemption Exemption
 	Prefix    netip.Prefix
 	Carved    netip.Prefix
 	Via       string
 	RouterID  string
+	Own       bool
 }
 
 // BorderSets holds the carve-outs and the ranges of the table's sets, each of
@@ -235,7 +240,8 @@ type BorderSets struct {
 	// this node's node addresses inside it
 	Carved []Range
 	// Conflicts is each exemption that another node's prefix overlaps, sorted
-	// and each once
+	// and each once, and then each that a range of this node's own another
+	// router announces too overlaps, the same way
 	Conflicts []ExemptConflict
 	// Owned is the sources this node owns, from which the entry chain lets a
 	// packet into the tun, one of the passes Tun lists

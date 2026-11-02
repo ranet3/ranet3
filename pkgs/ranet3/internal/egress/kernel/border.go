@@ -595,12 +595,12 @@ func (f *BorderFilter) reportCarveOuts(now []egress.CarveOut) {
 	f.carveOuts = now
 }
 
-// reportConflicts reports each exemption another node's prefix came to
-// overlap since the last pass, once, at warning with an event, and each
-// conflict that ended at info. A conflict is the drop it makes, its
-// exemption, the prefix and the part carved, as a carve-out is its link and
-// its prefix, so the prefix's route moving to another peer or router-id
-// reports nothing.
+// reportConflicts reports each exemption another node's prefix, or a range of
+// this node's own that another router announces too, came to overlap since the
+// last pass, once, at warning with an event, and each conflict that ended at
+// info. A conflict is its exemption, the prefix and the part carved, as a
+// carve-out is its link and its prefix, so the prefix's route or offer moving
+// to another peer or router-id reports nothing.
 func (f *BorderFilter) reportConflicts(now []egress.ExemptConflict) {
 	drops := func(list []egress.ExemptConflict, conflict egress.ExemptConflict) bool {
 		return slices.ContainsFunc(list, func(other egress.ExemptConflict) bool {
@@ -614,16 +614,26 @@ func (f *BorderFilter) reportConflicts(now []egress.ExemptConflict) {
 		}
 		attrs := []slog.Attr{
 			slog.String("exemption", conflict.Exemption.Prefix.String()), slog.String("interface", conflict.Exemption.Interface),
-			slog.String("prefix", conflict.Prefix.String()), slog.String("carved", conflict.Carved.String()),
-			slog.String("routed_via", conflict.Via), slog.String("router_id", conflict.RouterID),
+			slog.String("prefix", conflict.Prefix.String()),
 		}
-		slog.LogAttrs(context.Background(), slog.LevelWarn, "antispoof drops part of an exemption, since another node's prefix holds it", attrs...)
-		f.rt.Events.Emit("antispoof.conflict", "", attrs...)
+		message := "antispoof admits this node's range though another router announces it too"
+		if !conflict.Own {
+			attrs = append(attrs, slog.String("carved", conflict.Carved.String()), slog.String("routed_via", conflict.Via))
+			message = "antispoof drops part of an exemption, since another node's prefix holds it"
+		}
+		attrs = append(attrs, slog.String("router_id", conflict.RouterID))
+		slog.LogAttrs(context.Background(), slog.LevelWarn, message, attrs...)
+		f.rt.Events.Emit("antispoof.conflict", "", append(attrs, slog.Bool("own", conflict.Own))...)
 	}
 	for i, conflict := range f.conflicts {
-		if !drops(now, conflict) && !drops(f.conflicts[:i], conflict) {
-			slog.Info("antispoof no longer drops part of an exemption for another node's prefix", "exemption", conflict.Exemption.Prefix, "interface", conflict.Exemption.Interface, "prefix", conflict.Prefix)
+		if drops(now, conflict) || drops(f.conflicts[:i], conflict) {
+			continue
 		}
+		message := "antispoof no longer drops part of an exemption for another node's prefix"
+		if conflict.Own {
+			message = "antispoof no longer sees another router announce this node's range"
+		}
+		slog.Info(message, "exemption", conflict.Exemption.Prefix, "interface", conflict.Exemption.Interface, "prefix", conflict.Prefix)
 	}
 	f.conflicts = now
 }
