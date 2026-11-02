@@ -9,7 +9,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"maps"
 	"net/netip"
@@ -62,7 +61,7 @@ func (c *Client) syncPeers() (stopped []*dialer) {
 		if _, keep := wanted[path]; keep {
 			continue
 		}
-		log.Printf("peer %s: no longer configured", path)
+		slog.Info(fmt.Sprintf("peer %s: no longer configured", path))
 		running.cancel()
 		delete(c.dialers, path)
 		stopped = append(stopped, running)
@@ -143,11 +142,11 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	refuse, skip := validatePeers(peers, x, families)
 	for _, problems := range [][]error{refuse, skip} {
 		for _, problem := range problems {
-			log.Printf("reload: %v, so nothing will dial it", problem)
+			slog.Warn(fmt.Sprintf("reload: %v, so nothing will dial it", problem))
 		}
 	}
 	for _, problem := range validateAliases(cfg.Auth.Aliases, x) {
-		log.Printf("reload: %v, so no handshake can use it", problem)
+		slog.Warn(fmt.Sprintf("reload: %v, so no handshake can use it", problem))
 	}
 
 	c.storeIndex(x)
@@ -192,7 +191,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	}
 	_, nodes := x.Size()
 	applied = changedCapabilities(old, cfg)
-	log.Printf("reloaded %s: %d peers, %d nodes in the trust document", path, len(peers), nodes)
+	slog.Info(fmt.Sprintf("reloaded %s: %d peers, %d nodes in the trust document", path, len(peers), nodes))
 	warnUnbordered(forwardingEnabled)
 	warnCountedAdvertisements(cfg)
 	return nil
@@ -343,7 +342,7 @@ func (c *Client) syncResponder() int {
 			closed, err := c.acceptPeers(ctx)
 			started.closed = closed
 			if err != nil && ctx.Err() == nil {
-				log.Printf("responder: %v", err)
+				slog.Warn("responder: " + err.Error())
 			}
 		})
 	}

@@ -4,12 +4,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -236,16 +241,57 @@ func TestDebugAccessIsAnUnknownFlag(t *testing.T) {
 	}
 }
 
-// log.Fatal is os.Exit, which a test cannot observe, so this reads the source.
-// The helper existing is not the fix: a call site that still reports through
-// the standard logger exits 1 saying nothing at a production level.
-func TestStartupRefusalsAvoidTheStandardLogger(t *testing.T) {
-	body, err := os.ReadFile("main.go")
+// the standard logger writes through slog at INFO, which --log-level warn drops, so a failure or a warning sent there goes unwritten
+// this reads every non-test file of the module but the commands under internal/cmd, which are test tools and generators,
+// and refuses a call of log's Print, Fatal and Panic functions in any of them
+func TestDaemonPackagesAvoidTheStandardLogger(t *testing.T) {
+	root := filepath.Join("..", "..")
+	files := token.NewFileSet()
+	read := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case entry.IsDir() && (path == filepath.Join(root, "internal", "cmd") || entry.Name() == "testdata"):
+			return filepath.SkipDir
+		case entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go"):
+			return nil
+		}
+		file, err := parser.ParseFile(files, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		dir, _ := filepath.Rel(root, filepath.Dir(path))
+		read[filepath.ToSlash(dir)] = true
+		for _, spec := range file.Imports {
+			if spec.Path.Value != `"log"` {
+				continue
+			}
+			name := "log"
+			if spec.Name != nil {
+				name = spec.Name.Name
+			}
+			writes := func(function string) bool {
+				return slices.ContainsFunc([]string{"Print", "Fatal", "Panic"}, func(prefix string) bool { return strings.HasPrefix(function, prefix) })
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				if call, ok := node.(*ast.SelectorExpr); ok {
+					if x, ok := call.X.(*ast.Ident); ok && x.Name == name && writes(call.Sel.Name) {
+						t.Errorf("%s calls log.%s, which writes at INFO", files.Position(call.Pos()), call.Sel.Name)
+					}
+				}
+				return true
+			})
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(body, []byte("log.Fatal")) {
-		t.Error("main.go still exits through log.Fatal, which writes at INFO and vanishes at --log-level warn")
+	for _, dir := range []string{"cmd/ranet3", "internal/client", "internal/netstack", "transport", "ike", "control"} {
+		if !read[dir] {
+			t.Errorf("the walk read nothing of %s", dir)
+		}
 	}
 }
 
@@ -260,6 +306,21 @@ func TestStartupRefusalsSurviveAProductionLogLevel(t *testing.T) {
 	}
 	if !strings.Contains(written.String(), "/nonexistent.yaml") {
 		t.Errorf("a refusal at --log-level error wrote %q", written.String())
+	}
+	// and so is the failure to undo a start, which exits 1 as well
+	if !logged("kernel", errors.New("kernel: delete rule 1000: operation not permitted")) {
+		t.Error("a close that failed was reported as one that did not")
+	}
+	if !strings.Contains(written.String(), "delete rule 1000") {
+		t.Errorf("a close that failed at --log-level error wrote %q", written.String())
+	}
+	// and so is a second signal, which gives up on the shutdown with 1
+	signals := make(chan os.Signal, 2)
+	signals <- os.Interrupt
+	signals <- os.Interrupt
+	watchSignals(make(chan struct{}), signals, func() {}, func() {})
+	if !strings.Contains(written.String(), "second signal") {
+		t.Errorf("a second signal at --log-level error wrote %q", written.String())
 	}
 }
 

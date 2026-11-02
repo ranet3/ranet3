@@ -7,7 +7,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"log"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -60,7 +61,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 			}
 			// losing to a session the other end also prefers is ordinary on a full mesh
 			if err != nil && !errors.Is(err, errSessionEstablished) && ctx.Err() == nil {
-				log.Printf("peer %s: %v", identity.Path(accepted.Peer, accepted.Local), err)
+				slog.Info(fmt.Sprintf("peer %s: %v", identity.Path(accepted.Peer, accepted.Local), err))
 			}
 		})
 	})

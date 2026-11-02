@@ -50,7 +50,6 @@ package transport
 import (
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"maps"
 	"net"
@@ -261,7 +260,7 @@ func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
 		return nil, fmt.Errorf("transport: resolve local addr: %w", err)
 	}
 	if laddr.IP != nil && !laddr.IP.IsUnspecified() {
-		log.Printf("transport: binding to a specific local address (%s) is not supported, binding all interfaces on port %d instead", laddr.IP, laddr.Port)
+		slog.Warn(fmt.Sprintf("transport: binding to a specific local address (%s) is not supported, binding all interfaces on port %d instead", laddr.IP, laddr.Port))
 	}
 	if err := underlay.refuse(); err != nil {
 		return nil, fmt.Errorf("transport: %w", err)

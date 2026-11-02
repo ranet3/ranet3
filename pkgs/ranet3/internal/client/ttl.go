@@ -5,7 +5,6 @@ package client
 
 import (
 	"fmt"
-	"log"
 	"log/slog"
 )
 
@@ -29,7 +28,7 @@ func (c *Client) retakeTTL() {
 	ttl, err := defaultTTL()
 	if err != nil {
 		kept := c.Mesh.AnswerTTL()
-		log.Printf("reload: %v, so ICMPv4 errors keep the TTL %d", err, kept)
+		slog.Warn(fmt.Sprintf("reload: %v, so ICMPv4 errors keep the TTL %d", err, kept))
 		c.events.Emit("daemon.ttl", "", slog.Int("ttl", int(kept)), slog.String("err", err.Error()))
 		return
 	}

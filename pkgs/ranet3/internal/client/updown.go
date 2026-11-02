@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -43,7 +42,7 @@ func (c *Client) SetStateDir(dir string) error {
 	if down {
 		c.downSince.Store(&since)
 		c.noteMove(true, control.CauseFlag, since, 0)
-		log.Printf("this node is down since %s, as %s says, and ranet3 up puts it back on the mesh", stamp(since), filepath.Join(dir, downFlag))
+		slog.Info(fmt.Sprintf("this node is down since %s, as %s says, and ranet3 up puts it back on the mesh", stamp(since), filepath.Join(dir, downFlag)))
 	}
 	c.startBabel(dir)
 	return nil
@@ -71,7 +70,7 @@ func (c *Client) Down(ctx context.Context) (result control.Result, err error) {
 	c.runningMu.Unlock()
 	closed := c.leave()
 	c.noteMove(true, control.CauseRequest, since, len(closed))
-	log.Printf("control: this node is down, %d session(s) closed", len(closed))
+	slog.Info(fmt.Sprintf("control: this node is down, %d session(s) closed", len(closed)))
 	return control.Result{Acted: closed,
 		Detail: fmt.Sprintf("This node is off the mesh with %d session(s) closed, and it stays off through a restart until ranet3 up", len(closed))}, nil
 }
@@ -103,7 +102,7 @@ func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 	c.runningMu.Unlock()
 	c.syncMesh()
 	c.noteMove(false, control.CauseRequest, time.Time{}, 0)
-	log.Printf("control: this node is back on the mesh")
+	slog.Info("control: this node is back on the mesh")
 	return control.Result{Detail: "This node is back on the mesh"}, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 )
 
 // fakeSource answers with one distinguishable value per read, so a handler
@@ -338,6 +341,27 @@ func TestIdleConnectionsAreBounded(t *testing.T) {
 	client.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := io.ReadAll(client); err != nil && !errors.Is(err, io.EOF) {
 		t.Fatalf("an idle connection was not closed: %v", err)
+	}
+}
+
+// a handler's panic the server recovers is logged at warn, which a log at warn keeps
+func TestRecoveredPanicIsLoggedAtWarn(t *testing.T) {
+	logged := &lockedBuffer{}
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	served := httptest.NewUnstartedServer(nil)
+	served.Config = newServer(&fakeSource{})
+	served.Config.Handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("a handler's panic") })
+	served.Start()
+	defer served.Close()
+	if response, err := served.Client().Get(served.URL + PathStatus); err == nil {
+		response.Body.Close()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logged.String(), "a handler's panic") && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if line := logged.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "a handler's panic") {
+		t.Errorf("a recovered panic left %q in a log at warn", line)
 	}
 }
 

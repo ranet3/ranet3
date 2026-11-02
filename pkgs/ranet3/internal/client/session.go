@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
-	"log"
 	"log/slog"
 	"slices"
 	"strings"
@@ -39,7 +38,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.
 	// read before adopt publishes the session
 	// after that a rekey may replace the Child SA
 	suite := sess.Suite()
-	log.Printf("peer %s: connected (SPI %08x/%08x)", sessionName, child.LocalSPI, child.RemoteSPI)
+	slog.Info(fmt.Sprintf("peer %s: connected (SPI %08x/%08x)", sessionName, child.LocalSPI, child.RemoteSPI))
 	role := "responder"
 	if dialed {
 		role = "initiator"
@@ -56,7 +55,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.
 	// a failed rekey leaves the IKE SA up and the schedule retries
 	tunnel.rekey = func() {
 		if err := sess.RekeyChildProactively(); err != nil && !sess.Mux().IsClosed() {
-			log.Printf("peer %s: proactive Child SA rekey: %v", sessionName, err)
+			slog.Warn(fmt.Sprintf("peer %s: proactive Child SA rekey: %v", sessionName, err))
 		}
 	}
 	tunnel.spent = sess.ChildSequenceSpent
@@ -365,7 +364,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, co
 	contacted := previous != nil && previous.session != sess && !contact.IsZero() && previous.adopted.Before(contact)
 	if previous != nil && previous.session != sess && !contacted && previous.keptAgainst(preferred) {
 		s.mu.Unlock()
-		log.Printf("peer %s: keeping the session the other end also prefers", path)
+		slog.Info(fmt.Sprintf("peer %s: keeping the session the other end also prefers", path))
 		s.events.Emit("ike.session.resolved", path, slog.String("kept", "the session already held"))
 		s.close(sess)
 		return func() {}, false
@@ -385,10 +384,10 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, co
 	switch {
 	case previous == nil || previous.session == sess:
 	case contacted:
-		log.Printf("peer %s: the peer's INITIAL_CONTACT on a newer session ends the one it no longer holds", path)
+		slog.Info(fmt.Sprintf("peer %s: the peer's INITIAL_CONTACT on a newer session ends the one it no longer holds", path))
 		s.drop(previous.session)
 	default:
-		log.Printf("peer %s: replacing the previous session", path)
+		slog.Info(fmt.Sprintf("peer %s: replacing the previous session", path))
 		s.events.Emit("ike.session.resolved", path, slog.String("kept", "the new session"))
 		s.close(previous.session)
 	}
@@ -572,7 +571,7 @@ func (s *sessionSet) revoke() {
 }
 
 func (s *sessionSet) revoked(path, reason string, sess *ike.Session, peer identity.Identity, err error) {
-	log.Printf("peer %s: %v, closing the session", path, err)
+	slog.Warn(fmt.Sprintf("peer %s: %v, closing the session", path, err))
 	s.events.Emit("ike.session.revoked", path, slog.String("reason", reason), slog.String("peer", peer.String()),
 		slog.String("endpoint", s.endpoint(sess)), slog.String("err", err.Error()))
 }
@@ -640,7 +639,7 @@ func (s *sessionSet) rekeyEach(ctx context.Context, asked []liveSessionView) ([]
 		go func() {
 			err := s.rekey(live.session)
 			if err != nil {
-				log.Printf("peer %s: rekey asked for on the control socket: %v", live.path, err)
+				slog.Warn(fmt.Sprintf("peer %s: rekey asked for on the control socket: %v", live.path, err))
 			}
 			outcomes <- outcome{live.path, err}
 		}()

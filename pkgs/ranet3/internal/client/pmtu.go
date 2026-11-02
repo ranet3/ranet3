@@ -5,7 +5,7 @@ package client
 
 import (
 	"errors"
-	"log"
+	"fmt"
 	"log/slog"
 	"math"
 	"sync"
@@ -544,7 +544,7 @@ func (d *pathDriver) apply(before pathSearch, now time.Time, timer *time.Timer) 
 	// and on every event under the floor, which hands the fragmenting to an endpoint the session moved to
 	if under || before.phase == underFloor {
 		if err := d.mux.Fragment(under); err != nil {
-			log.Printf("peer %s: fragmenting the sends of a path under the floor %v: %v", d.peer.ID, under, err)
+			slog.Warn(fmt.Sprintf("peer %s: fragmenting the sends of a path under the floor %v: %v", d.peer.ID, under, err))
 		}
 	}
 	if under != (before.phase == underFloor) {

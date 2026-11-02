@@ -15,7 +15,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -157,10 +156,8 @@ func logLevelNames() []string {
 	return names
 }
 
-// refuseToStart reports a startup this node will not attempt, at the level an
-// operator filters for. The standard logger writes through slog at INFO,
-// which --log-level warn and above drop, so every refusal below was a process
-// that exited 1 having written nothing at all.
+// refuseToStart reports a startup this node will not attempt at error, which
+// every --log-level keeps.
 func refuseToStart(err error) int {
 	slog.Error("ranet3 is not starting", "err", err)
 	return 1
@@ -168,9 +165,7 @@ func refuseToStart(err error) int {
 
 // runDaemon runs the node from the production parts and answers the process
 // status rather than exiting, so every deferred close runs before the process
-// exits with it. A failure reported only in the log and then exited zero tells
-// a supervisor the node stopped cleanly when it did not, and the route
-// withdrawal at shutdown is one of the things that reports this way.
+// exits with it.
 func runDaemon(opts options) int {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: opts.level})))
 	return startDaemon(opts, production)
@@ -236,7 +231,7 @@ func startDaemon(opts options, s stages) int {
 	}
 	select {
 	case <-asked:
-		log.Print("stopping while the start builds, so it undoes what it built")
+		slog.Info("stopping while the start builds, so it undoes what it built")
 		if d.close() {
 			return 1
 		}
@@ -374,9 +369,16 @@ func (d *daemon) closeListeners() {
 	}
 }
 
-func logged(name string, err error) bool {
+// serveHTTP serves handler on listener until it closes, the server's own errors, a handler's panic it recovers among them,
+// logged at warn
+func serveHTTP(listener net.Listener, handler http.Handler) error {
+	server := &http.Server{Handler: handler, ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn)}
+	return server.Serve(listener)
+}
+
+func logged(part string, err error) bool {
 	if err != nil {
-		log.Printf("%s: %v", name, err)
+		slog.Error("daemon part failed, so the exit status is 1", "part", part, "err", err)
 	}
 	return err != nil
 }
@@ -385,6 +387,10 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 	// Set by anything that fails on a goroutine or after the daemon has
 	// committed to a clean shutdown. It returns nonzero if any of them did.
 	var failed atomic.Bool
+	fail := func(part string, err error) {
+		logged(part, err)
+		failed.Store(true)
+	}
 	ctx, cancelFor := context.WithCancelCause(context.Background())
 	stop := stopFor(d.node.MarkStopping, cancelFor)
 	cancel := func() { stop(nil) }
@@ -409,8 +415,7 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 	serve := func(name string, listener net.Listener, on func(net.Listener) error) {
 		served.Go(func() {
 			if err := on(listener); err != nil && !errors.Is(err, net.ErrClosed) {
-				log.Printf("%s: %v", name, err)
-				failed.Store(true)
+				fail(name, err)
 			}
 		})
 	}
@@ -419,8 +424,8 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			runtime.SetMutexProfileFraction(1)
 			runtime.SetBlockProfileRate(1)
 		}
-		log.Printf("pprof listening on http://%s/debug/pprof/", d.pprof.Addr())
-		serve("pprof", d.pprof, func(l net.Listener) error { return http.Serve(l, nil) })
+		slog.Info(fmt.Sprintf("pprof listening on http://%s/debug/pprof/", d.pprof.Addr()))
+		serve("pprof", d.pprof, func(l net.Listener) error { return serveHTTP(l, http.DefaultServeMux) })
 	}
 	// A separate listener from pprof: a fleet node wants metrics scraped
 	// without exposing a profiler, and a profiling run wants the profiler
@@ -428,8 +433,8 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 	if d.metrics != nil {
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", d.node.MetricsHandler())
-		log.Printf("metrics listening on http://%s/metrics", d.metrics.Addr())
-		serve("metrics", d.metrics, func(l net.Listener) error { return http.Serve(l, mux) })
+		slog.Info(fmt.Sprintf("metrics listening on http://%s/metrics", d.metrics.Addr()))
+		serve("metrics", d.metrics, func(l net.Listener) error { return serveHTTP(l, mux) })
 	}
 
 	stopBorder := func(error) {}
@@ -441,15 +446,14 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			// the error is the withdrawal failing, which leaves the table in
 			// the host's ruleset and is no clean exit
 			if err := d.border.Run(borderCtx); err != nil {
-				log.Printf("antispoof: %v", err)
-				failed.Store(true)
+				fail("antispoof", err)
 			}
 		}()
 		stopBorder = func(cause error) {
 			cancelBorder(cause)
 			<-done
 		}
-		log.Printf("antispoof filter in %s, inside %s", d.border.Where(), strings.Join(d.border.Inside(), " "))
+		slog.Info(fmt.Sprintf("antispoof filter in %s, inside %s", d.border.Where(), strings.Join(d.border.Inside(), " ")))
 	}
 
 	// the reconciler's run here and the exit's after the wait, each withdrawing what it holds once ctx ends
@@ -461,23 +465,22 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			// reconcile: routes left behind in the kernel after shutdown are
 			// exactly what an operator must not be told was a clean exit.
 			if err := routes.Run(ctx); err != nil {
-				log.Printf("kernel: %v", err)
-				failed.Store(true)
+				fail("kernel", err)
 			}
 		})
 		// The table is read back from the reconciler rather than from the
 		// config, which has not had its defaults applied yet and reads zero on
 		// a platform that has no tables at all.
-		log.Printf("tun device %s ready with %d queues, reconciling its routes into %s",
-			mesh.Name, mesh.QueueCount(), routes.Where())
+		slog.Info(fmt.Sprintf("tun device %s ready with %d queues, reconciling its routes into %s",
+			mesh.Name, mesh.QueueCount(), routes.Where()))
 		if mode := d.cfg.ReconcilerTable().Mode(); mode != nil && mode.Refuses() {
 			firstPass = routes.FirstPass()
 		}
 	} else {
 		// no reconciler runs to delete a table an earlier instance left, which holds the host's traffic whatever this file asks
 		kernel.DeleteFallback()
-		log.Printf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",
-			mesh.Name, mesh.QueueCount())
+		slog.Info(fmt.Sprintf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",
+			mesh.Name, mesh.QueueCount()))
 	}
 	dials := awaitFirstPass(ctx, firstPass, firstPassWait)
 	// The exit withdraws what it holds while the tun still exists, as the
@@ -489,11 +492,10 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			// filter after shutdown must never be reported to an operator as a
 			// clean exit.
 			if err := exit.Run(ctx); err != nil {
-				log.Printf("egress: %v", err)
-				failed.Store(true)
+				fail("egress", err)
 			}
 		})
-		log.Printf("egress translating for %d prefixes in %s", len(d.cfg.Egress().Advertise), exit.Status().Where)
+		slog.Info(fmt.Sprintf("egress translating for %d prefixes in %s", len(d.cfg.Egress().Advertise), exit.Status().Where))
 	}
 
 	// The reconciler has to finish withdrawing while the TUN still exists,
@@ -513,13 +515,13 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 		// The control socket is served once the node may dial, so no verb
 		// reaches the node before then. Reads answer until it closes.
 		if d.control != nil {
-			log.Printf("control socket listening on %s", d.opts.controlPath)
+			slog.Info("control socket listening on " + d.opts.controlPath)
 			serve("control", d.control, func(l net.Listener) error { return control.Serve(l, d.node) })
 		}
 		// a SIGHUP that came during the start is read here, once the node may dial
 		go read(ctx, signals.reload, func() {
 			if err := d.node.ReloadFrom(d.opts.configPath); err != nil {
-				log.Printf("reload: %v", err)
+				slog.Warn("reload failed", "err", err)
 			}
 		})
 		// Route installs and retractions and neighbor up and down transitions
@@ -527,12 +529,12 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 		go read(ctx, signals.dump, func() {
 			routes := mesh.Routes.Debug()
 			if len(routes) == 0 {
-				log.Printf("routes: (none installed)")
+				slog.Info("routes: (none installed)")
 				return
 			}
-			log.Printf("routes:")
+			slog.Info("routes:")
 			for _, r := range routes {
-				log.Printf("  %s", r)
+				slog.Info("  " + r)
 			}
 		})
 		d.bus.Emit("daemon.started", "", slog.String("version", version.String()), slog.String("config", d.opts.configPath))
@@ -642,7 +644,7 @@ func watchSignals(done <-chan struct{}, signals <-chan os.Signal, cancel context
 	case <-done:
 		return
 	}
-	log.Print("second signal, exiting without finishing shutdown")
+	slog.Error("second signal, exiting with status 1 without finishing shutdown")
 	force()
 }
 

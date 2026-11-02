@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"maps"
 	"net"
@@ -36,7 +35,7 @@ func (c *Client) reconnectDelay() time.Duration {
 func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 	x := c.index()
 	if _, err := x.Key(d.peer.Node()); err != nil {
-		log.Printf("peer %s: node not found", d.path)
+		slog.Warn(fmt.Sprintf("peer %s: node not found", d.path))
 		return
 	}
 	// a dual-stack node runs a dialer per local endpoint
@@ -44,15 +43,15 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 	targets := x.Targets(d.peer)
 	if d.peer != d.peer.Node() {
 		if len(targets) == 0 {
-			log.Printf("peer %s: endpoint %s not found", d.path, d.peer)
+			slog.Warn(fmt.Sprintf("peer %s: endpoint %s not found", d.path, d.peer))
 			return
 		}
 		if targets[0].AddressFamily != d.local.Family {
-			log.Printf("peer %s: endpoint %s is %s, not %s", d.path, d.peer, targets[0].AddressFamily, d.local.Family)
+			slog.Warn(fmt.Sprintf("peer %s: endpoint %s is %s, not %s", d.path, d.peer, targets[0].AddressFamily, d.local.Family))
 			return
 		}
 		if !targets[0].Dialable() {
-			log.Printf("peer %s: endpoint %s carries no address", d.path, d.peer)
+			slog.Warn(fmt.Sprintf("peer %s: endpoint %s carries no address", d.path, d.peer))
 			return
 		}
 	} else if !slices.ContainsFunc(targets, func(target registry.Target) bool {
@@ -68,7 +67,7 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		}
 		// a reload may remove the node while this dialer runs
 		if _, err := c.index().Key(d.peer.Node()); err != nil {
-			log.Printf("peer %s: no longer in the registry, giving up", d.path)
+			slog.Info(fmt.Sprintf("peer %s: no longer in the registry, giving up", d.path))
 			return
 		}
 		err := c.connectPeer(ctx, d)
@@ -83,12 +82,12 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		case errors.Is(err, ike.ErrPRFUnlisted):
 			// the session deleted its IKE SA for a new handshake under the lists in force
 			// and the new handshake goes out at once
-			log.Printf("peer %s: %v, dialing again now", d.path, err)
+			slog.Info(fmt.Sprintf("peer %s: %v, dialing again now", d.path, err))
 			continue
 		case failure.alreadySaid(err):
 			slog.Debug("peer dial failed again", "peer", d.path, "err", err)
 		default:
-			log.Printf("peer %s: %v, reconnecting in %s", d.path, err, c.reconnectDelay())
+			slog.Info(fmt.Sprintf("peer %s: %v, reconnecting in %s", d.path, err, c.reconnectDelay()))
 		}
 		select {
 		case <-ctx.Done():
@@ -216,7 +215,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 		// a second SA over this pair of endpoints would only be resolved away
 		return errSessionEstablished
 	}
-	log.Printf("peer %s: dialing %s:%d", sessionName, remoteIP, ep.Port)
+	slog.Info(fmt.Sprintf("peer %s: dialing %s:%d", sessionName, remoteIP, ep.Port))
 	c.events.Emit("dial.attempt", sessionName, slog.String("remote", net.JoinHostPort(remoteIP.String(), strconv.Itoa(int(ep.Port)))))
 
 	ikeCfg := ike.PeerConfig{

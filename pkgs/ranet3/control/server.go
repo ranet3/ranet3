@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -342,6 +343,8 @@ func newServer(src Source) *http.Server {
 		// first byte has arrived, so without this a client holds a goroutine
 		// and a descriptor for as long as it likes.
 		IdleTimeout: idleTimeout,
+		// the server's own errors, a handler's panic it recovers among them, log at warn
+		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
 }
 

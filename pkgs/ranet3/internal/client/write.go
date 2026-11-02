@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"slices"
 	"strings"
@@ -107,7 +106,7 @@ func (c *Client) SetSubsystem(ctx context.Context, name control.Subsystem, on bo
 	// acting and two writes cannot interleave their two halves.
 	c.applySubsystem(name, on)
 	c.running[name] = on
-	log.Printf("control: the %s is %s", name, startedStopped(on))
+	slog.Info(fmt.Sprintf("control: the %s is %s", name, startedStopped(on)))
 	return control.Result{Acted: []string{string(name)},
 		Detail: fmt.Sprintf("The %s is %s", name, startedStopped(on))}, nil
 }
@@ -217,9 +216,9 @@ func (c *Client) Redial(ctx context.Context, peer string, all bool) (result cont
 	acted := slices.Concat(dialers, dropped)
 	slices.Sort(acted)
 	if all {
-		log.Printf("control: redialing every peer, %d session(s) closed", len(dropped))
+		slog.Info(fmt.Sprintf("control: redialing every peer, %d session(s) closed", len(dropped)))
 	} else {
-		log.Printf("control: redialing %s, %d session(s) closed", peer, len(dropped))
+		slog.Info(fmt.Sprintf("control: redialing %s, %d session(s) closed", peer, len(dropped)))
 	}
 	return control.Result{Acted: slices.Compact(acted),
 		Detail: fmt.Sprintf("Closed %d session(s) and set %d dialer(s) going again",
@@ -275,7 +274,7 @@ func (c *Client) Rekey(ctx context.Context, peer string, all bool) (result contr
 		return control.Result{}, err
 	}
 	rekeyed, missed := c.sessions.rekeyEach(ctx, asked)
-	log.Printf("control: %d of %d session(s) replaced their child SA", len(rekeyed), len(asked))
+	slog.Info(fmt.Sprintf("control: %d of %d session(s) replaced their child SA", len(rekeyed), len(asked)))
 	detail := fmt.Sprintf("Rekeyed %d session(s), and the new SPIs show under sessions", len(rekeyed))
 	if len(missed) > 0 {
 		detail = fmt.Sprintf("Rekeyed %d of %d session(s), and the %d listed with a reason did not", len(rekeyed), len(asked), len(missed))

@@ -9,7 +9,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"maps"
 	"net/netip"
 	"runtime"
@@ -64,7 +64,7 @@ func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x 
 	}
 	refuse, skip := validatePeers(effectivePeers(cfg, x), x, families)
 	for _, problem := range skip {
-		log.Printf("%v, so nothing will dial it", problem)
+		slog.Warn(fmt.Sprintf("%v, so nothing will dial it", problem))
 	}
 	refuse = append(refuse, validateAliases(cfg.Auth.Aliases, x)...)
 	return errors.Join(refuse...)
@@ -349,8 +349,8 @@ func warnUnbordered(forwards func() (v4, v6 bool)) {
 	if len(on) == 0 {
 		return
 	}
-	log.Printf("config: this node forwards %s and %s runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source",
-		strings.Join(on, " and "), runtime.GOOS)
+	slog.Warn(fmt.Sprintf("config: this node forwards %s and %s runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source",
+		strings.Join(on, " and "), runtime.GOOS))
 }
 
 // warnCountedAdvertisements names each advertisement in cap.route or
@@ -360,8 +360,8 @@ func warnUnbordered(forwards func() (v4, v6 bool)) {
 func warnCountedAdvertisements(cfg *config.Config) {
 	warn := func(key, verb string, prefix netip.Prefix) {
 		if prefix.Bits() > 0 && schema.CapturesTheMachine(prefix, cfg.Overlay) {
-			log.Printf("config: %s %s %s, outside the overlay and shorter than /%d for IPv4 or /%d for IPv6 or holding the unspecified address, which counts as a default and makes this node an exit for its family, as routing.md says",
-				key, verb, prefix, schema.MinSubnetBits4, schema.MinSubnetBits6)
+			slog.Warn(fmt.Sprintf("config: %s %s %s, outside the overlay and shorter than /%d for IPv4 or /%d for IPv6 or holding the unspecified address, which counts as a default and makes this node an exit for its family, as routing.md says",
+				key, verb, prefix, schema.MinSubnetBits4, schema.MinSubnetBits6))
 		}
 	}
 	for _, entry := range cfg.Routes().Announce {
