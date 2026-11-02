@@ -166,11 +166,11 @@ func refuseToStart(err error) int {
 	return 1
 }
 
-// runDaemon is the node's body, in a function of its own so that every
-// deferred close runs before the process exits with a status. A failure
-// reported only in the log and then exited zero tells a supervisor the node
-// stopped cleanly when it did not, and the route withdrawal at shutdown is one
-// of the things that reports this way.
+// runDaemon runs the node from the production parts and answers the process
+// status rather than exiting, so every deferred close runs before the process
+// exits with it. A failure reported only in the log and then exited zero tells
+// a supervisor the node stopped cleanly when it did not, and the route
+// withdrawal at shutdown is one of the things that reports this way.
 func runDaemon(opts options) int {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: opts.level})))
 	return startDaemon(opts, production)
