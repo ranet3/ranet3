@@ -5,6 +5,7 @@ package netstack
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -381,5 +382,118 @@ func TestRefusedFramesAreCountedExactlyAndWarnedRarely(t *testing.T) {
 	}
 	if want := []string{"1", strconv.Itoa(refused)}; !slices.Equal(frames, want) {
 		t.Errorf("the events carried frames %v, want %v", frames, want)
+	}
+}
+
+// errRefusedWrite is the error a tun set down answers every write with
+var errRefusedWrite = errors.New("input/output error")
+
+// refusingDevice refuses every write and counts them
+type refusingDevice struct {
+	recordingDevice
+	refused atomic.Uint64
+}
+
+func (d *refusingDevice) Write([][]byte, int) (int, error) {
+	d.refused.Add(1)
+	return 0, errRefusedWrite
+}
+
+// refusedFrames is count frames, each to a flow of its own, to a tun that refuses them
+func refusedFrames(count int) [][]byte {
+	frames := make([][]byte, count)
+	for i := range frames {
+		frames[i] = append(make([]byte, TUNHeadroom), ipv6TCPPacket(uint16(40000+i), 5201, 0)...)
+	}
+	return frames
+}
+
+// a tun that refuses every write costs a counter of the writes, each of a batch of several packets
+// the log gets one line an interval, naming the interface and the writes refused since the one before
+func TestRefusedWritesAreCountedExactlyAndWarnedRarely(t *testing.T) {
+	warned := warnedCounts(t, "writes")
+	m := startedMesh()
+	device := &refusingDevice{}
+	m.setDevice(device)
+	const refused = 1000
+	for range refused {
+		m.WriteHost(refusedFrames(3))
+	}
+	if got := m.TUNWritesFailed(); got != refused || device.refused.Load() != refused {
+		t.Errorf("the counter reads %d for %d refused writes of 3 packets each", got, device.refused.Load())
+	}
+	if got := warned(); !slices.Equal(got, []uint64{1}) {
+		t.Fatalf("%d refused writes warned with counts %v, want one line for the first", refused, got)
+	}
+
+	m.writesFailed.next.Add(-int64(reportInterval))
+	m.WriteHost(refusedFrames(3))
+	if got := warned(); !slices.Equal(got, []uint64{1, refused}) {
+		t.Errorf("once the interval passed the warnings carried %v, want the %d refused since the first line", got, refused)
+	}
+}
+
+// once the mesh is closing or the tun is gone a refused write is counted and warns of nothing, though the interval passed
+func TestRefusedWritesOfAClosingMeshAreCountedUnwarned(t *testing.T) {
+	for name, ended := range map[string]func(*Mesh) chan struct{}{
+		"closing":     func(m *Mesh) chan struct{} { return m.closed },
+		"tun is gone": func(m *Mesh) chan struct{} { return m.failed },
+	} {
+		t.Run(name, func(t *testing.T) {
+			warned := warnedCounts(t, "writes")
+			m := startedMesh()
+			m.closed = make(chan struct{})
+			m.setDevice(&refusingDevice{})
+			m.WriteHost(refusedFrames(1))
+			close(ended(m))
+			m.writesFailed.next.Add(-int64(reportInterval))
+			m.WriteHost(refusedFrames(1))
+			if got := m.TUNWritesFailed(); got != 2 {
+				t.Errorf("the counter reads %d for 2 refused writes", got)
+			}
+			if got := warned(); !slices.Equal(got, []uint64{1}) {
+				t.Errorf("the writes warned with counts %v, want the first alone", got)
+			}
+		})
+	}
+}
+
+// on a tun of several queues each lane's writer counts the writes its queue refuses, whoever delivered to it
+func TestRefusedWritesOfEveryQueueAreCounted(t *testing.T) {
+	warnedCounts(t, "writes")
+	const queues = 4
+	devices := make([]tun.Device, queues)
+	refusing := make([]*refusingDevice, queues)
+	for i := range devices {
+		refusing[i] = &refusingDevice{}
+		devices[i] = refusing[i]
+	}
+	m := ownEverything(&Mesh{Name: "test0", closed: make(chan struct{})})
+	m.setDevice(lanesOf(devices...))
+	m.startInboundWriters()
+	var writers sync.WaitGroup
+	for range 8 {
+		writers.Go(func() {
+			for range 50 {
+				m.WriteHost(refusedFrames(16))
+			}
+		})
+	}
+	writers.Wait()
+	deadline := time.Now().Add(5 * time.Second)
+	for m.TUNWritesFailed() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	m.Close()
+	var made uint64
+	lanes := 0
+	for _, device := range refusing {
+		made += device.refused.Load()
+		if device.refused.Load() != 0 {
+			lanes++
+		}
+	}
+	if got := m.TUNWritesFailed(); got != made || lanes < 2 {
+		t.Errorf("the counter reads %d for %d writes refused on %d of %d queues", got, made, lanes, queues)
 	}
 }

@@ -22,7 +22,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/netip"
 	"runtime"
@@ -62,8 +61,8 @@ type Mesh struct {
 	// a field so a test can record when it runs against the steering table in force
 	setMTU func(name string, mtu int) error
 
-	// readsTruncated counts the reads that lost the tail of a GSO frame, and framesRefused the frames the device refused
-	readsTruncated, framesRefused reportedCount
+	// readsTruncated counts the reads that lost the tail of a GSO frame, framesRefused the frames the device refused, and writesFailed the writes it refused
+	readsTruncated, framesRefused, writesFailed reportedCount
 	// events records the mesh's changes of state, nil recording nothing
 	events func(kind, peer string, attrs ...slog.Attr)
 	// failed is closed once a reader finds the device gone while the mesh is not closing, nil for a mesh with no device
@@ -557,6 +556,9 @@ func (m *Mesh) TUNReadsTruncated() uint64 { return m.readsTruncated.total.Load()
 // TUNFramesRefused is how many frames read off the tun the device could not decode into packets
 func (m *Mesh) TUNFramesRefused() uint64 { return m.framesRefused.total.Load() }
 
+// TUNWritesFailed is how many writes to the tun returned an error, each up to inboundWriteBatchSize frames
+func (m *Mesh) TUNWritesFailed() uint64 { return m.writesFailed.total.Load() }
+
 // Failed is closed once the device is gone, the error line and the event netstack.tun.failed written before it
 // nothing in the process can make the device again, and a mesh with no device never fails
 func (m *Mesh) Failed() <-chan struct{} { return m.failed }
@@ -579,6 +581,22 @@ func (m *Mesh) noteRefusedFrame(err error) {
 	slog.Warn("netstack tun refused a frame", "interface", m.Name, "frames", frames, "err", err)
 	if m.events != nil {
 		m.events("netstack.tun.refused", "", slog.String("interface", m.Name), slog.Uint64("frames", frames), slog.String("err", err.Error()))
+	}
+}
+
+// noteFailedWrite counts one write to lane that the device refused with err
+// and warns at most once an interval with the count since the last warning, unless the mesh is closing or the device is gone
+func (m *Mesh) noteFailedWrite(lane int, err error) {
+	writes, warn := m.writesFailed.add(int64(time.Since(m.segmentsStarted)))
+	if !warn {
+		return
+	}
+	// a device reported gone refuses every write until the shutdown it started closes the mesh
+	select {
+	case <-m.closed:
+	case <-m.failed:
+	default:
+		slog.Warn("netstack tun refused a write", "interface", m.Name, "queue", lane, "writes", writes, "err", err)
 	}
 }
 
@@ -682,7 +700,7 @@ func (m *Mesh) outboundWorker() {
 				continue
 			}
 			if err := batch.enqueue(); err != nil {
-				log.Printf("netstack: send batch through peer %s: %v", peer.ID, err)
+				peer.noteSendError(err)
 			}
 		}
 		b.reset()
@@ -845,13 +863,7 @@ func collectReadyInbound(first inboundWriteBatch, queue <-chan inboundWriteBatch
 
 func (m *Mesh) writeInbound(lane int, frames [][]byte) {
 	if _, err := m.write(lane, frames, TUNHeadroom); err != nil {
-		// a device reported gone refuses every write until the shutdown it started closes the mesh
-		select {
-		case <-m.closed:
-		case <-m.failed:
-		default:
-			log.Printf("netstack: write to tun device queue %d: %v", lane, err)
-		}
+		m.noteFailedWrite(lane, err)
 	}
 }
 

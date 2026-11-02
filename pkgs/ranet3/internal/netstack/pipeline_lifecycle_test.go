@@ -88,6 +88,30 @@ func TestOnFailureReportsWhatAClosedPeerDropped(t *testing.T) {
 	}
 }
 
+// batches sealed for a peer that closed before its sender took them each fail
+// the log gets one send error an interval for the lot, and dropped counts every packet
+func TestBatchesForAClosedPeerWarnAsItsSendErrorsDo(t *testing.T) {
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	peer := NewPeer("peer",
+		func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
+	const batches = 20
+	m := &Mesh{closed: make(chan struct{}), outboundJobs: make(chan *outboundBatch, batches), outboundFree: make(chan *outboundBatch, batches)}
+	for range batches {
+		m.outboundJobs <- &outboundBatch{peerOrder: []*Peer{peer}, batches: map[*Peer]*peerBatch{peer: filled(peer, 1)}}
+	}
+	peer.Close()
+	close(m.outboundJobs)
+	m.outboundWorkerWG.Add(1)
+	m.outboundWorker()
+	if got := bytes.Count(logs.Bytes(), []byte("netstack send batch failed")); got != 1 {
+		t.Errorf("%d batches for a closed peer logged %d send errors, want 1\n%s", batches, got, logs.String())
+	}
+	if got := peer.dropped.Load(); got != batches {
+		t.Errorf("the peer counted %d dropped for %d one-packet batches", got, batches)
+	}
+}
+
 // A reader that has handed its batch to the workers has also handed them every
 // ticket it reserved, and a ticket the sender never sees stalls that peer for
 // good. Close therefore has to drain the queue rather than abandon it, and has

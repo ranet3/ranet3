@@ -45,7 +45,7 @@ const (
 // a read needs none, the device laying out the slab it reads into
 const TUNHeadroom = 16
 
-// reportInterval is the least time between two reports of one reportedCount, a read cut short, a frame the device refused, an ICMP error a limit withheld, a packet the forwarding decision dropped or one an End.DT46 took out of an ECN combination no tunnel sends
+// reportInterval is the least time between two reports of one reportedCount, a read cut short, a frame or a write the device refused, an ICMP error a limit withheld, a packet the forwarding decision dropped or one an End.DT46 took out of an ECN combination no tunnel sends
 // the counter keeps the exact count, and the report only has to point at it
 const reportInterval = 30 * time.Second
 

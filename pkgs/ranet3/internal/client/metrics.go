@@ -97,6 +97,9 @@ func (c *Client) Metrics(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_tun_frames_refused_total Frames read off the tun that the device could not decode into packets.\n")
 	fmt.Fprint(w, "# TYPE ranet3_tun_frames_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_tun_frames_refused_total %d\n", c.Mesh.TUNFramesRefused())
+	fmt.Fprint(w, "# HELP ranet3_tun_writes_failed_total Writes to the tun that the device refused, each of up to a batch of packets.\n")
+	fmt.Fprint(w, "# TYPE ranet3_tun_writes_failed_total counter\n")
+	fmt.Fprintf(w, "ranet3_tun_writes_failed_total %d\n", c.Mesh.TUNWritesFailed())
 
 	c.renderPathMTU(w)
 	c.renderReceiveCounters(w)

@@ -842,6 +842,8 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		// Nothing here fills a receive queue, which is the only thing that
 		// raises the other one, so it reads zero and says so.
 		"ranet3_receive_dropped_total 0",
+		// nor does anything fail a tun write
+		"ranet3_tun_writes_failed_total 0",
 		"ranet3_sessions 1",
 		"ranet3_esp_inbound_packets_total 7",
 		"ranet3_esp_inbound_dropped_total 2",
@@ -868,7 +870,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		"ranet3_babel_neighbor_cost", "ranet3_babel_routes_received",
 		"ranet3_peer_send_dropped_total", "ranet3_peer_send_delay_dropped_total", "ranet3_receive_dropped_total",
 		"ranet3_transport_pair_sockets", "ranet3_transport_pair_fallbacks_total",
-		"ranet3_tun_reads_truncated_total", "ranet3_tun_frames_refused_total",
+		"ranet3_tun_reads_truncated_total", "ranet3_tun_frames_refused_total", "ranet3_tun_writes_failed_total",
 		"ranet3_transit_packets_total",
 	} {
 		if !strings.Contains(text, "# HELP "+name+" ") || !strings.Contains(text, "# TYPE "+name+" ") {
