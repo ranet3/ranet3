@@ -49,8 +49,8 @@ func chainRules(desired []BorderRule, requests []nftables.Request, chain string)
 	return rules, out
 }
 
-// borderChain encodes the border chain the filter asks for over cfg, the mesh
-// tun ranet3 and lo, and runs a packet through it
+// borderChain encodes the antispoof chain the filter asks for over cfg, the
+// mesh tun ranet3 and lo, and runs a packet through it
 func borderChain(t *testing.T, cfg *egress.Border) ([]BorderRule, func(drawnPacket) chainRun) {
 	t.Helper()
 	desired, requests := encodedTable(t, cfg, egress.BorderSets{})
@@ -122,7 +122,7 @@ func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	}
 }
 
-// The border chain is a filter chain at prerouting at priority raw, after
+// The antispoof chain is a filter chain at prerouting at priority raw, after
 // defragmentation and before conntrack, and the entry chain one at
 // postrouting at srcnat + 10, after every source translation, both in the
 // inet table of this tool's name with its six interval sets, and the batch
@@ -194,7 +194,7 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 	}
 }
 
-// The border chain reads back as written only as the filter chain at
+// The antispoof chain reads back as written only as the filter chain at
 // prerouting, priority raw, accepting by default, that the batch creates, and
 // the translator's only as the chains it creates. Another type, hook,
 // priority or policy, or a regular chain of its name, is a fault, all but the

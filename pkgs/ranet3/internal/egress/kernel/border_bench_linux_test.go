@@ -248,12 +248,10 @@ func benchFamily(family string) (uplink netip.Prefix, far netip.Addr) {
 // Arm A: a datagram from a host beyond the uplink to the uplink's own
 // address, written into the uplink's tun b.N times, meeting prerouting, in
 // each family: with no table, with conntrack alone, with mesh_entry alone
-// (conntrack on), with the border over the overlay and no carve-out, so no
-// carved drop, and with the uplink's network carved out in each family and
-// two of the mesh's prefixes inside each. A source outside the overlay meets
-// every line of the border chain. Its other half at commit 2571934d, the base
-// this one is weighed against, builds the namespace newBenchHost builds and
-// times that commit's border chain.
+// (conntrack on), with the antispoof chain over the overlay and no carve-out,
+// so no carved drop, and with the uplink's network carved out in each family
+// and two of the mesh's prefixes inside each. A source outside the overlay
+// meets every line of the antispoof chain.
 func BenchmarkBorderChainOnAnUnderlayPacket(b *testing.B) {
 	carved := egress.BorderSets{
 		CarveOuts: []egress.CarveOut{{Link: benchUplink, Prefix: benchUplink4.Masked()}, {Link: benchUplink, Prefix: benchUplink6.Masked()}},

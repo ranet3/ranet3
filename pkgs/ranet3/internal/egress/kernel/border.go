@@ -322,9 +322,9 @@ func newBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBacke
 	return f
 }
 
-// SetConfig hands the filter the overlay and exemptions a reload carries, refusing what
-// NewBorderFilter refuses before anything changes, and wakes the run goroutine
-// to rewrite the chain
+// SetConfig hands the filter the configuration a reload carries, the overlay,
+// the exemptions and this node's own prefixes, refusing what NewBorderFilter
+// refuses before anything changes, and wakes the run goroutine for a pass
 func (f *BorderFilter) SetConfig(cfg egress.Border) error {
 	if err := cfg.Validate(); err != nil {
 		return err

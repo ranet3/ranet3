@@ -171,7 +171,7 @@ func (f *fakeBorder) allSpecs() []string {
 	return out
 }
 
-// specs is the border chain's rules as held, the entry chain's left out
+// specs is the antispoof chain's rules as held, the entry chain's left out
 func (f *fakeBorder) specs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -198,7 +198,7 @@ func borderRuntime(bus *events.Bus) egress.BorderRuntime {
 	return egress.BorderRuntime{Tun: "ranet0", Inside: []string{"ranet0", "lo"}, Events: bus}
 }
 
-// entryRules is the entry chain's rules, which follow the border chain's
+// entryRules is the entry chain's rules, which follow the antispoof chain's
 const entryRules = 10
 
 // readyMoves is each move of the filter's readiness bus recorded, in order
