@@ -27,6 +27,8 @@ var errAnsweredInvalidSyntax = errors.New("ike: the peer answered INVALID_SYNTAX
 
 var errPeerDeletedIKE = errors.New("ike: the peer deleted the IKE SA")
 
+var errInitialContact = errors.New("ike: the peer's INITIAL_CONTACT on a newer IKE SA of this path ended the IKE SA without a Delete")
+
 type localRequest struct {
 	exchange ExchangeType
 	inner    []RawPayload
@@ -800,6 +802,12 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		case <-s.rechecks:
 			resuiteDue = true
 			continue
+		// RFC 7296 section 2.4: "An endpoint MUST conclude that the other endpoint has failed only when repeated attempts to contact it have gone unanswered for a timeout period or when a cryptographically protected INITIAL_CONTACT notification is received on a different IKE SA to the same authenticated identity."
+		// the IKE SA ends with its Child SAs and sends no Delete, its end recorded as initial contact
+		case <-s.contacted:
+			s.tellClosed("initial contact", errInitialContact)
+			s.closeFor(errInitialContact)
+			continue
 		case err := <-replaced:
 			if err != nil {
 				return fmt.Errorf("%w, and its Delete failed: %v", ErrPRFUnlisted, err)
@@ -1180,11 +1188,16 @@ func (s *Session) fragmentLimit(ctx *ikeContext, mid uint32, err error) {
 	if s.removeRetainedContext(ctx) {
 		return
 	}
-	// an IKE SA this end is closing has its end told already, and one whose mux has closed ends for the reason that closed it
-	if !s.closing.Load() && !s.mux.IsClosed() {
-		s.emit("ike.sa.closed", slog.String("sa", "ike"), slog.String("reason", "fragment limit"), slog.String("err", err.Error()))
-	}
+	s.tellClosed("fragment limit", err)
 	s.closeFor(err)
+}
+
+// tellClosed records that the IKE SA ends without a Delete, for reason and err
+// an IKE SA this end is closing has its end told already, and one whose mux has closed ends for the reason that closed it
+func (s *Session) tellClosed(reason string, err error) {
+	if !s.closing.Load() && !s.mux.IsClosed() {
+		s.emit("ike.sa.closed", slog.String("sa", "ike"), slog.String("reason", reason), slog.String("err", err.Error()))
+	}
 }
 
 // closeFor closes the mux for err, which Run returns unless an earlier reason is kept
@@ -1324,10 +1337,7 @@ func (s *Session) endAtInvalidSyntax(ctx *ikeContext, request *pendingRequest, a
 		return
 	}
 	request.result <- requestResult{err: errAnsweredInvalidSyntax}
-	// an IKE SA this end is closing has its end told already, and one whose mux has closed ends for the reason that closed it
-	if !s.closing.Load() && !s.mux.IsClosed() {
-		s.emit("ike.sa.closed", slog.String("sa", "ike"), slog.String("reason", "invalid syntax"), slog.String("err", errAnsweredInvalidSyntax.Error()))
-	}
+	s.tellClosed("invalid syntax", errAnsweredInvalidSyntax)
 	s.answeredInvalidSyntax = true
 }
 
@@ -1426,6 +1436,16 @@ func (s *Session) DeleteIKE() error {
 	}
 	// before Run serves the session nothing drains the request queue, so a Delete sent through it would never go out
 	return s.sendUnansweredRequest(payloads)
+}
+
+// EndAtInitialContact has Run end the session without a Delete, for a newer IKE SA on its path whose IKE_AUTH carried the peer's INITIAL_CONTACT
+// RFC 7296 section 2.4: "the recipient MAY use this information to delete any other IKE SAs it has to the same authenticated identity without waiting for a timeout"
+// it never blocks
+func (s *Session) EndAtInitialContact() {
+	select {
+	case s.contacted <- struct{}{}:
+	default:
+	}
 }
 
 // closingSignal is closed once the IKE SA starts to close

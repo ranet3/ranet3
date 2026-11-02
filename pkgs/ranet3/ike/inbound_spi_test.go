@@ -126,17 +126,27 @@ func newAuthPeer(t *testing.T) authPeer {
 
 // authenticated is the peer's IDr and AUTH for s's IKE_AUTH, the IKE_SA_INIT response and initiator nonce it signs being what the tests pass doIKEAuth
 func (p authPeer) authenticated(s *Session) []RawPayload {
-	signed := slices.Concat([]byte("the IKE_SA_INIT response"), make([]byte, 32), prf(s.current.suite.PRFID, s.current.skpr, p.idr))
+	return p.authenticatedOver(s, []byte("the IKE_SA_INIT response"))
+}
+
+// authenticatedOver is authenticated for an IKE_AUTH that follows response
+func (p authPeer) authenticatedOver(s *Session, response []byte) []RawPayload {
+	signed := slices.Concat(response, make([]byte, 32), prf(s.current.suite.PRFID, s.current.skpr, p.idr))
 	return []RawPayload{{Type: PayloadIDr, Body: p.idr}, {Type: PayloadAUTH, Body: BuildAuth(p.private, signed)}}
 }
 
 // startIKEAuth runs s's IKE_AUTH toward p and answers how it ends
 func startIKEAuth(s *Session, p authPeer) <-chan error {
+	return startIKEAuthAfter(s, p, []byte("the IKE_SA_INIT response"))
+}
+
+// startIKEAuthAfter is startIKEAuth for an IKE_AUTH that follows response
+func startIKEAuthAfter(s *Session, p authPeer, response []byte) <-chan error {
 	s.current.authMID, s.current.nextLocalMID = 1, 2
 	s.current.skpi, s.current.skpr = make([]byte, 32), make([]byte, 32)
 	ended := make(chan error, 1)
 	go func() {
-		_, err := s.doIKEAuth(p.cfg, []byte("the IKE_SA_INIT request"), []byte("the IKE_SA_INIT response"), make([]byte, 32), make([]byte, 32), intAuth{})
+		_, err := s.doIKEAuth(p.cfg, []byte("the IKE_SA_INIT request"), response, make([]byte, 32), make([]byte, 32), intAuth{})
 		ended <- err
 	}()
 	return ended

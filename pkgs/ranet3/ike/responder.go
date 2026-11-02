@@ -102,6 +102,10 @@ type ResponderConfig struct {
 	// nil records nothing
 	Events Recorder
 
+	// InitialContact decides whether the IKE_AUTH response carries INITIAL_CONTACT, asked once the Child SA of an authenticated request is selected, with the session and the endpoint IDi names
+	// nil sends none
+	InitialContact func(*Session, identity.Identity) bool
+
 	// pathMTU stands in for each answered session's mux PathMTU, and nil reads the mux
 	pathMTU func() (int, error)
 }
@@ -368,6 +372,8 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	if err != nil {
 		return nil, Accepted{}, err
 	}
+	// read before the response leaves, so the session starts before the peer can decide INITIAL_CONTACT, as StartedAt says
+	started := time.Now()
 	if err := mux.SendIKE(response); err != nil {
 		return nil, Accepted{}, err
 	}
@@ -382,6 +388,7 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 		nextPeerMID: authMID + 1, nextLocalMID: 0,
 	}
 	session := newSession(mux, current, r.cfg.RekeyTiming, r.cfg.Suites, fragments, r.cfg.pathMTU)
+	session.started = started
 
 	accepted, created, err := session.completeResponderAuth(r, datagram.Raw, response, ni, nr, deadline)
 	if err != nil {
@@ -544,13 +551,16 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	localSPI := make([]byte, 4)
 	binary.BigEndian.PutUint32(localSPI, child.sa.LocalSPI)
 	tsv4, tsv6 := FullRangeV4(), FullRangeV6()
-	response, err := s.response(ctx, ctx.authMID, IKE_AUTH, []RawPayload{
-		{Type: PayloadIDr, Body: idrBody},
-		{Type: PayloadAUTH, Body: authBody},
-		{Type: PayloadSA, Body: EncodeSA([]Proposal{child.proposal(localSPI)})},
-		{Type: PayloadTSi, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
-		{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
-	})
+	answer := []RawPayload{{Type: PayloadIDr, Body: idrBody}, {Type: PayloadAUTH, Body: authBody}}
+	// RFC 7296 section 2.4: "The INITIAL_CONTACT notification, if sent, MUST be in the first IKE_AUTH request or response, not as a separate exchange afterwards"
+	if r.cfg.InitialContact != nil && r.cfg.InitialContact(s, peerID) {
+		answer = append(answer, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INITIAL_CONTACT})})
+	}
+	response, err := s.response(ctx, ctx.authMID, IKE_AUTH, append(answer,
+		RawPayload{Type: PayloadSA, Body: EncodeSA([]Proposal{child.proposal(localSPI)})},
+		RawPayload{Type: PayloadTSi, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
+		RawPayload{Type: PayloadTSr, Body: EncodeTS([]TrafficSelector{tsv4, tsv6})},
+	))
 	if err != nil {
 		return Accepted{}, false, err
 	}
@@ -571,6 +581,7 @@ func (s *Session) completeResponderAuth(r *Responder, realMessage1, realMessage2
 	if err := s.send(sent.datagrams); err != nil {
 		return Accepted{}, false, err
 	}
+	_, s.initialContact = findNotify(inner, N_INITIAL_CONTACT)
 	return Accepted{Peer: peerID, Local: localID, Key: peerKey}, true, nil
 }
 

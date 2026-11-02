@@ -54,6 +54,10 @@ type PeerConfig struct {
 	// nil records nothing
 	Events Recorder
 
+	// InitialContact decides whether the IKE_AUTH request carries INITIAL_CONTACT, asked once as it is built, with the session and Remote
+	// nil sends none
+	InitialContact func(*Session, identity.Identity) bool
+
 	// pathMTU stands in for the mux's PathMTU, and nil reads the mux
 	pathMTU func() (int, error)
 }
@@ -196,8 +200,13 @@ type Session struct {
 	// closed is closed with closing set, for a wait that ends there, and closedMu guards it
 	closedMu sync.Mutex
 	closed   chan struct{}
-	// started fixes the origin lastActive is measured from. It is written
-	// once, before the session is handed to anyone.
+	// initialContact is whether the peer's IKE_AUTH carried INITIAL_CONTACT, written before the session is handed out
+	initialContact bool
+	// contacted holds at most the one ending EndAtInitialContact asked for that Run has not acted on
+	contacted chan struct{}
+	// started fixes the origin lastActive is measured from. newSession writes
+	// it, and an answering end writes it again with the instant before its
+	// IKE_SA_INIT response left, both before the session is handed to anyone.
 	started time.Time
 	// lastActive is how long after started the peer last proved it is still
 	// there, in nanoseconds, plus one so that zero still reads as never: the
@@ -450,6 +459,7 @@ func newSession(mux *transport.Mux, current *ikeContext, timing RekeyTiming, sui
 		childFailed:      make(chan error, 1),
 		suites:           suites,
 		rechecks:         make(chan struct{}, 1),
+		contacted:        make(chan struct{}, 1),
 		fragments:        fragments,
 		pathMTU:          pathMTU,
 		timing:           timing,
@@ -1050,6 +1060,10 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 	case 1:
 		inner = append(inner, RawPayload{Type: PayloadIDr, Body: asking[0]})
 	}
+	// RFC 7296 section 2.4: "The INITIAL_CONTACT notification, if sent, MUST be in the first IKE_AUTH request or response, not as a separate exchange afterwards"
+	if cfg.InitialContact != nil && cfg.InitialContact(s, cfg.Remote) {
+		inner = append(inner, RawPayload{Type: PayloadN, Body: EncodeNotify(Notify{Type: N_INITIAL_CONTACT})})
+	}
 
 	macedIDForI := prf(s.current.suite.PRFID, s.current.skpi, idiBody)
 	signedOctets := slices.Concat(realMessage1, nr, macedIDForI, chain.octets(s.current.authMID))
@@ -1117,6 +1131,7 @@ func (s *Session) doIKEAuth(cfg PeerConfig, realMessage1, realMessage2, ni, nr [
 		return false, refuse(N_AUTHENTICATION_FAILED, nil, fmt.Errorf("ike: the responder's IDr names %s, and this node dialed %s", responder.endpoint, cfg.Remote))
 	}
 	s.emit("ike.id.resolved", responder.attrs(idiBody)...)
+	_, s.initialContact = findNotify(respInner, N_INITIAL_CONTACT)
 
 	// RFC 7296 section 2.21.2: "a responder may include all the payloads associated with authentication (IDr, CERT, and AUTH) while sending error notifications for the piggybacked exchanges (FAILED_CP_REQUIRED, NO_PROPOSAL_CHOSEN, and so on), and the initiator MUST NOT fail the authentication because of this."
 	// section 3.10.1: "An implementation receiving a Notify payload with one of these types that it does not recognize in a response MUST assume that the corresponding request has failed entirely."
@@ -1248,9 +1263,16 @@ func (s *Session) Active() bool {
 // noteActive records that the peer has just proved it is still there.
 func (s *Session) noteActive() { s.lastActive.Store(int64(time.Since(s.started)) + 1) }
 
-// StartedAt is when this SA was established. It is written once, before the
-// session is handed to anyone, so it needs no lock.
+// StartedAt is when this end made the session, before the peer holds any
+// message of this end's it could decide INITIAL_CONTACT from: as the IKE_SA_INIT
+// exchange ended where this end dialed, and before its IKE_SA_INIT response left
+// where it answered. It is written once by newSession and once more where this
+// end answered, both before the session is handed to anyone, so it needs no
+// lock.
 func (s *Session) StartedAt() time.Time { return s.started }
+
+// InitialContact reports whether the peer's IKE_AUTH carried INITIAL_CONTACT
+func (s *Session) InitialContact() bool { return s.initialContact }
 
 // Idle is how long since the peer last proved it is still there, which is the
 // quantity dead peer detection acts on. It reports the session's whole age
