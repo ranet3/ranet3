@@ -38,8 +38,12 @@
    storm text in dark, the reverse in light, frost for the accent and aurora
    for the states. Where a nord color falls short of 4.5:1 for text, 3:1 for a
    meter on its track or 2:1 for a divider, the shade is that color mixed
-   toward another nord color only as far as it takes. The scheme follows the
-   system unless the theme switch sets data-theme to light or dark */
+   toward another nord color only as far as it takes. In light the accent and
+   the states instead keep their nord color's hue and go darker and more
+   saturated until they reach 4.5:1, since no nord accent reaches it on snow
+   storm and a shade mixed that far reads gray. The accent reaches it on nord4
+   too, under the footer's links. The scheme follows the system
+   unless the theme switch sets data-theme to light or dark */
 :root {
   color-scheme: light dark;
   --bg: light-dark(var(--color-nord-6), var(--color-nord-0));
@@ -50,16 +54,33 @@
   --mute: light-dark(var(--color-nord-3), #a7aebd);
   --fg2: light-dark(var(--color-nord-1), var(--color-nord-4));
   --fg: light-dark(var(--color-nord-0), var(--color-nord-6));
-  --acc: light-dark(#4b6382, var(--color-nord-8));
+  --acc: light-dark(#2e63a2, var(--color-nord-8));
   --accl: color-mix(in srgb, var(--acc) 40%, transparent);
   --tint: light-dark(
     color-mix(in srgb, var(--acc) 8%, transparent),
     color-mix(in srgb, var(--acc) 10%, transparent)
   );
-  --warn: light-dark(#9a5328, var(--color-nord-13));
-  --hint: light-dark(#9a5328, var(--color-nord-13));
-  --good: light-dark(#4c6f38, var(--color-nord-14));
-  --bad: light-dark(#8c515b, #cc8a92);
+  --warn: light-dark(#c33d00, var(--color-nord-13));
+  --hint: light-dark(#c33d00, var(--color-nord-13));
+  --good: light-dark(#4b7805, var(--color-nord-14));
+  --bad: light-dark(#c23b52, #cc8a92);
+  /* the marks of a chart, one color for each thing it compares: --mark for the
+     one the page is about, in the site's accent, then the rest in the order they
+     are compared in. --mark against each of the rest, and each pair drawn side
+     by side, sit at least 15 apart in oklab and 8 under protanopia and
+     deuteranopia, at 3:1 or better on the page. Pairs a chart keeps apart can
+     sit closer, and a name beside the mark or in a key tells those apart. In
+     light the orange, teal, mauve and gold hold their nord color's hue, and
+     violet and brown are additions, since red and green stay with the states.
+     --mark-rest draws a key that names a shape and no series */
+  --mark: var(--acc);
+  --mark-1: light-dark(#e55827, #f5642b);
+  --mark-2: light-dark(#9467d6, #ac77fa);
+  --mark-3: light-dark(#069999, #1dc67f);
+  --mark-4: light-dark(#a67b01, #ab9925);
+  --mark-5: light-dark(#7d2773, #e65fb3);
+  --mark-6: light-dark(#904100, #f5ab77);
+  --mark-rest: light-dark(#7f8799, #7a8394);
 }
 
 /* only keeps a browser's own dark mode from darkening the light theme */
@@ -298,22 +319,313 @@
       @apply text-mute;
     }
   }
-  /* a bar under a figure, as long as --w */
+  /* a bar under a figure, as long as --w, in --fill where a page sets one. A
+     2px gap parts it from its track, which leaves the fill against the cell's
+     own background alone */
   .meter {
     --fill: var(--bar);
-    @apply mt-[.3em] block h-[3px]
-      bg-[linear-gradient(to_left,var(--fill)_var(--w),var(--track)_0)];
-  }
-  .meter-accent {
-    --fill: var(--acc);
+    @apply mt-[.3em] block h-[3px];
+    background: linear-gradient(
+      to left,
+      var(--fill) var(--w),
+      transparent var(--w),
+      transparent calc(var(--w) + 2px),
+      var(--track) calc(var(--w) + 2px)
+    );
   }
   /* forced colors drop a gradient background, so the bar keeps its own in
-     system colors */
+     system colors, which only important sets over a color on the element */
   @media (forced-colors: active) {
     .meter {
       forced-color-adjust: none;
-      --fill: CanvasText;
+      --fill: CanvasText !important;
       --track: GrayText;
+    }
+  }
+  /* a dot in --c beside a name, so a series keeps its color outside a chart */
+  .swatch {
+    @apply mr-[.7ch] inline-block size-[.6em] rounded-full align-[.05em];
+    background: var(--c);
+  }
+  @media (forced-colors: active) {
+    .swatch {
+      forced-color-adjust: none;
+      --c: CanvasText !important;
+    }
+  }
+  /* a range of ratios under a figure, --a to --b along a log scale in the
+     text's color, 1x at the tick in the center, and --s to --e paler to join a
+     range to that tick */
+  .ratio {
+    --pale: color-mix(in srgb, currentColor 30%, transparent);
+    @apply relative mt-[.5em] block h-[6px] min-w-[12ch];
+    background:
+      linear-gradient(
+      to right,
+      transparent var(--a),
+      currentColor var(--a),
+      currentColor var(--b),
+      transparent var(--b)
+    ),
+      linear-gradient(
+      to right,
+      transparent var(--s, 50%),
+      var(--pale) var(--s, 50%),
+      var(--pale) var(--e, 50%),
+      transparent var(--e, 50%)
+    ),
+      linear-gradient(var(--track), var(--track));
+    &::after {
+      content: "";
+      @apply absolute -top-[3px] -bottom-[3px] left-1/2 w-px bg-mute;
+    }
+  }
+  /* a chart of rows: a label, a track its marks sit on at --x and a figure.
+     Below sm the label and the figure share a line above the track. --grid on
+     the chart draws the scale's lines on every track */
+  .plot {
+    @apply text-[.9em] tabular-nums;
+  }
+  .plot-row {
+    --c: var(--mark-rest);
+    @apply grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-[1.5ch]
+      max-sm:mt-[.5em] sm:grid-cols-[19ch_minmax(0,1fr)_11ch];
+  }
+  .plot-label {
+    @apply text-fg2;
+    & small {
+      @apply text-[.85em] font-normal text-mute;
+    }
+  }
+  .plot-figure {
+    @apply text-right text-fg2;
+  }
+  /* the row the chart is about, on a band of its color with heavier marks */
+  .plot-accent {
+    --c: var(--mark);
+    @apply -mx-[.75ch] rounded-[3px] px-[.75ch];
+    background: color-mix(in srgb, var(--mark) 13%, transparent);
+    & :where(.plot-label, .plot-figure) {
+      @apply font-bold text-fg;
+    }
+    & .plot-span {
+      @apply h-[4px];
+    }
+    & .plot-bar {
+      @apply h-[10px] rounded-[5px];
+    }
+  }
+  .plot-track {
+    @apply relative block h-[26px] max-sm:col-span-full max-sm:row-start-2;
+    background: var(--grid);
+  }
+  /* a dot at --x, and at --y where the chart has no rows. The ring keeps it
+     legible where it crosses a line. An open one and a half filled one mark
+     the steps of a scale without leaning on color */
+  .plot-mark {
+    @apply absolute size-[9px] -translate-x-1/2 -translate-y-1/2 rounded-full;
+    top: var(--y, 50%);
+    left: var(--x);
+    background: var(--c);
+    box-shadow: 0 0 0 2px var(--bg);
+  }
+  .plot-mark-lead,
+  .plot-accent .plot-mark {
+    @apply size-[14px];
+  }
+  .plot-mark-open {
+    background: var(--bg);
+    border: 2px solid var(--c);
+  }
+  .plot-mark-half {
+    background: linear-gradient(to right, var(--c) 50%, var(--bg) 50%);
+    border: 2px solid var(--c);
+  }
+  /* --a to --b behind the marks, thin to join them and thick as a bar */
+  .plot-span {
+    @apply absolute top-1/2 h-[2px] -translate-y-1/2;
+    left: var(--a);
+    right: calc(100% - var(--b));
+    background: var(--c);
+  }
+  .plot-bar {
+    @apply h-[5px] rounded-[2.5px];
+  }
+  /* its columns are the rows' at the rows' font size, since ch follows the
+     element's own, and only its figures are smaller */
+  .plot-axis {
+    @apply grid h-[1.8em] sm:grid-cols-[19ch_minmax(0,1fr)_11ch]
+      sm:gap-x-[1.5ch];
+    & > div {
+      @apply relative sm:col-start-2;
+    }
+    & span {
+      @apply absolute top-[.3em] -translate-x-1/2 text-[.85em] whitespace-nowrap
+        text-mute;
+      left: var(--x);
+    }
+  }
+  /* what a chart's marks stand for, the mark beside its name */
+  .plot-keys {
+    --c: var(--mark-rest);
+    @apply mb-[.5em] flex flex-wrap gap-x-[2.5ch] text-[.85em] text-mute;
+    & > span {
+      @apply flex items-center gap-x-[1ch];
+    }
+    & i {
+      @apply relative inline-block size-[10px] translate-x-0 translate-y-0;
+      top: auto;
+      left: auto;
+    }
+  }
+  /* a line chart, 240px tall so its marks and names are placed in pixels down
+     and in percent across. From sm the names sit at the ends of their lines,
+     and below it the plot takes the width, the lead's name moves onto its line
+     and the rest become a key under the axis */
+  .lines {
+    @apply grid grid-cols-[minmax(0,1fr)] text-[.9em] tabular-nums
+      sm:grid-cols-[minmax(0,1fr)_18ch];
+  }
+  .lines-plot {
+    @apply relative h-[240px];
+    & svg {
+      @apply absolute inset-0 size-full overflow-visible;
+    }
+  }
+  .lines-tick {
+    @apply absolute left-0 -translate-y-full text-[.85em] text-mute;
+    top: var(--y);
+  }
+  .lines-lead {
+    @apply absolute right-[10px] bg-bg px-[.5ch] font-bold text-fg sm:hidden;
+    top: calc(var(--y) + 10px);
+  }
+  .lines-names {
+    @apply relative grid grid-cols-[repeat(auto-fill,minmax(18ch,1fr))]
+      gap-x-[1.5ch]
+      gap-y-[.15em] text-[.85em] max-sm:order-4 max-sm:mt-[.8em] sm:block
+      sm:h-[240px] sm:text-[1em];
+    & svg {
+      @apply absolute inset-y-0 left-0 h-full w-[14px] overflow-visible
+        max-sm:hidden;
+    }
+    & span {
+      @apply whitespace-nowrap text-fg2 sm:absolute sm:left-[18px]
+        sm:-translate-y-1/2;
+      top: var(--y);
+      & small {
+        @apply text-[.85em] text-mute;
+      }
+      /* the key's mark, which the lines' ends stand in for from sm */
+      &::before {
+        content: "";
+        @apply mr-[.8ch] inline-block size-[9px] rounded-full sm:hidden;
+        background: var(--c);
+      }
+    }
+    & span.lines-accent {
+      @apply font-bold text-fg;
+    }
+  }
+  .lines-axis {
+    @apply relative h-[1.8em] max-sm:order-2;
+    & span {
+      @apply absolute top-[.3em] -translate-x-1/2 text-[.85em] whitespace-nowrap
+        text-mute;
+      left: var(--x);
+    }
+  }
+  .lines-unit {
+    @apply pt-[.3em] text-[.85em] text-mute max-sm:order-3 max-sm:text-center
+      sm:pl-[18px];
+  }
+  .line {
+    fill: none;
+    stroke: var(--c, var(--mark-rest));
+    stroke-width: 2px;
+    vector-effect: non-scaling-stroke;
+  }
+  /* the line the chart is about, heavier and on a wash of its own color */
+  .line-accent {
+    stroke: var(--mark);
+    stroke-width: 3.5px;
+  }
+  .line-halo {
+    stroke: var(--mark);
+    stroke-width: 11px;
+    opacity: 0.16;
+  }
+  /* from a line's end to its name, thin rules on the scale, and the wide stroke
+     that gives a line its hover */
+  .line-leader {
+    stroke-width: 1px;
+  }
+  .line-rule {
+    stroke: var(--bg2);
+    stroke-width: 1px;
+  }
+  .line-limit {
+    stroke: var(--mute);
+    stroke-width: 1px;
+  }
+  .line-hit {
+    stroke: transparent;
+    stroke-width: 14px;
+    pointer-events: stroke;
+  }
+  /* forced colors drop backgrounds, and a chart's marks are nothing else */
+  @media (forced-colors: active) {
+    .ratio,
+    .plot-row,
+    .plot-keys,
+    .plot-track,
+    .plot-mark,
+    .plot-span {
+      forced-color-adjust: none;
+    }
+    /* a chart sets each series' color on the element, which only important
+       outranks */
+    .plot-row,
+    .plot-keys {
+      --c: CanvasText !important;
+      --bg: Canvas;
+      --track: GrayText;
+      --grid: none;
+    }
+    .lines-plot .plot-mark,
+    .lines-names span {
+      forced-color-adjust: none;
+      --c: CanvasText !important;
+    }
+    .plot-accent,
+    .lines-plot .plot-mark-lead {
+      --c: Highlight !important;
+    }
+    .plot-accent {
+      background: none;
+    }
+    /* a ratio's color comes from a utility on the element, which only
+       important outranks */
+    .ratio {
+      --track: GrayText;
+      color: CanvasText !important;
+    }
+    .line {
+      forced-color-adjust: none;
+      stroke: CanvasText;
+    }
+    .line-accent {
+      stroke: Highlight;
+    }
+    .line-rule,
+    .line-leader {
+      stroke: GrayText;
+    }
+    .line-halo {
+      stroke: transparent;
+    }
+    .line-hit {
+      stroke: transparent;
     }
   }
   /* figures right aligned, row labels left, a rule between tbody groups */
@@ -371,7 +683,7 @@
     @apply font-bold text-acc;
   }
   .td-best {
-    @apply font-bold text-fg before:mr-[1ch] before:font-normal before:text-acc
+    @apply font-bold text-fg before:mr-[1ch] before:font-normal before:text-mute
       before:content-['\25B8'];
     /* the marker reads as a word to assistive tech, which would read the
        glyph. A browser without alternative text for content keeps the glyph
