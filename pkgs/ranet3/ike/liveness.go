@@ -402,11 +402,13 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		ending = err
 		s.keepReason(err)
 		s.startClosing()
-		slog.Warn("ike deleting the IKE SA", "sa", schedule.name, "reason", reason, "err", err)
-		// a reason Run finds once the mux has closed did not end the session, which ended as the mux closed
-		if !s.mux.IsClosed() {
-			s.emit("ike.sa.closed", slog.String("sa", schedule.sa), slog.String("reason", reason), slog.String("err", err.Error()))
+		// as in tellClosed, a reason found once the mux has closed did not end the session, which ended for the reason that
+		// closed it, so it records nothing and deletes nothing
+		if s.mux.IsClosed() {
+			return
 		}
+		slog.Warn("ike deleting the IKE SA", "sa", schedule.name, "reason", reason, "err", err)
+		s.emit("ike.sa.closed", slog.String("sa", schedule.sa), slog.String("reason", reason), slog.String("err", err.Error()))
 	}
 	// RFC 7296 section 2.4: "In this case, an IKE endpoint SHOULD send a Delete payload indicating that it has closed the IKE SA unless the other endpoint is no longer responding."
 	fail := func(err error) {

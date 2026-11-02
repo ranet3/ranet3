@@ -2162,9 +2162,10 @@ func TestMessageTakenOnceThePeersDeleteClosedTheMuxRecordsNoClose(t *testing.T) 
 	}))
 }
 
-// a lifetime Run finds once the peer's Delete closed the mux records no ike.sa.closed, since the session ends for the Delete
+// a lifetime Run finds once the peer's Delete closed the mux records no ike.sa.closed and warns of no delete, since the session ends for the Delete
 func TestLifetimeFoundOnceThePeersDeleteClosedTheMuxRecordsNoClose(t *testing.T) {
 	bubble.Run(func(t *testing.T) {
+		lines := recordLines(t)
 		events := &recorder{}
 		s := firstReasonSession(t)
 		s.events = events.record
@@ -2178,6 +2179,9 @@ func TestLifetimeFoundOnceThePeersDeleteClosedTheMuxRecordsNoClose(t *testing.T)
 		}
 		if closed := recordedKind(events, "ike.sa.closed"); closed != 0 {
 			t.Errorf("a lifetime Run found once the peer's Delete closed the mux recorded %q, want no ike.sa.closed", events.recorded())
+		}
+		if warned := lines.said(slog.LevelWarn, "ike deleting the IKE SA", "reason"); len(warned) != 0 {
+			t.Errorf("a lifetime Run found once the peer's Delete closed the mux warned of deleting the IKE SA for %v", warned)
 		}
 	})(t)
 }
