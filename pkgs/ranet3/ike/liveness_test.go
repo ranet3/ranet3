@@ -2078,7 +2078,7 @@ func TestRunReturnsTheFirstReasonItClosedFor(t *testing.T) {
 	}))
 }
 
-// selectRuns is how often a case runs whose Run takes one of two ready select cases, so a wrong one goes unseen once in 2^20
+// selectRuns is how many times a case runs whose Run takes one of two ready select cases
 const selectRuns = 20
 
 // firstReasonSession holds an IKE SA past IKE_AUTH on a mux to a peer socket, and runs no loop
