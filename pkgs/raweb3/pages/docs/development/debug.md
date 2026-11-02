@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-02
+updated: 2026-11-03
 order: 30
 ---
 
@@ -678,7 +678,10 @@ of the IKE SA or the Child SA completed by either end in between,
 `invalid syntax` when the peer answered a request of this end's on the current
 IKE SA with `INVALID_SYNTAX`, which ends it without a Delete, `fragment limit`
 when the peer's fragments of 1 message passed the reassembly limit
-[limits](../design/limits.md#ike) gives, which ends it without a Delete too, and
+[limits](../design/limits.md#ike) gives, which ends it without a Delete too,
+`initial contact` when a newer IKE SA of the session's path carried the peer's
+`INITIAL_CONTACT`, as
+[closing SAs](../design/protocol-deviations.md#closing-sas) describes, and
 `local failure` when this node failed on its own side, as when its dataplane
 refused a change to a Child SA. An IKE SA rekey of this node's that runs
 `IKE_FOLLOWUP_KE` adds 3 more: `rekey answer refused` when this node refused the

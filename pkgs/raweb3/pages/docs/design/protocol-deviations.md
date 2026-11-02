@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-02
+updated: 2026-11-03
 order: 20
 ---
 
@@ -488,7 +488,7 @@ leaves the IKE SA uncreated without a Delete.
 [RFC 7296 section 2.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.4)
 asks an end that closes an IKE SA to send a Delete for it "unless the other
 endpoint is no longer responding". ranet3 does so wherever the peer may still
-answer, except in 4 cases where it closes without one:
+answer, except in 5 cases where it closes without one:
 
 - This end's Message ID space is spent. A Delete is a request and needs one.
 - A request or a response cannot be built. A Delete is encrypted the same way,
@@ -501,6 +501,16 @@ answer, except in 4 cases where it closes without one:
   says "the receiver can consider this situation to be either an attack or a
   broken sender implementation. In either case, the receiver SHOULD drop the
   connection and discard all the received fragments."
+- A newer IKE SA of the session's path carries the peer's `INITIAL_CONTACT`.
+  Section 2.4 allows an end to conclude that the peer has failed only on such a
+  notice or a timeout, and lets it "delete any other IKE SAs it has to the same
+  authenticated identity without waiting for a timeout". The notice is read per
+  path: a node deletes the session it holds on the notice's path, with its Child
+  SAs, where it took that session before the notice's IKE SA started, leaves a
+  newer one there, from a dial that crossed the notice's, to the
+  [`preferred`](../control-socket.md#requests-and-answers) rule, and leaves its
+  sessions on the peer's other paths for dead peer detection or the peer's own
+  new handshakes to end.
 
 One close comes near these. An answer to this end's own request that does not
 decode after its integrity check closes the IKE SA as
@@ -654,6 +664,24 @@ responder and sends no CERT payload. Refusing additional Child SAs with
 
 A node answers handshakes as a responder only when `link.listen` is set. A full
 mesh needs every node to answer as well as dial.
+
+A node sends `INITIAL_CONTACT` in its first `IKE_AUTH` request or response to a
+peer while it holds no other IKE SA to that peer's node on any path, live or
+with its `IKE_AUTH` under way, as after a restart, so of the handshakes it runs
+to a peer at once only 1 carries it. The peer reads it as
+[closing SAs](#closing-sas) describes.
+[RFC 7296 section 2.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.4)
+says the notice "MUST NOT be sent by an entity that may be replicated", and a
+node's name runs on 1 host at a time, since the name and
+[its key](../trust.md#key-files) running on a second host at once would have one
+host's restart delete the other's IKE SAs on that path. A strongSwan responder
+takes the notice to destroy without a Delete every IKE SA it holds with the same
+2 IDs in that address family, unless its `unique` is `never`, a session it
+dialed across the notice's among them
+([`check_uniqueness`](https://github.com/strongswan/strongswan/blob/6.1.0/src/libcharon/sa/ike_sa_manager.c)),
+so where the rule keeps that session here, this node holds it alone for the 72
+seconds its liveness check takes to fail, 10 of silence and 62 of
+retransmissions as [limits](limits.md#ike) gives.
 
 Identities are compared by the endpoint they name rather than by their bytes.
 ranet3 writes `O` and `CN` as `UTF8String`, while strongSwan picks the string
