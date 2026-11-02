@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-11-01
+updated: 2026-11-02
 order: 30
 ---
 
@@ -191,17 +191,17 @@ allow = ["3fff:a::10/128", "203.0.113.10/32", "198.51.100.128/28"]
 
 ### Capabilities
 
-| Block           | What it turns on                                                                                                                     |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `cap.route`     | What this node announces                                                                                                             |
-| `cap.transit`   | Whether this node relays the routes it learns, and so other nodes' traffic                                                           |
-| `cap.babel`     | The speaker's timers, link quality estimator and costs                                                                               |
-| `cap.table`     | The route reconciler: a routing table, addresses and, on Linux, the policy rules it derives                                          |
-| `cap.segment`   | Segment routing (RFC 8986): the SIDs this node answers for and what it steers                                                        |
-| `cap.crypto`    | The transforms, the replay window and the rekey timers                                                                               |
-| `cap.egress`    | Source translation for an exit node or a subnet router, Linux only                                                                   |
-| `cap.antispoof` | Exemptions from the filter for forged mesh traffic arriving from other interfaces, which runs on Linux wherever `overlay` is written |
-| `cap.exit`      | Exit mode: this host's own traffic and its forwarded links out by the mesh's default or `via`'s exit, Linux                          |
+| Block           | What it turns on                                                                                                                                     |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cap.route`     | What this node announces                                                                                                                             |
+| `cap.transit`   | Whether this node relays the routes it learns, and so other nodes' traffic                                                                           |
+| `cap.babel`     | The speaker's timers, link quality estimator, costs and switching margin                                                                             |
+| `cap.table`     | The route reconciler: a routing table, addresses and, on Linux, the policy rules it derives                                                          |
+| `cap.segment`   | Segment routing (RFC 8986): the SIDs this node answers for and what it steers                                                                        |
+| `cap.crypto`    | The transforms, the replay window and the rekey timers                                                                                               |
+| `cap.egress`    | Source translation for an exit node or a subnet router, Linux only                                                                                   |
+| `cap.antispoof` | Exemptions from the antispoof filter, which drops forged mesh traffic arriving from other interfaces and runs on Linux wherever `overlay` is written |
+| `cap.exit`      | Exit mode: this host's own traffic and its forwarded links out by the mesh's default or `via`'s exit, Linux                                          |
 
 [Routing](routing.md), [segment routing](segment-routing.md),
 [exit nodes](exit-nodes.md) and [the antispoof filter](antispoof.md) describe

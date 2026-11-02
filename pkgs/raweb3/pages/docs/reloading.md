@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-11-01
+updated: 2026-11-02
 order: 70
 ---
 
@@ -345,16 +345,13 @@ created under the families it translated at startup, the advertised ones and
 both beside an egress segment. A new block applied here would leave the host
 holding rules from a configuration nothing is running.
 
-`overlay` appearing or going is refused with
-`config: overlay added, restart to apply` or
-`config: overlay removed, restart to apply`, since the antispoof filter and its
-pass are built once at startup, as the translator is. A changed `overlay` list
-and `cap.antispoof` reload in place, as
-[the antispoof filter](antispoof.md#reloads) gives. The reload also hands the
-new overlay to the [forwarding decision](routing.md#transit) at once, which
-answers an IPv4 destination no route holds Host Unreachable inside it and
-Network Unreachable outside it. In the same step the decision judges again, for
-every route the mesh holds, whether it
+`overlay` appearing or going is refused, and a changed `overlay` list and
+`cap.antispoof` reload in place, as [the antispoof filter](antispoof.md#reloads)
+gives. The reload also hands the new overlay to the
+[forwarding decision](routing.md#transit) at once, which answers an IPv4
+destination no route holds Host Unreachable inside it and Network Unreachable
+outside it. In the same step the decision judges again, for every route the mesh
+holds, whether it
 [counts as a default](routing.md#routes-that-count-as-a-default), which decides
 where an exit [carries a packet out](exit-nodes.md#what-an-exit-carries-out). A
 reload of a node that runs no antispoof filter and whose host forwards logs the

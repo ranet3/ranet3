@@ -142,9 +142,11 @@ announce = ["203.0.113.10/32"]
 # [cap.transit]
 # enable = true
 
-# The babel speaker's own timers and costs. Omitted, each keeps the default
-# below, the value RFC 8966 Appendix B and BIRD use. The two written out here
-# are those defaults, so a node that deletes them runs the same speaker.
+# The babel speaker's own timers, costs and switching margin. Omitted, hello and
+# update keep the defaults RFC 8966 Appendix B and BIRD use, and each key below
+# them gives its own default. margin is ranet3's own, from neither. The two
+# written out here are those defaults, so a node that deletes them runs the
+# same speaker.
 [cap.babel]
 hello = "4s"
 update = "16s"
@@ -362,20 +364,11 @@ update = "16s"
 # forwarding sysctls. Omitted it is 30s.
 # sweep = "30s"
 
-# The antispoof filter drops a source in overlay arriving from outside the
-# mesh, which only a forger sends, and runs wherever overlay is written, so
-# this block only exempts. Where a link's own network overlaps the overlay the
-# filter carves it out on its own: there the link's neighbors keep their
-# addresses. The interfaces inside the mesh are derived: the tun and lo. exempt
-# passes a source in its prefixes from every interface outside the mesh, and
-# the exempt of cap.antispoof.interface.<name> passes one from the interfaces
-# <name> matches: that name, or with one trailing *, every name starting with
-# what comes before it. Each prefix lies inside overlay. A prefix the mesh's
-# table holds inside a carve-out or an exemption is still dropped. The entry
-# chain, which lets into the tun only a reply, an owned source, an IPv6
-# link-local or multicast destination or what a none class takes, runs on every
-# linux node with or without overlay. The filter runs on linux, and darwin
-# loads overlay and this block and enforces neither yet, as status says.
+# The antispoof filter runs wherever overlay is written, and this block only
+# exempts prefixes inside it: exempt from every interface outside the mesh, and
+# the exempt of cap.antispoof.interface.<name> from the interfaces <name>
+# matches, that name or, with one trailing *, every name starting with what
+# comes before it. The antispoof page gives the filter's rules.
 # [cap.antispoof]
 # exempt = ["203.0.113.128/25"]
 # [cap.antispoof.interface.eth1]

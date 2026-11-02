@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-01
+updated: 2026-11-02
 order: 60
 ---
 
@@ -55,23 +55,26 @@ before its header is read, and is never answered. The process makes this check
 itself, on every platform. [The antispoof filter](antispoof.md) drops a source
 inside the overlay arriving from outside the mesh, but for the rest of a
 [carve-out](antispoof.md#carve-outs) on that carve-out's own interface and an
-[exemption](antispoof.md#exemptions) on the interfaces it names, less the mesh's
-prefixes inside either. [The entry chain](antispoof.md#the-entry-chain) and the
-[tun read](routing.md#transit) keep that rest out of the mesh as a source this
-node does not own, and a host beyond the mesh reaches no SID through a node with
-the filter, whatever the SID delivers to. On Linux a node that forwards without
-`overlay` passes on to every SID only a forged source it owns, since the entry
-chain keeps every other out of the tun. On a platform that runs no entry chain
-such a node is only warned at load, and passes on to every SID a forged overlay
-source that no route other than a default sends to another node or holds
-unreachable, since the tun read drops the rest. A steering node's `source` has
-to lie inside the overlay too, or every SID it steers through refuses its
-packets. The loader refuses a local segment without `overlay`, and one beside an
-overlay holding no IPv6 prefix, which would refuse every packet. Every platform
-loads `overlay`, so a node on macOS holds `End` and `End.DT46` segments that
-deliver to the mesh, checked by the outer source as on Linux, though no filter
-drops a forged overlay source there before the check. A reload that changes the
-overlay rebuilds the table of SIDs in place.
+[exemption](antispoof.md#exemptions) on the interfaces it names, less what each
+carves. [The entry chain](antispoof.md#the-entry-chain) and the
+[tun read](routing.md#transit) keep a source of that rest out of the mesh where
+this node does not own it, so a host beyond the mesh reaches no SID through a
+node with the filter from a source outside every range that node owns, whatever
+the SID delivers to. An exemption inside a range the node announces admits that
+range's sources as the node's own, and they reach the SIDs any source the node
+owns reaches. On Linux a node that forwards without `overlay` passes on to every
+SID only a forged source it owns, since the entry chain keeps every other out of
+the tun. On a platform that runs no entry chain such a node is only warned at
+load, and passes on to every SID a forged overlay source that no route other
+than a default sends to another node or holds unreachable, since the tun read
+drops the rest. A steering node's `source` has to lie inside the overlay too, or
+every SID it steers through refuses its packets. The loader refuses a local
+segment without `overlay`, and one beside an overlay holding no IPv6 prefix,
+which would refuse every packet. Every platform loads `overlay`, so a node on
+macOS holds `End` and `End.DT46` segments that deliver to the mesh, checked by
+the outer source as on Linux, though no filter drops a forged overlay source
+there before the check. A reload that changes the overlay rebuilds the table of
+SIDs in place.
 
 A node parses a packet only when its destination is one of its SIDs. It accepts
 a reduced header, which leaves out the segment the destination address already

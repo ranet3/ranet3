@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-10-28
+updated: 2026-11-02
 order: 10
 ---
 

@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-10-27
+updated: 2026-11-02
 order: 38
 ---
 

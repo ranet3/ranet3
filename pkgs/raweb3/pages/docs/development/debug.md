@@ -514,7 +514,7 @@ connections to the reads.
 | `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size                |
 | `babel.request.sent`                  | this node asked a neighbor that came up for its whole table                               |
 | `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload                     |
-| `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals and cost                      |
+| `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals, cost and margin              |
 | `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved               |
 | `babel.route.selected`, `.retracted`  | a prefix's next hop changed, every time rather than once a second as logged               |
 | `babel.seqno.requested`               | a seqno request naming this node's own router id arrived                                  |

@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-01
+updated: 2026-11-02
 order: 45
 ---
 
@@ -154,9 +154,9 @@ request up to 4 times, 3, 3, 6 and 12 seconds apart. An unfeasible route that
 selection would take, weighed with every feasible route, if it were feasible
 draws 1 seqno request to its neighbor, not repeated. The speaker holds back a
 second request to a neighbor for the same prefix and origin inside 2 seconds,
-but not one for a newer seqno, and a request it holds back is still repeated. A
-route is sent back toward its own next hop as a retraction, which is split
-horizon.
+but not one for a newer seqno, and a starvation request it holds back is still
+repeated. A route is sent back toward its own next hop as a retraction, which is
+split horizon.
 
 A route that appears or goes away sends a triggered update, as do a change of
 origin and a metric rise of at least `rx` (RFC 8966 section 3.7.2). A new seqno

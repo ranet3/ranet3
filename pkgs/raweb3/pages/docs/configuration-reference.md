@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-01
+updated: 2026-11-02
 order: 35
 ---
 
@@ -904,7 +904,7 @@ programs' rules do beside them.
   LAN behind it, as [`cap.segment.local`](#capsegmentlocal) gives.
 - `via` is refused with more than 16 segments, a segment written twice, an
   address that cannot be a SID, such as an IPv4, IPv4-mapped or multicast one, a
-  first or last segment of this node's own `cap.segment.local`, a `overlay`
+  first or last segment of this node's own `cap.segment.local`, an `overlay`
   holding no IPv6 prefix, and with no outer source or one outside the overlay,
   as
   `config: cap.exit via is written and neither cap.segment source nor an IPv6 cap.table address inside overlay gives the path an outer source: write cap.segment source`.

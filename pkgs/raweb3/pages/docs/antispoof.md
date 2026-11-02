@@ -193,9 +193,9 @@ away than its lease, or the site behind a gateway that
   uplink too, and names the `cap.antispoof.interface.<name>.exempt` form, which
   takes it.
 - Exemptions covering the whole overlay pass every overlay source that no other
-  node's prefix and no node address of this node holds, from the interfaces they
-  name. The filter has no setting that passes a mesh node's own address from
-  outside the mesh.
+  node's prefix, no node address of this node and no carve-out's carved drop
+  holds, from the interfaces they name. The filter has no setting that passes a
+  mesh node's own address from outside the mesh.
 - Each exemption is 1 rule, commented `accept exempt source <prefix>` for the
   shared list and `accept exempt via <name> source <prefix>` for a name, which
   `nft list ruleset` shows as `iifname "<name>"`, or as `iifname "wl*"` for a
@@ -217,7 +217,9 @@ logged at info,
 ### A gateway's site
 
 Gateway G has the node address `203.0.113.1`, announces its site's
-`203.0.113.0/25`, and reaches the internet by `eth0` and its site by `eth1`:
+`203.0.113.0/25`, and reaches the internet by `eth0` and its site through a
+router on `eth1`, whose own network, `198.51.100.0/24`, lies outside the
+overlay:
 
 ```toml
 overlay = ["203.0.113.0/24", "3fff:a::/36"]
@@ -246,6 +248,11 @@ exempt = ["203.0.113.0/25"]
   [`cap.antispoof`](configuration-reference.md#capantispoof) gives it.
 - A node that starts announcing a more specific prefix, such as
   `203.0.113.112/29`, is carved out on the pass its route wakes.
+
+Where `eth1`'s own network holds the site's range instead, `eth1` is a
+[carve-out](#carve-outs), and its carved drop takes G's own `203.0.113.0/25`
+too, ahead of the exemption's accept, so the site's sources are dropped on
+`eth1` as well.
 
 ## The entry chain
 
@@ -414,7 +421,8 @@ destination no node announces leaves a Mac by its own routes.
 
 ## Reloads
 
-`overlay` appearing or going is a restart, refused by a reload with
+`overlay` appearing or going is a restart, since the filter and its pass are
+built once at startup, as the translator is, and a reload refuses it with
 `config: overlay added, restart to apply` or
 `config: overlay removed, restart to apply`. A changed `overlay` list or
 `cap.antispoof` block applies in place, named `overlay` and `cap.antispoof`
