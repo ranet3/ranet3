@@ -283,11 +283,12 @@ These commands take flags of their own:
   no counter shown uncounted, any rule it asks for and the chains do not hold,
   any they hold that it did not write, counted by the chain it was read from,
   then each family as the last pass judged it: ready or why not, its chains read
-  back, the host's forwarding, and each route lookup the pass read with its
-  answer, the reply's lookup included, as [exit nodes](../exit-nodes.md)
-  describes the readiness. Then IPv4's `rp_filter` of `all` and of each link a
-  route of those lookups leaves by, read now. The lookups are the last pass's
-  and are not asked again. A node with no `cap.egress` says so.
+  back, the host's forwarding as the exit reads it, a setting the node cannot
+  read counted as on, and each route lookup the pass read with its answer, the
+  reply's lookup included, as [exit nodes](../exit-nodes.md) describes the
+  readiness. Then IPv4's `rp_filter` of `all` and of each link a route of those
+  lookups leaves by, read now. The lookups are the last pass's and are not asked
+  again. A node with no `cap.egress` says so.
 - `debug segments` is each segment the node answers for, an egress segment with
   whether its SID is announced and the families the mesh hands to the exit
   through it, then the steering policies, on or stopped, with the overhead the
@@ -699,7 +700,8 @@ was answered. An `INVALID_SYNTAX` this end sends on the current IKE SA records
 no `ike.sa.closed`: the session logs a warning and ends with
 `ike.session.ended`. Nor does the peer's Delete of the IKE SA, and the
 `ike.session.ended` that follows carries `ike: the peer deleted the IKE SA` in
-its `err`.
+its `err`. Any reason the session finds once that Delete has closed it records
+no `ike.sa.closed` either, and logs no `ike deleting the IKE SA`.
 
 The `ike` of an `ike.session.established` names the IKE SA's cipher, PRF and kex
 entry by their `cap.crypto` names, joined by `/`, such as

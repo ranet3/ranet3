@@ -194,7 +194,8 @@ On a platform other than Linux, macOS, iOS and Android:
 - The tun takes its MTU only when it opens, so a change to `link.mtu` or to the
   steering that moves the tun needs a restart. A reload applies one that leaves
   the tun where it was.
-- The node assumes the host forwards both families.
+- The node reads no forwarding setting, so `status` shows forwarding as
+  `unknown` and logs no antispoof warning.
 - The node reads no caller credentials, so its records of who asked name no
   caller.
 - Datagrams leave without DF, as [path MTU](#path-mtu) below describes.

@@ -490,10 +490,11 @@ fails, that pass retracts the prefix. A pass runs at least every `sweep` (30
 seconds by default).
 
 The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
-`/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on,
-and so does a file the node cannot read. An exit acts on them by withholding its
-advertisement, because no other node can tell whether it forwards. Transit
-between sessions needs neither setting, since the mesh forwards it itself.
+`/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on.
+The exit counts a file the node cannot read as on too, and `status` shows it as
+`unknown`. An exit acts on them by withholding its advertisement, because no
+other node can tell whether it forwards. Transit between sessions needs neither
+setting, since the mesh forwards it itself.
 
 `status` names the prefixes it announces and the ones it withholds. The scrape
 carries the advertised and the announced counts as `ranet3_egress_prefixes`.

@@ -91,6 +91,7 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_transport_pair_fallbacks_total`  | counter | none                 | Sockets connected to 1 peer that a send or a read failed on, whose pairs went back to the shared socket                                                                                                                                                                                                                                                                                                                                                         | always                                                          |
 | `ranet3_tun_reads_truncated_total`       | counter | none                 | Reads off the tun that lost the tail of a GSO frame                                                                                                                                                                                                                                                                                                                                                                                                             | always                                                          |
 | `ranet3_tun_frames_refused_total`        | counter | none                 | Frames read off the tun that could not be read as packets                                                                                                                                                                                                                                                                                                                                                                                                       | always                                                          |
+| `ranet3_tun_writes_failed_total`         | counter | none                 | Writes to the tun that the device refused                                                                                                                                                                                                                                                                                                                                                                                                                       | always                                                          |
 | `ranet3_packet_too_big_sent_total`       | counter | none                 | Packet Too Big and fragmentation needed answers this node sent                                                                                                                                                                                                                                                                                                                                                                                                  | always                                                          |
 | `ranet3_icmp_withheld_total`             | counter | `limit`              | ICMP errors this node did not send, by the limit that held them back, `source` for the bucket of the source answered or `node` for the node's cap                                                                                                                                                                                                                                                                                                               | always                                                          |
 | `ranet3_mss_clamped_total`               | counter | none                 | TCP SYNs whose MSS this node lowered                                                                                                                                                                                                                                                                                                                                                                                                                            | always                                                          |
@@ -210,6 +211,12 @@ most once every 30 seconds. Any other error reading the tun means the device is
 gone, and the node then stops as
 [the service](service.md#restarts-and-the-network) describes.
 
+`ranet3_tun_writes_failed_total` counts writes to the tun that returned an
+error, each of up to 128 packets, some or all of which the device did not take.
+A `netstack tun refused a write` warning carries the interface, the queue and
+the writes refused since the previous warning, at most once every 30 seconds,
+and none once the mesh is closing or the tun is gone.
+
 ## Packets a peer did not send
 
 `ranet3_peer_send_dropped_total` counts, per peer, every packet this node chose
@@ -240,12 +247,13 @@ together, and they mean this node cannot seal and send as fast as traffic is
 offered, not that a path is slow. The rest of the counter, the total less the
 delay drops, counts the reads the budget refused, together with a closing peer's
 packets, reservations the outbound SA refused and batches that failed to seal.
-The last 2 leave a `netstack send batch failed` warning in the log and a closing
-peer ends its session, so the rest climbing on a live session without that
-warning is the budget refusing reads: a burst, a CPU that cannot keep the peer's
-sender running, or a transport that stopped taking packets for longer than the
-budget lasts. `ranet3_peer_send_failed_total` stays apart from all of these:
-those packets were sealed and the transport lost them, which is the link failing
+The last 2, and a batch sealed for a peer that closed before taking it, leave a
+`netstack send batch failed` warning in the log, and a closing peer ends its
+session, so the rest climbing on a live session without that warning is the
+budget refusing reads: a burst, a CPU that cannot keep the peer's sender
+running, or a transport that stopped taking packets for longer than the budget
+lasts. `ranet3_peer_send_failed_total` stays apart from all of these: those
+packets were sealed and the transport lost them, which is the link failing
 rather than this node choosing.
 
 ## Path MTU

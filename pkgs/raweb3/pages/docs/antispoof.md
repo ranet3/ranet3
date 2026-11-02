@@ -426,13 +426,14 @@ without its entry chain.
 
 ## Nodes that forward without it
 
-On a platform that runs no antispoof filter, a node whose host forwards logs, at
-startup and at every reload,
+On a platform that runs no antispoof filter, a node whose host forwards logs a
+warning at startup and at every reload,
 `config: this node forwards IPv4 and IPv6 and darwin runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source`,
-naming the families it forwards and the platform, whether or not `overlay` is
-written. On Linux the tun read and `mesh_entry` keep a forged source out of the
-mesh, chain `antispoof` runs wherever `overlay` is written, and no warning is
-logged.
+naming the families it reads as forwarding and the platform, whether or not
+`overlay` is written. A family whose setting the node cannot read is not named,
+and a node that can read neither logs no warning. On Linux the tun read and
+`mesh_entry` keep a forged source out of the mesh, chain `antispoof` runs
+wherever `overlay` is written, and no warning is logged.
 
 ## Platforms
 

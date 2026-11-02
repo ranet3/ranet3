@@ -21,11 +21,11 @@ document is rewritten every time any node joins.
 `ranet3 reload` asks for the same reload over the
 [control socket](control-socket.md). Both re-read the file the daemon was
 started with. When the daemon refuses the reload, `ranet3 reload` prints the
-refusal and exits 1. After `SIGHUP`, the refusal goes to the log, on a line
-starting `reload:`, and to the `err` of the `daemon.reload` event. A `SIGHUP`
-that comes while the daemon starts is applied once the node dials. Once the
-daemon has begun to stop, a `SIGHUP` applies nothing, at most logging the
-refusal, and `ranet3 reload` is refused, as
+refusal and exits 1. After `SIGHUP`, a reload that fails goes to the log as the
+warning `reload failed`, with the reason in `err`, and to the `err` of the
+`daemon.reload` event. A `SIGHUP` that comes while the daemon starts is applied
+once the node dials. Once the daemon has begun to stop, a `SIGHUP` applies
+nothing, at most logging the refusal, and `ranet3 reload` is refused, as
 [the control socket](control-socket.md#acting-on-a-running-node) says. On NixOS,
 `systemctl reload ranet3` runs `ranet3 reload`, as
 [running it as a service](service.md) describes.
@@ -423,7 +423,7 @@ A reload is refused when the new trust document:
 ### Peers the trust document cannot support
 
 A reload logs a peer the new trust document cannot support and does not dial it.
-The log line reads `reload: <reason>, so nothing will dial it`. At startup, some
+The warning reads `reload: <reason>, so nothing will dial it`. At startup, some
 of the same peers refuse the start: a `dial.to` node the document does not name,
 a pinned endpoint it does not list, and a pinned endpoint in a family this node
 has no endpoint in. The [trust document](trust.md) page describes the document
@@ -431,5 +431,5 @@ itself.
 
 An `auth.aliases` entry naming a node the new document does not name, or an
 endpoint it does not list, is logged the same way and the reload applies. The
-line reads `reload: <reason>, so no handshake can use it`. At startup the same
-entry refuses the start.
+warning reads `reload: <reason>, so no handshake can use it`. At startup the
+same entry refuses the start.
