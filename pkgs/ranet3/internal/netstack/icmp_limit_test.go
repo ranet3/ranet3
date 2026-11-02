@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"math/bits"
+	"math/rand/v2"
 	"net/netip"
 	"slices"
 	"sync"
@@ -31,6 +32,9 @@ const capSpentWait = 5 * time.Second
 // warmDrawRuns is how many times TestWarmDrawAllocatesNothing makes its draws
 const warmDrawRuns = 100
 
+// spreadSeeds is how many seeds TestSequentialSourcesSpreadOverTheShardsUnderEachSeed draws from its generator
+const spreadSeeds = 4096
+
 // freshSource is the i-th of a run of addresses no other test draws from, IPv6 for an even i and IPv4 for an odd one
 func freshSource(i int) netip.Addr {
 	if i%2 == 1 {
@@ -40,11 +44,25 @@ func freshSource(i int) netip.Addr {
 }
 
 // icmpShardOf is the shard the table's rule puts source in, of 64
-// the two halves of its 16-byte form, each XORed with its word of the seed, multiply into 128 bits, and the top bits of their halves' XOR pick the shard
+// the high half of its 16-byte form XORed with the seed's first word goes through splitmix64's finish, the low half and the second word are XORed in,
+// and the top bits of that word's finish pick the shard
 func icmpShardOf(source netip.Addr) int {
+	finish := func(z uint64) uint64 {
+		z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
+		z = (z ^ z>>27) * 0x94d049bb133111eb
+		return z ^ z>>31
+	}
 	address := source.As16()
-	hi, lo := bits.Mul64(binary.BigEndian.Uint64(address[:8])^icmpSeed[0], binary.BigEndian.Uint64(address[8:])^icmpSeed[1])
-	return int((hi ^ lo) >> 58)
+	return int(finish(finish(binary.BigEndian.Uint64(address[:8])^icmpSeed[0])^binary.BigEndian.Uint64(address[8:])^icmpSeed[1]) >> 58)
+}
+
+// sequentialSources is count addresses from first on, each the one before it plus one
+func sequentialSources(first netip.Addr, count int) []netip.Addr {
+	sources := make([]netip.Addr, 0, count)
+	for source := first; len(sources) < count; source = source.Next() {
+		sources = append(sources, source)
+	}
+	return sources
 }
 
 // sourcesOfShard is the first count fresh sources from the from-th on that lie in shard
@@ -494,6 +512,72 @@ func TestICMPLimitShardEvictsItsLeastRecentSource(t *testing.T) {
 	}
 	if got := held(t, &l); got > icmpSources {
 		t.Errorf("the table holds %d sources, want %d at most", got, icmpSources)
+	}
+}
+
+// 1024 sequential IPv4 sources, 1024 sequential IPv6 sources of one /64, the 2048 TestConcurrentDrawsKeepTheCapExactAndTheBucketsTheirOwn draws for,
+// and 1024 IPv6 sources whose two halves step together, each put no more in any shard than 8 square roots of the mean past the mean,
+// below a shard's 96, under every seed of the run
+// a pick at random puts more than that in one shard less often than once in 10^10 shards
+// the seeds are 4096 a generator of a fixed seed draws, and those whose first word, alone or XORed with the /64's high half, is p/q of 2^64 for a q up to 16
+// those words are the steps at which a mix linear in the low half crowds each sequential run onto q shards or fewer
+// and a mix that joined the halves before its first finish would put the last run in one shard under every seed
+func TestSequentialSourcesSpreadOverTheShardsUnderEachSeed(t *testing.T) {
+	v4, v6 := netip.MustParseAddr("198.18.0.0"), netip.MustParseAddr("2001:db8:1::")
+	concurrent := make([]netip.Addr, 2048)
+	for i := range concurrent {
+		concurrent[i] = freshSource(i)
+	}
+	together := make([]netip.Addr, 1024)
+	for j := range together {
+		var address [16]byte
+		binary.BigEndian.PutUint64(address[:8], 0x20010db800020000|uint64(j))
+		binary.BigEndian.PutUint64(address[8:], uint64(j))
+		together[j] = netip.AddrFrom16(address)
+	}
+	runs := []struct {
+		name    string
+		sources []netip.Addr
+	}{
+		{"1024 sequential IPv4 sources", sequentialSources(v4, 1024)},
+		{"1024 sequential IPv6 sources of one /64", sequentialSources(v6, 1024)},
+		{"2048 sources of the concurrent draws", concurrent},
+		{"1024 IPv6 sources whose halves step together", together},
+	}
+	draw := rand.New(rand.NewPCG(65, 1024))
+	seeds := make([][2]uint64, 0, spreadSeeds+2*120)
+	for range spreadSeeds {
+		seeds = append(seeds, [2]uint64{draw.Uint64(), draw.Uint64()})
+	}
+	high := v6.As16()
+	for q := uint64(2); q <= 16; q++ {
+		for p := uint64(1); p < q; p++ {
+			step, _ := bits.Div64(p, 0, q)
+			seeds = append(seeds, [2]uint64{step, draw.Uint64()}, [2]uint64{step ^ binary.BigEndian.Uint64(high[:8]), draw.Uint64()})
+		}
+	}
+	for _, run := range runs {
+		mean := float64(len(run.sources)) / icmpShards
+		bound := min(icmpSources/icmpShards, int(mean+8*math.Sqrt(mean)))
+		worst, over := 0, 0
+		for _, seed := range seeds {
+			var counts [icmpShards]int
+			for _, source := range run.sources {
+				counts[icmpShardIndex(seed, source)]++
+			}
+			most := slices.Max(counts[:])
+			worst = max(worst, most)
+			if most > bound {
+				over++
+				if over <= 5 {
+					t.Errorf("under seed %016x %016x the %s put %d in one shard, want at most %d", seed[0], seed[1], run.name, most, bound)
+				}
+			}
+		}
+		if over > 5 {
+			t.Errorf("the %s crowded a shard under %d more seeds", run.name, over-5)
+		}
+		t.Logf("the %s put at most %d in one shard under %d seeds, against a mean of %.0f and a bound of %d", run.name, worst, len(seeds), mean, bound)
 	}
 }
 

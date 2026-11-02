@@ -157,14 +157,30 @@ func (l *icmpLimit) take(now int64, source netip.Addr) icmpVerdict {
 	return verdict
 }
 
-// shard is the one source's bucket lies in, picked by a seeded mix of its address's two halves
-// the halves, each keyed by its own word of the seed, multiply into 128 bits whose halves fold into one word, and its top bits pick the shard
+// shard is the one source's bucket lies in, the one icmpShardIndex picks under icmpSeed
 func (l *icmpLimit) shard(source netip.Addr) *icmpShard {
+	// the index is below icmpShards already, and the modulo only spares the bounds check
+	return &l.shards[icmpShardIndex(icmpSeed, source)%icmpShards]
+}
+
+// icmpShardIndex is the shard of icmpShards that seed's mix puts source in
+// the high half of its 16-byte form, keyed by seed's first word, goes through splitmix64's finish, the low half keyed by the second word joins it,
+// and the finish again spreads that word before its top bits pick the shard
+// the finish is a bijection each of whose output bits turns on every input bit, so sources that share their high half, as every IPv4 source does,
+// spread by their low halves near as evenly as a pick at random, a run of sequential ones among them
+// a mix linear in the low half would put such a run on a few shards under the seeds that make its step near a fraction of small denominator
+func icmpShardIndex(seed [2]uint64, source netip.Addr) uint64 {
 	address := source.As16()
-	hi, lo := bits.Mul64(binary.BigEndian.Uint64(address[:8])^icmpSeed[0], binary.BigEndian.Uint64(address[8:])^icmpSeed[1])
-	index, _ := bits.Mul64(hi^lo, icmpShards)
-	// index is below icmpShards already, and the modulo only spares the bounds check
-	return &l.shards[index%icmpShards]
+	mixed := splitmixFinish(splitmixFinish(binary.BigEndian.Uint64(address[:8])^seed[0]) ^ binary.BigEndian.Uint64(address[8:]) ^ seed[1])
+	index, _ := bits.Mul64(mixed, icmpShards)
+	return index
+}
+
+// splitmixFinish is splitmix64's finish, a xorshift and a multiply twice and a last xorshift
+func splitmixFinish(z uint64) uint64 {
+	z = (z ^ z>>30) * 0xbf58476d1ce4e5b9
+	z = (z ^ z>>27) * 0x94d049bb133111eb
+	return z ^ z>>31
 }
 
 // counter is the shard a draw with no bucket of its own counts on, the one its clock reading picks

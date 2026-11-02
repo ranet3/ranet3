@@ -48,6 +48,23 @@ func withheldSources(b *testing.B, m *Mesh, family, count int) []netip.Addr {
 	return sources
 }
 
+// BenchmarkICMPShard is the pick of a source's shard alone, which a draw makes before it takes the shard's lock, over a run of 1024 sequential sources of each family
+func BenchmarkICMPShard(b *testing.B) {
+	var l icmpLimit
+	for _, run := range []struct {
+		name  string
+		first netip.Addr
+	}{{"IPv4", netip.MustParseAddr("198.18.0.0")}, {"IPv6", netip.MustParseAddr("2001:db8:1::")}} {
+		sources := sequentialSources(run.first, 1024)
+		b.Run(run.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; b.Loop(); i++ {
+				l.shard(sources[i%len(sources)])
+			}
+		})
+	}
+}
+
 // BenchmarkICMPTake is the limit's draw alone at BenchmarkDecideWithheld's arms, on the mesh's clock
 // each goroutine RunParallel starts drawing for every sender in turn, as each emitter of that benchmark does
 // take is the limit with its counts, and takeICMPToken the draw an answer makes, which adds the withheld report
