@@ -884,7 +884,7 @@ counts, and is answered with `INVALID_SYNTAX`.
 
 | Limit                                  | Value                                   | Past it                                                        |
 | -------------------------------------- | --------------------------------------- | -------------------------------------------------------------- |
-| Route table                            | 16,384 destination and source pairs     | Routes to a new pair are refused, with a warning               |
+| Route table and own keys with an offer | 16,384 destination and source pairs     | A route or offer for a new pair is refused, with a warning     |
 | Source table                           | 65,536 entries                          | An origin this node has never advertised is unfeasible         |
 | Origins of 1 prefix                    | 1,024, of which 256 through 1 neighbor  | The same                                                       |
 | Source entries through 1 neighbor      | 8,192                                   | The same                                                       |

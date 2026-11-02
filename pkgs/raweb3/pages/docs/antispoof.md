@@ -194,8 +194,12 @@ away than its lease, or the site behind a gateway that
   exemption covers it, less every range this node announces inside that prefix.
   The carved drop comes before the exemption's accept.
 - A range this node announces by `cap.route` is its own even if another node
-  announces it too, and no exemption carves it, inside or covering. A held
-  prefix, a default and a prefix wider than the overlay carve nothing.
+  announces it too, and no exemption carves it, inside or covering. Where babel
+  keeps [another router's offer](routing.md#what-a-node-announces) for exactly
+  such a range inside the overlay, with no source prefix, every exemption
+  overlapping it passes the sources it passes with no offer and reports the
+  conflict, as below. A held prefix, a default and a prefix wider than the
+  overlay carve nothing.
 - The loader refuses a `cap.antispoof.exempt` entry that overlaps a range inside
   the overlay that this node announces, since the shared list passes it from the
   uplink too, and names the `cap.antispoof.interface.<name>.exempt` form, which
@@ -214,13 +218,19 @@ Each part of an exemption another node's prefix comes to hold is logged at
 warning,
 `antispoof drops part of an exemption, since another node's prefix holds it`,
 with `exemption`, `interface`, `prefix`, `carved`, `routed_via` and `router_id`,
-once, and records an `antispoof.conflict` event with the same. `routed_via` is
-the peer the mesh routes the prefix through and `router_id` the router-id of the
-route babel selected for it. Neither names the node that announces it. A part is
-the exemption, its interface, the prefix and what is carved, so a route to the
-prefix that moves to another peer or router-id logs nothing. One that goes is
-logged at info,
+once, and records an `antispoof.conflict` event with the same and `own` false.
+`routed_via` is the peer the mesh routes the prefix through and `router_id` the
+router-id of the route babel selected for it. Neither names the node that
+announces it. A part is the exemption, its interface, the prefix and what is
+carved, so a route to the prefix that moves to another peer or router-id logs
+nothing. One that goes is logged at info,
 `antispoof no longer drops part of an exemption for another node's prefix`.
+
+A range `cap.route` announces inside the overlay that babel keeps another
+router's offer for, with no source prefix, is a conflict of each exemption
+overlapping it, and the conflict carves nothing. Its `router_id` is the
+router-id of the offer of least cost. [Watching it](#watching-it) gives its
+lines and attributes.
 
 ### A gateway's site
 
@@ -251,6 +261,9 @@ exempt = ["203.0.113.0/25"]
 - Another node announcing `203.0.113.96/28` inside G's range has its sources
   carved, so G drops them from `eth1`, logs the conflict and records
   `antispoof.conflict` with `prefix` `203.0.113.96/28`.
+- Another node announcing exactly `203.0.113.0/25` changes nothing G passes or
+  drops. G logs the conflict and records `antispoof.conflict` with `prefix`
+  `203.0.113.0/25`, `own` true and that node's router-id as `router_id`.
 - The same exemption under `[cap.antispoof]` is refused at load by a message
   naming `cap.antispoof.interface.<name>.exempt`, as
   [`cap.antispoof`](configuration-reference.md#capantispoof) gives it.
@@ -502,6 +515,8 @@ kernel holds and the rules the reconciler derives from the overlay, as
 | `antispoof no longer carves the overlay for a link`                          | info  | a carve-out went, with `link` and `prefix`                                                                                                               |
 | `antispoof drops part of an exemption, since another node's prefix holds it` | warn  | another node's prefix came to hold part of an exemption, with `exemption`, `interface`, `prefix`, `carved`, `routed_via` and `router_id`                 |
 | `antispoof no longer drops part of an exemption for another node's prefix`   | info  | that prefix went, with `exemption`, `interface` and `prefix`                                                                                             |
+| `antispoof admits this node's range though another router announces it too`  | warn  | another router came to announce an own range an exemption overlaps, with `exemption`, `interface`, `prefix` and `router_id`                              |
+| `antispoof no longer sees another router announce this node's range`         | info  | that conflict went, with `exemption`, `interface` and `prefix`                                                                                           |
 | `antispoof filter withdrawn`                                                 | info  | the table is removed at shutdown, or by a start that ended in its build after making it                                                                  |
 | `antispoof filter is leaving its table after the mesh failed`                | warn  | the stop a failed tun causes left the table, with `where`                                                                                                |
 | `antispoof filter is leaving the table it found`                             | info  | a start that ended before its build completed left the table its first pass's read found, with `where`. A read that failed logs only the start's refusal |
@@ -512,8 +527,9 @@ event with `trigger`, `took`, `installed`, `wrote` and, on failure, `err`. A
 change of readiness records `antispoof.ready` with `ready`. A pass that read a
 counter move records `antispoof.dropped` with the packets of each kind since the
 pass before, at most once per pass, a carve-out coming or going records
-`antispoof.carve`, and another node's prefix coming to hold part of an exemption
-records `antispoof.conflict`.
+`antispoof.carve`, and another node's prefix coming to hold part of an
+exemption, or another router's offer for a range of this node's own that an
+exemption overlaps, records `antispoof.conflict`.
 
 | Metric                                                  | Meaning                                      |
 | ------------------------------------------------------- | -------------------------------------------- |

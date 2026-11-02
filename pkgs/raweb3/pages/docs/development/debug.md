@@ -541,7 +541,7 @@ connections to the reads.
 | `antispoof.ready`                     | the antispoof filter's table went ready or not ready, with `ready`                        |
 | `antispoof.dropped`                   | a pass read a drop counter that moved, at most once per pass                              |
 | `antispoof.carve`                     | a carve-out of the overlay for a link came or went                                        |
-| `antispoof.conflict`                  | another node's prefix came to hold part of an exemption                                   |
+| `antispoof.conflict`                  | another node's prefix or a copy of an own range came to overlap an exemption              |
 | `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two      |
 | `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                            |
 | `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                 |
@@ -637,7 +637,7 @@ Each kind carries these attributes:
 | `antispoof.ready`                             | `ready`                                                                                                                                                                                         |
 | `antispoof.dropped`                           | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, each the packets since the pass before                          |
 | `antispoof.carve`                             | `link`, `prefix`, `carved` (true where the carve-out came, false where it went)                                                                                                                 |
-| `antispoof.conflict`                          | `exemption`, `interface`, `prefix`, `carved` (the part the carved sets hold), `routed_via` (the peer the mesh routes the prefix through), `router_id` (of the route babel selected for it)      |
+| `antispoof.conflict`                          | `exemption`, `interface`, `prefix`, `own` (true for an own range), `carved` and `routed_via` where it is false, `router_id` (of the selected route, or of the offer where `own` is true)        |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, `ipv4_links_added`, `ipv4_links_removed`, `ipv4_links_changed`, the same 7 for `ipv6`, `probed`, `woken`                      |
 | `transport.underlay.selected`                 | `endpoint`, `interface`, empty where no route holds the endpoint, `interface_index`, 0 then                                                                                                     |
 | `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                                                                             |

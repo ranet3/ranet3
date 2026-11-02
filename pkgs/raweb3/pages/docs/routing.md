@@ -109,16 +109,26 @@ is IPv6 only (RFC 9079).
 The node holds each prefix it originates as its own in its table. It holds each
 address `cap.table` assigns the same way, as a host route that it announces only
 if it originates that route too. A route a neighbor offers for the same
-destination and source prefix as one of these never replaces it. A host address
-of this node's, a `/32` or `/128` it originates or `cap.table` assigns, is
-delivered whatever the source, as the host's kernel delivers it, so a route a
-neighbor offers for that address is dropped whatever its source prefix. For a
-wider prefix, a source-specific route a neighbor offers for the same destination
-is another route: the node learns it and prefers it for packets from its source,
-by RFC 9079 section 4's destination-first ordering. A peer's packet for an
-address inside a prefix this node originates goes to the tun, and the host
-decides it. A read off the tun for such an address is dropped with no answer.
-Neither follows a covering route such as a default.
+destination and source prefix as one of these never replaces it. The node keeps
+it as that neighbor's offer, outside its route table, with a route's expiry
+time, and drops it with no hold when that time passes, when the neighbor
+retracts it, or when the neighbor goes down or its session closes. While the key
+is this node's own no offer is selected, installed or advertised, and
+`ranet3 routes` lists none. Each route the node holds for a key when the key
+becomes its own becomes its neighbor's offer, unless it is retracted or has
+expired. Once the node neither announces the key nor `cap.table` assigns it, the
+offers that have not expired become its routes and selection runs on them at
+once, as [retracted routes](#retracted-routes) describes. A host address of this
+node's, a `/32` or `/128` it originates or `cap.table` assigns, is delivered
+whatever the source, as the host's kernel delivers it, so a route a neighbor
+offers for that address from another source prefix is dropped, and a key from a
+source to that address that the node gives back while the address stays its own
+drops its offers. For a wider prefix, a source-specific route a neighbor offers
+for the same destination is another route: the node learns it and prefers it for
+packets from its source, by RFC 9079 section 4's destination-first ordering. A
+peer's packet for an address inside a prefix this node originates goes to the
+tun, and the host decides it. A read off the tun for such an address is dropped
+with no answer. Neither follows a covering route such as a default.
 
 With transit on, the node relays every route it selects to its other neighbors
 and forwards the packets they bring, as [transit](#transit) describes. With
@@ -156,7 +166,9 @@ draws 1 seqno request to its neighbor, not repeated. The speaker holds back a
 second request to a neighbor for the same prefix and origin inside 2 seconds,
 but not one for a newer seqno, and a starvation request it holds back is still
 repeated. A route is sent back toward its own next hop as a retraction, which is
-split horizon.
+split horizon. An update a neighbor sends under this node's own router id, which
+is this node's route come back, takes out the route or offer that neighbor last
+sent for the prefix, as a retraction does.
 
 A route that appears or goes away sends a triggered update, as do a change of
 origin and a metric rise of at least `rx` (RFC 8966 section 3.7.2). A new seqno
@@ -174,11 +186,11 @@ burst of requests, not a steady requester: a neighbor that asks once a second
 raises the seqno about once a second. A new session is sent the full update at
 once, and the other neighbors are not.
 
-| Limit                               | Value |
-| ----------------------------------- | ----- |
-| Prefixes in the route table         | 16384 |
-| Origins of 1 prefix                 | 1024  |
-| Origins of 1 prefix from 1 neighbor | 256   |
+| Limit                                  | Value |
+| -------------------------------------- | ----- |
+| Route table and own keys with an offer | 16384 |
+| Origins of 1 prefix                    | 1024  |
+| Origins of 1 prefix from 1 neighbor    | 256   |
 
 ## Retracted routes
 
@@ -200,15 +212,18 @@ retraction, as
 say.
 
 A prefix loses its last route when that route is flushed, when the session of
-the neighbor that offered it closes or is replaced, or when this node stops
-announcing it while `cap.table` does not assign it, or, for the host route of an
-address, when `cap.table` stops assigning it while this node does not announce
-it. A neighbor this node told the prefix is reachable may still send packets for
-it here until that update expires there, even after a retraction, which is sent
-once and never acknowledged. So the prefix is held the same way until the latest
-time any update this node sent naming it reachable expires at a neighbor, unless
-a neighbor's route for it is selected first. Each update's time is the route
-expiry of
+the neighbor that offered it closes or is replaced, or when this node gives back
+a prefix of its own, one it stops announcing while `cap.table` does not assign
+it or the host route of an address `cap.table` stops assigning while this node
+does not announce it, and selection takes none of the offers it kept for the
+prefix. The neighbor of each unfeasible offer among them is then sent a seqno
+request for the offer's origin, repeated as it is when only unfeasible routes
+remain. A neighbor this node told the prefix is reachable may still send packets
+for it here until that update expires there, even after a retraction, which is
+sent once and never acknowledged. So the prefix is held the same way until the
+latest time any update this node sent naming it reachable expires at a neighbor,
+unless a neighbor's route for it is selected first. Each update's time is the
+route expiry of
 [RFC 8966 Appendix B](https://www.rfc-editor.org/rfc/rfc8966.html#appendix-B),
 "3.5 times the advertised update interval", counted from when that update was
 sent and taken from the interval it carried, plus 1 Hello interval for it to
@@ -228,13 +243,12 @@ ends at it, as rows L4 and L9 of
 [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) give, and any
 other lookup ends where those tables give. A retracted prefix covered by a
 shorter route is answered unreachable until the latest update this node sent for
-it expires, 60 seconds at the defaults. An exit whose readiness withdraws its
-default holds that default the same way. While it originates its own default it
-holds no other exit's, since it drops every update for a prefix it originates.
-With another exit's default on offer, its transit for the internet moves to that
-exit once that exit's next update arrives, within 16 seconds at the defaults.
-With none, it answers that transit unreachable, IPv6 code 0 and IPv4 Network
-Unreachable, until the hold ends.
+it expires, 60 seconds at the defaults. While an exit originates its own default
+it keeps another exit's as an offer, so once its readiness withdraws its default
+its transit for the internet moves at once to the other exit's default that
+selection takes. With none taken, it holds its own the same way and answers that
+transit unreachable, IPv6 code 0 and IPv4 Network Unreachable, until the hold
+ends.
 [The protocol deviations](design/protocol-deviations.md#updates-and-requests)
 list the departure. Where the hold counts as a default the kernel keeps none,
 and that traffic ends as
