@@ -55,10 +55,10 @@ func TestFallbackNoneIsRefusedHereAheadOfTheExitMode(t *testing.T) {
 			t.Errorf("the start refused fallback = \"none\" with %v, which does not name %q", err, want)
 		}
 	}
-	// mode 3 with fallback unwritten asks for the switch too, and writing "uplink" leaves the mode's own refusal
+	// mode 3 with fallback unwritten is refused by fallback's own message, and writing "uplink" leaves the mode's refusal
 	cfg.Cap.Exit = &kernel.ExitMode{Via: []schema.Addr{schema.MustAddr("3fff:b:0:306::3")}}
 	err = refuseExitModeHere(cfg)
-	for _, want := range []string{"via", "fallback", `"none"`, `"uplink"`, runtime.GOOS} {
+	for _, want := range []string{"via", "fallback", `"none"`, runtime.GOOS} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("the start refused cap.exit via with fallback unwritten with %v, which does not name %q", err, want)
 		}

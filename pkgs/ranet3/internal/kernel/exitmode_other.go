@@ -25,7 +25,7 @@ func RefuseFallback(mode ExitMode) error {
 		return nil
 	}
 	if mode.Fallback == "" {
-		return fmt.Errorf("kernel: cap.exit via is refused on %s with fallback unwritten, which is %q in mode 3, where this build has no filter to keep the host's traffic off the uplink: write fallback = %q, and the host's traffic leaves by its own default while the path is down", runtime.GOOS, FallbackNone, FallbackUplink)
+		return fmt.Errorf("kernel: cap.exit via is refused on %s with fallback unwritten, which is %q in mode 3, where this build has no filter to keep the host's traffic off the uplink", runtime.GOOS, FallbackNone)
 	}
-	return fmt.Errorf("kernel: cap.exit fallback = %q is refused on %s, where this build has no filter to keep the host's traffic off the uplink: remove fallback, and the host's traffic leaves by its own default while no exit is live", mode.Fallback, runtime.GOOS)
+	return fmt.Errorf("kernel: cap.exit fallback = %q is refused on %s, where this build has no filter to keep the host's traffic off the uplink", mode.Fallback, runtime.GOOS)
 }

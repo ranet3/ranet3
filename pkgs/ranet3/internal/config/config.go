@@ -975,7 +975,7 @@ func (c *Config) validateEgressSegments(segments []srv6.Segment) error {
 		return nil
 	}
 	if c.Cap.Egress == nil {
-		return fmt.Errorf("config: cap.segment local %s delivers to egress and cap.egress is absent, so nothing translates what leaves the mesh tun: add cap.egress, whose advertise may stay empty", segments[0].SID)
+		return fmt.Errorf("config: cap.segment local %s delivers to egress and cap.egress is absent, so nothing translates what leaves the mesh tun", segments[0].SID)
 	}
 	for _, segment := range segments {
 		own := netip.PrefixFrom(segment.SID.Addr, segment.SID.BitLen())
@@ -1068,7 +1068,7 @@ func (c *Config) validateExit() error {
 	}
 	switch exit := c.ExitReason(c.Overlay); {
 	case c.Cap.Table == nil:
-		return errors.New("config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of: add cap.table")
+		return errors.New("config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of")
 	case len(c.Overlay) == 0:
 		return errors.New("config: cap.exit is written and overlay is absent, so the mode's rules cannot keep the overlay's sources off the uplink: write overlay with the prefixes the mesh numbers its nodes from")
 	case exit.Advertised.IsValid():

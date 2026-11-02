@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -241,57 +243,69 @@ func TestDebugAccessIsAnUnknownFlag(t *testing.T) {
 	}
 }
 
-// the standard logger writes through slog at INFO, which --log-level warn drops, so a failure or a warning sent there goes unwritten
-// this reads every non-test file of the module but the commands under internal/cmd, which are test tools and generators,
-// and refuses a call of log's Print, Fatal and Panic functions in any of them
-func TestDaemonPackagesAvoidTheStandardLogger(t *testing.T) {
+// notDaemon is the directories of the module no daemon is built from: the test tools and generators under internal/cmd,
+// and the packages only tests import
+var notDaemon = []string{"internal/cmd", "internal/dnstest", "internal/egress/egresstest", "internal/goldentest", "internal/logtest", "internal/netnstest"}
+
+// daemonSources parses, as far as mode asks, every non-test file of the module but those of notDaemon and of testdata
+func daemonSources(tb testing.TB, mode parser.Mode) (*token.FileSet, []*ast.File) {
+	tb.Helper()
 	root := filepath.Join("..", "..")
 	files := token.NewFileSet()
-	read := map[string]bool{}
+	var parsed []*ast.File
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		dir, _ := filepath.Rel(root, path)
 		switch {
 		case err != nil:
 			return err
-		case entry.IsDir() && (path == filepath.Join(root, "internal", "cmd") || entry.Name() == "testdata"):
+		case entry.IsDir() && (slices.Contains(notDaemon, filepath.ToSlash(dir)) || entry.Name() == "testdata"):
 			return filepath.SkipDir
 		case entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go"):
 			return nil
 		}
-		file, err := parser.ParseFile(files, path, nil, parser.SkipObjectResolution)
+		file, err := parser.ParseFile(files, path, nil, mode|parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}
-		dir, _ := filepath.Rel(root, filepath.Dir(path))
-		read[filepath.ToSlash(dir)] = true
-		for _, spec := range file.Imports {
-			if spec.Path.Value != `"log"` {
-				continue
-			}
-			name := "log"
-			if spec.Name != nil {
-				name = spec.Name.Name
-			}
-			writes := func(function string) bool {
-				return slices.ContainsFunc([]string{"Print", "Fatal", "Panic"}, func(prefix string) bool { return strings.HasPrefix(function, prefix) })
-			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				if call, ok := node.(*ast.SelectorExpr); ok {
-					if x, ok := call.X.(*ast.Ident); ok && x.Name == name && writes(call.Sel.Name) {
-						t.Errorf("%s calls log.%s, which writes at INFO", files.Position(call.Pos()), call.Sel.Name)
-					}
-				}
-				return true
-			})
-		}
+		parsed = append(parsed, file)
 		return nil
 	})
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
-	for _, dir := range []string{"cmd/ranet3", "internal/client", "internal/netstack", "transport", "ike", "control"} {
-		if !read[dir] {
-			t.Errorf("the walk read nothing of %s", dir)
+	if len(parsed) == 0 {
+		tb.Fatal("the walk read no source")
+	}
+	return files, parsed
+}
+
+// the standard logger writes through slog at INFO, which --log-level warn drops, so a failure or a warning sent there goes unwritten
+// an import of log in any of the daemon's sources fails
+func TestDaemonPackagesAvoidTheStandardLogger(t *testing.T) {
+	files, parsed := daemonSources(t, parser.ImportsOnly)
+	for _, file := range parsed {
+		for _, spec := range file.Imports {
+			if spec.Path.Value == `"log"` {
+				t.Errorf("%s imports log, whose standard logger writes at INFO", files.Position(spec.Pos()))
+			}
 		}
+	}
+}
+
+// a message tells no one to add cap.egress, cap.exit or cap.table, each of which a platform other than linux refuses, and
+// builds no instruction to add a block from parts
+func TestNoMessageSaysToAddABlockAPlatformRefuses(t *testing.T) {
+	files, parsed := daemonSources(t, 0)
+	instruction := regexp.MustCompile(`\badd cap\.(egress|exit|table)\b|\badd $|\badd %`)
+	for _, file := range parsed {
+		ast.Inspect(file, func(node ast.Node) bool {
+			if literal, ok := node.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+				if text, err := strconv.Unquote(literal.Value); err == nil && instruction.MatchString(text) {
+					t.Errorf("%s: %q says to add a block", files.Position(literal.Pos()), text)
+				}
+			}
+			return true
+		})
 	}
 }
 
