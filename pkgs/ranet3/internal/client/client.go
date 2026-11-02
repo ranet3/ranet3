@@ -501,7 +501,8 @@ type borderFilter interface {
 }
 
 // SetBorder hands the node the antispoof filter the command built, which a
-// reload hands the overlay and the exemptions and the status reads
+// reload hands the overlay, the exemptions and this node's own prefixes and
+// addresses, and the status reads
 func (c *Client) SetBorder(f borderFilter) { c.border.Store(&f) }
 
 // BorderInside is the devices the antispoof filter accepts whatever they carry:
