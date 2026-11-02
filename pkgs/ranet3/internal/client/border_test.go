@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -545,15 +546,15 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	var lines bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
 	for _, host := range []struct {
-		v4, v6  bool
+		v4, v6  *bool
 		warning string
 	}{
-		{true, true, "this node forwards IPv4 and IPv6 and " + runtime.GOOS + " runs no antispoof filter"},
-		{true, false, "this node forwards IPv4 and " + runtime.GOOS + " runs no antispoof filter"},
-		{false, true, "this node forwards IPv6 and " + runtime.GOOS + " runs no antispoof filter"},
-		{false, false, ""},
+		{new(true), new(true), "this node forwards IPv4 and IPv6 and " + runtime.GOOS + " runs no antispoof filter"},
+		{new(true), new(false), "this node forwards IPv4 and " + runtime.GOOS + " runs no antispoof filter"},
+		{new(false), new(true), "this node forwards IPv6 and " + runtime.GOOS + " runs no antispoof filter"},
+		{new(false), new(false), ""},
 	} {
-		forwards := func() (bool, bool) { return host.v4, host.v6 }
+		forwards := func() (*bool, *bool) { return host.v4, host.v6 }
 		lines.Reset()
 		warnUnbordered(forwards)
 		if kernelexit.EntryRuns {
@@ -561,9 +562,9 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 		}
 		switch got := lines.String(); {
 		case host.warning == "" && got != "":
-			t.Errorf("a node on a host forwarding %v %v, or where the entry chain runs, warned:\n%s", host.v4, host.v6, got)
+			t.Errorf("a node on a host forwarding %v %v, or where the entry chain runs, warned:\n%s", *host.v4, *host.v6, got)
 		case host.warning != "" && (!strings.Contains(got, host.warning) || !strings.Contains(got, "this host's own services")):
-			t.Errorf("a node on a host forwarding %v %v warned %q, want it to say %q", host.v4, host.v6, got, host.warning)
+			t.Errorf("a node on a host forwarding %v %v warned %q, want it to say %q", *host.v4, *host.v6, got, host.warning)
 		}
 	}
 
@@ -578,12 +579,42 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := 0
-	if v4, v6 := forwardingEnabled(); (v4 || v6) && !kernelexit.EntryRuns {
+	if len(forwardedFamilies(forwardingEnabled())) != 0 && !kernelexit.EntryRuns {
 		want = 1
 	}
 	if n := reloaded.count("runs no antispoof filter"); n != want {
 		t.Errorf("a reload warned %d times, want %d: %q", n, want, reloaded.lines("antispoof"))
 	}
+}
+
+// a family whose forwarding setting the node could not read is no family it forwards for the warning, and one the exit counts as forwarding
+// the exit's lookups then judge it, rather than a refusal that says the kernel does not forward it
+func TestForwardingThatCannotBeReadIsNotWarnedOf(t *testing.T) {
+	for _, host := range []struct {
+		v4, v6       *bool
+		warned       []string
+		exit4, exit6 bool
+	}{
+		{nil, nil, nil, true, true},
+		{nil, new(true), []string{"IPv6"}, true, true},
+		{new(true), nil, []string{"IPv4"}, true, true},
+		{new(false), nil, nil, false, true},
+		{nil, new(false), nil, true, false},
+	} {
+		if got := forwardedFamilies(host.v4, host.v6); !slices.Equal(got, host.warned) {
+			t.Errorf("a host read as forwarding %s and %s is warned of forwarding %v, want %v", onOffUnread(host.v4), onOffUnread(host.v6), got, host.warned)
+		}
+		if exit4, exit6 := forwardsUnlessOff(host.v4, host.v6); exit4 != host.exit4 || exit6 != host.exit6 {
+			t.Errorf("a host read as forwarding %s and %s is forwarding %v and %v to the exit, want %v and %v", onOffUnread(host.v4), onOffUnread(host.v6), exit4, exit6, host.exit4, host.exit6)
+		}
+	}
+}
+
+func onOffUnread(on *bool) string {
+	if on == nil {
+		return "unread"
+	}
+	return strconv.FormatBool(*on)
 }
 
 // the antispoof filter accepts the mesh tun and lo, and an exit's egress leaves through

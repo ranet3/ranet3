@@ -26,9 +26,11 @@ import (
 //
 // Nothing here writes. The verbs that do are in write.go and updown.go.
 
-// Forwarding reports whether this host forwards, per family
-// it is exported so the egress capability withholds an advertisement over the answer status and the antispoof warning read
-func Forwarding() (v4, v6 bool) { return forwardingEnabled() }
+// Forwarding reports whether this host forwards, per family, for the egress capability, which withholds a family it reads as off
+// a setting it cannot read counts as on, since the reason the exit gives a family it withholds is that the kernel does not forward it
+func Forwarding() (v4, v6 bool) { return forwardsUnlessOff(forwardingEnabled()) }
+
+func forwardsUnlessOff(v4, v6 *bool) (bool, bool) { return v4 == nil || *v4, v6 == nil || *v6 }
 
 func (c *Client) Status() control.Status {
 	cfg := c.config()

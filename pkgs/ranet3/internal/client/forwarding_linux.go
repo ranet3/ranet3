@@ -10,18 +10,21 @@ import (
 	"strings"
 )
 
-// forwardingEnabled reports whether this host forwards, per family
+// forwardingEnabled reports whether this host forwards, per family, nil for a family whose setting it cannot read
 // an exit egresses only a family its kernel forwards, while the mesh forwards transit itself
-// it is read here alone, so the egress capability, status and the antispoof warning answer alike
-func forwardingEnabled() (v4, v6 bool) {
+// the egress capability, status and the antispoof warning read it here alone, each taking an unread family its own way,
+// as Forwarding and forwardedFamilies give
+func forwardingEnabled() (v4, v6 *bool) {
 	return sysctlIsOne("/proc/sys/net/ipv4/ip_forward"),
 		sysctlIsOne("/proc/sys/net/ipv6/conf/all/forwarding")
 }
 
-func sysctlIsOne(path string) bool {
-	// Unreadable is not "off": reporting a warning this node cannot
-	// substantiate is worse than staying quiet.
-	return readSysctl(path) != "0"
+func sysctlIsOne(path string) *bool {
+	value := readSysctl(path)
+	if value == "" {
+		return nil
+	}
+	return new(value != "0")
 }
 
 // Sysctl reads a setting by its path under /proc/sys, the empty string where it

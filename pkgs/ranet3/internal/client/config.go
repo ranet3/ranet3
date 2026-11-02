@@ -334,23 +334,28 @@ func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies m
 //
 // a warning rather than a refusal, since forwarding moves under a running node
 // and darwin, which forwards with no filter to offer, would otherwise not start at all
-func warnUnbordered(forwards func() (v4, v6 bool)) {
+func warnUnbordered(forwards func() (v4, v6 *bool)) {
 	if kernelexit.EntryRuns {
 		return
 	}
-	v4, v6 := forwards()
-	var on []string
-	if v4 {
-		on = append(on, "IPv4")
-	}
-	if v6 {
-		on = append(on, "IPv6")
-	}
+	on := forwardedFamilies(forwards())
 	if len(on) == 0 {
 		return
 	}
 	slog.Warn(fmt.Sprintf("config: this node forwards %s and %s runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source",
 		strings.Join(on, " and "), runtime.GOOS))
+}
+
+// forwardedFamilies names each family read as forwarding, and no family whose setting could not be read, since that shows nothing forwarding
+func forwardedFamilies(v4, v6 *bool) []string {
+	var on []string
+	if v4 != nil && *v4 {
+		on = append(on, "IPv4")
+	}
+	if v6 != nil && *v6 {
+		on = append(on, "IPv6")
+	}
+	return on
 }
 
 // warnCountedAdvertisements names each advertisement in cap.route or

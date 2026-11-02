@@ -263,10 +263,10 @@ type Status struct {
 	Responder bool `json:"responder"`
 	FullMesh  bool `json:"full_mesh"`
 	NoTransit bool `json:"no_transit"`
-	// ForwardsIPv4 and ForwardsIPv6 are the kernel's forwarding, per family
+	// ForwardsIPv4 and ForwardsIPv6 are the kernel's forwarding, per family, null where the node could not read the setting
 	// an exit egresses only a family its kernel forwards, and transit needs neither
-	ForwardsIPv4 bool         `json:"forwards_ipv4"`
-	ForwardsIPv6 bool         `json:"forwards_ipv6"`
+	ForwardsIPv4 *bool        `json:"forwards_ipv4"`
+	ForwardsIPv6 *bool        `json:"forwards_ipv6"`
 	Registry     RegistryInfo `json:"registry"`
 	Kernel       KernelStatus `json:"kernel"`
 	Egress       EgressStatus `json:"egress"`

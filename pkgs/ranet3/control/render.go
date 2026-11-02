@@ -49,7 +49,7 @@ func RenderStatus(w io.Writer, s Status) {
 		{"Endpoints", strings.Join(s.Endpoints, " ")},
 		{"TUN", fmt.Sprintf("%s MTU %d queues %d", s.TUN, s.MTU, s.Queues)},
 		{"Role", role(s)},
-		{"Forwarding", fmt.Sprintf("IPv4 %s IPv6 %s", onOff(s.ForwardsIPv4), onOff(s.ForwardsIPv6))},
+		{"Forwarding", fmt.Sprintf("IPv4 %s IPv6 %s", onOffUnknown(s.ForwardsIPv4), onOffUnknown(s.ForwardsIPv6))},
 		{"Registry", fmt.Sprintf("%s, %d nodes in %d organizations", s.Registry.Path, s.Registry.Nodes, s.Registry.Organizations)},
 		{"Kernel", kernelLine(s.Kernel)},
 		{"Egress", egressLine(s.Egress)},
@@ -657,6 +657,14 @@ func onOff(on bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// onOffUnknown is a setting the node may have failed to read, unknown where it did
+func onOffUnknown(on *bool) string {
+	if on == nil {
+		return "unknown"
+	}
+	return onOff(*on)
 }
 
 func end(preferred bool) string {

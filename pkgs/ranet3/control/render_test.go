@@ -4,6 +4,7 @@
 package control
 
 import (
+	"encoding/json"
 	"net/netip"
 	"strings"
 	"testing"
@@ -178,6 +179,23 @@ func TestStatusSaysTheRoleInWords(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "responder") {
 		t.Error("a node with responder off is reported as one")
+	}
+}
+
+// a family whose forwarding setting the node could not read is unknown, in the line and as null in --json, rather than off
+func TestStatusSaysForwardingItCouldNotReadIsUnknown(t *testing.T) {
+	status := Status{ForwardsIPv6: new(false)}
+	var out strings.Builder
+	RenderStatus(&out, status)
+	if !strings.Contains(out.String(), "IPv4 unknown IPv6 off") {
+		t.Errorf("status printed as %q, want the forwarding line to read IPv4 unknown IPv6 off", out.String())
+	}
+	body, err := json.Marshal(status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"forwards_ipv4":null,"forwards_ipv6":false`) {
+		t.Errorf("status marshaled as %s, want forwards_ipv4 null and forwards_ipv6 false", body)
 	}
 }
 

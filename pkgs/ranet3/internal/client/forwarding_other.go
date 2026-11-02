@@ -5,9 +5,8 @@
 
 package client
 
-// forwardingEnabled cannot be answered on a platform with no implementation,
-// and a warning this node cannot substantiate is worse than silence.
-func forwardingEnabled() (v4, v6 bool) { return true, true }
+// forwardingEnabled reads no setting on a platform with no implementation, so neither family is known
+func forwardingEnabled() (v4, v6 *bool) { return nil, nil }
 
 // Sysctl reads no setting, since the paths the kernel exit names are linux's
 // and this build carries no exit
