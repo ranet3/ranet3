@@ -4,8 +4,8 @@
 title: "ranet3"
 description: "High performance policy routed IPsec mesh SD-WAN with userspace ESP, IKEv2, an embedded Babel speaker and SRv6 steering."
 created: 2026-10-06
-updated: 2026-10-25
-vetted: 2026-10-25
+updated: 2026-11-02
+vetted: 2026-11-02
 layout: bare
 og:
   title: "Mesh network, reimagined."
@@ -26,15 +26,10 @@ og:
 </div>
 
 <div class="border-y border-line">
-<div class="mx-auto grid max-w-6xl px-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)] md:px-6">
-<div class="py-10 md:border-r md:border-line md:pr-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">99%</div><p class="mt-3.5 text-fg2">of the 10 GbE payload limit, 1 stream one way</p><p class="label mt-1">8.79 of 8.84 Gbit/s</p></div>
-<div class="border-t border-line py-10 md:border-t-0 md:border-r md:px-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">2.7x</div><p class="mt-3.5 text-fg2">kernel WireGuard throughput, at best</p><p class="label mt-1">1.98-2.73x across all tests</p></div>
-<div class="flex flex-col justify-center gap-3.5 border-t border-line py-10 text-fg2 md:border-t-0 md:pl-14">
-<div class="flex gap-[2ch]"><span class="text-acc">+</span><span>1.3-1.5x Tailscale and wireguard-go throughput, all tests</span></div>
-<div class="pl-[3ch]">2.63-7.81 ms RTT p99 under saturation, kernel dataplanes 1.00-2.98 ms</div>
-<div class="pl-[3ch]"><span class="label">2 runs under saturation</span></div>
-<a href="/benchmarks/" class="link mt-1.5">Benchmarks</a>
-</div>
+<div class="mx-auto grid max-w-6xl px-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1.5fr)] md:px-6">
+<div class="py-10 md:border-r md:border-line md:pr-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">99%</div><p class="mt-3.5 text-fg2">of the 10 GbE limit one way, from 1 to 16 streams</p><p class="label mt-1"><span class="whitespace-nowrap">8.77-8.81</span> of 8.84 Gbit/s</p></div>
+<div class="border-t border-line py-10 md:border-t-0 md:border-r md:px-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">16.65</div><p class="mt-3.5 text-fg2">Gbit/s both ways at 8 streams</p><p class="label mt-1"><span class="whitespace-nowrap">16.09-16.65</span> from 1 to 16 streams</p></div>
+<div class="border-t border-line py-10 md:border-t-0 md:pl-14"><div class="text-[clamp(44px,5.6vw,72px)] leading-none font-bold whitespace-nowrap text-acc">15 of 15</div><p class="mt-3.5 text-fg2">saturated TCP tests with the highest throughput</p><p class="label mt-1">against 6 other dataplanes on 10 GbE</p><a href="/benchmarks/" class="link mt-3.5 inline-block">Benchmarks</a></div>
 </div>
 </div>
 
@@ -126,6 +121,6 @@ og:
 <div>
 <p class="text-fg2">The codebase is licensed under the <a href="https://github.com/ranet3/ranet3/blob/master/licenses/FSL-1.1-ALv2.txt" class="link whitespace-nowrap">FSL-1.1-ALv2</a>, and each version converts to <a href="https://www.apache.org/licenses/LICENSE-2.0" class="link whitespace-nowrap">Apache-2.0</a> 2 years after its original publication date.</p></div>
 </details>
-<a href="/benchmarks/" class="row"><span class="text-mute">06</span><span>Benchmarks<small>Higher throughput than Tailscale, NetBird, kernel WireGuard, wireguard-go and kernel IPsec in all tests on 10 GbE.</small></span></a>
+<a href="/benchmarks/" class="row"><span class="text-mute">06</span><span>Benchmarks<small>Higher throughput than wireguard-go, Tailscale, NetBird, kernel WireGuard and kernel IPsec in every saturated TCP test on 10 GbE.</small></span></a>
 </div>
 </div>
