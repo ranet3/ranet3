@@ -66,7 +66,6 @@ func validateFullRangeSelectors(tsi, tsr *RawPayload) error {
 }
 
 // Selector order and reserved bytes do not change the negotiated policy.
-// Still require exactly one unrestricted selector for each address family.
 func isFullRangeSelectors(body []byte) bool {
 	selectors, err := DecodeTS(body)
 	if err != nil || len(selectors) != 2 {
