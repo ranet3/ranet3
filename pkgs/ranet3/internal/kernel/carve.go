@@ -59,9 +59,8 @@ func CarvedPrefixes(carved []netip.Prefix, snapshot []sadr.Route[*netstack.Peer]
 	return carvedOf(carved, tableDestinations(snapshot))
 }
 
-// CarvedSets gives what the carved sets hold for border's pass over
-// carveOuts, those of the carve-outs and those of the exemptions, and each
-// conflict of an exemption with another node's prefix
+// CarvedSets is the carved sets of one pass, with the conflicts of the
+// exemptions
 func CarvedSets(border *egress.Border, carveOuts []egress.CarveOut, snapshot []sadr.Route[*netstack.Peer]) ([]egress.Range, []egress.ExemptConflict) {
 	exemptions := border.Exemptions()
 	exempt, conflicts := ExemptCarved(exemptions, border.Own, border.Addresses, snapshot, border.Overlay)
