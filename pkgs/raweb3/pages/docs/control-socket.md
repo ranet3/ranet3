@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-01
+updated: 2026-11-02
 order: 80
 ---
 
@@ -395,6 +395,20 @@ the reload, the command prints the refusal and exits 1. After SIGHUP, the same
 refusal goes to the log and to the `err` of the `daemon.reload` event.
 [Reloading](reloading.md) says what a reload applies.
 
+The daemon binds the socket while it starts and answers on it once the start has
+waited for the reconciler's first pass, so a command sent before then is
+answered once that wait ends, unless its own timeout ends first. A stop while
+the daemon builds its parts or waits for that pass closes the socket without
+serving it, and a command sent in the meantime fails with the connection reset.
+Once a daemon that serves the socket has begun to stop, on a signal or the
+mesh's failure, `up`, `reload` and `redial` are refused with an error saying the
+node is stopping, and the reads answer until the socket closes as the daemon
+exits. A refusal rather than a closed socket keeps `status` and the debug views
+answering through a slow withdrawal. No verb sent once the stop has begun starts
+a dialer, and the dialers running then, one an `up` already under way started
+among them, stop with the mesh once the reconciler and the egress translator
+have withdrawn.
+
 ## Taking a node off the mesh
 
 `ranet3 down` takes a node off the mesh and leaves its daemon running. Every
@@ -419,16 +433,19 @@ it at mode 0700 when it is missing. The flag is written beside its final name,
 synced and renamed into place, and the directory is synced after it, so a crash
 leaves the flag as it was or as asked.
 
-`ranet3 up` removes the flag before it acts. It then puts back the addresses,
-rules and routes, and [the kill switch's](routing.md#the-kill-switch-on-linux)
-table where `fallback = "none"` asks for it, as the reconciler does at start,
-and on an exit node the translator's tables and advertisement. It starts every
-dialer, the responder and the speaker. A subsystem somebody disabled stays
-disabled. A `down` on a node that is down and an `up` on one that is up succeed
-and say so. While the node is down, `redial`, `rekey`, `enable` and
-`debug probe` are refused with an error saying it is down. A reload applies the
-file and the trust document and leaves the node down, and a peer the reload adds
-is dialed after `up`.
+`ranet3 up` removes the flag before it acts. It then starts every dialer, the
+responder and the speaker at once, and answers without waiting for what it hands
+back: the addresses, rules and routes, and
+[the kill switch's](routing.md#the-kill-switch-on-linux) table where
+`fallback = "none"` asks for it, come back on the reconciler's next pass, and on
+an exit node the tables and advertisement on the translator's, each of which
+`up` wakes. Unlike a start, which waits for the reconciler's first pass before
+it dials, `up` can dial before the switch's table is back. A subsystem somebody
+disabled stays disabled. A `down` on a node that is down and an `up` on one that
+is up succeed and say so. While the node is down, `redial`, `rekey`, `enable`
+and `debug probe` are refused with an error saying it is down. A reload applies
+the file and the trust document and leaves the node down, and a peer the reload
+adds is dialed after `up`.
 
 ```console
 $ ranet3 down

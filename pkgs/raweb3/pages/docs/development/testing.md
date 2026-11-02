@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-01
+updated: 2026-11-02
 order: 20
 ---
 
@@ -432,12 +432,17 @@ unless run as root.
     path's SID resolved with the steered defaults installed, held with both
     withdrawn, after the crash helper wrote it, and after the lab's own node
     wrote it and stopped for the mesh's failure as above, the leaf's antispoof
-    filter running while its node does. Every socket kind, the forwarded links,
-    a listed service and an M2 route chain go where they go in mode 2 under the
-    switch, but for what a socket bound to the uplink's address sends to a mesh
-    peer, which `mesh_entry` drops and counts, and with `fallback = "uplink"`
-    written no table is held and the host's unbound traffic leaves by main once
-    the path is down.
+    filter running while its node does and stopping for the same cause. Every
+    socket kind, the forwarded links, a listed service and an M2 route chain go
+    where they go in mode 2 under the switch, but for what a socket bound to the
+    uplink's address sends to a mesh peer, which `mesh_entry` drops and counts,
+    and with `fallback = "uplink"` written no table is held and the host's
+    unbound traffic leaves by main once the path is down. Its last arm stops the
+    node and the antispoof filter for the mesh's failure with no route learned:
+    the filter's table stays, a datagram forged from an overlay source in each
+    family on the uplink meets its drop while no node runs, the next start takes
+    the table over with no `antispoof.pass` and each family's counter holding
+    its datagram, and the clean stop after it leaves neither table.
   - `TestTUNExitPathLeavesByTheNamedExitAndNoOther` runs a leaf in mode 3 beside
     two exits, `a` and `b`, each with an egress segment and a default, `b`'s the
     better, and a waypoint, each node writing the table `inet ranet3`. Echo, UDP
@@ -467,6 +472,36 @@ address or a route. Run them in an empty namespace:
 
 ```sh
 unshare -rn go test ./internal/client -run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)'
+```
+
+The `cmd/ranet3` tests whose names start with `TestDaemon` and that need root
+start the daemon as `ranet3 daemon` does, so they take the namespace the same
+way. `TestDaemonRefusedAtEachPartLeavesNothingRunningOrBound` refuses the start
+at each part it builds, the listeners on an address already held and the control
+socket at a path under a file, `TestDaemonStoppedWhileItBuildsStartsNothing`
+sends SIGTERM and SIGINT while it builds and
+`TestDaemonStoppedInTheFirstPassWaitDialsNothing` SIGTERM while it waits for the
+reconciler's first pass, and each finds no goroutine of the start running and no
+listener, socket, port, tun, table, rule or route of it left, with nothing
+dialed and no part logged as started. Each reads the listeners and the control
+socket as soon as the start returns, before the garbage collector can close a
+leaked one. `TestDaemonEndedInItsBuildLeavesTheTablesItFound` writes the
+antispoof filter's table and the kill switch's as an earlier instance leaves
+them, refuses the start at the reconciler or stops it while it builds, and finds
+both tables still there. `TestDaemonActsOnTheSignalsOfTheStartOnceItDials` finds
+a SIGHUP and a SIGUSR1 sent while the daemon builds applied once each, after the
+first pass. `TestDaemonForcedOutOfItsBuildByASecondSignal` finds a second
+SIGTERM forcing the exit in the build, with no root, and in the undo of a build
+the first SIGTERM stopped, sent from the exit's close.
+`TestDaemonRefusesUpReloadAndRedialOnceItStops` holds the exit's withdrawal and
+finds `up`, `reload` and `redial` refused and `status` answered while the stop
+waits for it. `TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable`
+deletes the tun under a running daemon, finds the antispoof filter's table and
+the kill switch's left after it exits 1, and a next start that takes the
+filter's over with no write and leaves nothing after SIGTERM:
+
+```sh
+unshare -rn go test ./cmd/ranet3 -run '^TestDaemon'
 ```
 
 `internal/registry`'s `TestResolverQueryFollowsTheOverlayResolveRemoteIsHanded`
@@ -791,13 +826,14 @@ The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the 23 `internal/egress/kernel` tests and the 5
 `internal/nftables` tests, the exit behavior suite and its 2 fakes, the
 `TestTUN` tests of `internal/netstack` and `internal/client`, the 3 `transport`
-sends, and the 4 `internal/client` tests above under `unshare -n`, the
-`internal/registry` tests whose names start with `TestResolver` and the client's
-resolver test above under `unshare -mn`, and every test of the `tun` and `conn`
-packages of `pkgs/wireguard`. It fails if any of them skips. It then checks that
-no rule, link, xfrm state or policy, or nftables table of theirs is left on the
-host, and that the host's `/etc/resolv.conf` is as it was. The `internal/kernel`
-tests `TestNetworkWatchInNetworkNamespace` and
+sends, the 4 `internal/client` tests and the 8 `cmd/ranet3` tests above under
+`unshare -n`, the `internal/registry` tests whose names start with
+`TestResolver` and the client's resolver test above under `unshare -mn`, and
+every test of the `tun` and `conn` packages of `pkgs/wireguard`. It fails if any
+of them skips. It then checks that no rule, link, xfrm state or policy, or
+nftables table of theirs is left on the host, and that the host's
+`/etc/resolv.conf` is as it was. The `internal/kernel` tests
+`TestNetworkWatchInNetworkNamespace` and
 `TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
 no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
 and the 3 of a session's fallback from its address.

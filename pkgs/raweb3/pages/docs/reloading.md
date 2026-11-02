@@ -22,7 +22,11 @@ document is rewritten every time any node joins.
 [control socket](control-socket.md). Both re-read the file the daemon was
 started with. When the daemon refuses the reload, `ranet3 reload` prints the
 refusal and exits 1. After `SIGHUP`, the refusal goes to the log, on a line
-starting `reload:`, and to the `err` of the `daemon.reload` event. On NixOS,
+starting `reload:`, and to the `err` of the `daemon.reload` event. A `SIGHUP`
+that comes while the daemon starts is applied once the node dials. Once the
+daemon has begun to stop, a `SIGHUP` applies nothing, at most logging the
+refusal, and `ranet3 reload` is refused, as
+[the control socket](control-socket.md#acting-on-a-running-node) says. On NixOS,
 `systemctl reload ranet3` runs `ranet3 reload`, as
 [running it as a service](service.md) describes.
 

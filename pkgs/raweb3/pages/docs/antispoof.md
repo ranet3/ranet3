@@ -368,14 +368,35 @@ daemon lost, which another table's large transaction can overflow its socket
 with, wake a pass too and leave readiness as it was, since that pass reads the
 table back.
 
-`ranet3 down` leaves the filter in place: the kernel still forwards and the
-host's services still trust mesh sources. At shutdown the filter goes last,
-after the reconciler withdrew the routes into the tun and the mesh closed its
-sessions, so nothing forwards into the mesh by the time it is gone. The table
-carries no owner flag, so after `SIGKILL` it stays: the tun goes with the
-process, `mesh_entry` then passes every packet at its first line, and
-`antispoof` keeps dropping forged sources until ranet3 starts again and takes
-the table over.
+The table's lifetime, which the other pages link here for:
+
+- The start writes it with the filter's first pass, before the reconciler routes
+  anything into the tun. A table an earlier instance left is taken over: a first
+  pass that reads it back as it would write it keeps it, with its counters, and
+  one that does not rewrites it in 1 transaction, so `antispoof` drops forged
+  sources throughout.
+- `ranet3 down` leaves it: the kernel still forwards and the host's services
+  still trust mesh sources.
+- A stop on `SIGINT` or `SIGTERM` withdraws it last, after the reconciler
+  withdrew the routes into the tun and the mesh closed its sessions, so nothing
+  forwards into the mesh by the time it is gone.
+- A start that a refusal or either signal ends before its build completes, after
+  the filter's first pass, withdraws the table where that pass made it, and
+  leaves one the pass found, taken over or rewritten, logging
+  `antispoof filter is leaving the table it found`. A first pass that fails ends
+  the start the same way, and one whose read of the table fails leaves whatever
+  is there and logs nothing beyond the start's refusal.
+- The stop a failed tun causes leaves it, as
+  [the kill switch's](routing.md#the-kill-switch-on-linux) stop leaves its
+  table, and logs `antispoof filter is leaving its table after the mesh failed`.
+  `antispoof` keeps dropping forged sources while the supervisor starts the
+  daemon again, `mesh_entry` passes every packet at its first line with the tun
+  gone, and the next start takes the table over as above. While ranet3 stays
+  down, the operator removes it with `nft delete table inet ranet3`.
+- After `SIGKILL` it stays, since the table carries no owner flag: the tun goes
+  with the process, `mesh_entry` passes every packet at its first line, and
+  `antispoof` keeps dropping forged sources until ranet3 starts again and takes
+  the table over.
 
 ## Readiness
 
@@ -456,20 +477,22 @@ each set with the elements the last pass asked for, beside every policy rule the
 kernel holds and the rules the reconciler derives from the overlay, as
 [the debug page](development/debug.md) describes.
 
-| Log line                                                                     | Level | When                                                                                                                                     |
-| ---------------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `antispoof filter in <where>, inside <interfaces>`                           | info  | the daemon starts the filter                                                                                                             |
-| `antispoof filter installed`                                                 | info  | a pass rewrote the table, with `rules`, `replaced` and `where`                                                                           |
-| `antispoof filter pass failed, retrying`                                     | warn  | a pass failed, with `err` and `retry_in`                                                                                                 |
-| `antispoof filter not ready`                                                 | warn  | the table stopped reading back, with the reason as `detail`                                                                              |
-| `antispoof filter ready`                                                     | info  | the table reads back again                                                                                                               |
-| `antispoof filter dropped packets`                                           | info  | a pass read a counter that moved, at most once per pass                                                                                  |
-| `antispoof carves the overlay for a link that holds part of it`              | warn  | a carve-out came, with `link` and `prefix`                                                                                               |
-| `antispoof no longer carves the overlay for a link`                          | info  | a carve-out went, with `link` and `prefix`                                                                                               |
-| `antispoof drops part of an exemption, since another node's prefix holds it` | warn  | another node's prefix came to hold part of an exemption, with `exemption`, `interface`, `prefix`, `carved`, `routed_via` and `router_id` |
-| `antispoof no longer drops part of an exemption for another node's prefix`   | info  | that prefix went, with `exemption`, `interface` and `prefix`                                                                             |
-| `antispoof filter withdrawn`                                                 | info  | the table is removed at shutdown                                                                                                         |
-| `stopped reading nf_tables notifications`                                    | warn  | a read of the filter's notification socket failed, with `table` and `err`, after which another writer's change waits for the next sweep  |
+| Log line                                                                     | Level | When                                                                                                                                                     |
+| ---------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `antispoof filter in <where>, inside <interfaces>`                           | info  | the daemon starts the filter                                                                                                                             |
+| `antispoof filter installed`                                                 | info  | a pass rewrote the table, with `rules`, `replaced` and `where`                                                                                           |
+| `antispoof filter pass failed, retrying`                                     | warn  | a pass failed, with `err` and `retry_in`                                                                                                                 |
+| `antispoof filter not ready`                                                 | warn  | the table stopped reading back, with the reason as `detail`                                                                                              |
+| `antispoof filter ready`                                                     | info  | the table reads back again                                                                                                                               |
+| `antispoof filter dropped packets`                                           | info  | a pass read a counter that moved, at most once per pass                                                                                                  |
+| `antispoof carves the overlay for a link that holds part of it`              | warn  | a carve-out came, with `link` and `prefix`                                                                                                               |
+| `antispoof no longer carves the overlay for a link`                          | info  | a carve-out went, with `link` and `prefix`                                                                                                               |
+| `antispoof drops part of an exemption, since another node's prefix holds it` | warn  | another node's prefix came to hold part of an exemption, with `exemption`, `interface`, `prefix`, `carved`, `routed_via` and `router_id`                 |
+| `antispoof no longer drops part of an exemption for another node's prefix`   | info  | that prefix went, with `exemption`, `interface` and `prefix`                                                                                             |
+| `antispoof filter withdrawn`                                                 | info  | the table is removed at shutdown, or by a start that ended in its build after making it                                                                  |
+| `antispoof filter is leaving its table after the mesh failed`                | warn  | the stop a failed tun causes left the table, with `where`                                                                                                |
+| `antispoof filter is leaving the table it found`                             | info  | a start that ended before its build completed left the table its first pass's read found, with `where`. A read that failed logs only the start's refusal |
+| `stopped reading nf_tables notifications`                                    | warn  | a read of the filter's notification socket failed, with `table` and `err`, after which another writer's change waits for the next sweep                  |
 
 A pass that rewrote the table or a set, or failed, records an `antispoof.pass`
 event with `trigger`, `took`, `installed`, `wrote` and, on failure, `err`. A

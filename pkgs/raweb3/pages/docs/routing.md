@@ -660,19 +660,22 @@ process that wrote it:
 - A clean stop, `ranet3 down`, `ranet3 disable reconciler` and a reload to
   `"uplink"` or without `cap.exit` withdraw it with the rules. A start or a
   reload whose file asks for no switch deletes one an earlier instance left.
+- A start that a refusal or `SIGINT` or `SIGTERM` ends before its build
+  completes runs no pass, so it writes no table and leaves one an earlier
+  instance left, with the rules and routes of its protocol.
 - The stop a failed tun causes withdraws the rules, routes and addresses, 5445
-  and mode 3's steered defaults among them, and last the filter's table
-  `inet ranet3`, as [the antispoof filter](antispoof.md#where-it-runs) gives for
-  every shutdown. Where `fallback = "none"` is in force, as it is in mode 3
-  unless `"uplink"` is written, it deletes no `ranet3_fallback`: a table that is
-  there it leaves as found, with no rule behind it, whatever the last pass read
-  or wrote, and before any pass an earlier instance's. The chains alone then
-  judge what leaves, by main's routes and the sets the last pass wrote: what
-  5445 sent to a carve-out or this node's own prefix leaves by the LAN's line or
-  the own prefixes' line, what the mesh's default or the steered defaults
-  carried meets the drop unless another line passes it, and a connect they
-  refuse waits out its retransmissions rather than meeting 5450's `ENETUNREACH`.
-  Where no table is there the host's traffic leaves by its routes. It
+  and mode 3's steered defaults among them. The filter's table `inet ranet3`
+  follows [the antispoof filter's lifetime](antispoof.md#where-it-runs). Where
+  `fallback = "none"` is in force, as it is in mode 3 unless `"uplink"` is
+  written, it deletes no `ranet3_fallback`: a table that is there it leaves as
+  found, with no rule behind it, whatever the last pass read or wrote, and
+  before any pass an earlier instance's. The chains alone then judge what
+  leaves, by main's routes and the sets the last pass wrote: what 5445 sent to a
+  carve-out or this node's own prefix leaves by the LAN's line or the own
+  prefixes' line, what the mesh's default or the steered defaults carried meets
+  the drop unless another line passes it, and a connect they refuse waits out
+  its retransmissions rather than meeting 5450's `ENETUNREACH`. Where no table
+  is there the host's traffic leaves by its routes. It
   [logs a warning](#watching-it) that says whether a listing found the table,
   found none, or failed, but where the table was deleted or found absent since
   the last pass that asked for it, as after `ranet3 down`,

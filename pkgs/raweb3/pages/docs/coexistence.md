@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-01
+updated: 2026-11-02
 order: 110
 ---
 
@@ -609,16 +609,16 @@ load wakes.
 `inet ranet3`, on every Linux node: filter chain `mesh_entry` at postrouting,
 priority `srcnat` + 10 (110), and with `overlay` filter chain `antispoof` at
 prerouting, priority `raw` (-300). The same rules hold: it writes only inside
-its table, replaces its chains and sets in 1 transaction, adopts a table an
-earlier instance left, and removes it at shutdown. Unlike the translator's
-tables it stays through `ranet3 down`. The conflict report above leaves its
-chains out, since they are in an `inet` table and translate nothing. Another
-base chain at the same hook, such as a firewall's own raw chain, runs beside it:
-both see every packet, and only a drop in either ends the hook. A firewall
-reload that flushes the whole ruleset deletes the table, and the filter puts it
-back on the pass the deletion wakes. A table or chain another writer changed in
-a way nf_tables will not undo in place is deleted and made again in 1
-transaction, any chain another writer put in the table with it.
+its table and replaces its chains and sets in 1 transaction.
+[Its lifetime](antispoof.md#where-it-runs) says when the table is taken over,
+kept and removed. The conflict report above leaves its chains out, since they
+are in an `inet` table and translate nothing. Another base chain at the same
+hook, such as a firewall's own raw chain, runs beside it: both see every packet,
+and only a drop in either ends the hook. A firewall reload that flushes the
+whole ruleset deletes the table, and the filter puts it back on the pass the
+deletion wakes. A table or chain another writer changed in a way nf_tables will
+not undo in place is deleted and made again in 1 transaction, any chain another
+writer put in the table with it.
 
 For a firewall's author, `mesh_entry` reads the source a packet leaves by the
 tun with, after every source translation: each NAT chain at postrouting runs
