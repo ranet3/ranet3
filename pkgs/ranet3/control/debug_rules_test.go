@@ -15,7 +15,7 @@ import (
 // its own protocol it does not derive, one derived rule missing, its last
 // pass's lookups with wg-quick's table taking the IPv4 overlay and another
 // program's table 300 taking a send pinned to eth0 but not one from a pair's
-// bound source, and its border chain read three seconds after its last pass
+// bound source, and its antispoof chain read three seconds after its last pass
 // with one forged source dropped
 func rulesFixture() RulesInfo {
 	lookup := func(family string, priority uint32, table uint32, protocol uint8, owned bool) PolicyRule {
