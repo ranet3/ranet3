@@ -572,13 +572,16 @@ func (c *Client) borderSets(border *egress.Border) egress.BorderSets {
 		sets.CarveOuts = kernel.CarveOuts(c.networkState(), overlay)
 		carved, conflicts := kernel.CarvedSets(border, sets.CarveOuts, snapshot)
 		sets.Carved = carved
-		for i, conflict := range conflicts {
-			if c.speaker == nil {
-				break
+		if c.speaker != nil {
+			for i, conflict := range conflicts {
+				if origin, ok := c.speaker.SelectedOrigin(conflict.Prefix); ok {
+					conflicts[i].RouterID = hex.EncodeToString(origin[:])
+				}
 			}
-			if origin, ok := c.speaker.SelectedOrigin(conflict.Prefix); ok {
-				conflicts[i].RouterID = hex.EncodeToString(origin[:])
-			}
+			conflicts = append(conflicts, kernel.OwnCopies(border.Exemptions(), border.Own, func(prefix netip.Prefix) (string, bool) {
+				origin, ok := c.speaker.OfferedOrigin(prefix)
+				return hex.EncodeToString(origin[:]), ok
+			})...)
 		}
 		sets.Conflicts = conflicts
 	}
