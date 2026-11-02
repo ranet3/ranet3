@@ -5,7 +5,7 @@ title: "Benchmarks"
 description: "How ranet3 compares with wireguard-go, Tailscale, NetBird userspace, NetBird kernel, kernel WireGuard and kernel IPsec on 2 hosts connected with 10 GbE."
 created: 2026-10-21
 updated: 2026-11-02
-vetted: 2026-10-25
+vetted: 2026-11-02
 layout: bare
 ---
 
