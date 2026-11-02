@@ -756,6 +756,67 @@ func TestDaemonActsOnTheSignalsOfTheStartOnceItDials(t *testing.T) {
 	}
 }
 
+// A SIGHUP whose file the node refuses leaves a warning with the reason, which a log at warn keeps, and the node runs on
+func TestDaemonWarnsOfTheReloadItRefuses(t *testing.T) {
+	claimNamespace(t)
+	var logged lockedLog
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	f := writeDaemon(t, leafCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	code := runAsync(f, watched(&bus))
+	waitTill(t, "the start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	if err := os.WriteFile(f.opts.configPath, []byte("overlay: [not a prefix]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signalSelf(t, syscall.SIGHUP)
+	waitTill(t, "the refusal's warning", func() bool {
+		return strings.Contains(logged.String(), `level=WARN msg="reload failed" err=`)
+	})
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("the daemon that refused a reload exited %d after SIGTERM", got)
+	}
+	leftNothing(t, f, was)
+}
+
+// failingExit withdraws as the exit does and then reports the withdrawal failed
+type failingExit struct{ egress.Exit }
+
+func (e failingExit) Run(ctx context.Context) error {
+	return errors.Join(e.Exit.Run(ctx), errors.New("withdrawal failed for the test"))
+}
+
+// a part that fails while the daemon stops exits 1 with an error line naming the part, which a log at warn keeps
+func TestDaemonPartFailureSurvivesALogAtWarn(t *testing.T) {
+	claimNamespace(t)
+	var logged lockedLog
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	f := writeDaemon(t, exitCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	s := watched(&bus)
+	s.exit = func(cfg *config.Config, node *client.Client, b *events.Bus) (egress.Exit, error) {
+		exit, err := newExit(cfg, node, b)
+		if err != nil {
+			return nil, err
+		}
+		return failingExit{exit}, nil
+	}
+	code := runAsync(f, s)
+	waitTill(t, "the start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 1 {
+		t.Errorf("the daemon whose exit failed its withdrawal exited %d, want 1", got)
+	}
+	if want := `level=ERROR msg="daemon part failed, so the exit status is 1" part=egress`; !strings.Contains(logged.String(), want) {
+		t.Errorf("a log at warn kept %q, want it to carry %q", logged.String(), want)
+	}
+	leftNothing(t, f, was)
+}
+
 // ask sends the daemon's control socket one request on a connection of its own, which closes once answered so nothing of
 // the exchange outlives it, and answers the status and the body
 func ask(t *testing.T, socket, method, path string, request *control.Request) (int, string) {

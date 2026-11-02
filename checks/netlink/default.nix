@@ -331,11 +331,11 @@ testers.runNixOSTest {
     # the daemon refused at each part it builds, and stopped by SIGTERM or SIGINT while it builds and while it waits for the
     # first pass, leaving nothing running or bound, a second signal of the build and of its undo forcing the exit, the
     # antispoof filter's and the kill switch's tables an earlier instance left kept by a start that ends in its build, a
-    # SIGHUP and a SIGUSR1 of the start applied once it dials, up, reload and redial refused once the stop began, and the
-    # antispoof filter's table the stop for the mesh's failure leaves, which the next start takes over and its SIGTERM
-    # withdraws, the whole process in a namespace of its own
+    # SIGHUP and a SIGUSR1 of the start applied once it dials, a failed reload's warning, a part's failure at error, up,
+    # reload and redial refused once the stop began, and the antispoof filter's table the stop for the mesh's failure
+    # leaves, which the next start takes over and its SIGTERM withdraws, the whole process in a namespace of its own
     out = machine.succeed(
-        "unshare -n ${netlinkTests}/bin/daemon-tests -test.v -test.run '^TestDaemon(RefusedAtEachPartLeavesNothingRunningOrBound|StoppedWhileItBuildsStartsNothing|ForcedOutOfItsBuildByASecondSignal|EndedInItsBuildLeavesTheTablesItFound|StoppedInTheFirstPassWaitDialsNothing|ActsOnTheSignalsOfTheStartOnceItDials|RefusesUpReloadAndRedialOnceItStops|StoppedForTheMeshsFailureLeavesTheAntispoofTable)$' 2>&1"
+        "unshare -n ${netlinkTests}/bin/daemon-tests -test.v -test.run '^TestDaemon(RefusedAtEachPartLeavesNothingRunningOrBound|StoppedWhileItBuildsStartsNothing|ForcedOutOfItsBuildByASecondSignal|EndedInItsBuildLeavesTheTablesItFound|StoppedInTheFirstPassWaitDialsNothing|ActsOnTheSignalsOfTheStartOnceItDials|WarnsOfTheReloadItRefuses|PartFailureSurvivesALogAtWarn|RefusesUpReloadAndRedialOnceItStops|StoppedForTheMeshsFailureLeavesTheAntispoofTable)$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the daemon's start and stop skipped themselves under root:\n{out}"
@@ -349,6 +349,8 @@ testers.runNixOSTest {
         "TestDaemonEndedInItsBuildLeavesTheTablesItFound/stopped_while_it_builds",
         "TestDaemonStoppedInTheFirstPassWaitDialsNothing",
         "TestDaemonActsOnTheSignalsOfTheStartOnceItDials",
+        "TestDaemonWarnsOfTheReloadItRefuses",
+        "TestDaemonPartFailureSurvivesALogAtWarn",
         "TestDaemonRefusesUpReloadAndRedialOnceItStops",
         "TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable",
     ]:
