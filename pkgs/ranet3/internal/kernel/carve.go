@@ -54,10 +54,41 @@ func compareCarveOuts(a, b egress.CarveOut) int {
 
 // CarvedPrefixes is the destination of each entry of the mesh's table that lies
 // inside a prefix of carved, masked, sorted and each once: learned, held and
-// this node's own alike, since a neighbor on a carved link holds none of them,
-// and a source-specific entry by its destination whole
+// this node's own alike, and a source-specific entry by its destination whole
 func CarvedPrefixes(carved []netip.Prefix, snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
 	return carvedOf(carved, tableDestinations(snapshot))
+}
+
+// CarvedSets gives what the carved sets hold for border's pass over
+// carveOuts, those of the carve-outs and those of the exemptions, and each
+// conflict of an exemption with another node's prefix
+func CarvedSets(border *egress.Border, carveOuts []egress.CarveOut, snapshot []sadr.Route[*netstack.Peer]) ([]egress.Range, []egress.ExemptConflict) {
+	exemptions := border.Exemptions()
+	exempt, conflicts := ExemptCarved(exemptions, border.Own, border.Addresses, snapshot, border.Overlay)
+	return egress.Union(append(carveOutCarved(carveOuts, exemptions, border.Own, snapshot), exempt...)), conflicts
+}
+
+// carveOutCarved gives the ranges the carved sets hold of the carve-outs:
+// CarvedPrefixes of their prefixes, but of own only what some carve-out keeps,
+// an address it holds that no exemption naming its link holds. The carved drop
+// matches on every link, so an address of own leaves the sets only where each
+// carve-out holding it is on a link an exemption holding it names, which then
+// admits it as this node's own.
+func carveOutCarved(carveOuts []egress.CarveOut, exemptions []egress.Exemption, own []netip.Prefix, snapshot []sadr.Route[*netstack.Peer]) []egress.Range {
+	prefixes := make([]netip.Prefix, 0, len(carveOuts))
+	var kept []egress.Range
+	for _, carveOut := range carveOuts {
+		prefixes = append(prefixes, carveOut.Prefix)
+		var named []netip.Prefix
+		for _, exemption := range exemptions {
+			if exemption.Names(carveOut.Link) {
+				named = append(named, exemption.Prefix)
+			}
+		}
+		kept = append(kept, subtract(Ranges([]netip.Prefix{carveOut.Prefix}), Ranges(named))...)
+	}
+	carved := Ranges(CarvedPrefixes(prefixes, snapshot))
+	return egress.Union(append(subtract(carved, Ranges(own)), intersect(carved, egress.Union(kept))...))
 }
 
 // carvedOf is each prefix of table inside a prefix of carved, sorted and each

@@ -122,6 +122,12 @@ func prefixRange(prefix netip.Prefix) egress.Range {
 	return egress.Range{First: prefix.Addr(), Last: lastAddress(prefix)}
 }
 
+// intersect is the addresses both a and b hold, both sorted as egress.Union
+// leaves them
+func intersect(a, b []egress.Range) []egress.Range {
+	return subtract(a, subtract(a, b))
+}
+
 // subtract is the addresses of from that no range of holes holds, both sorted
 // as egress.Union leaves them
 func subtract(from, holes []egress.Range) []egress.Range {

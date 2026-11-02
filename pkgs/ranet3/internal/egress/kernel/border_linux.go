@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"golang.org/x/sys/unix"
 
@@ -313,7 +312,7 @@ func borderLine(rule BorderRule) (nftables.Line, error) {
 // none, the bytes before the * for a name ending in one, as nft compiles
 // iifname "wl*", and the name over IFNAMSIZ for any other
 func interfaceMatch(name string) [][]byte {
-	if pattern, wildcard := strings.CutSuffix(name, "*"); wildcard {
+	if pattern, wildcard := egress.InterfacePattern(name); wildcard {
 		return nftables.MetaCompareValue(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, []byte(pattern))
 	}
 	if name == "" {

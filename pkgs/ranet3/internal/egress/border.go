@@ -55,6 +55,24 @@ type Exemption struct {
 	Prefix    netip.Prefix
 }
 
+// InterfacePattern splits a name of cap.antispoof.interface into the pattern
+// it matches an interface's name by and whether that is a wildcard: for a name
+// with a trailing *, the bytes before it, which start each name it matches,
+// and for any other the name, which each name it matches equals
+func InterfacePattern(name string) (pattern string, wildcard bool) {
+	return strings.CutSuffix(name, "*")
+}
+
+// Names reports e naming link, as its accept's iifname match does. The shared
+// list, under no interface, names none, since every link has a name.
+func (e Exemption) Names(link string) bool {
+	pattern, wildcard := InterfacePattern(e.Interface)
+	if wildcard {
+		return strings.HasPrefix(link, pattern)
+	}
+	return pattern == link
+}
+
 // Normalized is the configuration as the filter runs it: each list in one
 // order, an omitted list and an empty one the same. The order is not
 // meaningful: a packet may match nested exemptions, or one prefix in the
@@ -141,7 +159,7 @@ func (b Border) Validate() error {
 	}
 	for _, name := range slices.Sorted(maps.Keys(a.Interface)) {
 		key := fmt.Sprintf("cap.antispoof.interface.%q", name)
-		pattern := strings.TrimSuffix(name, "*")
+		pattern, _ := InterfacePattern(name)
 		switch {
 		case name == "*":
 			return fmt.Errorf("egress: %s names every interface, which is cap.antispoof exempt", key)
@@ -211,8 +229,10 @@ type BorderSets struct {
 	CarveOuts []CarveOut
 	// Carved is the sources the antispoof chain drops from every link outside
 	// the mesh ahead of the carve-outs' and the exemptions' accepts: the mesh's
-	// prefixes inside a carve-out, and of each exemption the part another node's
-	// prefix holds and this node's node addresses inside it
+	// prefixes inside a carve-out, but for an address of this node's own ranges
+	// that, for each carve-out holding it, an exemption naming the carve-out's
+	// link holds, and of each exemption the part another node's prefix holds and
+	// this node's node addresses inside it
 	Carved []Range
 	// Conflicts is each exemption that another node's prefix overlaps, sorted
 	// and each once

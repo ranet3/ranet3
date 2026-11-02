@@ -18,6 +18,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
+	"ranet3.com/pkgs/ranet3/sadr"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -195,6 +196,103 @@ func TestCarvedPrefixesAreTheTablesEntriesInsideACarveOut(t *testing.T) {
 		want := slices.SortedFunc(maps.Keys(set), comparePrefixes)
 		if got := CarvedPrefixes(egress.Border{}.Carved(carveOuts), routes.Snapshot()); !slices.Equal(got, want) {
 			ht.Fatalf("inside %v the table holds\n%v\nwant\n%v", carveOuts, got, want)
+		}
+	})
+}
+
+// drawnInside draws a prefix outer holds, outer lying in the prefix one bit
+// shorter around one of exemptSpaces, so the bits it draws sit in the last byte
+func drawnInside(tc hegel.TestCase, outer netip.Prefix) netip.Prefix {
+	address := outer.Masked().Addr().AsSlice()
+	address[len(address)-1] |= byte(hegel.Draw(tc, pbt.Spanning(0, 1<<(outer.Addr().BitLen()-outer.Bits())-1)))
+	drawn, _ := netip.AddrFromSlice(address)
+	return netip.PrefixFrom(drawn, hegel.Draw(tc, pbt.Spanning(outer.Bits(), outer.Addr().BitLen()))).Masked()
+}
+
+// carveExemptLinks are the links a drawn carve-out is on, carveExemptNames the
+// names a drawn exemption is under, the shared list's among them, and
+// carveExemptMatches the pairs of name and link that match. carveExemptNear is
+// each link's names that match it or hold it without starting it.
+var (
+	carveExemptLinks   = []string{"eth0", "veth0", "wlan0"}
+	carveExemptNames   = []string{"", "eth", "eth0", "eth*", "veth*", "lan*", "wl*", "wlan0"}
+	carveExemptMatches = map[[2]string]bool{{"eth0", "eth0"}: true, {"eth*", "eth0"}: true, {"veth*", "veth0"}: true, {"wl*", "wlan0"}: true, {"wlan0", "wlan0"}: true}
+	carveExemptNear    = map[string][]string{"eth0": {"eth", "eth0", "eth*"}, "veth0": {"eth*", "veth*"}, "wlan0": {"lan*", "wl*", "wlan0"}}
+)
+
+// An address is carved for the carve-outs exactly where a carve-out holds an
+// entry of the mesh's table holding the address, but where own holds it and,
+// for each carve-out holding it, an exemption naming that carve-out's link
+// holds it too, in either family
+func TestCarveOutCarvedDropsWhatTheModelDrops(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		space := exemptSpaces[hegel.Draw(ht, pbt.Spanning(0, len(exemptSpaces)-1))]
+		wider := netip.PrefixFrom(space.Addr(), space.Bits()-1).Masked()
+		// a gateway's range, in the table as its own, is most often held by the
+		// first carve-out, holds the others and meets exemptions around or
+		// inside it, the first under a name near the first carve-out's link
+		gateway := drawnExemptPrefix(ht, space)
+		aimed := func(aim func() netip.Prefix) netip.Prefix {
+			if hegel.Draw(ht, pbt.Spanning(0, 3)) == 0 {
+				return drawnExemptPrefix(ht, space)
+			}
+			return aim()
+		}
+		around := func() netip.Prefix {
+			return netip.PrefixFrom(gateway.Addr(), hegel.Draw(ht, pbt.Spanning(wider.Bits(), gateway.Bits()))).Masked()
+		}
+		inside := func() netip.Prefix { return drawnInside(ht, gateway) }
+		link := func() string { return carveExemptLinks[hegel.Draw(ht, pbt.Spanning(0, len(carveExemptLinks)-1))] }
+		carveOuts := []egress.CarveOut{{Link: link(), Prefix: aimed(around)}}
+		for range hegel.Draw(ht, pbt.Spanning(0, 2)) {
+			carveOuts = append(carveOuts, egress.CarveOut{Link: link(), Prefix: aimed(inside)})
+		}
+		routes := netstack.NewRouteTable()
+		routes.Set(netip.Prefix{}, gateway, netstack.Local)
+		values := []*netstack.Peer{learned, netstack.Local, netstack.Assigned, netstack.Unreachable}
+		for range hegel.Draw(ht, pbt.Spanning(0, 3)) {
+			holder := carveOuts[hegel.Draw(ht, pbt.Spanning(0, len(carveOuts)-1))].Prefix
+			routes.Set(netip.Prefix{}, aimed(func() netip.Prefix { return drawnInside(ht, holder) }), values[hegel.Draw(ht, pbt.Spanning(0, len(values)-1))])
+		}
+		own := []netip.Prefix{gateway}
+		for range hegel.Draw(ht, pbt.Spanning(0, 1)) {
+			own = append(own, drawnExemptPrefix(ht, space))
+		}
+		var exemptions []egress.Exemption
+		for i := range hegel.Draw(ht, pbt.Spanning(0, 3)) {
+			near, prefix := carveExemptNear[carveOuts[0].Link], aimed(around)
+			if i != 0 {
+				near = carveExemptNear[carveOuts[hegel.Draw(ht, pbt.Spanning(0, len(carveOuts)-1))].Link]
+				if hegel.Draw(ht, pbt.Spanning(0, 1)) == 0 {
+					near = carveExemptNames
+				}
+				if hegel.Draw(ht, pbt.Spanning(0, 1)) == 0 {
+					prefix = aimed(inside)
+				}
+			}
+			exemptions = append(exemptions, egress.Exemption{Interface: near[hegel.Draw(ht, pbt.Spanning(0, len(near)-1))], Prefix: prefix})
+		}
+		snapshot := routes.Snapshot()
+		got := carveOutCarved(carveOuts, exemptions, own, snapshot)
+		var want []netip.Prefix
+		for address := wider.Addr(); wider.Contains(address); address = address.Next() {
+			inTable := slices.ContainsFunc(carveOuts, func(c egress.CarveOut) bool {
+				return slices.ContainsFunc(snapshot, func(entry sadr.Route[*netstack.Peer]) bool {
+					return holds(c.Prefix, entry.Destination) && entry.Destination.Contains(address)
+				})
+			})
+			mine := slices.ContainsFunc(own, func(r netip.Prefix) bool { return r.Contains(address) })
+			named := !slices.ContainsFunc(carveOuts, func(c egress.CarveOut) bool {
+				return c.Prefix.Contains(address) && !slices.ContainsFunc(exemptions, func(e egress.Exemption) bool {
+					return carveExemptMatches[[2]string{e.Interface, c.Link}] && e.Prefix.Contains(address)
+				})
+			})
+			if inTable && !(mine && named) {
+				want = append(want, netip.PrefixFrom(address, address.BitLen()))
+			}
+		}
+		if !slices.Equal(got, Ranges(want)) {
+			ht.Fatalf("carve-outs %v, exemptions %v, own %v, table %v: carved\n%v\nwant\n%v", carveOuts, exemptions, own, snapshot, rangePrefixes(got...), want)
 		}
 	})
 }

@@ -570,12 +570,8 @@ func (c *Client) borderSets(border *egress.Border) egress.BorderSets {
 	}
 	if border != nil {
 		sets.CarveOuts = kernel.CarveOuts(c.networkState(), overlay)
-		carveOuts := make([]netip.Prefix, 0, len(sets.CarveOuts))
-		for _, carveOut := range sets.CarveOuts {
-			carveOuts = append(carveOuts, carveOut.Prefix)
-		}
-		exempt, conflicts := kernel.ExemptCarved(border.Exemptions(), border.Own, border.Addresses, snapshot, overlay)
-		sets.Carved = egress.Union(append(kernel.Ranges(kernel.CarvedPrefixes(carveOuts, snapshot)), exempt...))
+		carved, conflicts := kernel.CarvedSets(border, sets.CarveOuts, snapshot)
+		sets.Carved = carved
 		for i, conflict := range conflicts {
 			if c.speaker == nil {
 				break

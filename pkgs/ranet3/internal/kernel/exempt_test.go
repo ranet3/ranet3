@@ -16,6 +16,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/sadr"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // a gateway with node address 203.0.113.1 announcing 203.0.113.0/25 for the
@@ -73,6 +74,65 @@ func TestExemptCarvedKeepsTheGatewaysOwnRangeAndCarvesAnotherNodes(t *testing.T)
 	}
 	if want := []egress.ExemptConflict{{Exemption: inner6, Prefix: p("3fff::/28"), Carved: p("3fff:a::/47"), Via: learned.ID}}; !slices.Equal(conflicts, want) {
 		t.Errorf("under another node's covering IPv6 prefix the conflicts are %v, want %v", conflicts, want)
+	}
+}
+
+// a gateway with node address 203.0.113.1 announcing 203.0.113.0/25, whose site
+// link eth1 is the carve-out of that range
+func TestCarvedSetsLiftAnOwnAddressWhereEachCarveOutHoldingItIsNamed(t *testing.T) {
+	p := netip.MustParsePrefix
+	routes := netstack.NewRouteTable()
+	routes.Set(netip.Prefix{}, p("203.0.113.0/25"), netstack.Local)
+	routes.Set(netip.Prefix{}, p("203.0.113.1/32"), netstack.Assigned)
+	routes.Set(netip.Prefix{}, p("203.0.113.96/28"), learned)
+	routes.Set(netip.Prefix{}, p("203.0.113.128/28"), netstack.Unreachable)
+	routes.Set(netip.Prefix{}, p("203.0.113.200/32"), learned)
+	snapshot := routes.Snapshot()
+	site := egress.CarveOut{Link: "eth1", Prefix: p("203.0.113.0/25")}
+	lease := egress.CarveOut{Link: "wlan0", Prefix: p("203.0.113.0/24")}
+	nested := egress.CarveOut{Link: "wlan0", Prefix: p("203.0.113.0/28")}
+	wide := egress.CarveOut{Link: "eth1", Prefix: p("203.0.113.0/24")}
+	exempt := func(name, prefix string) egress.Exemption {
+		return egress.Exemption{Interface: name, Prefix: p(prefix)}
+	}
+	whole, lifted := []netip.Prefix{p("203.0.113.0/25")}, []netip.Prefix{p("203.0.113.1/32"), p("203.0.113.96/28")}
+	beside := []netip.Prefix{p("203.0.113.128/28"), p("203.0.113.200/32")}
+	for name, c := range map[string]struct {
+		carveOuts  []egress.CarveOut
+		exemptions []egress.Exemption
+		want       []netip.Prefix
+	}{
+		"an exemption naming the carve-out's link": {[]egress.CarveOut{site}, []egress.Exemption{exempt("eth1", "203.0.113.0/25")}, lifted},
+		"no exemption":                                      {[]egress.CarveOut{site}, nil, whole},
+		"an exemption under another interface":              {[]egress.CarveOut{site}, []egress.Exemption{exempt("eth0", "203.0.113.0/25")}, whole},
+		"a * matching the link":                             {[]egress.CarveOut{site}, []egress.Exemption{exempt("eth*", "203.0.113.0/25")}, lifted},
+		"a * not matching the link":                         {[]egress.CarveOut{site}, []egress.Exemption{exempt("wl*", "203.0.113.0/25")}, whole},
+		"a * the link holds but does not start with":        {[]egress.CarveOut{{Link: "veth0", Prefix: site.Prefix}}, []egress.Exemption{exempt("eth*", "203.0.113.0/25")}, whole},
+		"two carve-outs, the first one's link exempt":       {[]egress.CarveOut{site, lease}, []egress.Exemption{exempt("eth1", "203.0.113.0/25")}, slices.Concat(whole, beside)},
+		"two carve-outs, the second one's link exempt":      {[]egress.CarveOut{site, lease}, []egress.Exemption{exempt("wlan0", "203.0.113.0/25")}, slices.Concat(whole, beside)},
+		"two carve-outs, each one's link exempt":            {[]egress.CarveOut{site, lease}, []egress.Exemption{exempt("eth1", "203.0.113.0/25"), exempt("wl*", "203.0.113.0/25")}, slices.Concat(lifted, beside)},
+		"a carve-out inside the range on a link not exempt": {[]egress.CarveOut{site, nested}, []egress.Exemption{exempt("eth1", "203.0.113.0/25")}, []netip.Prefix{p("203.0.113.0/28"), p("203.0.113.96/28")}},
+		"a carve-out inside the range on a link exempt too": {[]egress.CarveOut{site, nested}, []egress.Exemption{exempt("eth1", "203.0.113.0/25"), exempt("wlan0", "203.0.113.0/25")}, lifted},
+		"an exemption wider than the range it holds":        {[]egress.CarveOut{wide}, []egress.Exemption{exempt("eth1", "203.0.113.0/24")}, slices.Concat(lifted, beside)},
+		"an exemption narrower than the range it is under":  {[]egress.CarveOut{site}, []egress.Exemption{exempt("eth1", "203.0.113.64/26")}, []netip.Prefix{p("203.0.113.0/26"), p("203.0.113.96/28")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			border := egress.Border{
+				Overlay:   prefixes(p("203.0.113.0/24")),
+				Antispoof: egress.Antispoof{Interface: map[string]egress.AntispoofInterface{}},
+				Own:       []netip.Prefix{p("203.0.113.0/25")},
+				Addresses: []netip.Prefix{p("203.0.113.1/32")},
+			}
+			for _, e := range c.exemptions {
+				entry := border.Antispoof.Interface[e.Interface]
+				entry.Exempt = append(entry.Exempt, schema.PrefixFrom(e.Prefix))
+				border.Antispoof.Interface[e.Interface] = entry
+			}
+			got, _ := CarvedSets(&border, c.carveOuts, snapshot)
+			if want := Ranges(c.want); !slices.Equal(got, want) {
+				t.Errorf("the carved sets hold %v, want %v", got, want)
+			}
+		})
 	}
 }
 

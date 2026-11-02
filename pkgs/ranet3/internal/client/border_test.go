@@ -361,6 +361,29 @@ func TestBorderSetsCarveAnotherNodesPrefixAndKeepTheGatewaysRange(t *testing.T) 
 	}
 }
 
+// a gateway announcing 203.0.113.0/25 and exempting it under eth1, whose own
+// network holds the range, carves of the carve-out eth1 is only its node
+// address and another node's prefix inside the range
+func TestBorderSetsLiftTheGatewaysExemptRangeOutOfItsSiteCarveOut(t *testing.T) {
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
+		cfg.Overlay = overlayOf("203.0.113.0/24")
+		cfg.Cap.Route = &babel.Routes{Announce: announce("203.0.113.0/25", "203.0.113.1/32")}
+		cfg.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"eth1": {Exempt: overlayOf("203.0.113.0/25")}}}
+	})
+	site := netip.MustParsePrefix("203.0.113.126/25")
+	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange), current: kernel.NetworkState{IPv4: kernel.NetworkFamily{Links: []kernel.Link{{Name: "eth1", Prefixes: []netip.Prefix{site}}}}}}
+	for prefix, value := range map[string]*netstack.Peer{"203.0.113.0/25": netstack.Local, "203.0.113.1/32": netstack.Local, "203.0.113.96/28": {ID: "example/peer"}} {
+		c.Mesh.Routes.Set(netip.Prefix{}, netip.MustParsePrefix(prefix), value)
+	}
+	sets := c.BorderRuntime().Sets(c.config().Border())
+	if want := []egress.CarveOut{{Link: "eth1", Prefix: site.Masked()}}; !slices.Equal(sets.CarveOuts, want) {
+		t.Fatalf("the filter's carve-outs are %v, want %v", sets.CarveOuts, want)
+	}
+	if want := kernel.Ranges([]netip.Prefix{netip.MustParsePrefix("203.0.113.1/32"), netip.MustParsePrefix("203.0.113.96/28")}); !slices.Equal(sets.Carved, want) {
+		t.Errorf("the filter carves %v, want %v", sets.Carved, want)
+	}
+}
+
 // a reload that moves only what cap.route announces hands the filter this
 // node's own prefixes, so the pass its SetConfig wakes, which may run before
 // the reload stores the file, carves a node address it announces inside an
