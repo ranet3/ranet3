@@ -1237,21 +1237,15 @@ func TestSessionAdoptedAfterAReloadsSweepAnswersToTheStoredDocument(t *testing.T
 	listenMesh(t, a, h)
 	a.client.dialRetry = longDialRetry
 	set := h.client.sessions
-	set.mu.Lock()
-	locked := true
-	defer func() {
-		if locked {
-			set.mu.Unlock()
-		}
-	}()
+	unlock := lockAfterDecision(set)
+	defer unlock()
 	runListen(t, a, h)
 	waitFor(t, convergeBudget, "h's first answered session waiting for its session set in adopt", waitingInAdopt)
 	if len(set.live) != 0 {
 		t.Fatalf("h holds %d sessions while its first waits in adopt, want none for a sweep to reach", len(set.live))
 	}
 	h.client.storeIndex(droppedFrom(t, h, a))
-	set.mu.Unlock()
-	locked = false
+	unlock()
 	waitFor(t, convergeBudget, "h to adopt or refuse the session", func() bool {
 		return len(sessionEvents(h, a, "ike.session.established")) > 0 || len(sessionEvents(a, h, "ike.session.ended")) > 0
 	})

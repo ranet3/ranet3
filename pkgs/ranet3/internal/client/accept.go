@@ -32,6 +32,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 		RekeyTiming:     crypto.Timing(),
 		Suites:          c.suites,
 		Events:          c.ikeEvent,
+		InitialContact:  c.sessions.contact,
 	})
 	if err != nil {
 		return 0, err

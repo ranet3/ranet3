@@ -162,9 +162,16 @@ func TestLosingSessionIsNeverRecordedEstablished(t *testing.T) {
 			closeSession(sess)
 		}
 	}
-	if _, adopted := alpha.client.sessions.adoptPreferred(fmt.Sprintf("example/%s:0@0", bravo.name), held, true, nil); !adopted {
+	path := fmt.Sprintf("example/%s:0@0", bravo.name)
+	if _, adopted := alpha.client.sessions.adoptPreferred(path, held, true, nil); !adopted {
 		t.Fatal("the held session was not adopted")
 	}
+	// crossed is after any handshake of bravo's starts, when a crossing dial's session is taken, so the INITIAL_CONTACT bravo's first handshake carries leaves the held one to the rule
+	crossed := time.Now().Add(time.Hour)
+	set := alpha.client.sessions
+	set.mu.Lock()
+	set.live[path].adopted = crossed
+	set.mu.Unlock()
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, "alpha to turn a session of bravo's away", func() bool {
 		return len(recorded(alpha.events, "ike.session.resolved")) > 0

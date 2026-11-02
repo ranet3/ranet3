@@ -62,7 +62,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.
 	tunnel.spent = sess.ChildSequenceSpent
 	tunnel.failed = sess.ChildFailed
 	if err := tunnel.install(child); err != nil {
-		closeSession(sess)
+		c.sessions.close(sess)
 		return err
 	}
 	sess.SetChildHandler(tunnel.install)
@@ -197,9 +197,10 @@ func (c *Client) tellDropped(ctx context.Context, path string, sess *ike.Session
 // preferred is that rule. Both nodes compare the same two names with
 // identity.Compare and so agree on which of them should be the initiator. The
 // SA opened in that direction is the one both keep, whichever order the two
-// handshakes finish in. Only when the two sessions are equally preferred,
-// which is a genuine reconnect rather than a collision, does the newer one
-// win.
+// handshakes finish in. The newer session wins only when the two are equally
+// preferred, which is a genuine reconnect rather than a collision, or when its
+// IKE_AUTH carried the peer's INITIAL_CONTACT and the session it meets was
+// adopted before it started, which the peer no longer holds.
 type sessionSet struct {
 	mu   sync.Mutex
 	live map[string]*liveSession
@@ -222,6 +223,14 @@ type sessionSet struct {
 	probe func(*ike.Session)
 	// endpoint is the address a session's mux sends to in production, replaced the same way
 	endpoint func(*ike.Session) string
+	// ended is whether a handshake's mux has closed and drop is (*ike.Session).EndAtInitialContact in production, replaced the same way
+	ended func(*ike.Session) bool
+	drop  func(*ike.Session)
+	// contact is initialContact in production, the decision both ike configs ask, replaced the same way
+	contact func(*ike.Session, identity.Identity) bool
+
+	// handshakes holds the peer's node of each handshake past its IKE_AUTH decision that adopt has not taken, under mu
+	handshakes map[*ike.Session]identity.Identity
 
 	// events records each resolution between two sessions for one path, and each session the trust refuses
 	events *events.Bus
@@ -242,21 +251,51 @@ type liveSession struct {
 	key ed25519.PublicKey
 	// pmtu is the search of the session's path MTU, which sets the MTU of its peer in the mesh
 	pmtu *pathDriver
+	// adopted is when adopt took the session
+	adopted time.Time
 }
 
 // keptAgainst reports whether adopt keeps l against a session for its path that preferred tells whether both ends prefer
 func (l *liveSession) keptAgainst(preferred bool) bool { return l.preferred && !preferred }
 
 func newSessionSet() *sessionSet {
-	return &sessionSet{
-		live:      make(map[string]*liveSession),
-		close:     closeSession,
-		active:    (*ike.Session).Active,
-		rekey:     (*ike.Session).RekeyChild,
-		rekeyWait: control.RekeyWait,
-		probe:     (*ike.Session).Probe,
-		endpoint:  func(sess *ike.Session) string { return sess.Mux().Endpoint().String() },
+	set := &sessionSet{
+		live:       make(map[string]*liveSession),
+		close:      closeSession,
+		active:     (*ike.Session).Active,
+		rekey:      (*ike.Session).RekeyChild,
+		rekeyWait:  control.RekeyWait,
+		probe:      (*ike.Session).Probe,
+		endpoint:   func(sess *ike.Session) string { return sess.Mux().Endpoint().String() },
+		ended:      func(sess *ike.Session) bool { return sess.Mux().IsClosed() },
+		drop:       (*ike.Session).EndAtInitialContact,
+		handshakes: make(map[*ike.Session]identity.Identity),
 	}
+	set.contact = set.initialContact
+	return set
+}
+
+// initialContact is the InitialContact decision of ike for sess, a handshake to peer
+// its IKE_AUTH carries INITIAL_CONTACT only where this end holds no other IKE SA to peer's node on any path, live or a handshake past this decision whose mux is open
+// sess counts as such a handshake from here until adopt takes it or its mux closes, so of 2 handshakes deciding at once under mu the second finds the first
+// RFC 7296 section 2.4: "The INITIAL_CONTACT notification asserts that this IKE SA is the only IKE SA currently active between the authenticated identities."
+func (s *sessionSet) initialContact(sess *ike.Session, peer identity.Identity) bool {
+	node := peer.Node()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	alone := true
+	for other, to := range s.handshakes {
+		if s.ended(other) {
+			delete(s.handshakes, other)
+		} else if to == node {
+			alone = false
+		}
+	}
+	for _, live := range s.live {
+		alone = alone && live.peer.Node() != node
+	}
+	s.handshakes[sess] = node
+	return alone
 }
 
 // preferInitiator reports whether, of the two nodes, the first should be the initiator
@@ -279,26 +318,32 @@ func (c *Client) ikeEvent(local, remote identity.Identity, kind string, attrs ..
 	}
 }
 
-// adopt makes sess the live session for path unless a session both ends prefer already holds it, and reports whether it did
-// the rule reads only the SA's two roles, which dialed tells apart and both ends compute alike, and never whether the incumbent looks alive
+// adopt makes sess the live session for path unless the rule sessionSet states keeps the session already holding it, and reports whether it did
+// dialed tells the SA's two roles apart, which both ends compute alike, and the rule never asks whether the incumbent looks alive
 // a caller told false has lost and its mux is closed, and the release it gets drops the entry only while the entry is still sess
 func (s *sessionSet) adopt(path string, sess *ike.Session, local, remote identity.Identity, key ed25519.PublicKey, dialed bool, pmtu *pathDriver, attach func() func()) (func(), bool) {
 	initiator, responder := remote, local
 	if dialed {
 		initiator, responder = local, remote
 	}
-	return s.adoptFor(path, sess, preferInitiator(initiator, responder), local, remote, key, pmtu, attach)
+	var contact time.Time
+	if sess.InitialContact() {
+		contact = sess.StartedAt()
+	}
+	return s.adoptFor(path, sess, preferInitiator(initiator, responder), contact, local, remote, key, pmtu, attach)
 }
 
 // adoptPreferred is adopt with the rule already applied and no peer identity,
 // for a test that drives the resolution without two identities to derive it
 // from.
 func (s *sessionSet) adoptPreferred(path string, sess *ike.Session, preferred bool, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferred, identity.Identity{}, identity.Identity{}, nil, nil, attach)
+	return s.adoptFor(path, sess, preferred, time.Time{}, identity.Identity{}, identity.Identity{}, nil, nil, attach)
 }
 
-func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, local, remote identity.Identity, key ed25519.PublicKey, pmtu *pathDriver, attach func() func()) (func(), bool) {
+// adoptFor is adopt with the rule applied, and contact, where it is not zero, the start of sess, whose IKE_AUTH carried the peer's INITIAL_CONTACT
+func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, contact time.Time, local, remote identity.Identity, key ed25519.PublicKey, pmtu *pathDriver, attach func() func()) (func(), bool) {
 	s.mu.Lock()
+	delete(s.handshakes, sess)
 	if s.shut {
 		s.mu.Unlock()
 		// Told rather than dropped: this handshake finished after the node
@@ -314,7 +359,11 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, lo
 		return func() {}, false
 	}
 	previous := s.live[path]
-	if previous != nil && previous.session != sess && previous.keptAgainst(preferred) {
+	// contacted is whether sess's IKE_AUTH carried the peer's INITIAL_CONTACT and previous was adopted before sess started
+	// sess started here before the peer could decide the notice, and the peer decided it before any SA it still holds to this node passed its own IKE_AUTH, so such an SA was adopted here after sess started
+	// so previous is one the peer no longer holds, while a session adopted since comes from a dial that crossed the notice's and goes to the rule below
+	contacted := previous != nil && previous.session != sess && !contact.IsZero() && previous.adopted.Before(contact)
+	if previous != nil && previous.session != sess && !contacted && previous.keptAgainst(preferred) {
 		s.mu.Unlock()
 		log.Printf("peer %s: keeping the session the other end also prefers", path)
 		s.events.Emit("ike.session.resolved", path, slog.String("kept", "the session already held"))
@@ -331,9 +380,14 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, lo
 	if attach != nil {
 		detach = attach()
 	}
-	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, local: local, key: key, pmtu: pmtu}
+	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, local: local, key: key, pmtu: pmtu, adopted: time.Now()}
 	s.mu.Unlock()
-	if previous != nil && previous.session != sess {
+	switch {
+	case previous == nil || previous.session == sess:
+	case contacted:
+		log.Printf("peer %s: the peer's INITIAL_CONTACT on a newer session ends the one it no longer holds", path)
+		s.drop(previous.session)
+	default:
 		log.Printf("peer %s: replacing the previous session", path)
 		s.events.Emit("ike.session.resolved", path, slog.String("kept", "the new session"))
 		s.close(previous.session)
@@ -394,8 +448,9 @@ func (s *sessionSet) snapshot() []liveSessionView {
 // session that has recently proved the peer is there counts, and so does a
 // session both ends prefer while the dial would not be preferred, which adopt
 // keeps against the dial whether or not it still proves the peer. Behind that
-// one a dialer waits out its dead peer detection, or the preferred end's dial
-// replacing it. Any other session that has stopped proving the peer does not
+// one a dialer waits out its dead peer detection, the preferred end's dial
+// replacing it, or the other end's INITIAL_CONTACT ending it, by the rule
+// sessionSet states. Any other session that has stopped proving the peer does not
 // count, so a dialer takes over from a dead one instead of waiting out dead
 // peer detection behind it.
 func (s *sessionSet) holds(path string, dialPreferred bool) bool {

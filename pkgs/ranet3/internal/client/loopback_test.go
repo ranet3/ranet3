@@ -547,8 +547,21 @@ func TestRefusedFirstChildSADeletesTheIKESA(t *testing.T) {
 		node.client.cfg.Store(&quiet)
 	}
 	ctx, _ := run(t, alpha, bravo)
-	x := alpha.client.index()
-	d := dials(alpha.cfg, x)[0]
+	sess, local, remote, key := dialOnce(t, ctx, alpha, nil)
+	child := sess.Child()
+	child.EncrID = 0
+	if err := alpha.client.serveSession(ctx, sess, child, local, remote, key, true); err == nil {
+		t.Fatal("alpha served a session whose Child SA its tunnel could not install")
+	}
+	waitFor(t, refusedChildDeleteBudget, "alpha's Delete to end bravo's session", func() bool { return len(recorded(bravo.events, "ike.session.ended")) > 0 })
+}
+
+// dialOnce dials node's first peer as connectPeer does, outside its dialers, with decide as the IKE_AUTH's INITIAL_CONTACT decision
+// it hands back the session with the local and remote endpoints and the key serveSession takes for it
+func dialOnce(t *testing.T, ctx context.Context, node *loopbackNode, decide func(*ike.Session, identity.Identity) bool) (*ike.Session, identity.Identity, identity.Identity, ed25519.PublicKey) {
+	t.Helper()
+	x := node.client.index()
+	d := dials(node.cfg, x)[0]
 	ep, remoteIP, err := resolveEndpoint(ctx, x, nil, d.peer, d.local.Family, &names{})
 	if err != nil {
 		t.Fatal(err)
@@ -557,17 +570,12 @@ func TestRefusedFirstChildSADeletesTheIKESA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := ike.InitiateContext(ctx, ike.PeerConfig{Local: d.localID, LocalPrivateKey: alpha.client.privateKey, Remote: ep.ID, RemotePublicKey: remotePub,
-		RemoteAddr: remoteIP, RemotePort: int(ep.Port), Aliases: alpha.cfg.Auth.Aliases, Hub: alpha.client.hub})
+	sess, err := ike.InitiateContext(ctx, ike.PeerConfig{Local: d.localID, LocalPrivateKey: node.client.privateKey, Remote: ep.ID, RemotePublicKey: remotePub,
+		RemoteAddr: remoteIP, RemotePort: int(ep.Port), Aliases: node.cfg.Auth.Aliases, Hub: node.client.hub, InitialContact: decide})
 	if err != nil {
 		t.Fatal(err)
 	}
-	child := sess.Child()
-	child.EncrID = 0
-	if err := alpha.client.serveSession(ctx, sess, child, d.localID, ep.ID, remotePub, true); err == nil {
-		t.Fatal("alpha served a session whose Child SA its tunnel could not install")
-	}
-	waitFor(t, refusedChildDeleteBudget, "alpha's Delete to end bravo's session", func() bool { return len(recorded(bravo.events, "ike.session.ended")) > 0 })
+	return sess, d.localID, ep.ID, remotePub
 }
 
 // refusedChildDeleteBudget is shorter than the idle time after which a session starts a liveness check, so only a Delete ends the peer's session within it
@@ -861,13 +869,8 @@ func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
 	quiet.Link.MTU = started
 	bravo.client.cfg.Store(&quiet)
 	set := bravo.client.sessions
-	set.mu.Lock()
-	held := true
-	defer func() {
-		if held {
-			set.mu.Unlock()
-		}
-	}()
+	unlock := lockAfterDecision(set)
+	defer unlock()
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, "bravo's first session waiting for its session set in adopt", waitingInAdopt)
 	if len(set.live) != 0 {
@@ -876,8 +879,7 @@ func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
 	next := quiet
 	next.Link.MTU = 0
 	bravo.client.cfg.Store(&next)
-	set.mu.Unlock()
-	held = false
+	unlock()
 	var peer *netstack.Peer
 	waitFor(t, convergeBudget, "bravo forwarding to alpha's prefix", func() bool {
 		found, verdict, _ := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alpha.prefix.Addr().Next())
@@ -891,6 +893,33 @@ func TestSessionAdoptedDuringAReloadTakesTheStoredLinkMTU(t *testing.T) {
 
 // stackDumpSize is the bytes waitingInAdopt and dialerStandingDown read every goroutine's stack into, room for the running nodes of one test many times over
 const stackDumpSize = 4 << 20
+
+// lockAfterDecision has set's lock taken on the goroutine of the first handshake to decide INITIAL_CONTACT, once it has decided, which leaves that handshake to wait in adopt
+// a handshake decides under the lock, so a test holding the lock from the start would hold the handshake short of adopt
+// unlock lets the lock go where a handshake took it, and after it no handshake takes it, so a test defers it as well
+func lockAfterDecision(set *sessionSet) (unlock func()) {
+	decide := set.contact
+	var mu sync.Mutex
+	var taken, done bool
+	set.contact = func(sess *ike.Session, peer identity.Identity) bool {
+		sent := decide(sess, peer)
+		mu.Lock()
+		defer mu.Unlock()
+		if !taken && !done {
+			set.mu.Lock()
+			taken = true
+		}
+		return sent
+	}
+	return func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if taken && !done {
+			set.mu.Unlock()
+		}
+		done = true
+	}
+}
 
 // waitingInAdopt reports whether a session a node answered waits for its session set's lock inside adoptFor
 // a dialed session of the other node passes through adoptFor too, and it holds no lock a test holds

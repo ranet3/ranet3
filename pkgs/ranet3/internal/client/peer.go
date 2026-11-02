@@ -231,6 +231,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 		RekeyTiming:     crypto.Timing(),
 		Suites:          c.suites,
 		Events:          c.ikeEvent,
+		InitialContact:  c.sessions.contact,
 	}
 	sess, err := ike.InitiateContext(ctx, ikeCfg)
 	if err != nil {
