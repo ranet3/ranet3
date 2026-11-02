@@ -167,7 +167,7 @@ sections below give the details.
 | RFC 8754 section 4.3.2                                                                 | At a local interface that is no SID, process the next header at segments left 0                                                                                                                                           | `End` drops with no answer a packet at segments left 0 whose next segment is an address `cap.table` assigns this node                                                                                                                                                                                                                                                                                                                 | None holds, see ICMP answers                                                                                                                                                                                                                                                                               |
 | RFC 8200 sections 4 and 4.2                                                            | Process extension headers in order, and an unrecognized option by its type's 2 high bits: skip it, discard the packet, or discard and answer                                                                              | `End` and `End.DT46` read no option of a hop-by-hop or destination options header they walk past, so `End` forwards and `End.DT46` decapsulates a packet such an option says to discard                                                                                                                                                                                                                                               | None holds: Linux acts on the options of a hop-by-hop header in the first place, see ICMP answers                                                                                                                                                                                                          |
 | RFC 8200 section 4.4, RFC 4443 section 3.2                                             | Discard a packet larger than the link its routing header sends it onto, and answer it with Packet Too Big (MUST)                                                                                                          | `End` cuts a carried IPv4 packet without DF, and drops with no answer one it cannot cut but for its options                                                                                                                                                                                                                                                                                                                           | RFC 1812 has a router cut IPv4 and silently discard a bad header, and none holds for the rest, see ICMP answers                                                                                                                                                                                            |
-| RFC 4443 sections 3.2, 3.3 and 3.4                                                     | Send Packet Too Big and Time Exceeded (MUST) and Parameter Problem (SHOULD) to the packet's source                                                                                                                        | A SID's Time Exceeded, Parameter Problem and Destination Unreachable go only through a session, so none goes to a source an entry of this node's own reaches, this host or a network behind it among them. Its answer to a segment larger than its next session goes into the tun where that entry counts as no default, and nowhere where it counts as one                                                                           | A host's strict reverse path check drops an answer from a SID, which the host never routes into the tun, and the mesh routes no reply to a source only this node's own default reaches, see ICMP answers                                                                                                   |
+| RFC 4443 sections 3.2, 3.3 and 3.4                                                     | Send Packet Too Big and Time Exceeded (MUST) and Parameter Problem (SHOULD) to the packet's source                                                                                                                        | The Time Exceeded, Parameter Problem and Destination Unreachable a refused segment gets go only through a session, so none goes to a source an entry of this node's own reaches, this host or a network behind it among them. The answer to a segment larger than its next session, or to its packet's unreadable options, goes into the tun where that entry counts as no default, and nowhere where it counts as one                | A host's strict reverse path check drops an answer from a SID, which the host never routes into the tun, and the mesh routes no reply to a source only this node's own default reaches, see ICMP answers                                                                                                   |
 | RFC 8200 section 3, RFC 4443 section 3.4                                               | Payload Length counts the octets after the IPv6 header, and a field keeping a packet from being processed gets Parameter Problem (SHOULD)                                                                                 | An IPv6 packet a session delivers whose Payload Length runs past its octets, or is 0 with octets after its header, is dropped with no answer                                                                                                                                                                                                                                                                                          | A jumbogram fits no session, which covers the drop at 0. The session drops the packet before the mesh, whose one entry for a session's packets hands one to a SID of this node to that SID before any answer, see Transit answers                                                                          |
 | RFC 8754 section 7                                                                     | Admit at ingress only the sources of the attached networks, as BCP 38 does                                                                                                                                                | The antispoof filter denies the mesh's own space from outside, but what [carve-outs](../antispoof.md#carve-outs) and [exemptions](../antispoof.md#exemptions) pass, and admits the rest, and on Linux `mesh_entry` admits into the tun only this node's own sources, a reply, a `none` class's destination and an IPv6 link-local or multicast destination                                                                            | The permit half needs first-hop source validation                                                                                                                                                                                                                                                          |
 | RFC 8754 section 7                                                                     | Admit at ingress only the sources of the attached networks, as BCP 38 does                                                                                                                                                | A tun read from a source this node does not own, outside the overlay and covered by no route but one that counts as a default, passes toward a mesh destination                                                                                                                                                                                                                                                                       | Owning every source would drop the replies to an exit's egress and to a subnet router's LAN, since a tun read does not say whether it answers a flow                                                                                                                                                       |
@@ -771,13 +771,13 @@ peer has to support at least 1 algorithm in each row of the table.
 Every Child SA carries exactly 2 traffic selectors on each side, the full IPv4
 range and the full IPv6 range. ranet3 proposes those, and as an initiator takes
 an answer of those alone. As a responder it takes a TSi and a TSr that each hold
-both ranges among their selectors, a first selector of the packet that started
-the request among them, and answers each with the 2 ranges. A request whose TSi
-or TSr lacks either range is refused with `TS_UNACCEPTABLE`, beside the
-responder's `AUTH` in `IKE_AUTH` and alone in `CREATE_CHILD_SA`. A
-`CREATE_CHILD_SA` request whose TS payload does not parse or holds no selector
-is malformed instead, and is answered `INVALID_SYNTAX` on an IKE SA that is not
-busy, as [Closing SAs](#closing-sas) describes.
+both ranges among their selectors, whatever else they hold, such as a first
+selector of the packet that started the request, and answers each with the 2
+ranges. A request whose TSi or TSr lacks either range is refused with
+`TS_UNACCEPTABLE`, beside the responder's `AUTH` in `IKE_AUTH` and alone in
+`CREATE_CHILD_SA`. A `CREATE_CHILD_SA` request whose TS payload does not parse
+or holds no selector is malformed instead, and is answered `INVALID_SYNTAX` on
+an IKE SA that is not busy, as [Closing SAs](#closing-sas) describes.
 [RFC 7296 section 2.9](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.9)
 has a responder narrow the selectors to a subset its policy accepts, and refuse
 with `TS_UNACCEPTABLE` only selectors it accepts no part of. ranet3 never
@@ -1066,15 +1066,11 @@ net/ipv6/exthdrs_core.c:223-224, `seg6_get_srh`, net/ipv6/seg6.c:84-85, and
 `input_action_end_core`, net/ipv6/seg6_local.c:410-412 and 418-420 at Linux
 `940de590`).
 
-A packet so refused is answered where a search that steps past at most 16
-extension headers ends within them without finding an ICMPv6 error message or a
-Redirect, at any of the ends
-[the search for an error](../segment-routing.md#waypoints-and-packet-size)
-lists. One whose search ends unfinished, or finds an ICMPv6 error message or a
-Redirect, is dropped with no answer. RFC 8883 section 2.5 says a code 8
-Parameter Problem "SHOULD be sent when a node discards a packet with an
-extension header chain that exceeds a limit on the number of extension headers
-in the chain", and
+A packet so refused is answered or dropped as
+[local segments](../segment-routing.md#local-segments) gives. RFC 8883 section
+2.5 says a code 8 Parameter Problem "SHOULD be sent when a node discards a
+packet with an extension header chain that exceeds a limit on the number of
+extension headers in the chain", and
 [RFC 4443 section 2.4 (e.1)](https://www.rfc-editor.org/rfc/rfc4443.html#section-2.4)
 lets no ICMPv6 error answer another, which such a packet may be.
 
@@ -1169,13 +1165,13 @@ of the packet it answers, in either family and whatever router-id the node
 holds, for the reasons a tun read's answer does above. The answer about the
 packet a segment carries comes from that packet's destination, and the one about
 a segment that carries no packet from the segment's destination as `End` rewrote
-it, its next segment. So a SID sends its Time Exceeded, Parameter Problem and
-Destination Unreachable to no source an entry of this node's own reaches. Such a
-source is this node's own, as where a segment list it steered comes back to it,
-or an overlay source a peer forged. RFC 4443 sends each answer to the packet's
-source: the Packet Too Big of section 3.2, quoted above, the Destination
-Unreachable of section 3.1, the Parameter Problem of section 3.4, and the Time
-Exceeded of
+it, its next segment. So a SID sends the Time Exceeded, Parameter Problem and
+Destination Unreachable a refused segment gets to no source an entry of this
+node's own reaches. Such a source is this node's own, as where a segment list it
+steered comes back to it, or an overlay source a peer forged. RFC 4443 sends
+each answer to the packet's source: the Packet Too Big of section 3.2, quoted
+above, the Destination Unreachable of section 3.1, the Parameter Problem of
+section 3.4, and the Time Exceeded of
 [section 3.3](https://www.rfc-editor.org/rfc/rfc4443.html#section-3.3), where a
 router that takes a hop limit to zero "MUST discard the packet and originate an
 ICMPv6 Time Exceeded message with Code 0 to the source of the packet". The Time

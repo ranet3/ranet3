@@ -1001,8 +1001,9 @@ header, and its `count` how many such packets arrived since the last record,
 this one included. The same record is written at the debug level as
 `segments arrived at an end.dt46 with an ecn combination no tunnel sends`, and
 `ranet3_segments_ecn_unused_total` counts every one, as
-[segment routing](../segment-routing.md#steering) describes. Only a node on
-Linux holds a local segment, so the event is recorded there alone.
+[segment routing](../segment-routing.md#steering) describes. It is recorded
+wherever an `End.DT46` runs, on Linux and on macOS, as
+[platforms](../platforms.md#at-a-glance) give the local segments of each.
 
 A `netstack.answer.source` is recorded at start where the node holds a router-id
 or a SID, and again each time a reload moves one. Its `ipv4` and `ipv6` are the

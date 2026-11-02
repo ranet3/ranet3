@@ -156,11 +156,11 @@ counts it by the limit that held it back.
 A sender's flood of expired or refused packets spends only its own bucket, and
 no flood holds back path MTU discovery.
 
-Each answer draws once. A Linux router draws twice for a packet no route holds,
-from the one bucket it keeps for the packet's source: `ip_error` takes 1 second
-of tokens, from a bucket holding at most 5 seconds of them, before the answer is
-sent, and `icmpv4_xrlim_allow` takes 1 second more as it is sent
-(net/ipv4/route.c:119-120 and 1024-1037, net/ipv4/icmp.c:334-336 and
+An answer that draws on the limits draws once. A Linux router draws twice for a
+packet no route holds, from the one bucket it keeps for the packet's source:
+`ip_error` takes 1 second of tokens, from a bucket holding at most 5 seconds of
+them, before the answer is sent, and `icmpv4_xrlim_allow` takes 1 second more as
+it is sent (net/ipv4/route.c:119-120 and 1024-1037, net/ipv4/icmp.c:334-336 and
 net/ipv4/inetpeer.c:277-301 at Linux `940de590`). A source new to that router
 gets 2 Destination Unreachable answers to a burst, and none after while it sends
 more often than once a second. ranet3 answers such a burst from an IPv4 source 6

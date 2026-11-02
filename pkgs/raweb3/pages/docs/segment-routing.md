@@ -120,26 +120,33 @@ pointing at that header, and a packet behind one of the two that is not of its
 version or is shorter than that version's header, with code 0 pointing at its
 first octet.
 
-Either SID answers with Parameter Problem a header it cannot walk past: a
-routing header of another type with segments left, with code 0 pointing at its
-Routing Type, a hop-by-hop header anywhere but right behind the IPv6 header or
-an extension header of a kind it does not process, with code 1 pointing at the
-Next Header field that names it, a header the packet ends inside, with code 0
-pointing at the header's length, or at the IPv6 Payload Length where the packet
-ends before that or the header is a Fragment header, which has no length field,
-and a ninth header it would step past, with code 8 pointing at that header's
-first octet, as RFC 8883 section 2.5 answers too many extension headers. It
-answers code 8 where a search that steps past at most 16 extension headers ends
-within them without finding an ICMPv6 error message or a Redirect, at any of the
-ends [the search for an error](#waypoints-and-packet-size) lists, and drops the
-packet without an answer where that search ends unfinished or finds one, as RFC
-4443 section 2.4 (e.1) and (e.2) answer neither with an error. It drops a
-fragment of a larger packet without an answer. A SID's answer goes back only
-through the session the mesh routes its destination to, and only while that
-session is open and has room for it, so none reaches a source this node's own
-route reaches, this host or a network behind it, but the answers to a segment
-larger than its next session that [waypoints](#waypoints-and-packet-size) write
-into the tun. Each answer draws on the ICMP rate limits, and none answers a
+Either SID answers with Parameter Problem a header it cannot walk past:
+
+- a routing header of another type with segments left, with code 0 pointing at
+  its Routing Type
+- a hop-by-hop header anywhere but right behind the IPv6 header, with code 1
+  pointing at the Next Header field that names it
+- an extension header of a kind it does not process, with code 1 pointing at the
+  Next Header field that names it
+- a header the packet ends inside, with code 0 pointing at the header's length,
+  or at the IPv6 Payload Length where the packet ends before that or the header
+  is a Fragment header, which has no length field
+- a ninth header it would step past, with code 8 pointing at that header's first
+  octet, as RFC 8883 section 2.5 answers too many extension headers
+
+It answers code 8 only where a search that steps past at most 16 extension
+headers ends within them without finding an ICMPv6 error message or a Redirect,
+at any of the ends [the search for an error](#waypoints-and-packet-size) lists.
+Where that search ends unfinished or finds one, it drops the packet without an
+answer, since RFC 4443 section 2.4 (e.1) and (e.2) allow no error in answer to
+an ICMPv6 error or a Redirect. It drops a fragment of a larger packet without an
+answer. A SID's answer goes back only through the session the mesh routes its
+destination to, and only while that session is open and has room for it, so none
+reaches a source this node's own route reaches, this host or a network behind
+it, but the answers to a segment larger than its next session that
+[waypoints](#waypoints-and-packet-size) write into the tun. Each answer but
+Packet Too Big and fragmentation needed, which draw on none, draws on the
+[ICMP rate limits](path-mtu.md#packets-that-do-not-fit), and no answer goes to a
 packet no ICMP error may answer, as [waypoints](#waypoints-and-packet-size)
 describe. [Protocol deviations](design/protocol-deviations.md#icmp-answers) list
 the requirements these drops and answers depart from. When a list names several
@@ -441,26 +448,26 @@ packets a segment acts on meet, as [debugging](development/debug.md) describes.
 An egress segment's packets are counted 3 ways. Egressed is a packet handed to
 the exit. Refused is a packet whose outer source is outside every entry of the
 segment's allow list inside the overlay, whose inner source is outside the list,
-whose inner source it cannot read, whose inner source no router forwards, whose
-inner destination no router forwards but the limited broadcast and multicast, an
-IPv4 link-local one among them, whose inner packet the mesh routes no reply to,
-or whose inner destination lies inside the overlay or the mesh routes itself.
-Not ready is a packet the allow list and the other checks above let through
-whose family was not ready, as [exit nodes](exit-nodes.md#readiness) describes.
-It is this node's own state and is not counted among the dropped.
+whose inner source no router forwards, whose inner destination no router
+forwards but the limited broadcast and multicast, an IPv4 link-local one among
+them, whose inner packet the mesh routes no reply to, or whose inner destination
+lies inside the overlay or the mesh routes itself. Not ready is a packet the
+allow list and the other checks above let through whose family was not ready, as
+[exit nodes](exit-nodes.md#readiness) describes. It is this node's own state and
+is not counted among the dropped.
 
-| Metric                               | Meaning                                                                                                                                                                                                                                                                           |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                                                                                                                                                                                                                                    |
-| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh's forwarding decision                                                                                                                                                                                                                 |
-| `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on                                                                                                                                                                                                                                 |
-| `ranet3_segments_answered_total`     | ICMP errors sent for dropped packets                                                                                                                                                                                                                                              |
-| `ranet3_segments_egressed_total`     | packets an egress segment handed to the exit                                                                                                                                                                                                                                      |
-| `ranet3_segments_refused_total`      | packets a SID refused, from outside the overlay or an allow list's entries inside it, for an inner source outside the list or one it cannot read, an inner packet no router forwards, the mesh routing no reply to, or an inner destination inside the overlay or the mesh routes |
-| `ranet3_segments_not_ready_total`    | packets an egress segment let through whose family was not ready                                                                                                                                                                                                                  |
-| `ranet3_segments_ecn_unused_total`   | packets an `End.DT46` decapsulated whose ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them                                                                                                                                |
-| `ranet3_steered_total`               | packets a steering policy encapsulated, `cap.exit.via`'s path among them                                                                                                                                                                                                          |
-| `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route`                                                                                                                                                                                                                   |
+| Metric                               | Meaning                                                                                                                                                                                                                                                     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                                                                                                                                                                                                              |
+| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh's forwarding decision                                                                                                                                                                                           |
+| `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on                                                                                                                                                                                                           |
+| `ranet3_segments_answered_total`     | ICMP errors sent for dropped packets                                                                                                                                                                                                                        |
+| `ranet3_segments_egressed_total`     | packets an egress segment handed to the exit                                                                                                                                                                                                                |
+| `ranet3_segments_refused_total`      | packets a SID refused, from outside the overlay or an allow list's entries inside it, for an inner source outside the list, an inner packet no router forwards, the mesh routing no reply to, or an inner destination inside the overlay or the mesh routes |
+| `ranet3_segments_not_ready_total`    | packets an egress segment let through whose family was not ready                                                                                                                                                                                            |
+| `ranet3_segments_ecn_unused_total`   | packets an `End.DT46` decapsulated whose ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them                                                                                                          |
+| `ranet3_steered_total`               | packets a steering policy encapsulated, `cap.exit.via`'s path among them                                                                                                                                                                                    |
+| `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route`                                                                                                                                                                                             |
 
 ## Interoperation with the Linux kernel
 

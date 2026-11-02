@@ -24,20 +24,21 @@ It also reports 3 subsystems that run inside the daemon. The route reconciler is
 reported as routes installed and skipped, when its last pass finished, whether
 that pass failed and, on Linux, the overlay prefixes and endpoints another
 program's rule takes. Segment routing is reported as what this node did for
-peers (forwarded, delivered, dropped, answered, and for an egress segment
-egressed, refused and not ready) and what it did with its own traffic (steered,
-and dropped with a reason). `cap.egress` is reported as rules installed,
-connections translated and connections a class of `none` left untranslated,
-packets refused past their source's share and packets dropped with no tracked
-flow in each family, the host's connection table against its maximum, other
-translation found at the same hook, when its last pass finished and whether that
-pass failed, whether each family is [ready](exit-nodes.md#readiness), and the 2
-prefix counts whose difference says this node is withholding an advertisement it
-cannot stand behind. The refused and dropped counts are read from the limit
-chain's rules at each pass, so they lag by up to 1 pass, and a rewrite of the
-chains starts them from 0, which a scrape reads as a counter reset. A pass that
-cannot read them back keeps the last pass's, unless it rewrote the chains, whose
-counts start from 0 whether or not it read them back.
+peers (forwarded, delivered, dropped, answered, refused, the packets an
+`End.DT46` took out of an unused ECN combination, and for an egress segment
+egressed and not ready) and what it did with its own traffic (steered, and
+dropped with a reason). `cap.egress` is reported as rules installed, connections
+translated and connections a class of `none` left untranslated, packets refused
+past their source's share and packets dropped with no tracked flow in each
+family, the host's connection table against its maximum, other translation found
+at the same hook, when its last pass finished and whether that pass failed,
+whether each family is [ready](exit-nodes.md#readiness), and the 2 prefix counts
+whose difference says this node is withholding an advertisement it cannot stand
+behind. The refused and dropped counts are read from the limit chain's rules at
+each pass, so they lag by up to 1 pass, and a rewrite of the chains starts them
+from 0, which a scrape reads as a counter reset. A pass that cannot read them
+back keeps the last pass's, unless it rewrote the chains, whose counts start
+from 0 whether or not it read them back.
 
 [The antispoof filter](antispoof.md) is reported as whether its table reads
 back, both chains and every set, and the packets each of its drops counted, by
@@ -99,7 +100,7 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_segments_dropped_total`          | counter | none                 | Packets to one of this node's segments that it would not act on, among them an End.DT46's inner Not-ECT packet that arrived under an outer CE, which a [trace](development/debug.md#trace-records) records as `ecn`                                                                                                                                                                                                                                             | always                                                          |
 | `ranet3_segments_answered_total`         | counter | none                 | ICMP errors sent for dropped packets                                                                                                                                                                                                                                                                                                                                                                                                                            | always                                                          |
 | `ranet3_segments_egressed_total`         | counter | none                 | Packets an egress segment handed to the exit to leave the mesh                                                                                                                                                                                                                                                                                                                                                                                                  | always                                                          |
-| `ranet3_segments_refused_total`          | counter | none                 | Packets a SID refused, for an outer source outside the overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside the overlay or an inner source outside the list, or an egress segment's inner packet whose source it cannot read, that no router forwards, that the mesh routes no reply to or whose destination lies inside the overlay or the mesh routes itself, counted dropped, and never answered         | always                                                          |
+| `ranet3_segments_refused_total`          | counter | none                 | Packets a SID refused, for an outer source outside the overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside the overlay or an inner source outside the list, or an egress segment's inner packet that no router forwards, that the mesh routes no reply to or whose destination lies inside the overlay or the mesh routes itself, counted dropped, and never answered                                      | always                                                          |
 | `ranet3_segments_not_ready_total`        | counter | none                 | Packets an egress segment let through and threw away because their family was not ready, not counted among the dropped                                                                                                                                                                                                                                                                                                                                          | always                                                          |
 | `ranet3_segments_ecn_unused_total`       | counter | none                 | Packets an End.DT46 behavior decapsulated whose inner and outer ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them                                                                                                                                                                                                                                                                                       | always                                                          |
 | `ranet3_steered_total`                   | counter | none                 | This node's own packets a steering policy encapsulated                                                                                                                                                                                                                                                                                                                                                                                                          | always                                                          |

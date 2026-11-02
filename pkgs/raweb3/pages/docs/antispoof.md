@@ -131,13 +131,13 @@ so a lease that comes or goes moves the carve-outs on the next pass.
   lifts, and what [the exemptions](#exemptions) carve. The chain drops such a
   source from any interface, the carve-out's own among them, so a neighbor on
   the leased network cannot reach the host as a mesh peer or as this node.
-- An address of a range this node announces leaves them where, for each
-  carve-out holding it, an exemption under [a name](#exemptions) matching the
-  carve-out's interface holds it too. The sets are one for every interface, so
-  where any carve-out holding the address is on an interface no such exemption
-  names, the address stays carved and is dropped from every interface. This
-  node's node addresses and another node's prefix inside the range stay carved,
-  as [the exemptions](#exemptions) give.
+- An address of a range this node announces leaves `carved4` and `carved6`
+  where, for each carve-out holding it, an exemption under [a name](#exemptions)
+  matching the carve-out's interface holds it too. The sets are one for every
+  interface, so where any carve-out holding the address is on an interface no
+  such exemption names, the address stays carved and is dropped from every
+  interface. This node's addresses and another node's prefix inside the range
+  stay carved, as [the exemptions](#exemptions) give.
 - The carve-out's own accept then passes the rest of the carve-out from its own
   interface alone, so the gateway and the network's other neighbors reach the
   host. The same addresses from any other interface meet the overlay's drop,
