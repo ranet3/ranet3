@@ -50,9 +50,8 @@ type pendingSeqno struct {
 	// ownSeqno and ownSentAt are the last request this node sent on its own
 	// behalf, and the entry did not already cover, while the entry of a
 	// forwarded one was kept. A covered one still goes out but is not
-	// recorded. They are held beside
-	// the forward's fields, which that request leaves as they are, so it still
-	// holds back a request it makes redundant.
+	// recorded. They are held beside the forward's fields, which that request
+	// leaves as they are, so it still holds back a request it makes redundant.
 	ownSeqno  uint16
 	ownSentAt time.Time
 }
@@ -869,9 +868,8 @@ func (s *Speaker) Run(ctx context.Context) error {
 		s.applyLostLocked()
 		s.sweepExpiredLocked(now)
 		var actions []sendAction
-		// RFC 8966 section 3.1's jitter and spacing are left out: each link is
-		// one ESP session to one neighbor, with no medium shared with other
-		// speakers whose sends could fall into step or collide.
+		// RFC 8966 section 3.1's jitter and spacing are left out, for the
+		// reason the protocol deviations page gives under Sending and link cost
 		helloDue := !now.Before(s.nextHello)
 		if helloDue {
 			s.nextHello = now.Add(s.hello)

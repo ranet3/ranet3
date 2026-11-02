@@ -388,8 +388,8 @@ func (s *Speaker) helloAction(n *neighborState, now time.Time) sendAction {
 	if n.heard && !n.isAlive(now) {
 		rxcost = MetricInfinity
 	}
-	// RFC 9616 section 3.2 takes one round-trip sample from each Hello and IHU
-	// pair a node receives, so an IHU goes with every Hello.
+	// an IHU goes with every Hello, against RFC 8966 section 3.4.2, for the
+	// reason the protocol deviations page gives under Sending and link cost
 	ihu := IHU{RxCost: rxcost, Interval: centis}
 	if n.haveTheirHello {
 		ihu.OriginTS, ihu.ReceiveTS, ihu.HasTS = n.theirHelloTxTS, n.theirHelloRxTS, true
@@ -676,11 +676,11 @@ func (s *Speaker) triggeredActions(now time.Time) []sendAction {
 
 // triggerPace is the least time between two triggered updates to one neighbor.
 // Section 3.7.2 makes the update for a changed router-id urgent, and section
-// 3.8.1.2 the update that answers a forwarded request, and Appendix B
-// RECOMMENDS an urgent timeout of 0.2 s. Such an update that follows another
-// inside the pace waits for it, so a route that flaps costs each neighbor one
-// update a pace. Half the Hello interval keeps every other TLV inside the time
-// section 3.1 gives it.
+// 3.8.1.2 the update that answers a forwarded request, and such an update that
+// follows another inside the pace waits for it, past Appendix B's urgent
+// timeout of 0.2 s. The protocol deviations page gives the reason under
+// Updates and requests, and why half the Hello interval bounds the pace under
+// Sending and link cost.
 func (s *Speaker) triggerPace() time.Duration {
 	return min(maxTriggerPace, s.update/2, s.hello/2)
 }
@@ -766,8 +766,9 @@ func aeFor(p netip.Prefix) uint8 {
 	return AEIPv6
 }
 
-// rememberStarved records a prefix whose seqno request has just gone out, so
-// it can be repeated if no feasible route appears. RFC 8966 section 3.8.2.1.
+// rememberStarved records a prefix that starved, whether or not its seqno
+// request went out, so the request is repeated if no feasible route appears.
+// RFC 8966 section 3.8.2.1.
 //
 // It is bounded by maxStarveRetries and by maxStarveRetriesPerNeighbor. The
 // index carries a router id a neighbor writes into a packet, so a neighbor

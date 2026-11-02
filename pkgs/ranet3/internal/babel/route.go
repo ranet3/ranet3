@@ -107,9 +107,10 @@ type routeTable struct {
 	// Both are drained by the Speaker, which owns all transmission.
 	dirty   map[routeKey]struct{}
 	starved []starveRequest
-	// tau is the hysteresis time constant of Appendix A.3. Zero disables
-	// hysteresis, leaving plain lowest-metric selection. trigger is how much
-	// worse a selected route must get before it is worth a triggered update.
+	// tau is the hysteresis time constant of Appendix A.3. Zero keeps each
+	// smoothed metric at the route's current one, which margin still weighs.
+	// trigger is how much worse a selected route must get before it is worth
+	// a triggered update.
 	tau     time.Duration
 	trigger uint16
 	// margin is cap.babel.margin, see wins

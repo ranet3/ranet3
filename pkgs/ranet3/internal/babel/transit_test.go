@@ -1213,7 +1213,7 @@ func TestPrefixStarvedAgainAfterItsRepeatsAreSpentStartsANewSeries(t *testing.T)
 	a.mu.Lock()
 	retry := a.starveRetries[id]
 	if retry != nil {
-		retry.attempts = seqnoRequestRetries // its repeats spent, rather than waiting out 24 s of them
+		retry.attempts = seqnoRequestRetries // its repeats spent, rather than waiting out their delays
 	}
 	a.mu.Unlock()
 	if retry == nil {
