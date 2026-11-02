@@ -157,11 +157,10 @@ func nftFamily(family uint8) uint8 {
 // that is missing, holds its family not ready the same way, and the next pass
 // deletes or writes it, but for a stray one a rule of another writer's chain
 // or an element of a named map goes to, which the fault names and which stays
-// until that rule or element goes. The
-// elements of the set a line looks its sources up in are read with the line.
-// A rule in any other table or chain is skipped. This backend
-// never removes one in another table, and one in another chain of its table
-// goes with the table whenever the table is removed whole.
+// until that rule or element goes. The elements of the set a line looks its
+// sources up in are read with the line. A rule in any other table or chain is
+// skipped. This backend never removes one in another table, and one in another
+// chain of its table goes with the table whenever the table is removed whole.
 func (n *natTables) Rules(desired []Rule) (map[uint8]chainReadback, error) {
 	return n.read(n.conn, desired, true)
 }

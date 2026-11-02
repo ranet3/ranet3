@@ -500,12 +500,11 @@ func TestNftablesRewritesALineEditedUnderItsComment(t *testing.T) {
 // the 2 classes that translate inside it reads back ready, and a second pass
 // rewrites nothing. Its line another writer makes an accept under its comment,
 // its line written again under its comment over a set holding an element more
-// or missing its second, a chain
-// named as a class of none's that no class writes, and a class's chain deleted
-// once its pass is made an accept each read back as a fault of the ip family
-// alone naming the line or the chain, and the next pass writes the line back,
-// deletes the stray chain or writes the missing one, and reads both families
-// ready
+// or missing its second, a chain named as a class of none's that no class
+// writes, and a class's chain deleted once its pass is made an accept each read
+// back as a fault of the ip family alone naming the line or the chain, and the
+// next pass writes the line back, deletes the stray chain or writes the missing
+// one, and reads both families ready
 func TestNftablesReadsTheChainsOfClassesOfNoneBack(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")

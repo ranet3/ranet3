@@ -11,14 +11,15 @@
 //
 // On linux the translation is an nftables table named after this tool, one per
 // address family, holding a nat postrouting chain that translates, the timeout
-// objects it attaches, and a filter forward chain with a set that holds each
-// mesh source under a class that translates to its share of the flows
-// (exit-nodes.md, "Each source's share of the flows"). That name is the
+// objects it attaches, a filter forward chain with a set that holds each mesh
+// source under a class that translates to its share of the flows
+// (exit-nodes.md, "Each source's share of the flows"), and a regular chain for
+// each class of none, which that class's pass goes to. That name is the
 // ownership marker, the way Table.Proto is the reconciler's in internal/kernel.
 // This package creates the table, writes only inside it and withdraws it whole
 // at shutdown. It reads other writers' tables, chains and rules to find its own
 // and to report conflicts, and writes, replaces or deletes nothing outside its
-// own tables. A rule another writer puts in this package's chain is removed by
+// own tables. A rule another writer puts in this package's chains is removed by
 // the next pass. Other source translation already on the host is reported
 // rather than fought over: several nat postrouting chains coexist at the same
 // hook, the first to translate a connection wins it, and taking somebody else's
@@ -64,9 +65,11 @@
 // It is a second owner beside Translator, with its own run goroutine, socket
 // and change monitor, and neither writes, replaces or deletes the other's
 // table. The filter keeps its table through `ranet3 down`, since it guards
-// the host's links rather than the mesh, and withdraws it last at shutdown,
-// after nothing routes into the tun. Its readiness is a report, in status and
-// the metrics, and holds back nothing the translator or a segment carries.
+// the host's links rather than the mesh, withdraws it last at a stop the
+// operator asks for, after nothing routes into the tun, and leaves it at the
+// stop for the mesh's failure (antispoof.md, "Where it runs"). Its readiness
+// is a report, in status and the metrics, and holds back nothing the
+// translator or a segment carries.
 package kernel
 
 import (
@@ -1059,8 +1062,9 @@ func (t *Translator) classRules(family uint8, direction Direction, from netip.Pr
 // mesh from each prefix an In rule translates. So a packet under a class that
 // translates meets one limit, one under a class of none meets none, one
 // outside a class of none meets its pass alone, and one under a class of none
-// that directly holds a class that translates meets 4 screens there, whatever
-// their count, and none under one that directly holds none.
+// that directly holds a class that translates meets one rule of each kind of
+// screen there, whatever their count, and none under one that directly holds
+// none.
 func (t *Translator) screens(family uint8) []Rule {
 	classes := t.cfg.Classes(family)
 	var out []Rule

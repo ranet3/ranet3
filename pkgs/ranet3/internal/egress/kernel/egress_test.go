@@ -311,7 +311,7 @@ func TestConfiguredSourceReplacesTheHostsOwnChoice(t *testing.T) {
 // Information Request and Reply out of the mesh and into it. A class of none's
 // pass follows, then from every source the rule taking what no flow is tracked
 // for, the refusals of DCCP and UDP-Lite and the limit. The chain of the class
-// of none comes next, with the same 4 rules from the sources of the classes
+// of none comes next, with the same rules from the sources of the classes
 // that translate inside it, matched as one set. Each class's translation rules come
 // together, the longest From first since the first translation ends the chain.
 // A class that translates attaches the exit's timeouts first, by a rule for
@@ -390,7 +390,7 @@ func TestClassesAreWrittenLongestFromFirst(t *testing.T) {
 // The limit counts the flows of a class that translates alone. A class of none
 // sends its sources on to its own chain ahead of every limit of the limit's
 // chain, a class that translates inside it counts its flows in that chain, by
-// the 4 rules taking the sources of every such class as one set, one inside
+// the rules taking the sources of every such class as one set, one inside
 // that class at that class's limit alone, so the set holds the class and not
 // the one inside it, and one inside no class of none, as a source no class
 // takes, at the limit from every source.

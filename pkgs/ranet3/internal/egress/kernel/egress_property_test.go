@@ -292,12 +292,12 @@ func forwardWalk(desired []Rule, packet crossing) []Rule {
 
 // An established IPv4 packet out of the mesh meets one rule for a class of none
 // outside it, its pass, whatever classes it holds, one for each class of none
-// it is under, and in the chain of the class of none nearest it 4 screens,
-// one of each kind for the classes that translate inside that class, whatever
-// their count, here every count from 1 to 31. So a packet under the default or
-// under one class of none meets 9 rules wherever a class translates inside it.
-// No packet meets more rules than it would with every class's rules in the
-// forward chain itself: 4 ICMP drops, a rule taking what no flow is tracked for
+// it is under, and in the chain of the class of none nearest it one screen of
+// each kind for the classes that translate inside that class, whatever their
+// count. So a packet under the default or under one class of none meets as many
+// rules whatever the count of classes that translate inside it. No packet meets
+// more rules than it would with every class's rules in the forward chain
+// itself: the ICMP drops, a rule taking what no flow is tracked for
 // from each class down to the last of none and from every source, the limit,
 // then the same walk for DCCP and again for UDP-Lite.
 func TestPacketsMeetOneRuleForEachClassOfNoneOutsideThem(t *testing.T) {
