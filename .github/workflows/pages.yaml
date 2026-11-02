@@ -41,6 +41,7 @@ jobs:
 
   Deploy:
     needs: Build
+    if: github.repository == 'ranet3/ranet3'
     runs-on: ubuntu-latest
     permissions:
       pages: write
