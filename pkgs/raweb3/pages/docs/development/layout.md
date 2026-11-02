@@ -142,7 +142,9 @@ names no component or holds content. A relative link to a `.md` file serves as
 the path of that page.
 
 `.github/workflows/pages.yaml` deploys `raweb3` to GitHub Pages when a push to
-`master` changes `pkgs/raweb3`, the workflow or `flake.lock`.
+`master` of `ranet3/ranet3` changes `pkgs/raweb3`, the workflow, `flake.nix`,
+`flake.lock`, `lib` or `modules/flake`. In a fork the workflow builds the site
+and deploys nothing.
 
 ## Flake outputs
 
