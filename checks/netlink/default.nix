@@ -130,7 +130,7 @@ testers.runNixOSTest {
     # hands back for a diff to compare against, is checked here and nowhere
     # else short of the full exit node arm.
     out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow|RewritesALineEditedUnderItsComment|ReadsTheChainsOfClassesOfNoneBack|NamesTheChainThatKeepsAStrayChainOfNone)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged|RefillsAFlushedSet|HoldsTheEntryChainAloneWithNoBorder|TakesOverATableWithAStrayChain|OutlivesAKilledOwner)?$|^TestBorderPassSendsAOneLANChangeAsItsDelta$' 2>&1"
+        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow|RewritesALineEditedUnderItsComment|ReadsTheChainsOfClassesOfNoneBack|NamesTheChainThatKeepsAStrayChainOfNone)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged|RefillsAFlushedSet|HoldsTheEntryChainAloneWithNoBorder|TakesOverATableWithAStrayChain|OutlivesAKilledOwner)?$|^TestBorderPassSendsAOneLANChangeAsItsDelta$|^TestBorderTakesTheExemptOwnRangeFromItsCarveOutsLinkAlone$|^TestBorderKeepsTheOwnRangeCarvedWhereACarveOutHoldingItIsNotExempt$' 2>&1"
     )
     print(out)
     assert "SKIP" not in out, f"the nftables round trips skipped themselves under root:\n{out}"
@@ -141,6 +141,8 @@ testers.runNixOSTest {
     assert "--- PASS: TestBorderRoundTripTakesOverATableWithAStrayChain" in out, f"the start over a table with a stray chain did not run:\n{out}"
     assert "--- PASS: TestBorderRoundTripOutlivesAKilledOwner" in out, f"the antispoof filter's table outliving its owner did not run:\n{out}"
     assert "--- PASS: TestBorderPassSendsAOneLANChangeAsItsDelta" in out, f"the antispoof filter's delta of one LAN did not run:\n{out}"
+    assert "--- PASS: TestBorderTakesTheExemptOwnRangeFromItsCarveOutsLinkAlone" in out, f"the gateway's exempt range on its carve-out's link did not run:\n{out}"
+    assert "--- PASS: TestBorderKeepsTheOwnRangeCarvedWhereACarveOutHoldingItIsNotExempt" in out, f"the gateway's range under a carve-out no exemption names did not run:\n{out}"
     assert "--- PASS: TestNftablesRemakesATableHoldingAStaleTimeout" in out, f"the stale timeout's remake did not run:\n{out}"
     assert "--- PASS: TestNftablesKeepsTheSetsCountsAcrossARewrite" in out, f"the sets' counts across a rewrite did not run:\n{out}"
     assert "--- PASS: TestNftablesRemakesATableWhoseSetCountsAnotherLimit" in out, f"the remake of a set counting another limit did not run:\n{out}"
@@ -149,7 +151,7 @@ testers.runNixOSTest {
     assert "--- PASS: TestNftablesReadsTheChainsOfClassesOfNoneBack" in out, f"the readback of the chains of classes of none did not run:\n{out}"
     assert "--- PASS: TestNftablesNamesTheChainThatKeepsAStrayChainOfNone" in out, f"the chain keeping a stray chain of none did not run:\n{out}"
     ran = out.count("--- PASS")
-    assert ran >= 19, f"only {ran} nftables round trips ran:\n{out}"
+    assert ran >= 21, f"only {ran} nftables round trips ran:\n{out}"
 
     # the encoder's sets, their elements, the lookup, ct with a direction and the set messages of the monitor, each
     # acting on loopback's datagrams, and woken by another writer, and a set of ten thousand intervals filled in one batch
