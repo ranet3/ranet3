@@ -22,7 +22,7 @@ type ProbeSource interface {
 
 // serveProbe is an action, so it takes a POST and the body a write takes
 func serveProbe(d *debugServer, w http.ResponseWriter, r *http.Request) {
-	journal(r)
+	journal(r, "control debug call")
 	if !writing(w, r) {
 		return
 	}

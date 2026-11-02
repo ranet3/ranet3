@@ -250,6 +250,48 @@ func TestUnnamedCallerIsJournaledWithoutUIDOrPID(t *testing.T) {
 	}
 }
 
+// every verb is journaled with its path and the caller's uid and pid, before its own checks, so a GET it refuses leaves its line too
+// and no read is journaled
+func TestVerbsAreJournaledWithTheirCallerAndReadsAreNot(t *testing.T) {
+	logged := journaling(t)
+	server := injected(t, &writingSource{}, Caller{UID: 4242, PID: 77})
+	for _, path := range []string{PathDisable, PathEnable, PathRedial, PathRekey, PathReload, PathDown, PathUp} {
+		body := `{"subsystem":"steering","peer":"example/gateway"}`
+		if answer := post(t, server.URL+path, body); answer.StatusCode != http.StatusOK {
+			t.Errorf("uid 4242 asking for %s was answered %s", path, answer.Status)
+		}
+		line := journaledLine(logged, path)
+		for _, want := range []string{`msg="control verb"`, "uid=4242", "pid=77"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("%s was journaled as %q, want it to carry %q", path, line, want)
+			}
+		}
+	}
+	if status, _ := get(t, server.Client(), server.URL+PathDown); status != http.StatusMethodNotAllowed {
+		t.Errorf("a GET of down was answered %d", status)
+	}
+	if answer := post(t, server.URL+PathDown, "not json"); answer.StatusCode != http.StatusBadRequest {
+		t.Errorf("a down whose body is not JSON was answered %s", answer.Status)
+	}
+	if lines := strings.Count(logged.String(), "path="+PathDown+" "); lines != 3 {
+		t.Errorf("a POST, a refused GET and a POST of a body that is not JSON to down left %d lines, want 3", lines)
+	}
+	readsOnly := injected(t, fakeSource{}, Caller{UID: 4242, PID: 77})
+	if answer := post(t, readsOnly.URL+PathUp, "{}"); answer.StatusCode != http.StatusNotImplemented {
+		t.Errorf("an up to a node that serves the reads only was answered %s", answer.Status)
+	}
+	if lines := strings.Count(logged.String(), "path="+PathUp+" "); lines != 2 {
+		t.Errorf("an up to a writing node and one to a node that serves the reads only left %d lines, want 2", lines)
+	}
+	before := logged.String()
+	for _, path := range []string{PathStatus, PathNeighbors, PathRoutes, PathSessions, PathPeers, PathMetrics, PathDebugRuntime} {
+		get(t, server.Client(), server.URL+path)
+	}
+	if after := logged.String(); after != before {
+		t.Errorf("the reads were journaled as %q", strings.TrimPrefix(after, before))
+	}
+}
+
 // lockedBuffer takes what a server goroutine logs while the test reads it
 type lockedBuffer struct {
 	mu   sync.Mutex

@@ -262,6 +262,7 @@ func scrape(mux *http.ServeMux, path string, src Source) {
 // restated.
 func act(mux *http.ServeMux, path string, sink Sink, run func(context.Context, Sink, Request) (Result, error)) {
 	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		journal(r, "control verb")
 		if !writing(w, r) {
 			return
 		}

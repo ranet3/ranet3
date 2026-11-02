@@ -76,14 +76,14 @@ func (d *debugServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route.serve(d, w, r)
 }
 
-// journal logs a probe or a trace request with its path and its caller where the socket names one
+// journal logs a verb, a probe or a trace request as message with its path and its caller where the socket names one
 // the log outlives the event ring, which a restart clears and the caller's own verbs can push the record out of
-func journal(r *http.Request, attrs ...any) {
+func journal(r *http.Request, message string, attrs ...any) {
 	line := []any{"path", r.URL.Path}
 	if caller, known := CallerOf(r.Context()); known {
 		line = append(line, "uid", caller.UID, "pid", caller.PID)
 	}
-	slog.Info("control debug call", append(line, attrs...)...)
+	slog.Info(message, append(line, attrs...)...)
 }
 
 // DebugPaths is every debug path this build serves
