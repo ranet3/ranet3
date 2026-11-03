@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -470,6 +471,36 @@ func TestDecisionDropsMartians(t *testing.T) {
 	}
 }
 
+// an answer the decision builds for a session whose budget has no room for it goes nowhere and is counted unsent
+func TestDecisionCountsAnAnswerWithNowhereToGoUnsent(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		raw  []byte
+		want TransitCounters
+	}{
+		{"IPv4 expired", withTTL(udpPacket(transitSender[4], transitFar[4], 200, true), 1), TransitCounters{Expired: 1, Unsent: 1}},
+		{"IPv6 expired", withTTL(udpPacket(transitSender[6], transitFar[6], 200, true), 1), TransitCounters{Expired: 1, Unsent: 1}},
+		{"beyond the scope of its source", udpPacket(segAddr("fe80::1"), transitFar[6], 100, false), TransitCounters{Martian: 1, Unsent: 1}},
+	} {
+		t.Run(c.name+" through a full session", func(t *testing.T) {
+			n := newTransitNode(t, DefaultMTU)
+			full := n.fromPeer.reserveBatchNow(1, peerDataBudget)
+			if full == nil {
+				t.Fatal("an empty budget refused a read of all of it")
+			}
+			n.m.DeliverInboundBatch(framed(c.raw), DefaultMTU, n.fromPeer)
+			got := n.m.TransitCounters()
+			_ = full.abandon()
+			if back, out := n.from.packets(t), n.out.packets(t); len(back)+len(out) != 0 {
+				t.Errorf("the session was sent %x and the next hop %x, want nothing", back, out)
+			}
+			if got != c.want {
+				t.Errorf("the decision counted %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
 // the answer beyond the scope of a link-local source draws on that source's bucket and on the node's cap, as every answer of the decision does
 // so a burst from one link-local source to several destinations gets its bucket's burst answered and the bucket withholds the rest
 // while a packet from a second link-local source to one of those destinations is answered from a bucket of its own
@@ -504,17 +535,86 @@ func TestDecisionAnswersBeyondScopeUnderTheBucketOfTheirSource(t *testing.T) {
 	}
 }
 
-// a packet of no session has no link its IPv6 link-local source could be on, so nothing answers it
+// a packet of no session has no link its IPv6 link-local source could be on, so nothing answers it, and its answer is counted unsent, drawing on neither limit
 func TestDecisionAnswersNoLinkLocalSourceOfNoSession(t *testing.T) {
 	n := newTransitNode(t, DefaultMTU)
 	n.m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), n.outPeer)
-	n.m.DeliverInbound(udpPacket(segAddr("fe80::1"), transitFar[6], 100, false), 0)
+	// one past the source's bucket, so a draw on it would withhold the last
+	for range icmpSourceBurst + 1 {
+		n.m.DeliverInbound(udpPacket(segAddr("fe80::1"), transitFar[6], 100, false), 0)
+	}
 	tun, out, back := n.deliver(t)
 	if len(tun)+len(out)+len(back) != 0 {
 		t.Errorf("a link-local source of no session reached the tun %x, the next hop %x or a session %x", tun, out, back)
 	}
-	if got := n.m.TransitCounters(); got != (TransitCounters{Martian: 1}) {
-		t.Errorf("a link-local source of no session counted %+v", got)
+	if got := n.m.TransitCounters(); got != (TransitCounters{Martian: icmpSourceBurst + 1, Unsent: icmpSourceBurst + 1}) {
+		t.Errorf("%d packets from a link-local source of no session counted %+v, want each unsent", icmpSourceBurst+1, got)
+	}
+	if source, node := n.m.ICMPWithheld(); source+node != 0 {
+		t.Errorf("%d answers no session carries drew on the limits, which withheld %d by source and %d by the cap", icmpSourceBurst+1, source, node)
+	}
+}
+
+// an ICMPv6 error from a link-local source of no session is due no answer, so it counts martian alone and no unsent, and is traced an answer not answerable
+func TestDecisionCountsNoAnswerUnsentToALinkLocalErrorOfNoSession(t *testing.T) {
+	for _, traced := range []bool{false, true} {
+		t.Run(fmt.Sprintf("traced %t", traced), func(t *testing.T) {
+			n := newTransitNode(t, DefaultMTU)
+			n.m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), n.outPeer)
+			var feed *TraceFeed
+			if traced {
+				feed = openTrace(t, n.m, TraceFilter{}, 0, control.TraceRateMax)
+			}
+			n.m.DeliverInbound(icmpv6Error(segAddr("fe80::1"), transitFar[6], 200), 0)
+			tun, out, back := n.deliver(t)
+			if len(tun)+len(out)+len(back) != 0 {
+				t.Errorf("an ICMPv6 error from a link-local source of no session reached the tun %x, the next hop %x or a session %x", tun, out, back)
+			}
+			if got := n.m.TransitCounters(); got != (TransitCounters{Martian: 1}) {
+				t.Errorf("an ICMPv6 error from a link-local source of no session counted %+v, want martian alone", got)
+			}
+			if !traced {
+				return
+			}
+			want := TraceRecord{Decision: TraceAnswer, Reason: "martian", Answer: "beyond_scope", Outcome: TraceNotAnswerable}
+			if records := queued(feed); len(records) != 1 || !reflect.DeepEqual(decisionOf(records[0]), want) {
+				t.Errorf("the decision recorded %+v, want %+v", records, want)
+			}
+		})
+	}
+}
+
+// unbuiltRuns is how many answers an allocation count averages over
+const unbuiltRuns = 100
+
+// an answer due that no way back carries is counted unsent and never built, to a source only a counted default reaches as beyond the scope of a link-local source of no session
+func TestAnswerNoWayBackCarriesIsNeverBuilt(t *testing.T) {
+	n := newTransitNode(t, DefaultMTU)
+	n.m.Routes.Set(netip.Prefix{}, exitShapes[0].prefixes[6][0], Local)
+	toStranger := udpPacket(transitStranger[6], transitUnrouted[6], 200, true)
+	linkLocal := udpPacket(segAddr("fe80::1"), transitFar[6], 200, false)
+	for _, c := range []struct {
+		name   string
+		answer func() TraceOutcome
+	}{
+		{"to a source only a counted default reaches", func() TraceOutcome {
+			return n.m.answerTaking(toStranger, 6, answerNoRoute, 0, (*Mesh).takeICMPToken)
+		}},
+		{"beyond the scope of a link-local source of no session", func() TraceOutcome {
+			return n.m.answerBeyondScope(linkLocal, nil, (*Mesh).takeICMPToken)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			before := n.m.TransitCounters().Unsent
+			fate := TraceSent
+			if allocs := testing.AllocsPerRun(unbuiltRuns, func() { fate = c.answer() }); allocs != 0 || fate != TraceUnsent {
+				t.Errorf("an answer no way back carries allocated %.1f times and met %v, want none and unsent", allocs, fate)
+			}
+			// AllocsPerRun runs the answer once more to warm up
+			if got := n.m.TransitCounters().Unsent - before; got != unbuiltRuns+1 {
+				t.Errorf("%d answers counted %d unsent", unbuiltRuns+1, got)
+			}
+		})
 	}
 }
 
@@ -859,7 +959,7 @@ func TestDecisionAnswersWithoutARouterID(t *testing.T) {
 // an answer to a packet this host or a network behind it sent goes into the tun, from the answered packet's destination
 // the one source every reverse path check of the host takes, where the router-id is an address of the host itself
 // the reply's route decides it, so where a peer routes the source from a source prefix holding the destination the answer goes back through the session
-// and a source only an entry of this node's counting as a default reaches is no network behind this host, so it gets no answer at all and draws on neither limit
+// and a source only an entry of this node's counting as a default reaches is no network behind this host, so it gets no answer at all, counted unsent, and draws on neither limit
 func TestDecisionAnswersThisHostIntoTheTun(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		for _, c := range []struct {
@@ -892,8 +992,8 @@ func TestDecisionAnswersThisHostIntoTheTun(t *testing.T) {
 					if len(out)+len(tun)+len(back) != 0 {
 						t.Errorf("the next hop was sent %x, a session %x and the tun took %x, want nothing", out, back, tun)
 					}
-					if got := n.m.TransitCounters(); got != (TransitCounters{NoRoute: icmpSourceBurst + 1}) {
-						t.Errorf("%d unanswered drops counted %+v", icmpSourceBurst+1, got)
+					if got := n.m.TransitCounters(); got != (TransitCounters{NoRoute: icmpSourceBurst + 1, Unsent: icmpSourceBurst + 1}) {
+						t.Errorf("%d unanswered drops counted %+v, want each unsent", icmpSourceBurst+1, got)
 					}
 					if source, node := n.m.ICMPWithheld(); source+node != 0 {
 						t.Errorf("%d unanswered drops drew on the limits, which withheld %d by source and %d by the cap", icmpSourceBurst+1, source, node)

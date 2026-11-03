@@ -60,12 +60,14 @@ const (
 	// transitLooped counts reads off the tun to a destination of this node's own, which the mesh could only hand back to the tun
 	transitLooped
 	transitAnswered
+	// transitUnsent counts the answers built for, or due to, a source the mesh routes them no way back to, or whose session had no room for them
+	transitUnsent
 	transitReasonCount
 )
 
 // transitReasonNames name each reason in the drop report, its event and a trace record, each drop from transitExpired to transitLooped as control.TransitDropReasons labels it
 var transitReasonNames = func() (names [transitReasonCount]string) {
-	names[transitForwarded], names[transitDelivered], names[transitAnswered] = "forwarded", "delivered", "answered"
+	names[transitForwarded], names[transitDelivered], names[transitAnswered], names[transitUnsent] = "forwarded", "delivered", "answered", "unsent"
 	for i, reason := range control.TransitDropReasons {
 		names[transitExpired+transitReason(i)] = reason.Label
 	}
@@ -145,7 +147,8 @@ type TransitCounters struct {
 	// Answered counts the ICMP errors sent about dropped packets and reads
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
 	// counted before the rules that keep an error from answering a packet and before the rate limits
-	Answered, Unanswered uint64
+	// Unsent counts the answers the decision built for, or due to, a source the mesh routes them no way back to, or whose session had no room for them
+	Answered, Unanswered, Unsent uint64
 }
 
 func (m *Mesh) TransitCounters() TransitCounters {
@@ -172,6 +175,7 @@ func (m *Mesh) TransitCounters() TransitCounters {
 		Looped:         count(transitLooped),
 		Answered:       count(transitAnswered),
 		Unanswered:     m.unanswered.Load(),
+		Unsent:         count(transitUnsent),
 	}
 }
 
@@ -763,8 +767,8 @@ func (m *Mesh) answerForward(raw []byte, version byte, kind answerKind, value in
 	draw.fate = m.answerDrawn(raw, version, kind, value, draw)
 }
 
-// answerTaking is answer, its builder drawing through take once it finds raw a packet an error may answer and before it builds
-// it reports the answer's fate, TraceNotAnswerable where buildAnswer builds none, a draw the limits withheld among them
+// answerTaking is answer, drawing through take for an answer a way back may carry, and on no limit for one to a source only a counted default reaches
+// it reports the answer's fate, TraceNotAnswerable where none is due or built, a draw the limits withheld among them
 func (m *Mesh) answerTaking(raw []byte, version byte, kind answerKind, value int, take takeAnswer) TraceOutcome {
 	src, dst := addressesOf(raw, version)
 	// packet too big and fragmentation needed draw on no limit, as answerTooBig's do
@@ -778,9 +782,12 @@ func (m *Mesh) answerTaking(raw []byte, version byte, kind answerKind, value int
 	// the host drops an IPv4 packet from an address of its own, fib_validate_source
 	// and a strict chain one from an address it routes out of another link, nft_fib_ipv6.c, which the router-id and a SID can both be
 	// a source only an entry counting as a default reaches is no network behind this host, and the mesh routes no answer to it
+	// so an answer it is due goes unsent, and none is built
 	if _, verdict, match := m.replyRoute(src, dst); verdict == RouteLocal {
 		if match.Counted {
-			return TraceUnsent
+			var due dueAnswer
+			buildAnswer(raw, version, kind, value, dst, m.AnswerTTL(), due.refuse)
+			return m.unsentIfDue(due)
 		}
 		out := buildAnswer(raw, version, kind, value, dst, m.AnswerTTL(), allow)
 		if out == nil {
@@ -799,7 +806,7 @@ func (m *Mesh) answerTaking(raw []byte, version byte, kind answerKind, value int
 	case out == nil:
 		return TraceNotAnswerable
 	case !m.sendAnswer(out):
-		return TraceUnsent
+		return m.noteUnsent()
 	}
 	m.noteAnswered(kind)
 	return TraceSent
@@ -828,15 +835,39 @@ func (m *Mesh) noteAnswered(kind answerKind) {
 	}
 }
 
-// answerBeyondScope answers raw, an IPv6 packet from a link-local source to a wider destination, RFC 4443 section 3.1 code 2, drawing through take, and reports the answer's fate as answerTaking does
-// it goes back on the session the packet came through, the one link its source can be on, and nowhere for a packet of no session
-func (m *Mesh) answerBeyondScope(raw []byte, from *Peer, take takeAnswer) TraceOutcome {
-	if from == nil {
-		return TraceUnsent
+// noteUnsent counts an answer due that no way back carries
+func (m *Mesh) noteUnsent() TraceOutcome {
+	m.transitCounts[transitUnsent].Add(1)
+	return TraceUnsent
+}
+
+// dueAnswer is the draw of an answer no way back carries, which notes that the builder found one due and refuses it, so none is built
+type dueAnswer bool
+
+func (d *dueAnswer) refuse() bool {
+	*d = true
+	return false
+}
+
+// unsentIfDue is the fate of an answer that drew through due, unsent where its builder found one due
+func (m *Mesh) unsentIfDue(due dueAnswer) TraceOutcome {
+	if !due {
+		return TraceNotAnswerable
 	}
+	return m.noteUnsent()
+}
+
+// answerBeyondScope answers raw, an IPv6 packet from a link-local source to a wider destination, RFC 4443 section 3.1 code 2, drawing through take, and reports the answer's fate as answerTaking does
+// it goes back on the session the packet came through, the one link its source can be on, and nowhere for a packet of no session, whose answer draws on no limit
+func (m *Mesh) answerBeyondScope(raw []byte, from *Peer, take takeAnswer) TraceOutcome {
 	source, ok := m.errorSource(true)
 	if !ok {
 		return TraceUnanswered
+	}
+	if from == nil {
+		var due dueAnswer
+		srv6.BeyondScope(raw, source, due.refuse)
+		return m.unsentIfDue(due)
 	}
 	sender, _ := addressesOf(raw, 6)
 	out := srv6.BeyondScope(raw, source, m.allowAnswer(take, sender))
@@ -844,7 +875,7 @@ func (m *Mesh) answerBeyondScope(raw []byte, from *Peer, take takeAnswer) TraceO
 	case out == nil:
 		return TraceNotAnswerable
 	case !m.sendThrough(from, out, esp.NextHeaderIPv6):
-		return TraceUnsent
+		return m.noteUnsent()
 	}
 	m.noteAnswered(answerBeyondScope)
 	return TraceSent

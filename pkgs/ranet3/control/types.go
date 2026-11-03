@@ -348,7 +348,8 @@ type SegmentCounters struct {
 // Forwarded counts the packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
 // the fields from Expired to Looped count the packets dropped, by reason, Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped counting reads off the tun, and Invalid both
 // Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
-// counted before the rules that keep an error from answering a packet and before the rate
+// counted before the rules that keep an error from answering a packet and before the rate limits
+// Unsent counts the answers built for, or due to, a source the mesh routes them no way back to, or whose session had no room for them
 type TransitCounters struct {
 	Forwarded      uint64 `json:"forwarded"`
 	Delivered      uint64 `json:"delivered"`
@@ -371,6 +372,7 @@ type TransitCounters struct {
 	Looped         uint64 `json:"looped"`
 	Answered       uint64 `json:"answered"`
 	Unanswered     uint64 `json:"unanswered"`
+	Unsent         uint64 `json:"unsent"`
 }
 
 // TransitDropReason is one reason a packet is dropped, as the metrics and a trace record label it and as status words it

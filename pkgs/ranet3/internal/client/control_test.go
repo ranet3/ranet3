@@ -88,6 +88,7 @@ func TestStatusCarriesEveryCounterOfTheMesh(t *testing.T) {
 		fmt.Sprintf(`ranet3_transit_packets_total{decision="delivered",reason=""} %d`, transit.Delivered),
 		fmt.Sprintf(`ranet3_transit_packets_total{decision="answered",reason=""} %d`, transit.Answered),
 		fmt.Sprintf(`ranet3_transit_packets_total{decision="unanswered",reason=""} %d`, transit.Unanswered),
+		fmt.Sprintf(`ranet3_transit_packets_total{decision="unsent",reason=""} %d`, transit.Unsent),
 		fmt.Sprintf("ranet3_segments_forwarded_total %d", segments.Forwarded),
 		fmt.Sprintf("ranet3_segments_delivered_total %d", segments.Delivered),
 		fmt.Sprintf("ranet3_segments_dropped_total %d", segments.Dropped),

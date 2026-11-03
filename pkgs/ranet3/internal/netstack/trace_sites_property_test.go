@@ -42,6 +42,7 @@ var decideKinds = []siteKind{
 	{"no route", both, func(f int) []byte { return udpPacket(transitSender[f], transitUnrouted[f], 100, false) }, TraceAnswer, "no_route", false, false},
 	{"held", both, func(f int) []byte { return udpPacket(transitSender[f], transitHeldHost[f], 100, false) }, TraceAnswer, "held", false, false},
 	{"expired", both, func(f int) []byte { return withTTL(udpPacket(transitSender[f], transitFar[f], 100, false), 1) }, TraceAnswer, "expired", true, false},
+	{"expired with no way back", both, func(f int) []byte { return withTTL(udpPacket(transitStranger[f], transitFar[f], 100, false), 1) }, TraceAnswer, "expired", true, false},
 	{"too big", both, func(f int) []byte { return udpPacket(transitSender[f], transitFar[f], tracedMTU+100, true) }, TraceAnswer, "too_big", true, false},
 	{"martian", both, func(f int) []byte {
 		return udpPacket(transitSender[f], map[int]netip.Addr{4: segAddr("127.0.0.1"), 6: segAddr("::1")}[f], 100, false)
@@ -91,7 +92,7 @@ func drawKinds(tc hegel.TestCase, kinds []siteKind) ([]siteKind, [][]byte) {
 	return drawn, packets
 }
 
-// counted is the counters a record's decision and reason move, as TransitCounters names them, the answered among them only for an answer sent
+// counted is the counters a record's decision and reason move, as TransitCounters names them, the answered among them only for an answer sent and the unsent for one unsent
 func counted(records []TraceRecord) (counters TransitCounters, budget int) {
 	byReason := map[string]*uint64{
 		"expired": &counters.Expired, "no_route": &counters.NoRoute, "held": &counters.Held, "refused": &counters.Refused,
@@ -113,8 +114,11 @@ func counted(records []TraceRecord) (counters TransitCounters, budget int) {
 			}
 			*byReason[r.Reason]++
 		}
-		if r.Outcome == TraceSent {
+		switch r.Outcome {
+		case TraceSent:
 			counters.Answered++
+		case TraceUnsent:
+			counters.Unsent++
 		}
 	}
 	return counters, budget

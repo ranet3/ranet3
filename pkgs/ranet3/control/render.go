@@ -399,7 +399,7 @@ func segmentLine(s Status) string {
 }
 
 // transitLine always names forwarded, delivered and dropped
-// and each reason a packet was dropped for, answered and unanswered only while each is above 0
+// and each reason a packet was dropped for, answered, unanswered and unsent only while each is above 0
 func transitLine(c TransitCounters) string {
 	var dropped uint64
 	var reasons []string
@@ -418,6 +418,9 @@ func transitLine(c TransitCounters) string {
 	}
 	if c.Unanswered > 0 {
 		line += fmt.Sprintf(", %d unanswered", c.Unanswered)
+	}
+	if c.Unsent > 0 {
+		line += fmt.Sprintf(", %d unsent", c.Unsent)
 	}
 	return line
 }

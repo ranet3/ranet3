@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -37,7 +39,7 @@ var transitStranger = map[int]netip.Addr{4: segAddr("203.0.113.66"), 6: segAddr(
 // where cap.route announces the prefix instead it reaches the tun and never the exit whatever the readiness, since no translation stands behind it
 // an overlay address inside the prefix that no route holds is answered as no route and never egressed
 // a packet from a source the mesh routes no reply to is dropped and counted with no answer
-// and so is every packet from it this node answers, expired, refused, held or for an overlay address, since only the exit's default reaches the source
+// and so is every packet from it this node answers, expired, refused, held or for an overlay address, its answer counted unsent, since only the exit's default reaches the source
 // an IPv4 link-local destination is a martian, never in the tun, and an IPv6 one goes to the tun as link scope does and never to the exit
 func TestDecisionEgressesAtAnExit(t *testing.T) {
 	for _, family := range []int{4, 6} {
@@ -64,10 +66,10 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 					{name: "from an address cap.table assigns it", from: assigned, to: transitNowhere[family], ready: true, carried: true, want: TransitCounters{Delivered: 1}},
 					{name: "to an overlay address no route holds", from: transitSender[family], to: transitUnrouted[family], ready: true, answer: true, want: TransitCounters{NoRoute: 1, Answered: 1}},
 					{name: "from a source the mesh routes no reply to", from: transitStranger[family], to: transitNowhere[family], ready: true, want: TransitCounters{UnroutedSource: 1}},
-					{name: "expired from a source the mesh routes no reply to", from: transitStranger[family], to: transitFar[family], hops: 1, ready: true, want: TransitCounters{Expired: 1}},
-					{name: "refused from a source the mesh routes no reply to", from: transitStranger[family], to: transitFar[family], transitOff: true, ready: true, want: TransitCounters{Refused: 1}},
-					{name: "held from a source the mesh routes no reply to", from: transitStranger[family], to: transitHeldHost[family], ready: true, want: TransitCounters{Held: 1}},
-					{name: "to an overlay address no route holds from a source the mesh routes no reply to", from: transitStranger[family], to: transitUnrouted[family], ready: true, want: TransitCounters{NoRoute: 1}},
+					{name: "expired from a source the mesh routes no reply to", from: transitStranger[family], to: transitFar[family], hops: 1, ready: true, want: TransitCounters{Expired: 1, Unsent: 1}},
+					{name: "refused from a source the mesh routes no reply to", from: transitStranger[family], to: transitFar[family], transitOff: true, ready: true, want: TransitCounters{Refused: 1, Unsent: 1}},
+					{name: "held from a source the mesh routes no reply to", from: transitStranger[family], to: transitHeldHost[family], ready: true, want: TransitCounters{Held: 1, Unsent: 1}},
+					{name: "to an overlay address no route holds from a source the mesh routes no reply to", from: transitStranger[family], to: transitUnrouted[family], ready: true, want: TransitCounters{NoRoute: 1, Unsent: 1}},
 					{name: "to a link-local address", from: transitSender[family], to: linkLocal, ready: true, linkScope: family == 6,
 						want: map[int]TransitCounters{4: {Martian: 1}, 6: {Delivered: 1}}[family]},
 					{name: "while the translation is not ready", from: transitSender[family], to: transitNowhere[family], carried: !advertised,
@@ -114,6 +116,33 @@ func TestDecisionEgressesAtAnExit(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// an ICMP error past its hop limit is due no answer, so at an exit it counts expired alone, draws none and is traced an answer not answerable
+// from a source only the exit's default reaches as from one the mesh routes
+func TestDecisionCountsNoAnswerUnsentThatNoneIsDue(t *testing.T) {
+	for _, from := range []netip.Addr{transitSender[6], transitStranger[6]} {
+		t.Run(from.String(), func(t *testing.T) {
+			n := newTransitNode(t, DefaultMTU)
+			for _, prefix := range exitShapes[0].prefixes[6] {
+				n.m.Routes.Set(netip.Prefix{}, prefix, Local)
+			}
+			n.m.SetEgressPrefixes(exitShapes[0].prefixes[6])
+			n.m.SetAdvertisedReady(true, true)
+			feed := openTrace(t, n.m, TraceFilter{}, 0, control.TraceRateMax)
+			_, out, back := n.deliver(t, withTTL(icmpv6Error(from, transitFar[6], 200), 1))
+			if len(out) != 0 || len(back) != 0 {
+				t.Errorf("the next hop was sent %x and the sender %x, want neither", out, back)
+			}
+			if got := n.m.TransitCounters(); got != (TransitCounters{Expired: 1}) {
+				t.Errorf("the decision counted %+v, want the expired packet alone", got)
+			}
+			want := with(session(TraceAnswer, "expired"), func(r *TraceRecord) { r.Answer, r.Outcome = "expired", TraceNotAnswerable })
+			if records := queued(feed); len(records) != 1 || !reflect.DeepEqual(decisionOf(records[0]), want) {
+				t.Errorf("the decision recorded %+v, want %+v", records, want)
+			}
+		})
 	}
 }
 

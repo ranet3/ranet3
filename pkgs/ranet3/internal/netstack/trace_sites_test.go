@@ -261,7 +261,7 @@ func TestTraceRecordsEachOutcome(t *testing.T) {
 		return
 	}
 	for reason := range traceECN + 1 {
-		if reason != transitAnswered && !covered[reason] {
+		if reason != transitAnswered && reason != transitUnsent && !covered[reason] {
 			t.Errorf("no input draws a record of reason %s", traceReasonName(reason))
 		}
 	}

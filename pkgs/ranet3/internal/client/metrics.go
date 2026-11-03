@@ -287,7 +287,7 @@ func (c *Client) renderTransitCounters(w io.Writer) {
 }
 
 func writeTransitCounters(w io.Writer, transit control.TransitCounters) {
-	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or handed to the exit, or dropped, by reason, and the ICMP errors it answered or could not answer them with.\n")
+	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or handed to the exit, or dropped, by reason, and the ICMP errors it answered them with, found no source for, or built with no way back.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transit_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"forwarded\",reason=\"\"} %d\n", transit.Forwarded)
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"delivered\",reason=\"\"} %d\n", transit.Delivered)
@@ -296,6 +296,7 @@ func writeTransitCounters(w io.Writer, transit control.TransitCounters) {
 	}
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"answered\",reason=\"\"} %d\n", transit.Answered)
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"unanswered\",reason=\"\"} %d\n", transit.Unanswered)
+	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"unsent\",reason=\"\"} %d\n", transit.Unsent)
 }
 
 // renderKernel writes the route reconciler's last pass, the half of a node
