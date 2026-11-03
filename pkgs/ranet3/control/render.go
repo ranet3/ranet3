@@ -659,7 +659,7 @@ func onOff(on bool) string {
 	return "off"
 }
 
-// onOffUnknown is a setting the node may have failed to read, unknown where it did
+// onOffUnknown prints unknown for a setting the node failed to read
 func onOffUnknown(on *bool) string {
 	if on == nil {
 		return "unknown"

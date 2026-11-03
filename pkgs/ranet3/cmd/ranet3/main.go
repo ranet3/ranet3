@@ -369,8 +369,7 @@ func (d *daemon) closeListeners() {
 	}
 }
 
-// serveHTTP serves handler on listener until it closes, the server's own errors, a handler's panic it recovers among them,
-// logged at warn
+// serveHTTP serves handler on listener until it closes
 func serveHTTP(listener net.Listener, handler http.Handler) error {
 	server := &http.Server{Handler: handler, ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn)}
 	return server.Serve(listener)
