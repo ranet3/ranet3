@@ -639,7 +639,7 @@ func (f *BorderFilter) reportConflicts(now []egress.ExemptConflict) {
 }
 
 // countDrops reads the counters of the drops the table holds and, at most
-// once per pass, reports the packets each drop took since the last pass when
+// once per pass, records the packets each drop took since the last pass when
 // one moved
 func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress.BorderDrops {
 	rules := make(map[string]BorderRule, len(desired))
@@ -655,7 +655,6 @@ func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress
 	moved := dropsSince(now, f.dropped)
 	f.dropped = now
 	if moved != (egress.BorderDrops{}) {
-		slog.LogAttrs(context.Background(), slog.LevelInfo, "antispoof filter dropped packets", dropAttrs(moved)...)
 		f.rt.Events.Emit("antispoof.dropped", "", dropAttrs(moved)...)
 	}
 	return now

@@ -869,7 +869,8 @@ func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 }
 
 // Each pass reads the drop counters and records what each class dropped
-// since the pass before, once, and only on a pass in which one moved
+// since the pass before, once, and only on a pass in which one moved, and
+// logs nothing of it
 func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	var lines strings.Builder
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
@@ -905,8 +906,9 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	if want := []string{"3 0 0 0 0 0", "2 2 1 0 0 4"}; !slices.Equal(got, want) {
 		t.Errorf("recorded antispoof.dropped %q, want %q", got, want)
 	}
-	if n := strings.Count(lines.String(), "antispoof filter dropped packets"); n != 2 {
-		t.Errorf("logged the drops %d times, want twice:\n%s", n, lines.String())
+	// the event and the counters carry the drops, so no pass logs them
+	if strings.Contains(lines.String(), "dropped packets") {
+		t.Errorf("a pass logged the drops:\n%s", lines.String())
 	}
 	if want := (egress.BorderDrops{5, 2, 1, 0, 0, 4}); f.Stats().Dropped != want {
 		t.Errorf("the last pass reports %+v dropped, want %+v", f.Stats().Dropped, want)
