@@ -8,13 +8,11 @@ package kernel
 import "ranet3.com/pkgs/ranet3/internal/egress"
 
 // EntryRuns is whether this platform writes the entry chain, which no
-// platform without nftables or pf has
+// platform without nftables has
 const EntryRuns = false
 
-// borderSweep is the periodic pass of a filter this platform never runs
-const borderSweep = egress.DefaultSweep
-
-// Filters reports that this platform runs no filter
+// Filters reports that this platform runs no filter, with overlay written or
+// not
 func Filters(*egress.Border) bool { return false }
 
 // newBorderBackend opens no backend, so this platform runs no antispoof filter

@@ -327,8 +327,10 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 
 // the antispoof row follows the egress row, naming where the table is, what it
 // accepts, what it carves and what its drops counted, the entry chain's drops
-// alone on a node with no overlay, that it is not installed and why, or on a
-// platform running no filter, that the overlay it loaded is not enforced there
+// alone on a node with no overlay, that it is not installed and why, on a
+// platform running no filter, that the overlay it loaded is not enforced
+// there, and for darwin's filter over pf, chain antispoof's drops with no
+// entry chain's
 func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
 	status.Down = nil
@@ -351,14 +353,29 @@ func TestStatusBorderLineRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	RenderStatus(&out, status)
 	goldenJSON(t, "status-border.json", status.Border)
+	pf := BorderStatus{
+		Where:     "pf anchor com.apple/ranet3",
+		PF:        &BorderPF{Anchor: "com.apple/ranet3", Token: 9223372036854775809, PID: 4242, Listed: true, Called: true},
+		Inside:    []string{"utun7", "lo0"},
+		Overlay:   []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("3fff:10::/32")},
+		Carved:    []BorderCarveOut{{Link: "en0", Prefix: netip.MustParsePrefix("192.0.2.128/25")}},
+		Ready:     true,
+		PassAt:    time.Date(2026, 11, 3, 23, 40, 5, 0, time.UTC),
+		Installed: 10,
+		Dropped:   BorderDrops{"overlay_source_ipv4": 2, "overlay_source_ipv6": 9, "carved_source_ipv4": 1, "carved_source_ipv6": 0},
+	}
+	goldenJSON(t, "status-border-pf.json", pf)
 	out.WriteString("\n")
 	where := "nftables table inet ranet3 chains antispoof and mesh_entry"
 	for _, border := range []BorderStatus{
 		{Where: "nftables table inet ranet3 chain mesh_entry", Inside: []string{"ranet3", "lo"}, Ready: true, Dropped: BorderDrops{"mesh_entry_ipv6": 7}},
 		{Where: where, Unready: "another writer changed its table"},
 		{Where: where, Unready: "the readback differs", Err: "egress: list the rules of nftables table inet ranet3 chain antispoof: operation not permitted"},
-		{UnenforcedOn: "darwin", Overlay: []netip.Prefix{netip.MustParsePrefix("3fff:a::/36")}},
-		{UnenforcedOn: "darwin", Overlay: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("3fff:a::/36")}},
+		{UnenforcedOn: "freebsd", Overlay: []netip.Prefix{netip.MustParsePrefix("3fff:a::/36")}},
+		{UnenforcedOn: "freebsd", Overlay: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("3fff:a::/36")}},
+		pf,
+		{Where: "pf anchor com.apple/ranet3", Overlay: pf.Overlay, PF: &BorderPF{Anchor: "com.apple/ranet3", Token: 9223372036854775809, PID: 4242, Listed: true},
+			Unready: `pf's main ruleset holds no anchor "com.apple/*", so pf evaluates no rule of com.apple/ranet3: pfctl -f /etc/pf.conf loads the stock ruleset again, and a ruleset loaded in its place needs that line`},
 	} {
 		out.WriteString(borderLine(border) + "\n")
 	}

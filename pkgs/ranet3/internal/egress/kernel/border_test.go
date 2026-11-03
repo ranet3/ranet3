@@ -64,6 +64,8 @@ type fakeBorder struct {
 	// unready is the reason a readback gives for the host not being ready
 	// beside its rules, which no rewrite changes
 	unready string
+	// every is the sweep the host asks for, zero for the default
+	every time.Duration
 }
 
 func (f *fakeBorder) entries() []string {
@@ -186,6 +188,8 @@ func (f *fakeBorder) writes(rule BorderRule) bool {
 }
 
 func (f *fakeBorder) holds(string) bool { return true }
+
+func (f *fakeBorder) sweep() time.Duration { return f.every }
 
 func (f *fakeBorder) wildcards() bool { return !f.exact }
 
@@ -913,9 +917,10 @@ func TestBorderRecordsThePassesThatDidSomething(t *testing.T) {
 	}
 }
 
-// Each pass reads the drop counters and records what each class dropped
-// since the pass before, once, and only on a pass in which one moved, and
-// logs nothing of it
+// Each pass reads the drop counters and records what each drop its rules
+// write took since the pass before, once, and only on a pass in which one
+// moved, and logs nothing of it. With no IPv6 carve-out the chain writes no
+// IPv6 carved drop, which neither the record nor the status names.
 func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	var lines strings.Builder
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
@@ -944,12 +949,19 @@ func TestBorderReportsDropsOncePerPass(t *testing.T) {
 	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.dropped" }, 0) {
 		var counts []string
 		for _, kind := range egress.BorderDropKinds {
-			counts = append(counts, event.Attrs[kind.Name()])
+			count, ok := event.Attrs[kind.Name()]
+			if !ok {
+				count = "-"
+			}
+			counts = append(counts, count)
 		}
 		got = append(got, strings.Join(counts, " "))
 	}
-	if want := []string{"3 0 0 0 0 0", "2 2 1 0 0 4"}; !slices.Equal(got, want) {
+	if want := []string{"3 0 0 - 0 0", "2 2 1 - 0 4"}; !slices.Equal(got, want) {
 		t.Errorf("recorded antispoof.dropped %q, want %q", got, want)
+	}
+	if kinds, want := f.Stats().Kinds, slices.Delete(slices.Clone(egress.BorderDropKinds[:]), 3, 4); !slices.Equal(kinds, want) {
+		t.Errorf("the last pass writes the drops %v, want %v", kinds, want)
 	}
 	// the event and the counters carry the drops, so no pass logs them
 	if strings.Contains(lines.String(), "dropped packets") {
@@ -1102,6 +1114,16 @@ func TestBorderRetriesAFailedPass(t *testing.T) {
 	runBorder(t, f)
 	be.changed <- struct{}{}
 	waitForPass(t, bus, "retry")
+}
+
+// A backend that asks for a sweep of its own, as pf's does, gets it, and one
+// that asks for none sweeps every egress.DefaultSweep
+func TestBorderSweepsAsItsBackendAsks(t *testing.T) {
+	for every, want := range map[time.Duration]time.Duration{0: egress.DefaultSweep, 5 * time.Second: 5 * time.Second} {
+		if f := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{every: every}); f.sweep != want {
+			t.Errorf("a backend asking for %v sweeps every %v, want %v", every, f.sweep, want)
+		}
+	}
 }
 
 // A filter that stops reports the border not ready and withdraws its table,

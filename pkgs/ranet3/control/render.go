@@ -296,7 +296,7 @@ func conntrackText(count uint64, most *uint64) string {
 // borderLine leads with where the chain is and what it accepts, then the drops
 // counted, so an operator who injected a packet finds its count on the line, or
 // says it is not installed and why, or not enforced on a platform that runs no
-// filter
+// filter. It leaves out the entry drops where the filter writes none.
 func borderLine(b BorderStatus) string {
 	if b.UnenforcedOn != "" {
 		return fmt.Sprintf("not enforced on %s, %s", b.UnenforcedOn, overlayCount(len(b.Overlay)))
@@ -308,17 +308,21 @@ func borderLine(b BorderStatus) string {
 		}
 		return "not installed, " + why
 	}
-	entering := fmt.Sprintf("dropped %d entering the mesh", b.Dropped.Reason("mesh_entry"))
-	if len(b.Overlay) == 0 {
-		return b.Where + ", " + entering
+	line := b.Where
+	if len(b.Overlay) != 0 {
+		var overlay strings.Builder
+		overlay.WriteString(overlayCount(len(b.Overlay)))
+		for _, carveOut := range b.Carved {
+			fmt.Fprintf(&overlay, ", carving %s on %s", carveOut.Prefix, carveOut.Link)
+		}
+		sources, _ := b.Dropped.Reason("overlay_source")
+		carved, _ := b.Dropped.Reason("carved_source")
+		line += fmt.Sprintf(", inside %s, %s, dropped %d overlay sources and %d carved sources", strings.Join(b.Inside, " "), overlay.String(), sources, carved)
 	}
-	var overlay strings.Builder
-	overlay.WriteString(overlayCount(len(b.Overlay)))
-	for _, carveOut := range b.Carved {
-		fmt.Fprintf(&overlay, ", carving %s on %s", carveOut.Prefix, carveOut.Link)
+	if entering, written := b.Dropped.Reason("mesh_entry"); written {
+		line += fmt.Sprintf(", dropped %d entering the mesh", entering)
 	}
-	return fmt.Sprintf("%s, inside %s, %s, dropped %d overlay sources and %d carved sources, %s",
-		b.Where, strings.Join(b.Inside, " "), overlay.String(), b.Dropped.Reason("overlay_source"), b.Dropped.Reason("carved_source"), entering)
+	return line
 }
 
 func overlayCount(n int) string {

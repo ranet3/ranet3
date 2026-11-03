@@ -333,12 +333,14 @@
     ],
     "sets": [
       {
+        "kind": "set",
         "name": "carved4",
         "elements": [
           "203.0.113.5"
         ]
       },
       {
+        "kind": "set",
         "name": "owned4",
         "elements": [
           "203.0.113.0/26",
@@ -346,6 +348,7 @@
         ]
       },
       {
+        "kind": "set",
         "name": "none4",
         "elements": null
       }

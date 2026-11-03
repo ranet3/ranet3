@@ -79,9 +79,9 @@ func rulesFixture() RulesInfo {
 				{Rules: []BorderChainRule{{Spec: "a rule with no comment", Held: true}}},
 			},
 			Sets: []BorderSet{
-				{Name: "carved4", Elements: []string{"203.0.113.5"}},
-				{Name: "owned4", Elements: []string{"203.0.113.0/26", "198.51.100.7-198.51.100.9"}},
-				{Name: "none4"},
+				{Kind: "set", Name: "carved4", Elements: []string{"203.0.113.5"}},
+				{Kind: "set", Name: "owned4", Elements: []string{"203.0.113.0/26", "198.51.100.7-198.51.100.9"}},
+				{Kind: "set", Name: "none4"},
 			},
 		},
 	}
@@ -94,8 +94,8 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	golden(t, "rules.txt", []byte(out.String()))
 	goldenJSON(t, "rules.json", info)
 
-	// darwin has no policy rules and runs no antispoof filter, which it says
-	// where overlay is written, and lists the
+	// darwin has no policy rules, runs no antispoof filter where overlay is not
+	// written, and lists the
 	// interface each live session's datagrams name, or the interface of the pin
 	// they carry: the route the selection matched, one address no route holds, a pin
 	// of a session the peer opened, and a link-local zone's
@@ -104,7 +104,6 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 		Policy:    []PolicyRule{},
 		PolicyErr: "this platform has no policy rules",
 		Missing:   []PolicyRule{},
-		Border:    &BorderTable{UnenforcedOn: "darwin"},
 		Lookups: []RuleLookup{
 			{Lookup: "underlay", Family: "ipv4", Prefix: netip.MustParsePrefix("198.51.100.0/24"), Address: netip.MustParseAddr("198.51.100.77"), Answer: "dev en0"},
 			{Lookup: "underlay", Family: "ipv4", Address: netip.MustParseAddr("203.0.113.10"), Answer: "dev en1"},
@@ -117,6 +116,42 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	golden(t, "rules-darwin.txt", []byte(out.String()))
 	goldenJSON(t, "rules-darwin.json", darwin)
 
+	// where overlay is written darwin's filter runs over pf: the anchor's
+	// rules with their counters, an exemption under en* one rule per link and
+	// one whose label pf holds shortened by its whole text, its table, this
+	// daemon's reference and the main ruleset's call, and every reference pf
+	// lists
+	out.Reset()
+	darwin.Border = &BorderTable{
+		Where:   "pf anchor com.apple/ranet3",
+		ReadAt:  time.Date(2026, 11, 3, 23, 40, 5, 0, time.UTC),
+		ReadAgo: Duration(2 * time.Second),
+		Ready:   true,
+		Chains: []BorderChain{
+			{Name: "antispoof", Hook: "in", Rules: []BorderChainRule{
+				{Spec: "accept via lo0", Verdict: "accept", Reason: "inside", Held: true},
+				{Spec: "drop ipv4 source @carved4", Verdict: "drop", Reason: "carved_source", Family: "ipv4", Held: true, Packets: 1, Bytes: 84},
+				{Spec: "drop ipv6 source @carved6", Verdict: "drop", Reason: "carved_source", Family: "ipv6", Held: true},
+				{Spec: "accept via en0 source 192.0.2.128/25", Verdict: "accept", Reason: "carve_out", Family: "ipv4", Held: true},
+				{Spec: "accept exempt source 192.0.2.32/27", Verdict: "accept", Reason: "exempt", Family: "ipv4", Held: true},
+				{Spec: "accept exempt via bridge100 source 3fff:10:2222:3333:4444:5555:6666:7777/128", Verdict: "accept", Reason: "exempt", Family: "ipv6", Held: true},
+				{Spec: "accept exempt via en0 source 3fff:10:1::/48", Verdict: "accept", Reason: "exempt", Family: "ipv6", Held: true},
+				{Spec: "accept exempt via en1 source 3fff:10:1::/48", Verdict: "accept", Reason: "exempt", Family: "ipv6", Held: true},
+				{Spec: "accept exempt via en1 source 192.0.2.64/26", Verdict: "accept", Reason: "exempt", Family: "ipv4", Held: true},
+				{Spec: "drop ipv4 source 192.0.2.0/24", Verdict: "drop", Reason: "overlay_source", Family: "ipv4", Held: true, Packets: 2, Bytes: 168},
+				{Spec: "drop ipv6 source 3fff:10::/32", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 9, Bytes: 936},
+			}},
+		},
+		Sets: []BorderSet{
+			{Kind: "table", Name: "ranet3_carved", Elements: []string{"192.0.2.200", "3fff:10::/48"}},
+		},
+		PF:       &BorderPF{Anchor: "com.apple/ranet3", Token: 9223372036854775809, PID: 4242, Listed: true, Called: true},
+		Enablers: []BorderEnabler{{PID: 4242, Name: "ranet3"}, {PID: 377, Name: "othervpn"}},
+	}
+	RenderRules(&out, darwin)
+	golden(t, "rules-darwin-pf.txt", []byte(out.String()))
+	goldenJSON(t, "rules-darwin-pf.json", darwin)
+
 	// a pass that asked nothing, and a dump that failed beside the lookups
 	out.Reset()
 	RenderRules(&out, RulesInfo{Policy: info.Policy[:1]})
@@ -124,6 +159,28 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	out.Reset()
 	RenderRules(&out, RulesInfo{PolicyErr: "kernel: dump rules: permission denied", Lookups: info.Lookups})
 	golden(t, "rules-undumped.txt", []byte(out.String()))
+
+	// a platform that runs no filter, where overlay is written, says so in one line
+	out.Reset()
+	RenderRules(&out, RulesInfo{PolicyErr: "this platform has no policy rules", Border: &BorderTable{UnenforcedOn: "freebsd"}})
+	if want := "\nAntispoof filter, not enforced on freebsd\n"; !strings.HasSuffix(out.String(), want) {
+		t.Errorf("a platform with no filter renders\n%s\nwant it to end %q", out.String(), want)
+	}
+}
+
+// a set is headed by the word its reading carries, whatever else the table
+// holds, so the renderer learns no backend from the pf block
+func TestBorderSetIsHeadedByTheWordItsBackendCallsItBy(t *testing.T) {
+	for _, c := range []struct {
+		kind string
+		pf   *BorderPF
+	}{{"table", nil}, {"set", &BorderPF{Anchor: "com.apple/ranet3"}}} {
+		var out strings.Builder
+		RenderRules(&out, RulesInfo{Border: &BorderTable{Where: "a backend", PF: c.pf, Sets: []BorderSet{{Kind: c.kind, Name: "owned"}}}})
+		if !strings.Contains(out.String(), c.kind+" owned") {
+			t.Errorf("a %s read with pf block %v renders\n%s", c.kind, c.pf, out.String())
+		}
+	}
 }
 
 // fallbackFixture is a table of one chain, holding, its drop having counted

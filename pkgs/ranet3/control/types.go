@@ -645,6 +645,9 @@ type BorderStatus struct {
 	// UnenforcedOn names the platform where overlay is written and no filter
 	// runs, empty wherever one does
 	UnenforcedOn string `json:"unenforced_on,omitempty"`
+	// PF is pf's state for the filter beside its anchor, where the filter runs
+	// on pf
+	PF *BorderPF `json:"pf,omitempty"`
 	// Inside is the devices whose traffic the antispoof chain accepts whatever it carries
 	Inside  []string       `json:"inside"`
 	Overlay []netip.Prefix `json:"overlay"`
@@ -661,6 +664,22 @@ type BorderStatus struct {
 	Err       string      `json:"err,omitempty"`
 }
 
+// BorderPF is pf's state for the antispoof filter beside its anchor, without
+// which pf evaluates none of the anchor's rules: this daemon's reference,
+// which keeps pf enabled, and the main ruleset's call into com.apple's children
+type BorderPF struct {
+	Anchor string `json:"anchor"`
+	// Token is the reference, a string on the wire since it uses all 64
+	// bits, past what a reader taking numbers as doubles holds exactly, PID the
+	// process that took it, and Listed whether pf lists the one under the
+	// other
+	Token  uint64 `json:"token,string"`
+	PID    int    `json:"pid"`
+	Listed bool   `json:"listed"`
+	// Called is whether the main ruleset calls com.apple/*
+	Called bool `json:"called"`
+}
+
 // BorderCarveOut is a part of the overlay a link outside the mesh is on
 type BorderCarveOut struct {
 	Link   string       `json:"link"`
@@ -671,13 +690,17 @@ type BorderCarveOut struct {
 // pass read them, by the drop's reason and family joined with an underscore:
 // overlay_source and carved_source from outside the mesh, and mesh_entry for
 // a packet into the tun that none of the entry chain's lines BorderStatus
-// lists passes, each in ipv4 and ipv6. Every one is present. A rewrite of the
-// table starts them from zero.
+// lists passes, each in ipv4 and ipv6. A drop is present where a rule of the
+// last pass writes it, and absent otherwise. A rewrite of the table starts
+// them from zero.
 type BorderDrops map[string]uint64
 
-// Reason is the packets a drop counted in both families
-func (d BorderDrops) Reason(reason string) uint64 {
-	return d[reason+"_ipv4"] + d[reason+"_ipv6"]
+// Reason is the packets a drop counted in both families, and whether the
+// filter writes it in either
+func (d BorderDrops) Reason(reason string) (uint64, bool) {
+	v4, written4 := d[reason+"_ipv4"]
+	v6, written6 := d[reason+"_ipv6"]
+	return v4 + v6, written4 || written6
 }
 
 // Counts is the mesh in six numbers, which is the first thing to read when

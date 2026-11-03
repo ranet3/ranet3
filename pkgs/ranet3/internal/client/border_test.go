@@ -28,6 +28,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/pf"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -42,8 +43,7 @@ type borderRecord struct {
 	debug   egress.BorderDebug
 	// missing is a chain another writer took, which the filter reads not ready
 	missing bool
-	// pf is the filter as darwin's runs, over pf and writing only chain
-	// mesh_entry, nil for Linux's
+	// pf is the filter as darwin's runs, over pf, nil for Linux's
 	pf *egress.BorderPF
 }
 
@@ -79,18 +79,17 @@ func (b *borderRecord) Where() string {
 	return "nftables table inet ranet3 chain antispoof"
 }
 
-func (b *borderRecord) AntispoofRuns() bool { return b.pf == nil }
-
 func (b *borderRecord) Stats() egress.BorderStats {
 	if b.missing {
 		return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Unready: "another writer changed its table", PF: b.pf}
 	}
 	if b.pf != nil {
-		return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 2,
-			Dropped: egress.BorderDrops{0, 0, 0, 0, 6, 8}, PF: b.pf}
+		// the anchor's rules write chain antispoof's drops, the first four kinds, and none of the entry chain's
+		return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 6,
+			Dropped: egress.BorderDrops{3, 1, 4, 5, 0, 0}, Kinds: egress.BorderDropKinds[:4], PF: b.pf}
 	}
 	return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 7,
-		Dropped:   egress.BorderDrops{3, 1, 4, 5, 6, 8},
+		Dropped: egress.BorderDrops{3, 1, 4, 5, 6, 8}, Kinds: egress.BorderDropKinds[:],
 		CarveOuts: []egress.CarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}}
 }
 
@@ -636,12 +635,11 @@ func TestDownKeepsTheBorder(t *testing.T) {
 	}
 }
 
-// where the entry chain runs on every node no node is told. Elsewhere a node
-// whose host forwards is told so at every reload, naming the families and the
-// platform: where the filter runs for its overlay that the antispoof chain
-// does not, and where it does not run that no filter runs, with the overlay's
-// absence named where that is why. One on a host forwarding nothing is not
-// told.
+// where the filter runs on every node no node is told, and where it runs for
+// the overlay a node that writes it is not told. Elsewhere a node whose host
+// forwards is told at every reload that no filter runs, naming the families and
+// the platform, with the overlay's absence named where that is why. One on a
+// host forwarding nothing is not told.
 func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	var lines bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
@@ -659,20 +657,16 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 			forwards := func() (*bool, *bool) { return host.v4, host.v6 }
 			lines.Reset()
 			warnUnbordered(border, forwards)
-			warning := "this node forwards " + host.families + " and "
+			warning := "this node forwards " + host.families + " and " + runtime.GOOS + " runs no antispoof filter"
 			switch {
-			case host.families == "" || kernelexit.EntryRuns:
+			case host.families == "" || kernelexit.Filters(border):
 				warning = ""
-			case kernelexit.Filters(border):
-				warning += runtime.GOOS + " enforces no chain antispoof"
 			case border == nil:
-				warning += "writes no overlay, so " + runtime.GOOS + " runs no antispoof filter"
-			default:
-				warning += runtime.GOOS + " runs no antispoof filter"
+				warning = "this node forwards " + host.families + " and writes no overlay, and " + runtime.GOOS + " runs no antispoof filter"
 			}
 			switch got := lines.String(); {
 			case warning == "" && got != "":
-				t.Errorf("a node with overlay %v on a host forwarding %v %v, or where the entry chain runs, warned:\n%s", border != nil, *host.v4, *host.v6, got)
+				t.Errorf("a node with overlay %v on a host forwarding %v %v, or where the filter runs for it, warned:\n%s", border != nil, *host.v4, *host.v6, got)
 			case warning != "" && (!strings.Contains(got, warning) || !strings.Contains(got, "this host's own services")):
 				t.Errorf("a node with overlay %v on a host forwarding %v %v warned %q, want it to say %q", border != nil, *host.v4, *host.v6, got, warning)
 			}
@@ -690,10 +684,10 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := 0
-	if len(forwardedFamilies(forwardingEnabled())) != 0 && !kernelexit.EntryRuns {
+	if len(forwardedFamilies(forwardingEnabled())) != 0 && !kernelexit.Filters(c.config().Border()) {
 		want = 1
 	}
-	if n := reloaded.count("antispoof filter, ") + reloaded.count("enforces no chain antispoof"); n != want {
+	if n := reloaded.count("runs no antispoof filter"); n != want {
 		t.Errorf("a reload warned %d times, want %d: %q", n, want, reloaded.lines("antispoof"))
 	}
 }
@@ -764,10 +758,11 @@ func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
 	written.Overlay = overlayOf("3fff::/20", "198.18.0.0/15")
 	c.cfg.Store(&written)
 	unenforced := c.Status().Border
-	if kernelexit.EntryRuns && unenforced != nil {
-		t.Errorf("a node with overlay and no filter, where the filter runs, reported %+v", unenforced)
+	runs := kernelexit.Filters(written.Border())
+	if runs && unenforced != nil {
+		t.Errorf("a node with overlay and no filter, where the filter runs for it, reported %+v", unenforced)
 	}
-	if !kernelexit.EntryRuns && (unenforced == nil || unenforced.UnenforcedOn != runtime.GOOS || len(unenforced.Overlay) != 2 || unenforced.Ready) {
+	if !runs && (unenforced == nil || unenforced.UnenforcedOn != runtime.GOOS || len(unenforced.Overlay) != 2 || unenforced.Ready) {
 		t.Errorf("a node with overlay on %s, which runs no filter, reported %+v, want it not enforced there", runtime.GOOS, unenforced)
 	}
 	c.SetBorder(&borderRecord{border: egress.Border{Overlay: overlayOf("3fff::/20", "198.18.0.0/15")}})
@@ -777,13 +772,29 @@ func TestStatusReportsTheBorderOnlyWhereItRuns(t *testing.T) {
 		"mesh_entry_ipv4": 6, "mesh_entry_ipv6": 8,
 	}
 	carved := []control.BorderCarveOut{{Link: "eth0", Prefix: netip.MustParsePrefix("198.18.0.0/24")}}
-	if status == nil || !status.Ready || status.Installed != 7 || !maps.Equal(status.Dropped, want) || len(status.Overlay) != 2 || len(status.Inside) != 2 || !slices.Equal(status.Carved, carved) || status.UnenforcedOn != "" {
+	if status == nil || !status.Ready || status.Installed != 7 || !maps.Equal(status.Dropped, want) || len(status.Overlay) != 2 || len(status.Inside) != 2 || !slices.Equal(status.Carved, carved) || status.UnenforcedOn != "" || status.PF != nil {
 		t.Errorf("the antispoof filter reported %+v", status)
+	}
+
+	// darwin's filter, over pf, its status carrying its pf block and the drops
+	// its rules write, none of the entry chain's
+	held := &egress.BorderPF{Anchor: "com.apple/ranet3", Token: 1 << 63, PID: 4242, Listed: true, Called: true,
+		Enablers: []pf.Enabler{{PID: 4242, Name: "ranet3", Token: 1 << 63}}}
+	c.SetBorder(&borderRecord{border: egress.Border{Overlay: overlayOf("3fff::/20", "198.18.0.0/15")}, pf: held})
+	status = c.Status().Border
+	want = control.BorderDrops{
+		"overlay_source_ipv4": 3, "overlay_source_ipv6": 1, "carved_source_ipv4": 4, "carved_source_ipv6": 5,
+	}
+	block := control.BorderPF{Anchor: "com.apple/ranet3", Token: 1 << 63, PID: 4242, Listed: true, Called: true}
+	if status == nil || status.Where != "pf anchor com.apple/ranet3" || status.UnenforcedOn != "" || status.PF == nil || *status.PF != block ||
+		!status.Ready || status.Installed != 6 || !maps.Equal(status.Dropped, want) || len(status.Carved) != 0 {
+		t.Errorf("the antispoof filter over pf reported %+v, want its pf block %+v and the drops %v", status, block, want)
 	}
 }
 
-// the scrape carries the antispoof filter's readiness and a series per kind of
-// drop, and nothing of the filter on a node running none
+// the scrape carries the antispoof filter's readiness and a series for each
+// kind of drop its stats say the last pass's rules write, and nothing of the
+// filter on a node running none
 func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 	c := writable(t)
 	var off strings.Builder
@@ -806,6 +817,29 @@ func TestMetricsExposeTheBorderOnlyWhereItRuns(t *testing.T) {
 		if !strings.Contains(out.String(), want+"\n") {
 			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
 		}
+	}
+
+	// darwin's filter writes the series of chain antispoof's drops as Linux's
+	// does, and none of the entry chain's, which its rules do not write
+	written := *c.config()
+	written.Overlay = overlayOf("3fff::/20")
+	c.cfg.Store(&written)
+	c.SetBorder(&borderRecord{pf: &egress.BorderPF{Anchor: "com.apple/ranet3", Listed: true, Called: true}})
+	var pf strings.Builder
+	c.Metrics(&pf)
+	for _, want := range []string{
+		"ranet3_antispoof_ready 1",
+		`ranet3_antispoof_dropped_packets_total{reason="overlay_source",family="ipv4"} 3`,
+		`ranet3_antispoof_dropped_packets_total{reason="overlay_source",family="ipv6"} 1`,
+		`ranet3_antispoof_dropped_packets_total{reason="carved_source",family="ipv4"} 4`,
+		`ranet3_antispoof_dropped_packets_total{reason="carved_source",family="ipv6"} 5`,
+	} {
+		if !strings.Contains(pf.String(), want+"\n") {
+			t.Errorf("the scrape over pf does not carry %q:\n%s", want, pf.String())
+		}
+	}
+	if strings.Contains(pf.String(), `reason="mesh_entry"`) {
+		t.Errorf("the scrape over pf carries the entry chain's series, which its rules do not write:\n%s", pf.String())
 	}
 }
 
@@ -879,10 +913,11 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	written.Overlay = overlayOf("3fff::/20")
 	c.cfg.Store(&written)
 	unenforced := c.DebugRules().Border
-	if kernelexit.EntryRuns && unenforced != nil {
-		t.Errorf("debug rules reads antispoof filter %+v on a node with overlay and no filter where the filter runs", unenforced)
+	runs := kernelexit.Filters(written.Border())
+	if runs && unenforced != nil {
+		t.Errorf("debug rules reads antispoof filter %+v on a node with overlay and no filter where the filter runs for it", unenforced)
 	}
-	if !kernelexit.EntryRuns && (unenforced == nil || unenforced.UnenforcedOn != runtime.GOOS || len(unenforced.Chains) != 0) {
+	if !runs && (unenforced == nil || unenforced.UnenforcedOn != runtime.GOOS || len(unenforced.Chains) != 0) {
 		t.Errorf("debug rules reads antispoof filter %+v on %s, which runs none, want it not enforced there", unenforced, runtime.GOOS)
 	}
 
@@ -891,7 +926,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		Where: "nftables table inet ranet3 chains antispoof and mesh_entry", PassAt: passed, Ready: true,
 		Chains: []egress.BorderChainReading{{Name: "antispoof", Hook: "prerouting", Priority: new(-300),
 			Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}}}},
-		Sets: []egress.BorderSetReading{{Name: "owned4", Elements: []egress.Range{{First: netip.MustParseAddr("192.0.2.7"), Last: netip.MustParseAddr("192.0.2.7")}}}},
+		Sets: []egress.BorderSetReading{{Kind: "set", Name: "owned4", Elements: []egress.Range{{First: netip.MustParseAddr("192.0.2.7"), Last: netip.MustParseAddr("192.0.2.7")}}}},
 	}})
 	for name, dump := range map[string]struct {
 		err  error
@@ -908,8 +943,27 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		table := info.Border
 		if table == nil || !table.ReadAt.Equal(passed) || table.ReadAt.Location() != time.UTC || time.Duration(table.ReadAgo) < 3*time.Second ||
 			len(table.Chains) != 1 || len(table.Chains[0].Rules) != 1 || table.Chains[0].Rules[0].Packets != 2 || table.Chains[0].Priority == nil || *table.Chains[0].Priority != -300 || !table.Ready ||
-			len(table.Sets) != 1 || table.Sets[0].Name != "owned4" || !slices.Equal(table.Sets[0].Elements, []string{"192.0.2.7"}) {
+			len(table.Sets) != 1 || table.Sets[0].Kind != "set" || table.Sets[0].Name != "owned4" || !slices.Equal(table.Sets[0].Elements, []string{"192.0.2.7"}) ||
+			table.UnenforcedOn != "" || table.PF != nil || len(table.Enablers) != 0 {
 			t.Errorf("%s: debug rules carries the table %+v", name, table)
 		}
+	}
+
+	// darwin's filter carries its pf block and every reference pf lists
+	c.SetBorder(&borderRecord{pf: &egress.BorderPF{Anchor: "com.apple/ranet3"}, debug: egress.BorderDebug{
+		Where: "pf anchor com.apple/ranet3", PassAt: passed, Ready: true,
+		Chains: []egress.BorderChainReading{{Name: "antispoof", Hook: "in",
+			Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}}}},
+		Sets: []egress.BorderSetReading{{Kind: "table", Name: "ranet3_carved"}},
+		PF: &egress.BorderPF{Anchor: "com.apple/ranet3", Token: 1 << 63, PID: 4242, Listed: true, Called: true,
+			Enablers: []pf.Enabler{{PID: 4242, Name: "ranet3", Token: 1 << 63}, {PID: 77, Name: "othervpn", Token: 9}}},
+	}})
+	table := c.DebugRules().Border
+	block := control.BorderPF{Anchor: "com.apple/ranet3", Token: 1 << 63, PID: 4242, Listed: true, Called: true}
+	enablers := []control.BorderEnabler{{PID: 4242, Name: "ranet3"}, {PID: 77, Name: "othervpn"}}
+	if table == nil || table.UnenforcedOn != "" || table.PF == nil || *table.PF != block || !slices.Equal(table.Enablers, enablers) ||
+		len(table.Chains) != 1 || table.Chains[0].Hook != "in" || table.Chains[0].Priority != nil ||
+		len(table.Sets) != 1 || table.Sets[0].Kind != "table" {
+		t.Errorf("debug rules carries the table over pf %+v, want its pf block %+v, the enablers %+v and its table", table, block, enablers)
 	}
 }

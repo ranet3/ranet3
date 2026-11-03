@@ -292,6 +292,9 @@ type BorderStats struct {
 	// Dropped is the counters as the last pass read them, kept from the pass
 	// before over a listing that failed
 	Dropped BorderDrops
+	// Kinds is each drop of BorderDropKinds a rule of the last pass writes, in
+	// that order, the only ones Dropped counts and a report names
+	Kinds []BorderDrop
 	// CarveOuts is the carve-outs the last pass asked for, written or not, as
 	// Ready says
 	CarveOuts []CarveOut

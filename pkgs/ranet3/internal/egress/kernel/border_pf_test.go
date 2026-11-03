@@ -883,15 +883,17 @@ func TestPfBorderWithdrawsOnStopAndLeavesAllOnLeave(t *testing.T) {
 	}
 }
 
-// The overlay's drops and the carved drops count by family in the status, and
-// a debug read heads the one chain by its direction with no priority, lists
+// The overlay's drops and the carved drops count by family in the status and
+// the record, which name no entry drop, since the anchor writes none, and a
+// debug read heads the one chain by its direction with no priority, lists
 // each rule by its String whatever label pf holds, the carved table and every
 // reference pf lists
 func TestPfBorderCountsByFamilyAndDebugReadsTheAnchor(t *testing.T) {
 	cfg := gateway(t)
 	link := "vmenet123456789"
 	cfg.Antispoof.Interface[link] = egress.AntispoofInterface{Exempt: prefixes(t, "3fff:10:aaaa:bbbb:c000::/80")}
-	f, p, _ := pfFilter(t, events.New(), cfg, gatewaySets)
+	bus := events.New()
+	f, p, _ := pfFilter(t, bus, cfg, gatewaySets)
 	count := func(label string, packets uint64) {
 		i := slices.IndexFunc(p.rules, func(c pf.Counted) bool { return c.Rule.Label == label })
 		if i < 0 {
@@ -916,6 +918,23 @@ func TestPfBorderCountsByFamilyAndDebugReadsTheAnchor(t *testing.T) {
 		if got := dropped[slices.Index(egress.BorderDropKinds[:], kind)]; got != want {
 			t.Errorf("%s reads %d, want %d", kind.Name(), got, want)
 		}
+	}
+	// the antispoof chain's drops are the first four kinds
+	antispoof := egress.BorderDropKinds[:4]
+	if kinds := f.Stats().Kinds; !slices.Equal(kinds, antispoof) {
+		t.Errorf("the anchor writes the drops %v, want %v", kinds, antispoof)
+	}
+	recorded := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.dropped" }, 0)
+	var named []string
+	for _, event := range recorded {
+		for _, kind := range egress.BorderDropKinds {
+			if _, ok := event.Attrs[kind.Name()]; ok {
+				named = append(named, kind.Name())
+			}
+		}
+	}
+	if want := []string{"overlay_source_ipv4", "overlay_source_ipv6", "carved_source_ipv4", "carved_source_ipv6"}; len(recorded) != 1 || !slices.Equal(named, want) {
+		t.Errorf("the pass recorded %d antispoof.dropped naming %q, want one naming %q", len(recorded), named, want)
 	}
 	debug := f.Debug()
 	if len(debug.Chains) != 1 || debug.Chains[0].Name != BorderChain || debug.Chains[0].Hook != "in" || debug.Chains[0].Priority != nil || len(debug.Chains[0].Rules) != 11 {

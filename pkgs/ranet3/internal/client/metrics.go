@@ -114,20 +114,22 @@ func (c *Client) Metrics(w io.Writer) {
 }
 
 // renderBorder writes the antispoof filter's readiness and the packets each
-// drop counted as its last pass read them, and nothing on a node that runs no
-// filter
+// drop it writes counted as its last pass read them, and nothing on a node
+// that runs no filter
 func (c *Client) renderBorder(w io.Writer) {
 	border := c.borderStatus()
 	if border == nil || border.UnenforcedOn != "" {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet3_antispoof_ready Whether the antispoof filter's chains and sets read back as the configuration asks.\n")
+	fmt.Fprint(w, "# HELP ranet3_antispoof_ready Whether the antispoof filter's rules and sets read back as the configuration asks.\n")
 	fmt.Fprint(w, "# TYPE ranet3_antispoof_ready gauge\n")
 	fmt.Fprintf(w, "ranet3_antispoof_ready %d\n", boolValue(border.Ready))
 	fmt.Fprint(w, "# HELP ranet3_antispoof_dropped_packets_total Packets the antispoof filter dropped, arriving from outside the mesh with an overlay source no exemption passes or a mesh source inside a carve-out or an exemption, or kept out of the tun by the entry chain, as of its last pass. A rewrite of the table starts them from zero.\n")
 	fmt.Fprint(w, "# TYPE ranet3_antispoof_dropped_packets_total counter\n")
 	for _, kind := range egress.BorderDropKinds {
-		fmt.Fprintf(w, "ranet3_antispoof_dropped_packets_total{reason=\"%s\",family=\"%s\"} %d\n", kind.Reason, kind.Family, border.Dropped[kind.Name()])
+		if count, ok := border.Dropped[kind.Name()]; ok {
+			fmt.Fprintf(w, "ranet3_antispoof_dropped_packets_total{reason=\"%s\",family=\"%s\"} %d\n", kind.Reason, kind.Family, count)
+		}
 	}
 }
 

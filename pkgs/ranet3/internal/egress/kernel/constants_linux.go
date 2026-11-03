@@ -5,16 +5,11 @@
 
 package kernel
 
-import "ranet3.com/pkgs/ranet3/internal/egress"
-
 // EntryRuns is whether this platform writes the entry chain, which runs on
 // every node holding a tun with overlay written or not
 const EntryRuns = true
 
 const (
-	// borderSweep is the antispoof filter's periodic pass, which the table's
-	// monitor wakes early for another writer's change
-	borderSweep = egress.DefaultSweep
 	// rawPriority is NF_IP_PRI_RAW, the hook priority the antispoof chain runs
 	// at: after defragmentation at -400 and before conntrack at -200, so a
 	// forged packet creates no connection entry

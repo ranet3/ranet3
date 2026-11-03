@@ -4,6 +4,7 @@
 package kernel
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -187,10 +188,25 @@ func dropsSince(d, was egress.BorderDrops) egress.BorderDrops {
 	return d
 }
 
-func dropAttrs(d egress.BorderDrops) []slog.Attr {
-	attrs := make([]slog.Attr, 0, len(d))
+// dropKinds is each drop of egress.BorderDropKinds a rule of rules writes, in
+// that order
+func dropKinds(rules []BorderRule) []egress.BorderDrop {
+	var out []egress.BorderDrop
+	for _, kind := range egress.BorderDropKinds {
+		if slices.ContainsFunc(rules, func(rule BorderRule) bool { return rule.Reason() == kind.Reason && rule.Family() == kind.Family }) {
+			out = append(out, kind)
+		}
+	}
+	return out
+}
+
+// dropAttrs is d's count of each drop of kinds
+func dropAttrs(d egress.BorderDrops, kinds []egress.BorderDrop) []slog.Attr {
+	attrs := make([]slog.Attr, 0, len(kinds))
 	for i, kind := range egress.BorderDropKinds {
-		attrs = append(attrs, slog.Uint64(kind.Name(), d[i]))
+		if slices.Contains(kinds, kind) {
+			attrs = append(attrs, slog.Uint64(kind.Name(), d[i]))
+		}
 	}
 	return attrs
 }
@@ -258,6 +274,9 @@ type borderBackend interface {
 	// family. desired leaves out a set it does not, so moving one writes
 	// nothing.
 	holds(set string) bool
+	// sweep is the period of the pass that reads the table back unwoken, zero
+	// for egress.DefaultSweep
+	sweep() time.Duration
 	// wildcards reports whether the backend matches an interface by a name
 	// ending in *. desired writes an exemption under such a name for one that
 	// does not as one rule per link the name matches.
@@ -362,7 +381,7 @@ func (f *BorderFilter) Close() error {
 
 // newBorderFilter is a filter over a backend that is already open, before its first pass
 func newBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBackend) *BorderFilter {
-	f := &BorderFilter{rt: rt, be: be, sweep: borderSweep, wake: make(chan struct{}, 1), trigger: "start"}
+	f := &BorderFilter{rt: rt, be: be, sweep: cmp.Or(be.sweep(), egress.DefaultSweep), wake: make(chan struct{}, 1), trigger: "start"}
 	f.config.Store(cfg)
 	f.finish = sync.OnceValue(func() error {
 		f.setReady(false, "the antispoof filter is stopping")
@@ -642,7 +661,7 @@ func (f *BorderFilter) reconcile() error {
 	if f.ready {
 		f.last = rules
 	}
-	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, CarveOuts: carveOuts, Sets: f.be.readings(sets), PF: read.pf}
+	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, Kinds: dropKinds(rules), CarveOuts: carveOuts, Sets: f.be.readings(sets), PF: read.pf}
 	if err != nil {
 		stats.Err = err.Error()
 	} else {
@@ -740,7 +759,7 @@ func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress
 	moved := dropsSince(now, f.dropped)
 	f.dropped = now
 	if moved != (egress.BorderDrops{}) {
-		f.rt.Events.Emit("antispoof.dropped", "", dropAttrs(moved)...)
+		f.rt.Events.Emit("antispoof.dropped", "", dropAttrs(moved, dropKinds(desired))...)
 	}
 	return now
 }

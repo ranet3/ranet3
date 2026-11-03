@@ -185,8 +185,14 @@ func policyRule(rule kernel.DumpedRule) control.PolicyRule {
 func borderTable(debug egress.BorderDebug) *control.BorderTable {
 	table := &control.BorderTable{
 		Where: debug.Where, Ready: debug.Ready, Unready: debug.Unready, Err: debug.Err,
+		PF:     borderPF(debug.PF),
 		Chains: make([]control.BorderChain, 0, len(debug.Chains)),
 		Sets:   make([]control.BorderSet, 0, len(debug.Sets)),
+	}
+	if debug.PF != nil {
+		for _, enabler := range debug.PF.Enablers {
+			table.Enablers = append(table.Enablers, control.BorderEnabler{PID: enabler.PID, Name: enabler.Name})
+		}
 	}
 	if !debug.PassAt.IsZero() {
 		table.ReadAt, table.ReadAgo = debug.PassAt.UTC(), control.Duration(time.Since(debug.PassAt))
@@ -206,7 +212,7 @@ func borderTable(debug egress.BorderDebug) *control.BorderTable {
 		for _, r := range set.Elements {
 			elements = append(elements, r.String())
 		}
-		table.Sets = append(table.Sets, control.BorderSet{Name: set.Name, Elements: elements})
+		table.Sets = append(table.Sets, control.BorderSet{Kind: set.Kind, Name: set.Name, Elements: elements})
 	}
 	return table
 }

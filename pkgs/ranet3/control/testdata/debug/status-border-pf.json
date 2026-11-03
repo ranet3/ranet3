@@ -1,0 +1,33 @@
+{
+  "where": "pf anchor com.apple/ranet3",
+  "pf": {
+    "anchor": "com.apple/ranet3",
+    "token": "9223372036854775809",
+    "pid": 4242,
+    "listed": true,
+    "called": true
+  },
+  "inside": [
+    "utun7",
+    "lo0"
+  ],
+  "overlay": [
+    "192.0.2.0/24",
+    "3fff:10::/32"
+  ],
+  "carved": [
+    {
+      "link": "en0",
+      "prefix": "192.0.2.128/25"
+    }
+  ],
+  "ready": true,
+  "pass_at": "2026-11-03T23:40:05Z",
+  "installed": 10,
+  "dropped": {
+    "carved_source_ipv4": 1,
+    "carved_source_ipv6": 0,
+    "overlay_source_ipv4": 2,
+    "overlay_source_ipv6": 9
+  }
+}

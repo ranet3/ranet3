@@ -1,0 +1,27 @@
+Policy rules: this platform has no policy rules
+Lookups
+  Lookup    Family  Prefix           Address          Source  Interface  Taken  Answer
+  underlay  ipv4    198.51.100.0/24  198.51.100.77    -       -          no     dev en0
+  underlay  ipv4    -                203.0.113.10     -       -          no     dev en1
+  underlay  ipv4    -                203.0.113.70     -       -          no     no route
+  underlay  ipv6    ::/0             2001:db8:400::7  -       -          no     dev en0
+  underlay  ipv6    -                fe80::9%en0      -       -          no     dev en0
+
+Antispoof filter, pf anchor com.apple/ranet3, read 2 seconds ago, ready
+  chain antispoof, in
+    accept  via lo0
+    drop    ipv4 source @carved4  1 packets, 84 B
+    drop    ipv6 source @carved6  0 packets, 0 B
+    accept  via en0 source 192.0.2.128/25
+    accept  exempt source 192.0.2.32/27
+    accept  exempt via bridge100 source 3fff:10:2222:3333:4444:5555:6666:7777/128
+    accept  exempt via en0 source 3fff:10:1::/48
+    accept  exempt via en1 source 3fff:10:1::/48
+    accept  exempt via en1 source 192.0.2.64/26
+    drop    ipv4 source 192.0.2.0/24  2 packets, 168 B
+    drop    ipv6 source 3fff:10::/32  9 packets, 936 B
+  table ranet3_carved  192.0.2.200, 3fff:10::/48
+  pf reference         token 9223372036854775809 of pid 4242, listed
+  pf main ruleset      calls com.apple/*
+  pf enabler           pid 4242 ranet3
+  pf enabler           pid 377 othervpn

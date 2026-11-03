@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -55,6 +56,8 @@ type borderPF struct {
 	tun    string
 	inside []string
 	events *events.Bus
+	// every is the sweep, zero for the default
+	every time.Duration
 }
 
 func (b *borderPF) Changed() <-chan struct{} { return nil }
@@ -92,6 +95,8 @@ func (b *borderPF) writes(rule BorderRule) bool {
 // holds the carved sets alone, in one table, since only the carved drops read
 // a set
 func (b *borderPF) holds(set string) bool { return set == carvedSet }
+
+func (b *borderPF) sweep() time.Duration { return b.every }
 
 // wildcards is false, since pf matches an interface by its exact name, with no
 // wildcard (pfi_kif_match, bsd_net_pf_if.c:224-231)

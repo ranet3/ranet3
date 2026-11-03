@@ -1,0 +1,183 @@
+{
+  "policy": [],
+  "policy_err": "this platform has no policy rules",
+  "missing": [],
+  "lookups": [
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "prefix": "198.51.100.0/24",
+      "address": "198.51.100.77",
+      "answer": "dev en0",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "address": "203.0.113.10",
+      "answer": "dev en1",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "address": "203.0.113.70",
+      "answer": "no route",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv6",
+      "prefix": "::/0",
+      "address": "2001:db8:400::7",
+      "answer": "dev en0",
+      "taken": false
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv6",
+      "address": "fe80::9%en0",
+      "answer": "dev en0",
+      "taken": false
+    }
+  ],
+  "antispoof": {
+    "where": "pf anchor com.apple/ranet3",
+    "pf": {
+      "anchor": "com.apple/ranet3",
+      "token": "9223372036854775809",
+      "pid": 4242,
+      "listed": true,
+      "called": true
+    },
+    "enablers": [
+      {
+        "pid": 4242,
+        "name": "ranet3"
+      },
+      {
+        "pid": 377,
+        "name": "othervpn"
+      }
+    ],
+    "read_at": "2026-11-03T23:40:05Z",
+    "read_ago": "2s",
+    "ready": true,
+    "chains": [
+      {
+        "name": "antispoof",
+        "hook": "in",
+        "rules": [
+          {
+            "spec": "accept via lo0",
+            "verdict": "accept",
+            "reason": "inside",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "drop ipv4 source @carved4",
+            "verdict": "drop",
+            "reason": "carved_source",
+            "family": "ipv4",
+            "held": true,
+            "packets": 1,
+            "bytes": 84
+          },
+          {
+            "spec": "drop ipv6 source @carved6",
+            "verdict": "drop",
+            "reason": "carved_source",
+            "family": "ipv6",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "accept via en0 source 192.0.2.128/25",
+            "verdict": "accept",
+            "reason": "carve_out",
+            "family": "ipv4",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "accept exempt source 192.0.2.32/27",
+            "verdict": "accept",
+            "reason": "exempt",
+            "family": "ipv4",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "accept exempt via bridge100 source 3fff:10:2222:3333:4444:5555:6666:7777/128",
+            "verdict": "accept",
+            "reason": "exempt",
+            "family": "ipv6",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "accept exempt via en0 source 3fff:10:1::/48",
+            "verdict": "accept",
+            "reason": "exempt",
+            "family": "ipv6",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "accept exempt via en1 source 3fff:10:1::/48",
+            "verdict": "accept",
+            "reason": "exempt",
+            "family": "ipv6",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "accept exempt via en1 source 192.0.2.64/26",
+            "verdict": "accept",
+            "reason": "exempt",
+            "family": "ipv4",
+            "held": true,
+            "packets": 0,
+            "bytes": 0
+          },
+          {
+            "spec": "drop ipv4 source 192.0.2.0/24",
+            "verdict": "drop",
+            "reason": "overlay_source",
+            "family": "ipv4",
+            "held": true,
+            "packets": 2,
+            "bytes": 168
+          },
+          {
+            "spec": "drop ipv6 source 3fff:10::/32",
+            "verdict": "drop",
+            "reason": "overlay_source",
+            "family": "ipv6",
+            "held": true,
+            "packets": 9,
+            "bytes": 936
+          }
+        ]
+      }
+    ],
+    "sets": [
+      {
+        "kind": "table",
+        "name": "ranet3_carved",
+        "elements": [
+          "192.0.2.200",
+          "3fff:10::/48"
+        ]
+      }
+    ]
+  }
+}

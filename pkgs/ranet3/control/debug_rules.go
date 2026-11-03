@@ -156,6 +156,10 @@ type BorderTable struct {
 	// UnenforcedOn names the platform where overlay is written and no filter
 	// runs, empty wherever one does
 	UnenforcedOn string `json:"unenforced_on,omitempty"`
+	// PF is the last pass's reading of pf beside the anchor, and Enablers
+	// every reference pf lists now, where the filter runs on pf
+	PF       *BorderPF       `json:"pf,omitempty"`
+	Enablers []BorderEnabler `json:"enablers,omitempty"`
 	// ReadAt is the last pass, whose readback Ready and Unready report, and
 	// ReadAgo how long before the answer it ran
 	ReadAt  time.Time     `json:"read_at,omitzero"`
@@ -165,6 +169,13 @@ type BorderTable struct {
 	Chains  []BorderChain `json:"chains"`
 	Sets    []BorderSet   `json:"sets"`
 	Err     string        `json:"err,omitempty"`
+}
+
+// BorderEnabler is one reference on pf, by the process that took it, as the
+// wire carries pf's own: without its token, which only the filter reads
+type BorderEnabler struct {
+	PID  int    `json:"pid"`
+	Name string `json:"name"`
 }
 
 // BorderChain is one chain of the table, its hook, its priority where the
@@ -177,10 +188,12 @@ type BorderChain struct {
 	Rules    []BorderChainRule `json:"rules"`
 }
 
-// BorderSet is one set of the table, its elements as the last pass asked for
-// them, each written as nft prints it, one address bare, a prefix or a first
-// and last address
+// BorderSet is one set of the table, by the word its backend calls a set by,
+// set for nftables and table for pf, and its elements as the last pass asked
+// for them, each written as nft prints it, one address bare, a prefix or a
+// first and last address
 type BorderSet struct {
+	Kind     string   `json:"kind"`
 	Name     string   `json:"name"`
 	Elements []string `json:"elements"`
 }
@@ -318,8 +331,9 @@ func renderFallback(w io.Writer, table *FallbackTable) {
 }
 
 // renderBorder writes the antispoof filter's table: each chain with the
-// packets each drop counted, then each set's elements, or one line where no
-// filter runs for the overlay
+// packets each drop counted, then each set's elements, then on pf the
+// reference and the main ruleset's call with every reference pf lists, or one
+// line where no filter runs for the overlay
 func renderBorder(w io.Writer, border *BorderTable) {
 	if border.UnenforcedOn != "" {
 		fmt.Fprintf(w, "\nAntispoof filter, not enforced on %s\n", border.UnenforcedOn)
@@ -365,9 +379,35 @@ func renderBorder(w io.Writer, border *BorderTable) {
 		if len(set.Elements) != 0 {
 			elements = strings.Join(set.Elements, ", ")
 		}
-		rows = append(rows, []string{"set " + set.Name, elements})
+		rows = append(rows, []string{set.Kind + " " + set.Name, elements})
 	}
-	indented(w, func(w io.Writer) { pairs(w, rows) })
+	indented(w, func(w io.Writer) { pairs(w, append(rows, pfRows(border)...)) })
+}
+
+// pfRows is the rows that name, where the filter runs on pf, this daemon's
+// reference and whether pf lists it, the main ruleset's call, and every
+// reference pf lists by its process
+func pfRows(border *BorderTable) [][]string {
+	if border.PF == nil {
+		return nil
+	}
+	pf := border.PF
+	listed := "listed"
+	if !pf.Listed {
+		listed = "not listed"
+	}
+	called := "calls com.apple/*"
+	if !pf.Called {
+		called = "does not call com.apple/*"
+	}
+	rows := [][]string{
+		{"pf reference", fmt.Sprintf("token %d of pid %d, %s", pf.Token, pf.PID, listed)},
+		{"pf main ruleset", called},
+	}
+	for _, enabler := range border.Enablers {
+		rows = append(rows, []string{"pf enabler", fmt.Sprintf("pid %d %s", enabler.PID, enabler.Name)})
+	}
+	return rows
 }
 
 // indented writes what write writes with every line two spaces in

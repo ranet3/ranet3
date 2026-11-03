@@ -228,10 +228,10 @@ func egressStatus(status egress.Status) control.EgressStatus {
 	return out
 }
 
-// unenforcedOn names this platform where overlay is written and it runs no
-// antispoof filter, empty wherever one runs or no overlay is written
+// unenforcedOn names this platform where overlay is written and no antispoof
+// filter runs for it, empty wherever one runs or no overlay is written
 func (c *Client) unenforcedOn() string {
-	if kernelexit.EntryRuns || c.config().Border() == nil {
+	if border := c.config().Border(); border == nil || kernelexit.Filters(border) {
 		return ""
 	}
 	return runtime.GOOS
@@ -255,12 +255,15 @@ func (c *Client) borderStatus() *control.BorderStatus {
 	for _, carveOut := range stats.CarveOuts {
 		carved = append(carved, control.BorderCarveOut{Link: carveOut.Link, Prefix: carveOut.Prefix})
 	}
-	dropped := make(control.BorderDrops, len(egress.BorderDropKinds))
+	dropped := make(control.BorderDrops, len(stats.Kinds))
 	for i, kind := range egress.BorderDropKinds {
-		dropped[kind.Name()] = stats.Dropped[i]
+		if slices.Contains(stats.Kinds, kind) {
+			dropped[kind.Name()] = stats.Dropped[i]
+		}
 	}
 	return &control.BorderStatus{
 		Where:     border.Where(),
+		PF:        borderPF(stats.PF),
 		Inside:    border.Inside(),
 		Overlay:   prefixes,
 		Carved:    carved,
@@ -271,6 +274,15 @@ func (c *Client) borderStatus() *control.BorderStatus {
 		Dropped:   dropped,
 		Err:       stats.Err,
 	}
+}
+
+// borderPF is pf's state for the filter as the wire carries it, nil where
+// the filter does not run on pf
+func borderPF(pf *egress.BorderPF) *control.BorderPF {
+	if pf == nil {
+		return nil
+	}
+	return &control.BorderPF{Anchor: pf.Anchor, Token: pf.Token, PID: pf.PID, Listed: pf.Listed, Called: pf.Called}
 }
 
 func (c *Client) registryReadAt() time.Time {

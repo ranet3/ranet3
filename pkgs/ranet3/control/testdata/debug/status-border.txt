@@ -23,5 +23,7 @@ ESP         0 in, 0 dropped by their sessions, 0 datagrams refused
 nftables table inet ranet3 chain mesh_entry, dropped 7 entering the mesh
 not installed, another writer changed its table
 not installed, egress: list the rules of nftables table inet ranet3 chain antispoof: operation not permitted
-not enforced on darwin, 1 overlay prefix
-not enforced on darwin, 2 overlay prefixes
+not enforced on freebsd, 1 overlay prefix
+not enforced on freebsd, 2 overlay prefixes
+pf anchor com.apple/ranet3, inside utun7 lo0, 2 overlay prefixes, carving 192.0.2.128/25 on en0, dropped 11 overlay sources and 1 carved sources
+not installed, pf's main ruleset holds no anchor "com.apple/*", so pf evaluates no rule of com.apple/ranet3: pfctl -f /etc/pf.conf loads the stock ruleset again, and a ruleset loaded in its place needs that line

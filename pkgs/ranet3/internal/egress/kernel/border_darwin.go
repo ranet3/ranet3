@@ -36,7 +36,7 @@ func newBorderBackend(cfg *egress.Border, rt egress.BorderRuntime) (borderBacken
 	if err != nil {
 		return nil, err
 	}
-	return &borderPF{ctl: ctl, ref: ref, anchor: pfAnchor, tun: rt.Tun, inside: rt.Inside, events: rt.Events}, nil
+	return &borderPF{ctl: ctl, ref: ref, anchor: pfAnchor, tun: rt.Tun, inside: rt.Inside, events: rt.Events, every: pfSweep}, nil
 }
 
 // Filters reports whether the filter runs for cfg, nil where overlay is not

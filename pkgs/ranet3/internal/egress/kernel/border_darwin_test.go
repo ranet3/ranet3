@@ -80,9 +80,8 @@ const (
 // accept, folded into each drop, and no rule of the entry chain, which darwin
 // does not write
 func TestPfBorderRunsOnlyWhereOverlayIsWritten(t *testing.T) {
-	if Filters(nil) || !Filters(overlay(t, "192.0.2.0/24")) || borderSweep != 5*time.Second {
-		t.Errorf("darwin filters with no overlay %v, with overlay %v, and sweeps every %v",
-			Filters(nil), Filters(overlay(t, "192.0.2.0/24")), borderSweep)
+	if EntryRuns || Filters(nil) || !Filters(overlay(t, "192.0.2.0/24")) {
+		t.Errorf("darwin reads EntryRuns %v, filters with no overlay %v, with overlay %v", EntryRuns, Filters(nil), Filters(overlay(t, "192.0.2.0/24")))
 	}
 	// a state directory holding no record, so the start runs no pfctl
 	if f, err := NewBorderFilter(nil, egress.BorderRuntime{Tun: "utun250", StateDir: t.TempDir()}); f != nil || err != nil {

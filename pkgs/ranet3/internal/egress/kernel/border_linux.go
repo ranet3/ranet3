@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -69,6 +70,10 @@ func (b *borderTable) writes(BorderRule) bool { return true }
 
 // holds every set, each a set of the table its chains read
 func (b *borderTable) holds(string) bool { return true }
+
+// sweep is the default, since the table's monitor wakes a pass for another
+// writer's change
+func (b *borderTable) sweep() time.Duration { return 0 }
 
 // wildcards is true, since nft matches iifname "wl*" by the bytes before the *
 func (b *borderTable) wildcards() bool { return true }
