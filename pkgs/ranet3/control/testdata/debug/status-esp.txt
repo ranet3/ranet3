@@ -1,6 +1,7 @@
-41822931 in, 0 dropped, 14 refused
-41822931 in, 0 dropped, 14 refused, 1207 marked CE
-41822931 in, 3 dropped, 14 refused, 1207 marked CE, 2 with an unused ECN combination
+41822931 in, 0 dropped by their sessions, 14 datagrams refused
+41822931 in, 0 dropped by their sessions, 14 datagrams refused, 1207 marked CE
+41822931 in, 0 dropped by their sessions, 14 datagrams refused, 5 dropped at the receive queue
+41822931 in, 3 dropped by their sessions, 14 datagrams refused, 5 dropped at the receive queue, 1207 marked CE, 2 with an unused ECN combination
 
 Node        example/gateway
 Version     v0.1.0
@@ -21,4 +22,4 @@ Originate   2001:db8:a::/48
 Segments    off
 Steering    off
 Transit     0 forwarded, 0 delivered, 0 dropped
-ESP         41822931 in, 3 dropped, 14 refused, 1207 marked CE, 2 with an unused ECN combination
+ESP         41822931 in, 3 dropped by their sessions, 14 datagrams refused, 5 dropped at the receive queue, 1207 marked CE, 2 with an unused ECN combination

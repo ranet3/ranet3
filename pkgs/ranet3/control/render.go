@@ -78,8 +78,13 @@ func RenderStatus(w io.Writer, s Status) {
 	pairs(w, rows)
 }
 
+// espLine always names the packets in, those their sessions dropped and the datagrams the hub refused
+// and the datagrams a full receive queue dropped, the packets marked CE and those of an unused ECN combination only while each is above 0
 func espLine(e ESPCounters) string {
-	line := fmt.Sprintf("%d in, %d dropped, %d refused", e.InboundPackets, e.InboundDropped, e.ReceiveRefused)
+	line := fmt.Sprintf("%d in, %d dropped by their sessions, %d datagrams refused", e.InboundPackets, e.InboundDropped, e.ReceiveRefused)
+	if e.ReceiveDropped > 0 {
+		line += fmt.Sprintf(", %d dropped at the receive queue", e.ReceiveDropped)
+	}
 	if e.InboundCE > 0 {
 		line += fmt.Sprintf(", %d marked CE", e.InboundCE)
 	}
@@ -210,6 +215,9 @@ func egressLine(e EgressStatus) string {
 		return "off, this node carries no traffic for others"
 	}
 	line := fmt.Sprintf("%s, %d rules, %d flows", e.Where, e.Installed, e.Flows)
+	if e.Untranslated > 0 {
+		line += fmt.Sprintf(", %d flows untranslated", e.Untranslated)
+	}
 	if refused := packetsText(e.Refused); refused != "" {
 		line += fmt.Sprintf(", %s refused past %d a source", refused, e.FlowsPerSource)
 	}

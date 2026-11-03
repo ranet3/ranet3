@@ -247,7 +247,8 @@ func TestStatusTransitLineRendersAsTheGoldenFile(t *testing.T) {
 	goldenJSON(t, "status-transit.json", every)
 }
 
-// the ESP line always names in, dropped and refused, and names the packets marked CE and those of an unused ECN combination only while each is above 0
+// the ESP line always names in, the packets their sessions dropped and the datagrams refused
+// and names those a full receive queue dropped, the packets marked CE and those of an unused ECN combination only while each is above 0
 // and --json carries every count under esp
 func TestStatusESPLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()
@@ -257,6 +258,7 @@ func TestStatusESPLineRendersAsTheGoldenFile(t *testing.T) {
 	for _, counters := range []ESPCounters{
 		{InboundPackets: 41822931, ReceiveRefused: 14},
 		{InboundPackets: 41822931, ReceiveRefused: 14, InboundCE: 1207},
+		{InboundPackets: 41822931, ReceiveRefused: 14, ReceiveDropped: 5},
 		every,
 	} {
 		out.WriteString(espLine(counters) + "\n")
@@ -276,6 +278,7 @@ func TestStatusESPLineRendersAsTheGoldenFile(t *testing.T) {
 // prefix with no address to read. It names the flows each family's limit
 // refused where any were, against the limit, and the host's connection table
 // against its maximum, as far as the pass read them.
+// the flows a class of none left untranslated only where there are any
 func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	var out strings.Builder
 	for _, ready := range [][]string{nil, {"ipv6"}, {"ipv4", "ipv6"}} {
@@ -318,6 +321,7 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 		limited.Enabled, limited.Where, limited.Installed, limited.Flows = true, "nftables ip ranet3, ip6 ranet3", 20, 4100
 		out.WriteString(egressLine(limited) + "\n")
 	}
+	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Installed: 64, Untranslated: 3108371}) + "\n")
 	golden(t, "status-egress.txt", []byte(out.String()))
 }
 

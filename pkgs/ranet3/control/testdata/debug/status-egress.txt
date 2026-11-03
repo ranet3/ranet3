@@ -12,3 +12,4 @@ nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 12 ipv4 packets refused pa
 nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, 2 ipv6 packets dropped with no tracked flow, conntrack holding 9000 entries, no pass yet
 nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 3 ipv6 packets refused past 4096 a source, no pass yet
 nftables ip ranet3, ip6 ranet3, 20 rules, 4100 flows, 5 ipv4 and 2 ipv6 packets dropped with no tracked flow, no pass yet
+nftables ip ranet3, ip6 ranet3, 64 rules, 0 flows, 3108371 flows untranslated, no pass yet

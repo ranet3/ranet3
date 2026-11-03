@@ -17,7 +17,7 @@ Originate   2001:db8:a::/48
 Segments    3fff:b:0:106::1 End.DT46, 3fff:b:0:106::2 End (7 forwarded, 5 delivered, 4 dropped)
 Steering    off
 Transit     0 forwarded, 0 delivered, 0 dropped
-ESP         0 in, 0 dropped, 0 refused
+ESP         0 in, 0 dropped by their sessions, 0 datagrams refused
 
 Node        example/gateway
 Version     v0.1.0
@@ -38,5 +38,5 @@ Originate   2001:db8:a::/48
 Segments    3fff:b:0:106::1 End.DT46, 3fff:b:0:106::2 End (7 forwarded, 5 delivered, 4 dropped, 1 answered, 33 egressed, 2 refused, 3 not ready, 6 with an unused ECN combination)
 Steering    off
 Transit     0 forwarded, 0 delivered, 0 dropped
-ESP         0 in, 0 dropped, 0 refused
+ESP         0 in, 0 dropped by their sessions, 0 datagrams refused
 
