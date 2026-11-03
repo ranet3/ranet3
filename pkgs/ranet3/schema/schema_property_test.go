@@ -290,10 +290,9 @@ func TestDurationRoundTripsThroughEveryEncoding(t *testing.T) {
 	})
 }
 
-// The same for a table, over every number the kernel takes, so the three
-// reserved ones go out under their names and come back as their numbers. A
-// table that came back as another would send a rule's lookup somewhere it was
-// never written to go.
+// The same for a table, over every number the kernel takes. A table that came
+// back as another would send a rule's lookup somewhere it was never written to
+// go.
 func TestTableRoundTripsThroughEveryEncoding(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		want := hegel.Draw(ht, tables())
@@ -478,7 +477,7 @@ const spelledWith = "0123456789abcdefABCDEFx:./%-+_ hmsun\u00b5"
 func spellings() hegel.Generator[string] {
 	valid := hegel.OneOf(
 		hegel.Map(durations(), Duration.String),
-		hegel.Map(tables(), TableID.String),
+		hegel.Map(tables(), func(t TableID) string { return strconv.FormatUint(uint64(t), 10) }),
 		hegel.Map(addresses(), netip.Addr.String),
 		hegel.Map(prefixes(), Prefix.String),
 		hegel.SampledFrom([]string{"0", "main", "local", "default", "0x10", "4s", "::/0", "0.0.0.0/0"}),

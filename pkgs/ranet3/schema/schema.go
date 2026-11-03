@@ -384,9 +384,9 @@ func (a *Addr) UnmarshalYAML(value *yaml.Node) error {
 	return Scalar(value, "an address such as 2001:db8::1", a)
 }
 
-// TableID is a routing table, as a number or as one of the names the kernel
-// reserves, so a rule sending the underlay to the main table reads as
-// "table: main" rather than as "table: 254".
+// TableID is a routing table. A file writes it as a number, and String names
+// the tables the kernel reserves, so a debug view of a rule reads "main"
+// rather than 254.
 type TableID uint32
 
 // Reserved table numbers, from linux/rtnetlink.h. Named here rather than taken
@@ -410,39 +410,29 @@ func (t TableID) String() string {
 }
 
 func (t *TableID) UnmarshalText(text []byte) error {
-	switch string(text) {
-	case "main":
-		*t = TableMain
-		return nil
-	case "local":
-		*t = TableLocal
-		return nil
-	case "default":
-		*t = TableDefault
-		return nil
-	}
 	// Read as a signed integer and held to the range of a table, because the
 	// toml decoder hands an integer over as the number it is: a toml file
 	// writing "+200" or "-0" reaches this as 200 or 0, and the yaml decoder
 	// passes the same words through as written.
 	number, err := strconv.ParseInt(string(text), 0, 64)
 	if err != nil || number < 0 || number > math.MaxUint32 {
-		return fmt.Errorf("table %q is neither a number nor one of main, local and default", text)
+		return fmt.Errorf("table %q is not a number", text)
 	}
 	*t = TableID(number)
 	return nil
 }
 
-func (t TableID) MarshalText() ([]byte, error) { return []byte(t.String()), nil }
+func (t TableID) MarshalText() ([]byte, error) {
+	return strconv.AppendUint(nil, uint64(t), 10), nil
+}
 
-// UnmarshalJSON is Duration.UnmarshalJSON for a table, which a file writes as
-// a number more often than as a name.
+// UnmarshalJSON is Duration.UnmarshalJSON for a table
 func (t *TableID) UnmarshalJSON(data []byte) error {
-	return scalarJSON(data, "a table as a number or a name such as main", t)
+	return scalarJSON(data, "a table as a number", t)
 }
 
 func (t *TableID) UnmarshalYAML(value *yaml.Node) error {
-	return Scalar(value, "a table as a number or a name such as main", t)
+	return Scalar(value, "a table as a number", t)
 }
 
 // Announce is one prefix a node puts into the mesh, either bare or carrying

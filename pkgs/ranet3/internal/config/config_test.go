@@ -632,9 +632,7 @@ func TestConfigurationEndingInASeparatorIsTaken(t *testing.T) {
 
 // A refusal names the block and the field an operator wrote, and the value
 // they wrote there. Each of these used to name none of the three: "intervals
-// must be between 10ms and 10m55.35s" says nothing about which line to change,
-// and "rule priority 40 ... lookup 254" answers an operator who wrote "main"
-// with a number and leaves out the family that tells two expanded rules apart.
+// must be between 10ms and 10m55.35s" says nothing about which line to change.
 func TestRefusalsNameTheBlockTheOperatorWrote(t *testing.T) {
 	for name, refusal := range map[string]struct {
 		body  string

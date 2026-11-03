@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestBothDecodersReadOneConfiguration(t *testing.T) {
 interval: 4s
 prefix: 2001:db8::/48
 address: 2001:db8::1
-table: main
+table: 254
 announce:
   - 10.66.0.5/32
   - { prefix: "::/0", from: 2001:db8::/48 }
@@ -70,7 +71,7 @@ announce:
 interval = "4s"
 prefix = "2001:db8::/48"
 address = "2001:db8::1"
-table = "main"
+table = 254
 announce = ["10.66.0.5/32", { prefix = "::/0", from = "2001:db8::/48" }]
 `
 	fromYAML, err := decodeYAML(t, asYAML)
@@ -103,7 +104,7 @@ func TestRenderedScalarsParseBackToThemselves(t *testing.T) {
 			Table:    200,
 			Announce: []Announce{{Prefix: MustPrefix("10.66.0.5/32")}},
 		},
-		"a disabled timer and a named table": {
+		"a disabled timer and a reserved table": {
 			Interval: 0,
 			Prefix:   MustPrefix("::/0"),
 			Address:  MustAddr("2001:db8::1"),
@@ -368,7 +369,7 @@ func TestJSONTakesTheBareNumbersAFileTakes(t *testing.T) {
 		{key: "table", written: "0", want: holder{}},
 		{key: "table", written: "-0", want: holder{}},
 		{key: "table", written: "4294967295", want: holder{Table: math.MaxUint32}},
-		{key: "table", written: `"main"`, want: holder{Table: TableMain}},
+		{key: "table", written: `"main"`, refused: true},
 		{key: "table", written: "4294967296", refused: true},
 		{key: "table", written: "-5", refused: true},
 		{key: "table", written: "2e2", refused: true},
@@ -453,11 +454,15 @@ func TestAddressCarryingAZoneIsRefused(t *testing.T) {
 	}
 }
 
-func TestTableNamesSurviveARoundTrip(t *testing.T) {
+// A file writes a table as its number, and only a debug view names one.
+func TestTablesAreWrittenAsTheirNumber(t *testing.T) {
 	for _, table := range []TableID{TableMain, TableLocal, TableDefault, 200, 51820} {
 		text, err := table.MarshalText()
 		if err != nil {
 			t.Fatal(err)
+		}
+		if want := strconv.FormatUint(uint64(table), 10); string(text) != want {
+			t.Errorf("table %s was written as %q, not as %s", table, text, want)
 		}
 		var got TableID
 		if err := got.UnmarshalText(text); err != nil {
