@@ -33,29 +33,12 @@ let
     "CAP_NET_ADMIN"
   ]
   ++ lib.optional (generated && cfg.settings.link.port < 1024) "CAP_NET_BIND_SERVICE";
-  configExtension = lib.last (
-    lib.splitString "." (baseNameOf (builtins.unsafeDiscardStringContext (toString cfg.configFile)))
-  );
-  etcName = "ranet3/config.${configExtension}";
-  configPath = "/etc/${etcName}";
-  # every --control extraArgs hands the daemon, in either spelling the flag parser reads
-  controlArgs =
-    args:
-    if args == [ ] then
-      [ ]
-    else if lib.head args == "--control" && lib.tail args != [ ] then
-      [ (lib.elemAt args 1) ] ++ controlArgs (lib.drop 2 args)
-    else if lib.hasPrefix "--control=" (lib.head args) then
-      [ (lib.removePrefix "--control=" (lib.head args)) ] ++ controlArgs (lib.tail args)
-    else
-      controlArgs (lib.tail args);
-  # the socket the daemon serves when extraArgs moves it, the last one given as with the flag parser
-  # empty turns the socket off, and null leaves it where ranet3 reload looks by itself
-  controlSocket =
-    let
-      sockets = controlArgs cfg.extraArgs;
-    in
-    if sockets == [ ] then null else lib.last sockets;
+  inherit (import ../common/daemon.nix { inherit lib cfg; })
+    etcName
+    configPath
+    controlSocket
+    reload
+    ;
 in
 {
   key = toString ./ranet3.nix;
@@ -117,16 +100,7 @@ in
         # and a restart to pick that up would drop every SA this node is
         # carrying. The socket verb rather than SIGHUP, so a reload the
         # daemon refuses fails here instead of only reaching the log
-        ExecReload = utils.escapeSystemdExecArgs (
-          [
-            ranet3
-            "reload"
-          ]
-          ++ lib.optionals (controlSocket != null) [
-            "--control"
-            controlSocket
-          ]
-        );
+        ExecReload = utils.escapeSystemdExecArgs reload;
         Restart = "on-failure";
         # a delay of 5 seconds keeps a failing daemon under systemd's limit of 5 starts in 10 seconds
         RestartSec = "5s";
