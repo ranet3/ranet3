@@ -152,11 +152,10 @@ func ExemptCarved(exemptions []egress.Exemption, own, addresses []netip.Prefix, 
 	return egress.Union(carved), slices.Compact(conflicts)
 }
 
-// OwnCopies gives each conflict of an exemption with a range of own, the
-// ranges this node announces, that another router announces too, each with the
-// router-id origin reads for it: the exemption overlaps the range, inside it or
-// covering it, and the conflict carves nothing, the carved sets holding of the
-// range what CarvedSets gives them. Sorted, each once.
+// OwnCopies is the conflict of each exemption with a range of own, the ranges
+// this node announces, that another router announces too, under the router-id
+// origin reads for it. Such a conflict carves nothing, so the carved sets keep
+// of the range what CarvedSets gives them.
 func OwnCopies(exemptions []egress.Exemption, own []netip.Prefix, origin func(netip.Prefix) (string, bool)) []egress.ExemptConflict {
 	var conflicts []egress.ExemptConflict
 	for _, prefix := range own {
