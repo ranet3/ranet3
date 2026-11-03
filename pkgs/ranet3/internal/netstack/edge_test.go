@@ -520,7 +520,7 @@ func TestTUNReadToASIDOfThisNodeIsDropped(t *testing.T) {
 
 // a read off the tun the table answers this node's own is dropped and counted looped, since the mesh could only hand it back to the tun
 // to a host route of its own, to an address cap.table assigns it and toward the internet through its own default, while one into a hold is answered and counted so
-// and a steered packet whose first segment is this node's own counts as its steering's failure, unrouted and answered, and not as looped
+// and a steered packet whose first segment is this node's own counts as its steering's failure, unrouted, no_route and answered, and not as looped
 func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		m, _ := edgeMesh(t)
@@ -537,8 +537,8 @@ func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 		if !slices.Equal(went, make([]*Peer, 4)) {
 			t.Errorf("IPv%d reads to its own host route, its assigned address, the internet through its own default and a hold went to %v, want none", family, went)
 		}
-		if got := m.TransitCounters(); got != (TransitCounters{Looped: 3, Answered: 1}) {
-			t.Errorf("IPv%d the read counted %+v, want 3 looped and 1 answered", family, got)
+		if got := m.TransitCounters(); got != (TransitCounters{Looped: 3, Held: 1, Answered: 1}) {
+			t.Errorf("IPv%d the read counted %+v, want 3 looped and 1 held and answered", family, got)
 		}
 
 		steered, _ := edgeMesh(t)
@@ -555,8 +555,8 @@ func TestTUNReadToThisNodeIsCountedLooped(t *testing.T) {
 		if got := steered.SegmentCounters(); got.Steered != 1 || got.Unrouted != 1 {
 			t.Errorf("IPv%d a read steered to a first segment of this node's own counted %+v, want one steered and unrouted", family, got)
 		}
-		if got := steered.TransitCounters(); got != (TransitCounters{Answered: 1}) {
-			t.Errorf("IPv%d a read steered to a first segment of this node's own counted %+v, want only its answer", family, got)
+		if got := steered.TransitCounters(); got != (TransitCounters{NoRoute: 1, Answered: 1}) {
+			t.Errorf("IPv%d a read steered to a first segment of this node's own counted %+v, want no_route and its answer", family, got)
 		}
 	}
 }

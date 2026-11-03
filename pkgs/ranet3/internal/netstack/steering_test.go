@@ -58,7 +58,7 @@ func TestOutboundSeamRoutesBySegmentRatherThanByDestination(t *testing.T) {
 }
 
 // A steered packet whose first segment the mesh cannot reach is gone at the
-// route lookup, counted unrouted, and answered into the tun with destination
+// route lookup, counted unrouted and no_route, and answered into the tun with destination
 // unreachable, no route, from the destination it was read with, as RFC 4443
 // section 3.1 has the originating node answer it.
 func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
@@ -86,6 +86,32 @@ func TestSteeredPacketWithNoRouteIsCounted(t *testing.T) {
 	}
 	if counters.Dropped != 0 {
 		t.Errorf("this node's own steering was counted against its segment table %d times", counters.Dropped)
+	}
+	if transit := m.TransitCounters(); transit != (TransitCounters{NoRoute: 1, Answered: 1}) {
+		t.Errorf("the read was counted %+v, want no_route and its answer", transit)
+	}
+}
+
+// unencapsulable is the size of an IPv6 read whose encapsulation behind one segment would carry more than an IPv6 payload length counts, RFC 8200 section 3
+const unencapsulable = 0xffff - 8 - 16 + 1
+
+// a read a policy claims and cannot encapsulate is counted unsteered and too_big, and sent nowhere
+func TestReadTooLargeToSteerIsCountedTooBig(t *testing.T) {
+	table, err := srv6.NewSteerTable([]srv6.Steer{{
+		From: schema.PrefixFrom(segPrefix("3fff:a::17/128")),
+		Via:  []schema.Addr{schema.MustAddr("3fff:b:0:206::1")},
+	}}, schema.MustAddr("3fff:b:0:100::1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, dev := recordingMesh(t)
+	m.SetSteering(table)
+	b, written := classifyOne(m, dev, udpPacket(segAddr("3fff:a::17"), segAddr("2001:db8:c::9"), unencapsulable, false))
+	if len(written) != 0 || b.peers[0] != nil {
+		t.Errorf("a read too large to steer put %d packets into the tun and went to %v", len(written), b.peers[0])
+	}
+	if counters, transit := m.SegmentCounters(), m.TransitCounters(); counters.Unsteered != 1 || transit != (TransitCounters{TooBig: 1}) {
+		t.Errorf("the read was counted %+v and %+v, want unsteered and too_big", counters, transit)
 	}
 }
 

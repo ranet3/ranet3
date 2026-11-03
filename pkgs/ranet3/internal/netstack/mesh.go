@@ -437,6 +437,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 		sent, segment := raw, netip.Addr{}
 		if policy, path := m.steerPolicy(steering, src, dst, alongPath); policy != nil {
 			if b.steered[i], ok = m.steer(b.steered[i][:0], raw, policy); !ok {
+				tally.add(transitTooBig)
 				if trace != nil {
 					trace.read(TraceDrop, transitTooBig, policy.Path[0], raw)
 				}
@@ -468,6 +469,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 					trace.read(TraceDrop, transitLooped, netip.Addr{}, raw)
 				}
 			default:
+				tally.add(unroutedReason(verdict))
 				if trace != nil {
 					trace.unroutedRead(m, raw, verdict, match, src, dst, segment)
 				} else {
@@ -485,16 +487,20 @@ func (m *Mesh) classify(b *outboundBatch) {
 		overhead := len(sent) - len(raw)
 		if len(sent) > share.mtu {
 			var count, bytes int
+			var kind answerKind
 			if trace != nil {
-				count, bytes = trace.tooBig(m, b, raw, sent, peer, nh, share.mtu)
+				count, bytes, kind = trace.tooBig(m, b, raw, sent, peer, nh, share.mtu)
 			} else {
-				count, bytes, _, _ = m.tooBig(b, sent, overhead, peer, nh, share.mtu, (*Mesh).takeICMPToken)
+				count, bytes, kind, _ = m.tooBig(b, sent, overhead, peer, nh, share.mtu, (*Mesh).takeICMPToken)
+			}
+			if count == 0 {
+				m.dropTransit(&tally, tooBigReason(kind), src, dst)
 			}
 			share.count += count
 			share.bytes += bytes
 		} else {
 			if trace != nil {
-				trace.readSent(raw, sent, peer, false, 0, 0, TraceNoAnswer)
+				trace.readSent(raw, sent, peer, false, 0, answerNone, TraceNoAnswer)
 			}
 			m.ClampMSS(sent[overhead:], share.mtu-overhead)
 			b.packets[i], b.peers[i], b.headers[i] = sent, peer, nh
@@ -522,6 +528,14 @@ func (m *Mesh) answerUnroutedRead(raw []byte, verdict Verdict, match Match, src,
 	return kind, TraceSent
 }
 
+// tooBigReason is the reason a packet too big for its session and cut into no fragment is dropped for, invalid where its answer is about its options
+func tooBigReason(kind answerKind) transitReason {
+	if kind == answerParameter {
+		return transitInvalid
+	}
+	return transitTooBig
+}
+
 // tooBig takes a packet larger than mtu, the largest its peer's session carries, and reports how many fragments it queued for the peer and their bytes
 // and the kind of the answer it drew through take and that answer's fate as answerTaking reports it, TraceNoAnswer where the cut left no fault to answer
 // overhead is the header steering put in front of the packet
@@ -533,19 +547,20 @@ func (m *Mesh) tooBig(b *outboundBatch, raw []byte, overhead int, peer *Peer, ne
 	if cut {
 		count, bytes, fault := b.cut.add(peer, nextHeader, raw[:overhead], inner, mtu)
 		if fault == 0 {
-			return count, bytes, 0, TraceNoAnswer
+			return count, bytes, answerNone, TraceNoAnswer
 		}
 		if answer, _ = m.answerOptions(inner, fault, false, take); answer == nil {
 			return count, bytes, answerParameter, TraceNotAnswerable
 		}
 		m.writeHostPacket(answer)
+		m.noteAnswered(answerParameter)
 		return count, bytes, answerParameter, TraceSent
 	}
 	if answer == nil {
 		return 0, 0, answerTooBig, TraceNotAnswerable
 	}
 	m.writeHostPacket(answer)
-	m.tooBigAnswered.Add(1)
+	m.noteAnswered(answerTooBig)
 	return 0, 0, answerTooBig, TraceSent
 }
 

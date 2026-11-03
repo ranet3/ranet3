@@ -948,6 +948,55 @@ func TestPacketsPastTheirSessionWithOptionsThatDoNotFrameAreAnswered(t *testing.
 	}
 }
 
+// icmpv6Error is an ICMPv6 destination unreachable of size bytes from source to destination, which no ICMP error may answer
+func icmpv6Error(source, destination netip.Addr, size int) []byte {
+	raw := withProtocol(udpPacket(source, destination, size, false), 58)
+	raw[40] = 1
+	return raw
+}
+
+// badChecksum is raw, an IPv4 packet, with a header checksum that fails RFC 1812 section 5.2.2's check, which the cut refuses with no octet at fault
+func badChecksum(raw []byte) []byte {
+	raw[10] ^= 0x5a
+	return raw
+}
+
+// a read off the tun past its session counts under too_big where it is answered about its size, no ICMP error may answer it or the cut makes nothing of it
+// and under invalid where it is answered about options that do not frame, each answer sent counted answered and one about its size in TooBigAnswered too
+// while one cut into fragments counts under no reason
+func TestReadsPastTheirSessionAreCountedUnderTheirReason(t *testing.T) {
+	pastTheEnd := udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, false)
+	// a fragment offset of 64800 octets, from which the packet's data runs past 65535
+	binary.BigEndian.PutUint16(pastTheEnd[6:], 8100)
+	for _, c := range []struct {
+		name   string
+		raw    []byte
+		want   TransitCounters
+		tooBig uint64
+	}{
+		{"IPv6", udpPacket(tooBigSource[6], tooBigDestination[6], DefaultMTU, false), TransitCounters{TooBig: 1, Answered: 1}, 1},
+		{"IPv4 with DF", udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, true), TransitCounters{TooBig: 1, Answered: 1}, 1},
+		{"an ICMPv6 error", icmpv6Error(tooBigSource[6], tooBigDestination[6], DefaultMTU), TransitCounters{TooBig: 1}, 0},
+		{"IPv4 without DF and a bad checksum", badChecksum(udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, false)), TransitCounters{TooBig: 1}, 0},
+		{"IPv4 without DF whose data runs past 65535 octets", withTTL(pastTheEnd, 64), TransitCounters{TooBig: 1}, 0},
+		{"IPv4 without DF whose options do not frame", misframed, TransitCounters{Invalid: 1, Answered: 1}, 0},
+		{"IPv4 without DF", udpPacket(tooBigSource[4], tooBigDestination[4], DefaultMTU, false), TransitCounters{}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, dev := recordingMesh(t)
+			peer := (&recordingPeer{}).peer(t, "peer")
+			peer.SetMTU(srv6.MinimumIPv6MTU)
+			m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), peer)
+			m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), peer)
+			ownSources(m, c.raw)
+			classifyOne(m, dev, c.raw)
+			if got := m.TransitCounters(); got != c.want || m.TooBigAnswered() != c.tooBig {
+				t.Errorf("the read was counted %+v and %d answers about its size, want %+v and %d", got, m.TooBigAnswered(), c.want, c.tooBig)
+			}
+		})
+	}
+}
+
 // a read full of IPv4 packets without DF past their session whose options do not frame, all from one source, gets the burst of that source's bucket answered and no more
 // the bucket withholds the rest and the node's cap none, and none of those answers counts as one about a packet's size
 func TestPacketsPastTheirSessionWithOptionsThatDoNotFrameAreAnsweredAtABoundedRate(t *testing.T) {

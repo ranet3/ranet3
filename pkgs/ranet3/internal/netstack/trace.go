@@ -489,6 +489,7 @@ var answerKindNames = [...]string{
 	answerParameter:       "parameter",
 	answerTooBig:          "too_big",
 	answerBeyondScope:     "beyond_scope",
+	answerNone:            "",
 }
 
 // traceHold holds what a record of one packet needs, copied before a step that rewrites the packet, and the clients it was copied for
@@ -592,14 +593,14 @@ func (t *tracer) unroutedRead(m *Mesh, raw []byte, verdict Verdict, match Match,
 }
 
 // tooBig takes sent, a read off the tun larger than mtu, the largest next's session carries, as m.tooBig does, and records raw, the read, as readSent says
-// sent is raw behind the header a policy steered it with, or raw itself, and it reports the fragments queued for next and their bytes
+// sent is raw behind the header a policy steered it with, or raw itself, and it reports the fragments queued for next, their bytes and the kind of the answer m.tooBig reports
 //
 //go:noinline
-func (t *tracer) tooBig(m *Mesh, b *outboundBatch, raw, sent []byte, next *Peer, nextHeader byte, mtu int) (int, int) {
+func (t *tracer) tooBig(m *Mesh, b *outboundBatch, raw, sent []byte, next *Peer, nextHeader byte, mtu int) (int, int, answerKind) {
 	var draw answerDraw
 	count, bytes, kind, fate := m.tooBig(b, sent, len(sent)-len(raw), next, nextHeader, mtu, draw.take)
 	t.readSent(raw, sent, next, true, count, kind, draw.met(fate))
-	return count, bytes
+	return count, bytes, kind
 }
 
 // readSent records raw, a packet read off the tun that classify sent toward next as sent, cut into count fragments
@@ -612,10 +613,8 @@ func (t *tracer) readSent(raw, sent []byte, next *Peer, tooBig bool, count int, 
 	site.next, site.fragments = next, count
 	switch {
 	case !tooBig || count != 0:
-	case outcome != TraceNoAnswer && kind == answerParameter:
-		site = readSite(TraceAnswer, transitInvalid).answered(kind, outcome)
 	case outcome != TraceNoAnswer:
-		site = readSite(TraceDrop, transitTooBig).answered(kind, outcome)
+		site = readSite(TraceAnswer, tooBigReason(kind)).answered(kind, outcome)
 	default:
 		site = readSite(TraceDrop, transitTooBig)
 	}

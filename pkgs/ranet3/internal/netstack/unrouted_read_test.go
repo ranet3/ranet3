@@ -36,6 +36,7 @@ func unroutedMesh(tb testing.TB, set func(*RouteTable)) (*Mesh, *recordingDevice
 // or a hold holds, is answered back into the tun from that destination,
 // whether its source is this node's own or, toward a destination no entry
 // counting as a default covers, an uplink address the mesh holds no route to
+// and counted answered and under its reason, no_route or held
 // over IPv4 a hold counting as a default, and no route, answer network
 // unreachable outside the overlay, and a hold that does not count, or the
 // overlay, host
@@ -81,8 +82,12 @@ func TestTunReadNoRouteReachesIsAnsweredIntoTheTun(t *testing.T) {
 				} else {
 					checkICMPv4(t, written[0], raw, read.destination, 3, read.code, 0)
 				}
-				if got := m.transitCounts[transitAnswered].Load(); got != 1 {
-					t.Errorf("the answer was counted %d times, want once", got)
+				reason := transitNoRoute
+				if read.set != nil {
+					reason = transitHeld
+				}
+				if got, dropped := m.transitCounts[transitAnswered].Load(), m.transitCounts[reason].Load(); got != 1 || dropped != 1 {
+					t.Errorf("the answer was counted %d times and the read %d times as %s, want each once", got, dropped, transitReasonNames[reason])
 				}
 			})
 		}
@@ -105,8 +110,8 @@ func TestTunReadUnderACountedHoldFromAnUplinkSourceIsDroppedUnanswered(t *testin
 	}
 }
 
-// a read the table answers as this node's own goes unanswered, and so does one
-// whose source's bucket is spent
+// a read the table answers as this node's own goes unanswered, counted looped, and so does one
+// whose source's bucket is spent, counted no_route
 func TestTunReadIsLeftUnansweredWhereItLoopsOrItsSourceIsSpent(t *testing.T) {
 	for family := range ownSource {
 		m, dev := unroutedMesh(t, nil)
@@ -121,6 +126,9 @@ func TestTunReadIsLeftUnansweredWhereItLoopsOrItsSourceIsSpent(t *testing.T) {
 		destination := map[int]netip.Addr{4: segAddr("203.0.113.9"), 6: segAddr("2001:db8:c::9")}[family]
 		if _, written := classifyOne(m, dev, udpPacket(uplinkSource[family], destination, 200, false)); len(written) != 0 {
 			t.Errorf("ipv%d: a read from a spent source was answered", family)
+		}
+		if looped, dropped, answered := m.transitCounts[transitLooped].Load(), m.transitCounts[transitNoRoute].Load(), m.transitCounts[transitAnswered].Load(); looped != 1 || dropped != 1 || answered != 0 {
+			t.Errorf("ipv%d: the reads were counted %d times looped, %d no_route and %d answered, want once, once and never", family, looped, dropped, answered)
 		}
 	}
 }

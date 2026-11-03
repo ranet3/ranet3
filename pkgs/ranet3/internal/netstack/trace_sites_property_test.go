@@ -69,6 +69,13 @@ var classifyKinds = []siteKind{
 	{"unparseable", v4, func(int) []byte { return []byte{0x45, 0, 0, 10, 0, 0, 0, 0, 64, 17} }, TraceDrop, "invalid", false, false},
 	{"held", both, func(f int) []byte { return udpPacket(transitOwn[f], transitHeldHost[f], 100, false) }, TraceAnswer, "held", false, false},
 	{"too big", v6, func(f int) []byte { return udpPacket(transitOwn[f], transitFar[f], tracedMTU+100, false) }, TraceAnswer, "too_big", false, false},
+	{"too big with DF", v4, func(f int) []byte { return udpPacket(transitOwn[f], transitFar[f], tracedMTU+100, true) }, TraceAnswer, "too_big", false, false},
+	{"too big unanswerable", v6, func(int) []byte { return icmpv6Error(transitOwn[6], transitFar[6], tracedMTU+100) }, TraceAnswer, "too_big", false, false},
+	{"cut", v4, func(f int) []byte { return udpPacket(transitOwn[f], transitFar[f], tracedMTU+100, false) }, TraceForward, "", false, false},
+	{"uncut", v4, func(f int) []byte { return badChecksum(udpPacket(transitOwn[f], transitFar[f], tracedMTU+100, false)) }, TraceDrop, "too_big", false, false},
+	{"options at fault", v4, func(f int) []byte {
+		return withOptions(udpPacket(transitOwn[f], transitFar[f], tracedMTU+100, false), []byte{7, 9, 4, 0})
+	}, TraceAnswer, "invalid", false, false},
 }
 
 // drawKinds draws a batch of kinds, each with a family it applies to
@@ -161,7 +168,8 @@ func TestTraceRecordsTheDecisionsCountersOnePerPacket(t *testing.T) {
 }
 
 // over drawn reads off the tun of every outcome the checks give, the records come one for each packet in the order it was read, the decision and reason each kind meets
-// each counter of TransitCounters moved as the records say, the answers about a size as TooBigAnswered alone, and the forwards are the packets classify queued for their peer
+// each counter of TransitCounters moved as the records say, a forward under none, since a read classify queues or cuts for its peer is no transit
+// the forwards cut into no fragment are the packets classify queued for their peer, and TooBigAnswered counts the answers about a size the records say were sent
 func TestTraceRecordsTheChecksCountersOnePerRead(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		m, feed := tracedLeaf(ht)
@@ -171,8 +179,7 @@ func TestTraceRecordsTheChecksCountersOnePerRead(t *testing.T) {
 		if len(records) != len(kinds) {
 			ht.Fatalf("%d reads drew %d records, want one each: %+v", len(kinds), len(records), records)
 		}
-		var sizes, unrouted, rest []TraceRecord
-		queuedReads := 0
+		forwards, queuedReads, sizes := 0, 0, 0
 		for i, kind := range kinds {
 			r := records[i]
 			if r.Decision != kind.decision || r.Reason != kind.reason {
@@ -181,38 +188,23 @@ func TestTraceRecordsTheChecksCountersOnePerRead(t *testing.T) {
 			if went[i] != nil {
 				queuedReads++
 			}
-			switch {
-			case r.Decision == TraceForward:
-			case r.Reason == "too_big":
-				sizes = append(sizes, r)
-			case r.Decision == TraceAnswer:
-				unrouted = append(unrouted, r)
-			default:
-				rest = append(rest, r)
+			if r.Decision == TraceForward && r.Fragments == 0 {
+				forwards++
+			}
+			if r.Answer == answerKindNames[answerTooBig] && r.Outcome == TraceSent {
+				sizes++
 			}
 		}
-		forwards := len(records) - len(sizes) - len(unrouted) - len(rest)
 		if forwards != queuedReads {
-			ht.Fatalf("%d forward records for %d reads queued for their peer", forwards, queuedReads)
+			ht.Fatalf("%d forward records cut into no fragment for %d reads queued for their peer", forwards, queuedReads)
 		}
-		// the checks count a read they drop by its reason, and one to no route or a hold as answered alone
-		want, _ := counted(rest)
-		for _, r := range unrouted {
-			if r.Outcome == TraceSent {
-				want.Answered++
-			}
-		}
+		want, _ := counted(records)
+		want.Forwarded = 0
 		if got := m.TransitCounters(); got != want {
 			ht.Fatalf("the checks counted %+v, the records say %+v", got, want)
 		}
-		sent := 0
-		for _, r := range sizes {
-			if r.Outcome == TraceSent {
-				sent++
-			}
-		}
-		if got := m.TooBigAnswered(); got != uint64(sent) {
-			ht.Fatalf("the reads answered %d about their size, the records say %d", got, sent)
+		if got := m.TooBigAnswered(); got != uint64(sizes) {
+			ht.Fatalf("the reads answered %d about their size, the records say %d", got, sizes)
 		}
 	})
 }

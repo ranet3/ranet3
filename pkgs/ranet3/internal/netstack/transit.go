@@ -131,18 +131,20 @@ func (m *Mesh) inOverlay(address netip.Addr) bool {
 	return false
 }
 
-// TransitCounters counts the forwarding decision's outcomes since startup
+// TransitCounters counts the forwarding decision's outcomes since startup, and those of the checks of a read off the tun
 type TransitCounters struct {
-	// Forwarded counts packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
+	// Forwarded counts packets a session delivered that the decision handed to the next peer's send, one cut into fragments once, which that peer's budget may still refuse and Peer.Dropped then counts as well
+	// Delivered the ones written to the tun or handed to the exit
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
-	// Invalid counting as well the reads off the tun that are not exactly one IP packet, the reads whose extension headers the walk cannot finish, and the reads whose carried packet's header cannot be read
+	// NoRoute, Held, Invalid and TooBig count the reads off the tun dropped for them as well, a steered read whose first segment has no route among NoRoute and one a policy could not encapsulate among TooBig
+	// and Invalid the reads that are not exactly one IP packet, whose extension headers the walk cannot finish, whose carried packet's header cannot be read, or past their session with options the cut cannot frame
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
 	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
 	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
-	// Answered counts the ICMP errors sent about dropped packets
+	// Answered counts the ICMP errors sent about dropped packets and reads
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
-	// counted before the rules that keep an error from answering a packet and before the rate
+	// counted before the rules that keep an error from answering a packet and before the rate limits
 	Answered, Unanswered uint64
 }
 
@@ -671,6 +673,8 @@ const (
 	answerTooBig
 	// answerBeyondScope is RFC 4443 section 3.1 code 2, which answerBeyondScope sends rather than buildAnswer
 	answerBeyondScope
+	// answerNone is the kind reported beside TraceNoAnswer, where no error is due, which no record or counter reads
+	answerNone
 )
 
 // buildAnswer is the answer of kind to raw, one packet of version, from source, nil where none is built

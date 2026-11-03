@@ -194,7 +194,7 @@ func TestDefaultSteerTakesNoReadFromASourceThisNodeDoesNotOwn(t *testing.T) {
 }
 
 // the path never takes a read toward an overlay address, so one no entry covers from a source this node does not own does not leave the mesh
-// and is answered into the tun as without the path, host unreachable over IPv4 and no route over IPv6, never counted unowned_source
+// and is answered into the tun as without the path, host unreachable over IPv4 and no route over IPv6, counted no_route and never unowned_source
 // while the same source's read toward the internet is still dropped as unowned_source, in both families
 func TestDefaultSteerAnswersAnUnownedReadTowardAnOverlayAddressNoEntryCovers(t *testing.T) {
 	for _, family := range []int{4, 6} {
@@ -215,8 +215,8 @@ func TestDefaultSteerAnswersAnUnownedReadTowardAnOverlayAddressNoEntryCovers(t *
 			} else {
 				checkICMPv4(t, written[0], raw, transitUnrouted[4], 3, 1, 0)
 			}
-			if got := m.TransitCounters(); got != (TransitCounters{Answered: 1}) {
-				t.Errorf("IPv%d with the path %v the read to an unrouted overlay address counted %+v, want one answered", family, path, got)
+			if got := m.TransitCounters(); got != (TransitCounters{NoRoute: 1, Answered: 1}) {
+				t.Errorf("IPv%d with the path %v the read to an unrouted overlay address counted %+v, want it no_route and answered", family, path, got)
 			}
 			if !path {
 				continue
@@ -225,7 +225,7 @@ func TestDefaultSteerAnswersAnUnownedReadTowardAnOverlayAddressNoEntryCovers(t *
 			if b.peers[0] != nil || len(written) != 0 {
 				t.Errorf("IPv%d a read from a host on its LAN to the internet went to %v and wrote %d packets into the tun", family, b.peers[0], len(written))
 			}
-			if got := m.TransitCounters(); got != (TransitCounters{Answered: 1, UnownedSource: 1}) {
+			if got := m.TransitCounters(); got != (TransitCounters{NoRoute: 1, Answered: 1, UnownedSource: 1}) {
 				t.Errorf("IPv%d the read to the internet counted %+v, want it dropped from an unowned source", family, got)
 			}
 			if got := m.SegmentCounters().Steered; got != 0 {
