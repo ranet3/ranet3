@@ -135,12 +135,11 @@ to = ["example/gateway:0"]
 # ordinary node announces its own address and nothing else, as this file does.
 announce = ["203.0.113.10/32"]
 
-# Whether this node relays the routes it learns. A node that does carries other
-# nodes' packets in plaintext, each decrypted from one session and sealed again
-# onto the next. Off when left out, as a leaf wants it. A node that carries the
-# mesh writes enable = true.
+# Relay the routes this node learns. A node that does carries other nodes'
+# packets in plaintext, each decrypted from one session and sealed again onto
+# the next. Off when left out, as a leaf wants it. A node that carries the mesh
+# writes the block, which has no key.
 # [cap.transit]
-# enable = true
 
 # The babel speaker's own timers, costs and switching margin. Omitted, hello and
 # update keep the defaults RFC 8966 Appendix B and BIRD use, and each key below

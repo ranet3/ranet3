@@ -916,7 +916,7 @@ type listenNode struct {
 	dials  []*listenNode
 	// announce is the prefix the node puts into the mesh, none where it is invalid
 	announce netip.Prefix
-	// transit writes cap.transit enable = true, where the node otherwise leaves the block out
+	// transit writes cap.transit, where the node otherwise leaves the block out
 	transit bool
 	// foreign writes cap.babel cost.extra foreign, where the node otherwise charges nobody
 	foreign uint16
@@ -950,7 +950,7 @@ func writeListenConfig(t *testing.T, node *listenNode, listen bool) *config.Conf
 		fmt.Fprintf(&body, "    cost:\n      extra:\n        foreign: %d\n", node.foreign)
 	}
 	if node.transit {
-		body.WriteString("  transit:\n    enable: true\n")
+		body.WriteString("  transit: {}\n")
 	}
 	if node.announce.IsValid() {
 		fmt.Fprintf(&body, "  route:\n    announce: [%q]\n", node.announce)

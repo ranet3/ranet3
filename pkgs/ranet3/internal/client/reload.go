@@ -407,7 +407,7 @@ func reloadable(old, next *config.Config) error {
 		// so two lines swapped are no change
 		return fmt.Errorf("config: link.endpoints changed, restart to apply")
 	case old.Transits() != next.Transits():
-		return fmt.Errorf("config: cap.transit enable changed, restart to apply")
+		return fmt.Errorf("config: cap.transit changed, restart to apply")
 	case moved != "":
 		return fmt.Errorf("config: cap.table %s, restart to apply", moved)
 	case !sameCrypto(old, next):

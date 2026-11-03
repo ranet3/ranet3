@@ -139,8 +139,7 @@ func pathSpecs(via ...netip.Addr) []labSpec {
 	a := labSpec{announce: hosts(pathExitA), hosts: tunHosts(pathExitA), forwards: true, change: exit(pathSIDA, pathSIDAOutside)}
 	b := labSpec{announce: hosts(pathExitB), hosts: tunHosts(pathExitB), forwards: true, change: exit(pathSIDB)}
 	w := labSpec{announce: append(hosts(pathWaypoint), netip.PrefixFrom(pathSIDW, 128).String()), hosts: tunHosts(pathWaypoint), dial: []int{pathExitA}, change: func(cfg *config.Config) {
-		on := true
-		cfg.Cap.Transit = &babel.Transit{Enable: &on}
+		cfg.Cap.Transit = &babel.Transit{}
 		// a dear link to the waypoint, so a's routes reach the leaf by a metric b's always beat, whatever the round trips measure
 		rx := uint16(512)
 		cfg.Cap.Babel.Cost.Rx = &rx

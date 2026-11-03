@@ -739,8 +739,7 @@ func lineSpecs(transit bool) []labSpec {
 	}
 	if transit {
 		b.change = func(cfg *config.Config) {
-			on := true
-			cfg.Cap.Transit = &babel.Transit{Enable: &on}
+			cfg.Cap.Transit = &babel.Transit{}
 		}
 		return []labSpec{a, b, c}
 	}

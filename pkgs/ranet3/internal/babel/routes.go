@@ -21,21 +21,11 @@ type Routes struct {
 	Announce []schema.Announce `yaml:"announce,omitempty" json:"announce,omitempty" toml:"announce,omitempty"`
 }
 
-// Transit is the cap.transit capability: whether this node advertises the
-// routes it learns. A node that does is offering to carry other nodes'
+// Transit is the cap.transit capability, written to have this node advertise
+// the routes it learns. A node that does is offering to carry other nodes'
 // packets, decrypted from one session and sealed again onto the next, so it is
 // a grant of their plaintext rather than a routing detail.
-type Transit struct {
-	// Enable is the setting, which a written block states
-	Enable *bool `yaml:"enable,omitempty" json:"enable,omitempty" toml:"enable,omitempty"`
-}
-
-func (t Transit) Validate() error {
-	if t.Enable == nil {
-		return fmt.Errorf("babel: cap.transit states no enable, write enable = true or false")
-	}
-	return nil
-}
+type Transit struct{}
 
 // Originated is the announcements as the speaker takes them.
 func (r Routes) Originated() []OriginatedRoute {

@@ -174,13 +174,10 @@ type Dial struct {
 
 // Caps is everything this node does. Every member is a pointer and every one
 // is absent by default. Writing a block turns its capability on, so there is no
-// enabled field to forget, except cap.transit, which states its value with
-// enable and is off when left out or written with enable = false, and
-// cap.antispoof, a protection that runs wherever overlay is written and whose
-// block only exempts.
+// enabled field to forget, except cap.antispoof, a protection that runs
+// wherever overlay is written and whose block only exempts.
 type Caps struct {
-	Route *babel.Routes `yaml:"route,omitempty" json:"route,omitempty" toml:"route,omitempty"`
-	// Transit holds enable so that a file written for every node of a fleet says on each which way it goes
+	Route   *babel.Routes  `yaml:"route,omitempty" json:"route,omitempty" toml:"route,omitempty"`
 	Transit *babel.Transit `yaml:"transit,omitempty" json:"transit,omitempty" toml:"transit,omitempty"`
 	Babel   *babel.Config  `yaml:"babel,omitempty" json:"babel,omitempty" toml:"babel,omitempty"`
 	Table   *kernel.Table  `yaml:"table,omitempty" json:"table,omitempty" toml:"table,omitempty"`
@@ -340,9 +337,7 @@ func (c *Config) Crypto() ike.Crypto {
 }
 
 // Transits is whether this node relays the routes it learns
-func (c *Config) Transits() bool {
-	return c.Cap.Transit != nil && c.Cap.Transit.Enable != nil && *c.Cap.Transit.Enable
-}
+func (c *Config) Transits() bool { return c.Cap.Transit != nil }
 
 // Egress has no zero value worth returning: an absent block means this node
 // carries no traffic out of the mesh, and an empty capability is refused rather
@@ -777,11 +772,10 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
-	// Table, Egress and Transit are asked only where the block was written,
-	// because none has a zero value worth checking: an absent table writes no
-	// routes, an absent egress carries no traffic out of the mesh and an
-	// absent transit relays no route, while an empty block of any is a mistake
-	// each refuses by name.
+	// Table and Egress are asked only where the block was written, because
+	// neither has a zero value worth checking: an absent table writes no
+	// routes and an absent egress carries no traffic out of the mesh, while an
+	// empty block of either is a mistake each refuses by name.
 	if c.Cap.Table != nil {
 		if err := c.Cap.Table.Validate(); err != nil {
 			return err
@@ -789,11 +783,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Cap.Egress != nil {
 		if err := c.Cap.Egress.Validate(); err != nil {
-			return err
-		}
-	}
-	if c.Cap.Transit != nil {
-		if err := c.Cap.Transit.Validate(); err != nil {
 			return err
 		}
 	}

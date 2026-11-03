@@ -85,9 +85,8 @@ cap:
     announce:
       - "203.0.113.10/32"
       # - { prefix: "::/0", from: "2001:db8:1::/48" }
-  # Off when left out, and the one block that states its value.
-  # transit:
-  #   enable: true
+  # Off when left out, and on when written, with no key under it.
+  # transit: {}
   babel:
     hello: 4s
     update: 16s

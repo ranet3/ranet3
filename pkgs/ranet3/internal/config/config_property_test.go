@@ -277,12 +277,8 @@ func routes() hegel.Generator[babel.Routes] {
 	})
 }
 
-// transits draws cap.transit, now and then with no enable, which Validate refuses
-func transits() hegel.Generator[babel.Transit] {
-	return hegel.Composite(func(tc hegel.TestCase) babel.Transit {
-		return babel.Transit{Enable: hegel.Draw(tc, hegel.Optional(hegel.Booleans()))}
-	})
-}
+// transits draws cap.transit, which has no field
+func transits() hegel.Generator[babel.Transit] { return hegel.Just(babel.Transit{}) }
 
 // speakers draws cap.babel. Every interval sits inside what the protocol can
 // carry, and the cost window cannot be written backwards whichever half is
