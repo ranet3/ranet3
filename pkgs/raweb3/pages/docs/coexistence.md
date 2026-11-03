@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-02
+updated: 2026-11-03
 order: 110
 ---
 
@@ -33,7 +33,10 @@ reconciler's route monitor also listens for rule notifications, and a deleted
 rule carrying its protocol wakes it, so the pass after the 250 millisecond
 settle puts the rule back. A rule another writer adds or deletes for itself
 wakes nothing. `ManageForeignRoutingPolicyRules=no` in `networkd.conf` keeps
-networkd from removing the rules at all.
+networkd from removing the rules at all. The NixOS module sets it to `false`, by
+`mkDefault`, wherever `systemd.network.enable` is on, as nixpkgs' wg-quick
+module does for its own rules, and a host that sets it itself keeps its own
+value.
 
 Installing is where a router daemon usually takes over from its neighbors, and
 this one does not. It asks for the route exclusively, and a key something else
@@ -226,6 +229,38 @@ changes and when it stops being taken, in the log, on the Kernel line of
 - Another program's rule wakes no pass, so a rule added between passes is
   reported by the next periodic pass, `cap.table.reconcile` later at most.
 - macOS has no policy rules and asks nothing.
+
+### A BGP speaker on the same host
+
+A BGP speaker such as BIRD or FRR beside ranet3 often reaches a multihop
+neighbor by main's default alone. Its sessions are unmarked lookups, so 5410
+skips main's default for them. Where the mesh's longest match for the neighbor
+is a route longer than /7 for IPv4 or /15 for IPv6, 5420 sends the session into
+the tun, as row L8 of
+[where a lookup ends](routing.md#where-a-lookup-ends-on-linux) gives. Where the
+speaker's source lies in this node's own prefixes, 5430 sends it to the mesh's
+route of any length, its default among them, as row L11 gives. The session then
+rides the mesh and fails with the mesh's route, even though main reaches the
+neighbor. Where the mesh's longest match is a hold, 5420 refuses the session
+instead, as row L9 gives, and where it is a throw, the lookup goes on past 5420
+and 5430 to main at 32766, as row L10 gives, and main reaches the neighbor.
+
+A rule `from <its sources> lookup main` between the reconciler's 2 blocks, at a
+priority from 5191 to 5399, keeps those sessions on main:
+
+```sh
+ip -4 rule add priority 5300 from 192.0.2.1 lookup main
+ip -6 rule add priority 5300 from 2001:db8::1 lookup main
+```
+
+It comes after 5110, so a destination inside `overlay` still reads the mesh's
+table, a live one into the tun and a held one refused, and before 5410 to 5430,
+so main's longest match, its default among them, answers every other lookup from
+those sources that main holds a route for. Such a lookup then ends in main
+whatever the mesh's table holds for it, a subnet another node announces outside
+the overlay among them. The reconciler writes only the rules it derives from the
+config, so this one is the host's own, written by `ip rule` or networkd's
+`[RoutingPolicyRule]`.
 
 ### Exit mode beside other programs
 

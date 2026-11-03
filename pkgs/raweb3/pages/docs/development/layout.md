@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-11-02
+updated: 2026-11-03
 order: 10
 ---
 
@@ -31,7 +31,8 @@ modules/flake/          the formatter, the overlay, the package and check output
                         the module loader under modules/flake/modules/, and the shells
 modules/nixos/          the NixOS module, networking.ranet3
 modules/darwin/         the nix-darwin module, networking.ranet3
-modules/common/         the options both modules import
+modules/common/         the options both modules import, the paths and the reload
+                        command both derive, and the nix-darwin activation steps
 checks/                 checks, the VM tests among them, and the profiling runs
 checks/fixtures/        the synthetic organization key pair the tests use
 pkgs/ranet3/            the Go module, ranet3.com/pkgs/ranet3
@@ -167,6 +168,7 @@ also a dev shell of the same name.
 | `checks.<system>.go-test`, `.go-lint`, `.tree`                      | the Go tests, the linters, and the format and licenses of the tree with its `atelier.toml` exclusions, on every system                                                                      |
 | `checks.<system>.wireguard`                                         | the vet and the tests of `pkgs/wireguard`, on every system                                                                                                                                  |
 | `checks.<system>.raweb3`                                            | the vet and the tests of the generator in `pkgs/raweb3`, on every system                                                                                                                    |
+| `checks.<system>.modules`                                           | an evaluation of the NixOS module's networkd default and of the nix-darwin module with its activation steps, on Linux                                                                       |
 | `checks.<system>.netlink`, `.integration-*`                         | the VM tests, on Linux                                                                                                                                                                      |
 | `devShells.<system>.default`                                        | deno, git, nixfmt-tree and taplo                                                                                                                                                            |
 | `devShells.<system>.ranet3`                                         | the default shell, the build inputs of `ranet3`, go-tools, gomod2nix, gopls, pprof and Python, and on Linux BIRD, strongSwan, iproute2, iputils, ethtool, util-linux and `iperf3-benchmark` |

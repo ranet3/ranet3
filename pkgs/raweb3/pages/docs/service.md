@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-11-02
+updated: 2026-11-03
 order: 40
 ---
 
@@ -111,6 +111,29 @@ The module refuses 3 configurations at evaluation:
 - `--control ""` in `extraArgs` while a change to the config file still reloads
   the unit.
 
+## The journal
+
+With `logFile` at `null`, the daemon's standard error is the journal, and
+systemd hands it `JOURNAL_STREAM` naming that stream by its device and inode.
+Where `JOURNAL_STREAM` names standard error, each line the daemon writes starts
+with the
+[sd-daemon](https://www.freedesktop.org/software/systemd/man/latest/sd-daemon.html)
+prefix of its level's syslog priority, which journald stores as the entry's
+priority:
+
+| Level   | Prefix | Priority  |
+| ------- | ------ | --------- |
+| `error` | `<3>`  | `err`     |
+| `warn`  | `<4>`  | `warning` |
+| `info`  | `<6>`  | `info`    |
+| `debug` | `<7>`  | `debug`   |
+
+The error a command prints there starts with `<3>` too, such as the refusal of
+the `ranet3 reload` that the unit's `ExecReload` runs.
+[`journalctl -u ranet3 -p warning`](https://www.freedesktop.org/software/systemd/man/latest/journalctl.html#-p)
+reads the priorities. Elsewhere, a `logFile`, a terminal, the log file on macOS
+or a `JOURNAL_STREAM` that names another file, the lines carry no prefix.
+
 ## The state directory
 
 The unit's `StateDirectory` is `/var/lib/ranet3`, at mode 0700, and the module
@@ -196,8 +219,28 @@ switch runs.
 ## Restarts and the network
 
 The unit starts the daemon again 5 seconds after it fails, and it does not stop
-trying. A key that a secrets tool has not installed yet, or a port another IKE
-daemon still holds, costs 5 seconds a try and nothing else.
+trying. A port another IKE daemon still holds costs 5 seconds a try and nothing
+else.
+
+A key or a trust document that a secrets tool has not installed yet costs no
+failure. Once the daemon has read the config file and bound the control socket,
+on every platform, it waits for the files `auth.key` and `auth.trust` name to
+exist before it builds anything else, however long they take, and looks again
+every 250 milliseconds. Each look reads the config file again, so the wait is
+for the files the file names now, and the daemon builds from the file as the
+last look read it, or refuses to start where the loader refuses that file. It
+logs `waiting for a file the config names to exist` at warn once for each file
+missing as the wait for it begins, and `a file the start waited for exists` at
+info once that file is there. A stop signal ends the wait at once, and the
+daemon exits 0. A path the daemon cannot stat for a reason other than its
+absence, such as one under a regular file, ends the wait for that file with a
+warning that holds the error, and the start then fails on it.
+
+During the wait the control socket answers `ranet3 reload` by reading the file
+again: a file the loader refuses fails the reload with the loader's reason, and
+any other file succeeds. A switch or an activation during the wait reloads in
+that way. Every other command is refused with the file the daemon waits for. A
+reload of a running daemon never waits for either file.
 
 The mesh tun going away under a running node, such as one an operator deleted,
 is a failure the daemon cannot repair. It logs `netstack tun failed` with the
@@ -223,13 +266,17 @@ dhcpcd and NetworkManager are told to leave the tun alone. The module adds
 `ranet*` to `networking.dhcpcd.denyInterfaces`, and as an `interface-name:`
 entry to `networking.networkmanager.unmanaged`. Where the module renders the
 config file from `settings`, it adds the name `link.tun` gives to both as well.
+Where `systemd.network.enable` is on, the module keeps networkd off the
+reconciler's policy rules, as [sharing a host](coexistence.md#routes-on-linux)
+describes.
 
 ## nix-darwin
 
 The nix-darwin module, `darwinModules.ranet3`, takes the same options and runs
 the daemon from `launchd.daemons.ranet3`. The log file takes the place of the
-journal. No check covers the module. A check would need nix-darwin as an input
-of this flake, and nothing else here needs one.
+journal. The `modules` check evaluates the module on Linux beside a stand-in for
+the nix-darwin options it sets, and runs its activation steps below with
+stand-ins for `ranet3` and `launchctl`.
 
 | Key                                    | Value                                                                                                             |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -240,8 +287,10 @@ of this flake, and nothing else here needs one.
 | `StandardOutPath`, `StandardErrorPath` | `logFile`                                                                                                         |
 | `ExitTimeOut`                          | `20`, the seconds launchd gives a shutdown to close every session and withdraw its routes before it sends SIGKILL |
 
-The job runs `ranet3 daemon --config <store path> --log-level <logLevel>`, then
-`extraArgs`.
+The job runs
+`ranet3 daemon --config /etc/ranet3/config.<extension> --log-level <logLevel>`,
+then `extraArgs`. The module links that path to the config file through
+`environment.etc`, and the link keeps the file's extension, as on NixOS.
 
 The daemon creates `/var/run/ranet3` in the job's group at mode 0750 for the
 control socket. The daemon leaves a directory that already exists as it is. A
@@ -262,17 +311,36 @@ The daemon keeps the flag `ranet3 down` writes and `babel.json` in
 `/var/db/ranet3`, its default state directory on macOS, and makes the directory
 at mode 0700 the first time, which leaves the job no `--state-dir` to pass.
 
-launchd has no reload path, so the job names the store path of the config file,
-and any change to `settings` restarts the daemon.
+launchd has no reload of its own, so the module adds 2 activation steps. The
+first runs ahead of nix-darwin's launchd step and compares the job's plist with
+the copy in `/Library/LaunchDaemons`, as that step does. Where the two differ,
+nix-darwin loads the job anew and the daemon reads the new files as it starts. A
+new build, or a change to `package`, `logLevel`, `extraArgs`, `group` or
+`logFile`, changes the plist, so it restarts the daemon. Where the two match and
+the job is loaded, the second step runs `ranet3 reload`, with the last
+`--control` that `extraArgs` gives. It runs in `postActivation` past `mkAfter`,
+after a key or trust document that a secrets tool installs there at `mkAfter`,
+and before nix-darwin links `/run/current-system`. A reload of files that did
+not change keeps every session, and a change to `settings` or the trust document
+keeps every session the new files still admit, as a switch does on NixOS.
+
+A reload the daemon refuses fails the activation with the reload's status before
+`/run/current-system` moves, so the link still names the previous system, and
+the daemon keeps its old configuration until the job restarts. The next
+activation reloads the daemon onto the files it installs, a rollback among them.
+
+The module refuses 2 configurations at evaluation:
+
+- A `configFile` that names `/etc/ranet3/config.<extension>`, the path the
+  module links it to.
+- `--control ""` in `extraArgs`, which leaves the activation's reload nothing to
+  ask.
 
 nix-darwin loads its launchd jobs before a secrets tool has installed the key
-and the trust document. Where the module renders the config file from
-`settings`, the job waits up to 60 seconds in all for `auth.key` and
-`auth.trust` to exist before it starts the daemon, so the daemon does not exit
-once and come back about 10 seconds later through `KeepAlive`. When the 60
-seconds are up, the daemon starts anyway and fails with its own message in the
-log. A `configFile` set by hand names no file the module can read, and the job
-then waits for none.
+and the trust document. The daemon's own wait for them, as
+[restarts and the network](#restarts-and-the-network) gives it, holds the start
+until both exist, whether `settings` or a `configFile` set by hand names them,
+so the daemon does not exit and come back through `KeepAlive` in the meantime.
 
 `openFirewall` lets the binary through the application firewall when the
 configuration is activated. Every build is a store path of its own, and
