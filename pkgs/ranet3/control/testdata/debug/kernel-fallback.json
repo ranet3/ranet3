@@ -10,8 +10,10 @@
   "exit": {
     "fallback": {
       "state": "holding",
-      "dropped": 12,
-      "dropped_bytes": 720,
+      "dropped": {
+        "packets": 12,
+        "bytes": 720
+      },
       "captured": [
         "198.0.0.0/7"
       ],

@@ -444,27 +444,28 @@ func TestKernelLineNamesTheExitModeAndWhatItSkips(t *testing.T) {
 }
 
 // The kernel line names fallback = "none"'s state and what its drop counted in
-// each state, with each network the LAN leaves out, each endpoint name that
-// does not resolve and each DNS server beyond the LAN, and says nothing of the
-// switch under "uplink".
+// each state, or that no read has found the drops yet, with each network the
+// LAN leaves out, each endpoint name that does not resolve and each DNS server
+// beyond the LAN, and says nothing of the switch under "uplink".
 func TestKernelLineNamesTheSwitchsState(t *testing.T) {
 	exit := func(fallback *KernelFallback) KernelStatus {
 		return KernelStatus{Enabled: true, Where: "table 200 protocol 155", Table: 200, Protocol: 155, Installed: 4, Exit: &KernelExit{Fallback: fallback}}
 	}
 	var lines strings.Builder
 	for _, fallback := range []*KernelFallback{
-		{State: "passing", Dropped: 0},
-		{State: "holding", Dropped: 12, DroppedBytes: 720,
+		{State: "passing", Dropped: &FallbackDrops{}},
+		{State: "holding", Dropped: &FallbackDrops{Packets: 12, Bytes: 720},
 			Captured:   []string{"198.0.0.0/7"},
 			Public:     []string{"203.0.113.0/24", "2001:db8:a::/64"},
 			Unresolved: []string{"gateway.example.org"},
 			Resolvers:  []KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}},
-		{State: "not holding", Reason: "its set lan4 holds { }, where { 198.51.100.0/25 } was written", Dropped: 3, DroppedBytes: 180},
+		{State: "not holding", Reason: "its set lan4 holds { }, where { 198.51.100.0/25 } was written", Dropped: &FallbackDrops{Packets: 3, Bytes: 180}},
+		{State: "not holding", Reason: "netlink: dump interrupted"},
 	} {
 		lines.WriteString(kernelLine(exit(fallback)) + "\n")
 	}
 	golden(t, "kernel-fallback.txt", []byte(lines.String()))
-	goldenJSON(t, "kernel-fallback.json", exit(&KernelFallback{State: "holding", Dropped: 12, DroppedBytes: 720,
+	goldenJSON(t, "kernel-fallback.json", exit(&KernelFallback{State: "holding", Dropped: &FallbackDrops{Packets: 12, Bytes: 720},
 		Captured: []string{"198.0.0.0/7"}, Public: []string{"203.0.113.0/24", "2001:db8:a::/64"}, Unresolved: []string{"gateway.example.org"}, Resolvers: []KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}}))
 	if line := kernelLine(exit(nil)); strings.Contains(line, "fallback") {
 		t.Errorf("the kernel line reads %q under fallback uplink, want no switch clause", line)

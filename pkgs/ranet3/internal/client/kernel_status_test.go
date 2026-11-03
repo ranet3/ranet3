@@ -33,6 +33,23 @@ func TestExitStatusReportsThePassAndNothingInModeOff(t *testing.T) {
 	}
 }
 
+// the control surface carries the switch's drops once a read of the reconciler's process found them, and none before
+func TestExitStatusCarriesTheSwitchsDropsOnceRead(t *testing.T) {
+	for _, c := range []struct {
+		fallback kernel.FallbackStatus
+		want     *control.FallbackDrops
+	}{
+		{kernel.FallbackStatus{State: kernel.FallbackNotHolding, Fault: "netlink: dump interrupted"}, nil},
+		{kernel.FallbackStatus{State: kernel.FallbackHolding, Dropped: 5, DroppedBytes: 300, DropsRead: true}, &control.FallbackDrops{Packets: 5, Bytes: 300}},
+		{kernel.FallbackStatus{State: kernel.FallbackNotHolding, Fault: "netlink: dump interrupted", DropsRead: true}, &control.FallbackDrops{}},
+	} {
+		got := kernelExit(&kernel.ExitStatus{Fallback: &c.fallback}).Fallback
+		if !reflect.DeepEqual(got.Dropped, c.want) {
+			t.Errorf("the switch %+v reports drops %+v, want %+v", c.fallback, got.Dropped, c.want)
+		}
+	}
+}
+
 // the control surface carries the reconciler's path as each state reads it, up with the families installed and down with the SID and the table's answer, and none outside mode 3
 func TestExitPathStatusCarriesEachState(t *testing.T) {
 	via := []netip.Addr{netip.MustParseAddr("3fff:b:0:206::1"), netip.MustParseAddr("3fff:b:0:306::3")}

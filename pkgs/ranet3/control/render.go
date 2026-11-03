@@ -167,7 +167,11 @@ func kernelLine(k KernelStatus) string {
 			if f.Reason != "" {
 				line += ", " + f.Reason
 			}
-			line += fmt.Sprintf(", %d packets, %d B dropped", f.Dropped, f.DroppedBytes)
+			if d := f.Dropped; d != nil {
+				line += fmt.Sprintf(", %d packets, %d B dropped", d.Packets, d.Bytes)
+			} else {
+				line += ", drops not read yet"
+			}
 			for _, network := range f.Captured {
 				line += fmt.Sprintf(", %s left out of the LAN as it captures the machine", network)
 			}

@@ -478,9 +478,8 @@ type KernelFallback struct {
 	// kill switch on Linux" lists the table's lines.
 	State  string `json:"state"`
 	Reason string `json:"reason,omitempty"`
-	// Dropped and DroppedBytes are the packets and bytes the last lines of both chains have dropped, summed, as the last pass read them
-	Dropped      uint64 `json:"dropped"`
-	DroppedBytes uint64 `json:"dropped_bytes"`
+	// Dropped holds the packets and bytes the last lines of both chains have dropped, summed, as the last read of the table that succeeded found them, left out until a read of the table by this process has succeeded
+	Dropped *FallbackDrops `json:"dropped,omitempty"`
 	// Captured is each connected network left out of the LAN, since its
 	// length counts as capturing the machine
 	Captured []string `json:"captured,omitempty"`
@@ -496,6 +495,12 @@ type KernelFallback struct {
 	// outside the mesh at an address outside the LAN, this node's own prefixes,
 	// loopback and link-local
 	Resolvers []KernelResolver `json:"resolvers,omitempty"`
+}
+
+// FallbackDrops is the packets and bytes the kill switch's chains have dropped
+type FallbackDrops struct {
+	Packets uint64 `json:"packets"`
+	Bytes   uint64 `json:"bytes"`
 }
 
 // KernelResolver is a DNS server systemd-resolved queries through Link

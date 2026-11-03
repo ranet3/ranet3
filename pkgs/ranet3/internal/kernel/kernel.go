@@ -738,6 +738,10 @@ type Reconciler struct {
 	// last that asked for it. Both belong to the pass's goroutine.
 	fallbackFault string
 	fallbackClear bool
+	// fallbackDropped and fallbackBytes are the table's drops as the last read that succeeded found them, zero once a pass deletes or rewrites the table,
+	// and fallbackDropsRead says a read of this process has succeeded, the pass's goroutine's
+	fallbackDropped, fallbackBytes uint64
+	fallbackDropsRead              bool
 	// fallbackState is the switch's state the last pass reported, empty where
 	// none asked for it, the pass's goroutine's
 	fallbackState FallbackState
@@ -1989,6 +1993,7 @@ func (r *Reconciler) withdraw(cause error) error {
 				errs = append(errs, fmt.Errorf("delete table inet %s: %w", FallbackTable, err))
 			} else {
 				r.fallbackClear = true
+				r.fallbackDropped, r.fallbackBytes = 0, 0
 			}
 			r.reportFallbackState(nil)
 		}

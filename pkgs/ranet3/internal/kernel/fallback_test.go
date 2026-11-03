@@ -6,6 +6,7 @@ package kernel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/netip"
 	"reflect"
@@ -660,5 +661,162 @@ func TestFallbackStatusNamesEachStateOnce(t *testing.T) {
 	want := []string{"off to holding", "holding to passing", "passing to not holding", "not holding to passing", "passing to off"}
 	if !slices.Equal(states, want) {
 		t.Errorf("the switch's events read %v, want %v", states, want)
+	}
+}
+
+// droppedHarness is a reconciler under fallback none on exitPassHost with docker0, whose fake reads 5 packets of 60 bytes dropped by the table's last lines
+// and restart a second reconciler on the same fake and routes, as a process started on the table a killed one left builds
+func droppedHarness(t *testing.T) (reconciler *Reconciler, fake *fakeKernel, restart func() *Reconciler) {
+	t.Helper()
+	network := &hostNetwork{state: exitPassHost("docker0")}
+	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
+	rt := Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read}
+	reconciler, routes, fake := harness(t, tbl, rt)
+	routes.Set(netip.Prefix{}, prefix("203.0.113.128/25"), netstack.Local)
+	fake.fallbackDropped = 5
+	restart = func() *Reconciler {
+		normalized := tbl.Normalized()
+		return newReconciler(normalized, rt, normalized.Assigned(rt.Announced), routes, fake)
+	}
+	return reconciler, fake, restart
+}
+
+// dropsReported is the drops and state the last pass of reconciler reported for the switch
+func dropsReported(reconciler *Reconciler) string {
+	fallback := reconciler.Stats().Exit.Fallback
+	if !fallback.DropsRead {
+		return fmt.Sprintf("unread, %s", fallback.State)
+	}
+	return fmt.Sprintf("%d packets of %d bytes, %s", fallback.Dropped, fallback.DroppedBytes, fallback.State)
+}
+
+// setFallback switches reconciler's mode to mode and runs a pass, which fails exactly where failing
+func setFallback(t *testing.T, reconciler *Reconciler, mode *ExitMode, failing bool) {
+	t.Helper()
+	if err := reconciler.SetTable(reconciler.table.WithMode(mode), exitPassOverlay, nil); err != nil {
+		t.Fatal(err)
+	}
+	reconciler.adopt()
+	if err := reconciler.reconcile(); (err != nil) != failing {
+		t.Fatalf("a pass under %+v returned %v, want an error %t", mode, err, failing)
+	}
+}
+
+// a pass whose read of the table fails, and so rewrites nothing, reports the drops the last read found, which the next read that succeeds goes on from
+// and none once a withdrawal deleted the table they were read from
+func TestFallbackDropsOutlastAReadThatFails(t *testing.T) {
+	reconciler, fake, _ := droppedHarness(t)
+	var got []string
+	for _, failed := range []error{nil, errors.New("netlink: dump interrupted"), nil} {
+		fake.failFallback = failed
+		if err := reconciler.reconcile(); (err != nil) != (failed != nil) {
+			t.Fatalf("a pass whose read failed with %v returned %v", failed, err)
+		}
+		got = append(got, dropsReported(reconciler))
+	}
+	want := []string{"5 packets of 300 bytes, holding", "5 packets of 300 bytes, not holding", "5 packets of 300 bytes, holding"}
+	if !slices.Equal(got, want) {
+		t.Errorf("the passes reported %q, want %q", got, want)
+	}
+
+	// a withdrawal deletes the table, so a read that fails after the switch comes back has no drops to keep
+	setFallback(t, reconciler, &ExitMode{Fallback: FallbackUplink}, false)
+	fake.failFallback = errors.New("netlink: dump interrupted")
+	setFallback(t, reconciler, &ExitMode{Fallback: FallbackNone, LAN: exitPassLAN}, true)
+	if got, want := dropsReported(reconciler), "0 packets of 0 bytes, not holding"; got != want {
+		t.Errorf("after the switch was withdrawn and put back a failed read reported %q, want %q", got, want)
+	}
+}
+
+// a withdrawal that cannot delete the table leaves its drops in it, so a read that fails once the switch comes back keeps them
+func TestFallbackDropsOutlastAWithdrawalThatCannotDelete(t *testing.T) {
+	reconciler, fake, _ := droppedHarness(t)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	fake.failFallback = errors.New("netlink: dump interrupted")
+	setFallback(t, reconciler, &ExitMode{Fallback: FallbackUplink}, false)
+	if fake.fallback == nil {
+		t.Fatal("a delete that failed took the table")
+	}
+	setFallback(t, reconciler, &ExitMode{Fallback: FallbackNone, LAN: exitPassLAN}, true)
+	got := []string{dropsReported(reconciler)}
+	fake.failFallback = nil
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, dropsReported(reconciler))
+	if want := []string{"5 packets of 300 bytes, not holding", "5 packets of 300 bytes, holding"}; !slices.Equal(got, want) {
+		t.Errorf("after a withdrawal that left the table the passes reported %q, want %q", got, want)
+	}
+}
+
+// a stop that cannot delete the table leaves its drops in it, so a read that fails once the reconciler runs again keeps them
+func TestFallbackDropsOutlastAStopThatCannotDelete(t *testing.T) {
+	reconciler, fake, _ := droppedHarness(t)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	fake.failFallback = errors.New("netlink: dump interrupted")
+	if err := reconciler.withdraw(nil); err == nil {
+		t.Fatal("a stop whose delete failed returned no error")
+	}
+	if fake.fallback == nil {
+		t.Fatal("a delete that failed took the table")
+	}
+	if err := reconciler.reconcile(); err == nil {
+		t.Fatal("a pass whose read failed returned no error")
+	}
+	got := []string{dropsReported(reconciler)}
+	fake.failFallback = nil
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, dropsReported(reconciler))
+	if want := []string{"5 packets of 300 bytes, not holding", "5 packets of 300 bytes, holding"}; !slices.Equal(got, want) {
+		t.Errorf("after a stop that left the table the passes reported %q, want %q", got, want)
+	}
+}
+
+// a stop deletes the table, so a read that fails once the reconciler runs again has no drops to keep
+func TestFallbackDropsAreNoneOnceAStopDeletedTheTable(t *testing.T) {
+	reconciler, fake, _ := droppedHarness(t)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reconciler.withdraw(nil); err != nil {
+		t.Fatal(err)
+	}
+	if fake.fallback != nil {
+		t.Fatal("the stop left the table")
+	}
+	fake.failFallback = errors.New("netlink: dump interrupted")
+	if err := reconciler.reconcile(); err == nil {
+		t.Fatal("a pass whose read failed returned no error")
+	}
+	if got, want := dropsReported(reconciler), "0 packets of 0 bytes, not holding"; got != want {
+		t.Errorf("after the stop deleted the table a failed read reported %q, want %q", got, want)
+	}
+}
+
+// a process started on the table a killed one left, whose first read of it fails, reports no drops until a read of its own succeeds
+// so the series never reads 0 between the 5 the table held before the restart and the 5 it holds after, and nothing rewrites the table
+func TestFallbackDropsAreUnreadUntilAReadOfThisProcess(t *testing.T) {
+	first, fake, restart := droppedHarness(t)
+	if err := first.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	writes := fake.fallbackWrites
+	second := restart()
+	var got []string
+	for _, failed := range []error{errors.New("netlink: dump interrupted"), nil} {
+		fake.failFallback = failed
+		if err := second.reconcile(); (err != nil) != (failed != nil) {
+			t.Fatalf("a pass whose read failed with %v returned %v", failed, err)
+		}
+		got = append(got, dropsReported(second))
+	}
+	if want := []string{"unread, not holding", "5 packets of 300 bytes, holding"}; !slices.Equal(got, want) || fake.fallbackWrites != writes {
+		t.Errorf("across the restart the passes reported %q and wrote the table %d times, want %q and no write", got, fake.fallbackWrites-writes, want)
 	}
 }

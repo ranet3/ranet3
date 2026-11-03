@@ -5,10 +5,12 @@ package client
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/netip"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/control"
@@ -23,7 +25,7 @@ import (
 func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(*config.Config) {})
 	c.sessions = newSessionSet()
-	switchState := &control.KernelFallback{State: "holding", Dropped: 3, DroppedBytes: 180}
+	switchState := &control.KernelFallback{State: "holding", Dropped: &control.FallbackDrops{Packets: 3, Bytes: 180}}
 	c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
 		return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{Fallback: switchState}}
 	}})
@@ -40,7 +42,7 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	c.unresolved.note("relay.example.org", false)
 
 	fallback := c.Status().Kernel.Exit.Fallback
-	if fallback == nil || fallback.State != "holding" || fallback.Dropped != 3 || !slices.Equal(fallback.Unresolved, []string{"gateway.example.org"}) {
+	if fallback == nil || fallback.State != "holding" || fallback.Dropped == nil || fallback.Dropped.Packets != 3 || !slices.Equal(fallback.Unresolved, []string{"gateway.example.org"}) {
 		t.Errorf("the status names the switch as %+v, want holding with gateway.example.org unresolved", fallback)
 	}
 	if switchState.Unresolved != nil {
@@ -65,6 +67,49 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	}
 	if got := c.DebugRules().Fallback; got != nil {
 		t.Errorf("under uplink debug rules carries the table %+v", got)
+	}
+}
+
+// a scrape under fallback = "none" carries the switch, holding while it holds or passes and not while it does not, and the packets its last lines dropped
+// once a read found them, and one under "uplink" carries neither series
+func TestMetricsCarryTheSwitchUnderFallbackNone(t *testing.T) {
+	c, _, _, _ := reloadOf(t, func(*config.Config) {})
+	c.sessions = newSessionSet()
+	for _, test := range []struct {
+		fallback *control.KernelFallback
+		holding  int
+	}{
+		{&control.KernelFallback{State: string(kernel.FallbackHolding), Dropped: &control.FallbackDrops{Packets: 3, Bytes: 180}}, 1},
+		{&control.KernelFallback{State: string(kernel.FallbackPassing), Dropped: &control.FallbackDrops{}}, 1},
+		{&control.KernelFallback{State: string(kernel.FallbackNotHolding), Reason: "the table is missing", Dropped: &control.FallbackDrops{Packets: 5}}, 0},
+		{&control.KernelFallback{State: string(kernel.FallbackNotHolding), Reason: "netlink: dump interrupted"}, 0},
+		{nil, 0},
+	} {
+		c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
+			return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{Fallback: test.fallback}}
+		}})
+		var out strings.Builder
+		c.renderKernel(&out)
+		if test.fallback == nil {
+			if strings.Contains(out.String(), "ranet3_kernel_fallback") {
+				t.Errorf("a scrape under uplink carries the switch:\n%s", out.String())
+			}
+			continue
+		}
+		lines := []string{"# TYPE ranet3_kernel_fallback_holding gauge\n", fmt.Sprintf("ranet3_kernel_fallback_holding %d\n", test.holding)}
+		if test.fallback.Dropped == nil {
+			if strings.Contains(out.String(), "ranet3_kernel_fallback_dropped_packets_total") {
+				t.Errorf("a scrape before any read found the drops carries them:\n%s", out.String())
+			}
+		} else {
+			lines = append(lines, "# TYPE ranet3_kernel_fallback_dropped_packets_total counter\n",
+				fmt.Sprintf("ranet3_kernel_fallback_dropped_packets_total %d\n", test.fallback.Dropped.Packets))
+		}
+		for _, want := range lines {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("a scrape with the switch %s does not carry %q:\n%s", test.fallback.State, want, out.String())
+			}
+		}
 	}
 }
 

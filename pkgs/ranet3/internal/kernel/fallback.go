@@ -43,8 +43,10 @@ type FallbackStatus struct {
 	// Fault is why the table does not read back, under FallbackNotHolding
 	Fault string
 	// Dropped and DroppedBytes are the packets and bytes the last lines of
-	// both chains have dropped, summed, as the pass read them
+	// both chains have dropped, summed, as the last read that succeeded found
+	// them, and DropsRead says a read of this process has
 	Dropped, DroppedBytes uint64
+	DropsRead             bool
 	// Captured is each connected network left out of the LAN, since its
 	// length counts as capturing the machine
 	Captured []netip.Prefix
@@ -246,24 +248,33 @@ func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 		// tried again until a pass asks for the table, and any other is
 		err := sw.deleteFallback()
 		r.fallbackClear = err == nil || withoutNFTables(err)
+		if r.fallbackClear {
+			r.fallbackDropped, r.fallbackBytes = 0, 0
+		}
 		if err != nil {
 			warnFallbackLeft(err)
 		}
 		return nil, nil
 	}
 	r.fallbackClear = false
+	// a read that fails on a table no write touched keeps the drops the last read found, and a rewrite starts them from zero
 	read, err := sw.readFallback(sets)
-	if err == nil && read.fault != "" {
+	r.fallbackDropsRead = r.fallbackDropsRead || err == nil
+	switch {
+	case err != nil:
+		read.dropped, read.bytes = r.fallbackDropped, r.fallbackBytes
+	case read.fault != "":
 		if err = sw.writeFallback(sets, read.remake); err == nil {
 			read, err = sw.readFallback(sets)
 		}
 	}
+	r.fallbackDropped, r.fallbackBytes = read.dropped, read.bytes
 	if err != nil {
 		read.fault = err.Error()
 		err = fmt.Errorf("write table inet %s: %w", FallbackTable, err)
 	}
 	status := &FallbackStatus{
-		State: FallbackHolding, Fault: read.fault, Dropped: read.dropped, DroppedBytes: read.bytes,
+		State: FallbackHolding, Fault: read.fault, Dropped: read.dropped, DroppedBytes: read.bytes, DropsRead: r.fallbackDropsRead,
 		Captured: sets.captured, Public: sets.public, tun: sets.tun, passed: slices.Concat(sets.lan4, sets.lan6, sets.own4, sets.own6),
 	}
 	switch {
@@ -357,7 +368,7 @@ type switcher interface {
 	// flushed and filled and its chains rewritten, the table deleted first
 	// where remake, as the read before it found
 	writeFallback(sets fallbackSets, remake bool) error
-	// readFallback reads the table back against what writeFallback writes for sets
+	// readFallback reads the table back against what writeFallback writes for sets, the zero fallbackRead where the read fails
 	readFallback(fallbackSets) (fallbackRead, error)
 	// deleteFallback deletes the table where one is held, whoever wrote it
 	deleteFallback() error
