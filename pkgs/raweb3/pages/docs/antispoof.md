@@ -508,7 +508,6 @@ kernel holds and the rules the reconciler derives from the overlay, as
 | `antispoof filter pass failed, retrying`                                     | warn  | a pass failed, with `err` and `retry_in`                                                                                                                 |
 | `antispoof filter not ready`                                                 | warn  | the table stopped reading back, with the reason as `detail`                                                                                              |
 | `antispoof filter ready`                                                     | info  | the table reads back again                                                                                                                               |
-| `antispoof filter dropped packets`                                           | info  | a pass read a counter that moved, at most once per pass                                                                                                  |
 | `antispoof carves the overlay for a link that holds part of it`              | warn  | a carve-out came, with `link` and `prefix`                                                                                                               |
 | `antispoof no longer carves the overlay for a link`                          | info  | a carve-out went, with `link` and `prefix`                                                                                                               |
 | `antispoof drops part of an exemption, since another node's prefix holds it` | warn  | another node's prefix came to hold part of an exemption, with `exemption`, `interface`, `prefix`, `carved`, `routed_via` and `router_id`                 |
@@ -524,7 +523,7 @@ A pass that rewrote the table or a set, or failed, records an `antispoof.pass`
 event with `trigger`, `took`, `installed`, `wrote` and, on failure, `err`. A
 change of readiness records `antispoof.ready` with `ready`. A pass that read a
 counter move records `antispoof.dropped` with the packets of each kind since the
-pass before, at most once per pass, a carve-out coming or going records
+pass before, at most once per pass. A carve-out coming or going records
 `antispoof.carve`, and another node's prefix coming to hold part of an
 exemption, or another router's offer for a range of this node's own that an
 exemption overlaps, records `antispoof.conflict`.

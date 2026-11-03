@@ -265,14 +265,15 @@ up with its prefixes and point-to-point far ends. The mesh's own device is left
 out of all three, so the reconciler's writes to its table and to the tun never
 count. When the default or an address differs from the reading last acted on,
 every session is asked to prove its path at once, as `ranet3 debug probe` asks
-it, and every dialer that is waiting out its reconnect delay dials again. A
-change of links alone probes no session and wakes no dialer, and wakes the
-reconciler only under [`cap.exit`](routing.md#exit-mode-on-linux). Either change
-is recorded as a `network.changed` event naming what moved. A dialer that finds
-its session healthy stands down as it does after any wake, and so does one
-behind a [`preferred`](control-socket.md#requests-and-answers) session its own
-dial would not replace. A change the host shows nowhere, such as a captive
-portal that lets nothing through, needs `ranet3 redial --all` instead.
+it, and every dialer that is waiting out its reconnect delay, or the longer wait
+after a dial the host had no route for, dials again. A change of links alone
+probes no session and wakes no dialer, and wakes the reconciler only under
+[`cap.exit`](routing.md#exit-mode-on-linux). Either change is recorded as a
+`network.changed` event naming what moved. A dialer that finds its session
+healthy stands down as it does after any wake, and so does one behind a
+[`preferred`](control-socket.md#requests-and-answers) session its own dial would
+not replace. A change the host shows nowhere, such as a captive portal that lets
+nothing through, needs `ranet3 redial --all` instead.
 
 ## Sockets connected to 1 peer
 

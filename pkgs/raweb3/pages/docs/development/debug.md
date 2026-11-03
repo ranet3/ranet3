@@ -500,7 +500,7 @@ connections to the reads.
 | `control.trace.started`, `.ended`     | a trace of the forwarding decision opened, and closed                                     |
 | `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                                    |
 | `dial.woken`                          | a dialer was set going before its delay, as `redial` does                                 |
-| `ike.handshake.failed`                | the responder refused a handshake, as often as it logs one                                |
+| `ike.handshake.failed`                | the responder refused a handshake, as often as it warns of one                            |
 | `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                                             |
 | `ike.followup.dropped`                | a peer's rekey was dropped before its `IKE_FOLLOWUP_KE`                                   |
 | `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as                 |
@@ -737,6 +737,11 @@ that SA runs, named as above, and its `action` what the session does about it:
 `rekey` for a rekey under the lists, or `replace` when the lists left out the
 IKE SA's PRF, which no rekey changes, so the session deletes the IKE SA for a
 new handshake, as [reloading](../reloading.md#capcrypto) describes.
+
+An `INVALID_KE_PAYLOAD` answer naming the group to use, and a message of an IKE
+SA this node does not hold, record no `ike.handshake.failed`. The responder logs
+each at debug, and the warning it gives an address for a refused handshake stays
+for the next refusal from there.
 
 An `ike.kex.rejected` is recorded when this node refuses the peer's side of an
 ML-KEM key exchange. Its `exchange` is `IKE_INTERMEDIATE` in a handshake and

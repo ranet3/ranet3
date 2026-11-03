@@ -471,15 +471,16 @@ unless run as root.
 
 The `internal/client` tests `TestNodeGoingDownLeavesItsPeerAndItsKernelAtOnce`,
 `TestNodeRestartedWhileDownInstallsNothingUntilUp`,
-`TestSessionMovedUnderTheFloorHandsItsFragmentingOver` and
-`TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData` reach the kernel from
+`TestSessionMovedUnderTheFloorHandsItsFragmentingOver`,
+`TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData` and
+`TestDialerTheHostHasNoRouteForDialsAtOnceWhenWoken` reach the kernel from
 whatever thread a goroutine runs on. No single thread can be moved into a
 namespace for them, so they take the namespace the test process started in. They
 skip without root, and they fail in a namespace that holds a link that is up, an
 address or a route. Run them in an empty namespace:
 
 ```sh
-unshare -rn go test ./internal/client -run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)'
+unshare -rn go test ./internal/client -run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)|^TestDialerTheHostHasNoRouteForDialsAtOnceWhenWoken$'
 ```
 
 The `cmd/ranet3` tests whose names start with `TestDaemon` and that need root
