@@ -160,6 +160,9 @@ func (t Table) WithMode(m *ExitMode) Table {
 // Mode is cap.exit as t runs it, nil in mode off
 func (t Table) Mode() *ExitMode { return t.mode }
 
+// writesFallback is whether t's mode writes the table ranet3_fallback
+func (t Table) writesFallback() bool { return t.mode != nil && t.mode.Refuses() }
+
 // Runtime holds what the reconciler reads from outside cap.table: the device
 // the mesh actually got and the addresses this node's transport has to keep
 // reaching, which only a running node knows, and what other capabilities
@@ -1972,7 +1975,7 @@ func (r *Reconciler) withdraw(cause error) error {
 	}
 	// the table goes after the rules, so its chains hold the host's traffic while they go
 	if sw, ok := r.plat.(switcher); ok && !r.fallbackClear {
-		if mode := r.table.Mode(); errors.Is(cause, ErrMeshFailed) && mode != nil && mode.Refuses() {
+		if errors.Is(cause, ErrMeshFailed) && r.table.writesFallback() {
 			// the listing words the warning alone, so one that fails deletes nothing
 			switch held, err := sw.holdsFallback(); {
 			case err != nil:

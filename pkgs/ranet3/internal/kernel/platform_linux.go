@@ -55,8 +55,11 @@ type netlinkPlatform struct {
 	refused  map[Route]bool
 
 	// fallback writes the table ranet3_fallback and wakes Notify on another
-	// writer's change to it, from the platform's start to its Close. Only the
-	// reconcile loop touches it once the platform is built.
+	// writer's change to it, open while the table is written: from the
+	// platform's start under a capability that writes it or the first pass
+	// that asks for it, to Close or a delete of the table, a stop's or a
+	// pass's under a capability that does not write it. Only the reconcile
+	// loop touches it once the platform is built.
 	fallback *fallbackWatch
 }
 
@@ -110,7 +113,9 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 	// opened on this thread, so the table goes in the namespace the rules go
 	// in, and a kernel refusing it is answered at the first pass that asks
 	// for the table, which opens it again and reports the error
-	_, _ = p.watchFallback()
+	if t.writesFallback() {
+		_, _ = p.watchFallback()
+	}
 	return p, nil
 }
 

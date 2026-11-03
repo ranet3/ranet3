@@ -211,8 +211,11 @@ func (lab *pathLab) startRoutes(t *testing.T) {
 		runs.Wait()
 	})
 	t.Cleanup(lab.stopRoutes)
+	// in the leaf's namespace, as every thread of the daemon shares its one, so the socket for the table ranet3_fallback a
+	// reload's pass opens goes in it
+	runner := netnstest.JoinThread(t, leaf.ns.Path)
 	runs.Go(func() {
-		if err := routes.Run(ctx); err != nil {
+		if err := runner.Do(func() error { return routes.Run(ctx) }); err != nil {
 			t.Errorf("the leaf's reconciler: %v", err)
 		}
 	})

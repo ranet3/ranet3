@@ -490,13 +490,14 @@ func readFallback(conn *nftables.Conn, s fallbackSets) (nftables.Readback, error
 }
 
 // deleteFallback deletes through the watch's socket, so its own delete wakes
-// nothing
+// nothing, and closes the watch, which the next pass that asks for the table
+// opens again
 func (p *netlinkPlatform) deleteFallback() error {
 	conn, err := p.watchFallback()
 	if err != nil {
 		return err
 	}
-	return deleteFallback(conn)
+	return errors.Join(deleteFallback(conn), p.unwatchFallback())
 }
 
 // holdsFallback lists through the watch's socket

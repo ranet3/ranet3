@@ -423,7 +423,13 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	rt.Network = func() NetworkState { return network }
 	// lan lists the uplink's public networks, so lan4 holds one for the flush to take
 	mode := &ExitMode{Fallback: FallbackNone, LAN: []schema.Prefix{schema.PrefixFrom(lan4.Masked()), schema.PrefixFrom(lan6.Masked())}}
-	reconciler := newReconciler(tbl.WithMode(mode).Normalized(), rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
+	tbl = tbl.WithMode(mode).Normalized()
+	// as newPlatform would for the mode, on the test's thread, whose namespace the rules go in, where Run's is another
+	plat.retable(tbl)
+	if _, err := plat.watchFallback(); err != nil {
+		t.Fatal(err)
+	}
+	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), netstack.NewRouteTable(), plat)
 	exit, _ := reconciler.exitPass(reconciler.addresses, nil, reconciler.readNetwork())
 	sets, asked := reconciler.fallbackFor(exit)
 	if !asked {
@@ -625,6 +631,109 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	stop(nil)
 	if left := held(); left.read.fault != "the table is missing" || left.listed || left.rules+left.routes+left.addresses > 0 {
 		t.Errorf("a plain stop left %+v, want nothing", left)
+	}
+}
+
+// The socket for the table ranet3_fallback, its monitor and their goroutine
+// are open only while the table is written: a platform built for mode off opens
+// none, one built for fallback = "none" opens them, a reload into it opens them
+// at its pass, a refused reload out of it leaves them and the table, a reload
+// out of it deletes the table and closes them, a stop deletes the table and
+// closes them, a reload taken while stopped opens nothing, and the first pass
+// of a start under the mode opens them again.
+func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) {
+	const device, uplink = "ranetsw0", "ranetup0"
+	plat := rootRulePlatform(t, device)
+	if plat.fallback != nil {
+		t.Fatal("a platform built for mode off opened the table's socket")
+	}
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	createTUN(t, uplink)
+	link, err := conn.link(0, uplink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, link.index, unix.IFF_UP)
+	lan := prefix("198.51.100.10/25")
+	writeBatchAddress(t, conn, link.index, lan)
+	writeBatchRoute(t, conn, unix.RT_TABLE_MAIN, prefix("0.0.0.0/0"), batchHop{index: link.index})
+
+	off, rt := platformFor(device)
+	off.Addresses = prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))
+	off = off.Normalized()
+	none := off.WithMode(&ExitMode{Fallback: FallbackNone, LAN: []schema.Prefix{schema.PrefixFrom(lan.Masked())}}).Normalized()
+	rt.Overlay = exitPassOverlay
+	rt.Network = func() NetworkState {
+		return NetworkState{IPv4: NetworkFamily{Default: DefaultRoute{Interface: uplink}, Links: []Link{{Name: uplink, Prefixes: []netip.Prefix{lan}}}}}
+	}
+	built, err := newPlatform(none, rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.(*netlinkPlatform).fallback == nil {
+		t.Error("a platform built for fallback = \"none\" left the table's socket closed")
+	}
+	if err := built.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	held := func() bool {
+		tables, err := nftables.Tables(reader, FallbackTable)
+		if err != nil {
+			t.Fatalf("list the table: %v", err)
+		}
+		_, held := tables[unix.NFPROTO_INET]
+		return held
+	}
+	moved := off
+	moved.ID++
+	r := newReconciler(off, rt, off.Assigned(nil), netstack.NewRouteTable(), plat)
+	for _, step := range []struct {
+		name          string
+		table         Table
+		stopped, stop bool
+		open, held    bool
+	}{
+		{name: "mode off", table: off},
+		{name: "a reload into fallback none", table: none, open: true, held: true},
+		{name: "a refused reload out of it", table: moved, open: true, held: true},
+		{name: "a reload out of it", table: off},
+		{name: "a reload into it again", table: none, open: true, held: true},
+		{name: "a stop under it", table: none, stop: true},
+		{name: "a reload out of it while stopped", table: off, stopped: true},
+		{name: "a reload into it while stopped", table: none, stopped: true},
+		{name: "a start under it", table: none, open: true, held: true},
+		{name: "a stop under it again", table: none, stop: true},
+		{name: "a start after a reload out of it", table: off},
+	} {
+		err := r.SetTable(step.table, rt.Overlay, nil)
+		if refused := step.table.ID != off.ID; (err != nil) != refused {
+			t.Fatalf("%s: SetTable returned %v, want refused %v", step.name, err, refused)
+		}
+		// a stopped Run takes the reload and runs no pass
+		r.adopt()
+		if !step.stopped {
+			if err := r.reconcile(); err != nil {
+				t.Fatalf("%s: %v", step.name, err)
+			}
+		}
+		if step.stop {
+			if err := r.withdraw(nil); err != nil {
+				t.Fatalf("%s: %v", step.name, err)
+			}
+		}
+		if open, held := plat.fallback != nil, held(); open != step.open || held != step.held {
+			t.Errorf("%s leaves the socket open %v and the table held %v, want %v and %v", step.name, open, held, step.open, step.held)
+		}
 	}
 }
 
