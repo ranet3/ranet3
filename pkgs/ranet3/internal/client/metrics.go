@@ -52,7 +52,7 @@ func (c *Client) Metrics(w io.Writer) {
 	for _, neighbor := range stats.Neighbors {
 		fmt.Fprintf(w, "ranet3_peer_send_delay_dropped_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.DelayDropped)
 	}
-	fmt.Fprint(w, "# HELP ranet3_peer_send_failed_total Packets a peer sealed and the transport then lost.\n")
+	fmt.Fprint(w, "# HELP ranet3_peer_send_failed_total Packets a peer sealed and the transport then lost, but for a path MTU probe the host refused as past the path.\n")
 	fmt.Fprint(w, "# TYPE ranet3_peer_send_failed_total counter\n")
 	for _, neighbor := range stats.Neighbors {
 		fmt.Fprintf(w, "ranet3_peer_send_failed_total{peer=\"%s\"} %d\n", label(neighbor.Peer), neighbor.SendFailed)

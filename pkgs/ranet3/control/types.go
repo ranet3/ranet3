@@ -718,7 +718,7 @@ type Neighbor struct {
 	Routes  int       `json:"routes"`
 	Expires Duration  `json:"expires"`
 	// Dropped is packets this node's dataplane chose not to send to the peer, among them those dropped for the delay through its queue
-	// SendFailed is packets the transport lost after they were sealed
+	// SendFailed is packets the transport lost after they were sealed, but for a path MTU probe the host refused as past the path
 	// the first is this node choosing not to send and the second is the link failing
 	Dropped    uint64 `json:"dropped"`
 	SendFailed uint64 `json:"send_failed"`
