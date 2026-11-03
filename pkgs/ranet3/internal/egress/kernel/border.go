@@ -393,7 +393,7 @@ func (f *BorderFilter) Stats() egress.BorderStats {
 func (f *BorderFilter) Run(ctx context.Context) error {
 	ticker := time.NewTicker(f.sweep)
 	defer ticker.Stop()
-	retry := newRetryTimer(f.sweep)
+	retry := meshkernel.NewRetryTimer()
 	defer retry.Stop()
 	for {
 		select {
@@ -423,9 +423,9 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 			f.trigger = "missed"
 		}
 		if err := f.reconcile(); err != nil {
-			slog.Warn("antispoof filter pass failed, retrying", "err", err, "retry_in", retry.failed())
+			slog.Warn("antispoof filter pass failed, retrying", "err", err, "retry_in", retry.Failed(f.sweep))
 		} else {
-			retry.passed()
+			retry.Passed()
 		}
 	}
 }

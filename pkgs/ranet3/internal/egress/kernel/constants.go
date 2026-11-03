@@ -3,8 +3,6 @@
 
 package kernel
 
-import "time"
-
 const (
 	// TableName is the nftables table this package owns, and the whole of its
 	// ownership claim. It is the binary's own name so that an operator reading
@@ -30,9 +28,6 @@ const (
 	carvedSet = "carved"
 	ownedSet  = "owned"
 	noneSet   = "none"
-	// minRetryInterval is the first delay after a failed pass, and it doubles up
-	// to the sweep interval, as in internal/kernel.
-	minRetryInterval = time.Second
 	// rawPriority is NF_IP_PRI_RAW, the hook priority the antispoof chain runs
 	// at: after defragmentation at -400 and before conntrack at -200, so a
 	// forged packet creates no connection entry

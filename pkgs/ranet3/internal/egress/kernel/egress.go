@@ -85,6 +85,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	meshkernel "ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
 // Runtime holds the values the command resolves at startup rather than the
@@ -712,9 +713,10 @@ func (t *Translator) Announce() []netip.Prefix {
 func (t *Translator) Run(ctx context.Context) error {
 	slog.Info("egress translator started", "interface", t.rt.Interface, "steered", t.rt.Steered, "where", t.where(),
 		"advertise", len(t.cfg.Advertise))
-	ticker := time.NewTicker(t.cfg.SweepInterval())
+	sweep := t.cfg.SweepInterval()
+	ticker := time.NewTicker(sweep)
 	defer ticker.Stop()
-	retry := newRetryTimer(t.cfg.SweepInterval())
+	retry := meshkernel.NewRetryTimer()
 	defer retry.Stop()
 
 	t.trigger = "start"
@@ -724,10 +726,10 @@ func (t *Translator) Run(ctx context.Context) error {
 			// failed is retried on the backoff a failed pass takes
 			if !t.withdrawn {
 				if err := t.stop(); err != nil {
-					slog.Warn("egress could not withdraw its tables, retrying", "err", err, "retry_in", retry.failed())
+					slog.Warn("egress could not withdraw its tables, retrying", "err", err, "retry_in", retry.Failed(sweep))
 				} else {
 					t.withdrawn = true
-					retry.passed()
+					retry.Passed()
 				}
 			}
 		} else {
@@ -737,9 +739,9 @@ func (t *Translator) Run(ctx context.Context) error {
 				slog.Info("egress translator started again", "where", t.where())
 			}
 			if err := t.reconcile(); err != nil {
-				slog.Warn("egress pass failed, retrying", "err", err, "retry_in", retry.failed())
+				slog.Warn("egress pass failed, retrying", "err", err, "retry_in", retry.Failed(sweep))
 			} else {
-				retry.passed()
+				retry.Passed()
 			}
 		}
 		select {
@@ -775,35 +777,6 @@ func (t *Translator) Run(ctx context.Context) error {
 }
 
 func (t *Translator) Close() error { return t.be.Close() }
-
-// retryTimer is a run loop's retry of a failed pass, on a backoff doubling
-// from minRetryInterval up to the sweep, armed only while the backoff is set
-type retryTimer struct {
-	*time.Timer
-	sweep, backoff time.Duration
-}
-
-func newRetryTimer(sweep time.Duration) *retryTimer {
-	r := &retryTimer{Timer: time.NewTimer(sweep), sweep: sweep}
-	r.Stop()
-	return r
-}
-
-// failed arms the timer with the backoff doubled, which it returns
-func (r *retryTimer) failed() time.Duration {
-	r.backoff = min(max(2*r.backoff, minRetryInterval), r.sweep)
-	r.Stop()
-	r.Reset(r.backoff)
-	return r.backoff
-}
-
-// passed disarms the timer and starts the backoff over
-func (r *retryTimer) passed() {
-	if r.backoff != 0 {
-		r.backoff = 0
-		r.Stop()
-	}
-}
 
 // reconcile brings the host to the rules the configuration asks for and
 // republishes what may be advertised as a result. The rules are compared

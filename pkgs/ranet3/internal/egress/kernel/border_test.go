@@ -1057,35 +1057,6 @@ func TestBorderRetriesAFailedPass(t *testing.T) {
 	waitForPass(t, bus, "retry")
 }
 
-// The retry both run loops share starts disarmed, and each failed pass arms it
-// on a backoff doubling from minRetryInterval up to the sweep. A pass that
-// succeeds disarms it, and the next failure backs off from the start again.
-func TestRetryBacksOffUpToTheSweepAndStartsOverAfterAPass(t *testing.T) {
-	sweep := 5 * minRetryInterval
-	retry := newRetryTimer(sweep)
-	t.Cleanup(func() { retry.Stop() })
-	if retry.Stop() {
-		t.Error("a new retry is armed before any pass failed")
-	}
-	var got []time.Duration
-	for range 5 {
-		got = append(got, retry.failed())
-	}
-	if want := []time.Duration{minRetryInterval, 2 * minRetryInterval, 4 * minRetryInterval, sweep, sweep}; !slices.Equal(got, want) {
-		t.Errorf("5 failed passes backed off %v, want %v", got, want)
-	}
-	retry.passed()
-	if retry.Stop() {
-		t.Error("a pass that succeeded left the retry armed")
-	}
-	if backoff := retry.failed(); backoff != minRetryInterval {
-		t.Errorf("the first failure after a pass backed off %v, want %v", backoff, minRetryInterval)
-	}
-	if !retry.Stop() {
-		t.Error("a failed pass left the retry disarmed")
-	}
-}
-
 // A filter that stops reports the border not ready and withdraws its table,
 // and Run returns the withdrawal's error
 func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {

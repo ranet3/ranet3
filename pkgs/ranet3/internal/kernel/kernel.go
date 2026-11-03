@@ -1025,8 +1025,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	notify := r.plat.Notify()
 	ticker := time.NewTicker(r.table.Reconcile.Duration())
 	defer ticker.Stop()
-	retry := time.NewTimer(r.table.Reconcile.Duration())
-	retry.Stop()
+	retry := NewRetryTimer()
 	defer retry.Stop()
 	// Nothing else wakes at the moment the capture grace expires: the mesh has
 	// stopped changing, which is why the grace is running at all. Without this
@@ -1043,7 +1042,6 @@ func (r *Reconciler) Run(ctx context.Context) error {
 
 	r.audit()
 
-	backoff := time.Duration(0)
 	r.trigger = "start"
 	for ctx.Err() == nil {
 		switch {
@@ -1059,14 +1057,12 @@ func (r *Reconciler) Run(ctx context.Context) error {
 				err := r.withdraw(nil)
 				r.routePass = Stats{}
 				r.recordPass(err, time.Since(started))
-				retry.Stop()
 				grace.Stop()
 				if err != nil {
-					backoff = min(max(2*backoff, minRetryInterval), r.table.Reconcile.Duration())
-					slog.Warn("kernel could not withdraw everything it was asked to stop holding, retrying", "err", err, "retry_in", backoff)
-					retry.Reset(backoff)
+					slog.Warn("kernel could not withdraw everything it was asked to stop holding, retrying", "err", err, "retry_in", retry.Failed(r.table.Reconcile.Duration()))
 				} else {
-					r.withdrawn, backoff = true, 0
+					r.withdrawn = true
+					retry.Passed()
 					slog.Info("kernel reconciler stopped, its routes withdrawn", "where", r.Where())
 				}
 			}
@@ -1076,13 +1072,9 @@ func (r *Reconciler) Run(ctx context.Context) error {
 				slog.Info("kernel reconciler started again", "where", r.Where())
 			}
 			if err := r.reconcile(); err != nil {
-				backoff = min(max(2*backoff, minRetryInterval), r.table.Reconcile.Duration())
-				slog.Warn("kernel reconcile failed, retrying", "err", err, "retry_in", backoff)
-				retry.Stop()
-				retry.Reset(backoff)
-			} else if backoff != 0 {
-				backoff = 0
-				retry.Stop()
+				slog.Warn("kernel reconcile failed, retrying", "err", err, "retry_in", retry.Failed(r.table.Reconcile.Duration()))
+			} else {
+				retry.Passed()
 			}
 
 			grace.Stop()
