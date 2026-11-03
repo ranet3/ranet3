@@ -91,6 +91,9 @@ page gives what a refusal leaves of it:
 `--control` names the socket to read, `/var/run/ranet3/control.sock` by default.
 `--json` prints JSON instead of the table.
 
+- `status` names on its `Role` line the `initiator`, `responder`, `full_mesh`
+  and `no_transit` of
+  [the status answer](control-socket.md#requests-and-answers).
 - `status` shows the counters of the [forwarding decision](routing.md#transit)
   on its `Transit` line: the packets sessions delivered that went on to a peer
   or to the tun, those and the reads off the tun it dropped with each reason
@@ -132,10 +135,13 @@ page gives what a refusal leaves of it:
   SPI column counts the `INVALID_SPI` notifies the session sent its peer about
   ESP on an SPI this node does not hold, as
   [protocol deviations](design/protocol-deviations.md#errors-outside-an-exchange)
-  describes.
+  describes. Its End column is the `role` of
+  [the session answer](control-socket.md#requests-and-answers).
 - `whois` takes 1 address. It prints the longest prefix that covers the address,
   then the shorter ones it falls back to.
-- `ip` prints the host prefixes this node announces, 1 address per line.
+- `ip` prints the `mesh_addresses` of
+  [the status answer](control-socket.md#requests-and-answers), 1 address per
+  line.
 - `exit` on its own prints its help.
 - `bugreport` prints 1 JSON object of every read, and names any read that
   failed.
