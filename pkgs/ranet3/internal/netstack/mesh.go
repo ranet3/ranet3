@@ -715,7 +715,7 @@ func (m *Mesh) outboundWorker() {
 				continue
 			}
 			if err := batch.enqueue(); err != nil {
-				peer.noteSendError(err)
+				peer.noteSendError(err, false)
 			}
 		}
 		b.reset()

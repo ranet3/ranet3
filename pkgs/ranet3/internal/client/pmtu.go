@@ -386,7 +386,7 @@ type pathDriver struct {
 	search pathSearch
 	// endpoint is the endpoint the search measures, and a report for another one is about a path the session left
 	endpoint transport.Endpoint
-	// refusals counts the path reports of sends the host refused on the way to endpoint
+	// refusals counts the path reports for endpoint the search took, transmit dropping one that arrives while the one before it waits
 	refusals uint64
 	// changed is the session's last budget change, zero before the first
 	changed budgetChange

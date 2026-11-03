@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -89,7 +90,7 @@ func TestOnFailureReportsWhatAClosedPeerDropped(t *testing.T) {
 }
 
 // batches sealed for a peer that closed before its sender took them each fail
-// the log gets one send error an interval for the lot, and dropped counts every packet
+// the log gets one send error an interval for the lot, naming the dropped count, which counts every packet, and not the transport's
 func TestBatchesForAClosedPeerWarnAsItsSendErrorsDo(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
@@ -106,6 +107,9 @@ func TestBatchesForAClosedPeerWarnAsItsSendErrorsDo(t *testing.T) {
 	m.outboundWorker()
 	if got := bytes.Count(logs.Bytes(), []byte("netstack send batch failed")); got != 1 {
 		t.Errorf("%d batches for a closed peer logged %d send errors, want 1\n%s", batches, got, logs.String())
+	}
+	if text := logs.String(); !strings.Contains(text, "dropped_total=") || strings.Contains(text, "send_failed_total") {
+		t.Errorf("the send error names another count than the dropped packets:\n%s", text)
 	}
 	if got := peer.dropped.Load(); got != batches {
 		t.Errorf("the peer counted %d dropped for %d one-packet batches", got, batches)

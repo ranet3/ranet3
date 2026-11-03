@@ -37,7 +37,7 @@ type PMTUInfo struct {
 	DeviceMTU int `json:"device_mtu"`
 	// TooBigSent counts the packet too big and fragmentation needed answers to packets past their session's budget
 	TooBigSent uint64 `json:"packet_too_big_sent"`
-	// MSSClamped counts the SYNs whose MSS the node lowered to a session's budget
+	// MSSClamped counts the lowerings of a SYN or SYN-ACK's MSS to a session's budget, a forwarded SYN lowered at two sessions counting twice
 	MSSClamped uint64 `json:"mss_clamped"`
 	// RouterIDv4 and RouterIDv6 are the router-id of each family, RFC 1812 section 2.2.7, absent where the node holds none
 	RouterIDv4 netip.Addr `json:"router_id_ipv4,omitzero"`
@@ -89,7 +89,8 @@ type PMTUSession struct {
 	Sent  uint64 `json:"sent"`
 	Acked uint64 `json:"acked"`
 	Lost  uint64 `json:"lost"`
-	// Refusals counts the sends to the endpoint the host refused as past the path's MTU
+	// Refusals counts the reports of a send to the endpoint the host refused as past the path's MTU that the search took
+	// a report arriving while the one before it waits for the search is dropped, so a burst counts once for each report the search takes during it, far fewer than its sends
 	Refusals uint64 `json:"refusals"`
 	// Changed is the session's last budget change, absent before the first
 	Changed *PMTUChange `json:"changed,omitempty"`
@@ -162,7 +163,7 @@ func RenderPMTU(w io.Writer, info PMTUInfo) {
 		{"Steering", steering},
 		{"Device MTU", device},
 		{"Too big", countOf(int(info.TooBigSent), "answer") + " sent to packets past their session's budget"},
-		{"MSS clamped", countOf(int(info.MSSClamped), "SYN")},
+		{"MSS clamped", countOf(int(info.MSSClamped), "lowering")},
 		{"Answer sources", sourceText(info.RouterIDv4) + " for IPv4, " + sourceText(info.RouterIDv6) + " for IPv6"},
 		{"Answer SID", sourceText(info.AnswerSID)},
 	})

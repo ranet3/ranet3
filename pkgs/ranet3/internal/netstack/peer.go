@@ -477,7 +477,8 @@ func (p *Peer) storagePool(n int) *sync.Pool {
 
 // noteSendError warns of a failed send at most once every sendErrReportInterval, and says a send on a closed mux or a bare path report at debug, since the session's end and the path search answer for them
 // their lost packets still count
-func (p *Peer) noteSendError(err error) {
+// sealed is a batch the transport was handed, whose loss sendFailed counts and the warning names, where dropped counts one that never reached it
+func (p *Peer) noteSendError(err error, sealed bool) {
 	if _, bare := err.(*transport.PathMTUError); bare || errors.Is(err, transport.ErrClosed) {
 		slog.Debug("netstack send batch ended at a closed mux or past the path", "peer", p.ID, "err", err)
 		return
@@ -485,6 +486,10 @@ func (p *Peer) noteSendError(err error) {
 	now := int64(time.Since(p.started))
 	previous := p.sendErrReported.Load()
 	if now-previous < int64(sendErrReportInterval) || !p.sendErrReported.CompareAndSwap(previous, now) {
+		return
+	}
+	if sealed {
+		slog.Warn("netstack send batch failed", "peer", p.ID, "err", err, "send_failed_total", p.sendFailed.Load())
 		return
 	}
 	slog.Warn("netstack send batch failed", "peer", p.ID, "err", err, "dropped_total", p.dropped.Load())
@@ -567,8 +572,9 @@ func (p *Peer) senderLoop() {
 			// so its packets are gone and this peer refused them. One that
 			// sealed and then lost the syscall was attempted, which is a
 			// different number.
+			sealed := len(b.sealed) != 0
 			if b.err != nil && !b.counted {
-				if len(b.sealed) == 0 {
+				if !sealed {
 					p.dropped.Add(uint64(len(b.raw)))
 				} else {
 					p.sendFailed.Add(uint64(lost))
@@ -581,7 +587,7 @@ func (p *Peer) senderLoop() {
 				b.fail(b.err)
 			}
 			if b.err != nil {
-				p.noteSendError(b.err)
+				p.noteSendError(b.err, sealed)
 			}
 		}
 		clear(packets)

@@ -312,11 +312,11 @@ type Down struct {
 }
 
 // SegmentCounters is this node's segment routing, counted since startup.
-// Forwarded is packets an End sent on to their next segment, Delivered is
-// packets an End.DT46 took the outer header off and handed to the mesh's
-// forwarding decision, counted before it writes them to the tun, hands them to
-// the exit, forwards, answers or drops them, and Dropped is packets addressed
-// to one of this node's segments that it would not act on.
+// Forwarded is packets an End sent on to their next segment, a cut one
+// counted for each fragment, Delivered is packets an End.DT46 took the outer
+// header off and handed to the mesh's forwarding decision, and Dropped is
+// packets addressed to one of this node's segments that it refused or would
+// not act on, and packets End rewrote that went no further.
 type SegmentCounters struct {
 	Forwarded uint64 `json:"forwarded"`
 	Delivered uint64 `json:"delivered"`
@@ -344,12 +344,12 @@ type SegmentCounters struct {
 	ECNUnused uint64 `json:"ecn_unused"`
 }
 
-// TransitCounters counts the forwarding decision's outcomes since startup
-// Forwarded counts the packets a session delivered that went on to a peer, and Delivered the ones written to the tun or handed to the exit
-// the fields from Expired to Looped count the packets dropped, by reason, Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped counting reads off the tun, and Invalid both
+// TransitCounters counts the forwarding decision's outcomes since startup, and those of the checks of a read off the tun
+// Forwarded counts the packets the decision handed to the next peer's send, and Delivered the ones written to the tun or handed to the exit
+// the fields from Expired to TooBig count the packets a session delivered that were dropped, by reason, and Multicast to Looped the reads off the tun, which NoRoute, Held, Invalid and TooBig count as well
 // Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
 // counted before the rules that keep an error from answering a packet and before the rate limits
-// Unsent counts the answers built for, or due to, a source the mesh routes them no way back to, or whose session had no room for them
+// Unsent counts the answers the decision built and could not send
 type TransitCounters struct {
 	Forwarded      uint64 `json:"forwarded"`
 	Delivered      uint64 `json:"delivered"`

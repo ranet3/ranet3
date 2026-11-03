@@ -174,7 +174,7 @@ func TestProbeRefusedPastThePathIsNoFailure(t *testing.T) {
 }
 
 // a send at a closed mux and a bare path report are said at debug, and their lost packets still count
-// any other error warns
+// any other error warns, naming the count of packets the transport was handed and lost, which counts it
 func TestSendAtAClosedMuxOrPastThePathWarnsNothing(t *testing.T) {
 	report := &transport.PathMTUError{Endpoint: endpointTo(t, "198.51.100.1:4500"), MTU: 1280}
 	for _, test := range []struct {
@@ -195,7 +195,33 @@ func TestSendAtAClosedMuxOrPastThePathWarnsNothing(t *testing.T) {
 			if warned := strings.Contains(logs, "netstack send batch failed"); warned != test.warns {
 				t.Errorf("the sender warned %t, want %t:\n%s", warned, test.warns, logs)
 			}
+			if test.warns && (!strings.Contains(logs, "send_failed_total=1") || strings.Contains(logs, "dropped_total")) {
+				t.Errorf("the warning names another count than the packets the transport lost:\n%s", logs)
+			}
 		})
+	}
+}
+
+// a batch whose seal failed never reached the transport, and its warning names the peer's dropped count, which counts it
+func TestSealThatFailedWarnsWithTheDroppedCount(t *testing.T) {
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	peer := NewPeer("peer", func(int) (BatchSealer, error) {
+		return func([][]byte, []byte, [][]byte) ([][]byte, error) { return nil, errors.New("the SA is gone") }, nil
+	}, func([][]byte) error { return nil }, nil)
+	place, err := peer.ReserveRawOrDrop(make([]byte, 100), 41)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = place.Send()
+	// the sender gives the budget back as it takes the batch, and has warned once Close returns
+	waitForBudget(t, peer)
+	peer.Close()
+	if peer.Dropped() != 1 || peer.SendFailed() != 0 {
+		t.Fatalf("the peer counted %d dropped and %d lost by the transport, want the one dropped", peer.Dropped(), peer.SendFailed())
+	}
+	if text := logs.String(); !strings.Contains(text, "dropped_total=1") || strings.Contains(text, "send_failed_total") {
+		t.Errorf("the warning names another count than the dropped packets:\n%s", text)
 	}
 }
 

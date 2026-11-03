@@ -128,8 +128,10 @@ type SegmentCounters struct {
 	// Forwarded counts the packets sent on to a next segment
 	// a segment cut to fit the session to it counts once for each of its fragments
 	Forwarded uint64
+	// Delivered counts the packets an End.DT46 took the outer header off and handed to the forwarding decision
 	Delivered uint64
-	Dropped   uint64
+	// Dropped counts the packets addressed to one of this node's segments that it refused or would not act on, and the ones End rewrote that went no further
+	Dropped uint64
 	// Steered counts this node's own packets that a policy encapsulated,
 	// Unsteered the ones a policy claimed and this node could not, and
 	// Unrouted the ones it encapsulated toward a first segment the mesh had

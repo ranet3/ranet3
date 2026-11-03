@@ -22,7 +22,7 @@ import (
 type transitReason uint8
 
 const (
-	// transitForwarded counts packets sent on to a peer, one cut into fragments once
+	// transitForwarded counts packets handed to the next peer's send, one cut into fragments once
 	transitForwarded transitReason = iota
 	// transitDelivered counts packets written to the tun, for this node's own destinations and the ones linkScoped takes, and those handed to the exit through a prefix cap.egress advertises that counts as a default
 	transitDelivered
@@ -60,7 +60,7 @@ const (
 	// transitLooped counts reads off the tun to a destination of this node's own, which the mesh could only hand back to the tun
 	transitLooped
 	transitAnswered
-	// transitUnsent counts the answers built for, or due to, a source the mesh routes them no way back to, or whose session had no room for them
+	// transitUnsent counts the answers the decision built and could not send
 	transitUnsent
 	transitReasonCount
 )
@@ -135,19 +135,18 @@ func (m *Mesh) inOverlay(address netip.Addr) bool {
 
 // TransitCounters counts the forwarding decision's outcomes since startup, and those of the checks of a read off the tun
 type TransitCounters struct {
-	// Forwarded counts packets a session delivered that the decision handed to the next peer's send, one cut into fragments once, which that peer's budget may still refuse and Peer.Dropped then counts as well
+	// Forwarded counts the packets the decision handed to the next peer's send, one cut into fragments once
 	// Delivered the ones written to the tun or handed to the exit
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
-	// NoRoute, Held, Invalid and TooBig count the reads off the tun dropped for them as well, a steered read whose first segment has no route among NoRoute and one a policy could not encapsulate among TooBig
-	// and Invalid the reads that are not exactly one IP packet, whose extension headers the walk cannot finish, whose carried packet's header cannot be read, or past their session with options the cut cannot frame
+	// NoRoute, Held, Invalid and TooBig count the reads off the tun dropped for them as well
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
 	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
 	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
 	// Answered counts the ICMP errors sent about dropped packets and reads
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
 	// counted before the rules that keep an error from answering a packet and before the rate limits
-	// Unsent counts the answers the decision built for, or due to, a source the mesh routes them no way back to, or whose session had no room for them
+	// Unsent counts the answers the decision built and could not send
 	Answered, Unanswered, Unsent uint64
 }
 
@@ -271,8 +270,8 @@ func lengthAnswered(raw []byte) bool {
 // it inlines, so a packet without options pays one comparison and no clock read
 func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
 
-// decide runs the forwarding decision over frames, which a session delivered and no segment of this node took, in the order they came
-// granted marks the frames an End.DT46 delivering to the mesh took out of their outer headers, which go on whatever cap.transit says, nil where there are none
+// decide runs the forwarding decision over frames, in the order they came, each a packet a session delivered that no segment of this node took or an inner packet an End.DT46 delivering to the mesh took out of its outer header
+// granted marks the inner packets, which go on whatever cap.transit says, nil where there are none
 // from is the peer of the session they came through, nil for frames of no session
 // it returns the frames for the tun in the order they came, filtered in place, and hands egress the ones through a prefix cap.egress advertises that counts as a default
 // the checks run in RFC 1812's order for IPv6 as for IPv4, each before any answer, so a malformed packet draws none but the Payload Length answer of the first

@@ -22,8 +22,9 @@ import (
 // Metrics writes the Prometheus text exposition format, by hand rather than
 // through a client library so the dependency list stays short.
 //
-// Everything here is read from live state at scrape time rather than sampled
-// on a timer, so a scrape reflects the instant it happened.
+// Everything here is read from live state at scrape time but the kernel,
+// egress and border series, which hold the last pass of the reconciler that
+// writes each as that pass read it.
 func (c *Client) Metrics(w io.Writer) {
 	stats := c.speaker.Stats()
 	sessions := c.sessions.paths()
@@ -82,7 +83,7 @@ func (c *Client) Metrics(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_esp_inbound_packets_total ESP packets that authenticated and passed validation, including babel control traffic and dummy packets.\n")
 	fmt.Fprint(w, "# TYPE ranet3_esp_inbound_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_esp_inbound_packets_total %d\n", c.inboundPackets.Load())
-	fmt.Fprint(w, "# HELP ranet3_esp_inbound_dropped_total ESP packets that failed to decrypt or validate, or whose inner Not-ECT packet arrived in a datagram marked CE, which RFC 6040 section 4.2 drops.\n")
+	fmt.Fprint(w, "# HELP ranet3_esp_inbound_dropped_total ESP packets a session took that named an SPI with no SA installed, failed to decrypt or validate, or whose inner Not-ECT packet arrived in a datagram marked CE, which RFC 6040 section 4.2 drops.\n")
 	fmt.Fprint(w, "# TYPE ranet3_esp_inbound_dropped_total counter\n")
 	fmt.Fprintf(w, "ranet3_esp_inbound_dropped_total %d\n", c.inboundDropped.Load())
 	fmt.Fprint(w, "# HELP ranet3_esp_inbound_ce_total ESP packets whose inner ECT packet left CE because a hop on the underlay marked their datagram CE.\n")
@@ -165,7 +166,7 @@ func (c *Client) renderPathMTU(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_icmp_withheld_total counter\n")
 	fmt.Fprintf(w, "ranet3_icmp_withheld_total{limit=\"source\"} %d\n", source)
 	fmt.Fprintf(w, "ranet3_icmp_withheld_total{limit=\"node\"} %d\n", node)
-	fmt.Fprint(w, "# HELP ranet3_mss_clamped_total TCP SYNs whose MSS this node lowered to what their session carries.\n")
+	fmt.Fprint(w, "# HELP ranet3_mss_clamped_total Lowerings of the MSS of a TCP SYN or SYN-ACK to what a session carries, a forwarded one lowered to the session it arrived on and again to its next one counting twice.\n")
 	fmt.Fprint(w, "# TYPE ranet3_mss_clamped_total counter\n")
 	fmt.Fprintf(w, "ranet3_mss_clamped_total %d\n", c.Mesh.MSSClamped())
 	fmt.Fprint(w, "# HELP ranet3_pmtu_probes_total Probes of the sessions' path MTU that left, by result: acked, or lost when no Ack came within the probe timeout.\n")
@@ -254,7 +255,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_delivered_total Packets an End.DT46 behavior took the outer header off and handed to the forwarding decision, counted before it writes them to the tun, hands them to the exit, forwards, answers or drops them.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_delivered_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_delivered_total %d\n", segments.Delivered)
-	fmt.Fprint(w, "# HELP ranet3_segments_dropped_total Packets addressed to one of this node's segments that it would not act on.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_dropped_total Packets addressed to one of this node's segments that it refused or would not act on, and packets End rewrote that went no further.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_dropped_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_dropped_total %d\n", segments.Dropped)
 	fmt.Fprint(w, "# HELP ranet3_segments_answered_total ICMP errors sent for dropped packets, which is the half of the dropped ones whose sender was told why.\n")
@@ -288,7 +289,7 @@ func (c *Client) renderTransitCounters(w io.Writer) {
 }
 
 func writeTransitCounters(w io.Writer, transit control.TransitCounters) {
-	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision forwarded to a peer, delivered to the tun or handed to the exit, or dropped, by reason, and the ICMP errors it answered them with, found no source for, or built with no way back.\n")
+	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision took and reads off the tun it dropped, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or built and not sent.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transit_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"forwarded\",reason=\"\"} %d\n", transit.Forwarded)
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"delivered\",reason=\"\"} %d\n", transit.Delivered)
@@ -312,7 +313,7 @@ func (c *Client) renderKernel(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_kernel_routes_installed Routes the kernel holds for this reconciler as of its last pass.\n")
 	fmt.Fprint(w, "# TYPE ranet3_kernel_routes_installed gauge\n")
 	fmt.Fprintf(w, "ranet3_kernel_routes_installed %d\n", kernel.Installed)
-	fmt.Fprint(w, "# HELP ranet3_kernel_routes_skipped Routes the platform refused in the last pass, and cover members left out with their family.\n")
+	fmt.Fprint(w, "# HELP ranet3_kernel_routes_skipped Routes the platform refused in the last pass, cover members left out with their family, and zero routes a cover installs as nothing.\n")
 	fmt.Fprint(w, "# TYPE ranet3_kernel_routes_skipped gauge\n")
 	fmt.Fprintf(w, "ranet3_kernel_routes_skipped %d\n", kernel.Skipped)
 	fmt.Fprint(w, "# HELP ranet3_kernel_pass_timestamp_seconds When the last pass finished, and zero before the first one has.\n")

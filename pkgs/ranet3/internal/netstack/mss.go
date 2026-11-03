@@ -36,7 +36,7 @@ func (m *Mesh) ClampMSS(packet []byte, mtu int) {
 	}
 }
 
-// MSSClamped is how many SYNs had their MSS lowered to a session's budget
+// MSSClamped is how many times ClampMSS lowered the MSS of a SYN or SYN-ACK, one lowered at two sessions counting twice
 func (m *Mesh) MSSClamped() uint64 { return m.mssClamped.Load() }
 
 // MSSLimits is the MSS a SYN through a session carrying mtu byte packets leaves with at most, under IPv4 and under IPv6

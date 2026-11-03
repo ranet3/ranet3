@@ -735,6 +735,7 @@ func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 // a peer that refuses its reservation, as a closed or a full one does, is handed none of the fragments cut for it
 // they are dropped and counted by the peer, and by the waypoint for a segment it would have forwarded
 // a read off the tun and a forwarded segment each cut one IPv4 packet without DF into two fragments for such a peer
+// and a waypoint counts both fragments dropped as well where the peer closes after the reservation, while their batch is sealed
 func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 	source, destination := tooBigSource[4], tooBigDestination[4]
 	t.Run("read off the tun", func(t *testing.T) {
@@ -766,6 +767,23 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 		}
 		if dropped := peer.Dropped(); dropped != 2 {
 			t.Errorf("the session dropped %d packets, want the two fragments it had no place for", dropped)
+		}
+	})
+	t.Run("forwarded segment to a session closing while it seals", func(t *testing.T) {
+		after := segAddr("3fff:b:0:206::1")
+		var peer *Peer
+		peer = NewPeer("peer", func(int) (BatchSealer, error) {
+			return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
+				peer.Close()
+				return append(out[:0], raw...), nil
+			}, nil
+		}, func([][]byte) error { return nil }, nil)
+		t.Cleanup(peer.Close)
+		peer.SetMTU(srv6.MinimumIPv6MTU + srv6.Overhead(2))
+		m, _ := waypointOf(t, after, peer)
+		m.applySegments(framed(steeredThrough(t, udpPacket(source, destination, DefaultMTU, false), after)), DefaultMTU, nil)
+		if counters := m.SegmentCounters(); counters.Dropped != 2 || counters.Forwarded != 0 {
+			t.Errorf("the waypoint counted %+v, want the segment's two fragments dropped", counters)
 		}
 	})
 }
