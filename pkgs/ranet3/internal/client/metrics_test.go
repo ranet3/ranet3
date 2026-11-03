@@ -106,7 +106,7 @@ func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 	}
 }
 
-// the scrape counts the sockets connected to one busy peer each, and those a send or a read failed on and handed back to the shared socket
+// the scrape counts the sockets connected to one busy peer each, those a send or a read failed on and handed back to the shared socket, and the connects that failed
 // a change of the network closes the socket and counts no fallback
 func TestMetricsCountTheSocketsConnectedToOnePeer(t *testing.T) {
 	bus := events.New()
@@ -124,7 +124,8 @@ func TestMetricsCountTheSocketsConnectedToOnePeer(t *testing.T) {
 		}
 	}
 	scrape("# TYPE ranet3_transport_pair_sockets gauge", "ranet3_transport_pair_sockets 1",
-		"# TYPE ranet3_transport_pair_fallbacks_total counter", "ranet3_transport_pair_fallbacks_total 0")
+		"# TYPE ranet3_transport_pair_fallbacks_total counter", "ranet3_transport_pair_fallbacks_total 0",
+		"# TYPE ranet3_transport_pair_connects_failed_total counter", "ranet3_transport_pair_connects_failed_total 0")
 	hub.NetworkChanged()
 	scrape("ranet3_transport_pair_sockets 0", "# TYPE ranet3_transport_pair_fallbacks_total counter", "ranet3_transport_pair_fallbacks_total 0")
 }

@@ -193,6 +193,8 @@ type fakeConnector struct {
 	keeps  bool
 	// gate holds each connect until it receives, where it is not nil
 	gate chan struct{}
+	// fails is the error each connect from now on fails with, where it is not nil
+	fails error
 }
 
 func (c *fakeConnector) connectPair(pairKey) (pairSocket, receiveFunc, error) {
@@ -201,6 +203,9 @@ func (c *fakeConnector) connectPair(pairKey) (pairSocket, receiveFunc, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.fails != nil {
+		return nil, nil, c.fails
+	}
 	s := newFakePairSocket(c.refuse, c.keeps)
 	c.sockets = append(c.sockets, s)
 	return s, s.receive, nil
@@ -846,6 +851,49 @@ func TestPairSocketWhoseReadFailsFallsBackToTheSharedSocket(t *testing.T) {
 		t.Fatal("the pair opened again before the next sweep")
 	}
 	marker := []byte("after the read failed")
+	if err := mux.SendESP(marker); err != nil {
+		t.Fatal(err)
+	}
+	if from := readFrom(t, peer, marker); from.Port() != hub.port {
+		t.Fatalf("the peer heard from port %d, want the listener's %d", from.Port(), hub.port)
+	}
+}
+
+// a connect that fails leaves its pair on the shared socket until the next sweep
+// the hub counts it apart from the fallbacks and records why, with the address the pair names, empty where the route picks it
+func TestPairWhoseConnectFailsStaysOnTheSharedSocket(t *testing.T) {
+	events := &eventLog{}
+	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	fake := fakePairs(hub)
+	failure := errors.New("the address is gone")
+	fake.fails = failure
+	peer := listenPeer(t, "udp4", "127.0.0.1")
+	at := peer.LocalAddr().(*net.UDPAddr)
+	mux, err := hub.NewMux(at.IP, at.Port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := openNow(mux)
+	if p.socket.Load() != nil || openSockets(hub) != 0 || hub.PairConnectsFailed() != 1 || hub.PairFallbacks() != 0 {
+		t.Fatalf("a connect that failed left the pair a socket, %d open, %d connects failed and %d fallbacks, want 1 failed", openSockets(hub), hub.PairConnectsFailed(), hub.PairFallbacks())
+	}
+	local := ""
+	if p.key.local.IsValid() {
+		local = p.key.local.String()
+	}
+	want := []string{fmt.Sprintf("transport.pair.failed local=%s remote=%s %s", local, at.AddrPort(), slog.String("err", failure.Error()))}
+	if got := events.recorded(); !slices.Equal(got, want) {
+		t.Fatalf("the hub recorded %q, want %q", got, want)
+	}
+	hub.carry(p, pairThreshold)
+	if hub.PairConnectsFailed() != 1 || opening(hub, p) {
+		t.Fatal("the pair tried again before the next sweep")
+	}
+	marker := []byte("after the connect failed")
 	if err := mux.SendESP(marker); err != nil {
 		t.Fatal(err)
 	}

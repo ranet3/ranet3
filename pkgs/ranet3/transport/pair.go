@@ -64,6 +64,8 @@ type pairTable struct {
 	gen uint64
 	// fallbacks counts the sockets a send or a read failed on, whose pairs went back to the shared socket
 	fallbacks atomic.Uint64
+	// connectsFailed counts the connects that failed, whose pairs stay on the shared socket until the next sweep
+	connectsFailed atomic.Uint64
 }
 
 // pair is one address pair and its socket once it is busy
@@ -126,7 +128,16 @@ func (h *Hub) openPair(p *pair, gen uint64) {
 	if err != nil || p.refs == 0 || t.gen != gen || h.closed.Load() {
 		t.open--
 		if err != nil {
+			t.connectsFailed.Add(1)
 			slog.Debug("transport could not connect a socket to a busy peer", "local", p.key.local, "interface", p.key.index, "remote", p.key.remote, "err", err)
+			// local is empty for a pair whose route picks the address
+			if t.events != nil {
+				local := ""
+				if p.key.local.IsValid() {
+					local = p.key.local.String()
+				}
+				t.events("transport.pair.failed", slog.String("local", local), slog.String("remote", p.key.remote.String()), slog.String("err", err.Error()))
+			}
 			return
 		}
 		_ = socket.Close()
@@ -198,6 +209,14 @@ func (h *Hub) PairFallbacks() uint64 {
 		return 0
 	}
 	return h.pairs.fallbacks.Load()
+}
+
+// PairConnectsFailed is how many connects of a socket to one busy peer failed, whose traffic stayed on the shared socket
+func (h *Hub) PairConnectsFailed() uint64 {
+	if h.pairs == nil {
+		return 0
+	}
+	return h.pairs.connectsFailed.Load()
 }
 
 // closeSocket needs t.mu held

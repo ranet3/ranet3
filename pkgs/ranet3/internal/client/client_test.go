@@ -870,7 +870,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		"ranet3_session_up", "ranet3_babel_neighbor_up",
 		"ranet3_babel_neighbor_cost", "ranet3_babel_routes_received",
 		"ranet3_peer_send_dropped_total", "ranet3_peer_send_delay_dropped_total", "ranet3_receive_dropped_total",
-		"ranet3_transport_pair_sockets", "ranet3_transport_pair_fallbacks_total",
+		"ranet3_transport_pair_sockets", "ranet3_transport_pair_fallbacks_total", "ranet3_transport_pair_connects_failed_total",
 		"ranet3_tun_reads_truncated_total", "ranet3_tun_frames_refused_total", "ranet3_tun_writes_failed_total",
 		"ranet3_transit_packets_total",
 	} {

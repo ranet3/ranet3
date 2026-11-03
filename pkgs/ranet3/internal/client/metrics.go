@@ -409,9 +409,9 @@ func (c *Client) hubKeepalives() uint64 {
 }
 
 // renderPairSockets writes the sockets the hub holds connected to one busy peer each, under the prefix of their transport.pair events
-// a fallback leaves its peer's sends on the shared socket, which carries them, until the next sweep
+// a fallback and a failed connect each leave the peer's sends on the shared socket, which carries them, until the next sweep
 func (c *Client) renderPairSockets(w io.Writer) {
-	sockets, fallbacks := c.hubPairs()
+	sockets, fallbacks, failed := c.hubPairs()
 	fmt.Fprint(w, "# HELP ranet3_transport_pair_sockets Sockets open or opening that are connected to one busy peer each.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transport_pair_sockets gauge\n")
 	fmt.Fprintf(w, "ranet3_transport_pair_sockets %d\n", sockets)
@@ -419,14 +419,18 @@ func (c *Client) renderPairSockets(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_transport_pair_fallbacks_total Sockets connected to one peer that a send or a read failed on, whose pairs went back to the shared socket.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transport_pair_fallbacks_total counter\n")
 	fmt.Fprintf(w, "ranet3_transport_pair_fallbacks_total %d\n", fallbacks)
+
+	fmt.Fprint(w, "# HELP ranet3_transport_pair_connects_failed_total Connects of a socket to one busy peer that failed, whose pairs stayed on the shared socket.\n")
+	fmt.Fprint(w, "# TYPE ranet3_transport_pair_connects_failed_total counter\n")
+	fmt.Fprintf(w, "ranet3_transport_pair_connects_failed_total %d\n", failed)
 }
 
 // hubPairs is zero before the hub exists, as hubDropped is
-func (c *Client) hubPairs() (sockets int, fallbacks uint64) {
+func (c *Client) hubPairs() (sockets int, fallbacks, failed uint64) {
 	if c.hub == nil {
-		return 0, 0
+		return 0, 0, 0
 	}
-	return c.hub.PairSockets(), c.hub.PairFallbacks()
+	return c.hub.PairSockets(), c.hub.PairFallbacks(), c.hub.PairConnectsFailed()
 }
 
 // MetricsHandler serves Metrics, for mounting next to the pprof endpoint.

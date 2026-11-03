@@ -147,6 +147,8 @@ type pairMachine struct {
 	pending   []*pendingConnect
 	gen       int
 	fallbacks uint64
+	// connectsFailed is how many connects the model let fail
+	connectsFailed uint64
 	// seen is how many of the hub's events were held to the model, and want the ones the model expects next
 	seen int
 	want []string
@@ -335,6 +337,12 @@ func (m *pairMachine) RuleConnect(tc hegel.TestCase) {
 	p := pending.pair
 	switch {
 	case outcome == pairCannotConnect:
+		m.connectsFailed++
+		local := ""
+		if key := m.keys[p.peer]; key.local.IsValid() {
+			local = key.local.String()
+		}
+		m.want = append(m.want, fmt.Sprintf("transport.pair.failed local=%s remote=%s %s", local, m.keys[p.peer].remote, slog.String("err", unix.ECONNREFUSED.Error())))
 	case p.refs == 0:
 	case pending.gen != m.gen:
 		p.held = false
@@ -431,6 +439,9 @@ func (m *pairMachine) InvariantPairsAgreeWithTheModel(tc hegel.TestCase) {
 	}
 	if got := m.hub.PairFallbacks(); got != m.fallbacks {
 		tc.Errorf("the hub counts %d fallbacks, the model %d", got, m.fallbacks)
+	}
+	if got := m.hub.PairConnectsFailed(); got != m.connectsFailed {
+		tc.Errorf("the hub counts %d connects failed, the model %d", got, m.connectsFailed)
 	}
 	if live := m.connector.live(); live != sockets {
 		tc.Errorf("%d of the sockets connected are open, the model holds %d", live, sockets)
