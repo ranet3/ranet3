@@ -7,13 +7,16 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"net"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/srv6"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // probeAnswerTimeout bounds how long a test waits for the Ack to a probe that crosses an in-memory link
@@ -108,6 +111,45 @@ func TestRefusedProbeIsAnError(t *testing.T) {
 	speaker.AddPeer(closed, identity.Identity{})
 	if err := speaker.Probe(closed, srv6.MinimumIPv6MTU, 1); err == nil {
 		t.Error("a probe the session refused was taken")
+	}
+}
+
+// a probe the host refuses as past the path counts in no failed send of its session, since the refusal answers it
+func TestProbeRefusedPastThePathIsNoFailedSend(t *testing.T) {
+	speaker, err := New(Config{}, Routes{}, Runtime{}, &netstack.Mesh{Routes: netstack.NewRouteTable()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux, err := transport.Dial(":0", net.IPv4(198, 51, 100, 1), 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mux.Close()
+	report := &transport.PathMTUError{Endpoint: mux.Endpoint(), MTU: srv6.MinimumIPv6MTU}
+	refused := make(chan struct{})
+	var once sync.Once
+	peer := netstack.NewPeer("narrow", plainSealer, func(sealed [][]byte) error {
+		for _, packet := range sealed {
+			if len(packet) > report.Largest() {
+				once.Do(func() { close(refused) })
+				return report
+			}
+		}
+		return nil
+	}, nil)
+	speaker.AddPeer(peer, identity.Identity{})
+	if err := speaker.Probe(peer, srv6.MinimumIPv6MTU+100, 1); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-refused:
+	case <-time.After(probeAnswerTimeout):
+		t.Fatalf("waited %s for the probe to reach the transport", probeAnswerTimeout)
+	}
+	// the sender is done with the probe once Close returns
+	peer.Close()
+	if failed := peer.SendFailed(); failed != 0 {
+		t.Errorf("the session counted %d failed sends for a probe the path refused, want none", failed)
 	}
 }
 

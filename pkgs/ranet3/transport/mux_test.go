@@ -147,6 +147,42 @@ func TestHubFailureIsTerminal(t *testing.T) {
 	}
 }
 
+// a send on a mux its own Close or its hub's closed answers ErrClosed, and one on a hub whose read failed answers that failure
+// registering an SPI on any of them answers ErrClosed
+func TestSendOnAClosedMuxAnswersErrClosed(t *testing.T) {
+	for _, closing := range []struct {
+		name   string
+		close  func(*Hub, *Mux)
+		closed bool
+	}{
+		{"its own Close", func(_ *Hub, m *Mux) { m.Close() }, true},
+		{"its hub's Close", func(h *Hub, _ *Mux) { h.Close() }, true},
+		{"its hub's failed read", func(h *Hub, _ *Mux) { h.readFailed(errors.New("receive failed")) }, false},
+	} {
+		t.Run(closing.name, func(t *testing.T) {
+			hub, err := NewHub(":0", Underlay{}, Runtime{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer hub.Close()
+			mux, err := hub.NewMux(net.IPv4(127, 0, 0, 1), 4500)
+			if err != nil {
+				t.Fatal(err)
+			}
+			closing.close(hub, mux)
+			if err := mux.SendESPBatch([][]byte{{0, 0, 0, 1}}); errors.Is(err, ErrClosed) != closing.closed {
+				t.Errorf("the send answered %v, ErrClosed %t, want %t", err, errors.Is(err, ErrClosed), closing.closed)
+			}
+			if err := mux.RegisterESP(1); !errors.Is(err, ErrClosed) {
+				t.Errorf("registering an ESP SPI answered %v, want ErrClosed", err)
+			}
+			if err := mux.RegisterIKE(1); !errors.Is(err, ErrClosed) {
+				t.Errorf("registering an IKE SPI answered %v, want ErrClosed", err)
+			}
+		})
+	}
+}
+
 func TestRecvESPBatchDrainsToDestinationCapacity(t *testing.T) {
 	m := &Mux{espCh: make(chan espDatagramBatch, 2), done: make(chan struct{})}
 	m.espCh <- espDatagramBatch{packets: [][]byte{[]byte("one"), []byte("two")}}
@@ -998,6 +1034,33 @@ func (b *answeringBind) Send(packets [][]byte, _ Endpoint) error {
 	answer := b.answers[len(b.sends)]
 	b.sends = append(b.sends, len(packets))
 	return answer
+}
+
+// closingBind closes its hub inside a send and answers the send as the closed socket does
+type closingBind struct{ hub *Hub }
+
+func (*closingBind) ParseEndpoint(string) (Endpoint, error) { return nil, errors.New("no bind") }
+func (*closingBind) Close() error                           { return nil }
+
+func (b *closingBind) Send([][]byte, Endpoint) error {
+	b.hub.Close()
+	return net.ErrClosed
+}
+
+// a send whose socket the hub closed under it answers ErrClosed, wrapping the socket's error
+func TestSendTheHubClosedUnderAnswersErrClosed(t *testing.T) {
+	to := &fixedEndpoint{addr: netip.MustParseAddrPort("198.51.100.5:4500")}
+	bind := &closingBind{}
+	hub := &Hub{bind: bind, muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+	bind.hub = hub
+	hub.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
+	mux, err := hub.newMux(to, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mux.SendESPBatch([][]byte{{0, 0, 0, 1}}); !errors.Is(err, ErrClosed) || !errors.Is(err, net.ErrClosed) {
+		t.Errorf("a send the hub closed under answered %v, want ErrClosed wrapping the socket's error", err)
+	}
 }
 
 // a batch past one send carries on past a bare path report, which refused only the datagrams past its path

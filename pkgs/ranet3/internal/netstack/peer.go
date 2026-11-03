@@ -197,6 +197,11 @@ func (p *Place) Send() error { return p.batch.enqueue() }
 // with the batch, so it must not block.
 func (p *Place) OnFailure(f func(error)) { p.batch.onFailure = f }
 
+// MarkProbe marks the packet as a probe of the path's MTU, which the host
+// refusing as past the path answers rather than fails. It must be called
+// before Send, as OnFailure must.
+func (p *Place) MarkProbe() { p.batch.probe = true }
+
 type peerBatch struct {
 	peer    *Peer
 	ticket  uint64
@@ -227,6 +232,8 @@ type peerBatch struct {
 	// control says which budget the place came from, so it goes back where it
 	// was taken from.
 	control bool
+	// probe says the place holds a probe of the path, set through Place
+	probe bool
 	// admitted is when the batch was reserved, as time since the peer started
 	admitted time.Duration
 	// shed is how many sealed packets the delay control dropped from the head of the batch
@@ -467,7 +474,13 @@ func (p *Peer) storagePool(n int) *sync.Pool {
 	return &p.sealedPool[min(bits.Len(uint(n-1)), len(p.sealedPool)-1)]
 }
 
+// noteSendError warns of a failed send at most once every sendErrReportInterval, and says a send on a closed mux or a bare path report at debug, since the session's end and the path search answer for them
+// their lost packets still count
 func (p *Peer) noteSendError(err error) {
+	if _, bare := err.(*transport.PathMTUError); bare || errors.Is(err, transport.ErrClosed) {
+		slog.Debug("netstack send batch ended at a closed mux or past the path", "peer", p.ID, "err", err)
+		return
+	}
 	now := int64(time.Since(p.started))
 	previous := p.sendErrReported.Load()
 	if now-previous < int64(sendErrReportInterval) || !p.sendErrReported.CompareAndSwap(previous, now) {
@@ -543,7 +556,8 @@ func (p *Peer) senderLoop() {
 				if report != nil {
 					// a batch whose every packet went has not failed, so its caller undoes nothing
 					// a packet that went ahead of the refusal on a path that narrowed meanwhile counts as refused
-					if lost = b.past(report.Largest()); lost == 0 {
+					// a probe refused past the path has its answer, which the search takes from the report
+					if lost = b.past(report.Largest()); lost == 0 || b.probe {
 						b.err = nil
 					}
 				}

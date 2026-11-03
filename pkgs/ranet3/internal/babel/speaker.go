@@ -479,6 +479,7 @@ func (s *Speaker) Probe(peer *netstack.Peer, size int, nonce uint16) error {
 	if place == nil {
 		return fmt.Errorf("babel: peer %s refused a probe", peer.ID)
 	}
+	place.MarkProbe()
 	return place.Send()
 }
 

@@ -4,16 +4,20 @@
 package netstack
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -107,6 +111,89 @@ func TestPathReportFailsOnlyWhatItRefused(t *testing.T) {
 			}
 			if got := peer.SendFailed(); got != test.lost {
 				t.Errorf("the peer counted %d packets lost in the transport, want %d", got, test.lost)
+			}
+		})
+	}
+}
+
+// sentOnce sends one control packet of size through a peer whose transmit answers err, a probe where probe holds,
+// and returns the peer's lost count and what the sender logged at info and above once it took the packet
+func sentOnce(t *testing.T, size int, probe bool, err error) (uint64, string) {
+	t.Helper()
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
+	carried := make(chan struct{})
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error {
+		close(carried)
+		return err
+	}, nil)
+	place, reserveErr := peer.ReserveRawOrDrop(make([]byte, size), 41)
+	if reserveErr != nil {
+		t.Fatal(reserveErr)
+	}
+	if probe {
+		place.MarkProbe()
+	}
+	if err := place.Send(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-carried:
+	case <-time.After(deliveryTimeout):
+		t.Fatalf("waited %s for the transmit", deliveryTimeout)
+	}
+	// the sender is done with the packet once Close returns
+	peer.Close()
+	return peer.SendFailed(), logs.String()
+}
+
+// a probe the host refused past the path has its answer, so it counts in no lost packet and warns of nothing
+// a probe whose send failed otherwise is lost as any packet is
+func TestProbeRefusedPastThePathIsNoFailure(t *testing.T) {
+	report := &transport.PathMTUError{Endpoint: endpointTo(t, "198.51.100.1:4500"), MTU: 1280}
+	const past = 1253
+	for _, test := range []struct {
+		name  string
+		err   error
+		lost  uint64
+		warns bool
+	}{
+		{"bare report", report, 0, false},
+		{"report then another failure", fmt.Errorf("transport: send ESP batch: %w, then %w", report, errors.New("no route")), 1, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lost, logs := sentOnce(t, past, true, test.err)
+			if lost != test.lost {
+				t.Errorf("the peer counted %d packets lost, want %d", lost, test.lost)
+			}
+			if warned := strings.Contains(logs, "netstack send batch failed"); warned != test.warns {
+				t.Errorf("the sender warned %t, want %t:\n%s", warned, test.warns, logs)
+			}
+		})
+	}
+}
+
+// a send at a closed mux and a bare path report are said at debug, and their lost packets still count
+// any other error warns
+func TestSendAtAClosedMuxOrPastThePathWarnsNothing(t *testing.T) {
+	report := &transport.PathMTUError{Endpoint: endpointTo(t, "198.51.100.1:4500"), MTU: 1280}
+	for _, test := range []struct {
+		name  string
+		err   error
+		warns bool
+	}{
+		{"closed mux", transport.ErrClosed, false},
+		{"closed mux under the send", fmt.Errorf("transport: send ESP batch: %w: %w", transport.ErrClosed, net.ErrClosed), false},
+		{"bare report", report, false},
+		{"another failure", errors.New("sendto: network is unreachable"), true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lost, logs := sentOnce(t, 1253, false, test.err)
+			if lost != 1 {
+				t.Errorf("the peer counted %d packets lost, want 1", lost)
+			}
+			if warned := strings.Contains(logs, "netstack send batch failed"); warned != test.warns {
+				t.Errorf("the sender warned %t, want %t:\n%s", warned, test.warns, logs)
 			}
 		})
 	}

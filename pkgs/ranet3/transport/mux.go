@@ -373,7 +373,7 @@ func (h *Hub) LocalAddr() net.Addr { return &net.UDPAddr{Port: int(h.port)} }
 
 // Close closes the socket and every mux using it.
 func (h *Hub) Close() error {
-	return h.fail(fmt.Errorf("transport: closed"))
+	return h.fail(ErrClosed)
 }
 
 func (h *Hub) fail(cause error) (bindErr error) {
@@ -400,11 +400,7 @@ func (h *Hub) fail(cause error) (bindErr error) {
 
 // readFailed fails the hub on a read error from the socket every session shares
 func (h *Hub) readFailed(err error) {
-	if h.closed.Load() {
-		h.fail(fmt.Errorf("transport: closed"))
-	} else {
-		h.fail(fmt.Errorf("transport: read: %w", err))
-	}
+	h.fail(fmt.Errorf("transport: read: %w", err))
 }
 
 // receiveLoop demultiplexes what fn reads until it fails, and then hands failed the error
@@ -738,7 +734,7 @@ func (m *Mux) RegisterIKE(spi uint64) error {
 	m.hub.mu.Lock()
 	defer m.hub.mu.Unlock()
 	if m.closed.Load() || m.hub.closed.Load() {
-		return fmt.Errorf("transport: closed")
+		return ErrClosed
 	}
 	tables := m.hub.tables.Load()
 	owner := tables.ike[spi]
@@ -777,7 +773,7 @@ func (m *Mux) RegisterESP(spi uint32) error {
 	m.hub.mu.Lock()
 	defer m.hub.mu.Unlock()
 	if m.closed.Load() || m.hub.closed.Load() {
-		return fmt.Errorf("transport: closed")
+		return ErrClosed
 	}
 	tables := m.hub.tables.Load()
 	owner := tables.esp[spi]
@@ -901,6 +897,9 @@ func (m *Mux) SendESPBatch(bufs [][]byte) error {
 		}
 		next, ok := err.(*PathMTUError)
 		switch {
+		// the mux closed under this send
+		case !ok && m.IsClosed():
+			return fmt.Errorf("transport: send ESP batch: %w: %w", ErrClosed, err)
 		case !ok && report != nil:
 			return fmt.Errorf("transport: send ESP batch: %w, then %w", report, err)
 		case !ok:
@@ -1066,12 +1065,13 @@ func (m *Mux) RecvESPUntil(deadline time.Time) ([]byte, error) {
 
 var errTimeout = fmt.Errorf("transport: receive timeout")
 
+// ErrClosed answers a receive or an ESP send on a mux that its own Close or its hub's Close closed, an ESP send the mux closed under, and an SPI registration on any closed mux
+var ErrClosed = errors.New("transport: closed")
+
 func (m *Mux) closeDone(err error) { m.doneOnce.Do(func() { m.doneErr.Store(err); close(m.done) }) }
 func (m *Mux) doneError() error {
-	if err, _ := m.doneErr.Load().(error); err != nil {
-		return err
-	}
-	return fmt.Errorf("transport: closed")
+	err, _ := m.doneErr.Load().(error)
+	return err
 }
 
 // Close unregisters this peer. It does not close the shared hub.
@@ -1098,7 +1098,7 @@ func (m *Mux) Close() error {
 	delete(m.hub.muxes, m)
 	m.hub.mu.Unlock()
 	m.leavePair()
-	m.closeDone(fmt.Errorf("transport: closed"))
+	m.closeDone(ErrClosed)
 	// a family fragmenting for this mux alone sends with DF again
 	if err := m.Fragment(false); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		slog.Warn("transport could not stop fragmenting sends for a closed mux", "endpoint", m.currentEndpoint().String(), "err", err)
