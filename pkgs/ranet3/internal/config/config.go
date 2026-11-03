@@ -546,7 +546,7 @@ func decodeYAML(body []byte, c *Config) error {
 // The strict decode above has already refused an unknown key and a value of
 // the wrong shape, so this pass has only to find the keys and fill in the
 // pointers an empty one left nil, to refuse a number the decode changed on its
-// way into an integer field, and to refuse a merge key.
+// way into an integer field, and to refuse a merge key and a null list entry.
 func blocksWritten(body []byte, c *Config) error {
 	var document yaml.Node
 	if err := yaml.Unmarshal(body, &document); err != nil {
@@ -733,10 +733,9 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
-	// Table and Egress are asked only where the block was written, because
-	// neither has a zero value worth checking: an absent table writes no
-	// routes and an absent egress carries no traffic out of the mesh, while an
-	// empty block of either is a mistake each refuses by name.
+	// Table and Egress are asked only where the block was written: an absent
+	// table writes no routes and an absent egress carries no traffic out of the
+	// mesh, and an empty egress block is a mistake it refuses by name.
 	if c.Cap.Table != nil {
 		if err := c.Cap.Table.Validate(); err != nil {
 			return err
