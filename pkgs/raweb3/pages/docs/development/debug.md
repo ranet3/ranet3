@@ -297,29 +297,32 @@ These commands take flags of their own:
   segment counters `ranet3 status` reports. A node with neither says so.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
-  packets past a session's budget and the SYNs whose MSS was clamped, both for
-  the node as a whole. `Answer sources` is the router-id of each family, an
-  address rather than the 16 hex digits of Babel's router id that `debug updown`
-  shows, and `Answer SID` the answer SID, each `none` where the node holds none,
-  as [path MTU](../path-mtu.md#where-answers-come-from) describes. Then for each
+  packets past a session's budget and the lowerings of a SYN or SYN-ACK's MSS, a
+  forwarded SYN lowered at two sessions counting twice, both for the node as a
+  whole. `Answer sources` is the router-id of each family, an address rather
+  than the 16 hex digits of Babel's router id that `debug updown` shows, and
+  `Answer SID` the answer SID, each `none` where the node holds none, as
+  [path MTU](../path-mtu.md#where-answers-come-from) describes. Then for each
   session its path, the peer node it is with, its endpoint and whether its
   datagrams leave with DF, the state of its search, which is `confirming`,
   `searching up`, `searching down`, `confirmed`, `under the floor`, or
   `not searched` where datagrams leave without DF, its budget and the MSS it
   clamps to, the route's MTU when last read and the target it sets, the probe
-  out and how the last one ended, its probes sent, acked and lost, the sends the
-  host refused as too large for the path, and the budget's last change with its
-  reason. A session that is `not searched` shows its path, peer, endpoint, state
-  and budget, and no probes. Its budget follows `link.mtu`, and it records no
-  change. A probe whose target the search moves while it is out counts as sent,
-  and as neither acked nor lost. A refusal, the route read lower after a move of
-  the host's default or one of its addresses or `debug probe`, a change of
-  `link.mtu` and a move to another endpoint can each move the target. A probe
-  answered after its wait ran out counts as both acked and lost, so the 3 counts
-  need not add up. `ranet3_pmtu_probes_total` counts acked and lost probes the
-  same way and has no series for probes sent. The peer is named as `rekey` names
-  one, and completes to the nodes of the sessions the daemon holds. The command
-  fails for a peer the node holds no session with.
+  out and how the last one ended, its probes sent, acked and lost, the reports
+  the search took of sends the host refused as too large for the path, a burst
+  of such sends counting once for each report the search takes during it, far
+  fewer than its sends, and the budget's last change with its reason. A session
+  that is `not searched` shows its path, peer, endpoint, state and budget, and
+  no probes. Its budget follows `link.mtu`, and it records no change. A probe
+  whose target the search moves while it is out counts as sent, and as neither
+  acked nor lost. A refusal, the route read lower after a move of the host's
+  default or one of its addresses or `debug probe`, a change of `link.mtu` and a
+  move to another endpoint can each move the target. A probe answered after its
+  wait ran out counts as both acked and lost, so the 3 counts need not add up.
+  `ranet3_pmtu_probes_total` counts acked and lost probes the same way and has
+  no series for probes sent. The peer is named as `rekey` names one, and
+  completes to the nodes of the sessions the daemon holds. The command fails for
+  a peer the node holds no session with.
 - `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
   every session, to send a liveness check now and to probe their path MTU
   budget, as each does after a move of the host's default or one of its
@@ -409,25 +412,34 @@ out.
 A record names the decision, `deliver`, `forward`, `egress`, `answer` or `drop`,
 and for an answer or a drop its reason, as the `reason` label of
 `ranet3_transit_packets_total` names it, `budget` for a packet its next peer's
-send budget refused, or `ecn` for an inner Not-ECT packet an `End.DT46` of this
-node dropped since it arrived under an outer CE. It names how the packet
-arrived, `session` with the session's path, `tun` for a packet read off the tun,
-or `none` for one of no session, and the next peer's session for a forward. A
-packet a steering policy or `cap.exit.via`'s path sent through a segment carries
-that first segment, as does one answered since the mesh routes it no way to that
-segment, one an End segment of this node sent on carries the next segment, and
-one a segment of this node egressed or dropped carries the segment that did,
-past any End of this node that sent the packet on to it. Then come the source
-and destination, the protocol after the IPv6 extension headers, or an IPv4
-packet's, the names of those headers or of the IPv4 options, the ports and TCP
-flags or the ICMP type and code where the packet's first fragment carries them,
-the hop limit or TTL and the length, and how many fragments a forward cut the
-packet into. An answer names its ICMP error and what became of it: `sent`,
-`withheld` by the [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit),
-`unanswered` where the node holds no address of the family to send it from,
-`not_answerable` for a packet no ICMP error may answer, or `unsent` for one
-built for, or due to, a source the mesh routes it no way back to, or one its
-session had no room for.
+send budget refused or that met the peer closing, or `ecn` for an inner Not-ECT
+packet an `End.DT46` of this node dropped since it arrived under an outer CE. It
+names how the packet arrived, `session` with the session's path, `tun` for a
+packet read off the tun, or `none` for one of no session, and the next peer's
+session for a forward. A packet a steering policy or `cap.exit.via`'s path sent
+through a segment carries that first segment, as does one answered since the
+mesh routes it no way to that segment, one an End segment of this node sent on
+carries the next segment, and one a segment of this node egressed or dropped
+carries the segment that did, past any End of this node that sent the packet on
+to it. Then come the source and destination, the protocol after the IPv6
+extension headers, or an IPv4 packet's, the names of those headers or of the
+IPv4 options, the ports and TCP flags or the ICMP type and code where the
+packet's first fragment carries them, the hop limit or TTL and the length, and
+how many fragments a forward cut the packet into. An answer names its ICMP error
+and what became of it: `sent`, `withheld` by the
+[ICMP rate limits](../path-mtu.md#packets-that-do-not-fit), `unanswered` where
+the node holds no address of the family to send it from, `not_answerable` for a
+packet no ICMP error may answer, or `unsent` for one built and not sent, to a
+source the mesh routes it no way back to or through a session with no room for
+it.
+
+A packet a segment of this node refused, or one End rewrote that went no
+further, is an `answer` record where its refusal is due an ICMP error, and a
+`drop` record where it is due none. The answer carries the reason the drop would
+carry, `invalid` for one about the options of the packet a segment carries, and
+names its error and what became of it as above, `withheld` or `not_answerable`
+where none was built. [Metrics](../metrics.md#series) says what the counters
+count for such a packet and its answer.
 
 Every field is read from the packet as it arrived, before the node took its hop
 limit down, clamped its MSS or handed it on, except in a `drop` record of reason
@@ -547,6 +559,7 @@ connections to the reads.
 | `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                 |
 | `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment                     |
 | `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why                 |
+| `transport.pair.failed`               | a socket for a busy peer failed to connect, its pairs left on the shared socket           |
 | `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason                    |
 | `pmtu.floor`                          | a session's path went under 1280 bytes in one datagram, or came back                      |
 | `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back                  |
@@ -555,7 +568,7 @@ connections to the reads.
 | `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target                        |
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                             |
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                |
-| `netstack.transit.dropped`            | a drop the transit counters count, but a read counted as multicast, with why              |
+| `netstack.transit.dropped`            | a drop the transit counters count, but the reads they count alone, with why               |
 | `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit              |
 | `netstack.ecn.unused`                 | an `End.DT46` took packets out of ECN pairs no tunnel sends, at most every 30 seconds     |
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                    |
@@ -565,12 +578,12 @@ recorded on Linux alone. `transport.endpoint.unsegmented` is recorded on Linux
 and Android, which build the Linux sockets. `transport.underlay.selected` is
 recorded on macOS alone, because only macOS names each underlay datagram's
 interface, as [routing](../routing.md#the-underlays-interface-on-macos)
-describes. `transport.endpoint.unpinned`, `transport.pair.connected` and
-`transport.pair.closed` are recorded on Linux, macOS, iOS and Android, the
-platforms that answer from the address a request reached and connect a socket to
-1 busy peer, as [platforms](../platforms.md#sockets-connected-to-1-peer)
-describes. `esp.ecn.unused` is recorded on the same 4, the platforms that read a
-datagram's outer ECN field, and the same record is written at the debug level as
+describes. `transport.endpoint.unpinned` and the 3 `transport.pair` kinds are
+recorded on Linux, macOS, iOS and Android, the platforms that answer from the
+address a request reached and connect a socket to 1 busy peer, as
+[platforms](../platforms.md#sockets-connected-to-1-peer) describes.
+`esp.ecn.unused` is recorded on the same 4, the platforms that read a datagram's
+outer ECN field, and the same record is written at the debug level as
 `esp packets arrived with an ecn combination no tunnel sends`, with the same
 fields, as [ECN](../design/protocol-deviations.md#ecn) describes.
 
@@ -643,6 +656,7 @@ Each kind carries these attributes:
 | `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                                                                             |
 | `transport.pair.connected`                    | `local`, `remote`                                                                                                                                                                               |
 | `transport.pair.closed`                       | `local`, `remote`, `reason`, and `err` when the reason is `failed`                                                                                                                              |
+| `transport.pair.failed`                       | `local`, empty where the route was to pick it, `remote`, `err`                                                                                                                                  |
 | `pmtu.changed`                                | `endpoint`, `budget`, `budget_was`, `reason`                                                                                                                                                    |
 | `pmtu.floor`                                  | `endpoint`, `under`                                                                                                                                                                             |
 | `pmtu.steering`                               | `budget`, `need`, `under`                                                                                                                                                                       |
@@ -807,7 +821,10 @@ datagram drew nor a refusal of the socket's segments counts as `failed`, as
 [platforms](../platforms.md#sockets-connected-to-1-peer) describes. Each
 `failed` also counts in `ranet3_transport_pair_fallbacks_total`, and
 `ranet3_transport_pair_sockets` counts the sockets open, as
-[metrics](../metrics.md) lists.
+[metrics](../metrics.md) lists. A `transport.pair.failed` names the socket's
+connect that failed, with the address it was to bind in `local`, and counts in
+`ranet3_transport_pair_connects_failed_total`. The peer's pairs stay on the
+shared socket.
 
 A move of the host's default or one of its addresses also wakes every dialer,
 and a change of links alone wakes none and probes no session. A
@@ -990,9 +1007,10 @@ A `netstack.transit.dropped` is recorded at most once every 30 seconds, as is
 its warning in the log, for the packet that dropped first in that time. `reason`
 is the `reason` label of `ranet3_transit_packets_total`, which counts every
 drop, as [metrics](../metrics.md#transit-counters) describes. A read off the tun
-dropped as `multicast` records neither, and the counter alone counts it. `src`
-and `dst` read `invalid IP` for a frame that holds no whole IP packet, and for a
-read off the tun that is not exactly one IP packet.
+dropped as `multicast`, `no_route` or `held`, and a read a steering policy could
+not encapsulate, dropped as `too_big`, record neither, and the counter alone
+counts them. `src` and `dst` read `invalid IP` for a frame that holds no whole
+IP packet, and for a read off the tun that is not exactly one IP packet.
 
 A `netstack.icmp.withheld` is recorded when one of the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit) withholds an answer

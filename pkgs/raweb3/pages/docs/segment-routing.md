@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-02
+updated: 2026-11-03
 order: 60
 ---
 
@@ -402,8 +402,9 @@ that packet's source and against the cap. Packet Too Big and fragmentation
 needed count against neither. A packet no ICMP error may answer, or one to a
 multicast group, counts against neither. `status` counts a segment answered or
 dropped this way among the dropped, each answer among the answered, and each
-fragment of a cut segment among the forwarded once its session takes it. The log
-reports a dropped segment at most once every 30 seconds.
+fragment of a cut segment among the forwarded once its session takes it, or
+among the dropped where the session's budget refuses it or the session closes.
+The log reports a dropped segment at most once every 30 seconds.
 
 No node fragments the outer packet of a steered packet. What does not fit the
 session it leaves by is answered, cut or dropped as above. The answer names what
@@ -444,6 +445,8 @@ counts, as [the command line](cli.md#reading-state) gives.
 field by field, `ranet3 debug route --peer` whether a segment admits the source
 of a packet arriving through a session, and `ranet3 debug trace` what the
 packets a segment acts on meet, as [debugging](development/debug.md) describes.
+A packet a segment answers shows there as an `answer` record, with its ICMP
+error and what became of it.
 
 An egress segment's packets are counted 3 ways. Egressed is a packet handed to
 the exit. Refused is a packet whose outer source is outside every entry of the
@@ -460,7 +463,7 @@ is not counted among the dropped.
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                                                                                                                                                                                                              |
 | `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh's forwarding decision                                                                                                                                                                                           |
-| `ranet3_segments_dropped_total`      | packets to a local SID this node would not act on                                                                                                                                                                                                           |
+| `ranet3_segments_dropped_total`      | packets to a local SID this node refused or would not act on, and packets an `End` rewrote that went no further                                                                                                                                             |
 | `ranet3_segments_answered_total`     | ICMP errors sent for dropped packets                                                                                                                                                                                                                        |
 | `ranet3_segments_egressed_total`     | packets an egress segment handed to the exit                                                                                                                                                                                                                |
 | `ranet3_segments_refused_total`      | packets a SID refused, from outside the overlay or an allow list's entries inside it, for an inner source outside the list, an inner packet no router forwards, the mesh routing no reply to, or an inner destination inside the overlay or the mesh routes |
@@ -468,6 +471,9 @@ is not counted among the dropped.
 | `ranet3_segments_ecn_unused_total`   | packets an `End.DT46` decapsulated whose ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them                                                                                                          |
 | `ranet3_steered_total`               | packets a steering policy encapsulated, `cap.exit.via`'s path among them                                                                                                                                                                                    |
 | `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route`                                                                                                                                                                                             |
+
+[Metrics](metrics.md#series) gives each series in full, with the packets another
+series counts as well.
 
 ## Interoperation with the Linux kernel
 

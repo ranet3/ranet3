@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-02
+updated: 2026-11-03
 order: 50
 ---
 
@@ -789,12 +789,13 @@ advertisement follows.
 ## Watching it
 
 `status` prints 1 line for the translator: where it writes, the rules, the flows
-translated, the packets each family refused past a source's share and those it
-dropped with no tracked flow where any were, the entries the host's connection
-table holds against its maximum, what it announces, what it withholds "until its
-family is ready", the families it is ready for and the reason the others are
-not, what the lookups skipped, any chain it shares the hook with, the time since
-the last pass and the last error, such as
+translated and those a class of `none` left untranslated where there were any,
+the packets each family refused past a source's share and those it dropped with
+no tracked flow where any were, the entries the host's connection table holds
+against its maximum, what it announces, what it withholds "until its family is
+ready", the families it is ready for and the reason the others are not, what the
+lookups skipped, any chain it shares the hook with, the time since the last pass
+and the last error, such as
 `nftables table ip and ip6 ranet3 chains forward and postrouting and a none_ chain for each class of none, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, conntrack holding 9000 of 262144 entries, ...`.
 A family not ready is named with the reason the last pass found, and a family
 the node does not translate with none. Before the first pass the line names no

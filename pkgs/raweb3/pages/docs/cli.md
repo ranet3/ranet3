@@ -103,8 +103,8 @@ exits 1. Each table's own page gives what a refusal leaves of it:
 - `status` shows the counters of the [forwarding decision](routing.md#transit)
   on its `Transit` line: the packets sessions delivered that went on to a peer
   or to the tun, those and the reads off the tun it dropped with each reason
-  above 0, and the ICMP errors answered and unanswered about them. `--json`
-  carries them under `transit`.
+  above 0, and the ICMP errors answered, unanswered and built and not sent
+  (`unsent`) about them, each above 0. `--json` carries them under `transit`.
 - `status` on a node with `cap.egress` names, on its `nftables` line, the
   families the exit is [ready](exit-nodes.md#readiness) for and, for a family
   that is not, the reason, such as
@@ -118,8 +118,9 @@ exits 1. Each table's own page gives what a refusal leaves of it:
   [watching it](routing.md#watching-it) shows. Under `fallback = "none"` it
   names [the kill switch's](routing.md#the-kill-switch-on-linux) state,
   `holding`, `passing` or `not holding` with the reason, what the last lines of
-  both chains dropped, summed, a connected network or a part of one left out of
-  the LAN, an endpoint name whose last lookup failed and a DNS server beyond the
+  both chains dropped, summed, or `drops not read yet` until a read of the table
+  by this process succeeds, a connected network or a part of one left out of the
+  LAN, an endpoint name whose last lookup failed and a DNS server beyond the
   LAN. `--json` carries them under `kernel.exit`, the families in `unaddressed`.
   Under `cap.exit.via` the line names the path, its outer source, `up`, or
   `down` at the first segment that does not resolve with the mesh's answer, the

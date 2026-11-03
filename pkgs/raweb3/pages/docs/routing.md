@@ -386,12 +386,15 @@ of its own as [mode 3](#mode-3-on-linux) gives, is counted and answered as one
 whose destination no entry holds, from its destination into the tun.
 
 `ranet3 status` counts each outcome on its `Transit` line, and
-`ranet3_transit_packets_total` exports the same counts. Each drop they count,
-but a read dropped as multicast, which they count alone, also records the event
-`netstack.transit.dropped` with its reason, at most once every 30 seconds. A
-trace, `ranet3 debug trace`, shows the packets the decision takes as it takes
-them, each with what it met and why, and `ranet3 debug route` the checks one
-packet would meet, as [debugging](development/debug.md) describes.
+`ranet3_transit_packets_total` exports the same counts, as
+[metrics](metrics.md#transit-counters) lists. Each drop they count also records
+the event `netstack.transit.dropped` with its reason, at most once every 30
+seconds, but a read dropped as multicast, a read off the tun dropped as
+`no_route` or `held`, and a read a steering policy could not encapsulate,
+dropped as `too_big`, which they count alone. A trace, `ranet3 debug trace`,
+shows the packets the decision takes as it takes them, each with what it met and
+why, and `ranet3 debug route` the checks one packet would meet, as
+[debugging](development/debug.md) describes.
 
 ## The route reconciler
 
@@ -1296,7 +1299,9 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   it names the switch's state and what the last lines of both chains have
   dropped, summed, as `fallback none holding, 12 packets, 720 B dropped`,
   `passing` while an exit is live, or `not holding` with the reason the table
-  does not read back. It names a connected network left out of the LAN as
+  does not read back, and `drops not read yet` in place of the counts until a
+  read of the table by this process succeeds. It names a connected network left
+  out of the LAN as
   `198.0.0.0/7 left out of the LAN as it captures the machine`, and one the
   private and link-local ranges and `cap.exit.lan` leave out in whole or in
   part, or of one sharing an address with the overlay each such prefix of its
@@ -1316,6 +1321,8 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   steered defaults with the path's state, and under `fallback = "none"` the
   table `ranet3_fallback` as the kernel holds it now, each line with the drop's
   count and each set's elements.
+- Under `fallback = "none"` a scrape carries the switch and its drops, as
+  [metrics](metrics.md#series) lists.
 
 `SIGUSR1` writes the mesh's routes to the log, this node's own entries as
 `via this node` and the holds as `via unreachable`.
@@ -1370,19 +1377,19 @@ change of the switch's state, with `state` and `was`, each `holding`, `passing`,
 `state`, `segment`, `verdict` and `installed`, as
 [debugging](development/debug.md#events) says.
 
-| Metric                                 | Meaning                                                                                    |
-| -------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `ranet3_babel_neighbor_up{peer}`       | whether a neighbor is alive                                                                |
-| `ranet3_babel_neighbor_cost{peer}`     | link cost with its extra, 65535 is infinity                                                |
-| `ranet3_babel_routes_received{peer}`   | routes learned from a neighbor                                                             |
-| `ranet3_babel_routes_selected`         | routes in the forwarding table                                                             |
-| `ranet3_babel_routes_originated`       | prefixes this node announces                                                               |
-| `ranet3_kernel_routes_installed`       | routes the kernel holds for the reconciler                                                 |
-| `ranet3_kernel_routes_skipped`         | routes the platform refused in the last pass, and cover members left out with their family |
-| `ranet3_kernel_pass_timestamp_seconds` | when the last pass finished                                                                |
-| `ranet3_kernel_pass_failed`            | whether the last pass reported an error                                                    |
-| `ranet3_kernel_overlay_taken{family}`  | overlay prefixes the reconciler's last answered lookups found taken                        |
-| `ranet3_kernel_underlay_taken{family}` | live sessions' sends the reconciler's last answered lookups found taken under the mark     |
+| Metric                                 | Meaning                                                                                |
+| -------------------------------------- | -------------------------------------------------------------------------------------- |
+| `ranet3_babel_neighbor_up{peer}`       | whether a neighbor is alive                                                            |
+| `ranet3_babel_neighbor_cost{peer}`     | link cost with its extra, 65535 is infinity                                            |
+| `ranet3_babel_routes_received{peer}`   | routes learned from a neighbor                                                         |
+| `ranet3_babel_routes_selected`         | routes in the forwarding table                                                         |
+| `ranet3_babel_routes_originated`       | prefixes this node announces                                                           |
+| `ranet3_kernel_routes_installed`       | routes the kernel holds for the reconciler                                             |
+| `ranet3_kernel_routes_skipped`         | routes the last pass skipped                                                           |
+| `ranet3_kernel_pass_timestamp_seconds` | when the last pass finished                                                            |
+| `ranet3_kernel_pass_failed`            | whether the last pass reported an error                                                |
+| `ranet3_kernel_overlay_taken{family}`  | overlay prefixes the reconciler's last answered lookups found taken                    |
+| `ranet3_kernel_underlay_taken{family}` | live sessions' sends the reconciler's last answered lookups found taken under the mark |
 
 The neighbor cost includes the amount `cap.babel.cost.extra` charges, which no
 series reports alone. `ranet3 neighbors` shows it apart. [Metrics](metrics.md)
