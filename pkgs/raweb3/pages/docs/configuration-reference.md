@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-04
+updated: 2026-11-07
 order: 35
 ---
 
@@ -64,7 +64,10 @@ nest the same names. A key not listed here is refused when the file loads.
   the node.
 - `overlay` is a top-level key, so TOML writes it above the first table. Every
   platform loads it. Written, it turns on [the antispoof filter](antispoof.md),
-  which [`cap.antispoof`](#capantispoof) only exempts from.
+  which [`cap.antispoof`](#capantispoof) only exempts from. On macOS it turns pf
+  on for the whole host and writes chain `antispoof` into the pf anchor
+  `com.apple/ranet3`, as [the pf anchor](antispoof.md#the-pf-anchor-on-macos)
+  describes.
 - An empty `overlay` is refused, since the filter would pass every forged mesh
   source.
 - An `overlay` entry of length 0, an IPv4 entry shorter than `/8`, an IPv6 entry
@@ -757,7 +760,12 @@ on by default, and its block only exempts.
 | `interface.<name>.exempt` | list of prefixes | none    | Overlay prefixes whose sources pass from the interfaces `<name>` matches  |
 
 - `<name>` matches interfaces as [exemptions](antispoof.md#exemptions) give.
-  TOML quotes a name holding `*`.
+  TOML quotes a name holding `*`. On macOS, where pf matches no name ending in
+  `*`, such a name is 1 rule per link the network watch reports whose name it
+  matches, rewritten as links come and go.
+- On macOS an exact `<name>` holding a byte other than an ASCII letter, a digit
+  or `_`, such as `br-lan`, which the pf anchor cannot write, is refused, as
+  [platforms](antispoof.md#platforms) gives.
 - Each prefix lies inside `overlay`, each of its addresses in some entry, as an
   egress segment's `allow` entry does. One outside is refused, since the filter
   drops only an overlay source and it would exempt nothing:

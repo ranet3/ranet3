@@ -160,8 +160,15 @@ These commands take flags of their own:
   now with the packets and bytes each drop counted, any rule the table does not
   hold yet, any rule it holds that the filter did not write, by its comment or
   as `a rule with no comment`, and each set with the elements the last pass
-  asked for. Another platform with `overlay` written prints
-  `Antispoof filter, not enforced on darwin` there, naming itself. Then, under
+  asked for. On macOS with `overlay` written it prints the pf anchor's instead,
+  chain `antispoof` by its direction, `in`, with no priority and each rule read
+  now, an exemption under a name ending in `*` as 1 rule per link and a rule pf
+  holds under a shortened label by its whole spelling, the carved table, then
+  the daemon's reference with whether pf lists it, the main ruleset's call into
+  `com.apple/*`, and every reference `pfctl -s References` lists now by pid and
+  process name, as [the antispoof filter](../antispoof.md#watching-it) shows.
+  Another platform with `overlay` written prints
+  `Antispoof filter, not enforced on freebsd` there, naming itself. Then, under
   `cap.exit.fallback = "none"`, the table `ranet3_fallback` as `Fallback table`
   with its two chains, their hooks and priority and the switch's state, each
   line of each chain with the packets and bytes the drop counted, and each named
@@ -512,86 +519,89 @@ whose daemon is stopping ends with a `stream.closed` line saying so. A daemon
 holds 4 streams at once and refuses a 5th with 503, which leaves the rest of its
 connections to the reads.
 
-| Kind                                  | When                                                                                      |
-| ------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `daemon.started`, `daemon.stopping`   | the node is up, and its shutdown has begun                                                |
-| `daemon.reload`                       | the file and trust document were read again, with what applied or the error               |
-| `daemon.ttl`                          | a reload could not read the host's default TTL, which ICMPv4 answers carry                |
-| `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag                    |
-| `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed                |
-| `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed                |
-| `control.trace.started`, `.ended`     | a trace of the forwarding decision opened, and closed                                     |
-| `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                                    |
-| `dial.woken`                          | a dialer was set going before its delay, as `redial` does                                 |
-| `ike.handshake.failed`                | the responder refused a handshake, as often as it warns of one                            |
-| `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                                             |
-| `ike.followup.dropped`                | a peer's rekey was dropped before its `IKE_FOLLOWUP_KE`                                   |
-| `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as                 |
-| `ike.session.established`, `.ended`   | a session started serving, and stopped                                                    |
-| `ike.session.resolved`                | the preferred rule resolved 2 sessions for 1 path to 1                                    |
-| `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete                   |
-| `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                                |
-| `ike.rekey.failed`                    | the same rekey failing, with its error                                                    |
-| `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane                          |
-| `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                                           |
-| `ike.suite.unlisted`                  | an SA runs a transform the lists left out, and its rekey or replacement                   |
-| `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request or answer             |
-| `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again                       |
-| `ike.probe`                           | asked to prove its path, a session started a check or resent its request                  |
-| `ike.notify.invalid_spi`              | a session told its peer of ESP on an SPI this node does not hold                          |
-| `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                               |
-| `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended                     |
-| `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size                |
-| `babel.request.sent`                  | this node asked a neighbor that came up for its whole table                               |
-| `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload                     |
-| `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals, cost and margin              |
-| `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved               |
-| `babel.route.selected`, `.retracted`  | a prefix's next hop changed, every time rather than once a second as logged               |
-| `babel.seqno.requested`               | a seqno request naming this node's own router id arrived                                  |
-| `babel.seqno.raised`                  | this node's own seqno rose, at a start of the speaker or for a request                    |
-| `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start                     |
-| `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed                     |
-| `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS                     |
-| `kernel.underlay`                     | a cut endpoint or a route scoped beneath the host's came or went, on macOS                |
-| `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on Linux      |
-| `kernel.forward`                      | a link `cap.exit.forward` matched began or stopped being left out of the mode             |
-| `kernel.exit`                         | under `cap.exit`, the tun came to hold no overlay address of a family, or the state ended |
-| `kernel.fallback`                     | the kill switch began holding, passing or not holding, or ended                           |
-| `kernel.path`                         | under `cap.exit.via`, the path went up or down, or the steered defaults installed changed |
-| `exit.forwarding`                     | under `cap.exit` on macOS, the start or a reload read the host forwarding a family        |
-| `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed                    |
-| `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                               |
-| `egress.refused`                      | a pass read a family's count of packets refused past a source's share move                |
-| `antispoof.pass`                      | an antispoof filter pass that rewrote its table or a set, or failed                       |
-| `antispoof.ready`                     | the antispoof filter's table went ready or not ready, with `ready`                        |
-| `antispoof.dropped`                   | a pass read a drop counter that moved, at most once per pass                              |
-| `antispoof.carve`                     | a carve-out of the overlay for a link came or went                                        |
-| `antispoof.conflict`                  | another node's prefix or a copy of an own range came to overlap an exemption              |
-| `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two      |
-| `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                            |
-| `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                 |
-| `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment                     |
-| `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why                 |
-| `transport.pair.failed`               | a socket for a busy peer failed to connect, its pairs left on the shared socket           |
-| `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason                    |
-| `pmtu.floor`                          | a session's path went under 1280 bytes in one datagram, or came back                      |
-| `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back                  |
-| `esp.ecn.unused`                      | a session's packets came in ECN pairs no tunnel sends, at most every 10 seconds           |
-| `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target                         |
-| `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target                        |
-| `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                             |
-| `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                |
-| `netstack.transit.dropped`            | a drop the transit counters count, but the reads they count alone, with why               |
-| `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit              |
-| `netstack.ecn.unused`                 | an `End.DT46` took packets out of ECN pairs no tunnel sends, at most every 30 seconds     |
-| `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                    |
+| Kind                                  | When                                                                                                                    |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `daemon.started`, `daemon.stopping`   | the node is up, and its shutdown has begun                                                                              |
+| `daemon.reload`                       | the file and trust document were read again, with what applied or the error                                             |
+| `daemon.ttl`                          | a reload could not read the host's default TTL, which ICMPv4 answers carry                                              |
+| `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag                                                  |
+| `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed                                              |
+| `control.verb`                        | a verb over the socket, under each session or dialer it acted on or missed                                              |
+| `control.trace.started`, `.ended`     | a trace of the forwarding decision opened, and closed                                                                   |
+| `dial.attempt`, `dial.failed`         | a dialer sent a handshake, or ended short of a session                                                                  |
+| `dial.woken`                          | a dialer was set going before its delay, as `redial` does                                                               |
+| `ike.handshake.failed`                | the responder refused a handshake, as often as it warns of one                                                          |
+| `ike.kex.rejected`                    | a peer's ML-KEM key or ciphertext was refused                                                                           |
+| `ike.followup.dropped`                | a peer's rekey was dropped before its `IKE_FOLLOWUP_KE`                                                                 |
+| `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as                                               |
+| `ike.session.established`, `.ended`   | a session started serving, and stopped                                                                                  |
+| `ike.session.resolved`                | the preferred rule resolved 2 sessions for 1 path to 1                                                                  |
+| `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete                                                 |
+| `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                                                              |
+| `ike.rekey.failed`                    | the same rekey failing, with its error                                                                                  |
+| `ike.sa.expired`                      | a Child SA reached its lifetime, and its keys left the dataplane                                                        |
+| `ike.sa.closed`                       | a session decided to delete its IKE SA, and why                                                                         |
+| `ike.suite.unlisted`                  | an SA runs a transform the lists left out, and its rekey or replacement                                                 |
+| `ike.endpoint.moved`                  | a session moved to the addresses of its peer's latest fresh request or answer                                           |
+| `ike.send.failed`, `.recovered`       | a session's sends to its peer began to fail, and one went out again                                                     |
+| `ike.probe`                           | asked to prove its path, a session started a check or resent its request                                                |
+| `ike.notify.invalid_spi`              | a session told its peer of ESP on an SPI this node does not hold                                                        |
+| `ike.message.fragmented`              | a session cut an IKE message into the fragments of RFC 7383                                                             |
+| `babel.neighbor.up`, `.down`          | a neighbor's Hellos started arriving, or stopped or its session ended                                                   |
+| `babel.neighbor.fragmented`           | a neighbor's first Babel packet in fragments was read whole, with its size                                              |
+| `babel.request.sent`                  | this node asked a neighbor that came up for its whole table                                                             |
+| `babel.neighbor.extra`                | a neighbor's `cost.extra` amount changed, as it joined or on a reload                                                   |
+| `babel.config.applied`                | the speaker took a reloaded `cap.babel`, with its intervals, cost and margin                                            |
+| `babel.own.changed`                   | the prefixes this node announces or the addresses `cap.table` assigns moved                                             |
+| `babel.route.selected`, `.retracted`  | a prefix's next hop changed, every time rather than once a second as logged                                             |
+| `babel.seqno.requested`               | a seqno request naming this node's own router id arrived                                                                |
+| `babel.seqno.raised`                  | this node's own seqno rose, at a start of the speaker or for a request                                                  |
+| `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start                                                   |
+| `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed                                                   |
+| `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS                                                   |
+| `kernel.underlay`                     | a cut endpoint or a route scoped beneath the host's came or went, on macOS                                              |
+| `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on Linux                                    |
+| `kernel.forward`                      | a link `cap.exit.forward` matched began or stopped being left out of the mode                                           |
+| `kernel.exit`                         | under `cap.exit`, the tun came to hold no overlay address of a family, or the state ended                               |
+| `kernel.fallback`                     | the kill switch began holding, passing or not holding, or ended                                                         |
+| `kernel.path`                         | under `cap.exit.via`, the path went up or down, or the steered defaults installed changed                               |
+| `exit.forwarding`                     | under `cap.exit` on macOS, the start or a reload read the host forwarding a family                                      |
+| `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed                                                  |
+| `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                                                             |
+| `egress.refused`                      | a pass read a family's count of packets refused past a source's share move                                              |
+| `antispoof.pass`                      | an antispoof filter pass that rewrote its table or a set, or failed                                                     |
+| `antispoof.ready`                     | the antispoof filter's table went ready or not ready, with `ready`                                                      |
+| `antispoof.dropped`                   | a pass read a drop counter that moved, at most once per pass                                                            |
+| `antispoof.carve`                     | a carve-out of the overlay for a link came or went                                                                      |
+| `antispoof.conflict`                  | another node's prefix or a copy of an own range came to overlap an exemption                                            |
+| `antispoof.pf`                        | on macOS, a pass took a new reference on pf where pf no longer listed the daemon's, turning pf back on where it was off |
+| `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two                                    |
+| `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                                                          |
+| `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                                               |
+| `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment                                                   |
+| `transport.pair.connected`, `.closed` | a busy peer got a socket connected to it, or that socket closed, with why                                               |
+| `transport.pair.failed`               | a socket for a busy peer failed to connect, its pairs left on the shared socket                                         |
+| `pmtu.changed`                        | a session's path MTU budget moved, with the size before and the reason                                                  |
+| `pmtu.floor`                          | a session's path went under 1280 bytes in one datagram, or came back                                                    |
+| `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back                                                |
+| `esp.ecn.unused`                      | a session's packets came in ECN pairs no tunnel sends, at most every 10 seconds                                         |
+| `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target                                                       |
+| `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target                                                      |
+| `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                                                           |
+| `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                                              |
+| `netstack.transit.dropped`            | a drop the transit counters count, but the reads they count alone, with why                                             |
+| `netstack.icmp.withheld`              | an ICMP rate limit withheld answers, at most once every 30 seconds per limit                                            |
+| `netstack.ecn.unused`                 | an `End.DT46` took packets out of ECN pairs no tunnel sends, at most every 30 seconds                                   |
+| `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                                                  |
 
-`egress.pass`, `egress.ready`, `egress.refused` and the 5 `antispoof` kinds are
-recorded on Linux alone. `transport.endpoint.unsegmented` is recorded on Linux
-and Android, which build the Linux sockets. `transport.underlay.selected` is
-recorded on macOS alone, because only macOS names each underlay datagram's
-interface, as [routing](../routing.md#the-underlays-interface-on-macos)
-describes. `exit.forwarding` is recorded on macOS alone, beside the warning
+`egress.pass`, `egress.ready` and `egress.refused` are recorded on Linux alone.
+The `antispoof` kinds are recorded on Linux and, where `overlay` is written, on
+macOS, but `antispoof.pf`, which is macOS's alone.
+`transport.endpoint.unsegmented` is recorded on Linux and Android, which build
+the Linux sockets. `transport.underlay.selected` is recorded on macOS alone,
+because only macOS names each underlay datagram's interface, as
+[routing](../routing.md#the-underlays-interface-on-macos) describes.
+`exit.forwarding` is recorded on macOS alone, beside the warning
 [the limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) give,
 since on Linux a link `cap.exit.forward` leaves out keeps the routes it had.
 `transport.endpoint.unpinned` and the 3 `transport.pair` kinds are recorded on
@@ -605,87 +615,88 @@ fields, as [ECN](../design/protocol-deviations.md#ecn) describes.
 
 Each kind carries these attributes:
 
-| Kind                                          | Attributes                                                                                                                                                                                         |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `daemon.started`                              | `version`, `config`                                                                                                                                                                                |
-| `daemon.stopping`                             | none                                                                                                                                                                                               |
-| `daemon.reload`                               | `path`, `applied`, `err`                                                                                                                                                                           |
-| `daemon.ttl`                                  | `ttl`, the TTL the answers keep, and `err`                                                                                                                                                         |
-| `node.down`                                   | `cause`, `since`, `closed`                                                                                                                                                                         |
-| `node.up`                                     | `cause`                                                                                                                                                                                            |
-| `responder.changed`                           | `listen`, `closed`                                                                                                                                                                                 |
-| `control.verb`                                | `verb`, `peer`, `uid`, `pid`, `err`, and `all` or `subsystem` for a verb that takes one                                                                                                            |
-| `control.trace.started`                       | `filter`, `rate`, `payload`, `uid`, `pid`                                                                                                                                                          |
-| `control.trace.ended`                         | `reason`, `recorded`, `refused_rate`, `refused_queue`                                                                                                                                              |
-| `dial.attempt`                                | `remote`                                                                                                                                                                                           |
-| `dial.failed`                                 | `err`                                                                                                                                                                                              |
-| `dial.woken`                                  | none                                                                                                                                                                                               |
-| `ike.handshake.failed`                        | `from`, `err`                                                                                                                                                                                      |
-| `ike.kex.rejected`                            | `exchange`, `method`, `side`, and `from` at the answering end of a handshake                                                                                                                       |
-| `ike.followup.dropped`                        | `sa`, which is `child` or `ike`, `reason`                                                                                                                                                          |
-| `ike.id.resolved`                             | `type`, `id`, `sent`                                                                                                                                                                               |
-| `ike.session.established`                     | `role`, `spi_in`, `spi_out`, `ike`, `esp`                                                                                                                                                          |
-| `ike.session.ended`                           | `role`, `spi_in`, `spi_out`, `ike`, `esp`, `err`                                                                                                                                                   |
-| `ike.session.resolved`                        | `kept`                                                                                                                                                                                             |
-| `ike.session.revoked`                         | `reason`, `peer`, `endpoint`, `err`                                                                                                                                                                |
-| `ike.rekey.started`                           | `sa`, which is `child` or `ike`                                                                                                                                                                    |
-| `ike.rekey.completed`                         | `sa`, which is `child` or `ike`, `suite`                                                                                                                                                           |
-| `ike.rekey.failed`                            | `sa`, `err`                                                                                                                                                                                        |
-| `ike.sa.expired`                              | `spi_in`, `spi_out`, and `sa`, which is always `child`                                                                                                                                             |
-| `ike.sa.closed`                               | `sa`, which is `child` or `ike`, `reason`, `err`                                                                                                                                                   |
-| `ike.suite.unlisted`                          | `sa`, which is `child` or `ike`, `suite`, `action`                                                                                                                                                 |
-| `ike.endpoint.moved`                          | `endpoint`, `packet`, which is `request` or `response`                                                                                                                                             |
-| `ike.send.failed`                             | `err`                                                                                                                                                                                              |
-| `ike.send.recovered`                          | `failed`                                                                                                                                                                                           |
-| `ike.probe`                                   | `action`, `message_id`                                                                                                                                                                             |
-| `ike.notify.invalid_spi`                      | `spi`                                                                                                                                                                                              |
-| `ike.message.fragmented`                      | `exchange`, `message_id`, `fragments`, `threshold`                                                                                                                                                 |
-| `babel.neighbor.up`, `.down`                  | none                                                                                                                                                                                               |
-| `babel.neighbor.fragmented`                   | `size`                                                                                                                                                                                             |
-| `babel.request.sent`                          | none                                                                                                                                                                                               |
-| `babel.neighbor.extra`                        | `from`, `extra`                                                                                                                                                                                    |
-| `babel.config.applied`                        | `hello`, `update`, `quality`, `rx`, `rtt_weight`, `rtt_min`, `rtt_max`, `margin`                                                                                                                   |
-| `babel.own.changed`                           | `set`, and `added`, `removed` and `held` where they name a route                                                                                                                                   |
-| `babel.route.selected`                        | `route`, `metric`                                                                                                                                                                                  |
-| `babel.route.retracted`                       | `route`                                                                                                                                                                                            |
-| `babel.seqno.requested`                       | `route`, `asked`, `seqno`, `raised`                                                                                                                                                                |
-| `babel.seqno.raised`                          | `cause`, `from`, `to`, `limit` where a state file is kept, and `router_id` at the process's start, with `drawn` where that router id is new                                                        |
-| `babel.state.unsaved`                         | `limit`, `seqno`, `err`                                                                                                                                                                            |
-| `babel.state.unreadable`                      | `file`, `err`                                                                                                                                                                                      |
-| `kernel.pass`                                 | `trigger`, `took`, `added`, `removed`, `skipped`, `installed`, `err`                                                                                                                               |
-| `kernel.cover`                                | `family`, `installed`                                                                                                                                                                              |
-| `kernel.underlay`                             | `cut` and `restored`, the addresses a pass began and stopped cutting out, `scoped` and `unscoped`, the routes it began and stopped scoping beneath the host's, `none` for none                     |
-| `kernel.taken`                                | `family`, `lookup` (`overlay` or `underlay`), `prefix` and `address` for an overlay lookup or `endpoint` with `source` and `interface` where the send carries them, `answer`, `taken`              |
-| `kernel.forward`                              | `entry`, `link`, `reason` (the tun, the loopback link, or the link a family's default leaves by), `skipped`                                                                                        |
-| `kernel.exit`                                 | `family`, `addressed` (false where the family came to be left out of the mode, as [limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) says, and true where the state then ended) |
-| `kernel.fallback`                             | `state` and `was`, each `holding`, `passing`, `not holding` or `off`                                                                                                                               |
-| `kernel.path`                                 | `state` (`up` or `down`), with `segment` and `verdict` where it is down, and `installed`, the families whose steered default, or on macOS its zero-free cover, the pass left in the table          |
-| `exit.forwarding`                             | `family`, one event for each family the host forwards                                                                                                                                              |
-| `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                                 |
-| `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                              |
-| `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains)                                                                                    |
-| `antispoof.pass`                              | `trigger`, `took`, `installed`, `wrote` (`table` or `sets`, where the pass wrote), `err`                                                                                                           |
-| `antispoof.ready`                             | `ready`                                                                                                                                                                                            |
-| `antispoof.dropped`                           | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, each the packets since the pass before                             |
-| `antispoof.carve`                             | `link`, `prefix`, `carved` (true where the carve-out came, false where it went)                                                                                                                    |
-| `antispoof.conflict`                          | `exemption`, `interface`, `prefix`, `own` (true for an own range), `carved` and `routed_via` where it is false, `router_id` (of the selected route, or of the offer where `own` is true)           |
-| `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, `ipv4_links_added`, `ipv4_links_removed`, `ipv4_links_changed`, the same 7 for `ipv6`, `probed`, `woken`                         |
-| `transport.underlay.selected`                 | `endpoint`, `interface`, empty where no route holds the endpoint, `interface_index`, 0 then                                                                                                        |
-| `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                                                                                |
-| `transport.pair.connected`                    | `local`, `remote`                                                                                                                                                                                  |
-| `transport.pair.closed`                       | `local`, `remote`, `reason`, and `err` when the reason is `failed`                                                                                                                                 |
-| `transport.pair.failed`                       | `local`, empty where the route was to pick it, `remote`, `err`                                                                                                                                     |
-| `pmtu.changed`                                | `endpoint`, `budget`, `budget_was`, `reason`                                                                                                                                                       |
-| `pmtu.floor`                                  | `endpoint`, `under`                                                                                                                                                                                |
-| `pmtu.steering`                               | `budget`, `need`, `under`                                                                                                                                                                          |
-| `esp.ecn.unused`                              | `outer`, `inner`, `count` (the packets since the session's last record), `header` (the first one's IP header in hex)                                                                               |
-| `netstack.codel.dropping`, `.drained`         | `sojourn`, `target`                                                                                                                                                                                |
-| `netstack.tun.refused`                        | `interface`, `frames`, `err`                                                                                                                                                                       |
-| `netstack.tun.failed`                         | `interface`, `err`                                                                                                                                                                                 |
-| `netstack.transit.dropped`                    | `reason`, `src`, `dst`                                                                                                                                                                             |
-| `netstack.icmp.withheld`                      | `interface`, `limit`, `withheld`                                                                                                                                                                   |
-| `netstack.ecn.unused`                         | `interface`, `outer`, `inner`, `count` (the packets since the last record), `header` (the recorded one's IP header in hex)                                                                         |
-| `netstack.answer.source`                      | `ipv4`, `ipv6`, `sid`, each only where the node holds it                                                                                                                                           |
+| Kind                                          | Attributes                                                                                                                                                                                                                                                     |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daemon.started`                              | `version`, `config`                                                                                                                                                                                                                                            |
+| `daemon.stopping`                             | none                                                                                                                                                                                                                                                           |
+| `daemon.reload`                               | `path`, `applied`, `err`                                                                                                                                                                                                                                       |
+| `daemon.ttl`                                  | `ttl`, the TTL the answers keep, and `err`                                                                                                                                                                                                                     |
+| `node.down`                                   | `cause`, `since`, `closed`                                                                                                                                                                                                                                     |
+| `node.up`                                     | `cause`                                                                                                                                                                                                                                                        |
+| `responder.changed`                           | `listen`, `closed`                                                                                                                                                                                                                                             |
+| `control.verb`                                | `verb`, `peer`, `uid`, `pid`, `err`, and `all` or `subsystem` for a verb that takes one                                                                                                                                                                        |
+| `control.trace.started`                       | `filter`, `rate`, `payload`, `uid`, `pid`                                                                                                                                                                                                                      |
+| `control.trace.ended`                         | `reason`, `recorded`, `refused_rate`, `refused_queue`                                                                                                                                                                                                          |
+| `dial.attempt`                                | `remote`                                                                                                                                                                                                                                                       |
+| `dial.failed`                                 | `err`                                                                                                                                                                                                                                                          |
+| `dial.woken`                                  | none                                                                                                                                                                                                                                                           |
+| `ike.handshake.failed`                        | `from`, `err`                                                                                                                                                                                                                                                  |
+| `ike.kex.rejected`                            | `exchange`, `method`, `side`, and `from` at the answering end of a handshake                                                                                                                                                                                   |
+| `ike.followup.dropped`                        | `sa`, which is `child` or `ike`, `reason`                                                                                                                                                                                                                      |
+| `ike.id.resolved`                             | `type`, `id`, `sent`                                                                                                                                                                                                                                           |
+| `ike.session.established`                     | `role`, `spi_in`, `spi_out`, `ike`, `esp`                                                                                                                                                                                                                      |
+| `ike.session.ended`                           | `role`, `spi_in`, `spi_out`, `ike`, `esp`, `err`                                                                                                                                                                                                               |
+| `ike.session.resolved`                        | `kept`                                                                                                                                                                                                                                                         |
+| `ike.session.revoked`                         | `reason`, `peer`, `endpoint`, `err`                                                                                                                                                                                                                            |
+| `ike.rekey.started`                           | `sa`, which is `child` or `ike`                                                                                                                                                                                                                                |
+| `ike.rekey.completed`                         | `sa`, which is `child` or `ike`, `suite`                                                                                                                                                                                                                       |
+| `ike.rekey.failed`                            | `sa`, `err`                                                                                                                                                                                                                                                    |
+| `ike.sa.expired`                              | `spi_in`, `spi_out`, and `sa`, which is always `child`                                                                                                                                                                                                         |
+| `ike.sa.closed`                               | `sa`, which is `child` or `ike`, `reason`, `err`                                                                                                                                                                                                               |
+| `ike.suite.unlisted`                          | `sa`, which is `child` or `ike`, `suite`, `action`                                                                                                                                                                                                             |
+| `ike.endpoint.moved`                          | `endpoint`, `packet`, which is `request` or `response`                                                                                                                                                                                                         |
+| `ike.send.failed`                             | `err`                                                                                                                                                                                                                                                          |
+| `ike.send.recovered`                          | `failed`                                                                                                                                                                                                                                                       |
+| `ike.probe`                                   | `action`, `message_id`                                                                                                                                                                                                                                         |
+| `ike.notify.invalid_spi`                      | `spi`                                                                                                                                                                                                                                                          |
+| `ike.message.fragmented`                      | `exchange`, `message_id`, `fragments`, `threshold`                                                                                                                                                                                                             |
+| `babel.neighbor.up`, `.down`                  | none                                                                                                                                                                                                                                                           |
+| `babel.neighbor.fragmented`                   | `size`                                                                                                                                                                                                                                                         |
+| `babel.request.sent`                          | none                                                                                                                                                                                                                                                           |
+| `babel.neighbor.extra`                        | `from`, `extra`                                                                                                                                                                                                                                                |
+| `babel.config.applied`                        | `hello`, `update`, `quality`, `rx`, `rtt_weight`, `rtt_min`, `rtt_max`, `margin`                                                                                                                                                                               |
+| `babel.own.changed`                           | `set`, and `added`, `removed` and `held` where they name a route                                                                                                                                                                                               |
+| `babel.route.selected`                        | `route`, `metric`                                                                                                                                                                                                                                              |
+| `babel.route.retracted`                       | `route`                                                                                                                                                                                                                                                        |
+| `babel.seqno.requested`                       | `route`, `asked`, `seqno`, `raised`                                                                                                                                                                                                                            |
+| `babel.seqno.raised`                          | `cause`, `from`, `to`, `limit` where a state file is kept, and `router_id` at the process's start, with `drawn` where that router id is new                                                                                                                    |
+| `babel.state.unsaved`                         | `limit`, `seqno`, `err`                                                                                                                                                                                                                                        |
+| `babel.state.unreadable`                      | `file`, `err`                                                                                                                                                                                                                                                  |
+| `kernel.pass`                                 | `trigger`, `took`, `added`, `removed`, `skipped`, `installed`, `err`                                                                                                                                                                                           |
+| `kernel.cover`                                | `family`, `installed`                                                                                                                                                                                                                                          |
+| `kernel.underlay`                             | `cut` and `restored`, the addresses a pass began and stopped cutting out, `scoped` and `unscoped`, the routes it began and stopped scoping beneath the host's, `none` for none                                                                                 |
+| `kernel.taken`                                | `family`, `lookup` (`overlay` or `underlay`), `prefix` and `address` for an overlay lookup or `endpoint` with `source` and `interface` where the send carries them, `answer`, `taken`                                                                          |
+| `kernel.forward`                              | `entry`, `link`, `reason` (the tun, the loopback link, or the link a family's default leaves by), `skipped`                                                                                                                                                    |
+| `kernel.exit`                                 | `family`, `addressed` (false where the family came to be left out of the mode, as [limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) says, and true where the state then ended)                                                             |
+| `kernel.fallback`                             | `state` and `was`, each `holding`, `passing`, `not holding` or `off`                                                                                                                                                                                           |
+| `kernel.path`                                 | `state` (`up` or `down`), with `segment` and `verdict` where it is down, and `installed`, the families whose steered default, or on macOS its zero-free cover, the pass left in the table                                                                      |
+| `exit.forwarding`                             | `family`, one event for each family the host forwards                                                                                                                                                                                                          |
+| `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                                                                                             |
+| `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                                                                                          |
+| `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains)                                                                                                                                                |
+| `antispoof.pass`                              | `trigger`, `took`, `installed`, `wrote` (`table` or `sets`, where the pass wrote), `err`                                                                                                                                                                       |
+| `antispoof.ready`                             | `ready`                                                                                                                                                                                                                                                        |
+| `antispoof.dropped`                           | `overlay_source_ipv4`, `overlay_source_ipv6`, `carved_source_ipv4`, `carved_source_ipv6`, `mesh_entry_ipv4`, `mesh_entry_ipv6`, each the packets since the pass before, present where a rule of the pass writes the drop, which leaves out the last 2 on macOS |
+| `antispoof.carve`                             | `link`, `prefix`, `carved` (true where the carve-out came, false where it went)                                                                                                                                                                                |
+| `antispoof.conflict`                          | `exemption`, `interface`, `prefix`, `own` (true for an own range), `carved` and `routed_via` where it is false, `router_id` (of the selected route, or of the offer where `own` is true)                                                                       |
+| `antispoof.pf`                                | `token`, `pid`, of the reference the pass took, `pf_off` (true where pf was off, which the new reference turned back on, and false where another holder kept pf running, absent where `pfctl -s info` failed)                                                  |
+| `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, `ipv4_links_added`, `ipv4_links_removed`, `ipv4_links_changed`, the same 7 for `ipv6`, `probed`, `woken`                                                                                     |
+| `transport.underlay.selected`                 | `endpoint`, `interface`, empty where no route holds the endpoint, `interface_index`, 0 then                                                                                                                                                                    |
+| `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                                                                                                                                            |
+| `transport.pair.connected`                    | `local`, `remote`                                                                                                                                                                                                                                              |
+| `transport.pair.closed`                       | `local`, `remote`, `reason`, and `err` when the reason is `failed`                                                                                                                                                                                             |
+| `transport.pair.failed`                       | `local`, empty where the route was to pick it, `remote`, `err`                                                                                                                                                                                                 |
+| `pmtu.changed`                                | `endpoint`, `budget`, `budget_was`, `reason`                                                                                                                                                                                                                   |
+| `pmtu.floor`                                  | `endpoint`, `under`                                                                                                                                                                                                                                            |
+| `pmtu.steering`                               | `budget`, `need`, `under`                                                                                                                                                                                                                                      |
+| `esp.ecn.unused`                              | `outer`, `inner`, `count` (the packets since the session's last record), `header` (the first one's IP header in hex)                                                                                                                                           |
+| `netstack.codel.dropping`, `.drained`         | `sojourn`, `target`                                                                                                                                                                                                                                            |
+| `netstack.tun.refused`                        | `interface`, `frames`, `err`                                                                                                                                                                                                                                   |
+| `netstack.tun.failed`                         | `interface`, `err`                                                                                                                                                                                                                                             |
+| `netstack.transit.dropped`                    | `reason`, `src`, `dst`                                                                                                                                                                                                                                         |
+| `netstack.icmp.withheld`                      | `interface`, `limit`, `withheld`                                                                                                                                                                                                                               |
+| `netstack.ecn.unused`                         | `interface`, `outer`, `inner`, `count` (the packets since the last record), `header` (the recorded one's IP header in hex)                                                                                                                                     |
+| `netstack.answer.source`                      | `ipv4`, `ipv6`, `sid`, each only where the node holds it                                                                                                                                                                                                       |
 
 `err` appears on `daemon.reload`, `control.verb`, `kernel.pass`, `egress.pass`
 and `antispoof.pass` only when the step failed, and on a `control.verb` under a

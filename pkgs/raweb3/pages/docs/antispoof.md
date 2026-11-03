@@ -4,20 +4,22 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-04
+updated: 2026-11-07
 order: 55
 ---
 
-The antispoof filter owns the nftables table `inet ranet3` and its 2 chains.
-Chain `antispoof` runs wherever the top-level `overlay` is written, and drops a
-packet that arrives on an interface outside the mesh with a source in the mesh's
-own address space, but where the interface's own network lies inside that space
-or an exemption passes it. Chain `mesh_entry` runs on every Linux node with no
-key, and lets a packet the host sends into the tun pass only from a source this
-node owns, as a reply, toward a destination a `none` class takes, or toward an
-IPv6 link-local or multicast destination. A mesh source arriving from anywhere
-else is forged, and so is a packet entering the mesh under a source the mesh
-routes to another node.
+The antispoof filter owns the nftables table `inet ranet3` and its 2 chains on
+Linux, and the pf anchor `com.apple/ranet3` on macOS. Chain `antispoof` runs
+wherever the top-level `overlay` is written, and drops a packet that arrives on
+an interface outside the mesh with a source in the mesh's own address space, but
+where the interface's own network lies inside that space or an exemption passes
+it. Chain `mesh_entry` runs on every Linux node with no key, and lets a packet
+the host sends into the tun pass only from a source this node owns, as a reply,
+toward a destination a `none` class takes, or toward an IPv6 link-local or
+multicast destination. On macOS the tun read makes that check, as
+[the platforms](#platforms) say. A mesh source arriving from anywhere else is
+forged, and so is a packet entering the mesh under a source the mesh routes to
+another node.
 
 A protection is on by default, and its block only exempts. `overlay` turns the
 filter on, and `[cap.antispoof]` holds nothing but exemptions:
@@ -116,16 +118,65 @@ prefixes, the per-node list of RFC 8754 section 5.1, as
 [segment routing](segment-routing.md#local-segments) describes, so a file with a
 local segment needs `overlay`, with an IPv6 prefix in it.
 
+### On macOS
+
+On macOS the chain is the rules of [the anchor](#the-pf-anchor-on-macos) in the
+same order. pf matches an interface by its exact name and negates at most 1 in a
+rule, so the mesh tun's accept folds into each drop as `on ! <tun>`, and the
+loopback link's accept passes overlay sources alone. With the mesh tun `utun7`,
+the overlay `192.0.2.0/24` and `3fff:10::/32`, a carve-out of `192.0.2.128/25`
+on `en0` holding another node's `192.0.2.200`, the shared exemption
+`192.0.2.32/27`, `en*`'s `3fff:10:1::/48` over the links `en0` and `en1`, and
+`en1`'s `192.0.2.64/26`, the anchor holds:
+
+```
+table <ranet3_overlay> const { 192.0.2.0/24, 3fff:10::/32 }
+table <ranet3_carved> const { 192.0.2.200 }
+pass in quick on lo0 from <ranet3_overlay> to any no state label "accept via lo0"
+block drop in quick on ! utun7 inet from <ranet3_carved> to any label "drop ipv4 source @carved4"
+block drop in quick on ! utun7 inet6 from <ranet3_carved> to any label "drop ipv6 source @carved6"
+pass in quick on en0 inet from 192.0.2.128/25 to any no state label "accept via en0 source 192.0.2.128/25"
+pass in quick on ! utun7 inet from 192.0.2.32/27 to any no state label "accept exempt source 192.0.2.32/27"
+pass in quick on en0 inet6 from 3fff:10:1::/48 to any no state label "accept exempt via en0 source 3fff:10:1::/48"
+pass in quick on en1 inet6 from 3fff:10:1::/48 to any no state label "accept exempt via en1 source 3fff:10:1::/48"
+pass in quick on en1 inet from 192.0.2.64/26 to any no state label "accept exempt via en1 source 192.0.2.64/26"
+block drop in quick on ! utun7 inet from 192.0.2.0/24 to any label "drop ipv4 source 192.0.2.0/24"
+block drop in quick on ! utun7 inet6 from 3fff:10::/32 to any label "drop ipv6 source 3fff:10::/32"
+```
+
+- Every rule is `quick`, and each pass names 1 family or the overlay's table, 1
+  prefix or that table, and 1 interface or `! utun7`, and keeps no state.
+  [The limits](design/limits.md#the-antispoof-filter) give how far a pass
+  reaches and what pf decides before the anchor: a `quick` pass ahead of the
+  main ruleset's call to `com.apple/*`, and a state in pf's state table. An
+  operator's own block of a source the anchor passes goes in the main ruleset
+  ahead of that call.
+- `lo0`'s pass carries the Mac's own datagrams from an overlay address to
+  `127.0.0.1` and `::1`, which arrive on `lo0` with that source, and reaches no
+  source outside the overlay. The mesh tun's packets match no rule, since each
+  drop names every interface but `utun7`.
+- Each table holds both families, and a rule of 1 family reads its own. A family
+  no carve-out and no exemption is of has no carved drop, as on Linux.
+- A rule's label is its spelling, which `pfctl -a com.apple/ranet3 -s rules`
+  shows, where it fits pf's 63 bytes. A carve-out's or an exemption's that does
+  not is `accept via <link> carve-out <n>`, `accept exempt <n>` or
+  `accept exempt via <link> <n>`, `n` its place among the rules of its kind from
+  1, and `ranet3 debug rules` still shows the whole spelling.
+
 ## Carve-outs
 
 An interface outside the mesh can hold a network inside the overlay, such as a
 lease from a carrier-grade NAT where the overlay is numbered from the same
 shared space of RFC 6598, or reach a point-to-point far end inside it, such as a
-PPPoE gateway's. For each interface but `lo`, each of its networks and far ends
-that shares an address with an overlay prefix is a carve-out on that interface:
-the network or far end where the overlay prefix holds it, the overlay prefix
-where the network or far end holds it. The filter follows the host's interfaces,
-so a lease that comes or goes moves the carve-outs on the next pass.
+PPPoE gateway's. For each interface but the loopback link, `lo` on Linux and
+`lo0` on macOS, each of its networks and far ends that shares an address with an
+overlay prefix is a carve-out on that interface: the network or far end where
+the overlay prefix holds it, the overlay prefix where the network or far end
+holds it. The filter follows the host's interfaces, as
+[the network watch](platforms.md#moving-hosts) reads them, so a lease that comes
+or goes moves the carve-outs on the next pass. On macOS the watch reads an IPv4
+address on a point-to-point link as a host, so such a link's carve-outs are its
+address and its far end, each a `/32`.
 
 - `carved4` and `carved6` hold every prefix of the mesh's table inside a
   carve-out, learned, held or this node's own, but for what the next bullet
@@ -143,10 +194,10 @@ so a lease that comes or goes moves the carve-outs on the next pass.
   interface alone, so the gateway and the network's other neighbors reach the
   host. The same addresses from any other interface meet the overlay's drop,
   unless an exemption passes them from that interface.
-- With `cap.table` the reconciler throws the carve-out in the mesh's table in
-  place of an equal overlay hold, so the host reaches the network's neighbors by
-  main, and a route of the mesh inside the lease still wins by its length, as
-  rows L5 and L6 of
+- On Linux, with `cap.table`, the reconciler throws the carve-out in the mesh's
+  table in place of an equal overlay hold, so the host reaches the network's
+  neighbors by main, and a route of the mesh inside the lease still wins by its
+  length, as rows L5 and L6 of
   [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give.
   [Exit mode](routing.md#exit-mode-on-linux) selects the lease's address and
   network for main at 5405 and 5435 unless an entry of the mesh's table inside
@@ -184,6 +235,12 @@ away than its lease, or the site behind a gateway that
   in `*`, every interface whose name starts with what comes before it, so `wl*`
   matches `wlan0` and `wlp3s0`. An interface takes the shared list and the list
   of every name that matches it.
+- No exemption reaches an interface inside the mesh, where the filter drops
+  nothing. An exemption under the exact name of the mesh tun or the loopback
+  link writes no rule, and the filter logs
+  `antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing`
+  at warning, with `interface` and `prefix`, once, at the start or the reload
+  that brings it in.
 - Each prefix lies inside `overlay`, each of its addresses in some entry. One
   outside exempts nothing, since the filter drops only an overlay source, and
   the loader refuses it, as it refuses a `*` anywhere but last, a name of `*`
@@ -207,11 +264,22 @@ away than its lease, or the site behind a gateway that
   node's prefix, no node address of this node and no carve-out's carved drop
   holds, from the interfaces they name. The filter has no setting that passes a
   mesh node's own address from outside the mesh.
-- Each exemption is 1 rule, commented `accept exempt source <prefix>` for the
-  shared list and `accept exempt via <name> source <prefix>` for a name, which
+- Each exemption but one naming an interface inside the mesh is 1 rule,
+  commented `accept exempt source <prefix>` for the shared list and
+  `accept exempt via <name> source <prefix>` for a name, which
   `nft list ruleset` shows as `iifname "<name>"`, or as `iifname "wl*"` for a
   name ending in `*`. An exemption of 1 family widens only that family's carved
   set.
+- On macOS the shared list's rule passes on `! <tun>`, and a name's on that
+  interface, as [the anchor](#on-macos) shows. An interface not attached yet is
+  written as named, and pf matches it once it attaches. pf matches no name
+  ending in `*`, so such a name is 1 rule per link
+  [the network watch](platforms.md#moving-hosts) reports whose name it matches,
+  in the links' order, but the mesh tun and `lo0`, and none while no link
+  matches, rewritten as links come and go. A link whose exempt sources must pass
+  from the moment it attaches is named exactly, as
+  [the limits](design/limits.md#the-antispoof-filter) give. An exact name and a
+  name ending in `*` that give the same link and prefix are 1 rule.
 
 Each part of an exemption another node's prefix comes to hold is logged at
 warning,
@@ -337,7 +405,12 @@ Chain `antispoof` accepts whatever arrives on an interface inside the mesh,
 before any drop. The list is derived and has no setting:
 
 1. the mesh tun, through which an egress segment's inner packets arrive as well
-2. `lo`, through which a packet this host sends to its own address arrives
+2. the loopback link, `lo` on Linux and `lo0` on macOS, through which a packet
+   this host sends to its own address arrives
+
+On macOS the tun's accept is each drop's `on ! <tun>`, and `lo0`'s pass takes
+overlay sources alone, every source a drop there would take, as
+[the anchor](#on-macos) shows.
 
 A deployment that carries mesh sources on another interface, a subnet router of
 mesh-numbered hosts, is refused at load: a `cap.egress` `advertise` entry that
@@ -424,6 +497,81 @@ The table's lifetime:
   `antispoof` keeps dropping forged sources until ranet3 starts again and takes
   the table over.
 
+### The pf anchor on macOS
+
+On macOS the filter writes the anchor `com.apple/ranet3`, a child of
+`com.apple`, which the stock main ruleset of `/etc/pf.conf` calls with
+`anchor "com.apple/*"`, so pf evaluates it among `com.apple`'s other children in
+the order of their names. The filter runs only where `overlay` is written, and a
+Mac with no `overlay` leaves pf as it found it but for what an earlier run's
+record names, which its start gives back, as below.
+[The limits](design/limits.md#the-antispoof-filter) give what turning pf on
+means for the rest of the host. pfctl is the only program the daemon runs on pf,
+and every load and flush names the anchor: `pfctl -a com.apple/ranet3 -f -`
+loads the anchor whole in 1 transaction, which leaves it as it was where pfctl
+refuses the text, `pfctl -a com.apple/ranet3 -T load -f -` loads its tables
+alone in 1 transaction, which keeps the rules and their counters, when only the
+carved sets move, and `pfctl -a com.apple/ranet3 -F rules` and `-F Tables` empty
+it. The one write that names no anchor gives back a reference by its token, with
+`pfctl -X <token>`.
+
+The daemon keeps pf enabled with a reference of its own, which `DIOCSTARTREF`
+takes and `pfctl -s References` lists under the daemon's pid, and records its
+token beside that pid in `pf.json`, in the directory
+[`--state-dir`](cli.md#running-the-node) names, `/var/db/ranet3` by default,
+before it writes the anchor. A reference outlives the process that took it, and
+pf gives a freed token's value to later references of any process, since a token
+is the hash of its allocation
+([pf_ioctl.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf_ioctl.c#L341-L368)),
+so the daemon counts a token as its own only where pf lists it under the pid the
+record holds, and gives back nothing else. pf runs while any reference is held
+([pf_ioctl.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf_ioctl.c#L1669-L1695)),
+so the daemon never runs `pfctl -e` or `pfctl -d`.
+
+The anchor's and the reference's lifetime:
+
+- The start takes a new reference, records it, then gives back the one an
+  earlier run recorded, where pf still lists it under that run's pid, so pf
+  stays enabled throughout where that reference kept it so. Its first pass takes
+  the anchor over as Linux's takes the table.
+- A start refused after it took its reference, its first pass not ready or a
+  later step of the start failing, gives that reference back and empties the
+  record, and empties the anchor where its own pass wrote it, as a refused Linux
+  start removes the table it made. Where the start found an anchor an earlier
+  run left, that anchor stays, and so does the new reference where it took the
+  place of an earlier run's that pf still listed, so pf runs as the start found
+  it.
+- A start without `overlay` takes no reference. Where the record names one, it
+  empties the anchor, gives back each recorded reference pf lists under its pid,
+  and empties the record, so pf runs as it would had that run stopped. Where pf
+  listed one, it logs
+  `antispoof filter gave back the pf anchor and reference an earlier run left, since overlay is not written`.
+  Where pfctl refuses a release, the record keeps that token for the next start,
+  and the start fails naming the refusal, with no such line.
+- A stop on `SIGINT` or `SIGTERM` empties the anchor, then gives the reference
+  back and empties the record, which stops pf where no other program holds a
+  reference.
+- The stop a failed tun causes leaves the anchor, the reference and its record,
+  and logs `antispoof filter is leaving its table after the mesh failed`. pf
+  keeps the anchor's rules while the supervisor starts the daemon again, and the
+  next start takes both over, or gives both back where it has no `overlay`.
+- After a crash the anchor and the reference stay, and keep dropping forged
+  sources. Its drops spare a utun that went with the process, so an overlay
+  source on a utun another program opens under that unit passes until the next
+  start rewrites the anchor for its own utun, as
+  [the limits](design/limits.md#the-antispoof-filter) say. While ranet3 stays
+  down, the operator empties the anchor with
+  `pfctl -a com.apple/ranet3 -F rules` and
+  `pfctl -a com.apple/ranet3 -F Tables`, and runs `pfctl -X <token>` with the
+  token `pf.json` holds only where `pfctl -s References` lists that token under
+  the pid `pf.json` holds beside it, the check the daemon makes, since pf may
+  have given a freed value to another program's reference, which `-X` would end.
+  A token listed under no such pid is left alone, and `pf.json` as it is for the
+  next start.
+- A reboot ends every reference and every rule. The next start finds the record
+  naming a token pf does not list under its pid, drops it unreleased and takes
+  its own.
+
 ## Readiness
 
 The filter is ready while both its chains and every set read back as the
@@ -438,29 +586,97 @@ install the table and read it back, which on a host means a kernel without
 nf_tables or conntrack or a daemon without `CAP_NET_ADMIN`. A node does not run
 without its entry chain.
 
+On macOS the pass runs every 5 seconds, since pf tells no program of another's
+change, so another program's change to the anchor goes unnoticed for up to 5
+seconds. The anchor reading back as written is not enough there, and the filter
+is ready only while pf evaluates it too:
+
+- pf lists the daemon's reference under the daemon's pid. `pfctl -d` ends every
+  reference and stops pf, and another program's `pfctl -X` ends one, which stops
+  pf where no other reference holds it
+  ([pf_ioctl.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf_ioctl.c#L1659-L1695)).
+  A pass that finds the reference gone reads whether pf runs from
+  `pfctl -s info`, then takes a new one and records it, and leaves the anchor,
+  which pf keeps while stopped. Where pf was off, the new reference turns it
+  back on. Where another holder kept pf running, pf was not off, and the new
+  reference only takes the old one's place. Where `pfctl -s info` fails, the
+  pass takes the new reference all the same, and says pf's state could not be
+  read. The pass logs which at warning, with why it took the reference and how
+  to turn the filter off, as [the log lines](#watching-it) list, and records
+  `antispoof.pf`. Removing `overlay` is the way to turn the filter off, since a
+  pass turns pf back on within 5 seconds of `pfctl -d`. Where the new reference
+  cannot be taken, the filter reads not ready, naming the refusal.
+- The main ruleset calls `com.apple/*` for every packet in, as the stock line
+  does, which pfctl prints as `anchor "com.apple/*" all`, or the same with `in`.
+  pf skips an anchor rule whose direction, interface, family, protocol or
+  addresses a packet does not match before it steps in
+  ([pf.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf.c#L5272-L5348)),
+  so a call naming `out`, an interface, `inet`, `inet6`, a protocol or an
+  address reads as no call. So does one inside an inline anchor's braces, which
+  pfctl prints indented and pf resolves relative to that inline anchor
+  ([pf_ruleset.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf_ruleset.c#L494-L519)).
+  `pfctl -F all` or another program's ruleset replaces the stock one, and the
+  filter reads not ready, naming the missing line and `pfctl -f /etc/pf.conf`,
+  which loads the stock ruleset again. The daemon never edits the main ruleset.
+- pf skips no interface outside the mesh. A `set skip` naming one, loaded with
+  the main ruleset, makes pf pass every packet on it before any rule
+  ([pf.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf.c#L9756)),
+  a forged overlay source among them, and the filter reads not ready, naming
+  each skipped interface and `pfctl -f /etc/pf.conf`, as
+  [pf on macOS](coexistence.md#pf-on-macos) gives. A skip of the mesh utun or
+  `lo0` changes nothing the filter passes or drops, since the tun's packets meet
+  no drop and `lo0`'s pass takes every overlay source there.
+
+None of these reasons rewrites the anchor, which reads back as written
+throughout. The start refuses to run where the first pass reads any of them, as
+a Linux start does, and [pf on macOS](coexistence.md#pf-on-macos) gives the
+refusal and the host's fix. An anchor holding a rule of a form the filter never
+writes, such as a stateful pass another program loaded, is a fault like any
+other the readback finds, which the next pass replaces by loading the anchor
+whole.
+
 ## Nodes that forward without it
 
-On a platform that runs no antispoof filter, a node whose host forwards logs a
-warning at startup and at every reload,
-`config: this node forwards IPv4 and IPv6 and darwin runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source`,
-naming the families it reads as forwarding and the platform, whether or not
-`overlay` is written. A family whose setting the node cannot read is not named,
-and a node that can read neither logs no warning. The warning is of the inbound
-side alone, since the tun read judges what enters the mesh there, as
-[the platforms](#platforms) below say, though a host on the node's links can
-still send under one of the node's own addresses. On Linux the tun read and
-`mesh_entry` keep a forged source out of the mesh, chain `antispoof` runs
-wherever `overlay` is written, and no warning is logged.
+Where no antispoof filter runs, a node whose host forwards logs a warning at
+startup and at every reload, naming the families it reads as forwarding and the
+platform, as
+`config: this node forwards IPv4 and IPv6 and freebsd runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source`.
+No filter runs on a Mac with no `overlay` or on a platform with neither nftables
+nor pf, and a node with no `overlay` says `and writes no overlay,` after the
+families.
+
+A family whose setting the node cannot read is not named, and a node that can
+read neither logs no warning. The warning is of the inbound side alone, since
+the tun read judges what enters the mesh there, as [the platforms](#platforms)
+below say, though a host on the node's links can still send under one of the
+node's own addresses. On Linux the tun read and `mesh_entry` keep a forged
+source out of the mesh and chain `antispoof` runs wherever `overlay` is written,
+on a Mac with `overlay` the tun read and chain `antispoof` do, and neither logs
+the warning.
 
 ## Platforms
 
-The table is Linux's alone. Every other platform loads `overlay` and
-`cap.antispoof`, with every refusal of theirs, and enforces neither, so a host
-on one of its interfaces can reach its services under an overlay source. With
-`overlay` written, `status` reads `not enforced on darwin, 2 overlay prefixes`
-on the antispoof line and `ranet3 debug rules` reads
-`Antispoof filter, not enforced on darwin`, naming the platform, and no pass
-logs anything. A node there that forwards gets the warning above.
+The table is Linux's alone. On macOS `overlay` turns pf on and the filter writes
+chain `antispoof` into [its anchor](#the-pf-anchor-on-macos), as
+[the chain on macOS](#on-macos) gives, with every carve-out and exemption.
+`status` reads
+`pf anchor com.apple/ranet3, inside utun7 lo0, 2 overlay prefixes, carving 192.0.2.128/25 on en0, dropped 11 overlay sources and 1 carved sources`
+on the antispoof line, with no drops entering the mesh, since the anchor holds
+no entry chain. A Mac with no `overlay` leaves pf as it found it, once it gives
+back what [an earlier run left](#the-pf-anchor-on-macos).
+
+The start and a reload on macOS refuse an exemption under an exact interface
+name the anchor cannot write, one holding a byte other than an ASCII letter, a
+digit or `_`, such as `br-lan`, and the error names it.
+
+Every other platform loads `overlay` and `cap.antispoof`, with every refusal of
+theirs, and enforces neither, so a host on one of its interfaces can reach its
+services under an overlay source. With `overlay` written, `status` reads
+`not enforced on freebsd, 2 overlay prefixes` on the antispoof line and
+`ranet3 debug rules` reads `Antispoof filter, not enforced on freebsd`, naming
+the platform, and no pass logs anything. A node there, or on a Mac with no
+`overlay`, that forwards gets
+[the warning above](#nodes-that-forward-without-it).
 
 The entry chain's place on every other platform, macOS among them, is the tun
 read's own: it drops a read from a source this node does not own toward every
@@ -505,9 +721,10 @@ chains, the interfaces inside, the overlay prefixes, each carve-out as
 `carving <prefix> on <link>`, and the packets each kind of drop counted as of
 the last pass, the overlay's, the carved prefixes' and those entering the mesh.
 A node with no `overlay` prints the table, chain `mesh_entry` and its drops
-alone. A filter whose table is not read back reads `not installed`, with the
-reason, also where it is there and holds another writer's rule or chain or sits
-in a dormant table.
+alone, and a Mac prints no drops entering the mesh, since its anchor holds no
+entry chain. A filter whose table is not read back reads `not installed`, with
+the reason, also where it is there and holds another writer's rule or chain or
+sits in a dormant table.
 
 `ranet3 debug rules` reads the table's rules now, through a socket of its own,
 so an operator who sends a test packet reads the counters of that moment rather
@@ -517,39 +734,86 @@ each set with the elements the last pass asked for, beside every policy rule the
 kernel holds and the rules the reconciler derives from the overlay, as
 [the debug page](development/debug.md) describes.
 
-| Log line                                                                     | Level | When                                                                                                                                                     |
-| ---------------------------------------------------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `antispoof filter in <where>, inside <interfaces>`                           | info  | the daemon starts the filter                                                                                                                             |
-| `antispoof filter installed`                                                 | info  | a pass rewrote the table, with `rules`, `replaced` and `where`                                                                                           |
-| `antispoof filter pass failed, retrying`                                     | warn  | a pass failed, with `err` and `retry_in`                                                                                                                 |
-| `antispoof filter not ready`                                                 | warn  | the table stopped reading back, with the reason as `detail`                                                                                              |
-| `antispoof filter ready`                                                     | info  | the table reads back again                                                                                                                               |
-| `antispoof carves the overlay for a link that holds part of it`              | warn  | a carve-out came, with `link` and `prefix`                                                                                                               |
-| `antispoof no longer carves the overlay for a link`                          | info  | a carve-out went, with `link` and `prefix`                                                                                                               |
-| `antispoof drops part of an exemption, since another node's prefix holds it` | warn  | another node's prefix came to hold part of an exemption, with `exemption`, `interface`, `prefix`, `carved`, `routed_via` and `router_id`                 |
-| `antispoof no longer drops part of an exemption for another node's prefix`   | info  | that prefix went, with `exemption`, `interface` and `prefix`                                                                                             |
-| `antispoof admits this node's range though another router announces it too`  | warn  | another router came to announce an own range an exemption overlaps, with `exemption`, `interface`, `prefix` and `router_id`                              |
-| `antispoof no longer sees another router announce this node's range`         | info  | that conflict went, with `exemption`, `interface` and `prefix`                                                                                           |
-| `antispoof filter withdrawn`                                                 | info  | the table is removed at shutdown, or by a start that ended in its build after making it                                                                  |
-| `antispoof filter is leaving its table after the mesh failed`                | warn  | the stop a failed tun causes left the table, with `where`                                                                                                |
-| `antispoof filter is leaving the table it found`                             | info  | a start that ended before its build completed left the table its first pass's read found, with `where`. A read that failed logs only the start's refusal |
-| `stopped reading nf_tables notifications`                                    | warn  | a read of the filter's notification socket failed, with `table` and `err`, after which another writer's change waits for the next sweep                  |
+On macOS the status's `border` object carries a `pf` block with the anchor, the
+daemon's `token` and `pid`, `listed`, whether pf lists the one under the other,
+and `called`, whether the main ruleset calls `com.apple/*`, as the last pass
+read them. `ranet3 debug rules` heads the anchor's rules by their direction,
+`in` for chain `antispoof`, with no priority and with their counters read now,
+each by its whole spelling where pf holds its label shortened, lists the carved
+table, and then the daemon's reference, the main ruleset's call and every
+reference `pfctl -s References` lists now, by pid and process name:
+
+```
+Antispoof filter, pf anchor com.apple/ranet3, read 2 seconds ago, ready
+  chain antispoof, in
+    accept  via lo0
+    drop    ipv4 source @carved4  1 packets, 84 B
+    drop    ipv6 source @carved6  0 packets, 0 B
+    accept  via en0 source 192.0.2.128/25
+    accept  exempt source 192.0.2.32/27
+    accept  exempt via bridge100 source 3fff:10:2222:3333:4444:5555:6666:7777/128
+    accept  exempt via en0 source 3fff:10:1::/48
+    accept  exempt via en1 source 3fff:10:1::/48
+    accept  exempt via en1 source 192.0.2.64/26
+    drop    ipv4 source 192.0.2.0/24  2 packets, 168 B
+    drop    ipv6 source 3fff:10::/32  9 packets, 936 B
+  table ranet3_carved  192.0.2.200, 3fff:10::/48
+  pf reference         token 9223372036854775809 of pid 4242, listed
+  pf main ruleset      calls com.apple/*
+  pf enabler           pid 4242 ranet3
+  pf enabler           pid 377 othervpn
+```
+
+The rule for `bridge100` is labelled `accept exempt via bridge100 2` in the
+anchor, its spelling past 63 bytes.
+
+| Log line                                                                                                                                                                                                                                                                      | Level | When                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `antispoof filter in <where>, inside <interfaces>`                                                                                                                                                                                                                            | info  | the daemon starts the filter                                                                                                                                                                              |
+| `antispoof filter installed`                                                                                                                                                                                                                                                  | info  | a pass rewrote the table, with `rules`, `replaced` and `where`                                                                                                                                            |
+| `antispoof filter pass failed, retrying`                                                                                                                                                                                                                                      | warn  | a pass failed, with `err` and `retry_in`                                                                                                                                                                  |
+| `antispoof filter not ready`                                                                                                                                                                                                                                                  | warn  | the table stopped reading back, with the reason as `detail`                                                                                                                                               |
+| `antispoof filter ready`                                                                                                                                                                                                                                                      | info  | the table reads back again                                                                                                                                                                                |
+| `antispoof carves the overlay for a link that holds part of it`                                                                                                                                                                                                               | warn  | a carve-out came, with `link` and `prefix`                                                                                                                                                                |
+| `antispoof no longer carves the overlay for a link`                                                                                                                                                                                                                           | info  | a carve-out went, with `link` and `prefix`                                                                                                                                                                |
+| `antispoof drops part of an exemption, since another node's prefix holds it`                                                                                                                                                                                                  | warn  | another node's prefix came to hold part of an exemption, with `exemption`, `interface`, `prefix`, `carved`, `routed_via` and `router_id`                                                                  |
+| `antispoof no longer drops part of an exemption for another node's prefix`                                                                                                                                                                                                    | info  | that prefix went, with `exemption`, `interface` and `prefix`                                                                                                                                              |
+| `antispoof admits this node's range though another router announces it too`                                                                                                                                                                                                   | warn  | another router came to announce an own range an exemption overlaps, with `exemption`, `interface`, `prefix` and `router_id`                                                                               |
+| `antispoof no longer sees another router announce this node's range`                                                                                                                                                                                                          | info  | that conflict went, with `exemption`, `interface` and `prefix`                                                                                                                                            |
+| `antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing`                                                                                                                                                                                   | warn  | the start or a reload brought in an exemption under the exact name of the mesh tun or the loopback link, which writes no rule, with `interface` and `prefix`                                              |
+| `antispoof filter withdrawn`                                                                                                                                                                                                                                                  | info  | the table is removed at shutdown, or by a start that ended in its build after making it                                                                                                                   |
+| `antispoof filter is leaving its table after the mesh failed`                                                                                                                                                                                                                 | warn  | the stop a failed tun causes left the table, with `where`                                                                                                                                                 |
+| `antispoof filter is leaving the table it found`                                                                                                                                                                                                                              | info  | a start that ended before its build completed left the table its first pass's read found, with `where`. A read that failed logs only the start's refusal                                                  |
+| `stopped reading nf_tables notifications`                                                                                                                                                                                                                                     | warn  | a read of the filter's notification socket failed, with `table` and `err`, after which another writer's change waits for the next sweep                                                                   |
+| `this daemon took its reference on pf again, since pf no longer listed it, which pfctl -d or another program's pfctl -X ends: pf was off, and this daemon turned it back on, so the host's protection was off until now, and removing overlay turns the antispoof filter off` | warn  | on macOS, a pass took a new reference where pf no longer listed the daemon's and pf was off, which the new one turned back on, with `token`, `pid` and `pf_off`                                           |
+| `this daemon took its reference on pf again, since pf no longer listed it, which pfctl -d or another program's pfctl -X ends: pf was not off, as another holder kept it running, and removing overlay turns the antispoof filter off`                                         | warn  | on macOS, a pass took a new reference where pf no longer listed the daemon's and another holder kept pf running, with `token`, `pid` and `pf_off`                                                         |
+| `this daemon took its reference on pf again, since pf no longer listed it, which pfctl -d or another program's pfctl -X ends: whether pf was off could not be read, and removing overlay turns the antispoof filter off`                                                      | warn  | on macOS, a pass took a new reference where pf no longer listed the daemon's and `pfctl -s info` failed, with `token`, `pid` and `err`                                                                    |
+| `pf released the reference an earlier run left`                                                                                                                                                                                                                               | info  | on macOS, a start, with `overlay` or without, gave back the reference the record named, with `token` and `pid`                                                                                            |
+| `pf dropped the record of a reference it no longer lists under its pid, which a reboot or another program stopping pf ends`                                                                                                                                                   | info  | on macOS, a start found the record naming a reference pf no longer lists under its pid, or a pass's renewal dropped the daemon's own ended reference beside the renewal's warning, with `token` and `pid` |
+| `antispoof filter gave back the pf anchor and reference an earlier run left, since overlay is not written`                                                                                                                                                                    | info  | on macOS, a start without `overlay` found the record naming a reference pf still listed under its pid, emptied the anchor and gave it back, with `where`. One pfctl refused fails the start, naming it    |
 
 A pass that rewrote the table or a set, or failed, records an `antispoof.pass`
 event with `trigger`, `took`, `installed`, `wrote` and, on failure, `err`. A
 change of readiness records `antispoof.ready` with `ready`. A pass that read a
-counter move records `antispoof.dropped` with the packets of each kind since the
-pass before, at most once per pass. A carve-out coming or going records
-`antispoof.carve`, and another node's prefix coming to hold part of an
-exemption, or another router's offer for a range of this node's own that an
-exemption overlaps, records `antispoof.conflict`.
+counter move records `antispoof.dropped` with the packets since the pass before
+of each drop a rule of the pass writes, at most once per pass. A carve-out
+coming or going records `antispoof.carve`, and another node's prefix coming to
+hold part of an exemption, or another router's offer for a range of this node's
+own that an exemption overlaps, records `antispoof.conflict`. On macOS a pass
+that took a new reference on pf records `antispoof.pf` with `token`, `pid` and
+`pf_off`, whether pf was off, which it leaves out where pf's state could not be
+read.
 
 | Metric                                                  | Meaning                                      |
 | ------------------------------------------------------- | -------------------------------------------- |
 | `ranet3_antispoof_ready`                                | whether the table reads back, 1 or 0         |
 | `ranet3_antispoof_dropped_packets_total{reason,family}` | packets dropped by kind, as of the last pass |
 
-The reasons are `overlay_source`, `carved_source` and `mesh_entry`, each in both
-families. `mesh_entry` counts what the entry chain kept out of the mesh. A
-rewrite of the table starts the counters from 0, which a scrape reads as a
-counter reset.
+The reasons are `overlay_source`, `carved_source` and `mesh_entry`, each in the
+families a rule of the last pass drops it in, and a drop no rule writes has no
+series: `carved_source` in a family no carve-out and no exemption is of, as
+[what it drops](#what-it-drops) gives, and `mesh_entry` on macOS, since the
+anchor holds no entry chain. `mesh_entry` counts what the entry chain kept out
+of the mesh. A rewrite of the table starts the counters from 0, which a scrape
+reads as a counter reset. On macOS a load of the tables alone keeps the
+counters.

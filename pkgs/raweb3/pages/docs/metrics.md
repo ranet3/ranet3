@@ -45,17 +45,23 @@ from 0 whether or not it read them back.
 
 [The antispoof filter](antispoof.md) is reported as whether its table reads
 back, both chains and every set, and the packets each of its drops counted, by
-`reason`, each in both families: `overlay_source` and `carved_source` from chain
-`antispoof`, and `mesh_entry`, what the entry chain kept out of the tun. The
-counts are read from the table at each pass, so they lag by up to 1 pass, and a
-rewrite of the table starts them from 0, which a scrape reads as a counter
-reset.
+`reason` and `family`: `overlay_source` and `carved_source` from chain
+`antispoof`, and `mesh_entry`, what the entry chain kept out of the tun. A drop
+has a series in each family a rule of the last pass drops it in, and none
+otherwise, as [watching it](antispoof.md#watching-it) lists. The counts are read
+from the table at each pass, so they lag by up to 1 pass, and a rewrite of the
+table starts them from 0, which a scrape reads as a counter reset. On macOS,
+where `overlay` is written, the same series read the pf anchor
+`com.apple/ranet3`, whose readiness takes pf's reference, the main ruleset's
+call and no interface outside the mesh that pf skips too, as
+[readiness](antispoof.md#readiness) gives, and `mesh_entry` has no series, since
+the anchor holds no entry chain.
 
 A node without `cap.table` writes none of the reconciler's series, a node
-without `cap.egress` writes none of the egress series, and a node off Linux
-writes none of the antispoof filter's. Zeros there would read as a subsystem
-installing nothing. Segment routing writes its series on every node, zeros
-included.
+without `cap.egress` writes none of the egress series, and a node that runs no
+antispoof filter, off Linux and macOS or on a Mac with no `overlay`, writes none
+of the antispoof filter's. Zeros there would read as a subsystem installing
+nothing. Segment routing writes its series on every node, zeros included.
 
 The reconciler's, the egress and the antispoof filter's series hold their last
 pass as it read them, as the paragraphs above say. Every other series is read
@@ -132,8 +138,8 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_egress_pass_timestamp_seconds`         | gauge   | none                 | Unix time the last pass finished, 0 before the first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | with `cap.egress`                                                                                      |
 | `ranet3_egress_pass_failed`                    | gauge   | none                 | 1 when the last pass reported an error                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | with `cap.egress`                                                                                      |
 | `ranet3_egress_ready`                          | gauge   | `family`             | 1 while this node carries the family out of the mesh translated, which egress of that family waits for in both modes, as [readiness](exit-nodes.md#readiness) says                                                                                                                                                                                                                                                                                                                                                                                                                                          | with `cap.egress`                                                                                      |
-| `ranet3_antispoof_ready`                       | gauge   | none                 | 1 while the antispoof filter's chains and sets read back as the configuration asks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | on Linux                                                                                               |
-| `ranet3_antispoof_dropped_packets_total`       | counter | `reason`, `family`   | Packets the antispoof filter dropped from outside the mesh or kept out of the tun, as of its last pass                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | on Linux                                                                                               |
+| `ranet3_antispoof_ready`                       | gauge   | none                 | 1 while the antispoof filter's rules and sets read back as the configuration asks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | on Linux, and on macOS with `overlay`                                                                  |
+| `ranet3_antispoof_dropped_packets_total`       | counter | `reason`, `family`   | Packets the antispoof filter dropped from outside the mesh or kept out of the tun, as of its last pass                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | on Linux, and on macOS with `overlay`, for each drop a rule of the last pass writes                    |
 
 `ranet3_babel_neighbor_cost` holds the amount `cap.babel.cost.extra` charges the
 neighbor, and no series reports that amount alone. It is configuration rather

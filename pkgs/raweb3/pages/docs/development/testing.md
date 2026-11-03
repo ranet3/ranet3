@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-05
+updated: 2026-11-07
 order: 20
 ---
 
@@ -140,10 +140,29 @@ unshare -rn go test ./internal/egress/egresstest
 ## Root tests on macOS
 
 On macOS the root tests of `internal/kernel`, `internal/netstack`,
-`internal/client`, `transport` and `control` run as root, and only with
-`RANET3_DARWIN_NETTEST=1` set. They run against the real routing socket, utuns,
-feth pairs and directories given a group only root may give, and the Mac that
-runs them may be on a live mesh.
+`internal/client`, `transport`, `control`, `internal/pf` and
+`internal/egress/kernel` run as root, and only with `RANET3_DARWIN_NETTEST=1`
+set. They run against the real routing socket, utuns, feth pairs, directories
+given a group only root may give, and pf, and the Mac that runs them may be on a
+live mesh. The pf tests write only `com.apple/ranet3` and children of
+`com.apple` named `ranet3-` and a suffix, skip where `com.apple/ranet3` holds
+anything already or the main ruleset calls no child of `com.apple`, leave pf
+running as they found it, and fail one that leaves the anchor holding anything
+or a reference of its own held. They send datagrams up utuns of their own, from
+overlay and outside sources of the documentation ranges to each utun's own
+address, and count each on the anchor's rule that took it: a forged overlay
+source up an outside utun, an overlay source up the mesh utun and through `lo0`,
+a carve-out and the gateway example of
+[exemptions](../antispoof.md#a-gateways-site) through the daemon's own sets, a
+pass of a later anchor, a reply to a flow from the outside utun's own address
+that a later anchor's stateful `pass out` on the mesh utun lets in ahead of the
+drop, and its drop where that state is if-bound, and an exemption under `utun*`
+over a utun that comes after the first pass, whose exempt source is dropped
+until a pass writes the exemption's rule for it. One sends the same reply to a
+flow from the mesh utun's own address, which pf passes on the state and XNU's
+check of the interface then drops, read in `netstat -s -p ip`. One sets pf's
+skip flag on utuns of its own and clears it before it ends, and one loads filter
+rules into the main ruleset and puts back the ones it found.
 
 ## Property tests
 

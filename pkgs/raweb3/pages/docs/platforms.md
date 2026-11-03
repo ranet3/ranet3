@@ -28,13 +28,13 @@ setting or skips a route instead.
 | Policy rules                                           | derived from `overlay` and this node's own prefixes                                                                                                                                                                                | none                                                                                                                                                                                                                         |
 | An own prefix this node originates outside the overlay | a throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, row L10 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)                                               | nothing, row D2 of [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) for a socket bound to no interface and no address of the utun                                                                     |
 | Hold of each overlay prefix                            | installed for each that holds no unspecified address and that the mesh can carry                                                                                                                                                   | none, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                                      |
-| A link's network inside the overlay                    | a throw in place of the overlay prefix's hold, and accepted from its own interface by chain `antispoof`, as [carve-outs](antispoof.md#carve-outs) describe                                                                         | none                                                                                                                                                                                                                         |
+| A link's network inside the overlay                    | a throw in place of the overlay prefix's hold, and accepted from its own interface by chain `antispoof`, as [carve-outs](antispoof.md#carve-outs) describe                                                                         | accepted from its own interface by chain `antispoof` in the pf anchor, as [carve-outs](antispoof.md#carve-outs) describe                                                                                                     |
 | `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                       | refused, naming the platform                                                                                                                                                                                                 |
 | Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                           | refused                                                                                                                                                                                                                      |
 | A `cap.route` entry that counts as a default           | loaded, with a warning unless it is a default, making this node an exit for its family                                                                                                                                             | refused, as [gaps on macOS](#gaps-on-macos) gives                                                                                                                                                                            |
-| `overlay`                                              | loaded, and chain `antispoof` at prerouting in the nftables table `inet ranet3`, with an accept for each `cap.antispoof` exemption                                                                                                 | loaded, bounding the local segments' outer sources and the forwarding decision, and the filter not enforced, as `status` and `ranet3 debug rules` say                                                                        |
+| `overlay`                                              | loaded, and chain `antispoof` at prerouting in the nftables table `inet ranet3`, with an accept for each `cap.antispoof` exemption                                                                                                 | loaded, bounding the local segments' outer sources and the forwarding decision, and chain `antispoof` in the pf anchor `com.apple/ranet3`, which turns pf on, with a pass for each `cap.antispoof` exemption                 |
 | Local segments                                         | `End` and `End.DT46`, the outer source checked against the overlay                                                                                                                                                                 | `End` and `End.DT46` delivering to the mesh, the outer source checked against the overlay                                                                                                                                    |
-| Entry chain                                            | chain `mesh_entry` at postrouting in `inet ranet3` on every node, with no key, as [the antispoof filter](antispoof.md#the-entry-chain) describes                                                                                   | none, the tun read drops a source this node does not own toward all but an IPv6 link-local destination, and a Mac that forwards is warned                                                                                    |
+| Entry chain                                            | chain `mesh_entry` at postrouting in `inet ranet3` on every node, with no key, as [the antispoof filter](antispoof.md#the-entry-chain) describes                                                                                   | none, the tun read drops a source this node does not own toward all but an IPv6 link-local destination, and a Mac with no `overlay` that forwards is warned                                                                  |
 | `cap.exit`                                             | the policy rules 5405, 5435 and 5440 of [exit mode](routing.md#exit-mode-on-linux)                                                                                                                                                 | the routes of [the zero-free cover](routing.md#the-zero-free-cover-on-macos) in each family the tun holds an overlay address of, with `fallback = "uplink"`, and `forward` refused, as [gaps on macOS](#gaps-on-macos) gives |
 | `cap.exit.fallback = "none"`                           | the rules 5445 and 5450 and the nftables table `ranet3_fallback`, its chains at output and postrouting, of [the kill switch](routing.md#the-kill-switch-on-linux), which gives what each stop leaves of them                       | refused, naming `inbound` and `lan` where they are written                                                                                                                                                                   |
 | `cap.exit.via`                                         | two steered defaults out of the tun under exit mode's rules, and the dataplane's steer along the path, of [mode 3](routing.md#mode-3-on-linux)                                                                                     | the steered defaults as the zero-free cover, and the dataplane's steer along the path, with `fallback = "uplink"` written, and refused where `fallback` is unwritten                                                         |
@@ -45,14 +45,18 @@ setting or skips a route instead.
 | Control socket caller                                  | `SO_PEERCRED`                                                                                                                                                                                                                      | `LOCAL_PEERCRED`, `LOCAL_PEERPID`                                                                                                                                                                                            |
 | Default state directory                                | `/var/lib/ranet3`                                                                                                                                                                                                                  | `/var/db/ranet3`                                                                                                                                                                                                             |
 
-The forwarding settings decide whether a node with no entry chain warns about
-forwarding, and whether `cap.egress` advertises its prefixes. Transit needs
-neither, since the mesh forwards it between sessions itself on every platform.
-On macOS `overlay` and `cap.antispoof` load and the filter is not enforced, as
-[the antispoof filter](antispoof.md#platforms) says, and a Mac that forwards
-gets the warning. On macOS `cap.exit` runs with `fallback = "uplink"`, and
-[gaps on macOS](#gaps-on-macos) lists what it refuses there. The BSDs, Android
-and iOS refuse `cap.exit` at startup and on a reload, as
+The forwarding settings decide whether a node with no antispoof filter warns
+about forwarding, and whether `cap.egress` advertises its prefixes. Transit
+needs neither, since the mesh forwards it between sessions itself on every
+platform. On macOS `overlay` turns pf on and writes chain `antispoof` into the
+anchor `com.apple/ranet3`, as [the antispoof filter](antispoof.md#on-macos)
+gives, and a Mac with no `overlay` that forwards gets the warning. A Mac whose
+main ruleset does not call `anchor "com.apple/*"` for every packet in, or skips
+an interface outside the mesh, does not start with `overlay`, as
+[pf on macOS](coexistence.md#pf-on-macos) says. On macOS `cap.exit` runs with
+`fallback = "uplink"`, and [gaps on macOS](#gaps-on-macos) lists what it refuses
+there. The BSDs, Android and iOS refuse `cap.exit` at startup and on a reload,
+as
 `kernel: cap.exit is refused on freebsd, where this build has no exit mode: remove cap.exit, and this host keeps its own default`,
 so neither a Mac nor a BSD host has a kill switch. On Android and iOS no
 reconciler runs, and the platform's own setting holds the host's traffic to the
@@ -224,7 +228,7 @@ On a platform other than Linux, macOS, iOS and Android:
 - `cap.egress` and `cap.exit` are refused in words that name the platform, and
   the underlay sockets carry no mark.
 - `overlay` and `cap.antispoof` load, and the antispoof filter is not enforced,
-  as on macOS.
+  as [the antispoof filter's platforms](antispoof.md#platforms) say.
 - An egress segment fails the start, since it needs `cap.egress`, which is
   refused. A `cap.route` entry that counts as a default is refused at startup
   and on a reload, as [gaps on macOS](#gaps-on-macos) gives.
@@ -257,13 +261,14 @@ forwarding is warned, as [at a glance](#at-a-glance) gives. An Android build,
 which Go makes with the `linux` build tag, and an iOS build, which it makes with
 the `darwin` one, refuse `cap.egress` at startup, and `cap.exit` and a
 `cap.route` entry that counts as a default at startup and on a reload, in the
-same words, naming `android` or `ios`, and load `overlay` as macOS does.
-`cap.table` fails the start there too, and a moved host waits for each session's
-own liveness check. An iOS build opens no selection, so its underlay datagrams
-name no interface and leave by the host's own routes. A session there that sends
-from the kernel's choice of source reads its path MTU from the interface holding
-the source the kernel picks for a socket connected to the peer, and one the peer
-opened from the interface holding the address it sends from.
+same words, naming `android` or `ios`, and load `overlay` with no filter, as the
+BSDs do. `cap.table` fails the start there too, and a moved host waits for each
+session's own liveness check. An iOS build opens no selection, so its underlay
+datagrams name no interface and leave by the host's own routes. A session there
+that sends from the kernel's choice of source reads its path MTU from the
+interface holding the source the kernel picks for a socket connected to the
+peer, and one the peer opened from the interface holding the address it sends
+from.
 
 ## Moving hosts
 

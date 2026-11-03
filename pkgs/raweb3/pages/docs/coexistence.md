@@ -677,6 +677,65 @@ arriving on its own interface. Tailscale's sources forwarded from `tailscale0`
 into the tun are dropped by `mesh_entry` unless a masquerade gives them the
 tun's address, since this node owns none of them.
 
+### pf on macOS
+
+On macOS [the antispoof filter](antispoof.md#the-pf-anchor-on-macos) writes into
+pf where `overlay` is written, through
+[pfctl(8)](https://keith.github.io/xcode-man-pages/pfctl.8.html) alone, in the
+grammar of [pf.conf(5)](https://keith.github.io/xcode-man-pages/pf.conf.5.html).
+Apple's
+[TN3165](https://developer.apple.com/documentation/technotes/tn3165-packet-filter-is-not-api)
+says pf is not API, so a macOS release can change what pfctl prints or does, and
+a pass that reads the anchor back otherwise than written reads not ready. The
+same rules hold as for nftables: it writes only inside the anchor
+`com.apple/ranet3`, a child of `com.apple` beside Apple's own, loads it whole or
+its tables alone in 1 transaction each, and never runs `pfctl -e`, `pfctl -d`,
+`pfctl -F` without `-a`, or `pfctl -f` without `-a`. It holds pf enabled by a
+reference of its own, which leaves another program's reference and pf's running
+state as they were when it gives its own back.
+
+- The stock main ruleset in `/etc/pf.conf` calls `anchor "com.apple/*"`, and pf
+  evaluates `com.apple`'s children in the order of their names. An operator's
+  own rule for a source the anchor drops or passes, a block of part of an
+  exemption among them, goes in the main ruleset ahead of the call, and a
+  stateful rule of one's own that a flow over the mesh's utun can match keeps
+  its states to their interface, with `set state-policy if-bound` in the main
+  ruleset or `(if-bound)` on the rule, as
+  [the limits](design/limits.md#the-antispoof-filter) give.
+- `pfctl -F all` or another VPN's ruleset loaded over the stock one removes the
+  call, and pf then evaluates no rule of the anchor. A call counts only where it
+  evaluates the anchor for every packet into every interface in both families:
+  `anchor "com.apple/*"`, which pfctl prints as `anchor "com.apple/*" all`, or
+  the same with `in`. One that names `out`, an interface, `inet` or `inet6`, a
+  protocol or an address leaves packets out of the anchor, and counts as none,
+  and so does one inside an inline anchor's braces, such as
+  `anchor in { anchor "com.apple/*" }`, which pf resolves relative to that
+  inline anchor. A start with `overlay` written then refuses to run, as a Linux
+  start refuses a filter its first pass does not read back, with
+  `egress: the antispoof filter in pf anchor com.apple/ranet3 is not ready, since pf's main ruleset calls neither anchor "com.apple/*" all nor anchor "com.apple/*" in all at its own depth, so pf may evaluate no rule of com.apple/ranet3 for a packet in: a call that names out, an interface, a family, a protocol or an address leaves packets out of it, one inside an inline anchor's braces resolves relative to that anchor, pfctl -f /etc/pf.conf loads the stock ruleset again, and a ruleset loaded in its place needs that line`.
+  A running filter that finds the call gone reads not ready with the same reason
+  and keeps running. Either way the fix is the host's: load the stock ruleset
+  again, or keep `anchor "com.apple/*"` with no qualifier in a ruleset of one's
+  own, ahead of any `quick` pass meant to come after ranet3's drops. The daemon
+  never edits the main ruleset.
+- A `set skip` naming an interface outside the mesh, loaded with the main
+  ruleset, makes pf pass every packet on it before any rule, a forged overlay
+  source among them, and the start refuses the same way, with
+  `pf skips en0, as a set skip loaded with the main ruleset asks, so pf evaluates no rule for a packet arriving there and a forged overlay source passes: pfctl -f /etc/pf.conf loads the stock ruleset again, which skips no interface`
+  as the reason, naming every such interface. `pfctl -s Interfaces -v` lists
+  whether an interface has a skip rule activated, as `man pfctl` on a Mac says,
+  and prints `(skip)` after its name where it has one. A skip of the mesh's utun
+  or `lo0`, as `set skip on lo0` asks, changes nothing the anchor drops.
+- `pfctl -d` stops pf and ends every reference, the daemon's among them. The
+  next pass, within 5 seconds, takes a new reference, which turns pf back on, as
+  [readiness](antispoof.md#readiness) says with what the pass logs and how to
+  turn the filter off.
+- A crash leaves the anchor, its drops sparing a utun that went with the
+  process, and the reference held. The next start takes both over on its own, or
+  gives both back where it has no `overlay`, and
+  [the anchor's lifetime](antispoof.md#the-pf-anchor-on-macos) gives the
+  commands that clear them while ranet3 stays down.
+
 ## What forwarded traffic meets
 
 A node that forwards for others routes a neighbor's packet by its destination,

@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-06
+updated: 2026-11-07
 order: 10
 ---
 
@@ -152,6 +152,118 @@ passes from those interfaces whoever sends it, so a host there reaches this
 host's services under that source. A range this node announces passes so even
 where another node announces the same range, but where
 [the carve-outs](../antispoof.md#carve-outs) keep it carved.
+
+**On macOS a pass of the filter ends pf's evaluation.** Every rule of
+[the anchor](../antispoof.md#on-macos) is `quick`, so a packet its loopback
+pass, a carve-out's pass or an exemption's pass takes meets no rule pf would
+evaluate after the anchor: none of the main ruleset's after the call to
+`com.apple/*`, and none of a child of `com.apple` whose name sorts after
+`ranet3`. Linux's accept ends chain `antispoof` alone, and a later chain still
+sees the packet. An operator's own block of a source the filter passes goes
+ahead of that call, as [pf on macOS](../coexistence.md#pf-on-macos) gives. Each
+pass reaches only its family, its prefix or the overlay, and its interface, or
+every interface but the mesh's utun for the shared exemptions.
+
+**On macOS a pass ahead of the anchor's call decides first.** A `quick` pass in
+the main ruleset ahead of `anchor "com.apple/*"`, or in a child of `com.apple`
+whose name sorts before `ranet3`, passes a packet before the anchor's drop meets
+it, and the anchor still reads back as written. A pass that sorts after it meets
+no packet the drop takes, since the drop is `quick` too, and a state it made is
+matched ahead of both, as the next limit gives.
+
+**On macOS a state another rule made passes ahead of the anchor.** pf matches a
+packet against its state table before any rule, and passes one that matches a
+state without evaluating a rule, as `pf_test` does for a UDP datagram
+([pf.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf.c#L9934-L9953))
+and
+[pf.conf(5)](https://keith.github.io/xcode-man-pages/pf.conf.5.html#PACKET_FILTERING)
+gives. A state matches on every interface unless the rule that made it is
+if-bound
+([pf.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf.c#L1164-L1169)),
+a flag each rule carries for itself
+([pf.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf.c#L474-L475)).
+Where a stateful rule of the operator's or another program's made a state for a
+flow over the mesh's utun, such as a `pass out`, which keeps state unless it
+says `no state`, a forged overlay source that matches the state, as a UDP
+datagram does by the flow's addresses and ports alone, passes on any interface
+ahead of the anchor's drop, and the anchor still reads back as written. XNU's
+input then checks a datagram pf passed against the interface it came up
+([ip_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_input.c#L1247),
+[ip_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_input.c#L1569)).
+With `net.inet.ip.forwarding` at 0, it drops one for an address of a utun or an
+ipsec interface other than the one it came up where
+`net.inet.ip.check_interface` reads 1, its default, and one for any address of
+another interface where it reads 2
+([ip_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_input.c#L243-L280),
+[ip_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_input.c#L1377-L1387)).
+IPv6 does the same under `net.inet6.ip6.forwarding` and
+`net.inet6.ip6.check_interface`
+([ip6_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/ip6_input.c#L1096),
+[ip6_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/ip6_input.c#L1197),
+[ip6_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/ip6_input.c#L243-L272),
+[ip6_input.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/ip6_input.c#L647-L657)).
+So on a Mac that does not forward, with the check at 1 or 2, the forged datagram
+reaches no socket where the flow's local address is this node's own address on
+the mesh's utun. It reaches the flow where that local address belongs to the
+interface the datagram came up, where it belongs to an interface that is neither
+a utun nor an ipsec interface with the check at 1, and wherever the check reads
+0 or the Mac forwards. `set state-policy if-bound` in the main ruleset keeps the
+states its rules make to the interface each was made on, the mesh's utun for
+such a flow, and `(if-bound)` does the same for one rule, in an anchor of one's
+own too
+([pf.conf(5)](https://keith.github.io/xcode-man-pages/pf.conf.5.html#OPTIONS)).
+Another program's stateful rule keeps the policy that program loads it with.
+
+**On macOS a link the watch does not report gets no wildcard exemption.** pf
+matches no interface name ending in `*`, so the filter writes such an exemption
+as 1 rule per link [the network watch](../platforms.md#moving-hosts) reports. A
+link that attaches drops the exemption's sources until the pass its report wakes
+rewrites the anchor, and one the watch never reports drops them throughout. The
+gap drops, never passes.
+
+**On macOS a carved entry pf cannot hold fails the pass.** pfctl reads a prefix
+inside `fe80::/10` with its second 16-bit group cleared, the group in which a
+BSD kernel keeps a link-local address's zone
+([XNU's `in6.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6.c#L4476-L4481)).
+A prefix of the mesh's table such as `fe80:1:2::/48` that an exemption of
+`fe80::/16` carves would join `<ranet3_carved>` and cannot be written, so the
+pass that meets it fails, the filter reads not ready with the reason, and the
+anchor keeps what it held.
+
+**On macOS a crash leaves the anchor naming a utun unit.** The anchor's drops
+name every interface but the utun the crashed process held, and pf binds a rule
+naming a unit no interface holds to whichever utun later takes that unit. Until
+the next start rewrites the anchor for its own utun, an overlay source on a utun
+another program opens under that unit passes as the mesh's own.
+[The anchor's lifetime](../antispoof.md#the-pf-anchor-on-macos) gives the
+commands that clear it while ranet3 stays down.
+
+**On macOS a crash during a take leaves a reference no record names.** The
+daemon takes a reference with `DIOCSTARTREF` and then writes its token into
+`pf.json`, and a crash between the two leaves pf enabled under a token no record
+holds, so no start gives it back. `pfctl -s References` lists it under the dead
+process's pid until a reboot or a `pfctl -X` of it ends it.
+
+**On macOS a release may end a value pf handed on.** The daemon gives back a
+reference only where `pfctl -s References` lists its token under the pid the
+record holds, and then runs `pfctl -X <token>`, a second command. pf releases by
+value alone
+([pf_ioctl.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf_ioctl.c#L371-L389)),
+so where the reference ends and pf hands its value to another program's in the
+few milliseconds between the two, the release ends that program's reference.
+Neither pfctl nor `DIOCSTOPREF` releases by value and pid.
+
+**On macOS some interfaces pass pf.** pf's hook skips an interface the kernel
+marks as a co-processor or management interface, as `pf_af_hook` in
+[pf_ioctl.c](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/pf_ioctl.c#L4621-L4626)
+returns early for them, so the anchor drops nothing arriving on them, a forged
+overlay source among them.
+
+**On macOS pf is one switch for the whole host.** The daemon's reference enables
+pf for every interface, and pf then evaluates the main ruleset and every anchor
+it calls on every packet, those of other programs among them. A Mac with no
+`overlay` leaves pf as it found it, once it gives back what an earlier run's
+record names.
 
 ## Who a node dials
 
