@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"strings"
@@ -197,19 +198,22 @@ func (r *reader) report(cmd *cobra.Command, result control.Result, err error) er
 }
 
 // completePeers offers the peers this node dials or holds a session with, and nothing when the daemon cannot be reached, since an error would land in the command line
+// both reads together take completionTimeout at most
 func (r *reader) completePeers(_ *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
 	if len(args) > 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), completionTimeout)
+	defer cancel()
 	client := control.Dial(r.socket)
 	named := make(map[string]struct{})
-	if peers, err := client.Peers(); err == nil {
+	if peers, err := client.PeersWithin(ctx); err == nil {
 		for _, peer := range peers {
 			named[peer.Peer] = struct{}{}
 		}
 	}
 	// a peer that only dials this node has a session and no peers entry
-	if sessions, err := client.Sessions(); err == nil {
+	if sessions, err := client.SessionsWithin(ctx); err == nil {
 		for _, session := range sessions {
 			if session.Peer != "" {
 				named[session.Peer] = struct{}{}

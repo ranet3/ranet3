@@ -77,6 +77,16 @@ func (c *Client) Sessions() ([]Session, error) { return read[[]Session](c, PathS
 
 func (c *Client) Peers() ([]Peer, error) { return read[[]Peer](c, PathPeers) }
 
+// SessionsWithin and PeersWithin are Sessions and Peers, ctx bounding the
+// exchange beside the client's own timeout
+func (c *Client) SessionsWithin(ctx context.Context) ([]Session, error) {
+	return readWithin[[]Session](ctx, c, PathSessions)
+}
+
+func (c *Client) PeersWithin(ctx context.Context) ([]Peer, error) {
+	return readWithin[[]Peer](ctx, c, PathPeers)
+}
+
 // Disable and Enable stop and start one subsystem. Redial, Rekey, Reload, Down
 // and Up are the other verbs, written out for the same reason the reads are.
 func (c *Client) Disable(subsystem Subsystem) (Result, error) {

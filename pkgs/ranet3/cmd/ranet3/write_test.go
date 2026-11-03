@@ -7,10 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -264,6 +266,50 @@ func TestPeersCompleteToTheirCanonicalForm(t *testing.T) {
 		if got := strings.Fields(offered); !slices.Equal(got, want) {
 			t.Errorf("redial %q completed to %q, want %q", word, got, want)
 		}
+	}
+}
+
+// A daemon that takes the connection and never answers costs a peer's
+// completion completionTimeout, where each of its two reads would otherwise
+// wait out the client's ReadTimeout and stall the shell for both.
+func TestPeerCompletionIsBoundedWhenTheDaemonNeverAnswers(t *testing.T) {
+	path := socketPath(t)
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	var held []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			held = append(held, conn)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, conn := range held {
+			conn.Close()
+		}
+	})
+	started := time.Now()
+	out, err := execute(t, cobra.ShellCompRequestCmd, "redial", "--control", path, "")
+	if err != nil {
+		t.Fatalf("completing redial failed: %v", err)
+	}
+	if took := time.Since(started); took >= control.ReadTimeout/2 {
+		t.Errorf("completing redial against a daemon that never answers took %s, want about %s", took, completionTimeout)
+	}
+	// the directive's line comes first when nothing is offered
+	if !strings.HasPrefix(out, ":") {
+		t.Errorf("completing redial against a daemon that never answers offered %q, want nothing", out)
 	}
 }
 
