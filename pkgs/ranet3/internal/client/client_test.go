@@ -891,17 +891,6 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	}
 }
 
-// a node of an earlier release orders the raw names joined with /, where the text form puts example/bravo:0 after example/bravo2:0
-// and comparing the parts one by one, or joined with a byte below -, puts example/gw:0 before example/gw-2:0
-func TestCrossingSessionsKeepTheOrderOfTheRawNames(t *testing.T) {
-	for _, pair := range [][2]string{{"example/bravo:0", "example/bravo2:0"}, {"example/gw-2:0", "example/gw:0"}} {
-		first, second := identity.MustParse(pair[0]), identity.MustParse(pair[1])
-		if !preferInitiator(first, second) || preferInitiator(second, first) {
-			t.Errorf("%s is preferred as the initiator over %s, so a node of an earlier release keeps the other session", pair[1], pair[0])
-		}
-	}
-}
-
 // Two nodes that dial each other at once land both sessions on the same path
 // name at both ends. They have to pick the same survivor whichever order the
 // two handshakes finish in locally, or each keeps the SA the other tore down

@@ -116,6 +116,81 @@ func TestParsedTextIsItsOwnCanonicalForm(t *testing.T) {
 	})
 }
 
+// drawSlashed is drawIdentity with up to two more / and parts after one of its parts, so that its raw parts joined
+// with / split into other identities too
+func drawSlashed(tc hegel.TestCase) Identity {
+	id := drawIdentity(tc)
+	part := []*string{&id.organization, &id.name, &id.serial}[hegel.Draw(tc, pbt.Spanning(0, 2))]
+	for range hegel.Draw(tc, pbt.Spanning(0, 2)) {
+		*part += "/" + drawPart(tc, 1)
+	}
+	return id
+}
+
+// drawAgainst draws an identity against a: a itself, an identity whose raw parts joined with / give a's raw parts joined
+// with / and that is not a wherever one exists, a with one part lengthened so that the two share that part's prefix and
+// every other part, or an identity of its own
+func drawAgainst(tc hegel.TestCase, a Identity) Identity {
+	switch hegel.Draw(tc, pbt.Spanning(0, 3)) {
+	case 0:
+		return a
+	case 1:
+		join := a.organization + "/" + a.name + "/" + a.serial
+		var others []Identity
+		for i := range len(join) {
+			for j := i + 1; j < len(join); j++ {
+				if join[i] != '/' || join[j] != '/' {
+					continue
+				}
+				if b, err := From(join[:i], join[i+1:j], join[j+1:]); err == nil && b != a {
+					others = append(others, b)
+				}
+			}
+		}
+		if len(others) == 0 {
+			return a
+		}
+		return others[hegel.Draw(tc, pbt.Spanning(0, len(others)-1))]
+	case 2:
+		b, tail := a, drawPart(tc, 1)
+		switch hegel.Draw(tc, pbt.Spanning(0, 2)) {
+		case 0:
+			b.organization += tail
+		case 1:
+			b.name += tail
+		default:
+			b.serial += tail
+		}
+		return b
+	}
+	return drawIdentity(tc)
+}
+
+// Compare is 0 for an identity against itself alone, swapping its arguments negates it, and it is transitive, over
+// three identities drawn against one
+func TestCompareIsAStrictTotalOrder(t *testing.T) {
+	pbt.Check(t, func(ht *hegel.T) {
+		a := drawSlashed(ht)
+		three := []Identity{a, drawAgainst(ht, a), drawAgainst(ht, a)}
+		for _, x := range three {
+			for _, y := range three {
+				forward, backward := Compare(x, y), Compare(y, x)
+				if (forward == 0) != (x == y) {
+					ht.Fatalf("Compare(%#v, %#v) = %d", x, y, forward)
+				}
+				if forward != -backward {
+					ht.Fatalf("Compare(%#v, %#v) = %d and the reverse %d", x, y, forward, backward)
+				}
+				for _, z := range three {
+					if forward < 0 && Compare(y, z) < 0 && Compare(x, z) >= 0 {
+						ht.Fatalf("Compare orders %#v before %#v before %#v, and the first not before the last", x, y, z)
+					}
+				}
+			}
+		}
+	})
+}
+
 // a query names a path by the path, its remote, the remote's node or the node's name, never by the name with a serial, and names no path to a node whose name only starts with that name
 func TestNamesTakesEachSpellingOfThePeerAndNoOther(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {

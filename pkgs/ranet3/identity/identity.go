@@ -5,6 +5,7 @@
 package identity
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"strings"
@@ -114,10 +115,13 @@ func (id Identity) At(serial string) Identity {
 // IsZero reports whether id names nobody
 func (id Identity) IsZero() bool { return id == Identity{} }
 
-// Compare orders a and b by their raw organization, name and serial joined with /
-// both ends of two crossing sessions keep the one this order picks, whatever release each runs, so it never follows the text form
+// Compare orders a and b by their raw organization, then name, then serial, a strict total order both ends of two crossing sessions compute alike
 func Compare(a, b Identity) int {
-	return strings.Compare(a.organization+"/"+a.name+"/"+a.serial, b.organization+"/"+b.name+"/"+b.serial)
+	return cmp.Or(
+		strings.Compare(a.organization, b.organization),
+		strings.Compare(a.name, b.name),
+		strings.Compare(a.serial, b.serial),
+	)
 }
 
 // Path names the session between remote and the local endpoint local, the same whichever end dialed

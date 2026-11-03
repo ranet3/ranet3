@@ -112,6 +112,14 @@ func TestPathNamesTheRemoteAndTheLocalSerial(t *testing.T) {
 	}
 }
 
+// an endpoint whose name holds / and one whose serial holds / give one text joined with /, and the shorter name orders first
+func TestCompareOrdersTwoEndpointsOfOneJoin(t *testing.T) {
+	longer, shorter := MustParse("example/gw%2Fa:1"), MustParse("example/gw:a%2F1")
+	if got, back := Compare(shorter, longer), Compare(longer, shorter); got != -1 || back != 1 {
+		t.Errorf("Compare(%s, %s) = %d and the reverse %d, want -1 and 1", shorter, longer, got, back)
+	}
+}
+
 func TestNamesComparesWholeSegments(t *testing.T) {
 	for _, test := range []struct {
 		subject, query string
