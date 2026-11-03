@@ -505,7 +505,7 @@ connections to the reads.
 | `ike.followup.dropped`                | a peer's rekey was dropped before its `IKE_FOLLOWUP_KE`                                   |
 | `ike.id.resolved`                     | a handshake took the peer's ID as naming the endpoint it authenticated as                 |
 | `ike.session.established`, `.ended`   | a session started serving, and stopped                                                    |
-| `ike.session.resolved`                | 2 sessions for 1 path were resolved to 1                                                  |
+| `ike.session.resolved`                | the preferred rule resolved 2 sessions for 1 path to 1                                    |
 | `ike.session.revoked`                 | the trust in force refused a session's peer and closed it with a Delete                   |
 | `ike.rekey.started`, `.completed`     | a rekey this end started, of the Child SA or of the IKE SA                                |
 | `ike.rekey.failed`                    | the same rekey failing, with its error                                                    |
@@ -677,11 +677,11 @@ sequence numbers with none replacing it, `temporary failure` when the peer had
 answered this end's rekeys with `TEMPORARY_FAILURE` for 5 minutes with no rekey
 of the IKE SA or the Child SA completed by either end in between,
 `invalid syntax` when the peer answered a request of this end's on the current
-IKE SA with `INVALID_SYNTAX`, which ends it without a Delete, `fragment limit`
-when the peer's fragments of 1 message passed the reassembly limit
-[limits](../design/limits.md#ike) gives, which ends it without a Delete too,
+IKE SA with `INVALID_SYNTAX`, `fragment limit` when the peer's fragments of 1
+message passed the reassembly limit [limits](../design/limits.md#ike) gives,
 `initial contact` when a newer IKE SA of the session's path carried the peer's
-`INITIAL_CONTACT`, as
+`INITIAL_CONTACT`, an end that records no `ike.session.resolved`, each of these
+3 ending it without a Delete as
 [closing SAs](../design/protocol-deviations.md#closing-sas) describes, and
 `local failure` when this node failed on its own side, as when its dataplane
 refused a change to a Child SA. An IKE SA rekey of this node's that runs

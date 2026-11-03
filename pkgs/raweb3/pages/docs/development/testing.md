@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-02
+updated: 2026-11-03
 order: 20
 ---
 
@@ -501,12 +501,18 @@ a `SIGHUP` and a `SIGUSR1` sent while the daemon builds applied once each, after
 the first pass. `TestDaemonForcedOutOfItsBuildByASecondSignal` finds a second
 `SIGTERM` forcing the exit in the build, with no root, and in the undo of a
 build the first `SIGTERM` stopped, sent from the exit's close.
-`TestDaemonRefusesUpReloadAndRedialOnceItStops` holds the exit's withdrawal and
-finds `up`, `reload` and `redial` refused and `status` answered while the stop
-waits for it. `TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable`
-deletes the tun under a running daemon, finds the antispoof filter's table and
-the kill switch's left after it exits 1, and a next start that takes the
-filter's over with no write and leaves nothing after `SIGTERM`:
+`TestDaemonWarnsOfTheReloadItRefuses` finds the `reload failed` warning of a
+`SIGHUP` whose file the node refuses in a log at `warn`, and the node running on
+until `SIGTERM` stops it with status 0.
+`TestDaemonPartFailureSurvivesALogAtWarn` fails the exit's withdrawal at
+`SIGTERM` and finds status 1 and the error line naming the part in a log at
+`warn`. `TestDaemonRefusesUpReloadAndRedialOnceItStops` holds the exit's
+withdrawal and finds `up`, `reload` and `redial` refused and `status` answered
+while the stop waits for it.
+`TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable` deletes the tun
+under a running daemon, finds the antispoof filter's table and the kill switch's
+left after it exits 1, and a next start that takes the filter's over with no
+write and leaves nothing after `SIGTERM`:
 
 ```sh
 unshare -rn go test ./cmd/ranet3 -run '^TestDaemon'
@@ -834,7 +840,7 @@ The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the 25 `internal/egress/kernel` tests and the 5
 `internal/nftables` tests, the exit behavior suite and its 2 fakes, the
 `TestTUN` tests of `internal/netstack` and `internal/client`, the 3 `transport`
-sends, the 4 `internal/client` tests and the 8 `cmd/ranet3` tests above under
+sends, the 4 `internal/client` tests and the 10 `cmd/ranet3` tests above under
 `unshare -n`, the `internal/registry` tests whose names start with
 `TestResolver` and the client's resolver test above under `unshare -mn`, and
 every test of the `tun` and `conn` packages of `pkgs/wireguard`. It fails if any

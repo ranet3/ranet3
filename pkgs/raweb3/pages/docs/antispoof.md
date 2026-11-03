@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-02
+updated: 2026-11-03
 order: 55
 ---
 
@@ -194,12 +194,10 @@ away than its lease, or the site behind a gateway that
   exemption covers it, less every range this node announces inside that prefix.
   The carved drop comes before the exemption's accept.
 - A range this node announces by `cap.route` is its own even if another node
-  announces it too, and no exemption carves it, inside or covering. Where babel
-  keeps [another router's offer](routing.md#what-a-node-announces) for exactly
-  such a range inside the overlay, with no source prefix, every exemption
-  overlapping it passes the sources it passes with no offer and reports the
-  conflict, as below. A held prefix, a default and a prefix wider than the
-  overlay carve nothing.
+  announces it too, and no exemption carves it, inside or covering.
+  [Another router's offer](routing.md#what-a-node-announces) for such a range
+  makes a conflict, as below. A held prefix, a default and a prefix wider than
+  the overlay carve nothing.
 - The loader refuses a `cap.antispoof.exempt` entry that overlaps a range inside
   the overlay that this node announces, since the shared list passes it from the
   uplink too, and names the `cap.antispoof.interface.<name>.exempt` form, which

@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-02
+updated: 2026-11-03
 order: 35
 ---
 
@@ -919,8 +919,9 @@ programs' rules do beside them.
   lists.
 - macOS, the BSDs, Android and iOS refuse the block at startup:
   `kernel: cap.exit is refused on <platform>, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
-  `via` with `fallback` unwritten is refused ahead of it, naming `"none"` and
-  `fallback = "uplink"`.
+  `fallback = "none"`, and `via` with `fallback` unwritten, which is `"none"`
+  then, are refused ahead of it, since no filter there keeps the host's traffic
+  off the uplink.
 
 ## Daemon flags
 
