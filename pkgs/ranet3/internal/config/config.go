@@ -599,7 +599,7 @@ func blocksWritten(body []byte, c *Config) error {
 	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
 		return nil
 	}
-	return fillBlocks(document.Content[0], reflect.ValueOf(c).Elem())
+	return fillBlocks(document.Content[0], reflect.ValueOf(c).Elem(), "")
 }
 
 // fillBlocks walks the document beside the value it decoded to and allocates
@@ -607,7 +607,8 @@ func blocksWritten(body []byte, c *Config) error {
 // yaml key rather than by field order, into every entry of a map as well, and
 // stops at a type that reads its own yaml, since such a type spells a scalar
 // and carries no block under it. It hands every other scalar to wholeNumber.
-func fillBlocks(node *yaml.Node, target reflect.Value) error {
+// path is the key node stands under, which a refusal names.
+func fillBlocks(node *yaml.Node, target reflect.Value, path string) error {
 	node = schema.Followed(node)
 	if decodesItself(target.Type()) {
 		return nil
@@ -637,7 +638,7 @@ func fillBlocks(node *yaml.Node, target reflect.Value) error {
 				return err
 			}
 			if field := fieldByKey(target, name); field.IsValid() {
-				if err := fillBlocks(node.Content[i+1], field); err != nil {
+				if err := fillBlocks(node.Content[i+1], field, keyPath(path, name)); err != nil {
 					return err
 				}
 			}
@@ -649,18 +650,18 @@ func fillBlocks(node *yaml.Node, target reflect.Value) error {
 			}
 			// an entry is walked at a value of its own type for what it refuses
 			// a merge key inside it or an amount not written as a whole number
-			if err := fillBlocks(node.Content[i+1], reflect.New(target.Type().Elem()).Elem()); err != nil {
+			if err := fillBlocks(node.Content[i+1], reflect.New(target.Type().Elem()).Elem(), keyPath(path, schema.Followed(node.Content[i]).Value)); err != nil {
 				return err
 			}
 		}
 	case target.Kind() == reflect.Slice && node.Kind == yaml.SequenceNode:
 		for i, item := range node.Content {
-			// yaml.v3 drops a null item from the list, where encoding/json reads it as the zero identity Validate refuses
-			if target.Type().Elem() == reflect.TypeFor[identity.Identity]() && schema.Followed(item).ShortTag() == "!!null" {
-				return fmt.Errorf("line %d: a dial.to entry names nobody", item.Line)
+			// yaml.v3 drops a null item from the list, which encoding/json, the wire form's decoder, reads as an entry
+			if schema.Followed(item).ShortTag() == "!!null" {
+				return fmt.Errorf("line %d: a %s entry is null", item.Line, path)
 			}
 			if i < target.Len() {
-				if err := fillBlocks(item, target.Index(i)); err != nil {
+				if err := fillBlocks(item, target.Index(i), path); err != nil {
 					return err
 				}
 			}
@@ -724,6 +725,13 @@ func yamlKey(field reflect.StructField) string {
 		name = strings.ToLower(field.Name)
 	}
 	return name
+}
+
+func keyPath(path, key string) string {
+	if path == "" {
+		return key
+	}
+	return path + "." + key
 }
 
 // decodesItself reports a type that reads its own yaml. Everything in

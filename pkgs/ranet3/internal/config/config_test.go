@@ -414,7 +414,7 @@ func TestNodeAndPeersReadAsIdentities(t *testing.T) {
 	}
 }
 
-// a null dial.to entry names nobody, where yaml.v3 would drop it from the list and encoding/json reads it as the zero identity
+// a null dial.to entry is refused in a file, where yaml.v3 would drop it from the list, and names nobody on the wire, where encoding/json reads it as the zero identity
 // a null after a named peer is refused as one before it is
 func TestDialToRefusesAnEntryThatNamesNobody(t *testing.T) {
 	const asJSON = `{"node":"example/laptop","auth":{"key":"key.pem","trust":"trust.json"},` +
@@ -425,7 +425,7 @@ func TestDialToRefusesAnEntryThatNamesNobody(t *testing.T) {
 		"json, null first":        {".json", asJSON},
 		"json, null after a peer": {".json", strings.Replace(asJSON, `[null,"other/relay"]`, `["other/relay",null]`, 1)},
 	} {
-		if _, err := load(t, file.extension, file.body); err == nil || !strings.Contains(err.Error(), "a dial.to entry names nobody") {
+		if _, err := load(t, file.extension, file.body); err == nil || !strings.Contains(err.Error(), "a dial.to entry is null") {
 			t.Errorf("%s: a file whose dial.to holds a null entry was answered with %v", name, err)
 		}
 	}
@@ -435,6 +435,34 @@ func TestDialToRefusesAnEntryThatNamesNobody(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "a dial.to entry names nobody") {
 		t.Errorf("a null dial.to entry read by encoding/json was answered with %v", err)
+	}
+}
+
+// a null entry of any list is refused naming its key in yaml and in json, first or after an entry, where yaml.v3 would drop it
+func TestEveryListRefusesANullEntry(t *testing.T) {
+	const asJSON = `{"node":"example/laptop","auth":{"key":"key.pem","trust":"trust.json"},"overlay":["203.0.113.0/24"],` +
+		`"link":{"port":13000,"endpoints":[{"serial":"0","family":"ip4"}]},"dial":{"to":["example/gateway"]},"cap":{%s}}`
+	yamlOf := func(lists string) string { return nodeYAML + "overlay: [203.0.113.0/24]\ncap:\n" + lists }
+	for key, written := range map[string]struct{ yaml, json string }{
+		"cap.route.announce": {"  route:\n    announce: [~, 203.0.113.5/32]\n", `"route":{"announce":["203.0.113.5/32",null]}`},
+		"cap.table.addresses": {"  table:\n    addresses:\n      - 203.0.113.5/32\n      - null\n",
+			`"table":{"addresses":[null]}`},
+		"cap.antispoof.interface.eth1.exempt": {"  antispoof:\n    interface:\n      eth1: {exempt: [null]}\n",
+			`"antispoof":{"interface":{"eth1":{"exempt":["203.0.113.128/26",null]}}}`},
+	} {
+		for extension, body := range map[string]string{".yaml": yamlOf(written.yaml), ".json": fmt.Sprintf(asJSON, written.json)} {
+			if _, err := load(t, extension, body); err == nil || !strings.Contains(err.Error(), "a "+key+" entry is null") {
+				t.Errorf("%s%s holding a null entry was answered with %v", key, extension, err)
+			}
+		}
+	}
+	for extension, body := range map[string]string{
+		".yaml": strings.Replace(nodeYAML, "  endpoints:\n", "  endpoints:\n    - ~\n", 1),
+		".json": strings.Replace(fmt.Sprintf(asJSON, ""), `"endpoints":[`, `"endpoints":[null,`, 1),
+	} {
+		if _, err := load(t, extension, body); err == nil || !strings.Contains(err.Error(), "a link.endpoints entry is null") {
+			t.Errorf("link.endpoints%s holding a null entry was answered with %v", extension, err)
+		}
 	}
 }
 
