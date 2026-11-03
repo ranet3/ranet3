@@ -49,7 +49,7 @@ func main() {
 		if code, ok := errors.AsType[exitCode](err); ok {
 			os.Exit(int(code))
 		}
-		fmt.Fprintln(os.Stderr, err)
+		printError(os.Stderr, os.Getenv("JOURNAL_STREAM"), err)
 		os.Exit(1)
 	}
 }
@@ -167,7 +167,7 @@ func refuseToStart(err error) int {
 // status rather than exiting, so every deferred close runs before the process
 // exits with it.
 func runDaemon(opts options) int {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: opts.level})))
+	slog.SetDefault(slog.New(logHandler(os.Stderr, os.Getenv("JOURNAL_STREAM"), opts.level)))
 	return startDaemon(opts, production)
 }
 
