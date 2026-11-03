@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-11-02
+updated: 2026-11-03
 order: 75
 ---
 
@@ -275,8 +275,7 @@ socket:
 - `--iif` of `debug route`, from the links of the host the command runs on, the
   mesh's tun the daemon names left out
 
-When the daemon does not answer, completion offers nothing. A completion from
-the recorded events, from `debug pmtu` or for `--iif` of `debug route` waits at
-most 1 second. A completion for `redial`, `rekey`, `debug probe` or `--peer` of
-`debug route` or `debug trace` makes 2 reads, and waits up to 10 seconds for
-each.
+When the daemon does not answer, completion offers nothing, and a completion
+that asks the daemon waits at most 1 second. A completion for `redial`, `rekey`,
+`debug probe` or `--peer` of `debug route` or `debug trace` makes 2 reads within
+that second.

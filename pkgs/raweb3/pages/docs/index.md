@@ -5,7 +5,7 @@
 title: "ranet3"
 description: "What ranet3 is, and where each part of it is documented."
 created: 2026-08-17
-updated: 2026-11-02
+updated: 2026-11-03
 order: 10
 ---
 
@@ -46,10 +46,10 @@ The top of the config file says what the node is: its name in `node`, the
 prefixes the mesh numbers its nodes from in `overlay`, its key and trust
 document in `auth`, its port, endpoints and tun in `link`, and its peers in
 `dial`. Everything else it does is a block under `cap`. `cap.table`,
-`cap.segment` and `cap.egress` are off until the file writes them, and
-`cap.transit` until it writes `enable = true`. `cap.route`, `cap.babel` and
-`cap.crypto` run with their defaults when the file leaves them out.
-[`cap.antispoof`](antispoof.md) turns nothing on and only exempts.
+`cap.segment`, `cap.egress` and `cap.transit` are off until the file writes
+them. `cap.route`, `cap.babel` and `cap.crypto` run with their defaults when the
+file leaves them out. [`cap.antispoof`](antispoof.md) turns nothing on and only
+exempts.
 
 | Block           | What it does                                                                                                         |
 | --------------- | -------------------------------------------------------------------------------------------------------------------- |

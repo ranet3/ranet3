@@ -37,13 +37,15 @@ nest the same names. A key not listed here is refused when the file loads.
 | duration | as Go writes one, or a bare `0`                                    | `"4s"`, `"250ms"`, `"1h30m"` |
 | prefix   | an address and a length                                            | `"2001:db8::/48"`            |
 | address  | no length and no zone                                              | `"2001:db8::1"`              |
-| table    | a number, or `main` (254), `local` (255) or `default` (253)        | `200`, `"main"`              |
+| table    | a number                                                           | `200`                        |
 | integer  | whole digits, and hex in TOML and YAML                             | `13000`, `0xc8`              |
 | name     | `organization/name`, or `organization/name:serial` for an endpoint | `"example/gateway:0"`        |
 
 - JSON has no hex spelling. A `.json` file writes the decimal number.
 - An integer written with a fraction, an exponent or a minus sign is refused
   with its line.
+- A list entry written as `null` in YAML or JSON is refused with its line and
+  its list, such as `a cap.route.announce entry is null`.
 - In a name, a byte outside letters, digits, `-`, `.`, `_` and `~` is written as
   `%` and 2 uppercase hex digits. The organization `example org` is
   `example%20org`. No other spelling is taken.
@@ -283,27 +285,18 @@ nothing but what [`cap.egress`](#capegress) and an egress segment add, as
   outside `overlay` shorter than `/8` for IPv4 or `/16` for IPv6, makes this
   node an exit for its family. Such an entry other than a default loads with a
   warning.
-- `transit` under `cap.route` is refused at load, with a message naming
-  `cap.transit`. That key meant transit on when left out, and a node that relied
-  on it carries no transit until it writes `cap.transit.enable = true`.
 
 ## `cap.transit`
 
-Whether this node relays the routes it learns to its neighbors. A node that
-relays carries other nodes' traffic: it decrypts each of their packets from one
-session and encrypts it again onto the next.
+This node relays the routes it learns to its neighbors. A node that relays
+carries other nodes' traffic: it decrypts each of their packets from one session
+and encrypts it again onto the next. The block takes no key.
 
-| Key      | Value   | Default  | Meaning                           |
-| -------- | ------- | -------- | --------------------------------- |
-| `enable` | boolean | required | Relay the routes this node learns |
-
-- Without this block, transit is off, as with `enable = false`, and the node
-  advertises only the prefixes it originates. `enable = true` is the only way to
-  turn transit on, whatever `link.listen` and the host's forwarding are.
-- A written block states `enable`. A block without it is refused at load.
-- The daemon reads `enable` at startup. A reload that would turn transit on or
-  off is refused with `config: cap.transit enable changed, restart to apply`. A
-  reload between a left-out block and `enable = false` changes nothing.
+- Without this block, transit is off, and the node advertises only the prefixes
+  it originates. Writing the block, empty as it is, is the only way to turn
+  transit on, whatever `link.listen` and the host's forwarding are.
+- The daemon reads the block at startup. A reload that would write or remove it
+  is refused with `config: cap.transit changed, restart to apply`.
 - The mesh forwards transit itself, so the host's forwarding settings play no
   part in it. With transit off, a packet for another node that reaches this one
   all the same is answered administratively prohibited, unless an End.DT46 SID
@@ -394,25 +387,24 @@ Babel selects into a kernel routing table, through the tun.
 writes no route through the tun and assigns no address, and the tun is yours to
 configure.
 
-| Key                | Value            | Default        | Meaning                                                                          |
-| ------------------ | ---------------- | -------------- | -------------------------------------------------------------------------------- |
-| `id`               | table            | `200`          | The table the reconciler owns                                                    |
-| `proto`            | integer          | `155`          | Route protocol that marks what the reconciler owns                               |
-| `metric`           | integer          | kernel default | Priority of every installed route but a hold or a throw, which sits last         |
-| `addresses`        | list of prefixes | none           | Addresses assigned to the tun                                                    |
-| `assign_announced` | boolean          | `false`        | Also assign every prefix `cap.route` announces                                   |
-| `reconcile`        | duration         | `"30s"`        | Interval of the periodic pass that corrects drift                                |
-| `capture_grace`    | duration         | `"10s"`        | How long a route carrying this host's own traffic outlives the last live session |
+| Key                | Value            | Default | Meaning                                                                          |
+| ------------------ | ---------------- | ------- | -------------------------------------------------------------------------------- |
+| `id`               | table            | `200`   | The table the reconciler owns                                                    |
+| `proto`            | integer          | `155`   | Route protocol that marks what the reconciler owns                               |
+| `addresses`        | list of prefixes | none    | Addresses assigned to the tun                                                    |
+| `assign_announced` | boolean          | `false` | Also assign every prefix `cap.route` announces                                   |
+| `reconcile`        | duration         | `"30s"` | Interval of the periodic pass that corrects drift                                |
+| `capture_grace`    | duration         | `"10s"` | How long a route carrying this host's own traffic outlives the last live session |
 
 - `id` 253, 254 and 255 are refused. They are `default`, `main` and `local`.
 - `proto` 1 to 4 are refused. They belong to the kernel and to systemd-networkd.
   The reconciler reads back and deletes only routes and rules that carry its
   `proto`.
-- The kernel's default `metric` is 0 for IPv4 and 1024 for IPv6. The reconciler
-  does not take over a route another writer holds under the same key. A table
-  shared with BIRD needs a metric BIRD does not use.
+- On Linux every route goes in at the kernel's default priority, a hold or a
+  throw at the last, as [routing](routing.md#what-it-installs) lists. The
+  reconciler does not take over a route another writer holds under the same key.
 - macOS has 1 forwarding table and no route protocol. It refuses at startup an
-  `id` or `proto` other than the default. It ignores `metric`.
+  `id` or `proto` other than the default.
 - On Linux the reconciler derives its policy rules from `overlay`, this node's
   own prefixes and `cap.exit`, and no key writes a rule.
   [Routing](routing.md#policy-rules-on-linux) lists them. macOS installs none.

@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-02
+updated: 2026-11-03
 order: 100
 ---
 
@@ -29,7 +29,6 @@ setting or skips a route instead.
 | An own prefix this node originates outside the overlay | a throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, row L10 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)                                               | nothing, row D2 of [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) for a socket bound to no interface and no address of the utun         |
 | Hold of each overlay prefix                            | installed for each that holds no unspecified address and that the mesh can carry                                                                                                                                                   | none, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                          |
 | A link's network inside the overlay                    | a throw in place of the overlay prefix's hold, and accepted from its own interface by chain `antispoof`, as [carve-outs](antispoof.md#carve-outs) describe                                                                         | none                                                                                                                                                             |
-| `cap.table.metric`                                     | supported                                                                                                                                                                                                                          | ignored                                                                                                                                                          |
 | `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                       | refused, naming the platform                                                                                                                                     |
 | Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                           | refused                                                                                                                                                          |
 | `overlay`                                              | loaded, and chain `antispoof` at prerouting in the nftables table `inet ranet3`, with an accept for each `cap.antispoof` exemption                                                                                                 | loaded, bounding the local segments' outer sources and the forwarding decision, and the filter not enforced, as `status` and `ranet3 debug rules` say            |
@@ -118,11 +117,9 @@ stay apart.
 
 macOS has 1 forwarding table and lacks policy rules, so its reconciler installs
 none. It refuses any `cap.table.id` or `cap.table.proto` other than the
-defaults, 200 and 155. It takes `cap.table.metric` and ignores it, because a
-macOS route carries no metric. It installs nothing for an own prefix it
-originates outside the overlay, where Linux installs a throw route, so a lookup
-for one from a socket bound to no interface and no address of the utun ends as
-row D2 of
+defaults, 200 and 155. It installs nothing for an own prefix it originates
+outside the overlay, where Linux installs a throw route, so a lookup for one
+from a socket bound to no interface and no address of the utun ends as row D2 of
 [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives.
 It installs no hold of an overlay prefix either, as
 [the antispoof filter's platforms](antispoof.md#platforms) say.

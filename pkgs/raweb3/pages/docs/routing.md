@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-02
+updated: 2026-11-03
 order: 45
 ---
 
@@ -133,9 +133,9 @@ with no answer. Neither follows a covering route such as a default.
 With transit on, the node relays every route it selects to its other neighbors
 and forwards the packets they bring, as [transit](#transit) describes. With
 transit off, it advertises only the prefixes it originates, and still learns and
-installs every route. Transit is off unless
-[`cap.transit`](configuration-reference.md) writes `enable = true`, and a change
-to it takes a restart, as [reloading](reloading.md) lists.
+installs every route. Transit is off unless the file writes
+[`cap.transit`](configuration-reference.md), and a change to it takes a restart,
+as [reloading](reloading.md) lists.
 
 `cap.egress` adds the prefixes it is ready to carry, without a source prefix.
 [Exit nodes](exit-nodes.md) describes when it does. A node with an egress
@@ -413,7 +413,7 @@ Linux it also installs the [policy rules](#policy-rules-on-linux) it derives.
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Table       | `cap.table.id`, 200 by default                                                                                                                  |
 | Protocol    | `cap.table.proto`, 155 by default                                                                                                               |
-| Metric      | `cap.table.metric`, or 0 for IPv4 and 1024 for IPv6                                                                                             |
+| Metric      | the kernel's default, 0 for IPv4 and 1024 for IPv6, on Linux                                                                                    |
 | Hold        | an `unreachable` route at metric 4294967295, with no device, read back over IPv6 as `dev lo`, on Linux, and a reject route on the utun on macOS |
 | Throw       | a `throw` route at metric 4294967295, with no device, read back over IPv6 as `dev lo`, on Linux only                                            |
 | IPv6 source | on Linux a source-specific route carries its source prefix, and on macOS it is scoped to the utun instead                                       |
@@ -993,10 +993,12 @@ describes.
 
 A session is live for 20 seconds after the last authenticated IKE message from
 its peer, and for 20 to 30 seconds after the last authenticated ESP packet, as
-[the design's limits](design/limits.md#ike) list. The withdrawal logs
-`kernel is withdrawing the routes that would carry this machine's own traffic`,
-and the restore logs
-`kernel is carrying this machine's own traffic over the mesh again`.
+[the design's limits](design/limits.md#ike) list. A pass that installs such a
+route where the last held none logs
+`kernel is installing the routes that carry this machine's own traffic over the mesh`,
+and the withdrawal of them logs
+`kernel is withdrawing the routes that would carry this machine's own traffic`.
+An exit logs neither for the default it announces, which it never installs.
 
 The reconciler never installs a hold of a route that counts, nor this node's own
 prefix that counts, whatever the sessions. An `unreachable` route of that width

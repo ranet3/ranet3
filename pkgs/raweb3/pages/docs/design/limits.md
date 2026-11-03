@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-02
+updated: 2026-11-03
 order: 10
 ---
 
@@ -59,9 +59,9 @@ With transit off, a node advertises only the prefixes it announces and never
 relays one it learned. A packet for another node that reaches it all the same is
 answered administratively prohibited, unless an End.DT46 SID of this node
 delivering to the mesh took it out of its outer header. Transit is off unless
-[`cap.transit`](../configuration-reference.md) writes `enable = true`, and a
-leaf leaves it out. Refusing to advertise cannot close a loop, so this only
-narrows what the feasibility condition already bounds.
+the file writes [`cap.transit`](../configuration-reference.md), and a leaf
+leaves it out. Refusing to advertise cannot close a loop, so this only narrows
+what the feasibility condition already bounds.
 
 **A host's own tunnel through the mesh has its inner sources checked.** The
 forwarding decision opens every IPv6 read off the tun that ends at an inner IPv4
