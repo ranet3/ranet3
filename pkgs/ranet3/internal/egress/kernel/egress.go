@@ -776,15 +776,6 @@ func (t *Translator) Run(ctx context.Context) error {
 
 func (t *Translator) Close() error { return t.be.Close() }
 
-func stopTimer(timer *time.Timer) {
-	if !timer.Stop() {
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
-}
-
 // retryTimer is a run loop's retry of a failed pass, on a backoff doubling
 // from minRetryInterval up to the sweep, armed only while the backoff is set
 type retryTimer struct {
@@ -794,14 +785,14 @@ type retryTimer struct {
 
 func newRetryTimer(sweep time.Duration) *retryTimer {
 	r := &retryTimer{Timer: time.NewTimer(sweep), sweep: sweep}
-	stopTimer(r.Timer)
+	r.Stop()
 	return r
 }
 
 // failed arms the timer with the backoff doubled, which it returns
 func (r *retryTimer) failed() time.Duration {
 	r.backoff = min(max(2*r.backoff, minRetryInterval), r.sweep)
-	stopTimer(r.Timer)
+	r.Stop()
 	r.Reset(r.backoff)
 	return r.backoff
 }
@@ -810,7 +801,7 @@ func (r *retryTimer) failed() time.Duration {
 func (r *retryTimer) passed() {
 	if r.backoff != 0 {
 		r.backoff = 0
-		stopTimer(r.Timer)
+		r.Stop()
 	}
 }
 

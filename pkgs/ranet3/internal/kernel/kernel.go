@@ -1026,14 +1026,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	ticker := time.NewTicker(r.table.Reconcile.Duration())
 	defer ticker.Stop()
 	retry := time.NewTimer(r.table.Reconcile.Duration())
-	stopTimer(retry)
+	retry.Stop()
 	defer retry.Stop()
 	// Nothing else wakes at the moment the capture grace expires: the mesh has
 	// stopped changing, which is why the grace is running at all. Without this
 	// the machine's own traffic stays in a dead tun until the periodic sweep,
 	// which is three times the grace by default.
 	grace := time.NewTimer(r.table.Reconcile.Duration())
-	stopTimer(grace)
+	grace.Stop()
 	defer grace.Stop()
 
 	// The space this reconciler owns comes from the platform: darwin has one
@@ -1059,8 +1059,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 				err := r.withdraw(nil)
 				r.routePass = Stats{}
 				r.recordPass(err, time.Since(started))
-				stopTimer(retry)
-				stopTimer(grace)
+				retry.Stop()
+				grace.Stop()
 				if err != nil {
 					backoff = min(max(2*backoff, minRetryInterval), r.table.Reconcile.Duration())
 					slog.Warn("kernel could not withdraw everything it was asked to stop holding, retrying", "err", err, "retry_in", backoff)
@@ -1078,14 +1078,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			if err := r.reconcile(); err != nil {
 				backoff = min(max(2*backoff, minRetryInterval), r.table.Reconcile.Duration())
 				slog.Warn("kernel reconcile failed, retrying", "err", err, "retry_in", backoff)
-				stopTimer(retry)
+				retry.Stop()
 				retry.Reset(backoff)
 			} else if backoff != 0 {
 				backoff = 0
-				stopTimer(retry)
+				retry.Stop()
 			}
 
-			stopTimer(grace)
+			grace.Stop()
 			if at, ok := r.captureDeadline(); ok {
 				grace.Reset(max(at.Sub(r.now()), 0))
 			}
@@ -1153,15 +1153,6 @@ func (r *Reconciler) settle(ctx context.Context, changed, notify <-chan struct{}
 		case <-notify:
 		case <-timer.C:
 			return
-		}
-	}
-}
-
-func stopTimer(t *time.Timer) {
-	if !t.Stop() {
-		select {
-		case <-t.C:
-		default:
 		}
 	}
 }

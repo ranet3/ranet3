@@ -706,12 +706,6 @@ func (s *Session) run(ctx context.Context, ending error) (err error) {
 		}
 
 		// everything this loop reacts to is selectable, so it sleeps until one of them happens rather than polling
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
 		timer.Reset(max(time.Until(deadline), 0))
 		// a nil channel takes no local request while an exchange is outstanding, the window of one above
 		var requests <-chan *localRequest
