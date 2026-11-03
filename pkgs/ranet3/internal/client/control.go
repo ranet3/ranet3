@@ -15,7 +15,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
-	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/version"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -99,60 +98,10 @@ func (c *Client) Status() control.Status {
 		MeshAddresses:   MeshAddresses(cfg),
 		Segments:        segmentText(c.Mesh.Segments()),
 		Steering:        c.Mesh.Steering().Entries(),
-		SegmentCounters: segmentCounters(c.Mesh.SegmentCounters()),
-		Transit:         transitCounters(c.Mesh.TransitCounters()),
+		SegmentCounters: control.SegmentCounters(c.Mesh.SegmentCounters()),
+		Transit:         control.TransitCounters(c.Mesh.TransitCounters()),
 		Disabled:        c.disabledSubsystems(),
 		Down:            c.downStatus(),
-	}
-}
-
-// segmentCounters carries the dataplane's counters onto the wire, field by
-// field rather than by a type conversion, so that each side names what it
-// takes. Writing them out catches a renamed field and not an added one, which
-// is the drift that once made a counter stop being reported here, so
-// TestSegmentCountersDoNotDrift holds the two shapes identical and a field
-// added to either has to be added to both.
-func segmentCounters(counters netstack.SegmentCounters) control.SegmentCounters {
-	return control.SegmentCounters{
-		Forwarded: counters.Forwarded,
-		Delivered: counters.Delivered,
-		Dropped:   counters.Dropped,
-		Steered:   counters.Steered,
-		Unsteered: counters.Unsteered,
-		Unrouted:  counters.Unrouted,
-		Answered:  counters.Answered,
-		Egressed:  counters.Egressed,
-		Refused:   counters.Refused,
-		NotReady:  counters.NotReady,
-		ECNUnused: counters.ECNUnused,
-	}
-}
-
-// transitCounters carries the forwarding decision's counters onto the wire field by field, as segmentCounters does
-// TestTransitCountersDoNotDrift holds the two shapes identical
-func transitCounters(counters netstack.TransitCounters) control.TransitCounters {
-	return control.TransitCounters{
-		Forwarded:      counters.Forwarded,
-		Delivered:      counters.Delivered,
-		Expired:        counters.Expired,
-		NoRoute:        counters.NoRoute,
-		Held:           counters.Held,
-		Refused:        counters.Refused,
-		Invalid:        counters.Invalid,
-		Martian:        counters.Martian,
-		SourceRoute:    counters.SourceRoute,
-		UnroutedSource: counters.UnroutedSource,
-		NotReady:       counters.NotReady,
-		TooBig:         counters.TooBig,
-		Multicast:      counters.Multicast,
-		Forged:         counters.Forged,
-		RoutingHeader:  counters.RoutingHeader,
-		SID:            counters.SID,
-		UnownedSource:  counters.UnownedSource,
-		Nested:         counters.Nested,
-		Looped:         counters.Looped,
-		Answered:       counters.Answered,
-		Unanswered:     counters.Unanswered,
 	}
 }
 

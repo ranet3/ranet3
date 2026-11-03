@@ -14,7 +14,7 @@ import (
 // list takes, cap.exit via's path among them, and the counters ranet3 status
 // reports
 func (c *Client) DebugSegments() control.SegmentsInfo {
-	info := control.SegmentsInfo{Counters: segmentCounters(c.Mesh.SegmentCounters())}
+	info := control.SegmentsInfo{Counters: control.SegmentCounters(c.Mesh.SegmentCounters())}
 	egress := c.segmentEgress()
 	for _, segment := range c.Mesh.Segments().Segments() {
 		info.Segments = append(info.Segments, localSegment(segment, egress))

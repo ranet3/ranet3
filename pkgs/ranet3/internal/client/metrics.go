@@ -283,7 +283,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 // renderTransitCounters writes the forwarding decision's counters as one series, decision saying what became of a packet and reason why one was dropped
 // reason is empty for the decisions that are no drop
 func (c *Client) renderTransitCounters(w io.Writer) {
-	writeTransitCounters(w, transitCounters(c.Mesh.TransitCounters()))
+	writeTransitCounters(w, control.TransitCounters(c.Mesh.TransitCounters()))
 }
 
 func writeTransitCounters(w io.Writer, transit control.TransitCounters) {

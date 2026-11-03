@@ -38,7 +38,7 @@ func TestDebugSegmentsReadsTheSegmentsAndSteeringTheMeshHolds(t *testing.T) {
 		Steering: &control.Steering{Enabled: true, Overhead: srv6.Overhead(1), Policies: []control.SteerPolicy{
 			{To: netip.MustParsePrefix("3fff:1::/48"), Source: sid("3fff:b:0:100::1"), Path: []netip.Addr{sid("3fff:b:0:206::1")}, Overhead: srv6.Overhead(1)},
 		}},
-		Counters: segmentCounters(c.Mesh.SegmentCounters()),
+		Counters: control.SegmentCounters(c.Mesh.SegmentCounters()),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("the segments view reads\n%+v\nwant\n%+v", got, want)

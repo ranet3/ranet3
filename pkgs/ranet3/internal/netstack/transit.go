@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -62,29 +63,17 @@ const (
 	transitReasonCount
 )
 
-// transitReasonNames name each reason in the drop report and its event
-var transitReasonNames = [transitReasonCount]string{
-	transitForwarded:      "forwarded",
-	transitDelivered:      "delivered",
-	transitExpired:        "expired",
-	transitNoRoute:        "no_route",
-	transitHeld:           "held",
-	transitRefused:        "refused",
-	transitInvalid:        "invalid",
-	transitMartian:        "martian",
-	transitSourceRoute:    "source_route",
-	transitUnroutedSource: "unrouted_source",
-	transitNotReady:       "not_ready",
-	transitTooBig:         "too_big",
-	transitMulticast:      "multicast",
-	transitForged:         "forged",
-	transitRoutingHeader:  "routing_header",
-	transitOwnSID:         "sid",
-	transitUnownedSource:  "unowned_source",
-	transitNested:         "nested",
-	transitLooped:         "looped",
-	transitAnswered:       "answered",
-}
+// transitReasonNames name each reason in the drop report, its event and a trace record, each drop from transitExpired to transitLooped as control.TransitDropReasons labels it
+var transitReasonNames = func() (names [transitReasonCount]string) {
+	names[transitForwarded], names[transitDelivered], names[transitAnswered] = "forwarded", "delivered", "answered"
+	for i, reason := range control.TransitDropReasons {
+		names[transitExpired+transitReason(i)] = reason.Label
+	}
+	return names
+}()
+
+// the drops run from transitExpired to transitLooped in control.TransitDropReasons' order, so the two lists are one length
+var _ [len(control.TransitDropReasons)]struct{} = [transitLooped - transitExpired + 1]struct{}{}
 
 // transitState is the decision's state, embedded in Mesh
 type transitState struct {

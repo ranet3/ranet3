@@ -373,27 +373,40 @@ type TransitCounters struct {
 	Unanswered     uint64 `json:"unanswered"`
 }
 
-// Drops are the reasons a packet is dropped, in the order status and the metrics name them, with their counts in c
+// TransitDropReason is one reason a packet is dropped, as the metrics and a trace record label it and as status words it
+type TransitDropReason struct {
+	Label, Words string
+	count        func(TransitCounters) uint64
+}
+
+// TransitDropReasons are the reasons a packet is dropped, in the order of TransitCounters' fields from Expired to Looped
+var TransitDropReasons = [...]TransitDropReason{
+	{"expired", "expired", func(c TransitCounters) uint64 { return c.Expired }},
+	{"no_route", "no route", func(c TransitCounters) uint64 { return c.NoRoute }},
+	{"held", "held", func(c TransitCounters) uint64 { return c.Held }},
+	{"refused", "refused", func(c TransitCounters) uint64 { return c.Refused }},
+	{"invalid", "invalid", func(c TransitCounters) uint64 { return c.Invalid }},
+	{"martian", "martian", func(c TransitCounters) uint64 { return c.Martian }},
+	{"source_route", "source route", func(c TransitCounters) uint64 { return c.SourceRoute }},
+	{"unrouted_source", "unrouted source", func(c TransitCounters) uint64 { return c.UnroutedSource }},
+	{"not_ready", "not ready", func(c TransitCounters) uint64 { return c.NotReady }},
+	{"too_big", "too big", func(c TransitCounters) uint64 { return c.TooBig }},
+	{"multicast", "multicast", func(c TransitCounters) uint64 { return c.Multicast }},
+	{"forged", "forged", func(c TransitCounters) uint64 { return c.Forged }},
+	{"routing_header", "routing header", func(c TransitCounters) uint64 { return c.RoutingHeader }},
+	{"sid", "SID", func(c TransitCounters) uint64 { return c.SID }},
+	{"unowned_source", "unowned source", func(c TransitCounters) uint64 { return c.UnownedSource }},
+	{"nested", "nested", func(c TransitCounters) uint64 { return c.Nested }},
+	{"looped", "looped", func(c TransitCounters) uint64 { return c.Looped }},
+}
+
+// Drops are TransitDropReasons with their counts in c
 func (c TransitCounters) Drops() []TransitDrop {
-	return []TransitDrop{
-		{"expired", "expired", c.Expired},
-		{"no_route", "no route", c.NoRoute},
-		{"held", "held", c.Held},
-		{"refused", "refused", c.Refused},
-		{"invalid", "invalid", c.Invalid},
-		{"martian", "martian", c.Martian},
-		{"source_route", "source route", c.SourceRoute},
-		{"unrouted_source", "unrouted source", c.UnroutedSource},
-		{"not_ready", "not ready", c.NotReady},
-		{"too_big", "too big", c.TooBig},
-		{"multicast", "multicast", c.Multicast},
-		{"forged", "forged", c.Forged},
-		{"routing_header", "routing header", c.RoutingHeader},
-		{"sid", "SID", c.SID},
-		{"unowned_source", "unowned source", c.UnownedSource},
-		{"nested", "nested", c.Nested},
-		{"looped", "looped", c.Looped},
+	drops := make([]TransitDrop, len(TransitDropReasons))
+	for i, reason := range TransitDropReasons {
+		drops[i] = TransitDrop{reason.Label, reason.Words, reason.count(c)}
 	}
+	return drops
 }
 
 // TransitDrop is one reason a packet is dropped, as the metrics label it and as status words it, and its count

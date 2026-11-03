@@ -52,6 +52,23 @@ func ownEverything(m *Mesh) *Mesh {
 	return m
 }
 
+// each drop reason is named as control.TransitDropReasons labels the one counter its count lands in, so a reorder of either list fails
+func TestEachDropReasonIsNamedAsItsCounterIsLabeled(t *testing.T) {
+	for reason := transitExpired; reason <= transitLooped; reason++ {
+		var m Mesh
+		m.transitCounts[reason].Store(1)
+		var labels []string
+		for _, drop := range control.TransitCounters(m.TransitCounters()).Drops() {
+			if drop.Packets != 0 {
+				labels = append(labels, drop.Label)
+			}
+		}
+		if len(labels) != 1 || labels[0] != transitReasonNames[reason] {
+			t.Errorf("a count of reason %d, named %s, lands under the labels %v", reason, transitReasonNames[reason], labels)
+		}
+	}
+}
+
 // the addresses of the decision's tests by family, inside the overlay but for nowhere
 // sender is behind the session the frames come through, own is this node's router-id and an address it holds
 // far is behind the peer they go on to, held a host this node holds unreachable, unrouted an overlay address no route holds

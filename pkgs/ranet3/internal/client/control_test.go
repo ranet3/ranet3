@@ -5,11 +5,14 @@ package client
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/identity"
@@ -25,26 +28,91 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// A field added to the dataplane's counters and not to the wire's is a number
-// that silently stops being reported, as an earlier version of the mapper in
-// control.go allowed. The conversion below is legal only while the two
-// structs have identical underlying types, so it is the check writing the
-// fields out by name cannot give.
-func TestSegmentCountersDoNotDrift(t *testing.T) {
-	var counters netstack.SegmentCounters
-	_ = control.SegmentCounters(counters)
+// countedMesh is a mesh whose every transit and segment counter holds a count no other holds
+// set in the mesh's own fields, so what reads them meets the mesh's getters with every field nonzero
+func countedMesh(t *testing.T) *netstack.Mesh {
+	t.Helper()
+	m := netstack.NewOnDevice(&routeTun{})
+	t.Cleanup(m.Close)
+	mesh := reflect.ValueOf(m).Elem()
+	field := func(v reflect.Value, name string) reflect.Value {
+		found := v.FieldByName(name)
+		if !found.IsValid() {
+			t.Fatalf("the mesh holds no counter %s", name)
+		}
+		return found
+	}
+	var counters []reflect.Value
+	transit := field(mesh, "transitCounts")
+	for i := range transit.Len() {
+		counters = append(counters, transit.Index(i))
+	}
+	for _, name := range []string{"unanswered", "segmentsForwarded", "segmentsDelivered", "segmentsDropped", "segmentsSteered", "segmentsUnsteered",
+		"segmentsUnrouted", "segmentsAnswered", "segmentsEgressed", "segmentsRefused", "segmentsNotReady"} {
+		counters = append(counters, field(mesh, name))
+	}
+	counters = append(counters, field(field(mesh, "ecnUnused"), "total"))
+	for i, counter := range counters {
+		(*atomic.Uint64)(unsafe.Pointer(counter.UnsafeAddr())).Store(uint64(i + 1))
+	}
+	return m
 }
 
-// the forwarding decision's counters and their wire form hold the same fields in the same order, so a field added to either has to be added to both
-// and transitCounters carries each field onto the one of its name
-func TestTransitCountersDoNotDrift(t *testing.T) {
-	var counters netstack.TransitCounters
-	fields := reflect.ValueOf(&counters).Elem()
-	for i := range fields.NumField() {
-		fields.Field(i).SetUint(uint64(i + 1))
+// status, the segments view and the scrape carry every field of the mesh's transit and segment counters as the mesh's getters read it
+func TestStatusCarriesEveryCounterOfTheMesh(t *testing.T) {
+	c := writable(t)
+	c.Mesh = countedMesh(t)
+	transit, segments := control.TransitCounters(c.Mesh.TransitCounters()), control.SegmentCounters(c.Mesh.SegmentCounters())
+	for _, counters := range []reflect.Value{reflect.ValueOf(transit), reflect.ValueOf(segments)} {
+		for i := range counters.NumField() {
+			if counters.Field(i).Uint() == 0 {
+				t.Fatalf("the mesh's %s.%s holds no count", counters.Type(), counters.Type().Field(i).Name)
+			}
+		}
 	}
-	if got, want := transitCounters(counters), control.TransitCounters(counters); got != want {
-		t.Errorf("status carries %+v for the decision's %+v", got, want)
+	status := c.Status()
+	if status.Transit != transit {
+		t.Errorf("status carries the transit counters %+v, the mesh counted %+v", status.Transit, transit)
+	}
+	if status.SegmentCounters != segments {
+		t.Errorf("status carries the segment counters %+v, the mesh counted %+v", status.SegmentCounters, segments)
+	}
+	if got := c.DebugSegments().Counters; got != segments {
+		t.Errorf("the segments view carries %+v, the mesh counted %+v", got, segments)
+	}
+	var scrape strings.Builder
+	c.renderTransitCounters(&scrape)
+	c.renderSegmentCounters(&scrape)
+	want := []string{
+		fmt.Sprintf(`ranet3_transit_packets_total{decision="forwarded",reason=""} %d`, transit.Forwarded),
+		fmt.Sprintf(`ranet3_transit_packets_total{decision="delivered",reason=""} %d`, transit.Delivered),
+		fmt.Sprintf(`ranet3_transit_packets_total{decision="answered",reason=""} %d`, transit.Answered),
+		fmt.Sprintf(`ranet3_transit_packets_total{decision="unanswered",reason=""} %d`, transit.Unanswered),
+		fmt.Sprintf("ranet3_segments_forwarded_total %d", segments.Forwarded),
+		fmt.Sprintf("ranet3_segments_delivered_total %d", segments.Delivered),
+		fmt.Sprintf("ranet3_segments_dropped_total %d", segments.Dropped),
+		fmt.Sprintf("ranet3_segments_answered_total %d", segments.Answered),
+		fmt.Sprintf("ranet3_segments_egressed_total %d", segments.Egressed),
+		fmt.Sprintf("ranet3_segments_refused_total %d", segments.Refused),
+		fmt.Sprintf("ranet3_segments_not_ready_total %d", segments.NotReady),
+		fmt.Sprintf("ranet3_segments_ecn_unused_total %d", segments.ECNUnused),
+		fmt.Sprintf("ranet3_steered_total %d", segments.Steered),
+		fmt.Sprintf(`ranet3_steer_dropped_total{reason="too_large"} %d`, segments.Unsteered),
+		fmt.Sprintf(`ranet3_steer_dropped_total{reason="no_route"} %d`, segments.Unrouted),
+	}
+	for _, drop := range transit.Drops() {
+		want = append(want, fmt.Sprintf(`ranet3_transit_packets_total{decision="dropped",reason="%s"} %d`, drop.Label, drop.Packets))
+	}
+	var got []string
+	for line := range strings.Lines(scrape.String()) {
+		if !strings.HasPrefix(line, "#") {
+			got = append(got, strings.TrimSuffix(line, "\n"))
+		}
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("the scrape carries the series\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
