@@ -116,14 +116,15 @@ type Hub struct {
 	// An operator reads the counter, and the log line only has to point at it.
 	dropped atomic.Uint64
 	// refused counts datagrams this node read and did not deliver because
-	// nothing here wanted them: too short to carry an SPI, zero length, naming
-	// an SPI no Mux holds, arriving for an unclaimed queue that is already
-	// full, or carrying a control message or source address the receiver could
-	// not read. Anyone who can reach the port can raise it, which is why it is
-	// a counter and not a log line, and why it is separate from dropped: a
-	// rising dropped means this node is behind on receive, and mixing the two
-	// would make the one number an operator watches unreadable.
-	refused atomic.Uint64
+	// nothing here wanted them: too short to carry an SPI, zero length, cut by
+	// the kernel or with a control message it cut, naming an SPI no Mux holds,
+	// arriving for an unclaimed queue that is already full, or carrying a
+	// control message or source address the receiver could not read. Anyone
+	// who can reach the port can raise it, which is why it is a counter and
+	// not a log line, and why it is separate from dropped: a rising dropped
+	// means this node is behind on receive, and mixing the two would make the
+	// one number an operator watches unreadable.
+	refused [refusalCount]atomic.Uint64
 	// keepalives counts the one-octet NAT keepalives of RFC 3948 section 2.3.
 	// They are ignored rather than delivered, but they are expected traffic
 	// from a NATed peer rather than traffic nothing wanted, so they stay off
@@ -160,7 +161,80 @@ func (h *Hub) Dropped() uint64 { return h.dropped.Load() }
 
 // Refused is how many inbound datagrams this node read and had nowhere to put:
 // see Hub.refused.
-func (h *Hub) Refused() uint64 { return h.refused.Load() }
+func (h *Hub) Refused() uint64 {
+	var total uint64
+	for i := range h.refused {
+		total += h.refused[i].Load()
+	}
+	return total
+}
+
+// Refusals is Refused by cause, in the order RefusalCauses names them
+func (h *Hub) Refusals() (counts [len(RefusalCauses)]uint64) {
+	for i := range h.refused {
+		counts[i] = h.refused[i].Load()
+	}
+	return counts
+}
+
+// refusal is the cause a datagram this node read is refused for
+type refusal int
+
+const (
+	// refusedShort is a datagram too short to name an SPI
+	refusedShort refusal = iota
+	// refusedShortIKE is an IKE datagram too short behind its non-ESP marker to name its initiator's SPI
+	refusedShortIKE
+	// refusedUnknownIKE is an IKE datagram of an SA no mux holds, on a hub that does not listen or with no endpoint to answer
+	refusedUnknownIKE
+	// refusedUnknownESP is an ESP datagram of an SPI no mux holds
+	refusedUnknownESP
+	// refusedUnclaimedFull is an IKE datagram of an SA no mux holds, for a listening hub's queue of them that is full
+	refusedUnclaimedFull
+	// refusedTruncated is a datagram the kernel cut, or whose control message it cut, or one of zero length
+	refusedTruncated
+	// refusedControl is a datagram whose control message would not parse
+	refusedControl
+	// refusedEndpoint is an IKE datagram whose source or the address it arrived at would not read into an endpoint to answer
+	refusedEndpoint
+	refusalCount
+)
+
+// RefusalCauses names each cause a datagram is refused for, as the cause label of ranet3_receive_refused_total does
+var RefusalCauses = [refusalCount]string{
+	refusedShort:         "short",
+	refusedShortIKE:      "short_ike",
+	refusedUnknownIKE:    "unknown_ike",
+	refusedUnknownESP:    "unknown_esp",
+	refusedUnclaimedFull: "unclaimed_full",
+	refusedTruncated:     "truncated",
+	refusedControl:       "control",
+	refusedEndpoint:      "endpoint",
+}
+
+// refusals holds a read's refusals by cause until addRefusals counts them and zeroes it, so a receiver may add to it across retries
+// held is set by every add, and a read that refused nothing leaves it unset and costs addRefusals one compare
+type refusals struct {
+	counts [refusalCount]int
+	held   bool
+}
+
+func (r *refusals) add(cause refusal, n int) {
+	r.counts[cause] += n
+	r.held = true
+}
+
+func (h *Hub) addRefusals(r *refusals) {
+	if !r.held {
+		return
+	}
+	for cause, n := range r.counts {
+		if n > 0 {
+			h.refused[cause].Add(uint64(n))
+		}
+	}
+	*r = refusals{}
+}
 
 // Keepalives reports the RFC 3948 section 2.3 NAT keepalives this hub read and
 // ignored. They are separate from Refused because a NATed peer holding its
@@ -213,11 +287,12 @@ type packetBind interface {
 }
 
 // A receiver owns its buffers. Their views remain valid until its next call.
-// receiveFunc fills the vectors and reports how many datagrams it produced
-// and how many it read and could not use, which the hub counts so an operator
-// can tell a receive path that is discarding from one that is idle.
+// receiveFunc fills the vectors and reports how many datagrams it produced.
+// It adds those it read and could not use to refused, and returns an error
+// before it adds any, so an operator can tell a receive path that is
+// discarding from one that is idle.
 // It fills a record for every datagram and an endpoint for every IKE datagram, which the memory and portable binds fill for every datagram.
-type receiveFunc func([][]byte, []int, []Endpoint, []receiveRecord) (n, refused int, err error)
+type receiveFunc func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (n int, err error)
 
 // receiveRecord holds what a receiver read about one datagram beside its bytes, as values, so filling one allocates nothing
 type receiveRecord struct {
@@ -419,11 +494,9 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 	chains, chainOf := make([]espChain, 0, batch), make(map[*Mux]int)
 	ikeDatagrams := make([]pendingIKE, 0, batch)
 	unclaimed := make([]int, 0, batch)
+	var refused refusals
 	for {
-		n, refused, err := fn(bufs, sizes, eps, records)
-		if refused > 0 {
-			h.refused.Add(uint64(refused))
-		}
+		n, err := fn(bufs, sizes, eps, records, &refused)
 		if err != nil {
 			failed(err)
 			return
@@ -434,7 +507,6 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 		clear(chainOf)
 		ikeDatagrams = ikeDatagrams[:0]
 		unclaimed = unclaimed[:0]
-		unwanted := 0
 		// a batch's first unknown ESP SPI alone reads the clock and the last look, since the hub looks at most once an interval
 		looked := false
 		// one load for the whole batch, under no lock
@@ -454,12 +526,12 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 				continue
 			}
 			if len(raw) < nonESPMarkerLen {
-				unwanted++
+				refused.add(refusedShort, 1)
 				continue
 			}
 			if raw[0]|raw[1]|raw[2]|raw[3] == 0 {
 				if len(raw) < nonESPMarkerLen+8 {
-					unwanted++
+					refused.add(refusedShortIKE, 1)
 					continue
 				}
 				spi := uint64(raw[4])<<56 | uint64(raw[5])<<48 | uint64(raw[6])<<40 | uint64(raw[7])<<32 | uint64(raw[8])<<24 | uint64(raw[9])<<16 | uint64(raw[10])<<8 | uint64(raw[11])
@@ -469,7 +541,7 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 					// An SA no Mux owns yet, which only a listening hub keeps.
 					unclaimed = append(unclaimed, i)
 				} else {
-					unwanted++
+					refused.add(refusedUnknownIKE, 1)
 				}
 			} else {
 				spi := uint32(raw[0])<<24 | uint32(raw[1])<<16 | uint32(raw[2])<<8 | uint32(raw[3])
@@ -489,16 +561,13 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 					c.bytes += len(raw)
 					c.marked = c.marked || records[i].ecn != packet.NotECT
 				} else {
-					unwanted++
+					refused.add(refusedUnknownESP, 1)
 					if !looked {
 						looked = true
 						h.unknownSPI(spi, records[i].source)
 					}
 				}
 			}
-		}
-		if unwanted > 0 {
-			h.refused.Add(uint64(unwanted))
 		}
 		// The queue is tested before the datagram is copied, not after, so a
 		// flood from an unauthenticated peer is refused without allocating for
@@ -527,7 +596,7 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 		// one signal that says this node is behind on receive.
 		for _, i := range unclaimed {
 			if len(tables.listen) == cap(tables.listen) {
-				h.refused.Add(1)
+				refused.add(refusedUnclaimedFull, 1)
 				continue
 			}
 			raw := bufs[i][:sizes[i]]
@@ -538,9 +607,10 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 			select {
 			case tables.listen <- datagram:
 			default:
-				h.refused.Add(1)
+				refused.add(refusedUnclaimedFull, 1)
 			}
 		}
+		h.addRefusals(&refused)
 		for _, c := range chains {
 			m := c.mux
 			if p := m.pair.Load(); p != nil {

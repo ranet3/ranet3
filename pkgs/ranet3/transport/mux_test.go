@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/netip"
 	"runtime"
@@ -974,11 +975,30 @@ func TestDatagramsWithNowhereToGoAreCounted(t *testing.T) {
 	}
 }
 
+// refusedAs is a read's refusals holding n of cause alone
+func refusedAs(cause refusal, n int) refusals {
+	var r refusals
+	r.add(cause, n)
+	return r
+}
+
+// refusedByLabel maps each label of ranet3_receive_refused_total to the datagrams h refused under it, leaving out the labels it counted none under
+func refusedByLabel(h *Hub) map[string]uint64 {
+	out := map[string]uint64{}
+	for i, n := range h.Refusals() {
+		if n != 0 {
+			out[RefusalCauses[i]] = n
+		}
+	}
+	return out
+}
+
 // The socket layer refuses datagrams the hub never sees: on linux a GRO
 // control message that will not parse, and a reply source that will not
 // either. They are reported back through the receive function so the same
 // counter carries them, and an operator reading it gets one number for
 // "arrived here and went nowhere" rather than two halves of one.
+// each read's refusals count under their own labels, the second read's added to the first's
 func TestWhatTheReceiverRefusedReachesTheCounter(t *testing.T) {
 	h := &Hub{bind: closedBind{}, muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
 	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
@@ -987,20 +1007,81 @@ func TestWhatTheReceiverRefusedReachesTheCounter(t *testing.T) {
 	calls := 0
 	go func() {
 		defer close(done)
-		h.receiveLoop(func([][]byte, []int, []Endpoint, []receiveRecord) (int, int, error) {
+		h.receiveLoop(func(_ [][]byte, _ []int, _ []Endpoint, _ []receiveRecord, refused *refusals) (int, error) {
 			calls++
-			if calls == 1 {
-				return 0, 3, nil
+			switch calls {
+			case 1:
+				refused.add(refusedTruncated, 3)
+				refused.add(refusedControl, 2)
+				refused.add(refusedEndpoint, 1)
+			case 2:
+				refused.add(refusedEndpoint, 3)
+			default:
+				return 0, errors.New("closed")
 			}
-			return 0, 0, errors.New("closed")
+			return 0, nil
 		}, h.readFailed)
 	}()
 	<-done
-	if got := h.Refused(); got != 3 {
-		t.Errorf("the hub counted %d of the 3 datagrams its receiver refused", got)
+	if got := h.Refused(); got != 9 {
+		t.Errorf("the hub counted %d of the 9 datagrams its receiver refused", got)
+	}
+	if got, want := refusedByLabel(h), map[string]uint64{"truncated": 3, "control": 2, "endpoint": 4}; !maps.Equal(got, want) {
+		t.Errorf("the hub counted %v by label, want %v", got, want)
 	}
 	if got := h.Dropped(); got != 0 {
 		t.Errorf("it also raised the queue-full counter to %d, which means something else", got)
+	}
+}
+
+// each datagram the demultiplexing refuses is counted under the cause of its arm, on a listening hub whose queue of unclaimed IKE datagrams is full
+// one too short to name an SPI, an IKE one too short to name its SPI, one of an SA no mux holds with no endpoint, one with an endpoint for the full queue, and ESP of an SPI no mux holds
+// beside the keepalive, which counts as none of them
+func TestEachRefusalIsCountedUnderItsCause(t *testing.T) {
+	h := &Hub{bind: closedBind{}, muxes: make(map[*Mux]struct{}), done: make(chan struct{}), started: time.Now()}
+	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}, listen: make(chan Unclaimed)})
+	h.reported.Store(-int64(dropReportInterval))
+	ike := binary.BigEndian.AppendUint64(make([]byte, nonESPMarkerLen), 7)
+	type datagram struct {
+		raw      []byte
+		endpoint Endpoint
+	}
+	// each cause takes a count of its own, so a label naming another cause's count fails
+	var datagrams []datagram
+	for i, d := range []datagram{
+		{[]byte{1, 2}, nil},
+		{make([]byte, nonESPMarkerLen+4), nil},
+		{ike, nil},
+		{ike, newMemoryEndpoint(netip.MustParseAddrPort("192.0.2.1:500"))},
+		{binary.BigEndian.AppendUint32(nil, 0x01020304), nil},
+	} {
+		for range i + 1 {
+			datagrams = append(datagrams, d)
+		}
+	}
+	datagrams = append(datagrams, datagram{[]byte{natKeepaliveByte}, nil})
+	done := make(chan struct{})
+	calls := 0
+	go func() {
+		defer close(done)
+		h.receiveLoop(func(bufs [][]byte, sizes []int, endpoints []Endpoint, _ []receiveRecord, _ *refusals) (int, error) {
+			calls++
+			if calls > 1 {
+				return 0, errors.New("closed")
+			}
+			for i, d := range datagrams {
+				bufs[i], sizes[i], endpoints[i] = d.raw, len(d.raw), d.endpoint
+			}
+			return len(datagrams), nil
+		}, h.readFailed)
+	}()
+	<-done
+	want := map[string]uint64{"short": 1, "short_ike": 2, "unknown_ike": 3, "unclaimed_full": 4, "unknown_esp": 5}
+	if got := refusedByLabel(h); !maps.Equal(got, want) {
+		t.Errorf("the hub counted %v by label, want %v", got, want)
+	}
+	if h.Refused() != 15 || h.Keepalives() != 1 || h.Dropped() != 0 {
+		t.Errorf("the hub counted %d refused, %d keepalives and %d dropped, want 15, 1 and 0", h.Refused(), h.Keepalives(), h.Dropped())
 	}
 }
 

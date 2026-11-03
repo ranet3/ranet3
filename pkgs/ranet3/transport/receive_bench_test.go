@@ -44,7 +44,7 @@ func BenchmarkHubReceivesESP(b *testing.B) {
 			datagram = append(datagram, make([]byte, benchDatagramSize-len(datagram))...)
 			source := netip.MustParseAddrPort("198.51.100.7:4500")
 			vectors, taken := 0, 0
-			receive := func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
+			receive := func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
 				select {
 				case batch := <-mux.espCh:
 					if (batch.ecn != nil) != (bench.ecn != packet.NotECT) {
@@ -57,13 +57,13 @@ func BenchmarkHubReceivesESP(b *testing.B) {
 				default:
 				}
 				if vectors == b.N {
-					return 0, 0, net.ErrClosed
+					return 0, net.ErrClosed
 				}
 				vectors++
 				for i := range bufs {
 					bufs[i], sizes[i], endpoints[i], records[i] = datagram, len(datagram), nil, receiveRecord{source: source, ecn: bench.ecn}
 				}
-				return len(bufs), 0, nil
+				return len(bufs), nil
 			}
 			b.SetBytes(espSendBatch * benchDatagramSize)
 			b.ReportAllocs()

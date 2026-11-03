@@ -36,7 +36,7 @@ func TestPairReceiveReadsPastAnICMPReport(t *testing.T) {
 	}))
 	packets, sizes, endpoints, records := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)
 	for _, want := range []uint32{1, 3} {
-		n, _, err := receive(packets, sizes, endpoints, records)
+		n, err := receive(packets, sizes, endpoints, records, new(refusals))
 		if err != nil || n != 1 || binary.BigEndian.Uint32(packets[0][4:]) != want {
 			t.Fatalf("the read that should carry datagram %d answered n=%d err=%v", want, n, err)
 		}

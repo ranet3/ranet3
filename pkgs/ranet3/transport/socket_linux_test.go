@@ -59,7 +59,7 @@ func TestUDPReceivePreservesGROOverflowAndFullBatchReads(t *testing.T) {
 	})
 	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 	for batch := range 2 {
-		n, _, err := receive(packets, sizes, endpoints, records)
+		n, err := receive(packets, sizes, endpoints, records, new(refusals))
 		if err != nil || n != 128 || reads != 1 {
 			t.Fatalf("batch %d: n=%d err=%v reads=%d", batch, n, err, reads)
 		}
@@ -153,7 +153,8 @@ func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
 		return 3, nil
 	})
 	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
-	n, refused, err := receive(packets, sizes, endpoints, records)
+	var refused refusals
+	n, err := receive(packets, sizes, endpoints, records, &refused)
 	if err != nil || n != 3 {
 		t.Fatalf("receive: n=%d err=%v, want three intact GRO segments", n, err)
 	}
@@ -161,8 +162,8 @@ func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
 	// from an idle socket only by the hub's counter. Each carries one datagram
 	// here, while a coalesced one carries as many as it was cut into, which is the
 	// unit the third arm and the help text both use.
-	if refused != 2 {
-		t.Errorf("the receiver reported %d refused, want the two truncated messages", refused)
+	if refused != refusedAs(refusedTruncated, 2) {
+		t.Errorf("the receiver reported %v refused, want the two truncated messages", refused)
 	}
 	for i, want := range []int{8, 8, 4} {
 		if sizes[i] != want || len(packets[i]) != want {
@@ -217,7 +218,7 @@ func TestUDPKernelGSORoundTrip(t *testing.T) {
 			bufs, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 			seen := 0
 			for seen < count {
-				n, _, err := receivers[index](bufs, sizes, endpoints, records)
+				n, err := receivers[index](bufs, sizes, endpoints, records, new(refusals))
 				if err != nil {
 					t.Fatalf("received %d/%d packets: %v", seen, count, err)
 				}
@@ -262,15 +263,16 @@ func TestUDPReceiveDropsDatagramWithNoUsableSource(t *testing.T) {
 		return 3, nil
 	})
 	packets, sizes, endpoints, records := make([][]byte, 8), make([]int, 8), make([]Endpoint, 8), make([]receiveRecord, 8)
-	n, refused, err := receive(packets, sizes, endpoints, records)
+	var refused refusals
+	n, err := receive(packets, sizes, endpoints, records, &refused)
 	if err != nil {
 		t.Fatalf("one unparseable control message failed the whole receive: %v", err)
 	}
 	if n != 2 {
 		t.Fatalf("the receive returned %d datagrams, want the two whose source could be read", n)
 	}
-	if refused != 1 {
-		t.Errorf("the receiver reported %d refused, want the one whose source it could not read", refused)
+	if refused != refusedAs(refusedEndpoint, 1) {
+		t.Errorf("the receiver reported %v refused, want the one whose source it could not read", refused)
 	}
 	for i := range n {
 		if endpoints[i] == nil {
@@ -315,7 +317,8 @@ func TestWalkRecordsESPSourcesWithoutAllocating(t *testing.T) {
 		return len(sources), nil
 	})
 	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
-	n, _, err := receive(packets, sizes, endpoints, records)
+	var refused refusals
+	n, err := receive(packets, sizes, endpoints, records, &refused)
 	if err != nil || n != segments*len(sources) {
 		t.Fatalf("receive: n=%d err=%v, want %d datagrams", n, err, segments*len(sources))
 	}
@@ -327,7 +330,7 @@ func TestWalkRecordsESPSourcesWithoutAllocating(t *testing.T) {
 			t.Errorf("datagram %d of a message with the ECN field %d came with %d", i, want, records[i].ecn)
 		}
 	}
-	if allocs := testing.AllocsPerRun(walkAllocRuns, func() { _, _, _ = receive(packets, sizes, endpoints, records) }); allocs != 0 {
+	if allocs := testing.AllocsPerRun(walkAllocRuns, func() { _, _ = receive(packets, sizes, endpoints, records, &refused) }); allocs != 0 {
 		t.Errorf("a read of %d ESP datagrams allocated %v times", n, allocs)
 	}
 }
@@ -399,12 +402,40 @@ func TestTruncatedGROReadIsCountedInDatagrams(t *testing.T) {
 		return 1, nil
 	})
 	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
-	n, refused, err := receive(packets, sizes, endpoints, records)
+	var refused refusals
+	n, err := receive(packets, sizes, endpoints, records, &refused)
 	if err != nil || n != 0 {
 		t.Fatalf("receive: n=%d err=%v, want the whole truncated read discarded", n, err)
 	}
-	if refused != total {
-		t.Errorf("a truncated read of %d datagrams counted %d", total, refused)
+	if refused != refusedAs(refusedTruncated, total) {
+		t.Errorf("a truncated read of %d datagrams counted %v", total, refused)
+	}
+}
+
+// a message whose control message would not parse is refused once for its control message, which holds its segment size
+// and the message after it is handed out
+func TestUDPReceiveRefusesAMessageWhoseControlWillNotParse(t *testing.T) {
+	receive := scriptedReceiver(&udpSocket{}, func(messages []ipv4.Message) (int, error) {
+		for i := range 2 {
+			m := &messages[i]
+			m.N, m.Flags = 8, 0
+			binary.BigEndian.PutUint32(m.Buffers[0], pairTestSPI)
+		}
+		// a header claiming more than the buffer holds
+		control := appendUDPSegment(messages[0].OOB[:0], 8)
+		(*unix.Cmsghdr)(unsafe.Pointer(&control[0])).SetLen(len(control) + 64)
+		messages[0].NN = len(control)
+		messages[1].NN = 0
+		return 2, nil
+	})
+	packets, sizes, endpoints, records := make([][]byte, 8), make([]int, 8), make([]Endpoint, 8), make([]receiveRecord, 8)
+	var refused refusals
+	n, err := receive(packets, sizes, endpoints, records, &refused)
+	if err != nil || n != 1 {
+		t.Fatalf("receive: n=%d err=%v, want the message after the unparseable one", n, err)
+	}
+	if refused != refusedAs(refusedControl, 1) {
+		t.Errorf("the receiver reported %v refused, want the one whose control message would not parse", refused)
 	}
 }
 

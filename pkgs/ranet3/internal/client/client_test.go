@@ -839,7 +839,9 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	for _, want := range []string{
 		"ranet3_babel_routes_originated 1",
 		fmt.Sprintf("ranet3_babel_routes_selected %d", stats.Selected),
-		fmt.Sprintf("ranet3_receive_refused_total %d", refused),
+		// every datagram was an IKE_SA_INIT the full queue refused
+		fmt.Sprintf(`ranet3_receive_refused_total{cause="unclaimed_full"} %d`, refused),
+		`ranet3_receive_refused_total{cause="unknown_esp"} 0`,
 		// Nothing here fills a receive queue, which is the only thing that
 		// raises the other one, so it reads zero and says so.
 		"ranet3_receive_dropped_total 0",

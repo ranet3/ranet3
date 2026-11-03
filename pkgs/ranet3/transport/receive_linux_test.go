@@ -72,6 +72,7 @@ func BenchmarkUDPReceiveVector(b *testing.B) {
 	}
 	bufs, sizes, endpoints, records := make([][]byte, espSendBatch), make([]int, espSendBatch), make([]Endpoint, espSendBatch), make([]receiveRecord, espSendBatch)
 	b.SetBytes(espSendBatch * size)
+	var refused refusals
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
@@ -79,7 +80,7 @@ func BenchmarkUDPReceiveVector(b *testing.B) {
 			b.Fatal(err)
 		}
 		for received := 0; received < len(packets); {
-			n, _, err := receive(bufs, sizes, endpoints, records)
+			n, err := receive(bufs, sizes, endpoints, records, &refused)
 			if err != nil {
 				b.Fatal(err)
 			}

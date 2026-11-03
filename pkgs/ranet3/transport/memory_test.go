@@ -180,7 +180,7 @@ func TestReceiveRecordCarriesEachDatagramsSource(t *testing.T) {
 			}
 		}
 		bufs, sizes, endpoints, records := make([][]byte, len(sent)), make([]int, len(sent)), make([]Endpoint, len(sent)), make([]receiveRecord, len(sent))
-		n, _, err := b.receiver(p.queues[0])(bufs, sizes, endpoints, records)
+		n, err := b.receiver(p.queues[0])(bufs, sizes, endpoints, records, new(refusals))
 		if err != nil || n != len(sent) {
 			t.Fatalf("the receive answered %d datagrams and %v, want the %d sent", n, err, len(sent))
 		}
@@ -222,7 +222,7 @@ func TestMemoryHubReceivesABatchOfOneFamily(t *testing.T) {
 			{1, 4, [][]byte{{1, 0}, {1, 1}}},
 		} {
 			bufs, sizes, endpoints, records := make([][]byte, read.vector), make([]int, read.vector), make([]Endpoint, read.vector), make([]receiveRecord, read.vector)
-			n, _, err := b.receiver(p.queues[read.family])(bufs, sizes, endpoints, records)
+			n, err := b.receiver(p.queues[read.family])(bufs, sizes, endpoints, records, new(refusals))
 			if err != nil {
 				t.Fatal(err)
 			}

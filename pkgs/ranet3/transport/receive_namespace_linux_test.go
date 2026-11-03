@@ -102,7 +102,7 @@ func groReader(t *testing.T, socket *udpSocket, check func(datagram []byte, reco
 			if err := socket.conn.SetReadDeadline(time.Now().Add(arrivalBudget)); err != nil {
 				t.Fatal(err)
 			}
-			n, _, err := receive(bufs, sizes, endpoints, records)
+			n, err := receive(bufs, sizes, endpoints, records, new(refusals))
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				return
 			}

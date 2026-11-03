@@ -95,13 +95,18 @@ func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 	c := &Client{sessions: newSessionSet(), hub: hub}
 	var out strings.Builder
 	c.renderReceiveCounters(&out)
-	for _, want := range []string{
+	want := []string{
 		"# TYPE ranet3_receive_refused_total counter",
-		fmt.Sprintf("ranet3_receive_refused_total %d", hub.Refused()),
 		"ranet3_receive_dropped_total 0",
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
+	}
+	// every cause is a series, the unknown ESP SPI's the one the datagram raised
+	for i, cause := range transport.RefusalCauses {
+		want = append(want, fmt.Sprintf("ranet3_receive_refused_total{cause=%q} %d\n", cause, hub.Refusals()[i]))
+	}
+	want = append(want, fmt.Sprintf("ranet3_receive_refused_total{cause=\"unknown_esp\"} %d\n", hub.Refused()))
+	for _, line := range want {
+		if !strings.Contains(out.String(), line) {
+			t.Errorf("the scrape does not carry %q:\n%s", line, out.String())
 		}
 	}
 }

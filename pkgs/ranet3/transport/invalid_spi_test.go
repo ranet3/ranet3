@@ -84,13 +84,13 @@ func scriptedHub() (*Hub, chan<- scriptedArrival) {
 	network := NewMemoryNetwork()
 	p := network.hold(netip.Addr{})
 	arrivals := make(chan scriptedArrival)
-	receive := func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
+	receive := func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
 		a, ok := <-arrivals
 		if !ok {
-			return 0, 0, net.ErrClosed
+			return 0, net.ErrClosed
 		}
 		bufs[0], sizes[0], endpoints[0], records[0] = a.data, len(a.data), nil, receiveRecord{source: a.source}
-		return 1, 0, nil
+		return 1, nil
 	}
 	return startHub(&memoryBind{network: network, port: p}, []receiveFunc{receive}, p.port, Runtime{}), arrivals
 }

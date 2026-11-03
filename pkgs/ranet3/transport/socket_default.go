@@ -69,7 +69,7 @@ func openPacketBind(port uint16, _ Selection, _ func(string, ...slog.Attr)) (pac
 		// the next read reuses the slab, and the hub copies what it keeps of a read before the next
 		slab := make([]byte, readBufferSize*size)
 		packets := make([]conn.ReceivedPacket, size)
-		receivers = append(receivers, func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
+		receivers = append(receivers, func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
 			n, err := fn(slab, packets)
 			for i := range n {
 				bufs[i], sizes[i] = packets[i].Bytes(slab), packets[i].Size
@@ -78,7 +78,7 @@ func openPacketBind(port uint16, _ Selection, _ func(string, ...slog.Attr)) (pac
 			}
 			// This bind hands every datagram it reads straight through, so
 			// there is nothing it refuses of its own.
-			return n, 0, err
+			return n, err
 		})
 	}
 	return b, receivers, port, nil

@@ -46,15 +46,15 @@ func TestReceiveLoopsReadTablesThatRegistrationsReplace(t *testing.T) {
 	for range 2 {
 		left := churnBatches
 		loops.Go(func() {
-			hub.receiveLoop(func(bufs [][]byte, sizes []int, endpoints []Endpoint, _ []receiveRecord) (int, int, error) {
+			hub.receiveLoop(func(bufs [][]byte, sizes []int, endpoints []Endpoint, _ []receiveRecord, _ *refusals) (int, error) {
 				if left == 0 {
-					return 0, 0, errors.New("the churn is over")
+					return 0, errors.New("the churn is over")
 				}
 				left--
 				for i, datagram := range datagrams {
 					bufs[i], sizes[i], endpoints[i] = datagram, len(datagram), nil
 				}
-				return len(datagrams), 0, nil
+				return len(datagrams), nil
 			}, hub.readFailed)
 		})
 	}

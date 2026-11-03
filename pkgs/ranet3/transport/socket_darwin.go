@@ -702,30 +702,33 @@ func (b *darwinBind) dontFragment(endpoint Endpoint) bool {
 func (s *darwinSocket) receiver() receiveFunc {
 	buf := make([]byte, readBufferSize)
 	oob := make([]byte, controlMessageSize)
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
+	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (int, error) {
 		n, oobn, flags, from, err := s.conn.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
-			return 0, 0, err
+			return 0, err
 		}
 		// a datagram whose control message was cut or will not parse has no known outer ECN field, and an IKE one no address to be answered from
 		// so it is counted as refused and dropped, since recording Not-ECT would discard a congestion mark
 		// returning an error instead would end the hub
 		if flags&unix.MSG_CTRUNC != 0 {
-			return 0, 1, nil
+			refused.add(refusedTruncated, 1)
+			return 0, nil
 		}
 		ecn, err := outerECN(oob[:oobn])
 		if err != nil {
-			return 0, 1, nil
+			refused.add(refusedControl, 1)
+			return 0, nil
 		}
 		bufs[0], sizes[0], endpoints[0], records[0] = buf[:n], n, nil, receiveRecord{source: from, ecn: ecn}
 		if n >= nonESPMarkerLen && binary.BigEndian.Uint32(buf) == 0 {
 			ep, err := s.replyEndpoint(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), oob[:oobn])
 			if err != nil {
-				return 0, 1, nil
+				refused.add(refusedEndpoint, 1)
+				return 0, nil
 			}
 			endpoints[0] = ep
 		}
-		return 1, 0, nil
+		return 1, nil
 	}
 }
 

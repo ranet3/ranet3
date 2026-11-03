@@ -487,19 +487,18 @@ func receiveVector(vector int) []ipv4.Message {
 // a message is one sender's, since GRO coalesces only datagrams of one source address and port, so each of its datagrams takes the source read once for it
 // and it carries one outer ECN field, since GRO flushes a flow on any difference of TOS or traffic class, so each of its datagrams takes the field read once for it too
 func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) receiveFunc {
-	var count, index, offset, segment, refused int
+	var count, index, offset, segment int
 	var source netip.AddrPort
 	var ecn packet.ECN
 	var zones scopeZone
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
-		refused = 0
+	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (int, error) {
 		if index == count {
 			var err error
 			count, err = read()
 			index, offset, segment = 0, 0, 0
 			if err != nil {
 				count = 0
-				return 0, 0, err
+				return 0, err
 			}
 		}
 		n := 0
@@ -510,7 +509,7 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 				// since one GRO buffer holds many. A zero-length datagram is
 				// refused too, since it arrived and goes nowhere.
 				if m.Flags&(unix.MSG_TRUNC|unix.MSG_CTRUNC) != 0 || m.N == 0 {
-					refused += datagramsIn(m)
+					refused.add(refusedTruncated, datagramsIn(m))
 					index++
 					continue
 				}
@@ -519,7 +518,7 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 				if err != nil {
 					// The segment size itself would not parse, so this
 					// is the one arm that cannot do better than one.
-					refused++
+					refused.add(refusedControl, 1)
 					index++
 					continue
 				}
@@ -544,7 +543,7 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 				if ep, err := s.replyEndpoint(m); err == nil {
 					endpoints[n] = ep
 				} else {
-					refused++
+					refused.add(refusedEndpoint, 1)
 					offset = end
 					if offset == m.N {
 						index++
@@ -560,7 +559,7 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 				offset = 0
 			}
 		}
-		return n, refused, nil
+		return n, nil
 	}
 }
 

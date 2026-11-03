@@ -16,6 +16,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // Metrics writes the Prometheus text exposition format, by hand rather than
@@ -376,9 +377,12 @@ func (c *Client) renderReceiveCounters(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_receive_dropped_total counter\n")
 	fmt.Fprintf(w, "ranet3_receive_dropped_total %d\n", c.hubDropped())
 
-	fmt.Fprint(w, "# HELP ranet3_receive_refused_total Inbound datagrams nothing here wanted: naming no SPI this node holds, too short or empty, for a full unclaimed queue, or with an unreadable control message or source.\n")
+	fmt.Fprint(w, "# HELP ranet3_receive_refused_total Inbound datagrams nothing here wanted, by cause.\n")
 	fmt.Fprint(w, "# TYPE ranet3_receive_refused_total counter\n")
-	fmt.Fprintf(w, "ranet3_receive_refused_total %d\n", c.hubRefused())
+	refusals := c.hubRefusals()
+	for i, cause := range transport.RefusalCauses {
+		fmt.Fprintf(w, "ranet3_receive_refused_total{cause=%q} %d\n", cause, refusals[i])
+	}
 
 	fmt.Fprint(w, "# HELP ranet3_receive_keepalives_total Inbound RFC 3948 NAT keepalives, ignored on arrival.\n")
 	fmt.Fprint(w, "# TYPE ranet3_receive_keepalives_total counter\n")
@@ -399,6 +403,13 @@ func (c *Client) hubRefused() uint64 {
 		return 0
 	}
 	return c.hub.Refused()
+}
+
+func (c *Client) hubRefusals() (refusals [len(transport.RefusalCauses)]uint64) {
+	if c.hub == nil {
+		return refusals
+	}
+	return c.hub.Refusals()
 }
 
 func (c *Client) hubKeepalives() uint64 {

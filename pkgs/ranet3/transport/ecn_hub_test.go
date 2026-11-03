@@ -58,16 +58,16 @@ func scriptedReads(reads [][]scriptedDatagram) func() receiveFunc {
 	}
 	return func() receiveFunc {
 		next := 0
-		return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord) (int, int, error) {
+		return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
 			if next == len(reads) {
-				return 0, 0, errScriptDone
+				return 0, errScriptDone
 			}
 			for i, d := range reads[next] {
 				datagram := storage[next][i]
 				bufs[i], sizes[i], endpoints[i], records[i] = datagram, len(datagram), nil, receiveRecord{ecn: d.ecn}
 			}
 			next++
-			return len(reads[next-1]), 0, nil
+			return len(reads[next-1]), nil
 		}
 	}
 }
