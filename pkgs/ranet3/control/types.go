@@ -277,7 +277,7 @@ type Status struct {
 	Counts    Counts        `json:"counts"`
 	ESP       ESPCounters   `json:"esp"`
 	Originate []Originated  `json:"originate"`
-	// MeshAddresses is the host prefixes cap.route announces and cap.table assigns, each once, which cap.egress translates into the mesh under
+	// MeshAddresses is the address of each host prefix cap.route announces or cap.table assigns, once, which cap.egress translates into the mesh under
 	MeshAddresses []netip.Addr `json:"mesh_addresses"`
 	// Segments lists the addresses this node answers for as a waypoint or an
 	// exit, each written as the address and the behavior, then for an egress
