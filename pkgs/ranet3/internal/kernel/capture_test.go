@@ -484,8 +484,7 @@ func TestReconcileLeavesNoHoldOfARetractedSplitInternet(t *testing.T) {
 	}
 }
 
-// A reconciler nobody told about sessions keeps the behavior it had before the
-// gate existed. It is driven by something that has no sessions to report, and
+// A reconciler nobody told about sessions lets every capture in. It is driven by something that has no sessions to report, and
 // answering zero for it would leave every default uninstallable.
 func TestReconcileInstallsADefaultWhenNothingReportsSessions(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{})

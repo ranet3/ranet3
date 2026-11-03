@@ -409,8 +409,8 @@ func TestReconcileInstallsSnapshotRoutes(t *testing.T) {
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	// an unset metric is the kernel's own default, which is 0 for IPv4 and
-	// IP6_RT_PRIO_USER for IPv6.
+	// every route goes in at the kernel's own default, which is 0 for IPv4
+	// and IP6_RT_PRIO_USER for IPv6.
 	want := []Route{
 		{Destination: prefix("10.0.0.0/8")},
 		{Destination: prefix("::/0"), Source: prefix("3fff:a:1::/48"), Metric: defaultIPv6Metric},

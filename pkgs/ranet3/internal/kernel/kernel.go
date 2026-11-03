@@ -1181,9 +1181,8 @@ func (r *Reconciler) reconcile() error {
 }
 
 // sampleCapture asks how much of the mesh is carrying traffic and records what
-// this pass may therefore install. A reconciler with no session source keeps
-// the behavior it had before the gate existed, because nothing it could ask
-// would answer.
+// this pass may therefore install. A reconciler with no session source lets
+// every capture in, because nothing it could ask would answer.
 func (r *Reconciler) sampleCapture() {
 	if r.rt.Sessions == nil {
 		r.capture = true

@@ -305,7 +305,7 @@ type fallbackWatch struct {
 }
 
 // watchFallback is the socket the table is written through, opening it with
-// its monitor at the first call
+// its monitor where none is open
 func (p *netlinkPlatform) watchFallback() (*nftables.Conn, error) {
 	if p.fallback != nil {
 		return p.fallback.conn, nil

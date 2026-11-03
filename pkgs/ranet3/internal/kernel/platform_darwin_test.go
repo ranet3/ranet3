@@ -329,7 +329,7 @@ func TestDarwinDumpKeepsOnlyRoutesItOwns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode the dump: %v", err)
 	}
-	// the metric is mirrored from the configuration, because the darwin FIB
+	// the metric is mirrored as routeMetric gives it, because the darwin FIB
 	// holds none and the diff key needs it.
 	want := []Route{
 		{Destination: prefix("198.51.100.0/24")},
