@@ -54,15 +54,16 @@ func TestRenderersKeepTheirColumns(t *testing.T) {
 // a session the daemon reported no transforms for reads as a dash
 // the path's threshold, the largest IP datagram this end cuts a new IKE message to fit, stands beside its transforms, and no where its ends did not both say they support RFC 7383 fragmentation
 // the INVALID_SPI notifies a session sent its peer are counted last
+// the End column is the role this node took in the session's IKE_SA_INIT, whichever direction both ends prefer
 func TestSessionsRenderAsTheGoldenFiles(t *testing.T) {
 	sessions := []Session{
-		{Path: "example/gateway:0@0", Peer: "example/gateway", Remote: "192.0.2.7:13000", Preferred: true, Active: true,
+		{Path: "example/gateway:0@0", Peer: "example/gateway", Remote: "192.0.2.7:13000", Preferred: true, Role: "responder", Active: true,
 			LocalSPI: 0xc0ffee01, RemoteSPI: 0x0badf00d, IKECipher: "aes256gcm", IKEPRF: "sha384", IKEKex: "x25519", ESPCipher: "aes128gcm",
 			StartedAt: time.Date(2026, 10, 4, 12, 20, 1, 0, time.UTC), Age: Duration(90 * time.Minute), Idle: Duration(1200 * time.Millisecond),
 			InvalidSPIReports: 2},
-		{Path: "example/exit:1@0", Peer: "example/exit", Remote: "[2001:db8::1]:13000", LocalSPI: 1, RemoteSPI: 2,
+		{Path: "example/exit:1@0", Peer: "example/exit", Remote: "[2001:db8::1]:13000", Role: "initiator", LocalSPI: 1, RemoteSPI: 2,
 			StartedAt: time.Date(2026, 10, 4, 13, 50, 1, 0, time.UTC), Age: Duration(time.Second), Idle: Duration(time.Second)},
-		{Path: "example/relay:0@0", Peer: "example/relay", Remote: "198.51.100.4:13000", Active: true,
+		{Path: "example/relay:0@0", Peer: "example/relay", Remote: "198.51.100.4:13000", Role: "responder", Active: true,
 			LocalSPI: 0x5eed0001, RemoteSPI: 0x5eed0002, IKECipher: "aes256gcm", IKEPRF: "sha384", IKEKex: "x25519+mlkem768",
 			IKEFragments: true, IKEFragmentThreshold: 1280, ESPCipher: "aes256gcm", ESPKex: "x25519+mlkem768",
 			StartedAt: time.Date(2026, 10, 4, 13, 40, 1, 0, time.UTC), Age: Duration(10 * time.Minute), Idle: Duration(300 * time.Millisecond)},
@@ -167,11 +168,12 @@ func TestWhoisNamesAnAssignedAddressThisNodes(t *testing.T) {
 	golden(t, "whois-assigned.txt", []byte(out.String()))
 }
 
-// The role line is the three settings that decide what a node is on a fleet,
-// said as words rather than as booleans a reader reassembles.
+// The role line says in words what decides what a node is on a fleet, rather
+// than as booleans a reader reassembles, and initiator only of a node with a
+// peer to dial.
 func TestStatusSaysTheRoleInWords(t *testing.T) {
 	var out strings.Builder
-	RenderStatus(&out, Status{Node: "example/laptop", Responder: false, FullMesh: true, NoTransit: true})
+	RenderStatus(&out, Status{Node: "example/laptop", Initiator: true, Responder: false, FullMesh: true, NoTransit: true})
 	for _, want := range []string{"example/laptop", "initiator", "full mesh", "no transit", "off, routes configured externally"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status printed as %q, want it to carry %q", out.String(), want)
@@ -179,6 +181,14 @@ func TestStatusSaysTheRoleInWords(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "responder") {
 		t.Error("a node with responder off is reported as one")
+	}
+	for _, test := range []struct {
+		status Status
+		want   string
+	}{{Status{Responder: true}, "responder, transit"}, {Status{FullMesh: true}, "full mesh, transit"}} {
+		if got := role(test.status); got != test.want {
+			t.Errorf("a node with no peer to dial has the role %q, want %s", got, test.want)
+		}
 	}
 }
 

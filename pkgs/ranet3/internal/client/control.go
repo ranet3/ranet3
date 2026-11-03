@@ -33,8 +33,8 @@ func Forwarding() (v4, v6 bool) { return forwardsUnlessOff(forwardingEnabled()) 
 func forwardsUnlessOff(v4, v6 *bool) (bool, bool) { return v4 == nil || *v4, v6 == nil || *v6 }
 
 func (c *Client) Status() control.Status {
-	cfg := c.config()
-	organizations, nodes := c.index().Size()
+	cfg, x := c.config(), c.index()
+	organizations, nodes := x.Size()
 	stats := c.speaker.Stats()
 	alive := 0
 	for _, neighbor := range stats.Neighbors {
@@ -62,6 +62,7 @@ func (c *Client) Status() control.Status {
 		Queues:       c.Mesh.QueueCount(),
 		StartedAt:    c.started,
 		Uptime:       control.Duration(time.Since(c.started)),
+		Initiator:    slices.ContainsFunc(dials(cfg, x), func(d dial) bool { return refuseDial(x, d) == nil }),
 		Responder:    cfg.Link.Listen,
 		FullMesh:     cfg.Dial.All,
 		NoTransit:    !cfg.Transits(),
@@ -95,6 +96,7 @@ func (c *Client) Status() control.Status {
 			Keepalives:       c.hubKeepalives(),
 		},
 		Originate:       announced,
+		MeshAddresses:   MeshAddresses(cfg),
 		Segments:        segmentText(c.Mesh.Segments()),
 		Steering:        c.Mesh.Steering().Entries(),
 		SegmentCounters: segmentCounters(c.Mesh.SegmentCounters()),
@@ -408,6 +410,7 @@ func (c *Client) Sessions() []control.Session {
 			Path:                 session.path,
 			Peer:                 session.peer.Node().String(),
 			Preferred:            session.preferred,
+			Role:                 ikeRole(session.dialed),
 			Active:               session.session.Active(),
 			LocalSPI:             child.LocalSPI,
 			RemoteSPI:            child.RemoteSPI,
@@ -430,6 +433,13 @@ func (c *Client) Sessions() []control.Session {
 	}
 	slices.SortFunc(out, func(a, b control.Session) int { return strings.Compare(a.Path, b.Path) })
 	return out
+}
+
+func ikeRole(dialed bool) string {
+	if dialed {
+		return "initiator"
+	}
+	return "responder"
 }
 
 func (c *Client) Peers() []control.Peer {

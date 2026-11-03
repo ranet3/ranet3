@@ -13,10 +13,11 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 )
 
-// meshStub answers with a route table and an originate set rich enough for the
-// four queries to have something to separate, which the flat stubSource does
-// not: one prefix covering another, a default from an exit, and a prefix this
-// node announces itself.
+// meshStub answers with a route table and a status rich enough for the four
+// queries to have something to separate, which the flat stubSource does not:
+// one prefix covering another, a default from an exit, a prefix this node
+// announces itself, an egress SID it originates, and an address cap.table
+// assigns it unannounced.
 type meshStub struct{ stubSource }
 
 func (meshStub) Status() control.Status {
@@ -26,6 +27,10 @@ func (meshStub) Status() control.Status {
 			{Prefix: netip.MustParsePrefix("203.0.113.10/32")},
 			{Prefix: netip.MustParsePrefix("2001:db8:1::5/128")},
 			{Prefix: netip.MustParsePrefix("2001:db8:9::/48")},
+			{Prefix: netip.MustParsePrefix("2001:db8:b:106::3/128")},
+		},
+		MeshAddresses: []netip.Addr{
+			netip.MustParseAddr("203.0.113.10"), netip.MustParseAddr("2001:db8:1::5"), netip.MustParseAddr("2001:db8:9::7"),
 		},
 	}
 }
@@ -86,15 +91,17 @@ func TestQueriesAnswerFromTheReads(t *testing.T) {
 	}
 }
 
-// ip prints the addresses this node answers at and nothing else, since the
-// output goes into a shell variable rather than being read.
-func TestIPPrintsOnlyTheHostPrefixes(t *testing.T) {
+// ip prints the mesh addresses the status reports and nothing else, since the
+// output goes into a shell variable rather than being read: the address
+// cap.table assigns unannounced among them, and the egress SID the node
+// originates not
+func TestIPPrintsTheMeshAddressesTheStatusReports(t *testing.T) {
 	socket := serveMesh(t)
 	out, err := execute(t, "ip", "--control", socket)
 	if err != nil {
 		t.Fatalf("ip failed: %v", err)
 	}
-	if out != "203.0.113.10\n2001:db8:1::5\n" {
+	if out != "203.0.113.10\n2001:db8:1::5\n2001:db8:9::7\n" {
 		t.Errorf("ip printed %q", out)
 	}
 }

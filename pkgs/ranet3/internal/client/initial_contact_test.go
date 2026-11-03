@@ -63,7 +63,7 @@ func (c *contactSet) end(sess *ike.Session) {
 
 // take adopts sess at peer's path with the rule already applied, contact as adopt passes it
 func (c *contactSet) take(peer identity.Identity, sess *ike.Session, preferred bool, contact time.Time) (func(), bool) {
-	return c.adoptFor(identity.Path(peer, contactLocal), sess, preferred, contact, contactLocal, peer, seeded(1), nil, nil)
+	return c.adoptFor(identity.Path(peer, contactLocal), sess, preferred, false, contact, contactLocal, peer, seeded(1), nil, nil)
 }
 
 // after a restart a peer dialed on 2 paths at once gets the notice on the first IKE_AUTH alone, request or response

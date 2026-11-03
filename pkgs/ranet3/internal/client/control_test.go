@@ -4,9 +4,11 @@
 package client
 
 import (
+	"encoding/json"
 	"net/netip"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/control"
@@ -190,6 +192,115 @@ func TestAssignedAddressesAreThisNodesOwnFromTheStart(t *testing.T) {
 	want := []netip.Prefix{netip.MustParsePrefix("10.66.0.5/32"), netip.MustParsePrefix("fd00:1::1/128")}
 	if got := assignedRows(c); !slices.Equal(got, want) {
 		t.Errorf("the route table view marks %v assigned, want %v", got, want)
+	}
+}
+
+// status reports the addresses the egress translates into the mesh under, each once, an address cap.table assigns unannounced among them,
+// and neither a range cap.route announces nor the egress SID the node originates while it serves it
+// a node with none reports none rather than leaving the field out
+func TestStatusReportsTheMeshAddressesTheEgressTakes(t *testing.T) {
+	const sid = "3fff:b:0:106::3"
+	c, _, _, bus := reloadOf(t, func(cfg *config.Config) {
+		egressNode(cfg, egressSegment(sid, "3fff:a::/32"))
+		cfg.Cap.Route = &babel.Routes{Announce: announce("203.0.113.0/24", "3fff:a::1/128")}
+		cfg.Cap.Table = &kernel.Table{Addresses: []schema.Prefix{schema.MustPrefix("203.0.113.10/32"), schema.MustPrefix("3fff:a::1/128")}}
+	})
+	c.sessions = newSessionSet()
+	segmentsOf(t, c)
+	speakerRecording(t, c, bus)
+	c.SetEgressReady(true, true, true)
+	status := c.Status()
+	if !slices.Contains(status.Originate, control.Originated{Prefix: netip.MustParsePrefix(sid + "/128")}) {
+		t.Fatalf("the status originates %v, without the egress SID", status.Originate)
+	}
+	if want := []netip.Addr{netip.MustParseAddr("3fff:a::1"), netip.MustParseAddr("203.0.113.10")}; !slices.Equal(status.MeshAddresses, want) {
+		t.Errorf("the status reports the mesh addresses %v, want %v", status.MeshAddresses, want)
+	}
+	body, err := json.Marshal(writable(t).Status())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"mesh_addresses":[]`) {
+		t.Errorf("a node with no mesh address reports %s", body)
+	}
+}
+
+// status says a node is an initiator exactly where it has a peer to dial, one dial.to names or one dial.all takes from the trust document
+// that its dialer sends an IKE_SA_INIT, so a peer the trust document lacks, a peer whose endpoints carry an address only in a family
+// this node has no endpoint of, pinned or not, and a peer with no endpoint carrying an address are none, while a dual-stack node
+// dials a peer reachable over its second family alone
+func TestStatusSaysInitiatorOfANodeWithAPeerToDial(t *testing.T) {
+	address, v6 := "192.0.2.7", "2001:db8::7"
+	beside := func(endpoint registry.Endpoint) registry.Registry {
+		return registry.Registry{{Organization: "example", Nodes: []registry.Node{{CommonName: "node"}, {CommonName: "gateway", Endpoints: []registry.Endpoint{endpoint}}}}}
+	}
+	alone := registry.Registry{{Organization: "example", Nodes: []registry.Node{{CommonName: "node"}}}}
+	dialable := beside(registry.Endpoint{SerialNumber: "1", AddressFamily: "ip4", Address: &address, Port: 13000})
+	otherFamily := beside(registry.Endpoint{SerialNumber: "1", AddressFamily: "ip6", Address: &v6, Port: 13000})
+	unaddressed := beside(registry.Endpoint{SerialNumber: "1", AddressFamily: "ip4", Port: 13000})
+	pinned := config.Dial{To: []identity.Identity{identity.MustParse("example/gateway:1")}}
+	node := config.Dial{To: []identity.Identity{identity.MustParse("example/gateway")}}
+	v4, dualStack := []config.Endpoint{{Serial: "0", Family: "ip4"}}, []config.Endpoint{{Serial: "0", Family: "ip4"}, {Serial: "1", Family: "ip6"}}
+	for name, test := range map[string]struct {
+		local []config.Endpoint
+		dial  config.Dial
+		trust registry.Registry
+		want  bool
+	}{
+		"listening alone":                                                       {local: v4, trust: dialable},
+		"dialing a peer the trust document lacks":                               {local: v4, dial: pinned, trust: alone},
+		"dialing a pinned endpoint of another family":                           {local: v4, dial: pinned, trust: otherFamily},
+		"dialing a node with an address in another family":                      {local: v4, dial: node, trust: otherFamily},
+		"dialing a node with no address":                                        {local: v4, dial: node, trust: unaddressed},
+		"dialing a pinned endpoint with an address":                             {local: v4, dial: pinned, trust: dialable, want: true},
+		"dialing a node with an address":                                        {local: v4, dial: node, trust: dialable, want: true},
+		"dual-stack, dialing a node with an address in ip6 alone":               {local: dualStack, dial: node, trust: otherFamily, want: true},
+		"under dial.all with no other node":                                     {local: v4, dial: config.Dial{All: true}, trust: alone},
+		"under dial.all beside a node with an address in another family":        {local: v4, dial: config.Dial{All: true}, trust: otherFamily},
+		"under dial.all beside a node with no address":                          {local: v4, dial: config.Dial{All: true}, trust: unaddressed},
+		"under dial.all beside a node with an address":                          {local: v4, dial: config.Dial{All: true}, trust: dialable, want: true},
+		"dual-stack, under dial.all beside a node with an address in ip6 alone": {local: dualStack, dial: config.Dial{All: true}, trust: otherFamily, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := writable(t)
+			c.cfg.Store(&config.Config{Node: identity.MustParse("example/node"), Link: config.Link{Listen: true, Endpoints: test.local}, Dial: test.dial})
+			c.storeIndex(trust(t, test.trust))
+			if got := c.Status().Initiator; got != test.want {
+				t.Errorf("the status reports initiator %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+// each end of one session reports the role it took in the session's IKE_SA_INIT, initiator where it dialed and responder where it answered,
+// and both report the one preference of the session, which holds where alpha, whose name sorts first, dialed
+func TestSessionsReportTheRoleOfEachEndAndThePreferenceOfBoth(t *testing.T) {
+	for name, alphaDials := range map[string]bool{"alpha dials": true, "bravo dials": false} {
+		t.Run(name, func(t *testing.T) {
+			alpha, bravo := newLoopbackMesh(t)
+			dialer, answerer := alpha, bravo
+			if !alphaDials {
+				dialer, answerer = bravo, alpha
+			}
+			quiet := *answerer.cfg
+			quiet.Dial.To = nil
+			answerer.client.cfg.Store(&quiet)
+			run(t, alpha, bravo)
+			var dialed, answered []control.Session
+			waitFor(t, convergeBudget, "one session at each end", func() bool {
+				dialed, answered = dialer.client.Sessions(), answerer.client.Sessions()
+				return len(dialed) == 1 && len(answered) == 1
+			})
+			if dialed[0].LocalSPI != answered[0].RemoteSPI || dialed[0].RemoteSPI != answered[0].LocalSPI {
+				t.Fatalf("the two ends hold %+v and %+v, not one SA", dialed[0], answered[0])
+			}
+			if dialed[0].Role != "initiator" || answered[0].Role != "responder" {
+				t.Errorf("%s reports its role in the session it dialed as %q and %s its role in the one it answered as %q", dialer.name, dialed[0].Role, answerer.name, answered[0].Role)
+			}
+			if dialed[0].Preferred != alphaDials || answered[0].Preferred != alphaDials {
+				t.Errorf("%s dialing reports the session preferred %v at %s and %v at %s, want %v at both", dialer.name, dialed[0].Preferred, dialer.name, answered[0].Preferred, answerer.name, alphaDials)
+			}
+		})
 	}
 }
 

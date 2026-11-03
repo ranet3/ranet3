@@ -40,11 +40,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.
 	// after that a rekey may replace the Child SA
 	suite := sess.Suite()
 	slog.Info(fmt.Sprintf("peer %s: connected (SPI %08x/%08x)", sessionName, child.LocalSPI, child.RemoteSPI))
-	role := "responder"
-	if dialed {
-		role = "initiator"
-	}
-	established := []slog.Attr{slog.String("role", role),
+	established := []slog.Attr{slog.String("role", ikeRole(dialed)),
 		slog.String("spi_in", fmt.Sprintf("%08x", child.LocalSPI)), slog.String("spi_out", fmt.Sprintf("%08x", child.RemoteSPI)),
 		slog.String("ike", suite.IKE()), slog.String("esp", suite.ESP())}
 
@@ -255,6 +251,8 @@ type sessionSet struct {
 type liveSession struct {
 	session   *ike.Session
 	preferred bool
+	// dialed is whether this node sent the session's IKE_SA_INIT
+	dialed bool
 	// the endpoints the two ends authenticated as, and revoke asks the trust about peer's node
 	peer, local identity.Identity
 	// key verified peer's AUTH, and the session stays only while the trust gives peer's node that key
@@ -340,18 +338,18 @@ func (s *sessionSet) adopt(path string, sess *ike.Session, local, remote identit
 	if sess.InitialContact() {
 		contact = sess.StartedAt()
 	}
-	return s.adoptFor(path, sess, preferInitiator(initiator, responder), contact, local, remote, key, pmtu, attach)
+	return s.adoptFor(path, sess, preferInitiator(initiator, responder), dialed, contact, local, remote, key, pmtu, attach)
 }
 
 // adoptPreferred is adopt with the rule already applied and no peer identity,
 // for a test that drives the resolution without two identities to derive it
 // from.
 func (s *sessionSet) adoptPreferred(path string, sess *ike.Session, preferred bool, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferred, time.Time{}, identity.Identity{}, identity.Identity{}, nil, nil, attach)
+	return s.adoptFor(path, sess, preferred, false, time.Time{}, identity.Identity{}, identity.Identity{}, nil, nil, attach)
 }
 
 // adoptFor is adopt with the rule applied, and contact, where it is not zero, the start of sess, whose IKE_AUTH carried the peer's INITIAL_CONTACT
-func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, contact time.Time, local, remote identity.Identity, key ed25519.PublicKey, pmtu *pathDriver, attach func() func()) (func(), bool) {
+func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred, dialed bool, contact time.Time, local, remote identity.Identity, key ed25519.PublicKey, pmtu *pathDriver, attach func() func()) (func(), bool) {
 	s.mu.Lock()
 	delete(s.handshakes, sess)
 	if s.shut {
@@ -390,7 +388,7 @@ func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred bool, co
 	if attach != nil {
 		detach = attach()
 	}
-	s.live[path] = &liveSession{session: sess, preferred: preferred, peer: remote, local: local, key: key, pmtu: pmtu, adopted: time.Now()}
+	s.live[path] = &liveSession{session: sess, preferred: preferred, dialed: dialed, peer: remote, local: local, key: key, pmtu: pmtu, adopted: time.Now()}
 	s.mu.Unlock()
 	switch {
 	case previous == nil || previous.session == sess:
@@ -435,6 +433,7 @@ type liveSessionView struct {
 	path        string
 	session     *ike.Session
 	preferred   bool
+	dialed      bool
 	peer, local identity.Identity
 	pmtu        *pathDriver
 }
@@ -447,7 +446,7 @@ func (s *sessionSet) snapshot() []liveSessionView {
 	defer s.mu.Unlock()
 	out := make([]liveSessionView, 0, len(s.live))
 	for path, live := range s.live {
-		out = append(out, liveSessionView{path: path, session: live.session, preferred: live.preferred, peer: live.peer, local: live.local, pmtu: live.pmtu})
+		out = append(out, liveSessionView{path: path, session: live.session, preferred: live.preferred, dialed: live.dialed, peer: live.peer, local: live.local, pmtu: live.pmtu})
 	}
 	return out
 }

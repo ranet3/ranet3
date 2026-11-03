@@ -93,10 +93,11 @@ func downLine(d Down) string {
 	return "since " + d.Since.UTC().Format(time.DateTime) + " UTC, " + sinceText(time.Duration(d.For)) + " ago, until ranet3 up"
 }
 
-// role is the three settings that decide what this node is on a fleet, said as
-// words rather than as three booleans an operator has to reassemble.
 func role(s Status) string {
-	parts := []string{"initiator"}
+	var parts []string
+	if s.Initiator {
+		parts = append(parts, "initiator")
+	}
 	if s.Responder {
 		parts = append(parts, "responder")
 	}
@@ -592,7 +593,6 @@ func RenderAddresses(w io.Writer, addresses []netip.Addr) {
 }
 
 // RenderSessions writes the live IKE SAs with the transforms each runs
-// `swanctl --list-sas` answered the same while strongSwan carried them
 func RenderSessions(w io.Writer, sessions []Session) {
 	rows := make([][]string, 0, len(sessions))
 	for _, s := range sessions {
@@ -605,7 +605,7 @@ func RenderSessions(w io.Writer, sessions []Session) {
 			s.Path,
 			s.Peer,
 			s.Remote,
-			end(s.Preferred),
+			s.Role,
 			upDown(s.Active),
 			fmt.Sprintf("%08x/%08x", s.LocalSPI, s.RemoteSPI),
 			suite(s.IKECipher, s.IKEPRF, s.IKEKex),
@@ -665,13 +665,6 @@ func onOffUnknown(on *bool) string {
 		return "unknown"
 	}
 	return onOff(*on)
-}
-
-func end(preferred bool) string {
-	if preferred {
-		return "initiator"
-	}
-	return "responder"
 }
 
 func source(generated bool) string {

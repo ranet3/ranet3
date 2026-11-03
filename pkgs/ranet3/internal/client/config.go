@@ -155,16 +155,16 @@ func refuseEgressAdvertisedUnconditionally(cfg *config.Config) error {
 	return nil
 }
 
-// MeshAddresses is every address this node carries on the mesh, which cap.egress translates into the mesh under
-// it is the host prefixes cap.route announces and what cap.table assigns
+// MeshAddresses is the address of each host prefix cap.route announces and each host address cap.table assigns, once, which cap.egress translates into the mesh under and status reports
+// an address cap.table assigns with a shorter length is left out
 // the announced ones count because a node that configures its tun externally assigns nothing
 func MeshAddresses(cfg *config.Config) []netip.Addr {
-	var out []netip.Addr
+	out := []netip.Addr{}
 	for _, prefix := range slices.Concat(cfg.Routes().Announced(), assignedPrefixes(cfg)) {
-		// Only a host prefix. A shorter one is a range this node carries
-		// traffic for rather than an address it answers at, and translating
-		// to its base address would send replies to a host that may not exist.
-		if prefix.IsSingleIP() {
+		// a shorter prefix cap.route announces is a range this node carries
+		// traffic for, and translating to its base address would send
+		// replies to a host that may not exist
+		if prefix.IsSingleIP() && !slices.Contains(out, prefix.Addr()) {
 			out = append(out, prefix.Addr())
 		}
 	}

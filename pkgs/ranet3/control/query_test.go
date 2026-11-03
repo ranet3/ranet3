@@ -106,23 +106,6 @@ func TestDefaultsListANodeAdvertisingBothHalves(t *testing.T) {
 	}
 }
 
-// Only a host prefix is an address this node answers at. A range it carries
-// traffic for and a default an exit announces are neither, and announcing one
-// prefix twice is one address.
-func TestMeshAddressesTakeOnlyTheHostPrefixes(t *testing.T) {
-	status := Status{Originate: []Originated{
-		{Prefix: netip.MustParsePrefix("203.0.113.10/32")},
-		{Prefix: netip.MustParsePrefix("2001:db8:1::5/128")},
-		{Prefix: netip.MustParsePrefix("2001:db8:9::/48")},
-		{Prefix: netip.MustParsePrefix("::/0"), From: netip.MustParsePrefix("2001:db8::/32")},
-		{Prefix: netip.MustParsePrefix("203.0.113.10/32")},
-	}}
-	got := MeshAddresses(status)
-	if len(got) != 2 || got[0].String() != "203.0.113.10" || got[1].String() != "2001:db8:1::5" {
-		t.Errorf("the mesh addresses are %v", got)
-	}
-}
-
 // whois leads with the sentence a reader came for and then shows what the
 // address would fall back to.
 func TestWhoisNamesThePrefixAndTheNextHop(t *testing.T) {

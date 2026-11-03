@@ -9,10 +9,10 @@ import (
 )
 
 // This file is the questions a caller asks of what the reads returned rather
-// than of the daemon: which prefix covers an address, which routes carry a
-// default, and which addresses this node holds on the mesh. They live beside
-// the types they read so that a monitor asks them the way the subcommands do,
-// and so that a test asks them of the wire form rather than of a table.
+// than of the daemon: which prefix covers an address and which routes carry a
+// default. They live beside the types they read so that a monitor asks them
+// the way the subcommands do, and so that a test asks them of the wire form
+// rather than of a table.
 
 // Covering is every route whose destination contains an address, longest
 // prefix first, so the first entry is the one the forwarding table would use.
@@ -92,21 +92,4 @@ func boolIndex(b bool) int {
 		return 1
 	}
 	return 0
-}
-
-// MeshAddresses is the addresses this node carries on the mesh, taken from
-// what it announces. Only a host prefix counts: a shorter one is a range this
-// node carries traffic for rather than an address it answers at, and a
-// default announced by an exit is neither. The daemon applies the same rule
-// when it decides which addresses its egress translates into the mesh.
-func MeshAddresses(status Status) []netip.Addr {
-	out := make([]netip.Addr, 0, len(status.Originate))
-	for _, announced := range status.Originate {
-		prefix := announced.Prefix
-		if prefix.Bits() != prefix.Addr().BitLen() || slices.Contains(out, prefix.Addr()) {
-			continue
-		}
-		out = append(out, prefix.Addr())
-	}
-	return out
 }

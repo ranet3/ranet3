@@ -24,7 +24,7 @@ func downStatus() Status {
 		Port: 13000, Endpoints: []string{"0/ip4", "1/ip6"},
 		TUN: "ranet3", MTU: 1400, Queues: 4,
 		Uptime:    Duration(26 * time.Hour),
-		Responder: true, ForwardsIPv4: new(true), ForwardsIPv6: new(true),
+		Initiator: true, Responder: true, ForwardsIPv4: new(true), ForwardsIPv6: new(true),
 		Registry:  RegistryInfo{Path: "/etc/ranet3/registry.json", Organizations: 1, Nodes: 12},
 		Kernel:    KernelStatus{Enabled: true, Where: "table 100", Table: 100, Protocol: 155, PassAt: time.Now().Add(-downFor)},
 		Counts:    Counts{Originated: 1},

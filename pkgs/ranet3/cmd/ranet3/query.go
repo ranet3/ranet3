@@ -17,8 +17,7 @@ import (
 // This file is the commands that ask a question of what the read paths return
 // rather than printing one of them: which prefix covers an address, which
 // addresses this node holds, which defaults the mesh offers, and everything at
-// once for a bug report. Each one reads and nothing more, so none of them adds
-// anything the daemon has to serve.
+// once for a bug report. Each one reads and nothing more.
 
 // queryCommands are added beside the plain reads.
 func (r *reader) queryCommands() []*cobra.Command {
@@ -64,23 +63,21 @@ is the originating node only when that node is a neighbor.`,
 	return cmd
 }
 
-// addressCommand prints this node's own mesh addresses, one per line, which is
-// `tailscale ip`. A node whose addresses are assigned by cap.table announces
-// the same prefixes, so one answer serves both.
+// addressCommand is `tailscale ip`
 func (r *reader) addressCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ip",
 		Short: "Show mesh IP addresses",
-		Long: `The addresses are the host prefixes this node announces. They print one
-per line and nothing else, so the output goes into a shell variable as
-it is.`,
+		Long: `The addresses are the host prefixes cap.route announces and cap.table
+assigns, as the node reports them. They print one per line and nothing
+else, so the output goes into a shell variable as it is.`,
 		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			status, err := control.Dial(r.socket).Status()
 			if err != nil {
 				return err
 			}
-			addresses := control.MeshAddresses(status)
+			addresses := status.MeshAddresses
 			w := cmd.OutOrStdout()
 			return emit(w, r.asJSON, addresses, func() { control.RenderAddresses(w, addresses) })
 		},

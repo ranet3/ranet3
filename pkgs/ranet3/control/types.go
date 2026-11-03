@@ -257,6 +257,8 @@ type Status struct {
 	Queues    int       `json:"queues"`
 	StartedAt time.Time `json:"started_at"`
 	Uptime    Duration  `json:"uptime"`
+	// Initiator is whether this node has a peer to dial, from dial.to or dial.all
+	Initiator bool `json:"initiator"`
 	// Responder, FullMesh and NoTransit are the three settings that decide
 	// which node this is on a fleet, so they are reported rather than left to
 	// be read back off the config file on a machine an operator is not on.
@@ -275,6 +277,8 @@ type Status struct {
 	Counts    Counts        `json:"counts"`
 	ESP       ESPCounters   `json:"esp"`
 	Originate []Originated  `json:"originate"`
+	// MeshAddresses is the host prefixes cap.route announces and cap.table assigns, each once, which cap.egress translates into the mesh under
+	MeshAddresses []netip.Addr `json:"mesh_addresses"`
 	// Segments lists the addresses this node answers for as a waypoint or an
 	// exit, each written as the address and the behavior, then for an egress
 	// segment its delivery and its allow list. It is absent on a
@@ -754,9 +758,10 @@ type Session struct {
 	Path   string `json:"path"`
 	Peer   string `json:"peer"`
 	Remote string `json:"remote,omitempty"`
-	// Preferred is whether this node is the end both sides agreed should be
-	// the initiator, which is the rule that settles a simultaneous dial.
-	Preferred bool   `json:"preferred"`
+	// Preferred is whether the SA was opened in the direction both ends prefer, the same on both ends
+	Preferred bool `json:"preferred"`
+	// Role is initiator where this node sent the session's IKE_SA_INIT and responder where it answered it
+	Role      string `json:"role"`
 	Active    bool   `json:"active"`
 	LocalSPI  uint32 `json:"local_spi"`
 	RemoteSPI uint32 `json:"remote_spi"`

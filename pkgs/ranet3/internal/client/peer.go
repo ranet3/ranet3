@@ -44,34 +44,44 @@ func (c *Client) unroutedDelay(err error, last time.Duration) time.Duration {
 	return min(2*last, max(unroutedDelayCap, c.reconnectDelay()))
 }
 
+// errNoEndpointInFamily is refuseDial's answer for a node with no dialable endpoint in d's family
+// a dual-stack node runs a dialer per local endpoint, so a peer without an endpoint of this one's family is ordinary
+var errNoEndpointInFamily = errors.New("no endpoint carrying an address in this address family")
+
+// refuseDial is why runPeer sends d no IKE_SA_INIT under the trust document x, and nil where it dials
+func refuseDial(x *registry.Index, d dial) error {
+	if _, err := x.Key(d.peer.Node()); err != nil {
+		return errors.New("node not found")
+	}
+	targets := x.Targets(d.peer)
+	if d.peer == d.peer.Node() {
+		if !slices.ContainsFunc(targets, func(target registry.Target) bool {
+			return target.AddressFamily == d.local.Family && target.Dialable()
+		}) {
+			return errNoEndpointInFamily
+		}
+		return nil
+	}
+	switch {
+	case len(targets) == 0:
+		return fmt.Errorf("endpoint %s not found", d.peer)
+	case targets[0].AddressFamily != d.local.Family:
+		return fmt.Errorf("endpoint %s is %s, not %s", d.peer, targets[0].AddressFamily, d.local.Family)
+	case !targets[0].Dialable():
+		return fmt.Errorf("endpoint %s carries no address", d.peer)
+	}
+	return nil
+}
+
 // runPeer dials d again whenever its session ends, at once when wake fires and otherwise after the reconnect delay, or after unroutedDelay where the host had no route for the dial
 // a dial after one that failed is said at debug, since only a change of outcome tells an operator anything
 func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
-	x := c.index()
-	if _, err := x.Key(d.peer.Node()); err != nil {
-		slog.Warn(fmt.Sprintf("peer %s: node not found", d.path))
-		return
-	}
-	// a dual-stack node runs a dialer per local endpoint
-	// so a peer without an endpoint of this one's family is ordinary
-	targets := x.Targets(d.peer)
-	if d.peer != d.peer.Node() {
-		if len(targets) == 0 {
-			slog.Warn(fmt.Sprintf("peer %s: endpoint %s not found", d.path, d.peer))
-			return
-		}
-		if targets[0].AddressFamily != d.local.Family {
-			slog.Warn(fmt.Sprintf("peer %s: endpoint %s is %s, not %s", d.path, d.peer, targets[0].AddressFamily, d.local.Family))
-			return
-		}
-		if !targets[0].Dialable() {
-			slog.Warn(fmt.Sprintf("peer %s: endpoint %s carries no address", d.path, d.peer))
-			return
-		}
-	} else if !slices.ContainsFunc(targets, func(target registry.Target) bool {
-		return target.AddressFamily == d.local.Family && target.Dialable()
-	}) {
+	switch err := refuseDial(c.index(), d); {
+	case errors.Is(err, errNoEndpointInFamily):
 		slog.Debug("peer has no endpoint carrying an address in this address family", "peer", d.path, "family", d.local.Family)
+		return
+	case err != nil:
+		slog.Warn(fmt.Sprintf("peer %s: %v", d.path, err))
 		return
 	}
 	var failure repeatedFailure
