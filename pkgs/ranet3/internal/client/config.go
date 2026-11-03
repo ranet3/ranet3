@@ -19,6 +19,7 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
@@ -56,6 +57,15 @@ func refuseExitUnentered(cfg *config.Config, entryRuns bool) error {
 	return fmt.Errorf("config: cap.route announces %s, which counts as a default and asks this node to carry other nodes' traffic out of the mesh, and this build for %s carries no exit, since it runs no entry chain to pass that traffic's replies into the mesh", announced, runtime.GOOS)
 }
 
+// refuseBorderHere refuses, through refuse, an exemption's interface name that the antispoof filter's backend here cannot write
+// nil refuse is kernelexit.RefuseBorder, and the reload checks it ahead of retable, the last refusal, so a refused file changes nothing
+func refuseBorderHere(cfg *config.Config, refuse func(*egress.Border) error) error {
+	if refuse == nil {
+		refuse = kernelexit.RefuseBorder
+	}
+	return refuse(cfg.Border())
+}
+
 // refuseForwardedHere refuses a cap.exit forward entry naming the tun or a link a default leaves by, as the watch reads the host now
 func refuseForwardedHere(cfg *config.Config, tun string, network networkSource) error {
 	if cfg.Cap.Exit == nil || network == nil {
@@ -71,6 +81,9 @@ func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x 
 		return err
 	}
 	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns); err != nil {
+		return err
+	}
+	if err := refuseBorderHere(cfg, nil); err != nil {
 		return err
 	}
 	families, err := validateLocalConfig(cfg, privateKey, x)
@@ -345,24 +358,29 @@ func validatePeers(peers []identity.Identity, x *registry.Index, localFamilies m
 	return refuse, skip
 }
 
-// warnUnbordered says so when the host forwards where no antispoof filter
+// warnUnbordered says so when the host forwards where no chain antispoof
 // runs. The tun read drops a packet from a source this node does not own
 // there toward every destination but an IPv6 link-local one, so a host on any
 // of this node's links reaches the mesh only under a source this node owns, and
-// nothing keeps it from the host's own services under a mesh source.
+// nothing keeps it from the host's own services under a mesh source. border
+// is the antispoof filter's configuration, nil where overlay is not written.
 //
 // a warning rather than a refusal, since forwarding moves under a running node
-// and darwin, which forwards with no filter to offer, would otherwise not start at all
-func warnUnbordered(forwards func() (v4, v6 *bool)) {
+// and darwin, which forwards with no chain antispoof to offer, would otherwise not start at all
+func warnUnbordered(border *egress.Border, forwards func() (v4, v6 *bool)) {
 	if kernelexit.EntryRuns {
 		return
 	}
-	on := forwardedFamilies(forwards())
-	if len(on) == 0 {
-		return
+	on := strings.Join(forwardedFamilies(forwards()), " and ")
+	switch {
+	case on == "":
+	case kernelexit.Filters(border):
+		slog.Warn(fmt.Sprintf("config: this node forwards %s and %s enforces no chain antispoof, so a host on any of its links can reach this host's own services under a mesh source", on, runtime.GOOS))
+	case border == nil:
+		slog.Warn(fmt.Sprintf("config: this node forwards %s and writes no overlay, so %s runs no antispoof filter, and a host on any of its links can reach this host's own services under a mesh source", on, runtime.GOOS))
+	default:
+		slog.Warn(fmt.Sprintf("config: this node forwards %s and %s runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source", on, runtime.GOOS))
 	}
-	slog.Warn(fmt.Sprintf("config: this node forwards %s and %s runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source",
-		strings.Join(on, " and "), runtime.GOOS))
 }
 
 // hostForwarding is forwardingEnabled, which a test replaces to stand in for a host's settings

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/pf"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -199,7 +200,8 @@ type BorderRuntime struct {
 	Events *events.Bus
 	// StateDir is the directory for state that outlives the process, where a
 	// backend records what it holds in the kernel beyond its own rules, so a
-	// later start gives it back. Empty records nothing.
+	// later start gives it back. A backend that records refuses to open
+	// without it.
 	StateDir string
 }
 
@@ -253,6 +255,10 @@ type BorderSets struct {
 	// None is the destinations of an exit's none classes, toward which the
 	// entry chain lets a packet into the tun from any source, another of them
 	None []Range
+	// Links is the name of each up link outside the mesh the host's watch
+	// reports, sorted and each once, over which a backend that matches exact
+	// names alone writes an exemption under a name ending in *
+	Links []string
 }
 
 // BorderDrop is one drop of the table in one family, as the metric labels it
@@ -291,7 +297,27 @@ type BorderStats struct {
 	CarveOuts []CarveOut
 	// Sets is each set as the last pass asked for it
 	Sets []BorderSetReading
-	Err  string
+	// PF is pf's state for the filter beside its anchor, as the last pass read
+	// it, nil where the filter does not run on pf
+	PF  *BorderPF
+	Err string
+}
+
+// BorderPF is pf's state for the filter beside its anchor, without which pf
+// evaluates none of the anchor's rules
+type BorderPF struct {
+	Anchor string
+	// Token is this daemon's reference on pf, which keeps pf enabled, and PID
+	// the process that took it
+	Token uint64
+	PID   int
+	// Listed is whether pf lists Token under PID
+	Listed bool
+	// Called is whether the main ruleset calls com.apple's children, the
+	// anchor among them
+	Called bool
+	// Enablers is every reference pf lists, which a debug read alone fills
+	Enablers []pf.Enabler
 }
 
 // BorderReading is one rule of a chain as a debug read finds it
@@ -313,10 +339,11 @@ type BorderChainReading struct {
 	Rules      []BorderReading
 }
 
-// BorderSetReading is one set of the table and its ranges
+// BorderSetReading is one set of the table and its ranges, Kind the word its
+// backend calls a set by: nftables a set, pf a table
 type BorderSetReading struct {
-	Name     string
-	Elements []Range
+	Kind, Name string
+	Elements   []Range
 }
 
 // BorderDebug is the table as a debug read finds it: each chain's rules the
@@ -331,5 +358,8 @@ type BorderDebug struct {
 	Unready string
 	Chains  []BorderChainReading
 	Sets    []BorderSetReading
-	Err     string
+	// PF is the last pass's reading of pf beside the anchor, with the
+	// references pf lists now, nil where the filter does not run on pf
+	PF  *BorderPF
+	Err string
 }

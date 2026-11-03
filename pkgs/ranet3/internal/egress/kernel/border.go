@@ -224,10 +224,10 @@ type borderBackend interface {
 	// table, the sets filled with sets, and the chains holding rules
 	Apply(rules []BorderRule, sets borderSets) error
 	// Fill moves each set sets names from the ranges was gives it, which the
-	// table holds, to those sets gives it, in one transaction that leaves the
-	// chains as they are. nftables sends the ranges that differ alone, and pf
-	// sends both its tables whole.
-	Fill(was, sets borderSets) error
+	// table holds under rules, to those sets gives it, in one transaction that
+	// leaves the chains as they are. nftables sends the ranges that differ
+	// alone, and pf sends each table rules read whole.
+	Fill(rules []BorderRule, was, sets borderSets) error
 	// Withdraw removes the filter's table and reports whether it removed one,
 	// a table already gone being success
 	Withdraw() (removed bool, err error)
@@ -237,16 +237,31 @@ type borderBackend interface {
 	// Missed carries one coalesced wake-up per batch of notifications the
 	// backend lost or could not read, any of which may have been a change
 	Missed() <-chan struct{}
-	// Read is Rules with no sets through a socket of its own, for a reader off
-	// the run goroutine
-	Read() (chainReadback, error)
+	// Read is Rules with no sets and no fault through a socket of its own, for
+	// a reader off the run goroutine. rules names each line the backend cannot
+	// name by its comment alone.
+	Read(rules []BorderRule) (chainReadback, error)
+	// Close closes the backend of a filter that ends, a start refused before
+	// it ran among them, and gives back what opening it took for the filter
+	// beyond the table where no earlier run left it so
 	Close() error
+	// Leave closes the backend at the mesh's failure and keeps the table and
+	// whatever else the backend holds for it, so the next start takes them over
+	Leave() error
 	// where names what the backend writes for cfg, nil where overlay is not
 	// written
 	where(cfg *egress.Border) string
-	// writes reports whether the backend writes a rule of class as a rule of
-	// its own. A class it does not write it folds into the rules it does.
-	writes(class BorderClass) bool
+	// writes reports whether the backend writes rule as a rule of its own. A
+	// rule it does not write it folds into the rules it does, or runs nowhere.
+	writes(rule BorderRule) bool
+	// holds reports whether the backend writes the set named set in either
+	// family. desired leaves out a set it does not, so moving one writes
+	// nothing.
+	holds(set string) bool
+	// wildcards reports whether the backend matches an interface by a name
+	// ending in *. desired writes an exemption under such a name for one that
+	// does not as one rule per link the name matches.
+	wildcards() bool
 	// chain is chain's heading in a debug read, its rules left empty
 	chain(name string) egress.BorderChainReading
 	// readings is sets as the backend names and holds them
@@ -292,7 +307,8 @@ type BorderFilter struct {
 // written, opens the backend and runs the first pass, and refuses the start
 // when that pass cannot install the table and read it back: a node does not
 // run without it. Run keeps it from then on. A platform with no backend
-// returns no filter.
+// returns no filter, and so does one the filter runs on only where overlay is
+// written, where it is not, once it gives back what an earlier run left.
 func NewBorderFilter(cfg *egress.Border, rt egress.BorderRuntime) (*BorderFilter, error) {
 	if cfg != nil {
 		if err := cfg.Validate(); err != nil {
@@ -305,7 +321,7 @@ func NewBorderFilter(cfg *egress.Border, rt egress.BorderRuntime) (*BorderFilter
 	if rt.Tun == "" {
 		return nil, errors.New("egress: the entry chain needs the mesh's tun")
 	}
-	be, err := newBorderBackend(rt)
+	be, err := newBorderBackend(cfg, rt)
 	if err != nil || be == nil {
 		return nil, err
 	}
@@ -316,6 +332,7 @@ func NewBorderFilter(cfg *egress.Border, rt egress.BorderRuntime) (*BorderFilter
 // closes it as Close does when the pass does not leave the table read back
 func startBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBackend) (*BorderFilter, error) {
 	f := newBorderFilter(cfg, rt, be)
+	f.reportInside(nil, cfg)
 	if err := f.reconcile(); err != nil {
 		return nil, errors.Join(fmt.Errorf("egress: the antispoof filter could not be installed in %s: %w", f.Where(), err), f.Close())
 	}
@@ -330,6 +347,8 @@ func startBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBac
 // logging it withdrawn only where one was there to remove, and it leaves any
 // other for the next start: one the first read found, adopted or rewritten,
 // and whatever is there where that read failed, which it names nothing of.
+// Either way the backend's close gives back what opening it took beyond the
+// table, where no earlier run left it so.
 func (f *BorderFilter) Close() error {
 	if f.made {
 		return f.finish()
@@ -366,6 +385,7 @@ func (f *BorderFilter) SetConfig(cfg egress.Border) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	f.reportInside(f.config.Load(), &cfg)
 	f.config.Store(&cfg)
 	select {
 	case f.wake <- struct{}{}:
@@ -384,10 +404,6 @@ func (f *BorderFilter) Capability() egress.Border {
 }
 
 func (f *BorderFilter) Inside() []string { return slices.Clone(f.rt.Inside) }
-
-// AntispoofRuns reports whether the backend writes the antispoof chain, which
-// it then writes wherever overlay is
-func (f *BorderFilter) AntispoofRuns() bool { return f.be.writes(BorderSource) }
 
 // Where names what the filter owns, as its backend writes it
 func (f *BorderFilter) Where() string {
@@ -417,7 +433,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 			if errors.Is(context.Cause(ctx), meshkernel.ErrMeshFailed) {
 				f.setReady(false, "the antispoof filter is stopping")
 				slog.Warn("antispoof filter is leaving its table after the mesh failed", "where", f.Where())
-				return f.be.Close()
+				return f.be.Leave()
 			}
 			return f.finish()
 		case <-ticker.C:
@@ -450,9 +466,9 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 // backend writes as rules of their own in the order a packet meets them, the
 // antispoof chain's ahead of the entry chain's, the sets, and the carve-outs
 // the antispoof chain accepts with the exemptions' conflicts, neither where
-// overlay is not written and no conflict where the antispoof chain runs
-// nowhere. The carved drops come ahead of every accept by source, so neither
-// a carve-out nor an exemption lets in a source the carved sets hold.
+// overlay is not written. The carved drops come ahead of every accept by
+// source, so neither a carve-out nor an exemption lets in a source the carved
+// sets hold.
 func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 	// the sets and the rules read one configuration, so no pass carves from two
 	cfg := f.config.Load()
@@ -466,11 +482,7 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 		for _, device := range f.rt.Inside {
 			rules = append(rules, BorderRule{Class: BorderInside, Device: device})
 		}
-		reported.CarveOuts = derived.CarveOuts
-		// a conflict names a drop of the antispoof chain, which a backend that does not write the chain runs nowhere
-		if f.AntispoofRuns() {
-			reported.Conflicts = derived.Conflicts
-		}
+		reported = egress.BorderSets{CarveOuts: derived.CarveOuts, Conflicts: derived.Conflicts}
 		carveOuts := derived.CarveOuts
 		// a family Carved gives no prefix of holds an empty carved set, so its drop is left out
 		carved := cfg.Carved(carveOuts)
@@ -483,7 +495,13 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 			rules = append(rules, BorderRule{Class: BorderCarveOut, Device: carveOut.Link, Source: carveOut.Prefix, IPv6: carveOut.Prefix.Addr().Is6()})
 		}
 		for _, exemption := range cfg.Exemptions() {
-			rules = append(rules, BorderRule{Class: BorderExempt, Device: exemption.Interface, Source: exemption.Prefix, IPv6: exemption.Prefix.Addr().Is6()})
+			for _, device := range f.exempting(exemption, derived.Links) {
+				rule := BorderRule{Class: BorderExempt, Device: device, Source: exemption.Prefix, IPv6: exemption.Prefix.Addr().Is6()}
+				// a comment names one rule, and an exact name beside a wildcard matching it gives the same rule twice
+				if !slices.Contains(rules, rule) {
+					rules = append(rules, rule)
+				}
+			}
 		}
 		for _, prefix := range cfg.Normalized().Overlay {
 			rules = append(rules, BorderRule{Class: BorderSource, Source: prefix.Prefix, IPv6: prefix.Addr().Is6()})
@@ -496,12 +514,15 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 	for _, class := range []BorderClass{EntryOwned, EntryNone, EntryDrop} {
 		rules = append(rules, BorderRule{Class: class}, BorderRule{Class: class, IPv6: true})
 	}
-	rules = slices.DeleteFunc(rules, func(rule BorderRule) bool { return !f.be.writes(rule.Class) })
+	rules = slices.DeleteFunc(rules, func(rule BorderRule) bool { return !f.be.writes(rule) })
 	sets := borderSets{}
 	for _, one := range []struct {
 		name   string
 		ranges []egress.Range
 	}{{carvedSet, derived.Carved}, {ownedSet, derived.Owned}, {noneSet, derived.None}} {
+		if !f.be.holds(one.name) {
+			continue
+		}
 		// the union orders every IPv4 range ahead of every IPv6 one
 		ranges := egress.Union(one.ranges)
 		v6 := slices.IndexFunc(ranges, func(r egress.Range) bool { return r.First.Is6() })
@@ -511,6 +532,48 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 		sets[one.name+"4"], sets[one.name+"6"] = ranges[:v6:v6], ranges[v6:]
 	}
 	return rules, sets, reported
+}
+
+// exempting is the devices an exemption's rules name: none for the shared
+// list, its name where the backend matches it, and for a name ending in * on a
+// backend that matches exact names alone, each of links it matches, in their
+// order, but a device inside the mesh, which no exemption reaches. A link that
+// comes or goes changes the rules on the pass its change wakes.
+func (f *BorderFilter) exempting(exemption egress.Exemption, links []string) []string {
+	if _, wildcard := egress.InterfacePattern(exemption.Interface); !wildcard || f.be.wildcards() {
+		if f.insideDevice(exemption.Interface) {
+			return nil
+		}
+		return []string{exemption.Interface}
+	}
+	var out []string
+	for _, link := range links {
+		if exemption.Names(link) && !f.insideDevice(link) {
+			out = append(out, link)
+		}
+	}
+	return out
+}
+
+// insideDevice reports whether name is a device inside the mesh, where the
+// antispoof chain drops nothing
+func (f *BorderFilter) insideDevice(name string) bool { return slices.Contains(f.rt.Inside, name) }
+
+// reportInside warns once of each exemption cfg brings in beside was that
+// names a device inside the mesh, which exempting leaves out
+func (f *BorderFilter) reportInside(was, cfg *egress.Border) {
+	inside := func(cfg *egress.Border) []egress.Exemption {
+		if cfg == nil {
+			return nil
+		}
+		return slices.DeleteFunc(cfg.Exemptions(), func(exemption egress.Exemption) bool { return !f.insideDevice(exemption.Interface) })
+	}
+	before := inside(was)
+	for _, exemption := range inside(cfg) {
+		if !slices.Contains(before, exemption) {
+			slog.Warn("antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing", "interface", exemption.Interface, "prefix", exemption.Prefix)
+		}
+	}
 }
 
 // reconcile makes the table what the pass asks for, each rule by its comment
@@ -552,7 +615,7 @@ func (f *BorderFilter) reconcile() error {
 		}
 	case changed != nil:
 		// the readback found the table holding want, so the fill sends what differs from it
-		if fillErr := f.be.Fill(want, changed); fillErr != nil {
+		if fillErr := f.be.Fill(rules, want, changed); fillErr != nil {
 			f.held = nil
 			err = fmt.Errorf("fill sets: %w", fillErr)
 		} else {
@@ -579,7 +642,7 @@ func (f *BorderFilter) reconcile() error {
 	if f.ready {
 		f.last = rules
 	}
-	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, CarveOuts: carveOuts, Sets: f.be.readings(sets)}
+	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, CarveOuts: carveOuts, Sets: f.be.readings(sets), PF: read.pf}
 	if err != nil {
 		stats.Err = err.Error()
 	} else {
@@ -707,16 +770,23 @@ func (f *BorderFilter) setReady(ok bool, detail string) {
 func (f *BorderFilter) Debug() egress.BorderDebug {
 	stats := f.Stats()
 	out := egress.BorderDebug{Where: f.Where(), PassAt: stats.At, Ready: stats.Ready, Unready: stats.Unready, Sets: stats.Sets}
-	read, err := f.be.Read()
+	rules, _, _ := f.desired()
+	read, err := f.be.Read(rules)
 	if err != nil {
 		out.Err = err.Error()
+	}
+	if stats.PF != nil {
+		state := *stats.PF
+		if read.pf != nil {
+			state.Enablers = read.pf.Enablers
+		}
+		out.PF = &state
 	}
 	held := read.rules
 	readings := make(map[string]Installed, len(held))
 	for _, reading := range held {
 		readings[reading.Spec] = reading
 	}
-	rules, _, _ := f.desired()
 	for _, rule := range rules {
 		if len(out.Chains) == 0 || out.Chains[len(out.Chains)-1].Name != rule.Chain() {
 			out.Chains = append(out.Chains, f.be.chain(rule.Chain()))
@@ -745,11 +815,11 @@ func (f *BorderFilter) Debug() egress.BorderDebug {
 	return out
 }
 
-// readings is the sets by name
+// readings is the sets by name, as nftables sets
 func (s borderSets) readings() []egress.BorderSetReading {
 	out := make([]egress.BorderSetReading, 0, len(s))
 	for _, name := range slices.Sorted(maps.Keys(s)) {
-		out = append(out, egress.BorderSetReading{Name: name, Elements: slices.Clone(s[name])})
+		out = append(out, egress.BorderSetReading{Kind: "set", Name: name, Elements: slices.Clone(s[name])})
 	}
 	return out
 }

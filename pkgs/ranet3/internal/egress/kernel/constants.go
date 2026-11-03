@@ -28,4 +28,9 @@ const (
 	carvedSet = "carved"
 	ownedSet  = "owned"
 	noneSet   = "none"
+	// pfOverlayTable and pfCarvedTable name the pf anchor's tables, each of
+	// both families: the overlay, which the pass on the loopback link reads
+	// since pf cannot negate two interfaces in one rule, and the carved sets
+	pfOverlayTable = "ranet3_overlay"
+	pfCarvedTable  = "ranet3_carved"
 )

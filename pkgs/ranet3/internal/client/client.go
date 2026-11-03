@@ -126,6 +126,9 @@ type Client struct {
 	// of the host's network, which moves the carve-outs. A reload wakes the
 	// filter through its SetConfig.
 	borderNetwork chan struct{}
+	// borderRefusal refuses an exemption's interface name that the antispoof
+	// filter's backend cannot write, and nil means kernelexit.RefuseBorder
+	borderRefusal func(*egress.Border) error
 	// ruleDump reads every policy rule the host holds, and nil means kernel.DumpRules
 	ruleDump func() ([]kernel.DumpedRule, error)
 	// routeGet asks the kernel for one packet's route, and nil means kernel.RouteGet
@@ -220,7 +223,7 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err := validateRuntimeConfig(cfg, privateKey, x); err != nil {
 		return nil, err
 	}
-	warnUnbordered(hostForwarding)
+	warnUnbordered(cfg.Border(), hostForwarding)
 	warnForwardedUnderExit(cfg, hostForwarding, bus)
 	warnCountedAdvertisements(cfg)
 	// Before the tun exists, so a segment this node could not answer for
@@ -552,16 +555,18 @@ func (c *Client) BorderInside() []string {
 
 // BorderRuntime hands the antispoof filter what the node resolves at startup: the
 // mesh tun, the devices inside the mesh, the bus, the sets as the mesh's table
-// and the host's network give them now, and a wake for each of those two. It
-// takes a reader of the mesh's table, so the command calls it once.
+// and the host's network give them now, a wake for each of those two, and the
+// state directory, which SetStateDir names first. It takes a reader of the
+// mesh's table, so the command calls it once.
 func (c *Client) BorderRuntime() egress.BorderRuntime {
 	return egress.BorderRuntime{
-		Tun:     c.Mesh.Name,
-		Inside:  c.BorderInside(),
-		Events:  c.events,
-		Sets:    c.borderSets,
-		Routes:  c.Mesh.Routes.Changes(),
-		Network: c.borderNetwork,
+		Tun:      c.Mesh.Name,
+		Inside:   c.BorderInside(),
+		Events:   c.events,
+		Sets:     c.borderSets,
+		Routes:   c.Mesh.Routes.Changes(),
+		Network:  c.borderNetwork,
+		StateDir: c.stateDir,
 	}
 }
 
@@ -584,7 +589,15 @@ func (c *Client) borderSets(border *egress.Border) egress.BorderSets {
 		None:  kernel.NoneDestinations(classes, snapshot, overlay),
 	}
 	if border != nil {
-		sets.CarveOuts = kernel.CarveOuts(c.networkState(), overlay)
+		network := c.networkState()
+		for _, family := range []kernel.NetworkFamily{network.IPv4, network.IPv6} {
+			for _, link := range family.Links {
+				sets.Links = append(sets.Links, link.Name)
+			}
+		}
+		slices.Sort(sets.Links)
+		sets.Links = slices.Compact(sets.Links)
+		sets.CarveOuts = kernel.CarveOuts(network, overlay)
 		carved, conflicts := kernel.CarvedSets(border, sets.CarveOuts, snapshot)
 		sets.Carved = carved
 		if c.speaker != nil {

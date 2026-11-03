@@ -194,7 +194,7 @@ func tableDestinations(snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
 // fewest prefixes: the addresses of an overlapping lease that the link's own
 // neighbors hold, its gateway and resolver among them
 func (v exitView) carvedLAN() []netip.Prefix {
-	return rangePrefixes(subtract(Ranges(v.carved), Ranges(carvedOf(v.carved, v.table)))...)
+	return RangePrefixes(subtract(Ranges(v.carved), Ranges(carvedOf(v.carved, v.table)))...)
 }
 
 // passNetwork is the host's network as one pass reads it, and the prefixes of

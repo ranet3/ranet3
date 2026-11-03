@@ -42,6 +42,9 @@ type borderRecord struct {
 	debug   egress.BorderDebug
 	// missing is a chain another writer took, which the filter reads not ready
 	missing bool
+	// pf is the filter as darwin's runs, over pf and writing only chain
+	// mesh_entry, nil for Linux's
+	pf *egress.BorderPF
 }
 
 func (b *borderRecord) SetConfig(cfg egress.Border) error {
@@ -69,11 +72,22 @@ func (b *borderRecord) calls() int {
 
 func (*borderRecord) Inside() []string { return []string{"ranet3", "lo"} }
 
-func (*borderRecord) Where() string { return "nftables table inet ranet3 chain antispoof" }
+func (b *borderRecord) Where() string {
+	if b.pf != nil {
+		return "pf anchor " + b.pf.Anchor
+	}
+	return "nftables table inet ranet3 chain antispoof"
+}
+
+func (b *borderRecord) AntispoofRuns() bool { return b.pf == nil }
 
 func (b *borderRecord) Stats() egress.BorderStats {
 	if b.missing {
-		return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Unready: "another writer changed its table"}
+		return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Unready: "another writer changed its table", PF: b.pf}
+	}
+	if b.pf != nil {
+		return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 2,
+			Dropped: egress.BorderDrops{0, 0, 0, 0, 6, 8}, PF: b.pf}
 	}
 	return egress.BorderStats{At: time.Unix(1_790_000_000, 0), Ready: true, Installed: 7,
 		Dropped:   egress.BorderDrops{3, 1, 4, 5, 6, 8},
@@ -385,6 +399,24 @@ func TestBorderSetsLiftTheGatewaysExemptRangeOutOfItsSiteCarveOut(t *testing.T) 
 	}
 }
 
+// the antispoof filter's sets name each link the host's watch reports, in
+// either family, once where both report it and whatever its addresses, so a
+// backend matching a name exactly can expand a wildcard exemption over them,
+// and none where overlay is not written
+func TestBorderSetsNameEveryLinkTheWatchReports(t *testing.T) {
+	c, _, _, _ := reloadOf(t, func(cfg *config.Config) { cfg.Overlay = overlayOf("203.0.113.0/24") })
+	c.network = &fakeNetwork{changes: make(chan kernel.NetworkChange), current: kernel.NetworkState{
+		IPv4: kernel.NetworkFamily{Links: []kernel.Link{{Name: "en1", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/24")}}, {Name: "bridge100"}}},
+		IPv6: kernel.NetworkFamily{Links: []kernel.Link{{Name: "en1"}, {Name: "en0", Prefixes: []netip.Prefix{netip.MustParsePrefix("2001:db8:b::10/64")}}}},
+	}}
+	if got, want := c.BorderRuntime().Sets(c.config().Border()).Links, []string{"bridge100", "en0", "en1"}; !slices.Equal(got, want) {
+		t.Errorf("the filter's sets name the links %v, want %v", got, want)
+	}
+	if got := c.BorderRuntime().Sets(nil).Links; len(got) != 0 {
+		t.Errorf("with no overlay the filter's sets name the links %v, want none", got)
+	}
+}
+
 // a reload that moves only what cap.route announces hands the filter this
 // node's own prefixes, so the pass its SetConfig wakes, which may run before
 // the reload stores the file, carves a node address it announces inside an
@@ -518,6 +550,72 @@ func TestReloadRefusesRemovingTheOverlay(t *testing.T) {
 	}
 }
 
+// a reload whose exemption names an interface the filter's backend cannot
+// write is refused ahead of the reconciler's table, the last refusal, so the
+// refused file changes nothing
+func TestReloadRefusesAnInterfaceNameTheFilterCannotWriteAheadOfTheTable(t *testing.T) {
+	c, path, reconciler, bus := reloadOf(t, func(cfg *config.Config) {
+		cfg.Cap.Table = &kernel.Table{}
+		cfg.Overlay = overlayOf("3fff::/20")
+	})
+	refusal := errors.New(`egress: an exemption names the interface "br-lan", which the antispoof filter's pf anchor cannot write`)
+	var handed *egress.Border
+	c.borderRefusal = func(border *egress.Border) error {
+		handed = border
+		if border == nil {
+			return nil
+		}
+		if _, named := border.Antispoof.Interface["br-lan"]; !named {
+			return nil
+		}
+		return refusal
+	}
+	old := c.config()
+	next := *old
+	next.Cap.Table = &kernel.Table{Reconcile: schema.Duration(time.Minute)}
+	next.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"br-lan": {Exempt: overlayOf("3fff:a::/36")}}}
+	writeConfig(t, path, &next)
+	if err := c.ReloadFrom(path); !errors.Is(err, refusal) {
+		t.Fatalf("the reload answered %v, want the filter's refusal of br-lan, handed %+v", err, handed)
+	}
+	if len(reconciler.tables) != 0 {
+		t.Errorf("the reconciler was handed %d tables of a refused file", len(reconciler.tables))
+	}
+	changedNothing(t, c, old, bus)
+}
+
+// the start refuses an exemption's interface name the filter here cannot
+// write, which only pf does: on darwin br-lan is refused naming it, and on
+// every other platform it starts, as kernelexit.RefuseBorder answers for this
+// platform. A prefix this node announces is the tun read's to check on darwin,
+// so fe80:1:2::/48 announced starts everywhere.
+func TestStartRefusesAnInterfaceNameTheFilterCannotWrite(t *testing.T) {
+	for name, test := range map[string]struct {
+		set   func(cfg *config.Config)
+		named string
+	}{
+		"an exemption's interface": {func(cfg *config.Config) {
+			cfg.Overlay = overlayOf("3fff::/20")
+			cfg.Cap.Antispoof = &egress.Antispoof{Interface: map[string]egress.AntispoofInterface{"br-lan": {Exempt: overlayOf("3fff:a::/36")}}}
+		}, `"br-lan"`},
+		"announced": {func(cfg *config.Config) {
+			cfg.Overlay = overlayOf("3fff::/20")
+			cfg.Cap.Route = &babel.Routes{Announce: announce("fe80:1:2::/48")}
+		}, ""},
+	} {
+		cfg, privateKey, reg := runtimeFixture(t)
+		test.set(cfg)
+		err := validateRuntimeConfig(cfg, privateKey, trust(t, reg))
+		refused := test.named != "" && runtime.GOOS == "darwin"
+		if want := kernelexit.RefuseBorder(cfg.Border()); (want != nil) != refused {
+			t.Fatalf("%s: this platform's refusal answers %v", name, want)
+		}
+		if (err != nil) != refused || refused && !strings.Contains(err.Error(), test.named) {
+			t.Errorf("%s: the start answered %v, want it refused %v naming %s", name, err, refused, test.named)
+		}
+	}
+}
+
 // down takes the node off the mesh and leaves the antispoof filter running and
 // ready, since the kernel still forwards and the host's services still trust
 // mesh sources
@@ -538,33 +636,46 @@ func TestDownKeepsTheBorder(t *testing.T) {
 	}
 }
 
-// where no entry chain runs, no antispoof filter runs either, so a node whose
-// host forwards is told so at every reload, naming the families and the
-// platform, overlay written or not, and one on a host forwarding nothing is
-// not. Where the entry chain runs no node is told.
+// where the entry chain runs on every node no node is told. Elsewhere a node
+// whose host forwards is told so at every reload, naming the families and the
+// platform: where the filter runs for its overlay that the antispoof chain
+// does not, and where it does not run that no filter runs, with the overlay's
+// absence named where that is why. One on a host forwarding nothing is not
+// told.
 func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	var lines bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
-	for _, host := range []struct {
-		v4, v6  *bool
-		warning string
-	}{
-		{new(true), new(true), "this node forwards IPv4 and IPv6 and " + runtime.GOOS + " runs no antispoof filter"},
-		{new(true), new(false), "this node forwards IPv4 and " + runtime.GOOS + " runs no antispoof filter"},
-		{new(false), new(true), "this node forwards IPv6 and " + runtime.GOOS + " runs no antispoof filter"},
-		{new(false), new(false), ""},
-	} {
-		forwards := func() (*bool, *bool) { return host.v4, host.v6 }
-		lines.Reset()
-		warnUnbordered(forwards)
-		if kernelexit.EntryRuns {
-			host.warning = ""
-		}
-		switch got := lines.String(); {
-		case host.warning == "" && got != "":
-			t.Errorf("a node on a host forwarding %v %v, or where the entry chain runs, warned:\n%s", *host.v4, *host.v6, got)
-		case host.warning != "" && (!strings.Contains(got, host.warning) || !strings.Contains(got, "this host's own services")):
-			t.Errorf("a node on a host forwarding %v %v warned %q, want it to say %q", *host.v4, *host.v6, got, host.warning)
+	overlay := &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("192.0.2.0/24")}}
+	for _, border := range []*egress.Border{nil, overlay} {
+		for _, host := range []struct {
+			v4, v6   *bool
+			families string
+		}{
+			{new(true), new(true), "IPv4 and IPv6"},
+			{new(true), new(false), "IPv4"},
+			{new(false), new(true), "IPv6"},
+			{new(false), new(false), ""},
+		} {
+			forwards := func() (*bool, *bool) { return host.v4, host.v6 }
+			lines.Reset()
+			warnUnbordered(border, forwards)
+			warning := "this node forwards " + host.families + " and "
+			switch {
+			case host.families == "" || kernelexit.EntryRuns:
+				warning = ""
+			case kernelexit.Filters(border):
+				warning += runtime.GOOS + " enforces no chain antispoof"
+			case border == nil:
+				warning += "writes no overlay, so " + runtime.GOOS + " runs no antispoof filter"
+			default:
+				warning += runtime.GOOS + " runs no antispoof filter"
+			}
+			switch got := lines.String(); {
+			case warning == "" && got != "":
+				t.Errorf("a node with overlay %v on a host forwarding %v %v, or where the entry chain runs, warned:\n%s", border != nil, *host.v4, *host.v6, got)
+			case warning != "" && (!strings.Contains(got, warning) || !strings.Contains(got, "this host's own services")):
+				t.Errorf("a node with overlay %v on a host forwarding %v %v warned %q, want it to say %q", border != nil, *host.v4, *host.v6, got, warning)
+			}
 		}
 	}
 
@@ -582,7 +693,7 @@ func TestUnborderedNodeIsWarnedWhereItsHostForwards(t *testing.T) {
 	if len(forwardedFamilies(forwardingEnabled())) != 0 && !kernelexit.EntryRuns {
 		want = 1
 	}
-	if n := reloaded.count("runs no antispoof filter"); n != want {
+	if n := reloaded.count("antispoof filter, ") + reloaded.count("enforces no chain antispoof"); n != want {
 		t.Errorf("a reload warned %d times, want %d: %q", n, want, reloaded.lines("antispoof"))
 	}
 }

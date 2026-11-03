@@ -292,7 +292,7 @@ func TestCarveOutCarvedDropsWhatTheModelDrops(t *testing.T) {
 			}
 		}
 		if !slices.Equal(got, Ranges(want)) {
-			ht.Fatalf("carve-outs %v, exemptions %v, own %v, table %v: carved\n%v\nwant\n%v", carveOuts, exemptions, own, snapshot, rangePrefixes(got...), want)
+			ht.Fatalf("carve-outs %v, exemptions %v, own %v, table %v: carved\n%v\nwant\n%v", carveOuts, exemptions, own, snapshot, RangePrefixes(got...), want)
 		}
 	})
 }

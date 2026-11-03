@@ -247,7 +247,7 @@ func TestRangePrefixesHoldExactlyTheRange(t *testing.T) {
 				r.Last = next
 			}
 		}
-		got := rangePrefixes(r)
+		got := RangePrefixes(r)
 		next := r.First
 		for i, prefix := range got {
 			if prefix != prefix.Masked() || prefix.Addr() != next {

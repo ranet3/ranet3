@@ -472,6 +472,9 @@ type chainReadback struct {
 	// as written, which a rewrite would not change
 	unready string
 	remake  bool
+	// pf is pf's state beside the anchor as the antispoof filter's pf backend
+	// read it, nil on every other backend
+	pf *egress.BorderPF
 	// held is whether the table is there at all, which the antispoof filter's
 	// readback alone sets
 	held bool

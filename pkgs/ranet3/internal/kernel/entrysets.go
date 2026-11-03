@@ -95,9 +95,9 @@ func Ranges(prefixes []netip.Prefix) []egress.Range {
 	return egress.Union(ranges)
 }
 
-// rangePrefixes is the fewest prefixes holding exactly the addresses of
+// RangePrefixes is the fewest prefixes holding exactly the addresses of
 // ranges, in order
-func rangePrefixes(ranges ...egress.Range) []netip.Prefix {
+func RangePrefixes(ranges ...egress.Range) []netip.Prefix {
 	var out []netip.Prefix
 	for _, r := range ranges {
 		for first := r.First; first.IsValid() && !r.Last.Less(first); {

@@ -110,8 +110,8 @@ func TestExemptCarvedDropsWhatTheModelDrops(t *testing.T) {
 				want = append(want, netip.PrefixFrom(address, address.BitLen()))
 			}
 		}
-		if got := rangePrefixes(carved...); !slices.Equal(Ranges(got), Ranges(want)) {
-			ht.Fatalf("exemptions %v, own %v, addresses %v, table %v: carved\n%v\nwant\n%v", exemptions, own, addresses, snapshot, got, rangePrefixes(Ranges(want)...))
+		if got := RangePrefixes(carved...); !slices.Equal(Ranges(got), Ranges(want)) {
+			ht.Fatalf("exemptions %v, own %v, addresses %v, table %v: carved\n%v\nwant\n%v", exemptions, own, addresses, snapshot, got, RangePrefixes(Ranges(want)...))
 		}
 	})
 }

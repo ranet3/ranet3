@@ -40,7 +40,7 @@ func TestBorderRoundTrip(t *testing.T) {
 		t.Skip("the real nftables path needs root on linux")
 	}
 	enterThrowawayNamespace(t)
-	be, err := newBorderBackend(egress.BorderRuntime{})
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatalf("open the antispoof filter's backend: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestBorderRoundTrip(t *testing.T) {
 		t.Error("the inet table outlived the filter")
 	}
 	// a withdrawal of nothing is not an error, and removes nothing
-	again, err := newBorderBackend(egress.BorderRuntime{})
+	again, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	run("add", "table", "inet", TableName)
 	run("add", "chain", "inet", TableName, "extra")
 	run("add", "rule", "inet", TableName, "extra", "iifname", "eth0", "accept", "comment", `"accept via ranet3"`)
-	be, err := newBorderBackend(egress.BorderRuntime{})
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatalf("open the antispoof filter's backend: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestBorderRoundTripRefillsAFlushedSet(t *testing.T) {
 	}
 	enterThrowawayNamespace(t)
 	run := nftRun(t)
-	be, err := newBorderBackend(egress.BorderRuntime{})
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatalf("open the antispoof filter's backend: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder(t *testing.T) {
 	}
 	enterThrowawayNamespace(t)
 	// on a host holding no table the first start makes one
-	fresh, err := newBorderBackend(egress.BorderRuntime{})
+	fresh, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder(t *testing.T) {
 	if err := first.finish(); err != nil {
 		t.Fatal(err)
 	}
-	earlier, err := newBorderBackend(egress.BorderRuntime{})
+	earlier, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder(t *testing.T) {
 	}
 	// the earlier start ends without its withdrawal, as a crash ends it
 	_ = earlier.Close()
-	be, err := newBorderBackend(egress.BorderRuntime{})
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestBorderRoundTripTakesOverATableWithAStrayChain(t *testing.T) {
 	} {
 		// the entry chain and sets are the filter's, and the filter that wrote
 		// them ends without its withdrawal, as a killed process ends it
-		earlier, err := newBorderBackend(egress.BorderRuntime{})
+		earlier, err := newBorderBackend(nil, egress.BorderRuntime{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -556,7 +556,7 @@ func TestBorderRoundTripTakesOverATableWithAStrayChain(t *testing.T) {
 		run("add", "rule", "inet", TableName, "border", "iifname", "ranet3", "accept", "comment", `"accept via ranet3"`)
 		run("add", "rule", "inet", TableName, "border", "ip", "saddr", "198.18.0.0/15", "counter", "drop", "comment", `"drop ipv4 source 198.18.0.0/15"`)
 
-		be, err := newBorderBackend(egress.BorderRuntime{})
+		be, err := newBorderBackend(nil, egress.BorderRuntime{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -605,7 +605,7 @@ func TestBorderCrashHelper(t *testing.T) {
 	if err := unix.Setns(fd, unix.CLONE_NEWNET); err != nil {
 		t.Fatal(err)
 	}
-	be, err := newBorderBackend(egress.BorderRuntime{})
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +666,7 @@ func TestBorderRoundTripOutlivesAKilledOwner(t *testing.T) {
 	if read, err := readBorder(conn, desired, sets); err != nil || read.fault != "" {
 		t.Fatalf("after its owner was killed the kernel holds %v with the fault %q (%v), want %v", read.rules, read.fault, err, desired)
 	}
-	be, err := newBorderBackend(egress.BorderRuntime{})
+	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatal(err)
 	}

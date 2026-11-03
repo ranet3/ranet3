@@ -147,7 +147,7 @@ func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []
 					continue
 				}
 				for _, outside := range subtract(Ranges([]netip.Prefix{network}), inOverlay) {
-					for _, part := range rangePrefixes(outside) {
+					for _, part := range RangePrefixes(outside) {
 						if slices.Contains(v.forwarded, link.Name) {
 							// a hostile network reaches the host by an uplink, which forward never names
 							lan = append(lan, part)

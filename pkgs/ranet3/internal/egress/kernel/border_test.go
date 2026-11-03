@@ -56,9 +56,11 @@ type fakeBorder struct {
 	missed chan struct{}
 	// log records each listing, apply and withdrawal in order
 	log []string
-	// only is the classes the host writes as rules of their own, every class
+	// only is the rules the host writes as rules of their own, every rule
 	// where it is nil
-	only []BorderClass
+	only func(BorderRule) bool
+	// exact makes a host that matches an interface by its exact name alone
+	exact bool
 	// unready is the reason a readback gives for the host not being ready
 	// beside its rules, which no rewrite changes
 	unready string
@@ -99,7 +101,7 @@ func (f *fakeBorder) Rules(rules []BorderRule, sets borderSets) (chainReadback, 
 	return f.readback(rules, sets), nil
 }
 
-func (f *fakeBorder) Read() (chainReadback, error) {
+func (f *fakeBorder) Read([]BorderRule) (chainReadback, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.readback(nil, nil), nil
@@ -107,7 +109,7 @@ func (f *fakeBorder) Read() (chainReadback, error) {
 
 // Fill logs fill and the names of the sets it fills, and refuses a move from
 // ranges a set does not hold, which a delta would apply to the wrong elements
-func (f *fakeBorder) Fill(was, sets borderSets) error {
+func (f *fakeBorder) Fill(_ []BorderRule, was, sets borderSets) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, "fill "+strings.Join(slices.Sorted(maps.Keys(sets)), " "))
@@ -169,6 +171,8 @@ func (f *fakeBorder) Missed() <-chan struct{} { return f.missed }
 
 func (f *fakeBorder) Close() error { return nil }
 
+func (f *fakeBorder) Leave() error { return nil }
+
 // where, chain and readings read as the linux backend's
 func (f *fakeBorder) where(cfg *egress.Border) string {
 	if cfg == nil {
@@ -177,9 +181,13 @@ func (f *fakeBorder) where(cfg *egress.Border) string {
 	return "nftables table inet ranet3 chains antispoof and mesh_entry"
 }
 
-func (f *fakeBorder) writes(class BorderClass) bool {
-	return f.only == nil || slices.Contains(f.only, class)
+func (f *fakeBorder) writes(rule BorderRule) bool {
+	return f.only == nil || f.only(rule)
 }
+
+func (f *fakeBorder) holds(string) bool { return true }
+
+func (f *fakeBorder) wildcards() bool { return !f.exact }
 
 func (f *fakeBorder) chain(name string) egress.BorderChainReading {
 	hook, priority := "prerouting", -300
@@ -397,6 +405,15 @@ func TestBorderRefillsTheSetsThatMovedAlone(t *testing.T) {
 	}
 	if got, want := be.entries()[mark:], []string{"rules", "apply", "rules"}; !slices.Equal(got, want) || !f.ready {
 		t.Errorf("a pass after another writer emptied a set went %q, ready %v, want %q", got, f.ready, want)
+	}
+}
+
+// the sets read by name as nftables sets, the word a debug read heads each
+// with
+func TestBorderSetsReadAsNftablesSets(t *testing.T) {
+	got := borderSets{ownedSet + "6": ranges("2001:db8::/48"), ownedSet + "4": ranges("192.0.2.1/32")}.readings()
+	if len(got) != 2 || got[0].Kind != "set" || got[0].Name != ownedSet+"4" || got[1].Kind != "set" || got[1].Name != ownedSet+"6" {
+		t.Errorf("the sets read as %+v", got)
 	}
 }
 
@@ -1199,10 +1216,10 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	}
 }
 
-// A backend that writes the entry chain's drops alone holds those two rules,
-// which status and debug list alone, reports the carve-outs and no
-// exemption's conflict, since no drop of the antispoof chain runs, and heads
-// the debug read's chain as it says
+// A backend that writes the antispoof chain alone, the tun's inside rule
+// folded into its drops, holds those rules, which status and debug list
+// alone, reports the carve-outs and each exemption's conflict, and heads the
+// debug read's chain as it says
 func TestBorderListsOnlyTheRulesItsBackendWrites(t *testing.T) {
 	bus := events.New()
 	p := netip.MustParsePrefix
@@ -1212,29 +1229,27 @@ func TestBorderListsOnlyTheRulesItsBackendWrites(t *testing.T) {
 	rt.Sets = func(*egress.Border) egress.BorderSets {
 		return egress.BorderSets{CarveOuts: []egress.CarveOut{lease}, Conflicts: []egress.ExemptConflict{conflict}}
 	}
-	be := &fakeBorder{only: []BorderClass{EntryDrop}}
+	be := &fakeBorder{only: func(rule BorderRule) bool { return rule.Chain() == BorderChain && rule.Device != rt.Tun }}
 	f, err := startBorderFilter(overlay(t), rt, be)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"drop ipv4 entering the mesh", "drop ipv6 entering the mesh"}; !slices.Equal(be.allSpecs(), want) {
+	want := []string{"accept via lo", "drop ipv4 source @carved4", "accept via eth0 source 198.18.0.0/24", "drop ipv4 source 198.18.0.0/15", "drop ipv6 source 3fff::/20"}
+	if !slices.Equal(be.allSpecs(), want) {
 		t.Errorf("the backend holds %q, want %q", be.allSpecs(), want)
 	}
-	if f.AntispoofRuns() {
-		t.Error("a backend writing no antispoof rule reads as running the chain")
+	if got := f.Stats(); !got.Ready || got.Installed != len(want) || !slices.Equal(got.CarveOuts, []egress.CarveOut{lease}) {
+		t.Errorf("the status reads %+v, want ready with %d rules and the carve-out", got, len(want))
 	}
-	if got := f.Stats(); !got.Ready || got.Installed != 2 || !slices.Equal(got.CarveOuts, []egress.CarveOut{lease}) {
-		t.Errorf("the status reads %+v, want ready with two rules and the carve-out", got)
-	}
-	if n := len(bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.conflict" }, 0)); n != 0 {
-		t.Errorf("recorded %d antispoof.conflict, want none", n)
+	if n := len(bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.conflict" }, 0)); n != 1 {
+		t.Errorf("recorded %d antispoof.conflict, want one", n)
 	}
 	if n := len(bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.carve" }, 0)); n != 1 {
 		t.Errorf("recorded %d antispoof.carve, want one", n)
 	}
 	debug := f.Debug()
-	if len(debug.Chains) != 1 || debug.Chains[0].Name != EntryChain || debug.Chains[0].Hook != "postrouting" || len(debug.Chains[0].Rules) != 2 {
-		t.Errorf("the debug read lists %+v, want the entry chain's two drops", debug.Chains)
+	if len(debug.Chains) != 1 || debug.Chains[0].Name != BorderChain || debug.Chains[0].Hook != "prerouting" || len(debug.Chains[0].Rules) != len(want) {
+		t.Errorf("the debug read lists %+v, want the antispoof chain's %d rules", debug.Chains, len(want))
 	}
 }
 
@@ -1265,5 +1280,127 @@ func TestBorderNotReadyBesideItsRulesRewritesNothing(t *testing.T) {
 	be.mu.Unlock()
 	if err := f.reconcile(); err != nil || !f.Stats().Ready {
 		t.Errorf("the pass after reads ready %v (%v)", f.Stats().Ready, err)
+	}
+}
+
+// exemptRules is the exemptions' rules of rules, each as its String
+func exemptRules(rules []BorderRule) []string {
+	var out []string
+	for _, rule := range rules {
+		if rule.Class == BorderExempt {
+			out = append(out, rule.String())
+		}
+	}
+	return out
+}
+
+// On a backend that matches exact names alone an exemption under a name
+// ending in * is one rule per link the name matches, in the links' order: none
+// for a name matching no link, none on the mesh's tun or lo under a name
+// matching them, and one where an exact name and a wildcard name the same link
+// and prefix. A link that comes changes the rules on the pass it wakes, which
+// rewrites the table. A backend that matches the wildcard itself writes the
+// name as given.
+func TestWildcardExemptionIsOneRulePerLinkWhereNamesAreExact(t *testing.T) {
+	cfg := overlay(t)
+	cfg.Antispoof = egress.Antispoof{Interface: map[string]egress.AntispoofInterface{
+		"eth*":   {Exempt: prefixes(t, "198.18.1.0/24")},
+		"eth0":   {Exempt: prefixes(t, "198.18.1.0/24", "198.18.2.0/24")},
+		"wl*":    {Exempt: prefixes(t, "198.18.3.0/24")},
+		"ranet*": {Exempt: prefixes(t, "198.18.4.0/24")},
+		"l*":     {Exempt: prefixes(t, "198.18.5.0/24")},
+	}}
+	links := []string{"eth0", "eth1", "lo", "ranet0"}
+	rt := borderRuntime(nil)
+	rt.Sets = func(*egress.Border) egress.BorderSets { return egress.BorderSets{Links: slices.Clone(links)} }
+	be := &fakeBorder{exact: true}
+	f, err := startBorderFilter(cfg, rt, be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, _, _ := f.desired()
+	want := []string{
+		"accept exempt via eth0 source 198.18.1.0/24", "accept exempt via eth1 source 198.18.1.0/24",
+		"accept exempt via eth0 source 198.18.2.0/24",
+	}
+	if got := exemptRules(rules); !slices.Equal(got, want) {
+		t.Errorf("the exemptions' rules are %q, want %q", got, want)
+	}
+	links = append(links, "eth2")
+	f.trigger = "network"
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if be.applied != 2 || !slices.Contains(be.allSpecs(), "accept exempt via eth2 source 198.18.1.0/24") || !f.Stats().Ready {
+		t.Errorf("the link's pass applied %d times in all and holds %q", be.applied, be.allSpecs())
+	}
+
+	f, err = startBorderFilter(cfg, rt, &fakeBorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, _, _ = f.desired()
+	want = []string{
+		"accept exempt via eth* source 198.18.1.0/24", "accept exempt via eth0 source 198.18.1.0/24", "accept exempt via eth0 source 198.18.2.0/24",
+		"accept exempt via l* source 198.18.5.0/24", "accept exempt via ranet* source 198.18.4.0/24", "accept exempt via wl* source 198.18.3.0/24",
+	}
+	if got := exemptRules(rules); !slices.Equal(got, want) {
+		t.Errorf("where the backend matches the wildcard the exemptions' rules are %q, want %q", got, want)
+	}
+}
+
+// An exemption under the exact name of a device inside the mesh writes no
+// rule, on pf for the mesh's utun7 and lo0, where a pass would end pf's
+// evaluation of what arrives there, and on a backend that matches the name
+// itself for the tun and lo. The start warns of each once, a pass of none,
+// and a reload of the one it brings in alone.
+func TestExemptionNamingADeviceInsideWritesNoRule(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	said := func() int {
+		return strings.Count(lines.String(), "antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing")
+	}
+	cfg := gateway(t)
+	cfg.Antispoof.Interface["utun7"] = egress.AntispoofInterface{Exempt: prefixes(t, "192.0.2.96/28")}
+	cfg.Antispoof.Interface["lo0"] = egress.AntispoofInterface{Exempt: prefixes(t, "192.0.2.112/28")}
+	f, p, _ := pfFilter(t, nil, cfg, gatewaySets)
+	rules, _, _ := f.desired()
+	want := []string{
+		"accept exempt source 192.0.2.32/27", "accept exempt via en0 source 3fff:10:1::/48", "accept exempt via en1 source 3fff:10:1::/48",
+		"accept exempt via en1 source 192.0.2.64/26",
+	}
+	if got := exemptRules(rules); !slices.Equal(got, want) {
+		t.Errorf("the exemptions' rules are %q, want %q", got, want)
+	}
+	if text := p.text(t); strings.Contains(text, "on utun7 ") || strings.Count(text, "on lo0 ") != 1 {
+		t.Errorf("the anchor holds a pass on a device inside the mesh:\n%s", text)
+	}
+	if said() != 2 || !strings.Contains(lines.String(), "interface=utun7 prefix=192.0.2.96/28") || !strings.Contains(lines.String(), "interface=lo0 prefix=192.0.2.112/28") {
+		t.Errorf("the start warned %d times, want once of each:\n%s", said(), lines.String())
+	}
+	f.trigger = "sweep"
+	if err := f.reconcile(); err != nil || said() != 2 {
+		t.Errorf("a pass warned %d times in all (%v), want the start's 2", said(), err)
+	}
+	reloaded := *cfg
+	reloaded.Antispoof.Interface = maps.Clone(cfg.Antispoof.Interface)
+	reloaded.Antispoof.Interface["lo0"] = egress.AntispoofInterface{Exempt: prefixes(t, "192.0.2.112/28", "192.0.2.16/28")}
+	if err := f.SetConfig(reloaded); err != nil || said() != 3 || !strings.Contains(lines.String(), "interface=lo0 prefix=192.0.2.16/28") {
+		t.Errorf("a reload bringing in lo0's 192.0.2.16/28 warned %d times in all (%v), want once more:\n%s", said(), err, lines.String())
+	}
+
+	linux := overlay(t)
+	linux.Antispoof = egress.Antispoof{Interface: map[string]egress.AntispoofInterface{
+		"ranet0": {Exempt: prefixes(t, "198.18.1.0/24")},
+		"lo":     {Exempt: prefixes(t, "198.18.2.0/24")},
+		"eth0":   {Exempt: prefixes(t, "198.18.3.0/24")},
+	}}
+	matched, err := startBorderFilter(linux, borderRuntime(nil), &fakeBorder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, _, _ = matched.desired()
+	if got := exemptRules(rules); !slices.Equal(got, []string{"accept exempt via eth0 source 198.18.3.0/24"}) {
+		t.Errorf("where the backend matches the name itself the exemptions' rules are %q", got)
 	}
 }

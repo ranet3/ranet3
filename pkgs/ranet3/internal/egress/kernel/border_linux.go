@@ -25,7 +25,17 @@ type borderTable struct {
 	monitor *nftables.Monitor
 }
 
-func newBorderBackend(egress.BorderRuntime) (borderBackend, error) {
+// Filters reports that the filter runs on every node here, its entry chain
+// with overlay written or not
+func Filters(*egress.Border) bool { return true }
+
+// RefuseBorder refuses nothing, since nftables writes every interface name the
+// loader takes
+func RefuseBorder(*egress.Border) error { return nil }
+
+// newBorderBackend opens the netlink socket and the monitor of the table,
+// with overlay written or not, since the entry chain runs on every node here
+func newBorderBackend(*egress.Border, egress.BorderRuntime) (borderBackend, error) {
 	conn, err := nftables.Dial()
 	if err != nil {
 		return nil, err
@@ -40,6 +50,9 @@ func newBorderBackend(egress.BorderRuntime) (borderBackend, error) {
 
 func (b *borderTable) Close() error { return errors.Join(b.monitor.Close(), b.conn.Close()) }
 
+// Leave is Close, since the table is all the backend holds for the filter
+func (b *borderTable) Leave() error { return b.Close() }
+
 func (b *borderTable) Changed() <-chan struct{} { return b.monitor.Changed() }
 
 func (b *borderTable) Missed() <-chan struct{} { return b.monitor.Missed() }
@@ -51,8 +64,14 @@ func (b *borderTable) where(cfg *egress.Border) string {
 	return fmt.Sprintf("nftables table inet %s chains %s and %s", TableName, BorderChain, EntryChain)
 }
 
-// writes every class, each a line of its chain
-func (b *borderTable) writes(BorderClass) bool { return true }
+// writes every rule, each a line of its chain
+func (b *borderTable) writes(BorderRule) bool { return true }
+
+// holds every set, each a set of the table its chains read
+func (b *borderTable) holds(string) bool { return true }
+
+// wildcards is true, since nft matches iifname "wl*" by the bytes before the *
+func (b *borderTable) wildcards() bool { return true }
 
 func (b *borderTable) chain(name string) egress.BorderChainReading {
 	hook, priority := "prerouting", rawPriority
@@ -69,8 +88,8 @@ func (b *borderTable) Rules(rules []BorderRule, sets borderSets) (chainReadback,
 }
 
 // Read dumps through a socket of its own, so the run goroutine's stays with
-// its one user
-func (b *borderTable) Read() (chainReadback, error) {
+// its one user, and names each line by its comment alone
+func (b *borderTable) Read([]BorderRule) (chainReadback, error) {
 	conn, err := nftables.Dial()
 	if err != nil {
 		return chainReadback{}, err
@@ -230,7 +249,7 @@ func borderBatch(rules []BorderRule, sets borderSets, remake bool) ([]nftables.R
 
 // Fill sends the sets' changed ranges in one transaction, which nf_tables
 // commits whole, so a lookup meets the old elements or the new
-func (b *borderTable) Fill(was, sets borderSets) error {
+func (b *borderTable) Fill(_ []BorderRule, was, sets borderSets) error {
 	requests, err := fillBatch(was, sets)
 	if err != nil {
 		return err
