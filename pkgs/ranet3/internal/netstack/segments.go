@@ -295,9 +295,10 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, records *segmentRecords, 
 		case srv6.ActionDrop:
 			take(i)
 			m.noteSegmentDrop(result.Err)
-			m.answerRefused(packet, result.Err)
-			if records != nil {
-				records.acted(TraceDrop, segmentReason(result.Err), packet, records.arrived)
+			if records != nil && records.arrived != nil {
+				records.refusal(m, packet, result.Err)
+			} else {
+				m.answerRefused(packet, result.Err, (*Mesh).takeICMPToken)
 			}
 		default:
 			take(i)
@@ -412,14 +413,11 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment, arrived [][]byte, fr
 			m.segmentsDropped.Add(1)
 			m.reportSegmentDrop("no route counting as no default to the next segment", "segment", segment.next)
 			// Resolve answers an address cap.table assigns this node RouteLocal as it does a prefix this node originates, so a second lookup tells the two apart
-			switch {
-			case verdict != RouteLocal || match.Counted:
-				m.answerUnroutedSegment(segment)
-			case m.Routes.assigned(src, dst):
-				m.answerAssignedSegment(segment)
-			}
+			unrouted := verdict != RouteLocal || match.Counted
 			if trace != nil && arrived[i] != nil {
-				trace.segmentAt(from, TraceDrop, transitNoRoute, segment.next, arrived[i])
+				trace.unroutedSegment(m, from, segment, src, dst, unrouted, arrived[i])
+			} else {
+				m.answerNextSegment(segment, src, dst, unrouted, (*Mesh).takeICMPToken)
 			}
 			continue
 		}
@@ -429,8 +427,15 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment, arrived [][]byte, fr
 			order = append(order, peer)
 		}
 		fragments, tooBig := 0, len(segment.raw) > share.mtu
+		var kind answerKind
+		fate := TraceNoAnswer
 		if tooBig {
-			count, bytes := m.segmentTooBig(&cut, segment, peer, nextHeader, share.mtu)
+			var count, bytes int
+			if trace != nil && arrived[i] != nil {
+				count, bytes, kind, fate = m.segmentTooBigDrawn(&cut, segment, peer, nextHeader, share.mtu)
+			} else {
+				count, bytes, _, _ = m.segmentTooBig(&cut, segment, peer, nextHeader, share.mtu, (*Mesh).takeICMPToken)
+			}
 			share.count += count
 			share.bytes += bytes
 			fragments = count
@@ -445,7 +450,7 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment, arrived [][]byte, fr
 			segment.peer, segment.nextHeader = peer, nextHeader
 		}
 		if trace != nil && arrived[i] != nil {
-			trace.end(from, peer, segment.next, tooBig, fragments, arrived[i])
+			trace.end(from, peer, segment.next, tooBig, fragments, kind, fate, arrived[i])
 		}
 		counts[peer] = share
 	}
@@ -522,74 +527,122 @@ func (m *Mesh) noteECNUnused(outer, inner []byte) {
 // RFC 4443 section 2.4 (f) requires the limit, which the builder draws from
 // once the packet is one an error may answer and before it builds, so a flood
 // past its bucket builds nothing.
-func (m *Mesh) answerRefused(offending []byte, reason error) {
+//
+// it reports the answer's kind and its fate as sentBack says, TraceNoAnswer for a refusal no error answers
+func (m *Mesh) answerRefused(offending []byte, reason error, take takeAnswer) (answerKind, TraceOutcome) {
 	sender := netip.AddrFrom16([16]byte(offending[8:24]))
 	segment := netip.AddrFrom16([16]byte(offending[24:40]))
-	allow := func() bool { return m.takeICMPToken(sender) }
-	var answer []byte
+	allow := m.allowAnswer(take, sender)
 	if refusal, ok := errors.AsType[*srv6.Refusal](reason); ok {
-		answer = srv6.ParameterProblem(offending, segment, refusal, allow)
-	} else if errors.Is(reason, srv6.ErrHopLimit) {
-		answer = srv6.TimeExceeded(offending, segment, allow)
+		return answerParameter, m.sentBack(srv6.ParameterProblem(offending, segment, refusal, allow))
 	}
-	if answer != nil {
-		m.sendBack(answer)
+	if errors.Is(reason, srv6.ErrHopLimit) {
+		return answerExpired, m.sentBack(srv6.TimeExceeded(offending, segment, allow))
 	}
+	return answerNone, TraceNoAnswer
+}
+
+// sentBack sends answer back as sendBack does and reports its fate, TraceNotAnswerable for none built
+func (m *Mesh) sentBack(answer []byte) TraceOutcome {
+	switch {
+	case answer == nil:
+		return TraceNotAnswerable
+	case !m.sendBack(answer):
+		return TraceUnsent
+	}
+	return TraceSent
 }
 
 // answerUnroutedSegment answers a forwarded segment whose next segment the mesh routes to no other node, or only through a route counting as a default, from the SID it matched, within the limits answerRefused's answers draw on
 // as a steered read whose first segment has no route is answered, since a route counting as a default carries no segment
 // RFC 8986 section 4.1 S16 submits the rewritten packet to the lookup for its new destination, and RFC 4443 section 3.1 answers one no route carries with Destination Unreachable, code 0
-func (m *Mesh) answerUnroutedSegment(segment *forwardedSegment) {
+// it reports the answer's fate as sentBack says
+func (m *Mesh) answerUnroutedSegment(segment *forwardedSegment, take takeAnswer) TraceOutcome {
 	sender := netip.AddrFrom16([16]byte(segment.raw[8:24]))
-	if answer := srv6.NoRoute(segment.raw, segment.sid, func() bool { return m.takeICMPToken(sender) }); answer != nil {
-		m.sendBack(answer)
-	}
+	return m.sentBack(srv6.NoRoute(segment.raw, segment.sid, m.allowAnswer(take, sender)))
 }
 
 // answerAssignedSegment answers a forwarded segment whose next segment is an address cap.table assigns this node, which is no SID, as RFC 8754 section 4.3.2 has such an address answer one with segments left
 // from the SID it matched, within the limits answerRefused's answers draw on
 // one at segments left 0 is dropped with no answer
-func (m *Mesh) answerAssignedSegment(segment *forwardedSegment) {
+// it reports the answer's fate as sentBack says, TraceNoAnswer for one at segments left 0
+func (m *Mesh) answerAssignedSegment(segment *forwardedSegment, take takeAnswer) TraceOutcome {
 	refusal := srv6.AtLocalInterface(segment.raw, segment.srh)
 	if refusal == nil {
-		return
+		return TraceNoAnswer
 	}
 	sender := netip.AddrFrom16([16]byte(segment.raw[8:24]))
-	if answer := srv6.ParameterProblem(segment.raw, segment.sid, refusal, func() bool { return m.takeICMPToken(sender) }); answer != nil {
-		m.sendBack(answer)
+	return m.sentBack(srv6.ParameterProblem(segment.raw, segment.sid, refusal, m.allowAnswer(take, sender)))
+}
+
+// answerNextSegment answers a forwarded segment whose next segment has no route counting as no default, at src and dst
+// as answerUnroutedSegment does where unrouted, and otherwise as answerAssignedSegment does where the next segment is an address cap.table assigns this node
+// it reports the answer's kind and fate, TraceNoAnswer for a segment neither answers
+func (m *Mesh) answerNextSegment(segment *forwardedSegment, src, dst netip.Addr, unrouted bool, take takeAnswer) (answerKind, TraceOutcome) {
+	switch {
+	case unrouted:
+		return answerNoRoute, m.answerUnroutedSegment(segment, take)
+	case m.Routes.assigned(src, dst):
+		return answerParameter, m.answerAssignedSegment(segment, take)
 	}
+	return answerNone, TraceNoAnswer
 }
 
 // segmentTooBig takes a forwarded segment larger than mtu, the largest the session to its next segment carries
 // the packet it carries is held to mtu less the headers in front of it, which each fragment keeps
 // it reports how many fragments it queued in cut and their bytes, and an answer goes back as sendTooBig sends it
-func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer *Peer, nextHeader byte, mtu int) (int, int) {
+// for a segment it queued none of it reports the answer's kind and fate as tooBig does, TraceNoAnswer for one the cut refused for anything but its options
+func (m *Mesh) segmentTooBig(cut *fragmentList, segment *forwardedSegment, peer *Peer, nextHeader byte, mtu int, take takeAnswer) (int, int, answerKind, TraceOutcome) {
 	var answer []byte
-	var fragment, tun bool
+	var tun bool
+	kind := answerTooBig
 	if offset, ok := carriedPacket(segment.raw, segment.srh); ok {
 		inner := segment.raw[offset:]
-		// a record of End's forward names no answer, so the draw is the limits' own
-		if answer, fragment, tun = m.answerTooBig(inner, mtu-offset, true, segment.sid, (*Mesh).takeICMPToken); fragment {
+		var fragment bool
+		if answer, fragment, tun = m.answerTooBig(inner, mtu-offset, true, segment.sid, take); fragment {
 			count, bytes, fault := cut.add(peer, nextHeader, segment.raw[:offset], inner, mtu)
 			if count != 0 {
-				return count, bytes
+				return count, bytes, answerNone, TraceNoAnswer
 			}
-			answer, tun = m.answerOptions(inner, fault, true, (*Mesh).takeICMPToken)
+			if fault == 0 {
+				m.dropTooBig(segment, mtu)
+				return 0, 0, answerNone, TraceNoAnswer
+			}
+			// a packet that was to be cut is answered about its options, not its size
+			kind = answerParameter
+			answer, tun = m.answerOptions(inner, fault, true, take)
 		}
 	} else {
 		// a segment carrying no IP packet behind its SRH is answered about itself, as End rewrote it, to its outer source, RFC 4443 section 3.2
 		var source netip.Addr
 		source, tun = m.answerFrom(segment.raw, true, segment.sid)
-		answer = srv6.PacketTooBig(segment.raw, source, mtu, m.allowAnswer((*Mesh).takeICMPToken, netip.Addr{}))
+		answer = srv6.PacketTooBig(segment.raw, source, mtu, m.allowAnswer(take, netip.Addr{}))
 	}
-	m.segmentsDropped.Add(1)
-	m.reportSegmentDrop("a forwarded segment is larger than the session to its next segment carries", "segment", segment.next, "mtu", mtu)
-	// a packet that was to be cut is answered about its options, not its size
-	if answer != nil && m.sendTooBig(answer, tun) && !fragment {
+	m.dropTooBig(segment, mtu)
+	switch {
+	case answer == nil:
+		return 0, 0, kind, TraceNotAnswerable
+	case !m.sendTooBig(answer, tun):
+		return 0, 0, kind, TraceUnsent
+	}
+	if kind == answerTooBig {
 		m.tooBigAnswered.Add(1)
 	}
-	return 0, 0
+	return 0, 0, kind, TraceSent
+}
+
+func (m *Mesh) dropTooBig(segment *forwardedSegment, mtu int) {
+	m.segmentsDropped.Add(1)
+	m.reportSegmentDrop("a forwarded segment is larger than the session to its next segment carries", "segment", segment.next, "mtu", mtu)
+}
+
+// segmentTooBigDrawn is segmentTooBig for a traced segment, drawing through an answerDraw, and reports the fate the record reads
+//
+//go:noinline
+func (m *Mesh) segmentTooBigDrawn(cut *fragmentList, segment *forwardedSegment, peer *Peer, nextHeader byte, mtu int) (int, int, answerKind, TraceOutcome) {
+	var draw answerDraw
+	count, bytes, kind, fate := m.segmentTooBig(cut, segment, peer, nextHeader, mtu, draw.take)
+	return count, bytes, kind, draw.met(fate)
 }
 
 func (m *Mesh) sendTooBig(answer []byte, tun bool) bool {

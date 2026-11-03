@@ -402,10 +402,14 @@ func segmentSite(from *Peer, decision TraceDecision, reason transitReason, segme
 	return site
 }
 
-// endSite is the site of a packet End sent toward segment through next, cut into fragments where it was too big, and dropped where it was too big to cut
-func endSite(from, next *Peer, segment netip.Addr, tooBig bool, fragments int) traceSite {
+// endSite is the site of a packet End sent toward segment through next, cut into fragments where it was too big
+// and where it was too big to cut dropped too big, or answered with kind, the answer's fate outcome, an answer about its options as invalid
+func endSite(from, next *Peer, segment netip.Addr, tooBig bool, fragments int, kind answerKind, outcome TraceOutcome) traceSite {
 	if tooBig && fragments == 0 {
-		return segmentSite(from, TraceDrop, transitTooBig, segment)
+		if outcome == TraceNoAnswer {
+			return segmentSite(from, TraceDrop, transitTooBig, segment)
+		}
+		return segmentSite(from, TraceAnswer, tooBigReason(kind), segment).answered(kind, outcome)
 	}
 	site := segmentSite(from, TraceForward, transitForwarded, segment)
 	site.next, site.fragments = next, fragments
@@ -426,8 +430,8 @@ func segmentReason(err error) transitReason {
 }
 
 // arrive copies packet to the end of arena before a segment of this node acts on it, and returns arena and the copy
-// End rewrites a packet in place, and a forward or a drop it leads to is recorded as the packet arrived
-// the copy is nil where no client could take such a record now, none whose filter's decision is any, forward or drop, whose prefixes and protocol take the packet
+// End rewrites a packet in place, and a forward, a drop or an answer it leads to is recorded as the packet arrived
+// the copy is nil where no client could take such a record now, none whose filter's decision is any, forward, drop or answer, whose prefixes and protocol take the packet
 // and whose rate has room, as hold tests a forward it holds
 // the peer is left to the record, since the route of the segment End writes decides it
 // a segment of this node acts on an IPv6 packet alone
@@ -440,7 +444,7 @@ func (t *tracer) arrive(arena, packet []byte) ([]byte, []byte) {
 	parsed := false
 	var now int64
 	for _, c := range t.clients {
-		if d := c.filter.Decision; d != TraceAny && d != TraceForward && d != TraceDrop || !within(c.filter.Sources, src) || !within(c.filter.Destinations, dst) {
+		if d := c.filter.Decision; d != TraceAny && d != TraceForward && d != TraceDrop && d != TraceAnswer || !within(c.filter.Sources, src) || !within(c.filter.Destinations, dst) {
 			continue
 		}
 		if c.filter.Protocol != 0 {
@@ -656,14 +660,31 @@ func (t *tracer) actOnSegments(m *Mesh, frames [][]byte, mtu int, from *Peer, ac
 //
 //go:noinline
 func (r *segmentRecords) acted(decision TraceDecision, reason transitReason, acted, raw []byte) {
+	r.actedAs(sessionSite(r.from, decision, reason), acted, raw)
+}
+
+// actedAs is acted for a packet of site
+func (r *segmentRecords) actedAs(site traceSite, acted, raw []byte) {
 	if raw == nil {
 		return
 	}
-	var segment netip.Addr
 	if len(acted) >= 40 {
-		segment = netip.AddrFrom16([16]byte(acted[24:40]))
+		site.segment = netip.AddrFrom16([16]byte(acted[24:40]))
 	}
-	r.trace.record(segmentSite(r.from, decision, reason, segment), raw)
+	r.trace.record(site, raw)
+}
+
+// refusal answers packet, the packet in hand, which a segment of this node refused with err, as m.answerRefused does
+// and records it as it arrived, dropped for the reason err names, or answered with the answer's kind and fate
+//
+//go:noinline
+func (r *segmentRecords) refusal(m *Mesh, packet []byte, err error) {
+	var draw answerDraw
+	site := sessionSite(r.from, TraceDrop, segmentReason(err))
+	if kind, fate := m.answerRefused(packet, err, draw.take); fate != TraceNoAnswer {
+		site = site.answered(kind, draw.met(fate))
+	}
+	r.actedAs(site, packet, r.arrived)
 }
 
 // forwarded keeps the copy of the packet in hand, a forwarded segment behind before others, in arrivals sized for a batch of size packets
@@ -697,8 +718,21 @@ func (t *tracer) segmentAt(from *Peer, decision TraceDecision, reason transitRea
 // end records raw, a packet from's session delivered that End sent toward segment through next, as endSite says
 //
 //go:noinline
-func (t *tracer) end(from, next *Peer, segment netip.Addr, tooBig bool, fragments int, raw []byte) {
-	t.record(endSite(from, next, segment, tooBig, fragments), raw)
+func (t *tracer) end(from, next *Peer, segment netip.Addr, tooBig bool, fragments int, kind answerKind, outcome TraceOutcome, raw []byte) {
+	t.record(endSite(from, next, segment, tooBig, fragments, kind, outcome), raw)
+}
+
+// unroutedSegment answers segment, a forwarded segment at src and dst whose next segment has no route counting as no default, as m.answerNextSegment does
+// and records raw, the packet from's session delivered, dropped as no route toward the next segment, or answered with the answer's kind and fate
+//
+//go:noinline
+func (t *tracer) unroutedSegment(m *Mesh, from *Peer, segment *forwardedSegment, src, dst netip.Addr, unrouted bool, raw []byte) {
+	var draw answerDraw
+	site := segmentSite(from, TraceDrop, transitNoRoute, segment.next)
+	if kind, fate := m.answerNextSegment(segment, src, dst, unrouted, draw.take); fate != TraceNoAnswer {
+		site = site.answered(kind, draw.met(fate))
+	}
+	t.record(site, raw)
 }
 
 // refusedSegments records each segment and fragment of peer's share, which its budget refused, dropped for budget

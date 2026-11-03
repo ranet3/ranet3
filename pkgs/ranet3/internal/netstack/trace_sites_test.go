@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"reflect"
+	"slices"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -19,6 +20,9 @@ import (
 
 // transitClosed is a host the decision's tests route to a closed peer, whose budget refuses every share
 var transitClosed = map[int]netip.Addr{4: segAddr("192.0.2.7"), 6: segAddr("3fff::7")}
+
+// segmentAssigned is an address under egressWaypoint's /64 that the outcome cases End toward have cap.table assign the node
+var segmentAssigned = segAddr("3fff:b:0:106::9")
 
 // tracedMTU is the largest packet the out peer of a traced node carries
 const tracedMTU = 1280
@@ -224,7 +228,39 @@ var outcomeCases = func() []outcomeCase {
 			closed.Close()
 			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), closed)
 		}, end(64)), with(session(TraceDrop, "budget"), func(r *TraceRecord) { r.Next = "closed" })},
-		{"End past the hop limit", transitExpired, acted(nil, end(1)), with(session(TraceDrop, "expired"), func(r *TraceRecord) { r.Segment = egressWaypoint })},
+		{"End past the hop limit, its headend routed nowhere", transitExpired, acted(nil, end(1)), with(session(TraceAnswer, "expired"), func(r *TraceRecord) {
+			r.Segment, r.Answer, r.Outcome = egressWaypoint, "expired", TraceUnsent
+		})},
+		{"End with no route to its next segment", transitNoRoute, func(t *testing.T) []TraceRecord {
+			m, feed := tracedSegments(t)
+			m.Routes.Remove(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"))
+			m.Routes.Set(netip.Prefix{}, hostPrefix(headend), (&recordingPeer{}).peer(t, "back"))
+			m.DeliverInboundBatch(framed(end(64)), DefaultMTU, (&recordingPeer{}).peer(t, "from"))
+			return queued(feed)
+		}, with(session(TraceAnswer, "no_route"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressNext, "no_route", TraceSent })},
+		{"End toward an address cap.table assigns", transitNoRoute, func(t *testing.T) []TraceRecord {
+			m, feed := tracedSegments(t)
+			m.Routes.Set(netip.Prefix{}, hostPrefix(segmentAssigned), Assigned)
+			m.Routes.Set(netip.Prefix{}, hostPrefix(headend), (&recordingPeer{}).peer(t, "back"))
+			m.DeliverInboundBatch(framed(headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], 100, false), egressWaypoint, segmentAssigned, egressNext)), DefaultMTU, (&recordingPeer{}).peer(t, "from"))
+			return queued(feed)
+		}, with(session(TraceAnswer, "no_route"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = segmentAssigned, "parameter", TraceSent })},
+		{"End refusing a segments left past the last entry", transitInvalid, func(t *testing.T) []TraceRecord {
+			m, feed := tracedSegments(t)
+			m.Routes.Set(netip.Prefix{}, hostPrefix(headend), (&recordingPeer{}).peer(t, "back"))
+			past := end(64)
+			past[43] = 5
+			m.DeliverInboundBatch(framed(past), DefaultMTU, (&recordingPeer{}).peer(t, "from"))
+			return queued(feed)
+		}, with(session(TraceAnswer, "invalid"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressWaypoint, "parameter", TraceSent })},
+		{"End past its next session", transitTooBig, func(t *testing.T) []TraceRecord {
+			m, feed := tracedSegments(t)
+			next := (&recordingPeer{}).peer(t, "next")
+			next.SetMTU(tracedMTU)
+			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), next)
+			m.DeliverInboundBatch(framed(headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], tracedMTU, false), egressWaypoint, egressNext)), DefaultMTU, (&recordingPeer{}).peer(t, "from"))
+			return queued(feed)
+		}, with(session(TraceAnswer, "too_big"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressNext, "too_big", TraceSent })},
 		{"an egress segment dropping CE over Not-ECT", traceECN, acted(nil, outerCE(headendSteered(udp(4, tooBigSource, transitNowhere, 100, false), egressExit))), with(session(TraceDrop, "ecn"), func(r *TraceRecord) { r.Segment = egressExit })},
 	}
 }()
@@ -236,7 +272,7 @@ func outerCE(raw []byte) []byte {
 }
 
 // each outcome of decide, classify, the segments and the budget records the decision, reason, next peer, segment and answer it met
-// and once every case ran, every reason the transit counters name but answered, budget and ecn, has a case that recorded it, so a reason added without a record fails here
+// and once every case ran, every reason the transit counters name but answered and unsent, budget and ecn, has a case that recorded it, so a reason added without a record fails here
 func TestTraceRecordsEachOutcome(t *testing.T) {
 	covered := map[transitReason]bool{}
 	ran := 0
@@ -552,16 +588,80 @@ func TestTraceForwardsSpendNoRateOfAClientOfDrops(t *testing.T) {
 			check(t, feed, deliverTraced(n, feed, c.packets...))
 		})
 	}
-	t.Run("End's forward in the batch of End past the hop limit", func(t *testing.T) {
+	t.Run("End's forward in the batch of an egress segment's refusal after End", func(t *testing.T) {
 		m, _ := egressMesh(t)
 		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), (&recordingPeer{}).peer(t, "next"))
 		feed := openTrace(t, m, drops, 64, control.TraceRateMin)
-		end := func(hops byte) []byte {
-			return withTTL(headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], 100, false), egressWaypoint, egressNext), hops)
-		}
-		m.DeliverInboundBatch(framed(end(64), end(1)), DefaultMTU, (&recordingPeer{}).peer(t, "from"))
+		end := headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], 100, false), egressWaypoint, egressNext)
+		refused := headendSteered(udpPacket(stranger[6], transitNowhere[6], 100, false), egressWaypoint, egressExit)
+		m.DeliverInboundBatch(framed(end, refused), DefaultMTU, (&recordingPeer{}).peer(t, "from"))
 		check(t, feed, queued(feed))
 	})
+}
+
+// a client selecting answers alone takes a SID's answers, which arrive copies the packet for as it does for a client of drops
+// End past the hop limit, End with no route to its next segment and End past its next session
+func TestTraceTakesASIDsAnswersForAClientOfAnswers(t *testing.T) {
+	end := func(hops byte, size int) []byte {
+		return withTTL(headendSteered(udpPacket(tooBigSource[6], transitNowhere[6], size, false), egressWaypoint, egressNext), hops)
+	}
+	for _, c := range []struct {
+		name   string
+		routed bool
+		packet []byte
+		answer string
+	}{
+		{"past the hop limit", true, end(1, 100), "expired"},
+		{"with no route to its next segment", false, end(64, 100), "no_route"},
+		{"past its next session", true, end(64, tracedMTU), "too_big"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, _ := egressMesh(t)
+			if c.routed {
+				next := (&recordingPeer{}).peer(t, "next")
+				next.SetMTU(tracedMTU)
+				m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), next)
+			}
+			feed := openTrace(t, m, TraceFilter{Decision: TraceAnswer}, 64, control.TraceRateMax)
+			m.DeliverInboundBatch(framed(c.packet), DefaultMTU, (&recordingPeer{}).peer(t, "from"))
+			if records := queued(feed); len(records) != 1 || records[0].Decision != TraceAnswer || records[0].Answer != c.answer {
+				t.Errorf("the feed took %+v, want the %s answer", records, c.answer)
+			}
+		})
+	}
+}
+
+// End's answer about the options of an IPv4 packet without DF past its next session, which the cut cannot frame, is recorded invalid
+// and recorded withheld where the bucket of that packet's source is spent, since the answer draws on the limits as the record reads them
+func TestTraceRecordsEndsAnswerAboutOptionsAsInvalid(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		spent bool
+		want  TraceOutcome
+	}{
+		{"with room in its source's bucket", false, TraceSent},
+		{"with its source's bucket spent", true, TraceWithheld},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, feed := tracedSegments(t)
+			m.SetAnswerTTL(64)
+			next := (&recordingPeer{}).peer(t, "next")
+			next.SetMTU(tracedMTU)
+			m.Routes.Set(netip.Prefix{}, segPrefix("3fff:b:0:206::/64"), next)
+			if c.spent {
+				for range icmpSourceBurst {
+					if !m.takeICMPToken(tooBigSource[4]) {
+						t.Fatalf("a fresh bucket of %s held fewer than %d answers", tooBigSource[4], icmpSourceBurst)
+					}
+				}
+			}
+			m.DeliverInboundBatch(framed(headendSteered(slices.Clone(misframed), egressWaypoint, egressNext)), DefaultMTU, (&recordingPeer{}).peer(t, "from"))
+			want := with(session(TraceAnswer, "invalid"), func(r *TraceRecord) { r.Segment, r.Answer, r.Outcome = egressNext, "parameter", c.want })
+			if records := queued(feed); len(records) != 1 || !reflect.DeepEqual(decisionOf(records[0]), want) {
+				t.Errorf("the feed took %+v, want %+v", records, want)
+			}
+		})
+	}
 }
 
 // a segment's drop of a packet arrive left uncopied, the client's rate of one record a second holding no room as it arrived, has no record

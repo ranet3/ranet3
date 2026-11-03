@@ -548,8 +548,8 @@ func TestPacketsPastALimitBuildNoAnswer(t *testing.T) {
 		{"a refused packet past its source's bucket", func(m *Mesh) {
 			for m.takeICMPToken(from) {
 			}
-		}, func(m *Mesh) bool { m.answerRefused(outer, refusal); return false }},
-		{"a refused packet past the cap", func(m *Mesh) { capHolding(m, 0) }, func(m *Mesh) bool { m.answerRefused(outer, srv6.ErrHopLimit); return false }},
+		}, func(m *Mesh) bool { m.answerRefused(outer, refusal, (*Mesh).takeICMPToken); return false }},
+		{"a refused packet past the cap", func(m *Mesh) { capHolding(m, 0) }, func(m *Mesh) bool { m.answerRefused(outer, srv6.ErrHopLimit, (*Mesh).takeICMPToken); return false }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := &Mesh{Routes: NewRouteTable()}
@@ -693,10 +693,10 @@ func TestPacketsNoErrorAnswersLeaveTheLimitsUntouched(t *testing.T) {
 			m.startSegmentReports()
 			m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), recorder.peer(t, "sender"))
 			for range stream {
-				m.answerRefused(offending, srv6.ErrHopLimit)
+				m.answerRefused(offending, srv6.ErrHopLimit, (*Mesh).takeICMPToken)
 			}
 			untouched(t, m)
-			m.answerRefused(refused(func([]byte) {}), srv6.ErrHopLimit)
+			m.answerRefused(refused(func([]byte) {}), srv6.ErrHopLimit, (*Mesh).takeICMPToken)
 			if sent := len(recorder.packets(t)); sent != 1 {
 				t.Errorf("%d answers went out, want the one to the answerable segment after the stream", sent)
 			}
