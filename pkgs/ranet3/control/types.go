@@ -417,7 +417,6 @@ type KernelStatus struct {
 	Where    string `json:"where,omitempty"`
 	Table    uint32 `json:"table,omitempty"`
 	Protocol uint8  `json:"protocol,omitempty"`
-	Metric   uint32 `json:"metric,omitempty"`
 	// PassAt is zero until the first pass has run.
 	PassAt    time.Time `json:"pass_at,omitzero"`
 	Installed int       `json:"installed"`

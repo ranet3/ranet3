@@ -488,21 +488,25 @@ func TestReconcileKeepsSourceSpecificAndOrdinaryApart(t *testing.T) {
 	}
 }
 
-// The metric is part of a route's identity in the kernel, so changing it has
-// to withdraw the routes installed under the old one instead of leaving a
-// second copy of every prefix behind.
-func TestReconcileReplacesRoutesWhenMetricChanges(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{})
-	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
+// a route the mesh carries goes in at the kernel's default priority, 0 for IPv4
+// and IP6_RT_PRIO_USER for IPv6, and the overlay's hold of the same prefix at
+// the last, so the two are two keys of the kernel's
+func TestReconcileWritesTheKernelsDefaultPriority(t *testing.T) {
+	overlay := []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}
+	reconciler, table, fake := harness(t, Table{}, Runtime{Overlay: overlay})
+	for _, entry := range overlay {
+		table.Set(netip.Prefix{}, entry.Prefix, nil)
+	}
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-
-	reconciler.table.Metric = 32
-	if err := reconciler.reconcile(); err != nil {
-		t.Fatalf("reconcile: %v", err)
+	want := []Route{
+		{Destination: prefix("192.0.2.0/24")},
+		{Destination: prefix("192.0.2.0/24"), Metric: ^uint32(0), Unreachable: true},
+		{Destination: prefix("3fff::/20"), Metric: 1024},
+		{Destination: prefix("3fff::/20"), Metric: ^uint32(0), Unreachable: true},
 	}
-	want := []Route{{Destination: prefix("10.0.0.0/8"), Metric: 32}}
+	slices.SortFunc(want, compareRoutes)
 	if got := fake.snapshot(); !slices.Equal(got, want) {
 		t.Fatalf("installed %v, want %v", got, want)
 	}

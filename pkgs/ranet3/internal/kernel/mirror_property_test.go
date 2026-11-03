@@ -79,8 +79,10 @@ func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []ne
 		case entry.value == learned && counts(d) && (exit || !gate):
 			// a learned route that counts, on an exit or while the gate is shut
 			continue
+		case entry.value == learned && d.Addr().Is4():
+			// at the kernel's default priority, 0 for IPv4 and IP6_RT_PRIO_USER for IPv6
 		case entry.value == learned:
-			route.Metric = routeMetric(0, d, false)
+			route.Metric = 1024
 		case counts(d):
 			// a hold that counts, and this node's own prefix that counts
 			continue

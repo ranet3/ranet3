@@ -100,7 +100,6 @@ cap:
   # table:
   #   id: 200
   #   proto: 155
-  #   metric: 64
   #   addresses: ["203.0.113.10/32"]
   #   assign_announced: false
   #   reconcile: 30s

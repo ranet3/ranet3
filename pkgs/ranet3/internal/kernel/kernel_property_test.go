@@ -212,7 +212,6 @@ func reloads() hegel.Generator[Table] {
 		return Table{
 			ID:              schema.TableID(hegel.Draw(tc, hegel.SampledFrom([]uint32{0, DefaultTable, DefaultTable + 1}))),
 			Proto:           hegel.Draw(tc, hegel.SampledFrom([]uint8{0, DefaultProtocol, DefaultProtocol + 1})),
-			Metric:          hegel.Draw(tc, hegel.SampledFrom([]uint32{0, 32, 64})),
 			Addresses:       hegel.Draw(tc, reloadAddresses()),
 			AssignAnnounced: hegel.Draw(tc, hegel.Booleans()),
 			Reconcile:       schema.Duration(hegel.Draw(tc, hegel.SampledFrom([]time.Duration{0, time.Second, time.Minute}))),

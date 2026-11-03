@@ -149,7 +149,6 @@ func TestReloadHandsAChangedTableToTheReconciler(t *testing.T) {
 	})
 	next := *c.config()
 	next.Cap.Table = &kernel.Table{
-		Metric:          64,
 		Addresses:       []schema.Prefix{schema.MustPrefix("10.66.0.6/32")},
 		AssignAnnounced: true,
 		Reconcile:       schema.Duration(time.Minute),
@@ -372,7 +371,7 @@ func TestReloadMovingTheTableBeforeTheReconcilerIsHandedOverNamesIt(t *testing.T
 	segmentsOf(t, c)
 	c.reconciler.Store(nil)
 	next := *c.config()
-	next.Cap.Table = &kernel.Table{Metric: 64}
+	next.Cap.Table = &kernel.Table{Reconcile: schema.Duration(time.Minute)}
 	writeConfig(t, path, &next)
 	err := c.ReloadFrom(path)
 	if err == nil || !strings.Contains(err.Error(), "cap.table changed and no reconciler is running") {
@@ -481,9 +480,9 @@ const heldReloadWait = 300 * time.Millisecond
 func TestOverlappingReloadsLeaveTheReconcilerOnTheStoredTable(t *testing.T) {
 	c, path, _, _ := reloadOf(t, func(old *config.Config) { old.Cap.Table = &kernel.Table{} })
 	first, second := filepath.Join(filepath.Dir(path), "first.yaml"), filepath.Join(filepath.Dir(path), "second.yaml")
-	for file, metric := range map[string]uint32{first: 32, second: 64} {
+	for file, sweep := range map[string]time.Duration{first: time.Minute, second: 2 * time.Minute} {
 		next := *c.config()
-		next.Cap.Table = &kernel.Table{Metric: metric}
+		next.Cap.Table = &kernel.Table{Reconcile: schema.Duration(sweep)}
 		writeConfig(t, file, &next)
 	}
 	var mu sync.Mutex
@@ -514,8 +513,8 @@ func TestOverlappingReloadsLeaveTheReconcilerOnTheStoredTable(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if stored := c.config().Cap.Table.Metric; stored != running.Metric {
-		t.Errorf("the node stores cap.table metric %d and the reconciler was last handed metric %d", stored, running.Metric)
+	if stored := c.config().Cap.Table.Reconcile; stored != running.Reconcile {
+		t.Errorf("the node stores cap.table reconcile %s and the reconciler was last handed reconcile %s", stored, running.Reconcile)
 	}
 }
 
@@ -612,7 +611,7 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 	next.Cap.Segment = steering("3fff:b:0:206::1", "3fff:b:0:406::1")
 	next.Cap.Segment.Local = []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:106::1"), Behavior: srv6.BehaviorEnd}}
 	next.Cap.Babel = &babel.Config{Hello: schema.Duration(2 * time.Second)}
-	next.Cap.Table = &kernel.Table{Metric: 32}
+	next.Cap.Table = &kernel.Table{Reconcile: schema.Duration(time.Minute)}
 	next.Link.Listen = true
 	joinedAndAnnounced(t, c, &next)
 	writeConfig(t, path, &next)
@@ -689,7 +688,7 @@ func TestReloadRefusesMovingAMeshAddressCapEgressTranslatesUnder(t *testing.T) {
 		"the announced address no longer assigned as well": {
 			node(auto, &kernel.Table{AssignAnnounced: true}, "192.0.2.5/32"), node(auto, &kernel.Table{}, "192.0.2.5/32"),
 		},
-		"another metric": {start, node(auto, &kernel.Table{Metric: 64, Addresses: start.Cap.Table.Addresses})},
+		"another sweep": {start, node(auto, &kernel.Table{Reconcile: schema.Duration(time.Minute), Addresses: start.Cap.Table.Addresses})},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := reloadable(move.old, move.next); err != nil {

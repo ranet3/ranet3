@@ -53,12 +53,10 @@ import (
 // With it the default goes in unscoped as its zero-free cover (see
 // coverDefaults).
 //
-// There is no per-route metric either, so Route.Metric is mirrored from the
-// configuration into every dump. It is a diff key field computed from that
-// same configuration, and reporting anything else would make every pass add
-// and delete the same route forever.
+// There is no per-route metric either, so Route.Metric is mirrored into every
+// dump as routeMetric gives it. It is a diff key field, and reporting anything
+// else would make every pass add and delete the same route forever.
 type routePlatform struct {
-	table Table
 	rt    Runtime
 	index int
 
@@ -144,7 +142,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		return nil, err
 	}
 	plat := &routePlatform{
-		table: t, rt: rt, index: index, host: host,
+		rt: rt, index: index, host: host,
 		scoped:   make(map[netip.Prefix]netip.Prefix),
 		covering: make(map[netip.Prefix]bool),
 		warned:   make(map[Route]bool),
@@ -394,7 +392,7 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 		// The kernel keeps no source, so a scoped route's source comes back
 		// from what this process installed for that destination.
 		Source: source,
-		Metric: routeMetric(p.table.Metric, prefix, rm.Flags&unix.RTF_REJECT != 0),
+		Metric: routeMetric(prefix, rm.Flags&unix.RTF_REJECT != 0),
 		// Read back rather than re-derived, because the kernel keys on it: an
 		// unscoped default and a scoped one are two routes, and a withdrawal
 		// that guessed from the destination would take out the wrong one and
@@ -793,8 +791,7 @@ func (p *routePlatform) DelAddr(prefix netip.Prefix) error {
 // where is the interface itself: darwin has one FIB and no routing tables.
 func (p *routePlatform) where(Table) string { return "interface " + p.rt.Interface }
 
-// retable takes the metric a dump mirrors from the capability a reload installed
-func (p *routePlatform) retable(t Table) { p.table = t }
+func (p *routePlatform) retable(Table) {}
 
 // covers is link.underlay.bind: a plain default out of the tun unscoped meets
 // EEXIST beside the host's own, and scoped it carries no socket that does not

@@ -54,7 +54,7 @@ func coverCases() hegel.Generator[coverCase] {
 		}
 		for range hegel.Draw(tc, hegel.Integers(0, 8)) {
 			destination := coverPrefix(tc, hegel.Draw(tc, hegel.Booleans()))
-			c.routes = append(c.routes, Route{Destination: destination, Metric: routeMetric(0, destination, false)})
+			c.routes = append(c.routes, Route{Destination: destination, Metric: routeMetric(destination, false)})
 			c.scoped = append(c.scoped, hegel.Draw(tc, hegel.Booleans()))
 			c.lookups = append(c.lookups, destination.Addr(), lastAddress(destination))
 		}
@@ -162,7 +162,7 @@ func TestCoverMembersAreAZeroRouteLessTheHole(t *testing.T) {
 			zero, hole = netip.IPv6Unspecified(), netip.MustParsePrefix("::/8")
 		}
 		p := netip.PrefixFrom(zero, hegel.Draw(ht, hegel.OneOf(pbt.Spanning(0, 10), pbt.Spanning(0, zero.BitLen()))))
-		installed := coverDefaults([]Route{{Destination: p, Metric: routeMetric(0, p, false)}}, nil)
+		installed := coverDefaults([]Route{{Destination: p, Metric: routeMetric(p, false)}}, nil)
 		total := new(big.Int)
 		for i, r := range installed {
 			if !r.Cover {
@@ -367,7 +367,7 @@ func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 			}
 			for _, r := range step.routes {
 				if schema.HoldsUnspecified(r) {
-					base = append(base, Route{Destination: r, Metric: routeMetric(0, r, false)})
+					base = append(base, Route{Destination: r, Metric: routeMetric(r, false)})
 				}
 			}
 			expected := map[Family][]netip.Prefix{}

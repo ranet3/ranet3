@@ -1148,7 +1148,6 @@ func fullConfig() Config {
 			Table: &kernel.Table{
 				ID:              200,
 				Proto:           155,
-				Metric:          64,
 				Addresses:       []schema.Prefix{schema.MustPrefix("10.66.0.5/32")},
 				AssignAnnounced: true,
 				Reconcile:       schema.Duration(30 * time.Second),

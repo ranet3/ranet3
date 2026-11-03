@@ -193,7 +193,6 @@ update = "16s"
 # [cap.table]
 # id = 200
 # proto = 155
-# metric = 64                      # BIRD's kbabel uses 32, so not 32 beside it
 # addresses = ["203.0.113.10/32"]  # assigned to the device, removed at exit
 # assign_announced = false         # also assign what cap.route announces
 # reconcile = "30s"

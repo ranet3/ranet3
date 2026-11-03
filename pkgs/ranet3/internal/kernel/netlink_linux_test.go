@@ -247,7 +247,7 @@ func TestNetlinkReportsOccupiedRoute(t *testing.T) {
 
 // a reload against a real kernel, the tun's addresses IPv4 alone
 // a new overlay moves the rule that sends it to the table
-// then the tun is renumbered and the metric moves
+// then the tun is renumbered
 // each takes the one pass that follows it
 func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
@@ -325,8 +325,8 @@ func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 	step(Table{Addresses: prefixes(first, second)}, after)
 	holds("a new overlay", []netip.Prefix{first, second}, Route{Destination: prefix("10.0.0.0/8")}, after)
 
-	step(Table{Addresses: prefixes(second, third), Metric: 32}, after)
-	holds("a renumbered tun and a new metric", []netip.Prefix{second, third}, Route{Destination: prefix("10.0.0.0/8"), Metric: 32}, after)
+	step(Table{Addresses: prefixes(second, third)}, after)
+	holds("a renumbered tun", []netip.Prefix{second, third}, Route{Destination: prefix("10.0.0.0/8")}, after)
 
 	if err := r.withdraw(nil); err != nil {
 		t.Fatalf("withdraw: %v", err)
@@ -339,6 +339,67 @@ func TestNetlinkReloadRenumbersTheTunAndMovesTheRules(t *testing.T) {
 	}
 	if rules, _ := plat.Rules(); len(rules) != 0 {
 		t.Errorf("the withdrawal left %v", rules)
+	}
+}
+
+// a route the mesh carries for exactly an overlay prefix goes in at the
+// kernel's default priority beside the overlay's hold of it, and a lookup
+// inside the prefix takes the route, in each family
+func TestNetlinkRouteOfAnOverlayPrefixWinsOverItsHold(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
+	const device = "ranethold0"
+	createTUN(t, device)
+	tun, err := conn.link(0, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
+
+	overlay := []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("2001:db8:1::/48")}
+	mesh := netstack.NewRouteTable()
+	for _, entry := range overlay {
+		mesh.Set(netip.Prefix{}, entry.Prefix, nil)
+	}
+	r, err := New(Table{Addresses: prefixes(prefix("198.51.100.1/32"), prefix("2001:db8:a::1/128"))}, Runtime{Interface: device, Overlay: overlay}, mesh)
+	if err != nil {
+		t.Fatalf("start the reconciler: %v", err)
+	}
+	t.Cleanup(func() { _ = r.plat.Close() })
+	if err := r.reconcile(); err != nil {
+		t.Fatalf("the first pass: %v", err)
+	}
+	routes, err := r.plat.Routes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Route{
+		{Destination: prefix("192.0.2.0/24")},
+		{Destination: prefix("192.0.2.0/24"), Metric: ^uint32(0), Unreachable: true},
+		{Destination: prefix("2001:db8:1::/48"), Metric: 1024},
+		{Destination: prefix("2001:db8:1::/48"), Metric: ^uint32(0), Unreachable: true},
+	}
+	slices.SortFunc(want, compareRoutes)
+	if !slices.Equal(routes, want) {
+		t.Fatalf("the table holds %v, want %v", routes, want)
+	}
+	for _, entry := range overlay {
+		inside := entry.Addr().Next()
+		got, err := RouteGet(netip.Addr{}, inside, "")
+		if err != nil || got.Prefix != entry.Prefix || got.Table != DefaultTable || got.Type != "unicast" || !slices.Equal(got.NextHops, []NextHop{{Device: device}}) {
+			t.Errorf("a lookup of %s answered %+v (err %v), want the route of %s out of %s", inside, got, err, entry, device)
+		}
+	}
+	if err := r.withdraw(nil); err != nil {
+		t.Fatalf("withdraw: %v", err)
 	}
 }
 

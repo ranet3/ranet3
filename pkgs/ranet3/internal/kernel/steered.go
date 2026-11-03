@@ -49,7 +49,7 @@ func (r *Reconciler) steeredDefaults(out []Route) []Route {
 		return out
 	}
 	for _, destination := range steeredDestinations {
-		out = append(out, Route{Destination: destination, Metric: routeMetric(r.table.Metric, destination, false)})
+		out = append(out, Route{Destination: destination, Metric: routeMetric(destination, false)})
 	}
 	return out
 }

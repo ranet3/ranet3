@@ -970,7 +970,6 @@ testers.runNixOSTest {
               table = pkgs.lib.mkIf (kernel || egress || beside != null) {
                 id = kernelTable;
                 proto = kernelProtocol;
-                metric = 32;
                 reconcile = "2s";
               };
             };

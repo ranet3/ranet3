@@ -74,7 +74,7 @@ func testPlatform(t *testing.T, tbl Table, rt Runtime) (*routePlatform, *fakeRou
 	}
 	sock := &fakeRouteSocket{t: t}
 	return &routePlatform{
-		table: tbl, rt: rt, index: testIndex, sock: sock,
+		rt: rt, index: testIndex, sock: sock,
 		host:     runningKernel{},
 		warned:   make(map[Route]bool),
 		pending:  make(map[Route]bool),
@@ -198,7 +198,7 @@ func TestDarwinScopesPlainDefaults(t *testing.T) {
 		t.Run(destination, func(t *testing.T) {
 			plat, sock := testPlatform(t, Table{}, Runtime{})
 			announced := Route{Destination: prefix(destination)}
-			announced.Metric = routeMetric(plat.table.Metric, announced.Destination, false)
+			announced.Metric = routeMetric(announced.Destination, false)
 			if err := plat.AddRoute(announced); err != nil {
 				t.Fatal(err)
 			}
@@ -347,7 +347,7 @@ func TestDarwinDumpKeepsOnlyRoutesItOwns(t *testing.T) {
 // reconciler did not ask for would leave every route on both the add list and
 // the delete list forever.
 func TestDarwinDumpMirrorsDiffKeyFields(t *testing.T) {
-	plat, _ := testPlatform(t, Table{Metric: 32}, Runtime{})
+	plat, _ := testPlatform(t, Table{}, Runtime{})
 	rib := dumpRIB(t,
 		dumpEntry{index: testIndex, flags: unix.RTF_UP, dst: prefix("198.51.100.0/24"), gateway: ourGateway()},
 		dumpEntry{index: testIndex, flags: unix.RTF_UP, dst: prefix("2001:db8::/48"), gateway: ourGateway()},
@@ -357,25 +357,11 @@ func TestDarwinDumpMirrorsDiffKeyFields(t *testing.T) {
 		t.Fatalf("decode the dump: %v", err)
 	}
 	want := []Route{
-		{Destination: prefix("198.51.100.0/24"), Metric: 32},
-		{Destination: prefix("2001:db8::/48"), Metric: 32},
+		{Destination: prefix("198.51.100.0/24")},
+		{Destination: prefix("2001:db8::/48"), Metric: defaultIPv6Metric},
 	}
 	slices.SortFunc(got, compareRoutes)
 	if !slices.Equal(got, want) {
-		t.Fatalf("the dump decoded to %v, want %v", got, want)
-	}
-}
-
-// a dump read under the old metric after a reload would put every route on both lists of every pass
-func TestDarwinDumpMirrorsTheMetricAReloadInstalled(t *testing.T) {
-	plat, _ := testPlatform(t, Table{Metric: 32}, Runtime{})
-	plat.retable(Table{Metric: 64})
-	rib := dumpRIB(t, dumpEntry{index: testIndex, flags: unix.RTF_UP, dst: prefix("198.51.100.0/24"), gateway: ourGateway()})
-	got, err := plat.ownedRoutes(rib)
-	if err != nil {
-		t.Fatalf("decode the dump: %v", err)
-	}
-	if want := []Route{{Destination: prefix("198.51.100.0/24"), Metric: 64}}; !slices.Equal(got, want) {
 		t.Fatalf("the dump decoded to %v, want %v", got, want)
 	}
 }
@@ -885,7 +871,7 @@ func TestDarwinHoldIsInstalledAsReject(t *testing.T) {
 	// Through the same function the dump answers with. A hold sits last among
 	// the routes to its prefix, and a darwin FIB keeps no metric, so the two
 	// sides of the diff disagree the moment either takes its own answer.
-	held.Metric = routeMetric(plat.table.Metric, held.Destination, held.Unreachable)
+	held.Metric = routeMetric(held.Destination, held.Unreachable)
 	if err := plat.AddRoute(held); err != nil {
 		t.Fatal(err)
 	}
@@ -1224,7 +1210,7 @@ func TestDarwinWithdrawingUnscopedKeepsTheScopedSource(t *testing.T) {
 // means nothing here.
 func TestDarwinOwnsAnInterfaceRatherThanATable(t *testing.T) {
 	plat, _ := testPlatform(t, Table{ID: DefaultTable}, Runtime{Interface: "utun9"})
-	if got := plat.where(plat.table); got != "interface utun9" {
+	if got := plat.where(Table{}); got != "interface utun9" {
 		t.Errorf("darwin reports %q, want the interface it owns", got)
 	}
 }
@@ -1358,7 +1344,7 @@ func TestDarwinKeepsTheMoreSpecificSourceAtOneDestination(t *testing.T) {
 	wide := Route{Destination: prefix("::/0"), Source: prefix("3fff:a::/36")}
 	narrow := Route{Destination: prefix("::/0"), Source: prefix("3fff:a::/48")}
 	for _, r := range []*Route{&wide, &narrow} {
-		r.Metric = routeMetric(plat.table.Metric, r.Destination, false)
+		r.Metric = routeMetric(r.Destination, false)
 	}
 
 	// diffRoutes orders the installs, so the preference has to survive it
@@ -1401,7 +1387,7 @@ func TestDarwinNamesTheTwoSourceRefusalsApart(t *testing.T) {
 	plat.addrs = func() ([]netip.Prefix, error) { return []netip.Prefix{held}, nil }
 
 	foreign := Route{Destination: prefix("::/0"), Source: prefix("3fff:a:a::/48")}
-	foreign.Metric = routeMetric(plat.table.Metric, foreign.Destination, foreign.Unreachable)
+	foreign.Metric = routeMetric(foreign.Destination, foreign.Unreachable)
 	if err := plat.AddRoute(foreign); !errors.Is(err, errRouteSkipped) {
 		t.Fatalf("a source holding none of our addresses reported %v", err)
 	}

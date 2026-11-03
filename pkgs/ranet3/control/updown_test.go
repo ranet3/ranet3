@@ -26,7 +26,7 @@ func downStatus() Status {
 		Uptime:    Duration(26 * time.Hour),
 		Responder: true, ForwardsIPv4: new(true), ForwardsIPv6: new(true),
 		Registry:  RegistryInfo{Path: "/etc/ranet3/registry.json", Organizations: 1, Nodes: 12},
-		Kernel:    KernelStatus{Enabled: true, Where: "table 100", Table: 100, Protocol: 155, Metric: 1024, PassAt: time.Now().Add(-downFor)},
+		Kernel:    KernelStatus{Enabled: true, Where: "table 100", Table: 100, Protocol: 155, PassAt: time.Now().Add(-downFor)},
 		Counts:    Counts{Originated: 1},
 		Originate: []Originated{{Prefix: netip.MustParsePrefix("2001:db8:a::/48")}},
 		Down:      &Down{Since: wentDown, For: Duration(downFor)},

@@ -43,26 +43,14 @@ func (f *fakeKernel) heldRules() map[Rule]bool {
 	return maps.Clone(f.rules)
 }
 
-func TestReloadMovesTheRoutesToTheNewMetric(t *testing.T) {
-	r, table, fake := harness(t, Table{})
-	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
-	table.Set(netip.Prefix{}, prefix("3fff:a::/36"), nil)
-	table.Set(prefix("3fff:a:1::/48"), prefix("::/0"), nil)
+// the loop hands the platform the capability it took, and reports it as its own
+func TestReloadHandsThePlatformTheCapability(t *testing.T) {
+	r, _, fake := harness(t, Table{})
 	if err := r.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	next := Table{Metric: 32}
+	next := Table{Reconcile: schema.Duration(time.Minute)}
 	reload(t, r, next)
-	want := []Route{
-		{Destination: prefix("10.0.0.0/8"), Metric: 32},
-		{Destination: prefix("::/0"), Source: prefix("3fff:a:1::/48"), Metric: 32},
-		{Destination: prefix("3fff:a::/36"), Metric: 32},
-	}
-	slices.SortFunc(want, compareRoutes)
-	if got := fake.snapshot(); !slices.Equal(got, want) {
-		t.Fatalf("the pass after the reload left %v, want %v", got, want)
-	}
-	// darwin mirrors the metric into every dump from the platform's own copy
 	if got := fake.retabled; len(got) != 1 || !reflect.DeepEqual(got[0], next.Normalized()) {
 		t.Errorf("the platform was handed %+v, want the capability the loop took", got)
 	}
@@ -233,11 +221,11 @@ func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T)
 	r.SetEnabled(false)
 	waitFor(t, func() bool { return len(fake.snapshot()) == 0 && len(fake.heldAddresses()) == 0 })
 
-	next := Table{Metric: 32, Addresses: prefixes(prefix("203.0.113.6/32"))}
+	next := Table{CaptureGrace: schema.Duration(time.Minute), Addresses: prefixes(prefix("203.0.113.6/32"))}
 	if err := r.SetTable(next, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return r.Table().Metric == 32 })
+	waitFor(t, func() bool { return r.Table().CaptureGrace.Duration() == time.Minute })
 	later := next
 	later.Reconcile = schema.Duration(time.Minute)
 	if err := r.SetTable(later, nil, nil); err != nil {
@@ -250,7 +238,7 @@ func TestStoppedReconcilerTakesAReloadAndInstallsItOnlyOnceStarted(t *testing.T)
 
 	r.SetEnabled(true)
 	waitFor(t, func() bool {
-		return fake.has(Route{Destination: route, Metric: 32}) && slices.Equal(fake.heldAddresses(), []netip.Prefix{prefix("203.0.113.6/32")}) &&
+		return fake.has(Route{Destination: route}) && slices.Equal(fake.heldAddresses(), []netip.Prefix{prefix("203.0.113.6/32")}) &&
 			fake.holdsDerived(r)
 	})
 }
@@ -315,11 +303,12 @@ func TestReloadPassIsRecordedAsAReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(reloadPasses()) == 1 })
-	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute), Metric: 32}, nil, nil); err != nil {
+	// the overlay's hold is the one route the second pass adds
+	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute)}, prefixes(prefix("203.0.113.0/24")), nil); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(reloadPasses()) == 2 })
-	if got, want := reloadPasses(), [][2]string{{"0", "0"}, {"1", "1"}}; !slices.Equal(got, want) {
+	if got, want := reloadPasses(), [][2]string{{"0", "0"}, {"1", "0"}}; !slices.Equal(got, want) {
 		t.Errorf("the reload passes were recorded with added and removed %v, want %v", got, want)
 	}
 }
@@ -332,7 +321,7 @@ func TestWhereIsReadWhileTheLoopTakesAReload(t *testing.T) {
 	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
 	last := runToRecord(t, r, table, bus)
 	awaitPass(t, last, "the first pass", "start", func() bool { return true })
-	if err := r.SetTable(Table{Metric: 32}, nil, nil); err != nil {
+	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute)}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	awaitPass(t, last, "the pass after the reload", "reload", func() bool { return r.Where() == "table 200" })
@@ -349,14 +338,14 @@ func TestSecondReloadReadsTheTableTheLoopTook(t *testing.T) {
 	table.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
 	last := runToRecord(t, r, table, bus)
 	awaitPass(t, last, "the first pass", "start", func() bool { return true })
-	if err := r.SetTable(Table{Metric: 32}, nil, nil); err != nil {
+	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute)}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(reloadsApart)
-	if err := r.SetTable(Table{Metric: 64}, nil, nil); err != nil {
+	if err := r.SetTable(Table{Reconcile: schema.Duration(2 * time.Minute)}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	awaitPass(t, last, "the pass after the second reload", "reload", func() bool { return r.Table().Metric == 64 })
+	awaitPass(t, last, "the pass after the second reload", "reload", func() bool { return r.Table().Reconcile.Duration() == 2*time.Minute })
 }
 
 // insideSettle is how long after a mesh change a reload is handed over, half the settle window the change opened
@@ -372,10 +361,10 @@ func TestReloadInsideTheSettleWindowIsTaken(t *testing.T) {
 	awaitPass(t, last, "the first pass", "start", func() bool { return true })
 	table.Set(netip.Prefix{}, prefix("10.1.0.0/16"), nil)
 	time.Sleep(insideSettle)
-	if err := r.SetTable(Table{Metric: 32}, nil, nil); err != nil {
+	if err := r.SetTable(Table{Reconcile: schema.Duration(time.Minute)}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	awaitPass(t, last, "the pass after the reload", "reload", func() bool { return r.Table().Metric == 32 })
+	awaitPass(t, last, "the pass after the reload", "reload", func() bool { return r.Table().Reconcile.Duration() == time.Minute })
 }
 
 // an address a reload dropped and whose delete failed stays recorded, and the later pass that takes it off is recorded

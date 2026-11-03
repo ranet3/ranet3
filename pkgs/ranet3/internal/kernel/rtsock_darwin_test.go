@@ -136,7 +136,7 @@ func TestDarwinPlatformOnRealKernel(t *testing.T) {
 		hold,
 	}
 	for i := range want {
-		want[i].Metric = routeMetric(tbl.Metric, want[i].Destination, want[i].Unreachable)
+		want[i].Metric = routeMetric(want[i].Destination, want[i].Unreachable)
 		want[i].Scoped = plat.scopes(want[i])
 	}
 	slices.SortFunc(want, compareRoutes)

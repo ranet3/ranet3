@@ -118,13 +118,6 @@ type Table struct {
 	// separating this reconciler's routes from everyone else's. Zero uses
 	// DefaultProtocol.
 	Proto uint8 `yaml:"proto,omitempty" json:"proto,omitempty" toml:"proto,omitempty"`
-	// Metric is RTA_PRIORITY. Zero takes the kernel's own default, which is 0
-	// for IPv4 and 1024 for IPv6. Do not set it to BIRD's 32 while BIRD is
-	// still exporting to the same table: both daemons would then key on the
-	// same prefix and priority, and since an install refuses a key another
-	// writer holds rather than taking it over, whichever daemon got there
-	// first keeps the prefix and the other loses it quietly.
-	Metric uint32 `yaml:"metric,omitempty" json:"metric,omitempty" toml:"metric,omitempty"`
 	// Addresses are assigned to the device when absent and removed again at
 	// shutdown or when a reload stops assigning them. Only addresses the
 	// reconciler added itself are ever removed.
@@ -350,10 +343,7 @@ type RouteSource interface {
 
 // Route is one kernel route the reconciler manages, and simultaneously the
 // diff key: the table, the protocol and the next hop are the same for every
-// route it installs, so two routes with equal fields are the same route. The
-// metric is in the key even though it comes from the configuration, because
-// the kernel keys routes on it too: changing the configured metric has to withdraw
-// the routes installed under the old one rather than leave them behind.
+// route it installs, so two routes with equal fields are the same route.
 type Route struct {
 	// Destination is canonical: masked and zoneless.
 	Destination netip.Prefix
@@ -1609,7 +1599,7 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 		unreachable := entry.Value == netstack.Unreachable || entry.Value == netstack.Local
 		route := Route{
 			Destination: destination,
-			Metric:      routeMetric(r.table.Metric, destination, unreachable),
+			Metric:      routeMetric(destination, unreachable),
 			Unreachable: unreachable,
 		}
 		// A hold or this node's own entry that counts as a default is declined,
@@ -1751,19 +1741,19 @@ func unroutable(destination netip.Prefix) string {
 const holdMetric = ^uint32(0)
 
 // routeMetric is the value the kernel will actually hold, so a dump compares
-// equal to what was installed. An unset configured metric means the kernel's
-// own default, which differs by family. Both the reconciler and the darwin
-// backend answer through here, because darwin's FIB keeps no metric and
-// mirrors this onto every route it decodes: two answers to the same question
-// make a diff that adds and deletes the same route on every pass.
-func routeMetric(configured uint32, destination netip.Prefix, unreachable bool) uint32 {
+// equal to what was installed: a hold's, or the kernel's own default, which
+// differs by family. Both the reconciler and the darwin backend answer through
+// here, because darwin's FIB keeps no metric and mirrors this onto every route
+// it decodes: two answers to the same question make a diff that adds and
+// deletes the same route on every pass.
+func routeMetric(destination netip.Prefix, unreachable bool) uint32 {
 	switch {
 	case unreachable:
 		return holdMetric
-	case configured == 0 && !destination.Addr().Is4():
+	case !destination.Addr().Is4():
 		return defaultIPv6Metric
 	}
-	return configured
+	return 0
 }
 
 // diffRoutes reports the routes the kernel is missing and the reconciler's
