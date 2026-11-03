@@ -391,11 +391,6 @@ func decodeTOML(body []byte, c *Config) error {
 		return err
 	}
 	capabilities, _ := written["cap"].(map[string]any)
-	if route, ok := capabilities["route"].(map[string]any); ok {
-		if _, ok := route["transit"]; ok {
-			return errRouteTransit
-		}
-	}
 	if _, ok := capabilities["border"]; ok {
 		return errBorder
 	}
@@ -412,9 +407,6 @@ func decodeTOML(body []byte, c *Config) error {
 	}
 	return exactKeys(written, reflect.TypeFor[Config](), "")
 }
-
-// errRouteTransit refuses cap.route transit by the block that holds the setting, where the strict decode would only call the key unknown
-var errRouteTransit = errors.New("cap.route transit is refused, transit is the block cap.transit with enable = true or false")
 
 // errBorder refuses cap.border by the keys that hold what it held, where the strict decode would only call it unknown
 var errBorder = errors.New("cap.border is refused: the prefixes the mesh numbers its nodes from are the top-level key overlay, and the filter is cap.antispoof, which runs wherever overlay is written and whose block only exempts")
@@ -554,9 +546,6 @@ func decodesItselfTOML(t reflect.Type) bool {
 }
 
 func decodeYAML(body []byte, c *Config) error {
-	if line := keyLine(body, "cap", "route", "transit"); line != 0 {
-		return fmt.Errorf("line %d: %w", line, errRouteTransit)
-	}
 	if line := keyLine(body, "cap", "border"); line != 0 {
 		return fmt.Errorf("line %d: %w", line, errBorder)
 	}
