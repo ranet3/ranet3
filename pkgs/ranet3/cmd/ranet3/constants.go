@@ -17,6 +17,8 @@ const (
 	// firstPassWait bounds how long a start under fallback = "none" waits for the reconciler's first pass before it dials, long
 	// past a pass that writes the table once beside the routes and rules, so only a stalled pass dials first
 	firstPassWait = 10 * time.Second
+	// authPoll is how often the start looks again for a key or trust document it waits for
+	authPoll = 250 * time.Millisecond
 	// completionTimeout bounds a completion that asks the daemon, so a shell does not stall on one that is gone
 	completionTimeout = time.Second
 	// suggestionDistance is the most edits a mistyped command may be from a real one and still have it suggested, as cobra allows the root

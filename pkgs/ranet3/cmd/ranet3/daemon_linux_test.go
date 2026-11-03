@@ -20,7 +20,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
@@ -54,8 +53,6 @@ const (
 	daemonTUN = "start0"
 	// daemonQuiet is how long a test watches for what must not happen, long past a dial or a reload that would
 	daemonQuiet = 500 * time.Millisecond
-	// daemonSettle bounds a wait for what the daemon does once asked, and for the goroutines of a start to end
-	daemonSettle = 10 * time.Second
 	// daemonPrompt bounds what the daemon does at once on a signal, well inside the first pass's wait it must not sit out
 	daemonPrompt = firstPassWait / 5
 )
@@ -185,18 +182,6 @@ cap:
 	return f
 }
 
-// shortDir is a directory of the test's own directly under the temporary directory, whose path leaves a socket in it within
-// the 103 bytes a unix socket's path holds, which t.TempDir's, named after the test, can pass
-func shortDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "ranet3-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
-}
-
 // freePort is a port of network on the loopback that nothing holds now
 func freePort(t *testing.T, network string) int {
 	t.Helper()
@@ -233,23 +218,6 @@ func recorded(bus *atomic.Pointer[events.Bus], kind string) int {
 		return 0
 	}
 	return len(b.Recorded(func(k, _ string, _ []slog.Attr) bool { return k == kind }, 0))
-}
-
-// signalSelf sends sig to this process and returns once os/signal has handed it to a channel of the test's own, which it hands
-// the daemon's in the same delivery
-func signalSelf(t *testing.T, sig syscall.Signal) {
-	t.Helper()
-	seen := make(chan os.Signal, 1)
-	signal.Notify(seen, sig)
-	defer signal.Stop(seen)
-	if err := syscall.Kill(os.Getpid(), sig); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-seen:
-	case <-time.After(daemonSettle):
-		t.Fatalf("%s was not delivered", sig)
-	}
 }
 
 // stopInTheBuild sends sig from a part of the start's build and holds the build daemonQuiet after it, long past the
@@ -364,24 +332,6 @@ func ownRoutes(t *testing.T) int {
 		}
 	}
 	return owned
-}
-
-// lockedLog keeps what a log writes from any goroutine
-type lockedLog struct {
-	mu   sync.Mutex
-	text strings.Builder
-}
-
-func (l *lockedLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.text.Write(p)
-}
-
-func (l *lockedLog) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.text.String()
 }
 
 // A refusal at each part of the start, the first and the last of them included, is logged as that part's, closes what the
@@ -658,24 +608,6 @@ func exited(t *testing.T, code <-chan int) int {
 		t.Error("the daemon did not return")
 		signalSelf(t, syscall.SIGTERM)
 		return <-code
-	}
-}
-
-// waitTill polls done until it holds, failing t after daemonSettle
-func waitTill(t *testing.T, what string, done func() bool) {
-	t.Helper()
-	waitWithin(t, what, daemonSettle, done)
-}
-
-// waitWithin polls done until it holds, failing t after within
-func waitWithin(t *testing.T, what string, within time.Duration, done func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s did not happen within %s", what, within)
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 

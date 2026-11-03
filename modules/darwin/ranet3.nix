@@ -6,7 +6,6 @@
 {
   config,
   lib,
-  options,
   ...
 }:
 
@@ -14,10 +13,6 @@ let
   cfg = config.networking.ranet3;
   ranet3 = lib.getExe cfg.package;
   socketfilterfw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
-  # read from priorities alone, so a configFile set by hand never forces the settings it replaces
-  generated = options.networking.ranet3.configFile.highestPrio == (lib.mkOptionDefault null).priority;
-  auth = cfg.settings.auth;
-  awaited = [ auth.key ] ++ lib.optional (auth ? trust) auth.trust;
 in
 {
   key = toString ./ranet3.nix;
@@ -34,32 +29,21 @@ in
       # group can enter, which is why nothing here makes the directory.
       # configFile is interpolated before it is quoted, since escapeShellArg
       # leaves a path literal naming the source tree rather than the store
-      script =
-        lib.optionalString generated ''
-          # a file that never comes ends the wait after 60 seconds and the daemon fails with its own message
-          seconds_to_wait=60
-          for file in ${lib.escapeShellArgs awaited}; do
-            [ -e "$file" ] || echo "ranet3: waiting for $file" >&2
-            until [ -e "$file" ] || [ "$SECONDS" -ge "$seconds_to_wait" ]; do
-              sleep 1
-            done
-          done
-        ''
-        + ''
-          exec ${
-            lib.escapeShellArgs (
-              [
-                ranet3
-                "daemon"
-                "--config"
-                "${cfg.configFile}"
-                "--log-level"
-                cfg.logLevel
-              ]
-              ++ cfg.extraArgs
-            )
-          }
-        '';
+      script = ''
+        exec ${
+          lib.escapeShellArgs (
+            [
+              ranet3
+              "daemon"
+              "--config"
+              "${cfg.configFile}"
+              "--log-level"
+              cfg.logLevel
+            ]
+            ++ cfg.extraArgs
+          )
+        }
+      '';
       serviceConfig = {
         RunAtLoad = true;
         KeepAlive = true;

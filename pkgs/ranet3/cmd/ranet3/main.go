@@ -106,11 +106,16 @@ The --contention-profiles flag adds mutex and blocking profiles while
 pprof is served, at a high cost in overhead.
 
 The daemon builds everything it can refuse before it runs any of it: the
-config, the pprof, metrics and control listeners, the tun, the state
-directory, the antispoof filter, the exit and the route reconciler. The
-tun, the node's sockets, the network watch and the parts' monitors start
-their own workers as they are built, and the antispoof filter writes its
-table, but nothing dials or serves before the build ends. A refusal, or
+config, the control, pprof and metrics listeners, the tun, the state
+directory, the antispoof filter, the exit and the route reconciler. Once it
+has read the config and bound the control socket, it waits for the files
+auth.key and auth.trust name to exist before it builds the rest, however
+long they take, and reads the config again at each look. Meanwhile the
+socket answers a reload with the config's refusal or success, and refuses
+every other command. The tun, the node's sockets, the network watch and the
+parts' monitors start their own workers as they are built, and the
+antispoof filter writes its table, but nothing dials, and nothing but the
+wait answers on the socket, before the build ends. A refusal, or
 SIGINT or SIGTERM before the build ends, undoes what was built and starts
 nothing: the antispoof filter's table goes where the start made it, and
 stays where an earlier instance left it, as the kill switch's does. The
@@ -225,13 +230,16 @@ func startDaemon(opts options, s stages) int {
 	returned, asked := make(chan struct{}), make(chan struct{})
 	defer close(returned)
 	go watchSignals(returned, signals.stop, func() { close(asked) }, s.force)
-	d, err := assemble(opts, s)
+	d, err := assemble(opts, s, asked)
 	if err != nil {
 		return refuseToStart(err)
 	}
 	select {
 	case <-asked:
-		slog.Info("stopping while the start builds, so it undoes what it built")
+		// a stop that ended the wait logged its own line, and the bus is the first part built past the wait
+		if d.bus != nil {
+			slog.Info("stopping while the start builds, so it undoes what it built")
+		}
 		if d.close() {
 			return 1
 		}
@@ -260,9 +268,9 @@ type daemon struct {
 // network watch and the parts' monitors, and the antispoof filter's first pass
 // writes its table. A refusal closes what was built, which stops and waits
 // for each of those workers. Nothing dials or serves before it returns.
-func assemble(opts options, s stages) (*daemon, error) {
+func assemble(opts options, s stages, asked <-chan struct{}) (*daemon, error) {
 	d := &daemon{opts: opts}
-	if err := d.build(s); err != nil {
+	if err := d.build(s, asked); err != nil {
 		d.close()
 		return nil, err
 	}
@@ -278,11 +286,22 @@ func assemble(opts options, s stages) (*daemon, error) {
 	return d, nil
 }
 
-// build makes each part of d in turn and stops at the first refusal
-func (d *daemon) build(s stages) (err error) {
+// build makes each part of d in turn and stops at the first refusal. A stop
+// while it waits for the key or the trust document leaves the rest unbuilt,
+// which the start then reads from asked.
+func (d *daemon) build(s stages, asked <-chan struct{}) (err error) {
 	if d.cfg, err = s.load(d.opts.configPath); err != nil {
 		return err
 	}
+	// before the wait, which answers on it
+	if d.control, err = bindControl(d.opts.controlPath); err != nil {
+		return err
+	}
+	waited, err := d.await(s.load, asked)
+	if !waited || err != nil {
+		return err
+	}
+	d.bus = events.New()
 	// an address an operator named that cannot be bound refuses the start
 	if d.opts.pprofAddr != "" {
 		if d.pprof, err = net.Listen("tcp", d.opts.pprofAddr); err != nil {
@@ -294,10 +313,6 @@ func (d *daemon) build(s stages) (err error) {
 			return fmt.Errorf("metrics: %w", err)
 		}
 	}
-	if d.control, err = bindControl(d.opts.controlPath); err != nil {
-		return err
-	}
-	d.bus = events.New()
 	if d.node, err = s.node(d.cfg, d.bus); err != nil {
 		return err
 	}
