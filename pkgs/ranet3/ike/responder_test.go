@@ -3261,8 +3261,38 @@ func testFailedInboundHandshakeIsSaidOncePerSource(t *testing.T) {
 	recordedAsWarned(2)
 }
 
+// an INVALID_KE_PAYLOAD answer and a message of an IKE SA this node does not hold are said at debug and recorded as no failure
+// and the source's next failure is still warned and recorded
+func TestNegotiationStepAndStrayDatagramSpendNoReport(t *testing.T) {
+	bubble.Run(testNegotiationStepAndStrayDatagramSpendNoReport)(t)
+}
+
+func testNegotiationStepAndStrayDatagramSpendNoReport(t *testing.T) {
+	for name, err := range map[string]error{
+		"INVALID_KE_PAYLOAD": &invalidKEError{DH_CURVE25519},
+		"stray request":      errStray,
+	} {
+		source := observedEndpoint(t, listenHub(t), 0x66)
+		var levels []slog.Level
+		logtest.SetDefault(t, slog.New(&levelRecorder{levels: &levels}))
+		r := newFailureRecorder()
+		failures := &recorder{}
+		r.cfg.Events = failures.record
+		r.noteHandshakeFailure(source, err)
+		if len(levels) != 1 || levels[0] != slog.LevelDebug || len(failures.recorded()) != 0 {
+			t.Errorf("%s: wrote %v and recorded %q, want one debug line and nothing recorded", name, levels, failures.recorded())
+		}
+		levels = nil
+		r.noteHandshakeFailure(source, errors.New("no registry entry"))
+		if len(levels) != 1 || levels[0] != slog.LevelWarn || len(failures.recorded()) != 1 {
+			t.Errorf("%s: the source's failure after it wrote %v and recorded %q, want one warn line recorded", name, levels, failures.recorded())
+		}
+	}
+}
+
 // RFC 7296 section 2.21.4: "If the message is marked as a response, the node ... MUST NOT respond."
 // the answer to a Delete whose exchange has ended reaches the responder this way, and it is no failed handshake
+// nor is a request of an IKE SA this node does not hold, which is stray
 func TestResponderDropsAResponseNoExchangeWaitsFor(t *testing.T) {
 	bubble.Run(testResponderDropsAResponseNoExchangeWaitsFor)(t)
 }
@@ -3290,19 +3320,79 @@ func testResponderDropsAResponseNoExchangeWaitsFor(t *testing.T) {
 		t.Fatalf("a response no exchange waits for was recorded as %d failed handshakes", n)
 	}
 
-	// the same datagram marked as a request is a failed handshake, so the record would have shown the response as one
+	// the same datagram marked as a request is stray, and no failed handshake either
 	header.Flags = FlagInitiator
 	send()
-	for deadline := time.Now().Add(answerBudget); recordedKind(failures, "ike.handshake.failed") == 0; time.Sleep(recordPoll) {
-		if time.Now().After(deadline) {
-			t.Fatal("a request no SA holds was not recorded as a failed handshake either")
-		}
-	}
 	// section 2.21.4 on a message marked as a request: "MAY send a response."
 	// this end sends none, which also holds it to section 1.5 on the message a node sends about a packet no SA of its own takes: "This message is not part of an INFORMATIONAL exchange, and the receiving node MUST NOT respond to it because doing so could cause a message loop."
 	_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
 	if _, _, err := peer.ReadFromUDP(make([]byte, 2048)); err == nil {
 		t.Error("the responder answered a request no SA holds")
+	}
+	if n := recordedKind(failures, "ike.handshake.failed"); n != 0 {
+		t.Fatalf("a stray request was recorded as %d failed handshakes", n)
+	}
+
+	// an IKE_SA_INIT request from the same source carrying nothing is a failed handshake, recorded since neither datagram before it spent the source's report
+	send = func() {
+		t.Helper()
+		empty := Header{SPIInitiator: randUint64Nonzero(), ExchangeType: IKE_SA_INIT, Flags: FlagInitiator}
+		if _, err := peer.WriteToUDP(withNonESPMarker(encodeTestMessage(t, empty, nil)), to); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send()
+	for deadline := time.Now().Add(answerBudget); recordedKind(failures, "ike.handshake.failed") == 0; time.Sleep(recordPoll) {
+		if time.Now().After(deadline) {
+			t.Fatal("an IKE_SA_INIT request carrying nothing after them was not recorded as a failed handshake")
+		}
+	}
+}
+
+// a request that names no IKE SA of version 2 is a failed handshake, as an initiator that cannot connect sends it, and not stray
+// it gets no answer, even one that carries IKE_SA_INIT's payloads under another exchange
+func TestRequestNamingNoIKEv2SAIsAFailedHandshake(t *testing.T) {
+	// RFC 2409 section 5: Main Mode is ISAKMP's Identity Protection exchange, type 2
+	const mainMode = ExchangeType(2)
+	header := func(h Header, version byte) func(*testing.T) []byte {
+		return func(t *testing.T) []byte {
+			raw := encodeTestMessage(t, h, nil)
+			raw[17] = version
+			return raw
+		}
+	}
+	for _, request := range []struct {
+		name string
+		raw  func(*testing.T) []byte
+	}{
+		{"an IKEv1 Main Mode request", header(Header{SPIInitiator: randUint64Nonzero(), ExchangeType: mainMode}, 0x10)},
+		{"an IKEv1 request naming an ISAKMP SA", header(Header{SPIInitiator: randUint64Nonzero(), SPIResponder: randUint64Nonzero(), ExchangeType: mainMode}, 0x10)},
+		// RFC 5723 section 4.3.1: IKE_SESSION_RESUME is exchange type 38, sent with a zero responder SPI
+		{"an IKE_SESSION_RESUME request", header(Header{SPIInitiator: randUint64Nonzero(), ExchangeType: 38, Flags: FlagInitiator}, 0x20)},
+		{"an IKE_SA_INIT request without the initiator flag", header(Header{SPIInitiator: randUint64Nonzero(), ExchangeType: IKE_SA_INIT}, 0x20)},
+		{"an IKE_AUTH request naming no IKE SA and carrying IKE_SA_INIT's payloads", func(t *testing.T) []byte {
+			raw, _ := buildTestSAInit(t)
+			raw[18] = byte(IKE_AUTH)
+			return raw
+		}},
+	} {
+		t.Run(request.name, bubble.Run(func(t *testing.T) {
+			failures := &recorder{}
+			h := newResponderHarness(t, nil, failures.record)
+			peer := listenPeer(t)
+			if _, err := peer.WriteToUDP(withNonESPMarker(request.raw(t)), &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: h.remotePort}); err != nil {
+				t.Fatal(err)
+			}
+			for deadline := time.Now().Add(answerBudget); recordedKind(failures, "ike.handshake.failed") == 0; time.Sleep(recordPoll) {
+				if time.Now().After(deadline) {
+					t.Fatalf("%s was not recorded as a failed handshake", request.name)
+				}
+			}
+			_ = peer.SetReadDeadline(time.Now().Add(quietPeriod))
+			if n, _, err := peer.ReadFromUDP(make([]byte, 4096)); err == nil {
+				t.Errorf("the responder answered %s with %d bytes", request.name, n)
+			}
+		}))
 	}
 }
 

@@ -221,7 +221,6 @@ func (r *Responder) Serve(ctx context.Context, onSession func(*Session, Accepted
 			running.Go(func() {
 				session, accepted, err := r.handshake(ctx, datagram)
 				if err != nil {
-					// warn rather than debug, since this is the whole responder side of a peer that cannot connect, and rate limited, since anyone who can reach the port can drive it
 					r.noteHandshakeFailure(datagram.Endpoint, err)
 					return
 				}
@@ -243,8 +242,13 @@ func (r *Responder) handshake(ctx context.Context, datagram transport.Unclaimed)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 
-	if header, err := decodeHeader(datagram.Raw); err == nil && higherVersion(r.cfg.Hub.SendIKETo, header, datagram.Endpoint) {
-		return nil, Accepted{}, fmt.Errorf("ike: unclaimed request at major version %d", header.MajorVersion)
+	if header, err := decodeHeader(datagram.Raw); err == nil {
+		if higherVersion(r.cfg.Hub.SendIKETo, header, datagram.Endpoint) {
+			return nil, Accepted{}, fmt.Errorf("ike: unclaimed request at major version %d", header.MajorVersion)
+		}
+		if header.MajorVersion == 2 && header.SPIResponder != 0 && header.ExchangeType != IKE_SA_INIT {
+			return nil, Accepted{}, errStray
+		}
 	}
 	request, err := DecodeMessage(datagram.Raw)
 	if err != nil {
@@ -816,7 +820,20 @@ func contentDigest(m *opened) ([sha256.Size]byte, error) {
 	return [sha256.Size]byte(digest.Sum(nil)), nil
 }
 
+// errStray is the end of a message of an IKE SA this node does not hold, such as a liveness check on one it no longer holds
+var errStray = errors.New("ike: unclaimed message of an IKE SA this node does not hold")
+
+// noteHandshakeFailure reports a handshake that failed at warn, since it is the whole responder side of a peer that cannot connect, and rate limited, since anyone who can reach the port can drive it
+// an answer naming the group to use is a step of the negotiation, and a message of an IKE SA this node does not hold is no handshake, so neither spends the source's report
 func (r *Responder) noteHandshakeFailure(endpoint transport.Endpoint, err error) {
+	if _, wrongGroup := errors.AsType[*invalidKEError](err); wrongGroup {
+		slog.Debug("ike responder asked an initiator for another group", "peer", endpoint, "err", err)
+		return
+	}
+	if errors.Is(err, errStray) {
+		slog.Debug("ike responder dropped a stray datagram", "peer", endpoint, "err", err)
+		return
+	}
 	if !r.failureIsDue(endpoint) {
 		slog.Debug("ike responder handshake failed", "peer", endpoint, "err", err)
 		return
