@@ -1188,17 +1188,12 @@ func (r *Reconciler) sampleCapture() {
 	}
 	open, changed := r.gate.sample(r.now(), r.rt.Sessions())
 	r.capture = open
-	if !changed {
-		return
+	// an opening is reported by applyRoutes, since an exit installs nothing the gate lets in
+	if changed && !open && r.capturing {
+		slog.Warn("kernel is withdrawing the routes that would carry this machine's own traffic",
+			"grace", r.table.CaptureGrace,
+			"detail", "no session has been live for that long, so this node falls back to its own uplink")
 	}
-	if open {
-		slog.Info("kernel is carrying this machine's own traffic over the mesh again",
-			"detail", "a session is live, so an announced default is installed")
-		return
-	}
-	slog.Warn("kernel is withdrawing the routes that would carry this machine's own traffic",
-		"grace", r.table.CaptureGrace,
-		"detail", "no session has been live for that long, so this node falls back to its own uplink")
 }
 
 // captureDeadline is when a pass has to run for the grace to expire on time,
@@ -1346,6 +1341,7 @@ func (r *Reconciler) applyRoutes(desired []Route) error {
 	// which desired answers alone: it already holds only the capturing routes
 	// this pass may install.
 	r.capturing = slices.ContainsFunc(desired, r.captures)
+	captured := slices.ContainsFunc(actual, r.captures)
 	covering, scopes := r.covers(), r.platformScopes()
 	scoped := func(route Route) bool { return route.Scoped || scopes != nil && scopes(route) }
 	// A member is withheld only for a route the kernel holds once the pass has
@@ -1484,6 +1480,9 @@ func (r *Reconciler) applyRoutes(desired []Route) error {
 			skipped++
 		}
 		delete(held, route)
+	}
+	if !captured && slices.ContainsFunc(heldRoutes(), r.captures) {
+		slog.Info("kernel is installing the routes that carry this machine's own traffic over the mesh")
 	}
 	// A route the platform refuses stays in the diff on purpose, because the
 	// install is retried on every pass until it lands, so a node holding one
@@ -1922,6 +1921,8 @@ func (r *Reconciler) withdraw(cause error) error {
 	r.reportExit(nil)
 	var errs []error
 	routes, err := r.plat.Routes()
+	// the capture stands where the listing failed or a capturing route's delete does
+	r.capturing = r.capturing && err != nil
 	if err != nil {
 		errs = append(errs, fmt.Errorf("list routes: %w", err))
 	}
@@ -1929,6 +1930,7 @@ func (r *Reconciler) withdraw(cause error) error {
 	for _, route := range routes {
 		if err := r.plat.DelRoute(route); err != nil {
 			errs = append(errs, fmt.Errorf("delete route %s: %w", route, err))
+			r.capturing = r.capturing || r.captures(route)
 		} else {
 			withdrawn++
 		}

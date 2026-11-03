@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -208,6 +209,163 @@ func TestReconcileInstallsAnAnnouncedDefaultOnlyWhileASessionIsLive(t *testing.T
 	}
 	if !fake.has(def) {
 		t.Fatal("the default was not restored by the next live session")
+	}
+}
+
+// The gate's opening and closing are logged only where they move a route that
+// carries this machine's traffic: a leaf that learns a default says it installs
+// it and withdraws it, once each, and an exit that announces its own default
+// says nothing, since it installs none.
+func TestCaptureIsLoggedOnlyWhereARouteCarriesTheMachine(t *testing.T) {
+	const (
+		installed = "kernel is installing the routes that carry this machine's own traffic over the mesh"
+		withdrawn = "kernel is withdrawing the routes that would carry this machine's own traffic"
+	)
+	for name, test := range map[string]struct {
+		source *netstack.Peer
+		want   int
+	}{
+		"a leaf learning a default": {nil, 1},
+		"an exit announcing one":    {netstack.Local, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			said := logged(t)
+			live := 0
+			reconciler, table, _ := harness(t,
+				Table{CaptureGrace: schema.Duration(10 * time.Second)},
+				Runtime{Sessions: func() int { return live }})
+			clock := start
+			reconciler.now = func() time.Time { return clock }
+			table.Set(netip.Prefix{}, prefix("::/0"), test.source)
+			for _, pass := range []struct {
+				at   time.Duration
+				live int
+			}{{0, 0}, {time.Second, 1}, {2 * time.Second, 1}, {13 * time.Second, 0}, {14 * time.Second, 0}} {
+				clock, live = start.Add(pass.at), pass.live
+				if err := reconciler.reconcile(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			text := said.String()
+			if got := strings.Count(text, installed); got != test.want {
+				t.Errorf("logged the install %d times, want %d:\n%s", got, test.want, text)
+			}
+			if got := strings.Count(text, withdrawn); got != test.want {
+				t.Errorf("logged the withdrawal %d times, want %d:\n%s", got, test.want, text)
+			}
+		})
+	}
+}
+
+// The install is logged from the routes a pass installed: again at the start
+// after a stop, not at an install the kernel refused, and at the pass after it
+// that lands. A gate that closes at the start after a stop logs no withdrawal
+// of the routes the stop removed.
+func TestCaptureIsLoggedFromWhatAPassInstalled(t *testing.T) {
+	const (
+		installed = "kernel is installing the routes that carry this machine's own traffic over the mesh"
+		withdrawn = "kernel is withdrawing the routes that would carry this machine's own traffic"
+	)
+	said := logged(t)
+	live := 0
+	reconciler, table, fake := harness(t,
+		Table{CaptureGrace: schema.Duration(10 * time.Second)},
+		Runtime{Sessions: func() int { return live }})
+	clock := start
+	reconciler.now = func() time.Time { return clock }
+	table.Set(netip.Prefix{}, prefix("::/0"), nil)
+	pass := func(at time.Duration, sessions int) {
+		t.Helper()
+		clock, live = start.Add(at), sessions
+		if err := reconciler.reconcile(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := func() {
+		t.Helper()
+		if err := reconciler.withdraw(nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pass(0, 1)
+	routes := fake.snapshot()
+	if len(routes) != 1 {
+		t.Fatalf("the first pass installed %v, want the default alone", routes)
+	}
+	stop()
+	pass(time.Second, 1)
+	stop()
+	pass(12*time.Second, 0)
+	fake.failAdd[routes[0]] = errRouteSkipped
+	pass(13*time.Second, 1)
+	delete(fake.failAdd, routes[0])
+	pass(14*time.Second, 1)
+	text := said.String()
+	if got := strings.Count(text, installed); got != 3 {
+		t.Errorf("logged the install %d times over an install, a stop and a start, a refused install and the one after it, want 3:\n%s", got, text)
+	}
+	if got := strings.Count(text, withdrawn); got != 0 {
+		t.Errorf("logged the withdrawal %d times with the gate closing only after a stop, want 0:\n%s", got, text)
+	}
+}
+
+// A stop that fails leaves the capture as the kernel holds it: where the
+// listing or the capturing route's delete fails, the start's pass under a gate
+// that has closed withdraws the route and logs that, and where only another
+// route's delete fails, it logs nothing.
+func TestCaptureWithdrawalIsLoggedForWhatAFailedStopLeft(t *testing.T) {
+	const withdrawn = "kernel is withdrawing the routes that would carry this machine's own traffic"
+	defaultRoute, other := prefix("::/0"), prefix("3fff:1::/48")
+	for name, test := range map[string]struct {
+		listing bool
+		failing netip.Prefix
+		want    int
+	}{
+		"the capturing route's delete fails": {failing: defaultRoute, want: 1},
+		"the listing fails":                  {listing: true, want: 1},
+		"another route's delete fails":       {failing: other},
+	} {
+		t.Run(name, func(t *testing.T) {
+			said := logged(t)
+			live := 1
+			reconciler, table, fake := harness(t,
+				Table{CaptureGrace: schema.Duration(10 * time.Second)},
+				Runtime{Sessions: func() int { return live }})
+			clock := start
+			reconciler.now = func() time.Time { return clock }
+			table.Set(netip.Prefix{}, defaultRoute, nil)
+			table.Set(netip.Prefix{}, other, nil)
+			if err := reconciler.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			routes := fake.snapshot()
+			if len(routes) != 2 {
+				t.Fatalf("the first pass installed %v, want the default and %s", routes, other)
+			}
+			if test.listing {
+				fake.failList = syscall.EBUSY
+			}
+			for _, route := range routes {
+				if route.Destination == test.failing {
+					fake.failDel[route] = syscall.EPERM
+				}
+			}
+			if err := reconciler.withdraw(nil); err == nil {
+				t.Fatal("the stop succeeded where it should fail")
+			}
+			fake.failList = nil
+			clear(fake.failDel)
+			clock, live = start.Add(12*time.Second), 0
+			if err := reconciler.reconcile(); err != nil {
+				t.Fatal(err)
+			}
+			if left := fake.snapshot(); slices.ContainsFunc(left, reconciler.captures) {
+				t.Fatalf("the start's pass with the gate closed left %v, want no capture", left)
+			}
+			if got := strings.Count(said.String(), withdrawn); got != test.want {
+				t.Errorf("logged the withdrawal %d times, want %d:\n%s", got, test.want, said.String())
+			}
+		})
 	}
 }
 
