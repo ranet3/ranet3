@@ -592,11 +592,6 @@ func notificationTable(message nlMessage) uint32 {
 // It exists because an install asks for the route exclusively and reports a key
 // another writer already holds rather than taking it over, so a second writer
 // in one table means routes the mesh wanted are silently not installed.
-// Everything else on a host keeps to its own table: Tailscale
-// uses 52, and BIRD on a ranet fleet node uses 200, which is exactly the table
-// this reconciler is pointed at during a migration. Reporting it is the
-// difference between a migration that looks fine and one that is visibly
-// sharing a table.
 func (p *netlinkPlatform) foreignWriters() ([]string, error) {
 	seen := map[uint8]bool{}
 	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
@@ -604,7 +599,7 @@ func (p *netlinkPlatform) foreignWriters() ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		collectForeignWriters(replies, uint32(p.table.ID), p.table.Proto, seen)
+		collectForeignWriters(replies, p.table.Proto, seen)
 	}
 	// Labeled here rather than by the caller, because rt_proto is a linux
 	// registry and kernel.go is the portable half. Returning the numbers bare
@@ -619,9 +614,7 @@ func (p *netlinkPlatform) foreignWriters() ([]string, error) {
 
 // protocolLabel names a routing protocol the way iproute2 prints it, from the
 // rt_protos registry, and falls back to the bare number for one nothing has
-// claimed. The one a fleet node meets in table 200 is bird, during a
-// migration. The kernel's own entries appear there only when a VRF is bound to
-// that table.
+// claimed.
 func protocolLabel(protocol uint8) string {
 	var name string
 	switch protocol {
@@ -665,24 +658,15 @@ func protocolLabel(protocol uint8) string {
 
 // collectForeignWriters is the filter half of foreignWriters, split out so the
 // rule can be tested without a netlink socket.
-// replies hold the routes of table alone
+// replies hold the routes of the reconciler's table alone
 // the kernel filtered the dump to it
-func collectForeignWriters(replies []nlMessage, table uint32, ours uint8, seen map[uint8]bool) {
+func collectForeignWriters(replies []nlMessage, ours uint8, seen map[uint8]bool) {
 	for _, reply := range replies {
 		if reply.Kind != unix.RTM_NEWROUTE || len(reply.Data) < unix.SizeofRtMsg {
 			continue
 		}
 		protocol, kind := reply.Data[5], reply.Data[7]
 		if kind != unix.RTN_UNICAST || protocol == ours {
-			continue
-		}
-		// RTPROT_KERNEL marks the kernel's own entries, and the main table
-		// holds them by construction, as the plumbing for the machine's
-		// addresses. Nothing is lost by leaving them out: an install asks for
-		// its key exclusively and never takes one of these over, and a key it
-		// is refused is reported on its own route. In any other table the same
-		// entries mean a VRF is bound there.
-		if protocol == unix.RTPROT_KERNEL && table == unix.RT_TABLE_MAIN {
 			continue
 		}
 		seen[protocol] = true

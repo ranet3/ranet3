@@ -288,9 +288,7 @@ func (t Table) Validate() error {
 		// 51820 reaches the kernel. Nothing else here would refuse a route in
 		// main, and an announced default is installed unscoped on linux, so
 		// the reconciler would put the whole machine's default out of the tun
-		// and take the ESP underlay with it. collectForeignWriters also leaves
-		// the kernel's own entries in main out of its report, and that report
-		// is the one warning that would have said so.
+		// and take the ESP underlay with it.
 		return fmt.Errorf("kernel: cap.table id %d is reserved, use anything else from 1 to %d", id, ^uint32(0))
 	}
 	for i, prefix := range t.Addresses {

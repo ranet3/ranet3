@@ -30,46 +30,31 @@ func routeReply(table uint32, protocol, kind uint8) nlMessage {
 
 // The report exists because an install asks for its key exclusively, so a
 // second writer in one table leaves the routes it holds uninstalled, and
-// nothing else says so before the first refusal. Everything else on a host
-// keeps to its own table, and BIRD on a fleet node uses 200, which is exactly
-// the table this reconciler is pointed at during a migration.
+// nothing else says so before the first refusal.
 func TestForeignWritersReportsOnlyOurOwnTable(t *testing.T) {
 	const ours = DefaultProtocol
 	for name, test := range map[string]struct {
-		table   uint32
 		replies []nlMessage
 		want    []uint8
 	}{
 		"another protocol in our table": {
-			table:   200,
 			replies: []nlMessage{routeReply(200, unix.RTPROT_BIRD, unix.RTN_UNICAST)},
 			want:    []uint8{unix.RTPROT_BIRD},
 		},
 		"our own routes are not foreign": {
-			table:   200,
 			replies: []nlMessage{routeReply(200, ours, unix.RTN_UNICAST)},
 		},
 		"a route that is not unicast is not a writer": {
-			table:   200,
 			replies: []nlMessage{routeReply(200, unix.RTPROT_BIRD, unix.RTN_LOCAL)},
 		},
-		// The kernel's own plumbing for the machine's addresses, which is not
-		// somebody else sharing the table.
-		"kernel routes in the main table are the kernel's own": {
-			table:   unix.RT_TABLE_MAIN,
-			replies: []nlMessage{routeReply(unix.RT_TABLE_MAIN, unix.RTPROT_KERNEL, unix.RTN_UNICAST)},
-		},
-		// A VRF bound to this table put them there, and an install must not
-		// share its keys with it.
-		"kernel routes in any other table belong to somebody": {
-			table:   200,
+		"the kernel's own routes in our table are a writer": {
 			replies: []nlMessage{routeReply(200, unix.RTPROT_KERNEL, unix.RTN_UNICAST)},
 			want:    []uint8{unix.RTPROT_KERNEL},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			seen := map[uint8]bool{}
-			collectForeignWriters(test.replies, test.table, ours, seen)
+			collectForeignWriters(test.replies, ours, seen)
 			got := slices.Sorted(maps.Keys(seen))
 			if !slices.Equal(got, test.want) {
 				t.Errorf("reported %v, want %v", got, test.want)
