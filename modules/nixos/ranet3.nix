@@ -68,6 +68,12 @@ in
     networking.dhcpcd.denyInterfaces = tunNames;
     networking.networkmanager.unmanaged = map (name: "interface-name:${name}") tunNames;
 
+    # networkd removes every policy rule it did not add, the reconciler's among them, whenever it configures a link, on a
+    # resume and on its own restart, which nixpkgs' wg-quick module stops for its rules the same way
+    systemd.network.config = lib.mkIf config.systemd.network.enable {
+      networkConfig.ManageForeignRoutingPolicyRules = lib.mkDefault false;
+    };
+
     networking.firewall.allowedUDPPorts = lib.mkIf cfg.openFirewall [ cfg.settings.link.port ];
 
     environment.etc.${etcName}.source = cfg.configFile;

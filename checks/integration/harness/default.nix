@@ -2524,10 +2524,10 @@ testers.runNixOSTest {
               peer.wait_for_open_port(8080)
               for machine in [client, peer]:
                   machine.wait_for_unit("tailscaled.service")
-              # networkd deletes every rule it did not ask for, Tailscale's among them, as it configures a link, and
-              # tailscaled logs that it restores them before it adds them again, so the journal is read from once
-              # networkd has configured the uplink and the tun and Tailscale's IPv4 rules are all in place, and once
-              # journald has written what it was sent, since the cursor is the last entry it has written
+              # the module keeps networkd off every rule it did not ask for, Tailscale's among them, and tailscaled logs
+              # that it restores rules another program deleted, so the journal is read from once networkd has
+              # configured the uplink and the tun and Tailscale's IPv4 rules are all in place, and once journald has
+              # written what it was sent, since the cursor is the last entry it has written
               try:
                   client.wait_until_succeeds(
                       "networkctl list --no-legend > /tmp/links"

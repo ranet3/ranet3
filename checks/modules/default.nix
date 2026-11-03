@@ -6,6 +6,7 @@
   lib,
   pkgs,
   runCommand,
+  stdenv,
   writeShellScript,
   writeShellScriptBin,
   writeText,
@@ -185,6 +186,34 @@ let
       fi
       ${step "postActivation"}
     '';
+
+  # a NixOS host running the module, with networkd on or off and what extra sets
+  host =
+    networkd: extra:
+    (inputs.nixpkgs.lib.nixosSystem {
+      modules = [
+        inputs.self.nixosModules.ranet3
+        {
+          nixpkgs.hostPlatform = stdenv.hostPlatform.system;
+          system.stateVersion = lib.trivial.release;
+          systemd.network.enable = networkd;
+          networking.ranet3 = {
+            enable = true;
+            inherit settings;
+          };
+        }
+        extra
+      ];
+    }).config;
+  # the networkd settings for foreign rules and routes a host ends with, which the build compares
+  foreign =
+    config:
+    builtins.toJSON (
+      lib.filterAttrs (
+        name: _: lib.hasPrefix "ManageForeign" name
+      ) config.systemd.network.config.networkConfig
+    );
+  withNetworkd = host true { };
 in
 runCommand "ranet3-modules"
   {
@@ -214,6 +243,14 @@ runCommand "ranet3-modules"
     secretsFirst = (darwinWith [ secrets ] { }).system.activationScripts.postActivation.text;
     secretsImportedAfter =
       (darwin { imports = [ secrets ]; }).system.activationScripts.postActivation.text;
+    networkdOn = foreign withNetworkd;
+    networkdOverridden = foreign (
+      host true {
+        systemd.network.config.networkConfig.ManageForeignRoutingPolicyRules = true;
+      }
+    );
+    networkdOff = foreign (host false { });
+    networkdConf = withNetworkd.environment.etc."systemd/networkd.conf".text;
     meta.platforms = lib.platforms.linux;
   }
   ''
@@ -314,6 +351,22 @@ runCommand "ranet3-modules"
     root A
     activate "the control socket moved" ${activation darwinMoved} B yes no 0 1 config-b
     holds "the reload with the control socket moved" "$(cat root/calls)" "ranet3 reload --control /var/run/ranet3/moved.sock"
+
+    # networkd <case> <settings> <want>
+    networkd() {
+      if [ "$2" != "$3" ]; then
+        echo "$1: networkd's foreign settings are $2, want $3" >&2
+        failed=1
+      fi
+    }
+    networkd "a host with networkd" "$networkdOn" '{"ManageForeignRoutingPolicyRules":false}'
+    networkd "a host that sets the rules true" "$networkdOverridden" '{"ManageForeignRoutingPolicyRules":true}'
+    networkd "a host without networkd" "$networkdOff" '{}'
+    if ! grep -q -x 'ManageForeignRoutingPolicyRules=false' <<< "$networkdConf"; then
+      echo "networkd.conf of a host with networkd reads:" >&2
+      echo "$networkdConf" >&2
+      failed=1
+    fi
     [ "$failed" = 0 ]
     touch "$out"
   ''
