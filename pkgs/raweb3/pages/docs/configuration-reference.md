@@ -100,8 +100,6 @@ nest the same names. A key not listed here is refused when the file loads.
   another node advertises, so only the overlay tells
   [the entry chain](antispoof.md#the-entry-chain) which `none` destinations to
   keep.
-- A `cap.border` block is refused at load with
-  `cap.border is refused: the prefixes the mesh numbers its nodes from are the top-level key overlay, and the filter is cap.antispoof, which runs wherever overlay is written and whose block only exempts`.
 
 ## `auth`
 

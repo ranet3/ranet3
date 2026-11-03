@@ -385,10 +385,6 @@ func decodeTOML(body []byte, c *Config) error {
 	if _, err := toml.Decode(string(body), &written); err != nil {
 		return err
 	}
-	capabilities, _ := written["cap"].(map[string]any)
-	if _, ok := capabilities["border"]; ok {
-		return errBorder
-	}
 	metadata, err := toml.Decode(string(body), c)
 	if err != nil {
 		return err
@@ -401,38 +397,6 @@ func decodeTOML(body []byte, c *Config) error {
 		return fmt.Errorf("unknown field %q", undecoded[0].String())
 	}
 	return exactKeys(written, reflect.TypeFor[Config](), "")
-}
-
-// errBorder refuses cap.border by the keys that hold what it held, where the strict decode would only call it unknown
-var errBorder = errors.New("cap.border is refused: the prefixes the mesh numbers its nodes from are the top-level key overlay, and the filter is cap.antispoof, which runs wherever overlay is written and whose block only exempts")
-
-// keyLine is the line a yaml document writes the key at path on, or 0 where it writes none or does not parse, which the strict decode then names
-// keys are read as the decoder reads them, through an alias and from a !!binary spelling
-func keyLine(body []byte, path ...string) int {
-	var document yaml.Node
-	if yaml.Unmarshal(body, &document) != nil || document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
-		return 0
-	}
-	node, line := document.Content[0], 0
-	for _, want := range path {
-		node = schema.Followed(node)
-		if node.Kind != yaml.MappingNode {
-			return 0
-		}
-		var next *yaml.Node
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			var name string
-			if node.Content[i].Decode(&name) == nil && name == want {
-				next, line = node.Content[i+1], node.Content[i].Line
-				break
-			}
-		}
-		if next == nil {
-			return 0
-		}
-		node = next
-	}
-	return line
 }
 
 // exactKeys refuses a key whose spelling differs from the field's tag in case
@@ -541,9 +505,6 @@ func decodesItselfTOML(t reflect.Type) bool {
 }
 
 func decodeYAML(body []byte, c *Config) error {
-	if line := keyLine(body, "cap", "border"); line != 0 {
-		return fmt.Errorf("line %d: %w", line, errBorder)
-	}
 	decoder := yaml.NewDecoder(strings.NewReader(string(body)))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(c); err != nil {

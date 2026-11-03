@@ -4,7 +4,6 @@
 package config
 
 import (
-	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -87,30 +86,6 @@ func TestOverlayAndAntispoofReadAlikeInEveryFormat(t *testing.T) {
 	}
 	if border := cfg.Border(); border != nil {
 		t.Errorf("a node writing no overlay read the filter's configuration %+v", border)
-	}
-}
-
-// cap.border is refused in every format by one message naming overlay and
-// cap.antispoof, whatever it holds
-func TestBorderIsRefusedNamingWhatHoldsIt(t *testing.T) {
-	for name, c := range map[string]struct{ extension, text string }{
-		"toml":             {".toml", nodeTOML + "[cap.border]\noverlay = [\"203.0.113.0/24\"]\n"},
-		"toml empty":       {".toml", nodeTOML + "[cap.border]\n"},
-		"toml beside both": {".toml", overlayTOML + nodeTOML + "[cap.border]\noverlay = [\"203.0.113.0/24\"]\n"},
-		"yaml":             {".yaml", nodeYAML + "cap:\n  border:\n    overlay: [203.0.113.0/24]\n"},
-		"json":             {".json", strings.Replace(egressExitJSON, `"cap": {`, `"cap": {"border": {"overlay": ["203.0.113.0/24"]},`, 1)},
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := load(t, c.extension, c.text)
-			if !errors.Is(err, errBorder) {
-				t.Errorf("cap.border was refused with %v, want %q", err, errBorder)
-			}
-		})
-	}
-	for _, says := range []string{"overlay", "cap.antispoof"} {
-		if !strings.Contains(errBorder.Error(), says) {
-			t.Errorf("the refusal %q does not name %s", errBorder, says)
-		}
 	}
 }
 
