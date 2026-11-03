@@ -61,7 +61,7 @@ func (c *Client) acceptPeers(ctx context.Context) (int, error) {
 			}
 			// losing to a session the other end also prefers is ordinary on a full mesh
 			if err != nil && !errors.Is(err, errSessionEstablished) && ctx.Err() == nil {
-				slog.Info(fmt.Sprintf("peer %s: %v", identity.Path(accepted.Peer, accepted.Local), err))
+				slog.Log(ctx, endLevel(err), fmt.Sprintf("peer %s: %v", identity.Path(accepted.Peer, accepted.Local), err))
 			}
 		})
 	})

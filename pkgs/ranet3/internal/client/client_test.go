@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"maps"
 	"net"
 	"net/http/httptest"
@@ -1684,7 +1685,7 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 	}
 
 	start := time.Now()
-	err = c.connectPeer(ctx, dialTo(t, cfg, cfg.Dial.To[0]))
+	err = c.connectPeer(ctx, dialTo(t, cfg, cfg.Dial.To[0]), slog.LevelInfo)
 	if !errors.Is(err, errSessionEstablished) {
 		t.Fatalf("the dialer reported %v, want the stand-down", err)
 	}
@@ -1727,7 +1728,7 @@ func TestDialerStandsDownBehindAPreferredSessionUntilItEnds(t *testing.T) {
 		t.Fatal("the session the gateway dialed was not adopted")
 	}
 	for range 3 {
-		if err := c.connectPeer(ctx, d); !errors.Is(err, errSessionEstablished) {
+		if err := c.connectPeer(ctx, d, slog.LevelInfo); !errors.Is(err, errSessionEstablished) {
 			t.Fatalf("the dialer reported %v behind the preferred session, want the stand-down", err)
 		}
 	}
@@ -1737,7 +1738,7 @@ func TestDialerStandsDownBehindAPreferredSessionUntilItEnds(t *testing.T) {
 	release()
 	dialing, stop := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer stop()
-	if err := c.connectPeer(dialing, d); errors.Is(err, errSessionEstablished) {
+	if err := c.connectPeer(dialing, d, slog.LevelInfo); errors.Is(err, errSessionEstablished) {
 		t.Fatal("the dialer stood down once the preferred session ended")
 	}
 	if attempts := recorded(c.events, "dial.attempt"); len(attempts) != 1 {

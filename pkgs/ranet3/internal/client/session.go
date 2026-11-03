@@ -32,6 +32,7 @@ import (
 // the babel registration goes in under the same decision
 // it returns errSessionEstablished when another session already holds the path
 // and that is not a failure
+// any other end it returns as a *servedEnd
 func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.ChildSA, local, remote identity.Identity, key ed25519.PublicKey, dialed bool) error {
 	defer sess.Mux().Close()
 	sessionName := identity.Path(remote, local)
@@ -62,7 +63,7 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.
 	tunnel.failed = sess.ChildFailed
 	if err := tunnel.install(child); err != nil {
 		c.sessions.close(sess)
-		return err
+		return &servedEnd{err: err}
 	}
 	sess.SetChildHandler(tunnel.install)
 	sess.SetChildRetireHandler(tunnel.retire)
@@ -108,8 +109,18 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.
 	// with what its established event carried
 	// so a reader pairs the two across a replacement
 	c.events.Emit("ike.session.ended", sessionName, append(established, slog.String("err", ended.Error()))...)
-	return ended
+	return &servedEnd{err: ended, held: true}
 }
+
+// servedEnd is how a session serveSession ran ended, held saying it had held its path
+// the end of one that held it is the session's ordinary end, and one that ended before is a failure
+type servedEnd struct {
+	err  error
+	held bool
+}
+
+func (e *servedEnd) Error() string { return e.err.Error() }
+func (e *servedEnd) Unwrap() error { return e.err }
 
 // inboundEmit is the emit of the session at path, which receiveESP calls on one goroutine with each batch of results in receive order
 // beside the outer ECN field of each, nil when every one arrived Not-ECT

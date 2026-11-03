@@ -5,6 +5,7 @@
 package client
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
@@ -31,7 +33,19 @@ func (c *Client) reconnectDelay() time.Duration {
 	return defaultReconnectDelay
 }
 
-// runPeer dials d again whenever its session ends, at once when wake fires and otherwise after the reconnect delay
+// unroutedDelay is the wait after a dial that ended because the host had no route for it, and zero for any other end
+func (c *Client) unroutedDelay(err error, last time.Duration) time.Duration {
+	if !errors.Is(err, syscall.ENETUNREACH) {
+		return 0
+	}
+	if last == 0 {
+		return c.reconnectDelay()
+	}
+	return min(2*last, max(unroutedDelayCap, c.reconnectDelay()))
+}
+
+// runPeer dials d again whenever its session ends, at once when wake fires and otherwise after the reconnect delay, or after unroutedDelay where the host had no route for the dial
+// a dial after one that failed is said at debug, since only a change of outcome tells an operator anything
 func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 	x := c.index()
 	if _, err := x.Key(d.peer.Node()); err != nil {
@@ -61,6 +75,7 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		return
 	}
 	var failure repeatedFailure
+	var unrouted time.Duration
 	for {
 		if ctx.Err() != nil {
 			return
@@ -70,31 +85,42 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 			slog.Info(fmt.Sprintf("peer %s: no longer in the registry, giving up", d.path))
 			return
 		}
-		err := c.connectPeer(ctx, d)
+		// a dial is said at info until a failure is said, and again once a session has held the path
+		level := slog.LevelDebug
+		if failure.said.IsZero() {
+			level = slog.LevelInfo
+		}
+		err := c.connectPeer(ctx, d, level)
 		if ctx.Err() != nil || c.stopping() {
 			return
 		}
+		end, _ := errors.AsType[*servedEnd](err)
+		held := end != nil && end.held
+		// a session another end opened holds the path, and this dialer takes over once it ends
+		standing := errors.Is(err, errSessionEstablished)
+		if held || standing {
+			failure = repeatedFailure{}
+		}
+		unrouted = c.unroutedDelay(err, unrouted)
+		wait := cmp.Or(unrouted, c.reconnectDelay())
 		switch {
-		case err == nil:
-		case errors.Is(err, errSessionEstablished):
-			// not a failure
-			// this dialer takes over once the peer's session ends
 		case errors.Is(err, ike.ErrPRFUnlisted):
 			// the session deleted its IKE SA for a new handshake under the lists in force
 			// and the new handshake goes out at once
 			slog.Info(fmt.Sprintf("peer %s: %v, dialing again now", d.path, err))
 			continue
-		case failure.alreadySaid(err):
+		case standing:
+		case !held && failure.alreadySaid(err):
 			slog.Debug("peer dial failed again", "peer", d.path, "err", err)
 		default:
-			slog.Info(fmt.Sprintf("peer %s: %v, reconnecting in %s", d.path, err, c.reconnectDelay()))
+			slog.Log(ctx, endLevel(err), fmt.Sprintf("peer %s: %v, reconnecting in %s", d.path, err, wait))
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-wake:
 			c.events.Emit("dial.woken", d.path)
-		case <-time.After(c.reconnectDelay()):
+		case <-time.After(wait):
 		}
 	}
 }
@@ -187,8 +213,8 @@ func (n *names) list() []string {
 	return slices.Sorted(maps.Keys(n.set))
 }
 
-// connectPeer dials d once and serves the session until it ends
-func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
+// connectPeer dials d once, saying so at level, and serves the session until it ends
+func (c *Client) connectPeer(ctx context.Context, d dial, level slog.Level) (err error) {
 	// events go under the dialer's path until the endpoint resolves and under the session's after
 	path := d.path
 	established := false
@@ -215,8 +241,9 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 		// a second SA over this pair of endpoints would only be resolved away
 		return errSessionEstablished
 	}
-	slog.Info(fmt.Sprintf("peer %s: dialing %s:%d", sessionName, remoteIP, ep.Port))
-	c.events.Emit("dial.attempt", sessionName, slog.String("remote", net.JoinHostPort(remoteIP.String(), strconv.Itoa(int(ep.Port)))))
+	remote := net.JoinHostPort(remoteIP.String(), strconv.Itoa(int(ep.Port)))
+	slog.Log(ctx, level, fmt.Sprintf("peer %s: dialing %s", sessionName, remote))
+	c.events.Emit("dial.attempt", sessionName, slog.String("remote", remote))
 
 	ikeCfg := ike.PeerConfig{
 		Local:           d.localID,
@@ -238,6 +265,14 @@ func (c *Client) connectPeer(ctx context.Context, d dial) (err error) {
 	}
 	established = true
 	return c.serveSession(ctx, sess, sess.Child(), d.localID, ep.ID, remotePub, true)
+}
+
+// endLevel is the level a session's or a dial's end err is said at, warn for a session that ended before it held its path and info for any other
+func endLevel(err error) slog.Level {
+	if end, _ := errors.AsType[*servedEnd](err); end != nil && !end.held {
+		return slog.LevelWarn
+	}
+	return slog.LevelInfo
 }
 
 // errSessionEstablished means this peer is already reachable over a session

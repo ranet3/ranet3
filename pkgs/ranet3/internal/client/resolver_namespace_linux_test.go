@@ -7,6 +7,7 @@ package client
 
 import (
 	"context"
+	"log/slog"
 	"net/netip"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func TestEndpointQueryFollowsTheOverlayInForceAcrossReloads(t *testing.T) {
 			{"after a reload naming the overlay again", &inside, 0},
 		} {
 			c.cfg.Store(step.cfg)
-			err := c.connectPeer(ctx, d)
+			err := c.connectPeer(ctx, d, slog.LevelInfo)
 			queries := nameserver.Take()
 			if len(queries) != len(nameservers) {
 				t.Errorf("dialing %s %s: %d queries reached the %d nameservers, want 1 each: %v, dial %v", peer, step.name, len(queries), len(nameservers), queries, err)

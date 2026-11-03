@@ -14,6 +14,8 @@ const espDropReportInterval = 10 * time.Second
 const (
 	// defaultReconnectDelay is how long a dialer waits between attempts unless a test shortens it
 	defaultReconnectDelay = 10 * time.Second
+	// a wake of the network watch cuts unroutedDelay's wait short, and unroutedDelayCap bounds how late a dialer finds a route the watch does not follow
+	unroutedDelayCap = time.Minute
 	// dialFailureInterval is how long a dialer keeps a failure it already reported at debug
 	// one name that never resolves would otherwise say so every reconnect delay
 	dialFailureInterval = 10 * time.Minute

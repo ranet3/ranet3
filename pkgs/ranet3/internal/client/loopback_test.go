@@ -550,8 +550,13 @@ func TestRefusedFirstChildSADeletesTheIKESA(t *testing.T) {
 	sess, local, remote, key := dialOnce(t, ctx, alpha, nil)
 	child := sess.Child()
 	child.EncrID = 0
-	if err := alpha.client.serveSession(ctx, sess, child, local, remote, key, true); err == nil {
+	err := alpha.client.serveSession(ctx, sess, child, local, remote, key, true)
+	if err == nil {
 		t.Fatal("alpha served a session whose Child SA its tunnel could not install")
+	}
+	// a session that ended before it held its path is a failure of this node's
+	if level := endLevel(err); level != slog.LevelWarn {
+		t.Errorf("alpha's session ended with %v, said at %v, want warn", err, level)
 	}
 	waitFor(t, refusedChildDeleteBudget, "alpha's Delete to end bravo's session", func() bool { return len(recorded(bravo.events, "ike.session.ended")) > 0 })
 }
