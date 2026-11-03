@@ -40,6 +40,10 @@ const (
 	EntryDrop
 )
 
+// entryLinkLocal is the IPv6 link-local and multicast destinations the entry
+// chain lets into the tun from any source
+var entryLinkLocal = []netip.Prefix{netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8")}
+
 // BorderRule is one rule of the table. The backend writes String as the rule's
 // comment, which names the line in a readback.
 type BorderRule struct {
@@ -220,8 +224,9 @@ type borderBackend interface {
 	// table, the sets filled with sets, and the chains holding rules
 	Apply(rules []BorderRule, sets borderSets) error
 	// Fill moves each set sets names from the ranges was gives it, which the
-	// table holds, to those sets gives it, in one transaction that sends the
-	// ranges that differ alone and leaves the chains as they are
+	// table holds, to those sets gives it, in one transaction that leaves the
+	// chains as they are. nftables sends the ranges that differ alone, and pf
+	// sends both its tables whole.
 	Fill(was, sets borderSets) error
 	// Withdraw removes the filter's table and reports whether it removed one,
 	// a table already gone being success
@@ -236,11 +241,21 @@ type borderBackend interface {
 	// the run goroutine
 	Read() (chainReadback, error)
 	Close() error
+	// where names what the backend writes for cfg, nil where overlay is not
+	// written
+	where(cfg *egress.Border) string
+	// writes reports whether the backend writes a rule of class as a rule of
+	// its own. A class it does not write it folds into the rules it does.
+	writes(class BorderClass) bool
+	// chain is chain's heading in a debug read, its rules left empty
+	chain(name string) egress.BorderChainReading
+	// readings is sets as the backend names and holds them
+	readings(sets borderSets) []egress.BorderSetReading
 }
 
-// BorderFilter owns the table inet ranet3 on one node: its antispoof chain
-// where overlay is written, its entry chain, their sets, the readback and the
-// readiness
+// BorderFilter owns the antispoof filter on one node, as its backend writes it:
+// its antispoof chain where overlay is written, its entry chain, their sets,
+// the readback and the readiness
 type BorderFilter struct {
 	rt    egress.BorderRuntime
 	be    borderBackend
@@ -290,7 +305,7 @@ func NewBorderFilter(cfg *egress.Border, rt egress.BorderRuntime) (*BorderFilter
 	if rt.Tun == "" {
 		return nil, errors.New("egress: the entry chain needs the mesh's tun")
 	}
-	be, err := newBorderBackend()
+	be, err := newBorderBackend(rt)
 	if err != nil || be == nil {
 		return nil, err
 	}
@@ -328,7 +343,7 @@ func (f *BorderFilter) Close() error {
 
 // newBorderFilter is a filter over a backend that is already open, before its first pass
 func newBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBackend) *BorderFilter {
-	f := &BorderFilter{rt: rt, be: be, sweep: egress.DefaultSweep, wake: make(chan struct{}, 1), trigger: "start"}
+	f := &BorderFilter{rt: rt, be: be, sweep: borderSweep, wake: make(chan struct{}, 1), trigger: "start"}
 	f.config.Store(cfg)
 	f.finish = sync.OnceValue(func() error {
 		f.setReady(false, "the antispoof filter is stopping")
@@ -370,12 +385,13 @@ func (f *BorderFilter) Capability() egress.Border {
 
 func (f *BorderFilter) Inside() []string { return slices.Clone(f.rt.Inside) }
 
-// Where names the table and the chains the filter owns
+// AntispoofRuns reports whether the backend writes the antispoof chain, which
+// it then writes wherever overlay is
+func (f *BorderFilter) AntispoofRuns() bool { return f.be.writes(BorderSource) }
+
+// Where names what the filter owns, as its backend writes it
 func (f *BorderFilter) Where() string {
-	if f.config.Load() == nil {
-		return fmt.Sprintf("nftables table inet %s chain %s", TableName, EntryChain)
-	}
-	return fmt.Sprintf("nftables table inet %s chains %s and %s", TableName, BorderChain, EntryChain)
+	return f.be.where(f.config.Load())
 }
 
 func (f *BorderFilter) Stats() egress.BorderStats {
@@ -430,12 +446,13 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 	}
 }
 
-// desired is the table the configuration and the sets ask for: the rules in
-// the order a packet meets them, the antispoof chain's ahead of the entry
-// chain's, the sets, and the carve-outs the antispoof chain accepts with the
-// exemptions' conflicts, neither where overlay is not written. The carved
-// drops come ahead of every accept by source, so neither a carve-out nor an
-// exemption lets in a source the carved sets hold.
+// desired is the table the configuration and the sets ask for: the rules the
+// backend writes as rules of their own in the order a packet meets them, the
+// antispoof chain's ahead of the entry chain's, the sets, and the carve-outs
+// the antispoof chain accepts with the exemptions' conflicts, neither where
+// overlay is not written and no conflict where the antispoof chain runs
+// nowhere. The carved drops come ahead of every accept by source, so neither
+// a carve-out nor an exemption lets in a source the carved sets hold.
 func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 	// the sets and the rules read one configuration, so no pass carves from two
 	cfg := f.config.Load()
@@ -449,7 +466,11 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 		for _, device := range f.rt.Inside {
 			rules = append(rules, BorderRule{Class: BorderInside, Device: device})
 		}
-		reported = egress.BorderSets{CarveOuts: derived.CarveOuts, Conflicts: derived.Conflicts}
+		reported.CarveOuts = derived.CarveOuts
+		// a conflict names a drop of the antispoof chain, which a backend that does not write the chain runs nowhere
+		if f.AntispoofRuns() {
+			reported.Conflicts = derived.Conflicts
+		}
 		carveOuts := derived.CarveOuts
 		// a family Carved gives no prefix of holds an empty carved set, so its drop is left out
 		carved := cfg.Carved(carveOuts)
@@ -468,15 +489,14 @@ func (f *BorderFilter) desired() ([]BorderRule, borderSets, egress.BorderSets) {
 			rules = append(rules, BorderRule{Class: BorderSource, Source: prefix.Prefix, IPv6: prefix.Addr().Is6()})
 		}
 	}
-	rules = append(rules,
-		BorderRule{Class: EntryOutside, Device: f.rt.Tun},
-		BorderRule{Class: EntryReply},
-		BorderRule{Class: EntryLinkLocal, Destination: netip.MustParsePrefix("fe80::/10"), IPv6: true},
-		BorderRule{Class: EntryLinkLocal, Destination: netip.MustParsePrefix("ff00::/8"), IPv6: true},
-	)
+	rules = append(rules, BorderRule{Class: EntryOutside, Device: f.rt.Tun}, BorderRule{Class: EntryReply})
+	for _, destination := range entryLinkLocal {
+		rules = append(rules, BorderRule{Class: EntryLinkLocal, Destination: destination, IPv6: true})
+	}
 	for _, class := range []BorderClass{EntryOwned, EntryNone, EntryDrop} {
 		rules = append(rules, BorderRule{Class: class}, BorderRule{Class: class, IPv6: true})
 	}
+	rules = slices.DeleteFunc(rules, func(rule BorderRule) bool { return !f.be.writes(rule.Class) })
 	sets := borderSets{}
 	for _, one := range []struct {
 		name   string
@@ -550,6 +570,8 @@ func (f *BorderFilter) reconcile() error {
 		f.setReady(false, "a pass failed: "+err.Error())
 	case read.fault != "":
 		f.setReady(false, read.fault)
+	case read.unready != "":
+		f.setReady(false, read.unready)
 	default:
 		f.setReady(true, "")
 	}
@@ -557,7 +579,7 @@ func (f *BorderFilter) reconcile() error {
 	if f.ready {
 		f.last = rules
 	}
-	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, CarveOuts: carveOuts, Sets: sets.readings()}
+	stats := egress.BorderStats{At: time.Now(), Ready: f.ready, Unready: f.unready, Installed: len(installed), Dropped: f.dropped, CarveOuts: carveOuts, Sets: f.be.readings(sets)}
 	if err != nil {
 		stats.Err = err.Error()
 	} else {
@@ -697,11 +719,7 @@ func (f *BorderFilter) Debug() egress.BorderDebug {
 	rules, _, _ := f.desired()
 	for _, rule := range rules {
 		if len(out.Chains) == 0 || out.Chains[len(out.Chains)-1].Name != rule.Chain() {
-			chain := egress.BorderChainReading{Name: BorderChain, Hook: "prerouting", Priority: rawPriority}
-			if rule.Chain() == EntryChain {
-				chain = egress.BorderChainReading{Name: EntryChain, Hook: "postrouting", Priority: entryPriority}
-			}
-			out.Chains = append(out.Chains, chain)
+			out.Chains = append(out.Chains, f.be.chain(rule.Chain()))
 		}
 		reading, ok := readings[rule.String()]
 		delete(readings, rule.String())

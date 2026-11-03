@@ -466,9 +466,12 @@ type chainReadback struct {
 	// rules is every rule of the family's chains in order, the chains in the
 	// order desired writes them, one carrying no comment as an empty spec,
 	// which no rule this package writes has
-	rules  []Installed
-	fault  string
-	remake bool
+	rules []Installed
+	fault string
+	// unready says why the filter is not ready where its own rules read back
+	// as written, which a rewrite would not change
+	unready string
+	remake  bool
 	// held is whether the table is there at all, which the antispoof filter's
 	// readback alone sets
 	held bool

@@ -56,6 +56,12 @@ type fakeBorder struct {
 	missed chan struct{}
 	// log records each listing, apply and withdrawal in order
 	log []string
+	// only is the classes the host writes as rules of their own, every class
+	// where it is nil
+	only []BorderClass
+	// unready is the reason a readback gives for the host not being ready
+	// beside its rules, which no rewrite changes
+	unready string
 }
 
 func (f *fakeBorder) entries() []string {
@@ -72,7 +78,7 @@ func (f *fakeBorder) readback(rules []BorderRule, sets borderSets) chainReadback
 		out[i].Packets = f.counts[out[i].Spec]
 	}
 	// a table read back with no rule and no fault is one nobody wrote
-	read := chainReadback{rules: out, fault: f.fault, held: len(f.held) != 0 || f.fault != ""}
+	read := chainReadback{rules: out, fault: f.fault, unready: f.unready, held: len(f.held) != 0 || f.fault != ""}
 	if name := slices.Sorted(maps.Keys(sets.changed(f.sets))); sets != nil && read.fault == "" && len(name) > 0 {
 		read.fault = "its set " + name[0] + " holds other elements"
 	}
@@ -162,6 +168,28 @@ func (f *fakeBorder) Changed() <-chan struct{} { return f.changed }
 func (f *fakeBorder) Missed() <-chan struct{} { return f.missed }
 
 func (f *fakeBorder) Close() error { return nil }
+
+// where, chain and readings read as the linux backend's
+func (f *fakeBorder) where(cfg *egress.Border) string {
+	if cfg == nil {
+		return "nftables table inet ranet3 chain mesh_entry"
+	}
+	return "nftables table inet ranet3 chains antispoof and mesh_entry"
+}
+
+func (f *fakeBorder) writes(class BorderClass) bool {
+	return f.only == nil || slices.Contains(f.only, class)
+}
+
+func (f *fakeBorder) chain(name string) egress.BorderChainReading {
+	hook, priority := "prerouting", -300
+	if name == EntryChain {
+		hook, priority = "postrouting", 110
+	}
+	return egress.BorderChainReading{Name: name, Hook: hook, Priority: &priority}
+}
+
+func (f *fakeBorder) readings(sets borderSets) []egress.BorderSetReading { return sets.readings() }
 
 // allSpecs is both chains' rules as held
 func (f *fakeBorder) allSpecs() []string {
@@ -1132,7 +1160,11 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 	}
 	var got []string
 	for _, chain := range debug.Chains {
-		got = append(got, fmt.Sprintf("chain %s %s %d", chain.Name, chain.Hook, chain.Priority))
+		priority := "none"
+		if chain.Priority != nil {
+			priority = fmt.Sprint(*chain.Priority)
+		}
+		got = append(got, fmt.Sprintf("chain %s %s %s", chain.Name, chain.Hook, priority))
 		for _, rule := range chain.Rules {
 			got = append(got, fmt.Sprintf("%s|%s|%s|%s|%v|%d", rule.Spec, rule.Verdict, rule.Reason, rule.Family, rule.Held, rule.Packets))
 		}
@@ -1157,12 +1189,81 @@ func TestBorderDebugReadsTheChainBesideTheDesiredOne(t *testing.T) {
 		"return ipv6 to @none6|return|none|ipv6|true|0",
 		"drop ipv4 entering the mesh|drop|mesh_entry|ipv4|true|0",
 		"drop ipv6 entering the mesh|drop|mesh_entry|ipv6|true|0",
-		"chain   0",
+		"chain   none",
 		"drop ipv4 source 192.0.2.0/24|drop|||true|0",
 		"a rule with no comment||||true|3",
 		"set carved4 []", "set carved6 []", "set none4 []", "set none6 []", "set owned4 []", "set owned6 []",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("the debug read lists\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A backend that writes the entry chain's drops alone holds those two rules,
+// which status and debug list alone, reports the carve-outs and no
+// exemption's conflict, since no drop of the antispoof chain runs, and heads
+// the debug read's chain as it says
+func TestBorderListsOnlyTheRulesItsBackendWrites(t *testing.T) {
+	bus := events.New()
+	p := netip.MustParsePrefix
+	lease := egress.CarveOut{Link: "eth0", Prefix: p("198.18.0.0/24")}
+	conflict := egress.ExemptConflict{Exemption: egress.Exemption{Prefix: p("198.18.0.0/25")}, Prefix: p("198.18.0.64/28"), Carved: p("198.18.0.64/28"), Via: "example/peer"}
+	rt := borderRuntime(bus)
+	rt.Sets = func(*egress.Border) egress.BorderSets {
+		return egress.BorderSets{CarveOuts: []egress.CarveOut{lease}, Conflicts: []egress.ExemptConflict{conflict}}
+	}
+	be := &fakeBorder{only: []BorderClass{EntryDrop}}
+	f, err := startBorderFilter(overlay(t), rt, be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"drop ipv4 entering the mesh", "drop ipv6 entering the mesh"}; !slices.Equal(be.allSpecs(), want) {
+		t.Errorf("the backend holds %q, want %q", be.allSpecs(), want)
+	}
+	if f.AntispoofRuns() {
+		t.Error("a backend writing no antispoof rule reads as running the chain")
+	}
+	if got := f.Stats(); !got.Ready || got.Installed != 2 || !slices.Equal(got.CarveOuts, []egress.CarveOut{lease}) {
+		t.Errorf("the status reads %+v, want ready with two rules and the carve-out", got)
+	}
+	if n := len(bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.conflict" }, 0)); n != 0 {
+		t.Errorf("recorded %d antispoof.conflict, want none", n)
+	}
+	if n := len(bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "antispoof.carve" }, 0)); n != 1 {
+		t.Errorf("recorded %d antispoof.carve, want one", n)
+	}
+	debug := f.Debug()
+	if len(debug.Chains) != 1 || debug.Chains[0].Name != EntryChain || debug.Chains[0].Hook != "postrouting" || len(debug.Chains[0].Rules) != 2 {
+		t.Errorf("the debug read lists %+v, want the entry chain's two drops", debug.Chains)
+	}
+}
+
+// A readback whose rules read as written and which says the filter is not
+// ready otherwise holds the filter not ready with its reason, and is never a
+// reason to rewrite
+func TestBorderNotReadyBesideItsRulesRewritesNothing(t *testing.T) {
+	be := &fakeBorder{}
+	f, err := startBorderFilter(overlay(t), borderRuntime(nil), be)
+	if err != nil {
+		t.Fatal(err)
+	}
+	be.mu.Lock()
+	be.unready = "the host has stopped its filter"
+	be.mu.Unlock()
+	f.trigger = "sweep"
+	if err := f.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.Stats(); got.Ready || got.Unready != "the host has stopped its filter" {
+		t.Errorf("the status reads ready %v, unready %q", got.Ready, got.Unready)
+	}
+	if be.applied != 1 {
+		t.Errorf("the pass applied %d times, want only the start's", be.applied)
+	}
+	be.mu.Lock()
+	be.unready = ""
+	be.mu.Unlock()
+	if err := f.reconcile(); err != nil || !f.Stats().Ready {
+		t.Errorf("the pass after reads ready %v (%v)", f.Stats().Ready, err)
 	}
 }

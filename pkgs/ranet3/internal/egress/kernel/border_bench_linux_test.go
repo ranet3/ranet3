@@ -151,7 +151,7 @@ func netInterfaceIndex(name string) (int, error) {
 // write starts an antispoof filter over cfg and sets, withdrawn when the benchmark ends
 func (h *benchHost) write(b *testing.B, cfg *egress.Border, sets egress.BorderSets) *BorderFilter {
 	b.Helper()
-	be, err := newBorderBackend()
+	be, err := newBorderBackend(egress.BorderRuntime{})
 	if err != nil {
 		b.Fatal(err)
 	}

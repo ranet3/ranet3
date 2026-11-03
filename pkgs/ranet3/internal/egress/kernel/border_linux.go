@@ -25,7 +25,7 @@ type borderTable struct {
 	monitor *nftables.Monitor
 }
 
-func newBorderBackend() (borderBackend, error) {
+func newBorderBackend(egress.BorderRuntime) (borderBackend, error) {
 	conn, err := nftables.Dial()
 	if err != nil {
 		return nil, err
@@ -43,6 +43,26 @@ func (b *borderTable) Close() error { return errors.Join(b.monitor.Close(), b.co
 func (b *borderTable) Changed() <-chan struct{} { return b.monitor.Changed() }
 
 func (b *borderTable) Missed() <-chan struct{} { return b.monitor.Missed() }
+
+func (b *borderTable) where(cfg *egress.Border) string {
+	if cfg == nil {
+		return fmt.Sprintf("nftables table inet %s chain %s", TableName, EntryChain)
+	}
+	return fmt.Sprintf("nftables table inet %s chains %s and %s", TableName, BorderChain, EntryChain)
+}
+
+// writes every class, each a line of its chain
+func (b *borderTable) writes(BorderClass) bool { return true }
+
+func (b *borderTable) chain(name string) egress.BorderChainReading {
+	hook, priority := "prerouting", rawPriority
+	if name == EntryChain {
+		hook, priority = "postrouting", entryPriority
+	}
+	return egress.BorderChainReading{Name: name, Hook: hook, Priority: &priority}
+}
+
+func (b *borderTable) readings(sets borderSets) []egress.BorderSetReading { return sets.readings() }
 
 func (b *borderTable) Rules(rules []BorderRule, sets borderSets) (chainReadback, error) {
 	return readBorder(b.conn, rules, sets)

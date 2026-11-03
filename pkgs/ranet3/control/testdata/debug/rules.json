@@ -320,7 +320,6 @@
         ]
       },
       {
-        "priority": 0,
         "rules": [
           {
             "spec": "a rule with no comment",

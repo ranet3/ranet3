@@ -167,13 +167,13 @@ type BorderTable struct {
 	Err     string        `json:"err,omitempty"`
 }
 
-// BorderChain is one chain of the table, its hook, its priority and its
-// rules. One with no name holds the rules the table holds that the filter
-// does not ask for.
+// BorderChain is one chain of the table, its hook, its priority where the
+// backend orders chains by one, and its rules. One with no name holds the
+// rules the table holds that the filter does not ask for.
 type BorderChain struct {
 	Name     string            `json:"name,omitempty"`
 	Hook     string            `json:"hook,omitempty"`
-	Priority int               `json:"priority"`
+	Priority *int              `json:"priority,omitempty"`
 	Rules    []BorderChainRule `json:"rules"`
 }
 
@@ -338,10 +338,13 @@ func renderBorder(w io.Writer, border *BorderTable) {
 		fmt.Fprintf(w, "  read now: %s\n", border.Err)
 	}
 	for _, chain := range border.Chains {
-		if chain.Name == "" {
+		switch {
+		case chain.Name == "":
 			fmt.Fprint(w, "  rules the filter does not ask for\n")
-		} else {
-			fmt.Fprintf(w, "  chain %s, %s at priority %d\n", chain.Name, chain.Hook, chain.Priority)
+		case chain.Priority == nil:
+			fmt.Fprintf(w, "  chain %s, %s\n", chain.Name, chain.Hook)
+		default:
+			fmt.Fprintf(w, "  chain %s, %s at priority %d\n", chain.Name, chain.Hook, *chain.Priority)
 		}
 		rows := make([][]string, 0, len(chain.Rules))
 		for _, rule := range chain.Rules {

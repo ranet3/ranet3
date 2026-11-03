@@ -81,7 +81,7 @@ func startSiteGateway(t *testing.T, links ...siteLink) (*BorderFilter, *net.UDPC
 		sets.Carved, sets.Conflicts = meshkernel.CarvedSets(border, sets.CarveOuts, routes.Snapshot())
 		return sets
 	}
-	be, err := newBorderBackend()
+	be, err := newBorderBackend(egress.BorderRuntime{})
 	if err != nil {
 		t.Fatalf("open the antispoof filter's backend: %v", err)
 	}

@@ -197,6 +197,10 @@ type BorderRuntime struct {
 	// Events records the passes that rewrote the table or failed, readiness
 	// moving and the drops each pass read, nil records nothing
 	Events *events.Bus
+	// StateDir is the directory for state that outlives the process, where a
+	// backend records what it holds in the kernel beyond its own rules, so a
+	// later start gives it back. Empty records nothing.
+	StateDir string
 }
 
 // CarveOut is the part of the overlay a link outside the mesh is on, where the
@@ -300,11 +304,12 @@ type BorderReading struct {
 }
 
 // BorderChainReading is one chain of the table as a debug read finds it: its
-// hook and priority and its rules in order. A chain with no name holds the
-// rules the table holds that the filter does not ask for.
+// hook, its priority where its backend orders chains by one, and its rules in
+// order. A chain with no name holds the rules the table holds that the filter
+// does not ask for.
 type BorderChainReading struct {
 	Name, Hook string
-	Priority   int
+	Priority   *int
 	Rules      []BorderReading
 }
 

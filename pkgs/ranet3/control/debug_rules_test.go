@@ -60,7 +60,7 @@ func rulesFixture() RulesInfo {
 			ReadAgo: Duration(3 * time.Second),
 			Ready:   true,
 			Chains: []BorderChain{
-				{Name: "antispoof", Hook: "prerouting", Priority: -300, Rules: []BorderChainRule{
+				{Name: "antispoof", Hook: "prerouting", Priority: new(-300), Rules: []BorderChainRule{
 					{Spec: "accept via ranet3", Verdict: "accept", Reason: "inside", Held: true},
 					{Spec: "accept via lo", Verdict: "accept", Reason: "inside", Held: true},
 					{Spec: "drop ipv4 source @carved4", Verdict: "drop", Reason: "carved_source", Family: "ipv4", Held: true, Packets: 2, Bytes: 120},
@@ -70,7 +70,7 @@ func rulesFixture() RulesInfo {
 					{Spec: "drop ipv6 source 3fff:a::/36", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true},
 					{Spec: "drop ipv6 source 3fff:b::/48", Verdict: "drop", Reason: "overlay_source", Family: "ipv6"},
 				}},
-				{Name: "mesh_entry", Hook: "postrouting", Priority: 110, Rules: []BorderChainRule{
+				{Name: "mesh_entry", Hook: "postrouting", Priority: new(110), Rules: []BorderChainRule{
 					{Spec: "return via other than ranet3", Verdict: "return", Reason: "outside", Held: true},
 					{Spec: "return a reply", Verdict: "return", Reason: "reply", Held: true},
 					{Spec: "return ipv4 source @owned4", Verdict: "return", Reason: "owned", Family: "ipv4", Held: true},

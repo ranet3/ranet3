@@ -28,13 +28,4 @@ const (
 	carvedSet = "carved"
 	ownedSet  = "owned"
 	noneSet   = "none"
-	// rawPriority is NF_IP_PRI_RAW, the hook priority the antispoof chain runs
-	// at: after defragmentation at -400 and before conntrack at -200, so a
-	// forged packet creates no connection entry
-	rawPriority = -300
-	// entryPriority is NF_IP_PRI_NAT_SRC plus 10, srcnat + 10 in nft's
-	// words: every source translation at postrouting runs inside NAT's own
-	// hook at 100 whatever priority its chain names, so the entry chain reads
-	// the source a packet leaves with
-	entryPriority = 110
 )

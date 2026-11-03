@@ -778,7 +778,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 	passed := time.Now().Add(-3 * time.Second)
 	c.SetBorder(&borderRecord{debug: egress.BorderDebug{
 		Where: "nftables table inet ranet3 chains antispoof and mesh_entry", PassAt: passed, Ready: true,
-		Chains: []egress.BorderChainReading{{Name: "antispoof", Hook: "prerouting", Priority: -300,
+		Chains: []egress.BorderChainReading{{Name: "antispoof", Hook: "prerouting", Priority: new(-300),
 			Rules: []egress.BorderReading{{Spec: "drop ipv6 source 3fff::/20", Verdict: "drop", Reason: "overlay_source", Family: "ipv6", Held: true, Packets: 2, Bytes: 160}}}},
 		Sets: []egress.BorderSetReading{{Name: "owned4", Elements: []egress.Range{{First: netip.MustParseAddr("192.0.2.7"), Last: netip.MustParseAddr("192.0.2.7")}}}},
 	}})
@@ -796,7 +796,7 @@ func TestDebugRulesSortsEveryRuleByOwnerAndNamesTheMissing(t *testing.T) {
 		}
 		table := info.Border
 		if table == nil || !table.ReadAt.Equal(passed) || table.ReadAt.Location() != time.UTC || time.Duration(table.ReadAgo) < 3*time.Second ||
-			len(table.Chains) != 1 || len(table.Chains[0].Rules) != 1 || table.Chains[0].Rules[0].Packets != 2 || table.Chains[0].Priority != -300 || !table.Ready ||
+			len(table.Chains) != 1 || len(table.Chains[0].Rules) != 1 || table.Chains[0].Rules[0].Packets != 2 || table.Chains[0].Priority == nil || *table.Chains[0].Priority != -300 || !table.Ready ||
 			len(table.Sets) != 1 || table.Sets[0].Name != "owned4" || !slices.Equal(table.Sets[0].Elements, []string{"192.0.2.7"}) {
 			t.Errorf("%s: debug rules carries the table %+v", name, table)
 		}
