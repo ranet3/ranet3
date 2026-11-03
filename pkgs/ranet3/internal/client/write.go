@@ -247,9 +247,10 @@ func servesEndpoint(path, peer string) bool {
 	return err == nil && id.Node().String() == node && (!pinned || peerLocal == local)
 }
 
-// wakeDialers cuts the reconnect delay short on the loops named, skipping any
-// that ended in the meantime. A wake that finds the buffer full is dropped,
-// because a loop with one ask already queued makes one attempt either way.
+// wakeDialers cuts the wait before the next dial short on the loops named,
+// skipping any that ended in the meantime. A wake that finds the buffer full is
+// dropped, because a loop with one ask already queued makes one attempt either
+// way.
 func (c *Client) wakeDialers(paths []string) {
 	c.dialersMu.Lock()
 	defer c.dialersMu.Unlock()

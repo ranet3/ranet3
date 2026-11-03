@@ -643,10 +643,10 @@ func (c *Client) liveSends() []kernel.Send {
 // dialer is one running peer loop. It is a pointer so an entry has an identity
 // a later goroutine can compare against, which a func value cannot provide.
 //
-// wake cuts short the reconnect delay, and is buffered so a redial arriving
-// while the loop is dialing rather than waiting is not lost and does not block
-// the caller. One place is enough: two asks that land before the loop comes
-// round are one attempt either way.
+// wake cuts short the wait before the next dial, and is buffered so a redial
+// arriving while the loop is dialing rather than waiting is not lost and does
+// not block the caller. One place is enough: two asks that land before the
+// loop comes round are one attempt either way.
 //
 // done is closed once the loop has returned, session and all. A sweep that
 // stops the loop waits on it.
