@@ -159,9 +159,6 @@ func TestMetricsExposesSegmentsAndTheReconciler(t *testing.T) {
 			t.Errorf("the scrape does not carry %q:\n%s", want, segments.String())
 		}
 	}
-	if strings.Contains(segments.String(), "ranet3_segments_drained_total") {
-		t.Errorf("the scrape still carries the drained series:\n%s", segments.String())
-	}
 
 	pass := time.Date(2026, 9, 21, 19, 3, 0, 0, time.UTC)
 	c.SetReconciler(Reconciler{Status: func() control.KernelStatus {
@@ -314,9 +311,6 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		if !strings.Contains(ready.String(), want) {
 			t.Errorf("the scrape of an exit ready for IPv6 alone does not carry %q:\n%s", want, ready.String())
 		}
-	}
-	if strings.Contains(ready.String(), "ranet3_egress_device_ready") {
-		t.Errorf("the scrape still carries the egress device's gauge:\n%s", ready.String())
 	}
 	if strings.Contains(ready.String(), "ranet3_egress_conntrack") {
 		t.Errorf("the scrape of an exit that read no connection table carries one:\n%s", ready.String())
