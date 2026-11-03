@@ -135,8 +135,7 @@ session is live, on macOS with `link.underlay.bind` one holding its family's
 zero address as the members of the zero-free cover it contains, as
 [routing](routing.md#the-zero-free-cover-on-macos) describes.
 
-On Linux that first pass moves every route but a hold or a throw to the new
-metric, which macOS does not store. It derives the policy rules again, as
+On Linux that first pass derives the policy rules again, as
 [routing](routing.md#policy-rules-on-linux) lists them, from the new overlay and
 this node's own prefixes, deletes the ones it no longer derives and installs the
 new ones. It takes off the tun each address it added that the block no longer
@@ -158,10 +157,9 @@ On macOS the old prefix length of an address comes off before the new one goes
 on.
 
 A reconciler stopped with `ranet3 disable reconciler` takes the block as well,
-and installs it once it is started again. A running exit takes a new overlay, a
-renumbered tun or another metric without dropping a session or withdrawing the
-mesh table from the rest of the fleet. [Routing](routing.md) describes the
-reconciler.
+and installs it once it is started again. A running exit takes a new overlay or
+a renumbered tun without dropping a session or withdrawing the mesh table from
+the rest of the fleet. [Routing](routing.md) describes the reconciler.
 
 A change to `cap.table.id` or `cap.table.proto` is refused by name, and so is
 writing the block where there was none or taking it out. The reconciler reads
@@ -307,7 +305,7 @@ Its `applied` lists the blocks the reload changed among `auth.aliases.local`,
 table. A reload that changed only the trust document or the peers dialed carries
 no `applied`. A refused reload carries `err` instead. `cap.route` is listed when
 `announce` changed. `cap.transit` is never listed, since a reload that would
-change it is refused, and writing out the value in force changes nothing.
+change it is refused.
 
 The speaker records a `babel.config.applied` with the intervals, the cost and
 the margin it took, and a `babel.neighbor.extra` for each neighbor whose amount

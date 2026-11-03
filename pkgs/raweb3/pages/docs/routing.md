@@ -943,7 +943,8 @@ failed asks none, and it and a pass whose lookups failed keep the last answers.
   later. Changes in that window join the same pass. On Linux the notifications
   are a route of the mesh's table coming or going, a rule of the reconciler's
   protocol going, and an address of the tun coming or going, another writer's
-  among them, and another writer's change to the table `ranet3_fallback`.
+  among them, and another writer's change to the table `ranet3_fallback` while
+  the reconciler writes it.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.

@@ -841,7 +841,7 @@ The `netlink` check runs these root tests: the `internal/kernel` tests whose
 names start with `TestNetlink`, the 25 `internal/egress/kernel` tests and the 5
 `internal/nftables` tests, the exit behavior suite and its 2 fakes, the
 `TestTUN` tests of `internal/netstack` and `internal/client`, the 3 `transport`
-sends, the 4 `internal/client` tests and the 10 `cmd/ranet3` tests above under
+sends, the 5 `internal/client` tests and the 10 `cmd/ranet3` tests above under
 `unshare -n`, the `internal/registry` tests whose names start with
 `TestResolver` and the client's resolver test above under `unshare -mn`, and
 every test of the `tun` and `conn` packages of `pkgs/wireguard`. It fails if any
