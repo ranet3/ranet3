@@ -162,21 +162,19 @@ ours". A destination holds 1 scoped route. A scoped route a pass still wants
 keeps its destination. Otherwise the pass installs the route with the most
 specific source, and skips and logs the rest once.
 
-Under `cap.exit`, in each family the tun holds an overlay address of, the
-reconciler installs a route holding its family's zero address as the members of
-the zero-free cover it contains, and any other route that counts as a default
-unscoped, as [routing](routing.md#the-zero-free-cover-on-macos) describes. A Mac
-takes a mesh exit through the cover. A family the tun holds no overlay address
-of is left out of the mode and keeps mode off's form. macOS refuses a route out
-of an interface holding no address of the route's family, so where the utun
-holds no address of a family at all, in either mode, the reconciler skips that
-family's routes with one warning each, as
-[routing](routing.md#the-zero-free-cover-on-macos) gives. A route that contains
-a literal endpoint address the trust document lists still stays scoped to the
-tun, unless it is a member of the cover. Unscoped and longer than the host's own
-route to that peer, it could leave ranet3's datagrams to the peer no route on
-the interface they name. In either mode the daemon writes nothing outside the
-tun, and a reload moves the routes between the two forms with no restart.
+Under `cap.exit` a Mac takes a mesh exit through
+[the zero-free cover](routing.md#the-zero-free-cover-on-macos), which gives the
+routes each mode and family installs. A family the tun holds no overlay address
+of is left out of the mode and keeps mode off's form. Where the utun holds no
+address of a family at all, in either mode, the reconciler installs none of its
+routes, as
+[the limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) give. A
+route that contains a literal endpoint address the trust document lists still
+stays scoped to the tun, unless it is a member of the cover. Unscoped and longer
+than the host's own route to that peer, it could leave ranet3's datagrams to the
+peer no route on the interface they name. In either mode the daemon writes
+nothing outside the tun, and a reload moves the routes between the two forms
+with no restart.
 
 A source-specific route and a retracted one stay scoped in either mode.
 Interface scope is the only way macOS expresses a source. An unscoped reject
@@ -189,10 +187,7 @@ startup and on a reload, each for what this build lacks there:
 
 - `cap.exit.forward`, refused with
   `kernel: cap.exit forward is refused on macOS, where this build has no rule that routes a forwarded packet by the link it arrived on: remove forward, and a packet this host forwards toward an exit in a family the mode covers follows the mode into the tun as the host's own does, which drops a source this node does not own`.
-  The routes carry a forwarded packet as they carry the host's own, and this
-  build has no rule that picks a forwarded packet's route by the link it arrived
-  on, as the rule at 5440 does in [exit mode](routing.md#exit-mode-on-linux) on
-  Linux.
+  On Linux that rule is 5440 of [exit mode](routing.md#exit-mode-on-linux).
 - `cap.exit.fallback = "none"`, the kill switch, refused with
   `kernel: cap.exit fallback = "none" is refused on macOS, where this build has no filter to keep the host's traffic off the uplink: write fallback = "uplink"`,
   and where `inbound` or `lan` is written beside it, naming them, as
@@ -206,9 +201,8 @@ startup and on a reload, each for what this build lacks there:
   `kernel: cap.exit via with fallback unwritten is "none" in mode 3, which is refused on macOS, where this build has no filter to keep the host's traffic off the uplink: write fallback = "uplink" beside via`,
   for the same filter.
 
-A Mac that forwards under `cap.exit` loses what it forwards toward an exit in a
-family the mode covers from a source it does not own, and the daemon warns where
-it forwards, as
+A Mac that forwards under `cap.exit` loses some of what it forwards toward an
+exit, and the daemon warns, as
 [the limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) give.
 
 ## Other platforms

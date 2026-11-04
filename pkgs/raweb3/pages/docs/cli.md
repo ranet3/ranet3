@@ -128,8 +128,9 @@ exits 1. Each table's own page gives what a refusal leaves of it:
   LAN. `--json` carries them under `kernel.exit`, the families in `unaddressed`.
   Under `cap.exit.via` the line names the path, its outer source, `up`, or
   `down` at the first segment that does not resolve with the mesh's answer, the
-  families whose steered default is installed, and the path's own `steered` and
-  `unrouted` counts, which `--json` carries under `kernel.exit_path`.
+  families whose steered default, or on macOS its zero-free cover, is installed,
+  and the path's own `steered` and `unrouted` counts, which `--json` carries
+  under `kernel.exit_path`.
 - `down` withdraws [the kill switch's](routing.md#the-kill-switch-on-linux)
   rules and table with the rest of the reconciler's, as a clean stop does, and
   `up` writes them again.

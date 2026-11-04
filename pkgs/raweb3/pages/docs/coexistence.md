@@ -468,20 +468,22 @@ an address on it.
   [`cap.exit`](configuration-reference.md#capexit) leaves out. Such a route is
   one that [counts as a default](routing.md#routes-that-count-as-a-default).
 
-Under `cap.exit`, in each family the tun holds an overlay address of, every
-route outside the first 3 kinds is installed unscoped, so the Mac's own traffic
-takes the mesh's exit without every program binding first.
+Under `cap.exit` without `via`, in each family the tun holds an overlay address
+of, every route outside the first 3 kinds is installed unscoped, so the Mac's
+own traffic takes the mesh's exit without every program binding first. In mode 3
+the reconciler declines every route that counts as a default but its steered
+defaults, as [routing](routing.md#the-zero-free-cover-on-macos) describes.
 
 Tailscale makes the same split on the same host. Its exit-node default is scoped
 to its utun, and its `100.64.0.0/10` is not.
 
 An unscoped `0.0.0.0/0` or `::/0` out of the utun would collide with the host's
-own default. Under `cap.exit`, the reconciler installs a route holding its
-family's zero address as the members of the zero-free cover it contains, as
-[routing](routing.md#the-zero-free-cover-on-macos) describes. Until exit
-selection exists, a Mac under `cap.exit` takes whichever `/0` Babel selects.
-[Exit nodes](exit-nodes.md#what-to-advertise) says why an exit advertises the
-`/0` only.
+own default. Under `cap.exit`, in a family the mode covers, the reconciler
+installs a route holding its family's zero address as the members of the
+zero-free cover it contains, as
+[routing](routing.md#the-zero-free-cover-on-macos) describes, with which `/0` a
+Mac takes. [Exit nodes](exit-nodes.md#what-to-advertise) says why an exit
+advertises the `/0` only.
 
 ranet3 writes nothing outside its utun. A datagram it sends without a pin names
 the interface the selection answers from the host's routes, so another VPN's

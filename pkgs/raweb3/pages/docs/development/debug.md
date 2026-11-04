@@ -153,7 +153,8 @@ These commands take flags of their own:
   [limits](../design/limits.md#the-underlay-socket) gives. Then, under
   `cap.exit.via`, `Steered defaults in table <id>` with the path `up`, or `down`
   at the first segment that does not resolve and the mesh's answer, and each
-  family's steered default `installed` or `not installed`. Then, on Linux, the
+  family's steered default `installed`, on macOS in a family the mode covers as
+  its zero-free cover, or `not installed`. Then, on Linux, the
   [antispoof filter's](../antispoof.md) table: when its last pass read it and
   whether it is ready, then each chain, `antispoof` with `overlay` and
   `mesh_entry`, with the hook and priority it is written at and each rule read
@@ -647,7 +648,7 @@ Each kind carries these attributes:
 | `kernel.forward`                              | `entry`, `link`, `reason` (the tun, the loopback link, or the link a family's default leaves by), `skipped`                                                                                        |
 | `kernel.exit`                                 | `family`, `addressed` (false where the family came to be left out of the mode, as [limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) says, and true where the state then ended) |
 | `kernel.fallback`                             | `state` and `was`, each `holding`, `passing`, `not holding` or `off`                                                                                                                               |
-| `kernel.path`                                 | `state` (`up` or `down`), with `segment` and `verdict` where it is down, and `installed`, the families whose steered default the pass left in the table                                            |
+| `kernel.path`                                 | `state` (`up` or `down`), with `segment` and `verdict` where it is down, and `installed`, the families whose steered default, or on macOS its zero-free cover, the pass left in the table          |
 | `exit.forwarding`                             | `family`, one event for each family the host forwards                                                                                                                                              |
 | `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                                 |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                              |

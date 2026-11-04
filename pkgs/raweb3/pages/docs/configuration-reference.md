@@ -880,19 +880,15 @@ programs' rules do beside them.
   mode. A pattern matching one of them, or a name that becomes the uplink later,
   is skipped at each pass and logged, as [watching it](routing.md#watching-it)
   lists.
-- macOS refuses at startup and on a reload `forward`, as
-  `kernel: cap.exit forward is refused on macOS, where this build has no rule that routes a forwarded packet by the link it arrived on: remove forward, and a packet this host forwards toward an exit in a family the mode covers follows the mode into the tun as the host's own does, which drops a source this node does not own`,
-  `fallback = "none"`, naming `inbound` and `lan` where they are written, as
-  `kernel: cap.exit fallback = "none" with inbound is refused on macOS, where this build has no filter to keep the host's traffic off the uplink: write fallback = "uplink" and remove inbound`,
-  and `via` with `fallback` unwritten, which is `"none"` then, as
-  `kernel: cap.exit via with fallback unwritten is "none" in mode 3, which is refused on macOS, where this build has no filter to keep the host's traffic off the uplink: write fallback = "uplink" beside via`.
-  The fallback's refusal comes first, so a file writing `forward` beside
-  `fallback = "none"` is told of the fallback.
-  [Gaps on macOS](platforms.md#gaps-on-macos) says what this build lacks for
-  each, and
-  [the limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) what a
-  Mac that forwards under the mode is told.
-- The BSDs, Android and iOS refuse the block at startup:
+- macOS refuses at startup and on a reload `forward`, `fallback = "none"`,
+  naming `inbound` and `lan` where they are written, and `via` with `fallback`
+  unwritten, which is `"none"` then. [Gaps on macOS](platforms.md#gaps-on-macos)
+  quotes each refusal and says what this build lacks for it. The fallback's
+  refusal comes first, so a file writing `forward` beside `fallback = "none"` is
+  told of the fallback.
+  [The limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) say
+  what a Mac that forwards under the mode is told.
+- The BSDs, Android and iOS refuse the block at startup and on a reload:
   `kernel: cap.exit is refused on <platform>, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
   `fallback = "none"`, and `via` with `fallback` unwritten, which is `"none"`
   then, are refused ahead of it, since no filter there keeps the host's traffic

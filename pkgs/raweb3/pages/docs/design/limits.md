@@ -272,25 +272,37 @@ such as Tailscale's at 5270 while it uses an exit node, takes the host's traffic
 first, as [sharing a host](../coexistence.md#exit-mode-beside-other-programs)
 measures.
 
-On macOS exit mode is routes,
-[the zero-free cover](../routing.md#the-zero-free-cover-on-macos), and
-`fallback = "uplink"` is the only fallback. Wherever the mesh's table holds no
-default, the host's traffic toward one leaves by the host's own default: before
-the first session is live, after `capture_grace`, while the mesh's defaults are
-retracted, in mode 3 while a segment of the path is down, and after `SIGKILL`,
-since the cover goes with the utun. A family the tun holds no overlay address of
-is left out of the mode, its routes scoped to the utun as in mode off, so its
-traffic stays on the host's own routes, and `ranet3 status` names it. Where the
-utun holds no address of a family at all, macOS refuses every route of it, so
-the reconciler installs none of them and counts each as skipped, in mode off
-too, as [routing](../routing.md#the-zero-free-cover-on-macos) measures. In a
-family the mode covers, a packet the Mac forwards toward an exit follows the
-cover into the utun as the host's own does, and the tun read drops it, since its
-source is not this node's, so a host the Mac forwards for loses what it sends
-toward an exit. This build has no rule that picks a forwarded packet's route by
-the link it arrived on, and [refuses `forward`](../platforms.md#gaps-on-macos).
-At the start and at each reload, where `net.inet.ip.forwarding` or
-`net.inet6.ip6.forwarding` reads 1 under `cap.exit`, the daemon warns
+On macOS exit mode is the routes of
+[the zero-free cover](../routing.md#the-zero-free-cover-on-macos), and its only
+fallback is `fallback = "uplink"`. Wherever the mesh's table holds no default,
+the host's traffic toward one leaves by the host's own default: before the first
+session is live, after `capture_grace`, while the mesh's defaults are retracted,
+in mode 3 while a segment of the path is down, and after `SIGKILL`, since the
+cover goes with the utun. A family the tun holds no overlay address of is left
+out of the mode, its routes scoped to the utun as in mode off, so its traffic
+stays on the host's own routes, and `ranet3 status` names it.
+
+macOS refuses a route out of an interface that holds no address of the route's
+family, scoped or not, with `ENETUNREACH`
+([ifa_ifwithroute_common_locked](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/route.c#L1862)),
+which a test utun holding an IPv4 address alone answers for a scoped `::/0`. So
+where the utun holds no address of a family at all, in mode off as in a family
+the mode leaves out, the reconciler installs none of that family's routes. It
+counts each as skipped, logs
+`kernel is leaving a route uninstalled: the tun holds no address of its family, and macOS routes a family only out of an interface holding one of its addresses`
+once for each, and the pass after the utun gains an address of the family
+installs them. The mesh's own table still carries the family.
+[The zero-free cover](../routing.md#the-zero-free-cover-on-macos) gives what a
+pass keeps when it cannot list the tun's addresses.
+
+In a family the mode covers, a packet the Mac forwards toward an exit follows
+the cover into the utun as the host's own does, and the tun read drops it, since
+its source is not this node's, so a host the Mac forwards for loses what it
+sends toward an exit. This build has no rule that picks a forwarded packet's
+route by the link it arrived on, and
+[refuses `forward`](../platforms.md#gaps-on-macos). At the start and at each
+reload, where `net.inet.ip.forwarding` or `net.inet6.ip6.forwarding` reads 1
+under `cap.exit`, the daemon warns
 `config: this node forwards IPv4 under cap.exit, and on macOS a forwarded packet toward an exit in a family the mode covers follows the mode into the tun, which drops a source this node does not own`,
 naming each family it forwards, and records an `exit.forwarding` event for each,
 as [debugging](../development/debug.md#events) lists. Forwarding switched on
@@ -443,8 +455,9 @@ The rule about the unspecified address follows the macOS kernel's fallback of a
 scoped lookup, which
 [the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. A
 route out of the tun as small as `0.0.0.0/24` would take that fallback away, so
-under `cap.exit` such a route goes in as the zero-free cover's members it
-contains, and one inside `0.0.0.0/8` or `::/8`, which contains none, not at all.
+under `cap.exit` without `via`, in a family the mode covers, such a route goes
+in as the zero-free cover's members it contains, and one inside `0.0.0.0/8` or
+`::/8`, which contains none, not at all.
 
 `capture_grace` has a floor of 1 second. A value above 0 and under 1 second is
 refused by name, and 0 takes the default. The hold is checked once a pass, and
@@ -466,15 +479,16 @@ queries leave by no interface ranet3 names, so under `cap.exit` they follow the
 cover with the rest of the host's traffic. A Mac whose exit carries sessions but
 no traffic cannot resolve a peer's endpoint name until the hold's grace has run
 after its last live session, by when every other program on the Mac has lost its
-traffic too. ranet3 sends no query of its own bound to the selection's interface
-there, as it marks its own on Linux.
+traffic too. There the daemon sends no query of its own bound to the selection's
+interface, as it marks its own on Linux.
 
 On macOS an unscoped `/0` out of the tun would collide with the host's own
-default, because macOS has no route replace. Under `cap.exit`, the reconciler
-installs it as the zero-free cover instead, and the hold judges the cover by its
-`/0`. The cover's members stay unscoped even over a literal endpoint address the
-trust document lists, because no member holds the zero address a datagram that
-names its interface falls back to, as
+default, because macOS has no route replace. Under `cap.exit`, in a family the
+tun holds an overlay address of, the reconciler installs it as the zero-free
+cover instead, and the hold judges the cover by its `/0`. The cover's members
+stay unscoped even over a literal endpoint address the trust document lists,
+because no member holds the zero address a datagram that names its interface
+falls back to, as
 [the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. An
 exit serving Macs advertises the `/0` only, as
 [exit nodes](../exit-nodes.md#what-to-advertise) describes.
@@ -498,14 +512,15 @@ to.** It creates the device and brings it up. On Linux it attaches instead to an
 existing device that `link.tun` names, but never to one of the default name
 `ranet3`. An optional reconciler, `internal/kernel`, mirrors the learned routes
 into 1 routing table it owns, or on macOS into the single table that platform
-has. On macOS in mode off it scopes the routes that would otherwise capture the
-host, and under `cap.exit` installs them unscoped, a zero route as its zero-free
-cover, on Linux its policy rules give a route that counts as a default by its
-length the traffic from this node's own prefixes to a destination outside the
-overlay, for a lookup bound to no device where the rows before it pass the
-lookup on, as rows L6 to L12 of
-[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, and it
-can assign the configured addresses. The `cap.table` block in
+has, and it can assign the configured addresses. On macOS in mode off it scopes
+the routes that would otherwise capture the host, and under `cap.exit` installs
+them as [the zero-free cover](../routing.md#the-zero-free-cover-on-macos) gives
+for each mode and family. On Linux its policy rules give a route that counts as
+a default by its length the traffic from this node's own prefixes to a
+destination outside the overlay, for a lookup bound to no device where the rows
+before it pass the lookup on, as rows L6 to L12 of
+[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give. The
+`cap.table` block in
 [the configuration reference](../configuration-reference.md) turns it on. It is
 off unless enabled. Without it, another program assigns the addresses and
 installs the kernel routes.
@@ -956,11 +971,12 @@ limits.
 
 ### Kernel routes
 
-| Route                                                               | What the reconciler does                                                                  |
-| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| An IPv4 source-specific route                                       | Never installs it, and warns once. The mesh's own table still applies it                  |
-| A multicast, link-local or loopback prefix, or `255.255.255.255/32` | Never installs it. Each names a link or the host rather than a destination                |
-| A route another program changed without a notification              | Repairs it at the next pass, every 30 seconds unless `cap.table.reconcile` says otherwise |
+| Route                                                               | What the reconciler does                                                                           |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| An IPv4 source-specific route                                       | Never installs it, and warns once. The mesh's own table still applies it                           |
+| A multicast, link-local or loopback prefix, or `255.255.255.255/32` | Never installs it. Each names a link or the host rather than a destination                         |
+| On macOS, a route of a family the utun holds no address of          | Installs none of them, as [the host's own traffic](#routes-that-carry-the-hosts-own-traffic) gives |
+| A route another program changed without a notification              | Repairs it at the next pass, every 30 seconds unless `cap.table.reconcile` says otherwise          |
 
 The kernel's IPv4 table has no source-specific lookup. Installing such a route
 as an ordinary one would take traffic from every other source. The mesh's own

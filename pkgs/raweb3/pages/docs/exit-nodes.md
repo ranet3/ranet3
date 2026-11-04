@@ -49,20 +49,20 @@ An exit does not advertise the `/1` halves in place of a `/0`. A half is longer
 than any `/0`, so wherever it is installed it wins over every `/0` exit by
 longest prefix, whatever the metric, and Babel no longer chooses among exits.
 The lower half, `0.0.0.0/1` or `::/1`, also contains its family's zero address,
-so a Mac under `cap.exit` installs it as the 7 members of the zero-free cover it
-contains, which leave that address to the host's own default. A node that does
-advertise both halves of a family is still listed by `ranet3 exit list`, as an
-exit for that family. It egresses as an exit does, and so does a node
-advertising a split such as four `/2`s, since each of those prefixes
-[counts as a default](routing.md#routes-that-count-as-a-default).
+so a Mac under `cap.exit` without `via`, in a family the tun holds an overlay
+address of, installs it as the 7 members of the zero-free cover it contains,
+which leave that address to the host's own default. In mode 3 it declines the
+half, and in a family the tun holds no overlay address of it scopes the half to
+the tun, as [routing](routing.md#the-zero-free-cover-on-macos) gives. A node
+that does advertise both halves of a family is still listed by
+`ranet3 exit list`, as an exit for that family. It egresses as an exit does, and
+so does a node advertising a split such as four `/2`s, since each of those
+prefixes [counts as a default](routing.md#routes-that-count-as-a-default).
 
-Until exit selection exists, a Mac under
-[`cap.exit`](configuration-reference.md#capexit) takes whichever `/0` Babel
-selects, once a session has been live, and installs it as its zero-free cover in
-each family the tun holds an overlay address of, as
-[routing](routing.md#the-zero-free-cover-on-macos) describes. Babel, its updates
-and `ranet3 exit list` keep the `/0`. A Mac without `cap.exit` scopes the `/0`
-to the tun, which no socket selects unless it asks for the tun by name.
+[The zero-free cover](routing.md#the-zero-free-cover-on-macos) gives which `/0`
+a Mac under [`cap.exit`](configuration-reference.md#capexit) takes and how it
+installs it. A Mac without `cap.exit` scopes the `/0` to the tun, which no
+socket selects unless it asks for the tun by name.
 
 `cap.route` may not announce a prefix `cap.egress` advertises. The daemon
 refuses that at startup and on every reload, because `cap.route` would announce
@@ -703,14 +703,15 @@ exit by its segment list rather than by the default route Babel selects.
 [Segment routing](segment-routing.md#egress-segments) describes the segment and
 its `allow` list. This page covers what the exit does with the inner packet.
 
-A Linux leaf chooses the exit for its own traffic with `cap.exit.via`, the SIDs
-of any waypoints and then this exit's egress segment, as
-[mode 3](routing.md#mode-3-on-linux) describes. For a leaf to use it, the exit
-writes the segment with `deliver = "egress"` and an `allow` that holds the
-leaf's outer source and every inner source it sends, and originates the SID's
-`/128` while it is ready, as below. A LAN reaches the internet through the exit
-by a subnet router that announces the LAN and names its link in `forward`, and
-the exit's `allow` lists the LAN beside the router's overlay address, as
+A leaf chooses the exit for its own traffic with `cap.exit.via`, on macOS with
+`fallback = "uplink"` written, the SIDs of any waypoints and then this exit's
+egress segment, as [mode 3](routing.md#mode-3-on-linux) describes. For a leaf to
+use it, the exit writes the segment with `deliver = "egress"` and an `allow`
+that holds the leaf's outer source and every inner source it sends, and
+originates the SID's `/128` while it is ready, as below. A LAN reaches the
+internet through the exit by a subnet router that announces the LAN and names
+its link in `forward`, and the exit's `allow` lists the LAN beside the router's
+overlay address, as
 [the configuration reference](configuration-reference.md#capsegmentlocal) gives.
 
 A leaf sees one state for both families, the SID's `/128` the exit originates as
