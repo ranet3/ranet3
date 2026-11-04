@@ -1086,6 +1086,9 @@ func switchAsk(t *testing.T, lab *exitLab, s switchService) string {
 		kind = unix.SOCK_STREAM
 	}
 	uplink := rulesHost[family].uplink.Addr()
+	// the server reads once the ask is sent, so its wait cannot end before the ask is out
+	asked := make(chan struct{})
+	sent := sync.OnceFunc(func() { close(asked) })
 	if s.listen {
 		var listen int
 		if err := lab.leaf.Do(func() (err error) {
@@ -1098,8 +1101,9 @@ func switchAsk(t *testing.T, lab *exitLab, s switchService) string {
 		if kind == unix.SOCK_DGRAM {
 			go func() {
 				defer close(served)
+				<-asked
 				buf := make([]byte, 1500)
-				if n, from, err := unix.Recvfrom(listen, buf, 0); err == nil {
+				if n, from, err := exitReceive(listen, buf); err == nil {
 					_ = unix.Sendto(listen, buf[:n], 0, from)
 				}
 			}()
@@ -1108,6 +1112,8 @@ func switchAsk(t *testing.T, lab *exitLab, s switchService) string {
 		}
 		defer func() { <-served; _ = unix.Close(listen) }()
 	}
+	// an ask that never went out still lets the server end its read
+	defer sent()
 	var answer string
 	if err := lab.far.Do(func() error {
 		fd, err := switchListen(s.destination, 0, kind|unix.SOCK_NONBLOCK, false)
@@ -1115,7 +1121,7 @@ func switchAsk(t *testing.T, lab *exitLab, s switchService) string {
 			return err
 		}
 		defer unix.Close(fd)
-		answer, err = switchAskFrom(fd, kind, rulesSockaddr(uplink, s.port))
+		answer, err = switchAskFrom(fd, kind, rulesSockaddr(uplink, s.port), sent)
 		return err
 	}); err != nil {
 		t.Fatalf("ask port %d from the internet host: %v", s.port, err)
@@ -1133,8 +1139,7 @@ func switchListen(address netip.Addr, port, kind int, listen bool) (int, error) 
 	if err != nil {
 		return -1, err
 	}
-	timeout := unix.NsecToTimeval(exitPingWait.Nanoseconds())
-	err = errors.Join(unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1), unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout))
+	err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 	if err == nil {
 		err = unix.Bind(fd, rulesSockaddr(address, port))
 	}
@@ -1148,8 +1153,9 @@ func switchListen(address netip.Addr, port, kind int, listen bool) (int, error) 
 	return fd, nil
 }
 
-// switchAskFrom sends from the non-blocking fd to the service at to and waits exitPingWait for its answer
-func switchAskFrom(fd, kind int, to unix.Sockaddr) (string, error) {
+// switchAskFrom sends from the non-blocking fd to the service at to, calls sent once the ask is out, and waits exitPingWait for its
+// answer
+func switchAskFrom(fd, kind int, to unix.Sockaddr, sent func()) (string, error) {
 	err := unix.Connect(fd, to)
 	if kind == unix.SOCK_DGRAM {
 		if err != nil {
@@ -1161,6 +1167,7 @@ func switchAskFrom(fd, kind int, to unix.Sockaddr) (string, error) {
 	} else if err != nil && !errors.Is(err, unix.EINPROGRESS) {
 		return "", err
 	}
+	sent()
 	events := int16(unix.POLLIN)
 	if kind != unix.SOCK_DGRAM {
 		events = unix.POLLOUT
@@ -1635,7 +1642,7 @@ func switchLoopback(at, to netip.Addr) error {
 		return err
 	}
 	buf := make([]byte, 64)
-	n, _, err := unix.Recvfrom(listen, buf, 0)
+	n, _, err := exitReceive(listen, buf)
 	if err != nil {
 		return err
 	}

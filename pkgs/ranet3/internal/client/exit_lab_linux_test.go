@@ -936,7 +936,7 @@ func exitAnswered(t *testing.T, lab *exitLab, reply exitReply) bool {
 	served := make(chan error, 1)
 	go func() {
 		buf := make([]byte, 1500)
-		n, from, err := unix.Recvfrom(listen, buf, 0)
+		n, from, err := exitReceive(listen, buf)
 		if err == nil {
 			err = unix.Sendto(listen, buf[:n], 0, from)
 		}
@@ -946,13 +946,29 @@ func exitAnswered(t *testing.T, lab *exitLab, reply exitReply) bool {
 		t.Fatalf("ask the service at %s: %v", serverAt, err)
 	}
 	buf := make([]byte, 1500)
-	_, _, err := unix.Recvfrom(send, buf, 0)
+	_, _, err := exitReceive(send, buf)
 	<-served
 	return err == nil
 }
 
-// exitSocket opens a UDP socket of address's family in the calling thread's namespace, bound to address and port, carrying mark where it is not zero,
-// each read waiting exitPingWait
+// exitReceive reads one datagram on fd within exitPingWait
+// a read with a receive timeout set fails with EINTR at any signal, the runtime's own included, and is read again for the time left
+func exitReceive(fd int, buf []byte) (int, unix.Sockaddr, error) {
+	deadline := time.Now().Add(exitPingWait)
+	for {
+		// a zero timeval waits forever
+		timeout := unix.NsecToTimeval(max(time.Until(deadline), time.Microsecond).Nanoseconds())
+		if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
+			return 0, nil, err
+		}
+		n, from, err := unix.Recvfrom(fd, buf, 0)
+		if !errors.Is(err, unix.EINTR) || time.Until(deadline) <= 0 {
+			return n, from, err
+		}
+	}
+}
+
+// exitSocket opens a UDP socket of address's family in the calling thread's namespace, bound to address and port, carrying mark where it is not zero
 func exitSocket(address netip.Addr, port, mark int) (int, error) {
 	family := unix.AF_INET6
 	if address.Is4() {
@@ -962,9 +978,7 @@ func exitSocket(address netip.Addr, port, mark int) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	timeout := unix.NsecToTimeval(exitPingWait.Nanoseconds())
-	err = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout)
-	if mark != 0 && err == nil {
+	if mark != 0 {
 		err = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, mark)
 	}
 	if err == nil {

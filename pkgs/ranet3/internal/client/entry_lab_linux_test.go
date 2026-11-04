@@ -628,12 +628,8 @@ func TestTUNEntryPassesASubnetRoutersLANAndItsRepliesBesideTheKillSwitch(t *test
 		internet, lanHost := exitLabHost[s.probe.family].internet.Addr(), exitLabHost[s.probe.family].lanHost.Addr()
 		reply := []byte(fmt.Sprintf("reply %d", s.number))
 		lab.d.node.Mesh.DeliverInbound(udpPacket(internet, lanHost, rulesDiscard, uint16(rulesPortBase+s.number), reply), 0)
-		timeout := unix.NsecToTimeval(exitPingWait.Nanoseconds())
 		buf := make([]byte, 1500)
-		n, err := 0, unix.SetsockoptTimeval(s.fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout)
-		if err == nil {
-			n, _, err = unix.Recvfrom(s.fd, buf, 0)
-		}
+		n, _, err := exitReceive(s.fd, buf)
 		if err != nil || string(buf[:n]) != string(reply) {
 			t.Errorf("the LAN host's socket read %q (%v) of the exit's reply from %s, want %q", buf[:n], err, internet, reply)
 		}
