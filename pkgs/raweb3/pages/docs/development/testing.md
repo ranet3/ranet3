@@ -26,16 +26,17 @@ still running past a bound in real time fails its test by name, so a test that
 never blocks ends there rather than at `go test`'s timeout. The network delivers
 a datagram to what holds the port it is sent to, whole, copied and in order,
 keeps it until it is read, and answers a send to port 0 as the host's loopback
-does: on Linux it
-[refuses](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/udp.c#L1296)
-one from every sender, and on macOS it
-[takes](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/udp_usrreq.c#L1884)
-one from a socket bound to an IPv4 address, delivered nowhere,
-[refuses](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1556)
-one from a hub, whose IPv4 socket is bound to the wildcard, and
-[refuses](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/udp6_output.c#L287)
-one from an IPv6 socket. A mux on it reads a path MTU of 65535 for IPv4 and
-65536 for IPv6 with DF set, what a mux reads over Linux's
+answers the same socket, which Linux decides in
+[`ipv4/udp.c`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/udp.c#L1296)
+and
+[`ipv6/udp.c`](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/udp.c#L1562)
+and macOS in
+[`udp_usrreq.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/udp_usrreq.c#L1884),
+[`in_pcb.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1556)
+and
+[`udp6_output.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/udp6_output.c#L287).
+A mux on it reads a path MTU of 65535 for IPv4 and 65536 for IPv6 with DF set,
+what a mux reads over Linux's
 [loopback](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/drivers/net/loopback.c#L202)
 once IPv4's is
 [capped](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/include/net/ip.h#L500),
@@ -86,12 +87,13 @@ unshare -rn go test ./cmd/ranet3 -run '^TestDaemon'
 `internal/registry`'s `TestResolverQueryFollowsTheOverlayResolveRemoteIsHanded`
 and `internal/client`'s `TestEndpointQueryFollowsTheOverlayInForceAcrossReloads`
 look a name up through Go's resolver as the daemon does, and check the mark of
-each query by the overlay the lookup is handed. Go's resolver reads
-`/etc/resolv.conf` from whatever thread looks the name up, so each test starts a
-nameserver on lo through `internal/dnstest` and binds a resolv.conf naming it
-over `/etc/resolv.conf` in a mount namespace the whole process runs in. They
-skip without root and refuse to start in init's network or mount namespace. Run
-them in namespaces of their own:
+each query by the overlay the lookup is handed. Each starts a nameserver on lo
+through `internal/dnstest` and binds a resolv.conf naming it over the
+`/etc/resolv.conf` Go's resolver
+[reads](https://github.com/golang/go/blob/go1.26.3/src/net/dnsclient_unix.go#L369),
+in a mount namespace the whole process runs in. They skip without root and
+refuse to start in init's network or mount namespace. Run them in namespaces of
+their own:
 
 ```sh
 unshare -rmn go test ./internal/registry -run '^TestResolver'
@@ -110,8 +112,8 @@ declares the NAT behaviors it lacks by its nature, each with its reason and the
 row of [protocol deviations](../design/protocol-deviations.md) that records it,
 and says whether it ends the leaf's TCP. Each class runs on a network of its
 own, and each of the suite's rows in both families. The `raweb3` check fails
-when a row of that page the kernel exit's arm declares a limit under is not the
-first cell of exactly 1 of its rows.
+unless each row the kernel exit's arm declares a limit under is the first cell
+of exactly 1 row of that page.
 
 On Linux the suite builds 4 network namespaces, each new and empty and held by a
 thread of its own:
@@ -162,16 +164,10 @@ prints the smallest input it found. hegel is a test dependency only:
 or when a non-test file imports `internal/pbt`, so it never reaches the binary
 or its notices.
 
-hegel-go runs on a library of its own. With `HEGEL_LIBHEGEL_PATH` set it loads
-that file and no other. Otherwise it writes the copy it embeds into the user
-cache, `~/.cache/hegel-go` on Linux and `~/Library/Caches/hegel-go` on macOS,
-and loads it from there. Test binaries that start before a copy exists each
-write their own and rename it into place, and the macOS loader refuses a file
-replaced between its check and its open. The first `go test ./...` on a Mac
-after a hegel update can therefore fail in libhegel's load with "file inode
-changed", and the next run, which finds the copy, passes. The `go-test` check
-sets `HEGEL_LIBHEGEL_PATH` to the library in the vendored hegel module, and
-fails if a test wrote hegel's cache under the check's home directory anyway.
+hegel-go runs on a library of its own. The `go-test` check sets
+`HEGEL_LIBHEGEL_PATH` to the library in the vendored hegel module, and fails if
+a test wrote hegel's cache, `~/.cache/hegel-go` or `~/Library/Caches/hegel-go`,
+under the check's home directory anyway.
 
 Property tests build on Linux and macOS alone. `internal/pbt` and every property
 test carry a build constraint that names them. The `transport` properties of its
@@ -223,23 +219,26 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all. It
 also fails when a fixed string that a VM test's script greps ranet3's journal
 for and expects absent is no longer in a string literal of a non-test Go file
-under `pkgs`, since a renamed log line would leave that grep passing on nothing,
-and when a command a script expects to fail is one it cannot read as such a grep
-or as no read of ranet3's journal.
+under `pkgs`, since a renamed log line would leave that grep passing on nothing.
+It fails as well on a command a script expects to fail that is neither ranet3's
+journal piped into `grep -F` stages of quoted fixed strings nor a command that
+reads no journal of ranet3's.
 
 The `netlink` check runs the test binary of each package that holds Linux root
-tests, whole, as root, in its package's directory of the source the `go-test`
-check tests.
+tests, whole, as root, in its package's directory of the source it was built
+from.
 [`checks/netlink/default.nix`](https://github.com/ranet3/ranet3/blob/master/checks/netlink/default.nix)
 lists the binaries and the tests it names. `cmd/ranet3`'s binary runs under
 `unshare -n`, and so do the `internal/client` tests above that take the
 process's namespace. The resolver tests run under `unshare -mn`, and the rest of
 each binary in the VM's own namespace. The check fails when a test skips and the
-check does not name it, when a named test passed in a run, and when a top-level
-test a binary's `-test.list` names passed in none of the binary's runs and is
-not named. Each name carries the reason its test passes in no run. It then
-checks that no rule, link or nftables table of theirs is left on the host, and
-that the host's `/etc/resolv.conf` is as it was.
+check does not name it, when a named test passed in a run or is not in its
+binary's `-test.list`, when a subtest the check lists passed in no run, and when
+a top-level test a binary's `-test.list` names passed in none of the binary's
+runs and is not named. Each name carries the reason its test passes in no run.
+It also checks that no rule, link or nftables table of theirs is left on the
+host, and that the host's own tables and its `/etc/resolv.conf` are as they
+were.
 
 A real kernel takes the `nf_tables` encoding in the `netlink` check and in every
 integration check that sets `cap.egress` or `overlay`. Elsewhere the encoding
@@ -311,14 +310,13 @@ ranet3 logs that it stopped ESP on a Child SA past its lifetime, whenever its
 scrape counts an ESP datagram a session dropped or one of an SPI no session
 holds, and whenever strongSwan's journal shows an `N(INVAL_SPI)`, an
 `INVALID_SPI` notify from ranet3, across the rekeys. They read the first in
-`ranet3_esp_inbound_dropped_total`, which counts a datagram of an SPI with no SA
-installed, one that failed to decrypt or validate, and one RFC 6040 drops, and
-the second in `ranet3_receive_refused_total{cause="unknown_esp"}`. They read
-neither `ranet3_receive_dropped_total`, which counts a datagram a full receive
-queue drops, nor the other causes of `ranet3_receive_refused_total`, such as a
-datagram too short to name an SPI or one the kernel cut. The two they read start
-at 0 with each start of the daemon, so a script that restarts it reads them
-before each restart.
+`ranet3_esp_inbound_dropped_total` and the second in
+`ranet3_receive_refused_total{cause="unknown_esp"}`, which
+[metrics](../metrics.md#series) and its
+[refused datagrams](../metrics.md#refused-datagrams) define. They read neither
+`ranet3_receive_dropped_total` nor the other causes of
+`ranet3_receive_refused_total`. The two they read start at 0 with each start of
+the daemon, so a script that restarts it reads them before each restart.
 
 The VM console, systemd, strongSwan, BIRD, ranet3, and iperf3 output is streamed
 by the Nix test driver. The test also prints strongSwan SA state and BIRD

@@ -389,11 +389,11 @@ whose destination no entry holds, from its destination into the tun.
 `ranet3_transit_packets_total` exports the same counts, as
 [metrics](metrics.md#transit-counters) lists. Each drop they count also records
 the event `netstack.transit.dropped` with its reason, at most once every 30
-seconds, except the reads [debugging](development/debug.md#events) lists, which
-only the counters count. A trace, `ranet3 debug trace`, shows the packets the
-decision takes as it takes them, each with what it met and why, and
-`ranet3 debug route` the checks one packet would meet, as
-[debugging](development/debug.md) describes.
+seconds, except the reads [debugging](development/debug.md#events) lists in its
+paragraph on `netstack.transit.dropped`, which only the counters count. A trace,
+`ranet3 debug trace`, shows the packets the decision takes as it takes them,
+each with what it met and why, and `ranet3 debug route` the checks one packet
+would meet, as [debugging](development/debug.md) describes.
 
 ## The route reconciler
 
