@@ -74,10 +74,9 @@ source the table routes to another node or holds unreachable, through a route
 that does not count as a default, or from an overlay source this node does not
 own, one carrying a routing header the mesh refuses, one to one of this node's
 own SIDs, one bound through an exit from a source this node does not own, or one
-whose inner packet fails the same checks. On every platform but Linux, where no
-entry chain runs, it also drops a read from a source this node does not own
-toward any destination but an IPv6 link-local one. Those reads count on the
-`Transit` line, not among the filter's drops.
+whose inner packet fails the same checks, and more on every platform but Linux,
+as [the platforms](#platforms) say. Those reads count on the `Transit` line, not
+among the filter's drops.
 
 ## What it drops
 
@@ -447,11 +446,11 @@ warning at startup and at every reload,
 naming the families it reads as forwarding and the platform, whether or not
 `overlay` is written. A family whose setting the node cannot read is not named,
 and a node that can read neither logs no warning. The warning is of the inbound
-side alone: there the tun read keeps out of the mesh every source this node does
-not own, as [the platforms](#platforms) below say, though a host on the node's
-links can still send under one of the node's own addresses. On Linux the tun
-read and `mesh_entry` keep a forged source out of the mesh, chain `antispoof`
-runs wherever `overlay` is written, and no warning is logged.
+side alone, since the tun read judges what enters the mesh there, as
+[the platforms](#platforms) below say, though a host on the node's links can
+still send under one of the node's own addresses. On Linux the tun read and
+`mesh_entry` keep a forged source out of the mesh, chain `antispoof` runs
+wherever `overlay` is written, and no warning is logged.
 
 ## Platforms
 

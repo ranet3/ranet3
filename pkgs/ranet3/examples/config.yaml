@@ -65,7 +65,9 @@ cap:
   route:
     # Either a bare prefix or a prefix and the source it is reachable from,
     # such as { prefix: "::/0", from: "2001:db8:1::/48" }, a default for 1
-    # source prefix alone. cap.egress below announces an exit's prefixes with no
+    # source prefix alone. A prefix that counts as a default, this one among
+    # them, makes this node an exit. linux only, refused elsewhere at the start
+    # and on a reload. cap.egress below announces an exit's prefixes with no
     # source.
     announce:
       - "203.0.113.10/32"

@@ -111,8 +111,10 @@ to = ["example/gateway:0"]
 [cap.route]
 # Either a bare prefix or a prefix and the source it is reachable from, such as
 # { prefix = "::/0", from = "2001:db8:1::/48" }, a default for 1 source prefix
-# alone. cap.egress below announces an exit's prefixes with no source. An
-# ordinary node announces its own address and nothing else, as this file does.
+# alone. A prefix that counts as a default, this one among them, makes this
+# node an exit. linux only, refused elsewhere at the start and on a reload.
+# cap.egress below announces an exit's prefixes with no source. An ordinary
+# node announces its own address and nothing else, as this file does.
 announce = ["203.0.113.10/32"]
 
 # Relay the routes this node learns. A node that does carries other nodes'

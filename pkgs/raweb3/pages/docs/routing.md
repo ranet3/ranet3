@@ -361,17 +361,16 @@ carrying an IPv6 routing header the mesh refuses (`routing_header`), one to this
 node's own SIDs (`sid`), or one from a source this node does not own
 (`unowned_source`) bound toward an exit's default, or under
 [mode 3](#mode-3-on-linux) toward a destination outside `overlay` that no entry
-holds, and on every platform but Linux toward any destination but an IPv6
-link-local one, since no [entry chain](antispoof.md#the-entry-chain) runs there
-to judge the rest. Every IPv6 read whose walk ends at an inner IPv4 or IPv6
-packet has that packet checked one level deep, whatever its destination, since
-the mesh cannot tell another node's SID from any other address, as
-[the limits](design/limits.md#transit) say. An inner packet that is itself
-encapsulated is dropped (`nested`). A read the table answers as this node's own,
-which the mesh could only hand back to the tun, is dropped (`looped`). None of
-these is answered, as [the antispoof filter](antispoof.md) and
-[segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for the
-mesh's edge.
+holds, and on every platform but Linux as
+[the platforms](antispoof.md#platforms) say. Every IPv6 read whose walk ends at
+an inner IPv4 or IPv6 packet has that packet checked one level deep, whatever
+its destination, since the mesh cannot tell another node's SID from any other
+address, as [the limits](design/limits.md#transit) say. An inner packet that is
+itself encapsulated is dropped (`nested`). A read the table answers as this
+node's own, which the mesh could only hand back to the tun, is dropped
+(`looped`). None of these is answered, as [the antispoof filter](antispoof.md)
+and [segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for
+the mesh's edge.
 
 A read off the tun that passes those checks and that no steering policy takes,
 whose destination no entry holds or that lies inside a held prefix, is answered
@@ -1033,12 +1032,11 @@ announced a default: every other node's reconciler treats a route to the prefix
 as above. On Linux the file still loads, and the daemon logs a warning at
 startup and on each reload it applies, such as
 `config: cap.route announces fd00::/8, outside the overlay and shorter than /8 for IPv4 or /16 for IPv6 or holding the unspecified address, which counts as a default and makes this node an exit for its family, as routing.md says`.
-Every other platform refuses such a `cap.route` announcement, a default among
-them, at startup and on a reload, as it refuses `cap.egress`, since no entry
-chain runs there to pass the replies an exit's traffic draws, as
-[the configuration reference](configuration-reference.md#caproute) gives. A
-gateway to a network numbered from `fd00::/8` that should stay a subnet router
-announces the prefixes it carries, each `/16` or longer, instead.
+On every other platform such a `cap.route` announcement, a default among them,
+is refused at startup and on a reload, as
+[gaps on macOS](platforms.md#gaps-on-macos) gives. A gateway to a network
+numbered from `fd00::/8` that should stay a subnet router announces the prefixes
+it carries, each `/16` or longer, instead.
 
 `ranet3 exit list` lists a `/0` or the two `/1` halves one node advertises
 together, and nothing else. A node whose other advertisement counts, such as

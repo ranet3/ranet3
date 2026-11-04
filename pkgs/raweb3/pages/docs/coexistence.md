@@ -709,9 +709,8 @@ destination, so the checks below read what it passed.
   [`cap.exit.via`](routing.md#mode-3-on-linux) toward a destination outside the
   overlay that no entry covers, from a source this node does not own is dropped
   and counted `unowned_source`, the owned-source rule. Only this node's own
-  traffic leaves the mesh through its exits. On every platform but Linux, where
-  no entry chain runs, the rule takes every destination but an IPv6 link-local
-  one, so only this node's own traffic enters the mesh at all.
+  traffic leaves the mesh through its exits. On every platform but Linux the
+  rule takes more, as [the platforms](antispoof.md#platforms) say.
 
 [Exit mode](routing.md#exit-mode-on-linux) sends what a link `cap.exit.forward`
 names forwards into the tun toward the mesh's default, so the owned-source rule

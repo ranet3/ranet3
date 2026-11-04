@@ -68,10 +68,10 @@ forwarding decision opens every IPv6 read off the tun that ends at an inner IPv4
 or IPv6 packet, one level deep, since the mesh keeps no registry of other nodes'
 SIDs to tell a host's own IP-in-IPv6 or 6in6 tunnel from a packet steered to a
 SID. A tunnel to a peer's overlay address, carrying traffic a host forwards for
-a LAN, therefore has its inner sources judged as the host's own: a LAN source
-the node does not own is dropped toward a default as `unowned_source`, on every
-platform but Linux toward any destination but an IPv6 link-local one, and one
-the table routes to another node is `forged`. An operator tunneling a LAN
+a LAN, therefore has its inner sources judged as the host's own. A LAN source
+the node does not own is dropped as `unowned_source` toward a default, and on
+every platform but Linux as [the platforms](../antispoof.md#platforms) say. A
+source the table routes to another node is `forged`. An operator tunneling a LAN
 through the mesh announces the LAN's prefix, which makes its sources the node's
 own, or carries the tunnel in UDP, which the walk does not open.
 
@@ -92,9 +92,9 @@ other a source the table routes to the announcing node, so a read of it is
 dropped there as `forged`, whatever its destination. An anycast source a node
 does not announce is dropped there the same way, as `forged` where another node
 announces it or it lies in the overlay, and otherwise as `unowned_source` toward
-a route that counts as a default, or on every platform but Linux toward any
-destination but an IPv6 link-local one. Both are fixed by announcing the prefix
-at the node that drops them.
+a route that counts as a default, and on every platform but Linux as
+[the platforms](../antispoof.md#platforms) say. Both are fixed by announcing the
+prefix at the node that drops them.
 
 **Where no entry chain runs, an error from behind the node is dropped.** On
 every platform but Linux the tun read passes no reply, since it cannot tell one
@@ -115,8 +115,8 @@ a destination no route covers has no owned-source check there but under
 [`cap.exit.via`](../routing.md#mode-3-on-linux), where a read toward such a
 destination outside the overlay is dropped from a source this node does not own,
 as [transit](../routing.md#transit) gives. On every other platform a steered
-packet whose source this node does not own is dropped toward any destination but
-an IPv6 link-local one.
+packet whose source this node does not own is dropped as
+[the platforms](../antispoof.md#platforms) say.
 
 ## The antispoof filter
 
