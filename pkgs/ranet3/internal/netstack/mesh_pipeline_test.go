@@ -438,6 +438,37 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 	}
 }
 
+// WriteHost runs for each batch the mesh writes to the tun, so a batch
+// allocates nothing over one lane, and over several lanes no more than its
+// grouping of the batch by lane takes
+func TestWriteHostAllocatesNoMoreThanItsLanesGroups(t *testing.T) {
+	packets := make([][]byte, 0, 32)
+	for stream := range 16 {
+		for sequence := range 2 {
+			packets = append(packets, ipv6TCPPacket(uint16(40000+stream), 5201, byte(sequence)))
+		}
+	}
+	frames := framed(packets...)
+	for _, c := range []struct {
+		lanes int
+		most  float64
+	}{{1, 0}, {2, 12}, {16, 30}} {
+		t.Run(fmt.Sprintf("%d lanes", c.lanes), func(t *testing.T) {
+			devices := make([]tun.Device, c.lanes)
+			for i := range devices {
+				devices[i] = &discardDevice{}
+			}
+			m := ownEverything(&Mesh{closed: make(chan struct{})})
+			m.setDevice(lanesOf(devices...))
+			m.startInboundWriters()
+			t.Cleanup(m.Close)
+			if allocs := leastAllocs(func() { m.WriteHost(frames) }); allocs > c.most {
+				t.Errorf("a write of %d packets over %d lanes allocated %v times, want at most %v", len(frames), c.lanes, allocs, c.most)
+			}
+		})
+	}
+}
+
 func TestCollectReadyInboundCoalescesQueuedDeliveries(t *testing.T) {
 	queue := make(chan inboundWriteBatch, 2)
 	queue <- inboundWriteBatch{frames: [][]byte{{2}, {3}}}
