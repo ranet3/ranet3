@@ -92,6 +92,7 @@ func (r *rows) timers(t *testing.T) {
 	t.Run("udp into the mesh to a resolver", func(t *testing.T) { r.timerInto(t, resolverPort, false) })
 	t.Run("tcp into the mesh opening", r.timerIntoOpening)
 	t.Run("echo into the mesh", r.timerIntoEcho)
+	r.verdict()
 }
 
 // timerOut has the leaf send the server a datagram at port, which the server
@@ -116,7 +117,7 @@ func (r *rows) timerAnswered(t *testing.T) {
 	began := time.Now()
 	again := []byte("sent again over " + r.family.Name)
 	receiveFrom(t, udpReader(server), again, func() { _, _ = leaf.Write(again) })
-	r.keeps(t, began, timer{syscall.IPPROTO_UDP, r.family.Leaf, to, NoPhase, udpFloor, true})
+	r.keeps(t, began, timer{syscall.IPPROTO_UDP, r.family.Leaf, to, NoPhase, answeredFloor, true})
 }
 
 // timerOpening connects to an address nothing holds, whose SYN the router

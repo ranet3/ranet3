@@ -35,12 +35,14 @@ func (r *rows) unsolicitedSYN(t *testing.T) {
 		if !errors.Is(err, syscall.ECONNREFUSED) || took > quietPeriod {
 			t.Errorf("the SYN to %s got %v after %s, want a reset within %s", to, err, took, quietPeriod)
 		}
+		r.verdict()
 		return
 	}
 	var timeout net.Error
 	if !errors.As(err, &timeout) || !timeout.Timeout() {
 		t.Errorf("the SYN to %s got %v after %s, want no answer within %s", to, err, took, unsolicitedWait)
 	}
+	r.verdict()
 }
 
 // portRanges is RFC 4787 REQ-3 and REQ-3a: the leaf's datagram and one from
@@ -69,6 +71,7 @@ func (r *rows) portRanges(t *testing.T) {
 			first = read
 		}
 	}
+	r.verdict()
 }
 
 // unheld is an address of the overlay that neither the leaf, the spare nor
@@ -94,6 +97,7 @@ func (r *rows) fragments(t *testing.T) {
 	if from := receiveFrom(t, udpReader(server), data, func() { r.exit.hand(sent) }); from.Addr() != r.seen() {
 		t.Errorf("the server read the fragmented datagram from %s, want %s", from, r.seen())
 	}
+	r.verdict()
 }
 
 // fragment cuts raw, whose transport part is a whole number of fragmentSize,
@@ -145,6 +149,7 @@ func fragment(raw []byte) [][]byte {
 func (r *rows) errorKeepsMapping(t *testing.T) {
 	t.Run("udp", r.errorKeepsUDP)
 	t.Run("tcp", r.errorKeepsTCP)
+	r.verdict()
 }
 
 // errorKeepsUDP is REQ-12's leg: the leaf's socket opens a mapping toward the

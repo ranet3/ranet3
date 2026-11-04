@@ -37,6 +37,10 @@ const (
 	transitoryFloor  = 4 * time.Minute
 	establishedFloor = 2*time.Hour + 4*time.Minute
 	queryFloor       = time.Minute
+	// answeredFloor is the least the exit keeps a translated UDP flow idle once
+	// it has an answer and a packet past answeredAge, the 5 minutes the exit
+	// nodes page and the deviations page's RFC 4787 section 4.3 row state
+	answeredFloor = 5 * time.Minute
 	// leftRounding is the second Flow.Left is rounded down to
 	leftRounding = time.Second
 	// answeredAge is how long an answered UDP flow lasts before the leaf sends

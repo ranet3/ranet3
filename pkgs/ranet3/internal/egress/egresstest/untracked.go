@@ -68,6 +68,7 @@ func (r *rows) untracked(t *testing.T) {
 		want += 2
 	}
 	r.awaitDropped(t, before, want)
+	r.verdict()
 }
 
 // untrackedInto holds that a packet into the mesh under return no flow is
@@ -138,6 +139,7 @@ func (r *rows) untrackedInto(t *testing.T) {
 		}
 	}
 	r.awaitDropped(t, before, before+3)
+	r.verdict()
 }
 
 // awaitDropped waits for a pass after now whose count of the family's packets

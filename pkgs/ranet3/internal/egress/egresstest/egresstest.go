@@ -255,6 +255,38 @@ func (a Arm) check() error {
 	return nil
 }
 
+// ones is how many of conditions hold
+func ones(conditions ...bool) int {
+	n := 0
+	for _, c := range conditions {
+		if c {
+			n++
+		}
+	}
+	return n
+}
+
+// level is a level of Run's subtests, counting each it makes, whether
+// -test.run selects it or not, so a gate that leaves a class, a row or a step
+// out of a level fails at holds and not in silence
+type level struct {
+	t    *testing.T
+	made int
+}
+
+func (l *level) run(name string, f func(*testing.T)) {
+	l.made++
+	l.t.Run(name, f)
+}
+
+// holds fails the level unless it made want subtests
+func (l *level) holds(want int) {
+	l.t.Helper()
+	if l.made != want {
+		l.t.Errorf("the suite ran %d rows in %s, want %d", l.made, l.t.Name(), want)
+	}
+}
+
 var defaults = []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
 
 // every is the default of prefix's family
@@ -274,77 +306,97 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 	if err := arm.check(); err != nil {
 		t.Fatal(err)
 	}
+	inside := slices.Contains(arm.Classes, Address) && slices.Contains(arm.Classes, None)
+	top := &level{t: t}
 	for _, class := range arm.Classes {
-		t.Run(class.String(), func(t *testing.T) {
+		top.run(class.String(), func(t *testing.T) {
 			network := build(t)
 			exit := start(t, network, arm, class, 0)
+			under := &level{t: t}
 			for _, v6 := range []bool{false, true} {
 				r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
-				t.Run(r.family.Name, func(t *testing.T) {
-					t.Run("what the server sees", r.serverSees)
-					t.Run("errors toward the leaf", r.errorsTowardTheLeaf)
-					t.Run("path mtu", r.pathMTU)
-					t.Run("hop limits", r.hopLimits)
-					t.Run("port reuse", r.portReuse)
-					t.Run("egress from several sessions at once", r.sessions)
-					t.Run("packets no flow is tracked for", r.untracked)
-					t.Run("packets into the mesh no flow is tracked for", r.untrackedInto)
-					if class != None && !v6 {
-						t.Run("icmp a nat does not carry", r.icmpNotCarried)
-					}
-					t.Run("protocols whose checksum covers the addresses", r.checksummed)
-					if arm.Flows != nil {
-						t.Run("idle timers", r.timers)
-					}
-					if class != None {
-						t.Run("filtering", r.filtering)
-						t.Run("hairpinning", r.hairpinning)
-						t.Run("tcp filtering", r.tcpFiltering)
-						t.Run("tcp hairpinning", r.tcpHairpinning)
-						t.Run("simultaneous open", r.simultaneousOpen)
-						t.Run("unsolicited syn", r.unsolicitedSYN)
-						t.Run("port ranges", r.portRanges)
-						t.Run("out of order fragments", r.fragments)
-						t.Run("a mapping surviving an error", r.errorKeepsMapping)
-					}
-					t.Run("the limit on a source's flows", r.sourceLimit)
+				under.run(r.family.Name, func(t *testing.T) {
+					family := &level{t: t}
+					r.steps(func(name string, step func(*testing.T)) { family.run(name, r.judged(step)) })
+					// a family runs 10 steps under every class, the quench in IPv4 alone, the idle timers for an arm that reads its flows,
+					// and 9 more under a class that translates
+					family.holds(10 + ones(!v6, arm.Flows != nil) + 9*ones(class != None))
 				})
 			}
-			t.Run("disabled and enabled", func(t *testing.T) { exit.disable(t, network, class) })
+			under.run("disabled and enabled", func(t *testing.T) { exit.disable(t, network, class) })
 			if arm.Remove != nil {
-				t.Run("another writer", func(t *testing.T) { exit.overwritten(t, network, class, arm.Remove) })
+				under.run("another writer", func(t *testing.T) { exit.overwritten(t, network, class, arm.Remove) })
 			}
 			if arm.Masquerade != nil {
-				t.Run("another writer's translation", func(t *testing.T) { exit.masqueraded(t, network, class, arm.Masquerade) })
+				under.run("another writer's translation", func(t *testing.T) { exit.masqueraded(t, network, class, arm.Masquerade) })
 			}
-			t.Run("stop", exit.stop)
+			under.run("stop", exit.stop)
+			// a class runs both families, the disabling, another writer for each the arm can play, and the stop
+			under.holds(4 + ones(arm.Remove != nil, arm.Masquerade != nil))
 		})
 	}
-	t.Run("a share the capability names", func(t *testing.T) {
+	top.run("a share the capability names", func(t *testing.T) {
 		class := arm.Classes[0]
 		network := build(t)
 		exit := start(t, network, arm, class, namedLimit)
+		share := &level{t: t}
 		for _, v6 := range []bool{false, true} {
 			r := &rows{network: network, family: network.Family(v6), class: class, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
-			t.Run(r.family.Name, r.sourceLimit)
+			share.run(r.family.Name, r.judged(r.sourceLimit))
 		}
-		t.Run("stop", exit.stop)
+		share.run("stop", exit.stop)
+		share.holds(3)
 	})
-	if !slices.Contains(arm.Classes, Address) || !slices.Contains(arm.Classes, None) {
-		return
+	if inside {
+		// the limit of a class that translates inside a class of none sits in the
+		// chain that class's pass goes on to, and counts none of that class's
+		// sources
+		top.run("a class that translates inside one of none", func(t *testing.T) {
+			network := build(t)
+			exit := start(t, network, arm, Inside, namedLimit)
+			share := &level{t: t}
+			for _, v6 := range []bool{false, true} {
+				r := &rows{network: network, family: network.Family(v6), class: Inside, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
+				share.run(r.family.Name, r.judged(r.sourceLimit))
+			}
+			share.run("stop", exit.stop)
+			share.holds(3)
+		})
 	}
-	// the limit of a class that translates inside a class of none sits in the
-	// chain that class's pass goes on to, and counts none of that class's
-	// sources
-	t.Run("a class that translates inside one of none", func(t *testing.T) {
-		network := build(t)
-		exit := start(t, network, arm, Inside, namedLimit)
-		for _, v6 := range []bool{false, true} {
-			r := &rows{network: network, family: network.Family(v6), class: Inside, exit: exit, terminates: arm.Terminates, flows: arm.Flows, limits: arm.Limits}
-			t.Run(r.family.Name, r.sourceLimit)
-		}
-		t.Run("stop", exit.stop)
-	})
+	// the run makes each class of the arm's, the share, and Inside for an arm that carries Address and None
+	top.holds(len(arm.Classes) + 1 + ones(inside))
+}
+
+// steps makes a family's steps through step, holding no testing.T of its own,
+// so each subtest of a family is a step the family's level counts
+func (r *rows) steps(step func(name string, run func(*testing.T))) {
+	step("what the server sees", r.serverSees)
+	step("errors toward the leaf", r.errorsTowardTheLeaf)
+	step("path mtu", r.pathMTU)
+	step("hop limits", r.hopLimits)
+	step("port reuse", r.portReuse)
+	step("egress from several sessions at once", r.sessions)
+	step("packets no flow is tracked for", r.untracked)
+	step("packets into the mesh no flow is tracked for", r.untrackedInto)
+	if !r.v6() {
+		step("icmp a nat does not carry", r.icmpNotCarried)
+	}
+	step("protocols whose checksum covers the addresses", r.checksummed)
+	if r.flows != nil {
+		step("idle timers", r.timers)
+	}
+	if r.class != None {
+		step("filtering", r.filtering)
+		step("hairpinning", r.hairpinning)
+		step("tcp filtering", r.tcpFiltering)
+		step("tcp hairpinning", r.tcpHairpinning)
+		step("simultaneous open", r.simultaneousOpen)
+		step("unsolicited syn", r.unsolicitedSYN)
+		step("port ranges", r.portRanges)
+		step("out of order fragments", r.fragments)
+		step("a mapping surviving an error", r.errorKeepsMapping)
+	}
+	step("the limit on a source's flows", r.sourceLimit)
 }
 
 // running is a backend under test, built for cfg, with what its hooks were

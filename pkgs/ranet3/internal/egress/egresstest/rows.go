@@ -54,6 +54,24 @@ type rows struct {
 	terminates bool
 	flows      func(Host) ([]Flow, error)
 	limits     map[Limit]Declared
+	// verdicts is how many times a step reached its verdict
+	verdicts int
+}
+
+// verdict marks the step's verdict reached, the last act of each path by
+// which a step returns having failed nothing
+func (r *rows) verdict() { r.verdicts++ }
+
+// judged is step, failing where it returns having failed nothing and reached
+// no verdict, as a gate inside it would
+func (r *rows) judged(step func(*testing.T)) func(*testing.T) {
+	return func(t *testing.T) {
+		before := r.verdicts
+		step(t)
+		if r.verdicts == before && !t.Failed() {
+			t.Error("the step returned before its verdict")
+		}
+	}
 }
 
 func (r *rows) v6() bool { return r.family.Leaf.Is6() }
@@ -79,6 +97,7 @@ func (r *rows) serverSees(t *testing.T) {
 	t.Run("tcp reset by the server", func(t *testing.T) { r.reset(t, listener, to, false) })
 	t.Run("udp", func(t *testing.T) { r.udp(t, to) })
 	t.Run("echo", func(t *testing.T) { r.echoTo(t, r.family.Server, echoID) })
+	r.verdict()
 }
 
 func (r *rows) halfClose(t *testing.T, listener *net.TCPListener, to netip.AddrPort, byLeaf bool) {
@@ -183,6 +202,7 @@ func (r *rows) errorsTowardTheLeaf(t *testing.T) {
 	t.Run("unreachable network", func(t *testing.T) { r.unreachable(t, "network unreachable", r.family.NoNetwork, netUnreachable) })
 	t.Run("error from the leaf", r.leafError)
 	t.Run("protocol no rule names", r.otherProtocol)
+	r.verdict()
 }
 
 // closedUDP sends to a port nothing listens on, which the leaf's socket reads
@@ -336,6 +356,7 @@ func (r *rows) pathMTU(t *testing.T) {
 		r.answered(t, "too big from the router", sent, tooBig, r.fromRouter, r.family.NarrowMTU)
 	})
 	t.Run("tcp transfer", r.transfer)
+	r.verdict()
 }
 
 func (r *rows) transfer(t *testing.T) {
@@ -392,6 +413,7 @@ func (r *rows) transfer(t *testing.T) {
 func (r *rows) hopLimits(t *testing.T) {
 	sent := datagram(netip.AddrPortFrom(r.family.Leaf, leafHopPort), netip.AddrPortFrom(r.family.Server, hopPort), 1, []byte("one hop over "+r.family.Name))
 	r.answered(t, "time exceeded from the exit", sent, hopExceeded, r.fromExit, 0)
+	r.verdict()
 }
 
 // portReuse is row 5: a leaf reconnecting from one port to one server just
@@ -403,6 +425,7 @@ func (r *rows) portReuse(t *testing.T) {
 	t.Run("udp from one port to two servers", r.udpPair)
 	t.Run("tcp from one port to two servers", r.tcpPair)
 	t.Run("echo from one identifier to two servers", r.echoPair)
+	r.verdict()
 }
 
 // reconnect closes a connection from the server first, which holds the
@@ -542,6 +565,7 @@ func (r *rows) sessions(t *testing.T) {
 			t.Errorf("the server read %q from %s, want %s", data, from, r.seen())
 		}
 	}
+	r.verdict()
 }
 
 func (r *rows) answered(t *testing.T, what string, sent []byte, want message, from func(netip.Addr) bool, mtu int) {

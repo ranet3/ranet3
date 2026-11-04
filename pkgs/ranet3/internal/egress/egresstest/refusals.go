@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"net"
 	"net/netip"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -54,6 +55,7 @@ func (r *rows) icmpNotCarried(t *testing.T) {
 		}
 	}
 	r.echoTo(t, r.family.Server, quenchEchoID)
+	r.verdict()
 }
 
 // readsICMP is whether the server reads an ICMP message of type kind within
@@ -77,12 +79,13 @@ func readsICMP(icmp *net.IPConn, kind byte) bool {
 // itself and valid. Under none the server reads each from the leaf's own
 // address, valid, and its answer, a DCCP-Response of section 5.3 or a
 // UDP-Lite datagram, reaches the leaf as the server sent it, the UDP-Lite one
-// unless the arm declares UDP-Lite unanswered. Under a class that translates
-// the server never reads one whose checksum fails for the addresses it reads
-// it from: it reads it valid from the class's address, or reads nothing while
-// each answer about it is an administratively prohibited from an address of
-// the exit, at least one of them arriving unless the arm declares the refusal
-// of IPv4 DCCP or of UDP-Lite unanswered, and none where it does.
+// not at all where the arm declares UDP-Lite unanswered. Under a class that
+// translates the server never reads one whose checksum fails for the
+// addresses it reads it from: it reads it valid from the class's address, or
+// reads nothing while each answer about it is an administratively prohibited
+// from an address of the exit, at least one of them arriving unless the arm
+// declares the refusal of IPv4 DCCP or of UDP-Lite unanswered, and none where
+// it does.
 func (r *rows) checksummed(t *testing.T) {
 	for _, p := range []struct {
 		name            string
@@ -138,15 +141,28 @@ func (r *rows) checksummed(t *testing.T) {
 				if read == nil || from != r.family.Leaf || !valid {
 					t.Fatalf("under none the server read the %s packet from %s with a valid checksum %v, want it from the leaf's own %s, valid", p.name, from, valid, r.family.Leaf)
 				}
-				if unanswered && p.dropsReply {
-					return
-				}
 				answer := p.answer(to, leaf)
 				answer = answer[headerLength(answer):]
-				if !r.await(func() { _, _ = raw.WriteToIP(answer, &net.IPAddr{IP: leaf.Addr().AsSlice()}) }, func(packet []byte) bool {
+				// a send the server's socket refuses reaches nothing, which the declared arm would take for the exit's drop
+				send := func() {
+					if _, err := raw.WriteToIP(answer, &net.IPAddr{IP: leaf.Addr().AsSlice()}); err != nil {
+						t.Fatalf("send the server's %s answer to the leaf's %s: %v", p.name, leaf, err)
+					}
+				}
+				reached := func(packet []byte) bool {
 					a, ok := parse(packet)
 					return ok && a.protocol == p.protocol && a.src == to.Addr() && a.dst == leaf.Addr() && bytes.Equal(a.payload, answer)
-				}) {
+				}
+				if unanswered && p.dropsReply {
+					before := len(r.network.Back())
+					send()
+					time.Sleep(quietPeriod)
+					if slices.ContainsFunc(r.network.Back()[before:], reached) {
+						t.Errorf("the arm declares the %s reply into the mesh dropped under none, and the server's answer reached the leaf's %s", p.name, leaf)
+					}
+					return
+				}
+				if !r.await(send, reached) {
 					t.Errorf("under none the server's %s answer to the leaf's %s reached the leaf not at all", p.name, leaf)
 				}
 				return
@@ -178,6 +194,7 @@ func (r *rows) checksummed(t *testing.T) {
 			}
 		})
 	}
+	r.verdict()
 }
 
 // dccpRequest is a DCCP-Request from from to to, RFC 4340 section 5.2, of

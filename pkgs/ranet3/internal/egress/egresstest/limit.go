@@ -50,6 +50,7 @@ func (r *rows) sourceLimit(t *testing.T) {
 	}
 	if r.class.spareUnderNone() {
 		t.Run("the next flow carried under none", func(t *testing.T) { r.carriedPast(t, refusedServer, refusedTo, before) })
+		r.verdict()
 		return
 	}
 	refused := []byte("past the limit over " + r.family.Name)
@@ -74,6 +75,7 @@ func (r *rows) sourceLimit(t *testing.T) {
 		}
 	})
 	t.Run("the refusals counted", func(t *testing.T) { r.counted(t, before, mark) })
+	r.verdict()
 }
 
 // fill opens the spare address's first count flows to the server at to, a

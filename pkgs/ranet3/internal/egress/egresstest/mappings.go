@@ -34,6 +34,7 @@ func (r *rows) filtering(t *testing.T) {
 		if from := receiveFrom(t, udpReader(leaf), sent, func() { _, _ = stranger.Write(sent) }); from != otherPort {
 			t.Errorf("the leaf read the datagram to its mapping from %s, want %s", from, otherPort)
 		}
+		r.verdict()
 		return
 	}
 	t.Logf("declared in %s: %s", declared.Row, declared.Reason)
@@ -47,6 +48,7 @@ func (r *rows) filtering(t *testing.T) {
 			t.Errorf("the leaf read the datagram from %s to its mapping from %s, which the arm declares it does not carry", from, got)
 		}
 	}
+	r.verdict()
 }
 
 // hairpinning is RFC 4787 REQ-9. The leaf's own address opens a mapping toward
@@ -70,6 +72,7 @@ func (r *rows) hairpinning(t *testing.T) {
 		if from := receiveFrom(t, udpReader(leaf), data, func() { r.exit.hand([][]byte{sent}) }); from.Addr() != r.seen() {
 			t.Errorf("the leaf read the hairpinned datagram from %s, want the spare's mapping on %s", from, r.seen())
 		}
+		r.verdict()
 		return
 	}
 	t.Logf("declared in %s: %s", declared.Row, declared.Reason)
@@ -77,6 +80,7 @@ func (r *rows) hairpinning(t *testing.T) {
 	if from, ok := readOnce(leaf, data, quietPeriod); ok {
 		t.Errorf("the leaf read the spare's datagram to its mapping from %s, which the arm declares it does not carry", from)
 	}
+	r.verdict()
 }
 
 // tcpFiltering is RFC 5382 REQ-3, TCP's filtering. The leaf, listening on its
@@ -103,6 +107,7 @@ func (r *rows) tcpFiltering(t *testing.T) {
 		if from := addrPort(accept(t, listener).RemoteAddr()); from != otherPort {
 			t.Errorf("the leaf accepted the connection to its mapping from %s, want %s", from, otherPort)
 		}
+		r.verdict()
 		return
 	}
 	t.Logf("declared in %s: %s", declared.Row, declared.Reason)
@@ -116,6 +121,7 @@ func (r *rows) tcpFiltering(t *testing.T) {
 		}
 	}
 	acceptsNothing(t, listener)
+	r.verdict()
 }
 
 // tcpHairpinning is RFC 5382 REQ-8, TCP's hairpinning. The leaf, listening on
@@ -145,6 +151,7 @@ func (r *rows) tcpHairpinning(t *testing.T) {
 		if from := addrPort(accept(t, listener).RemoteAddr()); from.Addr() != r.seen() {
 			t.Errorf("the leaf accepted the hairpinned connection from %s, want the spare's mapping on %s", from, r.seen())
 		}
+		r.verdict()
 		return
 	}
 	t.Logf("declared in %s: %s", declared.Row, declared.Reason)
@@ -160,6 +167,7 @@ func (r *rows) tcpHairpinning(t *testing.T) {
 		t.Errorf("no reset from the mapping %s came back toward the spare", mapping)
 	}
 	acceptsNothing(t, listener)
+	r.verdict()
 }
 
 // simultaneousOpen is RFC 5382 REQ-2a, section 4.2: a NAT MUST handle a TCP
@@ -202,6 +210,7 @@ func (r *rows) simultaneousOpen(t *testing.T) {
 	readFull(t, leaf.conn, data)
 	write(t, leaf.conn, data)
 	readFull(t, server, data)
+	r.verdict()
 }
 
 // dialFromServer opens a socket of the server's side at local, connected to to
