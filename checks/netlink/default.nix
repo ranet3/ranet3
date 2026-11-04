@@ -5,14 +5,9 @@
 # a network namespace to make a mess in, so they skip themselves under the go
 # check, which builds as an unprivileged user. That left every rule write, the
 # FRA_PROTOCOL ownership it rests on, and every byte of the nf_tables encoding
-# asserted nowhere any check ran. These are the same test binaries, run as root
-# against a real kernel.
-# internal/netstack's tun round trips run here for the same reason
-# and internal/nftables's sets and expressions beside nft's own encoding
-# and so does transport's send through a path whose mtu is locked
-# and the tun package of pkgs/wireguard
-# and internal/registry's and internal/client's tests of the endpoint resolver's mark, through a resolv.conf of their own
-# and cmd/ranet3's start and stop, whose parts write a tun, rules and tables
+# asserted nowhere any check ran. These are the same test binaries, each run
+# whole as root against a real kernel, and every test each lists passes in one
+# of its runs or is named with the reason it passes in none.
 {
   lib,
   iproute2,
@@ -75,6 +70,12 @@ testers.runNixOSTest {
   ];
 
   nodes.machine.virtualisation.memorySize = 2048;
+  # the binaries run whole, so their tests whose senders and readers run at once get several CPUs, as under the go-test
+  # check, and veth's GRO coalesces only what a sender on another CPU queues while the near end polls
+  nodes.machine.virtualisation.cores = 4;
+  # no DHCP client, so nothing but the tests writes the machine's links and routes, and resolv.conf names no nameserver
+  # the machine cannot reach, so a name a test looks up fails at once, as in the go-test check's sandbox
+  nodes.machine.networking.useDHCP = false;
 
   # the kill switch's tunnel lab writes a GRE and a WireGuard tunnel, whose modules nothing else here loads
   nodes.machine.boot.kernelModules = [
@@ -85,6 +86,8 @@ testers.runNixOSTest {
   nodes.machine.boot.kernel.sysctl."net.core.fb_tunnels_only_for_init_net" = 2;
 
   testScript = ''
+    import re
+
     machine.wait_for_unit("multi-user.target")
 
     # The host's own nftables tables, whatever they are. This machine runs the
@@ -97,291 +100,90 @@ testers.runNixOSTest {
     before = foreign()
     print("the host's own tables:", before)
 
-    # -test.v so a failure names the round trip rather than the package, and
-    # the count so a pass here means the binary ran them rather than skipping
-    # them for the same reason the go check does.
-    out = machine.succeed(
-        "${netlinkTests}/bin/netlink-tests -test.v -test.run 'TestNetlink' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the tests skipped themselves under root:\n{out}"
-    assert "--- PASS: TestNetlinkDumpRulesReadsEveryOwner" in out, f"the rule dump's round trip did not run:\n{out}"
-    assert "--- PASS: TestNetlinkRouteGetNamesTheMatchedRouteAndTable" in out, f"the route lookup did not run:\n{out}"
-    assert "--- PASS: TestNetlinkRouteGetNamesTheRuleTheLookupTook" in out, f"the rule a lookup took was not named:\n{out}"
-    assert "--- PASS: TestNetlinkRouteGetNamesACandidateForAnErrnoRaisedOutsideTheWalk" in out, f"a rule an errno raised outside the walk answers was not named a candidate:\n{out}"
-    assert "--- PASS: TestNetlinkRouteGetWalksAnInvertedRuleOfASelectorItDoesNotRead" in out, f"an inverted rule of an unread selector was not walked:\n{out}"
-    assert "--- PASS: TestNetlinkRouteGetNamesTheRuleAnExceptionTook" in out, f"the rule an exception took was not named:\n{out}"
-    assert "--- PASS: TestNetlinkRouteGetNamesLocalForALocalRouteOfOneTrie" in out, f"the local route of one trie was not named the lookup of local:\n{out}"
-    assert "--- PASS: TestNetlinkRouteGetAnswersARouteOfNoTableEntryAsTheKernelsOwn" in out, f"a route of no table entry was not answered as the kernel's own:\n{out}"
-    assert "--- PASS: TestNetlinkLookupsReportAnotherProgramsRuleAhead" in out, f"the reconciler's lookups did not run:\n{out}"
-    assert "--- PASS: TestNetlinkFollowsAnotherWritersAddressOnTheTun" in out, f"the reconciler's wake on the tun's addresses did not run:\n{out}"
-    assert "--- PASS: TestNetlinkFallbackNoneEndsTheWalkAsTheRulesSay" in out, f"fallback = \"none\"'s rules did not run:\n{out}"
-    assert "--- PASS: TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter" in out, f"the fallback table did not run:\n{out}"
-    assert "--- PASS: TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass" in out, f"the fallback table's wake did not run:\n{out}"
-    assert "--- PASS: TestNetlinkSteeredDefaultsComeAndGoWithTheSegments" in out, f"mode 3's steered defaults did not run:\n{out}"
-    assert "--- PASS: TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh" in out, f"the fallback table after a failed mesh's stop did not run:\n{out}"
-    ran = out.count("--- PASS")
-    assert ran >= 7, f"only {ran} netlink round trips ran:\n{out}"
+    # each test binary and its package's directory of the source the go-test
+    # check tests, where it runs, so its tests read their testdata as they do there
+    binaries = {
+        "netlink-tests": ("${netlinkTests}/bin/netlink-tests", "${ranet3.src}/internal/kernel"),
+        "egress-tests": ("${netlinkTests}/bin/egress-tests", "${ranet3.src}/internal/egress/kernel"),
+        "nftables-tests": ("${netlinkTests}/bin/nftables-tests", "${ranet3.src}/internal/nftables"),
+        "suite-tests": ("${netlinkTests}/bin/suite-tests", "${ranet3.src}/internal/egress/egresstest"),
+        "netstack-tests": ("${netlinkTests}/bin/netstack-tests", "${ranet3.src}/internal/netstack"),
+        "client-tests": ("${netlinkTests}/bin/client-tests", "${ranet3.src}/internal/client"),
+        "transport-tests": ("${netlinkTests}/bin/transport-tests", "${ranet3.src}/transport"),
+        "registry-tests": ("${netlinkTests}/bin/registry-tests", "${ranet3.src}/internal/registry"),
+        "daemon-tests": ("${netlinkTests}/bin/daemon-tests", "${ranet3.src}/cmd/ranet3"),
+        "tun-tests": ("${wireguardTests}/bin/tun-tests", "${wireguard.src}/tun"),
+    }
+    # the tests that pass in no run here, each with the reason, by binary
+    crash = "a lab's crash helper, which runs in the process its lab starts and kills, and skips anywhere else"
+    named: dict[str, dict[str, str]] = {
+        "egress-tests": {"TestBorderCrashHelper": crash},
+        "client-tests": {
+            "TestEntryLabCrashHelper": crash,
+            "TestExitLabCrashHelper": crash,
+            "TestKillSwitchLabCrashHelper": crash,
+            "TestSaveFailsWhereTheStateDirectoryWillNotSync": "root reads a directory whatever its mode, so the sync the test needs refused succeeds, and the test skips",
+        },
+    }
+    # the subtests a step of these binaries stands on, which the cover of top-level tests leaves out
+    subtests = {
+        "egress-tests": ["TestKernelExitPassesTheExitBehaviorSuite/a_share_the_capability_names"],
+        "client-tests": ["TestTUNKillSwitchHoldsInModeThree/the_antispoof_filter's_table_the_stop_for_the_mesh's_failure_leaves"],
+        "daemon-tests": [
+            "TestDaemonStoppedWhileItBuildsStartsNothing/SIGTERM",
+            "TestDaemonStoppedWhileItBuildsStartsNothing/SIGINT",
+            "TestDaemonForcedOutOfItsBuildByASecondSignal/in_the_build",
+            "TestDaemonForcedOutOfItsBuildByASecondSignal/in_the_undo",
+            "TestDaemonEndedInItsBuildLeavesTheTablesItFound/refused_at_the_reconciler",
+            "TestDaemonEndedInItsBuildLeavesTheTablesItFound/stopped_while_it_builds",
+        ],
+    }
+    passed: dict[str, set[str]] = {binary: set() for binary in binaries}
 
-    # The nf_tables half. A fake backend can only ever agree with the encoder
-    # it was written beside, so what the kernel accepts, and the spelling it
-    # hands back for a diff to compare against, is checked here and nowhere
-    # else short of the full exit node arm.
-    out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestNftables(RoundTrip|NotifiesAnotherWritersChange|RewritesAnotherWritersRuleInItsChain|RemakesATableHoldingAStaleTimeout|KeepsTheSetsCountsAcrossARewrite|RemakesATableWhoseSetCountsAnotherLimit|WakesMissedOnAnOverflow|PutsBackAnotherWritersChangeToItsTable|ReportsTheNatChainsAtItsPriorityOrBelow|RewritesALineEditedUnderItsComment|ReadsTheChainsOfClassesOfNoneBack|NamesTheChainThatKeepsAStrayChainOfNone)|^TestBorderRoundTrip(PutsBackWhatAnotherWriterChanged|RefillsAFlushedSet|HoldsTheEntryChainAloneWithNoBorder|TakesOverATableWithAStrayChain|OutlivesAKilledOwner)?$|^TestBorderPassSendsAOneLANChangeAsItsDelta$|^TestBorderTakesTheExemptOwnRangeFromItsCarveOutsLinkAlone$|^TestBorderKeepsTheOwnRangeCarvedWhereACarveOutHoldingItIsNotExempt$' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the nftables round trips skipped themselves under root:\n{out}"
-    assert "--- PASS: TestBorderRoundTrip" in out, f"the antispoof filter's round trip did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripPutsBackWhatAnotherWriterChanged" in out, f"the antispoof filter's readback of another writer's change did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripRefillsAFlushedSet" in out, f"the antispoof filter's flushed set did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder" in out, f"the entry chain with no overlay did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripTakesOverATableWithAStrayChain" in out, f"the start over a table with a stray chain did not run:\n{out}"
-    assert "--- PASS: TestBorderRoundTripOutlivesAKilledOwner" in out, f"the antispoof filter's table outliving its owner did not run:\n{out}"
-    assert "--- PASS: TestBorderPassSendsAOneLANChangeAsItsDelta" in out, f"the antispoof filter's delta of one LAN did not run:\n{out}"
-    assert "--- PASS: TestBorderTakesTheExemptOwnRangeFromItsCarveOutsLinkAlone" in out, f"the gateway's exempt range on its carve-out's link did not run:\n{out}"
-    assert "--- PASS: TestBorderKeepsTheOwnRangeCarvedWhereACarveOutHoldingItIsNotExempt" in out, f"the gateway's range under a carve-out no exemption names did not run:\n{out}"
-    assert "--- PASS: TestNftablesRemakesATableHoldingAStaleTimeout" in out, f"the stale timeout's remake did not run:\n{out}"
-    assert "--- PASS: TestNftablesKeepsTheSetsCountsAcrossARewrite" in out, f"the sets' counts across a rewrite did not run:\n{out}"
-    assert "--- PASS: TestNftablesRemakesATableWhoseSetCountsAnotherLimit" in out, f"the remake of a set counting another limit did not run:\n{out}"
-    assert "--- PASS: TestNftablesReportsTheNatChainsAtItsPriorityOrBelow" in out, f"the report of other nat chains did not run:\n{out}"
-    assert "--- PASS: TestNftablesRewritesALineEditedUnderItsComment" in out, f"the rewrite of a line edited under its comment did not run:\n{out}"
-    assert "--- PASS: TestNftablesReadsTheChainsOfClassesOfNoneBack" in out, f"the readback of the chains of classes of none did not run:\n{out}"
-    assert "--- PASS: TestNftablesNamesTheChainThatKeepsAStrayChainOfNone" in out, f"the chain keeping a stray chain of none did not run:\n{out}"
-    ran = out.count("--- PASS")
-    assert ran >= 21, f"only {ran} nftables round trips ran:\n{out}"
+    def ran(command):
+        """runs command, a binary named as in binaries with its flags and maybe a namespace of its own, under -test.v in the binary's directory,
+        keeps each test and subtest it passed, and fails on a test it skipped that named does not hold"""
+        binary = next(name for name in binaries if re.search(rf"(^| ){name}( |$)", command))
+        path, directory = binaries[binary]
+        out = machine.succeed(f"cd {directory} && {command.replace(binary, path + ' -test.v', 1)} 2>&1")
+        print(out)
+        passed[binary].update(re.findall(r"^\s*--- PASS: (\S+)", out, re.M))
+        for name in re.findall(r"^\s*--- SKIP: (\S+)", out, re.M):
+            assert name.split("/")[0] in named.get(binary, {}), f"{binary} skipped {name} under root:\n{out}"
 
-    # the encoder's sets, their elements, the lookup, ct with a direction and the set messages of the monitor, each
-    # acting on loopback's datagrams, and woken by another writer, and a set of ten thousand intervals filled in one batch
-    out = machine.succeed(
-        "${netlinkTests}/bin/nftables-tests -test.v -test.run '^TestNftables(FilterExpressionsActOnPackets|SetElementsReadBackAndWakeOnAnothersChange|BatchFillsASetOfTenThousandIntervals)$' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the encoder's round trips skipped themselves under root:\n{out}"
-    assert "--- PASS: TestNftablesFilterExpressionsActOnPackets" in out, f"the expressions on packets did not run:\n{out}"
-    assert "--- PASS: TestNftablesSetElementsReadBackAndWakeOnAnothersChange" in out, f"the set elements' readback and wake did not run:\n{out}"
-    assert "--- PASS: TestNftablesBatchFillsASetOfTenThousandIntervals" in out, f"the batch of ten thousand intervals did not run:\n{out}"
+    def pattern(command):
+        """the -test.run pattern of command"""
+        return re.findall(r"-test\.run '([^']*)'", command)[0]
 
-    # a set moved by the intervals that differ in one transaction, two intervals joined and split again among the moves
-    out = machine.succeed(
-        "${netlinkTests}/bin/nftables-tests -test.v -test.run '^TestNftablesUpdate(MovesASetInTheKernel|JoinsTwoIntervalsAndSplitsThemInTheKernel)$' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the set's moves skipped themselves under root:\n{out}"
-    assert "--- PASS: TestNftablesUpdateMovesASetInTheKernel" in out, f"the set's move did not run:\n{out}"
-    assert "--- PASS: TestNftablesUpdateJoinsTwoIntervalsAndSplitsThemInTheKernel" in out, f"the join and split of two intervals did not run:\n{out}"
+    for binary in ["netlink-tests", "egress-tests", "nftables-tests", "suite-tests", "netstack-tests", "transport-tests", "tun-tests"]:
+        ran(binary)
 
-    # the exit behavior suite against the kernel exit under each class: rows 1 to 5, Egress from several sessions, the
-    # packets no flow is tracked for out of the mesh and into it, the idle timers read from conntrack's listing, the
-    # return direction's and an answered flow's among them,
-    # filtering and hairpinning as it declares them under the classes that translate, and row 6's limit on a source's
-    # flows in both families, the withdrawal and restore, another writer's change, another writer's translation at
-    # srcnat made after the exit's and one ahead of it, and the stop, a leaf, the exit, a router and a server in
-    # namespaces of their own
-    out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^TestKernelExitPassesTheExitBehaviorSuite$' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the exit behavior suite skipped itself under root:\n{out}"
-    assert "--- PASS: TestKernelExitPassesTheExitBehaviorSuite" in out, f"the exit behavior suite did not pass:\n{out}"
-    assert "--- PASS: TestKernelExitPassesTheExitBehaviorSuite/a_share_the_capability_names" in out, f"row 6 at a share the capability names did not pass:\n{out}"
-    ran = out.count("--- PASS")
-    assert ran >= 343, f"only {ran} of the exit behavior suite's tests ran:\n{out}"
-
-    # the kernel exit held not ready while the host does not hold an address its classes translate to, in a namespace of
-    # its own, each family's taken off lo and put back
-    # and its debug read of a rule's counter, from two readers beside passes following one another, and across its stop
-    out = machine.succeed(
-        "${netlinkTests}/bin/egress-tests -test.v -test.run '^(TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady|TestDebugReadsARulesCounterWithoutAPass|TestDebugReadsBesidePassesAndAnotherReader|TestDebugReadsAcrossTheExitsStop)$' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the class address's readiness skipped itself under root:\n{out}"
-    assert "--- PASS: TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady" in out, f"the class address's readiness did not pass:\n{out}"
-    assert "--- PASS: TestDebugReadsARulesCounterWithoutAPass" in out, f"the debug read of a rule's counter did not pass:\n{out}"
-    assert "--- PASS: TestDebugReadsBesidePassesAndAnotherReader" in out, f"the debug reads beside passes and each other did not pass:\n{out}"
-    assert "--- PASS: TestDebugReadsAcrossTheExitsStop" in out, f"the debug reads across the exit's stop did not pass:\n{out}"
-
-    # the suite's own fakes of the backends no real one stands for yet, one mapping the leaf's ports and one ending its TCP
-    out = machine.succeed(
-        "${netlinkTests}/bin/suite-tests -test.v -test.run '^Test(PortMappingBackendMeetsTheRowsThatReadTheMapping|TerminatingBackendMeetsThePathMTURow)$' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the suite's fakes skipped themselves under root:\n{out}"
-    assert "--- PASS: TestPortMappingBackendMeetsTheRowsThatReadTheMapping" in out, f"the port mapping fake did not pass:\n{out}"
-    assert "--- PASS: TestTerminatingBackendMeetsThePathMTURow" in out, f"the terminating fake did not pass:\n{out}"
-    ran = out.count("--- PASS")
-    assert ran >= 52, f"only {ran} of the suite's fake tests ran:\n{out}"
-
-    # the tun round trips create a device, attach to one and read its gso limit back
-    # refuse a mesh under the default name where a device of that name is there
-    # and open several lanes as one device
-    out = machine.succeed(
-        "${netlinkTests}/bin/netstack-tests -test.v -test.run 'TestTUN' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the tun round trips skipped themselves under root:\n{out}"
-    ran = out.count("--- PASS")
-    assert ran >= 34, f"only {ran} tun round trips ran:\n{out}"
-
-    # the client's tun round trips
-    # among them a TCP stream through a black hole a session's search finds
-    # a veth pair to a second namespace whose far end drops what it cannot take and answers nothing
-    # and three nodes in a line whose middle one forwards and answers in process, with its kernel forwarding nothing
-    # and an exit carrying transit in process, with nothing out of its uplink
-    # and the same exit egressing each shape of the internet it advertises translated, a stranger's source refused
-    # and an exit egressing both modes through its one tun, held not ready by each kernel lookup that fails and refusing a mesh destination at its SID
-    # and an exit carrying a class of none, a class of an address, return from its LAN and its own traffic under the derived rules
-    # and a leaf's sockets of every kind sent where the derived rules and the mirror send them, beside another program's table, as an exit, and nothing left after a stop
-    # and the same leaf in exit mode beside a masqueraded bridge and a routed LAN, under each reverse path check
-    # and in exit mode beside Tailscale, a conntrack mark restore, kube-proxy and Cilium, and Docker, live, retracted and after kill -9
-    # and an IPv6 arrival the route view says the kernel drops exactly where the kernel counts it dropped, not forwarded
-    # and each kind of destination, own and arriving, the route view naming the path the kernel takes for it
-    # and the same leaf under fallback = "none", with its defaults present and retracted: each socket, other programs' chains and rules,
-    # NAT at output, a destination changed after the tun, loopback, each CPU, the listed services, each reverse path check, neighbor
-    # discovery and the host's ICMP errors, and a GRE and a WireGuard tunnel's outer packets
-    # and the line's middle node traced by uid 0 over its control socket, a record for each forward and answer
-    # and mesh_entry at a forwarding host, at a subnet router beside the kill switch, at an exit's none classes and a LAN learned
-    # inside them, and in the table a killed node leaves
-    # and a leaf in mode 3 between two exits, leaving by the one via names, refused while that one's segment is gone and by its uplink under fallback = "uplink",
-    # and through a waypoint, refused while the exit behind it is gone
-    # and the leaf's antispoof filter's table, which the stop for the mesh's failure leaves dropping, the next start adopts and an asked stop withdraws
-    # and the leaf's status counting the reads the path alone took apart from the totals
-    # and the antispoof filter's exemptions, each from the interfaces it names, and covering the overlay beside the carved drops
-    # and a gateway's site exempt on its own interface, its node address and another node's prefixes inside carved
-    out = machine.succeed(
-        "${netlinkTests}/bin/client-tests -test.v -test.run 'TestTUN' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the client's tun round trips skipped themselves under root:\n{out}"
-    assert "--- PASS: TestTUNBorderDropsAForgedSourceAtTheUplink" in out, f"the antispoof filter's lab did not run:\n{out}"
-    assert "--- PASS: TestTUNAntispoofExemptsFromTheInterfacesItNames" in out, f"the exemptions' lab did not run:\n{out}"
-    assert "--- PASS: TestTUNAntispoofExemptingTheOverlayKeepsTheCarvedDrops" in out, f"the lab of exemptions covering the overlay did not run:\n{out}"
-    assert "--- PASS: TestTUNAntispoofGatewayExemptsItsSiteAndNoOtherNode" in out, f"the gateway's lab did not run:\n{out}"
-    assert "--- PASS: TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter" in out, f"the line's lab did not run:\n{out}"
-    assert "--- PASS: TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID" in out, f"the line's lab with transit off did not run:\n{out}"
-    assert "--- PASS: TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink" in out, f"the exit's lab did not run:\n{out}"
-    assert "--- PASS: TestTUNExitEgressesEachShapeOfTheInternetTranslated" in out, f"the exit's egress lab did not run:\n{out}"
-    assert "--- PASS: TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment" in out, f"mode 2 egress at a node with no egress segment did not run:\n{out}"
-    assert "--- PASS: TestTUNExitEgressesBothModesThroughItsOneTun" in out, f"the egress lab did not run:\n{out}"
-    assert "--- PASS: TestTUNExitTranslatesEachClassUnderTheDerivedRules" in out, f"the classes' lab did not run:\n{out}"
-    assert "--- PASS: TestTUNDerivedRulesSendEachSocketWhereModeOffSays" in out, f"the derived rules' socket lab did not run:\n{out}"
-    assert "--- PASS: TestTUNExitModeSendsEachSocketWhereModeTwoSays" in out, f"the exit mode's socket lab did not run:\n{out}"
-    assert "--- PASS: TestTUNExitModeBesideTailscale" in out, f"the exit mode beside Tailscale did not run:\n{out}"
-    assert "--- PASS: TestTUNExitModeBesideAConntrackMarkRestore" in out, f"the exit mode beside a conntrack mark restore did not run:\n{out}"
-    assert "--- PASS: TestTUNExitModeBesideKubeProxyAndCilium" in out, f"the exit mode beside kube-proxy and Cilium did not run:\n{out}"
-    assert "--- PASS: TestTUNExitModeBesideDocker" in out, f"the exit mode beside Docker did not run:\n{out}"
-    assert "--- PASS: TestTUNDebugRouteNamesTheIPv6DropWhereTheKernelMakesIt" in out, f"the route view's IPv6 forwarding against the kernel's did not run:\n{out}"
-    assert "--- PASS: TestTUNDebugRouteNamesThePathTheKernelTakesForEachDestinationKind" in out, f"the route view against the kernel's path for each kind of destination did not run:\n{out}"
-    for name in [
-        "TestTUNKillSwitchKeepsEachSocketOffTheUplink",
-        "TestTUNKillSwitchAnswersOnlyTheListedServices",
-        "TestTUNKillSwitchHoldsUnderOtherProgramsChains",
-        "TestTUNKillSwitchHoldsUnderNATAtOutput",
-        "TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun",
-        "TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback",
-        "TestTUNKillSwitchIsTheSameOnEveryCPU",
-        "TestTUNKillSwitchKeepsReversePathChecksPassing",
-        "TestTUNKillSwitchPassesDiscoveryAndTheHostsErrors",
-        "TestTUNKillSwitchKeepsKernelTunnelsOffTheUplink",
-    ]:
-        assert f"--- PASS: {name}" in out, f"the kill switch's lab {name} did not run:\n{out}"
-    assert "--- PASS: TestTUNTraceShowsTheMiddleNodesDecisions" in out, f"the trace's lab did not run:\n{out}"
-    assert "--- PASS: TestTUNBorderKeepsAnOverlappingUplink" in out, f"the overlapping uplink's lab did not run:\n{out}"
-    for name in [
-        "TestTUNEntryTakesFromAForwardingHostOnlyWhatItOwns",
-        "TestTUNEntryPassesASubnetRoutersLANAndItsRepliesBesideTheKillSwitch",
-        "TestTUNEntryAtAnExitPassesItsNoneClassesLessAnotherNodesLAN",
-        "TestTUNEntryClosesALearnedLANWithinOneSettle",
-        "TestTUNEntryTableOutlivesAKilledNode",
-    ]:
-        assert f"--- PASS: {name}" in out, f"mesh_entry's lab {name} did not run:\n{out}"
-    assert "--- PASS: TestTUNExitPathLeavesByTheNamedExitAndNoOther" in out, f"mode 3's two-exit lab did not run:\n{out}"
-    assert "--- PASS: TestTUNKillSwitchHoldsInModeThree" in out, f"the kill switch's lab in mode 3 did not run:\n{out}"
-    assert "--- PASS: TestTUNKillSwitchHoldsInModeThree/the_antispoof_filter's_table_the_stop_for_the_mesh's_failure_leaves" in out, f"the antispoof filter's table after the stop for the mesh's failure did not run:\n{out}"
-    assert "--- PASS: TestTUNStatusCountsTheReadsThePathAloneTook" in out, f"the status's count of the path's reads did not run:\n{out}"
-    ran = out.count("--- PASS")
-    assert ran >= 26, f"only {ran} of the client's tun round trips ran:\n{out}"
-
-    # every datagram sent with DF and the path mtu a refused one reports, against linux itself
-    # and a family's socket fragmenting past the path only while a session of the family asks
-    # a veth pair to a second namespace behind routes whose path mtu is locked below the datagram size
-    # and an IPv4 datagram its route carries leaving without DF while the family fragments, read off loopback
-    out = machine.succeed(
-        "${netlinkTests}/bin/transport-tests -test.v -test.run 'TestKernel(RefusesWhatALockedPathCannotCarry|FragmentsPastALockedPathOnlyWhileTheFamilyAsks|SendsWithoutDFWhatTheRouteCarriesWhileIPv4Fragments)' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the kernel send tests skipped themselves under root:\n{out}"
-    ran = out.count("--- PASS")
-    assert ran >= 3, f"only {ran} of the kernel send tests ran:\n{out}"
-
-    # two nodes taken down and put back up against linux itself
-    # a session moved under the floor handing its fragmenting to the new endpoint's family
-    # the refusal of a session's own data past a narrower loopback lowering its budget
-    # a dialer whose dials no route takes backing off, and dialing at once when woken
-    # every goroutine of a node opens sockets and tuns, so the whole process runs in a namespace of its own
-    out = machine.succeed(
-        "unshare -n ${netlinkTests}/bin/client-tests -test.v -test.run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)|^TestDialerTheHostHasNoRouteForDialsAtOnceWhenWoken$' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the client's round trips in a namespace of their own skipped themselves under root:\n{out}"
-    ran = out.count("--- PASS")
-    assert ran >= 5, f"only {ran} of the client's round trips in a namespace of their own ran:\n{out}"
-
-    # the daemon refused at each part it builds, and stopped by SIGTERM or SIGINT while it builds and while it waits for the
-    # first pass, leaving nothing running or bound, a second signal of the build and of its undo forcing the exit, the
-    # antispoof filter's and the kill switch's tables an earlier instance left kept by a start that ends in its build, a
-    # SIGHUP and a SIGUSR1 of the start applied once it dials, a failed reload's warning, a part's failure at error, up,
-    # reload and redial refused once the stop began, and the antispoof filter's table the stop for the mesh's failure
-    # leaves, which the next start takes over and its SIGTERM withdraws, the whole process in a namespace of its own
-    out = machine.succeed(
-        "unshare -n ${netlinkTests}/bin/daemon-tests -test.v -test.run '^TestDaemon(RefusedAtEachPartLeavesNothingRunningOrBound|StoppedWhileItBuildsStartsNothing|ForcedOutOfItsBuildByASecondSignal|EndedInItsBuildLeavesTheTablesItFound|StoppedInTheFirstPassWaitDialsNothing|ActsOnTheSignalsOfTheStartOnceItDials|WarnsOfTheReloadItRefuses|PartFailureSurvivesALogAtWarn|RefusesUpReloadAndRedialOnceItStops|StoppedForTheMeshsFailureLeavesTheAntispoofTable)$' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the daemon's start and stop skipped themselves under root:\n{out}"
-    for name in [
-        "TestDaemonRefusedAtEachPartLeavesNothingRunningOrBound",
-        "TestDaemonStoppedWhileItBuildsStartsNothing/SIGTERM",
-        "TestDaemonStoppedWhileItBuildsStartsNothing/SIGINT",
-        "TestDaemonForcedOutOfItsBuildByASecondSignal/in_the_build",
-        "TestDaemonForcedOutOfItsBuildByASecondSignal/in_the_undo",
-        "TestDaemonEndedInItsBuildLeavesTheTablesItFound/refused_at_the_reconciler",
-        "TestDaemonEndedInItsBuildLeavesTheTablesItFound/stopped_while_it_builds",
-        "TestDaemonStoppedInTheFirstPassWaitDialsNothing",
-        "TestDaemonActsOnTheSignalsOfTheStartOnceItDials",
-        "TestDaemonWarnsOfTheReloadItRefuses",
-        "TestDaemonPartFailureSurvivesALogAtWarn",
-        "TestDaemonRefusesUpReloadAndRedialOnceItStops",
-        "TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable",
-    ]:
-        assert f"--- PASS: {name}" in out, f"the daemon's start and stop {name} did not run:\n{out}"
-
-    # the endpoint resolver's sockets carrying the underlay's mark, and its query marked by the overlay a lookup is handed
-    # and a dial's query following the overlay of the config in force across reloads
-    # Go's resolver reads /etc/resolv.conf from whatever thread looks a name up, so each test binds its own over it in a
-    # mount namespace the whole process runs in, beside a network namespace for its nameserver on lo, and refuses init's
+    # every goroutine of a node of these opens sockets and tuns, so the whole process runs in a namespace of its own
+    claims = "unshare -n client-tests -test.run '^TestNode(GoingDown|RestartedWhileDown)|^TestSession(MovedUnderTheFloorHandsItsFragmentingOver|LowersItsBudgetAtTheRefusalOfItsOwnData)|^TestDialerTheHostHasNoRouteForDialsAtOnceWhenWoken$'"
+    # Go's resolver reads /etc/resolv.conf from whatever thread looks a name up, so each resolver test binds its own over it
+    # in a mount namespace the whole process runs in, beside a network namespace for its nameserver on lo, and refuses init's
+    resolvers = ["unshare -mn registry-tests -test.run '^TestResolver'", "unshare -mn client-tests -test.run '^TestEndpointQueryFollowsTheOverlayInForceAcrossReloads$'"]
+    ran(f"client-tests -test.skip '{pattern(claims)}|{pattern(resolvers[1])}'")
+    ran(claims)
+    # the daemon claims the process's namespace too
+    ran("unshare -n daemon-tests")
     resolv = machine.succeed("cat /etc/resolv.conf")
-    out = machine.succeed(
-        "unshare -mn ${netlinkTests}/bin/registry-tests -test.v -test.run '^TestResolver' 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the registry's resolver tests skipped themselves under root:\n{out}"
-    assert "--- PASS: TestResolverSocketsCarryTheUnderlayMark" in out, f"the resolver's socket marks did not pass:\n{out}"
-    assert "--- PASS: TestResolverQueryFollowsTheOverlayResolveRemoteIsHanded" in out, f"the registry's hand-over did not pass:\n{out}"
-    out = machine.succeed(
-        "unshare -mn ${netlinkTests}/bin/client-tests -test.v -test.run '^TestEndpointQueryFollowsTheOverlayInForceAcrossReloads$' 2>&1"
-    )
-    print(out)
-    assert "--- PASS: TestEndpointQueryFollowsTheOverlayInForceAcrossReloads" in out, f"the client's hand-over did not pass:\n{out}"
+    ran(f"registry-tests -test.skip '{pattern(resolvers[0])}'")
+    for command in resolvers:
+        ran(command)
     assert machine.succeed("cat /etc/resolv.conf") == resolv, "a resolver test's resolv.conf reached the host's mount namespace"
 
-    out = machine.succeed(
-        "${wireguardTests}/bin/tun-tests -test.v 2>&1"
-    )
-    print(out)
-    assert "SKIP" not in out, f"the wireguard tun tests skipped themselves under root:\n{out}"
-    ran = sum(1 for line in out.splitlines() if line.startswith("--- PASS"))
-    assert ran >= 27, f"only {ran} of the wireguard tun tests ran:\n{out}"
-    assert "--- PASS: TestWriteAllocs" in out, f"the write allocation test did not pass:\n{out}"
+    # a test renamed out of every run above, or skipped by a pattern no run takes up, fails here rather than running nowhere
+    # and a named test that passed in a run here has lost the reason it is named for
+    for binary, (path, _) in binaries.items():
+        listed = [name for name in machine.succeed(f"{path} -test.list '.'").split() if not name.startswith("Benchmark")]
+        reasons = named.get(binary, {})
+        unpassed = [name for name in listed if name not in passed[binary] and name not in reasons]
+        assert not unpassed, f"{binary} lists tests that passed in no run here: {unpassed}, and names {reasons}"
+        stale = {name: reason for name, reason in reasons.items() if name not in listed or name in passed[binary]}
+        assert not stale, f"{binary} names tests it does not list or that passed in a run here, against these reasons: {stale}"
+        missing = [name for name in subtests.get(binary, []) if name not in passed[binary]]
+        assert not missing, f"{binary} passed none of these subtests: {missing}"
 
     # Nothing the tests wrote may outlive them: they run against the host's own
     # kernel here rather than against a fake, so a rule, a link or a table left

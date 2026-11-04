@@ -1129,6 +1129,9 @@ func TestPairsLeaveNothingBehindTheHub(t *testing.T) {
 	for range pairChurnPeers {
 		peers = append(peers, listenPeer(t, "udp4", "127.0.0.1").LocalAddr().(*net.UDPAddr))
 	}
+	connected := func() bool {
+		return slices.ContainsFunc(events.recorded(), func(line string) bool { return strings.HasPrefix(line, "transport.pair.connected ") })
+	}
 	stop := make(chan struct{})
 	var others, churn sync.WaitGroup
 	others.Go(func() {
@@ -1162,6 +1165,13 @@ func TestPairsLeaveNothingBehindTheHub(t *testing.T) {
 						t.Error(err)
 					}
 				}
+				// an open runs on a goroutine of its own, which on one CPU may not run before the session closes
+				// so the first session goes on sending until a pair connected, and the churn holds a connect wherever it runs
+				for deadline := time.Now().Add(arrivalBudget); worker == 0 && session == 0 && !connected() && time.Now().Before(deadline); time.Sleep(pairPoll) {
+					if err := mux.SendESPBatch(busy); err != nil {
+						t.Error(err)
+					}
+				}
 				if err := mux.Close(); err != nil {
 					t.Error(err)
 				}
@@ -1183,10 +1193,17 @@ func TestPairsLeaveNothingBehindTheHub(t *testing.T) {
 			t.Fatalf("%d goroutines run the transport's code once the hub closed, where %d did before it opened:\n%s", after, before, strings.Join(stacks, "\n\n"))
 		}
 	}
-	if open, joined := hub.PairSockets(), pairsJoined(hub); open != 0 || joined != 0 {
-		t.Fatalf("the hub counts %d sockets connected to one peer open and its bind %d, want none", open, joined)
+	// an open still in flight at the close counts until it sees the hub closed and closes its socket
+	for deadline := time.Now().Add(arrivalBudget); ; time.Sleep(pairPoll) {
+		open, joined := hub.PairSockets(), pairsJoined(hub)
+		if open == 0 && joined == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the hub counts %d sockets connected to one peer open and its bind %d once it closed, want none", open, joined)
+		}
 	}
-	if !slices.ContainsFunc(events.recorded(), func(line string) bool { return strings.HasPrefix(line, "transport.pair.connected ") }) {
+	if !connected() {
 		t.Fatal("no pair connected a socket, so the churn proves nothing")
 	}
 }
