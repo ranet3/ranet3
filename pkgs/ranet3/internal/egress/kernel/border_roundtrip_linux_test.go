@@ -180,7 +180,8 @@ func TestBorderRoundTrip(t *testing.T) {
 				t.Fatalf("after another writer %s the filter's readiness moved %q, want not ready and then ready", change.name, moved)
 			}
 		}
-		if read, err := be.Rules(desired, sets); err != nil || read.fault != "" {
+		// read on the test's own socket, since the running filter's passes use the backend's
+		if read, err := readBorder(conn, desired, sets); err != nil || read.fault != "" {
 			t.Fatalf("after another writer %s the kernel holds %v with the fault %q (%v), want %v", change.name, read.rules, read.fault, err, desired)
 		}
 	}
