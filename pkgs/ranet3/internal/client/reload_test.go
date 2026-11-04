@@ -113,7 +113,6 @@ func TestReloadHandsTheReconcilerWhatAssignAnnouncedExpandsInto(t *testing.T) {
 	}
 }
 
-// requireEntryRule skips where no entry rule runs, where the start and a reload refuse a cap.route announcement that counts as a default
 func requireEntryRule(t *testing.T) {
 	t.Helper()
 	if !kernelexit.EntryRuns {

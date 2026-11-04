@@ -199,8 +199,7 @@ func (c *Client) Underlay() []netip.Addr {
 	return nil
 }
 
-// readsOwnedOnly is the mesh's ownedOnly, true where the kernel runs no entry rule
-// named so a test without root can hold it to the platform on every build
+// readsOwnedOnly is the mesh's ownedOnly for this build
 const readsOwnedOnly = !kernelexit.EntryRuns
 
 // New builds the node from its configuration, recording what it does on bus
