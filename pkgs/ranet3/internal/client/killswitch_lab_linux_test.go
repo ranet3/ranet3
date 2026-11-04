@@ -666,7 +666,11 @@ func (lab *switchLab) exercise(t *testing.T, arm switchArm) {
 				if err != nil {
 					return fmt.Errorf("%s %s to %s: %w", p.socket, protocol, p.destination, err)
 				}
-				if fd >= 0 {
+				switch {
+				// a connect left open sends its SYN again a second later, which mesh_entry would drop and count a second time
+				case fd >= 0 && protocol == "tcp":
+					_ = unix.Close(fd)
+				case fd >= 0:
 					fds = append(fds, fd)
 				}
 				all = append(all, sent{p, protocol, lab.probe, outcome})
