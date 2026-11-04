@@ -792,18 +792,17 @@ testers.runNixOSTest {
 
         environment.systemPackages =
           with pkgs;
+          # nft counts the client's own IKE sends in the initiator script's
+          # drop of them, and reads back what this tree wrote through netlink.
           [
             curl
             iperf3
             iproute2
+            nftables
             tcpdump
           ]
-          # nft reads back what this tree wrote through netlink, and jq asks
-          # the control socket a question the shell cannot.
-          ++ pkgs.lib.optionals (egress || beside != null) [
-            jq
-            nftables
-          ]
+          # jq asks the control socket a question the shell cannot.
+          ++ pkgs.lib.optionals (egress || beside != null) [ jq ]
           ++ lib.optionals profile [
             pprof
             perf
@@ -1049,6 +1048,9 @@ testers.runNixOSTest {
         timeout = dt.timedelta(seconds=30)
         # how long an iperf3 client retries a server that refused it between tests
         iperf_timeout = dt.timedelta(seconds=120)
+        # how long the drop of the client's IKE holds past its 5 s for one of the sends lost before it, short of three of an
+        # exchange's sends, which the rekey margin outlasts
+        ike_loss_hold = dt.timedelta(seconds=6)
 
         kernel_enabled = ${if kernel then "True" else "False"}
         fqdn_enabled = ${if fqdn then "True" else "False"}
@@ -1636,17 +1638,34 @@ testers.runNixOSTest {
                 # the drop outlasts a rekey's first send, so a rekey starting in it lives on its resends, and only the margin decides whether the SA lives that long
                 lost = journal_after(client, "ranet3.service")
                 client.succeed("systemd-run --unit=iperf-under-ike-loss iperf3 --client ${gatewayTunnel} --parallel 8 --time 10")
+                client.succeed(
+                    "nft add table inet ike_sent",
+                    "nft add chain inet ike_sent output '{ type filter hook output priority 0; }'",
+                    "nft add rule inet ike_sent output udp sport 14000 @th,64,32 0 counter",
+                )
                 gateway.succeed(
                     "nft add table inet ike_loss",
                     "nft add chain inet ike_loss input '{ type filter hook input priority 0; }'",
                     "nft add rule inet ike_loss input udp dport 13000 @th,64,32 0 counter drop",
-                    "sleep 5",
                 )
-                dropped = gateway.succeed("nft list table inet ike_loss")
+
+                def counted():
+                    """the client's IKE sends, and the drop's takes of them"""
+                    return [int(machine.succeed(f"nft list table inet {table}").split("counter packets ", 1)[1].split()[0]) for machine, table in [(client, "ike_sent"), (gateway, "ike_loss")]]
+
+                # the client's sends are counted from the drop in place, so each meets it
+                before = counted()[0]
+                gateway.succeed("sleep 5")
+                sent, took = counted()
+                print(f"the client sent {sent - before} IKE datagrams in the drop's 5 s, and the drop took {took}")
+                # an exchange sends within the 5 s while it has sent at most twice, so a drop that took none met a client silent on IKE, which fails, or sends lost before the gateway, and then holds until it takes one
+                if not took:
+                    assert sent > before, "the client sent no IKE in the drop's 5 s, a client silent on IKE mid-rekey"
+                    gateway.wait_until_succeeds("nft list table inet ike_loss | grep -F 'counter packets' | grep -vF 'counter packets 0 '", timeout=ike_loss_hold)
+                    sent, took = counted()
+                    print(f"after the hold, the client sent {sent - before} IKE datagrams and the drop took {took}")
+                client.succeed("nft delete table inet ike_sent")
                 gateway.succeed("nft delete table inet ike_loss")
-                print(dropped)
-                # the drop outlasts the time between Child SA rekeys, so it took at least one of their sends
-                assert "counter packets 0 " not in dropped, dropped
                 client.wait_until_fails("systemctl is-active iperf-under-ike-loss.service", timeout=iperf_timeout)
                 client.wait_until_succeeds(f"{lost} | grep -F 'ike rekey completed' | grep -F 'sa=\"Child SA\"'", timeout=timeout)
                 client.fail(f"{lost} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
