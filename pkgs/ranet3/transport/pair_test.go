@@ -45,7 +45,7 @@ const (
 // pairHub is a hub on loopback with a peer of the family loopback names, and a mux this node dialed to it
 func pairHub(t *testing.T, network, loopback string) (*Hub, *net.UDPConn, *Mux) {
 	t.Helper()
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestBusyPairGetsAConnectedSocket(t *testing.T) {
 
 // no more than pairCap sockets are open at once, and a pair past it stays on the shared socket
 func TestPairSocketsStopAtTheCap(t *testing.T) {
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestPairSendGoesOncePastAnICMPReport(t *testing.T) {
 func TestPairSocketGoesPastAPortUnreachable(t *testing.T) {
 	for _, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			hub, err := NewHub(":0", Underlay{}, Runtime{})
+			hub, err := NewHub(":0", Runtime{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -747,7 +747,7 @@ func TestConnectThatOutlivesItsPairKeepsNoSocket(t *testing.T) {
 	} {
 		t.Run(end.name, func(t *testing.T) {
 			events := &eventLog{}
-			hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+			hub, err := NewHub(":0", Runtime{Events: events.record})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -816,7 +816,7 @@ func TestClosedMuxJoinsNoPair(t *testing.T) {
 // the hub records why and counts a fallback, and the pair takes the shared socket until the next sweep
 func TestPairSocketWhoseReadFailsFallsBackToTheSharedSocket(t *testing.T) {
 	events := &eventLog{}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	hub, err := NewHub(":0", Runtime{Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -863,7 +863,7 @@ func TestPairSocketWhoseReadFailsFallsBackToTheSharedSocket(t *testing.T) {
 // the hub counts it apart from the fallbacks and records why, with the address the pair names, empty where the route picks it
 func TestPairWhoseConnectFailsStaysOnTheSharedSocket(t *testing.T) {
 	events := &eventLog{}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	hub, err := NewHub(":0", Runtime{Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -999,7 +999,7 @@ func TestConnectedSocketFeedsTheReceivePath(t *testing.T) {
 // and the hub counts the sockets open and those that fell back to the shared socket
 func TestPairSocketsAreRecorded(t *testing.T) {
 	events := &eventLog{}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	hub, err := NewHub(":0", Runtime{Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1057,7 +1057,7 @@ func TestPairSocketsAreRecorded(t *testing.T) {
 // so a second hub on the port is refused rather than let in to take a share of its datagrams
 // and so is a hub on a port another socket holds with SO_REUSEPORT set before its bind
 func TestHubRefusesAPortItWouldShare(t *testing.T) {
-	first, err := NewHub(":0", Underlay{}, Runtime{})
+	first, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1078,7 +1078,7 @@ func TestHubRefusesAPortItWouldShare(t *testing.T) {
 		name string
 		port int
 	}{{"another hub", int(first.port)}, {"a socket that shares it", held.LocalAddr().(*net.UDPAddr).Port}} {
-		hub, err := NewHub(fmt.Sprintf(":%d", holder.port), Underlay{}, Runtime{})
+		hub, err := NewHub(fmt.Sprintf(":%d", holder.port), Runtime{})
 		if err == nil {
 			_ = hub.Close()
 			t.Errorf("the hub took port %d while %s held it", holder.port, holder.name)
@@ -1120,7 +1120,7 @@ func transportGoroutines() (int, []string) {
 func TestPairsLeaveNothingBehindTheHub(t *testing.T) {
 	before, _ := transportGoroutines()
 	events := &eventLog{}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	hub, err := NewHub(":0", Runtime{Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}

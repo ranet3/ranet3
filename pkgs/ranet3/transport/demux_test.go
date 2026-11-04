@@ -28,7 +28,7 @@ const (
 // a loop reads a published table without a lock, so a change written into one in place is a race the detector reports
 // every packet a mux is handed carries an SPI that mux registered, whether it arrives before or after the close
 func TestReceiveLoopsReadTablesThatRegistrationsReplace(t *testing.T) {
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestReceiveLoopsReadTablesThatRegistrationsReplace(t *testing.T) {
 // a registration that returned before a datagram arrives routes it, and an unregistration refuses it
 // the receive loop loads the tables for each batch, so a change reaches the next datagram read
 func TestTableChangesReachTheNextDatagram(t *testing.T) {
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestTableChangesReachTheNextDatagram(t *testing.T) {
 
 // a closed mux gives up its SPIs, so a datagram for one is refused and another mux can register it and read its datagrams
 func TestClosedMuxGivesUpItsSPIs(t *testing.T) {
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

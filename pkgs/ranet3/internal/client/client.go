@@ -276,7 +276,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		}
 	}()
 	underlay.Events = func(kind string, attrs ...slog.Attr) { bus.Emit(kind, "", attrs...) }
-	hub, err := transport.NewHub(fmt.Sprintf(":%d", cfg.Link.Port), cfg.Link.Underlay, underlay)
+	hub, err := transport.NewHub(fmt.Sprintf(":%d", cfg.Link.Port), underlay)
 	if err != nil {
 		return nil, err
 	}

@@ -327,18 +327,15 @@ type espChain struct {
 }
 
 // NewHub binds the one UDP socket every session shares, on localAddr's port
-// and on all local IPv4 and IPv6 interfaces. underlay is refused where it
-// means nothing, and rt carries what the caller resolved at startup.
-func NewHub(localAddr string, underlay Underlay, rt Runtime) (*Hub, error) {
+// and on all local IPv4 and IPv6 interfaces. rt carries what the caller
+// resolved at startup.
+func NewHub(localAddr string, rt Runtime) (*Hub, error) {
 	laddr, err := net.ResolveUDPAddr("udp", localAddr)
 	if err != nil {
 		return nil, fmt.Errorf("transport: resolve local addr: %w", err)
 	}
 	if laddr.IP != nil && !laddr.IP.IsUnspecified() {
 		slog.Warn(fmt.Sprintf("transport: binding to a specific local address (%s) is not supported, binding all interfaces on port %d instead", laddr.IP, laddr.Port))
-	}
-	if err := underlay.refuse(); err != nil {
-		return nil, fmt.Errorf("transport: %w", err)
 	}
 	bind, fns, port, err := openPacketBind(uint16(laddr.Port), rt.Selection, rt.Events)
 	if err != nil {
@@ -770,7 +767,7 @@ func (m *Mux) takeESP(batch espDatagramBatch) [][]byte {
 // Dial preserves the one-peer convenience path. The returned mux owns its
 // newly-created hub and closes it when closed.
 func Dial(localAddr string, remoteIP net.IP, remotePort int) (*Mux, error) {
-	h, err := NewHub(localAddr, Underlay{}, Runtime{})
+	h, err := NewHub(localAddr, Runtime{})
 	if err != nil {
 		return nil, err
 	}

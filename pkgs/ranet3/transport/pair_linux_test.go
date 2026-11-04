@@ -353,7 +353,7 @@ func TestPairSocketThatCannotFollowItsFamilyCloses(t *testing.T) {
 // a pair's socket takes the mode its family's listener fragments in while a mux of the family fragments, and DO again once the last one stops
 // a pair connected while its family fragments starts in that mode, and the other family's pairs keep DO throughout
 func TestPairSocketFollowsItsFamilysPathMTUDiscovery(t *testing.T) {
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

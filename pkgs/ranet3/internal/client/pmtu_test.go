@@ -52,7 +52,7 @@ type pathRig struct {
 
 func loopbackHub(t *testing.T) *transport.Hub {
 	t.Helper()
-	hub, err := transport.NewHub(":0", transport.Underlay{}, transport.Runtime{})
+	hub, err := transport.NewHub(":0", transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

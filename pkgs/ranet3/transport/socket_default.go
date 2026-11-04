@@ -52,11 +52,6 @@ func (b *portableBind) Send(packets [][]byte, endpoint Endpoint) error {
 	return b.Bind.Send(packets, endpoint.(*portableEndpoint).Endpoint, 0)
 }
 
-// link.underlay.bind means nothing on this platform, so Underlay.refuse turns
-// down a configuration that sets it by name rather than accepting a setting
-// that does nothing.
-const takesBind = false
-
 func openPacketBind(port uint16, _ Selection, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &portableBind{conn.NewStdNetBind()}
 	fns, port, err := b.Open(port)

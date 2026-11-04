@@ -56,7 +56,7 @@ func unroutedPin(t *testing.T, netlink routeNetlink, i int, to netip.AddrPort) (
 func TestKernelHostUnreachableFromThePinFallsBack(t *testing.T) {
 	far, _, netlink := vethPair(t, 1, slices.Concat(nearAddresses, steeredSources))
 	events := &eventLog{}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	hub, err := NewHub(":0", Runtime{Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestKernelHostUnreachableFromThePinFallsBack(t *testing.T) {
 func TestKernelSessionReturnsToAnAddressTheHostHoldsAgain(t *testing.T) {
 	far, link, netlink := vethPair(t, 1, pairAddresses)
 	events := &eventLog{}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	hub, err := NewHub(":0", Runtime{Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestKernelSessionReturnsToAnAddressTheHostHoldsAgain(t *testing.T) {
 func TestKernelSessionReturnsToAPinThatRoutesAgain(t *testing.T) {
 	far, _, netlink := vethPair(t, 1, slices.Concat(nearAddresses, steeredSources))
 	events := &eventLog{}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Events: events.record})
+	hub, err := NewHub(":0", Runtime{Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}

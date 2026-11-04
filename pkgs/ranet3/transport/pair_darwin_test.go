@@ -74,7 +74,7 @@ func pairSocketOf(t *testing.T, hub *Hub, network, loopback string) (*Mux, *darw
 // an IPv4 pair's socket clears DF while an IPv4 mux fragments and sets it again once the last one stops, as the IPv4 socket does
 // a pair connected while IPv4 fragments starts without DF, and an IPv6 pair's socket keeps DF, since an IPv6 mux fragments its own datagrams alone
 func TestPairSocketFollowsItsFamilysDontFragment(t *testing.T) {
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestPairTakesItsSourceFromTheSelectedInterface(t *testing.T) {
 			t.Fatalf("the host routes %s from %s, want the far feth's %s", path.peer, from, path.far)
 		}
 	}
-	hub, err := NewHub(":0", Underlay{}, Runtime{Selection: newTestSelection(near.Index)})
+	hub, err := NewHub(":0", Runtime{Selection: newTestSelection(near.Index)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestPairToALinkLocalPeerConnects(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = peer.Close() })
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ const (
 // pairs to several peers connect at once, each binding the listener's port on one address
 // XNU refuses to bind an address and port another socket holds unconnected, which each socket does between its bind and its connect
 func TestPairsToSeveralPeersConnectAtOnce(t *testing.T) {
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestDarwinPairBindsThePinnedSource(t *testing.T) {
 // pairBindsThePin opens the pair of an endpoint at a peer on loopback pinned to reached by interface index, and checks what it binds and sends from
 func pairBindsThePin(t *testing.T, network, loopback string, reached netip.Addr, index int) {
 	t.Helper()
-	hub, err := NewHub(":0", Underlay{}, Runtime{})
+	hub, err := NewHub(":0", Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

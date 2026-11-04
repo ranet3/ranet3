@@ -34,7 +34,7 @@ const (
 // recordingHub is a hub on loopback whose events go to bus
 func recordingHub(t *testing.T, bus *events.Bus) *transport.Hub {
 	t.Helper()
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Underlay{}, transport.Runtime{Events: func(kind string, attrs ...slog.Attr) {
+	hub, err := transport.NewHub("127.0.0.1:0", transport.Runtime{Events: func(kind string, attrs ...slog.Attr) {
 		bus.Emit(kind, "", attrs...)
 	}})
 	if err != nil {

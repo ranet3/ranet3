@@ -135,12 +135,6 @@ func (b *udpBind) Close() error {
 	return errors.Join(errs...)
 }
 
-// linux sets the underlay's sockets apart, where the process may set it, with
-// a mark the reconciler's derived rules read, and installs a default
-// unscoped either way, so link.underlay.bind means nothing here.
-// Underlay.refuse reads this.
-const takesBind = false
-
 // underlayMark is the mark every underlay socket of this process carries,
 // schema.UnderlayMark, or none where the process may not set one. SO_MARK
 // needs CAP_NET_ADMIN or CAP_NET_RAW in the socket's network namespace, and a

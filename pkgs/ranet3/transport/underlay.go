@@ -4,14 +4,11 @@
 package transport
 
 import (
-	"errors"
 	"log/slog"
 	"net/netip"
 )
 
-// Underlay is darwin's link.underlay. Bind decides how the reconciler there
-// installs an exit's default, and is refused by name on a platform that has
-// no meaning for it, rather than accepted and ignored.
+// Underlay is link.underlay, which no hub reads.
 type Underlay struct {
 	// Bind installs an exit's default unscoped as its zero-free cover rather than scoped to the tun, darwin only
 	Bind bool `yaml:"bind,omitempty" json:"bind,omitempty" toml:"bind,omitempty"`
@@ -59,13 +56,4 @@ type Selection interface {
 	Interface(addr netip.Addr) (index int, generation uint64)
 	// Generation moves on whenever an answer may have changed
 	Generation() uint64
-}
-
-// refuse reports why this platform cannot apply u, or nil. A setting that
-// means nothing here is refused by name rather than accepted and ignored.
-func (u Underlay) refuse() error {
-	if u.Bind && !takesBind {
-		return errors.New("link.underlay.bind decides how macOS installs an exit's default and is set on no other platform")
-	}
-	return nil
 }
