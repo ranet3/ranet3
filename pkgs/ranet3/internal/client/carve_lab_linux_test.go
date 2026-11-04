@@ -97,9 +97,9 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 		d.node.Mesh.Routes.Set(netip.Prefix{}, carveHold[family], netstack.Unreachable)
 	}
 	var held []string
-	waitFor(t, convergeBudget, "the reconciler to throw the lease in place of the overlay's holds", func() bool {
+	waitFor(t, convergeBudget, "the reconciler to throw the lease in place of the overlay's holds and look the overlay up in the mesh's table", func() bool {
 		held = carveHeld(t, leaf)
-		return slices.Equal(held, carveTable)
+		return slices.Equal(held, carveTable) && carveLooksUp(t, leaf)
 	})
 	t.Logf("the mesh's table holds %v", held)
 
@@ -460,4 +460,22 @@ func carveHeld(t *testing.T, leaf *netnstest.Thread) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// carveLooksUp reports whether the leaf holds the reconciler's rule at 5110 for each overlay prefix, looking it up in the mesh's
+// table, without which main sends a mesh peer inside the lease out of the uplink
+func carveLooksUp(t *testing.T, leaf *netnstest.Thread) bool {
+	t.Helper()
+	var rules []kernelRule
+	if err := leaf.Do(func() (err error) { rules, err = dumpRules(); return err }); err != nil {
+		t.Fatalf("read the leaf's rules: %v", err)
+	}
+	for _, prefix := range rulesOverlay {
+		if !slices.ContainsFunc(rules, func(rule kernelRule) bool {
+			return rule.protocol == kernel.DefaultProtocol && rule.priority == 5110 && rule.table == kernel.DefaultTable && rule.destination.String() == prefix.String()
+		}) {
+			return false
+		}
+	}
+	return true
 }
