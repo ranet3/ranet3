@@ -16,11 +16,11 @@
         ${lib.getExe pkgs.nixfmt-tree} .
 
         pushd pkgs/ranet3 > /dev/null
-        ${lib.getExe pkgs.go} fmt ./...
-        ${lib.getExe pkgs.go} vet ./...
+        ${lib.getExe pkgs.go_latest} fmt ./...
+        ${lib.getExe pkgs.go_latest} vet ./...
         ${lib.getExe' pkgs.go-tools "staticcheck"} ./...
         ${lib.getExe' pkgs.gomod2nix "gomod2nix"}
-        ${lib.getExe pkgs.go} run ./internal/cmd/notices
+        ${lib.getExe pkgs.go_latest} run ./internal/cmd/notices
         popd > /dev/null
 
         pushd pkgs/wireguard > /dev/null
@@ -29,8 +29,8 @@
 
         # templ fmt formats the go inside the components with the go on PATH
         pushd pkgs/raweb3 > /dev/null
-        PATH="${lib.makeBinPath [ pkgs.go ]}:$PATH" ${lib.getExe pkgs.templ} fmt .
-        ${lib.getExe pkgs.go} fmt ./...
+        PATH="${lib.makeBinPath [ pkgs.go_latest ]}:$PATH" ${lib.getExe pkgs.templ} fmt .
+        ${lib.getExe pkgs.go_latest} fmt ./...
         ${lib.getExe' pkgs.gomod2nix "gomod2nix"}
         popd > /dev/null
 

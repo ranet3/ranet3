@@ -15,6 +15,7 @@
           inherit inputs lib;
           pkgsFinal = pkgs;
           checksFinal = tree;
+          go = pkgs.go_latest;
         };
       };
       found = lib.localPackagesFrom {

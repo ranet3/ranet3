@@ -4,6 +4,7 @@
 {
   lib,
   buildGoApplication,
+  go,
 }:
 
 buildGoApplication {
@@ -25,6 +26,7 @@ buildGoApplication {
     };
 
   modules = ./gomod2nix.toml;
+  inherit go;
 
   meta.license = lib.licenses.mit;
 

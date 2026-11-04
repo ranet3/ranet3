@@ -19,6 +19,7 @@
           pkgsFinal
           pkgsPrev
           ;
+        go = pkgsFinal.go_latest;
       };
     };
 }

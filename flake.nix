@@ -25,6 +25,14 @@
           overlays = with inputs; [
             self.overlays.default
             gomod2nix.overlays.default
+            # the tools that read the modules build with go_latest, and the
+            # package set's go stays nixpkgs' default, which libcap and through
+            # it qemu and the test machines build with
+            (final: prev: {
+              go-tools = prev.go-tools.override { buildGoModule = final.buildGoLatestModule; };
+              gomod2nix = prev.gomod2nix.override { go = final.go_latest; };
+              templ = prev.templ.override { buildGoModule = final.buildGoLatestModule; };
+            })
           ];
         };
       };
