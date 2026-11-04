@@ -463,32 +463,19 @@ func labErrorTo(destination netip.Addr) func([]byte) bool {
 	}
 }
 
-// a node with cap.egress and no egress segment egresses mode 2 through the prefixes cap.egress advertises into its tun
+// a node with cap.egress and no egress segment egresses mode 2 through the prefixes cap.egress advertises into the device its mesh writes to
 // for each family the exit holds ready and lets it announce as Republish last read, and is dropped and counted not ready for a family it does not
-func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("creating a tun needs root on linux")
-	}
+func TestModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T) {
 	every := map[int]netip.Prefix{4: netip.MustParsePrefix("0.0.0.0/0"), 6: netip.MustParsePrefix("::/0")}
 	internet := map[int]netip.Addr{4: netip.MustParseAddr("203.0.113.9"), 6: netip.MustParseAddr("2001:db8::9")}
 	c, _, _, _ := reloadOf(t, func(cfg *config.Config) {
 		cfg.Cap.Egress = &egress.Egress{Advertise: []schema.Prefix{schema.PrefixFrom(every[4]), schema.PrefixFrom(every[6])}}
 		labBorder(cfg)
 	})
-	if err := netnstest.StartThread(t).Do(func() (err error) {
-		c.Mesh, err = netstack.NewNamed(0, labTUN, nil)
-		return err
-	}); err != nil {
-		t.Fatalf("open the mesh: %v", err)
-	}
-	t.Cleanup(c.Mesh.Close)
+	mesh, device := labMesh(t, []netip.Prefix{netip.PrefixFrom(lineA[4], 32), netip.PrefixFrom(lineA[6], 128)})
+	c.Mesh = mesh
 	startDecision(c.Mesh, c.config())
-	leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
-		return nil, errors.New("the leaf is synthetic")
-	}, func([][]byte) error { return nil }, nil)
-	t.Cleanup(leaf.Close)
 	for _, family := range []int{4, 6} {
-		c.Mesh.Routes.Set(netip.Prefix{}, netip.PrefixFrom(lineA[family], lineA[family].BitLen()), leaf)
 		// the entry the speaker writes for a prefix this node originates, which this speaker writes into a mesh of its own
 		c.Mesh.Routes.Set(netip.Prefix{}, every[family], netstack.Local)
 	}
@@ -496,11 +483,11 @@ func TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T)
 		t.Helper()
 		for side, family := range []int{4, 6} {
 			before := c.Mesh.TransitCounters()
-			c.Mesh.DeliverInbound(udpPacket(lineA[family], internet[family], labLeafPort, lineListen, []byte("mode 2")), 0)
+			payload := []byte("mode 2")
+			families[side] = labCarried(c.Mesh, device, udpPacket(lineA[family], internet[family], labLeafPort, lineListen, payload), lineA[family], internet[family], payload)
 			after := c.Mesh.TransitCounters()
-			families[side] = after.Delivered == before.Delivered+1
 			if !families[side] && after.NotReady != before.NotReady+1 {
-				t.Errorf("an IPv%d datagram through %s counted %+v after %+v, want one more delivered or not ready", family, every[family], after, before)
+				t.Errorf("an IPv%d datagram through %s counted %+v after %+v and reached no device, want it written or counted not ready", family, every[family], after, before)
 			}
 		}
 		return families

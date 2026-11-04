@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -32,7 +33,7 @@ var routeEnd, routeDT46, routeEgress = netip.MustParseAddr("3fff:5::10"), netip.
 // its mesh routes 192.0.2.1 and 3fff::1 back to example/gateway, 192.0.2.3, 3fff::3 and 3fff:1::/64 to example/far and holds 192.0.2.2 and 3fff::2
 // with an IPv4 default cap.egress advertises and translates, cap.transit on, the overlay 192.0.2.0/24 and 3fff::/20
 // the three segments above, IPv4 ready through the egress one, and what 3fff::2 sends steered through 3fff:1::1
-// its mesh writes to a tun and egresses to an exit that count the batches handed to them
+// its mesh writes to a tun that keeps each packet written to it and egresses to an exit that counts the batches handed to it
 // it returns the arrival links the kernel was asked about and that tun and exit
 func meshRouteClient(t *testing.T, answer kernel.MatchedRoute, lookup error, settings map[string]string) (*Client, *[]string, *routeTun) {
 	t.Helper()
@@ -82,15 +83,32 @@ func meshRouteClient(t *testing.T, answer kernel.MatchedRoute, lookup error, set
 	return c, &asked, written
 }
 
-// routeTun is a tun that reads nothing and counts the batches written to it, and the exit, counting the batches handed to it
-type routeTun struct{ writes, egressed atomic.Int64 }
+// routeTun is a tun that reads nothing and keeps a copy of each packet written to it, and the exit, counting the batches handed to it
+type routeTun struct {
+	egressed atomic.Int64
+	mu       sync.Mutex
+	packets  [][]byte
+}
 
 func (d *routeTun) Egress([][]byte) { d.egressed.Add(1) }
 
+// taken is each packet written to d since the last take
+func (d *routeTun) taken() [][]byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	packets := d.packets
+	d.packets = nil
+	return packets
+}
+
 func (d *routeTun) File() *os.File                             { return nil }
 func (d *routeTun) Read([]byte, []tun.ReadPacket) (int, error) { return 0, os.ErrClosed }
-func (d *routeTun) Write(bufs [][]byte, _ int) (int, error) {
-	d.writes.Add(1)
+func (d *routeTun) Write(bufs [][]byte, offset int) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, buf := range bufs {
+		d.packets = append(d.packets, slices.Clone(buf[offset:]))
+	}
 	return len(bufs), nil
 }
 func (d *routeTun) MTU() (int, error)        { return netstack.DefaultMTU, nil }
@@ -300,8 +318,8 @@ func TestDebugRouteSpendsNothing(t *testing.T) {
 			if counts := feed.Counts(); counts != (netstack.TraceCounts{}) {
 				t.Errorf("the walk was traced as %+v", counts)
 			}
-			if n, egressed := written.writes.Load(), written.egressed.Load(); n+egressed != 0 {
-				t.Errorf("the walk wrote %d batches to the tun and handed %d to the exit", n, egressed)
+			if n, egressed := len(written.taken()), written.egressed.Load(); n+int(egressed) != 0 {
+				t.Errorf("the walk wrote %d packets to the tun and handed %d batches to the exit", n, egressed)
 			}
 		})
 	}

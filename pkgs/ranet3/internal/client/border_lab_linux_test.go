@@ -208,53 +208,30 @@ func TestTUNBorderDropsAForgedSourceAtTheUplink(t *testing.T) {
 	lab.withoutTable(t)
 }
 
-// meshCarrying gives c a mesh on a tun in a namespace of its own, holding the
+// meshCarrying gives c a mesh writing to a device of the test's, holding the
 // tables of its cap.segment, and returns the families of a steered packet to
-// labSID the mesh egresses into the tun
+// labSID whose inner packet the device received
 func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 	t.Helper()
 	segments, steering, err := c.config().SegmentTables()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := netnstest.StartThread(t).Do(func() error {
-		mesh, err := netstack.NewNamed(0, labTUN, nil)
-		if err != nil {
-			return err
-		}
-		mesh.SetSegments(segments)
-		mesh.SetSteering(steering)
-		// the egress segment egresses an inner source only where the mesh routes a reply to it, here through a synthetic leaf
-		leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
-			return nil, errors.New("the leaf is synthetic")
-		}, func([][]byte) error { return nil }, nil)
-		t.Cleanup(leaf.Close)
-		for _, prefix := range labLeafPrefixes() {
-			mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
-		}
-		// the exit writes into the tun, as the kernel exit does
-		mesh.SetExit(&fakeExit{write: mesh.WriteHost})
-		c.Mesh = mesh
-		return nil
-	}); err != nil {
-		t.Fatalf("open the mesh: %v", err)
-	}
-	t.Cleanup(c.Mesh.Close)
-	return func() (families [2]bool) {
+	mesh, device := labMesh(t, labLeafPrefixes())
+	mesh.SetSegments(segments)
+	mesh.SetSteering(steering)
+	// the exit writes into the tun, as the kernel exit does
+	mesh.SetExit(&fakeExit{write: mesh.WriteHost})
+	c.Mesh = mesh
+	return func() [2]bool {
 		t.Helper()
-		for i, inner := range [][]byte{
-			udpPacket(labLeaf4, labFar4.Addr(), labLeafPort, labPort, []byte("steered IPv4")),
-			udpPacket(labHeadend, labFar6.Addr(), labLeafPort, labPort, []byte("steered IPv6")),
-		} {
+		return labLeafCarried(t, mesh, device, func(inner []byte) []byte {
 			outer, err := srv6.Encapsulate(inner, labHeadend, []netip.Addr{labSID})
 			if err != nil {
 				t.Fatalf("encapsulate toward %s: %v", labSID, err)
 			}
-			egressed := c.Mesh.SegmentCounters().Egressed
-			c.Mesh.DeliverInbound(outer, 0)
-			families[i] = c.Mesh.SegmentCounters().Egressed > egressed
-		}
-		return families
+			return outer
+		})
 	}
 }
 

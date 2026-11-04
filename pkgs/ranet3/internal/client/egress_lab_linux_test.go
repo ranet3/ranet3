@@ -32,6 +32,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -584,12 +585,9 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 
 // the mesh takes the readiness before the announcement is rebuilt, so the
 // SID's /128 follows the word just given and never the one before it, the
-// mesh's word read by what it egresses into a real tun, with the border's
-// chain missing
-func TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("creating a tun needs root on linux")
-	}
+// mesh's word read by what it egresses into the device it writes to, with the
+// border's chain missing
+func TestSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) { egressNode(cfg, egressSegment(labSID.String(), labLeaves...)) })
 	carried := meshCarrying(t, c)
 	speakerRecording(t, c, bus)
@@ -626,12 +624,9 @@ func TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement(t *testing.T) {
 // on its announcement: a family Ready takes away stops before the
 // announcement is rebuilt, though Announce still answers it, as after another
 // writer's change until the exit's next pass, and a family Announce leaves out
-// stops though Ready holds it, the mesh's word read by what it delivers to the
-// exit
-func TestTUNAdvertisedEgressWaitsOnReadyAndTheAnnouncement(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("creating a tun needs root on linux")
-	}
+// stops though Ready holds it, the mesh's word read by what the exit writes to
+// the device the mesh writes to
+func TestAdvertisedEgressWaitsOnReadyAndTheAnnouncement(t *testing.T) {
 	both := []netip.Prefix{labDefaults[4], labDefaults[6]}
 	c, _, _, bus := reloadOf(t, func(cfg *config.Config) {
 		cfg.Cap.Egress = &egress.Egress{}
@@ -670,43 +665,61 @@ func TestTUNAdvertisedEgressWaitsOnReadyAndTheAnnouncement(t *testing.T) {
 	}
 }
 
+// meshSending gives c a mesh writing to a device of the test's, egressing through advertised, and returns the families
+// of a leaf's packet through them the device received, which the exit c holds writes there
 func meshSending(t *testing.T, c *Client, advertised []netip.Prefix) func() [2]bool {
 	t.Helper()
-	if err := netnstest.StartThread(t).Do(func() error {
-		mesh, err := netstack.NewNamed(0, labTUN, nil)
-		if err != nil {
-			return err
-		}
-		// egress through a default leaves only from a source the mesh routes a reply to, here through a synthetic leaf
-		leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
-			return nil, errors.New("the leaf is synthetic")
-		}, func([][]byte) error { return nil }, nil)
-		t.Cleanup(leaf.Close)
-		for _, prefix := range labLeafPrefixes() {
-			mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
-		}
-		for _, prefix := range advertised {
-			mesh.Routes.Set(netip.Prefix{}, prefix, netstack.Local)
-		}
-		mesh.SetEgressPrefixes(advertised)
-		c.Mesh = mesh
-		return nil
-	}); err != nil {
-		t.Fatalf("open the mesh: %v", err)
+	mesh, device := labMesh(t, labLeafPrefixes())
+	for _, prefix := range advertised {
+		mesh.Routes.Set(netip.Prefix{}, prefix, netstack.Local)
 	}
-	t.Cleanup(c.Mesh.Close)
-	return func() (families [2]bool) {
-		t.Helper()
-		for i, inner := range [][]byte{
-			udpPacket(labLeaf4, labFar4.Addr(), labLeafPort, labPort, []byte("sent IPv4")),
-			udpPacket(labHeadend, labFar6.Addr(), labLeafPort, labPort, []byte("sent IPv6")),
-		} {
-			delivered := c.Mesh.TransitCounters().Delivered
-			c.Mesh.DeliverInbound(inner, 0)
-			families[i] = c.Mesh.TransitCounters().Delivered > delivered
-		}
-		return families
+	mesh.SetEgressPrefixes(advertised)
+	c.Mesh = mesh
+	return func() [2]bool { return labLeafCarried(t, mesh, device, nil) }
+}
+
+// labMesh is a mesh writing to a device of the test's, with leaves routed to a synthetic leaf, since egress through
+// a default or an egress segment leaves only from a source the mesh routes a reply to
+func labMesh(t *testing.T, leaves []netip.Prefix) (*netstack.Mesh, *routeTun) {
+	t.Helper()
+	device := &routeTun{}
+	mesh := netstack.NewOnDevice(device)
+	mesh.Name = labTUN
+	t.Cleanup(mesh.Close)
+	leaf := netstack.NewPeer("example/leaf", func(int) (netstack.BatchSealer, error) {
+		return nil, errors.New("the leaf is synthetic")
+	}, func([][]byte) error { return nil }, nil)
+	t.Cleanup(leaf.Close)
+	for _, prefix := range leaves {
+		mesh.Routes.Set(netip.Prefix{}, prefix, leaf)
 	}
+	return mesh, device
+}
+
+// labLeafCarried delivers to mesh, as a session's packet, a leaf's datagram of each family to the far host, through wrap
+// where it is not nil, and returns the families whose datagram device received
+func labLeafCarried(t *testing.T, mesh *netstack.Mesh, device *routeTun, wrap func([]byte) []byte) (families [2]bool) {
+	t.Helper()
+	for i, sent := range [][2]netip.Addr{{labLeaf4, labFar4.Addr()}, {labHeadend, labFar6.Addr()}} {
+		payload := []byte("from the leaf to " + sent[1].String())
+		raw := udpPacket(sent[0], sent[1], labLeafPort, labPort, payload)
+		if wrap != nil {
+			raw = wrap(raw)
+		}
+		families[i] = labCarried(mesh, device, raw, sent[0], sent[1], payload)
+	}
+	return families
+}
+
+// labCarried delivers raw to mesh as a session's packet and reports whether device received a packet from src to dst
+// ending in payload
+func labCarried(mesh *netstack.Mesh, device *routeTun, raw []byte, src, dst netip.Addr, payload []byte) bool {
+	device.taken()
+	mesh.DeliverInbound(raw, 0)
+	return slices.ContainsFunc(device.taken(), func(written []byte) bool {
+		from, to, _ := packet.Addrs(written)
+		return from == src && to == dst && bytes.HasSuffix(written, payload)
+	})
 }
 
 func labLeafPrefixes() []netip.Prefix {
