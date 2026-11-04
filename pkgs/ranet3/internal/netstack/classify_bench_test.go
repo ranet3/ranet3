@@ -31,6 +31,8 @@ const (
 	classifyDefault
 	// classifyDefaultPath is classifyDefault's read in mode 3, which cap.exit via's path takes over the learned default, a leaf's common read
 	classifyDefaultPath
+	// classifyUnowned is classifyPlain's read from sources outside the overlay this node does not own, a neighbor's, which a mesh not ownedOnly passes toward another node
+	classifyUnowned
 )
 
 // encapsulated is inner, an IPv4 or IPv6 packet or one cut short, carried in a packet of source's family from source to destination
@@ -93,6 +95,10 @@ var classifyArms = []classifyArm{
 	{"IPv4 one packet from one source", 4, 1, 1, classifyPlain, 0},
 	{"IPv6 one packet from one source", 6, 1, 1, classifyPlain, 0},
 	{"IPv4 one packet from two sources in turn", 4, 1, 2, classifyPlain, 0},
+	{"IPv4 from one unowned source", 4, 128, 1, classifyUnowned, 0},
+	{"IPv6 from one unowned source", 6, 128, 1, classifyUnowned, 0},
+	{"IPv6 from 128 unowned sources", 6, 128, 128, classifyUnowned, 0},
+	{"IPv6 one packet from one unowned source", 6, 1, 1, classifyUnowned, 0},
 }
 
 // oneSteeredRead is a read of one IPv6 packet a cap.segment steer policy claims, and onePathRead one cap.exit via's path of one segment takes
@@ -105,7 +111,7 @@ var (
 var classifyPathSIDs = []netip.Addr{segAddr("3fff:1::1"), segAddr("3fff:2::46")}
 
 // classifyRead is the read of the classify benchmark, arm's packets to one peer's destination, and the packets it holds
-// from one source this node owns or from sources of them, under the overlay of the decision's tests and with a SID of this node's, so each packet meets every check
+// from one source this node owns or from sources of them, or of a neighbor's network for classifyUnowned, under the overlay of the decision's tests and with a SID of this node's, so each packet meets every check
 // a read of fewer packets than sources holds a packet from each, classified once before it is returned
 // it fails tb unless every packet of the read passes the checks to the peer, since the benchmark would otherwise time the drops
 func classifyRead(tb testing.TB, arm classifyArm) (*Mesh, *outboundBatch, [][]byte) {
@@ -154,9 +160,16 @@ func classifyRead(tb testing.TB, arm classifyArm) (*Mesh, *outboundBatch, [][]by
 	if shape == classifyCarried {
 		m.Routes.Set(netip.Prefix{}, segPrefix("3fff:7::/64"), peer)
 	}
+	from := owned
+	if shape == classifyUnowned {
+		from = netip.MustParsePrefix("198.51.100.0/24")
+		if family == 6 {
+			from = netip.MustParsePrefix("2001:db8:100::/64")
+		}
+	}
 	packets := make([][]byte, max(count, sources))
 	for i := range packets {
-		source := owned.Addr()
+		source := from.Addr()
 		for range i % sources {
 			source = source.Next()
 		}
