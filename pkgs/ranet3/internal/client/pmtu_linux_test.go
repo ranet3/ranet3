@@ -357,6 +357,11 @@ func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 	}
 	t.Cleanup(mesh.Close)
 	alpha, bravo := newLoopbackMeshOn(t, mesh)
+	// bravo answers and never dials, so the one session is the one alpha dials and no resolution replaces it once the path narrows
+	// a session made after that starts at the narrowed budget, which no event reports
+	quiet := *bravo.cfg
+	quiet.Dial.To = nil
+	bravo.client.cfg.Store(&quiet)
 	run(t, alpha, bravo)
 	waitFor(t, convergeBudget, fmt.Sprintf("bravo's session to alpha to settle at %d", netstack.DefaultMTU), func() bool {
 		peer, verdict, _ := bravo.client.Mesh.Routes.Resolve(netip.Addr{}, alphaHost.Addr())
