@@ -1061,6 +1061,12 @@ testers.runNixOSTest {
             cursor = output.rsplit("-- cursor: ", 1)[1].strip()
             return f"journalctl -u {unit} --after-cursor='{cursor}' --no-pager"
 
+        def no_esp_dropped():
+            """since ranet3 last started its scrape reads 0 in two series: ranet3_esp_inbound_dropped_total, the ESP datagrams a session dropped, of an SPI its tunnel holds no SA of, failing to decrypt or validate, or by RFC 6040, and ranet3_receive_refused_total{cause="unknown_esp"}, those of an SPI no session holds. It reads neither ranet3_receive_dropped_total, a full receive queue's drops, nor the hub's other causes of refusal, such as a datagram too short to name an SPI or one the kernel cut."""
+            metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics").splitlines()
+            for want in ["ranet3_esp_inbound_dropped_total 0", 'ranet3_receive_refused_total{cause="unknown_esp"} 0']:
+                assert want in metrics, f"the scrape does not carry {want}:\n" + "\n".join(metrics)
+
         def named_by_fqdn():
             """strongSwan established the SA under the two FQDNs, and ranet3 resolved the gateway's to its endpoint."""
             gateway.succeed(
@@ -1686,7 +1692,7 @@ testers.runNixOSTest {
             assert selected and int(selected[0].split()[1]) > 0, metrics
 
             assert client.succeed("journalctl -u ranet3.service --no-pager | grep -c ': connected (SPI'").strip() == "1"
-            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            no_esp_dropped()
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built|N[(]INVAL_SPI[)]'")
@@ -1734,7 +1740,7 @@ testers.runNixOSTest {
             gateway.wait_until_succeeds(f"{peer_rekey} | grep -E 'IKE_SA ranet.* rekeyed between'", timeout=timeout)
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
-            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            no_esp_dropped()
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built|N[(]INVAL_SPI[)]'")
@@ -1807,7 +1813,7 @@ testers.runNixOSTest {
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
             both_ends_run_the_shared_suite()
 
-            client.fail("journalctl -u ranet3.service --no-pager | grep -F 'no matching inbound ESP SA'")
+            no_esp_dropped()
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail("journalctl -u strongswan-swanctl.service --no-pager | grep -E 'integrity check failed|no CHILD_SA built|N[(]INVAL_SPI[)]'")
@@ -1993,7 +1999,7 @@ testers.runNixOSTest {
             if responder_enabled:
                 client.fail(f"{ranet3_log} | grep -F ': dialing '")
 
-            client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
+            no_esp_dropped()
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED|N[(]INVAL_SPI[)]'")
@@ -2057,7 +2063,7 @@ testers.runNixOSTest {
             assert ike_sas_closed() == [], f"ranet3 closed IKE SAs for {ike_sas_closed()}"
             connected_once()
 
-            client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
+            no_esp_dropped()
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|N[(]INVAL_SPI[)]'")
         finally:
@@ -2108,7 +2114,7 @@ testers.runNixOSTest {
                 assert ike_sas_closed() == [], f"ranet3 closed IKE SAs for {ike_sas_closed()}"
 
             client.fail(f"{ranet3_log} | grep -F ': dialing '")
-            client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
+            no_esp_dropped()
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED|N[(]INVAL_SPI[)]'")
         finally:
@@ -2187,6 +2193,8 @@ testers.runNixOSTest {
                         client.fail(f"{ranet3_since} | grep -F ': connected (SPI'")
                         swan_since = journal_after(gateway, "strongswan-swanctl.service")
                         ranet3_since = journal_after(client, "ranet3.service")
+                    # the counters start again at 0 with the process a restart starts, so the one it stops is read first
+                    no_esp_dropped()
                     # the endpoints are read at the start, and a restart dials with the phase's entry
                     client.succeed("systemctl restart ranet3.service")
                     client.wait_until_succeeds("ranet3 sessions --json", timeout=timeout)
@@ -2200,7 +2208,7 @@ testers.runNixOSTest {
                 for address in ["${gatewayTunnel}", "${gatewayTunnelV4}"]:
                     client.wait_until_succeeds(f"ping -c 1 {address}", timeout=timeout)
 
-            client.fail(f"{ranet3_log} | grep -F 'no matching inbound ESP SA'")
+            no_esp_dropped()
             client.fail(f"{ranet3_log} | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
             client.fail(f"{ranet3_log} | grep -F 'ike dropped the fragments of a message the peer left incomplete'")
             gateway.fail(f"{swan_log} | grep -E 'integrity check failed|no CHILD_SA built|AUTHENTICATION_FAILED|N[(]INVAL_SPI[)]'")
