@@ -13,7 +13,7 @@ require (
 	golang.org/x/crypto v0.58.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
-	hegel.dev/go/hegel v0.9.28
+	hegel.dev/go/hegel v0.9.29
 	ranet3.com/pkgs/wireguard v0.0.0-00010101000000-000000000000
 )
 

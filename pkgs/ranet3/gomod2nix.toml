@@ -38,5 +38,5 @@ version = 'v0.49.0'
 hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
 
 [mod.'hegel.dev/go/hegel']
-version = 'v0.9.28'
-hash = 'sha256-1rOmMIyDWxKcr85NZt0euZrDddLApfAefwpsL/nj6ww='
+version = 'v0.9.29'
+hash = 'sha256-OsQICbJCmS/1915jpcCMUADo+hExTrdW1exLuooEIDQ='
