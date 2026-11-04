@@ -408,6 +408,10 @@ func TestDialerSaysItsDialAfterAStandingSessionAtInfo(t *testing.T) {
 		wake()
 		return len(recorded(alpha.events, "dial.failed")) >= 3
 	})
+	// a failure is said after its dial.failed is recorded, at info or as a repeat at debug
+	waitFor(t, convergeBudget, "alpha to say the failure after the session", func() bool {
+		return written.count("reconnecting in")+written.count("peer dial failed again") >= 3
+	})
 
 	levels := func(phrase string) []string {
 		var out []string
