@@ -256,7 +256,7 @@ func (d *exitDaemon) hand(t *testing.T, table kernel.Table, announced []netip.Pr
 		t.Fatalf("hand the reconciler cap.table with cap.exit %+v: %v", table.Mode(), err)
 	}
 	d.table, d.announced = table, announced
-	waitFor(t, rulesSettle, "a pass under the table the reconciler was handed", func() bool { return d.reloaded() > before })
+	waitFor(t, convergeBudget, "a pass under the table the reconciler was handed", func() bool { return d.reloaded() > before })
 }
 
 // reloaded numbers the last pass the reconciler ran after taking a table it was handed, 0 before the first
@@ -279,7 +279,7 @@ func (d *exitDaemon) lastPass(trigger string) uint64 {
 // so the rules are that pass's own
 func (d *exitDaemon) settled(t *testing.T, leaf *netnstest.Thread, trigger string, want []string) {
 	t.Helper()
-	waitFor(t, rulesSettle, "the catch-all of the pass woken by "+trigger, func() bool {
+	waitFor(t, convergeBudget, "the catch-all of the pass woken by "+trigger, func() bool {
 		woken := d.lastPass(trigger)
 		return woken != 0 && woken == d.lastPass("") && slices.Equal(exitRules(t, leaf, 5440), want)
 	})
@@ -685,7 +685,7 @@ func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 				slices.Sort(want)
 				return want
 			}
-			waitFor(t, rulesSettle, "the reconciler to install the arm's catch-all and its routes", func() bool {
+			waitFor(t, convergeBudget, "the reconciler to install the arm's catch-all and its routes", func() bool {
 				return slices.Equal(exitRules(t, lab.leaf, 5440), catchAll()) && exitDefaults(t, lab.leaf, !arm.retracted && !arm.exit)
 			})
 			switch {
@@ -698,7 +698,7 @@ func TestTUNExitModeSendsEachSocketWhereModeTwoSays(t *testing.T) {
 				exitByHand(t, lab.leaf)
 				d.settled(t, lab.leaf, "kernel", catchAll())
 			}
-			waitFor(t, rulesSettle, "the mesh's defaults", func() bool { return exitDefaults(t, lab.leaf, !arm.retracted && !arm.exit) })
+			waitFor(t, convergeBudget, "the mesh's defaults", func() bool { return exitDefaults(t, lab.leaf, !arm.retracted && !arm.exit) })
 			t.Logf("the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
 			if status := d.routes.Stats().Exit; status != nil {
 				t.Logf("the exit status reads %+v", *status)

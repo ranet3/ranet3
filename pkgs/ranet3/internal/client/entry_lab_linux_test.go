@@ -210,7 +210,7 @@ func entrySetHolds(border *kernelexit.BorderFilter, name string, address netip.A
 // entryCaughtUp waits until the border's last pass asked for the owned and none sets node derives now
 func entryCaughtUp(t *testing.T, border *kernelexit.BorderFilter, node *Client) {
 	t.Helper()
-	waitFor(t, rulesSettle, "the antispoof filter's sets to follow the mesh's table", func() bool {
+	waitFor(t, convergeBudget, "the antispoof filter's sets to follow the mesh's table", func() bool {
 		derived := node.borderSets(node.config().Border())
 		for name, ranges := range map[string][]egress.Range{"owned": derived.Owned, "none": derived.None} {
 			for _, family := range []int{4, 6} {
@@ -274,7 +274,7 @@ func TestTUNEntryTakesFromAForwardingHostOnlyWhatItOwns(t *testing.T) {
 		d.node.Mesh.Routes.Set(netip.Prefix{}, entryPeer[family], d.learned)
 		d.node.Mesh.Routes.Set(netip.Prefix{}, exitLabHost[family].subnet, d.learned)
 	}
-	waitFor(t, rulesSettle, "the mesh's table routing the peer and the subnet into the tun", func() bool {
+	waitFor(t, convergeBudget, "the mesh's table routing the peer and the subnet into the tun", func() bool {
 		for _, family := range []int{4, 6} {
 			if !labMeshRoute(t, lab.leaf, entryPeer[family]) || !labMeshRoute(t, lab.leaf, exitLabHost[family].subnet) {
 				return false
@@ -388,7 +388,7 @@ func TestTUNEntryKeepsAnUntrackedStrangersDatagramOut(t *testing.T) {
 		d.node.Mesh.Routes.Set(netip.Prefix{}, entryPeer[family], d.learned)
 		d.node.Mesh.Routes.Set(netip.Prefix{}, exitLabHost[family].subnet, d.learned)
 	}
-	waitFor(t, rulesSettle, "the mesh's table routing the peer and the subnet into the tun", func() bool {
+	waitFor(t, convergeBudget, "the mesh's table routing the peer and the subnet into the tun", func() bool {
 		for _, family := range []int{4, 6} {
 			if !labMeshRoute(t, lab.leaf, entryPeer[family]) || !labMeshRoute(t, lab.leaf, exitLabHost[family].subnet) {
 				return false
@@ -518,7 +518,7 @@ func entryLinkLocal(t *testing.T, leaf *netnstest.Thread) (netip.Addr, int) {
 	t.Helper()
 	var address netip.Addr
 	var index int
-	waitFor(t, rulesSettle, "the tun's link-local address", func() bool {
+	waitFor(t, convergeBudget, "the tun's link-local address", func() bool {
 		_ = leaf.Do(func() error {
 			link, err := net.InterfaceByName(rulesTUN)
 			if err != nil {
@@ -771,7 +771,7 @@ const (
 
 // entryRace learns prefix from router, or forgets it, while a stranger beyond the uplink sends to its first host every entrySpray.
 // It answers when the mesh's table came to hold the route as the change asks, when the none set came to say so, how many datagrams
-// went, and the send time of each that entered the tun, each from the change. A zero time is one that never came within rulesSettle.
+// went, and the send time of each that entered the tun, each from the change. A zero time is one that never came within convergeBudget.
 func entryRace(t *testing.T, lab *borderLab, router *netstack.Peer, prefix netip.Prefix, learn bool, trial int) (route, set time.Duration, sent int, entered []time.Duration) {
 	t.Helper()
 	host, family := prefix.Addr().Next(), 6
@@ -812,7 +812,7 @@ func entryRace(t *testing.T, lab *borderLab, router *netstack.Peer, prefix netip
 		lab.node.Mesh.Routes.Remove(netip.Prefix{}, prefix)
 	}
 	none := entrySet("none", host)
-	for deadline := start.Add(rulesSettle); (route == 0 || set == 0) && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+	for deadline := start.Add(convergeBudget); (route == 0 || set == 0) && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
 		if route == 0 && labMeshRoute(t, lab.exit, prefix) == learn {
 			route = time.Since(start)
 		}
@@ -877,7 +877,7 @@ func TestTUNEntryClosesALearnedLANWithinOneSettle(t *testing.T) {
 				t.Logf("IPv%d LAN %s, trial %d: the route at %v, the none set at %v, %d of %d datagrams entered the tun%s",
 					family, change, trial, route, set, len(entered), sent, span)
 				if route == 0 || set == 0 {
-					t.Fatalf("the %s LAN %s left the route at %v and the none set at %v within %s", change, prefix, route, set, rulesSettle)
+					t.Fatalf("the %s LAN %s left the route at %v and the none set at %v within %s", change, prefix, route, set, convergeBudget)
 				}
 				switch {
 				case learn && len(entered) > 0:

@@ -70,7 +70,7 @@ func TestTUNKillSwitchKeepsKernelTunnelsOffTheUplink(t *testing.T) {
 	for _, state := range switchStates {
 		t.Run(string(state), func(t *testing.T) {
 			lab.settle(t, switchArm{state: state})
-			waitFor(t, rulesSettle, "the table's lan4 to hold the tunnels' networks", func() bool {
+			waitFor(t, convergeBudget, "the table's lan4 to hold the tunnels' networks", func() bool {
 				var held kernel.FallbackDebug
 				if err := lab.leaf.Do(func() (err error) { held, err = kernel.ReadFallback(); return err }); err != nil {
 					return false

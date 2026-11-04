@@ -96,7 +96,7 @@ func (lab *antispoofLab) reachable(t *testing.T) {
 		{lab.far, rulesHost[6].gateway.Addr(), rulesHost[6].uplink.Addr()},
 		{lab.other, carveOther[6].far.Addr(), carveOther[6].leaf.Addr()},
 	} {
-		waitFor(t, rulesSettle, "the leaf's IPv6 address by each link to take a datagram", func() bool {
+		waitFor(t, convergeBudget, "the leaf's IPv6 address by each link to take a datagram", func() bool {
 			if err := link.thread.Do(func() error { return carveSend(link.from, link.to, antispoofProbe) }); err != nil {
 				t.Fatalf("send a probe from %s: %v", link.from, err)
 			}
@@ -201,7 +201,7 @@ func (lab *antispoofLab) carved() string {
 // holds waits for the filter's chain to hold spec, ready
 func (lab *antispoofLab) holds(t *testing.T, spec string) {
 	t.Helper()
-	waitFor(t, rulesSettle, "the antispoof filter to hold "+spec, func() bool {
+	waitFor(t, convergeBudget, "the antispoof filter to hold "+spec, func() bool {
 		var debug egress.BorderDebug
 		_ = lab.leaf.Do(func() error { debug = lab.border.Debug(); return nil })
 		for _, chain := range debug.Chains {
@@ -232,7 +232,7 @@ func TestTUNAntispoofExemptsFromTheInterfacesItNames(t *testing.T) {
 	if got := lab.delivered(t); len(got) != 0 {
 		t.Errorf("with no cap.antispoof the leaf's socket took %q, want nothing", got)
 	}
-	waitFor(t, rulesSettle, "the overlay's drops to count both links' datagrams", func() bool {
+	waitFor(t, convergeBudget, "the overlay's drops to count both links' datagrams", func() bool {
 		return borderDropped(t, lab.leaf, lab.border, "drop ipv4 source 192.0.2.0/24") >= overlay4+2 && borderDropped(t, lab.leaf, lab.border, "drop ipv6 source 3fff::/20") >= overlay6+2
 	})
 
@@ -253,7 +253,7 @@ func TestTUNAntispoofExemptsFromTheInterfacesItNames(t *testing.T) {
 	if got := lab.delivered(t); !slices.Equal(got, want) {
 		t.Errorf("the leaf's socket took %q, want %q, with %s", got, want, lab.carved())
 	}
-	waitFor(t, rulesSettle, "the carved drop to count the mesh's prefixes inside an exemption from each link", func() bool {
+	waitFor(t, convergeBudget, "the carved drop to count the mesh's prefixes inside an exemption from each link", func() bool {
 		return borderDropped(t, lab.leaf, lab.border, "drop ipv4 source @carved4") >= carved+2
 	})
 }
@@ -284,7 +284,7 @@ func (lab *antispoofLab) pass(t *testing.T) {
 	if err := lab.border.SetConfig(lab.border.Capability()); err != nil {
 		t.Fatalf("wake the antispoof filter: %v", err)
 	}
-	waitFor(t, rulesSettle, "the antispoof filter to run another pass", func() bool { return lab.border.Stats().At.After(at) })
+	waitFor(t, convergeBudget, "the antispoof filter to run another pass", func() bool { return lab.border.Stats().At.After(at) })
 }
 
 // a gateway announcing 192.0.2.0/25 by cap.route, its site behind carx and
@@ -310,7 +310,7 @@ func TestTUNAntispoofGatewayExemptsItsSiteAndNoOtherNode(t *testing.T) {
 	if got := lab.delivered(t); !slices.Equal(got, want) {
 		t.Errorf("the leaf's socket took %q, want %q, with %s", got, want, lab.carved())
 	}
-	waitFor(t, rulesSettle, "the carved drop to count the node's own address and the other node's prefix, and the overlay's the uplink's source", func() bool {
+	waitFor(t, convergeBudget, "the carved drop to count the node's own address and the other node's prefix, and the overlay's the uplink's source", func() bool {
 		return borderDropped(t, lab.leaf, lab.border, "drop ipv4 source @carved4") >= carved+2 && borderDropped(t, lab.leaf, lab.border, "drop ipv4 source 192.0.2.0/24") >= overlay+1
 	})
 	// a conflict reported on every pass records one event per pass
@@ -322,13 +322,13 @@ func TestTUNAntispoofGatewayExemptsItsSiteAndNoOtherNode(t *testing.T) {
 
 	passes := lab.passes()
 	lab.d.node.Mesh.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("192.0.2.96/28"), lab.d.learned)
-	waitFor(t, rulesSettle, "a pass writing the other node's more specific prefix", func() bool { return lab.passes() > passes })
+	waitFor(t, convergeBudget, "a pass writing the other node's more specific prefix", func() bool { return lab.passes() > passes })
 	carved = borderDropped(t, lab.leaf, lab.border, "drop ipv4 source @carved4")
 	lab.send(t, nil, []string{"192.0.2.100", "192.0.2.65"})
 	if got := lab.delivered(t); !slices.Equal(got, []string{"carx 192.0.2.65"}) {
 		t.Errorf("the leaf's socket took %q, want %q, with %s", got, []string{"carx 192.0.2.65"}, lab.carved())
 	}
-	waitFor(t, rulesSettle, "the carved drop to count the later prefix's source", func() bool {
+	waitFor(t, convergeBudget, "the carved drop to count the later prefix's source", func() bool {
 		return borderDropped(t, lab.leaf, lab.border, "drop ipv4 source @carved4") >= carved+1
 	})
 	later := "192.0.2.96/28 carved 192.0.2.96/28 of 192.0.2.0/25 via carx routed via " + lab.d.learned.ID
@@ -355,7 +355,7 @@ func TestTUNAntispoofExemptingTheOverlayKeepsTheCarvedDrops(t *testing.T) {
 	if got := lab.delivered(t); !slices.Equal(got, want) {
 		t.Errorf("the leaf's socket took %q, want %q, with %s", got, want, lab.carved())
 	}
-	waitFor(t, rulesSettle, "the carved drops to count the mesh's prefixes", func() bool {
+	waitFor(t, convergeBudget, "the carved drops to count the mesh's prefixes", func() bool {
 		return borderDropped(t, lab.leaf, lab.border, "drop ipv4 source @carved4") >= carved4+2 &&
 			borderDropped(t, lab.leaf, lab.border, "drop ipv6 source @carved6") >= carved6+1
 	})

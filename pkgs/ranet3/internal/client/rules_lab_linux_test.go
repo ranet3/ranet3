@@ -19,7 +19,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -46,8 +45,6 @@ const (
 	rulesPortBase = 42000
 	// rulesDiscard is the port every probe is sent to
 	rulesDiscard = 9
-	// rulesSettle is how long an arm waits for the reconciler's pass, which takes about a second
-	rulesSettle = 10 * time.Second
 )
 
 // rulesVerdict is where the kernel sent a probe's first packet
@@ -392,14 +389,14 @@ func TestTUNDerivedRulesSendEachSocketWhereModeOffSays(t *testing.T) {
 				t.Fatalf("hand the reconciler the announcements %v: %v", arm.announced, err)
 			}
 			var held string
-			waitFor(t, rulesSettle, "the reconciler to install the arm's routes and rules", func() bool {
+			waitFor(t, convergeBudget, "the reconciler to install the arm's routes and rules", func() bool {
 				var ok bool
 				ok, held = rulesConverged(t, leaf, arm)
 				return ok
 			})
 			t.Logf("the kernel holds %s", held)
 			var status control.Status
-			waitFor(t, rulesSettle, "the daemon's status to report what another program's rule takes", func() bool {
+			waitFor(t, convergeBudget, "the daemon's status to report what another program's rule takes", func() bool {
 				status = node.Status()
 				return slices.Equal(status.Kernel.Taken, arm.taken)
 			})

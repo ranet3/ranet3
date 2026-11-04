@@ -212,7 +212,7 @@ func (lab *switchLab) notHolding(t *testing.T, state switchState, want kernel.Fa
 		}
 	}
 	t.Cleanup(release)
-	waitFor(t, rulesSettle, "the switch to read not holding", func() bool { return lab.switchStatus() == string(kernel.FallbackNotHolding) })
+	waitFor(t, convergeBudget, "the switch to read not holding", func() bool { return lab.switchStatus() == string(kernel.FallbackNotHolding) })
 	t.Logf("with the table held by another writer the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
 	internet6 := switchTun
 	if state != switchPresent {
@@ -232,7 +232,7 @@ func (lab *switchLab) notHolding(t *testing.T, state switchState, want kernel.Fa
 		{"lan", exitLabHost[4].internet.Addr(), switchOut, exitPings}, {"lan", exitLabHost[6].internet.Addr(), switchOut, exitPings},
 	}})
 	release()
-	waitFor(t, rulesSettle, "the switch to read "+string(want)+" again", func() bool { return lab.switchStatus() == string(want) })
+	waitFor(t, convergeBudget, "the switch to read "+string(want)+" again", func() bool { return lab.switchStatus() == string(want) })
 }
 
 // switchFlow is a ping a host behind the leaf sends to the internet host, where it has to go and how many replies come back
@@ -471,7 +471,7 @@ func (lab *switchLab) settle(t *testing.T, arm switchArm) {
 	case arm.state == switchRetracted:
 		state = string(kernel.FallbackHolding)
 	}
-	waitFor(t, rulesSettle, "the reconciler to install the arm's rules, its routes and the switch "+state, func() bool {
+	waitFor(t, convergeBudget, "the reconciler to install the arm's rules, its routes and the switch "+state, func() bool {
 		return slices.Equal(exitRules(t, lab.leaf, 5440), switchCatchAlls(arm.forward, arm.unaddressed)) && exitDefaults(t, lab.leaf, arm.state == switchPresent) && lab.switchStatus() == state
 	})
 	t.Logf("the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
@@ -501,13 +501,13 @@ func (lab *switchLab) crash(t *testing.T, arm switchArm) {
 		t.Fatal(err)
 	}
 	kill := startExitHelper(t, lab.leaf, "TestKillSwitchLabCrashHelper", switchHelperArm+"="+string(encoded))
-	waitFor(t, rulesSettle, "the crash helper's switch to pass", func() bool {
+	waitFor(t, convergeBudget, "the crash helper's switch to pass", func() bool {
 		_, err := os.Stat(helped.Ready)
 		return err == nil && slices.Equal(exitRules(t, lab.leaf, 5440), switchCatchAlls(arm.forward, arm.unaddressed)) && exitDefaults(t, lab.leaf, true)
 	})
 	t.Logf("the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
 	kill()
-	waitFor(t, rulesSettle, "the tun to go with the helper", func() bool { return !besideHasTun(t, lab.leaf) })
+	waitFor(t, convergeBudget, "the tun to go with the helper", func() bool { return !besideHasTun(t, lab.leaf) })
 	var held kernel.FallbackDebug
 	if err := lab.leaf.Do(func() (err error) { held, err = kernel.ReadFallback(); return err }); err != nil {
 		t.Fatalf("read the table back: %v", err)
@@ -541,8 +541,8 @@ func (lab *switchLab) restart(t *testing.T) {
 	}
 	select {
 	case <-lab.d.routes.FirstPass():
-	case <-time.After(rulesSettle):
-		t.Fatalf("the node's first pass did not end within %s", rulesSettle)
+	case <-time.After(convergeBudget):
+		t.Fatalf("the node's first pass did not end within %s", convergeBudget)
 	}
 }
 
@@ -555,8 +555,8 @@ func (lab *switchLab) failMesh(t *testing.T) {
 	}
 	select {
 	case <-lab.d.node.Mesh.Failed():
-	case <-time.After(rulesSettle):
-		t.Fatalf("the mesh did not fail within %s of its tun's delete", rulesSettle)
+	case <-time.After(convergeBudget):
+		t.Fatalf("the mesh did not fail within %s of its tun's delete", convergeBudget)
 	}
 	lab.d.stopFor(kernel.ErrMeshFailed)
 	if lab.bordered {
@@ -579,7 +579,7 @@ func TestKillSwitchLabCrashHelper(t *testing.T) {
 	d := startExitDaemon(t, netnstest.JoinThread(t, path))
 	switchEntries(d, switchPresent, helped.Via)
 	switchMode(t, d, helped.Forward, helped.Inbound, helped.Unaddressed, helped.Unlisted, helped.Via, helped.Uplink)
-	waitFor(t, rulesSettle, "the switch to pass", func() bool {
+	waitFor(t, convergeBudget, "the switch to pass", func() bool {
 		stats := d.routes.Stats()
 		if helped.Uplink {
 			return stats.Exit != nil && stats.Exit.Fallback == nil && stats.Path != nil && len(stats.Path.Installed) == 2

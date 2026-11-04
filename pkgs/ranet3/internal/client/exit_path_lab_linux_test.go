@@ -223,7 +223,7 @@ func (lab *pathLab) startRoutes(t *testing.T) {
 // settle waits for the leaf's table to hold the steered defaults where up says, and neither where it does not
 func (lab *pathLab) settle(t *testing.T, up bool) {
 	t.Helper()
-	waitFor(t, rulesSettle, fmt.Sprintf("the leaf's steered defaults installed %v", up), func() bool {
+	waitFor(t, convergeBudget, fmt.Sprintf("the leaf's steered defaults installed %v", up), func() bool {
 		return exitDefaults(t, lab.nodes[pathLeaf].ns, up)
 	})
 }
@@ -429,10 +429,10 @@ func (lab *pathLab) switchState() string {
 	return exit.Fallback.State
 }
 
-// awaitSwitch fails the test unless status reads the leaf's switch want within rulesSettle
+// awaitSwitch fails the test unless status reads the leaf's switch want within convergeBudget
 func (lab *pathLab) awaitSwitch(t *testing.T, want kernel.FallbackState) {
 	t.Helper()
-	waitFor(t, rulesSettle, "the leaf's switch to read "+string(want), func() bool { return lab.switchState() == string(want) })
+	waitFor(t, convergeBudget, "the leaf's switch to read "+string(want), func() bool { return lab.switchState() == string(want) })
 }
 
 // reloadFallback writes fallback into the leaf's cap.exit, unwritten where empty, reloads it, and waits for status to read the switch want
@@ -477,17 +477,17 @@ func (lab *pathLab) reload(t *testing.T, via ...netip.Addr) {
 	if err := leaf.ns.Do(func() error { return leaf.client.ReloadFrom(leaf.configPath) }); err != nil {
 		t.Fatalf("reload the leaf onto the path %v: %v", want, err)
 	}
-	waitFor(t, rulesSettle, fmt.Sprintf("status to read the path %v up", want), func() bool {
+	waitFor(t, convergeBudget, fmt.Sprintf("status to read the path %v up", want), func() bool {
 		path := lab.path(t)
 		return slices.Equal(path.Via, want) && path.State == "up"
 	})
 }
 
-// awaitEvent fails the test unless the last kernel.path event reads want within rulesSettle, since the pass emits it after the kernel holds its routes
+// awaitEvent fails the test unless the last kernel.path event reads want within convergeBudget, since the pass emits it after the kernel holds its routes
 func (lab *pathLab) awaitEvent(t *testing.T, want string) {
 	t.Helper()
 	got := lab.lastPathEvent()
-	for deadline := time.Now().Add(rulesSettle); got != want && time.Now().Before(deadline); got = lab.lastPathEvent() {
+	for deadline := time.Now().Add(convergeBudget); got != want && time.Now().Before(deadline); got = lab.lastPathEvent() {
 		time.Sleep(labPoll)
 	}
 	if got != want {
@@ -495,14 +495,14 @@ func (lab *pathLab) awaitEvent(t *testing.T, want string) {
 	}
 }
 
-// awaitDown fails the test unless status reads the path down at sid with nothing installed within rulesSettle, since the pass stores its status after the kernel holds its routes
+// awaitDown fails the test unless status reads the path down at sid with nothing installed within convergeBudget, since the pass stores its status after the kernel holds its routes
 func (lab *pathLab) awaitDown(t *testing.T, sid netip.Addr) {
 	t.Helper()
 	down := func(path control.KernelExitPath) bool {
 		return path.State == "down" && path.Down == sid.String() && len(path.Installed) == 0
 	}
 	path := lab.path(t)
-	for deadline := time.Now().Add(rulesSettle); !down(path) && time.Now().Before(deadline); path = lab.path(t) {
+	for deadline := time.Now().Add(convergeBudget); !down(path) && time.Now().Before(deadline); path = lab.path(t) {
 		time.Sleep(labPoll)
 	}
 	if !down(path) {
@@ -725,7 +725,7 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 			return path.State == "down" && path.Down == pathSIDAOutside.String() && path.Verdict == "no route of its own" && len(path.Installed) == 0
 		}
 		path := lab.path(t)
-		for deadline := time.Now().Add(rulesSettle); !held(path) && time.Now().Before(deadline); path = lab.path(t) {
+		for deadline := time.Now().Add(convergeBudget); !held(path) && time.Now().Before(deadline); path = lab.path(t) {
 			time.Sleep(labPoll)
 		}
 		if !held(path) {

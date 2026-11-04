@@ -106,7 +106,7 @@ func runBeside(t *testing.T, c exitBeside) {
 				kill := startExitHelper(t, lab.leaf, "TestExitLabCrashHelper")
 				besideConverged(t, lab, true)
 				kill()
-				waitFor(t, rulesSettle, "the tun to go with the helper", func() bool { return !besideHasTun(t, lab.leaf) })
+				waitFor(t, convergeBudget, "the tun to go with the helper", func() bool { return !besideHasTun(t, lab.leaf) })
 				// the rules are the kernel's, so they outlive the process that wrote them
 				if got, want := exitRules(t, lab.leaf, 5440), besideRules(); !slices.Equal(got, want) {
 					t.Fatalf("after kill -9 the leaf holds %v at 5440, want the helper's rules %v", got, want)
@@ -169,7 +169,7 @@ func besideRules() []string {
 func besideConverged(t *testing.T, lab *exitLab, live bool) {
 	t.Helper()
 	want := besideRules()
-	waitFor(t, rulesSettle, "the reconciler to install mode 2's rules and the mesh's defaults", func() bool {
+	waitFor(t, convergeBudget, "the reconciler to install mode 2's rules and the mesh's defaults", func() bool {
 		return slices.Equal(exitRules(t, lab.leaf, 5440), want) && exitDefaults(t, lab.leaf, live)
 	})
 }

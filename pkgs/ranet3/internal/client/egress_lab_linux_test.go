@@ -543,7 +543,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		for _, arm := range arms {
 			from := carry(t, send, delivered, arm.leaf, arm.far, arm.exit, arm.listener, "sent before an ICMP error over "+arm.name)
 			message := entryTooBig(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), netip.AddrPortFrom(arm.far, labPort))
-			for deadline := time.Now().Add(rulesSettle); ; {
+			for deadline := time.Now().Add(convergeBudget); ; {
 				if err := far.Do(func() error { return entrySendError(arm.exit, message) }); err != nil {
 					t.Fatalf("send the ICMP error from the far host: %v", err)
 				}
@@ -551,7 +551,7 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 					break
 				}
 				if time.Now().After(deadline) {
-					t.Fatalf("no ICMP error about the %s flow reached the leaf %s through the tun within %s", arm.name, arm.leaf, rulesSettle)
+					t.Fatalf("no ICMP error about the %s flow reached the leaf %s through the tun within %s", arm.name, arm.leaf, convergeBudget)
 				}
 			}
 		}

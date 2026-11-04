@@ -97,7 +97,7 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 		d.node.Mesh.Routes.Set(netip.Prefix{}, carveHold[family], netstack.Unreachable)
 	}
 	var held []string
-	waitFor(t, rulesSettle, "the reconciler to throw the lease in place of the overlay's holds", func() bool {
+	waitFor(t, convergeBudget, "the reconciler to throw the lease in place of the overlay's holds", func() bool {
 		held = carveHeld(t, leaf)
 		return slices.Equal(held, carveTable)
 	})
@@ -106,7 +106,7 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 	for _, family := range []int{4, 6} {
 		for name, address := range map[string]netip.Addr{"gateway": carveLease[family].gateway.Addr(), "neighbor": carveLease[family].neighbor.Addr()} {
 			answered := 0
-			waitFor(t, rulesSettle, fmt.Sprintf("the %s %s to answer", name, address), func() bool {
+			waitFor(t, convergeBudget, fmt.Sprintf("the %s %s to answer", name, address), func() bool {
 				if err := leaf.Do(func() (err error) { answered, err = exitPing(address, exitPingBase+family); return err }); err != nil {
 					t.Fatalf("ping the %s %s: %v", name, address, err)
 				}
@@ -252,9 +252,9 @@ func TestTUNBorderKeepsAnOverlappingUplink(t *testing.T) {
 	// this node's own from the leased link, and the peer's from the second link
 	for _, family := range []int{4, 6} {
 		spec := fmt.Sprintf("drop ipv%d source @carved%d", family, family)
-		waitFor(t, rulesSettle, "the antispoof filter to count the 4 forged datagrams on "+spec, func() bool { return borderDropped(t, leaf, border, spec) >= 4 })
+		waitFor(t, convergeBudget, "the antispoof filter to count the 4 forged datagrams on "+spec, func() bool { return borderDropped(t, leaf, border, spec) >= 4 })
 		overlay := carveOverlayDrop(family)
-		waitFor(t, rulesSettle, "the antispoof filter to count the second link's unannounced lease address on "+overlay, func() bool {
+		waitFor(t, convergeBudget, "the antispoof filter to count the second link's unannounced lease address on "+overlay, func() bool {
 			return borderDropped(t, leaf, border, overlay) > overlayBefore[family]
 		})
 	}
@@ -333,7 +333,7 @@ func TestTUNBorderCarvesAPointToPointUplinksGateway(t *testing.T) {
 	}
 	d := startExitDaemon(t, leaf)
 	gateway := netip.PrefixFrom(p2p.gateway, 32)
-	waitFor(t, rulesSettle, "the reconciler to throw the gateway in place of the overlay's hold", func() bool {
+	waitFor(t, convergeBudget, "the reconciler to throw the gateway in place of the overlay's hold", func() bool {
 		return slices.Contains(carveHeld(t, leaf), "throw "+gateway.String())
 	})
 	var border *kernelexit.BorderFilter
@@ -353,7 +353,7 @@ func TestTUNBorderCarvesAPointToPointUplinksGateway(t *testing.T) {
 		cancel()
 		<-done
 	})
-	waitFor(t, rulesSettle, "the antispoof filter to carve the gateway", func() bool {
+	waitFor(t, convergeBudget, "the antispoof filter to carve the gateway", func() bool {
 		return slices.ContainsFunc(border.Stats().CarveOuts, func(c egress.CarveOut) bool { return c.Link == rulesUplink && c.Prefix == gateway })
 	})
 	var receiver *net.UDPConn
@@ -391,7 +391,7 @@ func TestTUNBorderCarvesAPointToPointUplinksGateway(t *testing.T) {
 	if want := []string{"gateway " + p2p.gateway.String()}; !slices.Equal(delivered, want) {
 		t.Errorf("the leaf's socket took %q, want the gateway's datagram alone", delivered)
 	}
-	waitFor(t, rulesSettle, "the antispoof filter to count the forged datagram on "+overlayDrop, func() bool { return borderDropped(t, leaf, border, overlayDrop) > before })
+	waitFor(t, convergeBudget, "the antispoof filter to count the forged datagram on "+overlayDrop, func() bool { return borderDropped(t, leaf, border, overlayDrop) > before })
 }
 
 // carvePeerAddress gives the link name the address local with peer at its far end, as pppd addresses a PPPoE link: IFA_LOCAL
