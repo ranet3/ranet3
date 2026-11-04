@@ -63,7 +63,7 @@ type rows struct {
 func (r *rows) verdict() { r.verdicts++ }
 
 // judged is step, failing where it returns having failed nothing and reached
-// no verdict, as a gate inside it would
+// no verdict, as a condition that returns before its verdict would
 func (r *rows) judged(step func(*testing.T)) func(*testing.T) {
 	return func(t *testing.T) {
 		before := r.verdicts

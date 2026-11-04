@@ -267,7 +267,7 @@ func ones(conditions ...bool) int {
 }
 
 // level is a level of Run's subtests, counting each it makes, whether
-// -test.run selects it or not, so a gate that leaves a class, a row or a step
+// -test.run selects it or not, so a condition that leaves a class, a row or a step
 // out of a level fails at holds and not in silence
 type level struct {
 	t    *testing.T
@@ -318,8 +318,8 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 				under.run(r.family.Name, func(t *testing.T) {
 					family := &level{t: t}
 					r.steps(func(name string, step func(*testing.T)) { family.run(name, r.judged(step)) })
-					// a family runs 10 steps under every class, the quench in IPv4 alone, the idle timers for an arm that reads its flows,
-					// and 9 more under a class that translates
+					// a family runs the steps of every class, the quench in IPv4 alone, the idle timers for an arm that reads its flows,
+					// and the steps of a class that translates
 					family.holds(10 + ones(!v6, arm.Flows != nil) + 9*ones(class != None))
 				})
 			}

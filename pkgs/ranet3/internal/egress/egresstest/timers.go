@@ -75,7 +75,9 @@ type timer struct {
 // the floor RFC 4787 REQ-5, RFC 5382 REQ-5 and RFC 5508 REQ-2 set where the
 // exit translates it, out of the mesh under a class that translates and into
 // it under return whatever the class, and below that floor where it does not
-// and for a datagram to a resolver, as REQ-5a lets it.
+// and for a datagram to a resolver, as REQ-5a lets it. Under a class that
+// translates it also holds an answered UDP flow out of the mesh to
+// answeredFloor.
 func (r *rows) timers(t *testing.T) {
 	t.Run("udp with no answer", func(t *testing.T) { r.timerOut(t, unansweredPort, r.class != None) })
 	t.Run("udp to a resolver", func(t *testing.T) { r.timerOut(t, resolverPort, false) })
