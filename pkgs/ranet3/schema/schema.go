@@ -165,6 +165,17 @@ func (p Prefix) MarshalText() ([]byte, error) {
 	return []byte(p.String()), nil
 }
 
+// AppendText is MarshalText for encoding/json, which prefers an AppendText to a
+// MarshalText. Embedding promotes netip.Prefix's, which spells what MarshalText
+// refuses.
+func (p Prefix) AppendText(b []byte) ([]byte, error) {
+	text, err := p.MarshalText()
+	if err != nil {
+		return b, err
+	}
+	return append(b, text...), nil
+}
+
 func (p *Prefix) UnmarshalYAML(value *yaml.Node) error {
 	return Scalar(value, "a prefix such as 2001:db8::/48", p)
 }
@@ -378,6 +389,16 @@ func (a Addr) MarshalText() ([]byte, error) {
 		return nil, fmt.Errorf("schema: address %s carries a zone, which has no spelling", a.Addr)
 	}
 	return []byte(a.String()), nil
+}
+
+// AppendText is Prefix.AppendText for an address, and is there for the same
+// reason.
+func (a Addr) AppendText(b []byte) ([]byte, error) {
+	text, err := a.MarshalText()
+	if err != nil {
+		return b, err
+	}
+	return append(b, text...), nil
 }
 
 func (a *Addr) UnmarshalYAML(value *yaml.Node) error {
