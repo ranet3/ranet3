@@ -153,7 +153,7 @@ in files ending in `_property_test.go`: `esp`, `ike`, `identity`, `transport`,
 `schema`, `internal/config`, `internal/registry`, `internal/client`,
 `internal/kernel`, `internal/egress`, `internal/egress/kernel`,
 `internal/nftables` and `control`. They run with the rest of `go test`, under
-hegel-go through `internal/pbt`, whose `Check` gives every property the same
+Hegel for Go through `internal/pbt`, whose `Check` gives every property the same
 terms: 200 cases, or 10 under `go test -short`, where hegel replaces the count
 `Check` sets, no example database, and a derandomized engine. hegel seeds the
 labels of nested generators per process, so two runs need not draw the same
@@ -164,7 +164,7 @@ prints the smallest input it found. hegel is a test dependency only:
 or when a non-test file imports `internal/pbt`, so it never reaches the binary
 or its notices.
 
-hegel-go runs on a library of its own. The `go-test` check sets
+Hegel for Go runs on a library of its own. The `go-test` check sets
 `HEGEL_LIBHEGEL_PATH` to the library in the vendored hegel module, and fails if
 a test wrote hegel's cache, `~/.cache/hegel-go` or `~/Library/Caches/hegel-go`,
 under the check's home directory anyway.
