@@ -1,13 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Yifei Sun
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
-# The netlink round trips in internal/kernel and internal/egress/kernel need root and
-# a network namespace to make a mess in, so they skip themselves under the go
-# check, which builds as an unprivileged user. That left every rule write, the
-# FRA_PROTOCOL ownership it rests on, and every byte of the nf_tables encoding
-# asserted nowhere any check ran. These are the same test binaries, each run
-# whole as root against a real kernel, and every test each lists passes in one
-# of its runs or is named with the reason it passes in none.
+# The Linux root tests need root and a network namespace to make a mess in, so
+# they skip themselves under the go-test and wireguard checks, which build as an
+# unprivileged user. These are the same test binaries, each run whole as root
+# against a real kernel, and every test each lists passes in one of its runs or
+# is named with the reason it passes in none.
 {
   lib,
   iproute2,
@@ -100,8 +98,8 @@ testers.runNixOSTest {
     before = foreign()
     print("the host's own tables:", before)
 
-    # each test binary and its package's directory of the source the go-test
-    # check tests, where it runs, so its tests read their testdata as they do there
+    # each test binary and its package's directory of the source it was built
+    # from, where it runs, so its tests read their testdata as they do there
     binaries = {
         "netlink-tests": ("${netlinkTests}/bin/netlink-tests", "${ranet3.src}/internal/kernel"),
         "egress-tests": ("${netlinkTests}/bin/egress-tests", "${ranet3.src}/internal/egress/kernel"),
