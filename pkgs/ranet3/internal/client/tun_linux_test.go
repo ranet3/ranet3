@@ -47,7 +47,7 @@ const synPort = 443
 func TestTUNClampsTheMSSOfASYNArrivingThroughASession(t *testing.T) {
 	const session = 1300
 	netnstest.EnterEmpty(t)
-	mesh, err := netstack.NewNamed(0, "synclamp0", nil)
+	mesh, err := netstack.NewNamed(0, "synclamp0", false, nil)
 	if err != nil {
 		t.Fatalf("open bravo's mesh: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestTUNFollowsAReloadOfLinkMTUOrTheSteering(t *testing.T) {
 // one read toward the internet goes along the path and one toward the entry's prefix by the entry, each steered and finding no route to its first segment
 func TestTUNStatusCountsTheReadsThePathAloneTook(t *testing.T) {
 	netnstest.EnterEmpty(t)
-	mesh, err := netstack.NewNamed(0, "pathcount0", nil)
+	mesh, err := netstack.NewNamed(0, "pathcount0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -210,6 +210,19 @@ func TestTUNStatusCountsTheReadsThePathAloneTook(t *testing.T) {
 	}
 	if path := c.kernel().ExitPath; path == nil || path.Steered != want.Steered || path.Unrouted != want.Unrouted {
 		t.Errorf("status carries the path %+v, want its counts %+v of the %+v the mesh steered in all", path, want, mesh.SegmentCounters())
+	}
+}
+
+// a node New starts on Linux forwards a read from a neighbor toward another node's prefix, which the kernel's entry rule judges
+func TestTUNNodeLeavesAnUnownedReadToTheEntryRule(t *testing.T) {
+	netnstest.EnterEmpty(t)
+	neighbor, far := netip.MustParseAddr("2001:db8:100::30"), netip.MustParseAddr("3fff:20::1")
+	c, _ := startOnTUN(t, func(*config.Config) {})
+	peer := netstack.NewPeer("another node", nil, nil, nil)
+	t.Cleanup(peer.Close)
+	c.Mesh.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("3fff:20::/32"), peer)
+	if e := c.Mesh.ExplainRead(udpPacket(neighbor, far, 40000, 9, []byte("neighbor"))); e.Decision != netstack.TraceForward {
+		t.Errorf("a read from %s to %s on a node started on Linux is %s %q, want %s", neighbor, far, e.Decision, e.Reason, netstack.TraceForward)
 	}
 }
 

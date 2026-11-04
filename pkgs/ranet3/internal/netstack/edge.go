@@ -98,6 +98,11 @@ func (m *Mesh) edgeCheck(kept *keptAnswers, segments *srv6.LocalTable, raw []byt
 	return reason, dropped
 }
 
+// linkLocal6 is an IPv6 destination inside fe80::/10, which an IPv4-mapped address never is
+func linkLocal6(destination netip.Addr) bool {
+	return destination.Is6() && !destination.Is4In6() && destination.IsLinkLocalUnicast()
+}
+
 // checkPacket is edgeCheck's checks of one packet, leaving what it carries unread
 // and reports the family of an IPv4 or IPv6 packet it carries, 0 for none, and for an IPv6 packet where in raw the walk found it
 func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []byte, family byte, source, destination netip.Addr, leaves bool) (reason transitReason, dropped bool, carried byte, offset int) {
@@ -121,7 +126,8 @@ func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []b
 		return transitForged, true, 0, 0
 	}
 	// a packet leaving the mesh through an exit comes from this node, so a host's neighbor reaches no exit through it
-	if leaves && !answer.owned() {
+	// and under ownedOnly so does every packet entering the mesh but one to an IPv6 link-local destination, which mesh_entry passes too
+	if !answer.owned() && (leaves || m.ownedOnly && !linkLocal6(destination)) {
 		return transitUnownedSource, true, 0, 0
 	}
 	if next == esp.NextHeaderIPv4 || next == esp.NextHeaderIPv6 {

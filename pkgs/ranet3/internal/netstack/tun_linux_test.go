@@ -54,7 +54,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 				t.Logf("gso_max_segs %d before the mesh attached", gsoMaxSegs(t, path.device))
 			}
 
-			m, err := NewNamed(0, path.asked, nil)
+			m, err := NewNamed(0, path.asked, false, nil)
 			if err != nil {
 				t.Fatalf("open the mesh on %q: %v", path.asked, err)
 			}
@@ -79,7 +79,7 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 // so the first cut read of a mesh NewNamed opened warns at once rather than an interval later
 func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 	enterEmptyNamespace(t)
-	m, err := NewNamed(0, "gsocap0", nil)
+	m, err := NewNamed(0, "gsocap0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 // and that open has to refuse the device too
 func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 	heldByAMesh := func(t *testing.T) {
-		first, err := NewNamed(0, "", nil)
+		first, err := NewNamed(0, "", false, nil)
 		if err != nil {
 			t.Fatalf("open the first mesh: %v", err)
 		}
@@ -123,7 +123,7 @@ func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 			enterEmptyNamespace(t)
 			arm.setup(t)
 
-			m, err := NewNamed(0, arm.asked, nil)
+			m, err := NewNamed(0, arm.asked, false, nil)
 			if err == nil {
 				m.Close()
 				t.Fatalf("a mesh asking for %q joined %s, which was there before it", arm.asked, m.Name)
@@ -204,7 +204,7 @@ func TestTUNLaneOutlivesAOneByteFrame(t *testing.T) {
 	enterEmptyNamespace(t)
 	previous := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
-	m, err := NewNamed(DefaultMTU, "onebyte0", nil)
+	m, err := NewNamed(DefaultMTU, "onebyte0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestTUNLaneOutlivesARefusedFrame(t *testing.T) {
 	enterEmptyNamespace(t)
 	previous := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
-	m, err := NewNamed(DefaultMTU, "refused0", nil)
+	m, err := NewNamed(DefaultMTU, "refused0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestTUNLinkDeletedUnderTheMeshIsReportedOnce(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&logs, nil)))
 	bus := events.New()
-	m, err := NewNamed(DefaultMTU, "gone0", bus.Emit)
+	m, err := NewNamed(DefaultMTU, "gone0", false, bus.Emit)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -407,7 +407,7 @@ const listenerSettle = 500 * time.Millisecond
 func TestTUNDeviceQueuesNoLinkEventsAndLeavesNoListener(t *testing.T) {
 	const moves = 10
 	enterEmptyNamespace(t)
-	m, err := NewNamed(DefaultMTU, "events0", nil)
+	m, err := NewNamed(DefaultMTU, "events0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

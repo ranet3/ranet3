@@ -39,13 +39,14 @@ const (
 )
 
 // a socket bound to the uplink's address and held to the mesh's utun by IPV6_BOUND_IF sends toward another node's prefix
-// the read takes it from a source this node does not own, and drops it as unowned_source rather than handing it to that node's peer
+// the read of a mesh opened ownedOnly, as a host whose kernel runs no entry rule opens it, takes it from a source this node does not own
+// and drops it as unowned_source rather than handing it to that node's peer
 // the uplink is a second utun, so the test needs no IPv6 address of the host's own
 // creating a utun needs root, which a run does here only with RANET3_DARWIN_NETTEST=1
 func TestTUNDropsAnUnownedReadTowardAnotherNode(t *testing.T) {
 	requireUTUN(t)
 	routesKept(t)
-	m, uplink := openUTUNMesh(t), openUTUNMesh(t)
+	m, uplink := openUTUNMesh(t, true), openUTUNMesh(t, false)
 	aliasUTUN(t, m.Name, entryOwn)
 	aliasUTUN(t, uplink.Name, entryUplink)
 	routeIntoUTUN(t, entryNode, m.Name)
@@ -85,10 +86,10 @@ func TestTUNDropsAnUnownedReadTowardAnotherNode(t *testing.T) {
 	}
 }
 
-// openUTUNMesh opens a mesh on the next free utun, closed when the test ends
-func openUTUNMesh(t *testing.T) *Mesh {
+// openUTUNMesh opens a mesh on the next free utun, ownedOnly as given, closed when the test ends
+func openUTUNMesh(t *testing.T, ownedOnly bool) *Mesh {
 	t.Helper()
-	m, err := NewNamed(utunJumbo, "", nil)
+	m, err := NewNamed(utunJumbo, "", ownedOnly, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

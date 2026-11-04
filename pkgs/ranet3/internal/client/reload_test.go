@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -111,10 +113,19 @@ func TestReloadHandsTheReconcilerWhatAssignAnnouncedExpandsInto(t *testing.T) {
 	}
 }
 
+// requireEntryRule skips where no entry rule runs, where the start and a reload refuse a cap.route announcement that counts as a default
+func requireEntryRule(t *testing.T) {
+	t.Helper()
+	if !kernelexit.EntryRuns {
+		t.Skip("no entry rule runs here, so the start and a reload refuse a cap.route announcement that counts as a default, as TestCountedAnnouncementIsRefusedHereAtTheStartAndAtReload checks in entry_other_test.go, built wherever no entry rule runs")
+	}
+}
+
 // a reload whose announcements make this node an exit, or stop making it one,
 // hands them to the reconciler, whose exit rule reads them, though the table
 // and the addresses it assigns stay as they were
 func TestReloadHandsTheReconcilerTheAnnouncementsThatMoveItsExit(t *testing.T) {
+	requireEntryRule(t)
 	for name, move := range map[string]struct {
 		before, after []string
 	}{
@@ -243,6 +254,7 @@ func TestCountedAdvertisementIsWarnedOf(t *testing.T) {
 // before it opens a device, and here a steering entry selecting nothing then
 // refuses the start.
 func TestNewLogsAnAdvertisementThatCountsAsADefault(t *testing.T) {
+	requireEntryRule(t)
 	cfg, privateKey, reg := runtimeFixture(t)
 	dir := t.TempDir()
 	cfg.Link.Port = 13000
@@ -268,6 +280,7 @@ func TestNewLogsAnAdvertisementThatCountsAsADefault(t *testing.T) {
 // A reload logs each advertisement that counts as a default and is not one
 // once it applies the file, and a refused reload logs none.
 func TestReloadLogsAnAdvertisementThatCountsAsADefault(t *testing.T) {
+	requireEntryRule(t)
 	c, path, _, _ := reloadOf(t, func(*config.Config) {})
 	written := capturedLog(t)
 	refused := *c.config()
@@ -288,6 +301,32 @@ func TestReloadLogsAnAdvertisementThatCountsAsADefault(t *testing.T) {
 	}
 	if got := written.count(countedWarning("cap.route", "fd00::/8")); got != 1 {
 		t.Errorf("the reload logged the warning %d times, want once", got)
+	}
+}
+
+// a cap.route announcement that counts as a default is refused where no entry rule runs, naming the prefix and the platform, and passes where one runs
+// a default, a prefix counting by its width and one over the unspecified address count, and a prefix at the floor and one inside the overlay do not
+func TestCountedAnnouncementIsRefusedOnlyWhereNoEntryRuleRuns(t *testing.T) {
+	overlay := []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3ff0::/12")}
+	for prefix, counts := range map[string]bool{
+		"::/0": true, "0.0.0.0/0": true, "fd00::/8": true, "192.0.0.0/7": true, "0.0.0.0/24": true,
+		"198.0.0.0/8": false, "2001::/16": false, "3ff0::/12": false,
+	} {
+		cfg := &config.Config{Overlay: overlay}
+		cfg.Cap.Route = &babel.Routes{Announce: announce(prefix)}
+		if err := refuseExitUnentered(cfg, true); err != nil {
+			t.Errorf("where the entry rule runs, announcing %s was refused: %v", prefix, err)
+		}
+		err := refuseExitUnentered(cfg, false)
+		if refused := err != nil; refused != counts {
+			t.Errorf("where no entry rule runs, announcing %s was refused %v, want %v: %v", prefix, refused, counts, err)
+			continue
+		}
+		for _, want := range []string{"cap.route announces " + prefix, runtime.GOOS, "carries no exit"} {
+			if err != nil && !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal of %s, %q, does not name %q", prefix, err, want)
+			}
+		}
 	}
 }
 

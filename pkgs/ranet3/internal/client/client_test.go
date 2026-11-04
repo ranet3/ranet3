@@ -23,6 +23,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -45,6 +46,13 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
 )
+
+// the mesh New opens reads only the sources this node owns on every platform but Linux, Android among them, which is a GOOS of its own
+func TestMeshReadsOnlyOwnedSourcesOffLinux(t *testing.T) {
+	if want := runtime.GOOS != "linux"; readsOwnedOnly != want {
+		t.Errorf("readsOwnedOnly is %v on %s, want %v", readsOwnedOnly, runtime.GOOS, want)
+	}
+}
 
 func TestInboundBatchOrderMergesConsecutiveCompletedBatches(t *testing.T) {
 	const first, second = 0, 1

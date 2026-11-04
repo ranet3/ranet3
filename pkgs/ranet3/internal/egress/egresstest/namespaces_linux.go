@@ -262,7 +262,7 @@ func (n *namespaces) makeExit(netlink netnstest.Netlink) error {
 	if err := netlink.AddVeth(exitUplink, routerUplink, uplinkMTU, n.router.Path); err != nil {
 		return fmt.Errorf("make %s: %w", exitUplink, err)
 	}
-	mesh, err := netstack.NewNamed(netstack.DefaultMTU, meshLink, nil)
+	mesh, err := netstack.NewNamed(netstack.DefaultMTU, meshLink, false, nil)
 	if err != nil {
 		return err
 	}

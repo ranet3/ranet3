@@ -92,16 +92,35 @@ func drawEdgeTable(tc hegel.TestCase) (*Mesh, *routeModel, []netip.Addr, []netip
 	return m, model, sources, destinations
 }
 
+// linkLocalEdges are destinations at and beside the edges of fe80::/10, IPv4's link-local block and its mapped form, which the drawn anchors seldom reach
+var linkLocalEdges = []netip.Addr{
+	segAddr("fe80::"), segAddr("febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff"), segAddr("fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff"), segAddr("fec0::"),
+	segAddr("169.254.0.1"), segAddr("::ffff:169.254.0.1"),
+}
+
+// edgeStrangers are sources by family that the drawn tables seldom cover, a host's neighbor's
+var edgeStrangers = map[bool]netip.Addr{true: segAddr("203.0.113.250"), false: segAddr("2001:db8:ffff::1")}
+
 // over drawn tables, a read off the tun carrying packets between the entries' edges and addresses drawn inside them and anywhere is forged exactly where a model passing over every counted entry says
-// and dropped for its source otherwise exactly where its destination resolves through an entry counting as a default and no uncounted entry of this node's own covers the source
+// and dropped for its source otherwise exactly where no uncounted entry of this node's own covers the source and its destination resolves through an entry counting as a default
+// or, on a mesh drawn ownedOnly, lies anywhere outside fe80::/10
 // a source an entry of this node's own covers always passes, one the table routes to a peer or holds never does, whatever the read's other packets
+// each table's reads end in a sweep of linkLocalEdges from a stranger's source of their family
 func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testing.T) {
+	linkLocal := netip.MustParsePrefix("fe80::/10")
 	pbt.Check(t, func(ht *hegel.T) {
 		m, model, sources, destinations := drawEdgeTable(ht)
+		m.ownedOnly = hegel.Draw(ht, hegel.Booleans())
 		var kept keptAnswers
+		var pairs [][2]netip.Addr
 		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
-			source := hegel.Draw(ht, hegel.SampledFrom(sources))
-			destination := hegel.Draw(ht, hegel.SampledFrom(destinations))
+			pairs = append(pairs, [2]netip.Addr{hegel.Draw(ht, hegel.SampledFrom(sources)), hegel.Draw(ht, hegel.SampledFrom(destinations))})
+		}
+		for _, destination := range linkLocalEdges {
+			pairs = append(pairs, [2]netip.Addr{edgeStrangers[destination.Is4()], destination})
+		}
+		for _, pair := range pairs {
+			source, destination := pair[0], pair[1]
 			if source.Zone() != "" || destination.Zone() != "" || source.Is4() != destination.Is4() {
 				continue
 			}
@@ -117,12 +136,12 @@ func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testi
 			switch {
 			case forged:
 				want, drop = transitForged, true
-			case toward.Counted && !owned:
+			case (toward.Counted || m.ownedOnly && !linkLocal.Contains(destination)) && !owned:
 				want, drop = transitUnownedSource, true
 			}
 			switch {
 			case dropped != drop || dropped && reason != want:
-				ht.Fatalf("a read from %v to %v was dropped %t for reason %d, the model drops it %t for reason %d, in %#v under the overlay %v", source, destination, dropped, reason, drop, want, model.entries, model.overlay)
+				ht.Fatalf("a read from %v to %v was dropped %t for reason %d, the model drops it %t for reason %d, in %#v under the overlay %v, ownedOnly %t", source, destination, dropped, reason, drop, want, model.entries, model.overlay, m.ownedOnly)
 			case owned && dropped, others && !dropped:
 				ht.Fatalf("a read from %v to %v that an entry of this node's covers %t or another node's %t was dropped %t", source, destination, owned, others, dropped)
 			}
@@ -131,7 +150,7 @@ func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testi
 }
 
 // a packet an IPv6 read carries meets exactly the checks it meets read itself, one level deep
-// over drawn tables, a packet of either family between drawn addresses or to this node's SID, behind a routing header of a drawn type or none, carrying a packet or none
+// over drawn tables, ownedOnly or not, a packet of either family between drawn addresses, a stranger's among the sources, or to this node's SID, behind a routing header of a drawn type or none, carrying a packet or none
 // carried from this node's own address to another node's SID, it takes the verdict of the carrying header alone where that one is dropped
 // and otherwise its own as a read of its own with what it carries left out, nested where it carries a packet that verdict passes
 func TestTUNReadCarriedPacketMeetsExactlyTheChecksItMeetsReadItself(t *testing.T) {
@@ -143,9 +162,11 @@ func TestTUNReadCarriedPacketMeetsExactlyTheChecksItMeetsReadItself(t *testing.T
 	outerSource, outerDestination := segAddr("3fff:0:5ee::1"), segAddr("3fff:0:5ee::2")
 	pbt.Check(t, func(ht *hegel.T) {
 		m, _, sources, destinations := drawEdgeTable(ht)
+		m.ownedOnly = hegel.Draw(ht, hegel.Booleans())
 		m.Routes.Set(netip.Prefix{}, hostPrefix(outerSource), Local)
 		m.Routes.Set(netip.Prefix{}, hostPrefix(outerDestination), &Peer{ID: "another node"})
-		destinations = append(destinations, sid)
+		destinations = append(append(destinations, sid), linkLocalEdges...)
+		sources = append(sources, edgeStrangers[true], edgeStrangers[false])
 		check := func(raw []byte) (transitReason, bool) {
 			var kept keptAnswers
 			source, destination, family, _ := addrsOf(raw)

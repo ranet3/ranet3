@@ -65,6 +65,10 @@ type Mesh struct {
 	readsTruncated, framesRefused, writesFailed reportedCount
 	// events records the mesh's changes of state, nil recording nothing
 	events func(kind, peer string, attrs ...slog.Attr)
+	// ownedOnly is the read dropping a packet from a source this node does not own toward every destination but an IPv6 link-local one, rather than only toward an exit
+	// where the kernel runs an entry rule that rule judges the rest, and passes an exit's egress replies, which the read cannot tell apart
+	// written before the readers start and never after, so they read it without a lock
+	ownedOnly bool
 	// failed is closed once a reader finds the device gone while the mesh is not closing, nil for a mesh with no device
 	failed     chan struct{}
 	failedOnce sync.Once
@@ -197,8 +201,9 @@ func NewOnDevice(dev tun.Device) *Mesh {
 // NewNamed attaches to or creates name through wireguard-go's TUN backend.
 // an empty name opens defaultTUNName, which is always created and never attached to
 // mtu is the device's MTU, zero taking DefaultMTU
+// ownedOnly is the mesh's for its life, a host whose kernel runs no entry rule passing true
 // events records the mesh's changes of state, nil recording nothing
-func NewNamed(mtu int, name string, events func(kind, peer string, attrs ...slog.Attr)) (*Mesh, error) {
+func NewNamed(mtu int, name string, ownedOnly bool, events func(kind, peer string, attrs ...slog.Attr)) (*Mesh, error) {
 	if mtu == 0 {
 		mtu = DefaultMTU
 	}
@@ -224,11 +229,12 @@ func NewNamed(mtu int, name string, events func(kind, peer string, attrs ...slog
 		return nil, fmt.Errorf("netstack: bring tun device up: %w", err)
 	}
 	m := &Mesh{
-		Routes: NewRouteTable(),
-		Name:   actualName,
-		setMTU: setTUNMTU,
-		closed: make(chan struct{}),
-		events: events,
+		Routes:    NewRouteTable(),
+		Name:      actualName,
+		setMTU:    setTUNMTU,
+		closed:    make(chan struct{}),
+		events:    events,
+		ownedOnly: ownedOnly,
 	}
 	m.setDevice(dev)
 	m.startSegmentReports()

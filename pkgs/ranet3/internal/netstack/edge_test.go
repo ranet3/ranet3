@@ -639,3 +639,113 @@ func TestTUNReadDropRecordsTheEvent(t *testing.T) {
 		}
 	}
 }
+
+// a read's fate: the ID of the peer it went to, empty for none, and what it counted, the answers' counts left out
+type readFate struct {
+	to      string
+	counted TransitCounters
+}
+
+// fateOf classifies raw as a read of its own on m
+func fateOf(m *Mesh, raw []byte) readFate {
+	var fate readFate
+	if went := classifiedTo(m, raw); went[0] != nil {
+		fate.to = went[0].ID
+	}
+	fate.counted = m.TransitCounters()
+	fate.counted.Answered, fate.counted.Unanswered, fate.counted.Unsent = 0, 0, 0
+	return fate
+}
+
+// each kind of read off the tun by its source and destination, on a mesh ownedOnly and on one that is not
+// ownedOnly drops a read from a source this node does not own toward another node, a LAN another node announces, no route and a hold, as toward an exit
+// and toward an IPv4 link-local destination and an IPv4-mapped one, but leaves an IPv6 link-local destination its fate, and every other read its own
+// a packet an IPv6 read carries to another node's SID meets the same rule, and the drop records the event as toward an exit
+func TestTUNReadOwnedOnlyDropsAnUnownedSourceTowardEveryDestinationButIPv6LinkLocal(t *testing.T) {
+	leaf := func(t *testing.T, _ int) *Mesh {
+		m, _, _ := edgeLeaf(t, "0.0.0.0/0", "::/0")
+		return m
+	}
+	bare := func(t *testing.T, _ int) *Mesh {
+		m, _ := edgeMesh(t)
+		return m
+	}
+	// a route of this node's own to edgeLAN announced from edgeSubnet, which another node announces, so edgeLAN is this node's only for replies from edgeSubnet
+	pair := func(t *testing.T, family int) *Mesh {
+		m, peer := edgeMesh(t)
+		m.Routes.Set(netip.Prefix{}, edgeSubnet[family], peer)
+		m.Routes.Set(edgeSubnet[family], hostPrefix(edgeLAN[family]), Local)
+		return m
+	}
+	carried := func(t *testing.T, _ int) *Mesh {
+		m, _ := carriedLeaf(t)
+		return m
+	}
+	forwarded := func(to string) [2]readFate { return [2]readFate{{to: to}, {to: to}} }
+	unowned := readFate{counted: TransitCounters{UnownedSource: 1}}
+	opened := func(counted TransitCounters) [2]readFate { return [2]readFate{{counted: counted}, unowned} }
+	same := func(counted TransitCounters) [2]readFate { return [2]readFate{{counted: counted}, {counted: counted}} }
+	type row struct {
+		name string
+		mesh func(*testing.T, int) *Mesh
+		raw  []byte
+		// fates is the read's fate on a mesh that is not ownedOnly and on one that is
+		fates [2]readFate
+	}
+	for _, family := range []int{4, 6} {
+		udp := func(source, destination netip.Addr) []byte { return udpPacket(source, destination, 100, false) }
+		multicast := map[int]netip.Addr{4: segAddr("224.0.0.1"), 6: segAddr("ff02::1")}
+		rows := []row{
+			{"from this node's own address to another node", bare, udp(transitOwn[family], transitFar[family]), forwarded("peer")},
+			{"from this node's own address to a LAN another node announces", leaf, udp(transitOwn[family], edgeSubnetHost[family]), forwarded("peer")},
+			{"from this node's own address to the internet", leaf, udp(transitOwn[family], edgeInternet[family]), forwarded("exit")},
+			{"from a neighbor to another node", bare, udp(edgeNeighbor[family], transitFar[family]), [2]readFate{{to: "peer"}, unowned}},
+			{"from a neighbor to a LAN another node announces", leaf, udp(edgeNeighbor[family], edgeSubnetHost[family]), [2]readFate{{to: "peer"}, unowned}},
+			{"from a neighbor to the internet", leaf, udp(edgeNeighbor[family], edgeInternet[family]), [2]readFate{unowned, unowned}},
+			{"from a neighbor to no route", bare, udp(edgeNeighbor[family], transitNowhere[family]), opened(TransitCounters{NoRoute: 1})},
+			{"from a neighbor to a hold", bare, udp(edgeNeighbor[family], transitHeldHost[family]), opened(TransitCounters{Held: 1})},
+			{"from another node's address", bare, udp(transitSender[family], transitFar[family]), same(TransitCounters{Forged: 1})},
+			{"from a neighbor to a multicast group", leaf, udp(edgeNeighbor[family], multicast[family]), same(TransitCounters{Multicast: 1})},
+			{"from a source this node owns for replies from that prefix, to it", pair, udp(edgeLAN[family], edgeSubnetHost[family]), forwarded("peer")},
+			{"from a source this node owns for replies from that prefix, to another node", pair, udp(edgeLAN[family], transitFar[family]), [2]readFate{{to: "peer"}, unowned}},
+			{"carrying a packet from a neighbor to another node", carried, encapsulated(transitOwn[6], edgeOtherSID, udp(edgeNeighbor[family], transitFar[family])), [2]readFate{{to: "peer"}, unowned}},
+			{"carrying a packet from this node's own address to another node", carried, encapsulated(transitOwn[6], edgeOtherSID, udp(transitOwn[family], transitFar[family])), forwarded("peer")},
+		}
+		if family == 4 {
+			rows = append(rows, row{"from a neighbor to an IPv4 link-local address", bare, udp(edgeNeighbor[4], segAddr("169.254.0.1")), opened(TransitCounters{NoRoute: 1})})
+		} else {
+			linkLocal := segAddr("fe80::1")
+			rows = append(rows,
+				row{"from a neighbor to a link-local address under the exit's default", leaf, udp(edgeNeighbor[6], linkLocal), [2]readFate{unowned, unowned}},
+				row{"from a neighbor to a link-local address with no default", bare, udp(edgeNeighbor[6], linkLocal), same(TransitCounters{NoRoute: 1})},
+				row{"from this node's own address to a link-local address under the exit's default", leaf, udp(transitOwn[6], linkLocal), forwarded("exit")},
+				row{"from a neighbor to an IPv4-mapped link-local address", bare, udp(edgeNeighbor[6], segAddr("::ffff:169.254.0.1")), opened(TransitCounters{NoRoute: 1})},
+			)
+		}
+		for _, r := range rows {
+			for i, ownedOnly := range []bool{false, true} {
+				m := r.mesh(t, family)
+				m.ownedOnly = ownedOnly
+				if got := fateOf(m, r.raw); got != r.fates[i] {
+					t.Errorf("IPv%d %s, ownedOnly %t, went to %q and counted %+v, want %q and %+v", family, r.name, ownedOnly, got.to, got.counted, r.fates[i].to, r.fates[i].counted)
+				}
+			}
+		}
+	}
+
+	m := bare(t, 6)
+	m.ownedOnly = true
+	bus := events.New()
+	m.events = bus.Emit
+	raw := udpPacket(edgeNeighbor[6], transitFar[6], 100, false)
+	classifiedTo(m, raw)
+	recorded := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "netstack.transit.dropped" }, 0)
+	if len(recorded) != 1 {
+		t.Fatalf("an ownedOnly read from a neighbor to another node recorded %d drop events", len(recorded))
+	}
+	for key, value := range map[string]string{"reason": "unowned_source", "src": edgeNeighbor[6].String(), "dst": transitFar[6].String()} {
+		if got := recorded[0].Attrs[key]; got != value {
+			t.Errorf("the event of an ownedOnly read from a neighbor to another node holds %s %v, want %s", key, got, value)
+		}
+	}
+}

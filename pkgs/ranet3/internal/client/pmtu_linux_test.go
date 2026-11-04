@@ -176,14 +176,14 @@ func newHoleMesh(t *testing.T, far *netnstest.Thread) (alpha, bravo *loopbackNod
 	alpha, bravo = nodes[0], nodes[1]
 	alpha.cfg.Link.MTU = holeLink
 
-	alphaMesh, err := netstack.NewNamed(holeLink, "bhalpha", nil)
+	alphaMesh, err := netstack.NewNamed(holeLink, "bhalpha", false, nil)
 	if err != nil {
 		t.Fatalf("open alpha's tun: %v", err)
 	}
 	t.Cleanup(alphaMesh.Close)
 	var bravoMesh *netstack.Mesh
 	if err := far.Do(func() (err error) {
-		bravoMesh, err = netstack.NewNamed(0, "bhbravo", nil)
+		bravoMesh, err = netstack.NewNamed(0, "bhbravo", false, nil)
 		return err
 	}); err != nil {
 		t.Fatalf("open bravo's tun: %v", err)
@@ -351,7 +351,7 @@ func TestSessionMovedUnderTheFloorHandsItsFragmentingOver(t *testing.T) {
 // the test holds the namespace kernelNamespace claims for the whole process
 func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 	kernelNamespace(t)
-	mesh, err := netstack.NewNamed(0, "ownrefusal", nil)
+	mesh, err := netstack.NewNamed(0, "ownrefusal", false, nil)
 	if err != nil {
 		t.Fatalf("open bravo's tun: %v", err)
 	}

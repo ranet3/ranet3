@@ -1004,9 +1004,9 @@ func (c *Config) validateExit() error {
 	}
 	switch exit := c.ExitReason(c.Overlay); {
 	case c.Cap.Table == nil:
-		return errors.New("config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of")
+		return errors.New("config: cap.exit is written and cap.table is absent, so no reconciler makes the mode")
 	case len(c.Overlay) == 0:
-		return errors.New("config: cap.exit is written and overlay is absent, so the mode's rules cannot keep the overlay's sources off the uplink: write overlay with the prefixes the mesh numbers its nodes from")
+		return errors.New("config: cap.exit is written and overlay is absent, so the mode cannot tell the mesh's addresses from the uplink's: write overlay with the prefixes the mesh numbers its nodes from")
 	case exit.Advertised.IsValid():
 		return exitRefused(fmt.Sprintf("cap.egress advertises %s", exit.Advertised))
 	case exit.Announced.IsValid():

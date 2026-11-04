@@ -22,7 +22,7 @@ const utunListenerSettle = 500 * time.Millisecond
 func TestTUNRunsNoRouteListener(t *testing.T) {
 	requireUTUN(t)
 	const moves = 12
-	m, err := NewNamed(DefaultMTU, "", nil)
+	m, err := NewNamed(DefaultMTU, "", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

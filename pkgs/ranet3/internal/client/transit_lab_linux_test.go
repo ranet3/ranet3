@@ -880,7 +880,7 @@ func startLab(t *testing.T, specs []labSpec, links []labLink) []*labNode {
 			t.Fatalf("%s: %v", node.name, err)
 		}
 		if err := node.ns.Do(func() (err error) {
-			meshes[i], err = netstack.NewNamed(mtu, fmt.Sprintf("mesh%c", 'a'+i), node.events.Emit)
+			meshes[i], err = netstack.NewNamed(mtu, fmt.Sprintf("mesh%c", 'a'+i), false, node.events.Emit)
 			return err
 		}); err != nil {
 			t.Fatalf("open %s's tun: %v", node.name, err)

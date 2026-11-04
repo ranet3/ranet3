@@ -51,7 +51,7 @@ func TestTUNSteersAReadAsLargeAsTheDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := largest - steering.Overhead()
-	m, err := NewNamed(device, "mtutest0", nil)
+	m, err := NewNamed(device, "mtutest0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestTUNHoldsTheMTUItWasOpenedAt(t *testing.T) {
 		t.Run(arm.name, func(t *testing.T) {
 			enterEmptyNamespace(t)
 			arm.setup(t)
-			m, err := NewNamed(jumbo, "mtutest0", nil)
+			m, err := NewNamed(jumbo, "mtutest0", false, nil)
 			if err != nil {
 				t.Fatalf("open the mesh: %v", err)
 			}
@@ -126,7 +126,7 @@ func TestTUNHoldsTheMTUItWasOpenedAt(t *testing.T) {
 func TestTUNCarriesAReadAsLargeAsTheSlabHolds(t *testing.T) {
 	const largest = 65535
 	enterEmptyNamespace(t)
-	m, err := NewNamed(0, "mtutest0", nil)
+	m, err := NewNamed(0, "mtutest0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestTUNPacketTooBigTeachesTheKernel(t *testing.T) {
 // it returns the mesh and a wait for the path MTU that socket reads
 func sendPastTheSession(t *testing.T, family pathFamily, name string, held bool, session int) (*Mesh, func(want int)) {
 	t.Helper()
-	m, err := NewNamed(DefaultMTU, name, nil)
+	m, err := NewNamed(DefaultMTU, name, false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}
@@ -447,7 +447,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 					t.Fatal(err)
 				}
 				device := headendSession - steering.Overhead()
-				headend, err := NewNamed(device, "wpttest0", nil)
+				headend, err := NewNamed(device, "wpttest0", false, nil)
 				if err != nil {
 					t.Fatalf("open the mesh: %v", err)
 				}
@@ -525,7 +525,7 @@ func TestTUNWaypointTeachesTheSenderBehindTheHeadend(t *testing.T) {
 func TestTUNClampsTheMSSOfASYN(t *testing.T) {
 	const session = 1300
 	enterEmptyNamespace(t)
-	m, err := NewNamed(DefaultMTU, "msstest0", nil)
+	m, err := NewNamed(DefaultMTU, "msstest0", false, nil)
 	if err != nil {
 		t.Fatalf("open the mesh: %v", err)
 	}

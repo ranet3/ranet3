@@ -64,7 +64,7 @@ func TestTUNAnswerToThisHostPassesAReversePathCheck(t *testing.T) {
 				if out, err := load.CombinedOutput(); err != nil {
 					t.Fatalf("load the %s reverse path chain: %v\n%s", chain.name, err, out)
 				}
-				m, err := NewNamed(DefaultMTU, "rpatest0", nil)
+				m, err := NewNamed(DefaultMTU, "rpatest0", false, nil)
 				if err != nil {
 					t.Fatalf("open the mesh: %v", err)
 				}

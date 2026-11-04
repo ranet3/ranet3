@@ -30,7 +30,7 @@ func TestTUNTakesAnMTUSetAfterOpening(t *testing.T) {
 	}
 	for _, arm := range []struct{ opened, moved int }{{jumbo, DefaultMTU}, {DefaultMTU, jumbo}} {
 		t.Run(fmt.Sprintf("opened at %d", arm.opened), func(t *testing.T) {
-			m, err := NewNamed(arm.opened, "", nil)
+			m, err := NewNamed(arm.opened, "", false, nil)
 			if err != nil {
 				t.Fatalf("open the mesh: %v", err)
 			}

@@ -19,6 +19,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -111,6 +112,9 @@ func (c *Client) ReloadFrom(path string) (err error) {
 		return err
 	}
 	if err := refuseExitModeHere(cfg); err != nil {
+		return err
+	}
+	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns); err != nil {
 		return err
 	}
 	if err := refuseForwardedHere(cfg, c.Mesh.Name, c.network); err != nil {

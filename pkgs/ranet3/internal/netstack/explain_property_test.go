@@ -62,7 +62,7 @@ var explainSteers = []srv6.Steer{
 	{To: schema.PrefixFrom(segPrefix("203.0.113.0/24"))},
 }
 
-// explainMesh is a transit node's mesh, its tun recording, with a feed of every record, this node's SID, and the table, settings and steering hegel draws
+// explainMesh is a transit node's mesh, its tun recording, with a feed of every record, this node's SID, and the table, settings, ownedOnly among them, and steering hegel draws
 // from is the peer of the session its packets arrive through, which the table may route to as to any other
 func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
 	m, _ := startTransitMesh(nil)
@@ -76,6 +76,7 @@ func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
 		m.SetOverlay(nil)
 	}
 	m.SetTransit(hegel.Draw(ht, hegel.Booleans()))
+	m.ownedOnly = hegel.Draw(ht, hegel.Booleans())
 	m.SetAdvertisedReady(hegel.Draw(ht, hegel.Booleans()), hegel.Draw(ht, hegel.Booleans()))
 	values := []*Peer{from, peer, Local, Assigned, Unreachable}
 	var advertised []netip.Prefix

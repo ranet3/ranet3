@@ -74,14 +74,14 @@ func exitLeafBody(format, exit string) string {
 	return body
 }
 
-// cap.exit is refused with no cap.table, whose reconciler writes the mode's
-// rules, and with no overlay, which those rules keep off the uplink,
-// in each format, and fallback by its value when it is neither "uplink" nor
-// "none".
+// cap.exit is refused with no cap.table, whose reconciler makes the mode, and
+// with no overlay, by which the mode tells the mesh's addresses from the
+// uplink's, in each format, and fallback by its value when it is neither
+// "uplink" nor "none".
 func TestExitRefusalsReachTheLoader(t *testing.T) {
 	const (
-		noTable   = "config: cap.exit is written and cap.table is absent, so no reconciler writes the rules the mode is made of"
-		noOverlay = "config: cap.exit is written and overlay is absent, so the mode's rules cannot keep the overlay's sources off the uplink: write overlay with the prefixes the mesh numbers its nodes from"
+		noTable   = "config: cap.exit is written and cap.table is absent, so no reconciler makes the mode"
+		noOverlay = "config: cap.exit is written and overlay is absent, so the mode cannot tell the mesh's addresses from the uplink's: write overlay with the prefixes the mesh numbers its nodes from"
 	)
 	for _, c := range []struct {
 		format, fallback       string

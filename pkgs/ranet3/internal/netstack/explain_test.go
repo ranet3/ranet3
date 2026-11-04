@@ -41,6 +41,13 @@ func explainLeaf(t *testing.T) *Mesh { m, _ := tracedLeaf(t); return m }
 // explainBare is an edgeMesh, with no default
 func explainBare(t *testing.T) *Mesh { m, _ := edgeMesh(t); return m }
 
+// explainOwnedOnly is explainLeaf opened ownedOnly
+func explainOwnedOnly(t *testing.T) *Mesh {
+	m := explainLeaf(t)
+	m.ownedOnly = true
+	return m
+}
+
 // explainSegment is the one segment the walk's steered cases are steered through
 var explainSegment = segAddr("3fff:1::1")
 
@@ -168,6 +175,9 @@ var readCases = func() []explainCase {
 		{"a routing header", explainLeaf, withRouting(udpPacket(transitOwn[6], transitFar[6], 100, false), 4), explainedDrop("routing_header", far6)},
 		{"this node's SID", explainLeaf, udpPacket(transitOwn[6], edgeOwnSID, 100, false), explainedDrop("sid", exit)},
 		{"an unowned source toward a default", explainLeaf, udpPacket(edgeLAN[4], edgeInternet[4], 100, false), explainedDrop("unowned_source", exit)},
+		{"an unowned source toward another node", explainLeaf, udpPacket(edgeLAN[4], transitFar[4], 100, false), heldTo(Explanation{Decision: TraceForward, Match: far4}, "peer", tracedMTU)},
+		{"an unowned source toward another node, ownedOnly", explainOwnedOnly, udpPacket(edgeLAN[4], transitFar[4], 100, false), explainedDrop("unowned_source", far4)},
+		{"an unowned source toward a link-local address, ownedOnly", explainOwnedOnly, udpPacket(edgeLAN[6], segAddr("fe80::9"), 100, false), explainedDrop("unowned_source", exit)},
 		{"a carried packet carrying another", explainLeaf, encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udpPacket(transitOwn[6], transitFar[6], 100, false))), explainedDrop("nested", Match{Bits: 64})},
 		{"this node's own", explainLeaf, udpPacket(transitOwn[4], edgeAssigned[4], 100, false), explainedDrop("looped", Match{Bits: 32})},
 		{"a hold", explainLeaf, udpPacket(transitOwn[4], transitHeldHost[4], 100, false), explainedAnswer("held", "host_unreachable", Match{Bits: 32})},

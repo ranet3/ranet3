@@ -29,7 +29,7 @@ import (
 )
 
 // The first two tests here run a darwin node on the recorded machine of daemon_darwin_test.go and need no privilege
-// the last two run one on a real utun, as root with RANET3_DARWIN_NETTEST=1, and name documentation prefixes alone
+// the last three run one on a real utun, as root with RANET3_DARWIN_NETTEST=1, and name documentation prefixes alone
 
 const (
 	// quietFor is how long a node starting down is watched for a write to its mesh device, ten of its 50 millisecond reconcile intervals
@@ -354,6 +354,20 @@ func TestDownTakesItsAddressAndRouteOffARealUTUN(t *testing.T) {
 		address, routed := u.onUTUN(t)
 		return address && routed
 	})
+}
+
+// the mesh of a node New starts on a real utun drops a read from a neighbor toward another node's prefix, counted unowned_source,
+// since darwin runs no entry rule to judge it
+func TestNodeOnARealUTUNDropsAnUnownedReadTowardAnotherNode(t *testing.T) {
+	requireRealUTUN(t)
+	u := startUTUN(t, t.TempDir())
+	neighbor, far := netip.MustParseAddr("2001:db8:100::30"), netip.MustParseAddr("3fff:20::1")
+	peer := netstack.NewPeer("another node", nil, nil, nil)
+	t.Cleanup(peer.Close)
+	u.node.Mesh.Routes.Set(netip.Prefix{}, netip.MustParsePrefix("3fff:20::/32"), peer)
+	if e := u.node.Mesh.ExplainRead(udpPacket(neighbor, far, 40000, 9, []byte("neighbor"))); e.Decision != netstack.TraceDrop || e.Reason != "unowned_source" {
+		t.Errorf("a read from %s to %s on a node New started is %s %q, want %s %q", neighbor, far, e.Decision, e.Reason, netstack.TraceDrop, "unowned_source")
+	}
 }
 
 // a node starting down on a real utun leaves it bare through its first pass and after, and up then dresses it
