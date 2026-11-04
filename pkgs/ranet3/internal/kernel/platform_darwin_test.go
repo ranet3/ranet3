@@ -17,6 +17,8 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // testIndex is the interface index every test in this file pretends to own.
@@ -1421,27 +1423,25 @@ func TestDarwinRefusesSettingsItCannotHonor(t *testing.T) {
 	}
 }
 
-// With link.underlay.bind, a plain default goes in as its cover. Every
+// In the families a pass covers, a plain default goes in as its cover. Every
 // member installs unscoped although a peer's endpoint lies inside one, reads
 // back as a member, and converges. A real route at a member's destination
 // keeps the endpoint check, and an unscoped route there that this process did
 // not install as a member reads back as an ordinary route.
-func TestDarwinInstallsTheCoverUnscopedUnderBind(t *testing.T) {
+func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
 	peer4, peer6 := addr("192.0.2.1"), addr("2001:db8:beef::1")
 	plat, sock := testPlatform(t, Table{}, Runtime{
-		BoundUnderlay: true,
-		Underlay:      func() []netip.Addr { return []netip.Addr{peer4, peer6} },
+		Underlay: func() []netip.Addr { return []netip.Addr{peer4, peer6} },
 	})
-	if !plat.covers() {
-		t.Fatal("bind does not ask for the cover")
-	}
+	families := []Family{FamilyIPv4, FamilyIPv6}
+	plat.cover(nil, families, nil)
 	if _, err := plat.Routes(); err != nil {
 		t.Fatal(err)
 	}
 	desired := coverDefaults([]Route{
 		{Destination: prefix("0.0.0.0/0")},
 		{Destination: prefix("::/0"), Metric: defaultIPv6Metric},
-	}, plat.scopes)
+	}, families, plat.scopes)
 	if len(desired) != 16 {
 		t.Fatalf("the cover is %d routes, want 16: %v", len(desired), desired)
 	}
@@ -1475,7 +1475,8 @@ func TestDarwinInstallsTheCoverUnscopedUnderBind(t *testing.T) {
 		t.Error("a real 2000::/3 holding a peer's endpoint installs unscoped, so the ESP goes into the tun")
 	}
 
-	left, _ := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+	left, _ := testPlatform(t, Table{}, Runtime{})
+	left.cover(nil, families, nil)
 	inherited, err := left.ownedRoutes(dumpRIB(t, dumpEntry{index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC, dst: prefix("128.0.0.0/1"), gateway: ourGateway()}))
 	if err != nil {
 		t.Fatal(err)
@@ -1485,12 +1486,13 @@ func TestDarwinInstallsTheCoverUnscopedUnderBind(t *testing.T) {
 	}
 }
 
-// The two remaining reasons to scope hold under link.underlay.bind too. A
-// source prefix has no other spelling on this platform at all, and a hold
-// answers with an error for every destination it covers, which unscoped is the
-// whole machine.
-func TestDarwinKeepsScopingWhatBindDoesNotExplain(t *testing.T) {
-	plat, _ := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+// The two remaining reasons to scope hold in a covered family too. A source
+// prefix has no other spelling on this platform at all, and a hold answers
+// with an error for every destination it covers, which unscoped is the whole
+// machine.
+func TestDarwinKeepsScopingWhatTheCoverDoesNotExplain(t *testing.T) {
+	plat, _ := testPlatform(t, Table{}, Runtime{})
+	plat.cover(nil, []Family{FamilyIPv4, FamilyIPv6}, nil)
 	plat.addrs = func() ([]netip.Prefix, error) { return []netip.Prefix{prefix("2001:db8:1::5/128")}, nil }
 	sourced := Route{Destination: prefix("::/0"), Source: prefix("2001:db8:1::/48")}
 	if !plat.scopeRoute(sourced) {
@@ -1502,12 +1504,65 @@ func TestDarwinKeepsScopingWhatBindDoesNotExplain(t *testing.T) {
 	}
 }
 
-// Without link.underlay.bind, an announced default goes in scoped to the
-// utun, beside the host's own default rather than in front of it.
-func TestDarwinScopesADefaultWithoutBind(t *testing.T) {
+// In a family a pass covers, a route that counts as a default goes in
+// unscoped, but one holding an address the transport has to keep reaching. In
+// mode off, and in a family the pass leaves out of the mode, it goes in scoped
+// to the utun, beside the host's own default rather than in front of it.
+func TestDarwinScopeFollowsTheModeAndTheFamily(t *testing.T) {
+	endpoint := addr("192.0.2.9")
+	plat, _ := testPlatform(t, Table{}, Runtime{Underlay: func() []netip.Addr { return []netip.Addr{endpoint} }})
+	if _, err := plat.Routes(); err != nil {
+		t.Fatal(err)
+	}
+	// none holds the endpoint, which holding below stands for
+	captures := []Route{
+		{Destination: prefix("0.0.0.0/1")}, {Destination: prefix("64.0.0.0/2")},
+		{Destination: prefix("::/0"), Metric: defaultIPv6Metric}, {Destination: prefix("2000::/3"), Metric: defaultIPv6Metric},
+	}
+	holding := Route{Destination: prefix("128.0.0.0/1")}
+	for _, c := range []struct {
+		name     string
+		families []Family
+	}{
+		{"mode off", nil},
+		{"both families covered", []Family{FamilyIPv4, FamilyIPv6}},
+		{"IPv6 left out of the mode", []Family{FamilyIPv4}},
+		{"IPv4 left out of the mode", []Family{FamilyIPv6}},
+	} {
+		plat.cover(nil, c.families, nil)
+		for _, r := range captures {
+			want := !slices.Contains(c.families, familyOf(r.Destination.Addr()))
+			if got := plat.scopeRoute(r); got != want {
+				t.Errorf("%s: %s scoped %v, want %v", c.name, r.Destination, got, want)
+			}
+		}
+		if !plat.scopeRoute(holding) {
+			t.Errorf("%s: %s holding the endpoint %s goes in unscoped, so the underlay goes into the tun", c.name, holding.Destination, endpoint)
+		}
+	}
+}
+
+// In mode off, and in a family left out of the mode, a prefix shorter than the
+// minimum inside the overlay this pass hands counts as no default and goes in
+// unscoped, and the overlay a later pass hands decides that pass's scope.
+func TestDarwinModeOffJudgesACaptureByTheOverlayInForce(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
-	if !plat.scopeRoute(Route{Destination: prefix("::/0")}) {
-		t.Error("an announced default installed plain without link.underlay.bind")
+	short := Route{Destination: prefix("3ff0::/12"), Metric: defaultIPv6Metric}
+	for _, c := range []struct {
+		name    string
+		overlay []schema.Prefix
+		scoped  bool
+	}{
+		{"inside the overlay", prefixes(short.Destination), false},
+		{"after a reload to an overlay without it", prefixes(prefix("3fff::/20")), true},
+		{"after a reload back", prefixes(short.Destination), false},
+	} {
+		for _, families := range [][]Family{nil, {FamilyIPv4}} {
+			plat.cover(c.overlay, families, nil)
+			if got := plat.scopeRoute(short); got != c.scoped {
+				t.Errorf("%s, covering %v: %s scoped %v, want %v", c.name, families, short.Destination, got, c.scoped)
+			}
+		}
 	}
 }
 
@@ -1553,7 +1608,8 @@ func TestDarwinReadsItsAddressesOncePerPass(t *testing.T) {
 // hand or flushed with its interface, is forgotten by the first dump without
 // it, for the same reason.
 func TestDarwinForgetsAMemberItWithdrew(t *testing.T) {
-	plat, _ := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+	plat, _ := testPlatform(t, Table{}, Runtime{})
+	plat.cover(nil, bothFamilies, nil)
 	member := Route{Destination: prefix("128.0.0.0/1"), Cover: true}
 	if err := plat.AddRoute(member); err != nil {
 		t.Fatal(err)
@@ -1628,7 +1684,7 @@ func (h holdingHost) InterfaceName(index int) (string, error) {
 // not only that one does.
 func TestDarwinNamesTheRouteThatKeepsAMemberOut(t *testing.T) {
 	logs := captureKernelLogs(t)
-	plat, sock := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+	plat, sock := testPlatform(t, Table{}, Runtime{})
 	member := Route{Destination: prefix("128.0.0.0/1"), Cover: true}
 	plat.host = holdingHost{key: member.Destination, answer: RouteAnswer{Index: testIndex + 1, Gateway: addr("10.7.0.1")}, device: "utun4"}
 	sock.err = unix.EEXIST
@@ -1649,5 +1705,32 @@ func TestDarwinNamesTheRouteThatKeepsAMemberOut(t *testing.T) {
 	}
 	if got := record["destination"]; got != member.Destination.String() {
 		t.Errorf("the refusal names %v as the member, want %s", got, member.Destination)
+	}
+}
+
+// A route of a family cover names bare is skipped with nothing written, with
+// one warning over two passes, and the route goes in once cover names the
+// family bare no more.
+func TestDarwinSkipsARouteOfABareFamilyUnwritten(t *testing.T) {
+	logs := captureKernelLogs(t)
+	plat, sock := testPlatform(t, Table{}, Runtime{})
+	zero := Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}
+	for pass := range 2 {
+		plat.rotateWarnings()
+		plat.cover(nil, nil, []Family{FamilyIPv6})
+		if err := plat.AddRoute(zero); !errors.Is(err, errRouteSkipped) {
+			t.Fatalf("pass %d: a route of a bare family reported %v", pass, err)
+		}
+	}
+	if len(sock.sent) != 0 {
+		t.Errorf("a route of a bare family wrote %d messages", len(sock.sent))
+	}
+	if n := strings.Count(logs.String(), "the tun holds no address of its family"); n != 1 {
+		t.Errorf("two passes warned %d times, want once: %s", n, logs.String())
+	}
+	plat.rotateWarnings()
+	plat.cover(nil, nil, []Family{FamilyIPv4})
+	if err := plat.AddRoute(zero); err != nil || len(sock.sent) != 1 {
+		t.Errorf("with IPv4 alone bare the route answered %v and wrote %d messages, want one", err, len(sock.sent))
 	}
 }

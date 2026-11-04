@@ -36,7 +36,7 @@ type PathStatus struct {
 	// resolves, and Verdict how the mesh's table answered it
 	Down    netip.Addr
 	Verdict string
-	// Installed is the families whose steered default the pass left in the table
+	// Installed is the families whose steered default the pass left in the table, itself or as its cover
 	Installed []Family
 }
 
@@ -99,8 +99,11 @@ func (r *Reconciler) pathPass(held map[Route]bool) *PathStatus {
 		status.Via = append(status.Via, sid.Addr)
 	}
 	for route := range held {
-		if slices.Contains(steeredDestinations[:], route.Destination) && !route.Unreachable && !route.Throw && !route.Source.IsValid() {
-			status.Installed = append(status.Installed, familyOf(route.Destination.Addr()))
+		steered := slices.Contains(steeredDestinations[:], route.Destination) && !route.Unreachable && !route.Throw && !route.Source.IsValid()
+		// mode 3 declines every other route that counts as a default, so a member of the cover stands in for a steered default
+		family := familyOf(route.Destination.Addr())
+		if (steered || route.Cover) && !slices.Contains(status.Installed, family) {
+			status.Installed = append(status.Installed, family)
 		}
 	}
 	slices.Sort(status.Installed)

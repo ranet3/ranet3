@@ -527,25 +527,30 @@ func TestReconcilerAsksToBeWokenWhenTheGraceExpires(t *testing.T) {
 	}
 }
 
-// link.underlay.bind with nothing to ask about liveness is refused at startup.
-// The two are halves of one arrangement: bind lets an announced default
-// install unscoped, where every socket sees it, and the gate is the only thing
-// keeping it out of the kernel until the mesh has carried traffic.
-func TestNewRefusesBindWithNoSessionSource(t *testing.T) {
+// cap.exit with nothing to ask about liveness is refused at startup and at a
+// reload, on every platform. The gate is the only thing keeping the mode's
+// default out of the kernel until the mesh has carried traffic. The same
+// runtime with a session source starts, and mode off needs none.
+func TestModeNeedsASessionSource(t *testing.T) {
 	table := netstack.NewRouteTable()
-	_, err := New(Table{}, Runtime{Interface: "lo0", BoundUnderlay: true}, table)
-	if err == nil {
-		t.Fatal("bind with no session source was accepted")
+	moded := Table{}.WithMode(&ExitMode{})
+	onFake := func(Table, Runtime) (platform, error) { return newFakeKernel(t), nil }
+	for _, sessions := range []func() int{nil, func() int { return 0 }} {
+		_, err := newOn(moded, Runtime{Interface: "ranet0", Sessions: sessions}, table, onFake)
+		if refused := err != nil && strings.Contains(err.Error(), "session source"); refused != (sessions == nil) || sessions != nil && err != nil {
+			t.Errorf("New of the mode with a session source %v gave %v", sessions != nil, err)
+		}
+		reconciler, _, _ := harness(t, Table{}, Runtime{Sessions: sessions})
+		err = reconciler.SetTable(moded, nil, nil)
+		if refused := err != nil && strings.Contains(err.Error(), "session source"); refused != (sessions == nil) {
+			t.Errorf("a reload into the mode with a session source %v gave %v", sessions != nil, err)
+		}
+		if err := reconciler.SetTable(Table{}, nil, nil); err != nil {
+			t.Errorf("a reload into mode off with a session source %v gave %v", sessions != nil, err)
+		}
 	}
-	if !strings.Contains(err.Error(), "session source") {
-		t.Errorf("the refusal reads %q", err)
-	}
-	// And the same runtime with a session source gets past that check, so the
-	// refusal is about the pair rather than about bind.
-	if _, err := New(Table{}, Runtime{
-		Interface: "lo0", BoundUnderlay: true, Sessions: func() int { return 0 },
-	}, table); err != nil && strings.Contains(err.Error(), "session source") {
-		t.Errorf("bind with a session source was refused for the same reason: %v", err)
+	if _, err := newOn(Table{}, Runtime{Interface: "ranet0"}, table, onFake); err != nil {
+		t.Errorf("New in mode off with no session source gave %v", err)
 	}
 }
 

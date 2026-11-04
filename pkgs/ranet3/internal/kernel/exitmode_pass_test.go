@@ -135,7 +135,7 @@ func TestExitModeCatchesAFamilysHostTrafficWhileTheTunHoldsItsAddress(t *testing
 	network := &hostNetwork{state: exitPassHost()}
 	without := Table{Addresses: prefixes(prefix("192.0.2.1/32"))}.WithMode(&ExitMode{})
 	with := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{})
-	reconciler, table, fake := harness(t, without, Runtime{Overlay: exitPassOverlay, Network: network.read, Events: bus})
+	reconciler, table, fake := harness(t, without, Runtime{Overlay: exitPassOverlay, Network: network.read, Events: bus, Sessions: func() int { return 1 }})
 	table.Set(netip.Prefix{}, prefix("2001:db8:5::/48"), nil)
 	last := runToRecord(t, reconciler, table, bus)
 	holds := func(want ...string) func() bool {
@@ -315,7 +315,7 @@ func TestFallbackNoneAddsTheThrownPrefixesAndTheUnreachableRules(t *testing.T) {
 	network := &hostNetwork{state: exitPassHost("docker0")}
 	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}
 	none := tbl.WithMode(&ExitMode{Forward: []string{"docker0"}, Fallback: FallbackNone})
-	reconciler, routes, fake := harness(t, none, Runtime{Overlay: exitPassOverlay, Network: network.read})
+	reconciler, routes, fake := harness(t, none, Runtime{Overlay: exitPassOverlay, Network: network.read, Sessions: func() int { return 1 }})
 	for _, own := range []string{"203.0.113.0/24", "2001:db8:5::/48", "3fff:1::/48"} {
 		routes.Set(netip.Prefix{}, netip.MustParsePrefix(own), netstack.Local)
 	}
@@ -365,7 +365,7 @@ func TestFallbackNoneAddsTheThrownPrefixesAndTheUnreachableRules(t *testing.T) {
 func TestReloadAddingAndRemovingTheModeChangesTheRules(t *testing.T) {
 	network := &hostNetwork{state: exitPassHost("docker0")}
 	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}
-	reconciler, _, fake := harness(t, tbl, Runtime{Overlay: exitPassOverlay, Network: network.read})
+	reconciler, _, fake := harness(t, tbl, Runtime{Overlay: exitPassOverlay, Network: network.read, Sessions: func() int { return 1 }})
 	reconciler.reconcile()
 	off := maps.Clone(fake.rules)
 	if len(catchAll(fake)) != 0 || reconciler.Stats().Exit != nil {

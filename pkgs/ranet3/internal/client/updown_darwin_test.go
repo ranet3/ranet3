@@ -64,7 +64,7 @@ func startDownable(t *testing.T, host *recordedKernel, stateDir string) *daemon 
 
 func tryDownable(t *testing.T, host *recordedKernel, stateDir string) (*daemon, error) {
 	t.Helper()
-	cfg := loadDaemonConfig(t, true)
+	cfg := newDaemonFile(t).load(t, true)
 	cfg.Dial = config.Dial{}
 	reg, err := registry.Load(cfg.Auth.Trust)
 	if err != nil {
@@ -81,7 +81,7 @@ func tryDownable(t *testing.T, host *recordedKernel, stateDir string) (*daemon, 
 	if err := node.SetStateDir(stateDir); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := kernel.New(*cfg.Cap.Table, node.KernelRuntime(), mesh.Routes)
+	routes, err := kernel.New(*cfg.ReconcilerTable(), node.KernelRuntime(), mesh.Routes)
 	if err != nil {
 		t.Fatalf("the reconciler this node described was refused: %v", err)
 	}

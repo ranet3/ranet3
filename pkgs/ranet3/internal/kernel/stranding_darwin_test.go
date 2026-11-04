@@ -45,14 +45,7 @@ func TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress(t *testing.T) {
 		t.Skipf("a bound socket cannot reach %s before anything is installed: %v", target, err)
 	}
 
-	opened, err := newPlatform(
-		Table{ID: DefaultTable, Proto: DefaultProtocol},
-		Runtime{Interface: mesh, BoundUnderlay: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = opened.Close() })
-	plat := opened.(*routePlatform)
+	plat := testTUNPlatform(t, mesh)
 	if plat.index == host {
 		t.Skip("the test utun is the interface the host's own traffic leaves by")
 	}

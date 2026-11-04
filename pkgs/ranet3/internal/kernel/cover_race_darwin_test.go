@@ -89,7 +89,8 @@ func newRaceRIB(t *testing.T, foreign netip.Prefix) *raceRIB {
 // A member installed at a key another program held when an add of the same
 // pass was refused there is this process's own, so the next dump reports it.
 func TestDarwinMemberAtAKeyFreedAfterARefusalReadsBackAsOurs(t *testing.T) {
-	plat, _ := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+	plat, _ := testPlatform(t, Table{}, Runtime{})
+	plat.cover(nil, bothFamilies, nil)
 	upper := prefix("128.0.0.0/1")
 	rib := newRaceRIB(t, upper)
 	plat.sock, plat.host = rib, rib
@@ -119,12 +120,13 @@ func TestDarwinMemberAtAKeyFreedAfterARefusalReadsBackAsOurs(t *testing.T) {
 // the key beside the rest of the IPv4 cover, with nothing skipped and every
 // desired route installed.
 func TestDarwinRealRouteTakesItsKeyAfterARace(t *testing.T) {
-	reconciler, table, _ := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	plat, _ := testPlatform(t, reconciler.Table(), Runtime{BoundUnderlay: true})
+	reconciler, table, _ := harness(t, Table{}.WithMode(&ExitMode{}), Runtime{Overlay: coverOverlay, Sessions: func() int { return 1 }})
+	plat, _ := testPlatform(t, reconciler.Table(), Runtime{})
+	plat.addrs = func() ([]netip.Prefix, error) { return coverAddresses, nil }
 	upper := prefix("128.0.0.0/1")
 	rib := newRaceRIB(t, upper)
 	plat.sock, plat.host = rib, rib
-	reconciler.plat = plat
+	reconciler.plat, reconciler.rules = plat, nil
 	reconciler.now = func() time.Time { return start }
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
 	table.Set(netip.Prefix{}, upper, nil)

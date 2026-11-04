@@ -109,7 +109,7 @@ func TestCoverForwardsAsThePlainDefaultDoes(t *testing.T) {
 		if c.with6 {
 			withDefault = append(withDefault, Route{Destination: netip.MustParsePrefix("::/0"), Metric: defaultIPv6Metric})
 		}
-		covered := coverDefaults(withDefault, scopes)
+		covered := coverDefaults(withDefault, bothFamilies, scopes)
 		for _, r := range covered {
 			if zeroRoute(r) {
 				ht.Fatalf("a zero route %s is still in the kernel's table", r.Destination)
@@ -162,7 +162,7 @@ func TestCoverMembersAreAZeroRouteLessTheHole(t *testing.T) {
 			zero, hole = netip.IPv6Unspecified(), netip.MustParsePrefix("::/8")
 		}
 		p := netip.PrefixFrom(zero, hegel.Draw(ht, hegel.OneOf(pbt.Spanning(0, 10), pbt.Spanning(0, zero.BitLen()))))
-		installed := coverDefaults([]Route{{Destination: p, Metric: routeMetric(p, false)}}, nil)
+		installed := coverDefaults([]Route{{Destination: p, Metric: routeMetric(p, false)}}, bothFamilies, nil)
 		total := new(big.Int)
 		for i, r := range installed {
 			if !r.Cover {
@@ -371,7 +371,7 @@ func TestCoverGoesInWholeOrNotAtAll(t *testing.T) {
 				}
 			}
 			expected := map[Family][]netip.Prefix{}
-			for _, r := range coverDefaults(base, nil) {
+			for _, r := range coverDefaults(base, bothFamilies, nil) {
 				if r.Cover {
 					family := familyOf(r.Destination.Addr())
 					expected[family] = append(expected[family], r.Destination)

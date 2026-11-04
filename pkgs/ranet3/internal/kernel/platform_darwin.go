@@ -47,10 +47,10 @@ import (
 // this interface's own addresses is installed as an interface-scoped route
 // (see scopeRoute). Any other source prefix is reported once and skipped,
 // because flattening it would turn an exit's "::/0 from <prefix>" into a plain
-// default route out of the tun. Without link.underlay.bind an announced
-// default is scoped for a different reason, that it would otherwise capture
-// the ESP underlay, and the two share the one scoped slot a destination has.
-// With it the default goes in unscoped as its zero-free cover (see
+// default route out of the tun. In mode off a route that counts as a default
+// is scoped as well, so that only a socket asking for the tun takes it, and
+// the two share the one scoped slot a destination has. In a family cap.exit
+// covers it goes in unscoped, a zero route as its zero-free cover (see
 // coverDefaults).
 //
 // There is no per-route metric either, so Route.Metric is mirrored into every
@@ -113,6 +113,15 @@ type routePlatform struct {
 	// installed scoped under one answer and deleted under another leaves the
 	// kernel holding a key nothing will name again.
 	underlay []netip.Addr
+	// overlay and covered hold the overlay in force and the families whose
+	// zero routes go in as the cover, as cover handed them to the current
+	// pass, so every scope decision of a pass reads the same two
+	overlay []schema.Prefix
+	covered []Family
+	// bare is each family the tun holds no address of, as cover handed it to
+	// the current pass. The kernel refuses a route of such a family out of the
+	// tun with ENETUNREACH, scoped or not (TestDarwinRouteOfABareFamilyIsSkipped)
+	bare []Family
 	// assigned is this interface's own addresses as of the current pass, and
 	// assignedAt says whether that answer has been taken yet.
 	//
@@ -470,6 +479,9 @@ func (p *routePlatform) AddRoute(r Route) error {
 		// wrote itself, and never withdraw it.
 		return p.skipRoute(r, "the limited broadcast address is not a destination")
 	}
+	if slices.Contains(p.bare, familyOf(r.Destination.Addr())) {
+		return p.skipRoute(r, "the tun holds no address of its family, and macOS routes a family only out of an interface holding one of its addresses")
+	}
 	if r.Source.IsValid() {
 		ours, err := p.sourceIsOurs(r.Source)
 		if err != nil {
@@ -604,15 +616,10 @@ func (p *routePlatform) scopeRoute(r Route) bool {
 	if standsInForASource(r) || holdsAgainstTheFIB(r) {
 		return true
 	}
-	// With link.underlay.bind a capture is not scoped: the reconciler
-	// installs a route holding a zero address as the cover's members (see
-	// coverDefaults). coversAny stays for a route that is not a cover member.
-	if p.rt.BoundUnderlay {
+	if slices.Contains(p.covered, familyOf(r.Destination.Addr())) {
 		return coversAny(r.Destination, p.underlay)
 	}
-	// the platform keeps the runtime it opened with, which carries no overlay
-	// a reload moves, so it decides with none
-	return schema.CapturesTheMachine(r.Destination, nil) || coversAny(r.Destination, p.underlay)
+	return schema.CapturesTheMachine(r.Destination, p.overlay) || coversAny(r.Destination, p.underlay)
 }
 
 // interface scope is the only thing on this platform that draws the
@@ -793,10 +800,13 @@ func (p *routePlatform) where(Table) string { return "interface " + p.rt.Interfa
 
 func (p *routePlatform) retable(Table) {}
 
-// covers is link.underlay.bind: a plain default out of the tun unscoped meets
+// cover takes the pass's input to scopeRoute. A covered family's zero route
+// goes in as members since a plain default out of the tun unscoped meets
 // EEXIST beside the host's own, and scoped it carries no socket that does not
 // ask for the tun by name.
-func (p *routePlatform) covers() bool { return p.rt.BoundUnderlay }
+func (p *routePlatform) cover(overlay []schema.Prefix, families, bare []Family) {
+	p.overlay, p.covered, p.bare = overlay, families, bare
+}
 
 // scopes is scopeRoute as the diff reads it.
 func (p *routePlatform) scopes(r Route) bool { return p.scopeRoute(r) }

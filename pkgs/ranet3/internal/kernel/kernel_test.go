@@ -949,14 +949,14 @@ func TestSkippedRoutesAreNotCountedAndDoNotFailPass(t *testing.T) {
 		t.Fatalf("the occupied route was not among the desired ones: %v", r.desired(table.Snapshot(), r.readNetwork()))
 	}
 
-	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork())); err != nil {
+	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
 		t.Fatalf("a refused route failed the whole pass: %v", err)
 	}
 	if kernel.adds != 1 {
 		t.Fatalf("the kernel took %d routes, want 1", kernel.adds)
 	}
 	// Still wanted, so the next pass tries again rather than forgetting it.
-	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork())); err != nil {
+	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
 	if kernel.adds != 1 {
@@ -977,12 +977,12 @@ func TestRetractedPrefixIsHeldInKernelTable(t *testing.T) {
 	retracted := prefix("2001:db8:1::/48")
 	table.Set(netip.Prefix{}, covering, peer)
 	table.Set(netip.Prefix{}, retracted, peer)
-	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork())); err != nil {
+	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	table.Set(netip.Prefix{}, retracted, netstack.Unreachable)
-	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork())); err != nil {
+	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	routes, err := kernel.Routes()
@@ -1020,7 +1020,7 @@ func TestRetractedPrefixIsHeldInKernelTable(t *testing.T) {
 	// And it goes when the hold is flushed, rather than staying an error route
 	// nothing announces.
 	table.Remove(netip.Prefix{}, retracted)
-	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork())); err != nil {
+	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	routes, err = kernel.Routes()
@@ -1054,7 +1054,7 @@ func TestLocalIsInstalledAsTheHoldInsideTheOverlayAndAsAThrowOutside(t *testing.
 		for _, key := range keys {
 			table.Set(key.source, key.destination, value)
 		}
-		if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork())); err != nil {
+		if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
 			t.Fatal(err)
 		}
 		return slices.DeleteFunc(kernel.snapshot(), func(route Route) bool {
@@ -1141,7 +1141,7 @@ func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
 	for _, p := range append(refused, wanted) {
 		table.Set(netip.Prefix{}, p, peer)
 	}
-	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork())); err != nil {
+	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	installed := kernel.snapshot()

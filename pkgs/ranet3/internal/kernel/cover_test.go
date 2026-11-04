@@ -38,14 +38,17 @@ func coverOf(family bool, except ...string) []string {
 	return out
 }
 
-// Where the platform covers a default, darwin with link.underlay.bind, a plain
-// default goes in as the members of its family, carrying its metric, and
-// leaves every member's zero address out.
+// bothFamilies covers each family
+var bothFamilies = []Family{FamilyIPv4, FamilyIPv6}
+
+// Where the platform covers a default, darwin under cap.exit, a plain default
+// goes in as the members of its family, carrying its metric, and leaves every
+// member's zero address out.
 func TestPlainDefaultBecomesItsZeroFreeCover(t *testing.T) {
 	got := coverDefaults([]Route{
 		{Destination: prefix("0.0.0.0/0"), Metric: 7},
 		{Destination: prefix("::/0"), Metric: defaultIPv6Metric},
-	}, nil)
+	}, bothFamilies, nil)
 	if want := append(coverOf(true), coverOf(false)...); !slices.Equal(destinations(got), sortedCopy(want)) {
 		t.Fatalf("the cover is %v, want %v", destinations(got), want)
 	}
@@ -94,7 +97,7 @@ func TestZeroRouteBecomesTheMembersItContains(t *testing.T) {
 		{[]Route{{Destination: prefix("0.0.0.0/0")}, {Destination: prefix("0.0.0.0/4")}}, coverOf(true)},
 	} {
 		t.Run(fmt.Sprint(destinations(test.routes)), func(t *testing.T) {
-			got := coverDefaults(test.routes, nil)
+			got := coverDefaults(test.routes, bothFamilies, nil)
 			for _, r := range got {
 				if !r.Cover {
 					t.Errorf("%s is in the table and not a member", r.Destination)
@@ -108,15 +111,21 @@ func TestZeroRouteBecomesTheMembersItContains(t *testing.T) {
 }
 
 // A hold at the default and a source-specific default stay what they are, and
-// a table with no zero route is returned as it was.
+// a table with no zero route is returned as it was. A zero route of a family
+// the pass does not cover stays itself beside the other family's members.
 func TestOnlyAZeroRouteIsCovered(t *testing.T) {
 	kept := []Route{
 		{Destination: prefix("::/0"), Unreachable: true, Metric: holdMetric},
 		{Destination: prefix("::/0"), Source: prefix("2001:db8::/32"), Metric: defaultIPv6Metric},
 		{Destination: prefix("3fff:a::/36"), Metric: defaultIPv6Metric},
 	}
-	if got := coverDefaults(kept, nil); !slices.Equal(got, kept) {
+	if got := coverDefaults(kept, bothFamilies, nil); !slices.Equal(got, kept) {
 		t.Errorf("routes with no plain default became %v", got)
+	}
+	uncovered := Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}
+	got := coverDefaults([]Route{{Destination: prefix("0.0.0.0/0")}, uncovered}, []Family{FamilyIPv4}, nil)
+	if want := append(coverOf(true), "::/0"); !slices.Equal(destinations(got), sortedCopy(want)) || !slices.Contains(got, uncovered) {
+		t.Errorf("IPv4 alone covered gives %v, want the IPv4 members and ::/0 as itself", got)
 	}
 }
 
@@ -145,7 +154,7 @@ func TestCoverWithholdsWhatALongerOrEqualUnscopedRouteHolds(t *testing.T) {
 				defaultRoute = Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}
 			}
 			hold := func(r Route) bool { return scopes(r) || r.Unreachable }
-			got := coverDefaults([]Route{test.route, defaultRoute}, hold)
+			got := coverDefaults([]Route{test.route, defaultRoute}, bothFamilies, hold)
 			var members []Route
 			for _, r := range got {
 				if r.Cover {
@@ -162,16 +171,72 @@ func TestCoverWithholdsWhatALongerOrEqualUnscopedRouteHolds(t *testing.T) {
 	}
 }
 
-// coveringKernel is the fake kernel on a platform that asks for the cover.
-type coveringKernel struct{ *fakeKernel }
+// coveringKernel is the fake kernel on a platform that asks for the cover and
+// scopes what darwin's scopeRoute scopes with no endpoint inside the mesh's
+// routes: a hold, a route from a source, and a route that counts as a default
+// under the overlay handed in, in a family the pass does not cover. It holds
+// each route under the scope it gives it, as darwin's dump reads it back.
+type coveringKernel struct {
+	*fakeKernel
+	overlay  []schema.Prefix
+	families []Family
+	// bare holds the families the last pass handed cover, whose routes
+	// darwin's AddRoute skips and this fake installs all the same
+	bare []Family
+}
 
-func (coveringKernel) covers() bool { return true }
+func (k *coveringKernel) cover(overlay []schema.Prefix, families, bare []Family) {
+	k.overlay, k.families, k.bare = overlay, families, bare
+}
+
+func (k *coveringKernel) scopes(r Route) bool {
+	switch {
+	case r.Cover:
+		return false
+	case r.Unreachable || r.Source.IsValid():
+		return true
+	case slices.Contains(k.families, familyOf(r.Destination.Addr())):
+		return false
+	}
+	return schema.CapturesTheMachine(r.Destination, k.overlay)
+}
+
+func (k *coveringKernel) AddRoute(r Route) error {
+	r.Scoped = k.scopes(r)
+	return k.fakeKernel.AddRoute(r)
+}
+
+// coverOverlay is the overlay the covering harness runs, and coverAddresses
+// the tun's address of each family inside it
+var (
+	coverOverlay   = prefixes(prefix("192.0.2.0/24"), prefix("3fff:c::/32"))
+	coverAddresses = []netip.Prefix{prefix("192.0.2.1/24"), prefix("3fff:c::1/64")}
+)
+
+// coveredHarness is harness on a covering platform with no policy rules, as
+// darwin's, under tbl over coverOverlay, the tun holding addresses
+func coveredHarness(t *testing.T, tbl Table, rt Runtime, addresses ...netip.Prefix) (*Reconciler, *netstack.RouteTable, *coveringKernel) {
+	t.Helper()
+	rt.Overlay = coverOverlay
+	reconciler, table, fake := harness(t, tbl, rt)
+	return reconciler, table, onCovering(reconciler, fake, addresses...)
+}
+
+// onCovering puts reconciler on the covering fake over fake with no policy
+// rules, as darwin's, the tun holding addresses
+func onCovering(reconciler *Reconciler, fake *fakeKernel, addresses ...netip.Prefix) *coveringKernel {
+	for _, address := range addresses {
+		fake.addrs[address] = true
+	}
+	kernel := &coveringKernel{fakeKernel: fake}
+	reconciler.plat, reconciler.rules, reconciler.look = kernel, nil, nil
+	return kernel
+}
 
 func coveringHarness(t *testing.T, tbl Table, rt Runtime) (*Reconciler, *fakeKernel, func(netip.Prefix)) {
 	t.Helper()
-	reconciler, table, fake := harness(t, tbl, rt)
-	reconciler.plat = coveringKernel{fake}
-	return reconciler, fake, func(destination netip.Prefix) { table.Set(netip.Prefix{}, destination, nil) }
+	reconciler, table, kernel := coveredHarness(t, tbl.WithMode(&ExitMode{}), rt, coverAddresses...)
+	return reconciler, kernel.fakeKernel, func(destination netip.Prefix) { table.Set(netip.Prefix{}, destination, nil) }
 }
 
 func coverHeld(fake *fakeKernel) (members int, defaults int) {
@@ -304,8 +369,8 @@ func TestRefusedMemberLeavesNoPartialCover(t *testing.T) {
 // A refusal takes out the members of its family that earlier passes
 // installed as well as the ones its own pass added.
 func TestRefusedMemberWithdrawsWhatEarlierPassesInstalled(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	reconciler.plat = coveringKernel{fake}
+	reconciler, table, kernel := coveredHarness(t, Table{}.WithMode(&ExitMode{}), Runtime{Sessions: func() int { return 1 }}, coverAddresses...)
+	fake := kernel.fakeKernel
 	reconciler.now = func() time.Time { return start }
 	withholding := prefix("16.0.0.0/4")
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
@@ -404,7 +469,7 @@ func TestRefusedIPv6MemberLeavesNoPartialCover(t *testing.T) {
 // delete of a member at a key in stuck fails. It records each add that failed
 // and the key of each member whose delete failed.
 type keyKernel struct {
-	*fakeKernel
+	*coveringKernel
 	taken, flaky, stuck map[netip.Prefix]error
 	failed              []failedAdd
 	kept                map[netip.Prefix]bool
@@ -414,8 +479,6 @@ type failedAdd struct {
 	route Route
 	err   error
 }
-
-func (*keyKernel) covers() bool { return true }
 
 func (k *keyKernel) AddRoute(r Route) error {
 	err := k.taken[r.Destination]
@@ -429,7 +492,7 @@ func (k *keyKernel) AddRoute(r Route) error {
 		k.failed = append(k.failed, failedAdd{r, err})
 		return err
 	}
-	return k.fakeKernel.AddRoute(r)
+	return k.coveringKernel.AddRoute(r)
 }
 
 func (k *keyKernel) DelRoute(r Route) error {
@@ -442,8 +505,8 @@ func (k *keyKernel) DelRoute(r Route) error {
 
 func keyHarness(t *testing.T) (*Reconciler, *keyKernel, *netstack.RouteTable) {
 	t.Helper()
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	kernel := &keyKernel{fakeKernel: fake, taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}, stuck: map[netip.Prefix]error{}, kept: map[netip.Prefix]bool{}}
+	reconciler, table, covering := coveredHarness(t, Table{}.WithMode(&ExitMode{}), Runtime{Sessions: func() int { return 1 }}, coverAddresses...)
+	kernel := &keyKernel{coveringKernel: covering, taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}, stuck: map[netip.Prefix]error{}, kept: map[netip.Prefix]bool{}}
 	reconciler.plat = kernel
 	reconciler.now = func() time.Time { return start }
 	return reconciler, kernel, table
@@ -857,23 +920,12 @@ func TestZeroRouteInsideTheHoleIsSkippedAndLoggedOnce(t *testing.T) {
 	}
 }
 
-// scopingCoveringKernel is the fake on a platform that asks for the cover and
-// scopes what darwin scopes under link.underlay.bind with no endpoint inside the
-// mesh's routes: a hold, and a route from a source.
-type scopingCoveringKernel struct{ *fakeKernel }
-
-func (scopingCoveringKernel) covers() bool { return true }
-
-func (scopingCoveringKernel) scopes(r Route) bool {
-	return !r.Cover && (r.Unreachable || r.Source.IsValid())
-}
-
 // A route the platform scopes takes none of the machine's unscoped lookups, so
 // it withholds no member, neither in the pass that installs both nor in a
 // later one that finds both held.
 func TestScopedRouteWithholdsNoMember(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	reconciler.plat = scopingCoveringKernel{fake}
+	reconciler, table, kernel := coveredHarness(t, Table{}.WithMode(&ExitMode{}), Runtime{Sessions: func() int { return 1 }}, coverAddresses...)
+	fake := kernel.fakeKernel
 	reconciler.now = func() time.Time { return start }
 	table.Set(netip.Prefix{}, prefix("::/0"), nil)
 	table.Set(prefix("2001:db8:bb::/48"), prefix("2000::/3"), nil)
@@ -891,15 +943,15 @@ func TestScopedRouteWithholdsNoMember(t *testing.T) {
 // in whole. The hold Babel keeps
 // at a retracted default stays out of the kernel, scoped or not.
 func TestSourcedDefaultGoesInWholeAndAHeldDefaultStaysOut(t *testing.T) {
-	reconciler, table, fake := harness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
-	reconciler.plat = scopingCoveringKernel{fake}
+	reconciler, table, kernel := coveredHarness(t, Table{}.WithMode(&ExitMode{}), Runtime{Sessions: func() int { return 1 }}, coverAddresses...)
+	fake := kernel.fakeKernel
 	reconciler.now = func() time.Time { return start }
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), netstack.Unreachable)
 	table.Set(prefix("2001:db8:bb::/48"), prefix("::/0"), nil)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	sourced := Route{Destination: prefix("::/0"), Source: prefix("2001:db8:bb::/48"), Metric: defaultIPv6Metric}
+	sourced := Route{Destination: prefix("::/0"), Source: prefix("2001:db8:bb::/48"), Metric: defaultIPv6Metric, Scoped: true}
 	if got := fake.snapshot(); !slices.Equal(got, []Route{sourced}) {
 		t.Errorf("installed %v, want only %+v", got, sourced)
 	}

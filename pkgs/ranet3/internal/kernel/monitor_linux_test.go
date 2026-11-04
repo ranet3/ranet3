@@ -95,7 +95,7 @@ func TestNetlinkFollowsAnotherWritersAddressOnTheTun(t *testing.T) {
 
 	bus := events.New()
 	overlay := []schema.Prefix{schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("3fff::/20")}
-	r, err := New(Table{}.WithMode(&ExitMode{}), Runtime{Interface: device, Overlay: overlay, Events: bus}, netstack.NewRouteTable())
+	r, err := New(Table{}.WithMode(&ExitMode{}), Runtime{Interface: device, Overlay: overlay, Events: bus, Sessions: func() int { return 1 }}, netstack.NewRouteTable())
 	if err != nil {
 		t.Fatalf("start the reconciler: %v", err)
 	}

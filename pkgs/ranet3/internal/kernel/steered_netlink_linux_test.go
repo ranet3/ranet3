@@ -45,7 +45,7 @@ func TestNetlinkSteeredDefaultsComeAndGoWithTheSegments(t *testing.T) {
 	for _, entry := range learnedDefaults() {
 		mesh.Set(entry.source, entry.destination, entry.value)
 	}
-	r, err := New(modeThree(waypointSID, exitSID), Runtime{Interface: device, Overlay: steeredOverlay}, mesh)
+	r, err := New(modeThree(waypointSID, exitSID), Runtime{Interface: device, Overlay: steeredOverlay, Sessions: func() int { return 1 }}, mesh)
 	if err != nil {
 		t.Fatalf("start the reconciler: %v", err)
 	}

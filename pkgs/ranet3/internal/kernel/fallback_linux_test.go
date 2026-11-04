@@ -667,6 +667,7 @@ func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) 
 	off = off.Normalized()
 	none := off.WithMode(&ExitMode{Fallback: FallbackNone, LAN: []schema.Prefix{schema.PrefixFrom(lan.Masked())}}).Normalized()
 	rt.Overlay = exitPassOverlay
+	rt.Sessions = func() int { return 1 }
 	rt.Network = func() NetworkState {
 		return NetworkState{IPv4: NetworkFamily{Default: DefaultRoute{Interface: uplink}, Links: []Link{{Name: uplink, Prefixes: []netip.Prefix{lan}}}}}
 	}

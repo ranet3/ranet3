@@ -274,7 +274,7 @@ func TestSteeredDefaultsFollowTheSegmentAsTheReconcilerRuns(t *testing.T) {
 // throughout
 func TestReloadBetweenModesTwoAndThreeTakesOnePass(t *testing.T) {
 	two := Table{}.WithMode(&ExitMode{Fallback: FallbackNone})
-	reconciler, table, fake := harness(t, two, Runtime{Overlay: steeredOverlay})
+	reconciler, table, fake := harness(t, two, Runtime{Overlay: steeredOverlay, Sessions: func() int { return 1 }})
 	for _, entry := range append(learnedDefaults(), host(waypointSID, learned), host(exitSID, learned)) {
 		table.Set(entry.source, entry.destination, entry.value)
 	}
@@ -332,7 +332,7 @@ func TestModeThreeRefusesUnlessFallbackSaysUplink(t *testing.T) {
 	refused := func(fake *fakeKernel) bool {
 		return slices.ContainsFunc(slices.Collect(maps.Keys(fake.heldRules())), func(rule Rule) bool { return rule.Priority == priorityRefused })
 	}
-	reconciler, table, fake := harness(t, modeThree(exitSID), Runtime{Overlay: steeredOverlay})
+	reconciler, table, fake := harness(t, modeThree(exitSID), Runtime{Overlay: steeredOverlay, Sessions: func() int { return 1 }})
 	for _, entry := range learnedDefaults() {
 		table.Set(entry.source, entry.destination, entry.value)
 	}

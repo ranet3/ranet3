@@ -41,8 +41,13 @@ func heldOn(t *testing.T, index int) map[netip.Prefix]bool {
 	return out
 }
 
-// coverRig is a test utun with a reconciler on it under link.underlay.bind, a
-// live session, and the host's defaults of both families to fall back on.
+// coverRigOverlay is the overlay the rig's reconciler runs under, holding the
+// address of each family the rig gives its tun
+var coverRigOverlay = prefixes(prefix("198.51.100.0/24"), prefix("2001:db8:bb::/48"))
+
+// coverRig is a test utun with a reconciler on it in mode 2, the tun holding an
+// overlay address of each family, a live session, and the host's defaults of
+// both families to fall back on.
 type coverRig struct {
 	meshIndex int
 	tun       int
@@ -56,6 +61,8 @@ type coverRig struct {
 // coverRigOptions name what one root test changes about the rig.
 type coverRigOptions struct {
 	endpoints []netip.Addr
+	// off starts the reconciler in mode off
+	off bool
 }
 
 func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
@@ -74,11 +81,15 @@ func newCoverRig(t *testing.T, options coverRigOptions) *coverRig {
 	host6 := hostDefault6(t, meshIndex)
 	rig := &coverRig{meshIndex: meshIndex, tun: tun, host4: host4, device4: device.Name, host6: host6,
 		table: netstack.NewRouteTable()}
-	reconciler, err := New(Table{ID: DefaultTable, Proto: DefaultProtocol}, Runtime{
-		Interface:     mesh,
-		BoundUnderlay: true,
-		Sessions:      func() int { return 1 },
-		Underlay:      func() []netip.Addr { return options.endpoints },
+	tbl := Table{ID: DefaultTable, Proto: DefaultProtocol}
+	if !options.off {
+		tbl = tbl.WithMode(&ExitMode{})
+	}
+	reconciler, err := New(tbl, Runtime{
+		Interface: mesh,
+		Overlay:   coverRigOverlay,
+		Sessions:  func() int { return 1 },
+		Underlay:  func() []netip.Addr { return options.endpoints },
 	}, rig.table)
 	if err != nil {
 		t.Fatal(err)

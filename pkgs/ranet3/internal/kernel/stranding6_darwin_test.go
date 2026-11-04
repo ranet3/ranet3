@@ -129,18 +129,20 @@ func interfaceIndex(t *testing.T, name string) int {
 	return device.Index
 }
 
-// testTUNPlatform opens the backend on one device, with the binding on so that
-// nothing it writes is scoped.
+// testTUNPlatform opens the backend on one device, covering both families so
+// that nothing it writes is scoped.
 func testTUNPlatform(t *testing.T, name string) *routePlatform {
 	t.Helper()
 	opened, err := newPlatform(
-		Table{ID: DefaultTable, Proto: DefaultProtocol},
-		Runtime{Interface: name, BoundUnderlay: true})
+		Table{ID: DefaultTable, Proto: DefaultProtocol}.WithMode(&ExitMode{}),
+		Runtime{Interface: name})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = opened.Close() })
-	return opened.(*routePlatform)
+	plat := opened.(*routePlatform)
+	plat.cover(nil, bothFamilies, nil)
+	return plat
 }
 
 // unscopedDefaultOn reports whether the kernel holds an unscoped ::/0 on that

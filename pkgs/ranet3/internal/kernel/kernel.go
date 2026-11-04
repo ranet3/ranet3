@@ -196,17 +196,6 @@ type Runtime struct {
 	// node an exit. A reload never changes it, since it refuses adding the
 	// first egress segment and removing the last.
 	EgressSegment bool
-	// BoundUnderlay is link.underlay.bind, which decides how the darwin
-	// backend installs a route holding its family's zero address: unscoped,
-	// as the zero-free cover's members it contains, rather than scoped out of
-	// the reach of every socket that does not ask for the tun by name, which
-	// is the difference between a node that can hold a mesh address and one
-	// that can use a mesh exit. The underlay's datagrams name their interface
-	// from the host's routes with the tun left out either way. Nothing reads
-	// it on linux, where a socket mark and a policy rule keep the underlay off
-	// the mesh and a default is installed unscoped either way. It is set from
-	// link.underlay, so it is handed here rather than written in cap.table.
-	BoundUnderlay bool
 	// Sessions reports how many of this node's mesh sessions have recently
 	// proved their peer is there. Until one has, and once none has for
 	// Table.CaptureGrace, no route that would carry this machine's own
@@ -415,9 +404,9 @@ type auditor interface {
 // overlay and this node's own sources sent into the mesh, as routing.md's
 // "Where a lookup ends on Linux" gives. darwin installs a source-specific route
 // only where its source prefix holds an address of the tun, and that one, and
-// without link.underlay.bind every route schema.CapturesTheMachine counts,
-// scoped to the tun instead, which keeps them off every unbound socket. See
-// the platform notes in pkgs/raweb3/pages/docs/platforms.md.
+// every route schema.CapturesTheMachine counts in a family cap.exit does not
+// cover, scoped to the tun instead, which keeps them off every unbound socket.
+// See the platform notes in pkgs/raweb3/pages/docs/platforms.md.
 type ruler interface {
 	// Rules returns only the rules carrying this reconciler's protocol.
 	Rules() ([]Rule, error)
@@ -649,6 +638,11 @@ type Reconciler struct {
 	// current pass, rotated the way warned is so a report costs one log line
 	// rather than one per pass.
 	warnedAddrs map[netip.Prefix]bool
+	// bare is each family the tun held no address of at the last listing,
+	// which a covering platform skips the routes of, and unlisted says the
+	// listings since have failed where no other step asked for one
+	bare     []Family
+	unlisted bool
 	// warned holds the routes already reported as unrepresentable. It is
 	// rebuilt from each pass, so it stays bounded by the snapshot.
 	warned map[Route]bool
@@ -729,7 +723,7 @@ type Reconciler struct {
 	// changed says the pass under way wrote a rule or an address, which the route counts do not show
 	// it belongs to the same goroutine, and the withdrawal never sets it
 	changed bool
-	// exitStatus is cap.exit's mode as the last rule pass ran it, nil in mode off, and belongs to the same goroutine
+	// exitStatus is cap.exit's mode as the last pass that judged it ran it, nil in mode off, and belongs to the same goroutine
 	// a pass replaces it whole, so a Stats holding it reads one pass
 	exitStatus *ExitStatus
 	// fallbackFault is why the table ranet3_fallback did not read back as
@@ -771,7 +765,7 @@ type Stats struct {
 	// Lookups holds the lookups the last pass whose batch answered asked of
 	// the kernel to find another program's rule ahead of the mesh's
 	Lookups []Lookup
-	// Exit is cap.exit's mode as the last rule pass ran it, nil in mode off
+	// Exit is cap.exit's mode as the last pass that judged it ran it, nil in mode off
 	Exit *ExitStatus
 	// Path is cap.exit via's path as this pass judged it, nil outside mode 3
 	Path *PathStatus
@@ -792,6 +786,11 @@ func (r *Reconciler) Stats() Stats {
 // misconfigured or unsupported deployment fails at startup rather than on the
 // first route. It installs nothing. Run does that.
 func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
+	return newOn(t, rt, src, newPlatform)
+}
+
+// newOn is New with open opening the platform once the capability passes
+func newOn(t Table, rt Runtime, src RouteSource, open func(Table, Runtime) (platform, error)) (*Reconciler, error) {
 	if rt.Interface == "" {
 		return nil, errors.New("kernel: interface is required")
 	}
@@ -805,25 +804,28 @@ func New(t Table, rt Runtime, src RouteSource) (*Reconciler, error) {
 		return nil, err
 	}
 	t = t.Normalized()
-	if rt.BoundUnderlay && rt.Sessions == nil {
-		// The two halves of one arrangement. link.underlay.bind lets this
-		// backend install an announced default where every socket can see
-		// it, and the gate is the only thing that keeps such a route out
-		// of the kernel until the mesh has proved it can carry traffic. With
-		// no session source the gate is open from the first pass, so the two
-		// together would put this machine's traffic in a tun nothing has ever
-		// answered on.
-		return nil, errors.New("kernel: link.underlay.bind needs a session source, or an announced default would install before the mesh has carried anything")
+	if err := refuseUngated(t, rt.Sessions); err != nil {
+		return nil, err
 	}
 	addresses, err := resolveAddresses(t, rt.Announced)
 	if err != nil {
 		return nil, err
 	}
-	plat, err := newPlatform(t, rt)
+	plat, err := open(t, rt)
 	if err != nil {
 		return nil, err
 	}
 	return newReconciler(t, rt, addresses, src, plat), nil
+}
+
+// refuseUngated refuses modes 2 and 3 with no session source
+// the gate is the only thing that keeps the mode's default out of the kernel until the mesh has proved it can carry traffic, and with no source it is open from the first pass
+// so the mode would put this host's traffic in a tun nothing has ever answered on
+func refuseUngated(t Table, sessions func() int) error {
+	if t.Mode() != nil && sessions == nil {
+		return errors.New("kernel: cap.exit needs a session source, or the mode would take this host's traffic before the mesh has carried anything")
+	}
+	return nil
 }
 
 // resolveAddresses is the address set a reconciler of t carries on the device, given the prefixes cap.route announces
@@ -977,6 +979,9 @@ func (r *Reconciler) SetTable(t Table, overlay []schema.Prefix, announced []neti
 	t = t.Normalized()
 	if setting := r.Table().Unreloadable(t); setting != "" {
 		return fmt.Errorf("kernel: cap.table %s changed, restart to apply", setting)
+	}
+	if err := refuseUngated(t, r.rt.Sessions); err != nil {
+		return err
 	}
 	addresses, err := resolveAddresses(t, announced)
 	if err != nil {
@@ -1174,8 +1179,24 @@ func (r *Reconciler) reconcile() error {
 	// the routes and the rules carve what one reading of the network gives
 	network := r.readNetwork()
 	held, listed, addressErr := r.applyAddresses()
+	// modes 2 and 3 cannot tell which families the tun holds an overlay address of without the listing, so the last pass's mode stands
+	// the address step's error has the pass retried
+	judged := r.table.Mode() == nil || listed
+	exit, status := exitView{}, r.exitStatus
+	if judged {
+		exit, status = r.exitPass(held, snapshot, network)
+	}
 	desired := r.desired(snapshot, network)
-	err := errors.Join(addressErr, r.applyRoutes(desired), r.applyRules(snapshot, network, thrown(desired), held, listed))
+	// a pass that cannot list the tun keeps the last listing's, as the cover's families stand
+	if listed {
+		r.bare = bareFamilies(held)
+	}
+	routesErr := r.applyRoutes(desired, r.coverFamilies(status), r.bare)
+	// after the route writes, so kernel.exit and kernel.forward follow the pass's kernel.path and kernel.cover
+	if judged {
+		r.reportExit(status)
+	}
+	err := errors.Join(addressErr, routesErr, r.applyRules(snapshot, thrown(desired), exit, judged))
 	// a pass missing a rule or a hold would find its own fault, which err reports
 	if err == nil {
 		r.lookUp()
@@ -1268,26 +1289,19 @@ func (r *Reconciler) audit() {
 // installs for the same reason applyRoutes does, and it reads the kernel back
 // rather than trusting a record, so rules an earlier instance left behind are
 // adopted, and withdrawn where no longer derived, rather than duplicated. It
-// adds in the set's order, which puts each nop ahead of its goto. held is the
-// tun's addresses as the pass's address step left them, where listed, and
-// throws the own prefixes the pass's mirror throws.
-func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], network passNetwork, throws, held []netip.Prefix, listed bool) error {
-	if r.rules == nil {
+// adds in the set's order, which puts each nop ahead of its goto. exit is the
+// mode as the pass judged it, where judged, and throws the own prefixes the
+// pass's mirror throws.
+func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], throws []netip.Prefix, exit exitView, judged bool) error {
+	if r.rules == nil || !judged {
 		return nil
 	}
-	// modes 2 and 3 cannot tell which families the tun holds an overlay address of without the listing, so the rules stay as they are
-	// the address step's error has the pass retried
-	if r.table.Mode() != nil && !listed {
-		return nil
-	}
-	exit, status := r.exitPass(held, snapshot, network)
-	r.reportExit(status)
 	if exit.fallback {
 		exit.own = throws
 	}
 	fallback, fallbackErr := r.applyFallback(exit)
-	if status != nil {
-		status.Fallback = fallback
+	if r.exitStatus != nil {
+		r.exitStatus.Fallback = fallback
 	}
 	exit.unheld = fallback == nil || fallback.State == FallbackNotHolding
 	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
@@ -1335,10 +1349,13 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], network p
 
 // applyRoutes removes before it installs, so a changed non-key attribute does
 // not collide with the old route under the exclusive-install policy.
-func (r *Reconciler) applyRoutes(desired []Route) error {
+func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family) error {
 	// Cleared first, so a pass that fails before it can count anything reports
 	// nothing rather than the counts of the last pass that succeeded.
 	r.routePass = Stats{}
+	if p, ok := r.plat.(coverer); ok {
+		p.cover(r.rt.Overlay, families, addressless)
+	}
 	actual, err := r.plat.Routes()
 	if err != nil {
 		return fmt.Errorf("list routes: %w", err)
@@ -1348,7 +1365,7 @@ func (r *Reconciler) applyRoutes(desired []Route) error {
 	// this pass may install.
 	r.capturing = slices.ContainsFunc(desired, r.captures)
 	captured := slices.ContainsFunc(actual, r.captures)
-	covering, scopes := r.covers(), r.platformScopes()
+	covering, scopes := len(families) > 0, r.platformScopes()
 	scoped := func(route Route) bool { return route.Scoped || scopes != nil && scopes(route) }
 	// A member is withheld only for a route the kernel holds once the pass has
 	// added, so a route refused last pass withholds nothing while it is tried
@@ -1373,8 +1390,8 @@ func (r *Reconciler) applyRoutes(desired []Route) error {
 	// check holds captures back.
 	var dropped []Route
 	if covering {
-		desired = coverDefaults(bare, unmet)
-		dropped = r.reportMemberless(bare)
+		desired = coverDefaults(bare, families, unmet)
+		dropped = r.reportMemberless(bare, families)
 	}
 	wanted := map[Route]bool{}
 	for _, route := range desired {
@@ -1452,7 +1469,7 @@ func (r *Reconciler) applyRoutes(desired []Route) error {
 			// member's own key refuses the member too
 			unheld[route] = true
 			var handed []Route
-			for _, member := range coverDefaults(bare, unmet) {
+			for _, member := range coverDefaults(bare, families, unmet) {
 				if member.Cover && !wanted[member] && !held[member] {
 					wanted[member] = true
 					handed = append(handed, member)
@@ -1526,14 +1543,15 @@ func (r *Reconciler) reportCover(now []Family) {
 	r.cover = now
 }
 
-// reportMemberless returns the zero routes of desired a cover installs as
-// nothing, those inside 0.0.0.0/8, this network (RFC 1122 section 3.2.1.3),
-// or ::/8, and warns once for each while the mesh keeps announcing it.
-func (r *Reconciler) reportMemberless(desired []Route) []Route {
+// reportMemberless returns the zero routes of desired in families a cover
+// installs as nothing, those inside 0.0.0.0/8, this network (RFC 1122 section
+// 3.2.1.3), or ::/8, and warns once for each while the mesh keeps announcing
+// it.
+func (r *Reconciler) reportMemberless(desired []Route, families []Family) []Route {
 	var out []Route
 	reported := make(map[Route]bool, len(r.memberless))
 	for _, route := range desired {
-		if !memberless(route) {
+		if !memberless(route) || !slices.Contains(families, familyOf(route.Destination.Addr())) {
 			continue
 		}
 		out = append(out, route)
@@ -1828,15 +1846,29 @@ func compareSourceSpecificity(a, b netip.Prefix) int {
 // removes are recorded in owned: an address on the link that is not configured
 // and not recorded belongs to somebody else. It returns the link's addresses
 // as the pass leaves them, another writer's among them, and whether it listed
-// them: modes 2 and 3 read them even where cap.table assigns nothing.
+// them: modes 2 and 3, and every pass on a covering platform, which skips a
+// route of a family the link holds no address of, read them even where
+// cap.table assigns nothing. A listing that serves the covering platform's
+// read alone fails no pass, and is logged once per run of failures.
 func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err error) {
-	if len(r.addresses) == 0 && len(r.owned) == 0 && r.table.Mode() == nil {
+	_, covering := r.plat.(coverer)
+	bareOnly := len(r.addresses) == 0 && len(r.owned) == 0 && r.table.Mode() == nil
+	if bareOnly && !covering {
 		return nil, false, nil
 	}
 	actual, err := r.plat.Addrs()
+	if err != nil && bareOnly {
+		if !r.unlisted {
+			slog.Warn("kernel could not list the tun's addresses, so it keeps the families the last listing found without one",
+				"interface", r.rt.Interface, "err", err)
+		}
+		r.unlisted = true
+		return nil, false, nil
+	}
 	if err != nil {
 		return nil, false, fmt.Errorf("list addresses: %w", err)
 	}
+	r.unlisted = false
 	keysByLength := func(netip.Addr) bool { return false }
 	if p, ok := r.plat.(lengthKeyer); ok {
 		keysByLength = p.keysByLength
@@ -2049,9 +2081,25 @@ func canonicalPrefix(prefix netip.Prefix) (netip.Prefix, bool) {
 // scope as well as by its destination, which is darwin alone.
 type scoper interface{ scopes(Route) bool }
 
-func (r *Reconciler) covers() bool {
-	p, ok := r.plat.(coverer)
-	return ok && p.covers()
+// coverFamilies is the families whose zero routes the pass installs as the
+// cover: on a covering platform in modes 2 and 3, each the tun holds an
+// overlay address of as status, the last that judged the mode, found it, and
+// none in mode off or before such a pass.
+func (r *Reconciler) coverFamilies(status *ExitStatus) []Family {
+	if _, ok := r.plat.(coverer); !ok || status == nil {
+		return nil
+	}
+	return slices.DeleteFunc([]Family{FamilyIPv4, FamilyIPv6}, func(family Family) bool {
+		return slices.Contains(status.Unaddressed, family)
+	})
+}
+
+// bareFamilies is each family held, the tun's addresses, holds no address of,
+// whoever wrote it
+func bareFamilies(held []netip.Prefix) []Family {
+	return slices.DeleteFunc([]Family{FamilyIPv4, FamilyIPv6}, func(family Family) bool {
+		return slices.ContainsFunc(held, func(address netip.Prefix) bool { return familyOf(address.Addr()) == family })
+	})
 }
 
 func (r *Reconciler) platformScopes() func(Route) bool {

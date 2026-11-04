@@ -58,12 +58,11 @@ const otherProgramIndex = 425
 // capture gate rests on.
 var (
 	capturingPrefix = netip.MustParsePrefix("::/0")
-	// halfCapture takes the machine too and holds ::, so under
-	// link.underlay.bind it goes in as the members it contains, the first
-	// seven of ipv6Cover
+	// halfCapture takes the machine too and holds ::, so under cap.exit it
+	// goes in as the members it contains, the first seven of ipv6Cover
 	halfCapture    = netip.MustParsePrefix("::/1")
 	ordinaryPrefix = netip.MustParsePrefix("2001:db8:2::/64")
-	// ipv6Cover holds the members link.underlay.bind installs capturingPrefix as
+	// ipv6Cover holds the members cap.exit installs capturingPrefix as
 	ipv6Cover = []netip.Prefix{
 		netip.MustParsePrefix("100::/8"), netip.MustParsePrefix("200::/7"),
 		netip.MustParsePrefix("400::/6"), netip.MustParsePrefix("800::/5"),
@@ -78,6 +77,9 @@ var (
 	// announcedAddress is the prefix this node originates, which
 	// assign_announced puts on the mesh device.
 	announcedAddress = netip.MustParsePrefix("2001:db8:1::1/128")
+	// announcedAddress4 is the IPv4 one, so the mesh device holds an overlay
+	// address of each family and cap.exit covers both
+	announcedAddress4 = netip.MustParsePrefix("203.0.113.1/32")
 	// hostGateways are the next hops the recorded host reaches the world
 	// through, one per family.
 	hostGateway4 = netip.MustParseAddr("192.0.2.1")
@@ -98,6 +100,8 @@ type daemon struct {
 	// stop ends the reconcile loop and waits for it to withdraw, the way the
 	// command waits for it before closing the node.
 	stop func()
+	// file is the configuration file the node was loaded from
+	file *daemonFile
 }
 
 // recordedHost is the machine a daemon in this file starts on: one uplink
@@ -115,12 +119,16 @@ func recordedHost(t *testing.T) *recordedKernel {
 	return host
 }
 
-// startDaemon builds one node and its reconciler, retrying the port
-func startDaemon(t *testing.T, bind bool, host *recordedKernel) *daemon {
+// startDaemon builds one node and its reconciler, under cap.exit where exit
+// is true, retrying the port
+func startDaemon(t *testing.T, exit bool, host *recordedKernel) *daemon {
 	t.Helper()
 	var d *daemon
 	retryPort(t, "bind", func() (err error) {
-		d, err = tryDaemon(t, loadDaemonConfig(t, bind), host)
+		file := newDaemonFile(t)
+		if d, err = tryDaemon(t, file.load(t, exit), host); d != nil {
+			d.file = file
+		}
 		return err
 	})
 	return d
@@ -155,10 +163,11 @@ func tryDaemon(t *testing.T, cfg *config.Config, host *recordedKernel) (*daemon,
 	// real SAs measures something else.
 	node.sessions.active = func(*ike.Session) bool { return true }
 
-	routes, err := kernel.New(*cfg.Cap.Table, node.KernelRuntime(), mesh.Routes)
+	routes, err := kernel.New(*cfg.ReconcilerTable(), node.KernelRuntime(), mesh.Routes)
 	if err != nil {
 		t.Fatalf("the reconciler this node described was refused: %v", err)
 	}
+	node.SetReconciler(ReconcilerOf(routes))
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -234,16 +243,16 @@ func (d *daemon) heldBack(t *testing.T, prefix, witness netip.Prefix) bool {
 	return !plain && !scoped
 }
 
-// A configuration that sets link.underlay.bind produces a daemon whose
-// reconciler holds an announced default out of the kernel until a session is
-// live and then installs it unscoped as the zero-free cover, installs every
-// other route holding a zero address as the members it contains, and writes
-// nothing outside the tun. Every one of those is a different call site, and
-// each of them was removable.
+// A configuration that writes cap.exit produces a daemon whose reconciler
+// holds an announced default out of the kernel until a session is live and
+// then installs it unscoped as the zero-free cover, installs every other route
+// holding a zero address as the members it contains, and writes nothing
+// outside the tun. Every one of those is a different call site, and each of
+// them was removable.
 //
 // The assertions are about routes and sockets rather than about which
 // functions ran, so a rearrangement that keeps the behavior keeps the test.
-func TestBindConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
+func TestExitModeInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 	d := startDaemon(t, true, recordedHost(t))
 
 	// An ordinary prefix installs at once: the gate holds back what would
@@ -276,7 +285,7 @@ func TestBindConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 	// One live session opens it.
 	d.live(t)
 	if got := d.node.LiveSessions(); got != 1 {
-		t.Fatalf("a node under link.underlay.bind with one live session counts %d", got)
+		t.Fatalf("a node under cap.exit with one live session counts %d", got)
 	}
 	waitForKernel(t, "the announced default reaches the kernel as its cover", func() bool {
 		plain, _ := d.host.coverInstalled()
@@ -287,7 +296,7 @@ func TestBindConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 	// name the tun, so this Mac would hold a mesh address and still not use a
 	// mesh exit. The default itself stays out of the kernel.
 	if _, scoped := d.host.coverInstalled(); scoped != 0 {
-		t.Error("cover members were scoped to the tun under link.underlay.bind")
+		t.Error("cover members were scoped to the tun under cap.exit")
 	}
 	if plain, scoped := d.host.installed(capturingPrefix); plain || scoped {
 		t.Error("the announced default went into the kernel itself rather than as its cover")
@@ -311,10 +320,10 @@ func TestBindConfigurationInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 	}
 }
 
-// The same file without link.underlay.bind produces a daemon that writes
-// nothing on the uplink and scopes its announced default to the tun so that
-// no ordinary socket follows it.
-func TestConfigurationWithoutBindScopesItsCaptureToTheTun(t *testing.T) {
+// The same file without cap.exit produces a daemon that writes nothing on the
+// uplink and scopes its announced default to the tun so that no ordinary
+// socket follows it.
+func TestConfigurationWithoutTheModeScopesItsCaptureToTheTun(t *testing.T) {
 	d := startDaemon(t, false, recordedHost(t))
 
 	d.live(t)
@@ -326,6 +335,42 @@ func TestConfigurationWithoutBindScopesItsCaptureToTheTun(t *testing.T) {
 	if plain, _ := d.host.installed(capturingPrefix); plain {
 		t.Error("the announced default is reachable from every socket on this machine")
 	}
+	for _, write := range d.host.writes() {
+		if write.index != meshDeviceIndex {
+			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
+		}
+	}
+}
+
+// A reload adding cap.exit moves the announced default, scoped to the tun
+// before it, into its cover with no restart, and a reload removing it moves
+// the default back and the cover out.
+func TestReloadAddingTheModeMovesTheDefaultIntoTheCoverAndBack(t *testing.T) {
+	d := startDaemon(t, false, recordedHost(t))
+	d.live(t)
+	d.announce(capturingPrefix)
+	scopedAlone := func() bool {
+		plain, scoped := d.host.installed(capturingPrefix)
+		members, scopedMembers := d.host.coverInstalled()
+		return scoped && !plain && members+scopedMembers == 0
+	}
+	waitForKernel(t, "the announced default reaches the kernel scoped to the tun", scopedAlone)
+
+	d.file.write(t, true)
+	if err := d.node.ReloadFrom(d.file.path); err != nil {
+		t.Fatalf("a reload adding cap.exit was refused: %v", err)
+	}
+	waitForKernel(t, "the announced default moves into its cover", func() bool {
+		plain, scoped := d.host.installed(capturingPrefix)
+		members, scopedMembers := d.host.coverInstalled()
+		return !plain && !scoped && members == len(ipv6Cover) && scopedMembers == 0
+	})
+
+	d.file.write(t, false)
+	if err := d.node.ReloadFrom(d.file.path); err != nil {
+		t.Fatalf("a reload removing cap.exit was refused: %v", err)
+	}
+	waitForKernel(t, "the announced default moves back out of its cover", scopedAlone)
 	for _, write := range d.host.writes() {
 		if write.index != meshDeviceIndex {
 			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
@@ -408,11 +453,11 @@ func TestCoverGoesInForAFamilyTheHostHasNoDefaultIn(t *testing.T) {
 }
 
 // A prefix covering a peer's own endpoint is scoped to the tun even under
-// link.underlay.bind: unscoped and longer than the host's own route to the
-// peer, it would leave the datagrams naming the selection's interface no route
-// there. It is scoped for that reason alone: it does not count as a default,
-// and the capture gate does not cover it.
-func TestPrefixCoveringAPeerEndpointIsScopedEvenUnderBind(t *testing.T) {
+// cap.exit: unscoped and longer than the host's own route to the peer, it
+// would leave the datagrams naming the selection's interface no route there.
+// It is scoped for that reason alone: it does not count as a default, and the
+// capture gate does not cover it.
+func TestPrefixCoveringAPeerEndpointIsScopedInTheMode(t *testing.T) {
 	d := startDaemon(t, true, recordedHost(t))
 	d.live(t)
 
@@ -468,7 +513,7 @@ func TestFailedStartLeavesTheMachineAsItFoundIt(t *testing.T) {
 	var cfg *config.Config
 	var held net.PacketConn
 	retryPort(t, "hold", func() (err error) {
-		cfg = loadDaemonConfig(t, true)
+		cfg = newDaemonFile(t).load(t, true)
 		held, err = net.ListenPacket("udp4", fmt.Sprintf("127.0.0.1:%d", cfg.Link.Port))
 		return err
 	})
@@ -487,21 +532,36 @@ func TestFailedStartLeavesTheMachineAsItFoundIt(t *testing.T) {
 	}
 }
 
-// loadDaemonConfig writes one node's file and reads it back through the loader
-// the daemon uses, so the capability defaults and the refusals are the ones a
-// deployment gets.
-func loadDaemonConfig(t *testing.T, bind bool) *config.Config {
+// daemonFile is one node's configuration file, with the key and the trust
+// document it names
+type daemonFile struct {
+	path, keyPath, trustPath string
+	port                     uint16
+}
+
+// newDaemonFile writes the key and the trust document of one node, on a port
+// of this run's own, because the hub binds it for real and two of these tests
+// in flight at once would otherwise collide.
+func newDaemonFile(t *testing.T) *daemonFile {
 	t.Helper()
 	dir := t.TempDir()
-	keyPath, trustPath := filepath.Join(dir, "key.pem"), filepath.Join(dir, "registry.json")
-	// A port of this run's own, because the hub below binds it for real and
-	// two of these tests in flight at once would otherwise collide.
-	port := freeUDPPort(t)
-	underlay := ""
-	if bind {
-		underlay = "  underlay:\n    bind: true\n"
+	f := &daemonFile{path: filepath.Join(dir, "config.yaml"), keyPath: filepath.Join(dir, "key.pem"),
+		trustPath: filepath.Join(dir, "registry.json"), port: freeUDPPort(t)}
+	writeDaemonIdentity(t, f.keyPath, f.trustPath, f.port)
+	return f
+}
+
+// write writes the file, with cap.exit in mode 2 where exit is true
+func (f *daemonFile) write(t *testing.T, exit bool) {
+	t.Helper()
+	mode := ""
+	if exit {
+		mode = "  exit: {}\n"
 	}
 	body := fmt.Sprintf(`node: example/laptop
+overlay:
+  - "2001:db8:1::/48"
+  - "203.0.113.0/24"
 auth:
   key: %s
   trust: %s
@@ -510,24 +570,30 @@ link:
   endpoints:
     - serial: "0"
       family: ip4
-%sdial:
+dial:
   to:
     - example/gateway:1
 cap:
-  route:
+%s  route:
     announce:
+      - %q
       - %q
   table:
     assign_announced: true
     reconcile: 50ms
     capture_grace: 1s
-`, keyPath, trustPath, port, underlay, announcedAddress.String())
-	path := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+`, f.keyPath, f.trustPath, f.port, mode, announcedAddress.String(), announcedAddress4.String())
+	if err := os.WriteFile(f.path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeDaemonIdentity(t, keyPath, trustPath, port)
-	cfg, err := config.Load(path)
+}
+
+// load writes the file and reads it back through the loader the daemon uses,
+// so the capability defaults and the refusals are the ones a deployment gets.
+func (f *daemonFile) load(t *testing.T, exit bool) *config.Config {
+	t.Helper()
+	f.write(t, exit)
+	cfg, err := config.Load(f.path)
 	if err != nil {
 		t.Fatalf("the configuration this test writes does not load: %v", err)
 	}

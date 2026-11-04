@@ -96,14 +96,7 @@ func TestDefaultInterfaceIgnoresTheMeshItself(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := newPlatform(
-		Table{ID: DefaultTable, Proto: DefaultProtocol},
-		Runtime{Interface: mesh, BoundUnderlay: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = opened.Close() })
-	plat := opened.(*routePlatform)
+	plat := testTUNPlatform(t, mesh)
 	if err := plat.AddAddr(prefix("198.51.100.1/24")); err != nil {
 		t.Fatal(err)
 	}

@@ -14,6 +14,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // Each pass reports the path: its SIDs and outer source, the first SID that
@@ -88,5 +89,27 @@ func TestPathReportsItsStateAndEmitsOnEachChange(t *testing.T) {
 	}
 	if path := reconciler.Stats().Path; path != nil {
 		t.Errorf("mode 2 reports the path %+v", path)
+	}
+}
+
+// kernel.forward and kernel.exit go out after the pass's route writes, so a
+// pass that moves the path, skips a link and finds both families unaddressed
+// records kernel.path first
+func TestExitEventsFollowThePassesRouteWrites(t *testing.T) {
+	bus := events.New()
+	network := &hostNetwork{state: exitPassHost()}
+	mode := &ExitMode{Via: []schema.Addr{schema.AddrFrom(waypointSID)}, Forward: []string{"eth*"}}
+	reconciler, _, _ := harness(t, Table{}.WithMode(mode).WithPathSource(steeredSource), Runtime{Overlay: steeredOverlay, Network: network.read, Events: bus})
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool {
+		return kind == "kernel.path" || kind == "kernel.forward" || kind == "kernel.exit"
+	}, 0) {
+		got = append(got, event.Kind)
+	}
+	if want := []string{"kernel.path", "kernel.forward", "kernel.exit", "kernel.exit"}; !slices.Equal(got, want) {
+		t.Errorf("the pass recorded %v, want %v", got, want)
 	}
 }

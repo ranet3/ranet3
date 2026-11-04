@@ -31,10 +31,15 @@ var zeroFreeCover = map[bool][]netip.Prefix{
 	},
 }
 
-// coverer is implemented by a platform that installs a route holding its
-// family's zero address as the zero-free cover's members, which is darwin
-// with link.underlay.bind.
-type coverer interface{ covers() bool }
+// coverer is implemented by a platform that installs a route holding the zero
+// address of a family cap.exit covers as the zero-free cover's members, which
+// is darwin. cover hands it, before each pass's routes, the overlay in force
+// and the families the pass covers, which every scope decision of that pass
+// reads, and bare, each family the tun held no address of at the last listing
+// that answered.
+type coverer interface {
+	cover(overlay []schema.Prefix, families, bare []Family)
+}
 
 // zeroRoute is a route with no source that carries traffic and holds its
 // family's zero address, the route a cover stands in for. A hold and a
@@ -59,17 +64,19 @@ func membersOf(destination netip.Prefix) []netip.Prefix {
 // as nothing
 func memberless(r Route) bool { return zeroRoute(r) && len(membersOf(r.Destination)) == 0 }
 
-// coverDefaults replaces each zero route with the cover's members it
-// contains, so a real 0.0.0.0/1 goes in as the seven members from 1.0.0.0/8
-// to 64.0.0.0/2. A member is withheld where another route the kernel holds
+// coverDefaults replaces each zero route of families with the cover's members
+// it contains, so a real 0.0.0.0/1 goes in as the seven members from 1.0.0.0/8
+// to 64.0.0.0/2, and leaves a zero route of another family as it is. A member
+// is withheld where another route the kernel holds
 // unscoped, of length 1 up to the member's own, contains it, so for every
 // address outside the hole the kernel's longest match is the route the zero
 // route's would be, or a member where that is the zero route itself (RFC 8966
 // Appendix C: the protocol keeps the route, only the kernel holds the cover).
 // unmet names the routes an unbound lookup will not meet in the kernel, which
 // withhold nothing.
-func coverDefaults(desired []Route, unmet func(Route) bool) []Route {
-	if !slices.ContainsFunc(desired, zeroRoute) {
+func coverDefaults(desired []Route, families []Family, unmet func(Route) bool) []Route {
+	covered := func(r Route) bool { return zeroRoute(r) && slices.Contains(families, familyOf(r.Destination.Addr())) }
+	if !slices.ContainsFunc(desired, covered) {
 		return desired
 	}
 	if unmet == nil {
@@ -77,12 +84,12 @@ func coverDefaults(desired []Route, unmet func(Route) bool) []Route {
 	}
 	out := make([]Route, 0, len(desired)+len(zeroFreeCover[true]))
 	for _, r := range desired {
-		if !zeroRoute(r) {
+		if !covered(r) {
 			out = append(out, r)
 		}
 	}
 	for _, r := range desired {
-		if !zeroRoute(r) {
+		if !covered(r) {
 			continue
 		}
 		for _, member := range membersOf(r.Destination) {

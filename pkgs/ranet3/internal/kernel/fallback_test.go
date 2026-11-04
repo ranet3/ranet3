@@ -28,7 +28,7 @@ func fallbackHarness(t *testing.T, mode *ExitMode) (*Reconciler, *fakeKernel) {
 	t.Helper()
 	network := &hostNetwork{state: exitPassHost("docker0")}
 	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(mode)
-	reconciler, routes, fake := harness(t, tbl, Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read})
+	reconciler, routes, fake := harness(t, tbl, Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read, Sessions: func() int { return 1 }})
 	routes.Set(netip.Prefix{}, prefix("203.0.113.0/24"), netstack.Local)
 	return reconciler, fake
 }
@@ -608,7 +608,7 @@ func TestFallbackStatusNamesEachStateOnce(t *testing.T) {
 	asked := 0
 	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
 	reconciler, routes, fake := harness(t, tbl, Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read, Events: bus,
-		Resolvers: func() ([]LinkResolver, error) { asked++; return resolvers, nil }})
+		Resolvers: func() ([]LinkResolver, error) { asked++; return resolvers, nil }, Sessions: func() int { return 1 }})
 	routes.Set(netip.Prefix{}, prefix("203.0.113.128/25"), netstack.Local)
 	fake.fallbackDropped = 5
 	status := func(want FallbackState) *FallbackStatus {
@@ -670,7 +670,7 @@ func droppedHarness(t *testing.T) (reconciler *Reconciler, fake *fakeKernel, res
 	t.Helper()
 	network := &hostNetwork{state: exitPassHost("docker0")}
 	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
-	rt := Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read}
+	rt := Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read, Sessions: func() int { return 1 }}
 	reconciler, routes, fake := harness(t, tbl, rt)
 	routes.Set(netip.Prefix{}, prefix("203.0.113.128/25"), netstack.Local)
 	fake.fallbackDropped = 5

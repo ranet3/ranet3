@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"fmt"
 	"maps"
 	"math"
 	"net/netip"
@@ -206,10 +207,14 @@ func reloadAddresses() hegel.Generator[[]schema.Prefix] {
 	})
 }
 
+// reloadSID is the one SID mode 3's via names, which the mesh every case shares resolves through its own /128 from reloadSource
+var reloadSID, reloadSource = addr("2001:db8:200::46"), addr("2001:db8::5")
+
 // reloads draws a cap.table block from a few values of every field, the id and the proto among them, so that a sequence keeps some and moves others
+// its mode is mode off, mode 2 with fallback unwritten or "uplink", or mode 3 along reloadSID under "uplink"
 func reloads() hegel.Generator[Table] {
 	return hegel.Composite(func(tc hegel.TestCase) Table {
-		return Table{
+		table := Table{
 			ID:              schema.TableID(hegel.Draw(tc, hegel.SampledFrom([]uint32{0, DefaultTable, DefaultTable + 1}))),
 			Proto:           hegel.Draw(tc, hegel.SampledFrom([]uint8{0, DefaultProtocol, DefaultProtocol + 1})),
 			Addresses:       hegel.Draw(tc, reloadAddresses()),
@@ -217,7 +222,48 @@ func reloads() hegel.Generator[Table] {
 			Reconcile:       schema.Duration(hegel.Draw(tc, hegel.SampledFrom([]time.Duration{0, time.Second, time.Minute}))),
 			CaptureGrace:    schema.Duration(hegel.Draw(tc, hegel.SampledFrom([]time.Duration{0, MinCaptureGrace, time.Minute}))),
 		}
+		switch hegel.Draw(tc, pbt.Spanning(0, 3)) {
+		case 1:
+			table = table.WithMode(&ExitMode{})
+		case 2:
+			table = table.WithMode(&ExitMode{Fallback: FallbackUplink})
+		case 3:
+			table = table.WithMode(&ExitMode{Via: []schema.Addr{schema.AddrFrom(reloadSID)}, Fallback: FallbackUplink}).WithPathSource(reloadSource)
+		}
+		return table
 	})
+}
+
+// reloadOverlays draws the overlay a reload hands, each of a few prefixes in or out: one holding the IPv4 addresses reloadAddresses
+// and the foreign ones draw, one holding the IPv6 one, one holding an address cap.route announces, and one holding none
+func reloadOverlays() hegel.Generator[[]schema.Prefix] {
+	return hegel.Composite(func(tc hegel.TestCase) []schema.Prefix {
+		var out []schema.Prefix
+		for _, entry := range []string{"203.0.113.0/24", "2001:db8::/64", "198.51.100.0/24", "3fff::/20"} {
+			if hegel.Draw(tc, hegel.Booleans()) {
+				out = append(out, schema.MustPrefix(entry))
+			}
+		}
+		return out
+	})
+}
+
+// coveredHere is the families whose zero routes a covering platform holds as members after a pass on t over overlay, written apart from
+// exitPass: in modes 2 and 3, each family an address of the tun lies inside the overlay in, the tun holding what t assigns and foreign
+func coveredHere(t Table, overlay []schema.Prefix, announced, foreign []netip.Prefix) []Family {
+	if t.Mode() == nil {
+		return nil
+	}
+	var out []Family
+	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+		inside := func(address netip.Prefix) bool {
+			return familyOf(address.Addr()) == family && slices.ContainsFunc(overlay, func(entry schema.Prefix) bool { return entry.Prefix.Contains(address.Addr()) })
+		}
+		if slices.ContainsFunc(t.Assigned(announced), inside) || slices.ContainsFunc(foreign, inside) {
+			out = append(out, family)
+		}
+	}
+	return out
 }
 
 // announcements draws what cap.route announces, a default among it, none of it an address reloadAddresses draws
@@ -225,19 +271,49 @@ func announcements() hegel.Generator[[]netip.Prefix] {
 	return hegel.Lists(hegel.SampledFrom([]netip.Prefix{prefix("2001:db8:1::1/64"), prefix("198.51.100.1/32"), prefix("::/0")})).MaxSize(2)
 }
 
-// reloadHarness is a reconciler started on table over one mesh every case shares, on a link where another writer already put foreign
+// reloadHarness is a reconciler with a live session started on table and overlay over one mesh every case shares, on a link where
+// another writer already put foreign, the plain fake or, where covering, the covering fake with no policy rules, as darwin's
 // byLength has the link key an IPv4 address by its length as well, as linux does
-func reloadHarness(t *testing.T, table Table, announced, foreign []netip.Prefix, byLength bool) (*Reconciler, *fakeKernel) {
-	r, routes, fake := harness(t, table, Runtime{Announced: announced})
+func reloadHarness(t *testing.T, table Table, overlay []schema.Prefix, announced, foreign []netip.Prefix, byLength, covering bool) (*Reconciler, *fakeKernel) {
+	r, routes, fake := harness(t, table, Runtime{Announced: announced, Overlay: overlay, Sessions: func() int { return 1 }})
 	fake.byLength = byLength
 	routes.Set(netip.Prefix{}, prefix("10.0.0.0/8"), nil)
 	routes.Set(netip.Prefix{}, prefix("2001:db8:100::/48"), nil)
 	routes.Set(prefix("2001:db8:1::/48"), prefix("::/0"), nil)
 	routes.Set(netip.Prefix{}, prefix("192.0.2.0/24"), netstack.Unreachable)
+	routes.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+	routes.Set(netip.Prefix{}, prefix("::/0"), nil)
+	routes.Set(netip.Prefix{}, netip.PrefixFrom(reloadSID, 128), learned)
 	for _, address := range foreign {
 		fake.addrs[address] = true
 	}
+	if covering {
+		onCovering(r, fake)
+	}
 	return r, fake
+}
+
+// wantCovered fails the case unless kernel holds a member of a family exactly where covered names the family and the routes r
+// projects from the mesh hold a zero route of it, and no zero route of a family covered names as itself
+func wantCovered(ht *hegel.T, r *Reconciler, kernel *fakeKernel, covered []Family, what string) {
+	toCover := map[Family]bool{}
+	for _, route := range r.desired(r.src.Snapshot(), r.readNetwork()) {
+		family := familyOf(route.Destination.Addr())
+		toCover[family] = toCover[family] || zeroRoute(route)
+	}
+	members, zeros := map[Family]bool{}, map[Family]bool{}
+	for _, route := range kernel.snapshot() {
+		family := familyOf(route.Destination.Addr())
+		members[family] = members[family] || route.Cover
+		zeros[family] = zeros[family] || zeroRoute(route)
+	}
+	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
+		covers := slices.Contains(covered, family)
+		if members[family] != (covers && toCover[family]) || zeros[family] && covers {
+			ht.Fatalf("%s the kernel holds %s members %v and its zero route %v, want it covered %v with a zero route to cover %v: %v",
+				what, family, members[family], zeros[family], covers, toCover[family], kernel.snapshot())
+		}
+	}
 }
 
 // inSpaceOf is next on the id and the proto of first, a default spelled either way
@@ -299,8 +375,11 @@ func meaningfulHere(t Table) bool {
 
 // the reconciler starts on a table New accepts here, one that validates and means something on this platform
 // a reload is taken when it validates, means something on this platform and keeps the id and the proto the reconciler started on
-// the pass after one it took leaves the kernel holding what a reconciler started on that capability holds after its first pass
+// the pass after one it took leaves the kernel holding what a reconciler started on that capability, overlay and announcements holds
+// after its first pass
 // that includes the addresses another writer holds
+// on a covering platform it holds a family's zero routes as the cover's members exactly where coveredHere covers the family and
+// the routes projected from the mesh hold a zero route of it
 // on a link that keys an IPv4 address by its length, a link carrying IPv4 before and after that pass carries it throughout
 // one it refused changes nothing at all
 func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
@@ -310,8 +389,8 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 		foreign := hegel.Draw(ht, hegel.Lists(hegel.SampledFrom([]netip.Prefix{
 			prefix("203.0.113.9/32"), prefix("203.0.113.6/32"), prefix("2001:db8::5/96"),
 		})).MaxSize(2))
-		byLength := hegel.Draw(ht, hegel.Booleans())
-		r, kernel := reloadHarness(t, first, hegel.Draw(ht, announcements()), foreign, byLength)
+		byLength, covering := hegel.Draw(ht, hegel.Booleans()), hegel.Draw(ht, hegel.Booleans())
+		r, kernel := reloadHarness(t, first, hegel.Draw(ht, reloadOverlays()), hegel.Draw(ht, announcements()), foreign, byLength, covering)
 		if err := r.reconcile(); err != nil {
 			ht.Fatalf("the first pass on %+v: %v", first, err)
 		}
@@ -319,17 +398,18 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 		moves := movedAlone(first)
 		for i := range len(moves) + hegel.Draw(ht, hegel.Integers(1, 4)) {
 			var next Table
+			var overlay []schema.Prefix
 			var announced []netip.Prefix
 			if i < len(moves) {
 				next = moves[i]
 			} else {
-				next, announced = hegel.Draw(ht, reloads()), hegel.Draw(ht, announcements())
+				next, overlay, announced = hegel.Draw(ht, reloads()), hegel.Draw(ht, reloadOverlays()), hegel.Draw(ht, announcements())
 				if hegel.Draw(ht, hegel.WeightedBooleans(3.0/4)) {
 					next = inSpaceOf(ht, first, next)
 				}
 			}
 			before, running := heldBy(kernel), r.Table()
-			err := r.SetTable(next, nil, announced)
+			err := r.SetTable(next, overlay, announced)
 			keeps := next.Normalized().ID == first.Normalized().ID && next.Normalized().Proto == first.Normalized().Proto
 			takes := keeps && next.Validate() == nil && meaningfulHere(next)
 			if (err == nil) != takes {
@@ -358,7 +438,12 @@ func TestReloadConvergesOnWhatAFreshReconcilerHolds(t *testing.T) {
 			if after := heldBy(kernel); byLength && kernel.emptied && slices.ContainsFunc(before.addresses, v4) && slices.ContainsFunc(after.addresses, v4) {
 				ht.Fatalf("the reload to %+v took every IPv4 address off the link on its way from %v to %v", next, before.addresses, after.addresses)
 			}
-			fresh, freshKernel := reloadHarness(t, next, announced, foreign, byLength)
+			var covered []Family
+			if covering {
+				covered = coveredHere(next, overlay, announced, foreign)
+			}
+			wantCovered(ht, r, kernel, covered, fmt.Sprintf("after the reload to %+v over %v", next, overlay))
+			fresh, freshKernel := reloadHarness(t, next, overlay, announced, foreign, byLength, covering)
 			if err := fresh.reconcile(); err != nil {
 				ht.Fatalf("the first pass on %+v: %v", next, err)
 			}

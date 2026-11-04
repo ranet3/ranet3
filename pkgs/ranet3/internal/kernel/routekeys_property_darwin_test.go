@@ -31,7 +31,8 @@ var raceKeys = []netip.Prefix{
 // it, and nothing another program holds.
 func TestDarwinDumpReadsBackTheKeysThisProcessHolds(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
-		plat, _ := testPlatform(t, Table{}, Runtime{BoundUnderlay: true})
+		plat, _ := testPlatform(t, Table{}, Runtime{})
+		plat.cover(nil, bothFamilies, nil)
 		rib := &raceRIB{t: t, held: map[occupiedKey]int{}, release: map[occupiedKey]bool{}}
 		plat.sock, plat.host = rib, rib
 		// the routes of this process the fake holds, true for a member

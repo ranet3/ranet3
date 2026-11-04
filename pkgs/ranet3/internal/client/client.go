@@ -590,9 +590,8 @@ func (c *Client) borderSets(border *egress.Border) egress.BorderSets {
 
 // KernelRuntime assembles what cap.table's reconciler reads from outside the
 // capability: the device the mesh actually got and the addresses the
-// transport has to keep reaching, which only a running node knows, the
-// link.underlay.bind the configuration sets, and what other capabilities
-// write, the prefixes cap.route announces and the overlay.
+// transport has to keep reaching, which only a running node knows, and what
+// other capabilities write, the prefixes cap.route announces and the overlay.
 //
 // It is assembled here rather than in the command because most of it is this
 // client's own and the rest is the configuration it runs. The command builds
@@ -608,8 +607,6 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		EgressSegment: len(cfg.Segments().Egress()) > 0,
 		Sessions:      c.LiveSessions,
 		Sends:         c.liveSends,
-		// the reconciler stops hiding an announced default from every socket that did not ask for the tun by name
-		BoundUnderlay: cfg.Link.Underlay.Bind,
 		Host:          c.host,
 		Events:        c.events,
 		Network:       c.networkState,
