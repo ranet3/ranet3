@@ -259,9 +259,9 @@ type Status struct {
 	Uptime    Duration  `json:"uptime"`
 	// Initiator is whether this node has a peer to dial, from dial.to or dial.all
 	Initiator bool `json:"initiator"`
-	// Responder, FullMesh and NoTransit are the three settings that decide
-	// which node this is on a fleet, so they are reported rather than left to
-	// be read back off the config file on a machine an operator is not on.
+	// Responder, FullMesh and NoTransit are the settings that decide, with
+	// Initiator, which node this is on a fleet, so they are reported rather than
+	// left to be read back off the config file on a machine an operator is not on.
 	Responder bool `json:"responder"`
 	FullMesh  bool `json:"full_mesh"`
 	NoTransit bool `json:"no_transit"`
