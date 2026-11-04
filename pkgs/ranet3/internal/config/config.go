@@ -47,7 +47,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
-	"ranet3.com/pkgs/ranet3/transport"
 )
 
 type Config struct {
@@ -119,23 +118,12 @@ type Link struct {
 	// ranet3 is only ever created
 	// a second instance on one host names its own
 	// darwin creates nothing but utun and utun followed by a unit number
-	// the daemon refuses any other name there when it starts, as with Underlay
+	// the daemon refuses any other name there when it starts
 	TUN string `yaml:"tun,omitempty" json:"tun,omitempty" toml:"tun,omitempty"`
 	// MTU is the largest inner packet a session carries, the plaintext ESP seals
 	// the device runs at it less the longest cap.segment steer list, which a steered packet carries inside the tunnel
 	// zero takes netstack.DefaultMTU, see SessionMTU
 	MTU uint16 `yaml:"mtu,omitempty" json:"mtu,omitempty" toml:"mtu,omitempty"`
-	// Underlay holds macOS's bind alone, which the type in transport
-	// describes: whether an exit-announced default goes in as a real default
-	// every socket sees or scoped to the tun, which no ordinary socket does.
-	// The UDP sockets carrying IKE and ESP name each datagram's interface from
-	// the host's own routes either way. Linux needs no setting: every underlay
-	// socket carries schema.UnderlayMark where the process may set it, as
-	// transport's underlayMark says, and routing.md's "Where a lookup ends on
-	// Linux" gives where a marked lookup ends. Every other platform, iOS among
-	// them, refuses bind by name, at startup rather than at load, so one file can carry a
-	// fleet's settings and a laptop's.
-	Underlay transport.Underlay `yaml:"underlay,omitempty" json:"underlay,omitzero" toml:"underlay,omitempty"`
 }
 
 // SessionMTU is link.mtu in force, netstack.DefaultMTU where the file leaves it out

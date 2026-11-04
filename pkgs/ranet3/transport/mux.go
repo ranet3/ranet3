@@ -34,10 +34,9 @@
 // process may set it, which the reconciler's derived rules read to keep them
 // off, as routing.md's "Where a lookup ends on Linux" gives with its scope. On
 // darwin every datagram names the interface [Runtime]'s [Selection] answers,
-// the host's own routes with ranet3's interface left out. [Underlay] is a
-// plain value a config file or a control plane can produce whole, and
-// [Runtime] carries what the caller has to resolve at startup, so a caller
-// that wants neither passes both zero.
+// the host's own routes with ranet3's interface left out. [Runtime] carries
+// what the caller has to resolve at startup, so a caller that wants none of it
+// passes it zero.
 //
 // # What it does not do
 //

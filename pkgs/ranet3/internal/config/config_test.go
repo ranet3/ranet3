@@ -29,7 +29,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
-	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // The node a test starts from, in both spellings. Everything below adds one
@@ -344,6 +343,18 @@ func TestBothDecodersRefuseTheSameConfigurations(t *testing.T) {
 				t.Errorf("toml took %q", pair.asTOML)
 			}
 		})
+	}
+}
+
+// link.underlay is no key of the file, so both decoders refuse it at load by its name, bind and all
+func TestLinkUnderlayIsRefusedAtLoadAsAnUnknownKey(t *testing.T) {
+	for extension, body := range map[string]string{
+		".yaml": strings.Replace(nodeYAML, "  port: 13000\n", "  port: 13000\n  underlay:\n    bind: true\n", 1),
+		".toml": nodeTOML + "[link.underlay]\nbind = true\n",
+	} {
+		if _, err := load(t, extension, body); err == nil || !strings.Contains(err.Error(), "underlay") {
+			t.Errorf("%s: link.underlay was answered with %v, want a refusal naming it", extension, err)
+		}
 	}
 }
 
@@ -1107,7 +1118,6 @@ func fullConfig() Config {
 			Listen:    true,
 			TUN:       "ranet0",
 			MTU:       8918,
-			Underlay:  transport.Underlay{Bind: true},
 		},
 		Dial: Dial{All: true, To: []identity.Identity{identity.MustParse("example/gateway:1")}},
 		// covering the egress segment's allow list, which the loader asks of it
@@ -1457,10 +1467,6 @@ func TestOneWrittenFieldKeepsItsBlock(t *testing.T) {
 		"cap.babel cost rtt":     babel.CostOptions{RTT: babel.RTTOptions{Min: &rttMin}},
 		"dial":                   Config{Node: laptop, Link: oneEndpoint(), Dial: Dial{All: true}},
 		"cap":                    Config{Node: laptop, Link: oneEndpoint(), Cap: Caps{Crypto: &ike.Crypto{Replay: &replay}}},
-		"link underlay": Config{Node: laptop, Link: Link{
-			Endpoints: oneEndpoint().Endpoints,
-			Underlay:  transport.Underlay{Bind: true},
-		}},
 		"cap.route announce from": babel.Routes{Announce: []schema.Announce{
 			{Prefix: schema.MustPrefix("::/0"), From: schema.MustPrefix("2001:db8:1::/48")},
 		}},

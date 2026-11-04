@@ -443,7 +443,7 @@ type KernelStatus struct {
 	Added     int       `json:"added"`
 	Removed   int       `json:"removed"`
 	// Cover names the families in which the last pass left a zero route
-	// installed as its zero-free cover, on macOS under link.underlay.bind.
+	// installed as its zero-free cover, on macOS under cap.exit.
 	Cover []string `json:"cover,omitempty"`
 	// Taken is each lookup of the last pass whose batch answered that another
 	// program's rule takes, on linux alone

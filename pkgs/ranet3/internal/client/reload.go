@@ -392,10 +392,6 @@ func reloadable(old, next *config.Config) error {
 	switch moved := tableMoved(old.Cap.Table, next.Cap.Table); {
 	case old.Node != next.Node:
 		return fmt.Errorf("config: node changed, restart to apply")
-	case old.Link.Underlay != next.Link.Underlay:
-		// bind is read once, by the route reconciler at its start
-		// so a change here would reach nothing
-		return fmt.Errorf("config: link.underlay changed, restart to apply")
 	case old.Link.Port != next.Link.Port:
 		return fmt.Errorf("config: link.port changed, restart to apply")
 	case old.Link.TUN != next.Link.TUN:

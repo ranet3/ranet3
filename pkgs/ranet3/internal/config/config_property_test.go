@@ -33,7 +33,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
-	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // nameCharacters is every printable ASCII character and three letters beyond
@@ -831,8 +830,7 @@ func nodes() hegel.Generator[Config] {
 				Listen:    hegel.Draw(tc, hegel.Booleans()),
 				// from the least IPv6 requires to the most one ESP-in-UDP datagram carries over IPv4
 				// a steering list drawn beside it can take the least of these out of bounds, which Validate refuses
-				MTU:      hegel.Draw(tc, unset(edges[uint16](1280, 65470))),
-				Underlay: transport.Underlay{Bind: hegel.Draw(tc, hegel.Booleans())},
+				MTU: hegel.Draw(tc, unset(edges[uint16](1280, 65470))),
 			},
 			Dial: Dial{
 				All: hegel.Draw(tc, hegel.Booleans()),

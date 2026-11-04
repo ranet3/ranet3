@@ -91,26 +91,6 @@ endpoints = [{ serial = "0", family = "ip4" }]
 # over IPv4, is refused.
 # mtu = 1400
 
-# Keep the one UDP socket carrying IKE and ESP out of the reach of the routes
-# the mesh installs. A node holding an address an exit announces ends up with a
-# route out of its own tun covering the peers it reaches that tun through, and
-# an underlay following it is a tunnel running inside itself. On linux every
-# underlay socket carries the mark 0x72, which no key sets, where the process
-# may set it. On macOS a datagram sent without a pin names the interface the
-# host's own routes send it by, the tun's left out, and one sent from its pin
-# names that source, as the routing page's "The underlay's interface on macOS"
-# says.
-#
-# bind, macOS only, decides how a route that counts as a default goes in, as
-# the routing page's "Where a lookup ends on macOS" gives. Without it such a
-# route is scoped to the tun, which no socket selects unless it asks for the tun
-# by name, so this machine cannot use a mesh exit. With it, a route holding its
-# family's zero address goes in as the members of the zero-free cover it
-# contains, as the routing page's "The zero-free cover on macOS" says. Every
-# other platform refuses it.
-# [link.underlay]
-# bind = true
-
 [dial]
 # Dial every node the trust document names, the N-to-N reconciliation ranet
 # does. Needed for reach against a fleet whose other speaker exports only its

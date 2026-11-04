@@ -8,15 +8,8 @@ import (
 	"net/netip"
 )
 
-// Underlay is link.underlay, which no hub reads.
-type Underlay struct {
-	// Bind installs an exit's default unscoped as its zero-free cover rather than scoped to the tun, darwin only
-	Bind bool `yaml:"bind,omitempty" json:"bind,omitempty" toml:"bind,omitempty"`
-}
-
 // Runtime carries what the caller resolves at startup rather than writes in a
-// file. It is separate from Underlay so the setting stays a value that a
-// config file, a control plane and a test can each produce whole.
+// file.
 type Runtime struct {
 	// Selection names the interface of every underlay datagram on darwin, and nil names none
 	Selection Selection
