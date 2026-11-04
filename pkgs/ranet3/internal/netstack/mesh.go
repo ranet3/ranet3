@@ -68,7 +68,7 @@ type Mesh struct {
 	// failed is closed once a reader finds the device gone while the mesh is not closing, nil for a mesh with no device
 	failed     chan struct{}
 	failedOnce sync.Once
-	// mssClamped counts the SYNs ClampMSS lowered, and tooBigAnswered the answers to packets past their session's budget it sent
+	// mssClamped counts the lowerings ClampMSS made, one lowered at two sessions counting twice, and tooBigAnswered the answers to packets past their session's budget it sent
 	mssClamped, tooBigAnswered atomic.Uint64
 
 	// segmentCounters is the segment routing state, in its own struct so that
