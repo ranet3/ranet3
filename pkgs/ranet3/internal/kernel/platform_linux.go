@@ -77,7 +77,7 @@ func (p *netlinkPlatform) lookups(reads []RouteRead) ([]BatchAnswer, error) {
 }
 
 // RefuseExitMode is nil here, where the reconciler's policy rules carry cap.exit
-func RefuseExitMode() error { return nil }
+func RefuseExitMode(ExitMode) error { return nil }
 
 // RefuseFallback is nil here, where the table ranet3_fallback carries
 // fallback = "none"

@@ -28,7 +28,7 @@ import (
 	"ranet3.com/pkgs/ranet3/srv6"
 )
 
-// refuseExitModeHere refuses cap.exit where this platform has no exit mode, and fallback = "none" where it has no filter
+// refuseExitModeHere refuses cap.exit, or the part of it, this platform has no exit mode for, and fallback = "none" where it has no filter
 // the start checks it ahead of every other capability's platform refusal, so a host writing cap.exit beside overlay is told about cap.exit
 // fallback goes first, so a host asking for the switch is told the switch is missing rather than only the mode
 func refuseExitModeHere(cfg *config.Config) error {
@@ -38,7 +38,7 @@ func refuseExitModeHere(cfg *config.Config) error {
 	if err := kernel.RefuseFallback(*cfg.Cap.Exit); err != nil {
 		return err
 	}
-	return kernel.RefuseExitMode()
+	return kernel.RefuseExitMode(*cfg.Cap.Exit)
 }
 
 // refuseForwardedHere refuses a cap.exit forward entry naming the tun or a link a default leaves by, as the watch reads the host now
