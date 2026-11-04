@@ -1030,12 +1030,22 @@ func TestAnotherWritersChangeStopsTheMeshUntilThePassRestoresIt(t *testing.T) {
 	if want := []string{"ready false false sid false", "rules", "apply", "rules", "ready true true sid true"}; !slices.Equal(after, want) {
 		t.Errorf("after the change the translator went %q, want %q", after, want)
 	}
-	var triggers []string
-	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
-		triggers = append(triggers, event.Attrs["trigger"])
-	}
-	if !slices.Contains(triggers, "changed") {
+	if triggers, named := passTriggers(bus, "changed"); !named {
 		t.Errorf("the passes were woken by %q, none by the change", triggers)
+	}
+}
+
+// passTriggers reads the trigger of each pass bus recorded, and whether one names want within passWait
+// a pass records its event after its last call of the backend, so a backend's log can hold a pass that bus does not yet
+func passTriggers(bus *events.Bus, want string) ([]string, bool) {
+	for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
+		var triggers []string
+		for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
+			triggers = append(triggers, event.Attrs["trigger"])
+		}
+		if named := slices.Contains(triggers, want); named || time.Now().After(deadline) {
+			return triggers, named
+		}
 	}
 }
 
@@ -1071,11 +1081,7 @@ func TestMissedNotificationsWakeAPassAndLeaveReadinessAlone(t *testing.T) {
 	mark := len(be.entries())
 	be.missed <- struct{}{}
 	settled(mark, "rules", "apply", "rules")
-	var triggers []string
-	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "egress.pass" }, 0) {
-		triggers = append(triggers, event.Attrs["trigger"])
-	}
-	if !slices.Contains(triggers, "missed") {
+	if triggers, named := passTriggers(bus, "missed"); !named {
 		t.Errorf("the passes were woken by %q, none by the lost notifications", triggers)
 	}
 }
