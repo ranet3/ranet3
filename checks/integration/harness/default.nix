@@ -1310,7 +1310,7 @@ testers.runNixOSTest {
             # is the proof that the spelling the host hands back is the one this
             # node wrote. Many sweeps have run by now.
             installs = client.succeed(
-                "journalctl -u ranet3.service --no-pager | grep -c 'egress rules installed'").strip()
+                "journalctl -u ranet3.service --no-pager | grep -cF 'egress rules installed'").strip()
             assert installs == "1", f"the ruleset was rewritten {installs} times, so a pass does not recognize its own rules"
 
             # An exit that cannot forward must stop advertising rather than
@@ -1691,7 +1691,7 @@ testers.runNixOSTest {
             selected = [line for line in metrics.splitlines() if line.startswith("ranet3_babel_routes_selected ")]
             assert selected and int(selected[0].split()[1]) > 0, metrics
 
-            assert client.succeed("journalctl -u ranet3.service --no-pager | grep -c ': connected (SPI'").strip() == "1"
+            assert client.succeed("journalctl -u ranet3.service --no-pager | grep -cF ': connected (SPI'").strip() == "1"
             no_esp_dropped()
             # an SA that reached its lifetime before a rekey replaced it drops what the peer still sends on it, and this names that cause
             client.fail("journalctl -u ranet3.service --no-pager | grep -F 'ike stopping ESP on a Child SA past its lifetime'")
