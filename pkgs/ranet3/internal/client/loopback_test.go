@@ -298,25 +298,33 @@ func TestKernelRuntimeHandsTheLiveSends(t *testing.T) {
 	_, stop := run(t, alpha, bravo)
 	defer stop()
 	loopback := netip.MustParseAddr("127.0.0.1")
-	pinned := 0
-	for _, node := range []*loopbackNode{alpha, bravo} {
-		sends := node.client.KernelRuntime().Sends
-		if sends == nil {
+	nodes := []*loopbackNode{alpha, bravo}
+	var sends [2]func() []kernel.Send
+	for i, node := range nodes {
+		if sends[i] = node.client.KernelRuntime().Sends; sends[i] == nil {
 			t.Fatalf("%s's reconciler runtime carries no sends, so it asks no marked lookup", node.name)
 		}
-		waitFor(t, convergeBudget, node.name+"'s live sends to read one to loopback", func() bool {
-			live := sends()
-			return len(live) == 1 && live[0].Destination == loopback
-		})
-		for _, session := range node.client.sessions.snapshot() {
-			var mux kernel.Send
-			waitFor(t, convergeBudget, node.name+"'s runtime to hand what its session's mux sends", func() bool {
-				mux = kernel.Send(session.session.Mux().Sends())
-				return slices.Equal(sends(), []kernel.Send{mux})
-			})
-			if mux.Interface != 0 {
-				pinned++
+	}
+	// both ends dial, so each holds the session it dialed, which no peer's datagram pinned, until one session replaces the other
+	var muxes [2]kernel.Send
+	waitFor(t, convergeBudget, "both ends holding the one session, its mux's sends to loopback what each runtime hands", func() bool {
+		var dialed [2]bool
+		for i, node := range nodes {
+			sessions, live := node.client.sessions.snapshot(), sends[i]()
+			if len(sessions) != 1 || len(live) != 1 || live[0].Destination != loopback {
+				return false
 			}
+			dialed[i], muxes[i] = sessions[0].dialed, kernel.Send(sessions[0].session.Mux().Sends())
+			if live[0] != muxes[i] {
+				return false
+			}
+		}
+		return dialed[0] != dialed[1]
+	})
+	pinned := 0
+	for _, mux := range muxes {
+		if mux.Interface != 0 {
+			pinned++
 		}
 	}
 	// darwin's mux leaves the pin to its selection and names none
