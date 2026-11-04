@@ -204,8 +204,7 @@ startup and on a reload, each for what this build lacks there:
 
 A `cap.route` entry that
 [counts as a default](routing.md#routes-that-count-as-a-default) is refused at
-startup and on a reload too, since it makes this node an exit and this build
-runs no entry chain to pass the replies an exit's traffic draws, with
+startup and on a reload too, with
 `config: cap.route announces ::/0, which counts as a default and asks this node to carry other nodes' traffic out of the mesh, and this build for darwin carries no exit, since it runs no entry chain to pass that traffic's replies into the mesh`.
 
 A Mac that forwards under `cap.exit` loses some of what it forwards toward an
@@ -223,7 +222,7 @@ On a platform other than Linux, macOS, iOS and Android:
   as on macOS.
 - An egress segment fails the start, since it needs `cap.egress`, which is
   refused. A `cap.route` entry that counts as a default is refused at startup
-  and on a reload, since no entry chain runs to pass an exit's replies.
+  and on a reload, as [gaps on macOS](#gaps-on-macos) gives.
 - The node has no network watch, so a moved host waits for each session's own
   liveness check.
 - Every peer shares the 1 socket of its family, busy or not.
@@ -248,18 +247,18 @@ antispoof filter or the entry chain. Neither drops a mesh source from outside,
 since iOS has no packet filter an application can write and an Android
 application cannot filter the device's inbound traffic. Each refuses every way
 of becoming an exit, a `cap.route` entry that counts as a default among them, so
-no exit's replies need the entry chain there. A device that forwards is warned,
-as [at a glance](#at-a-glance) gives. An Android build, which Go makes with the
-`linux` build tag, and an iOS build, which it makes with the `darwin` one,
-refuse `cap.egress` at startup, and `cap.exit` and a `cap.route` entry that
-counts as a default at startup and on a reload, in the same words, naming
-`android` or `ios`, and load `overlay` as macOS does. `cap.table` fails the
-start there too, and a moved host waits for each session's own liveness check.
-An iOS build opens no selection, so its underlay datagrams name no interface and
-leave by the host's own routes. A session there that sends from the kernel's
-choice of source reads its path MTU from the interface holding the source the
-kernel picks for a socket connected to the peer, and one the peer opened from
-the interface holding the address it sends from.
+no exit's replies need the entry chain there. A device the node reads as
+forwarding is warned, as [at a glance](#at-a-glance) gives. An Android build,
+which Go makes with the `linux` build tag, and an iOS build, which it makes with
+the `darwin` one, refuse `cap.egress` at startup, and `cap.exit` and a
+`cap.route` entry that counts as a default at startup and on a reload, in the
+same words, naming `android` or `ios`, and load `overlay` as macOS does.
+`cap.table` fails the start there too, and a moved host waits for each session's
+own liveness check. An iOS build opens no selection, so its underlay datagrams
+name no interface and leave by the host's own routes. A session there that sends
+from the kernel's choice of source reads its path MTU from the interface holding
+the source the kernel picks for a socket connected to the peer, and one the peer
+opened from the interface holding the address it sends from.
 
 ## Moving hosts
 
