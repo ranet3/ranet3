@@ -160,7 +160,7 @@ func kernelLine(k KernelStatus) string {
 			line += fmt.Sprintf(", forward %s skips %s, %s", skip.Entry, skip.Link, skip.Reason)
 		}
 		for _, family := range e.Unaddressed {
-			line += fmt.Sprintf(", no %s overlay address on the tun, so %s runs mode off's rules", familyLabel(family), familyLabel(family))
+			line += fmt.Sprintf(", no %s overlay address on the tun, so %s is left out of the mode", familyLabel(family), familyLabel(family))
 		}
 		if f := e.Fallback; f != nil {
 			line += ", fallback none " + f.State

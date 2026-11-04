@@ -166,6 +166,8 @@ func (c *Client) routeKernel(src, dst netip.Addr, iif string) *control.RouteKern
 			k.NextHops = append(k.NextHops, control.RouteNextHop{Dev: hop.Device, Gateway: hop.Gateway, Dead: hop.Dead, LinkDown: hop.LinkDown})
 			k.IntoTun = k.IntoTun || hop.Device == c.Mesh.Name
 		}
+		covers := c.reconcilerNow().Covers
+		k.Cover = k.IntoTun && covers != nil && covers(route.Prefix)
 	}
 	c.explainRoute(k, dst, iif, route, err)
 	dump := c.ruleDump

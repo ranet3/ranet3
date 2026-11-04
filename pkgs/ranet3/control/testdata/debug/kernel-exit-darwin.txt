@@ -1,0 +1,1 @@
+interface utun6, 9 installed, zero-free cover for ipv4, no pass yet, exit mode, no IPv6 overlay address on the tun, so IPv6 is left out of the mode

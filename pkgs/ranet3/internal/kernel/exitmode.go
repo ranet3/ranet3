@@ -277,14 +277,14 @@ func expandForward(forward []string, tun string, network NetworkState) ([]string
 	return out, skipped
 }
 
-// ExitStatus is cap.exit's mode as the last rule pass ran it
+// ExitStatus is cap.exit's mode as the last pass that judged it ran it
 type ExitStatus struct {
 	// Forwarded is each link forward expanded to, whose forwarded traffic follows the mode
 	Forwarded []string
 	// Skipped is each link a forward entry matched that the mode leaves out
 	Skipped []ForwardSkip
 	// Unaddressed is each family the tun carries no overlay address of, which
-	// runs mode off's rules
+	// the mode leaves out
 	Unaddressed []Family
 	// Fallback is the switch fallback = "none" asks for, nil under "uplink"
 	Fallback *FallbackStatus
@@ -346,9 +346,9 @@ func (r *Reconciler) reportExit(now *ExitStatus) {
 }
 
 func (r *Reconciler) reportFamily(family Family, addressed bool) {
-	level, message := slog.LevelWarn, "kernel runs mode off's rules in a family, the tun holding no overlay address of it"
+	level, message := slog.LevelWarn, "kernel leaves a family out of the exit mode, the tun holding no overlay address of it"
 	if addressed {
-		level, message = slog.LevelInfo, "kernel no longer counts a family as one the tun holds no overlay address of"
+		level, message = slog.LevelInfo, "kernel no longer leaves a family out of the exit mode"
 	}
 	slog.Log(context.Background(), level, message, "family", string(family))
 	r.rt.Events.Emit("kernel.exit", "", slog.String("family", string(family)), slog.Bool("addressed", addressed))

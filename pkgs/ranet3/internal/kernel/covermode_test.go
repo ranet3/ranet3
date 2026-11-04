@@ -264,6 +264,87 @@ func TestSteeredDefaultsCountAsInstalledThroughTheCover(t *testing.T) {
 	}
 }
 
+// CoverInstalled names a member the last pass left installed and nothing
+// else: no route on a platform that does not cover, a source-specific
+// 8000::/1 among them, a mode 3 member beside the mesh's 128.0.0.0/1, which
+// mode 3 declines, in mode 2 no member that half withholds, and no member the
+// pass wanted of a family whose cover another program's route at one member's
+// key keeps out.
+func TestCoverInstalledNamesWhatThePassLeftIn(t *testing.T) {
+	half, upper := prefix("128.0.0.0/1"), prefix("8000::/1")
+	plain, table, fake := harness(t, Table{}, Runtime{Overlay: coverOverlay, Sessions: func() int { return 1 }})
+	plain.now = func() time.Time { return start }
+	table.Set(prefix("2001:db8:1::/48"), upper, nil)
+	if err := plain.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(fake.snapshot(), func(r Route) bool { return r.Destination == upper }) || plain.CoverInstalled(upper) {
+		t.Errorf("with a source-specific %s held %v, a platform that does not cover names it a member %v", upper, fake.snapshot(), plain.CoverInstalled(upper))
+	}
+
+	mode := &ExitMode{Via: []schema.Addr{schema.AddrFrom(waypointSID), schema.AddrFrom(exitSID)}, Fallback: FallbackUplink}
+	steered, table, _ := modeCovering(t, Table{}.WithMode(mode).WithPathSource(steeredSource), nil, coverAddresses...)
+	for _, entry := range []mirrorEntry{host(waypointSID, learned), host(exitSID, learned)} {
+		table.Set(entry.source, entry.destination, entry.value)
+	}
+	table.Set(netip.Prefix{}, half, nil)
+	if err := steered.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if !steered.CoverInstalled(half) {
+		t.Errorf("mode 3 beside the mesh's %s names no member there: %v", half, steered.Stats().Members)
+	}
+
+	covered, table, _ := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses...)
+	table.Set(netip.Prefix{}, half, nil)
+	if err := covered.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if covered.CoverInstalled(half) || !covered.CoverInstalled(prefix("64.0.0.0/2")) {
+		t.Errorf("mode 2 beside the mesh's %s names the members %v, want every IPv4 member but that half", half, covered.Stats().Members)
+	}
+
+	refused, kernel, table := keyHarness(t)
+	taken := prefix("64.0.0.0/2")
+	kernel.taken[taken] = errRouteSkipped
+	table.Set(netip.Prefix{}, zero4.Destination, nil)
+	table.Set(netip.Prefix{}, zero6.Destination, nil)
+	if err := refused.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	for ipv4, members := range zeroFreeCover {
+		for _, member := range members {
+			if got, want := refused.CoverInstalled(member), !ipv4; got != want {
+				t.Errorf("with another program at %s, %s is named a member %v, want %v: %v", taken, member, got, want, refused.Stats().Members)
+			}
+		}
+	}
+}
+
+// A pass whose route dump fails leaves the cover the last pass installed in
+// place, so CoverInstalled goes on naming its members while the pass's counts
+// read nothing.
+func TestFailedRouteDumpKeepsTheMembersNamed(t *testing.T) {
+	reconciler, _, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses...)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	kernel.failList = errors.New("the dump is broken")
+	if err := reconciler.reconcile(); err == nil {
+		t.Fatal("a failing dump did not fail the pass")
+	}
+	if stats := reconciler.Stats(); stats.Installed != 0 || stats.Added != 0 {
+		t.Errorf("the failing pass republished the last good counts: %+v", stats)
+	}
+	for _, members := range zeroFreeCover {
+		for _, member := range members {
+			if !reconciler.CoverInstalled(member) {
+				t.Errorf("after a failed dump %s is named no member, want the last pass's: %v", member, reconciler.Stats().Members)
+			}
+		}
+	}
+}
+
 // A platform with no policy rules reports the mode's status all the same,
 // with the families the tun holds no overlay address of.
 func TestExitStatusIsReportedWithoutPolicyRules(t *testing.T) {

@@ -91,6 +91,15 @@ func routeFixtures() map[string][]RouteInfo {
 		RuleErr: "this platform has no policy rules", Route: netip.MustParsePrefix("0.0.0.0/0"), Type: "unicast",
 		NextHops: []RouteNextHop{{Dev: "en0", Gateway: netip.MustParseAddr("198.51.100.1")}},
 	}}
+	// under cap.exit, IPv4 covered and IPv6 left out of the mode
+	darwinCover := RouteInfo{Dst: netip.MustParseAddr("203.0.113.200"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
+		RuleErr: "this platform has no policy rules", Route: netip.MustParsePrefix("128.0.0.0/1"), Type: "unicast",
+		NextHops: []RouteNextHop{{Dev: "utun6"}}, IntoTun: true, Cover: true,
+	}, Unfollowed: "since its checks read the source the kernel picks, which its answer does not carry"}
+	darwinLeftOut := RouteInfo{Dst: netip.MustParseAddr("2001:db8:ff::7"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
+		RuleErr: "this platform has no policy rules", Route: netip.MustParsePrefix("::/0"), Type: "unicast",
+		NextHops: []RouteNextHop{{Dev: "en0", Gateway: netip.MustParseAddr("2001:db8:1::1")}},
+	}}
 	darwinUnrouted := RouteInfo{Src: netip.MustParseAddr("192.0.2.9"), Dst: netip.MustParseAddr("203.0.113.1"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
 		RuleErr: "this platform has no policy rules", NoSource: true,
 		Err: "kernel: look up the route to 203.0.113.1: network is unreachable", Errno: "ENETUNREACH", Why: WhyNoRoute,
@@ -309,6 +318,7 @@ func routeFixtures() map[string][]RouteInfo {
 		"route-forwarding-off": {refused, dropped, unreachable, forwarded, withheld, withheldUnread},
 		"route-rp-filter":      {forged, unread, blackholed, unjoined, unfiltered, martian},
 		"route-darwin":         {darwinArrival, darwinOwn, darwinUnrouted, darwinUnspecified},
+		"route-darwin-exit":    {darwinCover, darwinLeftOut},
 		"route-no-rule":        {unrouted, unsourced, unfit, unheld, refused4, blackhole6},
 		"route-into-tun":       {intoTun},
 		"route-no-entry":       {multicast, unspecified, broadcast, joined, routed, routingUnread, allHosts},

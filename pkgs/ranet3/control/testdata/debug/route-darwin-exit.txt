@@ -1,0 +1,10 @@
+Packet  from no source to 203.0.113.200, this host's own
+Rule    this platform has no policy rules
+Route   128.0.0.0/1, unicast, dev utun6, a member of the zero-free cover standing in for the mesh's route holding 0.0.0.0
+Leaves  into the mesh's tun
+Mesh    not followed, since its checks read the source the kernel picks, which its answer does not carry
+
+Packet  from no source to 2001:db8:ff::7, this host's own
+Rule    this platform has no policy rules
+Route   ::/0, unicast, via 2001:db8:1::1 dev en0
+Leaves  by en0, outside the mesh

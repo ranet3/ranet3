@@ -345,3 +345,31 @@ func TestDebugRouteOnAPlatformWithoutRules(t *testing.T) {
 		t.Errorf("a failed dump reads %+v", info.Kernel)
 	}
 }
+
+// A lookup ending out of the tun at a route the reconciler installed as a
+// member of the zero-free cover names the cover, and one ending at a route at
+// a member's key it did not install as one, at a member out of another link,
+// or on a node whose reconciler reports no cover, does not
+func TestDebugRouteNamesAMemberOfTheCover(t *testing.T) {
+	member := netip.MustParsePrefix("128.0.0.0/1")
+	installed := func(destination netip.Prefix) bool { return destination == member }
+	for _, c := range []struct {
+		name   string
+		device string
+		covers func(netip.Prefix) bool
+		cover  bool
+	}{
+		{"a member out of the tun", "ranet0", installed, true},
+		{"a route at the member's key installed as no member", "ranet0", func(netip.Prefix) bool { return false }, false},
+		{"a member out of another link", "en0", installed, false},
+		{"a reconciler reporting no cover", "ranet0", nil, false},
+	} {
+		route := kernel.MatchedRoute{Prefix: member, Type: "unicast", NextHops: []kernel.NextHop{{Device: c.device}}}
+		client, _ := routeClient(t, route, nil, nil)
+		client.SetReconciler(Reconciler{Rules: client.reconcilerNow().Rules, Covers: c.covers})
+		info, err := client.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.200"), "", "")
+		if err != nil || info.Kernel.Cover != c.cover {
+			t.Errorf("%s: the answer reads %+v, %v, want the cover named %v", c.name, info.Kernel, err, c.cover)
+		}
+	}
+}

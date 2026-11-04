@@ -443,6 +443,17 @@ func TestKernelLineNamesTheExitModeAndWhatItSkips(t *testing.T) {
 	}
 }
 
+// On darwin under cap.exit the kernel line names the family whose default went
+// in as the zero-free cover and the family the mode leaves out, in one text
+// with Linux's
+func TestKernelLineOnDarwinNamesTheCoverAndTheFamilyLeftOut(t *testing.T) {
+	status := KernelStatus{
+		Enabled: true, Where: "interface utun6", Installed: 9, Cover: []string{"ipv4"},
+		Exit: &KernelExit{Unaddressed: []string{"ipv6"}},
+	}
+	golden(t, "kernel-exit-darwin.txt", []byte(kernelLine(status)+"\n"))
+}
+
 // The kernel line names fallback = "none"'s state and what its drop counted in
 // each state, or that no read has found the drops yet, with each network the
 // LAN leaves out, each endpoint name that does not resolve and each DNS server

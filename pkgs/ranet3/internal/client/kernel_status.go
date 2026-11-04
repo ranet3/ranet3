@@ -30,6 +30,8 @@ type Reconciler struct {
 	Lookups func() []kernel.Lookup
 	// Resolvers asks systemd-resolved for the DNS servers beyond the switch's LAN, which a status read asks and a metrics scrape and debug rules do not
 	Resolvers func() []kernel.LinkResolver
+	// Covers reports a member of the cover its last pass left installed at a destination, for the route view
+	Covers func(netip.Prefix) bool
 }
 
 // ReconcilerOf is routes as the node reads and drives it, every field set
@@ -42,6 +44,7 @@ func ReconcilerOf(routes *kernel.Reconciler) Reconciler {
 		Rules:     routes.DerivedRules,
 		Lookups:   func() []kernel.Lookup { return routes.Stats().Lookups },
 		Resolvers: routes.FallbackResolvers,
+		Covers:    routes.CoverInstalled,
 	}
 }
 

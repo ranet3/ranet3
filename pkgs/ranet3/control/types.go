@@ -463,7 +463,7 @@ type KernelExit struct {
 	// Skipped is each link a forward entry matched that the mode leaves out
 	Skipped []KernelSkip `json:"skipped,omitempty"`
 	// Unaddressed is each family the tun carries no overlay address of, which
-	// runs mode off's rules
+	// the mode leaves out
 	Unaddressed []string `json:"unaddressed,omitempty"`
 	// Fallback is the switch cap.exit fallback = "none" asks for, absent under "uplink"
 	Fallback *KernelFallback `json:"fallback,omitempty"`

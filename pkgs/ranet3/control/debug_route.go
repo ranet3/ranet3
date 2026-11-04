@@ -170,6 +170,10 @@ type RouteKernel struct {
 	NoEntry bool `json:"no_entry,omitempty"`
 	// IntoTun is a route leaving by the mesh's tun
 	IntoTun bool `json:"into_tun,omitempty"`
+	// Cover is a Route out of the mesh's tun that the reconciler's last pass
+	// installed as a member of the zero-free cover, so it stands in for the
+	// mesh's route holding its family's zero address
+	Cover bool `json:"cover,omitempty"`
 	// NoSource is a lookup made without Src, which this platform's lookup does
 	// not take, as XNU's does not
 	NoSource bool `json:"no_source,omitempty"`
@@ -574,6 +578,13 @@ func routeLine(k RouteKernel) string {
 	}
 	if k.Exception {
 		route += ", through an exception cached for the destination alone"
+	}
+	if k.Cover {
+		zero := netip.IPv6Unspecified()
+		if k.Route.Addr().Is4() {
+			zero = netip.IPv4Unspecified()
+		}
+		route += ", a member of the zero-free cover standing in for the mesh's route holding " + zero.String()
 	}
 	if k.NoEntry {
 		route += ", the kernel's own for this destination, with no table entry behind it"

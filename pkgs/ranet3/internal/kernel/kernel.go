@@ -762,6 +762,8 @@ type Stats struct {
 	// Cover is the families in which this pass left a zero route installed as
 	// its zero-free cover.
 	Cover []Family
+	// Members is each member of the cover the last pass that listed the routes left installed
+	Members []netip.Prefix
 	// Lookups holds the lookups the last pass whose batch answered asked of
 	// the kernel to find another program's rule ahead of the mesh's
 	Lookups []Lookup
@@ -779,6 +781,12 @@ func (r *Reconciler) Stats() Stats {
 		return *s
 	}
 	return Stats{}
+}
+
+// CoverInstalled reports a member of the cover at destination among the
+// routes the last pass that listed them left installed
+func (r *Reconciler) CoverInstalled(destination netip.Prefix) bool {
+	return slices.Contains(r.Stats().Members, destination)
 }
 
 // New checks the capability, fills in its defaults, resolves it against the
@@ -1351,8 +1359,10 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], throws []
 // not collide with the old route under the exclusive-install policy.
 func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family) error {
 	// Cleared first, so a pass that fails before it can count anything reports
-	// nothing rather than the counts of the last pass that succeeded.
-	r.routePass = Stats{}
+	// nothing rather than the counts of the last pass that succeeded. The
+	// members stay, as r.installed does, since the cover that pass left stays
+	// installed.
+	r.routePass = Stats{Members: r.routePass.Members}
 	if p, ok := r.plat.(coverer); ok {
 		p.cover(r.rt.Overlay, families, addressless)
 	}
@@ -1518,7 +1528,15 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	// when the pass started and every add and delete above was confirmed, so
 	// the sum is exact and costs no second dump.
 	r.installed = held
+	var members []netip.Prefix
+	for route := range held {
+		if route.Cover {
+			members = append(members, route.Destination)
+		}
+	}
+	slices.SortFunc(members, comparePrefixes)
 	r.routePass = Stats{
+		Members:   members,
 		Desired:   desiredCount,
 		Installed: len(actual) - removed + added,
 		Skipped:   skipped,
