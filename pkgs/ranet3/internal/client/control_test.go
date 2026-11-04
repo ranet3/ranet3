@@ -294,10 +294,10 @@ func TestStatusReportsTheMeshAddressesTheEgressTakes(t *testing.T) {
 	}
 }
 
-// status says a node is an initiator exactly where it has a peer to dial, one dial.to names or one dial.all takes from the trust document
-// that its dialer sends an IKE_SA_INIT, so a peer the trust document lacks, a peer whose endpoints carry an address only in a family
-// this node has no endpoint of, pinned or not, and a peer with no endpoint carrying an address are none, while a dual-stack node
-// dials a peer reachable over its second family alone
+// status says a node is an initiator exactly where it has a peer to dial, one that dial.to names or dial.all takes from the trust
+// document and that its dialer sends an IKE_SA_INIT to, so no peer to dial is a peer the trust document lacks, one whose endpoints
+// carry an address only in a family this node has no endpoint of, pinned or not, or one with no endpoint carrying an address, while a
+// dual-stack node dials a peer reachable over its second family alone
 func TestStatusSaysInitiatorOfANodeWithAPeerToDial(t *testing.T) {
 	address, v6 := "192.0.2.7", "2001:db8::7"
 	beside := func(endpoint registry.Endpoint) registry.Registry {
