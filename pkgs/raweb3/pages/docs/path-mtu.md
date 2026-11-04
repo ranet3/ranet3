@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-11-03
+updated: 2026-11-04
 order: 65
 ---
 
@@ -243,16 +243,16 @@ extension header before TCP, and an option list that does not parse.
 
 ## Watching it
 
-| What                                                                                        | Where                                              |
-| ------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Each session's search, budget and last change                                               | [`ranet3 debug pmtu`](development/debug.md)        |
-| Probe every session now                                                                     | `ranet3 debug probe --all`                         |
-| A budget change, with its reason                                                            | the `pmtu.changed` event                           |
-| A session going under or over the floor                                                     | the `pmtu.floor` event                             |
-| A budget too small for a steered 1280 byte packet                                           | the `pmtu.steering` event                          |
-| Probes answered and lost                                                                    | `ranet3_pmtu_probes_total{result="acked"\|"lost"}` |
-| Packet Too Big and fragmentation needed answers sent                                        | `ranet3_packet_too_big_sent_total`                 |
-| Lowerings of a SYN or SYN-ACK's MSS, a forwarded SYN lowered at two sessions counting twice | `ranet3_mss_clamped_total`                         |
+| What                                                                               | Where                                              |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Each session's search, budget and last change                                      | [`ranet3 debug pmtu`](development/debug.md)        |
+| Probe every session now                                                            | `ranet3 debug probe --all`                         |
+| A budget change, with its reason                                                   | the `pmtu.changed` event                           |
+| A session going under or over the floor                                            | the `pmtu.floor` event                             |
+| A budget too small for a steered 1280 byte packet                                  | the `pmtu.steering` event                          |
+| Probes answered and lost                                                           | `ranet3_pmtu_probes_total{result="acked"\|"lost"}` |
+| Packet Too Big and fragmentation needed answers sent                               | `ranet3_packet_too_big_sent_total`                 |
+| Lowerings of a SYN or SYN-ACK's MSS, counted as [metrics](metrics.md#series) gives | `ranet3_mss_clamped_total`                         |
 
 A `pmtu.changed` event names its reason: `probe`, `route`, `refusal`,
 `endpoint change`, `floor` or `link.mtu`.

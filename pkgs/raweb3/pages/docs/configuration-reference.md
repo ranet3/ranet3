@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-03
+updated: 2026-11-04
 order: 35
 ---
 
@@ -108,6 +108,10 @@ nest the same names. A key not listed here is refused when the file loads.
 | `key`     | path  | required | This node's private key, a PKCS8 PEM Ed25519 file       |
 | `trust`   | path  | required | The [trust document](trust.md), a ranet `registry.json` |
 | `aliases` | table | none     | IDs other than a DN, for a peer that is not ranet3      |
+
+- At startup the daemon waits for the files `key` and `trust` name to exist, as
+  [restarts and the network](service.md#restarts-and-the-network) describes. A
+  reload never waits for either.
 
 ### `auth.aliases`
 

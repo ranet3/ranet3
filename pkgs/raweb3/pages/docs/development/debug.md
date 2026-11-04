@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-03
+updated: 2026-11-04
 order: 30
 ---
 
@@ -297,11 +297,12 @@ These commands take flags of their own:
   segment counters `ranet3 status` reports. A node with neither says so.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
-  packets past a session's budget and the lowerings of a SYN or SYN-ACK's MSS, a
-  forwarded SYN lowered at two sessions counting twice, both for the node as a
-  whole. `Answer sources` is the router-id of each family, an address rather
-  than the 16 hex digits of Babel's router id that `debug updown` shows, and
-  `Answer SID` the answer SID, each `none` where the node holds none, as
+  packets past a session's budget and the lowerings of a SYN or SYN-ACK's MSS,
+  counted as `ranet3_mss_clamped_total` counts them in
+  [metrics](../metrics.md#series), both for the node as a whole.
+  `Answer sources` is the router-id of each family, an address rather than the
+  16 hex digits of Babel's router id that `debug updown` shows, and `Answer SID`
+  the answer SID, each `none` where the node holds none, as
   [path MTU](../path-mtu.md#where-answers-come-from) describes. Then for each
   session its path, the peer node it is with, its endpoint and whether its
   datagrams leave with DF, the state of its search, which is `confirming`,

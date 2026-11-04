@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-11-03
+updated: 2026-11-04
 order: 70
 ---
 
@@ -24,10 +24,14 @@ started with. When the daemon refuses the reload, `ranet3 reload` prints the
 refusal and exits 1. After `SIGHUP`, a reload that fails goes to the log as the
 warning `reload failed`, with the reason in `err`, and to the `err` of the
 `daemon.reload` event. A `SIGHUP` that comes while the daemon starts is applied
-once the node dials. Once the daemon has begun to stop, a `SIGHUP` applies
-nothing, at most logging the refusal, and `ranet3 reload` is refused, as
+once the node dials. While the start waits for the key or the trust document,
+`ranet3 reload` reads the file again, as
+[restarts and the network](service.md#restarts-and-the-network) describes. Once
+the daemon has begun to stop, a `SIGHUP` applies nothing, at most logging the
+refusal, and `ranet3 reload` is refused, as
 [the control socket](control-socket.md#acting-on-a-running-node) says. On NixOS,
-`systemctl reload ranet3` runs `ranet3 reload`, as
+`systemctl reload ranet3` runs `ranet3 reload`, and on nix-darwin an activation
+that leaves the job loaded as it was runs it, as
 [running it as a service](service.md) describes.
 
 ## What a reload does with each key

@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-03
+updated: 2026-11-04
 order: 100
 ---
 
@@ -108,7 +108,9 @@ stay apart.
   take the reconciler's.
 - A deleted rule that carries `cap.table.proto` wakes the reconciler, and the
   next pass puts the rule back. systemd-networkd deletes such rules when it
-  configures a link.
+  configures a link, unless its `ManageForeignRoutingPolicyRules` is off, as the
+  NixOS module sets it by default and
+  [routes on Linux](coexistence.md#routes-on-linux) describes.
 - The reconciler asks the lookups
   [sharing a host](coexistence.md#another-programs-rules) describes. macOS has
   no policy rules and asks none.

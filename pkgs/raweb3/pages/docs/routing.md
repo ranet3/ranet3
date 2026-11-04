@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-03
+updated: 2026-11-04
 order: 45
 ---
 
@@ -389,11 +389,10 @@ whose destination no entry holds, from its destination into the tun.
 `ranet3_transit_packets_total` exports the same counts, as
 [metrics](metrics.md#transit-counters) lists. Each drop they count also records
 the event `netstack.transit.dropped` with its reason, at most once every 30
-seconds, but a read dropped as multicast, a read off the tun dropped as
-`no_route` or `held`, and a read a steering policy could not encapsulate,
-dropped as `too_big`, which they count alone. A trace, `ranet3 debug trace`,
-shows the packets the decision takes as it takes them, each with what it met and
-why, and `ranet3 debug route` the checks one packet would meet, as
+seconds, except the reads [debugging](development/debug.md#events) lists, which
+only the counters count. A trace, `ranet3 debug trace`, shows the packets the
+decision takes as it takes them, each with what it met and why, and
+`ranet3 debug route` the checks one packet would meet, as
 [debugging](development/debug.md) describes.
 
 ## The route reconciler
@@ -1377,19 +1376,8 @@ change of the switch's state, with `state` and `was`, each `holding`, `passing`,
 `state`, `segment`, `verdict` and `installed`, as
 [debugging](development/debug.md#events) says.
 
-| Metric                                 | Meaning                                                                                |
-| -------------------------------------- | -------------------------------------------------------------------------------------- |
-| `ranet3_babel_neighbor_up{peer}`       | whether a neighbor is alive                                                            |
-| `ranet3_babel_neighbor_cost{peer}`     | link cost with its extra, 65535 is infinity                                            |
-| `ranet3_babel_routes_received{peer}`   | routes learned from a neighbor                                                         |
-| `ranet3_babel_routes_selected`         | routes in the forwarding table                                                         |
-| `ranet3_babel_routes_originated`       | prefixes this node announces                                                           |
-| `ranet3_kernel_routes_installed`       | routes the kernel holds for the reconciler                                             |
-| `ranet3_kernel_routes_skipped`         | routes the last pass skipped                                                           |
-| `ranet3_kernel_pass_timestamp_seconds` | when the last pass finished                                                            |
-| `ranet3_kernel_pass_failed`            | whether the last pass reported an error                                                |
-| `ranet3_kernel_overlay_taken{family}`  | overlay prefixes the reconciler's last answered lookups found taken                    |
-| `ranet3_kernel_underlay_taken{family}` | live sessions' sends the reconciler's last answered lookups found taken under the mark |
+[Metrics](metrics.md#series) lists the series of Babel and of the reconciler,
+`ranet3_babel_` and `ranet3_kernel_` by their prefixes, with what each counts.
 
 The neighbor cost includes the amount `cap.babel.cost.extra` charges, which no
 series reports alone. `ranet3 neighbors` shows it apart. [Metrics](metrics.md)

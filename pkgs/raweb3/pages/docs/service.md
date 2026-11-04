@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-11-03
+updated: 2026-11-04
 order: 40
 ---
 
@@ -275,8 +275,8 @@ describes.
 The nix-darwin module, `darwinModules.ranet3`, takes the same options and runs
 the daemon from `launchd.daemons.ranet3`. The log file takes the place of the
 journal. The `modules` check evaluates the module on Linux beside a stand-in for
-the nix-darwin options it sets, and runs its activation steps below with
-stand-ins for `ranet3` and `launchctl`.
+the nix-darwin options it reads and sets, and runs its activation steps below
+with stand-ins for `ranet3` and `launchctl`.
 
 | Key                                    | Value                                                                                                             |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |

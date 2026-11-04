@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-03
+updated: 2026-11-04
 order: 60
 ---
 
@@ -459,21 +459,11 @@ allow list and the other checks above let through whose family was not ready, as
 [exit nodes](exit-nodes.md#readiness) describes. It is this node's own state and
 is not counted among the dropped.
 
-| Metric                               | Meaning                                                                                                                                                                                                                                                     |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ranet3_segments_forwarded_total`    | packets an `End` sent on to their next segment                                                                                                                                                                                                              |
-| `ranet3_segments_delivered_total`    | packets an `End.DT46` delivered to the mesh's forwarding decision                                                                                                                                                                                           |
-| `ranet3_segments_dropped_total`      | packets to a local SID this node refused or would not act on, and packets an `End` rewrote that went no further                                                                                                                                             |
-| `ranet3_segments_answered_total`     | ICMP errors sent for dropped packets                                                                                                                                                                                                                        |
-| `ranet3_segments_egressed_total`     | packets an egress segment handed to the exit                                                                                                                                                                                                                |
-| `ranet3_segments_refused_total`      | packets a SID refused, from outside the overlay or an allow list's entries inside it, for an inner source outside the list, an inner packet no router forwards, the mesh routing no reply to, or an inner destination inside the overlay or the mesh routes |
-| `ranet3_segments_not_ready_total`    | packets an egress segment let through whose family was not ready                                                                                                                                                                                            |
-| `ranet3_segments_ecn_unused_total`   | packets an `End.DT46` decapsulated whose ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them                                                                                                          |
-| `ranet3_steered_total`               | packets a steering policy encapsulated, `cap.exit.via`'s path among them                                                                                                                                                                                    |
-| `ranet3_steer_dropped_total{reason}` | steered packets not sent, `reason` is `too_large` or `no_route`                                                                                                                                                                                             |
-
-[Metrics](metrics.md#series) gives each series in full, with the packets another
-series counts as well.
+[Metrics](metrics.md#series) lists the series of these counts, with what each
+counts and the packets another series counts as well:
+`ranet3_segments_<count>_total` for each count of a segment, such as
+`ranet3_segments_refused_total`, and `ranet3_steered_total` and
+`ranet3_steer_dropped_total` for steering.
 
 ## Interoperation with the Linux kernel
 

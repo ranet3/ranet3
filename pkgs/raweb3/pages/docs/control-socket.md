@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-03
+updated: 2026-11-04
 order: 80
 ---
 
@@ -265,13 +265,14 @@ The reads answer JSON. A duration is a string such as `"4s"`. A time follows
 RFC 3339. An address or a prefix is its text form. An optional field with no
 value is left out, such as `down` on a node that is up or `err` after a pass
 that succeeded. `endpoints`, `originate` and `mesh_addresses` are always present
-and read `[]` when empty, and every counter is always present. Other lists, such
-as `segments`, `disabled`, `taken`, `acted` and `missed`, are left out when
-empty.
+and read `[]` when empty, and every counter is always present but
+`kernel.exit.fallback.dropped`, which is absent until a read of the kill
+switch's table by this process has succeeded. Other lists, such as `segments`,
+`disabled`, `taken`, `acted` and `missed`, are left out when empty.
 
 | Answer             | Fields                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| status             | `version`, `node`, `port`, `endpoints` (`serial/family`), `tun`, `mtu`, `queues`, `started_at`, `uptime`, `initiator` (this node has a peer to dial, from `dial.to` or `dial.all`), `responder` (`link.listen` is on), `full_mesh` (`dial.all` is on), `no_transit` (`cap.transit` is off), `forwards_ipv4`, `forwards_ipv6` (`null` where the node cannot read the setting, which `status` prints as `unknown`), `registry`, `kernel`, `egress`, `antispoof` (absent off Linux where no `overlay` is written), `counts`, `esp`, `originate`, `mesh_addresses` (the address of each host prefix `cap.route` announces or `cap.table` assigns, once, the mesh addresses `cap.egress` takes), `segments`, `steering`, `segment_counters`, `transit`, `disabled`, `down`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| status             | `version`, `node`, `port`, `endpoints` (`serial/family`), `tun`, `mtu`, `queues`, `started_at`, `uptime`, `initiator` (this node has a peer to dial, from `dial.to` or `dial.all`), `responder` (`link.listen` is on), `full_mesh` (`dial.all` is on), `no_transit` (`cap.transit` is off), `forwards_ipv4`, `forwards_ipv6` (`null` where the node cannot read the setting, which `status` prints as `unknown`), `registry`, `kernel`, `egress`, `antispoof` (absent off Linux where no `overlay` is written), `counts`, `esp`, `originate`, `mesh_addresses` (the address of each host prefix `cap.route` announces or `cap.table` assigns, once, among which an exit's in rule takes its address under `auto`, as [classes](exit-nodes.md#classes) describes), `segments`, `steering`, `segment_counters`, `transit`, `disabled`, `down`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `registry`         | `path`, `organizations`, `nodes`, `read_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `kernel`           | `enabled`, `where`, `table`, `protocol`, `pass_at`, `installed`, `skipped`, `added`, `removed`, `cover`, `taken` (each lookup another program's rule takes, as [sharing a host](coexistence.md#another-programs-rules) describes: `family`, then `prefix` and the `address` asked inside it for an overlay prefix or `endpoint` for the underlay with the `source` and `interface` the live session's send carries, each absent where it carries none, and `answer`), `exit` (absent in mode off: `forwarded`, the links `cap.exit.forward` expanded to on the last pass, `skipped`, each link an entry matched and the pass left out as `entry`, `link` and `reason`, and `unaddressed`, each family the tun holds no overlay address of, as [watching it](routing.md#watching-it) gives, and `fallback`, absent but under `fallback = "none"`: `state`, `holding`, `passing` or `not holding`, `reason` while it does not hold, `dropped`, the `packets` and `bytes` the last lines of both chains have dropped, summed, absent until a read of the table by this process has succeeded, `captured`, each connected network left out of the LAN as it captures the machine, `public`, each one the private and link-local ranges and `cap.exit.lan` leave out in whole or in part, or of one sharing an address with the overlay each such prefix of its part outside the overlay, `unresolved`, each endpoint name whose last lookup failed, in any state of the switch, and `resolvers`, each DNS server beyond the LAN as `link` and `address`), `exit_path` (absent outside [mode 3](routing.md#mode-3-on-linux): `via`, `source`, `state`, `up` or `down`, `down` and `verdict`, the first segment that does not resolve and the mesh's answer, `installed`, the families whose steered default the last pass left in the table, and `steered` and `unrouted`, the path's part of `segment_counters`' totals), `err` |
 | `egress`           | `enabled`, `where`, `ready` (`ipv4`, `ipv6`, the families the last pass judged ready, by the route lookups where they ran), `unready` (why a family it translates is not ready, such as a lookup that failed or left by another device, with the sysctls that explain it, or an address of its classes the host does not hold), `skipped` (the lookups the pass left out and why), `translate` (each class's `from` and `to`, `none`, `auto` or an address), `return`, `advertise`, `announced`, `flows_per_source` (the share in force), `refused` (`ipv4`, `ipv6`, the packets refused past it as of the last pass, from zero after a pass that rewrote the chains), `dropped` (`ipv4`, `ipv6`, the packets dropped with no tracked flow, out of the mesh under a class that translates and into it under `return`, counted as `refused` is), `pass_at`, `installed`, `flows`, `bytes`, `untranslated` (the connections a class of `none` left under their source), `conntrack_count` and `conntrack_max` (the host's connection table, each left out where the pass could not read it), `conflicts`, `err`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -290,15 +291,15 @@ empty.
 
 ### Status codes
 
-| Code | When                                                                                                                                                                                                   |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 200  | The read or the verb succeeded.                                                                                                                                                                        |
-| 400  | The node refused a verb, a body or query does not parse, a query names more kinds, attributes or prefixes than the limits allow, or a trace's rate or payload is out of its bounds. The body says why. |
-| 404  | No such path.                                                                                                                                                                                          |
-| 405  | The method does not fit the path. `Allow` names the one that does.                                                                                                                                     |
-| 500  | The daemon could not encode its answer. The body says why.                                                                                                                                             |
-| 501  | The program serving the socket does not implement that verb or debug view. The daemon implements them all.                                                                                             |
-| 503  | A 5th stream, of events or a trace, asked for while 4 are open, or a trace asked for while the daemon stops.                                                                                           |
+| Code | When                                                                                                                                                                                                                                                                         |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 200  | The read or the verb succeeded.                                                                                                                                                                                                                                              |
+| 400  | The node refused a verb, a body or query does not parse, a query names more kinds, attributes or prefixes than the limits allow, or a trace's rate or payload is out of its bounds. The body says why.                                                                       |
+| 404  | No such path.                                                                                                                                                                                                                                                                |
+| 405  | The method does not fit the path. `Allow` names the one that does.                                                                                                                                                                                                           |
+| 500  | The daemon could not encode its answer. The body says why.                                                                                                                                                                                                                   |
+| 501  | The program serving the socket does not implement that verb or debug view. The daemon implements them all.                                                                                                                                                                   |
+| 503  | A 5th stream, of events or a trace, asked for while 4 are open, a trace asked for while the daemon stops, or any request but `reload` while the start waits for the key or the trust document, as [restarts and the network](service.md#restarts-and-the-network) describes. |
 
 ### Limits
 
@@ -322,6 +323,12 @@ empty.
 | 1 stream line `ranet3` reads                              | 1 MiB                                                   |
 | Events in 1 stream write                                  | 64                                                      |
 
+The table holds once the daemon serves the node. While the start waits for the
+key or the trust document, as
+[restarts and the network](service.md#restarts-and-the-network) describes, the
+socket bounds reading a request and writing its answer to 10 seconds each, and
+holds no bound on the connections open at once.
+
 ## Acting on a running node
 
 7 subcommands change what a node is doing right now. `disable` and `enable` stop
@@ -334,8 +341,11 @@ session's rekey gave, such as the peer's refusal, a rekey already under way, a
 rekey still running at 5 seconds, or a failed Child SA rekey whose replacement
 waits for the retry the session has scheduled, as `cap.crypto.rekey.retry` sets.
 A rekey still running goes on, and `ike.rekey.completed` or `ike.rekey.failed`
-tells how it ended. `reload` does what SIGHUP does, so a supervisor is not the
-only way to ask. `down` takes the node off the mesh and `up` puts it back, as
+tells how it ended. `reload` does what SIGHUP does once the node runs, so a
+supervisor is not the only way to ask, and the start's wait for the key or the
+trust document answers it otherwise, as
+[restarts and the network](service.md#restarts-and-the-network) describes.
+`down` takes the node off the mesh and `up` puts it back, as
 [taking a node off the mesh](#taking-a-node-off-the-mesh) describes.
 `debug probe` acts as well.
 
@@ -398,19 +408,21 @@ the reload, the command prints the refusal and exits 1. After SIGHUP, the same
 refusal goes to the log and to the `err` of the `daemon.reload` event.
 [Reloading](reloading.md) says what a reload applies.
 
-The daemon binds the socket while it starts and answers on it once the start has
-waited for the reconciler's first pass, so a command sent before then is
-answered once that wait ends, unless its own timeout ends first. A stop while
-the daemon builds its parts or waits for that pass closes the socket without
-serving it, and a command sent in the meantime fails with the connection reset.
-Once a daemon that serves the socket has begun to stop, on a signal or the
-mesh's failure, `up`, `reload` and `redial` are refused with an error saying the
-node is stopping, and the reads answer until the socket closes as the daemon
-exits. A refusal rather than a closed socket keeps `status` and the debug views
-answering through a slow withdrawal. No verb sent once the stop has begun starts
-a dialer, and the dialers running then, one an `up` already under way started
-among them, stop with the mesh once the reconciler and the egress translator
-have withdrawn.
+The daemon binds the socket while it starts. While the start waits for the key
+or the trust document, the socket answers at once, as
+[restarts and the network](service.md#restarts-and-the-network) describes. From
+the end of that wait, the node answers on the socket once the start has waited
+for the reconciler's first pass, so a command sent before then is answered once
+that wait ends, unless its own timeout ends first. A stop while the daemon
+builds its parts or waits for that pass closes the socket without serving it,
+and a command sent in the meantime fails with the connection reset. Once a
+daemon that serves the socket has begun to stop, on a signal or the mesh's
+failure, `up`, `reload` and `redial` are refused with an error saying the node
+is stopping, and the reads answer until the socket closes as the daemon exits. A
+refusal rather than a closed socket keeps `status` and the debug views answering
+through a slow withdrawal. No verb sent once the stop has begun starts a dialer,
+and the dialers running then, one an `up` already under way started among them,
+stop with the mesh once the reconciler and the egress translator have withdrawn.
 
 ## Taking a node off the mesh
 
