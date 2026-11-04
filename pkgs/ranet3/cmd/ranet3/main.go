@@ -267,7 +267,8 @@ type daemon struct {
 // the constructors start the workers of their own, the tun's, the hub's, the
 // network watch and the parts' monitors, and the antispoof filter's first pass
 // writes its table. A refusal closes what was built, which stops and waits
-// for each of those workers. Nothing dials or serves before it returns.
+// for each of those workers. Nothing dials, and nothing but the wait for the
+// key and the trust document serves the control socket, before it returns.
 func assemble(opts options, s stages, asked <-chan struct{}) (*daemon, error) {
 	d := &daemon{opts: opts}
 	if err := d.build(s, asked); err != nil {

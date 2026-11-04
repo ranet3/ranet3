@@ -161,15 +161,19 @@ func peerOrAll(all *bool) cobra.PositionalArgs {
 	}
 }
 
-// reloadCommand is SIGHUP over the socket, so a supervisor is not the only way
-// to ask and an operator on a node they did not start can ask at all.
+// reloadCommand is SIGHUP over the socket once the node runs, so a supervisor is
+// not the only way to ask and an operator on a node they did not start can ask
+// at all. The start's wait for the key and the trust document answers it alone.
 func (r *reader) reloadCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reload",
 		Short: "Reload the config and trust document",
-		Long: `This does what SIGHUP does. The node reads its config file and the trust
-document again without restarting, and a subsystem that was disabled
-stays disabled.`,
+		Long: `This does what SIGHUP does once the node runs. The node reads its config
+file and the trust document again without restarting, and a subsystem
+that was disabled stays disabled. While the start waits for the key or
+the trust document, the daemon reads the config file again and answers
+at once with its refusal or success, where a SIGHUP waits until the node
+dials.`,
 		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			result, err := control.Dial(r.socket).Reload()

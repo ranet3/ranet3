@@ -52,8 +52,8 @@ func serveMesh(t *testing.T) string {
 	return serve(t, meshStub{})
 }
 
-// Each query answers from the read paths, so none of them needs anything the
-// daemon does not already serve.
+// Each query answers from the status and the routes the daemon serves, ip
+// from the status' mesh_addresses.
 func TestQueriesAnswerFromTheReads(t *testing.T) {
 	socket := serveMesh(t)
 	for name, test := range map[string]struct {

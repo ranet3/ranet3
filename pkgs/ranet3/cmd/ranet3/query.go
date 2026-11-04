@@ -68,9 +68,9 @@ func (r *reader) addressCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ip",
 		Short: "Show mesh IP addresses",
-		Long: `The addresses are the host prefixes cap.route announces and cap.table
-assigns, as the node reports them. They print one per line and nothing
-else, so the output goes into a shell variable as it is.`,
+		Long: `The addresses are the address of each host prefix cap.route announces
+or cap.table assigns, as the node reports them. They print one per line
+and nothing else, so the output goes into a shell variable as it is.`,
 		Args: noArguments,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			status, err := control.Dial(r.socket).Status()
