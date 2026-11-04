@@ -331,8 +331,12 @@ func TestDialerSaysAChangeOfOutcomeAtInfoAndARepeatAtDebug(t *testing.T) {
 	waitFor(t, convergeBudget, "alpha's session to come up", func() bool { return len(alpha.client.sessions.snapshot()) == 1 })
 	bravo.client.storeIndex(refusing)
 	failed := len(recorded(alpha.events, "dial.failed"))
+	// a dial's end is said after its dial.failed is recorded, at info or as a repeat at debug
+	ends := func() int { return written.count("reconnecting in") + written.count("peer dial failed again") }
+	said := ends()
 	alpha.client.sessions.snapshot()[0].session.Mux().Close()
 	waitFor(t, convergeBudget, "alpha's dial after the session to fail", func() bool { return len(recorded(alpha.events, "dial.failed")) > failed })
+	waitFor(t, convergeBudget, "alpha to say the session's end and the failure after it", func() bool { return ends() >= said+2 })
 
 	levels := func(phrase string) []string {
 		var out []string
