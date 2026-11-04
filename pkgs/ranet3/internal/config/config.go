@@ -991,10 +991,12 @@ func (c *Config) validateBorder() error {
 	return nil
 }
 
-// validateExit refuses cap.exit without the reconciler whose rules make the
-// mode, without the overlay those rules send to the mesh whatever the mode and
-// keep out of the selectors that send a source by the uplink, and on an exit,
-// whose own traffic and egress leave by its own uplink. It refuses a lan entry
+// validateExit refuses cap.exit without cap.table, whose reconciler makes the
+// mode, with rules on linux and routes on darwin. It refuses it without
+// overlay: linux's rules send the overlay to the mesh whatever the mode and keep
+// it out of the selectors that send a source by the uplink, and darwin judges by
+// it which families the mode covers. It refuses it on an exit, whose own
+// traffic and egress leave by its own uplink, and refuses a lan entry
 // overlapping the overlay and one schema.CapturesTheMachine counts.
 func (c *Config) validateExit() error {
 	if c.Cap.Exit == nil {
