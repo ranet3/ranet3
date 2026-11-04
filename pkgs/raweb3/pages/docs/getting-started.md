@@ -5,7 +5,7 @@
 title: "Getting started"
 description: "Building the binary, the binary cache, and running a node by hand."
 created: 2026-08-17
-updated: 2026-11-01
+updated: 2026-11-04
 order: 20
 ---
 
@@ -15,7 +15,7 @@ order: 20
 cd pkgs/ranet3 && go build -o ranet3 ./cmd/ranet3
 ```
 
-Requires Go 1.26.3 or later.
+Requires Go 1.27.3 or later.
 
 On Linux the daemon needs `CAP_NET_ADMIN` to create the tun and to write routes.
 A `link.port` below 1024 also needs `CAP_NET_BIND_SERVICE`. Root has both. On

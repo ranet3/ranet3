@@ -90,7 +90,7 @@ look a name up through Go's resolver as the daemon does, and check the mark of
 each query by the overlay the lookup is handed. Each starts a nameserver on lo
 through `internal/dnstest` and binds a resolv.conf naming it over the
 `/etc/resolv.conf` Go's resolver
-[reads](https://github.com/golang/go/blob/go1.26.3/src/net/dnsclient_unix.go#L369),
+[reads](https://github.com/golang/go/blob/go1.27.3/src/net/dnsclient_unix.go#L369),
 in a mount namespace the whole process runs in. They skip without root and
 refuse to start in init's network or mount namespace. Run them in namespaces of
 their own:
