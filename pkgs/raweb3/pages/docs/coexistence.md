@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-03
+updated: 2026-11-04
 order: 110
 ---
 
@@ -448,8 +448,8 @@ never installs it.
 
 Any other scoped route of the reconciler's shape out of its own utun is read
 back as its own. A pass withdraws it when the mesh does not select it. macOS
-keeps no source with a route, so a source-specific route an earlier instance
-left behind is withdrawn and installed again.
+keeps no source with a route, so a source-specific route another program wrote
+there is withdrawn and installed again.
 
 The reconciler installs 4 kinds of route scoped to the utun. A scoped route is
 invisible to an ordinary lookup and visible to a socket bound to the utun or to
@@ -464,21 +464,22 @@ an address on it.
   route to that peer, it could leave ranet3's datagrams to the peer no route on
   the interface they name, as
   [where a lookup ends](routing.md#where-a-lookup-ends-on-macos) gives.
-- A route that would carry the host's own traffic, unless `link.underlay.bind`
-  is set. Such a route is one that
-  [counts as a default](routing.md#routes-that-count-as-a-default).
+- A route that would carry the host's own traffic, in mode off or in a family
+  [`cap.exit`](configuration-reference.md#capexit) leaves out. Such a route is
+  one that [counts as a default](routing.md#routes-that-count-as-a-default).
 
-With `bind` set, every route outside the first 3 kinds is installed unscoped, so
-the mesh is reachable from the Mac without every program binding first.
+Under `cap.exit`, in each family the tun holds an overlay address of, every
+route outside the first 3 kinds is installed unscoped, so the Mac's own traffic
+takes the mesh's exit without every program binding first.
 
 Tailscale makes the same split on the same host. Its exit-node default is scoped
 to its utun, and its `100.64.0.0/10` is not.
 
 An unscoped `0.0.0.0/0` or `::/0` out of the utun would collide with the host's
-own default. With `bind` set, the reconciler installs a route holding its
+own default. Under `cap.exit`, the reconciler installs a route holding its
 family's zero address as the members of the zero-free cover it contains, as
 [routing](routing.md#the-zero-free-cover-on-macos) describes. Until exit
-selection exists, a Mac with `bind` set takes whichever `/0` Babel selects.
+selection exists, a Mac under `cap.exit` takes whichever `/0` Babel selects.
 [Exit nodes](exit-nodes.md#what-to-advertise) says why an exit advertises the
 `/0` only.
 
@@ -494,7 +495,8 @@ address. Invisibility to an ordinary lookup is the safety property, and it
 applies to every unbound socket, so Safari, curl and ssh keep the address of
 whatever interface the host was already using. macOS has no `ip rule`: selecting
 a scoped route means `bind()` to an address on the tun or `IP_BOUND_IF` to the
-tun itself, per application, and ranet3 provides neither.
+tun itself, per application, and ranet3 provides neither. `cap.exit` takes the
+host's own traffic into the mesh unscoped instead, as above.
 
 There is a second-order effect too. On an IPv4-only network the mesh address can
 be the host's only global IPv6 address. The host's own source address selection

@@ -5,7 +5,7 @@
 title: "Configuration"
 description: "The configuration file: the node, its links, and the capabilities it turns on."
 created: 2026-08-17
-updated: 2026-11-02
+updated: 2026-11-04
 order: 30
 ---
 
@@ -201,7 +201,7 @@ allow = ["3fff:a::10/128", "203.0.113.10/32", "198.51.100.128/28"]
 | `cap.crypto`    | The transforms, the replay window and the rekey timers                                                                                               |
 | `cap.egress`    | Source translation for an exit node or a subnet router, Linux only                                                                                   |
 | `cap.antispoof` | Exemptions from the antispoof filter, which drops forged mesh traffic arriving from other interfaces and runs on Linux wherever `overlay` is written |
-| `cap.exit`      | Exit mode: this host's own traffic and its forwarded links out by the mesh's default or `via`'s exit, Linux                                          |
+| `cap.exit`      | Exit mode: this host's own traffic and its forwarded links out by the mesh's default or `via`'s exit, on Linux, and the host's own on macOS          |
 
 [Routing](routing.md), [segment routing](segment-routing.md),
 [exit nodes](exit-nodes.md) and [the antispoof filter](antispoof.md) describe

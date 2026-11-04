@@ -15,8 +15,8 @@ the tun, and each lookup the host makes ends as
 [where a lookup ends on Linux](#where-a-lookup-ends-on-linux) and
 [on macOS](#where-a-lookup-ends-on-macos) give. Without `cap.table`, the
 reconciler does not run, and the host routes into the tun however it is
-configured to. On macOS, `link.underlay.bind` decides whether a route that
-counts as a default goes in scoped to the utun, as
+configured to. On macOS, `cap.exit` decides whether a route that counts as a
+default goes in scoped to the utun, as
 [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) and
 [the zero-free cover](#the-zero-free-cover-on-macos) give.
 
@@ -423,17 +423,17 @@ Linux it also installs the [policy rules](#policy-rules-on-linux) it derives.
 
 Each entry of the mesh's table becomes:
 
-| Entry in the mesh's table                                                              | In the kernel table                                                                                                                                                                                                                                                                            |
-| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A learned route                                                                        | a route out of the tun                                                                                                                                                                                                                                                                         |
-| A learned route that [counts as a default](#routes-that-count-as-a-default)            | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS with `link.underlay.bind` one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
-| A hold that does not count                                                             | a hold                                                                                                                                                                                                                                                                                         |
-| A hold that counts, or this node's own prefix that counts                              | nothing                                                                                                                                                                                                                                                                                        |
-| This node's own prefix outside `overlay`                                               | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                             |
-| This node's own prefix inside the overlay                                              | a hold                                                                                                                                                                                                                                                                                         |
-| An address only `cap.table` assigns                                                    | nothing                                                                                                                                                                                                                                                                                        |
-| Each prefix of `overlay` that holds no unspecified address and that the mesh can carry | a hold, on Linux only, since a hold goes only beside the policy rules, which macOS has none of, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                              |
-| Each [carve-out](antispoof.md#carve-outs), a link's network inside the overlay         | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself                                                                                                                              |
+| Entry in the mesh's table                                                              | In the kernel table                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A learned route                                                                        | a route out of the tun                                                                                                                                                                                                                                                                                                                  |
+| A learned route that [counts as a default](#routes-that-count-as-a-default)            | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS under `cap.exit`, in a family the tun holds an overlay address of, one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
+| A hold that does not count                                                             | a hold                                                                                                                                                                                                                                                                                                                                  |
+| A hold that counts, or this node's own prefix that counts                              | nothing                                                                                                                                                                                                                                                                                                                                 |
+| This node's own prefix outside `overlay`                                               | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                                                                      |
+| This node's own prefix inside the overlay                                              | a hold                                                                                                                                                                                                                                                                                                                                  |
+| An address only `cap.table` assigns                                                    | nothing                                                                                                                                                                                                                                                                                                                                 |
+| Each prefix of `overlay` that holds no unspecified address and that the mesh can carry | a hold, on Linux only, since a hold goes only beside the policy rules, which macOS has none of, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                                                       |
+| Each [carve-out](antispoof.md#carve-outs), a link's network inside the overlay         | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself                                                                                                                                                                       |
 
 A throw ends the table's lookup, and the rules after the one that looked it up
 decide, as row L10 of [where a lookup ends](#where-a-lookup-ends-on-linux)
@@ -493,11 +493,13 @@ With [`cap.exit`](configuration-reference.md#capexit) the reconciler adds three
 rules to each family the tun holds an overlay address of, derived on every pass
 from the links outside the mesh as the network watch last read them, and from
 the links `cap.exit.forward` expands to among them. A family the tun holds none
-of runs mode off's rules, as
-[limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) says.
-`iif lo` matches a lookup whose input link is `lo` (net/core/fib_rules.c:284-285
-at Linux `940de590`): the host's own, and the reverse path check of nftables'
-`fib` expression, which looks up from `lo` in a prerouting chain for a forwarded
+of is left out of the mode and keeps mode off's rules, as
+[limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) says. On
+macOS the mode is routes, as
+[the zero-free cover](#the-zero-free-cover-on-macos) gives. `iif lo` matches a
+lookup whose input link is `lo` (net/core/fib_rules.c:284-285 at Linux
+`940de590`): the host's own, and the reverse path check of nftables' `fib`
+expression, which looks up from `lo` in a prerouting chain for a forwarded
 packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
 
 | Priority | Rule                                                                                                                                                      | What it does                                                                                                   |
@@ -989,10 +991,10 @@ of ranet3's underlay datagrams without a pin does, falls back to it, as
 The reconciler installs a route that counts only after a session has been live.
 It withdraws them all once no session has been live for
 `cap.table.capture_grace` (10 seconds by default, 1 second at least), and
-restores them on the first live session. On macOS with `link.underlay.bind` a
-route holding its family's zero address goes in as the members of the zero-free
-cover it contains, as [the zero-free cover](#the-zero-free-cover-on-macos)
-describes.
+restores them on the first live session. On macOS under `cap.exit`, in a family
+the tun holds an overlay address of, a route holding its family's zero address
+goes in as the members of the zero-free cover it contains, as
+[the zero-free cover](#the-zero-free-cover-on-macos) describes.
 
 A session is live for 20 seconds after the last authenticated IKE message from
 its peer, and for 20 to 30 seconds after the last authenticated ESP packet, as
@@ -1049,21 +1051,22 @@ the rules in full.
 
 ## Linux and macOS
 
-|                                                    | Linux                                                                                                   | macOS                                                                                                                                                                                                             |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Table                                              | `cap.table.id`                                                                                          | the single forwarding table, `id` must stay 200                                                                                                                                                                   |
-| Ownership                                          | the protocol `cap.table.proto`                                                                          | the utun and the route's shape, `proto` must stay 155                                                                                                                                                             |
-| Metric                                             | installed                                                                                               | not stored                                                                                                                                                                                                        |
-| Hold                                               | `unreachable` route                                                                                     | reject route scoped to the utun                                                                                                                                                                                   |
-| Source-specific IPv6 route                         | installed with its source                                                                               | scoped to the utun where its source prefix holds an address of the utun, and otherwise not installed                                                                                                              |
-| A route covering a listed literal endpoint address | installed                                                                                               | scoped to the utun, with or without `link.underlay.bind`, but for a member of the zero-free cover                                                                                                                 |
-| A `/0` default                                     | installed                                                                                               | scoped to the utun. With `link.underlay.bind`, installed as its zero-free cover, unscoped                                                                                                                         |
-| Any other route that counts as a default           | installed                                                                                               | scoped to the utun. With `link.underlay.bind`, one holding its family's zero address as the zero-free cover's members it contains, another scoped when it covers a listed endpoint address and otherwise unscoped |
-| Policy rules                                       | derived and installed                                                                                   | none                                                                                                                                                                                                              |
-| An underlay datagram                               | marked 0x72, so its lookup ends past the mesh's routes                                                  | names the interface the selection answers, or the source its pin holds, as [the underlay's interface](#the-underlays-interface-on-macos) says                                                                     |
-| This node's own prefix outside the overlay         | throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source | nothing, so a lookup for it from a socket bound to no interface and no address of the utun ends as row D2 of [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) gives                                  |
-| Hold of each overlay prefix                        | installed for each that holds no unspecified address and that the mesh can carry                        | not installed, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                  |
-| `where` in the logs                                | `table 200 protocol 155`                                                                                | `interface utun6`, for example                                                                                                                                                                                    |
+|                                                    | Linux                                                                                                                                 | macOS                                                                                                                                                                                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Table                                              | `cap.table.id`                                                                                                                        | the single forwarding table, `id` must stay 200                                                                                                                                                                                                           |
+| Ownership                                          | the protocol `cap.table.proto`                                                                                                        | the utun and the route's shape, `proto` must stay 155                                                                                                                                                                                                     |
+| Metric                                             | installed                                                                                                                             | not stored                                                                                                                                                                                                                                                |
+| Hold                                               | `unreachable` route                                                                                                                   | reject route scoped to the utun                                                                                                                                                                                                                           |
+| Source-specific IPv6 route                         | installed with its source                                                                                                             | scoped to the utun where its source prefix holds an address of the utun, and otherwise not installed                                                                                                                                                      |
+| A route covering a listed literal endpoint address | installed                                                                                                                             | scoped to the utun in mode off and under `cap.exit` alike, but for a member of the zero-free cover                                                                                                                                                        |
+| A `/0` default                                     | installed                                                                                                                             | scoped to the utun. Under `cap.exit`, in a family the tun holds an overlay address of, installed as its zero-free cover, unscoped                                                                                                                         |
+| Any other route that counts as a default           | installed                                                                                                                             | scoped to the utun. Under `cap.exit`, in a family the tun holds an overlay address of, one holding its family's zero address as the zero-free cover's members it contains, another scoped when it covers a listed endpoint address and otherwise unscoped |
+| `cap.exit`                                         | the rules of [exit mode](#exit-mode-on-linux), `forward`, [the kill switch](#the-kill-switch-on-linux) and [mode 3](#mode-3-on-linux) | the routes of [the zero-free cover](#the-zero-free-cover-on-macos) with `fallback = "uplink"`, mode 3 among them, and `forward` and `fallback = "none"` refused, as [the configuration reference](configuration-reference.md#capexit) gives               |
+| Policy rules                                       | derived and installed                                                                                                                 | none                                                                                                                                                                                                                                                      |
+| An underlay datagram                               | marked 0x72, so its lookup ends past the mesh's routes                                                                                | names the interface the selection answers, or the source its pin holds, as [the underlay's interface](#the-underlays-interface-on-macos) says                                                                                                             |
+| This node's own prefix outside the overlay         | throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source                               | nothing, so a lookup for it from a socket bound to no interface and no address of the utun ends as row D2 of [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) gives                                                                          |
+| Hold of each overlay prefix                        | installed for each that holds no unspecified address and that the mesh can carry                                                      | not installed, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                                                          |
+| `where` in the logs                                | `table 200 protocol 155`                                                                                                              | `interface utun6`, for example                                                                                                                                                                                                                            |
 
 On both platforms a route that counts as a default, the `/0` default among them,
 goes in only once a session has been live, and never on an exit, as
@@ -1085,26 +1088,30 @@ the reconciler's alike. A route scoped to an interface answers a socket bound to
 that interface, and one scoped to the utun also answers a socket bound to an
 address of the utun, which the source-specific row below relies on. A route that
 counts as a default goes in only once a session has been live, and never on an
-exit, as [what it installs](#what-it-installs) says. The first row that matches
-gives how an entry of the mesh's table goes in:
+exit, as [what it installs](#what-it-installs) says. Under `cap.exit` a family
+the tun holds an overlay address of takes the second column, and a family it
+holds none of is left out of the mode and takes the first. A family the utun
+holds no address of at all goes in in neither, as
+[the zero-free cover](#the-zero-free-cover-on-macos) gives. The first row that
+matches gives how an entry of the mesh's table goes in:
 
-| Entry of the mesh's table                                                                                      | Without `link.underlay.bind` | With it                                             |
-| -------------------------------------------------------------------------------------------------------------- | ---------------------------- | --------------------------------------------------- |
-| This node's own prefix, a hold that counts, or a prefix the mesh cannot carry                                  | nothing                      | nothing                                             |
-| A source-specific IPv4 route, or a source-specific IPv6 route whose source prefix holds no address of the utun | nothing                      | nothing                                             |
-| A hold                                                                                                         | scoped to the utun           | scoped to the utun                                  |
-| A source-specific IPv6 route                                                                                   | scoped to the utun           | scoped to the utun                                  |
-| A route holding its family's zero address                                                                      | scoped to the utun           | the zero-free cover's members it contains, unscoped |
-| A route at a member's destination, such as a real `128.0.0.0/1`                                                | scoped to the utun           | unscoped                                            |
-| A route covering a listed endpoint address                                                                     | scoped to the utun           | scoped to the utun                                  |
-| A route that counts as a default                                                                               | scoped to the utun           | unscoped                                            |
-| Any other route                                                                                                | unscoped                     | unscoped                                            |
+| Entry of the mesh's table                                                                                      | Mode off           | `cap.exit`                                          |
+| -------------------------------------------------------------------------------------------------------------- | ------------------ | --------------------------------------------------- |
+| This node's own prefix, a hold that counts, or a prefix the mesh cannot carry                                  | nothing            | nothing                                             |
+| A source-specific IPv4 route, or a source-specific IPv6 route whose source prefix holds no address of the utun | nothing            | nothing                                             |
+| A hold                                                                                                         | scoped to the utun | scoped to the utun                                  |
+| A source-specific IPv6 route                                                                                   | scoped to the utun | scoped to the utun                                  |
+| A route holding its family's zero address                                                                      | scoped to the utun | the zero-free cover's members it contains, unscoped |
+| A route at a member's destination, such as a real `128.0.0.0/1`                                                | scoped to the utun | unscoped                                            |
+| A route covering a listed endpoint address                                                                     | scoped to the utun | scoped to the utun                                  |
+| A route that counts as a default                                                                               | scoped to the utun | unscoped                                            |
+| Any other route                                                                                                | unscoped           | unscoped                                            |
 
 A destination takes one scoped route. The reconciler offers the entry with the
 most specific source first, and leaves another entry that would go in scoped at
 the same destination uninstalled, such as `::/0` beside `::/0` from a prefix of
-the utun, and logs it once. With `link.underlay.bind`, a route holding its
-family's zero address goes in as the members of
+the utun, and logs it once. Under `cap.exit`, a route holding its family's zero
+address goes in as the members of
 [the zero-free cover](#the-zero-free-cover-on-macos) it contains. Where a lookup
 ends:
 
@@ -1113,8 +1120,8 @@ ends:
 | D1  | a socket bound to no interface and no address of the utun                                                                                                          | the longest unscoped match, so a route of the mesh installed unscoped takes it into the utun wherever no longer route of the host's covers the destination                                                                                                                                             |
 | D2  | a socket bound to no interface and no address of the utun, for a destination under a scoped route of the mesh, a hold among them, or inside this node's own prefix | the scoped route is passed over, or there is none, and D1 gives the end: a wider unscoped route of the mesh takes it into the utun ahead of a shorter route of the host's                                                                                                                              |
 | D3  | a socket bound to the utun                                                                                                                                         | the routes scoped to the utun answer it too, so a hold refuses it                                                                                                                                                                                                                                      |
-| D4  | ranet3's underlay datagram that names no source, with or without `link.underlay.bind`                                                                              | names the interface [the selection](#the-underlays-interface-on-macos) answers, never the utun, and the kernel's lookup scoped to it gives where it ends, but for the cached route [limits](design/limits.md#the-underlay-socket) gives                                                                |
-| D5  | ranet3's underlay datagram answering from the address a peer reached, with or without `link.underlay.bind`                                                         | names that address as its source, an IPv6 link-local one also its arrival interface, and leaves by the interface the kernel then takes ([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)), and as D4 once the kernel refuses that address |
+| D4  | ranet3's underlay datagram that names no source, in mode off and under `cap.exit` alike                                                                            | names the interface [the selection](#the-underlays-interface-on-macos) answers, never the utun, and the kernel's lookup scoped to it gives where it ends, but for the cached route [limits](design/limits.md#the-underlay-socket) gives                                                                |
+| D5  | ranet3's underlay datagram answering from the address a peer reached, in mode off and under `cap.exit` alike                                                       | names that address as its source, an IPv6 link-local one also its arrival interface, and leaves by the interface the kernel then takes ([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)), and as D4 once the kernel refuses that address |
 | D6  | a socket bound to an address of the utun and to no interface                                                                                                       | a route scoped to the utun answers it, a source-specific route whose source prefix holds that address among them                                                                                                                                                                                       |
 
 ### The underlay's interface on macOS
@@ -1191,10 +1198,14 @@ hostname, are declared limits, listed in
 
 ### The zero-free cover on macOS
 
-With `link.underlay.bind` set, a route Babel selects that holds its family's
-zero address goes into the kernel as the members of the zero-free cover it
-contains. The members of each family together hold every address but `0.0.0.0/8`
-and `::/8`:
+Exit mode on macOS is routes in the one table. Under
+[`cap.exit`](configuration-reference.md#capexit), in each family the tun holds
+an overlay address of, a route Babel selects that holds its family's zero
+address goes into the kernel as the members of the zero-free cover it contains,
+and every other route of the family that counts as a default goes in unscoped,
+but for one covering a listed endpoint address, which stays scoped to the utun.
+The members of each family together hold every address but `0.0.0.0/8` and
+`::/8`:
 
 | Family | Members                                                                                                     |
 | ------ | ----------------------------------------------------------------------------------------------------------- |
@@ -1261,7 +1272,38 @@ Each later pass deletes the member again and tries the route, so the error and
 the skipped count last until a delete succeeds. Meanwhile the member leaves by
 the utun as the route would, and traffic is forwarded as Babel selects.
 
-Until exit selection exists, a Mac with `bind` set takes whichever `/0` Babel
+A family the tun holds no overlay address of is left out of the mode. Its routes
+keep mode off's form, scoped to the utun, and the family's traffic stays on the
+host's own routes. The Kernel line of `ranet3 status` names it, and the change
+logs
+`kernel leaves a family out of the exit mode, the tun holding no overlay address of it`
+and records a `kernel.exit` event, as [watching it](#watching-it) lists. A pass
+that cannot list the tun's addresses keeps the last pass's families, and the
+first pass covers none until a listing answers.
+
+macOS refuses a route out of an interface that holds no address of the route's
+family, scoped or not, with `ENETUNREACH`
+([ifa_ifwithroute_common_locked](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/route.c#L1862)),
+which a test utun holding an IPv4 address alone answers for a scoped `::/0`. So
+where the utun holds no address of a family at all, in mode off as in a family
+the mode leaves out, the reconciler installs none of that family's routes. It
+counts each as skipped, logs
+`kernel is leaving a route uninstalled: the tun holds no address of its family, and macOS routes a family only out of an interface holding one of its addresses`
+once for each, and the pass after the utun gains an address of the family
+installs them. The mesh's own table still carries the family.
+
+A reload that adds or removes `cap.exit`, or a family that gains or loses its
+overlay address, moves the routes on the next pass with no restart: the scoped
+routes out and the cover in, or the reverse. The reconciler removes before it
+installs, so the Mac's traffic leaves by its uplink in between.
+
+In [mode 3](#mode-3-on-linux), which macOS takes with `fallback = "uplink"`
+written, the steered defaults hold the zero address, so they go in as the cover,
+and the path counts a family whose cover is in as installed. While a segment of
+the path is down they are withdrawn, and the host's traffic leaves by its
+uplink.
+
+Until exit selection exists, a Mac under `cap.exit` takes whichever `/0` Babel
 selects. A source-specific default is not covered. It is a route like any other,
 and a hold of a default is not installed at all.
 
@@ -1294,15 +1336,16 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   `no IPv6 overlay address on the tun, so IPv6 is left out of the mode`, as
   [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) counts the
   family and says where its traffic goes. [When a pass runs](#when-a-pass-runs)
-  lists what wakes the pass that reads the tun again. Under `fallback = "none"`
-  it names the switch's state and what the last lines of both chains have
-  dropped, summed, as `fallback none holding, 12 packets, 720 B dropped`,
-  `passing` while an exit is live, or `not holding` with the reason the table
-  does not read back, and `drops not read yet` in place of the counts until a
-  read of the table by this process succeeds. It names a connected network left
-  out of the LAN as
-  `198.0.0.0/7 left out of the LAN as it captures the machine`, and one the
-  private and link-local ranges and `cap.exit.lan` leave out in whole or in
+  lists what wakes the pass that reads the tun again. On macOS under `cap.exit`
+  it names the families whose cover is in as `zero-free cover for ipv4`, and a
+  family left out of the mode as on Linux. Under `fallback = "none"` it names
+  the switch's state and what the last lines of both chains have dropped,
+  summed, as `fallback none holding, 12 packets, 720 B dropped`, `passing` while
+  an exit is live, or `not holding` with the reason the table does not read
+  back, and `drops not read yet` in place of the counts until a read of the
+  table by this process succeeds. It names a connected network left out of the
+  LAN as `198.0.0.0/7 left out of the LAN as it captures the machine`, and one
+  the private and link-local ranges and `cap.exit.lan` leave out in whole or in
   part, or of one sharing an address with the overlay each such prefix of its
   part outside the overlay, as
   `203.0.113.0/24 left out of the LAN as public, outside the private and link-local ranges and cap.exit lan`,

@@ -209,41 +209,6 @@ handshake reads an ID.
   list. A value that leaves the device under 1280 bytes, or a value over 65470,
   is refused at load. [Path MTU](path-mtu.md) describes how sessions use it.
 
-### `link.underlay`
-
-This block decides how a Mac installs an exit's default route. A Mac that takes
-an exit's default route needs `bind`. It is refused at startup on every platform
-but macOS.
-
-| Key    | Value   | Default | Meaning                                                                                        |
-| ------ | ------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `bind` | boolean | `false` | macOS only. Install a route holding its family's zero address unscoped, as its zero-free cover |
-
-- On Linux the block takes no key. Every underlay socket carries the mark 0x72
-  where the process may set it. A marked lookup bound to no device ends as rows
-  L1 and L2 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)
-  give, an IPv4 reply pinned to the interface its request arrived on as row B1
-  gives, and an IPv6 one, which also names the address its request arrived at,
-  as row L2 gives. [Sharing a host](coexistence.md#the-underlays-mark) says what
-  a process the kernel refuses the mark does.
-- On macOS, with or without `bind`, each underlay datagram names the interface
-  the selection answers or the source its pin holds, as
-  [the underlay's interface](routing.md#the-underlays-interface-on-macos)
-  describes.
-- With `bind`, the reconciler installs a route Babel selects that holds its
-  family's zero address as the members of
-  [the zero-free cover](routing.md#the-zero-free-cover-on-macos) it contains, so
-  other sockets use the mesh exit. Until exit selection exists, a Mac with
-  `bind` set takes whichever `/0` Babel selects.
-- With `bind`, any other route that carries this host's own traffic is installed
-  unscoped too, except one that covers an endpoint address listed in the trust
-  document, which stays scoped to the tun, and a source-specific IPv6 one,
-  scoped to the tun where its source prefix holds an address of the tun and
-  otherwise not installed, while a source-specific IPv4 one is never installed.
-- Without `bind`, every route that carries this host's own traffic is scoped to
-  the tun, which no socket follows unless it asks for the tun by name. Either
-  way the daemon writes nothing outside the tun.
-
 ## `dial`
 
 | Key   | Value         | Default | Meaning                                             |
@@ -816,10 +781,13 @@ on by default, and its block only exempts.
 
 Exit mode. Writing this block turns it on. The mesh's default of lowest metric,
 or with `via` the path to one exit, becomes this host's default, for its own
-traffic and for what it forwards from the links `forward` names. Linux only.
-[Routing](routing.md#exit-mode-on-linux) lists the rules it adds and
-[mode 3](routing.md#mode-3-on-linux) what `via` changes, and
-[sharing a host](coexistence.md#exit-mode-beside-other-programs) what other
+traffic and for what it forwards from the links `forward` names. Linux and
+macOS. macOS takes `fallback = "uplink"`, written or unwritten, and `via` with
+`fallback = "uplink"` written, and refuses the rest, as the last items here
+give. [Routing](routing.md#exit-mode-on-linux) lists the rules it adds on Linux,
+[the zero-free cover](routing.md#the-zero-free-cover-on-macos) the routes it
+installs on macOS, and [mode 3](routing.md#mode-3-on-linux) what `via` changes,
+and [sharing a host](coexistence.md#exit-mode-beside-other-programs) what other
 programs' rules do beside them.
 
 | Key        | Value                | Default                         | Meaning                                                                                                                  |
@@ -868,8 +836,9 @@ programs' rules do beside them.
   `config: cap.exit lan 0.0.0.0/1 counts as capturing the machine, so it would let the host's traffic leave by the uplink as a default does`.
 
 - The file is refused without `cap.table`, whose reconciler writes the mode's
-  rules, and without `overlay`, which keeps the mode's sources by main apart
-  from the mesh's, as
+  rules, or on macOS its routes, and without `overlay`, which keeps the mode's
+  sources by main apart from the mesh's, and on macOS decides the families the
+  mode covers, as
   `config: cap.exit is written and overlay is absent, so the mode's rules cannot keep the overlay's sources off the uplink: write overlay with the prefixes the mesh numbers its nodes from`.
 - The file is refused on an exit, with the reason it is one:
   `config: cap.exit sends this node's own traffic out through another exit, and this node is an exit (cap.egress advertises 0.0.0.0/0), whose own traffic and whose egress leave by its own uplink: remove cap.exit, or stop offering the exit`.
@@ -911,7 +880,19 @@ programs' rules do beside them.
   mode. A pattern matching one of them, or a name that becomes the uplink later,
   is skipped at each pass and logged, as [watching it](routing.md#watching-it)
   lists.
-- macOS, the BSDs, Android and iOS refuse the block at startup:
+- macOS refuses at startup and on a reload `forward`, as
+  `kernel: cap.exit forward is refused on macOS, where this build has no rule that routes a forwarded packet by the link it arrived on: remove forward, and a packet this host forwards toward an exit in a family the mode covers follows the mode into the tun as the host's own does, which drops a source this node does not own`,
+  `fallback = "none"`, naming `inbound` and `lan` where they are written, as
+  `kernel: cap.exit fallback = "none" with inbound is refused on macOS, where this build has no filter to keep the host's traffic off the uplink: write fallback = "uplink" and remove inbound`,
+  and `via` with `fallback` unwritten, which is `"none"` then, as
+  `kernel: cap.exit via with fallback unwritten is "none" in mode 3, which is refused on macOS, where this build has no filter to keep the host's traffic off the uplink: write fallback = "uplink" beside via`.
+  The fallback's refusal comes first, so a file writing `forward` beside
+  `fallback = "none"` is told of the fallback.
+  [Gaps on macOS](platforms.md#gaps-on-macos) says what this build lacks for
+  each, and
+  [the limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) what a
+  Mac that forwards under the mode is told.
+- The BSDs, Android and iOS refuse the block at startup:
   `kernel: cap.exit is refused on <platform>, where this build has no exit mode: remove cap.exit, and this host keeps its own default`.
   `fallback = "none"`, and `via` with `fallback` unwritten, which is `"none"`
   then, are refused ahead of it, since no filter there keeps the host's traffic

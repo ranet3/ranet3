@@ -157,8 +157,8 @@ no device ends at row L1 or L2 of
 IPv4 reply pinned to the interface its request arrived on as row B1 gives, and
 an IPv6 one, which also names the address its request arrived at, as row L2
 gives. The head of that account says what another program's rule or another
-writer's route does. On macOS, with or without `link.underlay.bind`, a datagram
-sent without a pin leaves as row D4 of
+writer's route does. On macOS, in mode off and under `cap.exit` alike, a
+datagram sent without a pin leaves as row D4 of
 [where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos)
 gives, and one sent from its pin as row D5 gives, as
 [the underlay's interface](../routing.md#the-underlays-interface-on-macos) says.
@@ -216,18 +216,6 @@ overlay of the mesh's own prefixes, so its query is marked where the process may
 set the mark. An IPv6 one ends by main's route out of the link its zone names,
 and an IPv4 one at row L2 by main's route for it.
 
-`link.underlay.bind` is macOS only, and decides how the reconciler installs a
-route that carries the host's own traffic. With it, a route holding its family's
-zero address goes in unscoped as the members of the zero-free cover it contains,
-as [routing](../routing.md#the-zero-free-cover-on-macos) describes. Any other
-route that carries the host's own traffic is installed unscoped too, unless it
-covers a literal endpoint address the trust document lists or carries a source
-prefix. Without `bind`, the reconciler scopes every route that counts as a
-default to the tun, as [platforms](../platforms.md#macos) describes. No socket
-selects a scoped route unless it asks for the tun by name, so a node without
-`bind` can hold an exit-announced address and still cannot send its traffic
-through the exit. Either way the reconciler writes nothing outside the tun.
-
 ## Routes that carry the host's own traffic
 
 On Linux and macOS, a route that would carry this host's own traffic is held
@@ -259,9 +247,10 @@ mesh's defaults are retracted, and after the daemon is killed with `SIGKILL` and
 the tun goes with it, whose rules stay until the next start, while every stop
 that withdraws, a failure's included, withdraws them. A family the tun holds no
 overlay address of, an address inside no prefix of `overlay` counting for none,
-runs mode off's rules whatever the mesh's table holds, with 5445 and 5450 beside
-them under [the kill switch](../routing.md#the-kill-switch-on-linux). A lookup
-of that family ends where rows L1 to L12 of
+is left out of the mode and runs mode off's rules whatever the mesh's table
+holds, with 5445 and 5450 beside them under
+[the kill switch](../routing.md#the-kill-switch-on-linux). A lookup of that
+family ends where rows L1 to L12 of
 [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, but
 where they give main at 32766 an unmarked lookup of the host's own or of a link
 `forward` names ends at 5450 under the switch, or at 5445 to this node's own
@@ -282,6 +271,30 @@ as above, at 5450 under the switch, mode 3's default, and by main under
 such as Tailscale's at 5270 while it uses an exit node, takes the host's traffic
 first, as [sharing a host](../coexistence.md#exit-mode-beside-other-programs)
 measures.
+
+On macOS exit mode is routes,
+[the zero-free cover](../routing.md#the-zero-free-cover-on-macos), and
+`fallback = "uplink"` is the only fallback. Wherever the mesh's table holds no
+default, the host's traffic toward one leaves by the host's own default: before
+the first session is live, after `capture_grace`, while the mesh's defaults are
+retracted, in mode 3 while a segment of the path is down, and after `SIGKILL`,
+since the cover goes with the utun. A family the tun holds no overlay address of
+is left out of the mode, its routes scoped to the utun as in mode off, so its
+traffic stays on the host's own routes, and `ranet3 status` names it. Where the
+utun holds no address of a family at all, macOS refuses every route of it, so
+the reconciler installs none of them and counts each as skipped, in mode off
+too, as [routing](../routing.md#the-zero-free-cover-on-macos) measures. In a
+family the mode covers, a packet the Mac forwards toward an exit follows the
+cover into the utun as the host's own does, and the tun read drops it, since its
+source is not this node's, so a host the Mac forwards for loses what it sends
+toward an exit. This build has no rule that picks a forwarded packet's route by
+the link it arrived on, and [refuses `forward`](../platforms.md#gaps-on-macos).
+At the start and at each reload, where `net.inet.ip.forwarding` or
+`net.inet6.ip6.forwarding` reads 1 under `cap.exit`, the daemon warns
+`config: this node forwards IPv4 under cap.exit, and on macOS a forwarded packet toward an exit in a family the mode covers follows the mode into the tun, which drops a source this node does not own`,
+naming each family it forwards, and records an `exit.forwarding` event for each,
+as [debugging](../development/debug.md#events) lists. Forwarding switched on
+later is read at the next reload.
 
 [The kill switch](../routing.md#the-kill-switch-on-linux), `fallback = "none"`,
 whose section lists the lines that let that traffic leave by the uplink, has
@@ -430,8 +443,8 @@ The rule about the unspecified address follows the macOS kernel's fallback of a
 scoped lookup, which
 [the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. A
 route out of the tun as small as `0.0.0.0/24` would take that fallback away, so
-with `bind` such a route goes in as the zero-free cover's members it contains,
-and one inside `0.0.0.0/8` or `::/8`, which contains none, not at all.
+under `cap.exit` such a route goes in as the zero-free cover's members it
+contains, and one inside `0.0.0.0/8` or `::/8`, which contains none, not at all.
 
 `capture_grace` has a floor of 1 second. A value above 0 and under 1 second is
 refused by name, and 0 takes the default. The hold is checked once a pass, and
@@ -444,12 +457,20 @@ from its peer, and for 20 to 30 seconds after its last authenticated ESP, which
 the session notices up to 10 seconds late. Without the hold a laptop whose mesh
 has gone loses every network it has rather than only the mesh. With literal
 endpoints its sessions still redial over the uplink, since the underlay keeps
-off the mesh's routes, but a node whose endpoints are names cannot resolve
-them, since the lookup goes into the capture with the rest of the host's
-traffic.
+off the mesh's routes. An endpoint name resolves only where its query keeps off
+them too, as [the underlay socket](#the-underlay-socket) gives for Linux and the
+next paragraph for macOS.
+
+On macOS ranet3 resolves an endpoint name through the host's resolver, whose
+queries leave by no interface ranet3 names, so under `cap.exit` they follow the
+cover with the rest of the host's traffic. A Mac whose exit carries sessions but
+no traffic cannot resolve a peer's endpoint name until the hold's grace has run
+after its last live session, by when every other program on the Mac has lost its
+traffic too. ranet3 sends no query of its own bound to the selection's interface
+there, as it marks its own on Linux.
 
 On macOS an unscoped `/0` out of the tun would collide with the host's own
-default, because macOS has no route replace. With `bind` set, the reconciler
+default, because macOS has no route replace. Under `cap.exit`, the reconciler
 installs it as the zero-free cover instead, and the hold judges the cover by its
 `/0`. The cover's members stay unscoped even over a literal endpoint address the
 trust document lists, because no member holds the zero address a datagram that
@@ -477,11 +498,12 @@ to.** It creates the device and brings it up. On Linux it attaches instead to an
 existing device that `link.tun` names, but never to one of the default name
 `ranet3`. An optional reconciler, `internal/kernel`, mirrors the learned routes
 into 1 routing table it owns, or on macOS into the single table that platform
-has. On macOS without `link.underlay.bind` it scopes the routes that would
-otherwise capture the host, on Linux its policy rules give a route that counts
-as a default by its length the traffic from this node's own prefixes to a
-destination outside the overlay, for a lookup bound to no device where the rows
-before it pass the lookup on, as rows L6 to L12 of
+has. On macOS in mode off it scopes the routes that would otherwise capture the
+host, and under `cap.exit` installs them unscoped, a zero route as its zero-free
+cover, on Linux its policy rules give a route that counts as a default by its
+length the traffic from this node's own prefixes to a destination outside the
+overlay, for a lookup bound to no device where the rows before it pass the
+lookup on, as rows L6 to L12 of
 [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) give, and it
 can assign the configured addresses. The `cap.table` block in
 [the configuration reference](../configuration-reference.md) turns it on. It is
