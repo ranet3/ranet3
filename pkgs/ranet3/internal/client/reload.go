@@ -192,7 +192,8 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	_, nodes := x.Size()
 	applied = changedCapabilities(old, cfg)
 	slog.Info(fmt.Sprintf("reloaded %s: %d peers, %d nodes in the trust document", path, len(peers), nodes))
-	warnUnbordered(forwardingEnabled)
+	warnUnbordered(hostForwarding)
+	warnForwardedUnderExit(cfg, hostForwarding, c.events)
 	warnCountedAdvertisements(cfg)
 	return nil
 }

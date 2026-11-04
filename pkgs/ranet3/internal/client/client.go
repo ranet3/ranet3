@@ -211,7 +211,8 @@ func New(cfg *config.Config, bus *events.Bus) (_ *Client, err error) {
 	if err := validateRuntimeConfig(cfg, privateKey, x); err != nil {
 		return nil, err
 	}
-	warnUnbordered(forwardingEnabled)
+	warnUnbordered(hostForwarding)
+	warnForwardedUnderExit(cfg, hostForwarding, bus)
 	warnCountedAdvertisements(cfg)
 	// Before the tun exists, so a segment this node could not answer for
 	// refuses the startup without a device to clean up.

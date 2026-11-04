@@ -15,6 +15,11 @@ func forwardingEnabled() (v4, v6 *bool) {
 	return sysctlIsOne("net.inet.ip.forwarding"), sysctlIsOne("net.inet6.ip6.forwarding")
 }
 
+// forwardedFollowsTheMode is true: cap.exit is routes in the one table, and
+// this build has no rule that routes a forwarded packet by the link it arrived
+// on
+const forwardedFollowsTheMode = true
+
 func sysctlIsOne(name string) *bool {
 	value, err := unix.SysctlUint32(name)
 	if err != nil {

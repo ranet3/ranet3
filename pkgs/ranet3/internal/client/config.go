@@ -20,6 +20,7 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
@@ -344,6 +345,31 @@ func warnUnbordered(forwards func() (v4, v6 *bool)) {
 	}
 	slog.Warn(fmt.Sprintf("config: this node forwards %s and %s runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source",
 		strings.Join(on, " and "), runtime.GOOS))
+}
+
+// hostForwarding is forwardingEnabled, which a test replaces to stand in for a host's settings
+var hostForwarding = forwardingEnabled
+
+// warnForwardedUnderExit says so where cap.exit runs on macOS and the host
+// forwards. The mode there is routes in the one table, so a forwarded packet
+// toward an exit follows them into the tun, which drops a source this node
+// does not own.
+//
+// a warning rather than a refusal, since forwarding moves under a running node
+// and a Mac running a VM forwards with nothing shared
+func warnForwardedUnderExit(cfg *config.Config, forwards func() (v4, v6 *bool), bus *events.Bus) {
+	if !forwardedFollowsTheMode || cfg.Cap.Exit == nil {
+		return
+	}
+	on := forwardedFamilies(forwards())
+	if len(on) == 0 {
+		return
+	}
+	slog.Warn(fmt.Sprintf("config: this node forwards %s under cap.exit, and on macOS a forwarded packet toward an exit in a family the mode covers follows the mode into the tun, which drops a source this node does not own",
+		strings.Join(on, " and ")))
+	for _, family := range on {
+		bus.Emit("exit.forwarding", "", slog.String("family", strings.ToLower(family)))
+	}
 }
 
 // forwardedFamilies names each family read as forwarding, and no family whose setting could not be read, since that shows nothing forwarding

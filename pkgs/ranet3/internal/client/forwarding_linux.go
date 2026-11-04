@@ -19,6 +19,10 @@ func forwardingEnabled() (v4, v6 *bool) {
 		sysctlIsOne("/proc/sys/net/ipv6/conf/all/forwarding")
 }
 
+// forwardedFollowsTheMode is false, since a link cap.exit forward leaves out
+// keeps the routes it had
+const forwardedFollowsTheMode = false
+
 func sysctlIsOne(path string) *bool {
 	value := readSysctl(path)
 	if value == "" {

@@ -8,6 +8,9 @@ package client
 // forwardingEnabled reads no setting on a platform with no implementation, so neither family is known
 func forwardingEnabled() (v4, v6 *bool) { return nil, nil }
 
+// forwardedFollowsTheMode is false, since this build refuses cap.exit here
+const forwardedFollowsTheMode = false
+
 // Sysctl reads no setting, since the paths the kernel exit names are linux's
 // and this build carries no exit
 func Sysctl(string) string { return "" }
