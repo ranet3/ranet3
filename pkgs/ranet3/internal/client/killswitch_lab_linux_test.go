@@ -1175,7 +1175,8 @@ func switchAskFrom(fd, kind int, to unix.Sockaddr, sent func()) (string, error) 
 	fds := []unix.PollFd{{Fd: int32(fd), Events: events}}
 	deadline := time.Now().Add(exitPingWait)
 	for {
-		n, err := unix.Poll(fds, int(time.Until(deadline).Milliseconds()))
+		// a negative timeout waits forever, and a signal can break the poll past the deadline
+		n, err := unix.Poll(fds, max(0, int(time.Until(deadline).Milliseconds())))
 		if errors.Is(err, unix.EINTR) {
 			continue
 		}
