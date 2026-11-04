@@ -198,8 +198,10 @@ func TestDebugReadsBesidePassesAndAnotherReader(t *testing.T) {
 }
 
 // Reads go on while the exit stops and after Run has returned, which closed
-// the backend's sockets: each reads the rules or answers the error a read
-// after the stop answers, which names no descriptor Close released
+// the backend's sockets: each reads the rules, finds a table the stop removed
+// between the read's look at the tables and its read of one, or answers the
+// error a read after the stop answers, which names no descriptor Close
+// released
 func TestDebugReadsAcrossTheExitsStop(t *testing.T) {
 	exit, debug, _, _ := debugExit(t, debugBusySweep)
 	stopExit := runDebugExit(t, exit)
@@ -212,8 +214,9 @@ func TestDebugReadsAcrossTheExitsStop(t *testing.T) {
 		t.Fatalf("a debug read after Run returned answers %q, want the error of a stopped exit", after.ReadErr)
 	}
 	for err, reads := range errs {
-		if err != "" && err != after.ReadErr {
-			t.Errorf("%d reads across the stop answered %q, want the rules or %q", reads, err, after.ReadErr)
+		removed := strings.HasPrefix(err, "egress: read table ") && strings.HasSuffix(err, ": "+syscall.ENOENT.Error())
+		if err != "" && err != after.ReadErr && !removed {
+			t.Errorf("%d reads across the stop answered %q, want the rules, a table the stop removed or %q", reads, err, after.ReadErr)
 		}
 	}
 }
