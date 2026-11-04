@@ -7,6 +7,7 @@
   inputs,
   lib,
   nixfmt,
+  python3,
   reuse,
   runCommand,
   taplo,
@@ -32,6 +33,7 @@ runCommand "ranet3-tree"
       deno
       go
       nixfmt
+      python3
       reuse
       taplo
       templ
@@ -86,6 +88,12 @@ runCommand "ranet3-tree"
       }
       END { exit failed }
     ' pkgs/ranet3/go.mod pkgs/wireguard/go.mod pkgs/raweb3/go.mod >&2
+
+    # a grep of ranet3's journal that a check expects to fail passes on nothing
+    # once the Go text it copies is renamed, so each fixed string such a grep
+    # reads is text that non-test Go under pkgs still holds, and a form of it
+    # absent.py cannot read fails
+    python3 checks/tree/absent.py checks pkgs
 
     # reuse looks for the license texts in LICENSES alone. The rename goes
     # through a second name because a case-insensitive build directory reads
