@@ -209,7 +209,7 @@ func TestDarwinScopesPlainDefaults(t *testing.T) {
 				t.Fatalf("install wrote %d messages, want 1", len(written))
 			}
 			if written[0].Flags&unix.RTF_IFSCOPE == 0 || written[0].Index != testIndex {
-				t.Fatalf("default %s was installed without interface scope, so it can capture the ESP underlay", destination)
+				t.Fatalf("default %s was installed without interface scope, so the Mac's own traffic takes it in mode off", destination)
 			}
 			rib := dumpRIB(t, dumpEntry{
 				index: testIndex, flags: written[0].Flags,
@@ -232,11 +232,10 @@ func TestDarwinScopesPlainDefaults(t *testing.T) {
 	}
 }
 
-// An announced default is the one route that can capture this machine: darwin
-// has one FIB, Config.Table is meaningless here, and nothing keeps the peers'
-// own endpoints out of it, so the ESP underlay would route into the tun
-// carrying it.
-func TestDarwinAnnouncedDefaultDoesNotCaptureUnderlay(t *testing.T) {
+// In mode off an announced default goes in scoped to the tun, so only a socket
+// asking for the tun takes it: an unbound socket does not reach the tun
+// through it, and a socket bound to the mesh address does.
+func TestDarwinScopedDefaultReachesOnlyASocketBoundToTheTun(t *testing.T) {
 	requireNetTest(t)
 	device, tun := createUTUNWithFD(t)
 	setInterfaceUp(t, device)
@@ -290,7 +289,7 @@ func TestDarwinAnnouncedDefaultDoesNotCaptureUnderlay(t *testing.T) {
 		return false
 	}
 	if probe(false) {
-		t.Error("an unbound underlay socket reached the tun through the announced default, which is how the ESP underlay routes into its own tunnel")
+		t.Error("an unbound socket reached the tun through the announced default, which mode off scopes so that only a socket asking for the tun takes it")
 	}
 	if !probe(true) {
 		t.Error("a socket bound to the mesh address could not reach the announced default")
@@ -907,23 +906,21 @@ func TestDarwinHoldIsInstalledAsReject(t *testing.T) {
 	}
 }
 
-// ranet3 attaches to a tun it did not necessarily create, so an instance
-// can start on an interface that already carries its predecessor's scoped
-// routes. Darwin has no replace, so a scoped route the dump does not report is
-// one this process can neither withdraw nor install over: the add comes back
-// EEXIST on every pass for the life of the process, and the destination it
-// names is wrong for just as long.
+// Another program can write a scoped route out of ranet3's utun. Darwin has no
+// replace, so a scoped route the dump does not report is one this process can
+// neither withdraw nor install over: the add comes back EEXIST on every pass
+// for the life of the process, and the destination it names is wrong for just
+// as long.
 func TestDarwinAdoptsScopedRouteItDidNotInstall(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
 	inherited := []dumpEntry{
-		// an announced default, which this backend always scopes
+		// an announced default, which this backend scopes in mode off
 		{index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC | unix.RTF_IFSCOPE,
 			dst: prefix("::/0"), gateway: ourGateway()},
 		// a held prefix, which is scoped for the same reason
 		{index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC | unix.RTF_IFSCOPE | unix.RTF_REJECT,
 			dst: prefix("2001:db8:1::/48"), gateway: ourGateway()},
-		// what a source-specific route leaves behind once the source this
-		// process recorded for it is gone with the process
+		// a scoped route this process recorded no source for
 		{index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC | unix.RTF_IFSCOPE,
 			dst: prefix("2001:db8:2::/48"), gateway: ourGateway()},
 	}
@@ -1047,8 +1044,8 @@ func TestDarwinReplacesAnInheritedScopeTheMeshDoesNotWant(t *testing.T) {
 	dest := prefix("2001:db8:1::/48")
 	// What the mesh asks for: a plain route, which this backend never scopes.
 	wanted := Route{Destination: dest, Metric: defaultIPv6Metric}
-	// What the kernel holds: the same destination, scoped, left behind by an
-	// instance whose record of the source went with it.
+	// What the kernel holds: the same destination, scoped, as another program
+	// wrote it out of ranet3's utun.
 	inherited, err := plat.ownedRoutes(dumpRIB(t, dumpEntry{
 		index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC | unix.RTF_IFSCOPE,
 		dst: dest, gateway: ourGateway(),

@@ -56,7 +56,7 @@ func OpenSelection(host Host, mesh string) (*Selection, error) {
 		}
 	}
 	// opened before the first dump, so a change between the two is read again
-	watcher, err := host.Watch(0, index, false)
+	watcher, err := host.Watch(0, index)
 	if err != nil {
 		return nil, err
 	}

@@ -75,7 +75,8 @@ in
         UserName = "root";
         # shutdown closes every session with a grace period and withdraws the
         # routes it installed. launchd sends SIGTERM and then SIGKILL after
-        # this, so a machine that takes longer leaves routes behind.
+        # this, so a machine that takes longer ends its sessions without
+        # telling the peers, which time them out.
         ExitTimeOut = 20;
       };
     };

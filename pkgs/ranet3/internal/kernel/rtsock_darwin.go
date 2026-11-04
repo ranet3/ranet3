@@ -277,11 +277,6 @@ type routeMonitor struct {
 	// wake on, and that churn is one broadcast per route this process writes.
 	index int
 	skip  int
-	// quiet drops this process's own writes, successful ones included. The
-	// reconciler wants them, because its own install landing is a change it
-	// should converge on, but a watcher for the host's routing does not, because
-	// every route the mesh installs would wake it.
-	quiet bool
 	// self is this process, which stamps every route message it writes. XNU
 	// broadcasts the result of a route_output to every PF_ROUTE listener,
 	// including the writer's own monitor, and SO_USELOOPBACK is off only on
@@ -293,9 +288,9 @@ type routeMonitor struct {
 }
 
 // newRouteMonitor watches one interface, or every interface when index is
-// zero, minus the one skip names, and optionally ignores this process's own
-// writes. See routeMonitor for which caller wants which.
-func newRouteMonitor(index int, skip int, quiet bool) (*routeMonitor, error) {
+// zero, minus the one skip names. See routeMonitor for which caller wants
+// which.
+func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, unix.AF_UNSPEC)
 	if err != nil {
 		return nil, fmt.Errorf("kernel: open route monitor socket: %w", err)
@@ -315,7 +310,6 @@ func newRouteMonitor(index int, skip int, quiet bool) (*routeMonitor, error) {
 		file:   os.NewFile(uintptr(fd), "pf-route-monitor"),
 		index:  index,
 		skip:   skip,
-		quiet:  quiet,
 		self:   uintptr(os.Getpid()),
 		signal: make(chan struct{}, 1),
 		done:   make(chan struct{}),
@@ -412,9 +406,6 @@ func (m *routeMonitor) wakesOn(message []byte) bool {
 		return false
 	}
 	ours := uintptr(binary.NativeEndian.Uint32(message[rtmPIDOffset:])) == m.self
-	if ours && m.quiet {
-		return false
-	}
 	refused := binary.NativeEndian.Uint32(message[rtmErrnoOffset:]) != 0
 	return !ours || !refused
 }

@@ -27,7 +27,7 @@ import (
 // It needs no privilege and writes nothing, so it runs in the ordinary suite
 // rather than behind RANET3_DARWIN_NETTEST. A family with no default route
 // is the one honest reason to skip.
-func TestDefaultInterfaceNamesALinkThisHostHas(t *testing.T) {
+func TestLookupDefaultNamesALinkThisHostHas(t *testing.T) {
 	for _, family := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified()} {
 		t.Run(family.String(), func(t *testing.T) {
 			index, _, err := lookupDefault(runningKernel{}, 0, family)

@@ -174,7 +174,7 @@ func (k *recordedKernel) Lookup(destination, _ netip.Addr) (kernel.RouteAnswer, 
 	return answer, nil
 }
 
-func (k *recordedKernel) Watch(int, int, bool) (kernel.Watcher, error) {
+func (k *recordedKernel) Watch(int, int) (kernel.Watcher, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.openWatchers++

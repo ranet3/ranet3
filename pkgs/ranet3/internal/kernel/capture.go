@@ -37,11 +37,14 @@ const MinCaptureGrace = time.Second
 // It is also the failure: a node whose mesh has gone has no network at all,
 // rather than the mesh being down and the uplink still working, and on a
 // laptop the mesh goes for ordinary reasons: wifi to ethernet, a dock, sleep
-// and wake, a VPN started underneath. Nothing recovers from that on its own,
-// because reaching the peers needs the network the default just took.
+// and wake, a VPN started underneath. With literal endpoints the sessions
+// still redial over the uplink, since the underlay keeps off the mesh's
+// routes. A lookup of an endpoint name that the resolver does not mark, every
+// one on macOS, goes into the tun with the rest of the host's traffic, so
+// a node whose endpoints are names cannot resolve them.
 //
 // So the gate holds three rules, which together turn that failure into a
-// fallback:
+// fallback that keeps the host's traffic on its uplink while the mesh is down:
 //
 //   - nothing capturing is installed until one session has been live, so a
 //     node that comes up next to a stale announcement never takes it.

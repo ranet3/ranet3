@@ -23,8 +23,7 @@ func WatchNetwork(host Host, mesh string) (*NetworkWatch, error) {
 			return nil, err
 		}
 	}
-	// this process's own writes are dropped
-	watcher, err := host.Watch(0, index, true)
+	watcher, err := host.Watch(0, index)
 	if err != nil {
 		return nil, err
 	}

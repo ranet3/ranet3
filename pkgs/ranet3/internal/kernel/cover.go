@@ -67,13 +67,12 @@ func memberless(r Route) bool { return zeroRoute(r) && len(membersOf(r.Destinati
 // coverDefaults replaces each zero route of families with the cover's members
 // it contains, so a real 0.0.0.0/1 goes in as the seven members from 1.0.0.0/8
 // to 64.0.0.0/2, and leaves a zero route of another family as it is. A member
-// is withheld where another route the kernel holds
-// unscoped, of length 1 up to the member's own, contains it, so for every
-// address outside the hole the kernel's longest match is the route the zero
-// route's would be, or a member where that is the zero route itself (RFC 8966
-// Appendix C: the protocol keeps the route, only the kernel holds the cover).
-// unmet names the routes an unbound lookup will not meet in the kernel, which
-// withhold nothing.
+// is withheld where another route the kernel holds unscoped, of length 1 up to
+// the member's own, contains it, so for every address outside the hole the
+// kernel's longest match is the route the zero route's would be, or a member
+// where that is the zero route itself (RFC 8966 Appendix C: the protocol keeps
+// the route, only the kernel holds the cover). unmet names the routes an
+// unbound lookup will not meet in the kernel, which withhold nothing.
 func coverDefaults(desired []Route, families []Family, unmet func(Route) bool) []Route {
 	covered := func(r Route) bool { return zeroRoute(r) && slices.Contains(families, familyOf(r.Destination.Addr())) }
 	if !slices.ContainsFunc(desired, covered) {
@@ -107,7 +106,11 @@ func coverDefaults(desired []Route, families []Family, unmet func(Route) bool) [
 
 // withheld reports a route of routes the kernel holds unscoped, of length 1 up
 // to the member's own, containing member. A zero route is installed as members
-// and withholds nothing.
+// and withholds nothing. Every member holds one set bit, at its own length, so
+// a shorter route containing it holds the zero address, and is a zero route or
+// a hold or a source route, which scopeRoute scopes: in effect only a route at
+// the member's own key withholds it. The range keeps this correct where a
+// shorter route goes unscoped.
 func withheld(member netip.Prefix, routes []Route, unmet func(Route) bool) bool {
 	return slices.ContainsFunc(routes, func(r Route) bool {
 		bits := r.Destination.Bits()

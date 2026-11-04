@@ -46,9 +46,9 @@ type Host interface {
 	InterfaceIndex(name string) (int, error)
 	InterfaceName(index int) (string, error)
 	// Watch reports changes to the routing of one interface, or of every
-	// interface when index is zero, minus the one skip names, and quiet drops this
-	// process's own writes. The caller closes it.
-	Watch(index, skip int, quiet bool) (Watcher, error)
+	// interface when index is zero, minus the one skip names. The caller closes
+	// it.
+	Watch(index, skip int) (Watcher, error)
 	// Assign puts prefix on device, or takes it off again.
 	Assign(add bool, device string, prefix netip.Prefix) error
 }

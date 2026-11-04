@@ -28,11 +28,11 @@ import (
 // linux backend stamps on a route does not exist. The output interface takes
 // its place: a route belongs to this reconciler when it leaves the mesh device
 // with the shape this reconciler installs, a unicast prefix route whose gateway
-// is the interface itself and not a next hop. A route out of our own utun that
-// this process did not install is adopted and withdrawn with the rest, which is
-// how a crashed instance's routes get cleaned up. That rests on one condition:
-// nothing else writes routes out of a utun ranet3 created. Give it a device
-// no other daemon writes.
+// is the interface itself and not a next hop. The utun and every route out of
+// it go with the process that created it, so a route out of it with this shape
+// is this process's, and one another program wrote there is withdrawn with the
+// rest. That rests on one condition: nothing else writes routes out of a utun
+// ranet3 created. Give it a device no other daemon writes.
 //
 // The kernel's own entries for the interface are excluded by shape. An address
 // creates a host route whose gateway is the address, and the per-interface
@@ -70,9 +70,9 @@ type routePlatform struct {
 	// RTF_IFSCOPE, which the FIB cannot store, and an invalid prefix for a
 	// scoped route that has no source. The kernel keys a scoped route by
 	// destination and interface, so there is at most one per destination.
-	// Only successful installs go in here, so a route left by an earlier
-	// process reads as ordinary, gets deleted and is reinstalled correctly
-	// once, and a foreign scoped route is never adopted from its shape alone.
+	// Only successful installs go in here, so a scoped route another program
+	// wrote out of the utun reads as ordinary, gets deleted and is reinstalled
+	// correctly once, and its source is never taken from its shape alone.
 	scoped map[netip.Prefix]netip.Prefix
 	// covering holds the cover members this process installed, which the
 	// FIB cannot tell from a route at the same destination. Kept the way
@@ -190,7 +190,7 @@ func (p *routePlatform) open() error {
 		return err
 	}
 	p.sock = sock
-	p.watcher, err = p.host.Watch(p.index, 0, false)
+	p.watcher, err = p.host.Watch(p.index, 0)
 	return err
 }
 
@@ -388,14 +388,14 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 	}
 	// A scoped route this process did not install is reported anyway, with no
 	// source, so that it can be withdrawn. Requiring a record of the install
-	// made it invisible instead: an instance that attached to a tun it did not
-	// create inherited its predecessor's scoped routes and could neither
-	// withdraw them nor install over them, because darwin has no replace.
+	// would make it invisible, and the reconciler could neither withdraw it nor
+	// install over it, because darwin has no replace.
 	//
 	// It does mean taking over a scoped route out of this interface that
 	// belongs to somebody else, which already happens to an unscoped one. The
-	// interface is this process's, and another overlay scopes to its own. The source does not survive, so an inherited source-specific route
-	// is withdrawn and reinstalled rather than recognized.
+	// interface is this process's, and another overlay scopes to its own. The
+	// source does not survive, so another program's source-specific route is
+	// withdrawn and reinstalled rather than recognized.
 	return Route{
 		Destination: prefix,
 		// The kernel keeps no source, so a scoped route's source comes back
@@ -635,8 +635,7 @@ func holdsAgainstTheFIB(r Route) bool { return r.Unreachable }
 // coversAny reports a prefix that takes an address the transport needs into
 // the tun it is carrying. A default is not the only one that can: nothing
 // bounds what a mesh member announces, and 2000::/3 or a provider aggregate
-// holding a peer's endpoint does it as surely as ::/0. An empty list falls
-// back to the destination's own length.
+// holding a peer's endpoint does it as surely as ::/0.
 func coversAny(prefix netip.Prefix, addresses []netip.Addr) bool {
 	return slices.ContainsFunc(addresses, prefix.Contains)
 }

@@ -321,7 +321,7 @@ func drain(signal <-chan struct{}) {
 // costing a route lookup and a fresh socket. Measured at about 34 microseconds
 // and 46 allocations per wake, which at a full table is hundreds of
 // milliseconds of a core per convergence, driven by whatever a peer announces.
-func TestLinkWatcherIgnoresTheMeshAndOurOwnWrites(t *testing.T) {
+func TestLinkWatcherIgnoresTheMeshsOwnChurn(t *testing.T) {
 	const meshIndex = 42
 	const otherIndex = 16
 	self := uintptr(os.Getpid())
@@ -332,13 +332,10 @@ func TestLinkWatcherIgnoresTheMeshAndOurOwnWrites(t *testing.T) {
 		wakes   bool
 	}{
 		"the link watcher on another interface's change": {
-			&routeMonitor{index: 0, skip: meshIndex, quiet: true, self: self}, otherIndex, 1, true,
+			&routeMonitor{index: 0, skip: meshIndex, self: self}, otherIndex, 1, true,
 		},
 		"the link watcher on the mesh's own churn": {
-			&routeMonitor{index: 0, skip: meshIndex, quiet: true, self: self}, meshIndex, self, false,
-		},
-		"the link watcher on this process's own write elsewhere": {
-			&routeMonitor{index: 0, skip: meshIndex, quiet: true, self: self}, otherIndex, self, false,
+			&routeMonitor{index: 0, skip: meshIndex, self: self}, meshIndex, self, false,
 		},
 		// The reconciler's own monitor keeps waking on its own successful
 		// writes, which is how it converges on what it just installed.

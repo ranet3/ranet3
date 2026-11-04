@@ -8,7 +8,6 @@ package kernel
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"testing"
 
@@ -84,51 +83,56 @@ func boundReach(index int, target netip.Addr) error {
 	return unix.Connect(fd, &unix.SockaddrInet4{Addr: target.As4(), Port: 9})
 }
 
-// The lookup of the host's own default never answers with the mesh's own tun.
-// Once the mesh holds routes covering the address space, an ordinary
-// longest-prefix lookup does, and the cover would wait on a default of the
-// mesh's own.
-func TestDefaultInterfaceIgnoresTheMeshItself(t *testing.T) {
+// lookupDefault names the host's own default interface while another program's
+// utun holds the halves over the zero address, which a longest-prefix lookup
+// answers with
+func TestLookupDefaultIgnoresAnotherProgramsHalves(t *testing.T) {
 	requireNetTest(t)
 	mesh, _ := createUTUNWithFD(t)
 	setInterfaceUp(t, mesh)
-	device, err := net.InterfaceByName(mesh)
-	if err != nil {
-		t.Fatal(err)
+	meshIndex := interfaceIndex(t, mesh)
+	hosts := map[netip.Addr]int{}
+	for _, family := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified()} {
+		index, _, err := lookupDefault(runningKernel{}, meshIndex, family)
+		switch {
+		case errors.Is(err, ErrNoDefaultRoute):
+			t.Logf("the host has no default of %s, so its family is not asked", family)
+		case err != nil:
+			t.Fatalf("look up the default of %s: %v", family, err)
+		default:
+			hosts[family] = index
+		}
 	}
-	plat := testTUNPlatform(t, mesh)
+	if len(hosts) == 0 {
+		t.Skip("the host has no default of either family")
+	}
+
+	other, _ := createUTUNWithFD(t)
+	setInterfaceUp(t, other)
+	plat := testTUNPlatform(t, other)
 	if err := plat.AddAddr(prefix("198.51.100.1/24")); err != nil {
 		t.Fatal(err)
 	}
 	if err := plat.AddAddr(prefix("2001:db8:99::1/64")); err != nil {
 		t.Fatal(err)
 	}
-	for _, half := range []Route{
-		{Destination: prefix("0.0.0.0/1")}, {Destination: prefix("128.0.0.0/1")},
-		{Destination: prefix("::/1")}, {Destination: prefix("8000::/1")},
-	} {
-		if err := plat.AddRoute(half); err != nil {
-			t.Logf("could not install %s: %v", half.Destination, err)
-			continue
+	halves := map[netip.Addr][]Route{
+		netip.IPv4Unspecified(): {{Destination: prefix("0.0.0.0/1")}, {Destination: prefix("128.0.0.0/1")}},
+		netip.IPv6Unspecified(): {{Destination: prefix("::/1")}, {Destination: prefix("8000::/1")}},
+	}
+	for family, host := range hosts {
+		for _, half := range halves[family] {
+			if err := plat.AddRoute(half); err != nil {
+				t.Fatalf("install %s out of %s: %v", half.Destination, other, err)
+			}
+			t.Cleanup(func() { _ = plat.DelRoute(half) })
 		}
-		t.Cleanup(func() { _ = plat.DelRoute(half) })
-	}
-
-	// The ordinary question answers with the tun, which is the trap.
-	if answer, err := routeRequest(netip.IPv4Unspecified(), netip.Addr{}); err == nil && answer.Index != plat.index {
-		t.Logf("a longest-prefix lookup answered index %d rather than the tun, so the trap is not armed here", answer.Index)
-	}
-	for _, family := range []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified()} {
-		index, _, err := lookupDefault(runningKernel{}, device.Index, family)
-		switch {
-		case errors.Is(err, ErrNoDefaultRoute):
-			t.Logf("with the mesh holding the address space the lookup of %s reports no default", family)
-		case err != nil:
-			t.Errorf("look up the default of %s: %v", family, err)
-		case index == plat.index:
-			t.Errorf("the lookup of %s answered the mesh tun itself (index %d)", family, index)
-		default:
-			t.Logf("the lookup of %s answered index %d with the mesh holding the address space", family, index)
+		if answer, err := routeRequest(family, netip.Addr{}); err != nil || answer.Index != plat.index {
+			t.Fatalf("a longest-prefix lookup of %s answered %v, %v, want %s's index %d", family, answer, err, other, plat.index)
+		}
+		index, _, err := lookupDefault(runningKernel{}, meshIndex, family)
+		if err != nil || index != host {
+			t.Errorf("with %s holding the halves the lookup of %s answered index %d, %v, want the host's index %d", other, family, index, err, host)
 		}
 	}
 }

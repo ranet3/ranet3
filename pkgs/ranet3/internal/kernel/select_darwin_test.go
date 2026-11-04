@@ -75,9 +75,9 @@ func (h *selectionHost) Dump() ([]byte, error) {
 	return dumpRIB(h.t, h.entries...), nil
 }
 
-func (h *selectionHost) Watch(int, int, bool) (Watcher, error) { return h, nil }
-func (h *selectionHost) Changed() <-chan struct{}              { return h.changed }
-func (h *selectionHost) Close() error                          { return nil }
+func (h *selectionHost) Watch(int, int) (Watcher, error) { return h, nil }
+func (h *selectionHost) Changed() <-chan struct{}        { return h.changed }
+func (h *selectionHost) Close() error                    { return nil }
 
 // set replaces the table, or makes its dump fail with failing, and wakes the watcher
 func (h *selectionHost) set(failing error, entries ...dumpEntry) {
@@ -451,45 +451,4 @@ func unscopedDefaultIndex(messages []route.Message, destination netip.Prefix) (i
 		}
 	}
 	return 0, false
-}
-
-// No interface holds both an unscoped default and a scoped one: macOS scopes a
-// default to each interface but the one holding the unscoped default, so a
-// send naming that interface falls back on the unscoped default. Asserted on
-// whatever machine the suite runs on. It reads the table and writes nothing.
-func TestNoOtherProgramScopesADefaultToThePrimaryInterface(t *testing.T) {
-	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// One subtest per family, so a family the host cannot answer for reports
-	// itself untested rather than passing. This host carries nine scoped ::/0
-	// routes on utuns and no unscoped one, and a single-bodied test skipped
-	// quietly on it while claiming the premise held for IPv6.
-	for _, destination := range defaultPrefixes {
-		t.Run(destination.String(), func(t *testing.T) {
-			primary, ok := unscopedDefaultIndex(messages, destination)
-			if !ok {
-				t.Skipf("this host has no default of this family, so the premise is untested for it")
-			}
-			scoped := 0
-			for _, message := range messages {
-				rm, ok := message.(*route.RouteMessage)
-				if !ok || rm.Type != unix.RTM_GET || rm.Flags&unix.RTF_IFSCOPE == 0 {
-					continue
-				}
-				if isDefaultKey(rm, destination) && rm.Index == primary {
-					scoped++
-				}
-			}
-			t.Logf("the host's default is on index %d, which carries %d scoped defaults", primary, scoped)
-			if scoped != 0 {
-				t.Errorf("interface %d holds both the unscoped default and %d scoped ones", primary, scoped)
-			}
-		})
-	}
 }

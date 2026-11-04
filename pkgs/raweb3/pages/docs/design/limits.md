@@ -442,9 +442,11 @@ is in play.
 A session counts as live for 20 seconds after it last received authenticated IKE
 from its peer, and for 20 to 30 seconds after its last authenticated ESP, which
 the session notices up to 10 seconds late. Without the hold a laptop whose mesh
-has gone loses every network it has rather than only the mesh, and it cannot
-recover on its own, because reaching the peers needs the network the default
-just took.
+has gone loses every network it has rather than only the mesh. With literal
+endpoints its sessions still redial over the uplink, since the underlay keeps
+off the mesh's routes, but a node whose endpoints are names cannot resolve
+them, since the lookup goes into the capture with the rest of the host's
+traffic.
 
 On macOS an unscoped `/0` out of the tun would collide with the host's own
 default, because macOS has no route replace. With `bind` set, the reconciler

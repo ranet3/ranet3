@@ -23,12 +23,13 @@ import (
 // node's own tun, holds the key.
 //
 // It is an exact lookup of the one entry keyed on the unspecified address
-// rather than a longest-prefix match, because the mesh installs routes that
-// cover the whole address space and a match answers with those. Measured on
-// Darwin 27.2.0: with 0.0.0.0/1 and 128.0.0.0/1 out of the tun, the match
-// answers utun and the exact lookup answers the physical interface. Where
-// there is no entry at all the exact lookup falls back to a match, which is
-// why the mesh interface is rejected here too and not only there.
+// rather than a longest-prefix match, because another program's route over
+// the zero address, such as the 0.0.0.0/1 a VPN writes out of its own utun,
+// answers a match. Measured on Darwin 27.2.0: with 0.0.0.0/1 and 128.0.0.0/1
+// out of a utun, the match answers utun and the exact lookup answers the
+// physical interface. Where there is no entry at all the exact lookup falls
+// back to a match, which is why the mesh interface is rejected here too and
+// not only there.
 func lookupDefault(host Host, mesh int, family netip.Addr) (index int, gateway netip.Addr, err error) {
 	answer, err := host.Lookup(family.Unmap(), zeroMaskOf(family))
 	if err != nil {
@@ -83,8 +84,8 @@ func lookupSocket() (int, error) {
 // guess which address it was. An invalid mask sends no RTAX_NETMASK, which is
 // the longest-prefix question, while a valid one asks for that exact key, because
 // XNU turns an RTM_GET carrying a netmask into a lookup of that key alone.
-// lookupDefault asks that way, since the mesh's own routes cover the key it
-// is after and a match would answer with those.
+// lookupDefault asks that way, since another program's routes can cover the
+// key it is after and a match would answer with those.
 //
 // The request is the one `route -n get` makes. The technique is tailscale's,
 // read from net/netns/netns_darwin.go, which is BSD-3-Clause. Nothing here is

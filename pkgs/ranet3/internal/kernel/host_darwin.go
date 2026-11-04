@@ -74,8 +74,8 @@ func (runningKernel) InterfaceName(index int) (string, error) {
 	return device.Name, nil
 }
 
-func (runningKernel) Watch(index, skip int, quiet bool) (Watcher, error) {
-	return newRouteMonitor(index, skip, quiet)
+func (runningKernel) Watch(index, skip int) (Watcher, error) {
+	return newRouteMonitor(index, skip)
 }
 
 // controlSocket is one socket of a family, which is all the address ioctls
