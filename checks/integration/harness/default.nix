@@ -1877,16 +1877,23 @@ testers.runNixOSTest {
         def session_runs(want):
             """ranet3's one session holds each field of want, read again while an SA is being replaced"""
             seen = []
+            failed = ""
 
             def holds(last_try):
-                sessions = json.loads(client.succeed("ranet3 sessions --json")) or []
+                nonlocal failed
+                status, out = client.execute("ranet3 sessions --json")
+                if status != 0:
+                    failed = f"ranet3 sessions --json exited {status}: {out.strip()}"
+                    return False
+                failed = ""
+                sessions = json.loads(out) or []
                 seen[:] = [{key: s.get(key) for key in want} for s in sessions]
                 return seen == [want]
 
             try:
                 retry(holds, timeout=timeout)
             except Exception:
-                raise AssertionError(f"ranet3 runs {seen}, want [{want}]")
+                raise AssertionError(failed or f"ranet3 runs {seen}, want [{want}]")
             print(json.dumps(seen))
 
         def ike_sas_closed():
