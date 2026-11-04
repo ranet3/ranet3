@@ -218,11 +218,15 @@ the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 `exclude` list of `atelier.toml`, when such a line names a check that does not
 exist, and when it finds no `aarch64-linux` check that requires `kvm` at all. It
 also fails when a fixed string that a VM test's script greps ranet3's journal
-for and expects absent is no longer in a string literal of a non-test Go file
-under `pkgs`, since a renamed log line would leave that grep passing on nothing.
-It fails as well on a command a script expects to fail that is neither ranet3's
-journal piped into `grep -F` stages of quoted fixed strings nor a command that
-reads no journal of ranet3's.
+for and expects absent, or counts through a command that must succeed, is no
+longer in a string literal of a non-test Go file under `pkgs`, since a renamed
+log line would leave that grep passing on nothing and that count at 0. A count
+is a `grep` with `-c` among its flags or `--count`, or a pipe into `wc -l`, and
+it must sit in the text of the call that runs it, since one built into a name
+that is not bound to a string literal goes unread. It fails as well on a command
+a script expects to fail, or one that must succeed and counts, that is neither
+ranet3's journal piped into `grep -F` stages of quoted fixed strings, a trailing
+`|| true` allowed on a count, nor a command that reads no journal of ranet3's.
 
 The `netlink` check runs the test binary of each package that holds Linux root
 tests, whole, as root, in its package's directory of the source it was built
@@ -303,13 +307,17 @@ covers the unanswered Delete of a replaced IKE SA, which holds the session's
 next request, and then a rekey's 3 lost sends. The script of
 `integration-initiator` and `integration-kernel` also has the gateway drop the
 client's IKE for 5 seconds while iperf3 runs, which outlasts a rekey's first
-send, and asserts that a Child SA rekey completed and that no Child SA reached
-its lifetime. The scripts of the initiator, responder and `suites-meet` checks,
-and of the `mlkem-*` checks except the 2 `mlkem-apart` ones, fail whenever
-ranet3 logs that it stopped ESP on a Child SA past its lifetime, whenever its
-scrape counts an ESP datagram a session dropped or one of an SPI no session
-holds, and whenever strongSwan's journal shows an `N(INVAL_SPI)`, an
-`INVALID_SPI` notify from ranet3, across the rekeys. They read the first in
+send, and counts the IKE the client sends from the moment the drop is in place
+to its end. It fails when the client sent none in those 5 seconds. When the drop
+took none of the sends, which were then lost before the gateway, it holds the
+drop up to 6 seconds longer until it takes one, and fails if it takes none. It
+asserts that a Child SA rekey completed and that no Child SA reached its
+lifetime. The scripts of the initiator, responder and `suites-meet` checks, and
+of the `mlkem-*` checks except the 2 `mlkem-apart` ones, fail whenever ranet3
+logs that it stopped ESP on a Child SA past its lifetime, whenever its scrape
+counts an ESP datagram a session dropped or one of an SPI no session holds, and
+whenever strongSwan's journal shows an `N(INVAL_SPI)`, an `INVALID_SPI` notify
+from ranet3, across the rekeys. They read the first in
 `ranet3_esp_inbound_dropped_total` and the second in
 `ranet3_receive_refused_total{cause="unknown_esp"}`, which
 [metrics](../metrics.md#series) and its
