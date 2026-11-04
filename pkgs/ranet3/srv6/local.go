@@ -198,12 +198,10 @@ type LocalTable struct {
 // mesh reaches no SID through it from a source outside every range the node
 // owns, whatever the SID delivers to. An exemption inside a range the node
 // announces admits that range's sources as the node's own, and they reach the
-// SIDs any source it owns reaches. On linux a node that forwards without
-// overlay passes on to every SID only a forged source it owns, since its entry
-// chain keeps every other out of the tun. On a platform with no entry chain
-// such a node is only warned at load, and passes on to every SID a forged
-// overlay source that no route other than a default sends to another node or
-// holds unreachable, since its tun read drops the rest. An outer source is
+// SIDs any source it owns reaches. A node that forwards without overlay passes
+// on to every SID only a forged source it owns, since on linux its entry chain
+// keeps every other out of the tun and on every other platform its tun read
+// drops it, where such a node is also warned at load. An outer source is
 // always IPv6, so a table holding a SID and no IPv6 prefix of overlay is
 // refused.
 func NewLocalTable(segments []Segment, overlay []schema.Prefix) (*LocalTable, error) {
