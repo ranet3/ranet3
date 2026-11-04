@@ -201,9 +201,9 @@ type Runtime struct {
 	// Table.CaptureGrace, no route that would carry this machine's own
 	// traffic is installed: see captureGate, which is the whole of why. Nil
 	// installs every route the mesh announces as soon as it announces it,
-	// which is right for a reconciler driven by something that has no
-	// sessions. It is here rather than in the capability because no operator
-	// writes it down.
+	// which is right for a reconciler in mode off driven by something that
+	// has no sessions, and New and SetTable refuse cap.exit with it. It is
+	// here rather than in the capability because no operator writes it down.
 	Sessions func() int
 	// Sends reports where the live sessions send their underlay now, each
 	// with the source and interface its datagrams carry. Nil reports none

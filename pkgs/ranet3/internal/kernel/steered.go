@@ -14,8 +14,10 @@ import (
 
 // steeredDestinations are mode 3's two defaults, out of the tun like every
 // route the mirror installs, where the mesh steers what no route of its own
-// covers along cap.exit via. The rules derivedRules gives decide which lookups
-// reach them.
+// covers along cap.exit via. On linux the rules derivedRules gives decide which
+// lookups reach them. On darwin scopeRoute does, which leaves a covered
+// family's defaults unscoped as the cover's members and scopes a left-out
+// family's to the tun.
 var steeredDestinations = [...]netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
 
 // WithPathSource is t sending cap.exit via's path from source, the outer

@@ -28,8 +28,10 @@ import (
 type ExitMode struct {
 	// Forward is the links whose forwarded traffic follows the mode as the
 	// host's own does, each a link's name or a shell pattern as path.Match reads
-	// one, such as docker* or br-*. A link it leaves out keeps the routes it had
-	// before ranet3.
+	// one, such as docker* or br-*. On linux a link it leaves out keeps the
+	// routes it had before ranet3. darwin refuses it, and a packet forwarded
+	// there in a family the mode covers follows the mode as the host's own
+	// does.
 	Forward []string `yaml:"forward,omitempty" json:"forward,omitempty" toml:"forward,omitempty"`
 	// Fallback is where the host's traffic leaves while no exit is live,
 	// where it is unwritten FallbackUplink in mode 2 and FallbackNone in mode
