@@ -492,7 +492,7 @@ func TestModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment(t *testing.T) {
 		}
 		return families
 	}
-	// the exit writes into the tun, as the kernel exit does
+	// the exit writes into the mesh's device, as the kernel exit writes into the tun
 	var announced []netip.Prefix
 	c.SetExit(&fakeExit{announce: func() []netip.Prefix { return announced }, write: c.Mesh.WriteHost})
 	// the exit holds both families ready, as it does for every family it lets the node announce

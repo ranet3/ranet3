@@ -220,7 +220,7 @@ func meshCarrying(t *testing.T, c *Client) func() [2]bool {
 	mesh, device := labMesh(t, labLeafPrefixes())
 	mesh.SetSegments(segments)
 	mesh.SetSteering(steering)
-	// the exit writes into the tun, as the kernel exit does
+	// the exit writes into the mesh's device, as the kernel exit writes into the tun
 	mesh.SetExit(&fakeExit{write: mesh.WriteHost})
 	c.Mesh = mesh
 	return func() [2]bool {
