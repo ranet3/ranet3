@@ -118,6 +118,19 @@ func TestEncapsulationHandlesASingleSegment(t *testing.T) {
 	}
 }
 
+// An encapsulation runs for each packet a steered flow sends, so one into a
+// buffer with room for it allocates nothing
+func TestEncapsulationIntoABufferWithRoomAllocatesNothing(t *testing.T) {
+	path := []netip.Addr{addr("3fff:b:0:206::2"), addr("3fff:b:0:506::1")}
+	source := addr("3fff:b:0:100::1")
+	inner := innerV6("payload")
+	buf := make([]byte, 0, Overhead(len(path))+len(inner))
+	var err error
+	if allocs := testing.AllocsPerRun(100, func() { _, err = AppendEncapsulated(buf, inner, source, path) }); allocs != 0 || err != nil {
+		t.Errorf("an encapsulation at %d segments into a buffer with room allocated %v times, err %v", len(path), allocs, err)
+	}
+}
+
 // Every waypoint moves the packet along by one and leaves the rest alone, so a
 // three-segment path arrives at its exit with the inner packet untouched.
 func TestWaypointsWalkThePathInOrder(t *testing.T) {
