@@ -52,428 +52,20 @@ none of the network, which `go-lint` checks.
 
 ## Root tests on Linux
 
-The unit tests need no privileges, except for the ones below. Each of these
-unshares a network namespace, refuses to continue unless it is empty, and skips
-unless run as root.
+The unit tests need no privileges, except for the root tests, which skip unless
+run as root. Most of them move a thread of their own into a network namespace
+they unshare, and refuse to continue unless it is empty. The
+[`netlink` check](#nix-checks) runs them.
 
-- `internal/kernel` has tests that write to a real routing table.
-- `internal/egress/kernel` has 25 that write into a real packet filter. One
-  round trips the translator's tables, chains, set and timeout objects, another
-  checks that the kernel tells the backend when another writer adds a rule to
-  its chain, sets its table dormant or deletes it, and that its own writes tell
-  it nothing, and a third checks that another writer's transactions overflowing
-  the notification socket reach the backend as lost notifications. The fourth
-  checks that another writer's uncommented rule at the head of the translator's
-  chain is read back, and that the next pass leaves only the translator's rules.
-  The fifth runs the translator while another writer sets a table dormant or
-  makes a chain again at another priority or as a regular chain, and checks that
-  each holds both families not ready until the pass it wakes writes the table
-  back and reads them ready. The sixth makes a table again whose timeout object
-  holds other seconds than the translator writes, and the seventh rewrites the
-  chains and finds the set's counts kept. The eighth makes a table again whose
-  set counts under another share, and the ninth reports another writer's nat
-  chains at the translator's priority or below and not one above it. The tenth
-  takes the address a class translates to off `lo` in each family and reads that
-  family alone not ready, with the address named, until it is back. The eleventh
-  makes a line of each chain of each family an accept under the comment it was
-  written with, and reads that family alone at a fault naming the line until the
-  next pass writes it back. The twelfth,
-  `TestNftablesReadsTheChainsOfClassesOfNoneBack`, reads a class of `none`'s set
-  of 2 classes back ready, with a second pass rewriting nothing. It then makes 5
-  edits, each read on its own: a line of that class's chain made an accept under
-  its comment, such a line written again under its comment over a set holding an
-  element more, another over a set missing its second, a chain added that is
-  named as a class of `none`'s and that no class writes, and a class's chain
-  deleted once its rule in the limit chain is an accept. After each it reads the
-  ip family alone at a fault naming the line or the chain, until the next pass
-  writes the line back, deletes the chain or writes it again. The thirteenth
-  adds such a chain with another writer's chain going to it by a goto, then by a
-  vmap, then with an element of a named map going to it, and reads the ip family
-  alone at a fault naming that chain or map, the pass failing nothing, until the
-  rule or the element goes and the next pass deletes the chain. Seven round trip
-  the antispoof filter's table, both chains and its sets, one with an exemption
-  of each kind. One puts it back on the pass another writer wakes by deleting
-  the table, adding a rule or setting the table dormant, and leaves no table
-  behind. One writes it back after another writer adds a rule to it, sets its
-  table dormant, turns a policy to drop, makes a chain again at another priority
-  or as a regular chain, or makes the table again with a flag nf_tables will not
-  clear in place, the last 3 by deleting and making the table again. One refills
-  a set another writer flushed, or a chain it emptied, on the pass that change
-  wakes, one holds chain `mesh_entry` alone with no `overlay`, one starts over a
-  table holding a chain the filter does not write and finds the table made again
-  without that chain, with and without `overlay`, and one kills the filter's
-  process with `SIGKILL` and finds the table still there with every rule and
-  element, which the next start takes over without a write. That process is the
-  test binary run again as `TestBorderCrashHelper`, which joins the test's
-  namespace by its path and skips when run any other way. The last of the 7
-  moves a `none` set by one LAN at 10, 1,000 and 10,000 LANs held, and reads at
-  most 6 element notifications for each pass. Two more send datagrams through 2
-  veth pairs to a gateway whose site interface is the carve-out of the range it
-  announces and exempts under that interface, and read the carved set the pass
-  asks for. One finds a site host's source passed from that interface and
-  dropped from another as an overlay source, and one adds an interface whose
-  network lies inside the range, which no exemption names, and finds a
-  neighbor's source there dropped at the carved drop. The other 3 read the
-  translator's rules for debug. One sends a datagram from the mesh address out
-  of the uplink and finds its rule's counter moved while the last pass still
-  counts none. One reads from 2 readers at once while one pass follows another,
-  each read and each pass with no error. One reads on while the exit stops, and
-  each read answers the rules or the error a stopped exit answers, which names
-  no descriptor its close released. It also runs the
-  [exit behavior suite](#the-exit-behavior-suite) against the kernel exit.
-- `internal/nftables` has 5 that write into a real packet filter. One checks
-  that each expression the encoder writes acts on the host's own datagrams on
-  loopback as its line says, an interval set's lookup, the mark, the device
-  names and the connection's direction among them, and another that another
-  writer's change to a set's elements wakes the owner and reads back as a fault
-  until the owner fills the set again. One fills a set of 10,000 intervals in
-  one transaction through a socket whose send buffer starts at a fraction of the
-  batch. The other 2 move a set through the intervals that differ, two intervals
-  joined and split again among the moves, and read back the intervals wanted.
-- `transport` has 2 that send through a veth pair to a peer in a second
-  namespace, behind a route with a locked path MTU. They check that the kernel
-  refuses what the path cannot carry, segmented or single, and reports the path
-  MTU. They also check that it fragments past the path only while the family
-  asks. A third checks on loopback that IPv4 leaves without DF while the socket
-  fragments. 7 more, in `pair_namespace_linux_test.go`, check the sockets
-  connected to 1 peer. Such a socket gets its peer's datagrams while the
-  listener keeps the rest, connects only in its listener's namespace and stops
-  carrying a pair from an address the host lost. It follows its family's path
-  MTU discovery across a locked path, keeps its pair past a hop's report of a
-  smaller path, leaves by the interface its peer's datagram arrived on, and for
-  a dialed pair binds the source of the route the underlay mark selects. 3 more,
-  in `unpin_namespace_linux_test.go`, check that an answer from an address with
-  no route to the peer leaves from the kernel's choice, and that the session
-  returns to its address once the host holds it again, or 1 minute after a
-  fallback from `EHOSTUNREACH`, once it routes again. 2 more, in
-  `receive_namespace_linux_test.go` and `ecn_namespace_linux_test.go`, turn GRO
-  on at the near end of the veth and check that it coalesced some datagrams into
-  one message, and that each datagram's record holds its own source, and its own
-  outer ECN field on the listener and on a pair. 1 more,
-  `TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark` in
-  `mark_namespace_linux_test.go`, checks that the underlay's IKE and ESP
-  datagrams from the shared socket and from a pair's socket leave by the uplink
-  with the source address and port they were sent from, in both families, beside
-  Cilium's rule and kube-proxy's masquerade, whose counter counts none of them.
-- `internal/netstack` has tests whose names start with `TestTUN` that create and
-  attach to a real TUN device. They read its `gso_max_segs` back, open several
-  queues as 1 device and no more than the kernel attaches, and refuse a mesh
-  under the default name where a device of that name exists. They warn at a new
-  mesh's first cut read, keep a lane reading past a frame of 1 byte and past a
-  frame with a virtio-net header the read refuses, report a link deleted under a
-  running mesh once and stop every lane's reader, and check that the device
-  queues no link event and leaves no route listener running after the mesh
-  closes. They hold the MTU a device was created or attached at and move it,
-  carry a read of 65535 bytes through a device opened at the default MTU, steer
-  a read as large as the device and clamp the MSS of a SYN. They answer a packet
-  larger than its session, at the headend and at a waypoint, until the kernel
-  that sent it holds the smaller path MTU, and
-  `TestTUNAnswerToThisHostPassesAReversePathCheck` checks that a session's
-  packet from this host, answered by the forwarding decision, reaches the
-  sending socket under a strict and a loose reverse path chain in both families.
-  Another writes a TCP stream into a kernel socket as frames lying in 1 buffer,
-  as a session's datagrams do, and checks that the tun's GRO coalesces them and
-  that the socket reads back the bytes sent. 2 more check that a lane's write
-  into the tun allocates nothing and keeps no reference to the frames it wrote,
-  whether its packets go alone or coalesce.
-- `internal/client` has these tests under the same prefix, which run a node, or
-  a part of one, on a real TUN device or in a namespace of its own:
-  - A SYN arriving through a session between 2 nodes on loopback reaches the tun
-    with its MSS lowered.
-  - A reload moves the tun's MTU.
-  - `TestTUNStatusCountsTheReadsThePathAloneTook` sends one datagram toward the
-    internet, which `cap.exit.via`'s path steers, and one toward a
-    `cap.segment.steer` entry's prefix, each finding no route to its first
-    segment, and checks that status carries the path's own count of 1 steered
-    and 1 unrouted apart from the totals.
-  - A TCP stream keeps flowing through a session whose path drops IPv4 packets
-    past 1400 bytes, and later past 1360, without an answer, as the search finds
-    each.
-  - A Babel packet sent in fragments reaches the speaker whole, and the tun
-    never sees it. A fragment of ordinary traffic on the same session reaches
-    the tun as sent.
-  - `TestTUNExitEgressesBothModesThroughItsOneTun` runs an exit node with an
-    egress segment and a default of each family, in a namespace holding only its
-    tun, its uplink to a far host and the loopback. A leaf's IPv4 and IPv6,
-    steered through the SID and sent through the default, leave the uplink under
-    its address and the replies come back through the mesh tun, while a source
-    outside the allow list is refused. A route sending a lookup back into the
-    tun, a rule sending the leaf's address out of the uplink, and IPv4
-    `forwarding` off on the tun each hold their family not ready with a reason
-    naming it, retract the default and the SID's /128, and let nothing reach the
-    far host, until the change goes. With strict reverse path filtering on the
-    tun, the rule holds IPv4 by its forward lookup instead, and the reason names
-    the filter. An inner packet for the leaf at the SID is refused and counted.
-    With no IPv6 prefix of the leaf's inside the overlay, the IPv6 lookups are
-    skipped and say so, and IPv6 still egresses. The node puts back an nftables
-    table another writer deleted, and a packet from the far host to the SID
-    never reaches the tun. A stranger's datagram from beyond the uplink to a
-    leaf is dropped and counted by `mesh_entry`, and an ICMP error from beyond
-    the uplink about a leaf's egressed flow reaches the leaf through the tun as
-    the flow's reply.
-  - `TestTUNExitTranslatesEachClassUnderTheDerivedRules` runs an exit with the
-    egress segment, overlay and table of the one above, advertising no default
-    but a LAN of each family under `return`, on a link of its own to a host in a
-    namespace of its own, with a class of `none` and a class of an address in
-    each family and a mesh address of each family, under the derived rules of
-    mode off. Over UDP and TCP in both families, a leaf's flow steered through
-    the SID from inside the class of `none` reaches the far host from the leaf's
-    address, its reply takes the rule at 5110 into the tun toward the leaf, and
-    status counts it untranslated. One from inside the class of an address
-    reaches the far host from that address, its reply enters the tun toward the
-    leaf, and status counts it translated. The LAN host's flow to a leaf reaches
-    the tun from the exit's mesh address and its reply reaches the host by main
-    at 5410, and the exit's own flow from its mesh address leaves the uplink
-    under its class's address while another exit's `/1` halves are learned. The
-    mesh's edge counts nothing `forged`, `unowned_source` or `looped` in any
-    arm, and the stop leaves no tun, table, rule or route of the node's.
-  - `TestTUNSetEgressReadyMovesTheMeshBeforeTheAnnouncement` reads what the mesh
-    egresses into a real tun while the announcement is rebuilt, and checks that
-    it already follows the readiness just given.
-  - `TestTUNAdvertisedEgressWaitsOnReadyAndTheAnnouncement` reads what the mesh
-    egresses into a real tun through an advertised default of each family, and
-    checks that a family egresses only while the readiness given holds it and
-    the announcement carries its default, and that a family the readiness takes
-    away stops before the announcement is rebuilt.
-  - `TestTUNBorderDropsAForgedSourceAtTheUplink` runs an exit node with
-    `overlay` and a far host behind a veth pair. A packet from beyond the uplink
-    with a source outside the overlay crosses the mesh tun, while one with a
-    source inside it never crosses it and is counted. A type 4 routing header,
-    alone or behind one of type 0 or 2, crosses the filter and is dropped and
-    counted by the tun read, and a packet to the local SID never reaches the
-    tun. A packet to another node's SID from outside the overlay crosses the tun
-    and is refused at that SID. The mesh's own packets leave through the tun, a
-    packet the exit sends to its own mesh address arrives through lo, nothing
-    crosses once the filter is withdrawn and forwarding is off, and no table is
-    left behind.
-  - `TestTUNBorderKeepsAnOverlappingUplink` runs a leaf whose uplink holds a
-    lease as wide as the overlay in both families, with a mesh peer and a held
-    prefix inside it. The gateway and a neighbor on the link answer the host,
-    the peer stays on the tun, an overlay address no node announces leaves by
-    the link, and of the datagrams sent to the host's socket only the gateway's
-    arrives. One forged from the peer's, the held prefix's or this node's own
-    source inside the lease is counted as carved, and from a second link the
-    peer's is counted as carved and the lease's unannounced address as an
-    overlay source.
-  - `TestTUNBorderCarvesAPointToPointUplinksGateway` runs a leaf whose IPv4
-    uplink is point to point, its gateway's address inside the overlay as a
-    PPPoE peer's can be. The mesh's table throws the gateway's host prefix, the
-    gateway's datagram reaches the host's socket, and one forged from another
-    address of the overlay does not and is counted as an overlay source.
-  - `TestTUNAntispoofExemptsFromTheInterfacesItNames` runs a leaf with an uplink
-    and a second link named `carx`, outside the mesh, and a mesh prefix inside
-    each exemption that the mesh's table routes to a peer. With no
-    `cap.antispoof` no overlay source reaches the host's socket from either
-    link. With a shared exemption, one for the uplink's name and one for `car*`,
-    the shared one passes from both, the uplink's from the uplink alone and the
-    wildcard's from `carx` alone, while the mesh prefixes are dropped as carved
-    from both and the rest of the overlay as overlay sources.
-  - `TestTUNAntispoofGatewayExemptsItsSiteAndNoOtherNode` runs the same leaf as
-    [a gateway's site](../antispoof.md#a-gateways-site), announcing
-    `192.0.2.0/25` and exempting it under `carx`. A site source passes from
-    `carx` and is dropped from the uplink, and the leaf's own address and a
-    peer's prefix inside the range are dropped as carved, the prefix recorded
-    once as `antispoof.conflict` though another pass finds it again. A more
-    specific prefix the peer comes to hold is carved on the pass its route
-    wakes.
-  - `TestTUNAntispoofExemptingTheOverlayKeepsTheCarvedDrops` exempts the whole
-    overlay from every interface on the same leaf: every overlay source the
-    mesh's table holds no prefix for reaches the socket from both links in both
-    families, and the mesh prefixes are still dropped as carved.
-  - The `TestTUNEntry` labs run `mesh_entry` in both families with real sockets.
-    At a forwarding host in mode off a stranger's and an unannounced LAN host's
-    datagrams stay out of the tun, a container masqueraded at `srcnat` and the
-    host's own sockets enter from the tun's address, and a socket bound to the
-    uplink's address meets `EPERM`. A stranger's datagram that a `notrack` rule
-    exempts from connection tracking stays out of the tun too, and is counted.
-    At a subnet router in mode 2 beside the kill switch its LAN's datagrams and
-    their replies pass, and neither of the switch's chains drops anything. An
-    exit's `none` classes take a leaf's datagram from the internet and keep
-    another node's LAN out, and a LAN learned inside such a class leaves the set
-    before its route lands. A node killed with `SIGKILL` leaves its table, which
-    keeps dropping a forged overlay source until the next start takes it over.
-    The node is the test binary run again as `TestEntryLabCrashHelper`, which
-    joins the leaf's namespace by its path and skips when run any other way.
-  - `TestTUNLineCarriesTransitThroughItsMiddleNodeAndAnswersAsARouter` runs 3
-    nodes in a line, each in a namespace of its own, with transit on at the
-    middle one, whose kernel forwards neither family and whose tun holds no
-    address. Datagrams of both families cross it, and it answers from its
-    router-id: Time Exceeded at a hop limit of 1, Packet Too Big and
-    Fragmentation Needed with its next session's size, which the sender caches,
-    and Destination Unreachable inside a prefix it holds unreachable. An IPv6
-    datagram from a link-local source draws a beyond scope answer back on its
-    session. With no address of either family it answers IPv4 from `192.0.0.8`,
-    a Packet Too Big from the packet's destination and IPv6's Time Exceeded not
-    at all. Its kernel forwards nothing and reads nothing from its tun
-    throughout.
-  - `TestTUNLineRefusesTransitWhileItIsOffButNotThroughAnEndDT46SID` runs the
-    line with transit off at the middle node, which answers administratively
-    prohibited, and still carries what the sender steers through its End.DT46
-    SID.
-  - `TestTUNTraceShowsTheMiddleNodesDecisions` runs the line with transit on and
-    traces its middle node over its control socket as uid 0. In each family, a
-    datagram from one end to the other draws a forward record naming its arrival
-    on a session, the peer it came from and the next peer, with no payload, one
-    at a hop limit of 1 draws an answer expired and sent, and one into a prefix
-    the middle node holds unreachable draws an answer held and sent. A second
-    trace whose filter matches nothing takes no record, both traces are recorded
-    as uid 0's, and the middle node holds no tracer once both close.
-  - `TestTUNDebugRouteNamesTheIPv6DropWhereTheKernelMakesIt` writes an IPv6
-    packet into a tun in an empty namespace under settings of `all`'s and the
-    tun's `forwarding` and the tun's `force_forwarding`, those of
-    `force_forwarding` left out where the kernel has none. It checks that
-    `debug route` names the drop exactly where the kernel counts one in place of
-    a forwarded packet.
-  - `TestTUNDebugRouteNamesThePathTheKernelTakesForEachDestinationKind` asks the
-    kernel of an empty namespace for the route of each kind of destination,
-    unicast, local, broadcast, the limited broadcast, joined and unjoined
-    groups, link-local, `0.0.0.0` and `::`, as this host's own packet and as one
-    arriving on a link, in both families where the kind exists, with forwarding
-    off, multicast routing on and no IPv6 default where those change the answer.
-    It checks the kernel's answer, that `debug route`'s `Kernel`, `Rule`,
-    `Route` and `Leaves` lines name the path the kernel takes for each, and that
-    its `Socket` line, for this host's own packet to `::`, says the answer may
-    not be that packet's path.
-  - `TestTUNExitCarriesTransitInProcessAndNothingOutOfItsUplink` runs an exit
-    that announces a default of each family, with forwarding on and a default
-    route out of an uplink to a fourth namespace. Transit between its 2
-    neighbors crosses it in the mesh, its kernel forwards none of it, and
-    nothing of it reaches the uplink.
-  - `TestTUNExitEgressesEachShapeOfTheInternetTranslated` runs the same exit
-    advertising each family through `cap.egress` as a default, a pair of `/1`
-    halves and four `/2`s, with the translator running. A neighbor's datagrams
-    of both families reach the fourth namespace from the exit's uplink address,
-    and a datagram from a source the mesh routes no reply to is counted at the
-    exit and never reaches the uplink.
-  - `TestTUNEdgeChecksAHostsPacketsForwardedIntoTheTun` runs the line with a
-    host beside its last node, whose kernel forwards the host's packets for the
-    overlay into its tun. The host's forged mesh sources, its routing headers of
-    type 0 and 4, and its IP-in-IPv6 to the middle node's End.DT46 SID with a
-    forged inner source or an inner packet carrying another are counted at the
-    last node as `forged`, `routing_header` and `nested`, and none is delivered
-    at the node it is addressed to, while a routing header of type 2 reaches it.
-  - `TestTUNNeighborOnAForwardingLeafReachesNoExit` runs a leaf that learned an
-    exit's default of each family, then its `/1` halves, with a neighbor on the
-    leaf's uplink whose packets for the internet the leaf's kernel sends into
-    its tun. The neighbor's pings to a host beyond the exit's uplink are counted
-    `unowned_source` at the leaf and none reaches the exit or that host, while
-    the leaf's own datagram from its overlay address does.
-  - `TestTUNModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment` gives a node
-    with `cap.egress` and no egress segment a real tun, and checks that its
-    egress through a default reaches the tun for each family it announces and is
-    counted not ready for the others.
-  - `TestTUNDerivedRulesSendEachSocketWhereModeOffSays` runs a leaf with its
-    tun, an uplink to a far host, another program's link and the loopback, and
-    the reconciler over the mesh's table. For each state of the table, a learned
-    default, its retraction, half defaults, a split internet and its retraction,
-    a route at the floor, this node's own prefix inside the overlay, another
-    program's table at 5270 and an exit holding another exit's halves, the
-    kernel holds the routes the reconciler derives and its rules at 5430 for
-    this node's own prefixes. UDP, TCP and echo in both families, from sockets
-    unbound, bound to the overlay address, bound to the uplink's address or
-    device, carrying the underlay's mark, or that and bound to the overlay
-    address, then leave into the tun, out of the uplink or into the other
-    program's link, or are refused by their route, as
-    [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) gives, the
-    socket bound to the uplink's device passing the holds as rows B1 and B2
-    give. A packet a peer delivers to the exit's LAN outside the overlay leaves
-    by the uplink, one to this node's own prefix inside it goes nowhere, and a
-    clean stop leaves no rule or route of protocol 155.
-  - `TestTUNExitModeSendsEachSocketWhereModeTwoSays` runs the same leaf in
-    [exit mode](../routing.md#exit-mode-on-linux) beside a container behind a
-    bridge, masqueraded as Docker does, and a LAN host it routes untranslated,
-    each in a namespace of its own, with the internet's host beyond the far
-    host. For each arm, the mesh's defaults with nothing forwarded, `forward`
-    naming the bridge, strict rp_filter on the uplink, NixOS's strict and loose
-    fib chains, the defaults retracted and an exit holding another exit's
-    halves, each run after a pass under the arm's table, the leaf's sockets, the
-    container's and the LAN host's pings, a service on the uplink's address and
-    the underlay's socket go where rows E1 to E4 give. With `forward` naming the
-    bridge and the tun holding no overlay address of one family, then of the
-    other, the leaf's unbound sockets, connected and not, and the container's
-    ping to the internet leave by the uplink in that family and enter the tun in
-    the other, and the leaf's unbound sockets, connected and not, to the mesh's
-    subnet enter the tun in both, on the rules of the very pass that took the
-    address off. With another writer's overlay addresses on the tun and
-    `cap.table` writing none, the leaf's unbound sockets, connected and not,
-    enter the tun in both families on the rules of a pass after the addresses
-    went on. That the addresses themselves wake the pass is checked by
-    `TestNetlinkFollowsAnotherWritersAddressOnTheTun` in `internal/kernel`, for
-    each family. A clean stop leaves nothing of protocol 155.
-  - `TestTUNExitModeBesideTailscale`,
-    `TestTUNExitModeBesideAConntrackMarkRestore`,
-    `TestTUNExitModeBesideKubeProxyAndCilium` and `TestTUNExitModeBesideDocker`
-    copy those programs' rules and chains into the leaf through raw netlink and
-    nftables expressions, and check where the host's own traffic, the bridge's,
-    the LAN's and the underlay's leave by in both families, with the mesh's
-    defaults live, retracted, and after a helper process holding the tun and the
-    reconciler is killed with `SIGKILL`, as
-    [sharing a host](../coexistence.md#exit-mode-beside-other-programs) states.
-    The helper is the test binary run again as `TestExitLabCrashHelper`, which
-    joins the leaf's namespace by its path and skips when run any other way.
-  - `TestTUNKillSwitchKeepsEachSocketOffTheUplink`,
-    `TestTUNKillSwitchAnswersOnlyTheListedServices`,
-    `TestTUNKillSwitchHoldsUnderOtherProgramsChains`,
-    `TestTUNKillSwitchHoldsUnderNATAtOutput`,
-    `TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun`,
-    `TestTUNKillSwitchKeepsTheHostsOwnTrafficOnLoopback`,
-    `TestTUNKillSwitchIsTheSameOnEveryCPU` and
-    `TestTUNKillSwitchKeepsReversePathChecksPassing` run the same leaf under
-    [the kill switch](../routing.md#the-kill-switch-on-linux) with the mesh's
-    defaults present, retracted, after a helper process,
-    `TestKillSwitchLabCrashHelper`, wrote the switch and was killed with
-    `SIGKILL`, and after the lab's own node, started again in mode off, which
-    removes what the helper or an earlier arm left, wrote the switch, lost its
-    tun and stopped for the mesh's failure as the daemon does.
-    `TestTUNKillSwitchPassesDiscoveryAndTheHostsErrors` runs it with the
-    defaults present and retracted alone. In both families, UDP, TCP and echo
-    from every socket kind, the container's and the LAN host's pings, the listed
-    and unlisted services, other programs' chains and NAT at output, neighbor
-    and router discovery, DHCP, multicast, link-local and the host's Packet Too
-    Big and fragmentation needed leave by the uplink only where the switch
-    passes them, the far side's capture and the tun's showing where each went.
-    `TestTUNKillSwitchKeepsKernelTunnelsOffTheUplink` runs in the netlink VM,
-    where `ip_gre` and `wireguard` load, and finds no GRE or WireGuard outer
-    packet of a tunnel whose network counts as the LAN leaving by the uplink.
-  - `TestTUNKillSwitchHoldsInModeThree` runs that leaf in
-    [mode 3](../routing.md#mode-3-on-linux) with `fallback` unwritten, the
-    path's SID resolved with the steered defaults installed, held with both
-    withdrawn, after the crash helper wrote it, and after the lab's own node
-    wrote it and stopped for the mesh's failure as above, the leaf's antispoof
-    filter running while its node does and stopping for the same cause. Every
-    socket kind, the forwarded links, a listed service and an M2 route chain go
-    where they go in mode 2 under the switch, but for what a socket bound to the
-    uplink's address sends to a mesh peer, which `mesh_entry` drops and counts,
-    and with `fallback = "uplink"` written no table is held and the host's
-    unbound traffic leaves by main once the path is down. Its last arm stops the
-    node and the antispoof filter for the mesh's failure with no route learned:
-    the filter's table stays, a datagram forged from an overlay source in each
-    family on the uplink meets its drop while no node runs, the next start takes
-    the table over with no `antispoof.pass` and each family's counter holding
-    its datagram, and the clean stop after it leaves neither table.
-  - `TestTUNExitPathLeavesByTheNamedExitAndNoOther` runs a leaf in mode 3 beside
-    two exits, `a` and `b`, each with an egress segment and a default, `b`'s the
-    better, and a waypoint, each node writing the table `inet ranet3`. Echo, UDP
-    and TCP in both families, unbound and bound to the overlay address, leave
-    `a`'s uplink and never `b`'s, `mesh_entry` dropping none of them, and status
-    and `debug rules` read the path up. With `a`'s SID retracted the steered
-    defaults go and the leaf's sends are refused, or leave its own uplink under
-    `fallback = "uplink"`, and they come back with the SID. A neighbor on a link
-    `forward` leaves out reaches neither exit, one on a forwarded link from a
-    source the leaf does not own is dropped by `mesh_entry`, a LAN host behind
-    the leaf leaves `a`'s uplink, a path through the waypoint carries the
-    traffic, and one whose last SID is an `End` carries none. With `via` naming
-    a SID of `a`'s outside the overlay and the waypoint gone, only `b`'s default
-    covers that SID, and a datagram sent before the steered defaults go is
-    answered at the leaf with nothing toward the SID leaving `b`'s uplink. With
-    `b` announcing a subnet over that SID, the path stays down and nothing
-    toward the SID leaves `b`'s uplink.
+`internal/client`'s `TestSetEgressReadyMovesTheMeshBeforeTheAnnouncement`,
+`TestAdvertisedEgressWaitsOnReadyAndTheAnnouncement` and
+`TestModeTwoEgressFollowsTheAnnouncementWithNoEgressSegment` build the mesh with
+`netstack.NewOnDevice` over a device of the test's own, and judge what it
+egresses by the packets that device received, so they need no root.
+`TestTUNExitEgressesBothModesThroughItsOneTun`, the lab of both egress modes
+through the exit's tun, makes a real tun and is a root test.
 
-The `internal/client` tests `TestNodeGoingDownLeavesItsPeerAndItsKernelAtOnce`,
-`TestNodeRestartedWhileDownInstallsNothingUntilUp`,
-`TestSessionMovedUnderTheFloorHandsItsFragmentingOver`,
-`TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData` and
-`TestDialerTheHostHasNoRouteForDialsAtOnceWhenWoken` reach the kernel from
+The `internal/client` tests the command below runs reach the kernel from
 whatever thread a goroutine runs on. No single thread can be moved into a
 namespace for them, so they take the namespace the test process started in. They
 skip without root, and they fail in a namespace that holds a link that is up, an
@@ -485,35 +77,7 @@ unshare -rn go test ./internal/client -run '^TestNode(GoingDown|RestartedWhileDo
 
 The `cmd/ranet3` tests whose names start with `TestDaemon` and that need root
 start the daemon as `ranet3 daemon` does, so they take the namespace the same
-way. `TestDaemonRefusedAtEachPartLeavesNothingRunningOrBound` refuses the start
-at each part it builds, the listeners on an address already held and the control
-socket at a path under a file, `TestDaemonStoppedWhileItBuildsStartsNothing`
-sends `SIGTERM` and `SIGINT` while it builds and
-`TestDaemonStoppedInTheFirstPassWaitDialsNothing` `SIGTERM` while it waits for
-the reconciler's first pass, and each finds the process as before the start: its
-goroutines ended, its listeners, socket, port, tun, tables, rules and routes
-gone, and no peer dialed or part logged as started. Each reads the listeners and
-the control socket as soon as the start returns, before the garbage collector
-can close a leaked one. `TestDaemonEndedInItsBuildLeavesTheTablesItFound` writes
-the antispoof filter's table and the kill switch's as an earlier instance leaves
-them, refuses the start at the reconciler or stops it while it builds, and finds
-both tables still there. `TestDaemonActsOnTheSignalsOfTheStartOnceItDials` finds
-a `SIGHUP` and a `SIGUSR1` sent while the daemon builds applied once each, after
-the first pass. `TestDaemonForcedOutOfItsBuildByASecondSignal` finds a second
-`SIGTERM` forcing the exit in the build, with no root, and in the undo of a
-build the first `SIGTERM` stopped, sent from the exit's close.
-`TestDaemonWarnsOfTheReloadItRefuses` finds the `reload failed` warning of a
-`SIGHUP` whose file the node refuses in a log at `warn`, and the node running on
-until `SIGTERM` stops it with status 0.
-`TestDaemonPartFailureSurvivesALogAtWarn` fails the exit's withdrawal at
-`SIGTERM` and finds status 1 and the error line naming the part in a log at
-`warn`. `TestDaemonRefusesUpReloadAndRedialOnceItStops` holds the exit's
-withdrawal and finds `up`, `reload` and `redial` refused and `status` answered
-while the stop waits for it.
-`TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable` deletes the tun
-under a running daemon, finds the antispoof filter's table and the kill switch's
-left after it exits 1, and a next start that takes the filter's over with no
-write and leaves nothing after `SIGTERM`:
+way:
 
 ```sh
 unshare -rn go test ./cmd/ranet3 -run '^TestDaemon'
@@ -545,151 +109,16 @@ it with an arm, which builds the backend, names the source classes it carries,
 declares the NAT behaviors it lacks by its nature, each with its reason and the
 row of [protocol deviations](../design/protocol-deviations.md) that records it,
 and says whether it ends the leaf's TCP. Each class runs on a network of its
-own, and each row in both families:
-
-1. What the server sees: the class's address, the leaf's own under `none`, from
-   whatever port the backend chose, the bytes intact both ways, a half-close and
-   a reset each way, and an echo answered.
-2. Errors toward the leaf: a closed UDP port answered Port Unreachable from the
-   server, a closed TCP port refused, and an unreachable host and network
-   answered by the router beyond the exit, each error quoting the source,
-   destination, protocol and transport header of the leaf's packet as the leaf
-   sent it. The leaf's own Port Unreachable reaches the server from the class's
-   address, quoting the server's datagram, and a packet of protocol 253 is
-   carried to the server and answered by nothing.
-3. Path MTU: a datagram past the exit's uplink answered from an address of the
-   exit with the uplink's MTU, an IPv4 datagram without DF past it reaching the
-   server whole, the router's answer for a narrower link reaching the leaf
-   translated, and a TCP transfer completing over an uplink below the mesh's
-   MTU. A backend that forwards the leaf's segments, rather than ending its TCP,
-   also answers one of them too big, with the uplink's MTU.
-4. Hop limits: a TTL or hop limit of 1 answered Time Exceeded from an address of
-   the exit.
-5. Port reuse: a reconnect from one port just after the server closed first
-   connects at once, and one leaf port or echo identifier toward 2 servers is
-   read by both as 1 outside port or identifier, in UDP, in TCP and in echo.
-6. Each source's share of the flows, last, since it leaves the leaf's second
-   address at its share: that address opens as many UDP flows as `Status` gives
-   as the share, toward a server that answers none, and its next flow is
-   answered Host Unreachable over IPv4 and administratively prohibited over IPv6
-   from the exit, its datagram never reaching the server. A later datagram of
-   the first flow passes right after, a further flow is refused, a TCP
-   connection from the address fails at once, and the leaf's own address opens
-   its flow. `Status` counts every refused packet. Under `none` the next flow
-   reaches the server from the address with no answer from the exit, and
-   `Status` counts no refusal, since such a source holds
-   [no share](../exit-nodes.md#each-sources-share-of-the-flows). The row reads
-   the host's connection table against its maximum where the backend reports
-   them, and refuses to run where its flows would reach the maximum. For an arm
-   that carries an address and `none`, the row runs once more with the leaf's
-   own address under an address inside a class of `none` that holds the second
-   address, whose next flow is carried as under `none`, though the address
-   class's limit sits in the chain the pass of the class of `none` goes on to.
-
-In each family the suite also calls `Egress` from several goroutines at once, as
-each session's receive path does, and the server reads every datagram. Then the
-leaf sends 2 packets connection tracking keeps no flow for, an RFC 8335 extended
-echo request and a segment of a live TCP connection 2^30 past its next sequence
-number. Under a class that translates the server reads neither, the connection
-carries data after the segment, and `Status` counts both dropped. Under `none`
-the server reads both from the leaf's own address. The server, standing for a
-host behind the exit under `return`, then sends into the mesh an extended echo
-request, a Port Unreachable about a datagram no flow carried and a segment of a
-live TCP connection 2^30 past its next sequence number. Under every class the
-leaf reads none of them, the connection carries data after the segment, and
-`Status` counts the 3 dropped. Under a class that translates, in IPv4, the
-leaf's Source Quench quoting the server's datagram and its Information Request
-reach the server not at all, the server's Source Quench to the leaf's mapping
-reaches the leaf not at all, and an echo still crosses. Under every class the
-leaf sends a DCCP-Request and a UDP-Lite datagram, each with a checksum covering
-all of it. Under `none` the server reads each from the leaf's own address with a
-valid checksum, and its answer, a DCCP-Response or a UDP-Lite datagram, reaches
-the leaf as the server sent it, the UDP-Lite one unless the arm declares
-UDP-Lite refused with no answer. Under a class that translates the server never
-reads one whose checksum fails for the addresses it reads it from, reading it
-valid from the class's address or reading nothing while each answer about it is
-administratively prohibited from the exit: at least one arrives unless the arm
-declares IPv4 DCCP or UDP-Lite refused with no answer, and none where it does.
-For an arm that reads the flows its backend tracks, the idle timers follow: a
-datagram the server never answers, one to UDP port 53, under a class that
-translates one the server answered and the leaf sends again 3 seconds on, a SYN
-to an address nothing holds, a connection whose data the leaf's path never
-acknowledges, one the server half closed, one closed each way but for the leaf's
-last acknowledgment, an echo and a datagram from the exit's own mesh address,
-and into the mesh under `return` a datagram, one to port 53, a SYN and an echo,
-each flow's timer held to its requirement where the class translates it out of
-the mesh and wherever it enters the mesh, and below it to port 53 and out of the
-mesh under `none`. Under a class that translates, filtering and hairpinning
-follow. A datagram to the leaf's mapping from the server's other port reaches
-the leaf, unless the arm declares port dependent filtering, where neither it nor
-one from the server's other address does and the row holds the backend to
-refusing each. One from the leaf's second address to the leaf's mapping on the
-exit's address reaches the leaf from the second address's mapping, unless the
-arm declares no hairpinning, where the exit answers it Port Unreachable from the
-mapping's address. The same holds in TCP: the leaf, listening on its port,
-connects from it to the server, and a connection to its mapping from the
-server's other port reaches the leaf's listener, unless the arm declares port
-dependent filtering, where it and one from the server's other address are each
-reset and the leaf accepts nothing. A connection from the leaf's second address
-to that mapping reaches the leaf's listener from the second address's mapping,
-unless the arm declares no hairpinning, where the exit resets it from the
-mapping's address at once and the leaf accepts nothing. A simultaneous open
-follows: the leaf learns its mapping from a connection to the server, connects
-from the same port to a port of the server's whose SYN the server's side drops,
-and the server connects from that port to the mapping, so the connection opens
-both ways and carries data each way. A SYN from the server's side to the exit's
-address at a port no mapping holds is answered by nothing for 6 seconds, unless
-the arm declares it reset at once. Datagrams from port 500 of the leaf's address
-and of another overlay address reach the server from 2 endpoints at ports below
-1024, and from port 40000 from 2 endpoints at ports of 1024 or above. A datagram
-cut into 3 fragments and handed last first reaches the server whole. After the
-server's Port Unreachable through the exit, the server sends to the leaf's
-mapping from the closed port and the leaf reads it, and the leaf's socket then
-reaches the server from the same outside endpoint again. In TCP, a Time Exceeded
-from the server's side to a live connection's mapping, quoting its next segment,
-reaches the leaf, and the connection carries data each way after it.
-
-Then the suite takes the backend off with `SetEnabled` and puts it back.
-Readiness has to go false in both families and the announcement empty while the
-backend still holds what carries them, `Status` has to read neither family
-ready, and once enabled again both are ready and carried. For an arm that can
-make one, another writer then takes the backend's translation away. The backend
-has to say the families are not ready, a datagram the leaf sends meanwhile
-reaches the server not at all, and once the translation is back the same flow
-reaches the server translated. For an arm that can make one, another writer then
-masquerades every packet, in a translation made after the backend's where the
-host's own source translation runs and then in one ahead of the backend's: at
-the host's own place a new flow reaches the server under the class, the leaf's
-own address under `none`, and ahead of it under the other writer's, the exit's
-uplink address. Last the suite stops the backend, which withdraws as
-`SetEnabled` does, and once `Run` returns the backend holds nothing. Row 6 runs
-once more on a network of its own under the arm's first class, with
-`cap.egress.flows_per_source` set below the default, so a backend keeping the
-default fails it.
-
-`TestKernelExitPassesTheExitBehaviorSuite` in `internal/egress/kernel` runs the
-kernel exit's arm, which carries `auto`, an address and `none` through every
-row, and carries every protocol it can translate and refuses DCCP and UDP-Lite
-under a class that translates. It declares port dependent filtering, no
-hairpinning, a reset of an unsolicited SYN at once and IPv4 DCCP refused with no
-answer, and on a kernel before 7.1 UDP-Lite refused with no answer too, its
-reply into the mesh under `none` dropped, as
-[protocol deviations](../design/protocol-deviations.md#exit-translation)
-describes. It reads each flow's timer from conntrack's listing in the exit's
-namespace, and its other writer's masquerade sits at `srcnat`, made after the
-exit's chain at 99, and at `srcnat` minus 2. Its other writer deletes both its
-tables, and its stop leaves no table named `ranet3` in either family. No real
-backend maps the leaf's ports or ends its TCP yet, so the suite's own tests
-stand in for both: a fake that maps every port into a range of its own meets
-rows 1, 3 and 5, and a fake that ends the leaf's TCP and opens its own toward
-the server meets row 3 without a too-big answer of its own.
+own, and each of the suite's rows in both families. The `raweb3` check fails
+when a row of that page the kernel exit's arm declares a limit under is not the
+first cell of exactly 1 of its rows.
 
 On Linux the suite builds 4 network namespaces, each new and empty and held by a
 thread of its own:
 
 - the leaf, behind a tun of its own whose packets the suite hands the exit, with
-  a second address in each family for row 6 and hairpinning, which no unbound
-  socket takes as its source
+  a second address in each family for each source's share of the flows and
+  hairpinning, which no unbound socket takes as its source
 - the exit, with the mesh's tun, a peer the mesh routes the leaf's addresses to,
   which writes what it carries into the leaf's tun, and an uplink with an MTU of
   1340 to the router
@@ -708,57 +137,11 @@ unshare -rn go test ./internal/egress/egresstest
 
 ## Root tests on macOS
 
-On macOS the tests below run as root, and only with `RANET3_DARWIN_NETTEST=1`
-set. The Mac that runs them may be on a live mesh.
-
-- `internal/kernel` has tests against the real routing socket.
-- `internal/netstack` has arms that create a utun. 2 of its tests carry a packet
-  each way through a utun addressed in `198.18.0.0/15`: a datagram sent out of
-  it reaches a recording peer whole, and a frame delivered inbound reaches a
-  socket behind it. They take the address and its route off again and check that
-  no route on another interface changed. Another checks that the mesh's utun
-  runs no route listener and queues no link event while its MTU moves more times
-  than the device's event channel holds, and that closing the mesh closes that
-  channel.
-- `internal/client` has arms that put a node on a real utun.
-- `transport` has 1 that sends through a feth pair whose MTU is 1400. A datagram
-  past that MTU is refused, or fragmented while a session asks. A second checks
-  that a socket connected to 1 peer binds the address of the feth the selection
-  names, where the host's own route leaves by the other. Others hold test utuns
-  standing in for an uplink, a second uplink and ranet3's own utun, and check
-  that every datagram leaves by the interface the selection names, past a route
-  of the stand-in, on the shared socket, after a refused pin and on a socket
-  connected to 1 peer, in both families, that it follows the selection to
-  another interface, that nothing is sent once that interface is gone, and that
-  a longer route of the stand-in holding the peer refuses the send. 6 more check
-  where answers leave from. An answer leaves from the address its request
-  reached, by the interface holding that address. The session's path MTU reads
-  the MTU of that interface. The datagrams of a send that fit still leave from
-  the address after one is refused for its size. Once the address is gone or has
-  no route to the peer, sends leave from the kernel's choice and return to the
-  address as [moving hosts](../platforms.md#moving-hosts) describes. A send
-  refused from the address and again without it keeps the address.
-- `control` has 1 that checks that the control socket and the directories the
-  daemon makes for it get the daemon's group, under a parent directory that
-  hands down another group, as `/var/run` does on macOS.
-
-The `control` one gives a directory a group of any number, which only root may
-do. It has an unprivileged twin that uses a second group of the running user,
-and skips where the user has no second group it can give a directory. The twin
-runs on Linux as well, where a setgid directory hands its group down. It skips
-in the Linux Nix sandbox and under `unshare -rn`.
-
-`internal/kernel` names the machine it reads and writes, `kernel.Host`, so the
-macOS backend can be driven without either. `internal/client`'s
-`daemon_darwin_test.go` uses that to run a configuration file all the way to a
-daemon against a recorded routing table: the transport names each datagram's
-interface from the selection over that table, nothing is written outside the
-tun, and the reconciler holds an announced default out of the kernel until a
-session is live and installs a route holding a zero address as the cover's
-members, all asserted on the routes that arrive rather than on the calls that
-made them. It needs no privilege, and the one thing it leaves with the running
-kernel is the transport's own UDP sockets, whose datagrams name the interface
-the recorded routes select.
+On macOS the root tests of `internal/kernel`, `internal/netstack`,
+`internal/client`, `transport` and `control` run as root, and only with
+`RANET3_DARWIN_NETTEST=1` set. They run against the real routing socket, utuns,
+feth pairs and directories given a group only root may give, and the Mac that
+runs them may be on a live mesh.
 
 ## Property tests
 
@@ -821,11 +204,11 @@ have commands of their own.
 | --------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, `staticcheck ./...`, a build of `cmd/ranet3` for Android with cgo off, and a build of `cmd/ranet3` that keeps its symbols, which fails where the daemon links `transport`'s network in memory, `internal/bubble` or `testing`, or a non-test file, outside the network's own files, that names `NewMemoryNetwork`                                                                                                                                                                                                                                                                                     |
-| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, and `reuse lint`                                                                                                                                                                                                                                                                                                                                                                                          |
+| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, a check of the VM tests' absent log lines, and `reuse lint`                                                                                                                                                                                                                                                                                                                                               |
 | `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `raweb3`        | all 3   | all 3                            | `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `raweb3`        | all 3   | all 3                            | a check of the kernel exit's rows of protocol deviations, as [the exit behavior suite](#the-exit-behavior-suite) says, then `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `modules`       | Linux   | `x86_64-linux`, `aarch64-linux`  | an evaluation of the NixOS module with networkd on, on with `ManageForeignRoutingPolicyRules` set by the host, and off, and of the `networkd.conf` it writes with networkd on, and of the nix-darwin module beside a stand-in for the nix-darwin options it reads and sets, which declares each `serviceConfig` key the module sets with nix-darwin's type: its job's command line and its `/etc` entry for a TOML and a YAML file, its `serviceConfig` rendered as a plist, its 2 assertions, its reload past a secrets step at `mkAfter` in 3 module orders, and its activation steps against stand-ins for `ranet3` and `launchctl` in 9 activations |
-| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests listed below, as root in a VM                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `netlink`       | Linux   | `x86_64-linux`                   | the Linux root tests, as root in a VM                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `integration-*` | Linux   | `x86_64-linux`                   | the VM tests below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 The 3 systems are `x86_64-linux`, `aarch64-linux` and `aarch64-darwin`. CI
@@ -837,23 +220,26 @@ systems, and never builds `legacyPackages.*.profile`.
 The `tree` check fails when an `aarch64-linux` check whose derivation requires
 the `kvm` system feature has no `checks.aarch64-linux.<name>` line in the
 `exclude` list of `atelier.toml`, when such a line names a check that does not
-exist, and when it finds no `aarch64-linux` check that requires `kvm` at all.
+exist, and when it finds no `aarch64-linux` check that requires `kvm` at all. It
+also fails when a fixed string that a VM test's script greps ranet3's journal
+for and expects absent is no longer in a string literal of a non-test Go file
+under `pkgs`, since a renamed log line would leave that grep passing on nothing,
+and when a command a script expects to fail is one it cannot read as such a grep
+or as no read of ranet3's journal.
 
-The `netlink` check runs these root tests: the `internal/kernel` tests whose
-names start with `TestNetlink`, the 25 `internal/egress/kernel` tests and the 5
-`internal/nftables` tests, the exit behavior suite and its 2 fakes, the
-`TestTUN` tests of `internal/netstack` and `internal/client`, the 3 `transport`
-sends, the 5 `internal/client` tests and the 10 `cmd/ranet3` tests above under
-`unshare -n`, the `internal/registry` tests whose names start with
-`TestResolver` and the client's resolver test above under `unshare -mn`, and
-every test of the `tun` and `conn` packages of `pkgs/wireguard`. It fails if any
-of them skips. It then checks that no rule, link, xfrm state or policy, or
-nftables table of theirs is left on the host, and that the host's
-`/etc/resolv.conf` is as it was. The `internal/kernel` tests
-`TestNetworkWatchInNetworkNamespace` and
-`TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault` need root and run in
-no check, and so do the 7 `transport` tests of the sockets connected to 1 peer
-and the 3 of a session's fallback from its address.
+The `netlink` check runs the test binary of each package that holds Linux root
+tests, whole, as root, in its package's directory of the source the `go-test`
+check tests.
+[`checks/netlink/default.nix`](https://github.com/ranet3/ranet3/blob/master/checks/netlink/default.nix)
+lists the binaries and the tests it names. `cmd/ranet3`'s binary runs under
+`unshare -n`, and so do the `internal/client` tests above that take the
+process's namespace. The resolver tests run under `unshare -mn`, and the rest of
+each binary in the VM's own namespace. The check fails when a test skips and the
+check does not name it, when a named test passed in a run, and when a top-level
+test a binary's `-test.list` names passed in none of the binary's runs and is
+not named. Each name carries the reason its test passes in no run. It then
+checks that no rule, link or nftables table of theirs is left on the host, and
+that the host's `/etc/resolv.conf` is as it was.
 
 A real kernel takes the `nf_tables` encoding in the `netlink` check and in every
 integration check that sets `cap.egress` or `overlay`. Elsewhere the encoding
@@ -880,10 +266,7 @@ Protocol-level interoperability is covered by the NixOS VM tests in
 `checks/integration`. Except `integration-reload`, each boots separate client
 and gateway VMs. The client runs the packaged, user-facing `ranet3` binary with
 a real TUN device, while the gateway runs `charon-systemd`/`swanctl`, BIRD, and
-iperf3. `integration-initiator` verifies an Ed25519-authenticated IKEv2 and
-Child SA negotiation across asymmetric local and remote UDP ports, checks Babel
-route exchange in both directions, and measures TCP bandwidth through the
-negotiated ESP tunnel:
+iperf3. Each builds on its own:
 
 ```sh
 nix build .#checks.x86_64-linux.integration-initiator -L
@@ -909,250 +292,8 @@ nix build .#checks.x86_64-linux.integration-mlkem-fragment -L
 nix build .#checks.x86_64-linux.integration-docker -L
 nix build .#checks.x86_64-linux.integration-tailscale -L
 nix build .#checks.x86_64-linux.integration-k3s -L
-```
-
-`integration-responder` inverts the exchange: strongSwan dials and ranet3
-answers, and the check asserts that ranet3 never dials. After a restart of
-ranet3, strongSwan dials again and ranet3 answers without dialing.
-`integration-initiator-fqdn` and `integration-responder-fqdn` run the same 2
-exchanges with each side named by an FQDN in place of a DN, strongSwan by its
-own `id` and ranet3 through `auth.aliases`. Each asserts that strongSwan
-established the SA between the 2 FQDNs and that ranet3 recorded an
-`ike.id.resolved` with `type=fqdn` for the gateway. The initiator variant also
-asserts that ranet3 asked for the gateway's FQDN in IDr. `integration-kernel`
-exercises the route reconciler against a real table. In every one of these
-checks the client runs ranet3 through the NixOS module, which writes its
-settings as the TOML a deployed node runs, and the check reads back the unit's
-runtime directory and group.
-
-`integration-suites-meet` and `integration-suites-apart` set ranet3's
-`cap.crypto` lists against strongSwan's proposals, with ranet3 dialing, and
-their `-responder` variants with strongSwan dialing. In `suites-meet` the 2 ends
-share AES-GCM with a 128-bit key, HMAC-SHA2-256 and P-256 alone. Each check
-asserts that `ranet3 sessions --json` and `swanctl --list-sas` both report that
-suite, rekeys each SA from strongSwan's side and from ranet3's, and asserts the
-same suite after. In `suites-apart` the 2 ends share no IKE cipher, and the
-answering end refuses the handshake with `NO_PROPOSAL_CHOSEN` whichever end
-dials.
-
-The `integration-mlkem-*` checks set ranet3's `cap.crypto.ike.kex` against
-strongSwan's proposals. In `mlkem-meet` both ends run `x25519+mlkem768` with
-ranet3 dialing, and in `mlkem-meet-responder` with strongSwan dialing. Each
-asserts from strongSwan's log the `IKE_INTERMEDIATE` exchange at Message ID 1
-and `IKE_AUTH` at 2, and that `ranet3 sessions --json` names `x25519+mlkem768`
-and `swanctl --list-sas` `KE1_ML_KEM_768`. Each then waits for ranet3's own
-scheduled rekey of the IKE SA. After it the check asks strongSwan for a rekey of
-the IKE SA and then of the Child SA, each right after strongSwan answers
-ranet3's Delete of a Child SA ranet3 rekeyed, which puts each between 2 of
-ranet3's Child SA rekeys. It asks again the same way after strongSwan's request
-drew `TEMPORARY_FAILURE` or strongSwan logs that it lost an IKE SA rekey
-collision, and waits for strongSwan's own exchange by the name strongSwan gives
-the new SA. Each asserts from strongSwan's log that ranet3's rekey of the IKE
-SA, strongSwan's of the IKE SA and strongSwan's of the Child SA each run
-ML-KEM-768 in an `IKE_FOLLOWUP_KE` exchange whose request echoes the link of the
-`CREATE_CHILD_SA` response, that a ping crosses each, and that
-`ranet3 sessions --json` names no kex entry for the Child SA of `IKE_AUTH` and
-`x25519+mlkem768` for the Child SA of strongSwan's rekey. It also asserts that
-ranet3 closed no IKE SA and completed 1 handshake, and that strongSwan never
-dialed again. In `mlkem-apart` and `mlkem-apart-responder` ranet3 lists
-`x25519+mlkem768` alone against strongSwan's default proposals, which hold no
-ML-KEM, and the answering end refuses the handshake with `NO_PROPOSAL_CHOSEN`
-whichever end dials. In `mlkem-fallback` ranet3 dials listing `x25519+mlkem768`
-and then `x25519` against those defaults. strongSwan takes `x25519`, no
-`IKE_INTERMEDIATE` runs, and ranet3's rekey of the IKE SA, which offers both
-entries again, completes in `x25519`. In `mlkem-optional` and `mlkem-none`
-strongSwan dials with ML-KEM-768 or `NONE` for its additional key exchange.
-ranet3 lists `x25519+mlkem768` first in `mlkem-optional` and takes ML-KEM-768,
-and its own rekey of the IKE SA runs ML-KEM-768 again in an `IKE_FOLLOWUP_KE`
-exchange. It lists `x25519` alone in `mlkem-none`, answers with `NONE` written
-out, runs no `IKE_INTERMEDIATE` and rekeys its IKE SA in `x25519`. strongSwan
-logs at level 2 for its `cfg` group in these checks, so its journal shows the
-proposals it received from ranet3, a `NONE` among them.
-
-`integration-mlkem-fragment` has ranet3 dial over links too narrow for its
-ML-KEM messages, and each end cuts them into the fragments of RFC 7383. Vlan 1
-has an MTU of 1280 and carries IPv6. Vlan 2 carries IPv4 with a route MTU of 576
-at each end, since Linux takes IPv6 off a device under 1280, and the gateway's
-kernel then builds no route for IPv6 in an SA over it. strongSwan cuts its own
-messages at its `fragment_size` of 1280 on both, and on vlan 2 the kernel splits
-those fragments into IP fragments. The check runs 4 phases: `x25519+mlkem768`
-over IPv6, `p384+mlkem1024` over IPv6, `x25519+mlkem768` over IPv4 and
-`p384+mlkem1024` over IPv4, each later one entered through a `specialisation` of
-the client. Where a phase keeps the family, the switch reloads the `kex` list,
-which rekeys the IKE SA to the new entry through `IKE_FOLLOWUP_KE` cut both ways
-with the session kept, and a restart then dials with it. Each phase asserts that
-`ranet3 sessions --json` names the entry and the remote, `ike_fragments` true
-and `ike_fragment_threshold` at the phase's threshold, 1280 or 576, and that
-`swanctl --list-sas` names the entry. For each `IKE_INTERMEDIATE` and
-`IKE_FOLLOWUP_KE` it asserts ranet3's `ike sending a message in fragments` line
-and `ike.message.fragmented` event at that threshold and strongSwan's
-`reassembled fragmented IKE message`. For ML-KEM-1024, whose answers pass
-strongSwan's `fragment_size`, it also asserts strongSwan's
-`splitting IKE message (... bytes) into N fragments` and ranet3's
-`ike reassembled a message from fragments`. A ping crosses each phase in both
-families. At the end it asserts that each log holds none of these lines:
-
-- ranet3's: `no matching inbound ESP SA`,
-  `ike stopping ESP on a Child SA past its lifetime` and
-  `ike dropped the fragments of a message the peer left incomplete`
-- strongSwan's: `integrity check failed`, `no CHILD_SA built`,
-  `AUTHENTICATION_FAILED` and `N(INVAL_SPI)`
-
-The checks that write no `kex` list, all but `suites-meet` and the `mlkem-*`
-ones, run its default: ranet3 offers `x25519+mlkem768` first, and a strongSwan
-whose proposals hold no ML-KEM takes a classical entry.
-
-`integration-egress` makes the client an exit node and boots a third machine
-behind it, holding prefixes the gateway can reach through the mesh and no other
-way. It asserts that the announcement reaches BIRD on the far side, that the
-machine behind the exit sees the exit's own address on both families and never
-the mesh address the packet started with, that the sweep recognizes its own
-rules rather than rewriting them, that turning `net.ipv4.ip_forward` off
-withdraws the IPv4 advertisement and leaves the IPv6 one alone, and that a stop
-leaves no nftables table behind. A start after the stop installs the tables
-again.
-
-`integration-egress-segment` gives the exit node an egress segment instead of an
-advertisement. It asserts that the exit is ready for both families and that the
-gateway holds the SID's /128, that the exit holds its mesh tun as its only tun,
-no routing rule keyed on an arrival device and a translation rule keyed on the
-tun in both families, and that its lookups ran rather than being skipped. The
-gateway then steers its IPv6 traffic to the SID, and the machine behind the exit
-sees the exit's own address. A source outside the allow list is refused, and so
-is an inner packet for a destination the mesh routes, which the gateway never
-gets back through the mesh. Turning IPv6 forwarding off keeps the SID, since a
-family the host does not forward is not waited for. A stop removes the tables. A
-host on the client's link outside the mesh sends from mesh sources, which the
-client's antispoof filter drops and counts as `overlay_source` in both families,
-a type 4 routing header to a segment the mesh routes, which `mesh_entry` drops
-before the tun read sees it, at least 3 more in `mesh_entry_ipv6`, and packets
-to the client's own SID, which meet the mirror's hold. The tun read's
-`routing_header` and `sid` counts stay as they were, nothing reaches the
-gateway, nothing is egressed or refused, and `ranet3_antispoof_ready` reads 1.
-
-`integration-segments` steers 1 destination through a segment routing header
-(RFC 8754). The gateway's own kernel removes the header with End.DT6, and a
-capture on the gateway shows the bare inner packet. `ranet3 status --json`
-counts steered packets and no unsteered ones. With the gateway's SID removed,
-the steered packets still arrive and nothing removes the header. In the other
-direction the gateway's kernel builds the header, and the client's End.DT46
-delivers the packet, which its `delivered` counter records with no segment
-dropped. The address it delivers to is one the client holds on loopback and
-announces, since the forwarding decision delivers only to an address the client
-routes. A rule on the gateway ahead of its main table sends that address through
-the segment rather than the route it learns.
-
-`integration-docker`, `integration-tailscale` and `integration-k3s` each run
-another program's own daemon on the client beside ranet3, at the version the
-flake's nixpkgs pins, with `cap.table` and `overlay` set. Once the program is
-up, after its service restarts and after ranet3 restarts, each check asserts
-that the client reaches the gateway's tunnel addresses in both families. After 2
-more passes of the reconciler, `ranet3 debug rules --json` misses no derived
-rule and reads every lookup not taken, `ranet3 status` reports none taken, and
-the scrape carries `ranet3_kernel_overlay_taken` and
-`ranet3_kernel_underlay_taken` at 0 for each family the lookups asked in. The
-unit's journal shows no pass that could not ask its lookups without a later one
-that could. When the mesh does not reach, the check reads the rules view, the
-status and the gauges before it fails. A restart of ranet3 leaves the other
-program's policy rules and nftables tables as they were.
-
-`integration-docker` makes the client an exit node running Docker, with the
-machine behind it of `integration-egress`. The machine behind the exit sees the
-exit's own address in both families, the exit is ready in both, and
-`.egress.conflicts` is empty with `ranet3_egress_conflicts 0` beside Docker's
-nat `POSTROUTING`. [The packet filter](../coexistence.md#the-packet-filter) says
-which chains the report counts. A container, run from an empty image the check
-imports, reaches the machine behind the exit and the gateway's IPv4 tunnel
-address, where the gateway sees the client's own tun address, and the gateway
-fetches a page a container serves on a published port. A restart of Docker
-leaves ranet3's tables as they were. The client holds a default route by the
-gateway in the main table. Last, the gateway announces a default into the mesh
-and answers an address on its loopback beyond it, and the client switches into a
-specialisation that sets [`cap.exit`](../configuration-reference.md#capexit)
-with `forward` naming `docker0`, which ranet3 applies by a reload. The host's
-lookups of that address in both families, and a container's IPv4 lookup from its
-address on `docker0`, end in the mesh's table ahead of the main table's default,
-and the gateway's capture on its xfrm interface reads what the check sends there
-entering the mesh from the client's own tun address. The exit, the container's
-reach and the published port hold under `cap.exit` too, again after a restart of
-Docker and after a restart of ranet3.
-
-`integration-tailscale` runs `tailscaled` on the client and on a third node,
-which also runs headscale, the control server both register with. With no exit
-node, the client holds Tailscale's 4 rules beside ranet3's in both families. The
-check then makes the third node the client's exit node with
-`--exit-node-allow-lan-access`, and the client reaches an address only that node
-answers through `tailscale0` and table 52, while the mesh still reaches the
-gateway and the underlay's lookups end in the main table. In both phases the
-nodes reach each other by `tailscale ping` and by an ICMP ping of each Tailscale
-address. `tailscaled` logs no restore of rules another program deleted, read
-from the moment systemd-networkd has configured the uplink and the tun and
-Tailscale's 4 IPv4 rules are in place. The module keeps networkd off the rules
-it did not ask for, Tailscale's among them, as
-[routes on Linux](../coexistence.md#routes-on-linux) gives. Both Tailscale nodes
-hold a default route by the gateway. After each step that changes the client's
-links, a name headscale gives the third node reaches the client, so the client
-still takes the control server's updates. Last, the client switches into
-`cap.exit` as in `integration-docker`, first with the third node as its exit
-node. The host's lookups of the third node's Tailscale addresses and of the
-address beyond the mesh's exit, in both families, are routed by `tailscale0` and
-table 52, as
-[exit mode beside other programs](../coexistence.md#exit-mode-beside-other-programs)
-measures, and the switch into `cap.exit` leaves the other program's rules and
-nftables tables as they were. With no exit node, the host's own traffic to the
-address beyond the mesh's exit enters the mesh as in `integration-docker`, and
-the nodes still reach each other through Tailscale. Once Tailscale is back from
-a restart of `tailscaled`, ranet3's rules are as they were.
-
-`integration-k3s` runs a k3s server on the client with kube-proxy in iptables
-mode and flannel, its pods from an image the check builds. ranet3 starts only
-once kube-proxy's masquerade is in place, so its session's first packet meets it
-([the packet filter](../coexistence.md#the-packet-filter)), and the gateway's
-`swanctl --list-sas` then reads the client at port 14000, the port ranet3 sends
-from. A pod fetches from another through a ClusterIP service's address and pings
-the gateway's IPv4 tunnel address, and the host reaches a pod by its main
-table's route. The reading once k3s is up and the one after k3s restarts first
-wait for the pods to be ready and for flannel's masquerade, and the one after
-the restart also waits for the restarted flannel to log that it set up its
-rules.
-
-`integration-reload` boots one machine and no gateway. It runs ranet3 through
-the NixOS module with a trust document that names only itself. Once the daemon
-is up, the script finds the control socket at mode 0660 in the group `ranet3`. A
-member of that group runs `ranet3 status` and `ranet3 debug runtime`, and a user
-outside it is refused `ranet3 status`. The machine has 4 entries under
-`specialisation`, and the test script switches to each the way a deployment
-does:
-
-```sh
 nix build .#checks.x86_64-linux.integration-reload -L
 ```
-
-The first changes an announced prefix and the trust document, which a reload
-applies. The switch exits with status 0, the daemon keeps its process and so its
-sessions, and the control socket reports the new prefix and document. The second
-changes the port, which a reload refuses. The switch exits with status 4, the
-daemon's reason is in the journal, and the old configuration keeps running until
-a restart applies the new file. No other check switches a configuration, so this
-one holds the unit's reload triggers and the stable path its command line names.
-
-The third moves the control socket through `extraArgs`, and the switch restarts
-the daemon on the new socket. The fourth applies the first change through that
-socket, which the unit's reload command names with `--control`. Last, the script
-runs `ranet3 down`. Its flag is in `/var/lib/ranet3`, a directory of mode 0700.
-After a restart the node is still down, and the `Down` line of `ranet3 status`
-gives the moment the flag records. `ranet3 up` removes the flag, and the next
-restart comes up on the mesh.
-
-`integration-initiator`, with a 4-core client, and `integration-kernel`, with a
-1-core client, run the same script. It covers IPv4 and IPv6 routes, locally
-scheduled and peer-initiated rekeys, BIRD withdrawal and recovery, and a clean
-stop and restart with an idle tun read. It also sends an ECT(0) UDP flow from
-the gateway while `fq_codel` behind a 1 Mbit/s shaper on the gateway's underlay
-marks strongSwan's ESP CE, and asserts that the flow reaches the client's tun
-marked CE with a valid IPv4 header checksum, that `ranet3_esp_inbound_ce_total`
-rose and that `ranet3_esp_inbound_ecn_unused_total` stayed 0.
-`integration-responder` drives both rekeys from the peer.
 
 The checks give the Child SA a lifetime of 24 seconds and the IKE SA one of 34
 seconds, with a margin of 22 seconds and no jitter, so each SA rekeys soon after
@@ -1166,9 +307,18 @@ client's IKE for 5 seconds while iperf3 runs, which outlasts a rekey's first
 send, and asserts that a Child SA rekey completed and that no Child SA reached
 its lifetime. The scripts of the initiator, responder and `suites-meet` checks,
 and of the `mlkem-*` checks except the 2 `mlkem-apart` ones, fail whenever
-ranet3 logs that it stopped ESP on a Child SA past its lifetime, and whenever
-strongSwan's journal shows an `N(INVAL_SPI)`, an `INVALID_SPI` notify from
-ranet3, across the rekeys.
+ranet3 logs that it stopped ESP on a Child SA past its lifetime, whenever its
+scrape counts an ESP datagram a session dropped or one of an SPI no session
+holds, and whenever strongSwan's journal shows an `N(INVAL_SPI)`, an
+`INVALID_SPI` notify from ranet3, across the rekeys. They read the first in
+`ranet3_esp_inbound_dropped_total`, which counts a datagram of an SPI with no SA
+installed, one that failed to decrypt or validate, and one RFC 6040 drops, and
+the second in `ranet3_receive_refused_total{cause="unknown_esp"}`. They read
+neither `ranet3_receive_dropped_total`, which counts a datagram a full receive
+queue drops, nor the other causes of `ranet3_receive_refused_total`, such as a
+datagram too short to name an SPI or one the kernel cut. The two they read start
+at 0 with each start of the daemon, so a script that restarts it reads them
+before each restart.
 
 The VM console, systemd, strongSwan, BIRD, ranet3, and iperf3 output is streamed
 by the Nix test driver. The test also prints strongSwan SA state and BIRD
