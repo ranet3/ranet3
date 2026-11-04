@@ -31,9 +31,10 @@ setting or skips a route instead.
 | A link's network inside the overlay                    | a throw in place of the overlay prefix's hold, and accepted from its own interface by chain `antispoof`, as [carve-outs](antispoof.md#carve-outs) describe                                                                         | none                                                                                                                                                                                                                         |
 | `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                       | refused, naming the platform                                                                                                                                                                                                 |
 | Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                           | refused                                                                                                                                                                                                                      |
+| A `cap.route` entry that counts as a default           | loaded, with a warning unless it is a default, making this node an exit for its family                                                                                                                                             | refused, as [gaps on macOS](#gaps-on-macos) gives                                                                                                                                                                            |
 | `overlay`                                              | loaded, and chain `antispoof` at prerouting in the nftables table `inet ranet3`, with an accept for each `cap.antispoof` exemption                                                                                                 | loaded, bounding the local segments' outer sources and the forwarding decision, and the filter not enforced, as `status` and `ranet3 debug rules` say                                                                        |
 | Local segments                                         | `End` and `End.DT46`, the outer source checked against the overlay                                                                                                                                                                 | `End` and `End.DT46` delivering to the mesh, the outer source checked against the overlay                                                                                                                                    |
-| Entry chain                                            | chain `mesh_entry` at postrouting in `inet ranet3` on every node, with no key, as [the antispoof filter](antispoof.md#the-entry-chain) describes                                                                                   | none, and a Mac that forwards is warned                                                                                                                                                                                      |
+| Entry chain                                            | chain `mesh_entry` at postrouting in `inet ranet3` on every node, with no key, as [the antispoof filter](antispoof.md#the-entry-chain) describes                                                                                   | none, the tun read drops a source this node does not own toward all but an IPv6 link-local destination, and a Mac that forwards is warned                                                                                    |
 | `cap.exit`                                             | the policy rules 5405, 5435 and 5440 of [exit mode](routing.md#exit-mode-on-linux)                                                                                                                                                 | the routes of [the zero-free cover](routing.md#the-zero-free-cover-on-macos) in each family the tun holds an overlay address of, with `fallback = "uplink"`, and `forward` refused, as [gaps on macOS](#gaps-on-macos) gives |
 | `cap.exit.fallback = "none"`                           | the rules 5445 and 5450 and the nftables table `ranet3_fallback`, its chains at output and postrouting, of [the kill switch](routing.md#the-kill-switch-on-linux), which gives what each stop leaves of them                       | refused, naming `inbound` and `lan` where they are written                                                                                                                                                                   |
 | `cap.exit.via`                                         | two steered defaults out of the tun under exit mode's rules, and the dataplane's steer along the path, of [mode 3](routing.md#mode-3-on-linux)                                                                                     | the steered defaults as the zero-free cover, and the dataplane's steer along the path, with `fallback = "uplink"` written, and refused where `fallback` is unwritten                                                         |
@@ -201,6 +202,12 @@ startup and on a reload, each for what this build lacks there:
   `kernel: cap.exit via with fallback unwritten is "none" in mode 3, which is refused on macOS, where this build has no filter to keep the host's traffic off the uplink: write fallback = "uplink" beside via`,
   for the same filter.
 
+A `cap.route` entry that
+[counts as a default](routing.md#routes-that-count-as-a-default) is refused at
+startup and on a reload too, since it makes this node an exit and this build
+runs no entry chain to pass the replies an exit's traffic draws, with
+`config: cap.route announces ::/0, which counts as a default and asks this node to carry other nodes' traffic out of the mesh, and this build for darwin carries no exit, since it runs no entry chain to pass that traffic's replies into the mesh`.
+
 A Mac that forwards under `cap.exit` loses some of what it forwards toward an
 exit, and the daemon warns, as
 [the limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) give.
@@ -215,7 +222,8 @@ On a platform other than Linux, macOS, iOS and Android:
 - `overlay` and `cap.antispoof` load, and the antispoof filter is not enforced,
   as on macOS.
 - An egress segment fails the start, since it needs `cap.egress`, which is
-  refused.
+  refused. A `cap.route` entry that counts as a default is refused at startup
+  and on a reload, since no entry chain runs to pass an exit's replies.
 - The node has no network watch, so a moved host waits for each session's own
   liveness check.
 - Every peer shares the 1 socket of its family, busy or not.
@@ -238,17 +246,20 @@ path MTU search, the forwarding read and the caller credentials of macOS and
 Linux, but none of the reconciler, the network watch, `cap.egress`, the
 antispoof filter or the entry chain. Neither drops a mesh source from outside,
 since iOS has no packet filter an application can write and an Android
-application cannot filter the device's inbound traffic, and neither needs the
-entry chain, since nothing forwards into the tunnel there. An Android build,
-which Go makes with the `linux` build tag, and an iOS build, which it makes with
-the `darwin` one, refuse `cap.egress` and `cap.exit` at startup in the same
-words, naming `android` or `ios`, and load `overlay` as macOS does. `cap.table`
-fails the start there too, and a moved host waits for each session's own
-liveness check. An iOS build opens no selection, so its underlay datagrams name
-no interface and leave by the host's own routes. A session there that sends from
-the kernel's choice of source reads its path MTU from the interface holding the
-source the kernel picks for a socket connected to the peer, and one the peer
-opened from the interface holding the address it sends from.
+application cannot filter the device's inbound traffic. Each refuses every way
+of becoming an exit, a `cap.route` entry that counts as a default among them, so
+no exit's replies need the entry chain there. A device that forwards is warned,
+as [at a glance](#at-a-glance) gives. An Android build, which Go makes with the
+`linux` build tag, and an iOS build, which it makes with the `darwin` one,
+refuse `cap.egress` at startup, and `cap.exit` and a `cap.route` entry that
+counts as a default at startup and on a reload, in the same words, naming
+`android` or `ios`, and load `overlay` as macOS does. `cap.table` fails the
+start there too, and a moved host waits for each session's own liveness check.
+An iOS build opens no selection, so its underlay datagrams name no interface and
+leave by the host's own routes. A session there that sends from the kernel's
+choice of source reads its path MTU from the interface holding the source the
+kernel picks for a socket connected to the peer, and one the peer opened from
+the interface holding the address it sends from.
 
 ## Moving hosts
 

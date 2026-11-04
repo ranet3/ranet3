@@ -54,7 +54,7 @@ as [what a reload refuses](#what-a-reload-refuses) describes.
 | `link.tun`                                                     | refused                                  | Compared as written. Writing the default name where the file left it out is a change.                                                                                                                                                                                                                                                                                                                                         |
 | `link.mtu`                                                     | applied                                  | Refused when the tun cannot move. An omitted `mtu` and `1400` are the same.                                                                                                                                                                                                                                                                                                                                                   |
 | `dial.all`, `dial.to`                                          | applied                                  |                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `cap.route.announce`                                           | applied                                  | Refused when it moves a mesh address of a family `cap.egress` translates. A prefix it drops is retracted and held, as [routing](routing.md#retracted-routes) describes. A default it starts announcing makes this node an [exit](exit-nodes.md#an-exits-own-traffic) from the reconciler's next pass.                                                                                                                         |
+| `cap.route.announce`                                           | applied                                  | Refused when it moves a mesh address of a family `cap.egress` translates, and off Linux when it announces a prefix that [counts as a default](routing.md#routes-that-count-as-a-default). A prefix it drops is retracted and held, as [routing](routing.md#retracted-routes) describes. On Linux a default it starts announcing makes the node an [exit](exit-nodes.md#an-exits-own-traffic) from the reconciler's next pass. |
 | `cap.transit`, written or removed                              | refused                                  |                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `cap.babel` and every key under it                             | applied                                  |                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `cap.table`, written or removed                                | refused                                  |                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -130,13 +130,13 @@ overlay with its block too, and its pass judges again which routes
 
 A reload also hands the reconciler the prefixes `cap.route` announces, with its
 block, whenever they start or stop making this node an
-[exit](exit-nodes.md#an-exits-own-traffic). A reload announcing a default
-therefore makes the node an exit from the next pass, which withholds every route
-that counts as a default, a learned one already installed among them. A reload
-that stops making the node an exit lets the next pass install them again while a
-session is live, on macOS under `cap.exit` one holding its family's zero address
-as the members of the zero-free cover it contains, as
-[routing](routing.md#the-zero-free-cover-on-macos) describes.
+[exit](exit-nodes.md#an-exits-own-traffic). On Linux a reload announcing a
+default therefore makes the node an exit from the next pass, which withholds
+every route that counts as a default, a learned one already installed among
+them, and a reload that stops making the node an exit lets the next pass install
+them again while a session is live. Every other platform refuses a reload
+announcing one, as
+[the configuration reference](configuration-reference.md#caproute) gives.
 
 On Linux that first pass derives the policy rules again, as
 [routing](routing.md#policy-rules-on-linux) lists them, from the new overlay and

@@ -709,7 +709,9 @@ destination, so the checks below read what it passed.
   [`cap.exit.via`](routing.md#mode-3-on-linux) toward a destination outside the
   overlay that no entry covers, from a source this node does not own is dropped
   and counted `unowned_source`, the owned-source rule. Only this node's own
-  traffic leaves the mesh through its exits.
+  traffic leaves the mesh through its exits. On every platform but Linux, where
+  no entry chain runs, the rule takes every destination but an IPv6 link-local
+  one, so only this node's own traffic enters the mesh at all.
 
 [Exit mode](routing.md#exit-mode-on-linux) sends what a link `cap.exit.forward`
 names forwards into the tun toward the mesh's default, so the owned-source rule
@@ -717,11 +719,14 @@ decides it. A Docker bridge's IPv4 flows pass, masqueraded to the tun's address.
 A LAN this node announces through `cap.route` or advertises through `cap.egress`
 passes. Any other LAN's packets are dropped and counted `unowned_source`. On
 Linux the [entry chain](antispoof.md#the-entry-chain) drops them before the tun,
-toward any destination but a `none` class's, and counts them as `mesh_entry`.
+toward any destination but a `none` class's, and counts them as `mesh_entry`. On
+every other platform the read drops them toward the overlay and any subnet the
+mesh routes as well, and counts them `unowned_source`.
 
-Replies to the mesh's overlay and to subnets the mesh routes are untouched by
-the owned-source rule: an exit's egress replies, translated back by the kernel,
-carry the internet's sources and are bound for a leaf's overlay address, out of
-that rule's reach. A host tunneling its LAN through the mesh announces the LAN's
-prefix, which makes its sources this node's own, or carries the tunnel in UDP.
+On Linux replies to the mesh's overlay and to subnets the mesh routes are
+untouched by the owned-source rule: an exit's egress replies, translated back by
+the kernel, carry the internet's sources and are bound for a leaf's overlay
+address, out of that rule's reach. No other platform runs an exit. A host
+tunneling its LAN through the mesh announces the LAN's prefix, which makes its
+sources this node's own, or carries the tunnel in UDP.
 [The limits](design/limits.md#transit) say so.

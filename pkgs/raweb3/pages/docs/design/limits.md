@@ -69,7 +69,8 @@ or IPv6 packet, one level deep, since the mesh keeps no registry of other nodes'
 SIDs to tell a host's own IP-in-IPv6 or 6in6 tunnel from a packet steered to a
 SID. A tunnel to a peer's overlay address, carrying traffic a host forwards for
 a LAN, therefore has its inner sources judged as the host's own: a LAN source
-the node does not own is dropped toward a default as `unowned_source`, and one
+the node does not own is dropped toward a default as `unowned_source`, on every
+platform but Linux toward any destination but an IPv6 link-local one, and one
 the table routes to another node is `forged`. An operator tunneling a LAN
 through the mesh announces the LAN's prefix, which makes its sources the node's
 own, or carries the tunnel in UDP, which the walk does not open.
@@ -91,19 +92,31 @@ other a source the table routes to the announcing node, so a read of it is
 dropped there as `forged`, whatever its destination. An anycast source a node
 does not announce is dropped there the same way, as `forged` where another node
 announces it or it lies in the overlay, and otherwise as `unowned_source` toward
-a route that counts as a default. Both are fixed by announcing the prefix at the
-node that drops them.
+a route that counts as a default, or on every platform but Linux toward any
+destination but an IPv6 link-local one. Both are fixed by announcing the prefix
+at the node that drops them.
+
+**Where no entry chain runs, an error from behind the node is dropped.** On
+every platform but Linux the tun read passes no reply, since it cannot tell one
+from a new flow. An answer or ICMP error about a peer's flow that comes from a
+source this node does not own is dropped as `unowned_source`: a Packet Too Big
+or Time Exceeded from a router behind the node at an address the node does not
+announce, or the host's own error under another interface's source. Linux passes
+such an error as a reply, as [the entry chain](../antispoof.md#the-entry-chain)
+gives. An operator fixes the first by announcing that router's link.
 
 **A steered packet is checked before it is steered.** A packet
 [`cap.segment.steer`](../segment-routing.md#steering) steers is judged by the
 destination it was read with, before the steer puts its segment list on. It is
-dropped as `forged` wherever any read would be, and a steered packet whose
-source this node does not own is otherwise dropped, as `unowned_source`, only
-where a route counting as a default covers that destination. A steer toward a
-destination no route covers has no owned-source check but under
+dropped as `forged` wherever any read would be, and on Linux a steered packet
+whose source this node does not own is otherwise dropped, as `unowned_source`,
+only where a route counting as a default covers that destination. A steer toward
+a destination no route covers has no owned-source check there but under
 [`cap.exit.via`](../routing.md#mode-3-on-linux), where a read toward such a
 destination outside the overlay is dropped from a source this node does not own,
-as [transit](../routing.md#transit) gives.
+as [transit](../routing.md#transit) gives. On every other platform a steered
+packet whose source this node does not own is dropped toward any destination but
+an IPv6 link-local one.
 
 ## The antispoof filter
 

@@ -20,9 +20,12 @@ arriving on the same tun.
 `cap.egress` works on Linux only, whose builds carry the kernel exit this page
 describes. A build for any other platform, Android and iOS among them, carries
 no exit, and the daemon refuses `cap.egress` at startup in words that name the
-platform, as [Platforms](platforms.md#at-a-glance) quotes them. A node that
-accepted the configuration and carried nothing would advertise itself and then
-drop every flow that took it.
+platform, as [Platforms](platforms.md#at-a-glance) quotes them, and a
+`cap.route` entry that
+[counts as a default](routing.md#routes-that-count-as-a-default) at startup and
+on a reload, since it would make the node an exit as well. A node that accepted
+the configuration and carried nothing would advertise itself and then drop every
+flow that took it.
 
 [The configuration reference](configuration-reference.md) lists every key and
 its default.
@@ -395,8 +398,10 @@ holds one, as an exit by an egress segment alone can. Over IPv6 such a socket
 reaches the mesh only for a destination a route out of the tun covers, and is
 refused otherwise, row B4. The head of that account says what another program's
 rule or another writer's route in the table does. The mesh still forwards other
-nodes' packets by every route it selects. A reload that starts announcing a
-default makes the node an exit from the next pass.
+nodes' packets by every route it selects. On Linux a reload that starts
+announcing a default makes the node an exit from the next pass. Every other
+platform refuses that reload, as
+[the configuration reference](configuration-reference.md#caproute) gives.
 
 [`cap.exit`](configuration-reference.md#capexit) asks the opposite, the host's
 own traffic out through another exit, so an exit refuses it by the reason it is

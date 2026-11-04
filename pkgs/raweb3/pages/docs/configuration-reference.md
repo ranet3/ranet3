@@ -250,8 +250,10 @@ nothing but what [`cap.egress`](#capegress) and an egress segment add, as
 - A prefix that
   [counts as a default](routing.md#routes-that-count-as-a-default), such as one
   outside `overlay` shorter than `/8` for IPv4 or `/16` for IPv6, makes this
-  node an exit for its family. Such an entry other than a default loads with a
-  warning.
+  node an exit for its family. On Linux such an entry other than a default loads
+  with a warning. Every other platform refuses any such entry at startup and on
+  a reload, as [gaps on macOS](platforms.md#gaps-on-macos) and
+  [other platforms](platforms.md#other-platforms) give.
 
 ## `cap.transit`
 
@@ -839,7 +841,7 @@ programs' rules do beside them.
   rules, or on macOS its routes, and without `overlay`, which keeps the mode's
   sources by main apart from the mesh's, and on macOS decides the families the
   mode covers, as
-  `config: cap.exit is written and overlay is absent, so the mode's rules cannot keep the overlay's sources off the uplink: write overlay with the prefixes the mesh numbers its nodes from`.
+  `config: cap.exit is written and overlay is absent, so the mode cannot tell the mesh's addresses from the uplink's: write overlay with the prefixes the mesh numbers its nodes from`.
 - The file is refused on an exit, with the reason it is one:
   `config: cap.exit sends this node's own traffic out through another exit, and this node is an exit (cap.egress advertises 0.0.0.0/0), whose own traffic and whose egress leave by its own uplink: remove cap.exit, or stop offering the exit`.
   The other reasons read

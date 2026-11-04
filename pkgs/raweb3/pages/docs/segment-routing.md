@@ -62,19 +62,17 @@ this node does not own it, so a host beyond the mesh reaches no SID through a
 node with the filter from a source outside every range that node owns, whatever
 the SID delivers to. An exemption inside a range the node announces admits that
 range's sources as the node's own, and they reach the SIDs any source the node
-owns reaches. On Linux a node that forwards without `overlay` passes on to every
-SID only a forged source it owns, since the entry chain keeps every other out of
-the tun. On a platform that runs no entry chain such a node is only warned at
-load, and passes on to every SID a forged overlay source that no route other
-than a default sends to another node or holds unreachable, since the tun read
-drops the rest. A steering node's `source` has to lie inside the overlay too, or
-every SID it steers through refuses its packets. The loader refuses a local
-segment without `overlay`, and one beside an overlay holding no IPv6 prefix,
-which would refuse every packet. Every platform loads `overlay`, so a node on
-macOS holds `End` and `End.DT46` segments that deliver to the mesh, checked by
-the outer source as on Linux, though no filter drops a forged overlay source
-there before the check. A reload that changes the overlay rebuilds the table of
-SIDs in place.
+owns reaches. A node that forwards without `overlay` passes on to every SID only
+a forged source it owns, since on Linux the entry chain keeps every other out of
+the tun and on every other platform the tun read drops it, where such a node is
+also warned at load. A steering node's `source` has to lie inside the overlay
+too, or every SID it steers through refuses its packets. The loader refuses a
+local segment without `overlay`, and one beside an overlay holding no IPv6
+prefix, which would refuse every packet. Every platform loads `overlay`, so a
+node on macOS holds `End` and `End.DT46` segments that deliver to the mesh,
+checked by the outer source as on Linux, though no filter drops a forged overlay
+source there before the check. A reload that changes the overlay rebuilds the
+table of SIDs in place.
 
 A node parses a packet only when its destination is one of its SIDs. It accepts
 a reduced header, which leaves out the segment the destination address already

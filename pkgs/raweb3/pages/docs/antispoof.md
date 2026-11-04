@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-03
+updated: 2026-11-04
 order: 55
 ---
 
@@ -74,8 +74,10 @@ source the table routes to another node or holds unreachable, through a route
 that does not count as a default, or from an overlay source this node does not
 own, one carrying a routing header the mesh refuses, one to one of this node's
 own SIDs, one bound through an exit from a source this node does not own, or one
-whose inner packet fails the same checks. Those reads count on the `Transit`
-line, not among the filter's drops.
+whose inner packet fails the same checks. On every platform but Linux, where no
+entry chain runs, it also drops a read from a source this node does not own
+toward any destination but an IPv6 link-local one. Those reads count on the
+`Transit` line, not among the filter's drops.
 
 ## What it drops
 
@@ -279,8 +281,10 @@ drop takes the range too, and the site's sources are dropped on `eth1` as well.
 
 ## The entry chain
 
-Chain `mesh_entry` judges every packet the host sends or forwards out of the
-tun, after every source translation, and its first line that matches decides:
+Chain `mesh_entry` judges every packet the host sends or forwards out of the tun
+on Linux, after every source translation. On every other platform the tun read
+takes its place, as [the platforms](#platforms) say. The chain's first line that
+matches decides:
 
 | Rule comment                  | Does                                                                      |
 | ----------------------------- | ------------------------------------------------------------------------- |
@@ -442,9 +446,12 @@ warning at startup and at every reload,
 `config: this node forwards IPv4 and IPv6 and darwin runs no antispoof filter, so a host on any of its links can reach this host's own services under a mesh source`,
 naming the families it reads as forwarding and the platform, whether or not
 `overlay` is written. A family whose setting the node cannot read is not named,
-and a node that can read neither logs no warning. On Linux the tun read and
-`mesh_entry` keep a forged source out of the mesh, chain `antispoof` runs
-wherever `overlay` is written, and no warning is logged.
+and a node that can read neither logs no warning. The warning is of the inbound
+side alone: there the tun read keeps out of the mesh every source this node does
+not own, as [the platforms](#platforms) below say, though a host on the node's
+links can still send under one of the node's own addresses. On Linux the tun
+read and `mesh_entry` keep a forged source out of the mesh, chain `antispoof`
+runs wherever `overlay` is written, and no warning is logged.
 
 ## Platforms
 
@@ -455,6 +462,16 @@ on one of its interfaces can reach its services under an overlay source. With
 on the antispoof line and `ranet3 debug rules` reads
 `Antispoof filter, not enforced on darwin`, naming the platform, and no pass
 logs anything. A node there that forwards gets the warning above.
+
+The entry chain's place on every other platform, macOS among them, is the tun
+read's own: it drops a read from a source this node does not own toward every
+destination but an IPv6 link-local one, as `mesh_entry` passes `fe80::/10`, and
+counts it `unowned_source` on the `Transit` line and in
+`ranet3_transit_packets_total`, as [metrics](metrics.md#transit-counters) lists.
+A multicast destination never reaches the check, since the read drops it first.
+No reply passes it, since the read cannot tell one from a new flow, as
+[the limits](design/limits.md#transit) say of the errors it drops. The drop
+applies to the packet an IPv6 read carries as well.
 
 There the overlay still bounds what the process does itself. Every local segment
 loads and acts only on an outer source in the overlay's IPv6 prefixes, and the
