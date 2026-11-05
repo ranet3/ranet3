@@ -4,12 +4,11 @@
 package client
 
 import (
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -82,16 +81,11 @@ func readBabelState(dir string) (babelState, bool, error) {
 	return state, true, nil
 }
 
-// parseBabelState takes the file's body, refusing what writeBabelState would not have written
+// parseBabelState takes the file's body, refusing a member named twice, in another case or unknown, and a string that is not UTF-8
 func parseBabelState(body []byte) (babelState, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
 	var file babelStateBody
-	if err := decoder.Decode(&file); err != nil {
+	if err := jsonv2.Unmarshal(body, &file, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return babelState{}, err
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return babelState{}, errors.New("more follows the JSON object")
 	}
 	if file.Node == nil || file.Limit == nil {
 		return babelState{}, errors.New("node or seqno_limit is missing")
