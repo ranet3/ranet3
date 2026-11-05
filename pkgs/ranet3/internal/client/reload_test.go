@@ -1399,3 +1399,25 @@ func TestListenTurnedOffRightAfterOnLeavesTheHubRefusing(t *testing.T) {
 	}
 	waitFor(t, convergeBudget, "the hub to refuse an IKE_SA_INIT while listen is off", func() bool { return c.hub.Refused() > refused })
 }
+
+// A reload that changes the trust document's literal endpoints alone wakes
+// the reconciler for them, and one that leaves them as they were wakes it not
+func TestReloadWakesTheReconcilerForTheLiteralEndpointsItChanges(t *testing.T) {
+	c, path, reconciler, _ := reloadOf(t, func(*config.Config) {})
+	var wakes atomic.Int32
+	c.SetReconciler(Reconciler{Table: reconciler.setTable, Endpoints: func() { wakes.Add(1) }})
+	writeConfig(t, path, c.config())
+	reg := readRegistry(t, c.config().Auth.Trust)
+	literal := "192.0.2.77"
+	reg[0].Nodes = append(reg[0].Nodes, registry.Node{CommonName: "relay",
+		Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Address: &literal, Port: 13000}}})
+	writeRegistry(t, c.config().Auth.Trust, reg)
+	for reload := 1; reload <= 2; reload++ {
+		if err := c.ReloadFrom(path); err != nil {
+			t.Fatalf("reload %d was refused: %v", reload, err)
+		}
+		if n := wakes.Load(); n != 1 {
+			t.Errorf("after reload %d the reconciler was woken %d times, want once, for the endpoint the first one added", reload, n)
+		}
+	}
+}

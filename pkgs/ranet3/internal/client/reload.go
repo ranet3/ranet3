@@ -153,7 +153,11 @@ func (c *Client) ReloadFrom(path string) (err error) {
 		slog.Warn(fmt.Sprintf("reload: %v, so no handshake can use it", problem))
 	}
 
+	literals := !slices.Equal(c.index().Underlay(), x.Underlay())
 	c.storeIndex(x)
+	if literals {
+		c.endpointsChanged()
+	}
 	c.cfg.Store(cfg)
 	// the trust document decides who may connect
 	// so it decides who may stay

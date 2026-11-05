@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"net/netip"
 	"slices"
 	"strconv"
 	"sync"
@@ -84,6 +85,7 @@ func (c *Client) runPeer(ctx context.Context, d dial, wake <-chan struct{}) {
 		slog.Warn(fmt.Sprintf("peer %s: %v", d.path, err))
 		return
 	}
+	defer c.forgetDialed(ctx)
 	var failure repeatedFailure
 	var unrouted time.Duration
 	for {
@@ -223,6 +225,65 @@ func (n *names) list() []string {
 	return slices.Sorted(maps.Keys(n.set))
 }
 
+// dialedAddresses is each running dialer's last resolved address, safe for concurrent use
+// it is keyed by the context the dialer runs under, which is its own, so a dialer that ends drops its record and never that of the dialer replacing it
+type dialedAddresses struct {
+	mu sync.Mutex
+	by map[context.Context]netip.Addr
+}
+
+// set records address as the dialer's last, and reports whether its record changed
+func (d *dialedAddresses) set(dialer context.Context, address netip.Addr) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.by == nil {
+		d.by = make(map[context.Context]netip.Addr)
+	}
+	last, ok := d.by[dialer]
+	d.by[dialer] = address
+	return !ok || last != address
+}
+
+// drop forgets the dialer's record, and reports whether it held one
+func (d *dialedAddresses) drop(dialer context.Context) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, ok := d.by[dialer]
+	delete(d.by, dialer)
+	return ok
+}
+
+func (d *dialedAddresses) list() []netip.Addr {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Collect(maps.Values(d.by))
+}
+
+// noteDialed records address as the last the dialer running under dialer resolved, and wakes the reconciler where that changed its record
+func (c *Client) noteDialed(dialer context.Context, address net.IP) {
+	resolved, ok := netip.AddrFromSlice(address)
+	if !ok {
+		return
+	}
+	if c.dialed.set(dialer, resolved.Unmap()) {
+		c.endpointsChanged()
+	}
+}
+
+// forgetDialed drops the record of the dialer running under dialer, and wakes the reconciler where there was one
+func (c *Client) forgetDialed(dialer context.Context) {
+	if c.dialed.drop(dialer) {
+		c.endpointsChanged()
+	}
+}
+
+// endpointsChanged wakes the reconciler for a pass over the addresses the underlay sends to, which may have changed
+func (c *Client) endpointsChanged() {
+	if wake := c.reconcilerNow().Endpoints; wake != nil {
+		wake()
+	}
+}
+
 // connectPeer dials d once, saying so at level, and serves the session until it ends
 func (c *Client) connectPeer(ctx context.Context, d dial, level slog.Level) (err error) {
 	// events go under the dialer's path until the endpoint resolves and under the session's after
@@ -241,6 +302,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial, level slog.Level) (err
 	if err != nil {
 		return err
 	}
+	c.noteDialed(ctx, remoteIP)
 	remotePub, err := x.Key(ep.ID)
 	if err != nil {
 		return err

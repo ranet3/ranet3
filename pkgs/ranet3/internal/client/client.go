@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -136,6 +137,8 @@ type Client struct {
 	fallbackRead func() (kernel.FallbackDebug, error)
 	// unresolved is each endpoint name whose last lookup failed
 	unresolved names
+	// dialed is each running dialer's last resolved address
+	dialed dialedAddresses
 
 	// running is the control socket's write path state: whether each named
 	// subsystem is acting. It is the record rather than the mechanism, since
@@ -190,15 +193,15 @@ func (c *Client) storeIndex(x *registry.Index) {
 	c.regReadAt.Store(time.Now().UnixNano())
 }
 
-// Underlay is every endpoint address in the registry this node could have to
-// reach, which the route reconciler consults so that a route covering one is
-// not installed where the transport would then follow it into its own tunnel.
-// A hostname endpoint is not in it, because resolving one is a network call.
+// Underlay is every literal endpoint address in the registry this node could
+// have to reach and each running dialer's last resolved address, a name's
+// among them
 func (c *Client) Underlay() []netip.Addr {
+	var out []netip.Addr
 	if x := c.index(); x != nil {
-		return x.Underlay()
+		out = slices.Clone(x.Underlay())
 	}
-	return nil
+	return append(out, c.dialed.list()...)
 }
 
 // readsOwnedOnly is the mesh's ownedOnly for this build

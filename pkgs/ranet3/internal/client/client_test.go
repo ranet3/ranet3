@@ -27,6 +27,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2292,6 +2293,198 @@ func TestUnderlayHoldsTheEndpointsADialerWouldTake(t *testing.T) {
 	got := c.Underlay()
 	if len(got) != 1 || got[0].String() != literal {
 		t.Errorf("the underlay set is %v, want just %s: a name needs a resolver and the rest cannot be dialed", got, literal)
+	}
+}
+
+const (
+	// dialedWait bounds the wait for a dialer to resolve its endpoint or to end, and dialedPoll is how often it looks
+	dialedWait = 5 * time.Second
+	dialedPoll = time.Millisecond
+)
+
+// dialedClient is a client whose dialer to the gateway resolves address, a
+// name or a literal, and stands down past the resolution behind a session the
+// gateway opened, so no dial sends anything, with the reconciler's wakes
+// counted
+func dialedClient(t *testing.T, address string) (*Client, *config.Config, *atomic.Int32) {
+	t.Helper()
+	cfg, privateKey, reg := runtimeFixture(t)
+	reg[0].Nodes[1].Endpoints[0].Address = &address
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, sessions: newSessionSet(), events: events.New(),
+		dialers: make(map[string]*dialer), dialRetry: dialedPoll}
+	c.cfg.Store(cfg)
+	c.storeIndex(trust(t, reg))
+	c.sessions.close = func(*ike.Session) {}
+	c.sessions.active = func(*ike.Session) bool { return true }
+	if _, adopted := c.sessions.adoptPreferred("example/gateway:1@0", &ike.Session{}, false, nil); !adopted {
+		t.Fatal("the session the peer opened was not adopted")
+	}
+	wakes := &atomic.Int32{}
+	c.SetReconciler(Reconciler{Endpoints: func() { wakes.Add(1) }})
+	return c, cfg, wakes
+}
+
+// A dialer's first resolution puts the address in the underlay set and wakes
+// the reconciler once, whether the address is a name's or a literal the trust
+// document already lists, and a second resolution to the same address wakes
+// it no more
+func TestDialedAddressJoinsTheUnderlayAndWakesTheReconcilerOnce(t *testing.T) {
+	for _, c := range []struct{ address, resolved string }{{"localhost", "127.0.0.1"}, {"192.0.2.77", "192.0.2.77"}} {
+		t.Run(c.address, func(t *testing.T) {
+			client, cfg, wakes := dialedClient(t, c.address)
+			resolved := netip.MustParseAddr(c.resolved)
+			d := dialTo(t, cfg, cfg.Dial.To[0])
+			for dial := 1; dial <= 2; dial++ {
+				if err := client.connectPeer(t.Context(), d, slog.LevelInfo); !errors.Is(err, errSessionEstablished) {
+					t.Fatalf("dial %d reported %v, want the stand-down past the resolution", dial, err)
+				}
+				if !slices.Contains(client.Underlay(), resolved) {
+					t.Errorf("after dial %d the underlay set is %v, want %s, which %s resolved to", dial, client.Underlay(), resolved, c.address)
+				}
+				if n := wakes.Load(); n != 1 {
+					t.Errorf("after dial %d the reconciler was woken %d times, want once", dial, n)
+				}
+			}
+		})
+	}
+}
+
+// A dialer that resolves another address than its last holds the new one
+// alone in the underlay set, and each change wakes the reconciler
+func TestDialerResolvingAnotherAddressMovesItsRecord(t *testing.T) {
+	c, _, wakes := dialedClient(t, "localhost")
+	dialer := t.Context()
+	first, second := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+	for i, address := range []netip.Addr{first, second} {
+		c.noteDialed(dialer, address.AsSlice())
+		if got := c.Underlay(); !slices.Contains(got, address) || i == 1 && slices.Contains(got, first) {
+			t.Errorf("after resolving %s the underlay set is %v, want it alone of the two", address, got)
+		}
+		if n := wakes.Load(); n != int32(i+1) {
+			t.Errorf("after resolving %s the reconciler was woken %d times, want %d", address, n, i+1)
+		}
+	}
+}
+
+// A dialer that ends takes its address out of the underlay set and wakes the
+// reconciler, here once a reload took its node out of the trust document
+func TestDialerThatEndsTakesItsAddressOutOfTheUnderlay(t *testing.T) {
+	c, cfg, wakes := dialedClient(t, "localhost")
+	resolved := netip.MustParseAddr("127.0.0.1")
+	done := make(chan struct{})
+	go func() { c.runPeer(c.ctx, dialTo(t, cfg, cfg.Dial.To[0]), nil); close(done) }()
+	for deadline := time.Now().Add(dialedWait); !slices.Contains(c.Underlay(), resolved) || wakes.Load() == 0; time.Sleep(dialedPoll) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the dialer put no %s in the underlay set with a wake within %s: %v, woken %d times", resolved, dialedWait, c.Underlay(), wakes.Load())
+		}
+	}
+	woken := wakes.Load()
+	c.storeIndex(trust(t, registry.Registry{}))
+	select {
+	case <-done:
+	case <-time.After(dialedWait):
+		t.Fatalf("the dialer kept running for %s after its node left the trust document", dialedWait)
+	}
+	if got := c.Underlay(); slices.Contains(got, resolved) {
+		t.Errorf("after its dialer ended the underlay set is %v, still holding %s", got, resolved)
+	}
+	if n := wakes.Load(); n != woken+1 {
+		t.Errorf("the dialer's end woke the reconciler %d times, want once", n-woken)
+	}
+}
+
+// A dialer stopped and replaced at once ends after its replacement resolved,
+// and takes only its own address out of the underlay set
+func TestDialerThatEndsLeavesItsReplacementsAddress(t *testing.T) {
+	c, _, _ := dialedClient(t, "localhost")
+	stopped, stop := context.WithCancel(t.Context())
+	stop()
+	replacing, done := context.WithCancel(t.Context())
+	defer done()
+	old, current := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+	c.noteDialed(stopped, old.AsSlice())
+	c.noteDialed(replacing, current.AsSlice())
+	c.forgetDialed(stopped)
+	if got := c.Underlay(); !slices.Contains(got, current) || slices.Contains(got, old) {
+		t.Errorf("after the stopped dialer ended the underlay set is %v, want %s and not %s", got, current, old)
+	}
+}
+
+// A session that IKE moves to another endpoint wakes the reconciler, whose
+// pass reads the live sends again
+func TestMovedSessionWakesTheReconciler(t *testing.T) {
+	c, _, wakes := dialedClient(t, "localhost")
+	c.ikeEvent(identity.MustParse("example/local:0"), identity.MustParse("example/relay:0"), "ike.endpoint.moved")
+	if n := wakes.Load(); n != 1 {
+		t.Errorf("a moved session woke the reconciler %d times, want once", n)
+	}
+}
+
+// A session that ends wakes the reconciler once it has left the set, so the
+// pass reads the live sends without it. Ended from the far side, it leaves the
+// set only in its own serve's release.
+func TestEndedSessionWakesTheReconciler(t *testing.T) {
+	alpha, bravo := newLoopbackMesh(t)
+	// emptied counts the wakes that found alpha's set empty, and stale those that found an ended session in it
+	var emptied, stale atomic.Int32
+	alpha.client.SetReconciler(Reconciler{Endpoints: func() {
+		live := alpha.client.sessions.snapshot()
+		if len(live) == 0 {
+			emptied.Add(1)
+		}
+		if slices.ContainsFunc(live, func(session liveSessionView) bool { return session.session.Mux().IsClosed() }) {
+			stale.Add(1)
+		}
+	}})
+	run(t, bravo)
+	_, stopAlpha := run(t, alpha)
+	t.Cleanup(stopAlpha)
+	waitFor(t, convergeBudget, "both ends established", func() bool {
+		return len(alpha.client.sessions.paths()) == 1 && len(bravo.client.sessions.paths()) == 1
+	})
+	before := emptied.Load()
+	bravo.client.sessions.closeAll()
+	waitFor(t, convergeBudget, "the ended session's wake", func() bool { return emptied.Load() > before || stale.Load() > 0 })
+	if n := stale.Load(); n != 0 {
+		t.Errorf("%d wakes found a session that had ended among the live sends", n)
+	}
+}
+
+// A session this node answers, from a peer it does not dial whose endpoint the
+// trust document names by a hostname, adds its destination to the live sends
+// alone and wakes the reconciler, whose pass reads it there
+func TestAnsweredSessionWakesTheReconciler(t *testing.T) {
+	var alpha, bravo *loopbackNode
+	retryPort(t, "bind", func() error {
+		nodes, private, reg := writeMesh(t, [2]uint16{freeUDPPort(t), freeUDPPort(t)}, [2]string{"localhost", "localhost"})
+		// alpha only answers, so no dialer of its own records the address
+		nodes[0].cfg.Dial.To = nil
+		for i, node := range nodes {
+			client, err := newClient(node.cfg, private, trust(t, reg), netstack.NewRoutesOnly(), nil, node.events)
+			if err != nil {
+				for _, built := range nodes[:i] {
+					built.client.Close()
+				}
+				return fmt.Errorf("%s: %w", node.name, err)
+			}
+			node.client = client
+		}
+		alpha, bravo = nodes[0], nodes[1]
+		return nil
+	})
+	loopback := netip.MustParseAddr("127.0.0.1")
+	var read atomic.Bool
+	alpha.client.SetReconciler(Reconciler{Endpoints: func() {
+		if slices.ContainsFunc(alpha.client.liveSends(), func(send kernel.Send) bool { return send.Destination == loopback }) {
+			read.Store(true)
+		}
+	}})
+	run(t, alpha, bravo)
+	waitFor(t, convergeBudget, "a wake whose pass reads the answered session's destination among the live sends", read.Load)
+	if got := alpha.client.Underlay(); slices.Contains(got, loopback) {
+		t.Errorf("alpha's underlay set holds %s as well, so the session changed nothing: %v", loopback, got)
 	}
 }
 

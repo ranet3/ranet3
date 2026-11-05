@@ -172,7 +172,9 @@ type Runtime struct {
 	// the kernel named it (netstack.Mesh.Name, not the requested name).
 	Interface string
 	// Underlay names the addresses this node's own transport has to keep
-	// reaching. The darwin backend asks once per pass and scopes a route that
+	// reaching, the trust document's literal endpoints and each running
+	// dialer's last resolved address, and EndpointsChanged wakes a pass for one
+	// it gains. The darwin backend asks once per pass and scopes a route that
 	// covers one (see coversAny there). linux reads it never, and keeps the
 	// underlay out with a socket mark instead. Nil decides scope on the
 	// destination alone.
@@ -706,8 +708,8 @@ type Reconciler struct {
 	// next is the capability SetTable accepted last, which reload wakes the loop to take
 	next   atomic.Pointer[accepted]
 	reload chan struct{}
-	// network carries NetworkChanged to the loop
-	network chan struct{}
+	// network carries NetworkChanged to the loop, and gained EndpointsChanged
+	network, gained chan struct{}
 	// firstPass closes once the loop's first pass or withdrawal has ended
 	firstPass chan struct{}
 	// inForce is table as another goroutine reads it, stored whole when the loop takes a capability
@@ -916,6 +918,7 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 		wake:        make(chan struct{}, 1),
 		reload:      make(chan struct{}, 1),
 		network:     make(chan struct{}, 1),
+		gained:      make(chan struct{}, 1),
 		firstPass:   make(chan struct{}),
 	}
 	r.enabled.Store(true)
@@ -1021,6 +1024,18 @@ func (r *Reconciler) NetworkChanged(change NetworkChange) {
 	}
 	select {
 	case r.network <- struct{}{}:
+	default:
+	}
+}
+
+// EndpointsChanged wakes the loop for a pass where Runtime.Underlay or Sends may answer otherwise than for the last pass
+// a pass reads the endpoints only beside a selection, so with none it wakes nothing
+func (r *Reconciler) EndpointsChanged() {
+	if r.rt.Selection == nil {
+		return
+	}
+	select {
+	case r.gained <- struct{}{}:
 	default:
 	}
 }
@@ -1143,6 +1158,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 		case <-r.network:
 			r.trigger = "network"
 		case <-underlay:
+			r.trigger = "underlay"
+		case <-r.gained:
 			r.trigger = "underlay"
 		case <-changed:
 			r.trigger = "mesh"

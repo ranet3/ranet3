@@ -79,10 +79,16 @@ func (c *Client) serveSession(ctx context.Context, sess *ike.Session, child ike.
 		pmtu.start(c.config().Link.SessionMTU(), c.sessions.steering, route)
 		return c.speaker.AddPeer(peer, remote).Close
 	})
-	defer release()
 	if !adopted {
+		release()
 		return errSessionEstablished
 	}
+	c.endpointsChanged()
+	defer func() {
+		// out of the set first, so the pass this wakes reads the live sends without it
+		release()
+		c.endpointsChanged()
+	}()
 	// recorded once the session holds its path
 	// so one that lost the path is recorded only as resolved
 	c.events.Emit("ike.session.established", sessionName, established...)
@@ -323,6 +329,7 @@ func (c *Client) ikeEvent(local, remote identity.Identity, kind string, attrs ..
 	c.events.Emit(kind, path, attrs...)
 	if kind == "ike.endpoint.moved" {
 		c.sessions.moved(path)
+		c.endpointsChanged()
 	}
 }
 

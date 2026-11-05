@@ -24,6 +24,8 @@ type Reconciler struct {
 	Table func(kernel.Table, []schema.Prefix, []netip.Prefix) error
 	// Network wakes it for a change of the host's network
 	Network func(kernel.NetworkChange)
+	// Endpoints wakes it for a change of the addresses the underlay sends to
+	Endpoints func()
 	// Rules reads the rules it derived, for the rules and route views
 	Rules func() []kernel.DumpedRule
 	// Lookups reads the lookups its last pass whose batch answered asked
@@ -41,6 +43,7 @@ func ReconcilerOf(routes *kernel.Reconciler) Reconciler {
 		Enable:    routes.SetEnabled,
 		Table:     routes.SetTable,
 		Network:   routes.NetworkChanged,
+		Endpoints: routes.EndpointsChanged,
 		Rules:     routes.DerivedRules,
 		Lookups:   func() []kernel.Lookup { return routes.Stats().Lookups },
 		Resolvers: routes.FallbackResolvers,
