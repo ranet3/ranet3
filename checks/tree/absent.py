@@ -2,22 +2,30 @@
 # SPDX-License-Identifier: FSL-1.1-ALv2
 
 # absent.py CHECKS PKGS: a grep of ranet3's journal that a check expects to
-# fail passes on nothing once the Go text it copies is renamed. So every call
-# under CHECKS that expects a command to fail, .fail( or wait_until_fails( on
-# any machine, must hand it a command absent.py can read: string literals, a
-# name its file binds to one or to a journal, or a call of a function of its
-# file that returns one. A command that reads the journal, of ranet3's unit in
-# any spelling of journalctl, of no unit, or of a unit it cannot name, must be
-# the journal piped into stages of grep -F with quoted fixed strings, each held
-# in a string literal of a non-test Go file under PKGS. A count of the journal
-# that .succeed( or wait_until_succeeds( reads, a grep with -c in any flag or
-# --count or a pipe into wc -l, must be that form too, a trailing || true
-# allowed, and fails where absent.py cannot read it. absent.py reads each
-# command as the shell gets it, its string literals unescaped as Python reads
-# them. The count must sit in the string literals of the call's own text, as
-# one built into a name the file does not bind to a string literal is not
-# seen. A call it cannot read that way fails the check, since
-# its strings would go unchecked, and so does finding no such call at all.
+# fail passes on nothing once the Go text it copies is renamed, and a count of
+# that journal reads 0. absent.py holds the fixed strings of both to the string
+# literals of the non-test Go files under PKGS.
+#
+# Each call under CHECKS that expects a command to fail, .fail( or
+# wait_until_fails( on any machine, is read argument by argument. Python's
+# comments and a timeout= argument are skipped. Every other argument must be
+# string literals, a name its file binds to one or to a journal, or a call of a
+# function of its file that returns one. An argument of any other form, a
+# command= among them, fails the check, since its strings would go unchecked.
+#
+# A call of .succeed( or wait_until_succeeds( is read the same way where one of
+# its commands counts the journal, through a grep with -c in any flag, --count,
+# or a pipe into wc -l. Where one of its arguments has another form, the call
+# fails if the string literals of its arguments hold a count, and is skipped
+# otherwise. A name bound to a literal is read only as a whole argument: a
+# count built from one inside an expression is not seen.
+#
+# A command that reads the journal, of ranet3's unit in any spelling of
+# journalctl, of no unit, or of a unit absent.py cannot name, must be the
+# journal piped into stages of grep -F with quoted fixed strings, and a count
+# may end in || true. absent.py reads each command as the shell gets it, its
+# string literals unescaped as Python reads them. A command of another form
+# fails the check, and so does finding no grep of ranet3's journal at all.
 import ast
 import os
 import re
@@ -26,8 +34,8 @@ import sys
 # a call that expects its commands to fail, or that must succeed and is read where it counts
 CALLS = re.compile(r"\.(fail|wait_until_fails|succeed|wait_until_succeeds)\(")
 # a count of lines in a command as the shell gets it: a grep with -c in any of its flags or --count anywhere in its
-# stage, a single-quoted run, a double-quoted run with its escapes and a backslash escape each read whole so a pipe or
-# a quote inside one ends no stage, and a flag ending at a quote as at a space, or a pipe into wc -l
+# stage, a single-quoted run, a double-quoted run with its escapes and a backslash escape each read whole, a pipe or a
+# quote inside one ending no stage, and a flag ending at a quote as at a space, or a pipe into wc -l
 COUNTS = re.compile(r"""\bgrep\b(?:[^|'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")*\s(?:-[a-zA-Z]*c[a-zA-Z]*|--count)(?![^\s'"])|\|\s*wc\s+-l\b""")
 # a string literal of Python, and the leading ones of a call's argument, which Python joins into one command
 STRING = r""""(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'"""
@@ -205,9 +213,9 @@ def main():
                     for s in strings:
                         absent.setdefault(s, where)
     for where, what in unresolved:
-        print(f"{where} {what} that is no string literal, bound name or function of its file absent.py can read, so whether it reads ranet3's journal cannot be checked", file=sys.stderr)
+        print(f"{where} {what}, and absent.py cannot read the command as string literals, a bound name or a function of its file: whether it reads ranet3's journal cannot be checked", file=sys.stderr)
     for where, what in unread:
-        print(f"{where} {what} on ranet3's journal that is not the journal piped into grep -F stages of quoted fixed strings, so its strings cannot be checked", file=sys.stderr)
+        print(f"{where} {what}, and the command reads ranet3's journal other than through grep -F stages of quoted fixed strings: its strings cannot be checked", file=sys.stderr)
     failed = bool(unresolved or unread)
     if not absent and not failed:
         print("absent.py found no grep of ranet3's journal under checks that a check expects to fail or counts", file=sys.stderr)
