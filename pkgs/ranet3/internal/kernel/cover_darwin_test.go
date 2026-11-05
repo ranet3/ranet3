@@ -17,7 +17,11 @@ import (
 )
 
 // heldOn is every prefix the host's table holds out of one interface, with
-// whether the kernel scoped it, read from a dump rather than from Routes.
+// whether the kernel scoped it, read from a dump rather than from Routes, but
+// for the rows the kernel cloned or keeps for a neighbor, which no writer
+// installed: a datagram a socket bound to an interface sends clones a host
+// route of the interface's route holding its destination, scoped there, and
+// the clone lives until it expires or that route goes
 func heldOn(t *testing.T, index int) map[netip.Prefix]bool {
 	t.Helper()
 	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
@@ -31,7 +35,7 @@ func heldOn(t *testing.T, index int) map[netip.Prefix]bool {
 	out := map[netip.Prefix]bool{}
 	for _, message := range messages {
 		rm, ok := message.(*route.RouteMessage)
-		if !ok || rm.Type != unix.RTM_GET || rm.Index != index {
+		if !ok || rm.Type != unix.RTM_GET || rm.Index != index || rm.Flags&(unix.RTF_WASCLONED|unix.RTF_LLINFO) != 0 {
 			continue
 		}
 		if destination, ok := dumpedPrefix(rm); ok {
