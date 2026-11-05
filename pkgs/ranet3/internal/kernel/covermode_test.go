@@ -343,6 +343,21 @@ func TestFailedRouteDumpKeepsTheMembersNamed(t *testing.T) {
 			}
 		}
 	}
+
+	// the next good pass counts its own members, and in mode off it has none
+	kernel.failList = nil
+	if err := reconciler.SetTable(Table{}, coverOverlay, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reconciler.adopt() {
+		t.Fatal("the reload to mode off was not adopted")
+	}
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	if members := reconciler.Stats().Members; len(members) != 0 {
+		t.Errorf("a good pass in mode off after a failed dump names %v members of the cover, want none", members)
+	}
 }
 
 // A platform with no policy rules reports the mode's status all the same,
