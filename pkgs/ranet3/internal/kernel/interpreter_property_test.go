@@ -401,8 +401,8 @@ type exitLink struct{ name, v4, v6 string }
 // that, and mode off otherwise, over links drawn whatever the mode: eth0
 // holding the uplink's address, now and then a bridge, a LAN through eth1 and
 // a point-to-point ppp0 with its far end, and now and then an address of the
-// overlay on lo or on dummy0 with a network about it. forward names any of the
-// bridge, the LAN, ppp0 and docker0, a bridge holding no address.
+// overlay on the loopback or on dummy0 with a network about it. forward names
+// any of the bridge, the LAN, ppp0 and docker0, a bridge holding no address.
 func drawExitMode(ht *hegel.T, overlay []schema.Prefix) exitView {
 	mode := exitView{on: hegel.Draw(ht, hegel.Booleans())}
 	mode.fallback = mode.on && hegel.Draw(ht, hegel.Booleans())
@@ -456,10 +456,10 @@ func drawExitMode(ht *hegel.T, overlay []schema.Prefix) exitView {
 // ranet3 holds entries under overlay, advertises the prefixes of its own
 // advertised names through cap.egress and announces the rest through
 // cap.route, holds an egress segment where egressSegment says, whose capture
-// gate is open where gate says, and which runs mode, whose links but lo's hold
-// their connected networks in main, under fallback = "none" with the own
-// prefixes the mirror throws as a pass reads them, and mode 3 along via where
-// it names a SID
+// gate is open where gate says, and which runs mode, whose links but the
+// loopback hold their connected networks in main, under fallback = "none" with
+// the own prefixes the mirror throws as a pass reads them, and mode 3 along via
+// where it names a SID
 func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, advertised map[netip.Prefix]bool, egressSegment, gate bool, host fib, mode exitView, via []netip.Addr) interpreted {
 	routes := netstack.NewRouteTable()
 	routes.SetOverlay(overlay)
@@ -969,7 +969,7 @@ func TestRuleWalkNamedCases(t *testing.T) {
 	marked := func(p fibPacket, mark uint32) fibPacket { p.mark = mark; return p }
 	arriving := func(link string, p fibPacket) fibPacket { p.iif = link; return p }
 	// a bridge forward names and a LAN through eth1 it leaves out, an overlay
-	// address on lo, and on dummy0 a network about the overlay
+	// address on the loopback, and on dummy0 a network about the overlay
 	forwarding := exitView{on: true, forwarded: []string{"br-1a"}, network: NetworkState{
 		IPv4: NetworkFamily{Links: []Link{
 			{Name: "br-1a", Prefixes: []netip.Prefix{prefix("203.0.113.129/26")}},

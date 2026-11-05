@@ -24,9 +24,9 @@ type Hole struct {
 	Pieces    []netip.Prefix
 }
 
-// Beneath is a route of the mesh's installed scoped to the tun beneath Host, a
-// route of the host's longer than /0 on another interface holding all of it,
-// as row L6 orders the two on Linux
+// Beneath is a route of the mesh's installed scoped to the tun beneath Host, an
+// unscoped route of the host's longer than /0 on another interface holding all
+// of it, as row L6 orders the two on Linux
 type Beneath struct {
 	Route netip.Prefix
 	Host  netip.Prefix

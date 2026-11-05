@@ -243,9 +243,9 @@ type ForwardSkip struct {
 }
 
 // expandForward is each link the network holds outside the mesh, and the tun,
-// that an entry of forward matches, sorted and each once. The tun, lo and the
-// link either family's default leaves by are left out, each reported with the
-// first entry in forward's order that matched it.
+// that an entry of forward matches, sorted and each once. The tun, the
+// loopback link and the link either family's default leaves by are left out,
+// each reported with the first entry in forward's order that matched it.
 func expandForward(forward []string, tun string, network NetworkState) ([]string, []ForwardSkip) {
 	if len(forward) == 0 {
 		return nil, nil

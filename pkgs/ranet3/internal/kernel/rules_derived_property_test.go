@@ -147,7 +147,7 @@ func modeTwoNone(id schema.TableID, overlay, own []netip.Prefix, network Network
 }
 
 // exitAddresses are the addresses a drawn link holds per family: the overlay's
-// among them, as on lo, so the filter is drawn often
+// among them, as on the loopback, so the filter is drawn often
 var exitAddresses = map[Family][]string{
 	FamilyIPv4: {"192.0.2.1", "192.0.2.200", "198.51.100.10", "198.51.100.130", "203.0.113.7"},
 	FamilyIPv6: {"3fff::1", "3fff:0:0:1::1", "3fff::10", "2001:db8::10", "2001:db8:1::10"},
@@ -326,10 +326,11 @@ func modeTwoRules(t *testing.T, overlay []schema.Prefix, own []netip.Prefix, vie
 // each connected network shorter than a host prefix and each point-to-point
 // far end of a link forward leaves out, and 5440 for the host's own traffic
 // and each link forward names:
-//   - an overlay address on lo, as a host checking the mesh puts one there, is
-//     no source 5405 or 5435 selects, so the host's packet from it meets 5430
-//     and enters the mesh, and a connected network holding the overlay is left
-//     out of 5435 whole while its address outside the overlay stays in 5405
+//   - an overlay address on the loopback, as a host checking the mesh puts one
+//     there, is no source 5405 or 5435 selects, so the host's packet from it
+//     meets 5430 and enters the mesh, and a connected network holding the
+//     overlay is left out of 5435 whole while its address outside the overlay
+//     stays in 5405
 //   - a subnet router's address in the LAN it announces is no source either,
 //     nor is the LAN, whether or not forward names the LAN's link, so the
 //     host's packet from that address meets 5430 in mode 2 as in mode off
@@ -448,8 +449,8 @@ func TestModeTwoDerivesItsRulesFromTheLinks(t *testing.T) {
 // selected for main and a service on the lease's address answers by the link,
 // whatever the exit's default the mesh's table holds in mode 2. The tun's own
 // address inside it, an entry of the table, is not, and neither is an overlay
-// address on lo, nor the lease's network once a prefix of this node's own lies
-// inside it.
+// address on the loopback, nor the lease's network once a prefix of this node's
+// own lies inside it.
 func TestModeTwoSelectsACarvedLeaseForMain(t *testing.T) {
 	p := netip.MustParsePrefix
 	overlay := prefixes(p("192.0.2.0/24"))

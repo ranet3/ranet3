@@ -718,7 +718,7 @@ type Reconciler struct {
 	// next is the capability SetTable accepted last, which reload wakes the loop to take
 	next   atomic.Pointer[accepted]
 	reload chan struct{}
-	// network carries NetworkChanged to the loop, and gained EndpointsChanged
+	// network carries NetworkChanged to the loop, and gained carries EndpointsChanged
 	network, gained chan struct{}
 	// firstPass closes once the loop's first pass or withdrawal has ended
 	firstPass chan struct{}

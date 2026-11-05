@@ -46,9 +46,9 @@ func drawnDefault(tc hegel.TestCase) string {
 
 // The expansion writes exactly the links of the host, and the tun, that some
 // entry of forward matches as path.Match reads it, sorted and each once, less
-// the tun, lo and the link either family's default leaves by, and it reports
-// each of those it leaves out with the first entry in forward's order that
-// matched it.
+// the tun, the loopback and the link either family's default leaves by, and it
+// reports each of those it leaves out with the first entry in forward's order
+// that matched it.
 func TestForwardExpandsToTheMatchedLinksLessTheTunLoopbackAndUplink(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		var forward []string

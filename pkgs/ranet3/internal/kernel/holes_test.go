@@ -581,9 +581,8 @@ func TestRouteCutAroundTheOverlayIsOneHole(t *testing.T) {
 
 // A route is cut around the prefixes of the overlay it holds, each in no other
 // of them whatever order the overlay lists them in, where it lies beneath a
-// route of the host's but for them, and
-// around none where it lies inside one, holds none, lies beneath no route of
-// the host's or holds against the FIB
+// route of the host's but for them, and around none where it lies inside one,
+// holds none, lies beneath no route of the host's or holds against the FIB
 func TestOverlaidIsTheOutermostPrefixesARouteHolds(t *testing.T) {
 	table := hostTable{mesh: selectMesh, routes: []hostRoute{{destination: prefix("198.51.100.0/24"), index: 2}}}
 	overlay := prefixes(prefix("198.51.100.0/28"), prefix("198.51.100.0/26"), prefix("198.51.100.128/26"), prefix("192.0.2.0/25"))

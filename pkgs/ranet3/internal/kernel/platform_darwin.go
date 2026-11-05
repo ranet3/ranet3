@@ -596,17 +596,19 @@ func (p *routePlatform) holder(destination netip.Prefix) string {
 // on the same machine: its exit-node default is scoped to its utun, its
 // 100.64/10 is not.
 func (p *routePlatform) scopeRoute(r Route) bool {
-	// Row L6: a route of the mesh's outside the overlay beneath a route of the
-	// host's longer than /0 on another interface goes in scoped, so an unbound
-	// lookup ends by the host's route there as Linux's rule 5410 ends it, in
-	// mode off and in a covered family alike, a member of the cover among them
+	// Row L6: a route of the mesh's outside the overlay beneath an unscoped route
+	// of the host's longer than /0 on another interface goes in scoped, so an
+	// unbound lookup ends by the host's route there as Linux's rule 5410 ends
+	// it, in mode off and in a covered family alike, a member of the cover among
+	// them
 	if _, ok := p.hosts.beneath(r, p.overlay); ok {
 		return true
 	}
 	if r.Cover {
 		// no member holds a zero address, so a socket scoped to an interface
-		// falls back past it whatever it covers
-		// (TestZMeasureTheZeroFreeCoverKeepsABoundSocket)
+		// falls back past it to the host's zero-address route
+		// (TestZMeasureTheZeroFreeCoverKeepsABoundSocket), and cutHoles cuts it
+		// around an endpoint whose host route is another, shorter route
 		return false
 	}
 	if standsInForASource(r) || holdsAgainstTheFIB(r) {

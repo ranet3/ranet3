@@ -29,7 +29,7 @@ var carveBases = map[Family][]string{
 	FamilyIPv6: {"3fff::", "3fff:0:0:1::", "2001:db8::", "::"},
 }
 
-// carveLinks are the names a drawn host holds its links under, lo among them
+// carveLinks are the names a drawn host holds its links under, the loopback among them
 var carveLinks = []string{"eth0", Loopback, "wlan0"}
 
 // nearAddress draws an address of family a few bits off one of carveBases
@@ -103,10 +103,10 @@ func holds(outer, inner netip.Prefix) bool {
 	return outer.Contains(inner.Addr()) && outer.Contains(modelLast(inner))
 }
 
-// carveModel is 2.6's carve-outs: for each link but lo, each prefix of the
-// overlay that one of the link's networks or far ends holds whole and each such
-// network or far end the overlay holds whole, which is every address the two
-// share
+// carveModel is 2.6's carve-outs: for each link but the loopback, each prefix
+// of the overlay that one of the link's networks or far ends holds whole and
+// each such network or far end the overlay holds whole, which is every address
+// the two share
 func carveModel(network NetworkState, overlay []schema.Prefix) []egress.CarveOut {
 	set := map[egress.CarveOut]bool{}
 	for _, link := range slices.Concat(network.IPv4.Links, network.IPv6.Links) {
@@ -132,9 +132,9 @@ func carveModel(network NetworkState, overlay []schema.Prefix) []egress.CarveOut
 }
 
 // The carve-outs are exactly 2.6's intersections of each link's networks and
-// far ends with the overlay, never on lo, sorted by link and prefix and each
-// once, and an address lies in a link's carve-out exactly when one of the
-// link's networks or far ends and the overlay both hold it
+// far ends with the overlay, never on the loopback, sorted by link and prefix
+// and each once, and an address lies in a link's carve-out exactly when one of
+// the link's networks or far ends and the overlay both hold it
 func TestCarveOutsAreEachLinksIntersectionWithTheOverlay(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		network, overlay := drawnCarveNetwork(ht), drawnCarveOverlay(ht)
@@ -298,9 +298,9 @@ func TestCarveOutCarvedDropsWhatTheModelDrops(t *testing.T) {
 }
 
 // A lease as wide as the overlay, one inside it and one around it carve the
-// lease, the overlay prefix and nothing on lo, a point-to-point uplink's
-// gateway inside the overlay carves the gateway, and every entry of the table
-// inside the lease is carved, this node's own address among them
+// lease, the overlay prefix and nothing on the loopback, a point-to-point
+// uplink's gateway inside the overlay carves the gateway, and every entry of
+// the table inside the lease is carved, this node's own address among them
 func TestCarveOutsOfALeaseInsideAroundAndAsWideAsTheOverlay(t *testing.T) {
 	p := netip.MustParsePrefix
 	overlay := prefixes(p("192.0.2.0/24"), p("3fff::/48"))
