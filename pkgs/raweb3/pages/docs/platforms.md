@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-05
+updated: 2026-11-06
 order: 100
 ---
 
@@ -152,10 +152,11 @@ name:
 - a source-specific route
 - a retracted route, which it holds as a reject route, unless the route counts
   as a default, whose hold it does not install at all
-- any route outside the overlay inside a route of the host's longer than `/0`
-  out of another interface, a member of the zero-free cover among them, as
-  Linux's rule 5410 answers by such a route ahead of the mesh's table, and the
-  pieces outside the overlay of one there that holds a prefix of the overlay, as
+- any route outside the overlay inside an unscoped route of the host's longer
+  than `/0` out of another interface, a member of the zero-free cover among
+  them, as Linux's rule 5410 answers by such a route ahead of the mesh's table,
+  and the pieces outside the overlay of one there that holds a prefix of the
+  overlay, as
   [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives
 - in mode off, or in a family `cap.exit` leaves out, any route that
   [counts as a default](routing.md#routes-that-count-as-a-default)
@@ -302,13 +303,15 @@ A node also watches the host's network, so it does not wait for a liveness
 deadline to find a moved path. On Linux it follows the link, address and route
 notifications of rtnetlink, keeping only defaults in `main`. On macOS it follows
 the route, address and link messages of the
-[routing socket](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/rtsock.c#L1610)
-and the kernel's
+[routing socket](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/rtsock.c#L1610),
+and beside them the kernel's
 [network events](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/net_kev.h#L34)
-beside them, since neither alone reports every change. 250 milliseconds after a
-notification it reads, for each family, the host's own default route, its
-interface and gateway, the global unicast addresses of the interfaces that are
-up, and each link that is up, the loopback among them, with its prefixes and
+of the subclasses that can bring a link, take one away or move its addresses,
+`KEV_INET_SUBCLASS`, `KEV_DL_SUBCLASS`, `KEV_INET6_SUBCLASS` and
+`KEV_ND6_SUBCLASS`, since neither alone reports every change. 250 milliseconds
+after a notification it reads, for each family, the host's own default route,
+its interface and gateway, the global unicast addresses of the interfaces that
+are up, and each link that is up, the loopback among them, with its prefixes and
 point-to-point far ends. An IPv6 address counts once duplicate address detection
 ends, and never where detection found it duplicated. On Linux a far end counts
 as the network the kernel routes by it. On macOS a far end, and an IPv4 address

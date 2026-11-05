@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-05
+updated: 2026-11-06
 order: 110
 ---
 
@@ -463,8 +463,8 @@ an address on it.
   route longer than `/0` out of another interface, a member of the zero-free
   cover among them, and the pieces outside the overlay of one there that holds a
   prefix of the overlay. Linux answers by such a route of `main` ahead of the
-  mesh's table, and macOS by its one longest match, so unscoped the mesh's route
-  would take that route's traffic, as
+  mesh's table, and macOS by its one longest match, so the mesh's route, if left
+  unscoped, would take that route's traffic, as
   [where a lookup ends](routing.md#where-a-lookup-ends-on-macos) gives.
 - A route that would carry the host's own traffic, in mode off or in a family
   [`cap.exit`](configuration-reference.md#capexit) leaves out. Such a route is

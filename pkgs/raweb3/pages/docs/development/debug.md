@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-05
+updated: 2026-11-06
 order: 30
 ---
 
@@ -871,9 +871,10 @@ it moved anything. A reconciler stopped with `disable` runs no pass when it
 takes a reload, and the pass that installs the block once it is enabled again
 reads `trigger=enable`. The same holds for a reconciler `ranet3 down` stopped,
 until `ranet3 up`. The withdrawal such a stop runs records a `kernel.pass` only
-when it fails, and no `kernel.cover` for the cover it takes out. It records a
-`kernel.taken` with `taken=false` for each lookup the reconciler last found
-taken.
+when it fails, and no `kernel.cover` or `kernel.underlay` for what it takes out.
+It records a `kernel.taken` with `taken=false` for each lookup the reconciler
+last found taken. The pass that puts the routes back records a `kernel.cover` or
+`kernel.underlay` only for what differs from the last pass before the stop.
 
 A `daemon.ttl` is recorded when a reload cannot read the host's default TTL,
 `net.ipv4.ip_default_ttl` on Linux or `net.inet.ip.ttl` on macOS. Its `ttl` is

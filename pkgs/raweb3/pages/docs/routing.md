@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-05
+updated: 2026-11-06
 order: 45
 ---
 
@@ -960,9 +960,9 @@ failed asks none, and it and a pass whose lookups failed keep the last answers.
   start a pass too.
 - A change of a default or an address the network watch reads starts a pass.
   With `cap.exit` a change of links alone, a link coming, going or moving a
-  prefix or a far end, starts one too, which expands `forward` again and derives
-  5405, 5435 and 5440 from the links as they are. A change of links alone probes
-  no session.
+  prefix or a far end, starts one too, which on Linux expands `forward` again
+  and derives 5405, 5435 and 5440 from the links as they are. A change of links
+  alone probes no session.
 - On macOS a read of the host's routes by
   [the selection](#the-underlays-interface-on-macos) that finds them changed
   starts a pass at once, and so does each change of the addresses the underlay
@@ -1129,16 +1129,16 @@ the same destination uninstalled, such as `::/0` beside `::/0` from a prefix of
 the utun, and logs it once. Under `cap.exit`, a route holding its family's zero
 address goes in as the members of
 [the zero-free cover](#the-zero-free-cover-on-macos) it contains, and each
-member takes the rows above, so one inside a route of the host's longer than
-`/0` goes in scoped. That row keeps the order row L6 of
-[the policy rules](#policy-rules-on-linux) gives on Linux, where such a route of
-`main` answers ahead of the mesh's table for every destination outside the
-overlay. A route of the mesh that holds a prefix of the overlay and lies inside
-such a route of the host's goes in as the pieces of it around the overlay's
-prefixes it holds, each keeping the route's other fields, a member's among them,
-so the pieces outside the overlay take that row and each of those prefixes goes
-in unscoped in both columns, as row L3 sends an address of the overlay into the
-tun on Linux. The reconciler reads the host's routes from
+member takes the rows above, so one inside an unscoped route of the host's
+longer than `/0` out of another interface goes in scoped. That row keeps the
+order row L6 of [the policy rules](#policy-rules-on-linux) gives on Linux, where
+such a route of `main` answers ahead of the mesh's table for every destination
+outside the overlay. A route of the mesh that holds a prefix of the overlay and
+lies inside such a route of the host's goes in as the pieces of it around the
+overlay's prefixes it holds, each keeping the route's other fields, a member's
+among them, so the pieces outside the overlay take that row and each of those
+prefixes goes in unscoped in both columns, as row L3 sends an address of the
+overlay into the tun on Linux. The reconciler reads the host's routes from
 [the selection](#the-underlays-interface-on-macos), once each pass.
 
 A route of the mesh that goes in unscoped and holds an address the underlay
@@ -1179,10 +1179,13 @@ unscoped routes, those out of ranet3's utun, cloned routes and multicast and
 broadcast entries left out. Another program's reject route stays a candidate. A
 link-local destination takes the interface its zone names. The daemon reads the
 routing table once at its start, reads it again 250 milliseconds after a
-change's first routing message, and again after any message that arrives later,
-so a datagram sent before that read names the interface the last read found. A
-table it cannot read at the start refuses the start, and a later read that fails
-keeps the last answers and logs
+change's first notification, and again after any that arrives later, so a
+datagram sent before that read names the interface the last read found. A
+notification is a route, address or link message of the routing socket or a
+kernel network event of a subclass that can move a link, the utun's own left
+out, the ones the network watch of [moving hosts](platforms.md#moving-hosts)
+follows. A table it cannot read at the start refuses the start, and a later read
+that fails keeps the last answers and logs
 `kernel keeps the underlay's last selection, since it could not read the routing table`
 once.
 
@@ -1240,13 +1243,14 @@ the tun holds an overlay address of, a route Babel selects with no source that
 holds its family's zero address goes into the kernel as the members of the
 zero-free cover it contains, and every other route of the family with no source
 that counts as a default goes in unscoped, but for one outside the overlay
-inside a route of the host's longer than `/0`, which goes in scoped to the utun.
-In [mode 3](#mode-3-on-linux) the reconciler declines every route that counts as
-a default and installs its steered defaults alone, as below. A family the tun
-holds no overlay address of keeps mode off's form, and a source-specific route
-stays scoped to the utun in either mode, as
-[where a lookup ends on macOS](#where-a-lookup-ends-on-macos) gives. The members
-of each family together hold every address but `0.0.0.0/8` and `::/8`:
+inside an unscoped route of the host's longer than `/0` out of another
+interface, which goes in scoped to the utun. In [mode 3](#mode-3-on-linux) the
+reconciler declines every route that counts as a default and installs its
+steered defaults alone, as below. A family the tun holds no overlay address of
+keeps mode off's form, and a source-specific route stays scoped to the utun in
+either mode, as [where a lookup ends on macOS](#where-a-lookup-ends-on-macos)
+gives. The members of each family together hold every address but `0.0.0.0/8`
+and `::/8`:
 
 | Family | Members                                                                                                     |
 | ------ | ----------------------------------------------------------------------------------------------------------- |
@@ -1400,7 +1404,8 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   names the path, its state and its counts, as
   [the command line](cli.md#reading-state) gives.
 - `ranet3 debug netmon` lists each family's links outside the mesh with their
-  networks and point-to-point far ends, which exit mode derives its rules from.
+  networks and point-to-point far ends. On Linux exit mode derives its rules
+  from them.
 - `ranet3 debug rules` lists every lookup the reconciler last asked, taken or
   not, with the source and interface of an underlay lookup and its answer, as
   [debugging](development/debug.md#commands) gives, under `cap.exit.via` the
