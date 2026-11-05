@@ -19,6 +19,7 @@
           pkgsFinal
           pkgsPrev
           ;
+        # libcap, and through it qemu and the test VMs, build with the set's own go
         go = pkgsFinal.go_latest;
       };
     };
