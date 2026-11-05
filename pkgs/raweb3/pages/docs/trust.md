@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-11-02
+updated: 2026-11-05
 order: 38
 ---
 
@@ -59,11 +59,11 @@ is verified with the key of the block that lists it.
 
 ### Node
 
-| Field         | Meaning                                     |
-| ------------- | ------------------------------------------- |
-| `common_name` | The node's name within its organization     |
-| `endpoints`   | The addresses peers dial this node at       |
-| `remarks`     | Any JSON value. ranet3 reads and ignores it |
+| Field         | Meaning                                                        |
+| ------------- | -------------------------------------------------------------- |
+| `common_name` | The node's name within its organization                        |
+| `endpoints`   | The addresses peers dial this node at                          |
+| `remarks`     | Any JSON value, with members of any name, which ranet3 ignores |
 
 The node's full name is `organization/common_name`, written as
 [configuration](configuration.md#names) describes.
@@ -104,7 +104,12 @@ The node's full name is `organization/common_name`, written as
 The whole document is refused, and the daemon does not start or reload, when:
 
 - It is not a JSON array of organizations, or carries a field this page does not
-  list.
+  list. A field is named exactly as this page writes it, so another case or
+  spelling is a field this page does not list.
+- An object anywhere in the document, inside `remarks` too, names a member
+  twice.
+- A string or a member name, inside `remarks` too, is not valid UTF-8, or holds
+  an escaped surrogate that is not half of a pair.
 - Anything follows the array.
 - An organization has no name, or its `public_key` is not an Ed25519 key in PEM.
 - A node has no `common_name`, or its name appears twice in 1 organization,

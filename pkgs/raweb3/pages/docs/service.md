@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-11-04
+updated: 2026-11-05
 order: 40
 ---
 
@@ -165,13 +165,15 @@ syncs the directory. A start resumes one past the limit the file holds. A crash
 at any point of a write leaves the old limit or the new one, and either is ahead
 of every seqno sent.
 
-A file that is missing, names another node or cannot be read costs the router id
-and nothing else. A disk image or a backup taken from another node holds such a
-file. The node then starts under a new router id at seqno 1, and its first write
-replaces the file. The start's `babel.seqno.raised` event says why the router id
-is new, and the log gives the reason too where the file names another node or
-cannot be read. An unreadable file also records a `babel.state.unreadable`
-event.
+A file that is missing, names another node or is unreadable costs the router id
+and nothing else. A file is unreadable when it cannot be read or parsed, such as
+one that names a field twice, in another case or other than those above, or
+holds a string that is not valid UTF-8. A disk image or a backup taken from
+another node holds such a file. The node then starts under a new router id at
+seqno 1, and its first write replaces the file. The start's `babel.seqno.raised`
+event says why the router id is new, and the log gives the reason too where the
+file names another node or is unreadable. An unreadable file also records a
+`babel.state.unreadable` event.
 
 A write that fails is logged and recorded as a `babel.state.unsaved` event, and
 the node still raises its seqno when a neighbor asks for a newer one. A crash

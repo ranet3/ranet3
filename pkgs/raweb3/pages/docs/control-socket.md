@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-04
+updated: 2026-11-05
 order: 80
 ---
 
@@ -254,12 +254,15 @@ empty or 0.
 ### Requests and answers
 
 A verb's body is a JSON object with the fields `subsystem`, `peer` and `all`.
-Each verb reads the fields it needs and ignores the others. An empty body is the
-empty request, which `reload`, `down` and `up` take. A verb answers with a
-result. Its `acted` lists the subsystems or paths the verb reached, its `missed`
-each path the verb did not reach, by `entry` and `reason`, and its `detail` is
-the sentence the command prints. A command whose answer holds a `missed` exits 1
-once it has printed the answer.
+Each verb reads the fields it needs and ignores the others. Once the node runs,
+a body that names a field twice, names a member other than these 3, a field
+written in another case among them, or holds a string that is not valid UTF-8 is
+answered 400 and the verb does not run. An empty body is the empty request,
+which `reload`, `down` and `up` take. A verb answers with a result. Its `acted`
+lists the subsystems or paths the verb reached, its `missed` each path the verb
+did not reach, by `entry` and `reason`, and its `detail` is the sentence the
+command prints. A command whose answer holds a `missed` exits 1 once it has
+printed the answer.
 
 The reads answer JSON. A duration is a string such as `"4s"`. A time follows
 RFC 3339. An address or a prefix is its text form. An optional field with no
