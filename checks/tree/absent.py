@@ -48,26 +48,34 @@ GO = re.compile(r"""//[^\n]*|/\*.*?\*/|"(?:[^"\\\n]|\\.)*"|`[^`]*`|'(?:[^'\\\n]|
 
 def arguments(text, start):
     """the arguments of the call whose text starts at start, cut at its commas up to its closing parenthesis, outside
-    brackets and Python's string literals, or None where the call has no closing parenthesis"""
-    pieces, depth, quote, at, i = [], 0, None, start, start
+    brackets and Python's string literals, each without the comments Python reads to the end of a line outside a string,
+    or None where the call has no closing parenthesis"""
+    pieces, piece, depth, quote, i = [], "", 0, None, start
     while i < len(text):
         c = text[i]
         if quote:
             if c == "\\":
+                c = text[i : i + 2]
                 i += 1
             elif c == quote:
                 quote = None
+        elif c == "#":
+            i = text.find("\n", i)
+            if i < 0:
+                return None
+            continue
         elif c in "\"'":
             quote = c
         elif c in "([{":
             depth += 1
         elif c in ")]}":
             if depth == 0:
-                return pieces + [text[at:i]]
+                return pieces + [piece]
             depth -= 1
         elif c == "," and depth == 0:
-            pieces.append(text[at:i])
-            at = i + 1
+            pieces.append(piece)
+            piece, c = "", ""
+        piece += c
         i += 1
     return None
 
@@ -93,17 +101,20 @@ def constants(piece):
 
 
 def commands(pieces, bound):
-    """the commands a call's arguments can be: each argument of string literals, and what the name or the function the
-    first starts with is bound to, or None where the first is any other expression"""
+    """the commands a call's arguments can be, each argument string literals or a name or a call of a
+    function its file binds, or None where one is any other expression, a command= among them, a timeout= argument and
+    an empty last piece left out"""
     out = []
     for i, piece in enumerate(pieces):
+        if re.match(r"\s*timeout\s*=(?!=)", piece) or i == len(pieces) - 1 and not piece.strip():
+            continue
         if (cmd := literals(piece)) is not None:
             out.append(cmd)
-        elif i == 0:
-            m = re.fullmatch(r"\s*(\w+)\s*(?:\([^()]*\))?\s*", piece)
-            if not m or m.group(1) not in bound:
-                return None
-            out += bound[m.group(1)]
+            continue
+        m = re.fullmatch(r"\s*(\w+)\s*(?:\([^()]*\))?\s*", piece)
+        if not m or m.group(1) not in bound:
+            return None
+        out += bound[m.group(1)]
     return out
 
 
