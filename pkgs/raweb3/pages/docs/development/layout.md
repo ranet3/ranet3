@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-11-03
+updated: 2026-11-05
 order: 10
 ---
 
@@ -39,7 +39,13 @@ pkgs/ranet3/            the Go module, ranet3.com/pkgs/ranet3
 pkgs/raweb3/            ranet3.com with these pages, and the generator that builds it
 pkgs/iperf3-benchmark/  the iperf3 build the benchmarks use
 pkgs/wireguard/         wireguard-go's tun, conn and rwcancel, ranet3.com/pkgs/wireguard
+pkgs/go-tools/          go-tools, built with go_latest
+pkgs/gomod2nix/         gomod2nix, built with go_latest
+pkgs/templ/             templ, built with go_latest
 ```
+
+The Go modules and these three tools build with nixpkgs' `go_latest`, and the
+package set's own `go` stays nixpkgs' default.
 
 ## The Go module
 
@@ -164,6 +170,7 @@ also a dev shell of the same name.
 | `legacyPackages.<system>.raweb3`                                    | ranet3.com with these pages, checked as it builds                                                                                                                                           |
 | `legacyPackages.<system>.iperf3-benchmark`                          | the iperf3 build the benchmarks use                                                                                                                                                         |
 | `legacyPackages.<system>.wireguard`                                 | the Go module in `pkgs/wireguard`, built without its tests                                                                                                                                  |
+| `legacyPackages.<system>.go-tools`, `.gomod2nix`, `.templ`          | the tools the checks, the formatter and the dev shells take, built with `go_latest`                                                                                                         |
 | `legacyPackages.<system>.profile.integration`, `.profile.namespace` | the profiling runs [testing](testing.md) describes, which build only on Linux                                                                                                               |
 | `checks.<system>.go-test`, `.go-lint`, `.tree`                      | the Go tests, the linters, and the format and licenses of the tree with its `atelier.toml` exclusions, on every system                                                                      |
 | `checks.<system>.wireguard`                                         | the vet and the tests of `pkgs/wireguard`, on every system                                                                                                                                  |
