@@ -14,7 +14,8 @@ import (
 // mesh's routing with a socket mark and the policy rules that read it, which
 // need no lookup of their own, and an iOS build opens no selection, so its hub
 // names no interface. The host is taken and ignored, since nothing here reads
-// a routing table.
-func underlayRuntime(string, kernel.Host) (transport.Runtime, func(), error) {
-	return transport.Runtime{}, func() {}, nil
+// a routing table, and the network watch gets no watcher, since linux's reads
+// rtnetlink of its own.
+func underlayRuntime(string, kernel.Host) (transport.Runtime, kernel.Watcher, func(), error) {
+	return transport.Runtime{}, nil, func() {}, nil
 }

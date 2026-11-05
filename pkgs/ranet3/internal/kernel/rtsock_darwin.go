@@ -344,13 +344,13 @@ func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 	// no sweep reads the host's routes again for a monitor of every interface, as the reconciler's does for its own
 	stopped := "kernel route monitor stopped, falling back to the periodic sweep"
 	if index == 0 {
-		stopped = "kernel route monitor stopped, so the underlay's selection or the network watch, whichever reads it, sees a change only where it posts a kernel event"
+		stopped = "kernel route monitor stopped, so the underlay's selection and the network watch see a change only where it posts a kernel event"
 	}
 	monitor.readers.Go(func() { monitor.read(monitor.file, monitor.interesting, stopped) })
 	if monitor.events != nil {
 		monitor.readers.Go(func() {
 			monitor.read(monitor.events, func(raw []byte) bool { return kernelEventWakes(raw, monitor.skipName) },
-				"kernel event monitor stopped, so the underlay's selection or the network watch, whichever reads it, sees a link's change only where it sends a routing message")
+				"kernel event monitor stopped, so the underlay's selection and the network watch see a link's change only where it sends a routing message")
 		})
 	}
 	return monitor, nil

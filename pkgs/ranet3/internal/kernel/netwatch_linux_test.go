@@ -113,7 +113,7 @@ func TestNetworkWatchInNetworkNamespace(t *testing.T) {
 	setLinkFlags(t, conn, uplink.index, unix.IFF_UP)
 	setLinkFlags(t, conn, mesh.index, unix.IFF_UP)
 
-	w, err := WatchNetwork(nil, meshName)
+	w, err := WatchNetwork(nil, meshName, nil)
 	if err != nil {
 		t.Fatalf("open the watch: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestNetworkWatchFollowsLinksInNetworkNamespace(t *testing.T) {
 	if _, err := conn.execute(unix.RTM_NEWADDR, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK, hostAddrMessage(mesh.index, prefix("192.0.2.1/24"))); err != nil {
 		t.Fatal(err)
 	}
-	w, err := WatchNetwork(nil, meshName)
+	w, err := WatchNetwork(nil, meshName, nil)
 	if err != nil {
 		t.Fatalf("open the watch: %v", err)
 	}

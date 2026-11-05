@@ -6,6 +6,7 @@ package kernel
 import (
 	"errors"
 	"net/netip"
+	"sync"
 )
 
 // Host is the machine a reconciler reads and writes: the routing socket it
@@ -49,8 +50,8 @@ type Host interface {
 	InterfaceIndex(name string) (int, error)
 	InterfaceName(index int) (string, error)
 	// Watch reports changes to the routing of one interface, or of every
-	// interface when index is zero, minus the one skip names. The caller closes
-	// it.
+	// interface when index is zero, minus the one skip names, which then
+	// reports a link's flags and addresses moving too. The caller closes it.
 	Watch(index, skip int) (Watcher, error)
 	// Assign puts prefix on device, or takes it off again.
 	Assign(add bool, device string, prefix netip.Prefix) error
@@ -102,4 +103,88 @@ type RouteWriter interface {
 type Watcher interface {
 	Changed() <-chan struct{}
 	Close() error
+}
+
+// SharedWatcher is one watcher several readers follow, each wake reaching
+// every reader on a channel of its own. On darwin the underlay's selection and
+// the network watch both follow the host's watcher of every interface but the
+// mesh, so the two read one routing socket and one event socket between them.
+type SharedWatcher struct {
+	watcher Watcher
+	mu      sync.Mutex
+	readers map[*sharedReader]bool
+	stop    chan struct{}
+	done    chan struct{}
+	closing sync.Once
+}
+
+// shareWatcher takes over watcher, which the SharedWatcher closes once, on its
+// own Close.
+func shareWatcher(watcher Watcher) *SharedWatcher {
+	s := &SharedWatcher{watcher: watcher, readers: make(map[*sharedReader]bool), stop: make(chan struct{}), done: make(chan struct{})}
+	go s.run()
+	return s
+}
+
+func (s *SharedWatcher) run() {
+	defer close(s.done)
+	changed := s.watcher.Changed()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-changed:
+		}
+		s.mu.Lock()
+		for reader := range s.readers {
+			reader.wake()
+		}
+		s.mu.Unlock()
+	}
+}
+
+// Reader is a Watcher that carries every wake of the shared one from now on.
+// Its Close detaches it alone and leaves the shared watcher open.
+func (s *SharedWatcher) Reader() Watcher {
+	reader := &sharedReader{owner: s, signal: make(chan struct{}, 1)}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readers[reader] = true
+	return reader
+}
+
+// Close stops the wakes and closes the watcher, and a second call does
+// nothing. A reader still attached stays open and is never woken again.
+func (s *SharedWatcher) Close() error {
+	var err error
+	s.closing.Do(func() {
+		close(s.stop)
+		<-s.done
+		err = s.watcher.Close()
+	})
+	return err
+}
+
+// sharedReader is one reader of a SharedWatcher.
+type sharedReader struct {
+	owner  *SharedWatcher
+	signal chan struct{}
+}
+
+func (r *sharedReader) Changed() <-chan struct{} { return r.signal }
+
+// wake never blocks: a reader that has not taken the last wake yet takes both
+// as one.
+func (r *sharedReader) wake() {
+	select {
+	case r.signal <- struct{}{}:
+	default:
+	}
+}
+
+func (r *sharedReader) Close() error {
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	delete(r.owner.readers, r)
+	return nil
 }

@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
@@ -529,6 +530,142 @@ func TestFailedStartLeavesTheMachineAsItFoundIt(t *testing.T) {
 	}
 	if sockets, watchers := host.stillOpen(); sockets != 0 || watchers != 0 {
 		t.Errorf("the failed start left %d route sockets and %d route watchers open", sockets, watchers)
+	}
+}
+
+// a start whose first read of the host's links fails, after the selection and
+// the shared watcher opened, leaves the machine as it found it: the watcher is
+// closed once, and nothing was written
+func TestFailedNetworkReadLeavesTheMachineAsItFoundIt(t *testing.T) {
+	host := recordedHost(t)
+	host.linksErr = errors.New("the links cannot be read")
+	_, err := tryDaemon(t, newDaemonFile(t).load(t, false), host)
+	if !errors.Is(err, host.linksErr) {
+		t.Fatalf("a node whose links cannot be read started with %v, want the read's error", err)
+	}
+	if writes := host.writes(); len(writes) != 0 {
+		t.Errorf("the failed start wrote %+v", writes)
+	}
+	if sockets, watchers := host.stillOpen(); sockets != 0 || watchers != 0 {
+		t.Errorf("the failed start left %d route sockets and %d route watchers open", sockets, watchers)
+	}
+	if opened, closes := host.everyInterface(); opened != 1 || closes != 1 {
+		t.Errorf("the failed start opened %d watchers of every interface and closed them %d times, want one closed once", opened, closes)
+	}
+}
+
+// a start whose first dump of the host's table fails, after the shared watcher
+// opened and before the selection did, leaves the machine as it found it: the
+// watcher is closed once, and nothing was written
+func TestFailedTableDumpLeavesTheMachineAsItFoundIt(t *testing.T) {
+	host := recordedHost(t)
+	host.dumpErr = errors.New("the table cannot be dumped")
+	_, err := tryDaemon(t, newDaemonFile(t).load(t, false), host)
+	if !errors.Is(err, host.dumpErr) {
+		t.Fatalf("a node whose table cannot be dumped started with %v, want the dump's error", err)
+	}
+	if writes := host.writes(); len(writes) != 0 {
+		t.Errorf("the failed start wrote %+v", writes)
+	}
+	if sockets, watchers := host.stillOpen(); sockets != 0 || watchers != 0 {
+		t.Errorf("the failed start left %d route sockets and %d route watchers open", sockets, watchers)
+	}
+	if opened, closes := host.everyInterface(); opened != 1 || closes != 1 {
+		t.Errorf("the failed start opened %d watchers of every interface and closed them %d times, want one closed once", opened, closes)
+	}
+}
+
+// the underlay's selection and the network watch follow one watcher of every
+// interface, which the node's constructor opens beside the reconciler's own and
+// its Close closes once
+// a wake reaches both, and once either has closed its reader a wake still
+// reaches the other and the watcher stays open
+func TestOneWatcherServesTheSelectionAndTheNetworkWatch(t *testing.T) {
+	for _, closing := range []string{"the network watch", "the selection"} {
+		t.Run(closing+" closes first", func(t *testing.T) {
+			host := recordedHost(t)
+			d := startDaemon(t, false, host)
+			waitForKernel(t, "the reconciler opens its own watcher", func() bool { return host.watchCalls() >= 2 })
+			if opened, _ := host.everyInterface(); opened != 1 || host.watchCalls() != 2 {
+				t.Fatalf("the node opened %d watchers, %d of them of every interface, want the reconciler's and one for the selection and the network watch",
+					host.watchCalls(), opened)
+			}
+			selects := func(destination netip.Prefix, address netip.Addr) func() bool {
+				return func() bool {
+					got, _, ok := d.node.underlayRoutes.Route(address)
+					return ok && got == destination
+				}
+			}
+			reads := func(address netip.Addr) func() bool {
+				return func() bool { return slices.Contains(d.node.networkState().IPv4.Addresses, address) }
+			}
+
+			first, firstTarget, firstAddress := netip.MustParsePrefix("203.0.113.0/25"), netip.MustParseAddr("203.0.113.9"), netip.MustParseAddr("192.0.2.77")
+			host.hold(recordedRoute{destination: first, index: d.uplink})
+			if err := host.Assign(true, "uplink0", netip.PrefixFrom(firstAddress, 24)); err != nil {
+				t.Fatal(err)
+			}
+			host.fire()
+			waitForKernel(t, "the selection reads the route the wake reported", selects(first, firstTarget))
+			waitForKernel(t, "the network watch reads the address the wake reported", reads(firstAddress))
+
+			second, secondTarget, secondAddress := netip.MustParsePrefix("203.0.113.128/25"), netip.MustParseAddr("203.0.113.130"), netip.MustParseAddr("192.0.2.78")
+			host.hold(recordedRoute{destination: second, index: d.uplink})
+			if err := host.Assign(true, "uplink0", netip.PrefixFrom(secondAddress, 24)); err != nil {
+				t.Fatal(err)
+			}
+			if closing == "the network watch" {
+				if err := d.node.network.Close(); err != nil {
+					t.Fatal(err)
+				}
+				host.fire()
+				waitForKernel(t, "the selection reads a route reported after the network watch closed", selects(second, secondTarget))
+			} else {
+				selection, ok := d.node.underlayRoutes.(interface{ Close() error })
+				if !ok {
+					t.Fatalf("the selection %T has no Close", d.node.underlayRoutes)
+				}
+				if err := selection.Close(); err != nil {
+					t.Fatal(err)
+				}
+				host.fire()
+				waitForKernel(t, "the network watch reads an address reported after the selection closed", reads(secondAddress))
+			}
+			if _, closes := host.everyInterface(); closes != 0 {
+				t.Errorf("closing %s closed the watcher the other follows %d times", closing, closes)
+			}
+
+			d.stop()
+			d.node.Close()
+			if opened, closes := host.everyInterface(); opened != 1 || closes != 1 {
+				t.Errorf("the node opened %d watchers of every interface and closed them %d times, want one closed once", opened, closes)
+			}
+		})
+	}
+}
+
+// debug netmon carries the links of the recorded host as the network watch
+// reads them, the uplink with its addresses of each family and the mesh's
+// device left out
+func TestNetmonCarriesTheHostsLinks(t *testing.T) {
+	host := recordedHost(t)
+	host.assigned[host.uplink] = []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24"), netip.MustParsePrefix("2001:db8:5::10/64")}
+	host.assigned[meshDeviceIndex] = []netip.Prefix{announcedAddress4}
+	d := startDaemon(t, false, host)
+	info := d.node.DebugNetmon()
+	want := map[string][]control.NetmonLink{
+		string(kernel.FamilyIPv4): {{Name: "uplink0", Prefixes: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/24")}}},
+		string(kernel.FamilyIPv6): {{Name: "uplink0", Prefixes: []netip.Prefix{netip.MustParsePrefix("2001:db8:5::10/64")}}},
+	}
+	if !info.Watching || len(info.Families) != len(want) {
+		t.Fatalf("debug netmon reads %+v, want both families watched", info)
+	}
+	for _, family := range info.Families {
+		if !slices.EqualFunc(family.Links, want[family.Family], func(a, b control.NetmonLink) bool {
+			return a.Name == b.Name && slices.Equal(a.Prefixes, b.Prefixes) && slices.Equal(a.Peers, b.Peers)
+		}) {
+			t.Errorf("debug netmon carries the %s links %+v, want %+v", family.Family, family.Links, want[family.Family])
+		}
 	}
 }
 

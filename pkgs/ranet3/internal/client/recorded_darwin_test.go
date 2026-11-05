@@ -50,10 +50,15 @@ type recordedKernel struct {
 	// than a call this test watched for, and a node that leaks one leaks it
 	// once per start.
 	openSockets, openWatchers int
-	changed                   chan struct{}
+	// watchers is every watcher this machine handed out, in order, open or
+	// closed, which fire wakes the open ones of every interface among.
+	watchers []*recordedWatcher
 	// linksErr, where set, answers every read of the interfaces in place of
 	// the devices and the addresses assigned to them.
 	linksErr error
+	// dumpErr, where set, answers every dump of the table in place of the
+	// routes held.
+	dumpErr error
 }
 
 // recordedRoute is one entry, keyed by everything the kernel keys a route on:
@@ -81,7 +86,6 @@ func newRecordedKernel(uplink, mesh int) *recordedKernel {
 		devices:  map[int]string{uplink: "uplink0", mesh: "mesh0"},
 		held:     make(map[recordedRoute]bool),
 		assigned: make(map[int][]netip.Prefix),
-		changed:  make(chan struct{}, 1),
 	}
 }
 
@@ -197,11 +201,51 @@ func (k *recordedKernel) Lookup(destination, _ netip.Addr) (kernel.RouteAnswer, 
 	return answer, nil
 }
 
-func (k *recordedKernel) Watch(int, int) (kernel.Watcher, error) {
+func (k *recordedKernel) Watch(index, _ int) (kernel.Watcher, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.openWatchers++
-	return &recordedWatcher{k: k, signal: k.changed}, nil
+	watcher := &recordedWatcher{k: k, index: index, signal: make(chan struct{}, 1)}
+	k.watchers = append(k.watchers, watcher)
+	return watcher, nil
+}
+
+// watchCalls counts the watchers this machine handed out, of one interface
+// or of every one, open or closed.
+func (k *recordedKernel) watchCalls() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return len(k.watchers)
+}
+
+// everyInterface counts the watchers of every interface this machine handed
+// out, open or closed, and the calls to their Close.
+func (k *recordedKernel) everyInterface() (opened, closes int) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, watcher := range k.watchers {
+		if watcher.index == 0 {
+			opened++
+			closes += watcher.closes
+		}
+	}
+	return opened, closes
+}
+
+// fire wakes every open watcher of every interface, as a link or a route of
+// the host moving does.
+func (k *recordedKernel) fire() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, watcher := range k.watchers {
+		if watcher.index != 0 || watcher.closes > 0 {
+			continue
+		}
+		select {
+		case watcher.signal <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (k *recordedKernel) Assign(add bool, device string, prefix netip.Prefix) error {
@@ -228,6 +272,10 @@ func (k *recordedKernel) Assign(add bool, device string, prefix netip.Prefix) er
 // ownership it decides from those bytes.
 func (k *recordedKernel) Dump() ([]byte, error) {
 	k.mu.Lock()
+	if k.dumpErr != nil {
+		k.mu.Unlock()
+		return nil, k.dumpErr
+	}
 	held := make([]recordedRoute, 0, len(k.held))
 	for entry := range k.held {
 		held = append(held, entry)
@@ -418,14 +466,17 @@ func addrFrom(addr route.Addr) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
-// recordedWatcher never fires. What drives the reconcile loop in these tests
-// is the route source a test announces into, plus the interval the
-// configuration names, so a pass follows something the test did rather than
-// something the machine underneath happened to do.
+// recordedWatcher fires only when a test calls fire, and only for a watcher
+// of every interface. What drives the reconcile loop in these tests is the
+// route source a test announces into, plus the interval the configuration
+// names, so a pass follows something the test did rather than something the
+// machine underneath happened to do.
 type recordedWatcher struct {
 	k      *recordedKernel
+	index  int
 	signal chan struct{}
-	closed bool
+	// closes counts the calls to Close, the first of which closes it.
+	closes int
 }
 
 func (w *recordedWatcher) Changed() <-chan struct{} { return w.signal }
@@ -433,10 +484,10 @@ func (w *recordedWatcher) Changed() <-chan struct{} { return w.signal }
 func (w *recordedWatcher) Close() error {
 	w.k.mu.Lock()
 	defer w.k.mu.Unlock()
-	if !w.closed {
-		w.closed = true
+	if w.closes == 0 {
 		w.k.openWatchers--
 	}
+	w.closes++
 	return nil
 }
 

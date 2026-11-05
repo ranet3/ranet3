@@ -23,8 +23,9 @@ type networkSource interface {
 }
 
 // openNetwork opens the one network watch of this node, nil on a platform the kernel package reads no routes on
-func openNetwork(host kernel.Host, mesh string) (networkSource, error) {
-	watch, err := kernel.WatchNetwork(host, mesh)
+// watcher is darwin's reader of the watcher the underlay opened, which the watch takes over, and nil elsewhere
+func openNetwork(host kernel.Host, mesh string, watcher kernel.Watcher) (networkSource, error) {
+	watch, err := kernel.WatchNetwork(host, mesh, watcher)
 	if errors.Is(err, kernel.ErrUnsupported) {
 		slog.Info("this platform has no network watch, a moved host waits for each session's own liveness check")
 		return nil, nil

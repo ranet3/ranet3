@@ -21,12 +21,12 @@ import (
 // Selection answers which interface an underlay datagram names: the one
 // the host's own routes send it by with ranet3's interface left out, which is
 // where a lookup carrying linux's underlay mark ends. It reads one dump of the
-// routing table into a snapshot, and reads it again once the routing messages
-// of its own watcher settle.
+// routing table into a snapshot, and reads it again once the wakes of its
+// reader of the shared watcher settle.
 type Selection struct {
 	host Host
 	mesh int
-	// watcher reports every routing change but those on ranet3's own interface and this process's refused writes
+	// watcher reports every routing change but those on ranet3's own interface and this process's refused writes, and each link's flags or addresses moving
 	// a route this process writes on another interface is a route of the host the selection reads
 	watcher Watcher
 	// current is replaced whole by follow and loaded by every answer without a lock
@@ -43,21 +43,16 @@ type selectionSnapshot struct {
 }
 
 // OpenSelection reads the host's routing table with mesh, ranet3's own interface, left out, and follows it until Close
+// watcher is a Reader of the SharedWatcher of every interface but mesh, taken before the first dump so a change between the two is read
+// again, and the selection takes it over and closes it when it closes or fails to open
 // mesh is empty on a node without one, which leaves no interface out
 // host is the machine it reads, nil for the one this process runs on
 // a table it cannot read refuses the start, since a host that cannot read its table cannot run its reconciler either
-func OpenSelection(host Host, mesh string) (*Selection, error) {
+func OpenSelection(host Host, mesh string, watcher Watcher) (*Selection, error) {
 	host = hostOr(host)
-	index := 0
-	if mesh != "" {
-		var err error
-		if index, err = host.InterfaceIndex(mesh); err != nil {
-			return nil, err
-		}
-	}
-	// opened before the first dump, so a change between the two is read again
-	watcher, err := host.Watch(0, index)
+	index, err := meshIndex(host, mesh)
 	if err != nil {
+		_ = watcher.Close()
 		return nil, err
 	}
 	s := &Selection{host: host, mesh: index, watcher: watcher, done: make(chan struct{}), stopped: make(chan struct{})}
@@ -162,7 +157,7 @@ func (s *Selection) settled() bool {
 	return settle(changed, s.done, selectionSettle)
 }
 
-// Close stops following the table and closes the watcher
+// Close stops following the table and closes its reader of the watcher
 func (s *Selection) Close() error {
 	var err error
 	s.closeOnce.Do(func() {

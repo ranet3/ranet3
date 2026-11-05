@@ -21,7 +21,7 @@ import (
 func newPlatform(Table, Runtime) (platform, error) { return nil, ErrUnsupported }
 
 // WatchNetwork has no routing table to read here, for the same reason
-func WatchNetwork(Host, string) (*NetworkWatch, error) { return nil, ErrUnsupported }
+func WatchNetwork(Host, string, Watcher) (*NetworkWatch, error) { return nil, ErrUnsupported }
 
 const routeGetTakesSource = false
 

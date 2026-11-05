@@ -46,8 +46,8 @@ type Client struct {
 	speaker       *babel.Speaker
 	hub           *transport.Hub
 	// closeUnderlay releases whatever the transport's underlay had to open,
-	// which on darwin is the selection and its route watcher. Nil on a Client
-	// built by hand in a test.
+	// which on darwin is the selection and the watcher it shares with the
+	// network watch. Nil on a Client built by hand in a test.
 	closeUnderlay func()
 	// underlayRoutes is the selection the transport names each underlay
 	// datagram's interface from, as the rules view reads it, nil where the
@@ -271,7 +271,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		return nil, err
 	}
 	mesh.SetAnswerTTL(ttl)
-	underlay, closeUnderlay, err := underlayRuntime(mesh.Name, host)
+	underlay, watcher, closeUnderlay, err := underlayRuntime(mesh.Name, host)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +297,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		return nil, err
 	}
 	speaker.SetAssigned(assignedAddresses(cfg))
-	network, err := openNetwork(host, mesh.Name)
+	network, err := openNetwork(host, mesh.Name, watcher)
 	if err != nil {
 		return nil, err
 	}
@@ -461,14 +461,16 @@ func (c *Client) syncSpeaker() {
 }
 
 // Close is idempotent and can interrupt Run.
+// The network watch closes before the underlay, so on darwin both readers of
+// the shared watcher are gone before the watcher closes.
 func (c *Client) Close() {
 	c.cancel()
 	_ = c.hub.Close()
-	if c.closeUnderlay != nil {
-		c.closeUnderlay()
-	}
 	if c.network != nil {
 		_ = c.network.Close()
+	}
+	if c.closeUnderlay != nil {
+		c.closeUnderlay()
 	}
 	c.Mesh.Close()
 }

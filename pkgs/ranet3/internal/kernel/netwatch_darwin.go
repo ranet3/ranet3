@@ -10,20 +10,40 @@ import (
 	"net/netip"
 )
 
-// WatchNetwork opens the network watch over a watcher of every interface, which reads the routing socket and the kernel's network events
-// mesh names this node's tun, whose addresses and routes never signal, and is empty on a node without one
-// host is the machine it reads, nil for the one this process is running on
-func WatchNetwork(host Host, mesh string) (*NetworkWatch, error) {
+// ShareWatcher opens the host's watcher of every interface but mesh, which reads the routing socket and the kernel's network events, for the
+// underlay's selection and the network watch to follow through a Reader each
+// mesh names this node's tun, whose addresses, routes and events never wake it, and is empty on a node without one
+// host is the machine it watches, nil for the one this process is running on
+func ShareWatcher(host Host, mesh string) (*SharedWatcher, error) {
 	host = hostOr(host)
-	index := 0
-	if mesh != "" {
-		var err error
-		if index, err = host.InterfaceIndex(mesh); err != nil {
-			return nil, err
-		}
+	index, err := meshIndex(host, mesh)
+	if err != nil {
+		return nil, err
 	}
 	watcher, err := host.Watch(0, index)
 	if err != nil {
+		return nil, err
+	}
+	return shareWatcher(watcher), nil
+}
+
+// meshIndex is the index of the mesh's tun, zero where mesh is empty
+func meshIndex(host Host, mesh string) (int, error) {
+	if mesh == "" {
+		return 0, nil
+	}
+	return host.InterfaceIndex(mesh)
+}
+
+// WatchNetwork opens the network watch over watcher, a Reader of the SharedWatcher of every interface but mesh, which it takes over and
+// closes when the watch closes or fails to open
+// mesh names this node's tun, which the reads leave out, and is empty on a node without one
+// host is the machine it reads, nil for the one this process is running on
+func WatchNetwork(host Host, mesh string, watcher Watcher) (*NetworkWatch, error) {
+	host = hostOr(host)
+	index, err := meshIndex(host, mesh)
+	if err != nil {
+		_ = watcher.Close()
 		return nil, err
 	}
 	reader := hostReader{host: host, mesh: index}

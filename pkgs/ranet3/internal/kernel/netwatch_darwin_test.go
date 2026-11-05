@@ -135,27 +135,24 @@ type watchRig struct {
 // dadWindow outlasts duplicate address detection on a broadcast link, which ends within about two seconds of the add
 const dadWindow = 5 * time.Second
 
-// step runs one change and waits within for the watch to signal it, then a quiet window for a second signal, or within for none
-// check, where set, runs right after the change and again on the change signaled
-func (r *watchRig) step(name string, signals bool, within time.Duration, run func() error, check func(*NetworkChange)) {
+// step runs one change and waits within for the watch to signal it, with the links want accepts, then a quiet window for a second
+// signal, and where want is nil waits within for no signal at all
+func (r *watchRig) step(name string, within time.Duration, run func() error, want func(NetworkChange) error) {
 	r.t.Helper()
 	if err := run(); err != nil {
 		r.t.Fatalf("%s: %v", name, err)
 	}
-	if check != nil {
-		check(nil)
-	}
 	select {
 	case change := <-r.w.Changes():
-		if !signals {
+		if want == nil {
 			r.t.Errorf("%s signaled %+v", name, change.Families())
 			return
 		}
-		if check != nil {
-			check(&change)
+		if err := want(change); err != nil {
+			r.t.Errorf("%s signaled %v", name, err)
 		}
 	case <-time.After(within):
-		if signals {
+		if want != nil {
 			r.t.Errorf("%s signaled nothing within %s", name, within)
 		}
 		return
@@ -165,6 +162,46 @@ func (r *watchRig) step(name string, signals bool, within time.Duration, run fun
 		r.t.Errorf("%s signaled a second time, %+v", name, change.Families())
 	case <-time.After(quietWindow):
 	}
+}
+
+// link wants device a link of both families holding exactly the prefixes and the peers of each, space separated
+func wantLink(device, v4, peers4, v6, peers6 string) func(NetworkChange) error {
+	return func(change NetworkChange) error {
+		for _, family := range []struct {
+			links           []Link
+			prefixes, peers string
+		}{{change.After.IPv4.Links, v4, peers4}, {change.After.IPv6.Links, v6, peers6}} {
+			i := slices.IndexFunc(family.links, func(l Link) bool { return l.Name == device })
+			if i < 0 {
+				return fmt.Errorf("links without %s, %+v", device, family.links)
+			}
+			got := family.links[i]
+			if !slices.Equal(got.Prefixes, prefixList(family.prefixes)) || !slices.Equal(got.Peers, prefixList(family.peers)) {
+				return fmt.Errorf("%s holding %v with peers %v, want %q with peers %q", device, got.Prefixes, got.Peers, family.prefixes, family.peers)
+			}
+		}
+		return nil
+	}
+}
+
+// linkGone wants device a link of neither family
+func linkGone(device string) func(NetworkChange) error {
+	return func(change NetworkChange) error {
+		for _, links := range [][]Link{change.After.IPv4.Links, change.After.IPv6.Links} {
+			if slices.ContainsFunc(links, func(l Link) bool { return l.Name == device }) {
+				return fmt.Errorf("links still holding %s, %+v", device, links)
+			}
+		}
+		return nil
+	}
+}
+
+func prefixList(list string) []netip.Prefix {
+	var out []netip.Prefix
+	for _, word := range strings.Fields(list) {
+		out = append(out, netip.MustParsePrefix(word))
+	}
+	return out
 }
 
 // ifconfig is a step that runs ifconfig on one interface
@@ -237,79 +274,108 @@ func createFeth(t *testing.T) (string, func() error) {
 func TestDarwinNetworkWatchOnRealKernel(t *testing.T) {
 	requireNetTest(t)
 	mesh := createUTUN(t)
-	w, err := WatchNetwork(nil, mesh)
+	shared, err := ShareWatcher(nil, mesh)
+	if err != nil {
+		t.Fatalf("open the watcher: %v", err)
+	}
+	t.Cleanup(func() { _ = shared.Close() })
+	w, err := WatchNetwork(nil, mesh, shared.Reader())
 	if err != nil {
 		t.Fatalf("open the watch: %v", err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
 	r := &watchRig{t: t, w: w}
+	q := quietWindow
 	var a, b string
 	var destroyA, destroyB func() error
-	r.step("utun A created, up at once", true, quietWindow, func() error { a, destroyA = destroyableUTUN(t); return nil }, nil)
-	r.step("utun A up, which it already is", false, quietWindow, ifconfig(a, "up"), nil)
-	r.step("utun A 198.18.77.1 to 198.18.77.2", true, quietWindow, ifconfig(a, "inet", "198.18.77.1", "198.18.77.2", "netmask", "255.255.255.0", "alias"), nil)
-	r.step("utun A 198.18.77.3 to the same far end", true, quietWindow, ifconfig(a, "inet", "198.18.77.3", "198.18.77.2", "netmask", "255.255.255.0", "alias"), nil)
-	r.step("a route out of utun A", false, quietWindow, commandStep("route", "-n", "add", "-net", "198.51.100.0/24", "-interface", a), nil)
-	r.step("the route gone", false, quietWindow, commandStep("route", "-n", "delete", "-net", "198.51.100.0/24", "-interface", a), nil)
-	r.step("utun A 198.18.79.1/24 with itself as far end", true, quietWindow, ifconfig(a, "inet", "198.18.79.1/24", "198.18.79.1", "alias"), nil)
-	r.step("utun A 198.18.79.5/24 with itself as far end", true, quietWindow, ifconfig(a, "inet", "198.18.79.5/24", "198.18.79.5", "alias"), nil)
-	r.step("utun A 198.18.77.1 gone, its far end shared", true, quietWindow, ifconfig(a, "inet", "198.18.77.1", "delete"), nil)
-	r.step("utun A 198.18.77.3 gone", true, quietWindow, ifconfig(a, "inet", "198.18.77.3", "delete"), nil)
-	r.step("utun A 198.18.79.5 gone", true, quietWindow, ifconfig(a, "inet", "198.18.79.5", "delete"), nil)
-	r.step("utun A down", true, quietWindow, ifconfig(a, "down"), nil)
-	r.step("utun A up again", true, quietWindow, ifconfig(a, "up"), nil)
-	r.step("utun A destroyed holding an address", true, quietWindow, func() error { return destroyA() }, nil)
+	r.step("utun A created, up at once", q, func() error { a, destroyA = destroyableUTUN(t); return nil }, func(change NetworkChange) error {
+		return wantLink(a, "", "", "", "")(change)
+	})
+	r.step("utun A up, which it already is", q, ifconfig(a, "up"), nil)
+	r.step("utun A 198.18.77.1 to 198.18.77.2", q, ifconfig(a, "inet", "198.18.77.1", "198.18.77.2", "netmask", "255.255.255.0", "alias"),
+		wantLink(a, "198.18.77.1/32", "198.18.77.2/32", "", ""))
+	r.step("utun A 198.18.77.3 to the same far end, which sends no routing message", q,
+		ifconfig(a, "inet", "198.18.77.3", "198.18.77.2", "netmask", "255.255.255.0", "alias"),
+		wantLink(a, "198.18.77.1/32 198.18.77.3/32", "198.18.77.2/32", "", ""))
+	r.step("a route out of utun A", q, commandStep("route", "-n", "add", "-net", "198.51.100.0/24", "-interface", a), nil)
+	r.step("the route gone", q, commandStep("route", "-n", "delete", "-net", "198.51.100.0/24", "-interface", a), nil)
+	r.step("utun A 198.18.79.1/24 with itself as far end", q, ifconfig(a, "inet", "198.18.79.1/24", "198.18.79.1", "alias"),
+		wantLink(a, "198.18.77.1/32 198.18.77.3/32 198.18.79.1/32", "198.18.77.2/32", "", ""))
+	r.step("utun A 198.18.79.5/24 with itself as far end", q, ifconfig(a, "inet", "198.18.79.5/24", "198.18.79.5", "alias"),
+		wantLink(a, "198.18.77.1/32 198.18.77.3/32 198.18.79.1/32 198.18.79.5/32", "198.18.77.2/32", "", ""))
+	r.step("utun A 198.18.77.1 gone, its far end shared", q, ifconfig(a, "inet", "198.18.77.1", "delete"),
+		wantLink(a, "198.18.77.3/32 198.18.79.1/32 198.18.79.5/32", "198.18.77.2/32", "", ""))
+	r.step("utun A 198.18.77.3 gone, which sends no routing message", q, ifconfig(a, "inet", "198.18.77.3", "delete"),
+		wantLink(a, "198.18.79.1/32 198.18.79.5/32", "", "", ""))
+	r.step("utun A 198.18.79.5 gone", q, ifconfig(a, "inet", "198.18.79.5", "delete"), wantLink(a, "198.18.79.1/32", "", "", ""))
+	r.step("utun A down", q, ifconfig(a, "down"), linkGone(a))
+	r.step("utun A up again", q, ifconfig(a, "up"), wantLink(a, "198.18.79.1/32", "", "", ""))
+	r.step("utun A destroyed holding an address", q, func() error { return destroyA() }, linkGone(a))
 
-	r.step("an address on the mesh", false, quietWindow, ifconfig(mesh, "inet", "198.18.78.1", "198.18.78.2", "up"), nil)
-	r.step("the mesh address gone", false, quietWindow, ifconfig(mesh, "inet", "198.18.78.1", "delete"), nil)
+	r.step("an address on the mesh", q, ifconfig(mesh, "inet", "198.18.78.1", "198.18.78.2", "up"), nil)
+	r.step("the mesh address gone", q, ifconfig(mesh, "inet", "198.18.78.1", "delete"), nil)
 
-	r.step("utun B created, up at once", true, quietWindow, func() error { b, destroyB = destroyableUTUN(t); return nil }, nil)
-	r.step("utun B up, which it already is", false, quietWindow, ifconfig(b, "up"), nil)
-	r.step("utun B 2001:db8:78::1/64", true, quietWindow, ifconfig(b, "inet6", "2001:db8:78::1", "prefixlen", "64", "alias"), nil)
-	r.step("utun B 2001:db8:78::5/64, which posts no event", true, quietWindow, ifconfig(b, "inet6", "2001:db8:78::5", "prefixlen", "64", "alias"), nil)
-	r.step("utun B 2001:db8:78::9 to 2001:db8:78::a", true, quietWindow, ifconfig(b, "inet6", "2001:db8:78::9", "2001:db8:78::a", "prefixlen", "128", "alias"), nil)
-	r.step("utun B 2001:db8:78::5 gone", true, quietWindow, ifconfig(b, "inet6", "2001:db8:78::5", "delete"), nil)
-	r.step("utun B 2001:db8:78::9 gone", true, quietWindow, ifconfig(b, "inet6", "2001:db8:78::9", "delete"), nil)
-	r.step("utun B down", true, quietWindow, ifconfig(b, "down"), nil)
-	r.step("utun B destroyed while down", false, quietWindow, func() error { return destroyB() }, nil)
+	r.step("utun B created, up at once", q, func() error { b, destroyB = destroyableUTUN(t); return nil }, func(change NetworkChange) error {
+		return wantLink(b, "", "", "", "")(change)
+	})
+	r.step("utun B up, which it already is", q, ifconfig(b, "up"), nil)
+	r.step("utun B 2001:db8:78::1/64", q, ifconfig(b, "inet6", "2001:db8:78::1", "prefixlen", "64", "alias"),
+		wantLink(b, "", "", "2001:db8:78::1/64", ""))
+	r.step("utun B 2001:db8:78::5/64, which posts no kernel event", q, ifconfig(b, "inet6", "2001:db8:78::5", "prefixlen", "64", "alias"),
+		wantLink(b, "", "", "2001:db8:78::1/64 2001:db8:78::5/64", ""))
+	r.step("utun B 2001:db8:78::9 to 2001:db8:78::a", q, ifconfig(b, "inet6", "2001:db8:78::9", "2001:db8:78::a", "prefixlen", "128", "alias"),
+		wantLink(b, "", "", "2001:db8:78::1/64 2001:db8:78::5/64 2001:db8:78::9/128", "2001:db8:78::a/128"))
+	r.step("utun B 2001:db8:78::5 gone", q, ifconfig(b, "inet6", "2001:db8:78::5", "delete"),
+		wantLink(b, "", "", "2001:db8:78::1/64 2001:db8:78::9/128", "2001:db8:78::a/128"))
+	r.step("utun B 2001:db8:78::9 gone", q, ifconfig(b, "inet6", "2001:db8:78::9", "delete"), wantLink(b, "", "", "2001:db8:78::1/64", ""))
+	r.step("utun B down", q, ifconfig(b, "down"), linkGone(b))
+	r.step("utun B destroyed while down", q, func() error { return destroyB() }, nil)
 
 	var c, d string
 	var destroyC, destroyD func() error
-	r.step("feth C created, down", false, quietWindow, func() error { c, destroyC = createFeth(t); return nil }, nil)
-	r.step("feth D created, down", false, quietWindow, func() error { d, destroyD = createFeth(t); return nil }, nil)
-	r.step("feth C peered with feth D", false, quietWindow, ifconfig(c, "peer", d), nil)
-	r.step("feth D up", true, quietWindow, ifconfig(d, "up"), nil)
-	r.step("feth C up", true, quietWindow, ifconfig(c, "up"), nil)
-	r.step("feth C 198.18.81.1/24", true, quietWindow, ifconfig(c, "inet", "198.18.81.1/24", "alias"), nil)
-	r.step("feth C 198.18.81.5/24 inside its network", true, quietWindow, ifconfig(c, "inet", "198.18.81.5/24", "alias"), nil)
+	r.step("feth C created, down", q, func() error { c, destroyC = createFeth(t); return nil }, nil)
+	r.step("feth D created, down", q, func() error { d, destroyD = createFeth(t); return nil }, nil)
+	r.step("feth C peered with feth D", q, ifconfig(c, "peer", d), nil)
+	r.step("feth D up", q, ifconfig(d, "up"), func(change NetworkChange) error { return wantLink(d, "", "", "", "")(change) })
+	r.step("feth C up", q, ifconfig(c, "up"), func(change NetworkChange) error { return wantLink(c, "", "", "", "")(change) })
+	r.step("feth C 198.18.81.1/24", q, ifconfig(c, "inet", "198.18.81.1/24", "alias"), wantLink(c, "198.18.81.1/24", "", "", ""))
+	r.step("feth C 198.18.81.5/24 inside its network, which sends no routing message", q, ifconfig(c, "inet", "198.18.81.5/24", "alias"),
+		wantLink(c, "198.18.81.1/24 198.18.81.5/24", "", "", ""))
 	detected := netip.MustParseAddr("2001:db8:81::1")
-	r.step("feth C 2001:db8:81::1/64", true, dadWindow, ifconfig(c, "inet6", "2001:db8:81::1", "prefixlen", "64", "alias"), func(change *NetworkChange) {
+	flags := func() uint32 {
 		flags, err := addressFlags6(c, detected)
 		if err != nil {
 			t.Fatalf("read the flags of the address on feth C: %v", err)
 		}
-		if change == nil {
-			if flags&in6IffTentative == 0 {
-				t.Errorf("the address on feth C left detection before the first read, flags %#x", flags)
-			}
-			interfaces, err := runningKernel{}.Links()
-			if err != nil {
-				t.Fatalf("read the links: %v", err)
-			}
-			if _, v6 := hostLinks(interfaces, 0); slices.Contains(v6.Addresses, detected) {
-				t.Errorf("a read holds the address on feth C while it is tentative, %v", v6.Addresses)
-			}
-			return
+		return flags
+	}
+	r.step("feth C 2001:db8:81::1/64, a link's only once detection ends", dadWindow, func() error {
+		if err := ifconfig(c, "inet6", "2001:db8:81::1", "prefixlen", "64", "alias")(); err != nil {
+			return err
 		}
-		if flags&(in6IffTentative|in6IffDuplicated) != 0 || !slices.Contains(change.After.IPv6.Addresses, detected) {
-			t.Errorf("feth C's address with flags %#x signaled %v", flags, change.After.IPv6.Addresses)
+		if now := flags(); now&(in6IffTentative|in6IffOptimistic) == 0 {
+			t.Errorf("the address on feth C left detection before the first read, flags %#x", now)
 		}
+		interfaces, err := runningKernel{}.Links()
+		if err != nil {
+			return err
+		}
+		if _, v6 := hostLinks(interfaces, 0); slices.Contains(v6.Addresses, detected) {
+			t.Errorf("a read holds the address on feth C while it is tentative, %v", v6.Addresses)
+		}
+		return nil
+	}, func(change NetworkChange) error {
+		if now := flags(); now&(in6IffTentative|in6IffOptimistic|in6IffDuplicated) != 0 {
+			return fmt.Errorf("the address on feth C with flags %#x", now)
+		}
+		return wantLink(c, "198.18.81.1/24 198.18.81.5/24", "", "2001:db8:81::1/64", "")(change)
 	})
-	r.step("feth D 2001:db8:81::1/64, which feth C holds", false, dadWindow, ifconfig(d, "inet6", "2001:db8:81::1", "prefixlen", "64", "alias"), nil)
-	r.step("feth D's duplicated address gone", false, quietWindow, ifconfig(d, "inet6", "2001:db8:81::1", "delete"), nil)
-	r.step("feth C 198.18.81.5 gone", true, quietWindow, ifconfig(c, "inet", "198.18.81.5", "delete"), nil)
-	r.step("feth C 198.18.81.1 gone", true, quietWindow, ifconfig(c, "inet", "198.18.81.1", "delete"), nil)
-	r.step("feth C down", true, quietWindow, ifconfig(c, "down"), nil)
-	r.step("feth C destroyed while down", false, quietWindow, func() error { return destroyC() }, nil)
-	r.step("feth D destroyed while up", true, quietWindow, func() error { return destroyD() }, nil)
+	r.step("feth D 2001:db8:81::1/64, which feth C holds", dadWindow, ifconfig(d, "inet6", "2001:db8:81::1", "prefixlen", "64", "alias"), nil)
+	r.step("feth D's duplicated address gone", q, ifconfig(d, "inet6", "2001:db8:81::1", "delete"), nil)
+	r.step("feth C 198.18.81.5 gone, which sends no routing message", q, ifconfig(c, "inet", "198.18.81.5", "delete"),
+		wantLink(c, "198.18.81.1/24", "", "2001:db8:81::1/64", ""))
+	r.step("feth C 198.18.81.1 gone", q, ifconfig(c, "inet", "198.18.81.1", "delete"), wantLink(c, "", "", "2001:db8:81::1/64", ""))
+	r.step("feth C down", q, ifconfig(c, "down"), linkGone(c))
+	r.step("feth C destroyed while down", q, func() error { return destroyC() }, nil)
+	r.step("feth D destroyed while up", q, func() error { return destroyD() }, linkGone(d))
 }

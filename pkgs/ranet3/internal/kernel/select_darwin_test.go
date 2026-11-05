@@ -95,9 +95,15 @@ func selectionEntry(index, flags int, destination string) dumpEntry {
 	return dumpEntry{index: index, flags: unix.RTF_UP | flags, dst: prefix(destination), gateway: &route.LinkAddr{Index: index}}
 }
 
+// openTestSelection opens a selection as the client does, over a reader of the host's shared watcher
 func openTestSelection(t *testing.T, host Host, mesh string) *Selection {
 	t.Helper()
-	selection, err := OpenSelection(host, mesh)
+	shared, err := ShareWatcher(host, mesh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = shared.Close() })
+	selection, err := OpenSelection(host, mesh, shared.Reader())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,13 +236,23 @@ func TestDarwinSelectionWithoutAMeshLeavesNoInterfaceOut(t *testing.T) {
 	}
 }
 
-// a table that cannot be read refuses the start
+// a table that cannot be read refuses the start, and the reader the selection took is detached
 func TestDarwinSelectionRefusesAnUnreadableTable(t *testing.T) {
 	host := newSelectionHost(t)
 	host.failing = errors.New("the dump failed")
-	if selection, err := OpenSelection(host, selectionMeshName); err == nil {
+	shared, err := ShareWatcher(host, selectionMeshName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = shared.Close() }()
+	if selection, err := OpenSelection(host, selectionMeshName, shared.Reader()); err == nil {
 		_ = selection.Close()
 		t.Fatal("a selection opened over a table it could not read")
+	}
+	shared.mu.Lock()
+	defer shared.mu.Unlock()
+	if len(shared.readers) != 0 {
+		t.Errorf("the refused selection left %d readers of the watcher attached", len(shared.readers))
 	}
 }
 

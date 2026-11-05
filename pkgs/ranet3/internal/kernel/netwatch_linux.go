@@ -18,8 +18,8 @@ import (
 
 // WatchNetwork opens the network watch over rtnetlink, one socket for its notifications and one for its reads
 // mesh names this node's tun, whose addresses and routes never signal, and is empty on a node without one
-// host is read on darwin alone
-func WatchNetwork(_ Host, mesh string) (*NetworkWatch, error) {
+// host and the shared watcher are darwin's alone, and a watcher passed here is left open
+func WatchNetwork(_ Host, mesh string, _ Watcher) (*NetworkWatch, error) {
 	conn, err := dialNetlink()
 	if err != nil {
 		return nil, err

@@ -12,7 +12,9 @@ import (
 	"net/netip"
 	"slices"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"hegel.dev/go/hegel"
 
@@ -409,6 +411,100 @@ func TestRecordedKernelEventsWake(t *testing.T) {
 		if got := kernelEventWakes(raw, mesh); got != recorded.wakes {
 			t.Errorf("%s wakes the watch %v, want %v", recorded.name, got, recorded.wakes)
 		}
+	}
+}
+
+// countedWatcher is a watcher a test wakes, which counts the calls to its Close
+type countedWatcher struct {
+	signal chan struct{}
+	mu     sync.Mutex
+	closes int
+}
+
+func (w *countedWatcher) Changed() <-chan struct{} { return w.signal }
+
+func (w *countedWatcher) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closes++
+	return nil
+}
+
+func (w *countedWatcher) closed() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.closes
+}
+
+// each wake of a shared watcher reaches every reader still attached, each on its own channel, a reader's Close detaches it alone and
+// leaves the watcher open, a reader that stops taking its wakes keeps them from no other reader, and the shared watcher's Close returns
+// with that reader still attached and closes the watcher once however often it is called
+func TestSharedWatcherWakesEveryOpenReader(t *testing.T) {
+	underlying := &countedWatcher{signal: make(chan struct{})}
+	shared := shareWatcher(underlying)
+	a, b := shared.Reader(), shared.Reader()
+	if a.Changed() == b.Changed() {
+		t.Fatal("two readers share one channel, so a wake reaches one of them")
+	}
+	woken := func(reader Watcher) bool {
+		select {
+		case <-reader.Changed():
+			return true
+		case <-time.After(quietWindow):
+			return false
+		}
+	}
+	// a shared watcher that stopped takes no wake, which fails the test rather than blocking it
+	wake := func() {
+		t.Helper()
+		select {
+		case underlying.signal <- struct{}{}:
+		case <-time.After(quietWindow):
+			t.Fatal("the shared watcher took no wake")
+		}
+	}
+	wake()
+	if !woken(a) || !woken(b) {
+		t.Fatal("a wake did not reach both readers")
+	}
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wake()
+	if !woken(b) {
+		t.Error("a wake after the other reader closed did not reach the reader still attached")
+	}
+	select {
+	case <-a.Changed():
+		t.Error("a closed reader was woken")
+	default:
+	}
+	if closes := underlying.closed(); closes != 0 {
+		t.Errorf("a reader's Close closed the watcher %d times", closes)
+	}
+	// a reader that never takes a wake
+	_ = shared.Reader()
+	for i := range 3 {
+		wake()
+		if !woken(b) {
+			t.Fatalf("wake %d did not reach the reader that reads beside one that stopped", i)
+		}
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- shared.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(quietWindow):
+		t.Fatal("the shared watcher's Close did not return beside a reader that stopped")
+	}
+	if err := shared.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if closes := underlying.closed(); closes != 1 {
+		t.Errorf("the shared watcher closed the watcher %d times, want once", closes)
 	}
 }
 
