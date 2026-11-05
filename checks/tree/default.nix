@@ -90,9 +90,14 @@ runCommand "ranet3-tree"
     ' pkgs/ranet3/go.mod pkgs/wireguard/go.mod pkgs/raweb3/go.mod >&2
 
     # a grep of ranet3's journal that a check expects to fail passes on nothing
-    # once the Go text it copies is renamed, so each fixed string such a grep
-    # reads is text that non-test Go under pkgs still holds, and a form of it
-    # absent.py cannot read fails
+    # once the Go text it copies is renamed, and a count of it through a command
+    # that must succeed reads 0. absent.py reads every argument of such a call
+    # but a timeout= and holds each fixed string to text non-test Go under pkgs
+    # still holds. It fails on a form it cannot read, but a call that must
+    # succeed with an argument of another form fails only where its string
+    # literals hold a count, and is otherwise skipped whole, a bound name's
+    # count in it unread. A count built from a bound name inside an expression
+    # is not seen either
     python3 checks/tree/absent.py checks pkgs
 
     # reuse looks for the license texts in LICENSES alone. The rename goes
