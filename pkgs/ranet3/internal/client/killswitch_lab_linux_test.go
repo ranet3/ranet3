@@ -1086,7 +1086,7 @@ func switchAsk(t *testing.T, lab *exitLab, s switchService) string {
 		kind = unix.SOCK_STREAM
 	}
 	uplink := rulesHost[family].uplink.Addr()
-	// the server reads once the ask is sent, so its wait cannot end before the ask is out
+	// the server reads only once the ask is sent, because its wait must not end before the ask is out
 	asked := make(chan struct{})
 	sent := sync.OnceFunc(func() { close(asked) })
 	if s.listen {

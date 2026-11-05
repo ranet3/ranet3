@@ -357,7 +357,7 @@ func TestSessionLowersItsBudgetAtTheRefusalOfItsOwnData(t *testing.T) {
 	}
 	t.Cleanup(mesh.Close)
 	alpha, bravo := newLoopbackMeshOn(t, mesh)
-	// bravo answers and never dials, so the one session is the one alpha dials and no resolution replaces it once the path narrows
+	// bravo answers and never dials: the one session is the one alpha dials, and no resolution replaces it once the path narrows
 	// a session made after that starts at the narrowed budget, which no event reports
 	quiet := *bravo.cfg
 	quiet.Dial.To = nil

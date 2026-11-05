@@ -305,7 +305,7 @@ func TestKernelRuntimeHandsTheLiveSends(t *testing.T) {
 			t.Fatalf("%s's reconciler runtime carries no sends, so it asks no marked lookup", node.name)
 		}
 	}
-	// both ends dial, so each holds the session it dialed, which no peer's datagram pinned, until one session replaces the other
+	// both ends dial, and each holds the session it dialed, which no peer's datagram pinned, until one session replaces the other
 	var muxes [2]kernel.Send
 	waitFor(t, convergeBudget, "both ends holding the one session, its mux's sends to loopback what each runtime hands", func() bool {
 		var dialed [2]bool
