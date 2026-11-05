@@ -29,7 +29,7 @@ func withheldAnswers(m *Mesh) uint64 {
 // over drawn tables and drawn runs of changes to what the sources' answers of reads off the tun read, the table's entries, the overlay and the egress prefixes, each change followed by a read
 // each read carries a packet of each of a few drawn pairs, the entries and overlay prefixes written cover their sources and destinations at drawn lengths, and the entries and peers removed are mostly ones their replies resolve through
 // each read through one batch, whose answers outlive the read, sends every packet where a mesh of the same table sends it read alone with answers of its own
-// and counts what that mesh counts
+// and counts what that mesh counts, with the answers each mesh's ICMP limits withheld added to its Answered
 func TestTUNReadsAcrossChangesGoWhereFreshAnswersSendThem(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		m, model, sources, destinations := drawEdgeTable(ht)
@@ -96,12 +96,12 @@ func TestTUNReadsAcrossChangesGoWhereFreshAnswersSendThem(t *testing.T) {
 			if !slices.Equal(got, want) {
 				ht.Fatalf("a read went to %v, its packets read alone with answers of their own to %v, in %v under the overlay %v", got, want, m.Routes.Debug(), model.overlay)
 			}
-			// the ICMP limits earn answers back by the clock, so two meshes drawing at other moments let out other answers of those due
+			// the ICMP limits earn answers back by the clock, and two meshes drawing at other moments let out other answers of those due
 			counted, wantCounted := m.TransitCounters(), fresh.TransitCounters()
 			counted.Answered += withheldAnswers(m)
 			wantCounted.Answered += withheldAnswers(fresh)
 			if counted != wantCounted {
-				ht.Fatalf("the reads counted %+v, their packets read alone with answers of their own %+v, the answers the ICMP limits withheld counted answered", counted, wantCounted)
+				ht.Fatalf("the reads counted %+v, their packets read alone with answers of their own %+v, with the answers the ICMP limits withheld added to Answered", counted, wantCounted)
 			}
 		}
 		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
