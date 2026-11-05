@@ -154,9 +154,8 @@ func SubsystemNames() []string {
 }
 
 // Request is the body of a write. One shape serves every verb, and each verb
-// reads the fields it needs: a field another verb fills is ignored rather than
-// refused, so a client and a daemon built from different revisions still
-// speak. An empty body decodes as the zero value, and reload is asked with one.
+// reads the fields it needs and ignores the others. A member no field names is
+// refused. An empty body decodes as the zero value, and reload is asked with one.
 type Request struct {
 	Subsystem Subsystem `json:"subsystem,omitempty"`
 	Peer      string    `json:"peer,omitempty"`

@@ -104,6 +104,11 @@ func TestHandlerRoutesEveryVerb(t *testing.T) {
 				t.Errorf("redial --all reached %+v", s)
 			}
 		}},
+		"redial with every field": {path: PathRedial, body: `{"subsystem":"steering","peer":"example/gateway","all":true}`, check: func(t *testing.T, s *writingSource) {
+			if s.verb != "redial" || s.peer != "example/gateway" || !s.all {
+				t.Errorf("redial with every field reached %+v", s)
+			}
+		}},
 		"rekey one": {path: PathRekey, body: `{"peer":"example/gateway"}`, check: func(t *testing.T, s *writingSource) {
 			if s.verb != "rekey" || s.peer != "example/gateway" || s.all {
 				t.Errorf("rekey reached %+v", s)
@@ -147,6 +152,32 @@ func TestHandlerRoutesEveryVerb(t *testing.T) {
 			}
 			if result.Detail == "" {
 				t.Errorf("%s answered without a sentence: %+v", test.path, result)
+			}
+		})
+	}
+}
+
+func TestVerbBodyRefusesRepeatedOrUnknownMembersAndInvalidUTF8(t *testing.T) {
+	for name, body := range map[string]string{
+		"peer twice":        `{"peer":"example/laptop","peer":"example/gateway"}`,
+		"subsystem twice":   `{"subsystem":"steering","subsystem":"responder"}`,
+		"all twice":         `{"all":true,"all":false}`,
+		"Peer":              `{"Peer":"example/gateway"}`,
+		"PEER beside peer":  `{"PEER":"example/laptop","peer":"example/gateway"}`,
+		"an unknown member": `{"peer":"example/gateway","bogus":1}`,
+		"byte 0xff in peer": "{\"peer\":\"example/gate\xffway\"}",
+		"a second object":   `{"peer":"example/gateway"}{"peer":"example/laptop"}`,
+		"a stray brace":     `{"peer":"example/gateway"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := &writingSource{}
+			server := httptest.NewServer(Handler(sink))
+			defer server.Close()
+			if response := post(t, server.URL+PathRedial, body); response.StatusCode != http.StatusBadRequest {
+				t.Errorf("a body with %s answered %s, want 400", name, response.Status)
+			}
+			if sink.verb != "" {
+				t.Errorf("a body with %s reached the verb as %+v", name, sink)
 			}
 		})
 	}

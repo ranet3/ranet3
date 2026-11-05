@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -298,7 +299,7 @@ func readRequest(w http.ResponseWriter, r *http.Request) (Request, bool) {
 	// An empty body is the zero request rather than a decode failure, so
 	// reload, which reads no field, is asked with nothing at all.
 	if len(body) > 0 {
-		if err := json.Unmarshal(body, &request); err != nil {
+		if err := jsonv2.Unmarshal(body, &request, jsonv2.RejectUnknownMembers(true)); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return Request{}, false
 		}
