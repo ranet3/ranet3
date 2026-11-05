@@ -4,6 +4,7 @@
 package kernel
 
 import (
+	"net"
 	"net/netip"
 	"slices"
 	"testing"
@@ -14,7 +15,7 @@ import (
 // A lease as wide as an overlay prefix throws in place of that prefix's hold,
 // a lease inside another overlay prefix throws beside its hold, a table entry
 // of a lease's own prefix keeps the prefix in the mesh, and a link's network
-// outside the overlay and lo carve nothing
+// outside the overlay and the loopback carve nothing
 func TestCarveOutsThrowInPlaceOfTheHoldAndGiveWayToTheTable(t *testing.T) {
 	p := netip.MustParsePrefix
 	network := NetworkState{
@@ -48,6 +49,19 @@ func TestCarveOutsThrowInPlaceOfTheHoldAndGiveWayToTheTable(t *testing.T) {
 	slices.SortFunc(got, compareRoutes)
 	if !slices.Equal(got, want) {
 		t.Errorf("the mirror wants\n%v\nwant\n%v", got, want)
+	}
+}
+
+// Loopback names the loopback link of the host the tests run on, lo on Linux
+// and lo0 on darwin, so the link the carve-outs leave out is the one a global
+// overlay address on the host's loopback sits on
+func TestLoopbackNamesTheHostsLoopbackLink(t *testing.T) {
+	device, err := net.InterfaceByName(Loopback)
+	if err != nil {
+		t.Fatalf("%s names no link of this host: %v", Loopback, err)
+	}
+	if device.Flags&net.FlagLoopback == 0 {
+		t.Errorf("%s is no loopback link, its flags %v", Loopback, device.Flags)
 	}
 }
 
