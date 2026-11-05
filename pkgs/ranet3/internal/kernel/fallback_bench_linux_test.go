@@ -205,7 +205,7 @@ func BenchmarkFallbackSendRetracted(b *testing.B) {
 			var want error
 			switch layout {
 			case "A, 5450":
-				if err := s.plat.AddRule(Rule{Family: FamilyIPv4, Priority: priorityRefused, IIF: loopback, action: actionUnreachable}); err != nil {
+				if err := s.plat.AddRule(Rule{Family: FamilyIPv4, Priority: priorityRefused, IIF: Loopback, action: actionUnreachable}); err != nil {
 					b.Fatal(err)
 				}
 				s.write(b, fallbackSets{})
@@ -314,7 +314,7 @@ func BenchmarkFallbackRouteGet(b *testing.B) {
 			if rules {
 				for _, rule := range []Rule{
 					{Family: FamilyIPv4, Priority: priorityOwnPastMesh, To: schema.PrefixFrom(benchOwn), Table: schema.TableMain},
-					{Family: FamilyIPv4, Priority: priorityRefused, IIF: loopback, action: actionUnreachable},
+					{Family: FamilyIPv4, Priority: priorityRefused, IIF: Loopback, action: actionUnreachable},
 				} {
 					if err := s.plat.AddRule(rule); err != nil {
 						b.Fatal(err)

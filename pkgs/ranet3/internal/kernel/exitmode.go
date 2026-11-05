@@ -144,11 +144,8 @@ func (m ExitMode) Services() []Service {
 	return out
 }
 
-// loopback is the name Linux gives its loopback link, whose index every lookup of the host's own traffic carries
-const loopback = "lo"
-
 // Validate refuses a forward entry that can name no link, an empty one or a
-// malformed pattern, and lo by name, whose traffic is the host's own. It
+// malformed pattern, and the loopback link by name, whose traffic is the host's own. It
 // refuses a fallback other than "uplink" and "none", inbound unless fallback
 // is "none", and an inbound entry that is malformed, names port 0 or another
 // protocol, runs downward or is written twice. It refuses lan unless fallback
@@ -185,8 +182,8 @@ func (m ExitMode) Validate() error {
 		if _, err := path.Match(entry, ""); err != nil {
 			return fmt.Errorf("kernel: cap.exit forward %q: %w", entry, err)
 		}
-		if entry == loopback {
-			return errors.New("kernel: cap.exit forward lo is the loopback link, whose traffic is the host's own and follows the mode already")
+		if entry == Loopback {
+			return fmt.Errorf("kernel: cap.exit forward %s is the loopback link, whose traffic is the host's own and follows the mode already", Loopback)
 		}
 	}
 	return m.refuseViaLoop()
@@ -367,7 +364,7 @@ func skipReason(name, tun string, network NetworkState) string {
 	switch name {
 	case tun:
 		return "the mesh's own tun"
-	case loopback:
+	case Loopback:
 		return "the loopback link"
 	case network.IPv4.Default.Interface:
 		return "the link the IPv4 default leaves by"

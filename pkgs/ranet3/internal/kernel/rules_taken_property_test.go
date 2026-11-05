@@ -55,7 +55,7 @@ func (p walkedPacket) refusals() []syscall.Errno {
 	switch {
 	case p.dst.Is6():
 		return nil
-	case p.iif == loopback && p.src.IsValid():
+	case p.iif == linuxLoopback && p.src.IsValid():
 		return []syscall.Errno{syscall.EINVAL, syscall.ENETUNREACH}
 	}
 	return []syscall.Errno{syscall.EINVAL}
@@ -225,9 +225,9 @@ func walkedPackets(v6 bool) []walkedPacket {
 	pool := walkedPools[v6]
 	var packets []walkedPacket
 	for _, dst := range pool.dst {
-		sweep := []walkedPacket{{dst: addr(dst), iif: loopback}}
+		sweep := []walkedPacket{{dst: addr(dst), iif: linuxLoopback}}
 		for _, src := range pool.src {
-			for _, iif := range []string{loopback, "eth1"} {
+			for _, iif := range []string{linuxLoopback, "eth1"} {
 				sweep = append(sweep, walkedPacket{src: addr(src), dst: addr(dst), iif: iif})
 			}
 		}
@@ -298,7 +298,7 @@ func drawWalked(ht *hegel.T) (walkedHost, []walkedPacket) {
 		}
 		rule.Action = hegel.Draw(ht, hegel.SampledFrom([]string{"lookup", "goto", "nop", "lookup", "goto", "nop", "lookup", "unreachable", "prohibit", "blackhole"}))
 		rule.From, rule.To = selector(true), selector(false)
-		rule.IIF = hegel.Draw(ht, hegel.SampledFrom([]string{"", "", "", "", "", "", "", loopback, loopback, "eth1", "eth2"}))
+		rule.IIF = hegel.Draw(ht, hegel.SampledFrom([]string{"", "", "", "", "", "", "", linuxLoopback, linuxLoopback, "eth1", "eth2"}))
 		if hegel.Draw(ht, hegel.WeightedBooleans(0.05)) {
 			rule.OIF = "eth0"
 		}
@@ -412,7 +412,7 @@ func checkTaken(ht *hegel.T, host walkedHost, packet walkedPacket) {
 		route = MatchedRoute{Prefix: netip.PrefixFrom(packet.dst, end.bits).Masked(), Table: end.table, Type: "unicast", Exception: end.cached}
 	}
 	iif := packet.iif
-	if iif == loopback {
+	if iif == linuxLoopback {
 		iif = ""
 	}
 	got := TakeRule(host.rules, packet.src, packet.dst, iif, route, err)

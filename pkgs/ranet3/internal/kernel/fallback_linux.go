@@ -64,7 +64,7 @@ var (
 func (s fallbackSets) elements() map[string][]nftables.Interval {
 	// lo counts as a link forward names, as 5450 does, so a packet looped back through it and forwarded meets the lines
 	var forwarded []nftables.Interval
-	for _, name := range append([]string{loopback}, s.forwarded...) {
+	for _, name := range append([]string{Loopback}, s.forwarded...) {
 		forwarded = append(forwarded, nftables.Key(nftables.InterfaceName(name)))
 	}
 	return map[string][]nftables.Interval{
@@ -121,9 +121,9 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 	out = append(out,
 		fallbackRule{
 			// unquoted, since nft prints a comment as written and a quote in one would end it
-			spec:        fmt.Sprintf("oifname { %s, %s } accept", loopback, s.tun),
+			spec:        fmt.Sprintf("oifname { %s, %s } accept", Loopback, s.tun),
 			expressions: [][]byte{nftables.MetaLoad(unix.NFT_META_OIFNAME), nftables.Lookup(*oif, false), accept},
-			anonymous:   oif, members: []nftables.Interval{nftables.Key(nftables.InterfaceName(loopback)), nftables.Key(nftables.InterfaceName(s.tun))},
+			anonymous:   oif, members: []nftables.Interval{nftables.Key(nftables.InterfaceName(Loopback)), nftables.Key(nftables.InterfaceName(s.tun))},
 		},
 		fallbackRule{
 			spec:        fmt.Sprintf("meta mark %#08x accept", schema.UnderlayMark),

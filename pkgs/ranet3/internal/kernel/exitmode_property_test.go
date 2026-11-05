@@ -17,7 +17,7 @@ import (
 )
 
 // globNames is the names a drawn host holds its links under, the tun among them
-var globNames = []string{"br-1a", "br-3d", "docker0", "docker1", "eth0", "eth1", "lo", "ranet3", "veth9", "wlan0"}
+var globNames = []string{"br-1a", "br-3d", "docker0", "docker1", "eth0", "eth1", Loopback, "ranet3", "veth9", "wlan0"}
 
 // globEntries is the entries a drawn forward list holds, each a name or a
 // pattern that path.Match finds in none, one or several of globNames
@@ -78,7 +78,7 @@ func TestForwardExpandsToTheMatchedLinksLessTheTunLoopbackAndUplink(t *testing.T
 			if at < 0 {
 				continue
 			}
-			if name == tun || name == "lo" || name == network.IPv4.Default.Interface || name == network.IPv6.Default.Interface {
+			if name == tun || name == Loopback || name == network.IPv4.Default.Interface || name == network.IPv6.Default.Interface {
 				wantSkipped = append(wantSkipped, ForwardSkip{Entry: forward[at], Link: name})
 				continue
 			}

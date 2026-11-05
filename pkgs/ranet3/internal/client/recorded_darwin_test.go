@@ -422,9 +422,9 @@ func (w *recordedWatcher) Close() error {
 // answers on its own UDP sockets, and an index no device has is refused.
 func loopbackIndex(t *testing.T) int {
 	t.Helper()
-	device, err := net.InterfaceByName("lo0")
+	device, err := net.InterfaceByName(kernel.Loopback)
 	if err != nil {
-		t.Skipf("this host has no lo0 to bind a socket to: %v", err)
+		t.Skipf("this host has no %s to bind a socket to: %v", kernel.Loopback, err)
 	}
 	return device.Index
 }

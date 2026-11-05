@@ -16,7 +16,7 @@ import (
 // the loopback stands in for the tun
 // New installs nothing and opens only route sockets, which need no root
 func TestNewOnAPlatformWithoutRulesRunsNoRulePass(t *testing.T) {
-	reconciler, err := New(Table{}, Runtime{Interface: "lo0", Overlay: prefixes(prefix("192.0.2.0/24"))}, netstack.NewRouteTable())
+	reconciler, err := New(Table{}, Runtime{Interface: Loopback, Overlay: prefixes(prefix("192.0.2.0/24"))}, netstack.NewRouteTable())
 	if err != nil {
 		t.Fatal(err)
 	}

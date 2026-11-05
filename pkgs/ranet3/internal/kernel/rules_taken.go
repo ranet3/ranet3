@@ -115,7 +115,7 @@ func TakeRule(rules []DumpedRule, src, dst netip.Addr, iif string, route Matched
 	rules = slices.DeleteFunc(slices.Clone(rules), func(rule DumpedRule) bool { return rule.Family != family })
 	slices.SortStableFunc(rules, func(a, b DumpedRule) int { return cmp.Compare(a.Priority, b.Priority) })
 	if own {
-		iif = loopback
+		iif = linuxLoopback
 	}
 	var errno syscall.Errno
 	if err != nil && !errors.As(err, &errno) {

@@ -208,7 +208,7 @@ func TestModeThreeSelectsACarvedLeaseForMainAsModeTwoDoes(t *testing.T) {
 	overlay := prefixes(prefix("192.0.2.0/24"), prefix("3fff::/20"))
 	network := NetworkState{IPv4: NetworkFamily{Links: []Link{
 		{Name: "eth0", Prefixes: []netip.Prefix{prefix("192.0.2.10/24")}},
-		{Name: "lo", Prefixes: []netip.Prefix{prefix("192.0.2.200/32"), prefix("192.0.2.1/32")}},
+		{Name: Loopback, Prefixes: []netip.Prefix{prefix("192.0.2.200/32"), prefix("192.0.2.1/32")}},
 	}}}
 	selected := func(table Table, routed bool) []Rule {
 		reconciler, routes, _ := harness(t, table, Runtime{Overlay: overlay, Network: func() NetworkState { return network }})

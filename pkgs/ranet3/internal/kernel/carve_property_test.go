@@ -30,7 +30,7 @@ var carveBases = map[Family][]string{
 }
 
 // carveLinks are the names a drawn host holds its links under, lo among them
-var carveLinks = []string{"eth0", "lo", "wlan0"}
+var carveLinks = []string{"eth0", Loopback, "wlan0"}
 
 // nearAddress draws an address of family a few bits off one of carveBases
 func nearAddress(tc hegel.TestCase, family Family) netip.Addr {
@@ -110,7 +110,7 @@ func holds(outer, inner netip.Prefix) bool {
 func carveModel(network NetworkState, overlay []schema.Prefix) []egress.CarveOut {
 	set := map[egress.CarveOut]bool{}
 	for _, link := range slices.Concat(network.IPv4.Links, network.IPv6.Links) {
-		if link.Name == "lo" {
+		if link.Name == Loopback {
 			continue
 		}
 		for _, address := range slices.Concat(link.Prefixes, link.Peers) {
@@ -150,7 +150,7 @@ func TestCarveOutsAreEachLinksIntersectionWithTheOverlay(t *testing.T) {
 			}
 			inOverlay := slices.ContainsFunc(overlay, func(o schema.Prefix) bool { return o.Contains(address) })
 			for _, link := range links {
-				onLink := link.Name != "lo" && slices.ContainsFunc(slices.Concat(link.Prefixes, link.Peers), func(p netip.Prefix) bool { return p.Masked().Contains(address) })
+				onLink := link.Name != Loopback && slices.ContainsFunc(slices.Concat(link.Prefixes, link.Peers), func(p netip.Prefix) bool { return p.Masked().Contains(address) })
 				carved := slices.ContainsFunc(got, func(c egress.CarveOut) bool { return c.Link == link.Name && c.Prefix.Contains(address) })
 				if carved != (onLink && inOverlay) {
 					ht.Fatalf("%s carved on %s %v, on the link %v and in the overlay %v", address, link.Name, carved, onLink, inOverlay)
@@ -307,7 +307,7 @@ func TestCarveOutsOfALeaseInsideAroundAndAsWideAsTheOverlay(t *testing.T) {
 	network := NetworkState{
 		IPv4: NetworkFamily{Links: []Link{
 			{Name: "eth0", Prefixes: []netip.Prefix{p("192.0.2.10/24")}},
-			{Name: "lo", Prefixes: []netip.Prefix{p("192.0.2.1/32")}},
+			{Name: Loopback, Prefixes: []netip.Prefix{p("192.0.2.1/32")}},
 			{Name: "wlan0", Prefixes: []netip.Prefix{p("192.0.2.130/25"), p("198.51.100.7/24")}},
 		}},
 		IPv6: NetworkFamily{Links: []Link{

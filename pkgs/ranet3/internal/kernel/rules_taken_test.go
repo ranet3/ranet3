@@ -98,15 +98,15 @@ func TestTakeRuleNamesTheRuleTheLabsLookupsTook(t *testing.T) {
 		{name: "a link arrival with forwarding off", src: "198.51.100.140", dst: "203.0.113.200", iif: "lan0", err: syscall.EHOSTUNREACH, routeType: "unreachable"},
 		{name: "a link arrival under rp_filter", src: "203.0.113.50", dst: "203.0.113.200", iif: "lan0", err: syscall.EINVAL, routeType: "blackhole"},
 
-		{name: "own to the internet in mode 2", exit: true, dst: "203.0.113.200", route: takenAnswer(mesh, "128.0.0.0/1"), priority: 5440, ruleIIF: "lo"},
-		{name: "own to the internet in mode 2 over IPv6", exit: true, dst: "2001:db8:ffff::10", route: takenAnswer(mesh, "::/1"), priority: 5440, ruleIIF: "lo"},
+		{name: "own to the internet in mode 2", exit: true, dst: "203.0.113.200", route: takenAnswer(mesh, "128.0.0.0/1"), priority: 5440, ruleIIF: linuxLoopback},
+		{name: "own to the internet in mode 2 over IPv6", exit: true, dst: "2001:db8:ffff::10", route: takenAnswer(mesh, "::/1"), priority: 5440, ruleIIF: linuxLoopback},
 		{name: "own to an overlay address in mode 2", exit: true, dst: "192.0.2.20", route: takenAnswer(mesh, "128.0.0.0/1"), priority: 5110},
 		{name: "own to the mesh subnet in mode 2", exit: true, dst: "203.0.113.10", route: takenAnswer(mesh, "203.0.113.0/26"), priority: 5420},
 		{name: "own from the own prefix in mode 2", exit: true, src: "192.0.2.1", dst: "203.0.113.200", route: takenAnswer(mesh, "128.0.0.0/1"), priority: 5430},
 		{name: "a link arrival in mode 2", exit: true, src: "198.51.100.140", dst: "203.0.113.200", iif: "lan0", route: takenAnswer(mesh, "128.0.0.0/1"), priority: 5440, ruleIIF: "lan0"},
 		{name: "a link arrival in mode 2 over IPv6", exit: true, src: "2001:db8:2::5", dst: "2001:db8:ffff::10", iif: "lan0", route: takenAnswer(mesh, "::/1"), priority: 5440, ruleIIF: "lan0"},
-		{name: "own from the forwarded link's address in mode 2", exit: true, src: "198.51.100.130", dst: "203.0.113.200", route: takenAnswer(main, "0.0.0.0/0"), priority: 5405, ruleIIF: "lo"},
-		{name: "own from the uplink's address in mode 2 over IPv6", exit: true, src: "2001:db8:1::2", dst: "2001:db8:ffff::10", route: takenAnswer(main, "::/0"), priority: 5405, ruleIIF: "lo"},
+		{name: "own from the forwarded link's address in mode 2", exit: true, src: "198.51.100.130", dst: "203.0.113.200", route: takenAnswer(main, "0.0.0.0/0"), priority: 5405, ruleIIF: linuxLoopback},
+		{name: "own from the uplink's address in mode 2 over IPv6", exit: true, src: "2001:db8:1::2", dst: "2001:db8:ffff::10", route: takenAnswer(main, "::/0"), priority: 5405, ruleIIF: linuxLoopback},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

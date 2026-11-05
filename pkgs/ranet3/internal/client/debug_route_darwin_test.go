@@ -12,6 +12,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/config"
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
 // XNU's own lookup answers this host's packet to loopback by lo0 from its one
@@ -25,7 +26,7 @@ func TestDebugRouteLooksUpThroughXNU(t *testing.T) {
 		t.Fatal(err)
 	}
 	k := info.Kernel
-	if k == nil || !k.Route.Contains(loopback) || !slices.Equal(k.NextHops, []control.RouteNextHop{{Dev: "lo0"}}) || k.Table != 0 || k.Err != "" {
+	if k == nil || !k.Route.Contains(loopback) || !slices.Equal(k.NextHops, []control.RouteNextHop{{Dev: kernel.Loopback}}) || k.Table != 0 || k.Err != "" {
 		t.Fatalf("this host's own packet to %s reads %+v", loopback, k)
 	}
 	if k.RuleErr != "this platform has no policy rules" || k.Rule != nil || k.Candidate != nil || k.NoSource {

@@ -92,7 +92,7 @@ func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkStat
 		if slices.Contains(unaddressed, family) {
 			continue
 		}
-		out[Rule{Family: family, Priority: 5440, IIF: "lo", Table: id}] = true
+		out[Rule{Family: family, Priority: 5440, IIF: linuxLoopback, Table: id}] = true
 		for _, name := range forwarded {
 			out[Rule{Family: family, Priority: 5440, IIF: name, Table: id}] = true
 		}
@@ -100,11 +100,11 @@ func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkStat
 			for _, prefix := range link.Prefixes {
 				address := prefix.Addr()
 				if !shares(netip.PrefixFrom(address, address.BitLen())) {
-					out[Rule{Family: family, Priority: 5405, From: schema.PrefixFrom(netip.PrefixFrom(address, address.BitLen())), IIF: "lo", Table: 254}] = true
+					out[Rule{Family: family, Priority: 5405, From: schema.PrefixFrom(netip.PrefixFrom(address, address.BitLen())), IIF: linuxLoopback, Table: 254}] = true
 				}
 				network := prefix.Masked()
 				if !slices.Contains(forwarded, link.Name) && !shares(network) && network.Bits() < address.BitLen() {
-					out[Rule{Family: family, Priority: 5435, From: schema.PrefixFrom(network), IIF: "lo", Table: 254}] = true
+					out[Rule{Family: family, Priority: 5435, From: schema.PrefixFrom(network), IIF: linuxLoopback, Table: 254}] = true
 				}
 			}
 			for _, peer := range link.Peers {
@@ -114,7 +114,7 @@ func modeTwo(id schema.TableID, overlay, own []netip.Prefix, network NetworkStat
 					return network.Bits() < prefix.Addr().BitLen() && network.Bits() <= peer.Bits() && network.Contains(peer.Masked().Addr())
 				})
 				if !slices.Contains(forwarded, link.Name) && !shares(peer) && !held {
-					out[Rule{Family: family, Priority: 5435, From: schema.PrefixFrom(peer), IIF: "lo", Table: 254}] = true
+					out[Rule{Family: family, Priority: 5435, From: schema.PrefixFrom(peer), IIF: linuxLoopback, Table: 254}] = true
 				}
 			}
 		}
@@ -133,7 +133,7 @@ func modeTwoNone(id schema.TableID, overlay, own []netip.Prefix, network Network
 		maps.DeleteFunc(out, func(rule Rule, _ bool) bool { return rule.Priority == 5405 || rule.Priority == 5435 })
 	}
 	for _, family := range []Family{FamilyIPv4, FamilyIPv6} {
-		out[Rule{Family: family, Priority: 5450, IIF: "lo", action: actionUnreachable}] = true
+		out[Rule{Family: family, Priority: 5450, IIF: linuxLoopback, action: actionUnreachable}] = true
 		for _, name := range forwarded {
 			out[Rule{Family: family, Priority: 5450, IIF: name, action: actionUnreachable}] = true
 		}
@@ -172,7 +172,7 @@ var exitOverlays = []string{"192.0.2.0/24", "192.0.2.128/25", "3fff::/20", "3fff
 var exitOwn = []string{"198.51.100.128/25", "203.0.113.7/32", "2001:db8:1::/48", "2001:db8::/32"}
 
 // exitLinks are the names a drawn host holds its links under
-var exitLinks = []string{"br-1a", "docker0", "eth0", "lo", "wlan0"}
+var exitLinks = []string{"br-1a", "docker0", "eth0", Loopback, "wlan0"}
 
 // drawnExitLinks draws a family's links: each name of exitLinks or not, each
 // with up to two of the family's addresses at drawn lengths and now and then a
@@ -221,7 +221,7 @@ func TestDerivedRulesAreModeTwoWithTheLinksAndModeOffWithout(t *testing.T) {
 		network := NetworkState{IPv4: NetworkFamily{Links: drawnExitLinks(ht, FamilyIPv4)}, IPv6: NetworkFamily{Links: drawnExitLinks(ht, FamilyIPv6)}}
 		var forwarded []string
 		for _, name := range exitLinks {
-			if name != "lo" && hegel.Draw(ht, pbt.Spanning(0, 1)) == 1 {
+			if name != Loopback && hegel.Draw(ht, pbt.Spanning(0, 1)) == 1 {
 				forwarded = append(forwarded, name)
 			}
 		}
@@ -368,12 +368,12 @@ func TestModeTwoDerivesItsRulesFromTheLinks(t *testing.T) {
 			view: exitView{on: true, network: NetworkState{
 				IPv4: NetworkFamily{Links: []Link{
 					{Name: "eth0", Prefixes: []netip.Prefix{p("198.51.100.10/24")}},
-					{Name: "lo", Prefixes: []netip.Prefix{p("192.0.2.1/32")}},
+					{Name: Loopback, Prefixes: []netip.Prefix{p("192.0.2.1/32")}},
 				}},
 				IPv6: NetworkFamily{Links: []Link{
 					{Name: "dummy0", Prefixes: []netip.Prefix{p("3fff::10/48")}},
 					{Name: "eth0", Prefixes: []netip.Prefix{p("2001:db8::10/64")}},
-					{Name: "lo", Prefixes: []netip.Prefix{p("3fff:0:0:1::1/128")}},
+					{Name: Loopback, Prefixes: []netip.Prefix{p("3fff:0:0:1::1/128")}},
 				}},
 			}},
 			want: slices.Concat(uplinkRules, host, []string{"ipv6 5405 from 3fff::10/128 iif lo"}),
@@ -455,7 +455,7 @@ func TestModeTwoSelectsACarvedLeaseForMain(t *testing.T) {
 	overlay := prefixes(p("192.0.2.0/24"))
 	network := NetworkState{IPv4: NetworkFamily{Links: []Link{
 		{Name: "eth0", Prefixes: []netip.Prefix{p("192.0.2.10/24")}},
-		{Name: "lo", Prefixes: []netip.Prefix{p("192.0.2.200/32"), p("192.0.2.1/32")}},
+		{Name: Loopback, Prefixes: []netip.Prefix{p("192.0.2.200/32"), p("192.0.2.1/32")}},
 	}}}
 	reconciler, routes, _ := harness(t, Table{}.WithMode(&ExitMode{}), Runtime{Overlay: overlay, Network: func() NetworkState { return network }})
 	routes.Set(netip.Prefix{}, p("192.0.2.200/32"), netstack.Assigned)
@@ -471,8 +471,8 @@ func TestModeTwoSelectsACarvedLeaseForMain(t *testing.T) {
 		}
 		return out
 	}
-	address := Rule{Family: FamilyIPv4, Priority: 5405, From: schema.PrefixFrom(p("192.0.2.10/32")), IIF: "lo", Table: schema.TableMain}
-	lease := Rule{Family: FamilyIPv4, Priority: 5435, From: schema.PrefixFrom(p("192.0.2.0/24")), IIF: "lo", Table: schema.TableMain}
+	address := Rule{Family: FamilyIPv4, Priority: 5405, From: schema.PrefixFrom(p("192.0.2.10/32")), IIF: linuxLoopback, Table: schema.TableMain}
+	lease := Rule{Family: FamilyIPv4, Priority: 5435, From: schema.PrefixFrom(p("192.0.2.0/24")), IIF: linuxLoopback, Table: schema.TableMain}
 	if got, want := selected(nil), map[Rule]bool{address: true, lease: true}; !maps.Equal(got, want) {
 		t.Errorf("mode 2 selects for main\n%v\nwant\n%v", slices.Collect(maps.Keys(got)), slices.Collect(maps.Keys(want)))
 	}

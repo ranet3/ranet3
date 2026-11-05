@@ -382,7 +382,7 @@ func TestReloadAddingAndRemovingTheModeChangesTheRules(t *testing.T) {
 	if got, want := catchAll(fake), []string{"ipv4 iif docker0", "ipv4 iif lo", "ipv6 iif docker0", "ipv6 iif lo"}; !slices.Equal(got, want) {
 		t.Errorf("after adding cap.exit the catch-all reads %v, want %v", got, want)
 	}
-	uplink := Rule{Family: FamilyIPv4, Priority: priorityUplinkSource, From: schema.MustPrefix("198.51.100.10/32"), IIF: loopback, Table: schema.TableMain}
+	uplink := Rule{Family: FamilyIPv4, Priority: priorityUplinkSource, From: schema.MustPrefix("198.51.100.10/32"), IIF: linuxLoopback, Table: schema.TableMain}
 	if !fake.rules[uplink] {
 		t.Errorf("after adding cap.exit the reconciler holds no %s", uplink)
 	}

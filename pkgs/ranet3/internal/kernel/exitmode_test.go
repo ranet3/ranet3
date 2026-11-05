@@ -61,7 +61,7 @@ func TestTableCarriesTheModeNormalized(t *testing.T) {
 	if reflect.DeepEqual(Table{}.Normalized(), Table{}.WithMode(&ExitMode{}).Normalized()) {
 		t.Error("mode off and mode 2 with no forward normalize alike")
 	}
-	if err := (Table{}.WithMode(&ExitMode{Forward: []string{"lo"}})).Validate(); err == nil {
-		t.Error("a table running a mode forward lo was taken")
+	if err := (Table{}.WithMode(&ExitMode{Forward: []string{Loopback}})).Validate(); err == nil {
+		t.Error("a table running a mode forwarding the loopback link was taken")
 	}
 }

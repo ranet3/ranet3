@@ -42,7 +42,7 @@ type fibPacket struct {
 }
 
 // input is the link the kernel gives p's lookup as its input
-func (p fibPacket) input() string { return cmp.Or(p.iif, loopback) }
+func (p fibPacket) input() string { return cmp.Or(p.iif, linuxLoopback) }
 
 func (p fibPacket) String() string {
 	return fmt.Sprintf("from %s to %s mark %#x iif %s", p.source, p.destination, p.mark, p.input())
@@ -430,7 +430,7 @@ func drawExitMode(ht *hegel.T, overlay []schema.Prefix) exitView {
 		if len(held) > 0 && hegel.Draw(ht, hegel.Booleans()) {
 			within := hegel.Draw(ht, hegel.SampledFrom(held))
 			address := addressIn(ht, within)
-			link := Link{Name: loopback, Prefixes: []netip.Prefix{netip.PrefixFrom(address, address.BitLen())}}
+			link := Link{Name: Loopback, Prefixes: []netip.Prefix{netip.PrefixFrom(address, address.BitLen())}}
 			if hegel.Draw(ht, hegel.Booleans()) {
 				// a network holding the overlay prefix, or one inside it
 				floor := map[bool]int{false: schema.MinSubnetBits4, true: schema.MinSubnetBits6}[v6]
@@ -520,7 +520,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 	mainRoutes := slices.Clone(tables[schema.TableMain])
 	for _, link := range mode.links() {
 		for _, prefix := range link.Prefixes {
-			if link.Name != loopback {
+			if link.Name != Loopback {
 				mainRoutes = append(mainRoutes, fibRoute{destination: prefix.Masked(), device: link.Name})
 			}
 		}
@@ -693,7 +693,7 @@ func (h interpreted) modeTwo(p fibPacket) bool {
 // link outside the mesh that neither the overlay nor an own prefix holds, which
 // 5405 takes
 func (h interpreted) uplinkSource(p fibPacket) bool {
-	return h.modeTwo(p) && p.input() == loopback && !h.inOverlay(p.source) && !h.owns(p.source) && slices.ContainsFunc(h.mode.links(), func(link Link) bool {
+	return h.modeTwo(p) && p.input() == linuxLoopback && !h.inOverlay(p.source) && !h.owns(p.source) && slices.ContainsFunc(h.mode.links(), func(link Link) bool {
 		return slices.ContainsFunc(link.Prefixes, func(prefix netip.Prefix) bool { return prefix.Addr() == p.source })
 	})
 }
@@ -703,7 +703,7 @@ func (h interpreted) uplinkSource(p fibPacket) bool {
 // forward leaves out that shares no address with the overlay or an own prefix,
 // which 5435 takes
 func (h interpreted) linkSource(p fibPacket) bool {
-	if !h.modeTwo(p) || p.input() != loopback {
+	if !h.modeTwo(p) || p.input() != linuxLoopback {
 		return false
 	}
 	taken := slices.Clone(h.own)
@@ -734,7 +734,7 @@ func (h interpreted) linkSource(p fibPacket) bool {
 // caughtAll reports p the host's own lookup in mode 2, or one arriving on a
 // link forward expands to, which 5440 takes
 func (h interpreted) caughtAll(p fibPacket) bool {
-	return h.modeTwo(p) && (p.input() == loopback || slices.Contains(h.mode.forwarded, p.iif))
+	return h.modeTwo(p) && (p.input() == linuxLoopback || slices.Contains(h.mode.forwarded, p.iif))
 }
 
 // pastOwn is where p goes past 5430: from main at 5435, from the mirror at
@@ -758,7 +758,7 @@ func (h interpreted) pastOwn(p fibPacket, landing, past uint32) string {
 		if route, ok := lookup(h.host.tables[schema.TableMain], p); ok && thrown && landing <= priorityOwnPastMesh {
 			return route.device
 		}
-		if landing <= priorityRefused && (p.input() == loopback || slices.Contains(h.mode.forwarded, p.iif)) {
+		if landing <= priorityRefused && (p.input() == linuxLoopback || slices.Contains(h.mode.forwarded, p.iif)) {
 			return "unreachable"
 		}
 	}
@@ -975,7 +975,7 @@ func TestRuleWalkNamedCases(t *testing.T) {
 			{Name: "br-1a", Prefixes: []netip.Prefix{prefix("203.0.113.129/26")}},
 			{Name: "eth0", Prefixes: []netip.Prefix{prefix("198.51.100.10/24")}},
 			{Name: "eth1", Prefixes: []netip.Prefix{prefix("203.0.113.65/26")}},
-			{Name: "lo", Prefixes: []netip.Prefix{prefix("192.0.2.1/32")}},
+			{Name: Loopback, Prefixes: []netip.Prefix{prefix("192.0.2.1/32")}},
 		}},
 		IPv6: NetworkFamily{Links: []Link{
 			{Name: "br-1a", Prefixes: []netip.Prefix{prefix("2001:db8:17::1/64")}},

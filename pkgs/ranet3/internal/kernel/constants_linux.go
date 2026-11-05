@@ -10,6 +10,8 @@ import "time"
 // the values the netlink backend chooses, apart from constants.go because no other platform reads them
 
 const (
+	// Loopback is the name of the loopback link, whose index every lookup of the host's own traffic carries
+	Loopback = "lo"
 	// netlinkReadSize is the first receive buffer of the request socket, in bytes
 	// the kernel caps a dump datagram at 32 KiB
 	// a dump then reads into it without the buffer growing

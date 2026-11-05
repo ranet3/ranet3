@@ -75,3 +75,10 @@ const (
 	// priorityMeshEnd is the nop the second block's goto jumps to.
 	priorityMeshEnd = 5490
 )
+
+// linuxLoopback is the name Linux gives its loopback link, the input every
+// lookup of the host's own traffic carries, which the policy rules select by
+// iif. Only linux installs a rule (see ruler), so every build derives and walks
+// them under this name, where Loopback names this host's loopback link as the
+// network watch reads it.
+const linuxLoopback = "lo"

@@ -20,7 +20,7 @@ func TestCarveOutsThrowInPlaceOfTheHoldAndGiveWayToTheTable(t *testing.T) {
 	network := NetworkState{
 		IPv4: NetworkFamily{Links: []Link{
 			{Name: "eth0", Prefixes: []netip.Prefix{p("192.0.2.10/24"), p("198.51.100.10/24")}},
-			{Name: "lo", Prefixes: []netip.Prefix{p("203.0.113.1/32")}},
+			{Name: Loopback, Prefixes: []netip.Prefix{p("203.0.113.1/32")}},
 		}},
 		IPv6: NetworkFamily{Links: []Link{
 			{Name: "eth0", Prefixes: []netip.Prefix{p("3fff:0:0:7::10/64"), p("3fff:0:0:8::10/64")}},

@@ -8,6 +8,8 @@ package kernel
 import "time"
 
 const (
+	// Loopback is the name of the loopback link
+	Loopback = "lo0"
 	// lookupTimeout bounds one request. Without it a reply that never comes holds
 	// the goroutine asking for it forever, and one of the callers is the startup
 	// path that opens the transport socket.

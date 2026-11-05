@@ -82,11 +82,11 @@ type switchConfig struct {
 func switchModel(c switchConfig, p switchPacket, hook uint32) bool {
 	v6 := p.destination.Is6()
 	switch {
-	case p.oif == loopback || p.oif == switchTun:
+	case p.oif == Loopback || p.oif == switchTun:
 		return true
 	case p.mark == schema.UnderlayMark:
 		return true
-	case p.iif != "" && p.iif != loopback && !slices.Contains(c.view.forwarded, p.iif) && !p.local:
+	case p.iif != "" && p.iif != Loopback && !slices.Contains(c.view.forwarded, p.iif) && !p.local:
 		return true
 	case v6 && p.l4 == unix.IPPROTO_ICMPV6 && 133 <= p.icmpType && p.icmpType <= 136 && p.hops == 255:
 		return true
@@ -539,8 +539,8 @@ func TestFallbackChainGivesEachPacketTheVerdictOfItsLines(t *testing.T) {
 		}
 		s := c.view.fallbackSetsOf(switchTun, exitPassOverlay, c.services, nil)
 		destinations, ports := c.destinations(), c.ports()
-		devices := slices.Concat([]string{loopback, switchTun, switchTun + "0"}, switchLinks)
-		incoming := slices.Concat([]string{"", "", "docker1", loopback}, switchLinks)
+		devices := slices.Concat([]string{Loopback, switchTun, switchTun + "0"}, switchLinks)
+		incoming := slices.Concat([]string{"", "", "docker1", Loopback}, switchLinks)
 		for i, chain := range fallbackChains {
 			rules, err := s.rules(i)
 			if err != nil {

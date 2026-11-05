@@ -81,7 +81,7 @@ func TestDarwinRouteGetNamesTheLoopbackRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("look up the route to %s: %v", loopback, err)
 	}
-	if !got.Prefix.Contains(loopback) || len(got.NextHops) != 1 || got.NextHops[0].Device != "lo0" {
-		t.Fatalf("the route to %s read as %+v, want one through lo0", loopback, got)
+	if !got.Prefix.Contains(loopback) || len(got.NextHops) != 1 || got.NextHops[0].Device != Loopback {
+		t.Fatalf("the route to %s read as %+v, want one through %s", loopback, got, Loopback)
 	}
 }

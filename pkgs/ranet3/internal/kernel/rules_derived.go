@@ -71,7 +71,7 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 		out = append(out, Rule{Family: family, Priority: priorityUnderlayPastMesh, FWMark: schema.UnderlayMark, action: actionGoto, target: priorityMeshEnd})
 		addresses, networks := exit.sources(family, SchemaPrefixes(overlay), own)
 		for _, address := range addresses {
-			out = append(out, Rule{Family: family, Priority: priorityUplinkSource, From: schema.PrefixFrom(address), IIF: loopback, Table: schema.TableMain})
+			out = append(out, Rule{Family: family, Priority: priorityUplinkSource, From: schema.PrefixFrom(address), IIF: linuxLoopback, Table: schema.TableMain})
 		}
 		out = append(out,
 			Rule{Family: family, Priority: priorityMain, Table: schema.TableMain, suppress: SuppressUpTo(0)},
@@ -85,9 +85,9 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 		}
 		if !slices.Contains(exit.unaddressed, family) {
 			for _, network := range networks {
-				out = append(out, Rule{Family: family, Priority: priorityLinkSource, From: schema.PrefixFrom(network), IIF: loopback, Table: schema.TableMain})
+				out = append(out, Rule{Family: family, Priority: priorityLinkSource, From: schema.PrefixFrom(network), IIF: linuxLoopback, Table: schema.TableMain})
 			}
-			out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: loopback, Table: id})
+			out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: linuxLoopback, Table: id})
 			for _, link := range exit.forwarded {
 				out = append(out, Rule{Family: family, Priority: priorityCatchAll, IIF: link, Table: id})
 			}
@@ -98,7 +98,7 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 		for _, prefix := range familyPrefixes(family, exit.own) {
 			out = append(out, Rule{Family: family, Priority: priorityOwnPastMesh, To: schema.PrefixFrom(prefix), Table: schema.TableMain})
 		}
-		out = append(out, Rule{Family: family, Priority: priorityRefused, IIF: loopback, action: actionUnreachable})
+		out = append(out, Rule{Family: family, Priority: priorityRefused, IIF: linuxLoopback, action: actionUnreachable})
 		for _, link := range exit.forwarded {
 			out = append(out, Rule{Family: family, Priority: priorityRefused, IIF: link, action: actionUnreachable})
 		}

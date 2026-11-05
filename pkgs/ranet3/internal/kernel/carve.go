@@ -18,12 +18,12 @@ import (
 // is on, or a point-to-point far end it reaches, with a prefix of the overlay:
 // the network where the overlay prefix holds it, and the overlay prefix where
 // the network holds it. A PPPoE uplink's gateway inside the overlay is carved
-// as a lease inside it is. lo is never carved, since nothing off the host reaches
+// as a lease inside it is. The loopback link is never carved, since nothing off the host reaches
 // the host through it. Sorted by link and then by prefix, each once.
 func CarveOuts(network NetworkState, overlay []schema.Prefix) []egress.CarveOut {
 	var out []egress.CarveOut
 	for _, link := range slices.Concat(network.IPv4.Links, network.IPv6.Links) {
-		if link.Name == loopback {
+		if link.Name == Loopback {
 			continue
 		}
 		for _, address := range slices.Concat(link.Prefixes, link.Peers) {

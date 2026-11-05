@@ -163,19 +163,19 @@ func TestExitIsRefusedOnAnExit(t *testing.T) {
 }
 
 // forward refuses an entry that can name no link, a malformed pattern with
-// path.ErrBadPattern among them, and lo by name, and takes every other pattern
-// and name, a pattern matching lo among them
+// path.ErrBadPattern among them, and the loopback by its name on this platform,
+// and takes every other pattern and name, a pattern matching lo among them
 func TestExitForwardRefusesWhatNamesNoLink(t *testing.T) {
 	forward := func(entry string) string {
 		return exitLeafBody("toml", "forward = ['docker0', '"+entry+"']\n")
 	}
 	for entry, says := range map[string]string{
-		"":      "kernel: cap.exit forward holds an empty entry, which names no link",
-		"br-[a": `kernel: cap.exit forward "br-[a": syntax error in pattern`,
-		`eth\`:  `kernel: cap.exit forward "eth\\": syntax error in pattern`,
-		"[]":    `kernel: cap.exit forward "[]": syntax error in pattern`,
-		"[a-]":  `kernel: cap.exit forward "[a-]": syntax error in pattern`,
-		"lo":    "kernel: cap.exit forward lo is the loopback link, whose traffic is the host's own and follows the mode already",
+		"":              "kernel: cap.exit forward holds an empty entry, which names no link",
+		"br-[a":         `kernel: cap.exit forward "br-[a": syntax error in pattern`,
+		`eth\`:          `kernel: cap.exit forward "eth\\": syntax error in pattern`,
+		"[]":            `kernel: cap.exit forward "[]": syntax error in pattern`,
+		"[a-]":          `kernel: cap.exit forward "[a-]": syntax error in pattern`,
+		kernel.Loopback: "kernel: cap.exit forward " + kernel.Loopback + " is the loopback link, whose traffic is the host's own and follows the mode already",
 	} {
 		_, err := loadTOML(t, forward(entry))
 		if err == nil || err.Error() != says {
