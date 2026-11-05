@@ -174,6 +174,12 @@ type RouteKernel struct {
 	// installed as a member of the zero-free cover, so it stands in for the
 	// mesh's route holding its family's zero address
 	Cover bool `json:"cover,omitempty"`
+	// CutFrom is the mesh's route that the reconciler's last pass installed
+	// Route as a piece of, on macOS, cut around each address of CutAround the
+	// underlay sends to, so a datagram to it by its own route reaches past the
+	// mesh's
+	CutFrom   netip.Prefix `json:"cut_from,omitzero"`
+	CutAround []netip.Addr `json:"cut_around,omitempty"`
 	// NoSource is a lookup made without Src, which this platform's lookup does
 	// not take, as XNU's does not
 	NoSource bool `json:"no_source,omitempty"`
@@ -586,6 +592,13 @@ func routeLine(k RouteKernel) string {
 			zero = netip.IPv4Unspecified()
 		}
 		route.WriteString(", a member of the zero-free cover standing in for the mesh's route holding " + zero.String())
+	}
+	if k.CutFrom.IsValid() {
+		around := make([]string, len(k.CutAround))
+		for i, address := range k.CutAround {
+			around[i] = address.String()
+		}
+		route.WriteString(", a piece of the mesh's route " + k.CutFrom.String() + " cut around " + strings.Join(around, " ") + ", which the underlay sends to by the host's own route")
 	}
 	if k.NoEntry {
 		route.WriteString(", the kernel's own for this destination, with no table entry behind it")

@@ -6,6 +6,8 @@
 package kernel
 
 import (
+	"errors"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"sync"
@@ -134,6 +136,56 @@ func TestPassCutsTheEndpointOutOfALongerMeshRoute(t *testing.T) {
 	}
 	if !fake.has(mesh) || len(plain.Stats().Holes) != 0 {
 		t.Errorf("with no selection the kernel holds %v and the pass reports the holes %+v, want %s whole and none", fake.snapshot(), plain.Stats().Holes, mesh.Destination)
+	}
+}
+
+// kernel.underlay is recorded for the pass that cuts the endpoints and the one
+// that stops cutting them, naming them, and for no pass between, and HoleAt
+// names the mesh's route for each piece of it and for no other route, still
+// after a pass that could not list the routes
+func TestUnderlayEventFollowsTheCutEndpoints(t *testing.T) {
+	mesh := Route{Destination: prefix("192.0.2.0/25")}
+	bus := events.New()
+	selection := newFakeSelection(holeTable...)
+	underlay := func() []netip.Addr { return []netip.Addr{holeEndpoint} }
+	sends := func() []Send { return []Send{{Destination: holeSent}} }
+	reconciler, table, kernel := coveredHarness(t, Table{}, Runtime{Events: bus, Underlay: underlay, Sends: sends, Selection: selection}, coverAddresses...)
+	table.Set(netip.Prefix{}, mesh.Destination, nil)
+	pass := func(step string) {
+		t.Helper()
+		if err := reconciler.reconcile(); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+	}
+	pass("the first pass")
+	pass("a pass cutting the same endpoints")
+	kernel.mu.Lock()
+	kernel.failList = errors.New("the dump is broken")
+	kernel.mu.Unlock()
+	if err := reconciler.reconcile(); err == nil {
+		t.Fatal("a pass that could not list the routes reports no error")
+	}
+	kernel.mu.Lock()
+	kernel.failList = nil
+	kernel.mu.Unlock()
+	for _, piece := range without(mesh.Destination, []netip.Addr{holeEndpoint, holeSent}) {
+		if hole, ok := reconciler.HoleAt(piece); !ok || hole.Route != mesh.Destination {
+			t.Errorf("HoleAt(%s) is %+v, %v, want %s", piece, hole, ok, mesh.Destination)
+		}
+	}
+	if hole, ok := reconciler.HoleAt(mesh.Destination); ok {
+		t.Errorf("HoleAt(%s) names %+v for the route cut", mesh.Destination, hole)
+	}
+	selection.publish(append(slices.Clone(holeTable), hostRoute{destination: prefix("192.0.2.0/25"), index: 2})...)
+	pass("the pass that stops cutting")
+	pass("a pass cutting nothing")
+	var got []string
+	for _, event := range bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "kernel.underlay" }, 0) {
+		got = append(got, event.Attrs["cut"]+" / "+event.Attrs["restored"])
+	}
+	want := []string{"192.0.2.9 192.0.2.100 / none", "none / 192.0.2.9 192.0.2.100"}
+	if !slices.Equal(got, want) {
+		t.Errorf("the underlay events are %q, want %q", got, want)
 	}
 }
 

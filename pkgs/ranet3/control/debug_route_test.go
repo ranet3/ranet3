@@ -29,7 +29,8 @@ func routeRule(family string, priority, table uint32, protocol uint8, owned bool
 // its source and one to ::, a lookup with no route from a source and from
 // none, one no rule fits, one from a source the host may not hold beside an
 // unreachable rule and an IPv4 and an IPv6 EINVAL past a lookup, this host's
-// own packet into the tun in mode 2, and the routes of no table entry the
+// own packet into the tun in mode 2, darwin's own packet by a piece of a mesh
+// route cut around an endpoint and to that endpoint, and the routes of no table entry the
 // kernel makes for this host's multicast, its packet to 0.0.0.0, an arrival
 // to the limited broadcast, and an arrival to a group beyond the link with
 // multicast routing off, on and unread and to one on the link. A session's
@@ -99,6 +100,18 @@ func routeFixtures() map[string][]RouteInfo {
 	darwinLeftOut := RouteInfo{Dst: netip.MustParseAddr("2001:db8:ff::7"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
 		RuleErr: "this platform has no policy rules", Route: netip.MustParsePrefix("::/0"), Type: "unicast",
 		NextHops: []RouteNextHop{{Dev: "en0", Gateway: netip.MustParseAddr("2001:db8:1::1")}},
+	}}
+	// the mesh's 203.0.113.0/24, inside the overlay, cut around an endpoint that
+	// another tunnel's half 128.0.0.0/1 holds, which is not the match for
+	// 0.0.0.0, so the cut stands and row L6 leaves the route unscoped
+	darwinPiece := RouteInfo{Dst: netip.MustParseAddr("203.0.113.200"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
+		RuleErr: "this platform has no policy rules", Route: netip.MustParsePrefix("203.0.113.128/25"), Type: "unicast",
+		NextHops: []RouteNextHop{{Dev: "utun6"}}, IntoTun: true,
+		CutFrom: netip.MustParsePrefix("203.0.113.0/24"), CutAround: []netip.Addr{netip.MustParseAddr("203.0.113.9")},
+	}, Unfollowed: "since its checks read the source the kernel picks, which its answer does not carry"}
+	darwinEndpoint := RouteInfo{Dst: netip.MustParseAddr("203.0.113.9"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
+		RuleErr: "this platform has no policy rules", Route: netip.MustParsePrefix("128.0.0.0/1"), Type: "unicast",
+		NextHops: []RouteNextHop{{Dev: "utun4"}},
 	}}
 	darwinUnrouted := RouteInfo{Src: netip.MustParseAddr("192.0.2.9"), Dst: netip.MustParseAddr("203.0.113.1"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
 		RuleErr: "this platform has no policy rules", NoSource: true,
@@ -319,6 +332,7 @@ func routeFixtures() map[string][]RouteInfo {
 		"route-rp-filter":      {forged, unread, blackholed, unjoined, unfiltered, martian},
 		"route-darwin":         {darwinArrival, darwinOwn, darwinUnrouted, darwinUnspecified},
 		"route-darwin-exit":    {darwinCover, darwinLeftOut},
+		"route-darwin-hole":    {darwinPiece, darwinEndpoint},
 		"route-no-rule":        {unrouted, unsourced, unfit, unheld, refused4, blackhole6},
 		"route-into-tun":       {intoTun},
 		"route-no-entry":       {multicast, unspecified, broadcast, joined, routed, routingUnread, allHosts},

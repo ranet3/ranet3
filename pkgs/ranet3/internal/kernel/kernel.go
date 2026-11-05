@@ -667,6 +667,9 @@ type Reconciler struct {
 	// cover is the families the last pass left covered, so a change is
 	// reported once.
 	cover []Family
+	// cutAround is the endpoints the last pass cut out of the mesh's routes,
+	// so a change is reported once
+	cutAround []netip.Addr
 	// memberless holds the zero routes a cover installs as nothing that the
 	// last pass reported, rebuilt each pass, so a route the mesh keeps
 	// announcing costs one log line
@@ -804,6 +807,16 @@ func (r *Reconciler) Stats() Stats {
 // routes the last pass that listed them left installed
 func (r *Reconciler) CoverInstalled(destination netip.Prefix) bool {
 	return slices.Contains(r.Stats().Members, destination)
+}
+
+// HoleAt reports the hole the last pass cut a piece at destination from
+func (r *Reconciler) HoleAt(destination netip.Prefix) (Hole, bool) {
+	for _, hole := range r.Stats().Holes {
+		if slices.Contains(hole.Pieces, destination) {
+			return hole, true
+		}
+	}
+	return Hole{}, false
 }
 
 // New checks the capability, fills in its defaults, resolves it against the
@@ -1592,7 +1605,49 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		Path:      r.pathPass(held),
 	}
 	r.reportCover(r.routePass.Cover)
+	r.reportUnderlay(holes)
 	return errors.Join(errs...)
+}
+
+// reportUnderlay logs and records the endpoints a pass began or stopped
+// cutting out of the mesh's routes, once for each change of the set
+func (r *Reconciler) reportUnderlay(holes []Hole) {
+	var now []netip.Addr
+	for _, hole := range holes {
+		now = append(now, hole.Endpoints...)
+	}
+	slices.SortFunc(now, netip.Addr.Compare)
+	now = slices.Compact(now)
+	cut, restored := addrsOutside(now, r.cutAround), addrsOutside(r.cutAround, now)
+	r.cutAround = now
+	if len(cut) == 0 && len(restored) == 0 {
+		return
+	}
+	slog.Info("kernel changed the endpoints it cuts out of the mesh's routes", "cut", addrList(cut), "restored", addrList(restored))
+	r.rt.Events.Emit("kernel.underlay", "", slog.String("cut", addrList(cut)), slog.String("restored", addrList(restored)))
+}
+
+// addrsOutside is each address of these that others lacks
+func addrsOutside(these, others []netip.Addr) []netip.Addr {
+	var out []netip.Addr
+	for _, address := range these {
+		if !slices.Contains(others, address) {
+			out = append(out, address)
+		}
+	}
+	return out
+}
+
+// addrList is addresses as an event's attribute carries them, none for none
+func addrList(addresses []netip.Addr) string {
+	if len(addresses) == 0 {
+		return "none"
+	}
+	names := make([]string, len(addresses))
+	for i, address := range addresses {
+		names[i] = address.String()
+	}
+	return strings.Join(names, " ")
 }
 
 func (r *Reconciler) reportCover(now []Family) {

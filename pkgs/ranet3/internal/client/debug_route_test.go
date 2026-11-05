@@ -373,3 +373,39 @@ func TestDebugRouteNamesAMemberOfTheCover(t *testing.T) {
 		}
 	}
 }
+
+// A lookup ending out of the tun at a piece the reconciler cut around an
+// endpoint names the mesh's route and the endpoint, and one ending at a route
+// it cut nothing from, at that piece out of another link, or on a node whose
+// reconciler reports no hole, does not
+func TestDebugRouteNamesAPieceOfAHole(t *testing.T) {
+	hole := kernel.Hole{
+		Route:     netip.MustParsePrefix("203.0.113.0/24"),
+		Endpoints: []netip.Addr{netip.MustParseAddr("203.0.113.9")},
+		Pieces:    []netip.Prefix{netip.MustParsePrefix("203.0.113.128/25")},
+	}
+	cut := func(destination netip.Prefix) (kernel.Hole, bool) {
+		return hole, slices.Contains(hole.Pieces, destination)
+	}
+	for _, c := range []struct {
+		name   string
+		route  netip.Prefix
+		device string
+		holes  func(netip.Prefix) (kernel.Hole, bool)
+		named  bool
+	}{
+		{"a piece out of the tun", hole.Pieces[0], "ranet0", cut, true},
+		{"a route cut from nothing", netip.MustParsePrefix("203.0.113.0/24"), "ranet0", cut, false},
+		{"a piece out of another link", hole.Pieces[0], "en0", cut, false},
+		{"a reconciler reporting no hole", hole.Pieces[0], "ranet0", nil, false},
+	} {
+		route := kernel.MatchedRoute{Prefix: c.route, Type: "unicast", NextHops: []kernel.NextHop{{Device: c.device}}}
+		client, _ := routeClient(t, route, nil, nil)
+		client.SetReconciler(Reconciler{Rules: client.reconcilerNow().Rules, Holes: c.holes})
+		info, err := client.DebugRoute(netip.Addr{}, netip.MustParseAddr("203.0.113.200"), "", "")
+		named := info.Kernel.CutFrom == hole.Route && slices.Equal(info.Kernel.CutAround, hole.Endpoints)
+		if err != nil || named != c.named || !c.named && (info.Kernel.CutFrom.IsValid() || info.Kernel.CutAround != nil) {
+			t.Errorf("%s: the answer reads %+v, %v, want the hole named %v", c.name, info.Kernel, err, c.named)
+		}
+	}
+}

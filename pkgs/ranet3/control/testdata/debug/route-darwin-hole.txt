@@ -1,0 +1,10 @@
+Packet  from no source to 203.0.113.200, this host's own
+Rule    this platform has no policy rules
+Route   203.0.113.128/25, unicast, dev utun6, a piece of the mesh's route 203.0.113.0/24 cut around 203.0.113.9, which the underlay sends to by the host's own route
+Leaves  into the mesh's tun
+Mesh    not followed, since its checks read the source the kernel picks, which its answer does not carry
+
+Packet  from no source to 203.0.113.9, this host's own
+Rule    this platform has no policy rules
+Route   128.0.0.0/1, unicast, dev utun4
+Leaves  by utun4, outside the mesh

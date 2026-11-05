@@ -34,6 +34,8 @@ type Reconciler struct {
 	Resolvers func() []kernel.LinkResolver
 	// Covers reports a member of the cover its last pass left installed at a destination, for the route view
 	Covers func(netip.Prefix) bool
+	// Holes reports the hole its last pass cut a piece at a destination from, for the route view
+	Holes func(netip.Prefix) (kernel.Hole, bool)
 }
 
 // ReconcilerOf is routes as the node reads and drives it, every field set
@@ -48,6 +50,7 @@ func ReconcilerOf(routes *kernel.Reconciler) Reconciler {
 		Lookups:   func() []kernel.Lookup { return routes.Stats().Lookups },
 		Resolvers: routes.FallbackResolvers,
 		Covers:    routes.CoverInstalled,
+		Holes:     routes.HoleAt,
 	}
 }
 
