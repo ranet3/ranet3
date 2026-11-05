@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -147,9 +148,11 @@ const (
 	siocDIfAddrIn6  = iocIn | (sizeofIn6IfReq&iocParamMask)<<16 | iocGroupIf<<8 | 25
 	siocGIfAFlagIn6 = iocIn | iocOut | (sizeofIn6IfReq&iocParamMask)<<16 | iocGroupIf<<8 | 73
 
-	// IN6_IFF_TENTATIVE and IN6_IFF_DUPLICATED of ia6_flags, which SIOCGIFAFLAG_IN6 reads
-	in6IffTentative  = 0x2
-	in6IffDuplicated = 0x4
+	// SYSPROTO_EVENT, the kernel event protocol of AF_SYSTEM, and SIOCSKEVFILT, _IOW('e', 2, struct kev_request), the filter a kernel event
+	// socket takes as vendor, class and subclass, a 32-bit word each
+	sysprotoEvent    = 1
+	sizeofKevRequest = 12
+	siocSKevFilt     = iocIn | (sizeofKevRequest&iocParamMask)<<16 | 'e'<<8 | 2
 
 	// ND6_INFINITE_LIFETIME. An address nothing renews has to be permanent or
 	// nd6 expires it out from under the mesh.
@@ -263,16 +266,28 @@ func ioctlRequest(fd int, request uintptr, argument []byte) error {
 // which stops the rest of the box's route churn from waking the
 // reconciler. Its own writes still wake it once, but the settle window in Run
 // absorbs the burst and the following pass finds nothing to do.
+//
+// A monitor of every interface wakes on the host's links as well: an address
+// or link message, and a kernel event that moves a link, read off a second
+// socket. Routing alone misses an address whose route already exists, which
+// fails with EEXIST before its message (bsd/net/route.c rtrequest_locked), and
+// a utun's creation, while the events miss a utun's IPv6 addresses after its
+// first, so neither socket alone reports every change.
 type routeMonitor struct {
 	file *os.File
+	// events is the kernel event socket, filtered to the network class, of a
+	// monitor of every interface, nil for one of a single interface.
+	events *os.File
 	// index is the interface whose changes wake this monitor, or zero for
 	// every interface, and skip is the one interface that never does. A
 	// watcher for the host's own default takes the second shape: the route it
 	// follows moves between wifi, ethernet and a dock, so it cannot name one
 	// interface, but the mesh tun's own churn is the one thing it must not
 	// wake on, and that churn is one broadcast per route this process writes.
-	index int
-	skip  int
+	// skipName is skip's name, by which a kernel event names it.
+	index    int
+	skip     int
+	skipName string
 	// self is this process, which stamps every route message it writes. XNU
 	// broadcasts the result of a route_output to every PF_ROUTE listener,
 	// including the writer's own monitor, and SO_USELOOPBACK is off only on
@@ -280,20 +295,43 @@ type routeMonitor struct {
 	// that made it.
 	self   uintptr
 	signal chan struct{}
-	done   chan struct{}
+	// readers is the reader of each socket, which Close waits for.
+	readers sync.WaitGroup
 }
 
 // newRouteMonitor watches one interface, or every interface when index is
 // zero, minus the one skip names. See routeMonitor for which caller wants
 // which.
 func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
+	monitor := &routeMonitor{
+		index:  index,
+		skip:   skip,
+		self:   uintptr(os.Getpid()),
+		signal: make(chan struct{}, 1),
+	}
+	if index == 0 {
+		if skip != 0 {
+			device, err := net.InterfaceByIndex(skip)
+			if err != nil {
+				return nil, fmt.Errorf("kernel: name interface %d, whose events the route monitor skips: %w", skip, err)
+			}
+			monitor.skipName = device.Name
+		}
+		events, err := openKernelEvents()
+		if err != nil {
+			return nil, err
+		}
+		monitor.events = events
+	}
 	fd, err := unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, unix.AF_UNSPEC)
 	if err != nil {
+		monitor.closeEvents()
 		return nil, fmt.Errorf("kernel: open route monitor socket: %w", err)
 	}
 	unix.CloseOnExec(fd)
 	if err := unix.SetNonblock(fd, true); err != nil {
 		_ = unix.Close(fd)
+		monitor.closeEvents()
 		return nil, fmt.Errorf("kernel: set the route monitor nonblocking: %w", err)
 	}
 	// a routing socket that overflows drops the excess without telling the
@@ -302,42 +340,71 @@ func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, routeReceiveBuffer)
 	// the socket is nonblocking, so os.NewFile registers it with the runtime
 	// poller and Close unblocks the reader without racing on the descriptor.
-	monitor := &routeMonitor{
-		file:   os.NewFile(uintptr(fd), "pf-route-monitor"),
-		index:  index,
-		skip:   skip,
-		self:   uintptr(os.Getpid()),
-		signal: make(chan struct{}, 1),
-		done:   make(chan struct{}),
+	monitor.file = os.NewFile(uintptr(fd), "pf-route-monitor")
+	// no sweep reads the host's routes again for a monitor of every interface, as the reconciler's does for its own
+	stopped := "kernel route monitor stopped, falling back to the periodic sweep"
+	if index == 0 {
+		stopped = "kernel route monitor stopped, so the underlay's selection or the network watch, whichever reads it, sees a change only where it posts a kernel event"
 	}
-	go monitor.run()
+	monitor.readers.Go(func() { monitor.read(monitor.file, monitor.interesting, stopped) })
+	if monitor.events != nil {
+		monitor.readers.Go(func() {
+			monitor.read(monitor.events, func(raw []byte) bool { return kernelEventWakes(raw, monitor.skipName) },
+				"kernel event monitor stopped, so the underlay's selection or the network watch, whichever reads it, sees a link's change only where it sends a routing message")
+		})
+	}
 	return monitor, nil
 }
 
-func (m *routeMonitor) run() {
-	defer close(m.done)
-	// a routing socket delivers one message per read and drops the rest of a
-	// message that does not fit, so the buffer is far larger than the longest
-	// one the kernel can send.
+// openKernelEvents opens a kernel event socket filtered to Apple's network
+// class, nonblocking so that Close unblocks its reader as it does the routing
+// socket's.
+func openKernelEvents() (*os.File, error) {
+	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_RAW, sysprotoEvent)
+	if err != nil {
+		return nil, fmt.Errorf("kernel: open the kernel event socket: %w", err)
+	}
+	unix.CloseOnExec(fd)
+	// struct kev_request, the subclass left as KEV_ANY_SUBCLASS, since the
+	// filter takes one subclass or all and the watch keeps four
+	request := make([]byte, sizeofKevRequest)
+	binary.NativeEndian.PutUint32(request[0:], darwinKEVVendorApple)
+	binary.NativeEndian.PutUint32(request[4:], darwinKEVNetworkClass)
+	if err := ioctlRequest(fd, siocSKevFilt, request); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("kernel: filter the kernel event socket to the network class: %w", err)
+	}
+	if err := unix.SetNonblock(fd, true); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("kernel: set the kernel event socket nonblocking: %w", err)
+	}
+	return os.NewFile(uintptr(fd), "kernel-events"), nil
+}
+
+// closeEvents closes the event socket of a monitor whose reader never started
+func (m *routeMonitor) closeEvents() {
+	if m.events != nil {
+		_ = m.events.Close()
+	}
+}
+
+// read wakes the monitor on each datagram of file that wakes reports as a change, until file closes
+// any other error would spin, so it wakes the monitor, warns with stopped and stops
+func (m *routeMonitor) read(file *os.File, wakes func([]byte) bool, stopped string) {
+	// either socket delivers one message per read and drops the rest of one
+	// that does not fit, so the buffer is far larger than the longest one the
+	// kernel can send.
 	buf := make([]byte, 8192)
 	for {
-		n, err := m.file.Read(buf)
+		n, err := file.Read(buf)
 		if err != nil {
-			if errors.Is(err, os.ErrClosed) {
-				return
-			}
-			// anything else is unexpected and would spin, so it is reported and the monitor stops
-			// the reconciler's monitor watches its interface alone, and its periodic sweep reads the table again
-			// no sweep reads the host's routes again for a monitor of every interface
-			m.wake()
-			if m.index != 0 {
-				slog.Warn("kernel route monitor stopped, falling back to the periodic sweep", "err", err)
-			} else {
-				slog.Warn("kernel route monitor stopped, so the underlay's selection or the network watch, whichever reads it, keeps its last reading until the daemon restarts", "err", err)
+			if !errors.Is(err, os.ErrClosed) {
+				m.wake()
+				slog.Warn(stopped, "err", err)
 			}
 			return
 		}
-		if m.interesting(buf[:n]) {
+		if wakes(buf[:n]) {
 			m.wake()
 		}
 	}
@@ -354,6 +421,10 @@ const (
 	rtmIndexOffset = 4
 	rtmPIDOffset   = 16
 	rtmErrnoOffset = 24
+	// ifmIndexOffset is where struct if_msghdr and struct ifa_msghdr carry
+	// the index, after the message's addrs and flags. Their offset 4, where
+	// rt_msghdr carries it, holds the addrs.
+	ifmIndexOffset = 12
 	// rtmDecodedLen covers the fields below, not sizeof(struct rt_msghdr),
 	// which is larger and carries metrics nothing here asks about.
 	rtmDecodedLen = 28
@@ -386,9 +457,15 @@ func (m *routeMonitor) interesting(buf []byte) bool {
 // failing, waking and installing again, four times a second for as long as the
 // other writer holds the key. A successful one still wakes, which converges:
 // the next pass has nothing to do.
+//
+// A monitor of every interface also wakes on an address coming or going and
+// on a link's flags, on every interface but skip. The reconciler's own
+// monitor never does, since an address moves no route of the mesh's.
 func (m *routeMonitor) wakesOn(message []byte) bool {
-	switch int(message[rtmTypeOffset]) {
-	case unix.RTM_ADD, unix.RTM_DELETE, unix.RTM_CHANGE:
+	switch kind := int(message[rtmTypeOffset]); {
+	case kind == unix.RTM_ADD || kind == unix.RTM_DELETE || kind == unix.RTM_CHANGE:
+	case m.index == 0 && (kind == unix.RTM_NEWADDR || kind == unix.RTM_DELADDR || kind == unix.RTM_IFINFO):
+		return m.skip == 0 || int(binary.NativeEndian.Uint16(message[ifmIndexOffset:])) != m.skip
 	default:
 		return false
 	}
@@ -421,6 +498,9 @@ func (m *routeMonitor) wake() {
 
 func (m *routeMonitor) Close() error {
 	err := m.file.Close()
-	<-m.done
+	if m.events != nil {
+		err = errors.Join(err, m.events.Close())
+	}
+	m.readers.Wait()
 	return err
 }

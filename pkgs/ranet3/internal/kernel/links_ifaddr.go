@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -27,6 +28,80 @@ const (
 	darwinIFA       = 5
 	darwinBRD       = 7
 )
+
+// the ia6_flags of an IPv6 address (netinet6/in6_var.h), which SIOCGIFAFLAG_IN6 reads: TENTATIVE or OPTIMISTIC while duplicate address
+// detection runs (IN6_IFF_DADPROGRESS), and DUPLICATED once it found the address in use
+const (
+	in6IffTentative  = 0x2
+	in6IffDuplicated = 0x4
+	in6IffOptimistic = 0x200
+)
+
+// darwin's kernel events of the network class (sys/kern_event.h, net/net_kev.h, net/if_var.h)
+const (
+	darwinKEVVendorApple  = 1
+	darwinKEVNetworkClass = 1
+	// the subclasses whose events can move a link, each event's data starting with struct net_event_data
+	darwinKEVInet  = 1
+	darwinKEVDL    = 2
+	darwinKEVInet6 = 6
+	darwinKEVND6   = 7
+	// darwinKEVHeader is KEV_MSG_HEADER_SIZE, struct kern_event_msg up to event_data: total_size, vendor_code, kev_class, kev_subclass, id
+	// and event_code, a 32-bit word each
+	darwinKEVHeader = 24
+	// darwinNetEventData is sizeof(struct net_event_data): if_family, if_unit, and if_name of IFNAMSIZ bytes
+	darwinNetEventData = 24
+)
+
+// kernelEvent is the header of one struct kern_event_msg
+type kernelEvent struct {
+	vendor, class, subclass uint32
+	// link is the interface the event's net_event_data names, its driver's name and unit, empty where the data names none
+	link string
+}
+
+// decodeKernelEvent reads the one event a read of a kernel event socket holds, the socket being PR_ATOMIC and each event a record of its
+// own (bsd/kern/kern_event.c, eventsw and kev_post_msg_internal)
+// false is a read shorter than the header, or one whose total_size is not its length
+func decodeKernelEvent(raw []byte) (kernelEvent, bool) {
+	if len(raw) < darwinKEVHeader || int(binary.NativeEndian.Uint32(raw)) != len(raw) {
+		return kernelEvent{}, false
+	}
+	event := kernelEvent{
+		vendor:   binary.NativeEndian.Uint32(raw[4:]),
+		class:    binary.NativeEndian.Uint32(raw[8:]),
+		subclass: binary.NativeEndian.Uint32(raw[12:]),
+	}
+	if data := raw[darwinKEVHeader:]; event.movesLink() && len(data) >= darwinNetEventData {
+		name, _, _ := strings.Cut(string(data[8:darwinNetEventData]), "\x00")
+		event.link = name + strconv.FormatUint(uint64(binary.NativeEndian.Uint32(data[4:])), 10)
+	}
+	return event, true
+}
+
+// movesLink reports whether the event is of a subclass that can bring a link, take it away or move its addresses
+// NECP, NETPOLICY and the rest of the network class move none, and NECP posts after most address changes
+func (e kernelEvent) movesLink() bool {
+	if e.vendor != darwinKEVVendorApple || e.class != darwinKEVNetworkClass {
+		return false
+	}
+	switch e.subclass {
+	case darwinKEVInet, darwinKEVDL, darwinKEVInet6, darwinKEVND6:
+		return true
+	}
+	return false
+}
+
+// kernelEventWakes reports whether one read of a kernel event socket wakes the network watch: an event that can move a link on any
+// interface but mesh, named as the event names it, or a read that does not decode
+// an event that can move a link and names no interface wakes it too, since the reread decides
+func kernelEventWakes(raw []byte, mesh string) bool {
+	event, ok := decodeKernelEvent(raw)
+	if !ok {
+		return true
+	}
+	return event.movesLink() && (mesh == "" || event.link != mesh)
+}
 
 // decodeAddrMessage reads one RTM_NEWADDR of darwin's address dump: the interface's index, and the address under the length of its netmask with
 // RTAX_BRD beside it
@@ -119,7 +194,7 @@ func hostLinks(interfaces []HostInterface, mesh int) (v4, v6 NetworkFamily) {
 		var held, far [2][]netip.Prefix
 		for _, address := range device.Addresses {
 			local := address.Prefix.Addr()
-			if !local.IsGlobalUnicast() || address.Unready {
+			if !local.IsGlobalUnicast() || address.Flags&(in6IffTentative|in6IffOptimistic|in6IffDuplicated) != 0 {
 				continue
 			}
 			family, bits := 0, address.Prefix.Bits()

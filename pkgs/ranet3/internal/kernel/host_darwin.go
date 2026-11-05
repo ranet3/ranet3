@@ -47,7 +47,7 @@ func (runningKernel) Addresses(index int) ([]netip.Prefix, error) {
 }
 
 // Links reads the interface list and one address dump of every interface
-// an IPv6 address gone between the dump and the read of its flags is taken as unready, and the event of its delete brings a read without it
+// an IPv6 address gone between the dump and the read of its flags is left out, as the read its delete wakes leaves it
 func (runningKernel) Links() ([]HostInterface, error) {
 	devices, err := net.Interfaces()
 	if err != nil {
@@ -76,21 +76,19 @@ func (runningKernel) Links() ([]HostInterface, error) {
 		link := HostInterface{
 			Index: device.Index, Name: device.Name,
 			Up: device.Flags&net.FlagUp != 0, PointToPoint: device.Flags&net.FlagPointToPoint != 0, Loopback: device.Flags&net.FlagLoopback != 0,
-			Addresses: held[device.Index],
 		}
-		for i, address := range link.Addresses {
-			if !address.Prefix.Addr().Is6() || !address.Prefix.Addr().IsGlobalUnicast() {
-				continue
+		for _, address := range held[device.Index] {
+			if address.Prefix.Addr().Is6() && address.Prefix.Addr().IsGlobalUnicast() {
+				flags, err := addressFlags6(device.Name, address.Prefix.Addr())
+				if gone(err) {
+					continue
+				}
+				if err != nil {
+					return nil, err
+				}
+				address.Flags = flags
 			}
-			flags, err := addressFlags6(device.Name, address.Prefix.Addr())
-			switch {
-			case gone(err):
-				link.Addresses[i].Unready = true
-			case err != nil:
-				return nil, err
-			default:
-				link.Addresses[i].Unready = flags&(in6IffTentative|in6IffDuplicated) != 0
-			}
+			link.Addresses = append(link.Addresses, address)
 		}
 		out = append(out, link)
 	}

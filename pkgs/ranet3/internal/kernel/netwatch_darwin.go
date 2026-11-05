@@ -10,7 +10,7 @@ import (
 	"net/netip"
 )
 
-// WatchNetwork opens the network watch over a PF_ROUTE watcher of every interface
+// WatchNetwork opens the network watch over a watcher of every interface, which reads the routing socket and the kernel's network events
 // mesh names this node's tun, whose addresses and routes never signal, and is empty on a node without one
 // host is the machine it reads, nil for the one this process is running on
 func WatchNetwork(host Host, mesh string) (*NetworkWatch, error) {

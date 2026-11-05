@@ -75,11 +75,11 @@ type HostInterface struct {
 // HostAddress is one address an interface carries, under the length of its netmask
 // Far is the address of the same family the kernel holds beside it in RTAX_BRD, the far end on a point-to-point link, invalid where it
 // holds none
-// Unready is an IPv6 address still proving itself unique, or found not to be
+// Flags is a global unicast IPv6 address's ia6_flags, zero for any other address
 type HostAddress struct {
-	Prefix  netip.Prefix
-	Far     netip.Addr
-	Unready bool
+	Prefix netip.Prefix
+	Far    netip.Addr
+	Flags  uint32
 }
 
 // RouteAnswer is the kernel's answer about one destination: the interface it

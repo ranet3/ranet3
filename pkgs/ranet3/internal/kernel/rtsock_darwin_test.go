@@ -355,6 +355,81 @@ func TestLinkWatcherIgnoresTheMeshsOwnChurn(t *testing.T) {
 	}
 }
 
+// The link watcher wakes on an address or a link's flags moving on any
+// interface but the mesh, read at the index's offset in the interface
+// headers. Offset 4 holds the message's addrs there, 0xb4 for an address
+// with its netmask, link, address and far end, as a darwin host sends one.
+// The reconciler's monitor wakes on none of them.
+func TestLinkWatcherWakesOnLinksOutsideTheMesh(t *testing.T) {
+	const meshIndex = 42
+	const otherIndex = 16
+	linkWatcher := &routeMonitor{index: 0, skip: meshIndex, self: uintptr(os.Getpid())}
+	for name, test := range map[string]struct {
+		monitor     *routeMonitor
+		kind, index int
+		wakes       bool
+	}{
+		"an address on another interface":               {linkWatcher, unix.RTM_NEWADDR, otherIndex, true},
+		"an address gone from another interface":        {linkWatcher, unix.RTM_DELADDR, otherIndex, true},
+		"another interface's flags":                     {linkWatcher, unix.RTM_IFINFO, otherIndex, true},
+		"an address on the mesh":                        {linkWatcher, unix.RTM_NEWADDR, meshIndex, false},
+		"an address gone from the mesh":                 {linkWatcher, unix.RTM_DELADDR, meshIndex, false},
+		"the mesh's flags":                              {linkWatcher, unix.RTM_IFINFO, meshIndex, false},
+		"a multicast group joined on another interface": {linkWatcher, unix.RTM_NEWMADDR, otherIndex, false},
+		"an address with no mesh to skip":               {&routeMonitor{index: 0, self: uintptr(os.Getpid())}, unix.RTM_NEWADDR, meshIndex, true},
+		"an address on the reconciler's own interface":  {&routeMonitor{index: meshIndex, self: uintptr(os.Getpid())}, unix.RTM_NEWADDR, meshIndex, false},
+		"flags of the reconciler's own interface":       {&routeMonitor{index: meshIndex, self: uintptr(os.Getpid())}, unix.RTM_IFINFO, meshIndex, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			message := make([]byte, 60)
+			binary.NativeEndian.PutUint16(message[:2], uint16(len(message)))
+			message[2], message[rtmTypeOffset] = 5, byte(test.kind)
+			binary.NativeEndian.PutUint32(message[4:], 0xb4)
+			binary.NativeEndian.PutUint16(message[ifmIndexOffset:], uint16(test.index))
+			if got := test.monitor.interesting(message); got != test.wakes {
+				t.Errorf("woke %v, want %v", got, test.wakes)
+			}
+		})
+	}
+}
+
+// SIOCSKEVFILT is the number a darwin kernel took the network class's filter
+// under, _IOW('e', 2, struct kev_request) in sys/kern_event.h.
+func TestKernelEventFilterNumber(t *testing.T) {
+	if siocSKevFilt != 0x800c6502 {
+		t.Errorf("SIOCSKEVFILT is %#x, want 0x800c6502", siocSKevFilt)
+	}
+}
+
+// A monitor of every interface but one skips that interface's kernel events
+// by the name it reads for the index, here the loopback's, and its Close
+// returns, which it does once the readers of both its sockets stop. It opens
+// the two sockets a monitor reads and writes nothing, so it needs no
+// privilege.
+func TestLinkWatcherNamesTheInterfaceItSkips(t *testing.T) {
+	index, err := runningKernel{}.InterfaceIndex(Loopback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor, err := newRouteMonitor(0, index)
+	if err != nil {
+		t.Fatalf("open a monitor of every interface but %s: %v", Loopback, err)
+	}
+	if monitor.skipName != Loopback {
+		t.Errorf("the monitor skips the kernel events of %q, want %q", monitor.skipName, Loopback)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- monitor.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("close the monitor: %v", err)
+		}
+	case <-time.After(quietWindow):
+		t.Error("the monitor's Close did not return beside its two readers")
+	}
+}
+
 // routeMessageBytes is the fixed header of one routing message, which is all
 // the monitor decodes.
 func routeMessageBytes(t *testing.T, kind, index int, pid uintptr, errno uint32) []byte {
