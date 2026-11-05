@@ -268,6 +268,50 @@ func TestTUNReadsKeepAnswersForAtMostKeptPairs(t *testing.T) {
 	}
 }
 
+// the answer kept for the last pair a read looked up answers that pair alone
+func TestTUNAnswerKeptForTheLastPairAnswersThatPairAlone(t *testing.T) {
+	// no overlay, so a fresh lookup never sets overlay, which kept does
+	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
+	kept := sourceAnswer{verdict: RouteHeld, overlay: true}
+	v4 := [2]netip.Addr{transitSender[4], transitFar[4]}
+	v6 := [2]netip.Addr{transitSender[6], transitFar[6]}
+	for _, c := range []struct {
+		name       string
+		last, read [2]netip.Addr
+		hit        bool
+	}{
+		{"IPv4 pair read again", v4, v4, true},
+		{"IPv4 pair from another source", v4, [2]netip.Addr{transitOwn[4], v4[1]}, false},
+		{"IPv4 pair to another destination", v4, [2]netip.Addr{v4[0], transitOwn[4]}, false},
+		{"IPv4 pair reversed", v4, [2]netip.Addr{v4[1], v4[0]}, false},
+		{"IPv6 pair from its source zoned", v6, [2]netip.Addr{v6[0].WithZone("eth0"), v6[1]}, false},
+		{"IPv6 pair to its destination zoned", v6, [2]netip.Addr{v6[0], v6[1].WithZone("eth0")}, false},
+		{"IPv4 pair from its source mapped", v4, [2]netip.Addr{mapped(v4[0]), v4[1]}, false},
+		{"IPv4 pair to its destination mapped", v4, [2]netip.Addr{v4[0], mapped(v4[1])}, false},
+	} {
+		answers := keptAnswers{last: c.last, lastAnswer: kept}
+		if got := m.answerFor(&answers, c.read[0], c.read[1]); (got == kept) != c.hit {
+			t.Errorf("%s, after %v a read of %v took the kept answer %t, want %t", c.name, c.last, c.read, got == kept, c.hit)
+		}
+	}
+	// a pair looked up afresh is kept in the order it was read, with kept standing in for its answer
+	answers := keptAnswers{}
+	m.answerFor(&answers, v4[0], v4[1])
+	answers.lastAnswer = kept
+	for _, c := range []struct {
+		name string
+		read [2]netip.Addr
+		hit  bool
+	}{
+		{"IPv4 pair looked up and read again", v4, true},
+		{"IPv4 pair looked up and read reversed", [2]netip.Addr{v4[1], v4[0]}, false},
+	} {
+		if got := m.answerFor(&answers, c.read[0], c.read[1]); (got == kept) != c.hit {
+			t.Errorf("%s, after a lookup of %v a read of %v took the kept answer %t, want %t", c.name, v4, c.read, got == kept, c.hit)
+		}
+	}
+}
+
 // reads off the tun, each on a goroutine of its own as each queue's reader is, race every writer of what their sources' answers read
 // each reader reads once before the writes start, and once the writers are done its next read goes where a read looking every answer up afresh goes
 func TestTUNReadsRaceTheWritersOfTheirAnswers(t *testing.T) {

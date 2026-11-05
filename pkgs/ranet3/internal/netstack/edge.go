@@ -52,10 +52,11 @@ func (k *keptAnswers) keepFor(generation uint64) {
 }
 
 func (m *Mesh) answerFor(kept *keptAnswers, source, destination netip.Addr) sourceAnswer {
-	pair := [2]netip.Addr{source, destination}
-	if pair == kept.last {
+	// the compiler compares a netip.Addr inline and a [2]netip.Addr through a call to memequal
+	if source == kept.last[0] && destination == kept.last[1] {
 		return kept.lastAnswer
 	}
+	pair := [2]netip.Addr{source, destination}
 	answer, seen := kept.pairs[pair]
 	if !seen {
 		_, verdict, match := m.replyRoute(source, destination)
