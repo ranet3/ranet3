@@ -11,7 +11,7 @@
 let
   # the commit this build came from, which tells two nodes apart between
   # releases: version.txt moves once per release and a fleet converts one node
-  # at a time in between. A dirty tree has no revision to report.
+  # at a time in between.
   revision = inputs.self.shortRev or inputs.self.dirtyShortRev or null;
 in
 buildGoApplication (
@@ -61,7 +61,6 @@ buildGoApplication (
 
     ldflags = [
       "-s"
-      "-w"
       "-X ranet3.com/pkgs/ranet3/internal/version.Value=${finalAttrs.version}"
     ]
     ++ lib.optional (
