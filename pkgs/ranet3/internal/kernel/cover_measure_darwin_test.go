@@ -238,7 +238,7 @@ func scopedLookup(t *testing.T, device string, target netip.Addr) string {
 		t.Errorf("route get: %v", err)
 		return ""
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "interface:"); ok {
 			return strings.TrimSpace(name)
 		}

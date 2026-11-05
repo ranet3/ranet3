@@ -495,7 +495,8 @@ func (q *reassembly) merge() *opened {
 		outer:      &Message{Header: *header, Payloads: payloads, skHeaderOffset: len(q.head)},
 		innerFirst: PayloadType(q.next),
 		plaintext:  append(content, 0),
-		form:       form{total: q.total, largest: q.largest},
+		total:      q.total,
+		largest:    q.largest,
 	}
 }
 

@@ -166,8 +166,7 @@ func (r *Reconciler) reportLookup(level slog.Level, message string, lookup Looku
 func judgeLookup(underlay bool, answer BatchAnswer, tun string) (string, bool) {
 	if answer.Err != nil {
 		text := answer.Err.Error()
-		var errno syscall.Errno
-		if errors.As(answer.Err, &errno) {
+		if errno, ok := errors.AsType[syscall.Errno](answer.Err); ok {
 			text = errno.Error()
 		}
 		return fmt.Sprintf("a refusal (%s)", text), !underlay && !errors.Is(answer.Err, syscall.EHOSTUNREACH)

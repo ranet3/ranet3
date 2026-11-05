@@ -282,7 +282,7 @@ func prefixSet(prefixes []netip.Prefix) PrefixSet {
 // Prefixes is the set's prefixes, as prefixSet was given them
 func (s PrefixSet) Prefixes() []netip.Prefix {
 	var out []netip.Prefix
-	for _, part := range strings.Fields(string(s)) {
+	for part := range strings.FieldsSeq(string(s)) {
 		out = append(out, netip.MustParsePrefix(part))
 	}
 	return out

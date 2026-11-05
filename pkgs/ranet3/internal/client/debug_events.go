@@ -69,11 +69,11 @@ type attribute struct {
 
 // heldBy reports whether attrs carry the attribute, the last of its key being the one an event renders
 func (a attribute) heldBy(attrs []slog.Attr) bool {
-	for i := len(attrs) - 1; i >= 0; i-- {
-		if attrs[i].Key != a.key {
+	for _, attr := range slices.Backward(attrs) {
+		if attr.Key != a.key {
 			continue
 		}
-		return slices.ContainsFunc(a.values, attrs[i].Value.Equal)
+		return slices.ContainsFunc(a.values, attr.Value.Equal)
 	}
 	return false
 }

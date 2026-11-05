@@ -1046,11 +1046,11 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 		Steered:    true,
 		Forwarding: func() (bool, bool) { return true, true },
 		Sysctl:     readsNothing,
-		Hooks: egress.Hooks{Ready: func(v4, v6, _ bool) {
+		Ready: func(v4, v6, _ bool) {
 			mu.Lock()
 			defer mu.Unlock()
 			told = append(told, fmt.Sprintf("ready %v %v", v4, v6))
-		}},
+		},
 	}
 	// no sweep comes within notificationWait, so only a wake explains a pass
 	cfg := egress.Egress{Sweep: schema.Duration(lateSweep)}

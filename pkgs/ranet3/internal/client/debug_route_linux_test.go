@@ -217,8 +217,7 @@ func TestTUNDebugRouteNamesThePathTheKernelTakesForEachDestinationKind(t *testin
 		if route.NoEntry {
 			answer += " of no entry"
 		}
-		var errno syscall.Errno
-		if errors.As(err, &errno) {
+		if errno, ok := errors.AsType[syscall.Errno](err); ok {
 			answer = unix.ErrnoName(errno)
 		}
 		info, viewErr := c.DebugRoute(src, dst, iif, "")

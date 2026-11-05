@@ -39,7 +39,7 @@ func TestDebugEgressCarriesTheExitsDebugRead(t *testing.T) {
 
 	member, read := netip.MustParseAddr("192.0.2.65"), netip.MustParseAddr("203.0.113.128")
 	route := egress.Route{Type: "unicast", Hops: []egress.Hop{{Device: "up0"}, {Device: "up1", Dead: true, LinkDown: true}}}
-	c.SetExit(&debugExit{fakeExit: fakeExit{status: status}, debug: egress.ExitDebug{
+	c.SetExit(&debugExit{status: status, debug: egress.ExitDebug{
 		Status: status,
 		Rules:  []egress.RuleReading{{Spec: "out via ranet0 ipv4 masquerade", Wanted: true, Held: true, Counter: "flows", Packets: 3, Bytes: 180}},
 		Families: []egress.FamilyReading{{Family: egress.FamilyIPv4, Ready: true, Forwarding: true,

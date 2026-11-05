@@ -1106,7 +1106,7 @@ func transportGoroutines() (int, []string) {
 	var all strings.Builder
 	_ = pprof.Lookup("goroutine").WriteTo(&all, 2)
 	var stacks []string
-	for _, stack := range strings.Split(all.String(), "\n\n") {
+	for stack := range strings.SplitSeq(all.String(), "\n\n") {
 		if strings.Contains(stack, "ranet3.com/pkgs/ranet3/transport.") && !strings.Contains(stack, "testing.tRunner") {
 			stacks = append(stacks, stack)
 		}

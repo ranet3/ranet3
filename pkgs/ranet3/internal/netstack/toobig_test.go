@@ -698,7 +698,7 @@ func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 	t.Run("read off the tun", func(t *testing.T) {
 		peer, places := reservingPeer(t)
 		peer.SetMTU(srv6.MinimumIPv6MTU)
-		dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1)}, reads: make(chan scriptedRead, 2), closed: make(chan struct{})}
+		dev := &scriptedDevice{writes: make(chan recordedWrite, 1), reads: make(chan scriptedRead, 2), closed: make(chan struct{})}
 		m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 		m.setDevice(dev)
 		m.startSegmentReports()
@@ -742,7 +742,7 @@ func TestFragmentsForAPeerThatRefusesItsReservationAreDropped(t *testing.T) {
 		peer, _ := reservingPeer(t)
 		peer.SetMTU(srv6.MinimumIPv6MTU)
 		peer.Close()
-		dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 1)}, reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
+		dev := &scriptedDevice{writes: make(chan recordedWrite, 1), reads: make(chan scriptedRead, 1), closed: make(chan struct{})}
 		m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})}
 		m.setDevice(dev)
 		m.startSegmentReports()

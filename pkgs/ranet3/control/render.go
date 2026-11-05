@@ -121,77 +121,78 @@ func kernelLine(k KernelStatus) string {
 	if !k.Enabled {
 		return "off, routes configured externally"
 	}
-	line := fmt.Sprintf("%s, %d installed", k.Where, k.Installed)
+	var line strings.Builder
+	fmt.Fprintf(&line, "%s, %d installed", k.Where, k.Installed)
 	if k.Skipped > 0 {
-		line += fmt.Sprintf(", %d skipped", k.Skipped)
+		fmt.Fprintf(&line, ", %d skipped", k.Skipped)
 	}
 	if len(k.Cover) > 0 {
-		line += ", zero-free cover for " + strings.Join(k.Cover, " and ")
+		line.WriteString(", zero-free cover for " + strings.Join(k.Cover, " and "))
 	}
 	switch since := time.Since(k.PassAt); {
 	case k.PassAt.IsZero():
-		line += ", no pass yet"
+		line.WriteString(", no pass yet")
 	case since < 0:
 		// The timestamp crossed the socket as JSON, which drops the monotonic
 		// reading, so a daemon and a client whose clocks disagree land here.
-		line += ", last pass timestamped ahead of this clock"
+		line.WriteString(", last pass timestamped ahead of this clock")
 	default:
-		line += fmt.Sprintf(", last pass %s ago", sinceText(since))
+		fmt.Fprintf(&line, ", last pass %s ago", sinceText(since))
 	}
 	for _, taken := range k.Taken {
 		if taken.Endpoint != "" {
-			line += fmt.Sprintf(", the underlay's mark taken by %s toward %s", taken.Answer, taken.Endpoint)
+			fmt.Fprintf(&line, ", the underlay's mark taken by %s toward %s", taken.Answer, taken.Endpoint)
 			if taken.Source != "" {
-				line += " from " + taken.Source
+				line.WriteString(" from " + taken.Source)
 			}
 			if taken.Interface != "" {
-				line += " dev " + taken.Interface
+				line.WriteString(" dev " + taken.Interface)
 			}
 		} else {
-			line += fmt.Sprintf(", overlay %s taken by %s", taken.Prefix, taken.Answer)
+			fmt.Fprintf(&line, ", overlay %s taken by %s", taken.Prefix, taken.Answer)
 		}
 	}
 	if e := k.Exit; e != nil {
-		line += ", exit mode"
+		line.WriteString(", exit mode")
 		if len(e.Forwarded) > 0 {
-			line += " forwarding " + strings.Join(e.Forwarded, " ")
+			line.WriteString(" forwarding " + strings.Join(e.Forwarded, " "))
 		}
 		for _, skip := range e.Skipped {
-			line += fmt.Sprintf(", forward %s skips %s, %s", skip.Entry, skip.Link, skip.Reason)
+			fmt.Fprintf(&line, ", forward %s skips %s, %s", skip.Entry, skip.Link, skip.Reason)
 		}
 		for _, family := range e.Unaddressed {
-			line += fmt.Sprintf(", no %s overlay address on the tun, so %s is left out of the mode", familyLabel(family), familyLabel(family))
+			fmt.Fprintf(&line, ", no %s overlay address on the tun, so %s is left out of the mode", familyLabel(family), familyLabel(family))
 		}
 		if f := e.Fallback; f != nil {
-			line += ", fallback none " + f.State
+			line.WriteString(", fallback none " + f.State)
 			if f.Reason != "" {
-				line += ", " + f.Reason
+				line.WriteString(", " + f.Reason)
 			}
 			if d := f.Dropped; d != nil {
-				line += fmt.Sprintf(", %d packets, %d B dropped", d.Packets, d.Bytes)
+				fmt.Fprintf(&line, ", %d packets, %d B dropped", d.Packets, d.Bytes)
 			} else {
-				line += ", drops not read yet"
+				line.WriteString(", drops not read yet")
 			}
 			for _, network := range f.Captured {
-				line += fmt.Sprintf(", %s left out of the LAN as it captures the machine", network)
+				fmt.Fprintf(&line, ", %s left out of the LAN as it captures the machine", network)
 			}
 			for _, network := range f.Public {
-				line += fmt.Sprintf(", %s left out of the LAN as public, outside the private and link-local ranges and cap.exit lan", network)
+				fmt.Fprintf(&line, ", %s left out of the LAN as public, outside the private and link-local ranges and cap.exit lan", network)
 			}
 			for _, name := range f.Unresolved {
-				line += fmt.Sprintf(", %s does not resolve", name)
+				fmt.Fprintf(&line, ", %s does not resolve", name)
 			}
 			for _, resolver := range f.Resolvers {
-				line += fmt.Sprintf(", DNS server %s on %s lies beyond the LAN", resolver.Address, resolver.Link)
+				fmt.Fprintf(&line, ", DNS server %s on %s lies beyond the LAN", resolver.Address, resolver.Link)
 			}
 		}
 	}
 	if p := k.ExitPath; p != nil {
-		line += fmt.Sprintf(", exit path via %s from %s", strings.Join(p.Via, " "), p.Source)
+		fmt.Fprintf(&line, ", exit path via %s from %s", strings.Join(p.Via, " "), p.Source)
 		if p.State == "down" {
-			line += fmt.Sprintf(" down at %s, %s", p.Down, p.Verdict)
+			fmt.Fprintf(&line, " down at %s, %s", p.Down, p.Verdict)
 		} else {
-			line += " up"
+			line.WriteString(" up")
 		}
 		installed := "no steered default installed"
 		if len(p.Installed) > 0 {
@@ -201,12 +202,12 @@ func kernelLine(k KernelStatus) string {
 			}
 			installed = "steered defaults installed for " + strings.Join(labels, " and ")
 		}
-		line += fmt.Sprintf(", %s, %d steered, %d unrouted", installed, p.Steered, p.Unrouted)
+		fmt.Fprintf(&line, ", %s, %d steered, %d unrouted", installed, p.Steered, p.Unrouted)
 	}
 	if k.Err != "" {
-		line += ", " + k.Err
+		line.WriteString(", " + k.Err)
 	}
-	return line
+	return line.String()
 }
 
 // egressLine says "off" on a node that is neither an exit node nor a subnet
@@ -311,12 +312,13 @@ func borderLine(b BorderStatus) string {
 	if len(b.Overlay) == 0 {
 		return b.Where + ", " + entering
 	}
-	overlay := overlayCount(len(b.Overlay))
+	var overlay strings.Builder
+	overlay.WriteString(overlayCount(len(b.Overlay)))
 	for _, carveOut := range b.Carved {
-		overlay += fmt.Sprintf(", carving %s on %s", carveOut.Prefix, carveOut.Link)
+		fmt.Fprintf(&overlay, ", carving %s on %s", carveOut.Prefix, carveOut.Link)
 	}
 	return fmt.Sprintf("%s, inside %s, %s, dropped %d overlay sources and %d carved sources, %s",
-		b.Where, strings.Join(b.Inside, " "), overlay, b.Dropped.Reason("overlay_source"), b.Dropped.Reason("carved_source"), entering)
+		b.Where, strings.Join(b.Inside, " "), overlay.String(), b.Dropped.Reason("overlay_source"), b.Dropped.Reason("carved_source"), entering)
 }
 
 func overlayCount(n int) string {
@@ -390,7 +392,8 @@ func segmentLine(s Status) string {
 	if len(s.Segments) == 0 {
 		return "off"
 	}
-	line := fmt.Sprintf("%s (%d forwarded, %d delivered, %d dropped",
+	var line strings.Builder
+	fmt.Fprintf(&line, "%s (%d forwarded, %d delivered, %d dropped",
 		strings.Join(s.Segments, ", "),
 		s.SegmentCounters.Forwarded, s.SegmentCounters.Delivered, s.SegmentCounters.Dropped)
 	for _, count := range []struct {
@@ -404,10 +407,11 @@ func segmentLine(s Status) string {
 		{s.SegmentCounters.ECNUnused, "with an unused ECN combination"},
 	} {
 		if count.n > 0 {
-			line += fmt.Sprintf(", %d %s", count.n, count.name)
+			fmt.Fprintf(&line, ", %d %s", count.n, count.name)
 		}
 	}
-	return line + ")"
+	line.WriteString(")")
+	return line.String()
 }
 
 // transitLine always names forwarded, delivered and dropped

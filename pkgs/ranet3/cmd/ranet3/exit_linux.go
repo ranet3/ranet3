@@ -30,7 +30,9 @@ func newExit(cfg *config.Config, node *client.Client, bus *events.Bus) (egress.E
 		// is how an exit whose chain does not read back as written withholds
 		// its advertisement instead of attracting traffic it would drop.
 		// Republish reads it back from the exit.
-		Hooks: egress.Hooks{Ready: node.SetEgressReady, Republish: node.Republish, Events: bus},
+		Ready:     node.SetEgressReady,
+		Republish: node.Republish,
+		Events:    bus,
 	})
 	if err != nil {
 		return nil, err

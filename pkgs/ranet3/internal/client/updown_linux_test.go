@@ -267,12 +267,12 @@ func newKernelMesh(t *testing.T) (alpha, bravo *kernelNode) {
 	}
 	mesh := meshCounter.Add(1)
 	alpha = &kernelNode{
-		loopbackNode: loopbackNode{name: fmt.Sprintf("alpha-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("10.77.0.1/32")},
-		tun:          "updown0", table: 100, protocol: 200,
+		name: fmt.Sprintf("alpha-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("10.77.0.1/32"),
+		tun: "updown0", table: 100, protocol: 200,
 	}
 	bravo = &kernelNode{
-		loopbackNode: loopbackNode{name: fmt.Sprintf("bravo-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("10.77.0.2/32")},
-		tun:          "updown1", table: 101, protocol: 201,
+		name: fmt.Sprintf("bravo-%d", mesh), port: freeUDPPort(t), prefix: netip.MustParsePrefix("10.77.0.2/32"),
+		tun: "updown1", table: 101, protocol: 201,
 	}
 	nodes := []*kernelNode{alpha, bravo}
 	loopback := "127.0.0.1"

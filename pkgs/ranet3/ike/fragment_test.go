@@ -1794,8 +1794,8 @@ func TestOnlyFragmentOneOfAnAnsweredRequestDrawsTheAnswerAgain(t *testing.T) {
 			if again := peerReads(t, peer, quietPeriod); len(again) != 0 {
 				t.Errorf("a fragment 1 that does not authenticate drew %d datagrams", len(again))
 			}
-			for i := len(request) - 1; i >= 0; i-- {
-				take(s, request[i], s.mux.Endpoint())
+			for i, r := range slices.Backward(request) {
+				take(s, r, s.mux.Endpoint())
 				again := peerReads(t, peer, quietPeriod)
 				if i == 0 && (len(again) != 1 || !bytes.Equal(again[0], answer[0])) || i > 0 && len(again) != 0 {
 					t.Errorf("a repeat of fragment %d drew %d datagrams, want the answer again %v", i+1, len(again), i == 0)
@@ -1813,8 +1813,8 @@ func TestOnlyFragmentOneOfAnAnsweredRequestDrawsTheAnswerAgain(t *testing.T) {
 		s.cut = 500
 		s.intermediate(1, ML_KEM_768)
 		request, answer := s.sent, s.got
-		for i := len(request) - 1; i >= 0; i-- {
-			if err := s.mux.SendIKE(request[i]); err != nil {
+		for i, r := range slices.Backward(request) {
+			if err := s.mux.SendIKE(r); err != nil {
 				t.Fatal(err)
 			}
 			if i > 0 && !s.silent() {

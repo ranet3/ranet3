@@ -265,8 +265,7 @@ func noLiveHop(route Route) string {
 // answers for other causes too, so the setting is read rather than the errno
 func (t *Translator) failure(destination netip.Addr, device string, err error) string {
 	text := ": " + err.Error()
-	var errno syscall.Errno
-	if errors.As(err, &errno) {
+	if errno, ok := errors.AsType[syscall.Errno](err); ok {
 		text = ": " + errno.Error()
 	}
 	if !destination.Is4() || device == "" {

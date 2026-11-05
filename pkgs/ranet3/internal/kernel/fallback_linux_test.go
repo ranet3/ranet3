@@ -287,8 +287,8 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 			}
 			lines := strings.Split(strings.TrimSuffix(fallbackLines, "\n"), "\n")
 			script := "flush chain inet " + FallbackTable + " fallback\n"
-			for j := len(rules) - 1; j >= 0; j-- {
-				script += fmt.Sprintf("insert rule inet %s output %s comment %q\n", FallbackTable, strings.TrimSpace(lines[j]), rules[j].spec)
+			for j, rule := range slices.Backward(rules) {
+				script += fmt.Sprintf("insert rule inet %s output %s comment %q\n", FallbackTable, strings.TrimSpace(lines[j]), rule.spec)
 			}
 			runScript(script)
 			return "the postrouting chain's lines moved ahead of output's"

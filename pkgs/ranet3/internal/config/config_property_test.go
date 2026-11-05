@@ -1330,8 +1330,8 @@ func scalarTypes() []reflect.Type {
 // nested writes a document that sets the field to value, in the flow syntax json and yaml share
 // or in toml inline tables, which are the one nesting toml can write on a line
 func (f schemaField) nested(value string, inTOML bool) string {
-	for i := len(f.path) - 1; i >= 0; i-- {
-		key, list := strings.CutSuffix(f.path[i], "[]")
+	for i, step := range slices.Backward(f.path) {
+		key, list := strings.CutSuffix(step, "[]")
 		if list {
 			value = "[" + value + "]"
 		}

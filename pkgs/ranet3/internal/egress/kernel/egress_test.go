@@ -597,8 +597,7 @@ func TestReturnDropsWhatNoFlowIsTrackedForIntoTheMesh(t *testing.T) {
 func TestSIDOnlyExitTranslatesTheTunInBothFamilies(t *testing.T) {
 	var announced [][]netip.Prefix
 	var tr *Translator
-	rt := Runtime{Steered: true}
-	rt.Republish = func() { announced = append(announced, tr.Announce()) }
+	rt := Runtime{Steered: true, Republish: func() { announced = append(announced, tr.Announce()) }}
 	be := &fakeBackend{}
 	tr = translator(t, egress.Egress{}, rt, be)
 	if err := tr.reconcile(); err != nil {
@@ -710,8 +709,7 @@ func TestNothingIsAnnouncedWhileTheRuleWillNotInstall(t *testing.T) {
 	be := &fakeBackend{failApply: true}
 	var announced [][]netip.Prefix
 	var tr *Translator
-	rt := Runtime{}
-	rt.Republish = func() { announced = append(announced, tr.Announce()) }
+	rt := Runtime{Republish: func() { announced = append(announced, tr.Announce()) }}
 	tr = translator(t, cfg, rt, be)
 	if err := tr.reconcile(); err == nil {
 		t.Fatal("a pass that could not install reported success")
@@ -940,15 +938,16 @@ func readyLog(t *testing.T, cfg egress.Egress, bus *events.Bus) (*Translator, *f
 	t.Helper()
 	be := &fakeBackend{changed: make(chan struct{}, 1), missed: make(chan struct{}, 1)}
 	var tr *Translator
-	rt := Runtime{Steered: true, Hooks: egress.Hooks{
-		Events: bus,
-		Ready:  func(v4, v6, serves bool) { be.record(fmt.Sprintf("ready %v %v sid %v", v4, v6, serves)) },
+	rt := Runtime{
+		Steered: true,
+		Events:  bus,
+		Ready:   func(v4, v6, serves bool) { be.record(fmt.Sprintf("ready %v %v sid %v", v4, v6, serves)) },
 		Republish: func() {
 			if len(tr.Announce()) == 0 {
 				be.record("retract")
 			}
 		},
-	}}
+	}
 	tr = translator(t, cfg, rt, be)
 	return tr, be
 }

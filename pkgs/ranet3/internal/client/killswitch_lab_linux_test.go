@@ -89,7 +89,7 @@ type switchProbe struct {
 
 // switchFrom is a probe of destination from socket carrying mark, none for 0, wanting want, of protocols or of UDP, TCP and echo
 func switchFrom(destination netip.Addr, socket rulesSocket, mark uint32, want switchWant, protocols ...string) switchProbe {
-	return switchProbe{rulesProbe: rulesProbe{destination: destination, socket: socket, mark: mark}, want: want, protocols: protocols}
+	return switchProbe{destination: destination, socket: socket, mark: mark, want: want, protocols: protocols}
 }
 
 // switchRow is a probe of destination from the six sockets, unbound, from the overlay address, from the uplink's address,

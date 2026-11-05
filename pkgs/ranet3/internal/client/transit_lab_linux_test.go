@@ -576,11 +576,13 @@ func labTranslator(t *testing.T, ns *netnstest.Thread, client *Client, bus *even
 				in(func() { answers, err = RouteLookups(lookups) })
 				return answers, err
 			},
-			Sysctl:  func(path string) (value string) { in(func() { value = Sysctl(path) }); return value },
-			Members: client.EgressMembers,
-			Write:   client.Mesh.WriteHost,
-			Steered: len(cfg.Segments().Egress()) != 0,
-			Hooks:   egress.Hooks{Ready: client.SetEgressReady, Republish: client.Republish, Events: bus},
+			Sysctl:    func(path string) (value string) { in(func() { value = Sysctl(path) }); return value },
+			Members:   client.EgressMembers,
+			Write:     client.Mesh.WriteHost,
+			Steered:   len(cfg.Segments().Egress()) != 0,
+			Ready:     client.SetEgressReady,
+			Republish: client.Republish,
+			Events:    bus,
 		})
 		return err
 	}); err != nil {

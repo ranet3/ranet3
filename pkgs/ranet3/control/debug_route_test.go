@@ -281,10 +281,10 @@ func routeFixtures() map[string][]RouteInfo {
 	unlisted.Segment = &RouteSegment{LocalSegment: egress, Overlay: true, Decision: "drop", Reason: "refused"}
 	toMesh := allowed
 	toMesh.Src, toMesh.Dst = netip.MustParseAddr("3fff::3"), netip.MustParseAddr("3fff:5::1")
-	toMesh.Segment = &RouteSegment{LocalSegment: LocalSegment{SID: toMesh.Dst, Behavior: "End.DT46", Deliver: "mesh"}, Overlay: true}
+	toMesh.Segment = &RouteSegment{SID: toMesh.Dst, Behavior: "End.DT46", Deliver: "mesh", Overlay: true}
 	stranger := allowed
 	stranger.Src, stranger.Dst = netip.MustParseAddr("2001:db8:66::6"), netip.MustParseAddr("3fff:5::10")
-	stranger.Segment = &RouteSegment{LocalSegment: LocalSegment{SID: stranger.Dst, Behavior: "End"}, Decision: "drop", Reason: "refused"}
+	stranger.Segment = &RouteSegment{SID: stranger.Dst, Behavior: "End", Decision: "drop", Reason: "refused"}
 	waypoint := stranger
 	waypoint.Src = netip.MustParseAddr("3fff::3")
 	waypoint.Segment = &RouteSegment{LocalSegment: stranger.Segment.LocalSegment, Overlay: true}

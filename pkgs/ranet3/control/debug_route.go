@@ -555,14 +555,15 @@ func ruleText(rule PolicyRule) string {
 }
 
 func routeLine(k RouteKernel) string {
-	route := k.Route.String()
+	var route strings.Builder
+	route.WriteString(k.Route.String())
 	if k.Source.IsValid() {
-		route += " from " + k.Source.String()
+		route.WriteString(" from " + k.Source.String())
 	}
 	if k.Table != 0 {
-		route += " in table " + PolicyRule{Action: "lookup", Table: k.Table}.target()
+		route.WriteString(" in table " + PolicyRule{Action: "lookup", Table: k.Table}.target())
 	}
-	route += ", " + k.Type
+	route.WriteString(", " + k.Type)
 	for _, hop := range k.NextHops {
 		text := "dev " + hop.Dev
 		if hop.Gateway.IsValid() {
@@ -574,22 +575,22 @@ func routeLine(k RouteKernel) string {
 		if hop.LinkDown {
 			text += " linkdown"
 		}
-		route += ", " + text
+		route.WriteString(", " + text)
 	}
 	if k.Exception {
-		route += ", through an exception cached for the destination alone"
+		route.WriteString(", through an exception cached for the destination alone")
 	}
 	if k.Cover {
 		zero := netip.IPv6Unspecified()
 		if k.Route.Addr().Is4() {
 			zero = netip.IPv4Unspecified()
 		}
-		route += ", a member of the zero-free cover standing in for the mesh's route holding " + zero.String()
+		route.WriteString(", a member of the zero-free cover standing in for the mesh's route holding " + zero.String())
 	}
 	if k.NoEntry {
-		route += ", the kernel's own for this destination, with no table entry behind it"
+		route.WriteString(", the kernel's own for this destination, with no table entry behind it")
 	}
-	return route
+	return route.String()
 }
 
 // leaves says where a packet goes by the kernel's route

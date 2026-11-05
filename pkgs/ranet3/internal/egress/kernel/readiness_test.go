@@ -69,7 +69,7 @@ func readingExit(t *testing.T, cfg egress.Egress, host *lookupHost, members *[]n
 		Lookup:    host.lookup,
 		Sysctl:    host.sysctl,
 		Members:   func() []netip.Prefix { return slices.Clone(*members) },
-		Hooks:     egress.Hooks{Events: bus},
+		Events:    bus,
 	}
 	return translator(t, cfg, rt, &fakeBackend{})
 }

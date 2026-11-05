@@ -165,7 +165,7 @@ func TestPostHandshakeRetransmitsRequireLivePeerToContinue(t *testing.T) {
 	if !pendingRetransmitsExhausted(ordinary, false) {
 		t.Fatal("unanswered rekey kept a silent peer alive indefinitely")
 	}
-	dpd := &pendingRequest{attempts: maxRetransmits, localRequest: localRequest{dpd: true}}
+	dpd := &pendingRequest{attempts: maxRetransmits, dpd: true}
 	if !pendingRetransmitsExhausted(dpd, true) {
 		t.Fatal("DPD request did not exhaust retransmissions")
 	}
@@ -1107,7 +1107,7 @@ func testSessionTakesNothingFromANotifyInTheClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := make(chan requestResult, 1)
-	waiting := &pendingRequest{localRequest: localRequest{exchange: INFORMATIONAL, result: result}, context: held, msgID: 3}
+	waiting := &pendingRequest{exchange: INFORMATIONAL, result: result, context: held, msgID: 3}
 	pending := waiting
 	// INVALID_IKE_SPI, the notify a node sends in the clear about a message under SPIs it does not know
 	invalidSPI := []RawPayload{{Type: PayloadN, Body: EncodeNotify(Notify{Type: 4})}}
@@ -1381,7 +1381,7 @@ func testSessionHeedsTheCriticalBitOnlyOnAnUnsupportedType(t *testing.T) {
 		{[]RawPayload{unsupportedCritical}, false},
 	} {
 		result := make(chan requestResult, 1)
-		pending = &pendingRequest{localRequest: localRequest{exchange: INFORMATIONAL, result: result}, context: held, msgID: uint32(messageID)}
+		pending = &pendingRequest{exchange: INFORMATIONAL, result: result, context: held, msgID: uint32(messageID)}
 		header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: uint32(messageID)}
 		deliver(sealedEdited(t, held.suite, held.sker, header, response.inner, criticalSK))
 		select {
@@ -1483,7 +1483,7 @@ func testSessionSaysNothingOfAMalformedResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := make(chan requestResult, 1)
-	pending := &pendingRequest{localRequest: localRequest{exchange: INFORMATIONAL, result: result}, context: held, msgID: 3}
+	pending := &pendingRequest{exchange: INFORMATIONAL, result: result, context: held, msgID: 3}
 	// a Notify whose stated length is shorter than its own header, then no padding
 	header := Header{SPIInitiator: held.spiI, SPIResponder: held.spiR, ExchangeType: INFORMATIONAL, Flags: FlagResponse, MessageID: 3}
 	malformed, err := encryptMessagePlaintextIV(held.suite, held.sker, header, nil, PayloadN, []byte{0, 0, 0, 3, 0}, make([]byte, 8))
@@ -1888,7 +1888,7 @@ func TestUnansweredExchangeStillEnds(t *testing.T) {
 
 	// Dead peer detection keeps its own tighter bound, because that exchange
 	// exists to decide exactly this.
-	dpd := &pendingRequest{localRequest: localRequest{dpd: true}, attempts: maxRetransmits, sent: maxRetransmits}
+	dpd := &pendingRequest{dpd: true, attempts: maxRetransmits, sent: maxRetransmits}
 	if !pendingRetransmitsExhausted(dpd, true) {
 		t.Error("a liveness check kept retransmitting because other traffic was arriving")
 	}
@@ -1897,7 +1897,7 @@ func TestUnansweredExchangeStillEnds(t *testing.T) {
 // a Delete of an IKE SA ends after teardownRetransmits sends, whether or not the peer keeps other traffic coming
 // the budget goes by what the request deletes, so it is the same whoever sent the Delete, Run's own teardown or a caller
 func TestDeleteEndingAnIKESAHasTheTeardownBudget(t *testing.T) {
-	ender := &pendingRequest{localRequest: localRequest{inner: deleteIKEPayloads()}}
+	ender := &pendingRequest{inner: deleteIKEPayloads()}
 	for ender.sent < teardownRetransmits-1 {
 		ender.sent++
 		ender.attempts++

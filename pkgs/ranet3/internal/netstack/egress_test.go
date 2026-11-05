@@ -69,7 +69,7 @@ func steered(tb testing.TB, inner []byte, source netip.Addr, path ...netip.Addr)
 // its drop reports are not spaced, so every one reaches the log
 func egressMesh(tb testing.TB) (*Mesh, *recordingDevice) {
 	tb.Helper()
-	dev := &boundedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 16)}, tb: tb}
+	dev := &boundedDevice{writes: make(chan recordedWrite, 16), tb: tb}
 	m := ownEgressOwned(&Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{})})
 	m.setDevice(dev)
 	m.SetExit(tunExit{m.WriteHost})

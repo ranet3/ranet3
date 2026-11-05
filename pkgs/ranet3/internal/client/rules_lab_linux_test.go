@@ -149,9 +149,7 @@ func rulesArms(learned *netstack.Peer) []rulesArm {
 	peers := map[string]*netstack.Peer{"192.0.2.5/32": learned, "3fff::5/128": learned}
 	with := func(more map[string]*netstack.Peer) map[string]*netstack.Peer {
 		out := maps.Clone(peers)
-		for prefix, value := range more {
-			out[prefix] = value
-		}
+		maps.Copy(out, more)
 		return out
 	}
 	peerRoutes := []string{"unicast 192.0.2.5/32", "unicast 3fff::5/128"}

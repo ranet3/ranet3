@@ -125,7 +125,7 @@ func newRecordingTransitNode(tb testing.TB, outMTU int, events func(kind, peer s
 // startTransitMesh is a mesh with a tun of one lane recording its writes and its outbound pipeline running
 // with cap.transit on, the overlay above, the router-id of each family held and an answer TTL of 64, which its caller closes
 func startTransitMesh(events func(kind, peer string, attrs ...slog.Attr)) (*Mesh, *scriptedDevice) {
-	dev := &scriptedDevice{recordingDevice: recordingDevice{writes: make(chan recordedWrite, 64)}, reads: make(chan scriptedRead), closed: make(chan struct{})}
+	dev := &scriptedDevice{writes: make(chan recordedWrite, 64), reads: make(chan scriptedRead), closed: make(chan struct{})}
 	m := &Mesh{Name: "test0", Routes: NewRouteTable(), closed: make(chan struct{}), events: events}
 	m.setDevice(dev)
 	m.startSegmentReports()

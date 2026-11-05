@@ -45,10 +45,8 @@ func viaTaken(via []netip.Addr, own netip.Addr, local bool, overlay []netip.Pref
 		return true, netip.Addr{}
 	}
 	for i, sid := range via {
-		for _, other := range via[:i] {
-			if other == sid {
-				return false, netip.Addr{}
-			}
+		if slices.Contains(via[:i], sid) {
+			return false, netip.Addr{}
 		}
 	}
 	if local && (via[0] == own || via[len(via)-1] == own) || !v6 {

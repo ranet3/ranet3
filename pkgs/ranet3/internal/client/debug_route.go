@@ -156,8 +156,7 @@ func (c *Client) routeKernel(src, dst netip.Addr, iif string) *control.RouteKern
 	k.NoSource = src.IsValid() && !kernel.RouteGetTakesSource
 	if err != nil {
 		k.Err = err.Error()
-		var errno syscall.Errno
-		if errors.As(err, &errno) {
+		if errno, ok := errors.AsType[syscall.Errno](err); ok {
 			k.Errno = unix.ErrnoName(errno)
 		}
 	} else {

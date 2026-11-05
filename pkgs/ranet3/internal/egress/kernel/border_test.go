@@ -578,7 +578,7 @@ func TestBorderExemptionConflictUnderTwoInterfacesIsTwoReports(t *testing.T) {
 	derived.Conflicts = []egress.ExemptConflict{on("eth1")}
 	f.reconcile()
 	var ends []string
-	for _, line := range strings.Split(lines.String()[started:], "\n") {
+	for line := range strings.SplitSeq(lines.String()[started:], "\n") {
 		if strings.Contains(line, "antispoof no longer drops part of an exemption") {
 			ends = append(ends, line)
 		}

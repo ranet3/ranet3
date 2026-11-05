@@ -35,7 +35,7 @@ func TestTranslatorRecordsThePassesThatDidSomething(t *testing.T) {
 	be := &fakeBackend{}
 	forwards := true
 	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")},
-		Runtime{Hooks: egress.Hooks{Events: bus}, Forwarding: func() (bool, bool) { return forwards, true }}, be)
+		Runtime{Events: bus, Forwarding: func() (bool, bool) { return forwards, true }}, be)
 	tr.trigger = "sweep"
 	tr.reconcile()
 	tr.reconcile()
@@ -74,7 +74,7 @@ func TestTranslatorRecordsThePassesThatDidSomething(t *testing.T) {
 func TestTranslatorRecordsThePacketsTheLimitRefused(t *testing.T) {
 	bus := events.New()
 	be := &fakeBackend{flows: 3}
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{Hooks: egress.Hooks{Events: bus}}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{Events: bus}, be)
 	var want []string
 	for _, step := range []struct {
 		name    string
@@ -118,7 +118,7 @@ func TestTranslatorRecordsThePacketsTheLimitRefused(t *testing.T) {
 func TestFailedReadbackKeepsTheLastPassCounts(t *testing.T) {
 	bus := events.New()
 	be := &fakeBackend{flows: 3}
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{Hooks: egress.Hooks{Events: bus}}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}, Runtime{Events: bus}, be)
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestFailedReadbackKeepsTheLastPassCounts(t *testing.T) {
 // a running translator names what woke it for each pass it records, its first pass and the retry of a failed one
 func TestTranslatorNamesWhatWokeIt(t *testing.T) {
 	bus := events.New()
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}, Runtime{Hooks: egress.Hooks{Events: bus}}, &fakeBackend{failApply: true})
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}, Runtime{Events: bus}, &fakeBackend{failApply: true})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
@@ -203,7 +203,7 @@ func TestTranslatorNamesWhatWokeIt(t *testing.T) {
 func TestStoppedTranslatorWithdrawsUntilItIsStartedAgain(t *testing.T) {
 	bus := events.New()
 	be := &fakeBackend{}
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Hooks: egress.Hooks{Events: bus}}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: bus}, be)
 	var mu sync.Mutex
 	withdrawnWhenRetracted := -1
 	tr.rt.Republish = func() {
@@ -281,7 +281,7 @@ func TestStoppedTranslatorWithdrawsUntilItIsStartedAgain(t *testing.T) {
 // enabled is stored without the wake, which is how the select leaves a start whose wake it passed over for the tick
 func TestStartTheSweepReachedFirstIsStoppedAgain(t *testing.T) {
 	be := &fakeBackend{}
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Hooks: egress.Hooks{Events: events.New()}}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: events.New()}, be)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
@@ -328,7 +328,7 @@ func TestStartTheSweepReachedFirstIsStoppedAgain(t *testing.T) {
 // only the retry a failed pass takes can then withdraw the tables within it
 func TestStoppedTranslatorRetriesAWithdrawalThatFailed(t *testing.T) {
 	be := &fakeBackend{}
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Hooks: egress.Hooks{Events: events.New()}}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: events.New()}, be)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
@@ -367,7 +367,7 @@ func TestStoppedTranslatorRetriesAWithdrawalThatFailed(t *testing.T) {
 func TestTranslatorNamesTheSweep(t *testing.T) {
 	bus := events.New()
 	be := &fakeBackend{}
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Hooks: egress.Hooks{Events: bus}}, be)
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(sweepEvery)}, Runtime{Events: bus}, be)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
@@ -403,7 +403,7 @@ func TestTranslatorNamesTheSweep(t *testing.T) {
 // the sweep is out past the wait, so only the wake can run either pass
 func TestTranslatorNamesTheStopAndTheStart(t *testing.T) {
 	bus := events.New()
-	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Hooks: egress.Hooks{Events: bus}}, &fakeBackend{})
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: bus}, &fakeBackend{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- tr.Run(ctx) }()
