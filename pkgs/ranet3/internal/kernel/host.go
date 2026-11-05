@@ -38,6 +38,9 @@ type Host interface {
 	// there. Decoded, unlike Dump, because nothing is decided from the
 	// encoding on this side.
 	Addresses(index int) ([]netip.Prefix, error)
+	// Links reads every interface with every address it carries, which the
+	// network watch derives the host's links from
+	Links() ([]HostInterface, error)
 	// Lookup asks where one destination of one family goes. An exact mask asks
 	// for that key alone rather than for a longest-prefix match. See
 	// lookupDefault for why the difference decides the answer here.
@@ -59,6 +62,25 @@ type Host interface {
 // it apart from a lookup that went wrong: a family the host reaches nowhere
 // costs nothing, and a lookup that failed is reported.
 var ErrNoDefaultRoute = errors.New("kernel: the host has no default route")
+
+// HostInterface is one interface of the host with every address it carries
+type HostInterface struct {
+	Index int
+	Name  string
+	// Up, PointToPoint and Loopback are the interface flags of those names
+	Up, PointToPoint, Loopback bool
+	Addresses                  []HostAddress
+}
+
+// HostAddress is one address an interface carries, under the length of its netmask
+// Far is the address of the same family the kernel holds beside it in RTAX_BRD, the far end on a point-to-point link, invalid where it
+// holds none
+// Unready is an IPv6 address still proving itself unique, or found not to be
+type HostAddress struct {
+	Prefix  netip.Prefix
+	Far     netip.Addr
+	Unready bool
+}
 
 // RouteAnswer is the kernel's answer about one destination: the interface it
 // would leave by and the next hop it points at, the address invalid where it

@@ -7,7 +7,6 @@ package kernel
 
 import (
 	"errors"
-	"net"
 	"net/netip"
 )
 
@@ -27,42 +26,23 @@ func WatchNetwork(host Host, mesh string) (*NetworkWatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	reader := hostReader{host: host, mesh: index, interfaces: net.Interfaces}
+	reader := hostReader{host: host, mesh: index}
 	return newNetworkWatch(watcher.Changed(), reader.read, watcher.Close)
 }
 
-// hostReader reads the host's network through a Host, with the interface list apart so a test chooses it
+// hostReader reads the host's network through a Host
 type hostReader struct {
-	host       Host
-	mesh       int
-	interfaces func() ([]net.Interface, error)
+	host Host
+	mesh int
 }
 
 func (h hostReader) read() (NetworkState, error) {
-	interfaces, err := h.interfaces()
+	interfaces, err := h.host.Links()
 	if err != nil {
 		return NetworkState{}, err
 	}
-	var v4, v6 []netip.Addr
-	for _, device := range interfaces {
-		if device.Flags&net.FlagUp == 0 || device.Index == h.mesh {
-			continue
-		}
-		prefixes, err := h.host.Addresses(device.Index)
-		if err != nil {
-			return NetworkState{}, err
-		}
-		for _, prefix := range prefixes {
-			switch address := prefix.Addr().Unmap(); {
-			case !address.IsGlobalUnicast():
-			case address.Is4():
-				v4 = append(v4, address)
-			default:
-				v6 = append(v6, address)
-			}
-		}
-	}
-	state := NetworkState{IPv4: NetworkFamily{Addresses: addressSet(v4)}, IPv6: NetworkFamily{Addresses: addressSet(v6)}}
+	var state NetworkState
+	state.IPv4, state.IPv6 = hostLinks(interfaces, h.mesh)
 	if state.IPv4.Default, err = h.defaultRoute(netip.IPv4Unspecified()); err != nil {
 		return NetworkState{}, err
 	}

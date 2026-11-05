@@ -19,8 +19,11 @@ type DefaultRoute struct {
 }
 
 // NetworkFamily holds the default and the addresses the paths of one family off this host leave by
-// Addresses holds the global unicast addresses of the up interfaces outside the mesh, sorted and each once
-// Links holds each of those interfaces by name, sorted and each once, with its global unicast addresses of the family, and is empty on darwin
+// Addresses holds the addresses of Links, sorted and each once
+// Links holds every up interface outside the mesh, the loopback among them, by name, sorted and each once, with its global unicast addresses of the
+// family that are ready to send from, an IPv6 address still proving itself unique or found not to be left out
+// on Linux an IPv4 point-to-point address is a host and its far end's network a peer (upAddresses), and on darwin, where XNU routes an IPv4
+// address on a point-to-point or loopback link as a host and its far end as a host, both are hosts (hostLinks)
 type NetworkFamily struct {
 	Default   DefaultRoute
 	Addresses []netip.Addr
@@ -29,7 +32,7 @@ type NetworkFamily struct {
 
 // Link is one up interface outside the mesh, with the addresses of one family it carries
 // each prefix is an address under the length of the network it is on, sorted and each once
-// Peers is the far end of each point-to-point address, a network main routes by the link that holds none of its addresses, sorted and each once
+// Peers is the far end of each point-to-point address, a network the kernel routes by the link that holds none of its addresses, sorted and each once
 type Link struct {
 	Name     string
 	Prefixes []netip.Prefix

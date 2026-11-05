@@ -124,16 +124,6 @@ func prefixMask(prefix netip.Prefix) (netip.Addr, bool) {
 	return netip.AddrFromSlice(mask)
 }
 
-// maskBits is the reverse. A mask whose ones are not contiguous denotes no
-// prefix at all, which net.IPMask.Size reports as a zero total.
-func maskBits(mask netip.Addr) (int, bool) {
-	ones, total := net.IPMask(mask.AsSlice()).Size()
-	if total == 0 {
-		return 0, false
-	}
-	return ones, true
-}
-
 const (
 	// the sizes of the darwin address ioctl request structures. Each one is
 	// part of the ioctl number itself, so a structure this file builds at the
@@ -146,14 +136,20 @@ const (
 	// _IOW as <sys/ioccom.h> spells it. The group is 'i', for the interface
 	// ioctls.
 	iocIn        uintptr = 0x80000000
+	iocOut       uintptr = 0x40000000
 	iocParamMask uintptr = 0x1fff
 	iocGroupIf   uintptr = 'i'
 
-	// golang.org/x/sys/unix carries the IPv4 address ioctls but neither IPv6
-	// one, so _IOW('i', 26, struct in6_aliasreq) and
-	// _IOW('i', 25, struct in6_ifreq) are spelled out here.
-	siocAIfAddrIn6 = iocIn | (sizeofIn6AliasReq&iocParamMask)<<16 | iocGroupIf<<8 | 26
-	siocDIfAddrIn6 = iocIn | (sizeofIn6IfReq&iocParamMask)<<16 | iocGroupIf<<8 | 25
+	// golang.org/x/sys/unix carries the IPv4 address ioctls but no IPv6
+	// one, so _IOW('i', 26, struct in6_aliasreq),
+	// _IOW('i', 25, struct in6_ifreq) and _IOWR('i', 73, struct in6_ifreq) are spelled out here.
+	siocAIfAddrIn6  = iocIn | (sizeofIn6AliasReq&iocParamMask)<<16 | iocGroupIf<<8 | 26
+	siocDIfAddrIn6  = iocIn | (sizeofIn6IfReq&iocParamMask)<<16 | iocGroupIf<<8 | 25
+	siocGIfAFlagIn6 = iocIn | iocOut | (sizeofIn6IfReq&iocParamMask)<<16 | iocGroupIf<<8 | 73
+
+	// IN6_IFF_TENTATIVE and IN6_IFF_DUPLICATED of ia6_flags, which SIOCGIFAFLAG_IN6 reads
+	in6IffTentative  = 0x2
+	in6IffDuplicated = 0x4
 
 	// ND6_INFINITE_LIFETIME. An address nothing renews has to be permanent or
 	// nd6 expires it out from under the mesh.

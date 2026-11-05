@@ -6,6 +6,8 @@
 package kernel
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -42,6 +44,73 @@ func (runningKernel) Addresses(index int) ([]netip.Prefix, error) {
 		return nil, fmt.Errorf("kernel: dump the addresses of interface %d: %w", index, err)
 	}
 	return interfaceAddrs(index, rib)
+}
+
+// Links reads the interface list and one address dump of every interface
+// an IPv6 address gone between the dump and the read of its flags is taken as unready, and the event of its delete brings a read without it
+func (runningKernel) Links() ([]HostInterface, error) {
+	devices, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("kernel: list the interfaces: %w", err)
+	}
+	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeInterface, 0)
+	if err != nil {
+		return nil, fmt.Errorf("kernel: dump the interfaces' addresses: %w", err)
+	}
+	held := make(map[int][]HostAddress)
+	for len(rib) > 0 {
+		size := 0
+		if len(rib) >= 2 {
+			size = int(binary.NativeEndian.Uint16(rib))
+		}
+		if size < 4 || size > len(rib) {
+			return nil, errors.New("kernel: the address dump holds a message cut short")
+		}
+		if index, address, ok := decodeAddrMessage(rib[:size]); ok {
+			held[index] = append(held[index], address)
+		}
+		rib = rib[size:]
+	}
+	out := make([]HostInterface, 0, len(devices))
+	for _, device := range devices {
+		link := HostInterface{
+			Index: device.Index, Name: device.Name,
+			Up: device.Flags&net.FlagUp != 0, PointToPoint: device.Flags&net.FlagPointToPoint != 0, Loopback: device.Flags&net.FlagLoopback != 0,
+			Addresses: held[device.Index],
+		}
+		for i, address := range link.Addresses {
+			if !address.Prefix.Addr().Is6() || !address.Prefix.Addr().IsGlobalUnicast() {
+				continue
+			}
+			flags, err := addressFlags6(device.Name, address.Prefix.Addr())
+			switch {
+			case gone(err):
+				link.Addresses[i].Unready = true
+			case err != nil:
+				return nil, err
+			default:
+				link.Addresses[i].Unready = flags&(in6IffTentative|in6IffDuplicated) != 0
+			}
+		}
+		out = append(out, link)
+	}
+	return out, nil
+}
+
+// addressFlags6 reads ia6_flags of one IPv6 address on device, which the address dump does not carry (it carries ifa_flags)
+func addressFlags6(device string, address netip.Addr) (uint32, error) {
+	fd, err := controlSocket(unix.AF_INET6)
+	if err != nil {
+		return 0, err
+	}
+	defer unix.Close(fd)
+	request := make([]byte, sizeofIn6IfReq)
+	copy(request[:unix.IFNAMSIZ], device)
+	putSockaddrInet6(request[offIn6IfReqAddr:], address)
+	if err := ioctlRequest(fd, siocGIfAFlagIn6, request); err != nil {
+		return 0, fmt.Errorf("SIOCGIFAFLAG_IN6 on %s: %w", device, err)
+	}
+	return binary.NativeEndian.Uint32(request[offIn6IfReqAddr:]), nil
 }
 
 func (runningKernel) Lookup(destination, mask netip.Addr) (RouteAnswer, error) {

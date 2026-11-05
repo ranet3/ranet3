@@ -179,17 +179,6 @@ func upAddresses(replies []nlMessage, family uint8, up map[uint32]string) []Link
 	return out
 }
 
-// linkAddresses is every address links carry, in the form diffFamily walks
-func linkAddresses(links []Link) []netip.Addr {
-	var out []netip.Addr
-	for _, link := range links {
-		for _, prefix := range link.Prefixes {
-			out = append(out, prefix.Addr())
-		}
-	}
-	return addressSet(out)
-}
-
 // upDefault is the default of one family a dump of main holds leaving by a link in up, the one of lowest metric where there are several
 func upDefault(replies []nlMessage, family uint8, up map[uint32]string) DefaultRoute {
 	var best DefaultRoute

@@ -7,6 +7,7 @@ package client
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"slices"
@@ -50,6 +51,9 @@ type recordedKernel struct {
 	// once per start.
 	openSockets, openWatchers int
 	changed                   chan struct{}
+	// linksErr, where set, answers every read of the interfaces in place of
+	// the devices and the addresses assigned to them.
+	linksErr error
 }
 
 // recordedRoute is one entry, keyed by everything the kernel keys a route on:
@@ -139,6 +143,25 @@ func (k *recordedKernel) stillOpen() (sockets, watchers int) {
 
 func (k *recordedKernel) Addresses(index int) ([]netip.Prefix, error) {
 	return k.addresses(index), nil
+}
+
+// Links is every device up, a broadcast link, with the addresses assigned to
+// it, in the order of their indexes.
+func (k *recordedKernel) Links() ([]kernel.HostInterface, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.linksErr != nil {
+		return nil, k.linksErr
+	}
+	var out []kernel.HostInterface
+	for _, index := range slices.Sorted(maps.Keys(k.devices)) {
+		device := kernel.HostInterface{Index: index, Name: k.devices[index], Up: true}
+		for _, prefix := range k.assigned[index] {
+			device.Addresses = append(device.Addresses, kernel.HostAddress{Prefix: prefix})
+		}
+		out = append(out, device)
+	}
+	return out, nil
 }
 
 func (k *recordedKernel) InterfaceIndex(name string) (int, error) {
