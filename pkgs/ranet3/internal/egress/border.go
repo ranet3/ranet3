@@ -185,7 +185,7 @@ type BorderRuntime struct {
 	// a source this node owns or toward a destination a none class takes
 	Tun string
 	// Inside names the devices whose traffic the antispoof chain takes whatever
-	// it carries: the mesh tun and lo
+	// it carries: the mesh tun and the loopback link
 	Inside []string
 	// Sets derives what the table's sets hold, on each pass, from the
 	// configuration the pass runs, nil where overlay is not written. Nil holds
