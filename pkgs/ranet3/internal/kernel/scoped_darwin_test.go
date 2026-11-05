@@ -163,7 +163,7 @@ func TestDarwinLeavesARouteHoldingAnEndpointUnscoped(t *testing.T) {
 	}
 	covering := Route{Destination: prefix("2001:db8::/32")}
 	for _, families := range [][]Family{nil, {FamilyIPv6}} {
-		plat.cover(nil, families, nil)
+		plat.cover(nil, families, nil, hostTable{})
 		if plat.scopeRoute(covering) {
 			t.Errorf("covering %v, a /32 holding a peer's endpoint goes in scoped, so the Mac's own traffic misses all of it", families)
 		}

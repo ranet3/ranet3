@@ -33,8 +33,9 @@ const (
 	utunHeader = 4
 )
 
-// holeOverlay holds the mesh route each family's endpoint lies in, so row L6 leaves that route as it is
-var holeOverlay = prefixes(prefix("203.0.113.0/24"), prefix("2001:db8:100::/48"))
+// holeOverlay holds the mesh route each family's endpoint lies in, so row L6 leaves that route as it is, and a prefix
+// inside each family's holding
+var holeOverlay = prefixes(prefix("203.0.113.0/24"), prefix("2001:db8:100::/48"), prefix("192.0.2.240/28"), prefix("2001:db8:200:1f0::/60"))
 
 // holeFamilies are one family's routes and addresses each
 var holeFamilies = []struct {
@@ -42,19 +43,22 @@ var holeFamilies = []struct {
 	// wide is U's route inside the overlay and narrow the mesh's inside it, holding peer and neighbor
 	wide, narrow   string
 	peer, neighbor netip.Addr
-	// lan is U's route outside the overlay and inside the mesh's route inLAN, holding lanTarget
-	lan, inLAN string
-	lanTarget  netip.Addr
+	// lan is U's route holding the mesh's routes inLAN, outside the overlay, and holding, which holds a prefix of the
+	// overlay. lanTarget lies in inLAN, outside in holding outside the overlay, and inside in the overlay
+	lan, inLAN, holding        string
+	lanTarget, outside, inside netip.Addr
 }{
 	{
 		name: "IPv4", wide: "203.0.113.0/24", narrow: "203.0.113.0/25",
 		peer: netip.MustParseAddr("203.0.113.9"), neighbor: netip.MustParseAddr("203.0.113.10"),
-		lan: "192.0.2.0/24", inLAN: "192.0.2.0/25", lanTarget: netip.MustParseAddr("192.0.2.9"),
+		lan: "192.0.2.0/24", inLAN: "192.0.2.0/25", holding: "192.0.2.128/25",
+		lanTarget: netip.MustParseAddr("192.0.2.9"), outside: netip.MustParseAddr("192.0.2.130"), inside: netip.MustParseAddr("192.0.2.241"),
 	},
 	{
 		name: "IPv6", wide: "2001:db8:100::/48", narrow: "2001:db8:100::/56",
 		peer: netip.MustParseAddr("2001:db8:100::9"), neighbor: netip.MustParseAddr("2001:db8:100::a"),
-		lan: "2001:db8:200::/48", inLAN: "2001:db8:200::/56", lanTarget: netip.MustParseAddr("2001:db8:200::9"),
+		lan: "2001:db8:200::/48", inLAN: "2001:db8:200::/56", holding: "2001:db8:200:100::/56",
+		lanTarget: netip.MustParseAddr("2001:db8:200::9"), outside: netip.MustParseAddr("2001:db8:200:100::9"), inside: netip.MustParseAddr("2001:db8:200:1f0::9"),
 	},
 }
 
@@ -243,8 +247,11 @@ func carriedOut(fd int, target netip.Addr, payload []byte) bool {
 // ends at M unbound. The listed arm lists the endpoint, with the same
 // answers. The L6 arm puts a mesh route outside the overlay inside a route U
 // holds, longer than /0, and an unbound lookup of an address inside it ends at
-// U, as rule 5410 sends it on linux. The reconciler's withdrawal leaves both
-// utuns and the host's defaults as they were.
+// U, as rule 5410 sends it on linux. The arm around the overlay puts a mesh
+// route holding a prefix of the overlay inside that route of U's, and an
+// unbound lookup ends at U outside the prefix and at M inside it. The
+// reconciler's withdrawal leaves both utuns and the host's defaults as they
+// were.
 func TestDarwinHolesLetTheUnderlayPastALongerMeshRoute(t *testing.T) {
 	requireNetTest(t)
 	rig := newHoleRig(t)
@@ -282,6 +289,15 @@ func TestDarwinHolesLetTheUnderlayPastALongerMeshRoute(t *testing.T) {
 			rig.pass(t, family.inLAN)
 			if got := askRoute(t, family.lanTarget, 0); got != rig.u.index {
 				t.Errorf("an unbound RTM_GET for %s, inside U's %s and the mesh's %s outside the overlay, answers interface %d, want U's %d", family.lanTarget, family.lan, family.inLAN, got, rig.u.index)
+			}
+		})
+		t.Run(family.name+", row L6 around the overlay", func(t *testing.T) {
+			rig.listed, rig.sent = nil, nil
+			rig.pass(t, family.holding)
+			for address, want := range map[netip.Addr]int{family.outside: rig.u.index, family.inside: rig.m} {
+				if got := askRoute(t, address, 0); got != want {
+					t.Errorf("an unbound RTM_GET for %s, inside U's %s and the mesh's %s, which holds the overlay's %v, answers interface %d, want %d", address, family.lan, family.holding, holeOverlay, got, want)
+				}
 			}
 		})
 	}

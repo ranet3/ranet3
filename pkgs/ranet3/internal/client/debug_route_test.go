@@ -409,3 +409,33 @@ func TestDebugRouteNamesAPieceOfAHole(t *testing.T) {
 		}
 	}
 }
+
+// A lookup ending out of another link at a host's route, to a destination of
+// a mesh route the reconciler scoped beneath a route of the host's, names the
+// mesh's route and the host's, and one ending out of the tun, or on a node
+// whose reconciler scoped nothing there, does not
+func TestDebugRouteNamesAMeshRouteBeneathTheHosts(t *testing.T) {
+	dst := netip.MustParseAddr("192.0.2.9")
+	under := kernel.Beneath{Route: netip.MustParsePrefix("192.0.2.0/25"), Host: netip.MustParsePrefix("192.0.2.0/24")}
+	beneath := func(destination netip.Addr) (kernel.Beneath, bool) { return under, under.Route.Contains(destination) }
+	for _, c := range []struct {
+		name    string
+		device  string
+		beneath func(netip.Addr) (kernel.Beneath, bool)
+		named   bool
+	}{
+		{"the host's route out of another link", "en0", beneath, true},
+		{"a route out of the tun", "ranet0", beneath, false},
+		{"a reconciler reporting nothing beneath", "en0", nil, false},
+		{"a reconciler with nothing beneath there", "en0", func(netip.Addr) (kernel.Beneath, bool) { return kernel.Beneath{}, false }, false},
+	} {
+		route := kernel.MatchedRoute{Prefix: under.Host, Type: "unicast", NextHops: []kernel.NextHop{{Device: c.device}}}
+		client, _ := routeClient(t, route, nil, nil)
+		client.SetReconciler(Reconciler{Rules: client.reconcilerNow().Rules, Beneath: c.beneath})
+		info, err := client.DebugRoute(netip.Addr{}, dst, "", "")
+		named := info.Kernel.Beneath == under.Route && info.Kernel.BeneathHost == under.Host
+		if err != nil || named != c.named || !c.named && (info.Kernel.Beneath.IsValid() || info.Kernel.BeneathHost.IsValid()) {
+			t.Errorf("%s: the answer reads %+v, %v, want the mesh's route named %v", c.name, info.Kernel, err, c.named)
+		}
+	}
+}

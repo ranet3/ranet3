@@ -81,10 +81,10 @@ func testPlatform(t *testing.T, tbl Table, rt Runtime) (*routePlatform, *fakeRou
 		warned:   make(map[Route]bool),
 		pending:  make(map[Route]bool),
 		scoped:   make(map[netip.Prefix]netip.Prefix),
-		covering: make(map[netip.Prefix]bool),
-		occupied: make(map[occupiedKey]bool),
-		refused:  make(map[occupiedKey]bool),
-		ours:     make(map[occupiedKey]bool),
+		covering: make(map[routeKey]bool),
+		occupied: make(map[routeKey]bool),
+		refused:  make(map[routeKey]bool),
+		ours:     make(map[routeKey]bool),
 		// No address belongs to this interface unless a test says so, which
 		// makes "the source is not ours" the default rather than an accident
 		// of whatever the host running the suite happens to have configured.
@@ -1427,7 +1427,7 @@ func TestDarwinRefusesSettingsItCannotHonor(t *testing.T) {
 func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
 	plat, sock := testPlatform(t, Table{}, Runtime{})
 	families := []Family{FamilyIPv4, FamilyIPv6}
-	plat.cover(nil, families, nil)
+	plat.cover(nil, families, nil, hostTable{})
 	if _, err := plat.Routes(); err != nil {
 		t.Fatal(err)
 	}
@@ -1464,7 +1464,7 @@ func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
 	}
 
 	left, _ := testPlatform(t, Table{}, Runtime{})
-	left.cover(nil, families, nil)
+	left.cover(nil, families, nil, hostTable{})
 	inherited, err := left.ownedRoutes(dumpRIB(t, dumpEntry{index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC, dst: prefix("128.0.0.0/1"), gateway: ourGateway()}))
 	if err != nil {
 		t.Fatal(err)
@@ -1480,7 +1480,7 @@ func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
 // machine.
 func TestDarwinKeepsScopingWhatTheCoverDoesNotExplain(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
-	plat.cover(nil, []Family{FamilyIPv4, FamilyIPv6}, nil)
+	plat.cover(nil, []Family{FamilyIPv4, FamilyIPv6}, nil, hostTable{})
 	plat.addrs = func() ([]netip.Prefix, error) { return []netip.Prefix{prefix("2001:db8:1::5/128")}, nil }
 	sourced := Route{Destination: prefix("::/0"), Source: prefix("2001:db8:1::/48")}
 	if !plat.scopeRoute(sourced) {
@@ -1511,13 +1511,71 @@ func TestDarwinScopeFollowsTheModeAndTheFamily(t *testing.T) {
 		{"IPv6 left out of the mode", []Family{FamilyIPv4}},
 		{"IPv4 left out of the mode", []Family{FamilyIPv6}},
 	} {
-		plat.cover(nil, c.families, nil)
+		plat.cover(nil, c.families, nil, hostTable{})
 		for _, r := range captures {
 			want := !slices.Contains(c.families, familyOf(r.Destination.Addr()))
 			if got := plat.scopeRoute(r); got != want {
 				t.Errorf("%s: %s scoped %v, want %v", c.name, r.Destination, got, want)
 			}
 		}
+	}
+}
+
+// Row L6: a route of the mesh's outside the overlay beneath a route of the
+// host's longer than /0, unscoped and out of another interface, goes in
+// scoped, in mode off and in a covered family alike, and one inside the
+// overlay, one beneath a /0 alone, one beneath a scoped route or a route out
+// of the utun, does not. A member of the cover beneath such a route goes in
+// scoped and reads back as a member, so the cover converges.
+func TestDarwinScopesARouteBeneathAHostRouteOutsideTheOverlay(t *testing.T) {
+	hosts, overlay, examples := beneathExamples(testIndex)
+	for _, families := range [][]Family{nil, {FamilyIPv4, FamilyIPv6}} {
+		plat, _ := testPlatform(t, Table{}, Runtime{})
+		plat.cover(overlay, families, nil, hosts)
+		for destination, host := range examples {
+			r := Route{Destination: prefix(destination)}
+			got, ok := hosts.beneath(r, overlay)
+			if want := host != ""; ok != want || want && got != prefix(host) || plat.scopeRoute(r) != want {
+				t.Errorf("covering %v: %s lies beneath %s %v and is scoped %v, want beneath %q", families, destination, got, ok, plat.scopeRoute(r), host)
+			}
+		}
+		for _, r := range scopedAlready {
+			if got, ok := hosts.beneath(r, overlay); ok || !plat.scopeRoute(r) {
+				t.Errorf("covering %v: %+v lies beneath %s %v and is scoped %v, want scoped beneath none", families, r, got, ok, plat.scopeRoute(r))
+			}
+		}
+	}
+
+	plat, sock := testPlatform(t, Table{}, Runtime{})
+	families := []Family{FamilyIPv4}
+	plat.cover(overlay, families, nil, hosts)
+	if _, err := plat.Routes(); err != nil {
+		t.Fatal(err)
+	}
+	desired := coverDefaults([]Route{{Destination: prefix("0.0.0.0/0")}}, families, plat.scopes)
+	var entries []dumpEntry
+	for _, member := range desired {
+		if err := plat.AddRoute(member); err != nil {
+			t.Fatal(err)
+		}
+		written := sock.messages(t)
+		last := written[len(written)-1]
+		if scoped := last.Flags&unix.RTF_IFSCOPE != 0; scoped != prefix("0.0.0.0/1").Contains(member.Destination.Addr()) {
+			t.Errorf("the member %s went in scoped %v, want scoped exactly beneath 0.0.0.0/1", member.Destination, scoped)
+		}
+		entries = append(entries, dumpEntry{index: testIndex, flags: last.Flags, dst: member.Destination, gateway: ourGateway()})
+	}
+	actual, err := plat.ownedRoutes(dumpRIB(t, entries...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range actual {
+		if !r.Cover {
+			t.Errorf("%s, scoped %v, read back as an ordinary route", r.Destination, r.Scoped)
+		}
+	}
+	if add, del := diffRoutes(desired, actual, plat.scopes); len(add) != 0 || len(del) != 0 {
+		t.Fatalf("the cover did not converge: add %v, delete %v", add, del)
 	}
 }
 
@@ -1537,7 +1595,7 @@ func TestDarwinModeOffJudgesACaptureByTheOverlayInForce(t *testing.T) {
 		{"after a reload back", prefixes(short.Destination), false},
 	} {
 		for _, families := range [][]Family{nil, {FamilyIPv4}} {
-			plat.cover(c.overlay, families, nil)
+			plat.cover(c.overlay, families, nil, hostTable{})
 			if got := plat.scopeRoute(short); got != c.scoped {
 				t.Errorf("%s, covering %v: %s scoped %v, want %v", c.name, families, short.Destination, got, c.scoped)
 			}
@@ -1585,10 +1643,11 @@ func TestDarwinReadsItsAddressesOncePerPass(t *testing.T) {
 // reads the route back as the member, and every pass after that deletes and
 // reinstalls it. A member that leaves the table some other way, deleted by
 // hand or flushed with its interface, is forgotten by the first dump without
-// it, for the same reason.
+// it, for the same reason. A member row L6 scopes is forgotten at its scoped
+// key.
 func TestDarwinForgetsAMemberItWithdrew(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
-	plat.cover(nil, bothFamilies, nil)
+	plat.cover(nil, bothFamilies, nil, hostTable{})
 	member := Route{Destination: prefix("128.0.0.0/1"), Cover: true}
 	if err := plat.AddRoute(member); err != nil {
 		t.Fatal(err)
@@ -1632,6 +1691,30 @@ func TestDarwinForgetsAMemberItWithdrew(t *testing.T) {
 	}
 	if len(actual) != 1 || actual[0].Cover {
 		t.Errorf("the route installed where a member left the table unasked reads back as %v", actual)
+	}
+
+	// a member scoped beneath a route of the host's, as row L6, is forgotten at its scoped key
+	plat.cover(nil, bothFamilies, nil, hostTable{mesh: testIndex, routes: []hostRoute{{destination: prefix("0.0.0.0/1"), index: testIndex + 1}}})
+	beneath := Route{Destination: prefix("32.0.0.0/3"), Cover: true}
+	if err := plat.AddRoute(beneath); err != nil {
+		t.Fatal(err)
+	}
+	beneath.Scoped = true
+	if err := plat.DelRoute(beneath); err != nil {
+		t.Fatal(err)
+	}
+	scoped := Route{Destination: beneath.Destination}
+	if err := plat.AddRoute(scoped); err != nil {
+		t.Fatal(err)
+	}
+	actual, err = plat.ownedRoutes(dumpRIB(t, dumpEntry{
+		index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC | unix.RTF_IFSCOPE, dst: scoped.Destination, gateway: ourGateway(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actual) != 1 || actual[0].Cover || !actual[0].Scoped {
+		t.Errorf("the route installed scoped where a scoped member was withdrawn reads back as %v", actual)
 	}
 }
 
@@ -1696,7 +1779,7 @@ func TestDarwinSkipsARouteOfABareFamilyUnwritten(t *testing.T) {
 	zero := Route{Destination: prefix("::/0"), Metric: defaultIPv6Metric}
 	for pass := range 2 {
 		plat.rotateWarnings()
-		plat.cover(nil, nil, []Family{FamilyIPv6})
+		plat.cover(nil, nil, []Family{FamilyIPv6}, hostTable{})
 		if err := plat.AddRoute(zero); !errors.Is(err, errRouteSkipped) {
 			t.Fatalf("pass %d: a route of a bare family reported %v", pass, err)
 		}
@@ -1708,7 +1791,7 @@ func TestDarwinSkipsARouteOfABareFamilyUnwritten(t *testing.T) {
 		t.Errorf("two passes warned %d times, want once: %s", n, logs.String())
 	}
 	plat.rotateWarnings()
-	plat.cover(nil, nil, []Family{FamilyIPv4})
+	plat.cover(nil, nil, []Family{FamilyIPv4}, hostTable{})
 	if err := plat.AddRoute(zero); err != nil || len(sock.sent) != 1 {
 		t.Errorf("with IPv4 alone bare the route answered %v and wrote %d messages, want one", err, len(sock.sent))
 	}

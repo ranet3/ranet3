@@ -1,0 +1,4 @@
+Packet  from no source to 192.0.2.9, this host's own
+Rule    this platform has no policy rules
+Route   192.0.2.0/24, unicast, dev en1, ahead of the mesh's route 192.0.2.0/25, which goes in scoped to the mesh's tun inside the host's route 192.0.2.0/24 as Linux puts the host's routes longer than /0 first
+Leaves  by en1, outside the mesh

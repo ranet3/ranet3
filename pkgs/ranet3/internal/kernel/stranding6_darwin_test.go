@@ -141,7 +141,7 @@ func testTUNPlatform(t *testing.T, name string) *routePlatform {
 	}
 	t.Cleanup(func() { _ = opened.Close() })
 	plat := opened.(*routePlatform)
-	plat.cover(nil, bothFamilies, nil)
+	plat.cover(nil, bothFamilies, nil, hostTable{})
 	return plat
 }
 

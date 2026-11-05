@@ -172,6 +172,11 @@ func (c *Client) routeKernel(src, dst netip.Addr, iif string) *control.RouteKern
 				k.CutFrom, k.CutAround = hole.Route, hole.Endpoints
 			}
 		}
+		if !k.IntoTun && reconciler.Beneath != nil {
+			if beneath, ok := reconciler.Beneath(dst); ok {
+				k.Beneath, k.BeneathHost = beneath.Route, beneath.Host
+			}
+		}
 	}
 	c.explainRoute(k, dst, iif, route, err)
 	dump := c.ruleDump

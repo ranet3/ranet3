@@ -36,6 +36,8 @@ type Reconciler struct {
 	Covers func(netip.Prefix) bool
 	// Holes reports the hole its last pass cut a piece at a destination from, for the route view
 	Holes func(netip.Prefix) (kernel.Hole, bool)
+	// Beneath reports the longest route its last pass scoped beneath a route of the host's holding a destination, for the route view
+	Beneath func(netip.Addr) (kernel.Beneath, bool)
 }
 
 // ReconcilerOf is routes as the node reads and drives it, every field set
@@ -51,6 +53,7 @@ func ReconcilerOf(routes *kernel.Reconciler) Reconciler {
 		Resolvers: routes.FallbackResolvers,
 		Covers:    routes.CoverInstalled,
 		Holes:     routes.HoleAt,
+		Beneath:   routes.BeneathAt,
 	}
 }
 

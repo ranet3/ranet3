@@ -30,7 +30,8 @@ func routeRule(family string, priority, table uint32, protocol uint8, owned bool
 // none, one no rule fits, one from a source the host may not hold beside an
 // unreachable rule and an IPv4 and an IPv6 EINVAL past a lookup, this host's
 // own packet into the tun in mode 2, darwin's own packet by a piece of a mesh
-// route cut around an endpoint and to that endpoint, and the routes of no table entry the
+// route cut around an endpoint and to that endpoint, darwin's own packet by a
+// host's route a mesh route goes in scoped beneath, and the routes of no table entry the
 // kernel makes for this host's multicast, its packet to 0.0.0.0, an arrival
 // to the limited broadcast, and an arrival to a group beyond the link with
 // multicast routing off, on and unread and to one on the link. A session's
@@ -112,6 +113,12 @@ func routeFixtures() map[string][]RouteInfo {
 	darwinEndpoint := RouteInfo{Dst: netip.MustParseAddr("203.0.113.9"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
 		RuleErr: "this platform has no policy rules", Route: netip.MustParsePrefix("128.0.0.0/1"), Type: "unicast",
 		NextHops: []RouteNextHop{{Dev: "utun4"}},
+	}}
+	// the mesh's 192.0.2.0/25, outside the overlay, scoped beneath the host's 192.0.2.0/24 out of en1
+	darwinBeneath := RouteInfo{Dst: netip.MustParseAddr("192.0.2.9"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
+		RuleErr: "this platform has no policy rules", Route: netip.MustParsePrefix("192.0.2.0/24"), Type: "unicast",
+		NextHops: []RouteNextHop{{Dev: "en1"}},
+		Beneath:  netip.MustParsePrefix("192.0.2.0/25"), BeneathHost: netip.MustParsePrefix("192.0.2.0/24"),
 	}}
 	darwinUnrouted := RouteInfo{Src: netip.MustParseAddr("192.0.2.9"), Dst: netip.MustParseAddr("203.0.113.1"), Arrival: ArrivalLocal, Kernel: &RouteKernel{
 		RuleErr: "this platform has no policy rules", NoSource: true,
@@ -333,6 +340,7 @@ func routeFixtures() map[string][]RouteInfo {
 		"route-darwin":         {darwinArrival, darwinOwn, darwinUnrouted, darwinUnspecified},
 		"route-darwin-exit":    {darwinCover, darwinLeftOut},
 		"route-darwin-hole":    {darwinPiece, darwinEndpoint},
+		"route-darwin-l6":      {darwinBeneath},
 		"route-no-rule":        {unrouted, unsourced, unfit, unheld, refused4, blackhole6},
 		"route-into-tun":       {intoTun},
 		"route-no-entry":       {multicast, unspecified, broadcast, joined, routed, routingUnread, allHosts},

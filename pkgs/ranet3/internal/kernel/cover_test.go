@@ -172,24 +172,30 @@ func TestCoverWithholdsWhatALongerOrEqualUnscopedRouteHolds(t *testing.T) {
 }
 
 // coveringKernel is the fake kernel on a platform that asks for the cover and
-// scopes what darwin's scopeRoute scopes: a hold, a route from a source, and a route that counts as a default
-// under the overlay handed in, in a family the pass does not cover. It holds
-// each route under the scope it gives it, as darwin's dump reads it back.
+// scopes what darwin's scopeRoute scopes: a hold, a route from a source, a
+// route beneath a route of the host's handed in, as row L6, and a route that
+// counts as a default under the overlay handed in, in a family the pass does
+// not cover. It holds each route under the scope it gives it, as darwin's dump
+// reads it back.
 type coveringKernel struct {
 	*fakeKernel
 	overlay  []schema.Prefix
 	families []Family
+	hosts    hostTable
 	// bare holds the families the last pass handed cover, whose routes
 	// darwin's AddRoute skips and this fake installs all the same
 	bare []Family
 }
 
-func (k *coveringKernel) cover(overlay []schema.Prefix, families, bare []Family) {
-	k.overlay, k.families, k.bare = overlay, families, bare
+func (k *coveringKernel) cover(overlay []schema.Prefix, families, bare []Family, hosts hostTable) {
+	k.overlay, k.families, k.bare, k.hosts = overlay, families, bare, hosts
 }
 
 func (k *coveringKernel) scopes(r Route) bool {
+	_, beneath := k.hosts.beneath(r, k.overlay)
 	switch {
+	case beneath:
+		return true
 	case r.Cover:
 		return false
 	case r.Unreachable || r.Source.IsValid():

@@ -180,6 +180,12 @@ type RouteKernel struct {
 	// mesh's
 	CutFrom   netip.Prefix `json:"cut_from,omitzero"`
 	CutAround []netip.Addr `json:"cut_around,omitempty"`
+	// Beneath is the mesh's route holding Dst that the reconciler's last pass
+	// installed scoped to the mesh's tun inside BeneathHost, a route of the
+	// host's longer than /0 out of another interface, on macOS, so an unbound
+	// lookup ends by the host's routes there, as Linux's rule 5410 ends it
+	Beneath     netip.Prefix `json:"beneath,omitzero"`
+	BeneathHost netip.Prefix `json:"beneath_host,omitzero"`
 	// NoSource is a lookup made without Src, which this platform's lookup does
 	// not take, as XNU's does not
 	NoSource bool `json:"no_source,omitempty"`
@@ -599,6 +605,9 @@ func routeLine(k RouteKernel) string {
 			around[i] = address.String()
 		}
 		route.WriteString(", a piece of the mesh's route " + k.CutFrom.String() + " cut around " + strings.Join(around, " ") + ", which the underlay sends to by the host's own route")
+	}
+	if k.Beneath.IsValid() {
+		route.WriteString(", ahead of the mesh's route " + k.Beneath.String() + ", which goes in scoped to the mesh's tun inside the host's route " + k.BeneathHost.String() + " as Linux puts the host's routes longer than /0 first")
 	}
 	if k.NoEntry {
 		route.WriteString(", the kernel's own for this destination, with no table entry behind it")

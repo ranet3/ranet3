@@ -105,12 +105,15 @@ func holeCases() hegel.Generator[holeCase] {
 				}
 			}
 		}
-		// a route at the key of a piece a nested route is cut into, scoped or not, which the piece gives way to only
-		// where it is unscoped
-		if len(nested) > 0 && hegel.Draw(tc, hegel.WeightedBooleans(1.0/2)) {
+		// a route at the key of a piece a nested route is cut into, one scoped and one not, which the piece gives way to
+		// only where it is unscoped
+		if len(nested) > 0 {
 			at := nested[hegel.Draw(tc, pbt.Spanning(0, len(nested)-1))]
-			if pieces := without(at.route, []netip.Addr{at.endpoint}); len(pieces) > 0 {
-				c.add(Route{Destination: pieces[hegel.Draw(tc, pbt.Spanning(0, len(pieces)-1))]}, hegel.Draw(tc, hegel.Booleans()))
+			pieces := without(at.route, hostPrefixes(at.endpoint))
+			for _, scoped := range []bool{true, false} {
+				if len(pieces) > 0 && hegel.Draw(tc, hegel.WeightedBooleans(3.0/4)) {
+					c.add(Route{Destination: pieces[hegel.Draw(tc, pbt.Spanning(0, len(pieces)-1))]}, scoped)
+				}
 			}
 		}
 		slices.SortFunc(c.endpoints, netip.Addr.Compare)
@@ -224,7 +227,7 @@ func TestHolesLetEachEndpointPastTheMesh(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		c := hegel.Draw(ht, holeCases())
 		scoped := func(r Route) bool { return c.scoped[r] }
-		out, holes := cutHoles(c.desired, scoped, c.endpoints, c.table)
+		out, holes := cutHoles(c.desired, scoped, c.endpoints, c.table, nil)
 		var unscopedIn, unscopedOut []Route
 		for _, r := range c.desired {
 			if !scoped(r) {

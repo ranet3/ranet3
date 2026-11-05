@@ -375,8 +375,8 @@ type Route struct {
 	// Unreachable.
 	Throw bool
 	// Cover marks a member of the zero-free cover a zero route goes in as (see
-	// coverDefaults). It is never scoped, and a dump reads it back only for a
-	// member this process installed.
+	// coverDefaults). It is scoped only beneath a route of the host's, as row
+	// L6, and a dump reads it back only for a member this process installed.
 	Cover bool
 }
 
@@ -670,6 +670,9 @@ type Reconciler struct {
 	// cutAround is the endpoints the last pass cut out of the mesh's routes,
 	// so a change is reported once
 	cutAround []netip.Addr
+	// beneath is the routes the last pass scoped beneath a route of the
+	// host's, as row L6, so a change is reported once
+	beneath []netip.Prefix
 	// memberless holds the zero routes a cover installs as nothing that the
 	// last pass reported, rebuilt each pass, so a route the mesh keeps
 	// announcing costs one log line
@@ -784,6 +787,8 @@ type Stats struct {
 	Members []netip.Prefix
 	// Holes is each route the last pass that listed the routes cut around an endpoint, with the pieces it wanted in its place
 	Holes []Hole
+	// Beneath is each route the last pass that listed the routes wanted scoped beneath a route of the host's, as row L6
+	Beneath []Beneath
 	// Lookups holds the lookups the last pass whose batch answered asked of
 	// the kernel to find another program's rule ahead of the mesh's
 	Lookups []Lookup
@@ -817,6 +822,18 @@ func (r *Reconciler) HoleAt(destination netip.Prefix) (Hole, bool) {
 		}
 	}
 	return Hole{}, false
+}
+
+// BeneathAt reports the longest route the last pass scoped beneath a route of
+// the host's, as row L6, holding destination
+func (r *Reconciler) BeneathAt(destination netip.Addr) (Beneath, bool) {
+	var best Beneath
+	for _, b := range r.Stats().Beneath {
+		if b.Route.Contains(destination) && (!best.Route.IsValid() || b.Route.Bits() > best.Route.Bits()) {
+			best = b
+		}
+	}
+	return best, best.Route.IsValid()
 }
 
 // New checks the capability, fills in its defaults, resolves it against the
@@ -1413,9 +1430,16 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	// nothing rather than the counts of the last pass that succeeded. The
 	// members stay, as r.installed does, since the cover that pass left stays
 	// installed.
-	r.routePass = Stats{Members: r.routePass.Members, Holes: r.routePass.Holes}
-	if p, ok := r.plat.(coverer); ok {
-		p.cover(r.rt.Overlay, families, addressless)
+	r.routePass = Stats{Members: r.routePass.Members, Holes: r.routePass.Holes, Beneath: r.routePass.Beneath}
+	// read once, so the scope of every route of the pass and its holes answer
+	// from one generation
+	var hosts hostTable
+	if r.rt.Selection != nil {
+		hosts = r.rt.Selection.table()
+	}
+	cover, _ := r.plat.(coverer)
+	if cover != nil {
+		cover.cover(r.rt.Overlay, families, addressless, hosts)
 	}
 	actual, err := r.plat.Routes()
 	if err != nil {
@@ -1428,6 +1452,14 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	captured := slices.ContainsFunc(actual, r.captures)
 	covering, scopes := len(families) > 0, r.platformScopes()
 	scoped := func(route Route) bool { return route.Scoped || scopes != nil && scopes(route) }
+	// A route row L6 scopes lies outside the overlay beneath a route of the
+	// host's, and so does a member at its key, which L6 scopes to the same key
+	// on darwin, so the route withholds that member as an unscoped one does.
+	// Only a route scoped apart from L6 withholds none.
+	apart := func(route Route) bool {
+		_, l6 := hosts.beneath(route, r.rt.Overlay)
+		return scoped(route) && !l6
+	}
 	// A member is withheld only for a route the kernel holds once the pass has
 	// added, so a route refused last pass withholds nothing while it is tried
 	// again, and one that fails in this pass hands its members back. The key
@@ -1443,11 +1475,10 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 			unheld[route] = true
 		}
 	}
-	unmet := func(route Route) bool { return scoped(route) || unheld[route] }
-	cut := func(routes []Route) ([]Route, []Hole) { return routes, nil }
-	if r.rt.Selection != nil {
-		table, endpoints := r.rt.Selection.table(), r.endpoints()
-		cut = func(routes []Route) ([]Route, []Hole) { return cutHoles(routes, scoped, endpoints, table) }
+	unmet := func(route Route) bool { return apart(route) || unheld[route] }
+	endpoints := r.endpoints()
+	cut := func(routes []Route) ([]Route, []Hole) {
+		return cutHoles(routes, scoped, endpoints, hosts, r.rt.Overlay)
 	}
 	bare := desired
 	// After the capture grace check, which judges the zero route whole: a
@@ -1460,6 +1491,14 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		dropped = r.reportMemberless(bare, families)
 	}
 	desired, holes := cut(desired)
+	var beneath []Beneath
+	for _, route := range desired {
+		if host, ok := hosts.beneath(route, r.rt.Overlay); ok {
+			beneath = append(beneath, Beneath{Route: route.Destination, Host: host})
+		}
+	}
+	slices.SortFunc(beneath, func(a, b Beneath) int { return comparePrefixes(a.Route, b.Route) })
+	beneath = slices.Compact(beneath)
 	wanted := map[Route]bool{}
 	for _, route := range desired {
 		if route.Cover {
@@ -1506,7 +1545,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	var refused map[Route]bool
 	for i := 0; i < len(add); i++ {
 		route := add[i]
-		if route.Cover && withheld(route.Destination, heldRoutes(), scoped) {
+		if route.Cover && withheld(route.Destination, heldRoutes(), apart) {
 			desiredCount--
 			continue
 		}
@@ -1556,7 +1595,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 			continue
 		}
 		broke := broken[familyOf(route.Destination.Addr())]
-		replaced := wanted[route] && withheld(route.Destination, ordinary, scoped)
+		replaced := wanted[route] && withheld(route.Destination, ordinary, apart)
 		if !broke && !replaced {
 			continue
 		}
@@ -1596,6 +1635,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	r.routePass = Stats{
 		Members:   members,
 		Holes:     holes,
+		Beneath:   beneath,
 		Desired:   desiredCount,
 		Installed: len(actual) - removed + added,
 		Skipped:   skipped,
@@ -1605,47 +1645,57 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		Path:      r.pathPass(held),
 	}
 	r.reportCover(r.routePass.Cover)
-	r.reportUnderlay(holes)
+	r.reportUnderlay(holes, beneath)
 	return errors.Join(errs...)
 }
 
 // reportUnderlay logs and records the endpoints a pass began or stopped
-// cutting out of the mesh's routes, once for each change of the set
-func (r *Reconciler) reportUnderlay(holes []Hole) {
-	var now []netip.Addr
+// cutting out of the mesh's routes and the routes it began or stopped scoping
+// beneath the host's, once for each change of either set
+func (r *Reconciler) reportUnderlay(holes []Hole, beneath []Beneath) {
+	var around []netip.Addr
 	for _, hole := range holes {
-		now = append(now, hole.Endpoints...)
+		around = append(around, hole.Endpoints...)
 	}
-	slices.SortFunc(now, netip.Addr.Compare)
-	now = slices.Compact(now)
-	cut, restored := addrsOutside(now, r.cutAround), addrsOutside(r.cutAround, now)
-	r.cutAround = now
-	if len(cut) == 0 && len(restored) == 0 {
+	slices.SortFunc(around, netip.Addr.Compare)
+	around = slices.Compact(around)
+	var under []netip.Prefix
+	for _, b := range beneath {
+		under = append(under, b.Route)
+	}
+	began, restored := outside(around, r.cutAround), outside(r.cutAround, around)
+	scoped, unscoped := outside(under, r.beneath), outside(r.beneath, under)
+	r.cutAround, r.beneath = around, under
+	if len(began) == 0 && len(restored) == 0 && len(scoped) == 0 && len(unscoped) == 0 {
 		return
 	}
-	slog.Info("kernel changed the endpoints it cuts out of the mesh's routes", "cut", addrList(cut), "restored", addrList(restored))
-	r.rt.Events.Emit("kernel.underlay", "", slog.String("cut", addrList(cut)), slog.String("restored", addrList(restored)))
+	attrs := []slog.Attr{
+		slog.String("cut", listed(began)), slog.String("restored", listed(restored)),
+		slog.String("scoped", listed(scoped)), slog.String("unscoped", listed(unscoped)),
+	}
+	slog.LogAttrs(context.Background(), slog.LevelInfo, "kernel changed the endpoints it cuts out of the mesh's routes or the routes it scopes beneath the host's", attrs...)
+	r.rt.Events.Emit("kernel.underlay", "", attrs...)
 }
 
-// addrsOutside is each address of these that others lacks
-func addrsOutside(these, others []netip.Addr) []netip.Addr {
-	var out []netip.Addr
-	for _, address := range these {
-		if !slices.Contains(others, address) {
-			out = append(out, address)
+// outside is each item of these that others lacks
+func outside[T comparable](these, others []T) []T {
+	var out []T
+	for _, item := range these {
+		if !slices.Contains(others, item) {
+			out = append(out, item)
 		}
 	}
 	return out
 }
 
-// addrList is addresses as an event's attribute carries them, none for none
-func addrList(addresses []netip.Addr) string {
-	if len(addresses) == 0 {
+// listed is items as an event's attribute carries them, none for none
+func listed[T fmt.Stringer](items []T) string {
+	if len(items) == 0 {
 		return "none"
 	}
-	names := make([]string, len(addresses))
-	for i, address := range addresses {
-		names[i] = address.String()
+	names := make([]string, len(items))
+	for i, item := range items {
+		names[i] = item.String()
 	}
 	return strings.Join(names, " ")
 }

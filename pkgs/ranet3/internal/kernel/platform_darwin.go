@@ -75,9 +75,10 @@ type routePlatform struct {
 	// correctly once, and its source is never taken from its shape alone.
 	scoped map[netip.Prefix]netip.Prefix
 	// covering holds the cover members this process installed, which the
-	// FIB cannot tell from a route at the same destination. Kept the way
-	// scoped is: only successful installs, pruned by every dump.
-	covering map[netip.Prefix]bool
+	// FIB cannot tell from a route at the same key, by key, since row L6
+	// scopes a member beneath a route of the host's. Kept the way scoped is:
+	// only successful installs, pruned by every dump.
+	covering map[routeKey]bool
 
 	// warned holds the source-specific routes already reported and pending
 	// the ones reported under the current dump. Routes starts every reconcile
@@ -87,10 +88,14 @@ type routePlatform struct {
 
 	// occupied remembers the keys another program already holds, so a
 	// route that can never install is reported once rather than every pass.
-	occupied map[occupiedKey]bool
+	// It is keyed as the FIB keys a route, by destination and scope: keyed by
+	// the destination alone, a plain route installing successfully would
+	// forget that a foreign scoped route holds the same destination, and the
+	// next dump would then report that route as ours and withdraw it.
+	occupied map[routeKey]bool
 	// refused holds the keys this pass watched the kernel refuse, which
 	// become occupied at the start of the next one.
-	refused map[occupiedKey]bool
+	refused map[routeKey]bool
 	// ours is the keys the kernel holds for this interface: what the last dump
 	// reported as ours, plus what has installed since. EEXIST says only that
 	// the key is taken, not by whom, and a pass that repairs a partial apply
@@ -98,7 +103,7 @@ type routePlatform struct {
 	// the reconciler recorded its own route as another program's, stopped
 	// reporting it in the dump, re-added it on every pass and could never
 	// withdraw it.
-	ours map[occupiedKey]bool
+	ours map[routeKey]bool
 
 	// addrs replaces the interface dump when set. The write side already goes
 	// through the rtSocket seam, but without the read side a test cannot reach the
@@ -113,6 +118,9 @@ type routePlatform struct {
 	// pass, so every scope decision of a pass reads the same two
 	overlay []schema.Prefix
 	covered []Family
+	// hosts is the host's routes as cover handed them to the current pass,
+	// which row L6 reads
+	hosts hostTable
 	// bare is each family the tun holds no address of, as cover handed it to
 	// the current pass. The kernel refuses a route of such a family out of the
 	// tun with ENETUNREACH, scoped or not (TestDarwinRouteOfABareFamilyIsSkipped)
@@ -148,11 +156,11 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 	plat := &routePlatform{
 		rt: rt, index: index, host: host,
 		scoped:   make(map[netip.Prefix]netip.Prefix),
-		covering: make(map[netip.Prefix]bool),
+		covering: make(map[routeKey]bool),
 		warned:   make(map[Route]bool),
-		occupied: make(map[occupiedKey]bool),
-		refused:  make(map[occupiedKey]bool),
-		ours:     make(map[occupiedKey]bool),
+		occupied: make(map[routeKey]bool),
+		refused:  make(map[routeKey]bool),
+		ours:     make(map[routeKey]bool),
 		pending:  make(map[Route]bool),
 	}
 	if err := plat.open(); err != nil {
@@ -225,7 +233,7 @@ func (p *routePlatform) rotateWarnings() {
 	// record, and two such passes would empty it. On this platform that also
 	// clears the exception decodeRoute reads, so a foreign key could be
 	// adopted and reach a delete list.
-	p.occupied, p.refused = p.refused, make(map[occupiedKey]bool, len(p.refused))
+	p.occupied, p.refused = p.refused, make(map[routeKey]bool, len(p.refused))
 }
 
 func (p *routePlatform) Routes() ([]Route, error) {
@@ -252,27 +260,27 @@ func (p *routePlatform) ownedRoutes(rib []byte) ([]Route, error) {
 	p.rotateWarnings()
 	var out []Route
 	stillScoped := make(map[netip.Prefix]bool, len(p.scoped))
-	stillCovering := make(map[netip.Prefix]bool, len(p.covering))
+	stillHeld := make(map[routeKey]bool, len(messages))
 	// Rebuilt rather than added to, so a route another program took over
 	// between two passes stops being claimed as ours and is reported as held
 	// the next time an install of it is refused.
-	p.ours = make(map[occupiedKey]bool, len(p.ours))
+	p.ours = make(map[routeKey]bool, len(p.ours))
 	for _, message := range messages {
 		decoded, ok := p.decodeRoute(message)
 		if !ok {
 			continue
 		}
 		out = append(out, decoded)
-		p.ours[occupiedKey{destination: decoded.Destination, scoped: decoded.Scoped}] = true
+		key := routeKey{destination: decoded.Destination, scoped: decoded.Scoped}
+		p.ours[key] = true
+		stillHeld[key] = true
 		if decoded.Scoped {
 			stillScoped[decoded.Destination] = true
-		} else {
-			stillCovering[decoded.Destination] = true
 		}
 	}
-	for destination := range p.covering {
-		if !stillCovering[destination] {
-			delete(p.covering, destination)
+	for key := range p.covering {
+		if !stillHeld[key] {
+			delete(p.covering, key)
 		}
 	}
 	// p.scoped stands in for a source the FIB cannot hold, so it is a cache of
@@ -310,17 +318,6 @@ const skipRouteFlags = unix.RTF_MULTICAST | unix.RTF_BROADCAST |
 	unix.RTF_LOCAL | unix.RTF_WASCLONED | unix.RTF_LLINFO |
 	unix.RTF_BLACKHOLE | unix.RTF_GATEWAY
 
-// occupiedKey is the pair the darwin FIB keys a route by: the destination,
-// and whether it is scoped to an interface. Recording only the
-// destination let an unrelated write to the other key clear the record: a
-// plain route installing successfully would forget that a foreign scoped route
-// holds the same destination, and the next dump would then report that route
-// as ours and withdraw it.
-type occupiedKey struct {
-	destination netip.Prefix
-	scoped      bool
-}
-
 // decodeRoute keeps only the routes this reconciler owns. Everything else in
 // the dump belongs to somebody else, so it is dropped here and can never reach
 // a delete list.
@@ -349,7 +346,7 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 		return Route{}, false
 	}
 	scoped := rm.Flags&unix.RTF_IFSCOPE != 0
-	if _, tracked := p.scoped[prefix]; !tracked && p.occupied[occupiedKey{destination: prefix, scoped: scoped}] {
+	if _, tracked := p.scoped[prefix]; !tracked && p.occupied[routeKey{destination: prefix, scoped: scoped}] {
 		// An install this process watched the kernel refuse, so another writer
 		// holds this key and reporting the route as ours would withdraw it on
 		// the next pass. The row's own scope is the one checked, because the
@@ -400,7 +397,7 @@ func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 		// leave the one it was asked for.
 		Scoped:      scoped,
 		Unreachable: rm.Flags&unix.RTF_REJECT != 0,
-		Cover:       !scoped && p.covering[prefix],
+		Cover:       p.covering[routeKey{destination: prefix, scoped: scoped}],
 	}, true
 }
 
@@ -528,7 +525,7 @@ func (p *routePlatform) AddRoute(r Route) error {
 		if !errors.Is(err, unix.EEXIST) {
 			return err
 		}
-		key := occupiedKey{destination: r.Destination, scoped: p.scopeRoute(r)}
+		key := routeKey{destination: r.Destination, scoped: p.scopeRoute(r)}
 		if p.ours[key] {
 			// Already installed out of this interface, so the key is taken by
 			// this reconciler and nothing is wrong. It is still reported as
@@ -551,7 +548,7 @@ func (p *routePlatform) AddRoute(r Route) error {
 		}
 		return errRouteSkipped
 	}
-	installed := occupiedKey{destination: r.Destination, scoped: p.scopeRoute(r)}
+	installed := routeKey{destination: r.Destination, scoped: p.scopeRoute(r)}
 	// a key another program held when an earlier add of this pass was
 	// refused is this process's own now, so the next dump has to report it
 	delete(p.occupied, installed)
@@ -565,7 +562,7 @@ func (p *routePlatform) AddRoute(r Route) error {
 		p.scoped[r.Destination] = r.Source
 	}
 	if r.Cover {
-		p.covering[r.Destination] = true
+		p.covering[installed] = true
 	}
 	return nil
 }
@@ -599,6 +596,13 @@ func (p *routePlatform) holder(destination netip.Prefix) string {
 // on the same machine: its exit-node default is scoped to its utun, its
 // 100.64/10 is not.
 func (p *routePlatform) scopeRoute(r Route) bool {
+	// Row L6: a route of the mesh's outside the overlay beneath a route of the
+	// host's longer than /0 on another interface goes in scoped, so an unbound
+	// lookup ends by the host's route there as Linux's rule 5410 ends it, in
+	// mode off and in a covered family alike, a member of the cover among them
+	if _, ok := p.hosts.beneath(r, p.overlay); ok {
+		return true
+	}
 	if r.Cover {
 		// no member holds a zero address, so a socket scoped to an interface
 		// falls back past it whatever it covers
@@ -668,10 +672,9 @@ func (p *routePlatform) DelRoute(r Route) error {
 	// source, and the next pass would tear that route down and reinstall it.
 	if r.Scoped {
 		delete(p.scoped, r.Destination)
-	} else {
-		delete(p.covering, r.Destination)
 	}
-	withdrawn := occupiedKey{destination: r.Destination, scoped: r.Scoped}
+	withdrawn := routeKey{destination: r.Destination, scoped: r.Scoped}
+	delete(p.covering, withdrawn)
 	delete(p.occupied, withdrawn)
 	delete(p.ours, withdrawn)
 	return nil
@@ -787,8 +790,8 @@ func (p *routePlatform) retable(Table) {}
 // goes in as members since a plain default out of the tun unscoped meets
 // EEXIST beside the host's own, and scoped it carries no socket that does not
 // ask for the tun by name.
-func (p *routePlatform) cover(overlay []schema.Prefix, families, bare []Family) {
-	p.overlay, p.covered, p.bare = overlay, families, bare
+func (p *routePlatform) cover(overlay []schema.Prefix, families, bare []Family, hosts hostTable) {
+	p.overlay, p.covered, p.bare, p.hosts = overlay, families, bare, hosts
 }
 
 // scopes is scopeRoute as the diff reads it.

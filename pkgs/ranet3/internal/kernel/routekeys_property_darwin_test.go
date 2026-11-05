@@ -32,8 +32,8 @@ var raceKeys = []netip.Prefix{
 func TestDarwinDumpReadsBackTheKeysThisProcessHolds(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		plat, _ := testPlatform(t, Table{}, Runtime{})
-		plat.cover(nil, bothFamilies, nil)
-		rib := &raceRIB{t: t, held: map[occupiedKey]int{}, release: map[occupiedKey]bool{}}
+		plat.cover(nil, bothFamilies, nil, hostTable{})
+		rib := &raceRIB{t: t, held: map[routeKey]int{}, release: map[routeKey]bool{}}
 		plat.sock, plat.host = rib, rib
 		// the routes of this process the fake holds, true for a member
 		ours := map[netip.Prefix]bool{}
@@ -55,7 +55,7 @@ func TestDarwinDumpReadsBackTheKeysThisProcessHolds(t *testing.T) {
 			check(pass)
 			for range hegel.Draw(ht, pbt.Spanning(0, 8)) {
 				destination := raceKeys[hegel.Draw(ht, pbt.Spanning(0, len(raceKeys)-1))]
-				key := occupiedKey{destination: destination}
+				key := routeKey{destination: destination}
 				add := func() {
 					member := hegel.Draw(ht, pbt.Spanning(0, 1)) == 1
 					err := plat.AddRoute(Route{Destination: destination, Cover: member})

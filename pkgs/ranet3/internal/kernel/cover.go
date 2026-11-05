@@ -33,12 +33,13 @@ var zeroFreeCover = map[bool][]netip.Prefix{
 
 // coverer is implemented by a platform that installs a route holding the zero
 // address of a family cap.exit covers as the zero-free cover's members, which
-// is darwin. cover hands it, before each pass's routes, the overlay in force
-// and the families the pass covers, which every scope decision of that pass
-// reads, and bare, each family the tun held no address of at the last listing
-// that answered.
+// is darwin. cover hands it, before each pass's routes, the overlay in force,
+// the families the pass covers and the host's routes as the underlay's
+// selection last read them, which every scope decision of that pass reads,
+// and bare, each family the tun held no address of at the last listing that
+// answered.
 type coverer interface {
-	cover(overlay []schema.Prefix, families, bare []Family)
+	cover(overlay []schema.Prefix, families, bare []Family, hosts hostTable)
 }
 
 // zeroRoute is a route with no source that carries traffic and holds its
@@ -67,12 +68,14 @@ func memberless(r Route) bool { return zeroRoute(r) && len(membersOf(r.Destinati
 // coverDefaults replaces each zero route of families with the cover's members
 // it contains, so a real 0.0.0.0/1 goes in as the seven members from 1.0.0.0/8
 // to 64.0.0.0/2, and leaves a zero route of another family as it is. A member
-// is withheld where another route the kernel holds unscoped, of length 1 up to
-// the member's own, contains it, so for every address outside the hole the
-// kernel's longest match is the route the zero route's would be, or a member
-// where that is the zero route itself (RFC 8966 Appendix C: the protocol keeps
-// the route, only the kernel holds the cover). unmet names the routes an
-// unbound lookup will not meet in the kernel, which withhold nothing.
+// is withheld where another route the kernel holds unscoped, or scoped by row
+// L6 as the member would be, of length 1 up to the member's own, contains it,
+// so for every address outside the hole the kernel's longest match is the
+// route the zero route's would be, or a member where that is the zero route
+// itself (RFC 8966 Appendix C: the protocol keeps the route, only the kernel
+// holds the cover). unmet names the routes that withhold no member: those the
+// kernel does not hold, or holds scoped apart from row L6, since row L6 scopes
+// the member at the route's own key as well.
 func coverDefaults(desired []Route, families []Family, unmet func(Route) bool) []Route {
 	covered := func(r Route) bool { return zeroRoute(r) && slices.Contains(families, familyOf(r.Destination.Addr())) }
 	if !slices.ContainsFunc(desired, covered) {
@@ -104,8 +107,8 @@ func coverDefaults(desired []Route, families []Family, unmet func(Route) bool) [
 	return out
 }
 
-// withheld reports a route of routes the kernel holds unscoped, of length 1 up
-// to the member's own, containing member. A zero route is installed as members
+// withheld reports a route of routes unmet does not name, of length 1 up to
+// the member's own, containing member. A zero route is installed as members
 // and withholds nothing. Every member holds one set bit, at its own length, so
 // a shorter route containing it holds the zero address, and is a zero route or
 // a hold or a source route, which scopeRoute scopes: in effect only a route at

@@ -26,8 +26,8 @@ const raceForeignIndex = 7
 type raceRIB struct {
 	runningKernel
 	t       *testing.T
-	held    map[occupiedKey]int
-	release map[occupiedKey]bool
+	held    map[routeKey]int
+	release map[routeKey]bool
 }
 
 func (k *raceRIB) WriteRoute(m *route.RouteMessage) error {
@@ -43,7 +43,7 @@ func (k *raceRIB) WriteRoute(m *route.RouteMessage) error {
 	if !ok {
 		return unix.EINVAL
 	}
-	key := occupiedKey{destination: netip.PrefixFrom(dst, bits).Masked(), scoped: m.Flags&unix.RTF_IFSCOPE != 0}
+	key := routeKey{destination: netip.PrefixFrom(dst, bits).Masked(), scoped: m.Flags&unix.RTF_IFSCOPE != 0}
 	switch m.Type {
 	case unix.RTM_ADD:
 		if _, ok := k.held[key]; ok {
@@ -82,15 +82,15 @@ func (k *raceRIB) Lookup(netip.Addr, netip.Addr) (RouteAnswer, error) {
 }
 
 func newRaceRIB(t *testing.T, foreign netip.Prefix) *raceRIB {
-	key := occupiedKey{destination: foreign}
-	return &raceRIB{t: t, held: map[occupiedKey]int{key: raceForeignIndex}, release: map[occupiedKey]bool{key: true}}
+	key := routeKey{destination: foreign}
+	return &raceRIB{t: t, held: map[routeKey]int{key: raceForeignIndex}, release: map[routeKey]bool{key: true}}
 }
 
 // A member installed at a key another program held when an add of the same
 // pass was refused there is this process's own, so the next dump reports it.
 func TestDarwinMemberAtAKeyFreedAfterARefusalReadsBackAsOurs(t *testing.T) {
 	plat, _ := testPlatform(t, Table{}, Runtime{})
-	plat.cover(nil, bothFamilies, nil)
+	plat.cover(nil, bothFamilies, nil, hostTable{})
 	upper := prefix("128.0.0.0/1")
 	rib := newRaceRIB(t, upper)
 	plat.sock, plat.host = rib, rib
@@ -103,7 +103,7 @@ func TestDarwinMemberAtAKeyFreedAfterARefusalReadsBackAsOurs(t *testing.T) {
 	if err := plat.AddRoute(Route{Destination: upper, Cover: true}); err != nil {
 		t.Fatalf("the member at the freed key reported %v", err)
 	}
-	if owner := rib.held[occupiedKey{destination: upper}]; owner != testIndex {
+	if owner := rib.held[routeKey{destination: upper}]; owner != testIndex {
 		t.Fatalf("the member did not take the freed key: held by %d", owner)
 	}
 	actual, err := plat.Routes()
@@ -143,9 +143,9 @@ func TestDarwinRealRouteTakesItsKeyAfterARace(t *testing.T) {
 				ours++
 			}
 		}
-		owner, held := rib.held[occupiedKey{destination: upper}]
-		if !held || owner != testIndex || plat.covering[upper] {
-			t.Errorf("pass %d: %s held %v by %d as a member %v, want the real route of this process", pass, upper, held, owner, plat.covering[upper])
+		owner, held := rib.held[routeKey{destination: upper}]
+		if !held || owner != testIndex || plat.covering[routeKey{destination: upper}] {
+			t.Errorf("pass %d: %s held %v by %d as a member %v, want the real route of this process", pass, upper, held, owner, plat.covering[routeKey{destination: upper}])
 		}
 		if ours != 8 {
 			t.Errorf("pass %d: %d IPv4 keys of ours, want the real route and 7 members", pass, ours)
