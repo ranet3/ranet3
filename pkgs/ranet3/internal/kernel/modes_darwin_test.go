@@ -22,9 +22,10 @@ import (
 )
 
 var (
-	// modeHeld is a real route at a member's key holding modeEndpoint, so the
-	// mode scopes it as covering the underlay and mode off as counting as a
-	// default
+	// modeHeld is a real route at a member's key holding modeEndpoint, which
+	// mode off scopes as counting as a default and the mode puts in unscoped
+	// and whole, in place of the member, since the host's own route to the
+	// endpoint is the one holding the zero address
 	modeHeld     = prefix("128.0.0.0/1")
 	modeEndpoint = netip.MustParseAddr("192.0.2.9")
 	modeTargets  = []netip.Addr{netip.MustParseAddr("203.0.113.7"), netip.MustParseAddr("2001:db8:ff::7"), modeEndpoint}
@@ -33,12 +34,12 @@ var (
 // A reconciler on a test utun M with a live session and the endpoint
 // 192.0.2.9 holds 0.0.0.0/0, ::/0 and 128.0.0.0/1. Mode off puts all three in
 // scoped to M. A reload into mode 2 puts the two defaults in as the 16
-// members unscoped and keeps 128.0.0.0/1 scoped beside the member at its key.
-// Then an unbound lookup of each target answers M, a lookup scoped to U, the
-// interface the host's own default of the family leaves by, answers U, a
-// socket bound to U connects from an address of U, and an unbound datagram
-// comes out of M. A reload back to mode off restores the first pass's routes
-// and the host's table.
+// members unscoped, 128.0.0.0/1 among them as the real route in place of the
+// member at its key. Then an unbound lookup of each target answers M, a
+// lookup scoped to U, the interface the host's own default of the family
+// leaves by, answers U, a socket bound to U connects from an address of U,
+// and an unbound datagram comes out of M. A reload back to mode off restores
+// the first pass's routes and the host's table.
 func TestDarwinModeMovesTheDefaultsThroughTheReconciler(t *testing.T) {
 	requireNetTest(t)
 	rig := newCoverRig(t, coverRigOptions{endpoints: []netip.Addr{modeEndpoint}, off: true})
@@ -76,9 +77,11 @@ func TestDarwinModeMovesTheDefaultsThroughTheReconciler(t *testing.T) {
 
 	modeReload(t, rig, off.WithMode(&ExitMode{}))
 	on := modePass(t, rig.reconcile, "mode 2")
-	want = []Route{modeRoute(modeHeld, true, false)}
+	want = []Route{modeRoute(modeHeld, false, false)}
 	for _, member := range members {
-		want = append(want, modeRoute(member, false, true))
+		if member != modeHeld {
+			want = append(want, modeRoute(member, false, true))
+		}
 	}
 	if slices.SortFunc(want, compareRoutes); !slices.Equal(on, want) {
 		t.Errorf("mode 2 reads back %v, want %v", on, want)
@@ -94,8 +97,8 @@ func TestDarwinModeMovesTheDefaultsThroughTheReconciler(t *testing.T) {
 			t.Errorf("mode 2 leaves %s on M, want nothing at its key", zero)
 		}
 	}
-	if !modeHolds(rows, modeHeld, true) || !modeHolds(rows, modeHeld, false) {
-		t.Errorf("mode 2 leaves %s on M scoped %v and unscoped %v, want the real route scoped beside the member", modeHeld,
+	if modeHolds(rows, modeHeld, true) || !modeHolds(rows, modeHeld, false) {
+		t.Errorf("mode 2 leaves %s on M scoped %v and unscoped %v, want the real route unscoped alone", modeHeld,
 			modeHolds(rows, modeHeld, true), modeHolds(rows, modeHeld, false))
 	}
 

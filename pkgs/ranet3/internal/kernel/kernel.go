@@ -173,11 +173,11 @@ type Runtime struct {
 	Interface string
 	// Underlay names the addresses this node's own transport has to keep
 	// reaching, the trust document's literal endpoints and each running
-	// dialer's last resolved address, and EndpointsChanged wakes a pass for one
-	// it gains. The darwin backend asks once per pass and scopes a route that
-	// covers one (see coversAny there). linux reads it never, and keeps the
-	// underlay out with a socket mark instead. Nil decides scope on the
-	// destination alone.
+	// dialer's last resolved address. A pass beside a Selection asks once,
+	// with Sends, and cuts each address out of the routes a datagram to it
+	// would not reach past, and EndpointsChanged wakes one where either may
+	// answer otherwise. linux opens no selection and keeps the underlay out
+	// with a socket mark instead.
 	Underlay func() []netip.Addr
 	// Announced carries the prefixes cap.route announces, which
 	// Table.AssignAnnounced puts on the device beside the addresses written

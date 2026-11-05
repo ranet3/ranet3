@@ -108,11 +108,6 @@ type routePlatform struct {
 
 	pending map[Route]bool
 
-	// underlay is Runtime.Underlay as of the current pass. Taken once in
-	// Routes, so every scope decision of a pass reads the same list: a route
-	// installed scoped under one answer and deleted under another leaves the
-	// kernel holding a key nothing will name again.
-	underlay []netip.Addr
 	// overlay and covered hold the overlay in force and the families whose
 	// zero routes go in as the cover, as cover handed them to the current
 	// pass, so every scope decision of a pass reads the same two
@@ -125,8 +120,8 @@ type routePlatform struct {
 	// assigned is this interface's own addresses as of the current pass, and
 	// assignedAt says whether that answer has been taken yet.
 	//
-	// It is cached for the same reason underlay is, and to stop paying for it
-	// repeatedly: AddRoute asks sourceIsOurs about every source-specific route
+	// It is cached so every scope decision of a pass reads one answer, and to
+	// stop paying for it repeatedly: AddRoute asks sourceIsOurs about every source-specific route
 	// it is offered, a route it skips stays in the diff and is offered again
 	// on the next pass, so a node hearing sixty-four of them paid for
 	// sixty-four whole-interface dumps per pass, forever. Taken once and
@@ -234,9 +229,6 @@ func (p *routePlatform) rotateWarnings() {
 }
 
 func (p *routePlatform) Routes() ([]Route, error) {
-	if p.rt.Underlay != nil {
-		p.underlay = p.rt.Underlay()
-	}
 	rib, err := p.host.Dump()
 	if err != nil {
 		return nil, fmt.Errorf("kernel: dump the routing table: %w", err)
@@ -617,9 +609,9 @@ func (p *routePlatform) scopeRoute(r Route) bool {
 		return true
 	}
 	if slices.Contains(p.covered, familyOf(r.Destination.Addr())) {
-		return coversAny(r.Destination, p.underlay)
+		return false
 	}
-	return schema.CapturesTheMachine(r.Destination, p.overlay) || coversAny(r.Destination, p.underlay)
+	return schema.CapturesTheMachine(r.Destination, p.overlay)
 }
 
 // interface scope is the only thing on this platform that draws the
@@ -631,14 +623,6 @@ func standsInForASource(r Route) bool { return r.Source.IsValid() }
 // still reach the prefix, for the life of the process if this node originates
 // it.
 func holdsAgainstTheFIB(r Route) bool { return r.Unreachable }
-
-// coversAny reports a prefix that takes an address the transport needs into
-// the tun it is carrying. A default is not the only one that can: nothing
-// bounds what a mesh member announces, and 2000::/3 or a provider aggregate
-// holding a peer's endpoint does it as surely as ::/0.
-func coversAny(prefix netip.Prefix, addresses []netip.Addr) bool {
-	return slices.ContainsFunc(addresses, prefix.Contains)
-}
 
 func (p *routePlatform) DelRoute(r Route) error {
 	_, installed := p.scoped[r.Destination]

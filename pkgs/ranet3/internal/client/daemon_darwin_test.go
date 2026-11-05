@@ -462,27 +462,40 @@ func TestCoverGoesInForAFamilyTheHostHasNoDefaultIn(t *testing.T) {
 	}
 }
 
-// A prefix covering a peer's own endpoint is scoped to the tun even under
-// cap.exit: unscoped and longer than the host's own route to the peer, it
-// would leave the datagrams naming the selection's interface no route there.
-// It is scoped for that reason alone: it does not count as a default, and the
-// capture gate does not cover it.
-func TestPrefixCoveringAPeerEndpointIsScopedInTheMode(t *testing.T) {
-	d := startDaemon(t, true, recordedHost(t))
-	d.live(t)
-
+// A prefix covering a peer's own endpoint, longer than the host's own route to
+// the peer, which is a default other than the host's match for 0.0.0.0, goes
+// in unscoped as the pieces of it around the endpoint, in mode off and under
+// cap.exit, so the Mac's own traffic reaches the rest of it through the mesh
+// and the datagrams naming the selection's interface still find their route
+func TestPrefixCoveringAPeerEndpointGoesInAroundIt(t *testing.T) {
 	covering := netip.MustParsePrefix("198.51.100.0/24")
 	if !covering.Contains(peerEndpoint) {
 		t.Fatalf("%s does not hold the peer endpoint %s, so this measures nothing", covering, peerEndpoint)
 	}
-	d.announce(covering)
-	waitForKernel(t, "the prefix covering the peer endpoint reaches the kernel", func() bool {
-		plain, scoped := d.host.installed(covering)
-		return plain || scoped
-	})
-	plain, scoped := d.host.installed(covering)
-	if plain || !scoped {
-		t.Error("a prefix holding this node's own peer endpoint went in unscoped")
+	// every address but the endpoint, one piece for each host bit of the prefix
+	var pieces []netip.Prefix
+	for bits := covering.Bits() + 1; bits <= 32; bits++ {
+		raw := netip.PrefixFrom(peerEndpoint, bits).Masked().Addr().As4()
+		raw[(bits-1)/8] ^= 0x80 >> ((bits - 1) % 8)
+		pieces = append(pieces, netip.PrefixFrom(netip.AddrFrom4(raw), bits))
+	}
+	for _, exit := range []bool{false, true} {
+		host := recordedHost(t)
+		host.hold(recordedRoute{destination: netip.MustParsePrefix("0.0.0.0/1"), index: otherProgramIndex})
+		d := startDaemon(t, exit, host)
+		d.live(t)
+		d.announce(covering)
+		waitForKernel(t, "the pieces of the prefix covering the peer endpoint reach the kernel", func() bool {
+			return !slices.ContainsFunc(pieces, func(piece netip.Prefix) bool { plain, _ := d.host.installed(piece); return !plain })
+		})
+		if plain, scoped := d.host.installed(covering); plain || scoped {
+			t.Errorf("under cap.exit %v, %s holding this node's own peer endpoint went in whole, plain %v, scoped %v", exit, covering, plain, scoped)
+		}
+		for _, piece := range pieces {
+			if _, scoped := d.host.installed(piece); scoped {
+				t.Errorf("under cap.exit %v, the piece %s went in scoped", exit, piece)
+			}
+		}
 	}
 }
 

@@ -1421,15 +1421,11 @@ func TestDarwinRefusesSettingsItCannotHonor(t *testing.T) {
 }
 
 // In the families a pass covers, a plain default goes in as its cover. Every
-// member installs unscoped although a peer's endpoint lies inside one, reads
-// back as a member, and converges. A real route at a member's destination
-// keeps the endpoint check, and an unscoped route there that this process did
-// not install as a member reads back as an ordinary route.
+// member installs unscoped, reads back as a member, and converges. An unscoped
+// route at a member's destination that this process did not install as a
+// member reads back as an ordinary route.
 func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
-	peer4, peer6 := addr("192.0.2.1"), addr("2001:db8:beef::1")
-	plat, sock := testPlatform(t, Table{}, Runtime{
-		Underlay: func() []netip.Addr { return []netip.Addr{peer4, peer6} },
-	})
+	plat, sock := testPlatform(t, Table{}, Runtime{})
 	families := []Family{FamilyIPv4, FamilyIPv6}
 	plat.cover(nil, families, nil)
 	if _, err := plat.Routes(); err != nil {
@@ -1467,11 +1463,6 @@ func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
 		t.Fatalf("the cover did not converge: add %v, delete %v", add, del)
 	}
 
-	advertised := Route{Destination: prefix("2000::/3"), Metric: defaultIPv6Metric}
-	if !plat.scopeRoute(advertised) {
-		t.Error("a real 2000::/3 holding a peer's endpoint installs unscoped, so the ESP goes into the tun")
-	}
-
 	left, _ := testPlatform(t, Table{}, Runtime{})
 	left.cover(nil, families, nil)
 	inherited, err := left.ownedRoutes(dumpRIB(t, dumpEntry{index: testIndex, flags: unix.RTF_UP | unix.RTF_STATIC, dst: prefix("128.0.0.0/1"), gateway: ourGateway()}))
@@ -1502,21 +1493,15 @@ func TestDarwinKeepsScopingWhatTheCoverDoesNotExplain(t *testing.T) {
 }
 
 // In a family a pass covers, a route that counts as a default goes in
-// unscoped, but one holding an address the transport has to keep reaching. In
-// mode off, and in a family the pass leaves out of the mode, it goes in scoped
-// to the utun, beside the host's own default rather than in front of it.
+// unscoped. In mode off, and in a family the pass leaves out of the mode, it
+// goes in scoped to the utun, beside the host's own default rather than in
+// front of it.
 func TestDarwinScopeFollowsTheModeAndTheFamily(t *testing.T) {
-	endpoint := addr("192.0.2.9")
-	plat, _ := testPlatform(t, Table{}, Runtime{Underlay: func() []netip.Addr { return []netip.Addr{endpoint} }})
-	if _, err := plat.Routes(); err != nil {
-		t.Fatal(err)
-	}
-	// none holds the endpoint, which holding below stands for
+	plat, _ := testPlatform(t, Table{}, Runtime{})
 	captures := []Route{
-		{Destination: prefix("0.0.0.0/1")}, {Destination: prefix("64.0.0.0/2")},
+		{Destination: prefix("0.0.0.0/1")}, {Destination: prefix("64.0.0.0/2")}, {Destination: prefix("128.0.0.0/1")},
 		{Destination: prefix("::/0"), Metric: defaultIPv6Metric}, {Destination: prefix("2000::/3"), Metric: defaultIPv6Metric},
 	}
-	holding := Route{Destination: prefix("128.0.0.0/1")}
 	for _, c := range []struct {
 		name     string
 		families []Family
@@ -1532,9 +1517,6 @@ func TestDarwinScopeFollowsTheModeAndTheFamily(t *testing.T) {
 			if got := plat.scopeRoute(r); got != want {
 				t.Errorf("%s: %s scoped %v, want %v", c.name, r.Destination, got, want)
 			}
-		}
-		if !plat.scopeRoute(holding) {
-			t.Errorf("%s: %s holding the endpoint %s goes in unscoped, so the underlay goes into the tun", c.name, holding.Destination, endpoint)
 		}
 	}
 }

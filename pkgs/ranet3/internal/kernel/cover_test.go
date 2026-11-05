@@ -172,8 +172,7 @@ func TestCoverWithholdsWhatALongerOrEqualUnscopedRouteHolds(t *testing.T) {
 }
 
 // coveringKernel is the fake kernel on a platform that asks for the cover and
-// scopes what darwin's scopeRoute scopes with no endpoint inside the mesh's
-// routes: a hold, a route from a source, and a route that counts as a default
+// scopes what darwin's scopeRoute scopes: a hold, a route from a source, and a route that counts as a default
 // under the overlay handed in, in a family the pass does not cover. It holds
 // each route under the scope it gives it, as darwin's dump reads it back.
 type coveringKernel struct {

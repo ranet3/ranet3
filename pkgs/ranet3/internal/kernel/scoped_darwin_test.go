@@ -152,26 +152,21 @@ func TestDarwinScopedRouteSelection(t *testing.T) {
 	})
 }
 
-// A prefix that covers a peer's own endpoint takes the ESP into the tun it is
-// carrying, and a default is not the only one that can: nothing bounds what a
-// mesh member announces, and the guarantee the documentation and the fwmark
-// refusal both state rested on the destination's own length alone.
-func TestDarwinScopesARouteThatCoversTheUnderlay(t *testing.T) {
+// A route holding a listed endpoint goes in unscoped, in mode off and in a
+// covered family, so the Mac's own traffic reaches the rest of it through the
+// mesh, and the pass cuts the endpoint out of it instead (see cutHoles)
+func TestDarwinLeavesARouteHoldingAnEndpointUnscoped(t *testing.T) {
 	peer := netip.MustParseAddr("2001:db8:beef::1")
 	plat, _ := testPlatform(t, Table{}, Runtime{Underlay: func() []netip.Addr { return []netip.Addr{peer} }})
-	covering := Route{Destination: prefix("2001:db8::/32")}
-	elsewhere := Route{Destination: prefix("3fff:1::/32")}
-	if plat.scopeRoute(covering) {
-		t.Fatal("the underlay was consulted before Routes took it, so a pass would decide scope two ways")
-	}
 	if _, err := plat.Routes(); err != nil {
 		t.Fatal(err)
 	}
-	if !plat.scopeRoute(covering) {
-		t.Error("a /32 holding a peer's endpoint installs unscoped, which routes an unbound socket's ESP into the tun")
-	}
-	if plat.scopeRoute(elsewhere) {
-		t.Error("a mesh prefix holding no endpoint was scoped, so the mesh is reachable only from a bound socket")
+	covering := Route{Destination: prefix("2001:db8::/32")}
+	for _, families := range [][]Family{nil, {FamilyIPv6}} {
+		plat.cover(nil, families, nil)
+		if plat.scopeRoute(covering) {
+			t.Errorf("covering %v, a /32 holding a peer's endpoint goes in scoped, so the Mac's own traffic misses all of it", families)
+		}
 	}
 }
 
