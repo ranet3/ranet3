@@ -1653,12 +1653,13 @@ testers.runNixOSTest {
                     """the client's IKE sends, and the drop's takes of them"""
                     return [int(machine.succeed(f"nft list table inet {table}").split("counter packets ", 1)[1].split()[0]) for machine, table in [(client, "ike_sent"), (gateway, "ike_loss")]]
 
-                # the client's sends are counted from the drop in place, so each meets it
+                # the client's sends are counted from the drop in place, each of them meeting it
                 before = counted()[0]
                 gateway.succeed("sleep 5")
                 sent, took = counted()
                 print(f"the client sent {sent - before} IKE datagrams in the drop's 5 s, and the drop took {took}")
-                # an exchange sends within the 5 s while it has sent at most twice, so a drop that took none met a client silent on IKE, which fails, or sends lost before the gateway, and then holds until it takes one
+                # while an exchange has sent at most twice, its next send falls within the 5 s
+                # a drop that took none then met a client silent on IKE, which fails, or sends lost before the gateway, and holds until it takes one
                 if not took:
                     assert sent > before, "the client sent no IKE in the drop's 5 s, a client silent on IKE mid-rekey"
                     gateway.wait_until_succeeds("nft list table inet ike_loss | grep -F 'counter packets' | grep -vF 'counter packets 0 '", timeout=ike_loss_hold)
