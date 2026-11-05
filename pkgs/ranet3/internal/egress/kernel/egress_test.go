@@ -1036,7 +1036,7 @@ func TestAnotherWritersChangeStopsTheMeshUntilThePassRestoresIt(t *testing.T) {
 }
 
 // passTriggers reads the trigger of each pass bus recorded, and whether one names want within passWait
-// a pass records its event after its last call of the backend, so a backend's log can hold a pass that bus does not yet
+// a pass records its event after its last call of the backend, and a backend's log can hold a pass that bus does not yet
 func passTriggers(bus *events.Bus, want string) ([]string, bool) {
 	for deadline := time.Now().Add(passWait); ; time.Sleep(passPoll) {
 		var triggers []string
