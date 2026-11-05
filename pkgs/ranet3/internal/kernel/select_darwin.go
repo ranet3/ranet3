@@ -30,7 +30,9 @@ type Selection struct {
 	// a route this process writes on another interface is a route of the host the selection reads
 	watcher Watcher
 	// current is replaced whole by follow and loaded by every answer without a lock
-	current   atomic.Pointer[selectionSnapshot]
+	current atomic.Pointer[selectionSnapshot]
+	// changed carries each generation after the first to the one reconciler that reads it, coalesced
+	changed   chan struct{}
 	done      chan struct{}
 	stopped   chan struct{}
 	closeOnce sync.Once
@@ -55,7 +57,7 @@ func OpenSelection(host Host, mesh string, watcher Watcher) (*Selection, error) 
 		_ = watcher.Close()
 		return nil, err
 	}
-	s := &Selection{host: host, mesh: index, watcher: watcher, done: make(chan struct{}), stopped: make(chan struct{})}
+	s := &Selection{host: host, mesh: index, watcher: watcher, changed: make(chan struct{}, 1), done: make(chan struct{}), stopped: make(chan struct{})}
 	if err := s.read(); err != nil {
 		_ = watcher.Close()
 		return nil, err
@@ -77,6 +79,9 @@ func (s *Selection) Interface(addr netip.Addr) (int, uint64) {
 
 // Generation names the snapshot the answers come from, and moves on when a dump finds the candidate routes changed
 func (s *Selection) Generation() uint64 { return s.current.Load().generation }
+
+// Changed is signaled once a generation after the first is published, several coalesced into one
+func (s *Selection) Changed() <-chan struct{} { return s.changed }
 
 // Route is the route Interface answers addr from and the name of its interface, or the index where the host names none
 // a link-local destination's zone answers with its interface and no route, and false is no route at all
@@ -125,6 +130,10 @@ func (s *Selection) read() error {
 	}
 	if !slices.Equal(last.routes, routes) {
 		s.current.Store(&selectionSnapshot{generation: last.generation + 1, routes: routes})
+		select {
+		case s.changed <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }

@@ -160,10 +160,21 @@ func TestDarwinSelectionReadsTheDump(t *testing.T) {
 	}
 }
 
+// signaled reports whether selection signaled a generation since the last read of its signal, and takes the signal
+func signaled(selection *Selection) bool {
+	select {
+	case <-selection.Changed():
+		return true
+	default:
+		return false
+	}
+}
+
 // a change the watcher reports is read after the settle and moves the
 // generation where the candidate routes changed, a change of none of them
 // leaves it, a dump that fails keeps the last answers, and the next dump that
-// works is read
+// works is read. Each new generation signals Changed once, after it is
+// published, and the first and a dump that changes nothing signal nothing
 func TestDarwinSelectionFollowsTheWatcher(t *testing.T) {
 	target := netip.MustParseAddr("203.0.113.9")
 	moved := selectionEntry(selectionOther, 0, "203.0.113.0/24")
@@ -173,9 +184,15 @@ func TestDarwinSelectionFollowsTheWatcher(t *testing.T) {
 		got, at := selection.Interface(target)
 		return got == index && at == generation
 	}
+	if signaled(selection) {
+		t.Error("the first generation signaled a change")
+	}
 	host.set(nil, moved)
 	if !waitSelection(func() bool { return answers(selectionOther, 2) }) {
 		t.Fatalf("the route moved to interface %d, and %s does not select it at generation 2", selectionOther, target)
+	}
+	if !waitSelection(func() bool { return signaled(selection) }) {
+		t.Error("generation 2 was published and signaled no change")
 	}
 	for _, step := range []struct {
 		name    string
@@ -191,10 +208,16 @@ func TestDarwinSelectionFollowsTheWatcher(t *testing.T) {
 			got, generation := selection.Interface(target)
 			t.Errorf("after %s, %s selects %d at generation %d, want %d at 2", step.name, target, got, generation, selectionOther)
 		}
+		if signaled(selection) {
+			t.Errorf("after %s the selection signaled a change", step.name)
+		}
 	}
 	host.set(nil, selectionEntry(selectionUplink, 0, "203.0.113.0/24"))
 	if !waitSelection(func() bool { return answers(selectionUplink, 3) }) {
 		t.Errorf("the dump works again with the route back on interface %d, and %s does not select it at generation 3", selectionUplink, target)
+	}
+	if !waitSelection(func() bool { return signaled(selection) }) {
+		t.Error("generation 3 was published and signaled no change")
 	}
 }
 

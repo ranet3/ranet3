@@ -126,6 +126,7 @@ func (rig *holeRig) runtime(mesh string) Runtime {
 	return Runtime{
 		Interface: mesh,
 		Overlay:   holeOverlay,
+		Selection: rig.selection,
 		Underlay:  func() []netip.Addr { return rig.listed },
 		Sends: func() []Send {
 			var out []Send

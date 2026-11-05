@@ -224,6 +224,15 @@ type Runtime struct {
 	// link each, which a pass under fallback = "none" names where they lie
 	// beyond the LAN, and nil reads none
 	Resolvers func() ([]LinkResolver, error)
+	// Selection is the underlay's selection, which darwin opens and linux and
+	// ios do not, and each generation it publishes wakes a pass. Nil wakes none
+	Selection UnderlaySelection
+}
+
+// UnderlaySelection is the underlay's selection as the reconciler reads it
+type UnderlaySelection interface {
+	// Changed is signaled once a generation after the first is published, several coalesced into one
+	Changed() <-chan struct{}
 }
 
 // Assigned is every address the reconciler puts on the device: the ones
@@ -1043,6 +1052,10 @@ func (r *Reconciler) adopt() bool {
 func (r *Reconciler) Run(ctx context.Context) error {
 	changed := r.src.Changes()
 	notify := r.plat.Notify()
+	var underlay <-chan struct{}
+	if r.rt.Selection != nil {
+		underlay = r.rt.Selection.Changed()
+	}
 	ticker := time.NewTicker(r.table.Reconcile.Duration())
 	defer ticker.Stop()
 	retry := NewRetryTimer()
@@ -1129,6 +1142,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 			}
 		case <-r.network:
 			r.trigger = "network"
+		case <-underlay:
+			r.trigger = "underlay"
 		case <-changed:
 			r.trigger = "mesh"
 			r.settle(ctx, changed, notify)

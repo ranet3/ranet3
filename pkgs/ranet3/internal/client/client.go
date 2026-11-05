@@ -53,6 +53,8 @@ type Client struct {
 	// datagram's interface from, as the rules view reads it, nil where the
 	// transport selects none
 	underlayRoutes underlayRoutes
+	// selection is the same selection as the route reconciler reads it, nil where the transport selects none
+	selection kernel.UnderlaySelection
 	// host is the machine the underlay and the route reconciler read and
 	// write, nil for the one this process is running on. It is kept so the
 	// reconciler this client hands the command is built against the same
@@ -306,10 +308,11 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		return nil, err
 	}
 	routes, _ := underlay.Selection.(underlayRoutes)
+	selection, _ := underlay.Selection.(kernel.UnderlaySelection)
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		Mesh: mesh, privateKey: privateKey,
-		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, underlayRoutes: routes,
+		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, underlayRoutes: routes, selection: selection,
 		host:     host,
 		sessions: sessions,
 		workers:  max(1, runtime.GOMAXPROCS(0)),
@@ -618,6 +621,7 @@ func (c *Client) KernelRuntime() kernel.Runtime {
 		Events:        c.events,
 		Network:       c.networkState,
 		Resolvers:     kernel.ResolvedLinkServers,
+		Selection:     c.selection,
 	}
 }
 
