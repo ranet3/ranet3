@@ -13,16 +13,15 @@ import (
 	"testing"
 )
 
-// each verdict a step of the package's rows marks is the last act of its path,
-// a statement of its own in the step's body that a return follows in its block
-// or that ends the step, so no condition or assertion after it returns or fails
-// unjudged, a step being a method of the rows that steps hands its step
-// function or that judged is handed, so a mark in a helper a step calls, of a
-// step's shape or not, is no step's, and a step is named only where step or
-// judged takes it as its last argument, or in a top-level Test function that
-// does not call it, as one handing it to t.Run, while the check does not read
-// judged's result called in place inside a step, r.judged(r.portReuse)(t), or
-// a local function named step that a step hands another step
+// each verdict a step of the package's rows marks is the last act of its path: a statement of its own in the step's
+// body that a return follows in its block or that ends the step, and no condition or assertion after it returns or
+// fails unjudged
+// a step is a method of the rows that steps hands its step function or that judged is handed, and a mark in a helper
+// a step calls, of a step's shape or not, is no step's
+// a step is named only as the last argument of step or judged, or uncalled in a top-level Test function, as one
+// handing it to t.Run
+// the check does not read judged's result called in place inside a step, r.judged(r.portReuse)(t), or a local
+// function named step that a step hands another step
 func TestEachVerdictMarkIsTheLastActOfItsPath(t *testing.T) {
 	names, err := filepath.Glob("*.go")
 	if err != nil {
