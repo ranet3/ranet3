@@ -227,7 +227,9 @@ type Runtime struct {
 	// beyond the LAN, and nil reads none
 	Resolvers func() ([]LinkResolver, error)
 	// Selection is the underlay's selection, which darwin opens and linux and
-	// ios do not, and each generation it publishes wakes a pass. Nil wakes none
+	// ios do not. A pass reads its last generation once and cuts each endpoint
+	// out of the routes a datagram to it would not reach past (see cutHoles),
+	// and each generation it publishes wakes a pass. Nil cuts and wakes nothing
 	Selection UnderlaySelection
 }
 
@@ -235,6 +237,8 @@ type Runtime struct {
 type UnderlaySelection interface {
 	// Changed is signaled once a generation after the first is published, several coalesced into one
 	Changed() <-chan struct{}
+	// table is the generation published last
+	table() hostTable
 }
 
 // Assigned is every address the reconciler puts on the device: the ones
@@ -775,6 +779,8 @@ type Stats struct {
 	Cover []Family
 	// Members is each member of the cover the last pass that listed the routes left installed
 	Members []netip.Prefix
+	// Holes is each route the last pass that listed the routes cut around an endpoint, with the pieces it wanted in its place
+	Holes []Hole
 	// Lookups holds the lookups the last pass whose batch answered asked of
 	// the kernel to find another program's rule ahead of the mesh's
 	Lookups []Lookup
@@ -1394,7 +1400,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	// nothing rather than the counts of the last pass that succeeded. The
 	// members stay, as r.installed does, since the cover that pass left stays
 	// installed.
-	r.routePass = Stats{Members: r.routePass.Members}
+	r.routePass = Stats{Members: r.routePass.Members, Holes: r.routePass.Holes}
 	if p, ok := r.plat.(coverer); ok {
 		p.cover(r.rt.Overlay, families, addressless)
 	}
@@ -1425,6 +1431,11 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		}
 	}
 	unmet := func(route Route) bool { return scoped(route) || unheld[route] }
+	cut := func(routes []Route) ([]Route, []Hole) { return routes, nil }
+	if r.rt.Selection != nil {
+		table, endpoints := r.rt.Selection.table(), r.endpoints()
+		cut = func(routes []Route) ([]Route, []Hole) { return cutHoles(routes, scoped, endpoints, table) }
+	}
 	bare := desired
 	// After the capture grace check, which judges the zero route whole: a
 	// member holds no zero address, and CapturesTheMachine counts one by its
@@ -1435,6 +1446,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		desired = coverDefaults(bare, families, unmet)
 		dropped = r.reportMemberless(bare, families)
 	}
+	desired, holes := cut(desired)
 	wanted := map[Route]bool{}
 	for _, route := range desired {
 		if route.Cover {
@@ -1511,7 +1523,8 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 			// member's own key refuses the member too
 			unheld[route] = true
 			var handed []Route
-			for _, member := range coverDefaults(bare, families, unmet) {
+			members, _ := cut(coverDefaults(bare, families, unmet))
+			for _, member := range members {
 				if member.Cover && !wanted[member] && !held[member] {
 					wanted[member] = true
 					handed = append(handed, member)
@@ -1569,6 +1582,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	slices.SortFunc(members, comparePrefixes)
 	r.routePass = Stats{
 		Members:   members,
+		Holes:     holes,
 		Desired:   desiredCount,
 		Installed: len(actual) - removed + added,
 		Skipped:   skipped,

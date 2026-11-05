@@ -137,8 +137,8 @@ func startDaemon(t *testing.T, exit bool, host *recordedKernel) *daemon {
 
 // tryDaemon builds the node a loaded configuration describes around a mesh
 // with no TUN, and builds the route reconciler out of what the node says about
-// itself. The last step is the one under test: main does exactly this and
-// nothing more.
+// itself. The last step is the one under test, as main takes it but for the
+// live sends (standInRuntime).
 //
 // Only the port it could not take comes back as an error. Anything else is
 // this test being wrong about the tree and ends it.
@@ -164,7 +164,7 @@ func tryDaemon(t *testing.T, cfg *config.Config, host *recordedKernel) (*daemon,
 	// real SAs measures something else.
 	node.sessions.active = func(*ike.Session) bool { return true }
 
-	routes, err := kernel.New(*cfg.ReconcilerTable(), node.KernelRuntime(), mesh.Routes)
+	routes, err := kernel.New(*cfg.ReconcilerTable(), standInRuntime(node), mesh.Routes)
 	if err != nil {
 		t.Fatalf("the reconciler this node described was refused: %v", err)
 	}
@@ -178,6 +178,15 @@ func tryDaemon(t *testing.T, cfg *config.Config, host *recordedKernel) (*daemon,
 	stop := sync.OnceFunc(func() { cancel(); <-done })
 	t.Cleanup(stop)
 	return &daemon{node: node, routes: routes, host: host, uplink: host.uplink, stop: stop}, nil
+}
+
+// standInRuntime is node's KernelRuntime with no live sends, since a session
+// these tests adopt stands in for one and carries no mux to read its
+// destination from
+func standInRuntime(node *Client) kernel.Runtime {
+	rt := node.KernelRuntime()
+	rt.Sends = func() []kernel.Send { return nil }
+	return rt
 }
 
 // announce puts a prefix in the mesh's forwarding table, which is where the

@@ -83,6 +83,10 @@ func (s *Selection) Generation() uint64 { return s.current.Load().generation }
 // Changed is signaled once a generation after the first is published, several coalesced into one
 func (s *Selection) Changed() <-chan struct{} { return s.changed }
 
+func (s *Selection) table() hostTable {
+	return hostTable{routes: s.current.Load().routes, mesh: s.mesh}
+}
+
 // Route is the route Interface answers addr from and the name of its interface, or the index where the host names none
 // a link-local destination's zone answers with its interface and no route, and false is no route at all
 func (s *Selection) Route(addr netip.Addr) (netip.Prefix, string, bool) {

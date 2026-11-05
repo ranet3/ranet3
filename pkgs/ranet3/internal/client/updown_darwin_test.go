@@ -81,7 +81,7 @@ func tryDownable(t *testing.T, host *recordedKernel, stateDir string) (*daemon, 
 	if err := node.SetStateDir(stateDir); err != nil {
 		t.Fatal(err)
 	}
-	routes, err := kernel.New(*cfg.ReconcilerTable(), node.KernelRuntime(), mesh.Routes)
+	routes, err := kernel.New(*cfg.ReconcilerTable(), standInRuntime(node), mesh.Routes)
 	if err != nil {
 		t.Fatalf("the reconciler this node described was refused: %v", err)
 	}
