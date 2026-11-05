@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-11-04
+updated: 2026-11-05
 order: 75
 ---
 
@@ -135,8 +135,9 @@ exits 1. Each table's own page gives what a refusal leaves of it:
   rules and table with the rest of the reconciler's, as a clean stop does, and
   `up` writes them again.
 - `debug netmon` lists each family's links outside the mesh with their addresses
-  and point-to-point far ends on Linux, the links
-  [exit mode](routing.md#exit-mode-on-linux) derives its rules from.
+  and point-to-point far ends, as [moving hosts](platforms.md#moving-hosts)
+  gives them, the links [exit mode](routing.md#exit-mode-on-linux) derives its
+  rules from on Linux.
 - `sessions` names the transforms of each IKE SA and of its Child SA by their
   `cap.crypto` names. A Child SA the peer's creation or rekey keyed with key
   exchanges of its own has their kex entry after its cipher, such as

@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-04
+updated: 2026-11-05
 order: 30
 ---
 
@@ -114,13 +114,14 @@ These commands take flags of their own:
 - `debug netmon` is the host's network as the node's watch last read it: for
   each family the default route, its interface and gateway, and the global
   unicast addresses of the interfaces that are up, the mesh's own device left
-  out, and on Linux each of those links with its addresses under their lengths
-  and its point-to-point far ends as `IPv4 links`, which
-  [exit mode](../routing.md#exit-mode-on-linux) derives its rules from, then the
-  last change the watch acted on and what moved in it, the links after it where
-  one came, went or moved an address or a far end. A change of links alone
-  probes no session, and wakes the reconciler only under `cap.exit`. A platform
-  without a watch says so. Linux and macOS have a watch.
+  out, and as `IPv4 links` each of those links with its addresses under their
+  lengths and its point-to-point far ends, which
+  [moving hosts](../platforms.md#moving-hosts) gives and
+  [exit mode](../routing.md#exit-mode-on-linux) derives its rules from on Linux,
+  then the last change the watch acted on and what moved in it, the links after
+  it where one came, went or moved an address or a far end. A change of links
+  alone probes no session, and wakes the reconciler only under `cap.exit`. A
+  platform without a watch says so. Linux and macOS have a watch.
 - `debug rules` is every policy rule the kernel holds, whoever wrote it, in a
   table per family with its priority, its selectors, the table it names, shown
   as `0` for an `l3mdev` rule, which names no table, with any

@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-04
+updated: 2026-11-05
 order: 100
 ---
 
@@ -38,7 +38,7 @@ setting or skips a route instead.
 | `cap.exit`                                             | the policy rules 5405, 5435 and 5440 of [exit mode](routing.md#exit-mode-on-linux)                                                                                                                                                 | the routes of [the zero-free cover](routing.md#the-zero-free-cover-on-macos) in each family the tun holds an overlay address of, with `fallback = "uplink"`, and `forward` refused, as [gaps on macOS](#gaps-on-macos) gives |
 | `cap.exit.fallback = "none"`                           | the rules 5445 and 5450 and the nftables table `ranet3_fallback`, its chains at output and postrouting, of [the kill switch](routing.md#the-kill-switch-on-linux), which gives what each stop leaves of them                       | refused, naming `inbound` and `lan` where they are written                                                                                                                                                                   |
 | `cap.exit.via`                                         | two steered defaults out of the tun under exit mode's rules, and the dataplane's steer along the path, of [mode 3](routing.md#mode-3-on-linux)                                                                                     | the steered defaults as the zero-free cover, and the dataplane's steer along the path, with `fallback = "uplink"` written, and refused where `fallback` is unwritten                                                         |
-| Network watch                                          | rtnetlink, with each link outside the mesh and its networks                                                                                                                                                                        | routing socket, with no links                                                                                                                                                                                                |
+| Network watch                                          | rtnetlink, with each link outside the mesh and its networks                                                                                                                                                                        | routing socket and kernel events, with each link outside the mesh and its networks                                                                                                                                           |
 | Don't fragment                                         | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO`                                                                                                                                                                                               | `IP_DONTFRAG`, `IPV6_DONTFRAG`                                                                                                                                                                                               |
 | Route MTU a path search takes                          | the route's MTU, including a path MTU the host learned                                                                                                                                                                             | the MTU of the interface the session sends through                                                                                                                                                                           |
 | Forwarding read from                                   | `/proc/sys/net/ipv4/ip_forward`, `/proc/sys/net/ipv6/conf/all/forwarding`                                                                                                                                                          | `net.inet.ip.forwarding`, `net.inet6.ip6.forwarding`                                                                                                                                                                         |
@@ -299,22 +299,31 @@ failures after it at debug until a send goes out again.
 A node also watches the host's network, so it does not wait for a liveness
 deadline to find a moved path. On Linux it follows the link, address and route
 notifications of rtnetlink, keeping only defaults in `main`. On macOS it follows
-the routing socket. 250 milliseconds after a notification it reads, for each
-family, the host's own default route, its interface and gateway, and the global
-unicast addresses of the interfaces that are up, and on Linux each link that is
-up with its prefixes and point-to-point far ends. The mesh's own device is left
-out of all three, so the reconciler's writes to its table and to the tun never
-count. When the default or an address differs from the reading last acted on,
-every session is asked to prove its path at once, as `ranet3 debug probe` asks
-it, and every dialer that is waiting out its reconnect delay, or the wait after
-a dial the host had no route for, dials again. A change of links alone probes no
-session and wakes no dialer, and wakes the reconciler only under
-[`cap.exit`](routing.md#exit-mode-on-linux). Either change is recorded as a
-`network.changed` event naming what moved. A dialer that finds its session
-healthy stands down as it does after any wake, and so does one behind a
-[`preferred`](control-socket.md#requests-and-answers) session its own dial would
-not replace. A change the host shows nowhere, such as a captive portal that lets
-nothing through, needs `ranet3 redial --all` instead.
+the route, address and link messages of the
+[routing socket](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/rtsock.c#L1610)
+and the kernel's
+[network events](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/net_kev.h#L34)
+beside them, since neither alone reports every change. 250 milliseconds after a
+notification it reads, for each family, the host's own default route, its
+interface and gateway, the global unicast addresses of the interfaces that are
+up, and each link that is up, the loopback among them, with its prefixes and
+point-to-point far ends. An IPv6 address counts once duplicate address detection
+ends, and never where detection found it duplicated. On Linux a far end counts
+as the network the kernel routes by it. On macOS a far end, and an IPv4 address
+on a point-to-point link or the loopback, count as hosts
+([`in_ifinit`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in.c#L1787)).
+The mesh's own device is left out of all three, so the reconciler's writes to
+its table and to the tun never count. When the default or an address differs
+from the reading last acted on, every session is asked to prove its path at
+once, as `ranet3 debug probe` asks it, and every dialer that is waiting out its
+reconnect delay, or the wait after a dial the host had no route for, dials
+again. A change of links alone probes no session and wakes no dialer, and wakes
+the reconciler only under [`cap.exit`](routing.md#exit-mode-on-linux). Either
+change is recorded as a `network.changed` event naming what moved. A dialer that
+finds its session healthy stands down as it does after any wake, and so does one
+behind a [`preferred`](control-socket.md#requests-and-answers) session its own
+dial would not replace. A change the host shows nowhere, such as a captive
+portal that lets nothing through, needs `ranet3 redial --all` instead.
 
 ## Sockets connected to 1 peer
 
