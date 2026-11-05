@@ -6,10 +6,7 @@
 package registry
 
 import (
-	"bytes"
 	"crypto/ed25519"
-	"crypto/x509"
-	"encoding/pem"
 	"slices"
 	"testing"
 
@@ -30,12 +27,7 @@ var (
 
 func init() {
 	for seed := range byte(4) {
-		key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed + 1}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
-		der, err := x509.MarshalPKIXPublicKey(key)
-		if err != nil {
-			panic(err)
-		}
-		text := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+		text, key := keyPEM(seed + 1)
 		poolKeys[text] = key
 		poolPEMs = append(poolPEMs, text)
 	}

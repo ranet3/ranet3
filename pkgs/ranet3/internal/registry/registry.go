@@ -2,23 +2,17 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
-// Package registry reads ranet's own registry and key file formats
-// unchanged, so a ranet3 deployment can point at the exact same
-// registry.json and Ed25519 keys an existing ranet mesh already uses.
-// Schema mirrors github.com/NickCao/ranet's src/registry.rs field for
-// field (verified against its own test fixture, not guessed).
+// Package registry reads the trust document and indexes each node's key and endpoints.
 package registry
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/json"
+	jsonv2 "encoding/json/v2"
 	"encoding/pem"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -57,21 +51,8 @@ func Load(path string) (*Index, error) {
 		return nil, fmt.Errorf("registry: read %s: %w", path, err)
 	}
 	var r Registry
-	decoder := json.NewDecoder(bytes.NewReader(b))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&r); err != nil {
+	if err := jsonv2.Unmarshal(b, &r, jsonv2.RejectUnknownMembers(true)); err != nil {
 		return nil, fmt.Errorf("registry: parse %s: %w", path, err)
-	}
-	// DisallowUnknownFields catches a stray field inside the document, while this
-	// catches a second document after it, which a partial write or a bad
-	// concatenation leaves behind and which Decode would otherwise ignore
-	// entirely. Token rather than More: More answers "is there another element
-	// in the array or object being parsed" and so reports false on a stray "]"
-	// or "}", which is one character of the concatenation this is here to
-	// refuse. Only an exhausted reader gives io.EOF, and trailing whitespace
-	// still does.
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("registry: parse %s: trailing data after the registry", path)
 	}
 	return New(r)
 }

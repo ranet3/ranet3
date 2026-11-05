@@ -5,10 +5,16 @@
 package registry
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,19 +217,14 @@ func TestValidateRefusesADuplicateNodeInOneBlock(t *testing.T) {
 	}
 }
 
-// DisallowUnknownFields catches a stray field inside the document. A second
-// document after it is the residue of a partial write or a bad concatenation.
-// Decode reads the first and says nothing about the rest.
-// Decode reads the first and says nothing about the rest.
+// A second document after the first is the residue of a partial write or a
+// bad concatenation, and a stray closing bracket is one character of that
+// concatenation.
 func TestLoadRefusesTrailingData(t *testing.T) {
 	good, err := os.ReadFile("testdata/registry.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The bracket cases are the concatenation itself rather than a clean
-	// append: json.Decoder.More reports whether another element follows in the
-	// array or object being parsed, so it answers false on either closing
-	// bracket and lets the document behind one through.
 	for name, trailing := range map[string]string{
 		"a second document":              "\n{\"anything\":\"at all\"}\n",
 		"a stray bracket and a document": "]\n{\"anything\":\"at all\"}\n",
@@ -247,5 +248,67 @@ func TestLoadRefusesTrailingData(t *testing.T) {
 	}
 	if _, err := Load(path); err != nil {
 		t.Errorf("a registry with trailing whitespace was refused: %v", err)
+	}
+}
+
+func keyPEM(seed byte) (string, ed25519.PublicKey) {
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	der, err := x509.MarshalPKIXPublicKey(key)
+	if err != nil {
+		panic(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), key
+}
+
+func loadText(t testing.TB, text string) (*Index, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "registry.json")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return Load(path)
+}
+
+// a member named twice and a string that is not UTF-8 refuse the whole document wherever they sit, remarks included, and a name in a spelling no field has refuses it outside remarks
+func TestLoadRefusesRepeatedOrMisspelledNamesAndInvalidUTF8(t *testing.T) {
+	firstPEM, firstKey := keyPEM(1)
+	secondPEM, _ := keyPEM(2)
+	first, second := strconv.Quote(firstPEM), strconv.Quote(secondPEM)
+	endpoint := `{"serial_number":"0","address_family":"ip4","address":"192.0.2.1","port":13000}`
+	gateway := `{"common_name":"gateway","endpoints":[` + endpoint + `],"remarks":{}}`
+	laptop := `{"common_name":"laptop","endpoints":[],"remarks":{}}`
+	block := func(members string) string { return `[{"organization":"example",` + members + `}]` }
+	withNode := func(node string) string { return block(`"public_key":` + first + `,"nodes":[` + node + `]`) }
+	kelvin, longS := string(rune(0x212A)), string(rune(0x017F))
+	escapedUnderscore := "\\" + "u005f"
+
+	x, err := loadText(t, withNode(gateway))
+	if err != nil {
+		t.Fatalf("the document every case below departs from was refused: %v", err)
+	}
+	if key, err := x.Key(identity.MustParse("example/gateway")); err != nil || !key.Equal(firstKey) {
+		t.Fatalf("the document every case below departs from gives example/gateway the key %x, %v, want %x", key, err, firstKey)
+	}
+
+	for name, text := range map[string]string{
+		"public_key twice":                                block(`"public_key":` + first + `,"public_key":` + second + `,"nodes":[` + gateway + `]`),
+		"public_key twice, once through an escape":        block(`"public_key":` + first + `,"public` + escapedUnderscore + `key":` + second + `,"nodes":[` + gateway + `]`),
+		"Public_Key alone":                                block(`"Public_Key":` + second + `,"nodes":[` + gateway + `]`),
+		"PUBLIC_KEY beside public_key":                    block(`"public_key":` + first + `,"PUBLIC_KEY":` + second + `,"nodes":[` + gateway + `]`),
+		"public_key with a Kelvin sign beside public_key": block(`"public_key":` + first + `,"public_` + kelvin + `ey":` + second + `,"nodes":[` + gateway + `]`),
+		"nodes with a long s beside nodes":                block(`"public_key":` + first + `,"nodes":[` + gateway + `],"node` + longS + `":[` + laptop + `]`),
+		"byte 0xff in a name inside remarks":              withNode("{\"common_name\":\"gateway\",\"endpoints\":[],\"remarks\":{\"si\xffte\":\"a\"}}"),
+		"a lone surrogate escape in a common_name":        withNode(`{"common_name":"gate\ud800way","endpoints":[],"remarks":{}}`),
+		"an unknown member":                               block(`"public_key":` + first + `,"nodes":[` + gateway + `],"extra":1`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := loadText(t, text)
+			if err == nil {
+				t.Fatalf("a document with %s was loaded", name)
+			}
+			if !strings.HasPrefix(err.Error(), "registry: parse ") {
+				t.Errorf("a document with %s was refused as %q, want the parse to refuse it", name, err)
+			}
+		})
 	}
 }
