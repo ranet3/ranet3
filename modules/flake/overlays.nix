@@ -19,7 +19,7 @@
           pkgsFinal
           pkgsPrev
           ;
-        # libcap, and through it qemu and the test VMs, build with the set's own go
+        # an argument, so the set's own go, which libcap and through it qemu and the test VMs build with, stays nixpkgs'
         go = pkgsFinal.go_latest;
       };
     };
