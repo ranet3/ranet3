@@ -46,7 +46,10 @@
 //     the wrapping differs.
 //   - MarshalText, which yaml.v3, BurntSushi/toml and encoding/json all write
 //     a word through. A type whose written form is a mapping rather than a
-//     word takes MarshalYAML alone, and [Announce] records why.
+//     word takes MarshalYAML alone, and [Announce] records why. A type
+//     embedding a [net/netip] value also takes an AppendText that calls its
+//     MarshalText, since encoding/json and log/slog's text handler take the
+//     AppendText the embedding promotes ahead of a MarshalText.
 //   - IsZero, when the type wraps a struct. yaml.v3 decides omitempty for a
 //     struct by asking for IsZero and otherwise walking the exported fields,
 //     and a [net/netip] value exports none, so a prefix holding 10.0.0.0/8 is
@@ -165,9 +168,9 @@ func (p Prefix) MarshalText() ([]byte, error) {
 	return []byte(p.String()), nil
 }
 
-// AppendText is MarshalText for encoding/json, which prefers an AppendText to a
-// MarshalText. Embedding promotes netip.Prefix's, which spells what MarshalText
-// refuses.
+// AppendText is MarshalText for encoding/json and log/slog's text handler,
+// which prefer an AppendText to a MarshalText. Embedding promotes
+// netip.Prefix's, which spells what MarshalText refuses.
 func (p Prefix) AppendText(b []byte) ([]byte, error) {
 	text, err := p.MarshalText()
 	if err != nil {
