@@ -152,8 +152,11 @@ name:
 - a source-specific route
 - a retracted route, which it holds as a reject route, unless the route counts
   as a default, whose hold it does not install at all
-- any route that contains a literal endpoint address the trust document lists,
-  but for a member of the zero-free cover
+- any route outside the overlay inside a route of the host's longer than `/0`
+  out of another interface, a member of the zero-free cover among them, as
+  Linux's rule 5410 answers by such a route ahead of the mesh's table, and the
+  pieces outside the overlay of one there that holds a prefix of the overlay, as
+  [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives
 - in mode off, or in a family `cap.exit` leaves out, any route that
   [counts as a default](routing.md#routes-that-count-as-a-default)
 
@@ -169,13 +172,12 @@ routes each mode and family installs. A family the tun holds no overlay address
 of is left out of the mode and keeps mode off's form. Where the utun holds no
 address of a family at all, in either mode, the reconciler installs none of its
 routes, as
-[the limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) give. A
-route that contains a literal endpoint address the trust document lists still
-stays scoped to the tun, unless it is a member of the cover. Unscoped and longer
-than the host's own route to that peer, it could leave ranet3's datagrams to the
-peer no route on the interface they name. In either mode the daemon writes
-nothing outside the tun, and a reload moves the routes between the two forms
-with no restart.
+[the limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) give. In
+either mode a route of the mesh holding an address the underlay sends to goes in
+as the pieces of it around the address in the cases
+[where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives.
+In either mode the daemon writes nothing outside the tun, and a reload moves the
+routes between the two forms with no restart.
 
 A source-specific route and a retracted one stay scoped in either mode.
 Interface scope is the only way macOS expresses a source. An unscoped reject

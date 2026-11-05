@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-04
+updated: 2026-11-05
 order: 10
 ---
 
@@ -175,14 +175,17 @@ datagram sent without a pin leaves as row D4 of
 [where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos)
 gives, and one sent from its pin as row D5 gives, as
 [the underlay's interface](../routing.md#the-underlays-interface-on-macos) says.
-No datagram enters the utun. The reconciler scopes a route of the mesh covering
-a literal endpoint address the trust document lists, while an endpoint written
-as a hostname has no listed address, so a route of the mesh covering the address
-it resolves to goes in unscoped unless it is a hold, carries a source prefix or
-counts as a default. Where that route is longer than the host's own route to the
-address, and the interface the selection names holds no route of its own to it
-and not the host's default, the lookup scoped to that interface finds no route,
-and the datagrams to that endpoint are refused.
+No datagram enters the utun. A route of the mesh holding an address the underlay
+sends to, a literal endpoint, the address a dialer last resolved and a live
+session's alike, goes in as the pieces of it around that address in the cases
+[where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos)
+gives, in a pass a change of those addresses starts at once, as
+[when a pass runs](../routing.md#when-a-pass-runs) lists. A dialer's first
+datagram to a newly resolved address goes out before that pass has run and can
+be refused. The dial then fails, and the dialer dials again after its reconnect
+delay, by which time the pass has cut the address. The Mac's own traffic to such
+an address leaves by the host's route too, where on Linux it would take the
+mesh's.
 
 On macOS an answer names the address the peer reached as its source, and the
 kernel picks the interface it leaves by
@@ -498,10 +501,10 @@ interface, as it marks its own on Linux.
 On macOS an unscoped `/0` out of the tun would collide with the host's own
 default, because macOS has no route replace. Under `cap.exit`, in a family the
 tun holds an overlay address of, the reconciler installs it as the zero-free
-cover instead, and the hold judges the cover by its `/0`. The cover's members
-stay unscoped even over a literal endpoint address the trust document lists,
-because no member holds the zero address a datagram that names its interface
-falls back to, as
+cover instead, and the hold judges the cover by its `/0`. A member goes in whole
+over an address the underlay sends to wherever the host's route to it is the one
+holding the zero address, because no member holds the zero address a datagram
+that names its interface falls back to, as
 [the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. An
 exit serving Macs advertises the `/0` only, as
 [exit nodes](../exit-nodes.md#what-to-advertise) describes.

@@ -410,6 +410,16 @@ out.
 | Socket   | for this host's own IPv6 packet to `::`, that a socket decides where it goes, so the answer may not be its path                                                                                                                                                                                                                                                                                                                 |
 | Settings | each setting read to explain the answer, with its value or why it could not be read                                                                                                                                                                                                                                                                                                                                             |
 
+On macOS the `Route` line also names a route out of the mesh's tun that the
+reconciler's last pass installed as a piece of a mesh's route cut around an
+address the underlay sends to, as
+`a piece of the mesh's route 203.0.113.0/24 cut around 203.0.113.9`, and a route
+of the host's answering for a destination of a mesh's route that pass scoped
+beneath one of the host's routes, as
+`ahead of the mesh's route 192.0.2.0/25, which goes in scoped to the mesh's tun inside the host's route 192.0.2.0/24`,
+as [where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos)
+gives.
+
 ## Trace records
 
 A record names the decision, `deliver`, `forward`, `egress`, `answer` or `drop`,
@@ -544,6 +554,7 @@ connections to the reads.
 | `babel.state.unsaved`, `.unreadable`  | a seqno limit could not be saved, or the state file not read at start                     |
 | `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed                     |
 | `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS                     |
+| `kernel.underlay`                     | a cut endpoint or a route scoped beneath the host's came or went, on macOS                |
 | `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on Linux      |
 | `kernel.forward`                      | a link `cap.exit.forward` matched began or stopped being left out of the mode             |
 | `kernel.exit`                         | under `cap.exit`, the tun came to hold no overlay address of a family, or the state ended |
@@ -645,6 +656,7 @@ Each kind carries these attributes:
 | `babel.state.unreadable`                      | `file`, `err`                                                                                                                                                                                      |
 | `kernel.pass`                                 | `trigger`, `took`, `added`, `removed`, `skipped`, `installed`, `err`                                                                                                                               |
 | `kernel.cover`                                | `family`, `installed`                                                                                                                                                                              |
+| `kernel.underlay`                             | `cut` and `restored`, the addresses a pass began and stopped cutting out, `scoped` and `unscoped`, the routes it began and stopped scoping beneath the host's, `none` for none                     |
 | `kernel.taken`                                | `family`, `lookup` (`overlay` or `underlay`), `prefix` and `address` for an overlay lookup or `endpoint` with `source` and `interface` where the send carries them, `answer`, `taken`              |
 | `kernel.forward`                              | `entry`, `link`, `reason` (the tun, the loopback link, or the link a family's default leaves by), `skipped`                                                                                        |
 | `kernel.exit`                                 | `family`, `addressed` (false where the family came to be left out of the mode, as [limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) says, and true where the state then ended) |
@@ -681,15 +693,17 @@ Each kind carries these attributes:
 and `antispoof.pass` only when the step failed, and on a `control.verb` under a
 session the verb missed it is the reason the answer gives. The `trigger` of a
 `kernel.pass` is `start`, `sweep`, `retry`, `grace`, `disable`, `enable`,
-`reload`, `network` when the network watch delivered a change, `mesh` or
-`kernel`. The `trigger` of an `egress.pass` is `start`, `sweep`, `retry`,
-`disable`, `enable`, `changed` when another writer added, changed or deleted
-part of its tables, or `missed` when the daemon lost nf_tables notifications to
-an overflow or could not read one, whoever's tables they were about. The
-`trigger` of an `antispoof.pass` is `start`, `sweep`, `retry`, `reload`,
-`routes` when the mesh's table changed, `network` when the host's links did,
-`changed` when another writer added, changed or deleted part of its table, or
-`missed` as for an `egress.pass`.
+`reload`, `network` when the network watch delivered a change, `underlay` on
+macOS when the selection found the host's routes changed or the addresses the
+underlay sends to changed, as [when a pass runs](../routing.md#when-a-pass-runs)
+lists, `mesh` or `kernel`. The `trigger` of an `egress.pass` is `start`,
+`sweep`, `retry`, `disable`, `enable`, `changed` when another writer added,
+changed or deleted part of its tables, or `missed` when the daemon lost
+nf_tables notifications to an overflow or could not read one, whoever's tables
+they were about. The `trigger` of an `antispoof.pass` is `start`, `sweep`,
+`retry`, `reload`, `routes` when the mesh's table changed, `network` when the
+host's links did, `changed` when another writer added, changed or deleted part
+of its table, or `missed` as for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an
