@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-04
+updated: 2026-11-05
 order: 20
 ---
 
@@ -198,9 +198,9 @@ have commands of their own.
 
 | Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | --------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote hegel's cache                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote Hegel's cache                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, `staticcheck ./...`, a build of `cmd/ranet3` for Android with cgo off, and a build of `cmd/ranet3` that keeps its symbols, which fails where the daemon links `transport`'s network in memory, `internal/bubble` or `testing`, or a non-test file, outside the network's own files, that names `NewMemoryNetwork`                                                                                                                                                                                                                                                                                     |
-| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, a check of the VM tests' absent log lines, and `reuse lint`                                                                                                                                                                                                                                                                                                                                               |
+| `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, a check of the VM tests' absent and counted log lines, and `reuse lint`                                                                                                                                                                                                                                                                                                                                   |
 | `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `raweb3`        | all 3   | all 3                            | a check of the kernel exit's rows of protocol deviations, as [the exit behavior suite](#the-exit-behavior-suite) says, then `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `modules`       | Linux   | `x86_64-linux`, `aarch64-linux`  | an evaluation of the NixOS module with networkd on, on with `ManageForeignRoutingPolicyRules` set by the host, and off, and of the `networkd.conf` it writes with networkd on, and of the nix-darwin module beside a stand-in for the nix-darwin options it reads and sets, which declares each `serviceConfig` key the module sets with nix-darwin's type: its job's command line and its `/etc` entry for a TOML and a YAML file, its `serviceConfig` rendered as a plist, its 2 assertions, its reload past a secrets step at `mkAfter` in 3 module orders, and its activation steps against stand-ins for `ranet3` and `launchctl` in 9 activations |
@@ -221,12 +221,18 @@ also fails when a fixed string that a VM test's script greps ranet3's journal
 for and expects absent, or counts through a command that must succeed, is no
 longer in a string literal of a non-test Go file under `pkgs`, since a renamed
 log line would leave that grep passing on nothing and that count at 0. A count
-is a `grep` with `-c` among its flags or `--count`, or a pipe into `wc -l`, and
-it must sit in the text of the call that runs it, since one built into a name
-that is not bound to a string literal goes unread. It fails as well on a command
-a script expects to fail, or one that must succeed and counts, that is neither
-ranet3's journal piped into `grep -F` stages of quoted fixed strings, a trailing
-`|| true` allowed on a count, nor a command that reads no journal of ranet3's.
+is a `grep` with `-c` among its flags or `--count`, or a pipe into `wc -l`. The
+check reads every argument of such a call but a `timeout=`, past Python's
+comments, as string literals, a name the file binds to one or to a journal, or a
+call of a function of the file that returns one. It fails on an argument of any
+other form, `command=` among them. A call that must succeed with such an
+argument fails only where its string literals hold a count, and is otherwise
+skipped whole, with the count of a bound name in it unread. A name bound to a
+literal is read only as a whole argument, and a count built from one inside an
+expression goes unread. It fails as well on a command a script expects to fail,
+or one that must succeed and counts, that is neither ranet3's journal piped into
+`grep -F` stages of quoted fixed strings, which a count may follow with
+`|| true`, nor a command that reads no journal of ranet3's.
 
 The `netlink` check runs the test binary of each package that holds Linux root
 tests, whole, as root, in its package's directory of the source it was built
@@ -305,20 +311,21 @@ ML-KEM-768 Child SA of strongSwan's rekey thereby lasts until ranet3's own rekey
 10 seconds after it is made, past the check of its key exchanges. The margin
 covers the unanswered Delete of a replaced IKE SA, which holds the session's
 next request, and then a rekey's 3 lost sends. The script of
-`integration-initiator` and `integration-kernel` also has the gateway drop the
-client's IKE for 5 seconds while iperf3 runs, which outlasts a rekey's first
-send, and counts the IKE the client sends from the moment the drop is in place
-to its end. It fails when the client sent none in those 5 seconds. When the drop
-took none of the sends, which were then lost before the gateway, it holds the
-drop up to 6 seconds longer until it takes one, and fails if it takes none. It
-asserts that a Child SA rekey completed and that no Child SA reached its
-lifetime. The scripts of the initiator, responder and `suites-meet` checks, and
-of the `mlkem-*` checks except the 2 `mlkem-apart` ones, fail whenever ranet3
-logs that it stopped ESP on a Child SA past its lifetime, whenever its scrape
-counts an ESP datagram a session dropped or one of an SPI no session holds, and
-whenever strongSwan's journal shows an `N(INVAL_SPI)`, an `INVALID_SPI` notify
-from ranet3, across the rekeys. They read the first in
-`ranet3_esp_inbound_dropped_total` and the second in
+`integration-initiator`, `integration-initiator-fqdn` and `integration-kernel`
+also has the gateway drop the client's IKE for 5 seconds while iperf3 runs,
+which outlasts a rekey's first send, and counts the IKE the client sends from
+the moment the drop is in place to its end. When the drop took none of the
+client's sends, the script fails if the client sent none in those 5 seconds. If
+the client sent some, they were lost before the gateway, and the script holds
+the drop up to 6 seconds longer until the drop takes one, and fails if the drop
+takes none. The script also asserts that a Child SA rekey completed and that no
+Child SA reached its lifetime. The scripts of the initiator, responder and
+`suites-meet` checks, and of the `mlkem-*` checks except the 2 `mlkem-apart`
+ones, fail whenever ranet3 logs that it stopped ESP on a Child SA past its
+lifetime, whenever its scrape counts an ESP datagram a session dropped or one of
+an SPI no session holds, and whenever strongSwan's journal shows an
+`N(INVAL_SPI)`, an `INVALID_SPI` notify from ranet3, across the rekeys. They
+read the first in `ranet3_esp_inbound_dropped_total` and the second in
 `ranet3_receive_refused_total{cause="unknown_esp"}`, which
 [metrics](../metrics.md#series) and its
 [refused datagrams](../metrics.md#refused-datagrams) define. They read neither
