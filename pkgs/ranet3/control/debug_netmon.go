@@ -53,7 +53,8 @@ type NetmonFamily struct {
 	Family    string        `json:"family"`
 	Default   NetmonDefault `json:"default"`
 	Addresses []netip.Addr  `json:"addresses"`
-	// Links is each up interface with its addresses of the family under their lengths, empty on darwin
+	// Links is each up interface outside the mesh with its addresses of the family under their lengths, which internal/kernel's
+	// NetworkFamily says per platform
 	Links []NetmonLink `json:"links,omitempty"`
 }
 
