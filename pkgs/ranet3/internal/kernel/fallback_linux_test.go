@@ -324,7 +324,7 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	if err := plat.writeFallback(fallbackSample, false); err != nil {
 		t.Fatal(err)
 	}
-	DeleteFallback()
+	DeleteFallback(nil)
 	if read, err := plat.readFallback(fallbackSample); read.fault != "the table is missing" || err != nil {
 		t.Errorf("after a start with no reconciler the table reads back with %q (err %v)", read.fault, err)
 	}

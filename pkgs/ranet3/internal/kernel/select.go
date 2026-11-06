@@ -13,15 +13,15 @@ type hostRoute struct {
 	scoped, cloned bool
 	// multicast and broadcast are the kernel's own entries for a link's group and broadcast addresses
 	multicast, broadcast bool
-	// switched is a reject of the kill switch's shape at one of its keys, ranet3's own as a route out of mesh is
-	switched bool
+	// own is a reject of the kill switch's or an overlay hold, ranet3's own, which the mesh's utun routes stand beside
+	own bool
 }
 
 // candidate reports whether a socket scoped to no interface reaches r, and r leaves by an interface other than mesh and is
-// no reject of the kill switch's
+// no reject or hold of ranet3's own
 // any other reject or blackhole route stays a candidate, as the host's own lookup would take it
 func (r hostRoute) candidate(mesh int) bool {
-	return r.index != mesh && !r.scoped && !r.cloned && !r.multicast && !r.broadcast && !r.switched
+	return r.index != mesh && !r.scoped && !r.cloned && !r.multicast && !r.broadcast && !r.own
 }
 
 // selectRoute is the route whose interface an underlay datagram to destination names, the longest candidate holding it

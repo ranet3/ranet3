@@ -249,7 +249,8 @@ func carriedOut(fd int, target netip.Addr, payload []byte) bool {
 // holds, longer than /0, and an unbound lookup of an address inside it ends at
 // U, as rule 5410 sends it on linux. The arm around the overlay puts a mesh
 // route holding a prefix of the overlay inside that route of U's, and an
-// unbound lookup ends at U outside the prefix and at M inside it. The
+// unbound lookup ends at U outside the prefix and inside it at the prefix's
+// hold on lo0, as the hold refuses it on linux. The
 // reconciler's withdrawal leaves both utuns and the host's defaults as they
 // were.
 func TestDarwinHolesLetTheUnderlayPastALongerMeshRoute(t *testing.T) {
@@ -294,7 +295,7 @@ func TestDarwinHolesLetTheUnderlayPastALongerMeshRoute(t *testing.T) {
 		t.Run(family.name+", row L6 around the overlay", func(t *testing.T) {
 			rig.listed, rig.sent = nil, nil
 			rig.pass(t, family.holding)
-			for address, want := range map[netip.Addr]int{family.outside: rig.u.index, family.inside: rig.m} {
+			for address, want := range map[netip.Addr]int{family.outside: rig.u.index, family.inside: interfaceIndex(t, Loopback)} {
 				if got := askRoute(t, address, 0); got != want {
 					t.Errorf("an unbound RTM_GET for %s, inside U's %s and the mesh's %s, which holds the overlay's %v, answers interface %d, want %d", address, family.lan, family.holding, holeOverlay, got, want)
 				}

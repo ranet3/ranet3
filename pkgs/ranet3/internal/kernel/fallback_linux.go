@@ -539,8 +539,10 @@ func deleteFallback(conn *nftables.Conn) error {
 // DeleteFallback deletes the table an earlier instance left, for a start that
 // runs no reconciler to delete it. A kernel without nf_tables holds none. A
 // start without CAP_NET_ADMIN, which nfnetlink refuses with EPERM, cannot
-// tell whether one is held, and warns as any other refusal.
-func DeleteFallback() {
+// tell whether one is held, and warns as any other refusal. The overlay names
+// darwin's holds and nothing here, where the holds are routes of ranet3's
+// table, which no start without a reconciler touches.
+func DeleteFallback(_ []schema.Prefix) {
 	conn, err := nftables.Dial()
 	if err == nil {
 		err = deleteFallback(conn)

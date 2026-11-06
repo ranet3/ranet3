@@ -630,7 +630,7 @@ func logRecord(t *testing.T, logs *bytes.Buffer, msg string) map[string]any {
 // the census says what sharing a table costs and names the writers it found
 func TestCensusNamesTheWritersAndTheFix(t *testing.T) {
 	reconciler, _, fake := harness(t, Table{})
-	reconciler.plat = &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
+	reconciler.use(&auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}})
 	logs := captureKernelLogs(t)
 	reconciler.audit()
 	record := logRecord(t, logs, "kernel is sharing its table with another routing protocol")
@@ -650,7 +650,7 @@ func TestCensusNamesTheWritersAndTheFix(t *testing.T) {
 
 func TestRunTakesTheCensus(t *testing.T) {
 	reconciler, table, fake := harness(t, Table{})
-	reconciler.plat = &auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}}
+	reconciler.use(&auditingKernel{fakeKernel: fake, writers: []string{"bird (12)"}})
 	route := Route{Destination: prefix("10.0.0.0/8")}
 	table.Set(netip.Prefix{}, route.Destination, nil)
 	logs := captureKernelLogs(t)

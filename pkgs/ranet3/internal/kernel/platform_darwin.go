@@ -37,9 +37,10 @@ import (
 // The kernel's own entries for the interface are excluded by shape. An address
 // creates a host route whose gateway is the address, and the per-interface
 // broadcast and multicast entries carry RTF_BROADCAST or RTF_MULTICAST.
-// Nothing outside the mesh device is written, deleted or taken for ours. The
-// rest of the table is read only to be filtered out and to name the holder of
-// a key the kernel refused.
+// Nothing outside the mesh device is written, deleted or taken for ours but
+// the kill switch's rejects and the overlay holds on lo0, each owned by its
+// shape at its keys as the sections below say. The rest of the table is read
+// only to be filtered out and to name the holder of a key the kernel refused.
 //
 // # What the darwin FIB cannot hold
 //
@@ -59,29 +60,30 @@ import (
 //
 // # The kill switch
 //
-// cap.exit fallback = "none" is a reject route on lo0 at each of the zero-free
-// cover's 16 keys (zeroFreeCover), both families whatever the tun holds:
-// unscoped, RTF_UP, RTF_STATIC, RTF_REJECT and RTF_GATEWAY via 127.0.0.1 or
-// ::1. An unbound lookup ending at one refuses the send with ENETUNREACH
-// (rt_lookup_common in bsd/net/route.c). RTF_GATEWAY keeps a route out of a
+// cap.exit fallback = "none" is a reject route on lo0 at each key of the
+// zero-free cover (rejectKeys): unscoped, RTF_UP, RTF_STATIC, RTF_REJECT and
+// RTF_GATEWAY via 127.0.0.1 or ::1. RTF_GATEWAY keeps a route out of a
 // loopback interface from answering a scoped lookup, so a socket scoped to an
-// interface, the underlay's among them, passes the rejects over. They do not
-// leave with the utun, so after a crash the Mac's unbound traffic is refused
-// until ranet3 starts again.
+// interface, the underlay's among them, passes the rejects over. A reject is
+// owned by its shape alone at a key, since no marker says who wrote it, so one
+// of that shape another program wrote is taken over, and a route of any other
+// shape at a key is reported and never removed. The kernel holds one unscoped
+// route per key and mask, so while the switch is asked for a route of ours at
+// a key goes in as its halves (splitAtKeys). routing.md's "The kill switch on
+// macOS" gives what the rejects refuse and how long they stay.
 //
-// A reject is owned by its shape alone: lo0, those four flags, that gateway,
-// unscoped, at one of the 16 keys. No record or marker says who wrote it, so
-// one of exactly that shape another program wrote is taken over and deleted at
-// a stop, as linux deletes its table by name, and a route of any other shape
-// at a key is reported and never removed. The kernel holds one unscoped route
-// per key and mask, so a route of ours out of the utun and a reject at one key
-// cannot both go in (the second add is EEXIST in either order, measured), and
-// while the switch is asked for no route of ours sits at a key (splitAtKeys).
-// The IPv4 rejects count the sends they refuse in rmx_pksent and the IPv6 ones
-// count none, measured, so the switch reports no drops. A delete on lo0 wakes
-// a watcher of its index within about 20 ms and an add wakes none, measured,
-// so a reject another program deletes is written again at once and a route
-// another program adds at a key waits for the periodic pass.
+// # The overlay holds
+//
+// A hold at a prefix of the overlay (overlayHolds) goes on lo0 in the rejects'
+// shape, so it outlives the utun as linux's unreachable route outlives the
+// process. Every other hold stays scoped out of the utun (holdsAgainstTheFIB).
+// A route of ours out of the utun at a hold's key goes in as its halves
+// (splitAtKeys), and one at a full-length key, which has no halves, goes in as
+// a host route beside it (routeMessage). A route of that shape on lo0 is this
+// reconciler's at a key of the overlay in force or at one this process held a
+// hold at, and another program's at any other key, since route add -reject
+// writes the same shape. routing.md's "The kill switch on macOS" gives what a
+// hold refuses.
 type routePlatform struct {
 	rt    Runtime
 	index int
@@ -131,7 +133,7 @@ type routePlatform struct {
 	// the reconciler recorded its own route as another program's, stopped
 	// reporting it in the dump, re-added it on every pass and could never
 	// withdraw it.
-	ours map[routeKey]bool
+	ours map[ownKey]bool
 
 	// addrs replaces the interface dump when set. The write side already goes
 	// through the rtSocket seam, but without the read side a test cannot reach the
@@ -143,9 +145,11 @@ type routePlatform struct {
 
 	// overlay and covered hold the overlay in force and the families whose
 	// zero routes go in as the cover, as cover handed them to the current
-	// pass, so every scope decision of a pass reads the same two
-	overlay []schema.Prefix
-	covered []Family
+	// pass, so every scope decision of a pass reads the same two, and
+	// overlaid is the overlay's keys, where its holds sit
+	overlay  []schema.Prefix
+	overlaid map[netip.Prefix]bool
+	covered  []Family
 	// hosts is the host's routes as cover handed them to the current pass,
 	// which row L6 reads
 	hosts hostTable
@@ -169,6 +173,10 @@ type routePlatform struct {
 	// dump read it and its writes left it, nil until a dump of the pass has
 	// parsed
 	loops rejectRows
+	// holds is each key a dump or an install of this process found a hold of
+	// ours on lo0 at, so one at a prefix a reload took out of the overlay
+	// stays ours to delete. Pruned by every dump, as covering is.
+	holds map[netip.Prefix]bool
 }
 
 func newPlatform(t Table, rt Runtime) (platform, error) {
@@ -197,8 +205,13 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		warned:   make(map[Route]bool),
 		occupied: make(map[routeKey]bool),
 		refused:  make(map[routeKey]bool),
-		ours:     make(map[routeKey]bool),
+		ours:     make(map[ownKey]bool),
 		pending:  make(map[Route]bool),
+		holds:    make(map[netip.Prefix]bool),
+		// the overlay of the start until a pass hands its own, so a stop
+		// before the first pass deletes the holds a crash left
+		overlay:  rt.Overlay,
+		overlaid: keySet(overlayKeys(rt.Overlay)),
 	}
 	if err := plat.open(); err != nil {
 		_ = plat.Close()
@@ -304,22 +317,27 @@ func (p *routePlatform) ownedRoutes(rib []byte) ([]Route, error) {
 	// Rebuilt rather than added to, so a route another program took over
 	// between two passes stops being claimed as ours and is reported as held
 	// the next time an install of it is refused.
-	p.ours = make(map[routeKey]bool, len(p.ours))
+	p.ours = make(map[ownKey]bool, len(p.ours))
 	p.loops = make(rejectRows, len(rejectKeys))
+	holds := make(map[netip.Prefix]bool, len(p.holds))
 	for _, message := range messages {
 		p.readLoop(message)
 		decoded, ok := p.decodeRoute(message)
 		if !ok {
 			continue
 		}
+		if p.heldApart(decoded) {
+			holds[decoded.Destination] = true
+		}
 		out = append(out, decoded)
 		key := routeKey{destination: decoded.Destination, scoped: decoded.Scoped}
-		p.ours[key] = true
+		p.ours[p.owned(decoded, key)] = true
 		stillHeld[key] = true
 		if decoded.Scoped {
 			stillScoped[decoded.Destination] = true
 		}
 	}
+	p.holds = holds
 	for key := range p.covering {
 		if !stillHeld[key] {
 			delete(p.covering, key)
@@ -345,7 +363,8 @@ func (p *routePlatform) ownedRoutes(rib []byte) ([]Route, error) {
 // RTF_MULTICAST are the kernel's own entries for an address, which is how
 // darwin records the per-interface broadcast and multicast plumbing.
 // RTF_WASCLONED is a copy the kernel made of some other route, RTF_LLINFO a
-// neighbor cache entry, and RTF_BLACKHOLE discards silently, which the mesh
+// neighbor cache entry but on a host route of ours (ownHost), and
+// RTF_BLACKHOLE discards silently, which the mesh
 // never asks for. RTF_GATEWAY says the route has a next hop, which the mesh
 // never expresses. Removing any of them would break something this reconciler
 // did not create.
@@ -360,17 +379,42 @@ const skipRouteFlags = unix.RTF_MULTICAST | unix.RTF_BROADCAST |
 	unix.RTF_LOCAL | unix.RTF_WASCLONED | unix.RTF_LLINFO |
 	unix.RTF_BLACKHOLE | unix.RTF_GATEWAY
 
+// ownHost reports a host route whose gateway is the tun's link: the form
+// routeMessage writes a full-length route of ours in, which XNU marks
+// RTF_LLINFO in IPv6 (nd6_rtrequest in bsd/netinet6/nd6.c). A clone of one
+// carries RTF_WASCLONED as well, which stays skipped.
+func (p *routePlatform) ownHost(rm *route.RouteMessage) bool {
+	if rm.Flags&unix.RTF_HOST == 0 || len(rm.Addrs) <= unix.RTAX_GATEWAY {
+		return false
+	}
+	gateway, ok := rm.Addrs[unix.RTAX_GATEWAY].(*route.LinkAddr)
+	return ok && gateway.Index == p.index
+}
+
 // decodeRoute keeps only the routes this reconciler owns. Everything else in
 // the dump belongs to somebody else, so it is dropped here and can never reach
 // a delete list.
 func (p *routePlatform) decodeRoute(message route.Message) (Route, bool) {
 	rm, ok := message.(*route.RouteMessage)
-	// NET_RT_DUMP reports every entry as an RTM_GET. Anything else came from
-	// somewhere this function was not meant to read.
-	if !ok || rm.Type != unix.RTM_GET || rm.Index != p.index {
+	if !ok {
 		return Route{}, false
 	}
-	if rm.Flags&unix.RTF_UP == 0 || rm.Flags&skipRouteFlags != 0 {
+	// a route in the rejects' shape on lo0 is an overlay hold of ours at its
+	// keys alone, and another program's elsewhere
+	if destination, ok := loopShaped(rm, p.loopback); ok {
+		hold := Route{Destination: destination, Metric: holdMetric, Unreachable: true}
+		return hold, p.heldApart(hold)
+	}
+	// NET_RT_DUMP reports every entry as an RTM_GET. Anything else came from
+	// somewhere this function was not meant to read.
+	if rm.Type != unix.RTM_GET || rm.Index != p.index {
+		return Route{}, false
+	}
+	skip := skipRouteFlags
+	if p.ownHost(rm) {
+		skip &^= unix.RTF_LLINFO
+	}
+	if rm.Flags&unix.RTF_UP == 0 || rm.Flags&skip != 0 {
 		return Route{}, false
 	}
 	if len(rm.Addrs) <= unix.RTAX_NETMASK {
@@ -472,22 +516,37 @@ func (p *routePlatform) sourceIsOurs(source netip.Prefix) (bool, error) {
 // scoped route is invisible to an ordinary lookup and visible to a socket
 // bound to an address on this interface.
 //
-// RTF_HOST is not set either, even for a full-length prefix, because the netmask says
-// the same thing. With RTF_HOST the kernel resolves the output interface
-// through ifa_ifwithdstaddr, which on a box carrying several point-to-point
-// utuns can answer with somebody else's device.
+// A full-length prefix goes in as a host route, RTF_HOST and no netmask, which
+// the kernel keys apart from an overlay hold on lo0 at the same address, a
+// network route with a mask of all ones (bsd/net/radix.c rn_addroute), and
+// matches first, so the hold stays beneath it and outlives it. RTF_HOST makes
+// rtrequest look the interface up by its destination (ifa_ifwithdstaddr),
+// which on a box carrying several point-to-point utuns can answer with
+// somebody else's device, so the message names the tun as RTAX_IFP too, which
+// route_output sets on the route after it (rt_setif, bsd/net/rtsock.c).
+//
+// An overlay hold goes on lo0 in the rejects' shape instead (heldApart).
 func (p *routePlatform) routeMessage(kind int, r Route) (*route.RouteMessage, error) {
-	mask, ok := prefixMask(r.Destination)
-	if !ok {
-		return nil, fmt.Errorf("%s has no netmask", r.Destination)
+	if p.heldApart(r) {
+		return loopMessage(kind, r.Destination)
 	}
+	flags := unix.RTF_UP | unix.RTF_STATIC
 	addrs := make([]route.Addr, unix.RTAX_MAX)
 	addrs[unix.RTAX_DST] = routeAddr(r.Destination.Addr())
 	addrs[unix.RTAX_GATEWAY] = &route.LinkAddr{Index: p.index}
-	addrs[unix.RTAX_NETMASK] = routeAddr(mask)
+	if r.Destination.IsSingleIP() {
+		flags |= unix.RTF_HOST
+		addrs[unix.RTAX_IFP] = &route.LinkAddr{Index: p.index}
+	} else {
+		mask, ok := prefixMask(r.Destination)
+		if !ok {
+			return nil, fmt.Errorf("%s has no netmask", r.Destination)
+		}
+		addrs[unix.RTAX_NETMASK] = routeAddr(mask)
+	}
 	return &route.RouteMessage{
 		Type:  kind,
-		Flags: unix.RTF_UP | unix.RTF_STATIC,
+		Flags: flags,
 		Index: p.index,
 		Addrs: addrs,
 	}, nil
@@ -510,7 +569,9 @@ func (p *routePlatform) AddRoute(r Route) error {
 		// wrote itself, and never withdraw it.
 		return p.skipRoute(r, "the limited broadcast address is not a destination")
 	}
-	if slices.Contains(p.bare, familyOf(r.Destination.Addr())) {
+	// an overlay hold leaves by lo0, which holds an address of each family
+	loop := p.heldApart(r)
+	if !loop && slices.Contains(p.bare, familyOf(r.Destination.Addr())) {
 		return p.skipRoute(r, "the tun holds no address of its family, and macOS routes a family only out of an interface holding one of its addresses")
 	}
 	if r.Source.IsValid() {
@@ -568,7 +629,7 @@ func (p *routePlatform) AddRoute(r Route) error {
 			return err
 		}
 		key := routeKey{destination: r.Destination, scoped: p.scopeRoute(r)}
-		if p.ours[key] {
+		if p.ours[p.owned(r, key)] {
 			// Already installed out of this interface, so the key is taken by
 			// this reconciler and nothing is wrong. It is still reported as
 			// skipped, because this call installed nothing and a pass that
@@ -595,7 +656,7 @@ func (p *routePlatform) AddRoute(r Route) error {
 	// refused is this process's own now, so the next dump has to report it
 	delete(p.occupied, installed)
 	delete(p.refused, installed)
-	p.ours[installed] = true
+	p.ours[p.owned(r, installed)] = true
 	// Recorded only after the write lands, and only for a route that actually
 	// carries the scope. An entry for a route that was never installed would
 	// make decodeRoute report an unscoped route as carrying a source it does
@@ -605,6 +666,9 @@ func (p *routePlatform) AddRoute(r Route) error {
 	}
 	if r.Cover {
 		p.covering[installed] = true
+	}
+	if loop {
+		p.holds[r.Destination] = true
 	}
 	return nil
 }
@@ -644,6 +708,9 @@ func (p *routePlatform) describe(destination netip.Prefix, gateway netip.Addr, i
 // on the same machine: its exit-node default is scoped to its utun, its
 // 100.64/10 is not.
 func (p *routePlatform) scopeRoute(r Route) bool {
+	if p.heldApart(r) {
+		return false
+	}
 	// Row L6: a route of the mesh's outside the overlay beneath an unscoped route
 	// of the host's longer than /0 on another interface goes in scoped, so an
 	// unbound lookup ends by the host's route there as Linux's rule 5410 ends
@@ -675,8 +742,29 @@ func standsInForASource(r Route) bool { return r.Source.IsValid() }
 // a hold answers with an error rather than carrying the packet, and this FIB
 // is the only one the machine has, so unscoped it shadows whatever else could
 // still reach the prefix, for the life of the process if this node originates
-// it.
+// it. An overlay hold is there to shadow that and is no such hold.
 func holdsAgainstTheFIB(r Route) bool { return r.Unreachable }
+
+// heldApart reports an overlay hold, which goes on lo0 in the rejects' shape:
+// a hold with no source at a key of the overlay in force or at one this
+// process held a hold at
+func (p *routePlatform) heldApart(r Route) bool {
+	return r.Unreachable && !r.Scoped && !r.Source.IsValid() &&
+		(p.holds[r.Destination] || p.overlaid[r.Destination])
+}
+
+// ownKey is a key of ours: a route's key, and whether it is a host route,
+// which the kernel keys apart from a hold on lo0 at its address
+type ownKey struct {
+	routeKey
+	host bool
+}
+
+// owned is r's ownKey at key: a full-length route out of the tun goes in as a
+// host route (routeMessage)
+func (p *routePlatform) owned(r Route, key routeKey) ownKey {
+	return ownKey{routeKey: key, host: r.Destination.IsSingleIP() && !p.heldApart(r)}
+}
 
 func (p *routePlatform) DelRoute(r Route) error {
 	_, installed := p.scoped[r.Destination]
@@ -720,13 +808,15 @@ func (p *routePlatform) DelRoute(r Route) error {
 	// backend would have chosen for it: an unscoped route to a destination
 	// that also holds a scoped one would otherwise wipe the scoped route's
 	// source, and the next pass would tear that route down and reinstall it.
+	withdrawn := routeKey{destination: r.Destination, scoped: r.Scoped}
+	delete(p.ours, p.owned(r, withdrawn))
 	if r.Scoped {
 		delete(p.scoped, r.Destination)
+	} else {
+		delete(p.holds, r.Destination)
 	}
-	withdrawn := routeKey{destination: r.Destination, scoped: r.Scoped}
 	delete(p.covering, withdrawn)
 	delete(p.occupied, withdrawn)
-	delete(p.ours, withdrawn)
 	return nil
 }
 
@@ -841,7 +931,16 @@ func (p *routePlatform) retable(Table) {}
 // EEXIST beside the host's own, and scoped it carries no socket that does not
 // ask for the tun by name.
 func (p *routePlatform) cover(overlay []schema.Prefix, families, bare []Family, hosts hostTable) {
-	p.overlay, p.covered, p.bare, p.hosts = overlay, families, bare, hosts
+	p.overlay, p.overlaid, p.covered, p.bare, p.hosts = overlay, keySet(overlayKeys(overlay)), families, bare, hosts
+}
+
+// keySet is keys as a set
+func keySet(keys []netip.Prefix) map[netip.Prefix]bool {
+	out := make(map[netip.Prefix]bool, len(keys))
+	for _, key := range keys {
+		out[key] = true
+	}
+	return out
 }
 
 // scopes is scopeRoute as the diff reads it.

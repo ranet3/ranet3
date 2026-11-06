@@ -84,7 +84,10 @@ func testPlatform(t *testing.T, tbl Table, rt Runtime) (*routePlatform, *fakeRou
 		covering: make(map[routeKey]bool),
 		occupied: make(map[routeKey]bool),
 		refused:  make(map[routeKey]bool),
-		ours:     make(map[routeKey]bool),
+		ours:     make(map[ownKey]bool),
+		holds:    make(map[netip.Prefix]bool),
+		overlay:  rt.Overlay,
+		overlaid: keySet(overlayKeys(rt.Overlay)),
 		// No address belongs to this interface unless a test says so, which
 		// makes "the source is not ours" the default rather than an accident
 		// of whatever the host running the suite happens to have configured.

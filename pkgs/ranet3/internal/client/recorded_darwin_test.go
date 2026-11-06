@@ -65,13 +65,16 @@ type recordedKernel struct {
 // recordedRoute is one entry, keyed by everything the kernel keys a route on:
 // the destination, the interface it leaves by and whether it is scoped to
 // that interface. gateway is an address for a route with a next hop and
-// invalid for one that leaves through the interface itself.
+// invalid for one that leaves through the interface itself. host marks a host
+// route, RTF_HOST at the full length with no netmask, which the kernel keys
+// apart from a network route with a mask of all ones.
 type recordedRoute struct {
 	destination netip.Prefix
 	index       int
 	scoped      bool
 	gateway     netip.Addr
 	reject      bool
+	host        bool
 }
 
 // recordedWrite is one routing message, in the terms the assertions are
@@ -322,10 +325,6 @@ func compareRecorded(a, b recordedRoute) int {
 
 // message encodes one entry the way the kernel would report or accept it.
 func (r recordedRoute) message(kind int) (*route.RouteMessage, error) {
-	mask, ok := maskOf(r.destination)
-	if !ok {
-		return nil, fmt.Errorf("%s has no netmask", r.destination)
-	}
 	flags := unix.RTF_UP | unix.RTF_STATIC
 	if r.scoped {
 		flags |= unix.RTF_IFSCOPE
@@ -335,7 +334,19 @@ func (r recordedRoute) message(kind int) (*route.RouteMessage, error) {
 	}
 	addrs := make([]route.Addr, unix.RTAX_MAX)
 	addrs[unix.RTAX_DST] = addrOf(r.destination.Addr())
-	addrs[unix.RTAX_NETMASK] = addrOf(mask)
+	if r.host {
+		flags |= unix.RTF_HOST
+		if r.destination.Addr().Is6() && !r.gateway.IsValid() {
+			// nd6_rtrequest marks an IPv6 host route with no next hop
+			flags |= unix.RTF_LLINFO
+		}
+	} else {
+		mask, ok := maskOf(r.destination)
+		if !ok {
+			return nil, fmt.Errorf("%s has no netmask", r.destination)
+		}
+		addrs[unix.RTAX_NETMASK] = addrOf(mask)
+	}
 	if r.gateway.IsValid() {
 		// A next hop, which is how the host's own default and the one scoped
 		// to the underlay interface are written.
@@ -443,17 +454,22 @@ func decodeRecorded(rm *route.RouteMessage) (recordedRoute, bool) {
 	if !ok {
 		return recordedRoute{}, false
 	}
-	mask, ok := addrFrom(rm.Addrs[unix.RTAX_NETMASK])
-	if !ok || mask.BitLen() != destination.BitLen() {
-		return recordedRoute{}, false
-	}
-	bits := 0
-	for _, octet := range mask.AsSlice() {
-		for bit := range 8 {
-			if octet&(0x80>>bit) == 0 {
-				break
+	host := rm.Flags&unix.RTF_HOST != 0
+	bits := destination.BitLen()
+	// rtrequest drops a host route's netmask and keys it at the full length
+	if !host {
+		mask, ok := addrFrom(rm.Addrs[unix.RTAX_NETMASK])
+		if !ok || mask.BitLen() != destination.BitLen() {
+			return recordedRoute{}, false
+		}
+		bits = 0
+		for _, octet := range mask.AsSlice() {
+			for bit := range 8 {
+				if octet&(0x80>>bit) == 0 {
+					break
+				}
+				bits++
 			}
-			bits++
 		}
 	}
 	prefix, err := destination.Prefix(bits)
@@ -465,6 +481,7 @@ func decodeRecorded(rm *route.RouteMessage) (recordedRoute, bool) {
 		index:       rm.Index,
 		scoped:      rm.Flags&unix.RTF_IFSCOPE != 0,
 		reject:      rm.Flags&unix.RTF_REJECT != 0,
+		host:        host,
 	}
 	if gateway, ok := addrFrom(rm.Addrs[unix.RTAX_GATEWAY]); ok {
 		entry.gateway = gateway

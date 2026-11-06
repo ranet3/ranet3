@@ -225,8 +225,8 @@ func TestDarwinRealZeroRouteGoesInAsItsMembers(t *testing.T) {
 	if scoped, ok := held[beside]; !ok || scoped {
 		t.Errorf("the host's table holds %s as found %v scoped %v, want it unscoped", beside, ok, scoped)
 	}
-	if stats := rig.reconcile.Stats(); stats.Desired != 8 || stats.Installed != 8 || stats.Skipped != 0 {
-		t.Errorf("the pass reports %d desired, %d installed and %d skipped, want the 7 members and %s installed", stats.Desired, stats.Installed, stats.Skipped, beside)
+	if stats := rig.reconcile.Stats(); stats.Desired != 10 || stats.Installed != 10 || stats.Skipped != 0 {
+		t.Errorf("the pass reports %d desired, %d installed and %d skipped, want the 7 members, %s and the overlay's 2 holds on lo0 installed", stats.Desired, stats.Installed, stats.Skipped, beside)
 	}
 	if !reaches(t, rig.tun, target, netip.Addr{}, 0) {
 		t.Errorf("an unbound socket's datagram to %s did not follow %s into the tun", target, beside)

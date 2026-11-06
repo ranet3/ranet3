@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -53,7 +54,8 @@ func (k *raceRIB) WriteRoute(m *route.RouteMessage) error {
 			}
 			return unix.EEXIST
 		}
-		k.held[key] = m.Index
+		// a message naming no interface is the rejects' shape, which takes lo0 from its gateway
+		k.held[key] = cmp.Or(m.Index, testLoopback)
 	case unix.RTM_DELETE:
 		if _, ok := k.held[key]; !ok {
 			return unix.ESRCH
@@ -68,6 +70,10 @@ func (k *raceRIB) Close() error { return nil }
 func (k *raceRIB) Dump() ([]byte, error) {
 	var entries []dumpEntry
 	for key, index := range k.held {
+		if index == testLoopback {
+			entries = append(entries, rejectEntry(key.destination))
+			continue
+		}
 		flags := unix.RTF_UP | unix.RTF_STATIC
 		if key.scoped {
 			flags |= unix.RTF_IFSCOPE
@@ -125,8 +131,9 @@ func TestDarwinRealRouteTakesItsKeyAfterARace(t *testing.T) {
 	plat.addrs = func() ([]netip.Prefix, error) { return coverAddresses, nil }
 	upper := prefix("128.0.0.0/1")
 	rib := newRaceRIB(t, upper)
-	plat.sock, plat.host = rib, rib
-	reconciler.plat, reconciler.rules = plat, nil
+	plat.sock, plat.host, plat.loopback = rib, rib, testLoopback
+	reconciler.use(plat)
+	reconciler.rules = nil
 	reconciler.now = func() time.Time { return start }
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
 	table.Set(netip.Prefix{}, upper, nil)

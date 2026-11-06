@@ -163,10 +163,8 @@ func TestDownTakesTheMeshDeviceBareWithTheCover(t *testing.T) {
 	holdSessions(d.node).adopt(t, d.node, "example/gateway:1@0")
 	d.announce(capturingPrefix)
 	waitForKernel(t, "the cover is back on the mesh device", coverWhole)
-	for _, write := range d.host.writes() {
-		if write.index != meshDeviceIndex {
-			t.Errorf("the node wrote %+v, which is not on its own tun", write)
-		}
+	for _, write := range d.host.strayWrites() {
+		t.Errorf("the node wrote %+v, which is neither on its own tun nor an overlay hold", write)
 	}
 }
 

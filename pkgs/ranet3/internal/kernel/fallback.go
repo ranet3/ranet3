@@ -131,9 +131,6 @@ type fallbackSets struct {
 	// the overlay, that lan leaves out in whole or in part, lying outside
 	// lanRanges and the prefixes cap.exit lan lists
 	public []netip.Prefix
-	// rejects is the keys of a switch written as reject routes, which reads
-	// none of the above
-	rejects []netip.Prefix
 }
 
 // lanRanges is the ranges a connected network counts as the LAN inside: the
@@ -233,29 +230,33 @@ func covers(network netip.Prefix, parts []netip.Prefix) bool {
 	return false
 }
 
+// fallbackFor is the sets of the switch exit asks for, none for a switch of
+// reject routes, which passes nothing by a line, and whether it asks for one
 func (r *Reconciler) fallbackFor(exit exitView) (fallbackSets, bool) {
 	mode := r.table.Mode()
 	if !exit.on || !exit.fallback || mode == nil {
 		return fallbackSets{}, false
 	}
+	if r.switchForm().keys != nil {
+		return fallbackSets{}, true
+	}
 	return exit.fallbackSetsOf(r.rt.Interface, r.rt.Overlay, mode.Services(), exit.carvedLAN()), true
 }
 
-// applyFallback writes the switch where the pass asks for it, rewriting it
-// whenever it does not read back as written, and deletes one an earlier pass
-// or instance left where the pass does not ask for it. It reports the switch
-// as the pass leaves it, nil where the pass does not ask for it. reconcile
-// runs it after the route pass where the pass asks for the switch and before
-// it where the pass does not, so on darwin a route of ours out of the tun
-// never meets a reject at its key (see splitAtKeys).
-func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
-	sw, ok := r.plat.(switcher)
-	if !ok {
+// applyFallback writes the switch of sets where the pass asks for it,
+// rewriting it whenever it does not read back as written, and deletes one an
+// earlier pass or instance left where the pass does not ask for it. It
+// reports the switch as the pass leaves it, nil where the pass does not ask
+// for it. reconcile runs it after the route pass where the pass asks for the
+// switch and before it where the pass does not, so on darwin a route of ours
+// out of the tun never meets a reject at its key (see splitAtKeys).
+func (r *Reconciler) applyFallback(sets fallbackSets, asked bool) (*FallbackStatus, error) {
+	sw := r.sw
+	if sw == nil {
 		r.reportFallbackState(nil)
 		return nil, nil
 	}
 	form := sw.form()
-	sets, asked := r.fallbackFor(exit)
 	if !asked {
 		r.reportFallbackState(nil)
 		if r.fallbackClear {
@@ -272,9 +273,6 @@ func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 			warnFallbackLeft(form, err)
 		}
 		return nil, nil
-	}
-	if form.routes {
-		sets = fallbackSets{rejects: rejectKeys}
 	}
 	r.fallbackClear = false
 	// a read that fails on a table no write touched keeps the drops the last read found, and a rewrite starts them from zero
@@ -383,8 +381,8 @@ func (r *Reconciler) reportFallbackState(status *FallbackStatus) {
 // switchForm is the form of the platform's switch, the zero form on a
 // platform with none
 func (r *Reconciler) switchForm() fallbackForm {
-	if sw, ok := r.plat.(switcher); ok {
-		return sw.form()
+	if r.sw != nil {
+		return r.sw.form()
 	}
 	return fallbackForm{}
 }
@@ -414,10 +412,11 @@ type fallbackForm struct {
 	// unheld says what the host's traffic meets while the switch does not
 	// read back as written
 	unheld string
-	// routes says the switch is reject routes at rejectKeys, keyed as the
-	// tun's routes are, as darwin's is, where linux's is a table whose lines
-	// pass the LAN and this node's own prefixes as fallbackSets derives them
-	routes bool
+	// keys is where a switch of reject routes, keyed as the tun's routes are,
+	// holds one, as darwin's does, and nil for a table whose lines pass the
+	// LAN and this node's own prefixes as fallbackSets derives them, as
+	// linux's
+	keys []netip.Prefix
 	// uncounted says the switch counts nothing it refuses
 	uncounted bool
 }

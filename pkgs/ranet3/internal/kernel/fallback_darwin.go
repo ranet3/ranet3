@@ -15,9 +15,14 @@ import (
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
-var _ switcher = (*routePlatform)(nil)
+var (
+	_ switcher  = (*routePlatform)(nil)
+	_ holdKeyer = (*routePlatform)(nil)
+)
 
 // rejectsForm is the rejects on lo0 as a log line and a status read them. See
 // routePlatform's "The kill switch".
@@ -25,7 +30,7 @@ var rejectsForm = fallbackForm{
 	where:     "rejects on " + Loopback,
 	fix:       `start ranet3 with cap.exit fallback = "uplink", which deletes them, or delete each with route -n delete`,
 	unheld:    "the host's unbound traffic leaves by the host's own routes at each key no reject holds",
-	routes:    true,
+	keys:      rejectKeys,
 	uncounted: true,
 }
 
@@ -103,29 +108,36 @@ func (p *routePlatform) readLoop(message route.Message) {
 	if len(rm.Addrs) > unix.RTAX_GATEWAY {
 		gateway, _ = addressFromRouteAddr(rm.Addrs[unix.RTAX_GATEWAY])
 	}
-	_, shaped := loopShaped(rm, p.loopback)
-	p.loops.record(destination, shaped, rm.Index == p.loopback, rm.Index == p.index, func() string { return p.describe(destination, gateway, rm.Index) })
+	kind := rowOther
+	switch _, shaped := loopShaped(rm, p.loopback); {
+	case shaped:
+		kind = rowShaped
+	case rm.Index == p.loopback:
+		kind = rowLoopback
+	case rm.Index == p.index:
+		kind = rowTun
+	}
+	p.loops.record(destination, kind, func() string { return p.describe(destination, gateway, rm.Index) })
 }
 
 // errNoLoopDump is a read of the switch in a pass whose dump failed
 var errNoLoopDump = errors.New("kernel: no dump of this pass to read the rejects from")
 
-// readFallback reads the rejects at the keys of sets from the pass's dump, as
-// its writes left them
-func (p *routePlatform) readFallback(sets fallbackSets) (fallbackRead, error) {
+// readFallback reads the rejects from the pass's dump, as its writes left them
+func (p *routePlatform) readFallback(fallbackSets) (fallbackRead, error) {
 	if p.loops == nil {
 		return fallbackRead{}, errNoLoopDump
 	}
-	return fallbackRead{fault: p.loops.fault(sets.rejects)}, nil
+	return fallbackRead{fault: p.loops.fault(rejectsForm.keys)}, nil
 }
 
-// writeFallback adds each reject at the keys of sets the pass's dump did not
-// find, a key another route holds refusing it with EEXIST
-func (p *routePlatform) writeFallback(sets fallbackSets, _ bool) error {
+// writeFallback adds each reject the pass's dump did not find, a key another
+// route holds refusing it with EEXIST
+func (p *routePlatform) writeFallback(fallbackSets, bool) error {
 	if p.loops == nil {
 		return errNoLoopDump
 	}
-	return p.loops.write(sets.rejects, func(key netip.Prefix) error {
+	return p.loops.write(rejectsForm.keys, func(key netip.Prefix) error {
 		message, err := loopMessage(unix.RTM_ADD, key)
 		if err != nil {
 			return err
@@ -221,15 +233,16 @@ func deleteLoops(host Host, sock rtSocket, loopback int, keys []netip.Prefix) er
 	return errors.Join(errs...)
 }
 
-// DeleteFallback deletes the rejects an earlier instance left, for a start
-// that runs no reconciler to delete them
-func DeleteFallback() {
-	if err := deleteRejects(runningKernel{}); err != nil {
+// DeleteFallback deletes the rejects an earlier instance left, and its holds
+// at the keys of overlay, for a start that runs no reconciler to delete them
+func DeleteFallback(overlay []schema.Prefix) {
+	if err := deleteRejects(runningKernel{}, slices.Concat(rejectKeys, overlayKeys(overlay))); err != nil {
 		warnFallbackLeft(rejectsForm, err)
 	}
 }
 
-func deleteRejects(host Host) error {
+// deleteRejects deletes the routes of the rejects' shape on host's lo0 at keys
+func deleteRejects(host Host, keys []netip.Prefix) error {
 	loopback, err := host.InterfaceIndex(Loopback)
 	if err != nil {
 		return err
@@ -239,7 +252,7 @@ func deleteRejects(host Host) error {
 		return err
 	}
 	defer sock.Close()
-	return deleteLoops(host, sock, loopback, rejectKeys)
+	return deleteLoops(host, sock, loopback, keys)
 }
 
 // ResolvedLinkServers has no systemd-resolved to ask here

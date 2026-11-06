@@ -24,6 +24,21 @@ type fakeSelection struct {
 	changed chan struct{}
 	mu      sync.Mutex
 	current hostTable
+	// overlays is each overlay the selection was handed, in order
+	overlays [][]schema.Prefix
+}
+
+func (s *fakeSelection) holdOverlay(overlay []schema.Prefix) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.overlays = append(s.overlays, overlay)
+}
+
+// handed is each overlay the selection was handed so far
+func (s *fakeSelection) handed() [][]schema.Prefix {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.overlays)
 }
 
 func newFakeSelection(routes ...hostRoute) *fakeSelection {
@@ -464,7 +479,7 @@ func TestFullTunnelTakesEveryAddressOutsideTheOverlay(t *testing.T) {
 	}
 	reconciler, _, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses...)
 	reconciler.rt.Selection = newFakeSelection(hosts...)
-	reconciler.plat = darwinKeyed{kernel, hosts}
+	reconciler.use(darwinKeyed{kernel, hosts})
 	for pass := range 2 {
 		if err := reconciler.reconcile(); err != nil {
 			t.Fatalf("pass %d: %v", pass, err)
@@ -511,7 +526,7 @@ func TestRealRouteAtAMemberKeyWithholdsTheMemberBeneathAHostRoute(t *testing.T) 
 			hosts := append([]hostRoute{{destination: prefix("0.0.0.0/0"), index: 3}}, c.hosts...)
 			reconciler, table, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses...)
 			reconciler.rt.Selection = newFakeSelection(hosts...)
-			reconciler.plat = darwinKeyed{kernel, hosts}
+			reconciler.use(darwinKeyed{kernel, hosts})
 			table.Set(netip.Prefix{}, c.real, nil)
 			for pass := range 3 {
 				if err := reconciler.reconcile(); err != nil {
@@ -610,7 +625,7 @@ func TestRealRouteBeneathAHostRouteWithholdsTheMemberInThePassItGoesIn(t *testin
 	hosts := []hostRoute{{destination: prefix("0.0.0.0/0"), index: 3}, {destination: prefix("0.0.0.0/1"), index: 2}}
 	reconciler, table, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses...)
 	reconciler.rt.Selection = newFakeSelection(hosts...)
-	reconciler.plat = darwinKeyed{kernel, hosts}
+	reconciler.use(darwinKeyed{kernel, hosts})
 	real := Route{Destination: prefix("64.0.0.0/2"), Scoped: true}
 	table.Set(netip.Prefix{}, real.Destination, nil)
 	member := Route{Destination: prefix("1.0.0.0/8"), Cover: true, Scoped: true}

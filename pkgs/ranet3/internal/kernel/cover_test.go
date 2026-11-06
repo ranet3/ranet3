@@ -239,7 +239,8 @@ func onCovering(reconciler *Reconciler, fake *fakeKernel, addresses ...netip.Pre
 		fake.addrs[address] = true
 	}
 	kernel := &coveringKernel{fakeKernel: fake}
-	reconciler.plat, reconciler.rules, reconciler.look = kernel, nil, nil
+	reconciler.use(kernel)
+	reconciler.rules, reconciler.look = nil, nil
 	return kernel
 }
 
@@ -517,7 +518,7 @@ func keyHarness(t *testing.T) (*Reconciler, *keyKernel, *netstack.RouteTable) {
 	t.Helper()
 	reconciler, table, covering := coveredHarness(t, Table{}.WithMode(&ExitMode{}), Runtime{Sessions: func() int { return 1 }}, coverAddresses...)
 	kernel := &keyKernel{coveringKernel: covering, taken: map[netip.Prefix]error{}, flaky: map[netip.Prefix]error{}, stuck: map[netip.Prefix]error{}, kept: map[netip.Prefix]bool{}}
-	reconciler.plat = kernel
+	reconciler.use(kernel)
 	reconciler.now = func() time.Time { return start }
 	return reconciler, kernel, table
 }
@@ -766,7 +767,7 @@ func TestRealRouteTakesItsKeyAfterARaceWithAnotherWriter(t *testing.T) {
 	reconciler, kernel, table := keyHarness(t)
 	upper := prefix("128.0.0.0/1")
 	kernel.taken[upper] = errRouteSkipped
-	reconciler.plat = &releasingKernel{kernel}
+	reconciler.use(&releasingKernel{kernel})
 	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
 	table.Set(netip.Prefix{}, upper, nil)
 	if err := reconciler.reconcile(); err != nil {

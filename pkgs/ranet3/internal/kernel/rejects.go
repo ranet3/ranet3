@@ -19,17 +19,28 @@ type rejectRows map[netip.Prefix]string
 // errKeyTaken is an add the kernel refused since another route holds its key
 var errKeyTaken = errors.New("kernel: another route holds the key")
 
-// record notes the unscoped route a dump found at key, on the loopback link,
-// out of the tun or out of another interface: one in the rejects' shape is
-// the switch's, whoever wrote it, and any other is named as the fault, which
-// describe, called for a fault alone, names the route in
-func (rows rejectRows) record(key netip.Prefix, shaped, loopback, tun bool, describe func() string) {
-	switch {
-	case shaped:
+// rowKind is where the unscoped route a dump found at a key of the switch's
+// sits: in the rejects' shape, which is the switch's whoever wrote it, on the
+// loopback link in another shape, out of the tun, or out of another interface
+type rowKind int
+
+const (
+	rowShaped rowKind = iota
+	rowLoopback
+	rowTun
+	rowOther
+)
+
+// record notes the unscoped route a dump found at key, of kind, and names any
+// but the switch's as the fault, which describe, called for a fault alone,
+// names the route in
+func (rows rejectRows) record(key netip.Prefix, kind rowKind, describe func() string) {
+	switch kind {
+	case rowShaped:
 		rows[key] = ""
-	case loopback:
+	case rowLoopback:
 		rows[key] = fmt.Sprintf("the route %s is no reject of the switch's shape", describe())
-	case tun:
+	case rowTun:
 		rows[key] = fmt.Sprintf("this node's own route %s holds a key of the switch's until it goes in as its halves", describe())
 	default:
 		rows[key] = fmt.Sprintf("another program's route %s holds a key of the switch's", describe())
@@ -65,7 +76,7 @@ func (rows rejectRows) write(keys []netip.Prefix, add func(netip.Prefix) error, 
 		switch err := add(key); {
 		case errors.Is(err, errKeyTaken):
 			if !ok {
-				rows.record(key, false, false, false, func() string { return holder(key) })
+				rows.record(key, rowOther, func() string { return holder(key) })
 			}
 		case err != nil:
 			errs = append(errs, fmt.Errorf("add the reject at %s: %w", key, err))

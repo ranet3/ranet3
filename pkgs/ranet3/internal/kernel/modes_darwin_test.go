@@ -198,7 +198,8 @@ func modeReload(t *testing.T, rig *coverRig, next Table) {
 	}
 }
 
-// modePass runs one pass and reads the routes back, sorted
+// modePass runs one pass and reads the routes out of the tun back, sorted,
+// leaving out the overlay's holds on lo0, which every mode holds alike
 func modePass(t *testing.T, reconciler *Reconciler, step string) []Route {
 	t.Helper()
 	if err := reconciler.reconcile(); err != nil {
@@ -208,6 +209,7 @@ func modePass(t *testing.T, reconciler *Reconciler, step string) []Route {
 	if err != nil {
 		t.Fatalf("%s: %v", step, err)
 	}
+	routes = slices.DeleteFunc(routes, reconciler.plat.(*routePlatform).heldApart)
 	slices.SortFunc(routes, compareRoutes)
 	return routes
 }

@@ -6,13 +6,15 @@
 package kernel
 
 import (
+	"slices"
 	"testing"
 
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // darwin has no policy routing, and New takes a capability there with no rule
-// pass, which leaves the mirror's throw rows and overlay holds out too
+// pass, which leaves the mirror's throw rows out too, while its overlay holds
+// go in apart from the tun
 // the loopback stands in for the tun
 // New installs nothing and opens only route sockets, which need no root
 func TestNewOnAPlatformWithoutRulesRunsNoRulePass(t *testing.T) {
@@ -26,5 +28,9 @@ func TestNewOnAPlatformWithoutRulesRunsNoRulePass(t *testing.T) {
 	}
 	if err := reconciler.applyRules(reconciler.src.Snapshot(), exitView{}, true); err != nil || reconciler.DerivedRules() != nil {
 		t.Errorf("a rule pass on darwin answered %v and published %v", err, reconciler.DerivedRules())
+	}
+	want := []Route{{Destination: prefix("192.0.2.0/24"), Metric: holdMetric, Unreachable: true}}
+	if got := reconciler.desired(reconciler.src.Snapshot(), reconciler.readNetwork()); !slices.Equal(got, want) {
+		t.Errorf("the mirror on darwin wants %v, want the overlay's hold alone", got)
 	}
 }

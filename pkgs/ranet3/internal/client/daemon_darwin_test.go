@@ -327,13 +327,11 @@ func TestExitModeInstallsACaptureOnlyOnceASessionIsLive(t *testing.T) {
 	if plain, scoped := d.host.coverInstalled(); plain != len(ipv6Cover) || scoped != 0 {
 		t.Errorf("beside the half capture the cover is %d members unscoped and %d scoped, want %d and none", plain, scoped, len(ipv6Cover))
 	}
-	// Nothing of this daemon's is written outside the tun, and the host's own
-	// unscoped defaults are untouched, always. Tailscale
+	// Nothing of this daemon's is written outside the tun but the overlay's
+	// holds on lo0, and the host's own unscoped defaults are untouched, always. Tailscale
 	// shipped the opposite as #21395.
-	for _, write := range d.host.writes() {
-		if write.index != meshDeviceIndex {
-			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
-		}
+	for _, write := range d.host.strayWrites() {
+		t.Errorf("the daemon wrote %+v, which is neither on its own tun nor an overlay hold", write)
 	}
 }
 
@@ -352,10 +350,8 @@ func TestConfigurationWithoutTheModeScopesItsCaptureToTheTun(t *testing.T) {
 	if plain, _ := d.host.installed(capturingPrefix); plain {
 		t.Error("the announced default is reachable from every socket on this machine")
 	}
-	for _, write := range d.host.writes() {
-		if write.index != meshDeviceIndex {
-			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
-		}
+	for _, write := range d.host.strayWrites() {
+		t.Errorf("the daemon wrote %+v, which is neither on its own tun nor an overlay hold", write)
 	}
 }
 
@@ -388,10 +384,8 @@ func TestReloadAddingTheModeMovesTheDefaultIntoTheCoverAndBack(t *testing.T) {
 		t.Fatalf("a reload removing cap.exit was refused: %v", err)
 	}
 	waitForKernel(t, "the announced default moves back out of its cover", scopedAlone)
-	for _, write := range d.host.writes() {
-		if write.index != meshDeviceIndex {
-			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
-		}
+	for _, write := range d.host.strayWrites() {
+		t.Errorf("the daemon wrote %+v, which is neither on its own tun nor an overlay hold", write)
 	}
 }
 
@@ -526,10 +520,8 @@ func TestShutdownLeavesTheMachineAsItFoundIt(t *testing.T) {
 	if sockets, watchers := d.host.stillOpen(); sockets != 0 || watchers != 0 {
 		t.Errorf("shutdown left %d route sockets and %d route watchers open", sockets, watchers)
 	}
-	for _, write := range d.host.writes() {
-		if write.index != meshDeviceIndex {
-			t.Errorf("the daemon wrote %+v, which is not on its own tun", write)
-		}
+	for _, write := range d.host.strayWrites() {
+		t.Errorf("the daemon wrote %+v, which is neither on its own tun nor an overlay hold", write)
 	}
 }
 
@@ -706,45 +698,72 @@ func (k *recordedKernel) loopRejects() []netip.Prefix {
 }
 
 // switchKeys is the keys of the kill switch's rejects, the zero-free cover's
-// of both families, and anotherReject one another program wrote on lo0 in
-// their shape at another key
+// of both families, anotherReject one another program wrote on lo0 in their
+// shape at another key, and daemonOverlay the overlay the daemon's file
+// writes, whose holds go on lo0 in their shape
 var (
 	switchKeys = append([]netip.Prefix{
 		netip.MustParsePrefix("1.0.0.0/8"), netip.MustParsePrefix("2.0.0.0/7"), netip.MustParsePrefix("4.0.0.0/6"), netip.MustParsePrefix("8.0.0.0/5"),
 		netip.MustParsePrefix("16.0.0.0/4"), netip.MustParsePrefix("32.0.0.0/3"), netip.MustParsePrefix("64.0.0.0/2"), netip.MustParsePrefix("128.0.0.0/1"),
 	}, ipv6Cover...)
 	anotherReject = netip.MustParsePrefix("10.0.0.0/8")
+	daemonOverlay = []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48"), netip.MustParsePrefix("203.0.113.0/24")}
 )
+
+// strayWrites is each write that reached k off the tun but an overlay hold of
+// the daemon's file on lo0, a reject via its family's loopback address
+func (k *recordedKernel) strayWrites() []recordedWrite {
+	var out []recordedWrite
+	for _, write := range k.writes() {
+		hold := write.index == k.loopback && write.reject && !write.scoped && write.gateway.IsLoopback() && slices.Contains(daemonOverlay, write.destination)
+		if write.index != k.mesh && !hold {
+			out = append(out, write)
+		}
+	}
+	return out
+}
+
+// loopSorted is the prefixes of sets in the order loopRejects gives them
+func loopSorted(sets ...[]netip.Prefix) []netip.Prefix {
+	return slices.SortedFunc(slices.Values(slices.Concat(sets...)), func(a, b netip.Prefix) int {
+		return compareRecorded(recordedRoute{destination: a}, recordedRoute{destination: b})
+	})
+}
 
 // A file writing fallback = "none" starts on macOS, and its daemon writes a
 // reject on lo0 at each of the switch's keys, both families though the
-// session that opens the capture is not live, which it reads back as holding.
-// A failed mesh's stop leaves them, and a daemon under "uplink" on the same
-// host deletes them. Another program's reject of their shape at another key
-// is never written or deleted.
+// session that opens the capture is not live, which it reads back as holding,
+// and a hold at each overlay prefix in their shape. A failed mesh's stop
+// leaves the rejects and takes the holds, and a daemon under "uplink" on the
+// same host deletes the rejects and writes the holds again, which its stop
+// takes. Another program's reject of their shape at another key is never
+// written or deleted.
 func TestKillSwitchOnTheRecordedHost(t *testing.T) {
 	host := recordedHost(t)
 	host.hold(recordedRoute{destination: anotherReject, index: host.loopback, gateway: netip.MustParseAddr("127.0.0.1"), reject: true})
-	want := slices.SortedFunc(slices.Values(append(slices.Clone(switchKeys), anotherReject)), func(a, b netip.Prefix) int {
-		return compareRecorded(recordedRoute{destination: a}, recordedRoute{destination: b})
-	})
+	left := loopSorted(switchKeys, []netip.Prefix{anotherReject})
 	d := startDaemonWith(t, "{fallback: none}", host)
-	waitForKernel(t, "the rejects reach lo0", func() bool { return slices.Equal(host.loopRejects(), want) })
+	waitForKernel(t, "the rejects and the holds reach lo0", func() bool { return slices.Equal(host.loopRejects(), loopSorted(left, daemonOverlay)) })
 	waitForKernel(t, "the switch reads back", func() bool {
 		exit := d.routes.Stats().Exit
 		return exit != nil && exit.Fallback != nil && exit.Fallback.State == kernel.FallbackHolding
 	})
 	d.end(kernel.ErrMeshFailed)
-	if got := host.loopRejects(); !slices.Equal(got, want) {
-		t.Errorf("the failed mesh's stop left the rejects at %v, want %v", got, want)
+	if got := host.loopRejects(); !slices.Equal(got, left) {
+		t.Errorf("the failed mesh's stop left lo0's rejects at %v, want %v", got, left)
 	}
 
 	second := startDaemonWith(t, "{fallback: uplink}", host)
-	waitForKernel(t, "the daemon under \"uplink\" deletes the rejects", func() bool { return slices.Equal(host.loopRejects(), []netip.Prefix{anotherReject}) })
+	waitForKernel(t, "the daemon under \"uplink\" deletes the rejects and writes the holds", func() bool {
+		return slices.Equal(host.loopRejects(), loopSorted([]netip.Prefix{anotherReject}, daemonOverlay))
+	})
 	second.stop()
-	for _, write := range host.writes() {
-		if write.index == host.loopback && (!slices.Contains(switchKeys, write.destination) || !write.reject) {
-			t.Errorf("a daemon wrote %+v on lo0, which is no reject of the switch's", write)
+	if got := host.loopRejects(); !slices.Equal(got, []netip.Prefix{anotherReject}) {
+		t.Errorf("the operator's stop left lo0's rejects at %v, want %s alone", got, anotherReject)
+	}
+	for _, write := range host.strayWrites() {
+		if write.index != host.loopback || !slices.Contains(switchKeys, write.destination) || !write.reject {
+			t.Errorf("a daemon wrote %+v, which is no reject of the switch's or hold of its overlay", write)
 		}
 	}
 }

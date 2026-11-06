@@ -239,6 +239,8 @@ type UnderlaySelection interface {
 	Changed() <-chan struct{}
 	// table is the generation published last
 	table() hostTable
+	// holdOverlay hands it the overlay in force, whose holds the platform writes apart from the tun are ranet3's own and no candidate
+	holdOverlay(overlay []schema.Prefix)
 }
 
 // Assigned is every address the reconciler puts on the device: the ones
@@ -688,6 +690,11 @@ type Reconciler struct {
 	// rules is the optional half of the platform, nil where it has no policy
 	// engine
 	rules ruler
+	// keyer and sw are the platform's other optional halves, nil where it
+	// writes no hold apart from the tun and no kill switch, set by use with
+	// plat
+	keyer holdKeyer
+	sw    switcher
 	// look is the platform's lookups, nil where it answers none. lookups is
 	// what the last pass whose batch answered found, lookFailed whether the
 	// last batch failed, and installed what the kernel held for this
@@ -947,7 +954,7 @@ func (t Table) Unreloadable(next Table) string {
 func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSource, plat platform) *Reconciler {
 	r := &Reconciler{
 		table: t, rt: rt, addresses: addresses,
-		src: src, plat: plat,
+		src:         src,
 		owned:       make(map[netip.Prefix]bool),
 		warnedAddrs: make(map[netip.Prefix]bool),
 		warned:      make(map[Route]bool),
@@ -961,9 +968,20 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 	}
 	r.enabled.Store(true)
 	r.inForce.Store(&t)
+	r.use(plat)
 	r.rules, _ = plat.(ruler)
 	r.look, _ = plat.(looker)
+	if rt.Selection != nil {
+		rt.Selection.holdOverlay(rt.Overlay)
+	}
 	return r
+}
+
+// use puts the reconciler on plat with the optional halves it has
+func (r *Reconciler) use(plat platform) {
+	r.plat = plat
+	r.keyer, _ = plat.(holdKeyer)
+	r.sw, _ = plat.(switcher)
 }
 
 // Where names the space this reconciler owns, for an operator reading a log
@@ -1085,6 +1103,9 @@ func (r *Reconciler) adopt() bool {
 		return false
 	}
 	r.table, r.addresses, r.rt.Overlay, r.rt.Announced = next.table, next.addresses, next.overlay, next.announced
+	if r.rt.Selection != nil {
+		r.rt.Selection.holdOverlay(r.rt.Overlay)
+	}
 	r.gate.grace = next.table.CaptureGrace.Duration()
 	r.plat.retable(next.table)
 	r.inForce.Store(&next.table)
@@ -1275,14 +1296,14 @@ func (r *Reconciler) reconcile() error {
 	// the switch goes before the routes where the pass no longer asks for it
 	// and after them where it does, so on darwin the rejects and the routes
 	// out of the tun never contend for a key (see splitAtKeys)
-	_, asked := r.fallbackFor(exit)
+	sets, asked := r.fallbackFor(exit)
 	var fallback *FallbackStatus
 	var fallbackErr error
 	if judged {
 		r.switchAsked = asked
 	}
 	if judged && !asked {
-		fallback, fallbackErr = r.applyFallback(exit)
+		fallback, fallbackErr = r.applyFallback(sets, asked)
 	}
 	routesErr := r.applyRoutes(desired, r.coverFamilies(status), r.bare)
 	// after the route writes, so kernel.exit and kernel.forward follow the pass's kernel.path and kernel.cover
@@ -1290,7 +1311,7 @@ func (r *Reconciler) reconcile() error {
 		r.reportExit(status)
 	}
 	if judged && asked {
-		fallback, fallbackErr = r.applyFallback(exit)
+		fallback, fallbackErr = r.applyFallback(sets, asked)
 	}
 	if judged && r.exitStatus != nil {
 		r.exitStatus.Fallback = fallback
@@ -1493,11 +1514,13 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	}
 	unmet := func(route Route) bool { return apart(route) || unheld[route] }
 	endpoints := r.endpoints()
-	// the halves go in after withheld has judged the whole members, and
-	// before the holes are cut out of them
-	keys := r.splitKeys()
+	// The halves go in after withheld has judged the whole members (see
+	// cutAround)
+	keys, rejected := r.splitKeys(desired)
 	cut := func(routes []Route) ([]Route, []Hole) {
-		return cutHoles(splitAtKeys(routes, keys, scoped), scoped, endpoints, hosts, r.rt.Overlay)
+		return cutAround(routes, keys, rejected, r.keyer, scoped, hosts, func(routes []Route) ([]Route, []Hole) {
+			return cutHoles(routes, scoped, endpoints, hosts, r.rt.Overlay)
+		})
 	}
 	bare := desired
 	// After the capture grace check, which judges the zero route whole: a
@@ -1762,9 +1785,11 @@ func (r *Reconciler) reportMemberless(desired []Route, families []Family) []Rout
 func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network passNetwork) []Route {
 	out := make([]Route, 0, len(snapshot)+len(r.rt.Overlay))
 	warned := make(map[Route]bool, len(r.warned))
-	// the throw rows and the overlay holds stand with the policy rules that
-	// read them, which linux alone has
+	// the throw rows stand with the policy rules that read them, which linux
+	// alone has, and the overlay holds with them or with a platform writing
+	// the holds apart from the tun, which darwin's on lo0 is
 	exit, policy, steered := r.exit(), r.rules != nil, r.table.steers()
+	apart := r.keyer != nil
 	for _, entry := range snapshot {
 		// The host's kernel holds every address cap.table assigns as one of its
 		// own already, so the mirror copies no entry for one this node does not
@@ -1841,9 +1866,11 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 		out = append(out, route)
 	}
 	r.warned = warned
+	if policy || apart {
+		out = r.overlayHolds(out, network.carved)
+	}
 	if policy {
-		carved := network.carved
-		out = r.carveThrows(r.overlayHolds(out, carved), carved, snapshot)
+		out = r.carveThrows(out, network.carved, snapshot)
 	}
 	if steered {
 		out = r.steeredDefaults(out)
@@ -1855,12 +1882,12 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 // prefix of the overlay that no carve-out equals. The loader refuses an
 // overlay prefix holding an address of a class schema.Unroutable names
 // (egress.Border.Validate), the unspecified addresses among them, so no hold
-// sits at a key of those classes or counts as a default. A lookup the
-// walk ends at the hold is refused (routing.md, where a lookup ends on Linux),
-// where without it an overlay destination no route of the mesh covers would
-// follow an exit's default into the mesh, or leave by main, which on a host
-// whose uplink shares the space carries it to a stranger holding the same
-// address.
+// sits at a key of those classes or counts as a default. A lookup the walk
+// ends at the hold is refused (routing.md, where a lookup ends on Linux and on
+// macOS), where without it an overlay destination no route of the mesh covers
+// would follow an exit's default into the mesh, or leave by the host's routes,
+// which on a host whose uplink shares the space carries it to a stranger
+// holding the same address.
 func (r *Reconciler) overlayHolds(out []Route, carved []netip.Prefix) []Route {
 	for _, entry := range r.rt.Overlay {
 		destination, ok := canonicalPrefix(entry.Prefix)
@@ -2181,7 +2208,7 @@ func (r *Reconciler) withdraw(cause error) error {
 		}
 	}
 	// the switch goes after the rules and the routes, so it holds the host's traffic while they go
-	if sw, ok := r.plat.(switcher); ok && !r.fallbackClear {
+	if sw := r.sw; sw != nil && !r.fallbackClear {
 		where := sw.form().where
 		if errors.Is(cause, ErrMeshFailed) && r.table.writesFallback() {
 			// the listing words the warning alone, so one that fails deletes nothing
