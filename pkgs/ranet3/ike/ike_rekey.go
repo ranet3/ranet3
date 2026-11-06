@@ -602,12 +602,6 @@ func (s *Session) fillIKERekeyNonce(nonce []byte) error {
 	return err
 }
 
-// compareIKENonces compares complete nonce octet strings as specified by RFC
-// 7296 section 2.8.2. Leading zero octets remain significant.
-func compareIKENonces(a, b []byte) int {
-	return bytes.Compare(a, b)
-}
-
 // lowestNonceBelongsToFirst reports whether the lowest of the four nonces is
 // from the first rekey exchange, whose candidate must therefore be deleted.
 func lowestNonceBelongsToFirst(firstI, firstR, secondI, secondR []byte) bool {

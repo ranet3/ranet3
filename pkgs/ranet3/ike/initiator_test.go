@@ -1049,40 +1049,26 @@ func testSessionRekeyIKECollisionKeepsHigherNonceCandidate(t *testing.T) {
 	}
 }
 
-func TestCompareIKENonces(t *testing.T) {
-	tests := []struct {
-		a, b []byte
-		want int
-	}{
-		{[]byte{0x00, 0xff}, []byte{0x01, 0x00}, -1},
-		{[]byte{0x80}, []byte{0x7f}, 1},
-		{[]byte{0x42}, []byte{0x42}, 0},
-		{[]byte{0x00, 0x01}, []byte{0x01}, -1},
-		{[]byte{0xff}, []byte{0x01, 0x00}, 1},
-	}
-	for _, test := range tests {
-		got := compareIKENonces(test.a, test.b)
-		if (got < 0 && test.want < 0) || (got == 0 && test.want == 0) || (got > 0 && test.want > 0) {
-			continue
-		}
-		t.Errorf("compareIKENonces(%x, %x) = %d, want sign %d", test.a, test.b, got, test.want)
-	}
-}
-
+// RFC 7296 section 2.8, which section 2.8.2 applies to IKE SAs: ""Lowest" means an octet-by-octet comparison (instead of, for instance, comparing the nonces as large integers)." and "If you reach the end of one nonce, that nonce is the lower one."
 func TestLowestNonceSelectsRedundantExchange(t *testing.T) {
 	tests := []struct {
 		name                             string
-		firstI, firstR, secondI, secondR byte
+		firstI, firstR, secondI, secondR []byte
 		firstLoses                       bool
 	}{
-		{"first initiator lowest", 1, 4, 2, 3, true},
-		{"first responder lowest", 4, 1, 2, 3, true},
-		{"second initiator lowest", 2, 4, 1, 3, false},
-		{"second responder lowest", 2, 3, 4, 1, false},
+		{"first initiator lowest", []byte{1}, []byte{4}, []byte{2}, []byte{3}, true},
+		{"first responder lowest", []byte{4}, []byte{1}, []byte{2}, []byte{3}, true},
+		{"second initiator lowest", []byte{2}, []byte{4}, []byte{1}, []byte{3}, false},
+		{"second responder lowest", []byte{2}, []byte{3}, []byte{4}, []byte{1}, false},
+		{"leading zero octet lowest", []byte{0x00, 0xff}, []byte{0x02}, []byte{0x01}, []byte{0x03}, true},
+		{"leading zero octet of the second lowest", []byte{0x01}, []byte{0x02}, []byte{0x00, 0xff}, []byte{0x03}, false},
+		{"longer nonce with lower first octet lowest", []byte{0x01, 0x00}, []byte{0xfe}, []byte{0xff}, []byte{0xfd}, true},
+		{"shorter nonce with higher first octet not lowest", []byte{0xff}, []byte{0xfe}, []byte{0x01, 0x00}, []byte{0xfd}, false},
+		{"nonce ending first on equal octets lowest", []byte{0x05, 0x06}, []byte{0x07}, []byte{0x05}, []byte{0x08}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := lowestNonceBelongsToFirst([]byte{test.firstI}, []byte{test.firstR}, []byte{test.secondI}, []byte{test.secondR})
+			got := lowestNonceBelongsToFirst(test.firstI, test.firstR, test.secondI, test.secondR)
 			if got != test.firstLoses {
 				t.Fatalf("firstLoses = %v, want %v", got, test.firstLoses)
 			}
