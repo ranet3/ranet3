@@ -294,14 +294,14 @@ func (s *scripted) send(exchange ExchangeType, mid uint32, inner []RawPayload) [
 // it returns the message's octets through its Encrypted payload's generic header as the message has them whole
 func (s *scripted) receive() (Header, []RawPayload, []byte) {
 	s.t.Helper()
-	s.got = collect(s.t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
+	s.got = collect(s.t, func() ([]byte, error) { return recvIKEUntil(s.mux, time.Now().Add(answerBudget)) })
 	header, inner, raw, _ := assembled(s.t, modelSuite, s.model.keys[2], s.got)
 	return header, inner, raw
 }
 
 // silent reports whether the responder sends nothing for quietPeriod
 func (s *scripted) silent() bool {
-	_, err := s.mux.RecvIKEUntil(time.Now().Add(quietPeriod))
+	_, err := recvIKEUntil(s.mux, time.Now().Add(quietPeriod))
 	return err != nil
 }
 
@@ -558,7 +558,7 @@ func testResponderTakesIntermediateExchangesInMessageIDOrder(t *testing.T) {
 	if err := s.mux.SendIKE(request); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := s.mux.RecvIKEUntil(time.Now().Add(answerBudget)); err != nil || !bytes.Equal(again, response) {
+	if again, err := recvIKEUntil(s.mux, time.Now().Add(answerBudget)); err != nil || !bytes.Equal(again, response) {
 		t.Errorf("the repeat of IKE_INTERMEDIATE 1 drew %d octets (%v), want the %d of its response", len(again), err, len(response))
 	}
 	altered := slices.Clone(request)
@@ -595,10 +595,10 @@ func TestResponderAnswersAnIntermediateWhereItCameFrom(t *testing.T) {
 				if err := s.mux.SendIKE(s.sent[0]); err != nil {
 					t.Fatal(err)
 				}
-				if again, err := s.mux.RecvIKEUntil(time.Now().Add(answerBudget)); err != nil || !bytes.Equal(again, s.got[0]) {
+				if again, err := recvIKEUntil(s.mux, time.Now().Add(answerBudget)); err != nil || !bytes.Equal(again, s.got[0]) {
 					t.Errorf("a repeat of the request from the second endpoint drew %d octets there (%v), want the answer again", len(again), err)
 				}
-				if _, err := origin.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+				if _, err := recvIKEUntil(origin, time.Now().Add(quietPeriod)); err == nil {
 					t.Error("a repeat of the request from the second endpoint drew an answer at the first")
 				}
 				s.authenticate(2, 2)

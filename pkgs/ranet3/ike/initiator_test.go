@@ -1084,7 +1084,7 @@ func encodeTestMessage(t *testing.T, hdr Header, payloads []RawPayload) []byte {
 
 // withNonESPMarker prepends the 4-byte zero marker transport.Mux uses to
 // demux IKE from ESP traffic (RFC 3948). Without it, a reply sent by the
-// mock peer below would be classified as ESP and never reach RecvIKEUntil.
+// mock peer below would be classified as ESP and never reach the mux's IKE queue.
 func withNonESPMarker(b []byte) []byte {
 	return append([]byte{0, 0, 0, 0}, b...)
 }

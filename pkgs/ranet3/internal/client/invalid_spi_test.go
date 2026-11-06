@@ -58,7 +58,7 @@ func TestSessionsCountTheInvalidSPIReportsSent(t *testing.T) {
 	// the complement of the one SPI bravo holds
 	stray := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, ^held), 1)
 	waitFor(t, convergeBudget, "bravo to record a report and its control socket to count it under the one session", func() bool {
-		if err := dialed.Mux().SendESP(stray); err != nil {
+		if err := dialed.Mux().SendESPBatch([][]byte{stray}); err != nil {
 			t.Fatal(err)
 		}
 		reported := bravo.client.Sessions()

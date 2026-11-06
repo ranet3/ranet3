@@ -249,7 +249,7 @@ func TestKnownSPIIsNeverReported(t *testing.T) {
 		if spi, ok := told(muxes[0]); ok {
 			t.Errorf("ESP on the session's own SPI %#x was handed on as unknown, %#x", knownSPI, spi)
 		}
-		if packet, err := muxes[0].RecvESPUntil(time.Now().Add(arrivalBudget)); err != nil || binary.BigEndian.Uint32(packet) != knownSPI {
+		if packet, err := newESPReader(muxes[0]).next(time.Now().Add(arrivalBudget)); err != nil || binary.BigEndian.Uint32(packet) != knownSPI {
 			t.Errorf("the session read %x, %v, want its ESP on SPI %#x", packet, err, knownSPI)
 		}
 		if hub.Refused() != refused {

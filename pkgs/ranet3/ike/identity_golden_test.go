@@ -417,7 +417,7 @@ func answerExchange(t testing.TB, x payloadExchange, events Recorder, cleanup fu
 		t.Fatal(err)
 	}
 	accepted, _, authErr := s.completeResponderAuth(r, goldenMessage1, goldenMessage2, goldenNi, goldenNr, time.Now().Add(answerBudget))
-	raw, err := peer.RecvIKEUntil(time.Now().Add(answerBudget))
+	raw, err := recvIKEUntil(peer, time.Now().Add(answerBudget))
 	if err != nil {
 		t.Fatalf("the responder sent no answer: %v", err)
 	}

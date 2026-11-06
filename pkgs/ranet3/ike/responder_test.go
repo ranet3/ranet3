@@ -872,7 +872,7 @@ func testResponderDoesNotReflectOnSPIAlone(t *testing.T) {
 	if err := mux.SendIKE(request); err != nil {
 		t.Fatal(err)
 	}
-	first, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+	first, err := recvIKEUntil(mux, time.Now().Add(answerBudget))
 	if err != nil {
 		t.Fatalf("the responder did not answer a valid IKE_SA_INIT: %v", err)
 	}
@@ -888,7 +888,7 @@ func testResponderDoesNotReflectOnSPIAlone(t *testing.T) {
 	if err := mux.SendIKE(bare); err != nil {
 		t.Fatal(err)
 	}
-	if reply, err := mux.RecvIKEUntil(time.Now().Add(time.Second)); err == nil {
+	if reply, err := recvIKEUntil(mux, time.Now().Add(time.Second)); err == nil {
 		t.Fatalf("a %d byte header drew a %d byte response, which is an amplifier", len(bare), len(reply))
 	}
 
@@ -897,7 +897,7 @@ func testResponderDoesNotReflectOnSPIAlone(t *testing.T) {
 	if err := mux.SendIKE(request); err != nil {
 		t.Fatal(err)
 	}
-	again, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+	again, err := recvIKEUntil(mux, time.Now().Add(answerBudget))
 	if err != nil {
 		t.Fatalf("an identical retransmission was not answered: %v", err)
 	}
@@ -947,7 +947,7 @@ func testResponderTakesSlotBeforeKeyExchange(t *testing.T) {
 			if err := mux.SendIKE(encodeTestSAInit(t, spiI, ni, unacceptable, ahead)); err != nil {
 				t.Fatal(err)
 			}
-			reply, err := mux.RecvIKEUntil(time.Now().Add(wait))
+			reply, err := recvIKEUntil(mux, time.Now().Add(wait))
 			return reply, err == nil
 		}
 		reply, ok := send(nil)
@@ -1008,7 +1008,7 @@ func statelessAnswer(t testing.TB, mux *transport.Mux, request []byte, why strin
 	if err := mux.SendIKE(request); err != nil {
 		t.Fatal(err)
 	}
-	reply, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+	reply, err := recvIKEUntil(mux, time.Now().Add(answerBudget))
 	if err != nil {
 		t.Fatalf("%s: %v", why, err)
 	}
@@ -1185,7 +1185,7 @@ func testDeleteIKEReachesPeerWithoutRunLoop(t *testing.T) {
 		t.Fatal("DeleteIKE never returned, so it is waiting on a run loop that does not exist")
 	}
 
-	raw, err := responder.Mux().RecvIKEUntil(time.Now().Add(answerBudget))
+	raw, err := recvIKEUntil(responder.Mux(), time.Now().Add(answerBudget))
 	if err != nil {
 		t.Fatalf("the peer never received the Delete: %v", err)
 	}
@@ -1727,7 +1727,7 @@ func TestTrafficPostponesDeadPeerDetection(t *testing.T) {
 		}
 		// Nothing runs the responder's own loop, so whatever arrives here is
 		// what the initiator sent unprompted.
-		_, err = peer.Mux().RecvIKEUntil(time.Now().Add(defaultDPDInterval + 3*time.Second))
+		_, err = recvIKEUntil(peer.Mux(), time.Now().Add(defaultDPDInterval+3*time.Second))
 		return err == nil
 	}
 	// The quiet session is the positive control: without it, a busy session
@@ -2167,7 +2167,7 @@ func testResponderGivesUpItsUnansweredDeleteAfterTheTeardownBudget(t *testing.T)
 		}
 	}
 	awaitHandshakeEnd(t, h, refused, held.spiI)
-	if raw, err := mux.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+	if raw, err := recvIKEUntil(mux, time.Now().Add(quietPeriod)); err == nil {
 		t.Errorf("the responder sent %d more bytes after it let the IKE SA go", len(raw))
 	}
 }
@@ -2201,7 +2201,7 @@ func TestResponderRefusingIKEAuthSendsNoDelete(t *testing.T) {
 			if notify, err := DecodeNotify(inner[0].Body); err != nil || notify.Type != N_AUTHENTICATION_FAILED {
 				t.Fatalf("the responder refused IKE_AUTH with %+v (%v), want AUTHENTICATION_FAILED", notify, err)
 			}
-			if raw, err := mux.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+			if raw, err := recvIKEUntil(mux, time.Now().Add(quietPeriod)); err == nil {
 				t.Errorf("the responder sent %d more bytes after refusing IKE_AUTH, want nothing", len(raw))
 			}
 			awaitHandshakeEnd(t, h, refused, held.spiI)
@@ -2340,7 +2340,7 @@ func initHalfOpen(t *testing.T, mux *transport.Mux, shape func([]RawPayload) []R
 func responderMessage(t *testing.T, mux *transport.Mux, held *ikeContext) (Header, []RawPayload, []byte) {
 	t.Helper()
 	for {
-		raw, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+		raw, err := recvIKEUntil(mux, time.Now().Add(answerBudget))
 		if err != nil {
 			t.Fatalf("the responder sent nothing more: %v", err)
 		}
@@ -2436,7 +2436,7 @@ func testResponderChecksTheNonceAgainstTheNegotiatedPRF(t *testing.T) {
 			if err := mux.SendIKE(encodeTestSAInit(t, spiI, short, proposal, ahead)); err != nil {
 				t.Fatal(err)
 			}
-			reply, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+			reply, err := recvIKEUntil(mux, time.Now().Add(answerBudget))
 			if err != nil {
 				t.Fatalf("the responder never answered: %v", err)
 			}
@@ -2560,7 +2560,7 @@ func testResponderAnswersAMalformedIKEAuthWithInvalidSyntax(t *testing.T) {
 			answer.ExchangeType, answer.IsResponse(), answer.MessageID, inner)
 	}
 	awaitHandshakeEnd(t, h, refused, held.spiI)
-	if raw, err := moved.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+	if raw, err := recvIKEUntil(moved, time.Now().Add(quietPeriod)); err == nil {
 		t.Errorf("the responder sent %d more bytes after it let the half-open SA go", len(raw))
 	}
 }
@@ -2641,7 +2641,7 @@ func testStatelessErrorAnswersShareOneLimit(t *testing.T) {
 		if err := mux.SendIKE(atVersion(raw, refused.version)); err != nil {
 			t.Fatal(err)
 		}
-		if reply, err := mux.RecvIKEUntil(time.Now().Add(quietPeriod)); err == nil {
+		if reply, err := recvIKEUntil(mux, time.Now().Add(quietPeriod)); err == nil {
 			t.Errorf("the IKE_SA_INIT %s drew notify %d with the limit spent", name, firstTestNotify(t, reply).Type)
 		}
 	}
@@ -2913,7 +2913,7 @@ func testResponderAnswersAHigherMajorVersionWhileItWaitsForIKEAuth(t *testing.T)
 		t.Fatal(err)
 	}
 	for {
-		reply, err := mux.RecvIKEUntil(time.Now().Add(answerBudget))
+		reply, err := recvIKEUntil(mux, time.Now().Add(answerBudget))
 		if err != nil {
 			t.Fatalf("the IKE_AUTH at major version 3 drew no answer: %v", err)
 		}

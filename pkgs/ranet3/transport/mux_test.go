@@ -133,7 +133,7 @@ func TestHubFailureIsTerminal(t *testing.T) {
 	cause := errors.New("receive failed")
 	hub.fail(cause)
 
-	if _, err := mux.RecvESP(); !errors.Is(err, cause) {
+	if _, err := newESPReader(mux).next(time.Now().Add(arrivalBudget)); !errors.Is(err, cause) {
 		t.Fatalf("existing mux error = %v, want %v", err, cause)
 	}
 	if _, err := hub.NewMux(net.IPv4(127, 0, 0, 1), 4501); err == nil {
@@ -177,27 +177,6 @@ func TestSendOnAClosedMuxAnswersErrClosed(t *testing.T) {
 				t.Errorf("registering an IKE SPI answered %v, want ErrClosed", err)
 			}
 		})
-	}
-}
-
-func TestRecvESPBatchDrainsToDestinationCapacity(t *testing.T) {
-	m := &Mux{espCh: make(chan espDatagramBatch, 2), done: make(chan struct{})}
-	m.espCh <- espDatagramBatch{packets: [][]byte{[]byte("one"), []byte("two")}}
-	m.espCh <- espDatagramBatch{packets: [][]byte{[]byte("three")}}
-
-	batch, err := m.RecvESPBatch(make([][]byte, 0, 2))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(batch) != 2 || string(batch[0]) != "one" || string(batch[1]) != "two" {
-		t.Fatalf("batch = %q, want [one two]", batch)
-	}
-	last, err := m.RecvESP()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(last) != "three" {
-		t.Fatalf("remaining packet = %q, want three", last)
 	}
 }
 
@@ -392,10 +371,11 @@ func testRecvESPBatch(t *testing.T, network, addr string) {
 	}
 
 	got := map[int]bool{}
+	reader := newESPReader(m)
 	for i := range n {
-		pkt, err := m.RecvESP()
+		pkt, err := reader.next(time.Now().Add(arrivalBudget))
 		if err != nil {
-			t.Fatalf("RecvESP %d/%d: %v", i, n, err)
+			t.Fatalf("read ESP %d/%d: %v", i, n, err)
 		}
 		got[int(pkt[4])|int(pkt[5])<<8] = true
 	}
@@ -442,9 +422,9 @@ func TestRecvESPAndIKEDemux(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := m.RecvESP()
+	got, err := newESPReader(m).next(time.Now().Add(arrivalBudget))
 	if err != nil {
-		t.Fatalf("RecvESP: %v", err)
+		t.Fatalf("read ESP: %v", err)
 	}
 	if string(got) != string(espPkt) {
 		t.Fatalf("ESP payload mismatch: got %x want %x", got, espPkt)
@@ -498,8 +478,8 @@ func TestHubRoutesBySPIAndMuxCloseDoesNotCloseHub(t *testing.T) {
 	if _, err := server.WriteToUDP(espPkt, dst); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := second.RecvESPUntil(time.Now().Add(arrivalBudget)); err != nil || string(got) != string(espPkt) {
-		t.Fatalf("RecvESP = %x, %v", got, err)
+	if got, err := newESPReader(second).next(time.Now().Add(arrivalBudget)); err != nil || string(got) != string(espPkt) {
+		t.Fatalf("read ESP = %x, %v", got, err)
 	}
 }
 
@@ -666,33 +646,6 @@ func TestESPReceiveQueueIsBoundedInBytes(t *testing.T) {
 	}
 	if !m.hasRoomForESP(len(packet)) {
 		t.Fatal("a drained queue still reports itself full")
-	}
-}
-
-// Every receive path has to release the budget, not just the concurrent one.
-func TestEveryESPReceivePathReleasesItsBudget(t *testing.T) {
-	for name, recv := range map[string]func(*Mux) error{
-		"RecvESP":      func(m *Mux) error { _, err := m.RecvESP(); return err },
-		"RecvESPBatch": func(m *Mux) error { _, err := m.RecvESPBatch(nil); return err },
-		"RecvESPUntil": func(m *Mux) error {
-			_, err := m.RecvESPUntil(time.Now().Add(arrivalBudget))
-			return err
-		},
-		"RecvESPBatchConcurrent": func(m *Mux) error { _, _, _, err := m.RecvESPBatchConcurrent(); return err },
-	} {
-		t.Run(name, func(t *testing.T) {
-			m := &Mux{espCh: make(chan espDatagramBatch, 4), done: make(chan struct{})}
-			payload := []byte("one whole datagram")
-			if !m.dispatchESP(datagramBatch(payload)) {
-				t.Fatal("dispatch was dropped")
-			}
-			if err := recv(m); err != nil {
-				t.Fatal(err)
-			}
-			if got := m.espQueued.Load(); got != 0 {
-				t.Fatalf("%d bytes are still charged after %s drained the batch", got, name)
-			}
-		})
 	}
 }
 

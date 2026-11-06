@@ -976,7 +976,7 @@ func TestConnectedSocketFeedsTheReceivePath(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, err := mux.RecvESPUntil(time.Now().Add(arrivalBudget))
+			got, err := newESPReader(mux).next(time.Now().Add(arrivalBudget))
 			if err != nil || !bytes.Equal(got, esp) {
 				t.Fatalf("ESP from the peer arrived as %q, %v", got, err)
 			}

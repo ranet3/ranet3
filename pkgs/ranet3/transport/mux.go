@@ -15,9 +15,10 @@
 // then gets a [Mux] from [Hub.NewMux] or [Hub.NewMuxTo], which is that peer's
 // logical channel:
 // the caller registers the inbound SPIs it has negotiated with
-// [Mux.RegisterIKE] and [Mux.RegisterESP], and from then on [Mux.SendIKE] and
-// [Mux.RecvIKE] carry control messages while [Mux.SendESP], [Mux.RecvESP] and
-// their batch forms carry the data. An IKE datagram whose SPI no Mux has
+// [Mux.RegisterIKE] and [Mux.RegisterESP], and from then on [Mux.SendIKE]
+// sends control messages, which arrive on [Mux.IKE] or through
+// [Mux.RecvIKEFromUntil], while [Mux.SendESPBatch] and
+// [Mux.RecvESPBatchConcurrent] carry the data. An IKE datagram whose SPI no Mux has
 // registered arrives on [Hub.Listen] as an [Unclaimed], which is how a peer
 // that has never dialed this node opens an IKE_SA_INIT.
 //
@@ -700,12 +701,10 @@ type Mux struct {
 	endpoint      Endpoint
 	dialed        bool
 	ikeCh         chan Datagram
-	espRecvMu     sync.Mutex
 	espDispatchMu sync.Mutex
 	espTicket     uint64
 	espCh         chan espDatagramBatch
 	espQueued     atomic.Int64
-	espPending    [][]byte
 	done          chan struct{}
 	doneOnce      sync.Once
 	doneErr       atomic.Value
@@ -912,7 +911,6 @@ func (m *Mux) SendIKETo(b []byte, endpoint Endpoint) error {
 	copy(out[nonESPMarkerLen:], b)
 	return m.hub.bind.Send([][]byte{out}, endpoint)
 }
-func (m *Mux) SendESP(b []byte) error { return m.SendESPBatch([][]byte{b}) }
 
 // SendESPBatch writes directly to the shared UDP bind. Production batches are
 // already adjacent slices of one encryption allocation, which lets Bind use
@@ -986,32 +984,15 @@ func (m *Mux) send(bufs [][]byte, endpoint Endpoint) error {
 	return m.hub.bind.Send(bufs, endpoint)
 }
 
-func (m *Mux) RecvIKE() ([]byte, error) {
-	b, _, err := m.RecvIKEFrom()
-	return b, err
-}
-func (m *Mux) RecvIKEFrom() ([]byte, Endpoint, error) {
-	select {
-	case d := <-m.ikeCh:
-		return d.Raw, d.Endpoint, nil
-	case <-m.done:
-		return nil, nil, m.doneError()
-	}
-}
-
 // IKE is the channel this peer's IKE messages arrive on, so a control loop can
 // select over it together with its own work instead of waking on a timer to
-// check both. It is the same queue the Recv methods drain, so only one reader
-// may use either at a time: the handshake uses Recv and hands over to the
-// control loop once the SA is established.
+// check both. It is the same queue RecvIKEFromUntil drains, so only one reader
+// may use either at a time: the handshake uses RecvIKEFromUntil and hands over
+// to the control loop once the SA is established.
 func (m *Mux) IKE() <-chan Datagram { return m.ikeCh }
 
 // Err is why this mux is done, for a caller that selected on Done itself.
 func (m *Mux) Err() error { return m.doneError() }
-func (m *Mux) RecvIKEUntil(deadline time.Time) ([]byte, error) {
-	b, _, err := m.RecvIKEFromUntil(deadline)
-	return b, err
-}
 func (m *Mux) RecvIKEFromUntil(deadline time.Time) ([]byte, Endpoint, error) {
 	select {
 	case d := <-m.ikeCh:
@@ -1022,29 +1003,13 @@ func (m *Mux) RecvIKEFromUntil(deadline time.Time) ([]byte, Endpoint, error) {
 		return nil, nil, errTimeout
 	}
 }
-func (m *Mux) RecvESP() ([]byte, error) {
-	m.espRecvMu.Lock()
-	defer m.espRecvMu.Unlock()
-	if len(m.espPending) == 0 {
-		select {
-		case batch := <-m.espCh:
-			m.espPending = m.takeESP(batch)
-		case <-m.done:
-			return nil, m.doneError()
-		}
-	}
-	b := m.espPending[0]
-	m.espPending = m.espPending[1:]
-	return b, nil
-}
 
 // RecvESPBatchConcurrent returns one complete socket-demultiplexed batch, its
 // receive-order ticket and the outer ECN field of each of its packets, which
 // is nil when every packet arrived Not-ECT. It is safe for multiple data-plane
 // workers to call concurrently: the transport channel distributes batches,
 // while the ticket lets their independently decrypted results be emitted in
-// original order. It must not be mixed with RecvESP, RecvESPBatch, or
-// RecvESPUntil on one Mux.
+// original order.
 func (m *Mux) RecvESPBatchConcurrent() (uint64, [][]byte, []packet.ECN, error) {
 	select {
 	case batch := <-m.espCh:
@@ -1052,63 +1017,6 @@ func (m *Mux) RecvESPBatchConcurrent() (uint64, [][]byte, []packet.ECN, error) {
 	case <-m.done:
 		return 0, nil, nil, m.doneError()
 	}
-}
-
-// RecvESPBatch blocks for one ESP packet, then drains immediately available
-// packets into dst up to its capacity. A nil dst gets the transport's normal
-// batch capacity. Keeping the receive batch intact lets callers amortize
-// decrypt-pipeline and TUN write overhead without delaying a lone packet.
-func (m *Mux) RecvESPBatch(dst [][]byte) ([][]byte, error) {
-	m.espRecvMu.Lock()
-	defer m.espRecvMu.Unlock()
-	if cap(dst) == 0 {
-		dst = make([][]byte, 0, espSendBatch)
-	} else {
-		dst = dst[:0]
-	}
-	for len(dst) < cap(dst) {
-		if len(m.espPending) == 0 {
-			if len(dst) == 0 {
-				select {
-				case batch := <-m.espCh:
-					m.espPending = m.takeESP(batch)
-				case <-m.done:
-					return nil, m.doneError()
-				}
-			} else {
-				select {
-				case batch := <-m.espCh:
-					m.espPending = m.takeESP(batch)
-				case <-m.done:
-					return dst, nil
-				default:
-					return dst, nil
-				}
-			}
-		}
-		n := min(cap(dst)-len(dst), len(m.espPending))
-		dst = append(dst, m.espPending[:n]...)
-		m.espPending = m.espPending[n:]
-	}
-	return dst, nil
-}
-
-func (m *Mux) RecvESPUntil(deadline time.Time) ([]byte, error) {
-	m.espRecvMu.Lock()
-	defer m.espRecvMu.Unlock()
-	if len(m.espPending) == 0 {
-		select {
-		case batch := <-m.espCh:
-			m.espPending = m.takeESP(batch)
-		case <-m.done:
-			return nil, m.doneError()
-		case <-time.After(time.Until(deadline)):
-			return nil, errTimeout
-		}
-	}
-	b := m.espPending[0]
-	m.espPending = m.espPending[1:]
-	return b, nil
 }
 
 var errTimeout = fmt.Errorf("transport: receive timeout")

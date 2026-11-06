@@ -74,7 +74,7 @@ func sendEarlyESP(t *testing.T, s *Session, peer *transport.MemoryConn, hub *tra
 // tookEarlyESP checks the ESP sendEarlyESP sent reached the session's mux
 func tookEarlyESP(t *testing.T, s *Session, spi uint32) {
 	t.Helper()
-	packet, err := s.mux.RecvESPUntil(time.Now().Add(answerBudget))
+	packet, err := recvESPUntil(s.mux, time.Now().Add(answerBudget))
 	if err != nil || binary.BigEndian.Uint32(packet) != spi {
 		t.Errorf("the session read %x (%v), want the ESP on SPI %08x that came before the answer", packet, err, spi)
 	}

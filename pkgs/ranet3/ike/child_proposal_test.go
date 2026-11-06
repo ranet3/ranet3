@@ -963,7 +963,7 @@ func answerIKEAuth(t testing.TB, h *responderHarness, lists Suites, children ...
 	if !created {
 		t.Errorf("an IKE_AUTH that authenticates left the IKE SA uncreated, with %v", authErr)
 	}
-	raw, err := peer.RecvIKEUntil(time.Now().Add(answerBudget))
+	raw, err := recvIKEUntil(peer, time.Now().Add(answerBudget))
 	if err != nil {
 		t.Fatalf("no IKE_AUTH answer: %v", err)
 	}

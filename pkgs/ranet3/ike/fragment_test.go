@@ -1830,7 +1830,7 @@ func TestOnlyFragmentOneOfAnAnsweredRequestDrawsTheAnswerAgain(t *testing.T) {
 			}
 		}
 		for _, want := range answer {
-			if again, err := s.mux.RecvIKEUntil(time.Now().Add(answerBudget)); err != nil || !bytes.Equal(again, want) {
+			if again, err := recvIKEUntil(s.mux, time.Now().Add(answerBudget)); err != nil || !bytes.Equal(again, want) {
 				t.Fatalf("a repeat of fragment 1 drew %d octets (%v), want the answer again", len(again), err)
 			}
 		}
@@ -1906,7 +1906,7 @@ func TestKeptAnswerGoesAgainCutForThePathAtItsSend(t *testing.T) {
 			if err := s.mux.SendIKE(s.sent[0]); err != nil {
 				t.Fatal(err)
 			}
-			again := collect(t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
+			again := collect(t, func() ([]byte, error) { return recvIKEUntil(s.mux, time.Now().Add(answerBudget)) })
 			wantFits(t, again, floorRoom)
 			if _, inner, _, total := assembled(t, modelSuite, key, again); total < 2 || !slices.EqualFunc(inner, want, func(a, b RawPayload) bool { return a.Type == b.Type && bytes.Equal(a.Body, b.Body) }) {
 				t.Fatalf("repeat %d of fragment 1 under the lower path MTU drew payload types %v in %d fragments, want the answer cut again", repeat+1, payloadTypes(inner), total)
@@ -2033,7 +2033,7 @@ func TestKeptAnswerIsCutAgainWithinASmallerRepeatAndNoFurther(t *testing.T) {
 			if err := s.mux.SendIKE(raw); err != nil {
 				t.Fatal(err)
 			}
-			return collect(t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
+			return collect(t, func() ([]byte, error) { return recvIKEUntil(s.mux, time.Now().Add(answerBudget)) })
 		})
 		s.cut = 0
 		if header, _ := s.authenticate(2, 2); header.ExchangeType != IKE_AUTH || header.MessageID != 2 {
@@ -2047,7 +2047,7 @@ func TestKeptAnswerIsCutAgainWithinASmallerRepeatAndNoFurther(t *testing.T) {
 func heard(mux *transport.Mux) [][]byte {
 	var got [][]byte
 	for {
-		raw, err := mux.RecvIKEUntil(time.Now().Add(quietPeriod))
+		raw, err := recvIKEUntil(mux, time.Now().Add(quietPeriod))
 		if err != nil {
 			return got
 		}
@@ -2134,7 +2134,7 @@ func testHalfOpenRepeatFromAnotherAddressDrawsNoMoreOctetsThanItSent(t *testing.
 			}
 		}
 	}
-	again := collect(t, func() ([]byte, error) { return place.RecvIKEUntil(time.Now().Add(answerBudget)) })
+	again := collect(t, func() ([]byte, error) { return recvIKEUntil(place, time.Now().Add(answerBudget)) })
 	if drawn, sent := wireOf(again), wireOf(request); !slices.EqualFunc(again, answer, bytes.Equal) || drawn > sent {
 		t.Errorf("all of the request from another address, %d octets on the wire, drew %d there, want the answer of no more", sent, drawn)
 	}
@@ -2148,7 +2148,7 @@ func testHalfOpenRepeatFromAnotherAddressDrawsNoMoreOctetsThanItSent(t *testing.
 			t.Fatal(err)
 		}
 	}
-	again = collect(t, func() ([]byte, error) { return place.RecvIKEUntil(time.Now().Add(answerBudget)) })
+	again = collect(t, func() ([]byte, error) { return recvIKEUntil(place, time.Now().Add(answerBudget)) })
 	if drawn, sent := wireOf(again), wireOf(finer); len(again) <= len(answer) || largest(again) > max(largest(finer), floorRoom) || drawn > sent {
 		t.Errorf("all of the request in fragments of at most %d octets, %d on the wire in all, drew %d datagrams of at most %d octets, %d on the wire in all, from %d, want more fragments within the floor's and no more octets", largest(finer), sent, len(again), largest(again), drawn, len(answer))
 	}
@@ -2253,7 +2253,7 @@ func testMovedWholeRepeatIsReadOnTheWire(t *testing.T) {
 	if err := s.mux.SendIKE(finer[0]); err != nil {
 		t.Fatal(err)
 	}
-	answer := collect(t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
+	answer := collect(t, func() ([]byte, error) { return recvIKEUntil(s.mux, time.Now().Add(answerBudget)) })
 	if len(whole) != 1 || octetsOf(answer) >= octetsOf(whole) || wireOf(answer) <= wireOf(whole) {
 		t.Fatalf("the request went in %d datagrams, %d octets of IKE message and %d on the wire, and the answer cut again in %d, %d and %d, want the request whole and the answer fewer octets of IKE message and more on the wire", len(whole), octetsOf(whole), wireOf(whole), len(answer), octetsOf(answer), wireOf(answer))
 	}
@@ -2266,7 +2266,7 @@ func testMovedWholeRepeatIsReadOnTheWire(t *testing.T) {
 		if repeat == 0 {
 			again = heard(place)
 		} else {
-			again = collect(t, func() ([]byte, error) { return place.RecvIKEUntil(time.Now().Add(answerBudget)) })
+			again = collect(t, func() ([]byte, error) { return recvIKEUntil(place, time.Now().Add(answerBudget)) })
 		}
 		if repeat == 0 && len(again) != 0 || repeat == 1 && !slices.EqualFunc(again, answer, bytes.Equal) {
 			t.Errorf("repeat %d of the request whole from another address drew %d datagrams, %d octets on the wire, want nothing at the first and the answer at the second", repeat+1, len(again), wireOf(again))
@@ -2300,7 +2300,7 @@ func movedRepeats(t *testing.T, s *scripted, request, answer [][]byte) {
 		if repeat == 0 {
 			again = heard(place)
 		} else {
-			again = collect(t, func() ([]byte, error) { return place.RecvIKEUntil(time.Now().Add(answerBudget)) })
+			again = collect(t, func() ([]byte, error) { return recvIKEUntil(place, time.Now().Add(answerBudget)) })
 		}
 		drawn += wireOf(again)
 		if drawn > sent || repeat == 0 && len(again) != 0 || repeat > 0 && !slices.EqualFunc(again, answer, bytes.Equal) {
@@ -2348,7 +2348,7 @@ func testMovedFinerSetIsReadAgainstTheAnswerCutAgain(t *testing.T) {
 		if repeat == 0 {
 			again = heard(place)
 		} else {
-			again = collect(t, func() ([]byte, error) { return place.RecvIKEUntil(time.Now().Add(answerBudget)) })
+			again = collect(t, func() ([]byte, error) { return recvIKEUntil(place, time.Now().Add(answerBudget)) })
 		}
 		drawn += wireOf(again)
 		if drawn > sent || repeat == 0 && len(again) != 0 || repeat == 1 && (len(again) <= len(s.got) || largest(again) > largest(finer)) {
@@ -2650,7 +2650,7 @@ func testHalfOpenAnswersAtMostMaxRetransmitsWhileBusyRepeats(t *testing.T) {
 			}
 			continue
 		}
-		again := collect(t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
+		again := collect(t, func() ([]byte, error) { return recvIKEUntil(s.mux, time.Now().Add(answerBudget)) })
 		wantFits(t, again, floorRoom)
 		if _, inner, _, _ := assembled(t, modelSuite, answerKey, again); !samePayloads(inner, answer) {
 			t.Fatalf("repeat %d drew payload types %v, want the answer again", repeat+1, payloadTypes(inner))
@@ -2767,7 +2767,7 @@ func TestRepeatIsReadAgainstTheTotalFragmentsOfTheAnsweredRequest(t *testing.T) 
 				}
 				continue
 			}
-			again := collect(t, func() ([]byte, error) { return s.mux.RecvIKEUntil(time.Now().Add(answerBudget)) })
+			again := collect(t, func() ([]byte, error) { return recvIKEUntil(s.mux, time.Now().Add(answerBudget)) })
 			if _, got, _, _ := assembled(t, modelSuite, answerKey, again); !samePayloads(got, answer) {
 				t.Errorf("a repeat %s of a request in %d fragments drew payload types %v, want the answer again", r.name, len(request), payloadTypes(got))
 			}

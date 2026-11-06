@@ -116,6 +116,7 @@ func TestTableChangesReachTheNextDatagram(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sender.Close()
+	reader := newESPReader(mux)
 	for spi := uint32(1); spi <= tableChanges; spi++ {
 		if err := mux.RegisterESP(spi); err != nil {
 			t.Fatal(err)
@@ -124,7 +125,7 @@ func TestTableChangesReachTheNextDatagram(t *testing.T) {
 		if _, err := sender.Write(packet); err != nil {
 			t.Fatal(err)
 		}
-		got, err := mux.RecvESPUntil(time.Now().Add(arrivalBudget))
+		got, err := reader.next(time.Now().Add(arrivalBudget))
 		if err != nil || binary.BigEndian.Uint32(got) != spi {
 			t.Fatalf("ESP SPI %d registered before its datagram arrived, and the mux read %x, %v", spi, got, err)
 		}
@@ -203,7 +204,7 @@ func TestClosedMuxGivesUpItsSPIs(t *testing.T) {
 	if _, err := sender.Write(packet); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := next.RecvESPUntil(time.Now().Add(arrivalBudget)); err != nil || binary.BigEndian.Uint32(got) != spi {
+	if got, err := newESPReader(next).next(time.Now().Add(arrivalBudget)); err != nil || binary.BigEndian.Uint32(got) != spi {
 		t.Fatalf("the mux that took ESP SPI %d over read %x, %v", spi, got, err)
 	}
 	request := append(binary.BigEndian.AppendUint64(make([]byte, nonESPMarkerLen), spi), make([]byte, 20)...)

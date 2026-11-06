@@ -2208,7 +2208,7 @@ func TestCloseSendsItsDeleteBeforeALostRequestIsRetransmitted(t *testing.T) {
 	}
 	// ESP on an SPI the initiator does not hold, which the relay carries from the responder
 	report := func(_, responder *Session) error {
-		return responder.Mux().SendESP(binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, strayedSPI), 1))
+		return responder.Mux().SendESPBatch([][]byte{binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, strayedSPI), 1)})
 	}
 	rekeyChild := func(initiator, _ *Session) error { return initiator.RekeyChild() }
 	rekeyIKE := func(initiator, _ *Session) error { return initiator.RekeyIKE() }
