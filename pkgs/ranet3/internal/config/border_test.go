@@ -181,6 +181,35 @@ func TestOverlayAndAntispoofRefusalsReachTheLoader(t *testing.T) {
 			}
 		})
 	}
+	// each class whole and in part, ahead of the overlay's entries in each
+	// format, named by the opening of its reason, which schema's test pins whole
+	opening := map[string]string{"toml": `overlay = [`, "yaml": `overlay: [`, "json": `"overlay": [`}
+	for entry, says := range map[string]string{
+		"0.0.0.0/8":          "holds addresses of this network, 0.0.0.0/8,",
+		"127.0.0.0/8":        "holds loopback addresses, 127.0.0.0/8,",
+		"169.254.0.0/16":     "holds link-local addresses, 169.254.0.0/16,",
+		"169.0.0.0/8":        "holds link-local addresses, 169.254.0.0/16,",
+		"224.0.0.0/8":        "holds multicast addresses, 224.0.0.0/4,",
+		"255.255.255.255/32": "holds the limited broadcast address 255.255.255.255,",
+		"240.0.0.0/8":        "holds class E addresses, 240.0.0.0/4,",
+		"255.0.0.0/8":        "holds class E addresses, 240.0.0.0/4,",
+		"::/128":             "holds the unspecified address ::,",
+		"::/96":              "holds the unspecified address ::,",
+		"::1/128":            "holds the loopback address ::1,",
+		"::fffe:0:0/95":      "holds IPv4-mapped addresses, ::ffff:0:0/96,",
+		"fe80::/16":          "holds link-local addresses, fe80::/10,",
+		"ff02::/16":          "holds multicast addresses, ff00::/8,",
+	} {
+		for format, body := range egressExits() {
+			t.Run(entry+" in "+format, func(t *testing.T) {
+				text := strings.Replace(body.text, opening[format], opening[format]+`"`+entry+`", `, 1)
+				want := "egress: overlay " + entry + " " + says
+				if _, err := load(t, body.extension, text); err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("refused with %v, want %q", err, want)
+				}
+			})
+		}
+	}
 	for name, body := range map[string]string{
 		"an exemption covering the overlay":      exit + "[cap.antispoof]\nexempt = [\"203.0.113.0/24\", \"3fff:a::/36\"]\n",
 		"an interface's exemption alone":         exit + "[cap.antispoof.interface.eth1]\nexempt = [\"3fff:a::/48\"]\n",

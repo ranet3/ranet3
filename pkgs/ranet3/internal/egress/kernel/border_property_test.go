@@ -642,20 +642,25 @@ func unmappedIPv6() hegel.Generator[netip.Addr] {
 
 // overlayPrefixes draws one to four overlay prefixes of either family at
 // lengths spanning each family's floor to full length, with the lengths the
-// fleet and the documentation ranges use drawn by name
+// fleet and the documentation ranges use drawn by name, each holding no
+// address of a class schema.Unroutable names, which the overlay refuses
 func overlayPrefixes() hegel.Generator[[]schema.Prefix] {
+	routable := hegel.Filter(hegel.Composite(func(tc hegel.TestCase) netip.Prefix {
+		if hegel.Draw(tc, hegel.Booleans()) {
+			bits := hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]int{8, 23, 24, 32}), pbt.Spanning(schema.MinSourceBits4, 32)))
+			return netip.PrefixFrom(hegel.Draw(tc, hegel.IPAddresses().IPv4()), bits).Masked()
+		}
+		bits := hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]int{12, 36, 48, 64, 128}), pbt.Spanning(schema.MinSourceBits6, 128)))
+		return netip.PrefixFrom(hegel.Draw(tc, unmappedIPv6()), bits).Masked()
+	}), func(prefix netip.Prefix) bool {
+		reason, _ := schema.Unroutable(prefix)
+		return reason == ""
+	})
 	return hegel.Composite(func(tc hegel.TestCase) []schema.Prefix {
 		count := hegel.Draw(tc, pbt.Spanning(1, 4))
 		var out []schema.Prefix
 		for range count {
-			var prefix netip.Prefix
-			if hegel.Draw(tc, hegel.Booleans()) {
-				bits := hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]int{8, 23, 24, 32}), pbt.Spanning(schema.MinSourceBits4, 32)))
-				prefix = netip.PrefixFrom(hegel.Draw(tc, hegel.IPAddresses().IPv4()), bits).Masked()
-			} else {
-				bits := hegel.Draw(tc, hegel.OneOf(hegel.SampledFrom([]int{12, 36, 48, 64, 128}), pbt.Spanning(schema.MinSourceBits6, 128)))
-				prefix = netip.PrefixFrom(hegel.Draw(tc, unmappedIPv6()), bits).Masked()
-			}
+			prefix := hegel.Draw(tc, routable)
 			if !slices.ContainsFunc(out, func(other schema.Prefix) bool { return other.Prefix == prefix }) {
 				out = append(out, schema.PrefixFrom(prefix))
 			}

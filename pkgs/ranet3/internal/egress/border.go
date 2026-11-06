@@ -130,9 +130,10 @@ func (b Border) Carved(carveOuts []CarveOut) []netip.Prefix {
 	return out
 }
 
-// Validate refuses an overlay list that would pass a forged mesh source or
-// drop what no mesh numbers from, worded as Egress.Validate words advertise,
-// and an exemption that would exempt nothing
+// Validate refuses an overlay list that would pass a forged mesh source, drop
+// what no mesh numbers from or hold an address of a class schema.Unroutable
+// names, worded as Egress.Validate words advertise, and an exemption that
+// would exempt nothing
 func (b Border) Validate() error {
 	if len(b.Overlay) == 0 {
 		return errors.New("egress: overlay is empty, so the antispoof filter would pass every forged mesh source: name the prefixes the mesh numbers its nodes from")
@@ -144,7 +145,8 @@ func (b Border) Validate() error {
 		case schema.BelowSourceFloor(prefix):
 			return fmt.Sprintf("is shorter than /%d for IPv4 or /%d for IPv6, the unit IANA delegates to a regional registry, so it holds addresses the mesh does not number from", schema.MinSourceBits4, schema.MinSourceBits6)
 		}
-		return ""
+		reason, _ := schema.Unroutable(prefix)
+		return reason
 	}); err != nil {
 		return err
 	}

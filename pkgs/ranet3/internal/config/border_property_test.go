@@ -17,6 +17,7 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -26,7 +27,8 @@ import (
 // segments and cap.egress, where a node with an allow entry writes a local
 // segment: without it, no local segment, and with it, at least one entry, each
 // a masked prefix of its own family no shorter than the family's floor and
-// longer than zero, none written twice, holding an IPv6 prefix beside a local
+// longer than zero, holding no address the data path forwards no unicast
+// packet from or to, none written twice, holding an IPv6 prefix beside a local
 // segment, covering an IPv6 entry of each allow list that holds an entry it
 // does not cover, and overlapping no advertised prefix but a default. The
 // entries cover together, so a prefix two of them hold half each is covered.
@@ -46,7 +48,7 @@ func overlayTaken(overlay []schema.Prefix, allows [][]schema.Prefix, advertise [
 		if prefix.Addr().Is4() {
 			floor = schema.MinSourceBits4
 		}
-		if prefix.Masked() != prefix || prefix.Addr().Is4In6() || prefix.Bits() == 0 || prefix.Bits() < floor ||
+		if prefix.Masked() != prefix || prefix.Addr().Is4In6() || prefix.Bits() == 0 || prefix.Bits() < floor || holdsAClass(prefix) ||
 			slices.ContainsFunc(overlay[:i], func(other schema.Prefix) bool { return other.Prefix == prefix }) {
 			return false
 		}
@@ -73,6 +75,43 @@ func overlayTaken(overlay []schema.Prefix, allows [][]schema.Prefix, advertise [
 		}
 	}
 	return true
+}
+
+// holdsAClass reports a prefix no shorter than its family's floor holding an
+// address that ranet3's data path forwards no unicast packet from or to: its
+// first or last address is one, or it holds the first address of a class that
+// can lie inside it, as no class of /8 or shorter in IPv4 and /12 or shorter in
+// IPv6 can
+func holdsAClass(prefix netip.Prefix) bool {
+	class := func(address netip.Addr) bool {
+		return packet.InvalidSource(address) || address.Is4In6() || address == packet.LimitedBroadcast
+	}
+	return class(prefix.Addr()) || class(lastOf(prefix)) || slices.ContainsFunc(classFirsts, prefix.Contains)
+}
+
+// classFirsts are the first addresses of the classes that can lie inside a
+// prefix no shorter than its family's floor
+var classFirsts = []netip.Addr{
+	netip.MustParseAddr("169.254.0.0"), packet.LimitedBroadcast,
+	netip.MustParseAddr("::"), netip.MustParseAddr("::1"), netip.MustParseAddr("::ffff:0.0.0.0"),
+}
+
+// exitWith is an exit with the egress segments and cap.egress given, whose
+// overlay and cap.antispoof are as given
+func exitWith(overlay, advertise []schema.Prefix, translate []egress.Class, segments []srv6.Segment, antispoof *egress.Antispoof) Config {
+	return Config{
+		Node:    identity.MustParse("example/exit"),
+		Auth:    Auth{Key: "key.pem", Trust: "trust.json"},
+		Link:    Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}},
+		Dial:    Dial{All: true},
+		Overlay: overlay,
+		Cap: Caps{
+			Egress:    &egress.Egress{Advertise: advertise, Translate: translate},
+			Antispoof: antispoof,
+			Table:     &kernel.Table{},
+			Segment:   &srv6.Segments{Local: segments},
+		},
+	}
 }
 
 // antispoofTaken is the model of what the loader takes of cap.antispoof beside
@@ -155,12 +194,20 @@ func maskedTo(prefix schema.Prefix, bits int) netip.Addr {
 // alone, translating none for a class now and then, loads exactly where the
 // models take its overlay, drawn absent, from entries on either side of the
 // allow lists' and the advertised prefixes' edges, from two halves covering an
-// allow entry and an exemption only together, and with each entry the
-// filter refuses on its own, and its cap.antispoof, drawn absent, exempting
+// allow entry and an exemption only together, with each entry the filter
+// refuses on its own, and with one holding an address of a class beside
+// entries it takes, each class swept first, and its cap.antispoof, drawn absent, exempting
 // prefixes inside and outside the overlay and from names exact, wildcarded and
 // refused. A node without the overlay is refused for that by name, and a
 // configuration the models take reads back unchanged from each format.
 func TestOverlayLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
+	// a class whole or in part
+	classed := []schema.Prefix{
+		schema.MustPrefix("169.254.0.0/16"), schema.MustPrefix("169.0.0.0/8"), schema.MustPrefix("127.0.0.0/8"), schema.MustPrefix("0.0.0.0/8"),
+		schema.MustPrefix("224.0.0.0/8"), schema.MustPrefix("240.0.0.0/8"), schema.MustPrefix("255.0.0.0/8"),
+		schema.MustPrefix("fe80::/16"), schema.MustPrefix("ff02::/16"), schema.MustPrefix("::/96"), schema.MustPrefix("::fffe:0:0/95"),
+		schema.MustPrefix("::/128"), schema.MustPrefix("::1/128"),
+	}
 	pool := []schema.Prefix{
 		// covering the allow list's IPv4 entry, equal to it, shorter, longer, beside it
 		schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("203.0.0.0/8"), schema.MustPrefix("203.0.113.0/25"), schema.MustPrefix("198.51.100.0/24"),
@@ -172,6 +219,7 @@ func TestOverlayLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 		schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0"), schema.MustPrefix("8.0.0.0/7"), schema.MustPrefix("2000::/11"),
 		schema.MustPrefix("10.0.0.0/8"), schema.MustPrefix("2000::/12"), schema.MustPrefix("198.18.0.1/15"), schema.MustPrefix("::ffff:198.18.0.0/111"),
 	}
+	pool = append(pool, classed...)
 	advertised := []schema.Prefix{
 		schema.MustPrefix("0.0.0.0/0"), schema.MustPrefix("::/0"), schema.MustPrefix("192.0.2.0/24"), schema.MustPrefix("2001:db8::/32"),
 		schema.MustPrefix("198.18.4.0/24"), schema.MustPrefix("203.0.0.0/8"), schema.MustPrefix("3fff:c::/32"), schema.MustPrefix("10.1.0.0/16"),
@@ -183,6 +231,17 @@ func TestOverlayLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 		schema.MustPrefix("3fff:a:1::/48"), schema.MustPrefix("3fff:a::/36"), schema.MustPrefix("3fff:a:f000::/36"), schema.MustPrefix("3fff:a::/35"),
 	}
 	names := []string{"eth1", "wl*", "fifteen-bytes-x", "fifteen-bytes-x*", "sixteen-bytes-xy", "*", "", "w*0", "wl**"}
+	allow := []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3fff:a::/36")}
+	// the allow list's own overlay, then every class whole and in part beside it
+	for _, entries := range slices.Concat([][]schema.Prefix{nil}, slices.Collect(slices.Chunk(classed, 1))) {
+		overlay := append(slices.Clone(allow), entries...)
+		segments := []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:306::3"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow}}
+		c := exitWith(overlay, nil, nil, segments, nil)
+		err := c.Validate()
+		if want := overlayTaken(overlay, [][]schema.Prefix{allow}, nil, false); want != (err == nil) {
+			t.Errorf("overlay %v loaded with %v, want taken %v", overlay, err, want)
+		}
+	}
 	pbt.Check(t, func(ht *hegel.T) {
 		var overlay, advertise []schema.Prefix
 		if hegel.Draw(ht, hegel.Booleans()) {
@@ -208,6 +267,10 @@ func TestOverlayLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 				if !slices.Contains(overlay, prefix) {
 					overlay = append(overlay, prefix)
 				}
+			}
+			// now and then one entry holding a class among them
+			if at := hegel.Draw(ht, pbt.Spanning(0, 2*len(classed)-1)); at < len(classed) {
+				overlay = append(overlay, classed[at])
 			}
 			advertise = slices.Clone(hegel.Draw(ht, hegel.SampledFrom([][]schema.Prefix{
 				nil,
@@ -245,7 +308,6 @@ func TestOverlayLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 				antispoof.Interface[name] = egress.AntispoofInterface{Exempt: exempt()}
 			}
 		}
-		allow := []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3fff:a::/36")}
 		segments := []srv6.Segment{{SID: schema.MustAddr("3fff:b:0:306::3"), Behavior: srv6.BehaviorEndDT46, Deliver: srv6.DeliverEgress, Allow: allow}}
 		allows := [][]schema.Prefix{allow}
 		if hegel.Draw(ht, hegel.Booleans()) {
@@ -269,19 +331,7 @@ func TestOverlayLoadsExactlyWhereTheModelTakesIt(t *testing.T) {
 			{{From: schema.MustPrefix("198.18.0.0/16"), To: egress.Translation{None: true}}},
 			{{From: schema.MustPrefix("3fff:c::/32"), To: egress.Translation{None: true}}, {From: schema.MustPrefix("3fff:c:1::/48"), To: egress.Translation{Auto: true}}},
 		})))
-		c := Config{
-			Node:    identity.MustParse("example/exit"),
-			Auth:    Auth{Key: "key.pem", Trust: "trust.json"},
-			Link:    Link{Port: 13000, Endpoints: []Endpoint{{Serial: "0", Family: "ip6"}}},
-			Dial:    Dial{All: true},
-			Overlay: overlay,
-			Cap: Caps{
-				Egress:    &egress.Egress{Advertise: advertise, Translate: translate},
-				Antispoof: antispoof,
-				Table:     &kernel.Table{},
-				Segment:   &srv6.Segments{Local: segments},
-			},
-		}
+		c := exitWith(overlay, advertise, translate, segments, antispoof)
 		switch {
 		case hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)):
 			c.Cap.Segment, c.Cap.Egress, allows, advertise, translate = nil, nil, nil, nil, nil

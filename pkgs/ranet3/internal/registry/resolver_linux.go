@@ -29,8 +29,8 @@ const PrefersGo = true
 // datagrams do. One to a nameserver inside the overlay carries none, whatever
 // zone resolv.conf writes after its address. routing.md's "Where a lookup ends
 // on Linux" gives where each query ends. A link-local nameserver lies outside
-// an overlay of the mesh's own prefixes, so its query is marked where the
-// process may set the mark.
+// every overlay the loader takes, so its query is marked where the process may
+// set the mark.
 func resolverFor(overlay []schema.Prefix) *net.Resolver {
 	return &net.Resolver{PreferGo: PrefersGo, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 		nameserver, err := netip.ParseAddrPort(address)
