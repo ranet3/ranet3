@@ -63,7 +63,7 @@ func TestTunnelRekeyPreservesInflightKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	remote := remoteSA(t, old)
-	authenticated := tunnel.decryptBatch([][]byte{sealTestPacket(t, remote, 1)}, nil)[0]
+	authenticated := tunnel.decryptBatch([][]byte{sealTestPacket(t, remote, 1)}, nil)
 	if err := tunnel.install(next); err != nil {
 		t.Fatal(err)
 	}
@@ -78,17 +78,20 @@ func TestTunnelRekeyPreservesInflightKeys(t *testing.T) {
 	if err := tunnel.retire(old.LocalSPI); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := authenticated.Commit(); err != nil {
+	esp.CommitBatch(authenticated)
+	if _, _, err := authenticated[0].Plaintext(); err != nil {
 		t.Fatalf("in-flight authenticated packet lost retired keys: %v", err)
 	}
 	for _, raw := range [][]byte{nil, {0, 1}, sealTestPacket(t, remote, 2)} {
-		result := tunnel.decryptBatch([][]byte{raw}, nil)[0]
-		if _, _, err := result.Commit(); err == nil {
+		result := tunnel.decryptBatch([][]byte{raw}, nil)
+		esp.CommitBatch(result)
+		if _, _, err := result[0].Plaintext(); err == nil {
 			t.Fatal("accepted truncated data or a retired SPI")
 		}
 	}
-	result := tunnel.decryptBatch([][]byte{sealTestPacket(t, remoteSA(t, next), 3)}, nil)[0]
-	if _, _, err := result.Commit(); err != nil {
+	result := tunnel.decryptBatch([][]byte{sealTestPacket(t, remoteSA(t, next), 3)}, nil)
+	esp.CommitBatch(result)
+	if _, _, err := result[0].Plaintext(); err != nil {
 		t.Fatalf("retiring old SA disturbed the replacement: %v", err)
 	}
 	if err := tunnel.retire(next.LocalSPI); err != nil {

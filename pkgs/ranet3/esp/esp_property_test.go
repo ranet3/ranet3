@@ -242,8 +242,10 @@ func TestSealOpenRoundTripsEverySuite(t *testing.T) {
 	})
 }
 
-// authenticateVia authenticates packet through one of openPaths and commits it
-// Open's path is Authenticate, which decrypts into storage of its own as Open does
+// inPlacePaths are the openPaths that decrypt over the datagram they are given
+var inPlacePaths = openPaths[1:]
+
+// authenticateVia authenticates packet through one of inPlacePaths and commits it
 func authenticateVia(ht *hegel.T, path string, in *InboundSA, packet []byte) *AuthenticatedPacket {
 	ht.Helper()
 	if path == "AuthenticateBatchInPlace" {
@@ -251,11 +253,7 @@ func authenticateVia(ht *hegel.T, path string, in *InboundSA, packet []byte) *Au
 		CommitBatch(batch)
 		return &batch[0]
 	}
-	authenticate := in.Authenticate
-	if path == "AuthenticateInPlace" {
-		authenticate = in.AuthenticateInPlace
-	}
-	result, err := authenticate(packet)
+	result, err := in.AuthenticateInPlace(packet)
 	if err != nil {
 		ht.Fatalf("%s refused the packet: %v", path, err)
 	}
@@ -269,7 +267,6 @@ func authenticateVia(ht *hegel.T, path string, in *InboundSA, packet []byte) *Au
 // for every suite, any key and SPI, payloads from empty to a full 1500 byte MTU and any headroom up to the ESP header and IV, through both in place paths
 // the frame is the datagram's own storage and ends where the payload does, since the data plane writes a tun frame's header into the headroom and hands the frame on as it is
 // a headroom past the header and IV reaches in front of the datagram, into whatever the receive buffer holds there, and is refused
-// and so is any headroom on a packet decrypted into storage of its own
 func TestFrameIsThePayloadInItsOwnDatagram(t *testing.T) {
 	t.Cleanup(settle)
 	pbt.Check(t, func(ht *hegel.T) {
@@ -278,14 +275,14 @@ func TestFrameIsThePayloadInItsOwnDatagram(t *testing.T) {
 		nextHeader := drawNextHeader(ht)
 		framing := headerLen + in.params.IVLen
 		headroom := hegel.Draw(ht, withEdges(hegel.Integers(0, framing+1), 0, framing, framing+1))
-		path := hegel.Draw(ht, hegel.SampledFrom(openPaths))
+		path := hegel.Draw(ht, hegel.SampledFrom(inPlacePaths))
 		packet, err := out.Seal(payload, nextHeader)
 		if err != nil {
 			ht.Fatalf("Seal refused the payload: %v", err)
 		}
 
 		frame, gotHeader, err := authenticateVia(ht, path, in, packet).Frame(headroom)
-		if path == "Open" || headroom > framing {
+		if headroom > framing {
 			if err == nil {
 				ht.Fatalf("%s gave a frame of %d bytes with %d bytes of headroom, in front of a payload %d bytes into its datagram", path, len(frame), headroom, framing)
 			}

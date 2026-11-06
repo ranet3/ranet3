@@ -15,21 +15,7 @@ var (
 	errUnauthenticated = errors.New("esp: packet was not authenticated")
 	errUncommitted     = errors.New("esp: packet replay check was not committed")
 	errCommitted       = errors.New("esp: packet was already committed")
-	errNoDatagram      = errors.New("esp: packet was decrypted out of its datagram")
 )
-
-// Authenticate validates the SPI and AEAD tag without advancing the replay
-// window. The ciphertext is preserved. Commit must precede plaintext delivery.
-func (in *InboundSA) Authenticate(pkt []byte) (*AuthenticatedPacket, error) {
-	return in.authenticate(pkt, false)
-}
-
-// AuthenticateInPlace decrypts over pkt's ciphertext. The caller must own pkt
-// and must not use its encrypted contents again. Use AuthenticateBatchInPlace
-// to amortize replay locking and nonce storage across a batch.
-func (in *InboundSA) AuthenticateInPlace(pkt []byte) (*AuthenticatedPacket, error) {
-	return in.authenticate(pkt, true)
-}
 
 func (in *InboundSA) checkHeader(pkt []byte) (uint32, error) {
 	if len(pkt) < headerLen+in.params.IVLen+in.params.ICVLen {
@@ -41,39 +27,12 @@ func (in *InboundSA) checkHeader(pkt []byte) (uint32, error) {
 	return binary.BigEndian.Uint32(pkt[4:8]), nil
 }
 
-func (in *InboundSA) authenticate(pkt []byte, inPlace bool) (*AuthenticatedPacket, error) {
-	seq, err := in.checkHeader(pkt)
-	if err != nil {
-		return nil, err
-	}
-	in.mu.Lock()
-	err = in.window.check(seq)
-	in.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	var nonce [12]byte
-	plain, err := in.decrypt(pkt, inPlace, nonce[:])
-	if err != nil {
-		return nil, err
-	}
-	result := &AuthenticatedPacket{sa: in, seq: seq, plain: plain}
-	if inPlace {
-		result.datagram = pkt
-	}
-	return result, nil
-}
-
-func (in *InboundSA) decrypt(pkt []byte, inPlace bool, nonce []byte) ([]byte, error) {
+func (in *InboundSA) decrypt(pkt []byte, nonce []byte) ([]byte, error) {
 	iv := pkt[headerLen : headerLen+in.params.IVLen]
 	ciphertext := pkt[headerLen+in.params.IVLen:]
 	copy(nonce, in.salt)
 	copy(nonce[len(in.salt):], iv)
-	var dst []byte
-	if inPlace {
-		dst = ciphertext[:0]
-	}
-	plain, err := in.aead.Open(dst, nonce, ciphertext, pkt[:headerLen])
+	plain, err := in.aead.Open(ciphertext[:0], nonce, ciphertext, pkt[:headerLen])
 	if err != nil {
 		return nil, fmt.Errorf("esp: authentication failed: %w", err)
 	}
@@ -102,7 +61,7 @@ func (in *InboundSA) AuthenticateBatchInPlace(packets [][]byte, results []Authen
 	var nonce [12]byte
 	for i := range batch {
 		if batch[i].Err == nil {
-			batch[i].plain, batch[i].Err = in.decrypt(packets[i], true, nonce[:])
+			batch[i].plain, batch[i].Err = in.decrypt(packets[i], nonce[:])
 		}
 	}
 	return results
@@ -204,14 +163,11 @@ func (p *AuthenticatedPacket) Plaintext() ([]byte, byte, error) {
 
 // Frame is Plaintext with headroom bytes of its datagram in front of it, the tail of the ESP header and IV it was decrypted behind
 // a caller that owns the datagram may write into them, and the frame ends where the plaintext does
-// it refuses a headroom past the header and IV, and a packet decrypted out of its datagram, which has none
+// it refuses a headroom past the header and IV
 func (p *AuthenticatedPacket) Frame(headroom int) ([]byte, byte, error) {
 	plain, nextHeader, err := p.Plaintext()
 	if err != nil {
 		return nil, 0, err
-	}
-	if p.datagram == nil {
-		return nil, 0, errNoDatagram
 	}
 	framing := headerLen + p.sa.params.IVLen
 	if headroom < 0 || headroom > framing {
@@ -221,27 +177,10 @@ func (p *AuthenticatedPacket) Frame(headroom int) ([]byte, byte, error) {
 	return p.datagram[framing-headroom : end : end], nextHeader, nil
 }
 
-// Commit checks and advances replay state for a single authenticated packet.
-// Ordered receive pipelines use CommitBatch to amortize the same operation.
-func (p *AuthenticatedPacket) Commit() ([]byte, byte, error) {
-	if p == nil {
-		return nil, 0, errUnauthenticated
-	}
-	if p.sa != nil {
-		p.sa.mu.Lock()
-	}
-	p.commitLocked()
-	if p.sa != nil {
-		p.sa.mu.Unlock()
-	}
-	return p.Plaintext()
-}
-
-// Open is the single-packet convenience path and preserves the ciphertext.
+// Open authenticates, replay-checks and decrypts one packet through the batch
+// path, decrypting a copy so the caller's ciphertext is left as it was.
 func (in *InboundSA) Open(pkt []byte) ([]byte, byte, error) {
-	authenticated, err := in.Authenticate(pkt)
-	if err != nil {
-		return nil, 0, err
-	}
-	return authenticated.Commit()
+	results := in.AuthenticateBatchInPlace([][]byte{slices.Clone(pkt)}, nil)
+	CommitBatch(results)
+	return results[0].Plaintext()
 }

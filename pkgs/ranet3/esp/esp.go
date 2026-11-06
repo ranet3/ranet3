@@ -71,9 +71,8 @@ type OutboundSA struct {
 var ErrSequenceExhausted = errors.New("esp: sequence number space exhausted, SA must be re-established")
 
 // SequenceRange is an ordered run of sequence numbers reserved from one SA.
-// A range belongs to one worker: successive Seal calls consume its sequence
-// numbers in order, while separate ranges can perform their AEAD work in
-// parallel. Values can only be created by OutboundSA.ReserveSequenceRange, so
+// A range belongs to one worker, which seals it whole with SealBatchInto,
+// while separate ranges can perform their AEAD work in parallel. Values can only be created by OutboundSA.ReserveSequenceRange, so
 // callers cannot accidentally choose or reuse a nonce.
 type SequenceRange struct {
 	sa   *OutboundSA
@@ -109,7 +108,7 @@ type AuthenticatedPacket struct {
 	committed  bool
 	nextHeader byte
 	plain      []byte
-	// datagram is the packet decrypted in place, plain a view of it behind its ESP header and IV, nil for one decrypted into storage of its own
+	// datagram is the packet decrypted in place, plain a view of it behind its ESP header and IV
 	datagram []byte
 	Err      error
 }
@@ -161,19 +160,23 @@ func NewInbound(child ChildSA, options ...InboundOption) (*InboundSA, error) {
 }
 
 // Seal wraps one tunnel-mode IP packet (nextHeader identifies its version,
-// NextHeaderIPv4/IPv6) into a full ESP packet ready for UDP encapsulation.
-// It is the single-packet convenience path. The data plane reserves ranges so
-// whole TUN batches can encrypt concurrently without allocating their ESP
-// sequence numbers in scheduler-dependent order.
+// NextHeaderIPv4/IPv6) into a full ESP packet ready for UDP encapsulation,
+// sealing a range of one sequence number as a batch. The data plane
+// reserves larger ranges so whole TUN batches can encrypt concurrently without
+// allocating their ESP sequence numbers in scheduler-dependent order.
 func (o *OutboundSA) Seal(innerIPPacket []byte, nextHeader byte) ([]byte, error) {
-	seq, _, err := o.reserveSequenceNumbers(1)
+	first, end, err := o.reserveSequenceNumbers(1)
 	if err != nil {
 		return nil, err
 	}
-	nonceLen := o.aead.NonceSize()
-	storage := make([]byte, nonceLen, nonceLen+o.sealedLen(len(innerIPPacket)))
-	storage = o.appendSealed(storage, storage[:nonceLen], innerIPPacket, nextHeader, seq)
-	return storage[nonceLen:], nil
+	// the range and the vector stay on the stack, so the output buffer is the one allocation
+	r := SequenceRange{sa: o, next: first, end: end}
+	var vector [1][]byte
+	sealed, err := r.SealBatchInto([][]byte{innerIPPacket}, []byte{nextHeader}, vector[:0])
+	if err != nil {
+		return nil, err
+	}
+	return sealed[0], nil
 }
 
 // ReserveSequenceRange atomically reserves count consecutive ESP sequence
@@ -233,33 +236,13 @@ func (o *OutboundSA) reserveSequenceNumbers(count int) (uint64, uint64, error) {
 	return first, end, nil
 }
 
-// Seal consumes the next sequence number in this range and encrypts one
-// tunnel-mode packet. A SequenceRange is deliberately single-worker. Parallel
-// callers should reserve separate ranges from the OutboundSA.
-func (r *SequenceRange) Seal(innerIPPacket []byte, nextHeader byte) ([]byte, error) {
-	if r == nil || r.sa == nil || r.next > r.end {
-		return nil, fmt.Errorf("esp: reserved sequence range exhausted")
-	}
-	seq := r.next
-	r.next++
-	nonceLen := r.sa.aead.NonceSize()
-	storage := make([]byte, nonceLen, nonceLen+r.sa.sealedLen(len(innerIPPacket)))
-	storage = r.sa.appendSealed(storage, storage[:nonceLen], innerIPPacket, nextHeader, seq)
-	return storage[nonceLen:], nil
-}
-
-// SealBatch consumes the rest of the range and encrypts it into one backing
+// SealBatchInto consumes the rest of the range and encrypts it into one backing
 // allocation. Besides reducing allocator traffic, the adjacent packet slices
-// let the UDP transport use GSO without first repacking the ciphertext.
-func (r *SequenceRange) SealBatch(innerIPPackets [][]byte, nextHeaders []byte) ([][]byte, error) {
-	return r.SealBatchInto(innerIPPackets, nextHeaders, nil)
-}
-
-// SealBatchInto is SealBatch with reusable output storage. reuse must be nil
-// or the complete result of an earlier SealBatch/SealBatchInto call. The caller
-// must exclusively own that result: its previous consumer must have finished,
-// and the plaintext must not alias it. The returned vector and its backing
-// storage replace reuse, including when a larger batch requires growth.
+// let the UDP transport use GSO without first repacking the ciphertext. reuse
+// must be nil, empty, or the complete result of an earlier SealBatchInto call.
+// The caller must exclusively own that result: its previous consumer must have
+// finished, and the plaintext must not alias it. The returned vector and its
+// backing storage replace reuse, including when a larger batch requires growth.
 func (r *SequenceRange) SealBatchInto(innerIPPackets [][]byte, nextHeaders []byte, reuse [][]byte) ([][]byte, error) {
 	if r == nil || r.sa == nil || len(innerIPPackets) != len(nextHeaders) {
 		return nil, fmt.Errorf("esp: invalid sequence batch")

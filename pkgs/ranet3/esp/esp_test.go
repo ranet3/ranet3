@@ -316,11 +316,11 @@ func TestAuthenticateInPlaceReusesCiphertextStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	original := bytes.Clone(packet)
-	if _, err := newInbound().Authenticate(packet); err != nil {
+	if _, _, err := newInbound().Open(packet); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(packet, original) {
-		t.Fatal("Authenticate modified its input")
+		t.Fatal("Open modified its input")
 	}
 
 	authenticated, err := newInbound().AuthenticateInPlace(packet)
