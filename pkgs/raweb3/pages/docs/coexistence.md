@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-06
+updated: 2026-11-07
 order: 110
 ---
 
@@ -192,7 +192,7 @@ kernel where 2 kinds of lookup end, on the socket it writes with:
   ([the underlay socket](design/limits.md#the-underlay-socket),
   [sockets connected to 1 peer](platforms.md#sockets-connected-to-1-peer)).
   Sends carrying the same address, source and interface are asked once. A lookup
-  naming an interface the pass's dump of the links does not hold is answered
+  naming an interface no device holds when the pass names it is answered
   `a refusal (no such device)`, which is `ENODEV`, and nothing is asked, unless
   its send goes on an IPv6 socket connected to the peer, whose lookup is asked
   ([ip6_datagram_send_ctl](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/datagram.c#L855),

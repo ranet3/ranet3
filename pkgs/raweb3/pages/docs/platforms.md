@@ -337,6 +337,17 @@ behind a [`preferred`](control-socket.md#requests-and-answers) session its own
 dial would not replace. A change the host shows nowhere, such as a captive
 portal that lets nothing through, needs `ranet3 redial --all` instead.
 
+The watch also reads the host every 30 seconds whether or not a notification
+came, and acts only where the reading moved, which finds a change whose
+notification a full receive buffer dropped
+([`netlink_overrun`](https://github.com/torvalds/linux/blob/v7.3/net/netlink/af_netlink.c#L351),
+[`raw_input`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/raw_usrreq.c#L90)).
+A read that fails is read again after 1 second, the wait doubling to 30 seconds
+until a read succeeds, and no notification shortens it. While its reads fail the
+watch keeps the reading of its last read that succeeded, `ranet3 debug netmon`
+shows since when they fail, how many did and the last error, and a
+`network.read` event records each turn to failing and back that the daemon sees.
+
 ## Sockets connected to 1 peer
 
 On Linux and macOS the transport listens on 1 UDP socket per family, bound to

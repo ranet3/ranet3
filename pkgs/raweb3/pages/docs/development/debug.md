@@ -118,6 +118,8 @@ These commands take flags of their own:
   lengths and its point-to-point far ends, which
   [moving hosts](../platforms.md#moving-hosts) gives and
   [exit mode](../routing.md#exit-mode-on-linux) derives its rules from on Linux,
+  then `Read`, how long ago the watch last read the host whole, and while its
+  reads fail `Read failing`, since when, how many failed and the last error,
   then the last change the watch acted on and what moved in it, the links after
   it where one came, went or moved an address or a far end. A change of links
   alone probes no session, and wakes the reconciler only under `cap.exit`. A
@@ -576,6 +578,7 @@ connections to the reads.
 | `antispoof.conflict`                  | another node's prefix or a copy of an own range came to overlap an exemption                                            |
 | `antispoof.pf`                        | on macOS, a pass took a new reference on pf where pf no longer listed the daemon's, turning pf back on where it was off |
 | `network.changed`                     | the host's default, addresses or links moved, every session probed for the first two                                    |
+| `network.read`                        | the network watch's reads of the host began failing, or succeeded again                                                 |
 | `transport.underlay.selected`         | a peer's datagrams named their first interface, or another one                                                          |
 | `transport.endpoint.unpinned`         | sends to a peer left the address its datagram reached, gone or unroutable                                               |
 | `transport.endpoint.unsegmented`      | sends to a peer stopped segmenting, since its route refused a segment                                                   |
@@ -681,6 +684,7 @@ Each kind carries these attributes:
 | `antispoof.conflict`                          | `exemption`, `interface`, `prefix`, `own` (true for an own range), `carved` and `routed_via` where it is false, `router_id` (of the selected route, or of the offer where `own` is true)                                                                       |
 | `antispoof.pf`                                | `token`, `pid`, of the reference the pass took, `pf_off` (true where pf was off, which the new reference turned back on, and false where another holder kept pf running, absent where `pfctl -s info` failed)                                                  |
 | `network.changed`                             | `ipv4_default`, `ipv4_default_was`, `ipv4_added`, `ipv4_removed`, `ipv4_links_added`, `ipv4_links_removed`, `ipv4_links_changed`, the same 7 for `ipv6`, `probed`, `woken`                                                                                     |
+| `network.read`                                | `failing`, `failures` (the reads failed in a row, 0 once one succeeds), `err` (the last error, empty once one succeeds)                                                                                                                                        |
 | `transport.underlay.selected`                 | `endpoint`, `interface`, empty where no route holds the endpoint, `interface_index`, 0 then                                                                                                                                                                    |
 | `transport.endpoint.unpinned`, `.unsegmented` | `endpoint`, `errno`                                                                                                                                                                                                                                            |
 | `transport.pair.connected`                    | `local`, `remote`                                                                                                                                                                                                                                              |
