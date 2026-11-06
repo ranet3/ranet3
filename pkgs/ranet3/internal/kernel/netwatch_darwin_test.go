@@ -127,9 +127,60 @@ func TestDarwinNetworkReadSkipsTheMeshAndDownInterfaces(t *testing.T) {
 }
 
 // watchRig takes the steps of a real kernel's links under a network watch, each signaling once or not at all
+// it reads only the changes that touch an interface of owned, since the host moves its own interfaces meanwhile
 type watchRig struct {
-	t *testing.T
-	w *NetworkWatch
+	t       *testing.T
+	changes <-chan NetworkChange
+	owned   map[string]bool
+}
+
+// own adds the interface a step made to those the rig reads the changes of
+func (r *watchRig) own(device string) {
+	if r.owned == nil {
+		r.owned = make(map[string]bool)
+	}
+	r.owned[device] = true
+}
+
+// touched is the interfaces whose link or default route change moves, sorted and each once
+// a family's addresses are those of its links, so a link that moved names every address that moved
+func touched(change NetworkChange) []string {
+	var devices []string
+	for _, family := range change.Families() {
+		if family.DefaultMoved() {
+			devices = append(devices, family.DefaultBefore.Interface, family.DefaultAfter.Interface)
+		}
+		for _, link := range append(slices.Clone(family.LinksBefore), family.LinksAfter...) {
+			if !holdsLink(family.LinksBefore, link) || !holdsLink(family.LinksAfter, link) {
+				devices = append(devices, link.Name)
+			}
+		}
+	}
+	devices = slices.DeleteFunc(devices, func(device string) bool { return device == "" })
+	slices.Sort(devices)
+	return slices.Compact(devices)
+}
+
+func holdsLink(links []Link, link Link) bool {
+	return slices.ContainsFunc(links, func(other Link) bool { return sameLinks([]Link{link}, []Link{other}) })
+}
+
+// next is the next change before deadline that touches an interface the rig owns or names none, and false where none comes
+// it logs each change it skips
+func (r *watchRig) next(name string, deadline <-chan time.Time) (NetworkChange, bool) {
+	r.t.Helper()
+	for {
+		select {
+		case change := <-r.changes:
+			devices := touched(change)
+			if len(devices) == 0 || slices.ContainsFunc(devices, func(device string) bool { return r.owned[device] }) {
+				return change, true
+			}
+			r.t.Logf("%s: skipped a change on %v alone, %+v", name, devices, change.Families())
+		case <-deadline:
+			return NetworkChange{}, false
+		}
+	}
 }
 
 // dadWindow outlasts duplicate address detection on a broadcast link, which ends within about two seconds of the add
@@ -142,26 +193,61 @@ func (r *watchRig) step(name string, within time.Duration, run func() error, wan
 	if err := run(); err != nil {
 		r.t.Fatalf("%s: %v", name, err)
 	}
-	select {
-	case change := <-r.w.Changes():
-		if want == nil {
-			r.t.Errorf("%s signaled %+v", name, change.Families())
-			return
-		}
-		if err := want(change); err != nil {
-			r.t.Errorf("%s signaled %v", name, err)
-		}
-	case <-time.After(within):
+	change, signaled := r.next(name, time.After(within))
+	switch {
+	case !signaled:
 		if want != nil {
 			r.t.Errorf("%s signaled nothing within %s", name, within)
 		}
 		return
+	case want == nil:
+		r.t.Errorf("%s signaled %+v", name, change.Families())
+		return
 	}
-	select {
-	case change := <-r.w.Changes():
+	if err := want(change); err != nil {
+		r.t.Errorf("%s signaled %v", name, err)
+	}
+	if change, signaled := r.next(name, time.After(quietWindow)); signaled {
 		r.t.Errorf("%s signaled a second time, %+v", name, change.Families())
-	case <-time.After(quietWindow):
 	}
+}
+
+// a step passes over a change the host makes on an interface the test did not make, here an address and a default route in the quiet
+// window after the step's own change, and counts a change that moves both and one that moves nothing, which a watch must not signal
+func TestDarwinWatchRigReadsOnlyTheTestsInterfaces(t *testing.T) {
+	host := Link{Name: "en0", Prefixes: prefixList("2001:db8:1::10/64")}
+	moved := Link{Name: "en0"}
+	made := Link{Name: "utun90", Prefixes: prefixList("2001:db8:78::1/64")}
+	state := func(links ...Link) NetworkState {
+		v4 := make([]Link, len(links))
+		var addresses []netip.Addr
+		for i, link := range links {
+			v4[i] = Link{Name: link.Name}
+			for _, p := range link.Prefixes {
+				addresses = append(addresses, p.Addr())
+			}
+		}
+		return NetworkState{IPv4: NetworkFamily{Links: v4}, IPv6: NetworkFamily{Addresses: addresses, Links: links}}
+	}
+	routed := state(moved, made)
+	routed.IPv4.Default = DefaultRoute{Interface: moved.Name, Gateway: netip.MustParseAddr("192.0.2.1")}
+	changes := make(chan NetworkChange, 3)
+	r := &watchRig{t: t, changes: changes}
+	r.own(made.Name)
+	r.step("utun90 2001:db8:78::1/64, then en0 losing its address and taking a default route", quietWindow, func() error {
+		changes <- NetworkChange{Before: state(host), After: state(host, made)}
+		changes <- NetworkChange{Before: state(host, made), After: state(moved, made)}
+		changes <- NetworkChange{Before: state(moved, made), After: routed}
+		return nil
+	}, wantLink(made.Name, "", "", "2001:db8:78::1/64", ""))
+	r.step("utun90 gone as en0 takes its address back", quietWindow, func() error {
+		changes <- NetworkChange{Before: routed, After: state(host)}
+		return nil
+	}, linkGone(made.Name))
+	r.step("a change moving nothing", quietWindow, func() error {
+		changes <- NetworkChange{Before: state(host), After: state(host)}
+		return nil
+	}, func(NetworkChange) error { return nil })
 }
 
 // link wants device a link of both families holding exactly the prefixes and the peers of each, space separated
@@ -284,11 +370,12 @@ func TestDarwinNetworkWatchOnRealKernel(t *testing.T) {
 		t.Fatalf("open the watch: %v", err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	r := &watchRig{t: t, w: w}
+	r := &watchRig{t: t, changes: w.Changes()}
+	r.own(mesh)
 	q := quietWindow
 	var a, b string
 	var destroyA, destroyB func() error
-	r.step("utun A created, up at once", q, func() error { a, destroyA = destroyableUTUN(t); return nil }, func(change NetworkChange) error {
+	r.step("utun A created, up at once", q, func() error { a, destroyA = destroyableUTUN(t); r.own(a); return nil }, func(change NetworkChange) error {
 		return wantLink(a, "", "", "", "")(change)
 	})
 	r.step("utun A up, which it already is", q, ifconfig(a, "up"), nil)
@@ -315,7 +402,7 @@ func TestDarwinNetworkWatchOnRealKernel(t *testing.T) {
 	r.step("an address on the mesh", q, ifconfig(mesh, "inet", "198.18.78.1", "198.18.78.2", "up"), nil)
 	r.step("the mesh address gone", q, ifconfig(mesh, "inet", "198.18.78.1", "delete"), nil)
 
-	r.step("utun B created, up at once", q, func() error { b, destroyB = destroyableUTUN(t); return nil }, func(change NetworkChange) error {
+	r.step("utun B created, up at once", q, func() error { b, destroyB = destroyableUTUN(t); r.own(b); return nil }, func(change NetworkChange) error {
 		return wantLink(b, "", "", "", "")(change)
 	})
 	r.step("utun B up, which it already is", q, ifconfig(b, "up"), nil)
@@ -333,8 +420,8 @@ func TestDarwinNetworkWatchOnRealKernel(t *testing.T) {
 
 	var c, d string
 	var destroyC, destroyD func() error
-	r.step("feth C created, down", q, func() error { c, destroyC = createFeth(t); return nil }, nil)
-	r.step("feth D created, down", q, func() error { d, destroyD = createFeth(t); return nil }, nil)
+	r.step("feth C created, down", q, func() error { c, destroyC = createFeth(t); r.own(c); return nil }, nil)
+	r.step("feth D created, down", q, func() error { d, destroyD = createFeth(t); r.own(d); return nil }, nil)
 	r.step("feth C peered with feth D", q, ifconfig(c, "peer", d), nil)
 	r.step("feth D up", q, ifconfig(d, "up"), func(change NetworkChange) error { return wantLink(d, "", "", "", "")(change) })
 	r.step("feth C up", q, ifconfig(c, "up"), func(change NetworkChange) error { return wantLink(c, "", "", "", "")(change) })
