@@ -110,6 +110,18 @@ func (h *scriptedHost) read() (NetworkState, error) {
 	return h.state, nil
 }
 
+// startWatch opens a watch of host that follows the notify channel it returns and sweeps every sweep, closed when the test ends
+func startWatch(t *testing.T, host *scriptedHost, sweep time.Duration) (*NetworkWatch, chan<- struct{}) {
+	t.Helper()
+	notify := make(chan struct{}, 1)
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, sweep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	return w, notify
+}
+
 // errScriptedRead is a read of the host that failed, as a dump the kernel could not allocate fails
 var errScriptedRead = errors.New("kernel: dump addresses: no buffer space available")
 
@@ -123,12 +135,7 @@ func withAddress(address string) NetworkState {
 func TestNetworkWatchSignalsOnlyAMovedState(t *testing.T) {
 	first, second, third, fourth := withAddress("192.0.2.1"), withAddress("192.0.2.2"), withAddress("192.0.2.3"), withAddress("192.0.2.4")
 	host := &scriptedHost{state: first}
-	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = w.Close() })
+	w, notify := startWatch(t, host, idleSweep)
 	poke := func() {
 		select {
 		case notify <- struct{}{}:
@@ -220,12 +227,7 @@ func TestNetworkWatchSignalsALinkAlone(t *testing.T) {
 	farEndMoved := first
 	farEndMoved.IPv4.Links = []Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/32")}, Peers: []netip.Prefix{netip.MustParsePrefix("203.0.113.16/28")}}}
 	host := &scriptedHost{state: first}
-	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = w.Close() })
+	w, notify := startWatch(t, host, idleSweep)
 	for _, step := range []struct {
 		name  string
 		state NetworkState
@@ -249,12 +251,7 @@ func TestNetworkWatchSignalsALinkAlone(t *testing.T) {
 func TestNetworkWatchReadsAgainAfterAFailedRead(t *testing.T) {
 	first, second := withAddress("192.0.2.1"), withAddress("192.0.2.2")
 	host := &scriptedHost{state: first}
-	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = w.Close() })
+	w, notify := startWatch(t, host, idleSweep)
 	host.fail(errScriptedRead)
 	host.set(second)
 	notify <- struct{}{}
@@ -287,12 +284,7 @@ func maxReadsIn(window time.Duration, immediate int) int {
 // a host whose every read fails is read on a backoff doubling from minRetryInterval, notifications or not
 func TestNetworkWatchBacksOffWhileReadsFail(t *testing.T) {
 	host := &scriptedHost{state: withAddress("192.0.2.1")}
-	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = w.Close() })
+	_, notify := startWatch(t, host, idleSweep)
 	host.failEvery(errScriptedRead)
 	notify <- struct{}{}
 	waitFor(t, func() bool { return host.readCount() >= 2 })
@@ -313,12 +305,7 @@ func TestNetworkWatchBacksOffWhileReadsFail(t *testing.T) {
 func TestNetworkWatchStartsItsBackoffOverAfterARead(t *testing.T) {
 	first, second, third := withAddress("192.0.2.1"), withAddress("192.0.2.2"), withAddress("192.0.2.3")
 	host := &scriptedHost{state: first}
-	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = w.Close() })
+	w, notify := startWatch(t, host, idleSweep)
 	host.fail(errScriptedRead)
 	host.fail(errScriptedRead)
 	host.set(second)
@@ -380,16 +367,53 @@ func TestNetworkWatchClosesWhileRetrying(t *testing.T) {
 	}
 }
 
+// the watch's health turns failing at a failed read, counts each failure after it without waking again or moving the time of the
+// first, and clears once a read succeeds, which wakes once more
+func TestNetworkWatchKeepsItsReadHealth(t *testing.T) {
+	host := &scriptedHost{state: withAddress("192.0.2.1")}
+	w, notify := startWatch(t, host, idleSweep)
+	opened := w.Health()
+	if opened.Failing() || opened.ReadAt.IsZero() {
+		t.Fatalf("a watch that just read the host reports %+v", opened)
+	}
+	host.fail(errScriptedRead)
+	host.fail(errScriptedRead)
+	notify <- struct{}{}
+	select {
+	case <-w.HealthChanged():
+	case <-time.After(quietWindow):
+		t.Fatal("a failed read did not wake the health's follower")
+	}
+	failed := w.Health()
+	if !failed.Failing() || failed.Failures != 1 || !errors.Is(failed.Err, errScriptedRead) || failed.FailingSince.IsZero() || failed.ReadAt != opened.ReadAt {
+		t.Errorf("after a failed read the watch reports %+v", failed)
+	}
+	var again WatchHealth
+	waitFor(t, func() bool { again = w.Health(); return again.Failures == 2 })
+	if !again.FailingSince.Equal(failed.FailingSince) {
+		t.Errorf("a second failure moved the streak's first failure from %v to %v", failed.FailingSince, again.FailingSince)
+	}
+	select {
+	case <-w.HealthChanged():
+		t.Error("a second failure woke the health's follower again")
+	default:
+	}
+	select {
+	case <-w.HealthChanged():
+	case <-time.After(2*minRetryInterval + quietWindow):
+		t.Fatal("a read that succeeded after failures did not wake the health's follower")
+	}
+	if health := w.Health(); health.Failing() || health.Err != nil || !health.FailingSince.IsZero() || !health.ReadAt.After(opened.ReadAt) {
+		t.Errorf("after a read that succeeded the watch reports %+v", health)
+	}
+}
+
 // a sweep of a host that holds still signals nothing, and one of a host that moved with no notification signals the move once
 // a sweep that finds nothing moved records no change either
 func TestNetworkWatchSweepsWithoutANotification(t *testing.T) {
 	first, second := withAddress("192.0.2.1"), withAddress("192.0.2.2")
 	host := &scriptedHost{state: first}
-	w, err := newNetworkWatch(make(chan struct{}), host.read, func() error { return nil }, testSweep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = w.Close() })
+	w, _ := startWatch(t, host, testSweep)
 	select {
 	case change := <-w.Changes():
 		t.Fatalf("a sweep of a host holding still signaled %+v", change.Families())
@@ -414,6 +438,26 @@ func TestNetworkWatchSweepsWithoutANotification(t *testing.T) {
 	case change := <-w.Changes():
 		t.Errorf("the move signaled again: %+v", change.Families())
 	case <-time.After(2 * testSweep):
+	}
+}
+
+// cappedWindow is how long a test counts the reads of a watch whose sweep is shorter than minRetryInterval
+const cappedWindow = 6 * testSweep
+
+// the backoff of a watch whose reads keep failing stops doubling at the sweep, so the host is read at least once a sweep, less one
+// read for a slow machine
+func TestNetworkWatchReadsAFailingHostEverySweep(t *testing.T) {
+	host := &scriptedHost{state: withAddress("192.0.2.1")}
+	w, notify := startWatch(t, host, testSweep)
+	host.failEvery(errScriptedRead)
+	notify <- struct{}{}
+	waitFor(t, func() bool { return w.Health().Failing() })
+	want := int(cappedWindow/testSweep) - 1
+	for deadline := time.Now().Add(cappedWindow); w.Health().Failures < want && time.Now().Before(deadline); {
+		time.Sleep(waitPoll)
+	}
+	if failures := w.Health().Failures; failures < want {
+		t.Errorf("a host failing every read was read %d times in %v, want at least %d", failures, cappedWindow, want)
 	}
 }
 

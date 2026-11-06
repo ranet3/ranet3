@@ -121,16 +121,29 @@ type NetworkWatch struct {
 	read    func() (NetworkState, error)
 	release func() error
 	// a read every sweep finds a change whose notification was lost
-	sweep   time.Duration
-	changes chan NetworkChange
-	stop    chan struct{}
-	done    chan struct{}
-	closing sync.Once
+	sweep         time.Duration
+	changes       chan NetworkChange
+	healthChanged chan struct{}
+	stop          chan struct{}
+	done          chan struct{}
+	closing       sync.Once
 
 	mu      sync.Mutex
 	current NetworkState
 	last    NetworkChange
+	health  WatchHealth
 }
+
+// WatchHealth is how the watch's reads of the host go
+type WatchHealth struct {
+	ReadAt time.Time
+	// FailingSince, Failures and Err are the first failure, the count and the last error of the reads failing now, zero while they succeed
+	FailingSince time.Time
+	Failures     int
+	Err          error
+}
+
+func (h WatchHealth) Failing() bool { return h.Failures > 0 }
 
 // newNetworkWatch reads the state once and follows notify and a sweep every sweep from there
 // it takes over release, which it calls when the first read fails or when the watch closes
@@ -142,14 +155,26 @@ func newNetworkWatch(notify <-chan struct{}, read func() (NetworkState, error), 
 	}
 	w := &NetworkWatch{
 		notify: notify, read: read, release: release, sweep: sweep,
-		changes: make(chan NetworkChange, 1),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
-		current: current,
+		changes:       make(chan NetworkChange, 1),
+		healthChanged: make(chan struct{}, 1),
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+		current:       current,
+		health:        WatchHealth{ReadAt: time.Now()},
 	}
 	go w.run()
 	return w, nil
 }
+
+// Health is how the watch's reads of the host go now
+func (w *NetworkWatch) Health() WatchHealth {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.health
+}
+
+// HealthChanged wakes once the reads start or stop failing, a wake not yet taken standing for every one since
+func (w *NetworkWatch) HealthChanged() <-chan struct{} { return w.healthChanged }
 
 // Changes carries each change the watch signals
 // a change the reader has not taken yet is merged with the next, so it always starts from the last state the reader saw
@@ -175,14 +200,13 @@ func (w *NetworkWatch) Close() error {
 
 func (w *NetworkWatch) run() {
 	defer close(w.done)
-	signaled := w.current
+	signaled, health := w.current, w.health
 	retry := NewRetryTimer()
 	defer retry.Stop()
 	sweep := time.NewTicker(w.sweep)
 	defer sweep.Stop()
-	failures := 0
 	for {
-		if failures > 0 {
+		if health.Failing() {
 			select {
 			case <-w.stop:
 				return
@@ -201,21 +225,32 @@ func (w *NetworkWatch) run() {
 		}
 		state, err := w.read()
 		if err != nil {
-			if failures == 0 {
-				slog.Warn("kernel could not read the host's network, reading it again on a backoff", "err", err)
+			if !health.Failing() {
+				health.FailingSince = time.Now()
 			}
-			failures++
+			health.Failures++
+			health.Err = err
+			w.mu.Lock()
+			w.health = health
+			w.mu.Unlock()
+			if health.Failures == 1 {
+				slog.Warn("kernel could not read the host's network, reading it again on a backoff", "err", err)
+				w.wakeHealth()
+			}
 			retry.Failed(w.sweep)
 			continue
 		}
-		if failures > 0 {
-			slog.Info("kernel read the host's network again", "failures", failures)
-			failures = 0
-			retry.Passed()
-		}
+		failures := health.Failures
+		health = WatchHealth{ReadAt: time.Now()}
 		w.mu.Lock()
 		w.current = state
+		w.health = health
 		w.mu.Unlock()
+		if failures > 0 {
+			slog.Info("kernel read the host's network again", "failures", failures)
+			w.wakeHealth()
+			retry.Passed()
+		}
 		change := NetworkChange{At: time.Now(), Before: signaled, After: state}
 		if len(change.Families()) == 0 {
 			continue
@@ -241,6 +276,13 @@ func settle(notify, stop <-chan struct{}, delay time.Duration) bool {
 		case <-timer.C:
 			return true
 		}
+	}
+}
+
+func (w *NetworkWatch) wakeHealth() {
+	select {
+	case w.healthChanged <- struct{}{}:
+	default:
 	}
 }
 
