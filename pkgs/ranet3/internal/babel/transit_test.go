@@ -1358,31 +1358,6 @@ func TestOriginatingLearnedPrefixDoesNotLoop(t *testing.T) {
 	}
 }
 
-// Originate reaches the same purge through its own entry point. The config
-// goes through SetOriginated instead, so this covers the path internal/cmd/babeltest
-// and any single-prefix caller takes.
-func TestOriginateAlsoDropsWhatThisNodeLearned(t *testing.T) {
-	fabric := newMeshFabric(t, Config{}, "a-b", "b-c")
-	dest := netip.MustParsePrefix("fd00:a::/64")
-	key := routeKey{dest: dest}
-	fabric.speakers["a"].Originate(dest)
-	fabric.flush("a", "b", "c")
-	if got := fabric.nextHop("c", key); got != "b" {
-		t.Fatalf("c reaches %s via %q, want \"b\"", dest, got)
-	}
-
-	fabric.reset()
-	fabric.speakers["c"].Originate(dest)
-	fabric.flush("c", "b")
-
-	if got := fabric.nextHop("c", key); got != "" {
-		t.Errorf("c still forwards its own prefix to %q", got)
-	}
-	if got := fabric.nextHop("b", key); got == "c" {
-		t.Error("b now forwards to c for a prefix c reaches through b, which is the loop")
-	}
-}
-
 // The origin of a prefix is not a promise that every address in it is
 // reachable. Dropping the forwarding entry outright lets a packet for an
 // unassigned address fall through to a covering route, which on a transit node

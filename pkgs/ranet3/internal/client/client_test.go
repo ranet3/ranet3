@@ -754,7 +754,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	speaker.Originate(netip.MustParsePrefix("10.66.0.5/32"))
+	speaker.SetOriginated([]babel.OriginatedRoute{{Destination: netip.MustParsePrefix("192.0.2.5/32")}})
 	// A neighbor and a session, or every per-peer and per-path line below is
 	// a loop over nothing and only the scalars are ever written.
 	// A peer whose transport never returns, so its drop counter is

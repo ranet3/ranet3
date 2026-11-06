@@ -295,7 +295,7 @@ func New(cfg Config, routes Routes, rt Runtime, mesh *netstack.Mesh) (*Speaker, 
 	s.routes = newRouteTable(s.installRoute)
 	s.routes.forget, s.routes.answers = s.unrouteLocked, s.answersRequestLocked
 	s.applyEffective(cfg.Effective())
-	s.SetRoutes(routes)
+	s.SetOriginated(routes.Originated())
 	return s, nil
 }
 
@@ -483,31 +483,6 @@ func (s *Speaker) Probe(peer *netstack.Peer, size int, nonce uint16) error {
 	return place.Send()
 }
 
-// Originate prefers this directly attached prefix over any reflected route,
-// including announcements carrying the router ID from before a restart.
-func (s *Speaker) Originate(prefix netip.Prefix) {
-	s.OriginateFrom(prefix, netip.Prefix{})
-}
-
-// OriginateFrom announces a source-specific prefix, BIRD's
-// `route <dest> from <source>`. A zero-length source prefix announces an
-// ordinary route, the meaning RFC 9079 section 5 gives such an entry.
-func (s *Speaker) OriginateFrom(dest, source netip.Prefix) {
-	key, ok := originatedKey(dest, source)
-	if !ok {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, known := s.originate[key]; !known {
-		s.noteOwnLocked("originated", []routeKey{key}, nil, nil)
-	}
-	s.originate[key] = struct{}{}
-	s.adoptOwnLocked(key, time.Now())
-	s.updatePending = true
-	s.wake()
-}
-
 // adoptOwnLocked takes over a key this node now owns, a prefix it
 // announces or an address cap.table assigns it. What it had learned for the
 // key leaves the route table for the key's offers. A learned route left
@@ -605,16 +580,11 @@ func (s *Speaker) ownsHostLocked(dest netip.Prefix) bool {
 	return false
 }
 
-// SetRoutes applies the cap.route capability, which a reload may replace. Only
-// the announcements are read: whether this node relays was taken at
-// construction and a reload refuses a change to it, see New.
-func (s *Speaker) SetRoutes(routes Routes) { s.SetOriginated(routes.Originated()) }
-
 // SetOriginated replaces the whole originated set, as a
 // configuration reload needs: a prefix that is no longer configured has to be
 // retracted rather than announced forever, and adding one at a time cannot
 // express a removal. Each element is a destination and an optional source
-// prefix, the same pair OriginateFrom takes.
+// prefix.
 func (s *Speaker) SetOriginated(routes []OriginatedRoute) {
 	wanted := make(map[routeKey]struct{}, len(routes))
 	for _, route := range routes {
