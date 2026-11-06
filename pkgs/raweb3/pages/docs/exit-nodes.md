@@ -421,9 +421,10 @@ A host using an exit can ask with `cap.exit.fallback = "none"` for the kill
 switch, which holds while no exit is live and its table reads back as written.
 [The kill switch](routing.md#the-kill-switch-on-linux) lists the lines that let
 the host's traffic leave by its own uplink, and gives the rules and the table,
-the switch's reach, what each stop leaves of it, and what counts as the LAN. An
-exit installs no default for its own traffic and refuses `cap.exit`, so no
-exit's egress meets the table.
+the switch's reach, what each stop leaves of it, and what counts as the LAN, and
+[the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives the same
+for a Mac's rejects. An exit installs no default for its own traffic and refuses
+`cap.exit`, so no exit's egress meets the table.
 
 Application DNS is not yet kept on the exit, on Linux or macOS, as
 [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) gives.

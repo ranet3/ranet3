@@ -252,17 +252,18 @@ routes and rules and its translation rules. Its antispoof filter's table follows
 [the filter's lifetime](antispoof.md#where-it-runs). Where
 `cap.exit.fallback = "none"`, or mode 3 with `fallback` unwritten, asks for
 [the kill switch](routing.md#the-kill-switch-on-linux), it leaves the switch's
-table, as the switch's lifetime gives. It then exits 1, and the unit starts it
-again 5 seconds later, which opens the tun anew. On macOS launchd starts it
-again through `KeepAlive`. A single frame the tun hands over that cannot be read
-as packets costs that frame alone, as [metrics](metrics.md#tun-reads) describes.
-An exit's egress segments write to the same tun, so they have no device of their
-own to lose. An uplink going away does not stop the daemon either. Where the
-lookups of [readiness](exit-nodes.md#readiness) run, on an exit with `overlay`
-and a member of the family, they then fail, so the exit holds each family the
-uplink carried not ready, and withdraws its egress SIDs, until the kernel routes
-the family out again. A family whose lookups are skipped is judged by its chain
-and its forwarding alone, and stays ready.
+table, or on macOS [its rejects](routing.md#the-kill-switch-on-macos), as the
+switch's lifetime gives. It then exits 1, and the unit starts it again 5 seconds
+later, which opens the tun anew. On macOS launchd starts it again through
+`KeepAlive`. A single frame the tun hands over that cannot be read as packets
+costs that frame alone, as [metrics](metrics.md#tun-reads) describes. An exit's
+egress segments write to the same tun, so they have no device of their own to
+lose. An uplink going away does not stop the daemon either. Where the lookups of
+[readiness](exit-nodes.md#readiness) run, on an exit with `overlay` and a member
+of the family, they then fail, so the exit holds each family the uplink carried
+not ready, and withdraws its egress SIDs, until the kernel routes the family out
+again. A family whose lookups are skipped is judged by its chain and its
+forwarding alone, and stays ready.
 
 dhcpcd and NetworkManager are told to leave the tun alone. The module adds
 `ranet*` to `networking.dhcpcd.denyInterfaces`, and as an `interface-name:`

@@ -800,9 +800,9 @@ on by default, and its block only exempts.
 Exit mode. Writing this block turns it on. The mesh's default of lowest metric,
 or with `via` the path to one exit, becomes this host's default, for its own
 traffic and for what it forwards from the links `forward` names. Linux and
-macOS. macOS takes `fallback = "uplink"`, written or unwritten, and `via` with
-`fallback = "uplink"` written, and refuses the rest, as the last items here
-give. [Routing](routing.md#exit-mode-on-linux) lists the rules it adds on Linux,
+macOS. macOS takes every key but `forward` and `inbound`, which it refuses, as
+the last items here give. [Routing](routing.md#exit-mode-on-linux) lists the
+rules it adds on Linux,
 [the zero-free cover](routing.md#the-zero-free-cover-on-macos) the routes it
 installs on macOS, and [mode 3](routing.md#mode-3-on-linux) what `via` changes,
 and [sharing a host](coexistence.md#exit-mode-beside-other-programs) what other
@@ -822,7 +822,9 @@ programs' rules do beside them.
   live or not. Its section lists the lines that let the host's traffic leave by
   a link outside the mesh, and gives the rules, the table it writes, how the
   kernel takes what each line reads, the switch's reach, and what each stop
-  leaves of it.
+  leaves of it. On macOS the switch is reject routes on `lo0`, as
+  [the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives with its
+  own list.
 - [The kill switch's list](routing.md#the-kill-switch-on-linux) gives the LAN of
   each connected network. `lan` adds a network outside the overlay that the
   list's ranges leave out, such as
@@ -898,12 +900,11 @@ programs' rules do beside them.
   mode. A pattern matching one of them, or a name that becomes the uplink later,
   is skipped at each pass and logged, as [watching it](routing.md#watching-it)
   lists.
-- macOS refuses at startup and on a reload `forward`, `fallback = "none"`,
-  naming `inbound` and `lan` where they are written, and `via` with `fallback`
-  unwritten, which is `"none"` then. [Gaps on macOS](platforms.md#gaps-on-macos)
-  quotes each refusal and says what this build lacks for it. The fallback's
-  refusal comes first, so a file writing `forward` beside `fallback = "none"` is
-  told of the fallback.
+- macOS refuses at startup and on a reload `forward` and `inbound`.
+  [Gaps on macOS](platforms.md#gaps-on-macos) quotes each refusal and says what
+  this build lacks for it. `forward`'s refusal comes first, so a file writing
+  both is told of `forward`. `lan` loads there and widens nothing, since the
+  switch on macOS passes every connected network.
   [The limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) say
   what a Mac that forwards under the mode is told.
 - The BSDs, Android and iOS refuse the block at startup and on a reload:

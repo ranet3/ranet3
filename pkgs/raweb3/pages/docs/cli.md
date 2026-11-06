@@ -68,7 +68,8 @@ and nothing but the wait answers on the socket, before the build ends. A refusal
 undoes what it built, stopping and waiting for each of those workers, and
 exits 1. Each table's own page gives what a refusal leaves of it:
 [the antispoof filter's](antispoof.md#where-it-runs),
-[the kill switch's](routing.md#the-kill-switch-on-linux) and
+[the kill switch's](routing.md#the-kill-switch-on-linux), on macOS
+[its rejects'](routing.md#the-kill-switch-on-macos), and
 [the egress translator's](coexistence.md#the-packet-filter).
 
 | Signal              | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -123,17 +124,19 @@ exits 1. Each table's own page gives what a refusal leaves of it:
   names [the kill switch's](routing.md#the-kill-switch-on-linux) state,
   `holding`, `passing` or `not holding` with the reason, what the last lines of
   both chains dropped, summed, or `drops not read yet` until a read of the table
-  by this process succeeds, a connected network or a part of one left out of the
-  LAN, an endpoint name whose last lookup failed and a DNS server beyond the
-  LAN. `--json` carries them under `kernel.exit`, the families in `unaddressed`.
-  Under `cap.exit.via` the line names the path, its outer source, `up`, or
-  `down` at the first segment that does not resolve with the mesh's answer, the
-  families whose steered default, or on macOS its zero-free cover, is installed,
-  and the path's own `steered` and `unrouted` counts, which `--json` carries
-  under `kernel.exit_path`.
+  by this process succeeds, and neither on macOS, where ranet3 reads no count of
+  [the rejects](routing.md#the-kill-switch-on-macos), a connected network or a
+  part of one left out of the LAN, an endpoint name whose last lookup failed and
+  a DNS server beyond the LAN. `--json` carries them under `kernel.exit`, the
+  families in `unaddressed`. Under `cap.exit.via` the line names the path, its
+  outer source, `up`, or `down` at the first segment that does not resolve with
+  the mesh's answer, the families whose steered default, or on macOS its
+  zero-free cover, is installed, and the path's own `steered` and `unrouted`
+  counts, which `--json` carries under `kernel.exit_path`.
 - `down` withdraws [the kill switch's](routing.md#the-kill-switch-on-linux)
-  rules and table with the rest of the reconciler's, as a clean stop does, and
-  `up` writes them again.
+  rules and table, or on macOS
+  [its rejects](routing.md#the-kill-switch-on-macos), with the rest of the
+  reconciler's, as a clean stop does, and `up` writes them again.
 - `debug netmon` lists each family's links outside the mesh with their addresses
   and point-to-point far ends, as [moving hosts](platforms.md#moving-hosts)
   gives them, the links [exit mode](routing.md#exit-mode-on-linux) derives its

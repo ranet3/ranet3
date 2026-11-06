@@ -229,7 +229,13 @@ changes and when it stops being taken, in the log, on the Kernel line of
   [rt6_fill_node](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/route.c#L5902)).
 - Another program's rule wakes no pass, so a rule added between passes is
   reported by the next periodic pass, `cap.table.reconcile` later at most.
-- macOS has no policy rules and asks nothing.
+- macOS has no policy rules and no mark, so it asks the overlay's lookups alone,
+  as a socket bound to no interface meets the one table. The prefix is taken
+  when the answer is anything but a route out of the utun or the hold's own
+  reject on `lo0` at the prefix, such as another program's longer route inside
+  it, and the answer names that route as `route -n get` does. The underlay's
+  lookups are not asked, since its datagrams name the interface the selection
+  answers, which never holds the utun.
 
 ### A BGP speaker on the same host
 
@@ -458,8 +464,9 @@ an address on it.
 
 - A source-specific route. Interface scope is the only thing on this platform
   that draws the distinction a source prefix draws.
-- An unreachable hold. macOS has 1 forwarding table, and an unscoped hold would
-  shadow every other way to its prefix.
+- An unreachable hold but an overlay prefix's. macOS has 1 forwarding table, and
+  an unscoped hold would shadow every other way to its prefix. An overlay
+  prefix's hold is there to shadow them, and goes on `lo0`, as below.
 - A route outside the overlay inside another program's or the host's unscoped
   route longer than `/0` out of another interface, a member of the zero-free
   cover among them, and the pieces outside the overlay of one there that holds a
@@ -488,12 +495,23 @@ zero-free cover it contains, as
 Mac takes. [Exit nodes](exit-nodes.md#what-to-advertise) says why an exit
 advertises the `/0` only.
 
-ranet3 writes nothing outside its utun. A datagram it sends without a pin names
-the interface the selection answers from the host's routes, so another VPN's
-full tunnel or a second uplink's route carries it as it carries any other
-program's traffic. One sent from a pin names the address the peer reached as its
-source and leaves by the interface the kernel takes for that address, as
-[routing](routing.md#the-underlays-interface-on-macos) describes.
+ranet3 writes nothing outside its utun but reject routes on `lo0`, unscoped, via
+`127.0.0.1` or `::1`: the hold of each overlay prefix, and under
+`fallback = "none"` the 18 rejects of
+[the kill switch on macOS](routing.md#the-kill-switch-on-macos). It owns a route
+of that shape at those keys alone, whoever wrote it, and since
+`route add -reject` writes the same shape, one of another program's at another
+key is never touched. Another program's route at a reject's key, such as another
+VPN's `128.0.0.0/1`, is reported and never removed, and the switch does not read
+back while it stands. Another program's route inside a reject's key is longer
+than the reject and carries its traffic, as Tailscale's own routes do, each
+longer than the rejects, which
+[limits](design/limits.md#the-kill-switch-on-macos) declares. A datagram it
+sends without a pin names the interface the selection answers from the host's
+routes, so another VPN's full tunnel or a second uplink's route carries it as it
+carries any other program's traffic. One sent from a pin names the address the
+peer reached as its source and leaves by the interface the kernel takes for that
+address, as [routing](routing.md#the-underlays-interface-on-macos) describes.
 
 What a scoped route does not give you is automatic use of an exit-announced
 address. Invisibility to an ordinary lookup is the safety property, and it

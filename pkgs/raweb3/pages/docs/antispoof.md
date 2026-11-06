@@ -692,10 +692,11 @@ applies to the packet an IPv6 read carries as well.
 There the overlay still bounds what the process does itself. Every local segment
 loads and acts only on an outer source in the overlay's IPv6 prefixes, and the
 [forwarding decision](segment-routing.md#at-the-border-of-the-mesh) reads the
-overlay, as on Linux. macOS installs no overlay hold: a hold goes only beside
-the policy rules that read the mesh's table, and macOS has none, so an overlay
-destination no node announces leaves a Mac by its own routes.
-[Platforms](platforms.md) lists what each one carries.
+overlay, as on Linux. With `cap.table` a Mac holds each overlay prefix with a
+reject route on `lo0`, so an overlay destination no node announces is refused
+there, as [the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives,
+and a link whose network holds an overlay prefix whole is carved and takes no
+hold there. [Platforms](platforms.md) lists what each one carries.
 
 ## Reloads
 

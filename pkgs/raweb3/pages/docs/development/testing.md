@@ -164,6 +164,16 @@ check of the interface then drops, read in `netstat -s -p ip`. One sets pf's
 skip flag on utuns of its own and clears it before it ends, and one loads filter
 rules into the main ruleset and puts back the ones it found.
 
+The kill switch's tests in `internal/kernel` write
+[the rejects and the holds](../routing.md#the-kill-switch-on-macos) on `lo0` and
+send at them, so for a few seconds the Mac's unbound traffic beyond its
+connected networks is refused, which is why a run starts detached from the
+session that started it. One test kills a helper, the test binary run again as
+`TestDarwinSwitchCrashHelper`, with `SIGKILL`, and reads what the crash left.
+The helper skips unless `RANET3_DARWIN_SWITCH_HELPER=1` is set, as the test sets
+it. Each test ends by deleting any reject an arm left at the switch's or the
+overlay's keys, and checks that the host's table and defaults are as they were.
+
 ## Property tests
 
 The packages that read bytes a peer or a file chooses also carry property tests,

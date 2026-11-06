@@ -145,12 +145,12 @@ forward = ["docker0", "br-*"]     # names, or patterns as path.Match reads them
 ```
 
 With `fallback = "none"` ranet3 writes
-[the kill switch](routing.md#the-kill-switch-on-linux), which holds while no
-exit is live and its table reads back as written. Its section lists the lines
-that let the host's traffic leave by a link outside the mesh, the switch's
-reach, and what each stop leaves of it. The LAN's line passes what that list
-gives as the LAN, and `lan` adds a network outside the overlay that its ranges
-leave out:
+[the kill switch](routing.md#the-kill-switch-on-linux), or on macOS
+[its rejects](routing.md#the-kill-switch-on-macos), which hold while no exit is
+live and the switch reads back as written. Its section lists the lines that let
+the host's traffic leave by a link outside the mesh, the switch's reach, and
+what each stop leaves of it. The LAN's line passes what that list gives as the
+LAN, and `lan` adds a network outside the overlay that its ranges leave out:
 
 ```toml
 [cap.exit]

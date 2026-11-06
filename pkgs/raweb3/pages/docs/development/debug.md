@@ -140,16 +140,18 @@ These commands take flags of their own:
   `underlay` lookup, `-` where it carries none, whether it is taken and the
   kernel's answer, also when the dump failed, or `Lookups: none` where the dump
   answered and the reconciler asked none. On macOS, which has no policy rules,
-  `Lookups` lists the `underlay` rows, their source and interface `-`, the pin's
-  interface named in the answer. A row is one address live sessions send to, a
-  link-local one with its zone, with the interface of the pin their sends carry
-  where that pin has one. A pin has the interface its index names, or with no
-  index, the interface holding its address, and
-  [routing](../routing.md#the-underlays-interface-on-macos) gives which sends
-  carry a pin. Sessions whose sends carry no pin, or a pin with no interface,
-  share the address's row. A row with an interface shows `dev` with its name, or
-  its index where the host has no interface of that index, and no matched route.
-  A row without one shows `dev` with the interface
+  `Lookups` lists the `overlay` rows, each answer the route the lookup ends at
+  as `route -n get` names it, such as
+  `198.51.100.0/24 via 127.0.0.1 on lo0 reject` for the hold, and the `underlay`
+  rows, their source and interface `-`, the pin's interface named in the answer.
+  A row is one address live sessions send to, a link-local one with its zone,
+  with the interface of the pin their sends carry where that pin has one. A pin
+  has the interface its index names, or with no index, the interface holding its
+  address, and [routing](../routing.md#the-underlays-interface-on-macos) gives
+  which sends carry a pin. Sessions whose sends carry no pin, or a pin with no
+  interface, share the address's row. A row with an interface shows `dev` with
+  its name, or its index where the host has no interface of that index, and no
+  matched route. A row without one shows `dev` with the interface
   [the selection](../routing.md#the-underlays-interface-on-macos) names and the
   route it matched, or `no route`. No row is taken. Then, under `cap.exit.via`,
   `Steered defaults in table <id>` with the path `up`, or `down` at the first
@@ -174,13 +176,16 @@ These commands take flags of their own:
   `cap.exit.fallback = "none"`, the table `ranet3_fallback` as `Fallback table`
   with its two chains, their hooks and priority and the switch's state, each
   line of each chain with the packets and bytes the drop counted, and each named
-  set with its elements, or `not held` where the kernel holds no table. The dump
-  and the chains are each read now through a socket of their own, so an operator
-  who sends a test packet reads the counters of that moment, and neither the
-  reconciler's socket nor the filter's serves a reader. A platform with no
-  policy rules says so. A rule carrying a selector the view keeps no value of,
-  `uidrange`, `ipproto`, `sport`, `dport`, `dscp`, `flowlabel` or `tun_id`, or
-  carrying `suppress_ifgroup`, shows that name among its selectors.
+  set with its elements, or `not held` where the kernel holds no table. On macOS
+  it is `Fallback, rejects on lo0, holding`, or another state of the switch, and
+  each of [the rejects](../routing.md#the-kill-switch-on-macos) the table holds,
+  with no count. The dump and the chains are each read now through a socket of
+  their own, so an operator who sends a test packet reads the counters of that
+  moment, and neither the reconciler's socket nor the filter's serves a reader.
+  A platform with no policy rules says so. A rule carrying a selector the view
+  keeps no value of, `uidrange`, `ipproto`, `sport`, `dport`, `dscp`,
+  `flowlabel` or `tun_id`, or carrying `suppress_ifgroup`, shows that name among
+  its selectors.
 - `debug route <src> <dst> [--iif link | --peer node]` follows one packet to
   where this host sends it: this host's own packet, with `--iif` one arriving on
   that link, or with `--peer` one arriving through a session from that node,
@@ -562,10 +567,10 @@ connections to the reads.
 | `kernel.pass`                         | a reconciler pass that took a reload, changed, skipped anew or failed                                                   |
 | `kernel.cover`                        | a family's zero-free cover went into the kernel or came out, on macOS                                                   |
 | `kernel.underlay`                     | a cut endpoint or a route scoped beneath the host's came or went, on macOS                                              |
-| `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on Linux                                    |
+| `kernel.taken`                        | a reconciler lookup became taken or not, or a taken one changed its answer, on macOS the overlay's alone                |
 | `kernel.forward`                      | a link `cap.exit.forward` matched began or stopped being left out of the mode                                           |
 | `kernel.exit`                         | under `cap.exit`, the tun came to hold no overlay address of a family, or the state ended                               |
-| `kernel.fallback`                     | the kill switch began holding, passing or not holding, or ended                                                         |
+| `kernel.fallback`                     | the kill switch, on macOS its rejects, began holding, passing or not holding, or ended                                  |
 | `kernel.path`                         | under `cap.exit.via`, the path went up or down, or the steered defaults installed changed                               |
 | `exit.forwarding`                     | under `cap.exit` on macOS, the start or a reload read the host forwarding a family                                      |
 | `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed                                                  |

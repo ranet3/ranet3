@@ -368,6 +368,17 @@ main's route out of the uplink, where it went before ranet3. A marked one, such
 as ranet3's own paired IPv4 socket, goes by main's route, as rows L2 and B1
 give. None of it enters the mesh.
 
+On macOS an overlay prefix's hold on `lo0` does not refuse a send bound to an
+address of the utun where a route of the mesh's scoped to the utun, not a hold,
+holds the destination, such as the mesh's default in mode off, but an IPv4 TCP
+connect, which it refuses, as
+[the kill switch on macOS](../routing.md#the-kill-switch-on-macos) gives with
+where such a send goes. Linux's hold refuses it, as row L4 of
+[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) gives. Where
+such a send reaches an exit through a route that counts as a default, it leaves
+by that exit's uplink unless the exit's own `overlay` holds the address, as
+[what an exit carries out](../exit-nodes.md#what-an-exit-carries-out) gives.
+
 Wherever the mesh's table holds no default, traffic toward a default under
 [exit mode](../routing.md#exit-mode-on-linux), the host's own and a forwarded
 link's, leaves by main under `fallback = "uplink"`, with no rule of ranet3's
@@ -402,14 +413,16 @@ first, as [sharing a host](../coexistence.md#exit-mode-beside-other-programs)
 measures.
 
 On macOS exit mode is the routes of
-[the zero-free cover](../routing.md#the-zero-free-cover-on-macos), and its only
-fallback is `fallback = "uplink"`. Wherever the mesh's table holds no default,
-the host's traffic toward one leaves by the host's own default: before the first
-session is live, after `capture_grace`, while the mesh's defaults are retracted,
-in mode 3 while a segment of the path is down, and after `SIGKILL`, since the
-cover goes with the utun. A family the tun holds no overlay address of is left
-out of the mode, its routes scoped to the utun as in mode off, so its traffic
-stays on the host's own routes, and `ranet3 status` names it.
+[the zero-free cover](../routing.md#the-zero-free-cover-on-macos). Under
+`fallback = "uplink"`, wherever the mesh's table holds no default, the host's
+traffic toward one leaves by the host's own default: before the first session is
+live, after `capture_grace`, while the mesh's defaults are retracted, in mode 3
+while a segment of the path is down, and after `SIGKILL`, since the cover goes
+with the utun. Under `fallback = "none"` it meets the rejects of
+[the kill switch on macOS](#the-kill-switch-on-macos) instead, with the costs
+that section gives. A family the tun holds no overlay address of is left out of
+the mode, its routes scoped to the utun as in mode off, so its traffic stays on
+the host's own routes, and `ranet3 status` names it.
 
 macOS refuses a route out of an interface that holds no address of the route's
 family, scoped or not, with `ENETUNREACH`
@@ -585,8 +598,9 @@ scoped lookup, which
 [the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. A
 route out of the tun as small as `0.0.0.0/24` would take that fallback away, so
 under `cap.exit` without `via`, in a family the mode covers, such a route goes
-in as the zero-free cover's members it contains, and one inside `0.0.0.0/8` or
-`::/8`, which contains none, not at all.
+in as the zero-free cover's members it contains, and one inside
+[the hole](../routing.md#the-zero-free-cover-on-macos), which contains none, not
+at all.
 
 `capture_grace` has a floor of 1 second. A value above 0 and under 1 second is
 refused by name, and 0 takes the default. The hold is checked once a pass, and
@@ -630,6 +644,37 @@ that names its interface falls back to, as
 [the zero-free cover](../routing.md#the-zero-free-cover-on-macos) describes. An
 exit serving Macs advertises the `/0` only, as
 [exit nodes](../exit-nodes.md#what-to-advertise) describes.
+
+## The kill switch on macOS
+
+[The kill switch on macOS](../routing.md#the-kill-switch-on-macos) is reject
+routes on `lo0`, and its one list gives what leaves by a link outside the mesh
+while no exit is live and after a crash. Against Linux's filter, which drops
+what leaves by a link other than the tun beyond the LAN and this node's own
+prefixes, it has these costs:
+
+- A socket scoped to the uplink, or bound to its address, passes the rejects
+  over, but for an IPv4 TCP connect bound to its address, as
+  [the one list](../routing.md#the-kill-switch-on-macos) gives.
+- Another program's route longer than a reject's key, such as another VPN's,
+  carries the traffic inside it, and one at a reject's key keeps the switch from
+  reading back.
+- [The zero-free cover's hole](../routing.md#the-zero-free-cover-on-macos)
+  leaves by the host's own route.
+- A TCP connection or a connected UDP socket opened over the uplink before the
+  rejects went in keeps sending by the uplink while it lasts, in either family,
+  where Linux's filter drops it from the next packet on.
+- This node's own prefixes outside the overlay pass only where a route of the
+  host's reaches them, where Linux passes them by 5445.
+- Under `cap.exit` a resolver beyond the LAN is refused while no exit is live,
+  so a Mac whose endpoints are all names and whose resolver lies beyond its LAN
+  brings up no session under the switch.
+- A hold a crashed instance left at a prefix the next configuration no longer
+  holds stays on `lo0` until the Mac restarts or the operator deletes it, where
+  Linux's next start deletes its holds by their protocol.
+- `cap.exit.inbound` is refused, since a service's replies pass or not by its
+  protocol and how its socket is bound, and `cap.exit.lan` widens nothing.
+- The switch reports no drops, since ranet3 reads no count of the rejects.
 
 ## Source-specific routing
 
