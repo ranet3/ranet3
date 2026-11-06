@@ -30,25 +30,18 @@ func macExitStart(old *config.Config) {
 
 var macVia = []schema.Addr{schema.MustAddr("3fff:b:0:306::3")}
 
-// forward, fallback = "none" and via with fallback unwritten are refused at
-// the start and at a reload by their own messages, naming inbound and lan
-// where they are written, and a refused reload hands the reconciler nothing
+// forward and inbound are refused at the start and at a reload by their own
+// messages, and a refused reload hands the reconciler nothing
 func TestExitModeRefusesWhatThisBuildLacksAtTheStartAndAtReload(t *testing.T) {
-	const filter = "is refused on macOS, where this build has no filter to keep the host's traffic off the uplink"
+	const inbound = "kernel: cap.exit inbound is refused on macOS, where this build's kill switch is reject routes with no line passing a listed service's replies: while no exit is live and after a crash a service's replies leave by the uplink over IPv6 TCP whether it is bound to the uplink's address or to the wildcard and over UDP where it is bound to the uplink's address, and are refused over IPv4 TCP and over UDP on the wildcard, whatever inbound lists, so remove inbound"
 	for _, c := range []struct {
 		mode kernel.ExitMode
 		want string
 	}{
 		{kernel.ExitMode{Forward: []string{"bridge*"}},
 			"kernel: cap.exit forward is refused on macOS, where this build has no rule that routes a forwarded packet by the link it arrived on: remove forward, and a packet this host forwards toward an exit in a family the mode covers follows the mode into the tun as the host's own does, which drops a source this node does not own"},
-		{kernel.ExitMode{Fallback: kernel.FallbackNone},
-			`kernel: cap.exit fallback = "none" ` + filter + `: write fallback = "uplink"`},
-		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}},
-			`kernel: cap.exit fallback = "none" with inbound ` + filter + `: write fallback = "uplink" and remove inbound`},
-		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}, LAN: []schema.Prefix{schema.MustPrefix("198.51.100.0/24")}},
-			`kernel: cap.exit fallback = "none" with inbound and lan ` + filter + `: write fallback = "uplink" and remove inbound and lan`},
-		{kernel.ExitMode{Via: macVia},
-			`kernel: cap.exit via with fallback unwritten is "none" in mode 3, which ` + filter + `: write fallback = "uplink" beside via`},
+		{kernel.ExitMode{Fallback: kernel.FallbackNone, Inbound: []string{"22/tcp"}}, inbound},
+		{kernel.ExitMode{Via: macVia, Inbound: []string{"22/tcp"}, LAN: []schema.Prefix{schema.MustPrefix("198.51.100.0/24")}}, inbound},
 	} {
 		cfg, privateKey, reg := runtimeFixture(t)
 		macExitStart(cfg)
@@ -71,13 +64,17 @@ func TestExitModeRefusesWhatThisBuildLacksAtTheStartAndAtReload(t *testing.T) {
 	}
 }
 
-// mode 2 with fallback unwritten or "uplink", and mode 3 with via and
-// "uplink", start and reload, the reload handing the reconciler the mode
+// mode 2 with fallback unwritten, "uplink" or "none", lan beside "none", and
+// mode 3 with via and fallback "uplink" or unwritten, which is "none" there,
+// start and reload, the reload handing the reconciler the mode
 func TestExitModeThisBuildHasStartsAndReloads(t *testing.T) {
 	for _, mode := range []kernel.ExitMode{
 		{},
 		{Fallback: kernel.FallbackUplink},
+		{Fallback: kernel.FallbackNone},
+		{Fallback: kernel.FallbackNone, LAN: []schema.Prefix{schema.MustPrefix("198.51.100.0/24")}},
 		{Via: macVia, Fallback: kernel.FallbackUplink},
+		{Via: macVia},
 	} {
 		cfg, privateKey, reg := runtimeFixture(t)
 		macExitStart(cfg)

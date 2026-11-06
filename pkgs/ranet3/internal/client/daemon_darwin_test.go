@@ -6,6 +6,7 @@
 package client
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -102,6 +103,9 @@ type daemon struct {
 	// stop ends the reconcile loop and waits for it to withdraw, the way the
 	// command waits for it before closing the node.
 	stop func()
+	// end is stop for a stop of cause, as a failed mesh's names
+	// kernel.ErrMeshFailed
+	end func(cause error)
 	// file is the configuration file the node was loaded from
 	file *daemonFile
 }
@@ -170,15 +174,17 @@ func tryDaemon(t *testing.T, cfg *config.Config, host *recordedKernel) (*daemon,
 		t.Fatalf("the reconciler this node described was refused: %v", err)
 	}
 	node.SetReconciler(ReconcilerOf(routes))
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancelCause(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_ = routes.Run(ctx)
 	}()
-	stop := sync.OnceFunc(func() { cancel(); <-done })
+	var once sync.Once
+	end := func(cause error) { once.Do(func() { cancel(cause); <-done }) }
+	stop := func() { end(nil) }
 	t.Cleanup(stop)
-	return &daemon{node: node, routes: routes, host: host, uplink: host.uplink, stop: stop}, nil
+	return &daemon{node: node, routes: routes, host: host, uplink: host.uplink, stop: stop, end: end}, nil
 }
 
 // standInRuntime is node's KernelRuntime with no live sends, since a session
@@ -667,6 +673,82 @@ func TestOneWatcherServesTheSelectionAndTheNetworkWatch(t *testing.T) {
 	}
 }
 
+// startDaemonWith is startDaemon under cap.exit written as exit
+func startDaemonWith(t *testing.T, exit string, host *recordedKernel) *daemon {
+	t.Helper()
+	var d *daemon
+	retryPort(t, "bind", func() (err error) {
+		file := newDaemonFile(t)
+		file.exit = exit
+		if d, err = tryDaemon(t, file.load(t, true), host); d != nil {
+			d.file = file
+		}
+		return err
+	})
+	return d
+}
+
+// loopRejects is every reject the recorded host holds on lo0 via its family's
+// loopback address, unscoped, sorted
+func (k *recordedKernel) loopRejects() []netip.Prefix {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var out []netip.Prefix
+	for held := range k.held {
+		if held.index == k.loopback && held.reject && held.gateway.IsLoopback() && !held.scoped {
+			out = append(out, held.destination)
+		}
+	}
+	slices.SortFunc(out, func(a, b netip.Prefix) int {
+		return compareRecorded(recordedRoute{destination: a}, recordedRoute{destination: b})
+	})
+	return out
+}
+
+// switchKeys is the keys of the kill switch's rejects, the zero-free cover's
+// of both families, and anotherReject one another program wrote on lo0 in
+// their shape at another key
+var (
+	switchKeys = append([]netip.Prefix{
+		netip.MustParsePrefix("1.0.0.0/8"), netip.MustParsePrefix("2.0.0.0/7"), netip.MustParsePrefix("4.0.0.0/6"), netip.MustParsePrefix("8.0.0.0/5"),
+		netip.MustParsePrefix("16.0.0.0/4"), netip.MustParsePrefix("32.0.0.0/3"), netip.MustParsePrefix("64.0.0.0/2"), netip.MustParsePrefix("128.0.0.0/1"),
+	}, ipv6Cover...)
+	anotherReject = netip.MustParsePrefix("10.0.0.0/8")
+)
+
+// A file writing fallback = "none" starts on macOS, and its daemon writes a
+// reject on lo0 at each of the switch's keys, both families though the
+// session that opens the capture is not live, which it reads back as holding.
+// A failed mesh's stop leaves them, and a daemon under "uplink" on the same
+// host deletes them. Another program's reject of their shape at another key
+// is never written or deleted.
+func TestKillSwitchOnTheRecordedHost(t *testing.T) {
+	host := recordedHost(t)
+	host.hold(recordedRoute{destination: anotherReject, index: host.loopback, gateway: netip.MustParseAddr("127.0.0.1"), reject: true})
+	want := slices.SortedFunc(slices.Values(append(slices.Clone(switchKeys), anotherReject)), func(a, b netip.Prefix) int {
+		return compareRecorded(recordedRoute{destination: a}, recordedRoute{destination: b})
+	})
+	d := startDaemonWith(t, "{fallback: none}", host)
+	waitForKernel(t, "the rejects reach lo0", func() bool { return slices.Equal(host.loopRejects(), want) })
+	waitForKernel(t, "the switch reads back", func() bool {
+		exit := d.routes.Stats().Exit
+		return exit != nil && exit.Fallback != nil && exit.Fallback.State == kernel.FallbackHolding
+	})
+	d.end(kernel.ErrMeshFailed)
+	if got := host.loopRejects(); !slices.Equal(got, want) {
+		t.Errorf("the failed mesh's stop left the rejects at %v, want %v", got, want)
+	}
+
+	second := startDaemonWith(t, "{fallback: uplink}", host)
+	waitForKernel(t, "the daemon under \"uplink\" deletes the rejects", func() bool { return slices.Equal(host.loopRejects(), []netip.Prefix{anotherReject}) })
+	second.stop()
+	for _, write := range host.writes() {
+		if write.index == host.loopback && (!slices.Contains(switchKeys, write.destination) || !write.reject) {
+			t.Errorf("a daemon wrote %+v on lo0, which is no reject of the switch's", write)
+		}
+	}
+}
+
 // debug netmon carries the links of the recorded host as the network watch
 // reads them, the uplink with its addresses of each family and the mesh's
 // device left out
@@ -697,6 +779,8 @@ func TestNetmonCarriesTheHostsLinks(t *testing.T) {
 type daemonFile struct {
 	path, keyPath, trustPath string
 	port                     uint16
+	// exit is cap.exit's block where it is written, {} where empty
+	exit string
 }
 
 // newDaemonFile writes the key and the trust document of one node, on a port
@@ -716,7 +800,7 @@ func (f *daemonFile) write(t *testing.T, exit bool) {
 	t.Helper()
 	mode := ""
 	if exit {
-		mode = "  exit: {}\n"
+		mode = "  exit: " + cmp.Or(f.exit, "{}") + "\n"
 	}
 	body := fmt.Sprintf(`node: example/laptop
 overlay:

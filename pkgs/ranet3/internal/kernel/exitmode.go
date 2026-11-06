@@ -41,11 +41,14 @@ type ExitMode struct {
 	// table's reply lines pass while fallback is "none", on flows conntrack saw
 	// the far side open, as routing.md's "The kill switch on Linux" lists, each
 	// written "<port>/<protocol>" or "<first>-<last>/<protocol>" with the
-	// protocol tcp or udp
+	// protocol tcp or udp. darwin refuses it, whose switch has no reply lines
+	// (RefuseExitMode).
 	Inbound []string `yaml:"inbound,omitempty" json:"inbound,omitempty" toml:"inbound,omitempty"`
 	// LAN is the prefixes beyond the private and link-local ranges whose part
 	// of a connected network counts as the LAN while fallback is "none". It
-	// adds no destination a link outside the mesh is not connected to.
+	// adds no destination a link outside the mesh is not connected to. On
+	// darwin every connected network is longer than the switch's rejects and
+	// passes them, so it widens nothing there.
 	LAN []schema.Prefix `yaml:"lan,omitempty" json:"lan,omitempty" toml:"lan,omitempty"`
 	// Via is the path the host's traffic for the internet takes, the SIDs in
 	// the order a packet visits them, the waypoints and then an exit's egress
@@ -61,10 +64,12 @@ const (
 	// FallbackUplink lets the host's traffic leave by the host's own default
 	// while no exit is live
 	FallbackUplink Fallback = "uplink"
-	// FallbackNone writes the table ranet3_fallback, whose lines and lifetime
-	// routing.md's "The kill switch on Linux" lists, whether an exit is live or
-	// not. While it reads back as written the host's traffic leaves by a link
-	// outside the mesh only where one of its lines passes it.
+	// FallbackNone writes the kill switch whether an exit is live or not: on
+	// linux the table ranet3_fallback, whose lines and lifetime routing.md's
+	// "The kill switch on Linux" lists, and while it reads back as written the
+	// host's traffic leaves by a link outside the mesh only where one of its
+	// lines passes it. On macOS it is reject routes on lo0, which "The kill
+	// switch on macOS" lists with what passes them.
 	FallbackNone Fallback = "none"
 )
 
