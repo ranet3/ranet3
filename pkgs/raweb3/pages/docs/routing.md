@@ -367,10 +367,21 @@ an inner IPv4 or IPv6 packet has that packet checked one level deep, whatever
 its destination, since the mesh cannot tell another node's SID from any other
 address, as [the limits](design/limits.md#transit) say. An inner packet that is
 itself encapsulated is dropped (`nested`). A read the table answers as this
-node's own, which the mesh could only hand back to the tun, is dropped
-(`looped`). None of these is answered, as [the antispoof filter](antispoof.md)
-and [segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for
-the mesh's edge.
+node's own whose destination the tun holds, an address `cap.table` assigns, goes
+back into the tun and is counted `delivered`, for the host's kernel to take as
+arriving for that address, as macOS takes it
+([IPv4](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_input.c#L1357),
+[IPv6](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/ip6_input.c#L625)).
+It goes back as read, but for the checksum of an IPv6 UDP or TCP read that does
+not verify, which the mesh completes, since macOS leaves it to
+[its loopback interface's offload](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/ip6_output.c#L4303).
+Linux never routes such a packet into the tun, since its
+[local table](https://man7.org/linux/man-pages/man8/ip-rule.8.html) delivers it
+first. Any other read the table answers as this node's own, which the mesh could
+only hand back to the host, is dropped (`looped`). None of these is answered, as
+[the antispoof filter](antispoof.md) and
+[segment routing](segment-routing.md#at-the-border-of-the-mesh) describe for the
+mesh's edge.
 
 A read off the tun that passes those checks and that no steering policy takes,
 whose destination no entry holds or that lies inside a held prefix, is answered

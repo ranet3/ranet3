@@ -87,7 +87,9 @@ its read batch.
 On macOS the tun is a utun with 1 queue. `link.tun` takes `utun` for the next
 free unit or `utunN` for unit N, because the utun control creates nothing else.
 The daemon refuses any other name at startup. The reconciler works on the name
-the device got, such as `utun6`, rather than the one configured.
+the device got, such as `utun6`, rather than the one configured. A packet the
+Mac sends to an address of its own on the utun crosses the utun twice, once into
+the mesh and once [written back](routing.md#transit).
 
 ## Linux
 
