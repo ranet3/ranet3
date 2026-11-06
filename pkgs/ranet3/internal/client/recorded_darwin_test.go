@@ -203,9 +203,23 @@ func (k *recordedKernel) InterfaceName(index int) (string, error) {
 	return "", fmt.Errorf("kernel: name interface %d: no such interface", index)
 }
 
-func (k *recordedKernel) Lookup(destination, _ netip.Addr) (kernel.RouteAnswer, error) {
+// Lookup answers an exact mask with the host's own default of the family, and
+// a longest match, which names no mask, with the longest unscoped route held
+// holding destination, the host's default where none does
+func (k *recordedKernel) Lookup(destination, mask netip.Addr) (kernel.RouteAnswer, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if !mask.IsValid() {
+		var best recordedRoute
+		for held := range k.held {
+			if !held.scoped && held.destination.Contains(destination) && (!best.destination.IsValid() || held.destination.Bits() > best.destination.Bits()) {
+				best = held
+			}
+		}
+		if best.destination.IsValid() {
+			return kernel.RouteAnswer{Index: best.index, Gateway: best.gateway, Prefix: best.destination, Reject: best.reject}, nil
+		}
+	}
 	answer := k.v4
 	if destination.Is6() {
 		answer = k.v6

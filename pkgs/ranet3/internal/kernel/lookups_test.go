@@ -559,7 +559,7 @@ func TestWithdrawalClearsTheLookups(t *testing.T) {
 	}
 }
 
-// a platform with no lookup half, darwin's, asks and publishes nothing
+// a platform with no lookup half asks and publishes nothing
 func TestPlatformWithoutLookupsPublishesNone(t *testing.T) {
 	reconciler, _, _ := harness(t, Table{}, Runtime{
 		Overlay: prefixes(prefix("192.0.2.0/24")),

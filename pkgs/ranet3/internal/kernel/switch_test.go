@@ -186,6 +186,7 @@ func rejectingHarness(t *testing.T, mode *ExitMode, addresses ...netip.Prefix) (
 	reconciler.now = func() time.Time { return start }
 	k := &rejectingKernel{coveringKernel: covering, rejects: map[netip.Prefix]bool{}, others: map[netip.Prefix]string{}}
 	reconciler.use(k)
+	reconciler.rules = nil
 	return reconciler, table, k
 }
 
@@ -329,6 +330,7 @@ func TestSwitchNamesARouteThatTookAKeyAfterTheListing(t *testing.T) {
 	delete(k.rejects, taken)
 	k.smu.Unlock()
 	reconciler.use(lateRoute{k, taken})
+	reconciler.rules = nil
 	_ = reconciler.reconcile()
 	want := string(FallbackNotHolding) + ": another program's route 2000::/3 on utun5 holds a key of the switch's"
 	if got := switchReads(reconciler); got != want {
@@ -351,6 +353,7 @@ func (k stuckRejects) deleteFallback() error {
 func TestSwitchLeftInKeepsTheMembersSplit(t *testing.T) {
 	reconciler, table, k := rejectingHarness(t, &ExitMode{Fallback: FallbackNone}, coverAddresses...)
 	reconciler.use(stuckRejects{k})
+	reconciler.rules = nil
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}

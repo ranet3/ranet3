@@ -322,8 +322,7 @@ func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 			return nil, fmt.Errorf("kernel: find %s, whose routes the route monitor of interface %d wakes on: %w", Loopback, index, err)
 		}
 		monitor.loopback = loopback.Index
-	}
-	if index == 0 {
+	} else {
 		if skip != 0 {
 			device, err := net.InterfaceByIndex(skip)
 			if err != nil {

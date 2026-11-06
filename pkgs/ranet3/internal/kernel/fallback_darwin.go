@@ -22,6 +22,7 @@ import (
 var (
 	_ switcher  = (*routePlatform)(nil)
 	_ holdKeyer = (*routePlatform)(nil)
+	_ fibLooker = (*routePlatform)(nil)
 )
 
 // rejectsForm is the rejects on lo0 as a log line and a status read them. See

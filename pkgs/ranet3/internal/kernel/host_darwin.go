@@ -116,7 +116,10 @@ func (runningKernel) Lookup(destination, mask netip.Addr) (RouteAnswer, error) {
 	if err != nil {
 		return RouteAnswer{}, err
 	}
-	out := RouteAnswer{Index: answer.Index}
+	out := RouteAnswer{Index: answer.Index, Reject: answer.Flags&unix.RTF_REJECT != 0}
+	if prefix, ok := dumpedPrefix(answer); ok {
+		out.Prefix = prefix
+	}
 	if len(answer.Addrs) > unix.RTAX_GATEWAY {
 		if next, ok := addressFromRouteAddr(answer.Addrs[unix.RTAX_GATEWAY]); ok {
 			out.Gateway = next.WithZone("")

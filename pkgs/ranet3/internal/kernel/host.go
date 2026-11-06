@@ -85,10 +85,13 @@ type HostAddress struct {
 
 // RouteAnswer is the kernel's answer about one destination: the interface it
 // would leave by and the next hop it points at, the address invalid where it
-// leaves through a link instead.
+// leaves through a link instead, the key of the route that answered, invalid
+// where the answer names none, and whether that route is a reject.
 type RouteAnswer struct {
 	Index   int
 	Gateway netip.Addr
+	Prefix  netip.Prefix
+	Reject  bool
 }
 
 // RouteWriter is the write side of one routing socket, taking messages the

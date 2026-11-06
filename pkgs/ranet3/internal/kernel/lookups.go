@@ -70,10 +70,19 @@ func (l Lookup) asks(other Lookup) bool {
 		(!l.Underlay() || l.Address == other.Address && l.Source == other.Source && l.index == other.index)
 }
 
+// fibLooker is a looker over a platform's one FIB, darwin's, whose underlay
+// carries no mark a lookup could ask under, so it asks the overlay's lookups
+// alone and judges each by the route it ends at
+type fibLooker interface {
+	looker
+	judge(prefix netip.Prefix, answer BatchAnswer) (string, bool)
+}
+
 func (r *Reconciler) lookUp() {
 	if r.look == nil {
 		return
 	}
+	routed := r.fib != nil
 	var asked []Lookup
 	var reads []RouteRead
 	for _, hold := range r.overlayHolds(nil, nil) {
@@ -87,7 +96,7 @@ func (r *Reconciler) lookUp() {
 		asked = append(asked, Lookup{Family: familyOf(address), Prefix: hold.Destination, Address: address})
 		reads = append(reads, RouteRead{Destination: address})
 	}
-	if r.rt.Sends != nil {
+	if r.rt.Sends != nil && !routed {
 		for _, send := range slices.CompactFunc(slices.SortedFunc(slices.Values(r.rt.Sends()), Send.compare), Send.asksAs) {
 			asked = append(asked, Lookup{Family: familyOf(send.Destination), Address: send.Destination, Source: send.Source, index: send.Interface})
 			reads = append(reads, RouteRead{Source: send.Source, Destination: send.Destination, OIF: uint32(send.Interface), Pair: send.Pair, Mark: schema.UnderlayMark})
@@ -107,7 +116,11 @@ func (r *Reconciler) lookUp() {
 		}
 		r.lookFailed = false
 		for i := range asked {
-			asked[i].Answer, asked[i].Taken = judgeLookup(asked[i].Underlay(), answers[i], r.rt.Interface)
+			if routed {
+				asked[i].Answer, asked[i].Taken = r.fib.judge(asked[i].Prefix, answers[i])
+			} else {
+				asked[i].Answer, asked[i].Taken = judgeLookup(asked[i].Underlay(), answers[i], r.rt.Interface)
+			}
 			if asked[i].index != 0 {
 				asked[i].Interface = cmp.Or(answers[i].OIF, strconv.Itoa(asked[i].index))
 			}
@@ -165,11 +178,7 @@ func (r *Reconciler) reportLookup(level slog.Level, message string, lookup Looku
 // the mesh's whatever table gave it, but for local's, which delivers here
 func judgeLookup(underlay bool, answer BatchAnswer, tun string) (string, bool) {
 	if answer.Err != nil {
-		text := answer.Err.Error()
-		if errno, ok := errors.AsType[syscall.Errno](answer.Err); ok {
-			text = errno.Error()
-		}
-		return fmt.Sprintf("a refusal (%s)", text), !underlay && !errors.Is(answer.Err, syscall.EHOSTUNREACH)
+		return refusal(answer.Err), !underlay && !errors.Is(answer.Err, syscall.EHOSTUNREACH)
 	}
 	route := answer.Route
 	text := "table " + schema.TableID(route.Table).String()
@@ -182,6 +191,44 @@ func judgeLookup(underlay bool, answer BatchAnswer, tun string) (string, bool) {
 		return text, onTun && route.Table != uint32(schema.TableLocal)
 	}
 	return text, !onTun
+}
+
+// refusal is a lookup's error as text, its errno's where it carries one
+func refusal(err error) string {
+	text := err.Error()
+	if errno, ok := errors.AsType[syscall.Errno](err); ok {
+		text = errno.Error()
+	}
+	return fmt.Sprintf("a refusal (%s)", text)
+}
+
+// judgeRoute puts the route an overlay lookup inside the hold at prefix ends
+// at as route(8) prints it, and says whether it is taken. The hold's own
+// reject on the loopback link is the hold's refusal and a route out of tun is
+// the mesh's. Any other route is taken, and so is no route at all, since the
+// hold was read back installed.
+func judgeRoute(prefix netip.Prefix, answer BatchAnswer, tun string) (string, bool) {
+	if answer.Err != nil {
+		return refusal(answer.Err), true
+	}
+	route := answer.Route
+	var hop NextHop
+	if len(route.NextHops) > 0 {
+		hop = route.NextHops[0]
+	}
+	text := route.Prefix.String()
+	if hop.Gateway.IsValid() {
+		text += " via " + hop.Gateway.String()
+	}
+	if hop.Device != "" {
+		text += " on " + hop.Device
+	}
+	reject := route.Type == "unreachable"
+	if reject {
+		text += " reject"
+	}
+	hold := reject && route.Prefix == prefix && hop.Device == Loopback && hop.Gateway.IsLoopback()
+	return text, !hold && hop.Device != tun
 }
 
 // lookupAddress asks outside every assigned prefix where prefix has room,

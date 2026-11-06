@@ -547,3 +547,48 @@ func TestDarwinSelectionPassesTheSwitchOver(t *testing.T) {
 		}
 	}
 }
+
+// lookHost is switchHost answering each longest match from answers, and with
+// ErrNoDefaultRoute for an address it holds none for
+type lookHost struct {
+	*switchHost
+	answers map[netip.Addr]RouteAnswer
+}
+
+func (h *lookHost) Lookup(destination, mask netip.Addr) (RouteAnswer, error) {
+	answer, ok := h.answers[destination]
+	if mask.IsValid() || !ok {
+		return RouteAnswer{}, ErrNoDefaultRoute
+	}
+	return answer, nil
+}
+
+// darwin's lookup half asks the unbound longest match of each read and judges
+// the hold's reject on lo0 as the hold's, another utun's longer route as taken,
+// and no route at all as taken
+func TestDarwinLookupsJudgeTheRouteEachEndsAt(t *testing.T) {
+	plat, _ := testPlatform(t, Table{}, Runtime{})
+	plat.host = &lookHost{switchHost: &switchHost{t: t}, answers: map[netip.Addr]RouteAnswer{
+		addr("192.0.2.1"): {Index: testLoopback, Gateway: addr("127.0.0.1"), Prefix: prefix("192.0.2.0/24"), Reject: true},
+		addr("3fff:c::1"): {Index: testOther, Prefix: prefix("3fff:c::/33")},
+	}}
+	reads := []RouteRead{{Destination: addr("192.0.2.1")}, {Destination: addr("3fff:c::1")}, {Destination: addr("3fff:d::1")}}
+	answers, err := plat.lookups(reads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holds := []netip.Prefix{prefix("192.0.2.0/24"), prefix("3fff:c::/32"), prefix("3fff:d::/32")}
+	want := []struct {
+		text  string
+		taken bool
+	}{
+		{"192.0.2.0/24 via 127.0.0.1 on lo0 reject", false},
+		{"3fff:c::/33 on utun5", true},
+		{"a refusal (network is unreachable)", true},
+	}
+	for i, answer := range answers {
+		if text, taken := plat.judge(holds[i], answer); text != want[i].text || taken != want[i].taken {
+			t.Errorf("the lookup of %s judged %q taken %v, want %q taken %v", reads[i].Destination, text, taken, want[i].text, want[i].taken)
+		}
+	}
+}

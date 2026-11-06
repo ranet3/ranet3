@@ -691,14 +691,46 @@ func (p *routePlatform) holder(destination netip.Prefix) string {
 // describe names a route as route(8) prints one: its destination, its next
 // hop where it has one and its interface
 func (p *routePlatform) describe(destination netip.Prefix, gateway netip.Addr, index int) string {
-	device, err := p.host.InterfaceName(index)
-	if err != nil {
-		device = fmt.Sprintf("interface %d", index)
-	}
 	if gateway.IsValid() {
-		return fmt.Sprintf("%s via %s on %s", destination, gateway, device)
+		return fmt.Sprintf("%s via %s on %s", destination, gateway, p.deviceName(index))
 	}
-	return fmt.Sprintf("%s on %s", destination, device)
+	return fmt.Sprintf("%s on %s", destination, p.deviceName(index))
+}
+
+// deviceName is the name of the interface at index, its index where the host
+// names none
+func (p *routePlatform) deviceName(index int) string {
+	if device, err := p.host.InterfaceName(index); err == nil {
+		return device
+	}
+	return fmt.Sprintf("interface %d", index)
+}
+
+// lookups answers each read by the unbound longest match, as a send naming
+// no interface meets it (rt_lookup_common in bsd/net/route.c). Only the
+// overlay's reads reach it, since nothing here asks under a mark. No route at
+// all is ENETUNREACH, as routeGet answers it.
+func (p *routePlatform) lookups(reads []RouteRead) ([]BatchAnswer, error) {
+	answers := make([]BatchAnswer, len(reads))
+	for i, read := range reads {
+		held, err := p.host.Lookup(read.Destination, netip.Addr{})
+		if errors.Is(err, ErrNoDefaultRoute) {
+			answers[i].Err = fmt.Errorf("kernel: look up the route to %s: %w", read.Destination, unix.ENETUNREACH)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		answers[i].Route = MatchedRoute{Prefix: held.Prefix, Type: "unicast", NextHops: []NextHop{{Device: p.deviceName(held.Index), Gateway: held.Gateway}}}
+		if held.Reject {
+			answers[i].Route.Type = "unreachable"
+		}
+	}
+	return answers, nil
+}
+
+func (p *routePlatform) judge(prefix netip.Prefix, answer BatchAnswer) (string, bool) {
+	return judgeRoute(prefix, answer, p.rt.Interface)
 }
 
 // scopeRoute decides whether a route is installed with RTF_IFSCOPE, which

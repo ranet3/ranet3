@@ -687,19 +687,18 @@ type Reconciler struct {
 	pathVerdict  string
 	pathReported *PathStatus
 
-	// rules is the optional half of the platform, nil where it has no policy
-	// engine
+	// rules, keyer, sw and fib are the platform's optional halves, set by use
+	// with plat: nil where it has no policy engine, writes no hold apart from
+	// the tun and no kill switch, and judges no lookup by the route it ends at
 	rules ruler
-	// keyer and sw are the platform's other optional halves, nil where it
-	// writes no hold apart from the tun and no kill switch, set by use with
-	// plat
 	keyer holdKeyer
 	sw    switcher
-	// look is the platform's lookups, nil where it answers none. lookups is
-	// what the last pass whose batch answered found, lookFailed whether the
-	// last batch failed, and installed what the kernel held for this
-	// reconciler once the last route pass had applied. All four belong to the
-	// reconcile goroutine
+	fib   fibLooker
+	// look is the platform's lookups, nil where it answers none, also set by
+	// use. lookups holds what the last pass whose batch answered found,
+	// lookFailed whether the last batch failed, and installed what the kernel
+	// held for this reconciler once the last route pass had applied. All four
+	// belong to the reconcile goroutine
 	look       looker
 	lookups    []Lookup
 	lookFailed bool
@@ -969,8 +968,6 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 	r.enabled.Store(true)
 	r.inForce.Store(&t)
 	r.use(plat)
-	r.rules, _ = plat.(ruler)
-	r.look, _ = plat.(looker)
 	if rt.Selection != nil {
 		rt.Selection.holdOverlay(rt.Overlay)
 	}
@@ -980,6 +977,9 @@ func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSourc
 // use puts the reconciler on plat with the optional halves it has
 func (r *Reconciler) use(plat platform) {
 	r.plat = plat
+	r.rules, _ = plat.(ruler)
+	r.look, _ = plat.(looker)
+	r.fib, _ = plat.(fibLooker)
 	r.keyer, _ = plat.(holdKeyer)
 	r.sw, _ = plat.(switcher)
 }

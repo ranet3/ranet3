@@ -480,6 +480,7 @@ func TestFullTunnelTakesEveryAddressOutsideTheOverlay(t *testing.T) {
 	reconciler, _, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses...)
 	reconciler.rt.Selection = newFakeSelection(hosts...)
 	reconciler.use(darwinKeyed{kernel, hosts})
+	reconciler.rules = nil
 	for pass := range 2 {
 		if err := reconciler.reconcile(); err != nil {
 			t.Fatalf("pass %d: %v", pass, err)
@@ -527,6 +528,7 @@ func TestRealRouteAtAMemberKeyWithholdsTheMemberBeneathAHostRoute(t *testing.T) 
 			reconciler, table, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses...)
 			reconciler.rt.Selection = newFakeSelection(hosts...)
 			reconciler.use(darwinKeyed{kernel, hosts})
+			reconciler.rules = nil
 			table.Set(netip.Prefix{}, c.real, nil)
 			for pass := range 3 {
 				if err := reconciler.reconcile(); err != nil {
@@ -626,6 +628,7 @@ func TestRealRouteBeneathAHostRouteWithholdsTheMemberInThePassItGoesIn(t *testin
 	reconciler, table, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses...)
 	reconciler.rt.Selection = newFakeSelection(hosts...)
 	reconciler.use(darwinKeyed{kernel, hosts})
+	reconciler.rules = nil
 	real := Route{Destination: prefix("64.0.0.0/2"), Scoped: true}
 	table.Set(netip.Prefix{}, real.Destination, nil)
 	member := Route{Destination: prefix("1.0.0.0/8"), Cover: true, Scoped: true}
