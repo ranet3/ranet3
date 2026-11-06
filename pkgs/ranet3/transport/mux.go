@@ -629,7 +629,7 @@ func (h *Hub) unknownSPI(spi uint32, source netip.AddrPort) {
 		return
 	}
 	for m := range h.muxes {
-		if !sentFrom(m.currentEndpoint(), source) {
+		if !sentFrom(m.Endpoint(), source) {
 			continue
 		}
 		select {
@@ -870,13 +870,7 @@ func (m *Mux) KnowsSPI(spi uint32) bool {
 func (m *Mux) SendIKE(b []byte) error {
 	out := make([]byte, nonESPMarkerLen+len(b))
 	copy(out[nonESPMarkerLen:], b)
-	return m.send([][]byte{out}, m.currentEndpoint())
-}
-
-func (m *Mux) currentEndpoint() Endpoint {
-	m.endpointMu.RLock()
-	defer m.endpointMu.RUnlock()
-	return m.endpoint
+	return m.send([][]byte{out}, m.Endpoint())
 }
 
 // AdoptEndpoint moves this mux to endpoint unless the two are the same destination, and reports whether it moved
@@ -898,11 +892,10 @@ func (m *Mux) AdoptEndpoint(endpoint Endpoint) bool {
 }
 
 // Endpoint is the destination this mux currently sends to, which a NAT may
-// have moved since the session opened. It takes the same lock AdoptEndpoint
-// writes under, so a diagnostic reads one endpoint rather than a torn one.
+// have moved since the session opened.
 func (m *Mux) Endpoint() Endpoint {
-	m.endpointMu.Lock()
-	defer m.endpointMu.Unlock()
+	m.endpointMu.RLock()
+	defer m.endpointMu.RUnlock()
 	return m.endpoint
 }
 
@@ -932,7 +925,7 @@ func (m *Mux) SendESPBatch(bufs [][]byte) error {
 	default:
 	}
 
-	endpoint := m.currentEndpoint()
+	endpoint := m.Endpoint()
 	var report *PathMTUError
 	for len(bufs) != 0 {
 		n := min(len(bufs), espSendBatch)
@@ -1057,7 +1050,7 @@ func (m *Mux) Close() error {
 	m.closeDone(ErrClosed)
 	// a family fragmenting for this mux alone sends with DF again
 	if err := m.Fragment(false); err != nil && !errors.Is(err, errors.ErrUnsupported) {
-		slog.Warn("transport could not stop fragmenting sends for a closed mux", "endpoint", m.currentEndpoint().String(), "err", err)
+		slog.Warn("transport could not stop fragmenting sends for a closed mux", "endpoint", m.Endpoint().String(), "err", err)
 	}
 	if m.ownHub {
 		return m.hub.Close()

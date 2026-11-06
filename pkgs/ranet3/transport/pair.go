@@ -317,7 +317,7 @@ type sendKeyer interface {
 // a bind with no sendKey answers the destination alone
 // it takes only the endpoint's read lock, which sends share
 func (m *Mux) Sends() Send {
-	endpoint := m.currentEndpoint()
+	endpoint := m.Endpoint()
 	if endpoint == nil {
 		return Send{}
 	}

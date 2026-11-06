@@ -51,7 +51,7 @@ func (m *Mux) PathMTU() (int, error) {
 	if !ok {
 		return 0, errors.ErrUnsupported
 	}
-	return bind.readPathMTU(m.currentEndpoint())
+	return bind.readPathMTU(m.Endpoint())
 }
 
 // Fragment lets the host fragment sends to the mux's endpoint past the path MTU, or stops that
@@ -67,7 +67,7 @@ func (m *Mux) Fragment(on bool) error {
 	m.fragmentMu.Lock()
 	defer m.fragmentMu.Unlock()
 	// a closed mux takes nothing, so Close leaves no family fragmenting behind it
-	endpoint := m.currentEndpoint()
+	endpoint := m.Endpoint()
 	on = on && !m.closed.Load()
 	if m.fragmented != nil && (!on || m.fragmented != endpoint) {
 		if err := bind.fragment(m.fragmented, false); err != nil {
@@ -87,5 +87,5 @@ func (m *Mux) Fragment(on bool) error {
 // DontFragment reports whether sends to the mux's endpoint leave with DF now, which a probe needs to measure the path
 func (m *Mux) DontFragment() bool {
 	bind, ok := m.hub.bind.(pathBind)
-	return ok && bind.dontFragment(m.currentEndpoint())
+	return ok && bind.dontFragment(m.Endpoint())
 }
