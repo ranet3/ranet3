@@ -46,15 +46,6 @@ func DecodeRouterID(body []byte) (id [8]byte, ignore bool, err error) {
 	return id, false, nil
 }
 
-// NextHop TLV, RFC 8966 section 4.6.8.
-func EncodeNextHop(addr net.IP) RawTLV {
-	ae, a := encodeAddress(addr)
-	body := make([]byte, 2+len(a))
-	body[0] = ae
-	copy(body[2:], a)
-	return RawTLV{Type: TLVNextHop, Body: body}
-}
-
 // DecodeNextHop returns the next hop, the address encoding that named it, and
 // whether the TLV is otherwise ignored. The encoding is reported rather than
 // inferred from the address: RFC 8966 section 4.6.9 pairs an Update with "the

@@ -10,27 +10,6 @@ import (
 	"time"
 )
 
-// handlePacket takes one Babel payload the way Receive does, without the outer
-// IPv6 and UDP headers. Nothing in production calls it, because Receive is the
-// entry the transport reaches. It is here for the protocol tests that supply a
-// bare payload, and it takes the same lock and the same wake decision so that
-// what those tests drive is the path the transport drives.
-func (s *Speaker) handlePacket(n *neighborState, raw []byte) {
-	s.mu.Lock()
-	if s.neighbors[n.peer.ID] != n {
-		s.mu.Unlock()
-		return
-	}
-	actions, acked := s.handlePacketLocked(n, raw, time.Now())
-	send := s.emitLocked(actions)
-	s.wakeForPacketLocked()
-	s.mu.Unlock()
-	send()
-	for _, nonce := range acked {
-		s.probeAcked(n.peer, nonce)
-	}
-}
-
 // handlePacketLocked returns what the packet is answered with and the nonce of every Ack it carries
 // the caller reports the nonces once s.mu is released
 func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time) (actions []sendAction, acked []uint16) {

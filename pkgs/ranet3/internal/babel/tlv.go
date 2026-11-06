@@ -148,15 +148,6 @@ func findSubTLV(subs []SubTLV, t uint8) ([]byte, bool) {
 	return nil, false
 }
 
-// full-length address encoding (Hello has none, but IHU and NextHop use this)
-
-func encodeAddress(addr net.IP) (ae uint8, body []byte) {
-	if v4 := addr.To4(); v4 != nil {
-		return AEIPv4, v4
-	}
-	return AEIPv6, addr.To16()
-}
-
 func decodeAddress(ae uint8, body []byte) (net.IP, error) {
 	switch ae {
 	case AEIPv4:

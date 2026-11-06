@@ -696,6 +696,7 @@ func originatedKey(dest, source netip.Prefix) (routeKey, bool) {
 }
 
 // Passes is how many times the run loop has reselected the whole route table.
+// Only tests read it, babel's and internal/client's reload tests.
 func (s *Speaker) Passes() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
