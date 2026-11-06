@@ -11,7 +11,7 @@ import (
 // dial is a mux to remoteIP and remotePort on a hub of its own at an ephemeral port, the hub closed when the test ends
 func dial(t *testing.T, remoteIP net.IP, remotePort int) *Mux {
 	t.Helper()
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

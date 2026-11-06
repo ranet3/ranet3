@@ -120,7 +120,7 @@ func TestProbeRefusedPastThePathIsNoFailedSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub, err := transport.NewHub(":0", transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

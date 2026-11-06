@@ -122,7 +122,7 @@ func TestPackReceivedBatchDetachesReusableBuffers(t *testing.T) {
 }
 
 func TestHubFailureIsTerminal(t *testing.T) {
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestSendOnAClosedMuxAnswersErrClosed(t *testing.T) {
 		{"its hub's failed read", func(h *Hub, _ *Mux) { h.readFailed(errors.New("receive failed")) }, false},
 	} {
 		t.Run(closing.name, func(t *testing.T) {
-			hub, err := NewHub(":0", Runtime{})
+			hub, err := NewHub(0, Runtime{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -296,7 +296,7 @@ func TestSendIKEToReceivedSourceEndpoint(t *testing.T) {
 			configured := listenPeer(t, "udp4", "127.0.0.1")
 			rebound := listenPeer(t, "udp4", "127.0.0.1")
 			configuredAddr := configured.LocalAddr().(*net.UDPAddr)
-			hub, err := NewHub(":0", Runtime{})
+			hub, err := NewHub(0, Runtime{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -461,7 +461,7 @@ func TestRecvESPAndIKEDemux(t *testing.T) {
 func TestHubRoutesBySPIAndMuxCloseDoesNotCloseHub(t *testing.T) {
 	server := listenPeer(t, "udp4", "127.0.0.1")
 	serverAddr := server.LocalAddr().(*net.UDPAddr)
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +504,7 @@ func TestHubRoutesBySPIAndMuxCloseDoesNotCloseHub(t *testing.T) {
 }
 
 func TestListenDeliversUnclaimedIKEAndNewMuxToAnswers(t *testing.T) {
-	h, err := NewHub(":0", Runtime{})
+	h, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +566,7 @@ func TestListenDeliversUnclaimedIKEAndNewMuxToAnswers(t *testing.T) {
 
 // a responder stopped and started again answers only handshakes that arrived while it was on
 func TestStoppedListenDropsWhatItQueuedAndQueuesNothingUntilListenAgain(t *testing.T) {
-	h, err := NewHub(":0", Runtime{})
+	h, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,7 +614,7 @@ func TestStoppedListenDropsWhatItQueuedAndQueuesNothingUntilListenAgain(t *testi
 }
 
 func TestHubDoneIsClosedOnFailure(t *testing.T) {
-	h, err := NewHub(":0", Runtime{})
+	h, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,7 +701,7 @@ func TestEveryESPReceivePathReleasesItsBudget(t *testing.T) {
 // to stall the dataplane. The copy onto the heap has to come after that
 // decision, or the flood is paid for in allocation whether it is kept or not.
 func TestFloodOfUnclaimedIKEDatagramsIsNotCopied(t *testing.T) {
-	hub, err := NewHub("127.0.0.1:0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -748,7 +748,7 @@ func TestFloodOfUnclaimedIKEDatagramsIsNotCopied(t *testing.T) {
 // reach Hub.Listen: the flood that costs something is aimed at ikeCh, which
 // holds sixteen. The copy has to come after the queue is tested there too.
 func TestFloodOnMuxIKEQueueIsNotCopied(t *testing.T) {
-	hub, err := NewHub("127.0.0.1:0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -842,7 +842,7 @@ func TestEachESPByteBoundRefusesOnItsOwn(t *testing.T) {
 // A mux claiming it would be handed every datagram carrying one, which is the
 // same reason the ESP side refuses a zero SPI.
 func TestZeroSPIIsRefusedOnBothProtocols(t *testing.T) {
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -871,7 +871,7 @@ func TestZeroSPIIsRefusedOnBothProtocols(t *testing.T) {
 // datagram is a synchronous write to stderr per packet.
 func TestFullReceiveQueueIsCountedAndReportedOnce(t *testing.T) {
 	logs := captureTransportLogs(t)
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +912,7 @@ func captureTransportLogs(t *testing.T) *bytes.Buffer {
 // that from silence, and from a receive path that is merely behind, which is
 // what the other counter means.
 func TestDatagramsWithNowhereToGoAreCounted(t *testing.T) {
-	hub, err := NewHub("127.0.0.1:0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1192,7 +1192,7 @@ func TestMuxCarriesOnPastAPathReport(t *testing.T) {
 // it is not this node falling behind on receive, which is the one thing the
 // other counter says, so it has to land on the refused one.
 func TestUnclaimedFloodDoesNotReadAsBeingBehind(t *testing.T) {
-	hub, err := NewHub("127.0.0.1:0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1241,7 +1241,7 @@ func TestUnclaimedFloodDoesNotReadAsBeingBehind(t *testing.T) {
 // an arm that reaches no Mux and raises nothing leaves an operator with an
 // accounting that does not add up.
 func TestNATKeepaliveIsIgnoredRatherThanCounted(t *testing.T) {
-	hub, err := NewHub("127.0.0.1:0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

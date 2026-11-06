@@ -629,7 +629,7 @@ func TestReloadTheReconcilerRefusesChangesNothing(t *testing.T) {
 	})
 	segmentsOf(t, c)
 	speakerRecording(t, c, bus)
-	hub, err := transport.NewHub(":0", transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

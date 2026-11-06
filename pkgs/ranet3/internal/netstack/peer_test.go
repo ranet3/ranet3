@@ -25,7 +25,7 @@ import (
 func endpointTo(t *testing.T, address string) transport.Endpoint {
 	t.Helper()
 	to := netip.MustParseAddrPort(address)
-	hub, err := transport.NewHub(":0", transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

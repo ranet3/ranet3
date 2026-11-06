@@ -195,7 +195,7 @@ func TestCanceledDialIsNoFailure(t *testing.T) {
 	loopback := "127.0.0.1"
 	reg[0].Nodes[1].Endpoints[0].Address = &loopback
 	reg[0].Nodes[1].Endpoints[0].Port = uint16(silent.LocalAddr().(*net.UDPAddr).Port)
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestDialLineBracketsAnIPv6Endpoint(t *testing.T) {
 	reg[0].Nodes[1].Endpoints[0].Address = &loopback
 	reg[0].Nodes[1].Endpoints[0].Port = uint16(silent.LocalAddr().(*net.UDPAddr).Port)
 	cfg.Link.Endpoints[0].Family = "ip6"
-	hub, err := transport.NewHub("[::1]:0", transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

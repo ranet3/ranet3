@@ -130,7 +130,7 @@ func loopbackNamespace() error {
 func TestPairSocketLeavesAnAddressTheHostLost(t *testing.T) {
 	far, link, netlink := vethPair(t, 1, pairAddresses)
 	index := link.Index
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestPairSocketLeavesAnAddressTheHostLost(t *testing.T) {
 // the hub's mark routes the far end through the locked route
 func TestPairSocketFollowsItsFamilyAcrossALockedPath(t *testing.T) {
 	far, _ := lockedFarEnd(t)
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ const reportedPathMTU = 1280
 // the far end forges each report from a raw socket in its namespace, so it arrives by the interface the pair sends by
 func TestPairSocketKeepsItsPairPastAHopsPathReport(t *testing.T) {
 	far, _, _ := vethPair(t, 2, nearAddresses)
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestPairSocketLeavesByTheInterfaceItsPeerArrivedOn(t *testing.T) {
 			t.Fatalf("route %s over link %d: %v", route.to, route.index, err)
 		}
 	}
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +445,7 @@ func TestPairBindsTheSourceOfTheRouteTheUnderlayMarkSelects(t *testing.T) {
 			t.Fatalf("route %s over the dummy link: %v", to, err)
 		}
 	}
-	hub, err := NewHub(":0", Runtime{})
+	hub, err := NewHub(0, Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}

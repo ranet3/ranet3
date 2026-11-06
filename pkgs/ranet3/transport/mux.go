@@ -324,18 +324,11 @@ type espChain struct {
 	marked bool
 }
 
-// NewHub binds the one UDP socket every session shares, on localAddr's port
-// and on all local IPv4 and IPv6 interfaces. rt carries what the caller
-// resolved at startup.
-func NewHub(localAddr string, rt Runtime) (*Hub, error) {
-	laddr, err := net.ResolveUDPAddr("udp", localAddr)
-	if err != nil {
-		return nil, fmt.Errorf("transport: resolve local addr: %w", err)
-	}
-	if laddr.IP != nil && !laddr.IP.IsUnspecified() {
-		slog.Warn(fmt.Sprintf("transport: binding to a specific local address (%s) is not supported, binding all interfaces on port %d instead", laddr.IP, laddr.Port))
-	}
-	bind, fns, port, err := openPacketBind(uint16(laddr.Port), rt.Selection, rt.Events)
+// NewHub binds the one UDP socket every session shares, on port, an ephemeral
+// one where it is zero, and on all local IPv4 and IPv6 interfaces. rt carries
+// what the caller resolved at startup.
+func NewHub(port uint16, rt Runtime) (*Hub, error) {
+	bind, fns, port, err := openPacketBind(port, rt.Selection, rt.Events)
 	if err != nil {
 		return nil, fmt.Errorf("transport: open bind: %w", err)
 	}

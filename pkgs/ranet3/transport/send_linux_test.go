@@ -1123,7 +1123,7 @@ func TestUnchangedAdoptionKeepsWhatSendsLearned(t *testing.T) {
 // the kernel's own answer to a source the host does not hold, through the hub's own events
 func TestKernelRefusesAGoneSourceAndTheHubFallsBack(t *testing.T) {
 	events := &eventLog{}
-	hub, err := NewHub(":0", Runtime{Events: events.record})
+	hub, err := NewHub(0, Runtime{Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -798,7 +798,7 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 	// the zero it has with the counting deleted. Overflowing that queue is not
 	// this node falling behind on receive, which the other counter reports,
 	// so it is the refused one this drives.
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1675,7 +1675,7 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 	// A port nothing listens on, so a dial that happens anyway cannot succeed
 	// and cannot be mistaken for the stand-down.
 	reg[0].Nodes[1].Endpoints[0].Address = &loopback
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1715,7 +1715,7 @@ func TestDialerStandsDownBehindAPreferredSessionUntilItEnds(t *testing.T) {
 	loopback := "127.0.0.1"
 	// a port nothing listens on, so the dial once the session ends fails without a session
 	reg[0].Nodes[1].Endpoints[0].Address = &loopback
-	hub, err := transport.NewHub("127.0.0.1:0", transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
