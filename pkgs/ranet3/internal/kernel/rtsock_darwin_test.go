@@ -430,6 +430,32 @@ func TestLinkWatcherNamesTheInterfaceItSkips(t *testing.T) {
 	}
 }
 
+// a reader of the monitor reads its socket through readNotifications: an error wakes the monitor, the message after the error
+// wakes it again, and Close ends the backoff two errors in a row leave the reader in, though the reader's socket is not one Close
+// closes
+func TestDarwinRouteMonitorReadsOnAndClosesWhilePaused(t *testing.T) {
+	file, other, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	monitor := &routeMonitor{file: file, signal: make(chan struct{}, 1), stop: make(chan struct{})}
+	source := newScriptedSource(nil)
+	monitor.readers.Go(func() { monitor.read("scripted", source, func([]byte) bool { return true }) })
+	t.Cleanup(func() {
+		_ = source.Close()
+		_ = monitor.Close()
+	})
+	source.queue <- scriptedRead{err: unix.EBADF}
+	awaitWake(t, monitor.signal, "an error")
+	source.queue <- scriptedRead{datagram: routeMessageBytes(t, unix.RTM_ADD, 4, 1, 0)}
+	awaitWake(t, monitor.signal, "a message after the error")
+	source.queue <- scriptedRead{err: unix.EBADF}
+	source.queue <- scriptedRead{err: unix.EBADF}
+	waitFor(t, func() bool { return source.reads.Load() == 4 })
+	awaitClose(t, monitor.Close)
+}
+
 // routeMessageBytes is the fixed header of one routing message, which is all
 // the monitor decodes.
 func routeMessageBytes(t *testing.T, kind, index int, pid uintptr, errno uint32) []byte {

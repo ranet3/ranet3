@@ -9,7 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log/slog"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -295,6 +295,9 @@ type routeMonitor struct {
 	// that made it.
 	self   uintptr
 	signal chan struct{}
+	// stop ends a reader's backoff before Close closes its socket
+	stop    chan struct{}
+	closing sync.Once
 	// readers is the reader of each socket, which Close waits for.
 	readers sync.WaitGroup
 }
@@ -308,6 +311,7 @@ func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 		skip:   skip,
 		self:   uintptr(os.Getpid()),
 		signal: make(chan struct{}, 1),
+		stop:   make(chan struct{}),
 	}
 	if index == 0 {
 		if skip != 0 {
@@ -342,15 +346,10 @@ func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 	// poller and Close unblocks the reader without racing on the descriptor.
 	monitor.file = os.NewFile(uintptr(fd), "pf-route-monitor")
 	// no sweep reads the host's routes again for a monitor of every interface, as the reconciler's does for its own
-	stopped := "kernel route monitor stopped, falling back to the periodic sweep"
-	if index == 0 {
-		stopped = "kernel route monitor stopped, so the underlay's selection and the network watch see a change only where it posts a kernel event"
-	}
-	monitor.readers.Go(func() { monitor.read(monitor.file, monitor.interesting, stopped) })
+	monitor.readers.Go(func() { monitor.read(monitor.file.Name(), monitor.file, monitor.interesting) })
 	if monitor.events != nil {
 		monitor.readers.Go(func() {
-			monitor.read(monitor.events, func(raw []byte) bool { return kernelEventWakes(raw, monitor.skipName) },
-				"kernel event monitor stopped, so the underlay's selection and the network watch see a link's change only where it sends a routing message")
+			monitor.read(monitor.events.Name(), monitor.events, func(raw []byte) bool { return kernelEventWakes(raw, monitor.skipName) })
 		})
 	}
 	return monitor, nil
@@ -388,26 +387,16 @@ func (m *routeMonitor) closeEvents() {
 	}
 }
 
-// read wakes the monitor on each datagram of file that wakes reports as a change, until file closes
-// any other error would spin, so it wakes the monitor, warns with stopped and stops
-func (m *routeMonitor) read(file *os.File, wakes func([]byte) bool, stopped string) {
+// read wakes the monitor on each datagram of source, one of its sockets in production, that wakes reports as a change, until Close
+func (m *routeMonitor) read(name string, source io.Reader, wakes func([]byte) bool) {
 	// either socket delivers one message per read and drops the rest of one
 	// that does not fit, so the buffer is far larger than the longest one the
 	// kernel can send.
-	buf := make([]byte, 8192)
-	for {
-		n, err := file.Read(buf)
-		if err != nil {
-			if !errors.Is(err, os.ErrClosed) {
-				m.wake()
-				slog.Warn(stopped, "err", err)
-			}
-			return
-		}
-		if wakes(buf[:n]) {
+	readNotifications(name, source, make([]byte, 8192), m.stop, m.wake, func(datagram []byte) {
+		if wakes(datagram) {
 			m.wake()
 		}
-	}
+	})
 }
 
 // Offsets into darwin's rt_msghdr, from net/route.h. The fixed header is
@@ -497,6 +486,7 @@ func (m *routeMonitor) wake() {
 }
 
 func (m *routeMonitor) Close() error {
+	m.closing.Do(func() { close(m.stop) })
 	err := m.file.Close()
 	if m.events != nil {
 		err = errors.Join(err, m.events.Close())

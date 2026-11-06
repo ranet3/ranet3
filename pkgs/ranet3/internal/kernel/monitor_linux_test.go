@@ -73,6 +73,40 @@ func TestRouteMonitorWakesOnTheTunsAddresses(t *testing.T) {
 	}
 }
 
+// notification is one datagram holding one netlink message of kind with body
+func notification(kind uint16, body []byte) []byte {
+	datagram := make([]byte, unix.SizeofNlMsghdr+len(body))
+	binary.NativeEndian.PutUint32(datagram, uint32(len(datagram)))
+	binary.NativeEndian.PutUint16(datagram[4:], kind)
+	copy(datagram[unix.SizeofNlMsghdr:], body)
+	return datagram
+}
+
+// the monitor reads its socket through readNotifications: an error wakes it, the notification after the error and a datagram that
+// does not parse each wake it again, and Close ends the backoff two errors in a row leave it in, its goroutine with it
+func TestRouteMonitorReadsOnAndClosesWhilePaused(t *testing.T) {
+	source := newScriptedSource(nil)
+	monitor := startMonitor("scripted", source, func(message nlMessage) bool { return message.Kind == unix.RTM_NEWADDR })
+	t.Cleanup(func() { _ = monitor.Close() })
+	source.queue <- scriptedRead{err: unix.EMSGSIZE}
+	awaitWake(t, monitor.signal, "EMSGSIZE")
+	source.queue <- scriptedRead{datagram: notification(unix.RTM_NEWADDR, hostAddrMessage(2, prefix("192.0.2.10/24")))}
+	awaitWake(t, monitor.signal, "an address after the error")
+	runsPast := notification(unix.RTM_NEWADDR, nil)
+	binary.NativeEndian.PutUint32(runsPast, uint32(2*len(runsPast)))
+	source.queue <- scriptedRead{datagram: runsPast}
+	awaitWake(t, monitor.signal, "a datagram whose length runs past its end")
+	source.queue <- scriptedRead{err: unix.EMSGSIZE}
+	source.queue <- scriptedRead{err: unix.EMSGSIZE}
+	waitFor(t, func() bool { return source.reads.Load() == 5 })
+	awaitClose(t, monitor.Close)
+	select {
+	case <-monitor.done:
+	default:
+		t.Error("the monitor's goroutine still runs after Close returned")
+	}
+}
+
 // addressWakeBudget is how soon a pass follows another writer's address on the tun
 // the periodic sweep alone takes DefaultReconcileInterval
 const addressWakeBudget = time.Second

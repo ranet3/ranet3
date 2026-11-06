@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -253,6 +254,165 @@ func TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault(t *testing.T) {
 		}
 	case <-time.After(quietWindow):
 		t.Error("a default in main signaled nothing")
+	}
+}
+
+// heldSocket is a monitor's socket whose reads wait while a test holds them, as a reader too slow for a burst does
+// a read waits for gate, which is closed while reads pass
+type heldSocket struct {
+	*os.File
+	mu       sync.Mutex
+	gate     chan struct{}
+	overruns atomic.Int32
+}
+
+func newHeldSocket(file *os.File) *heldSocket {
+	gate := make(chan struct{})
+	close(gate)
+	return &heldSocket{File: file, gate: gate}
+}
+
+func (s *heldSocket) hold() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gate = make(chan struct{})
+}
+
+func (s *heldSocket) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.gate:
+	default:
+		close(s.gate)
+	}
+}
+
+func (s *heldSocket) Read(buf []byte) (int, error) {
+	s.mu.Lock()
+	gate := s.gate
+	s.mu.Unlock()
+	<-gate
+	n, err := s.File.Read(buf)
+	if errors.Is(err, unix.ENOBUFS) {
+		s.overruns.Add(1)
+	}
+	return n, err
+}
+
+// overrunFill is how many notifications that wake nothing fill the monitor's queue at its floor before the burst
+// overrunBurst is how many addresses the burst then adds, every one of them past the queue
+const overrunFill, overrunBurst = 16, 256
+
+// a burst past the monitor's receive buffer costs it the burst's notifications, and the ENOBUFS it reads then wakes the watch,
+// which reads the burst whole within quietWindow, and an address after it still signals
+// the queue holds only what wakes nothing when the monitor reads again, so ENOBUFS is the burst's only wake
+func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
+	const uplinkName = "ranetuplink0"
+	createTUN(t, uplinkName)
+	uplink, err := conn.link(0, uplinkName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, uplink.index, unix.IFF_UP)
+
+	file, err := monitorSocket("rtnetlink-netwatch", watchGroups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := file.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shrunk error
+	if err := raw.Control(func(fd uintptr) { shrunk = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF, 0) }); err != nil {
+		t.Fatal(err)
+	}
+	if shrunk != nil {
+		t.Fatalf("shrink the monitor's receive buffer: %v", shrunk)
+	}
+	socket := newHeldSocket(file)
+	monitor := startMonitor("rtnetlink-netwatch", socket, hostWakes(0))
+	reader, err := dialNetlink()
+	if err != nil {
+		_ = monitor.Close()
+		t.Fatal(err)
+	}
+	w, err := newNetworkWatch(monitor.signal, hostReader{conn: reader}.read, func() error { return errors.Join(monitor.Close(), reader.Close()) })
+	if err != nil {
+		t.Fatalf("open the watch: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	time.Sleep(quietWindow)
+	drainChanges := func() {
+		for {
+			select {
+			case <-w.Changes():
+			default:
+				return
+			}
+		}
+	}
+	drainChanges()
+
+	socket.hold()
+	t.Cleanup(socket.release)
+	add := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL | unix.NLM_F_ACK)
+	for i := range overrunFill {
+		route := hostRouteMessage(otherTable, uplink.index, netip.PrefixFrom(netip.AddrFrom4([4]byte{203, 0, 113, byte(i)}), 32), netip.Addr{})
+		if _, err := conn.execute(unix.RTM_NEWROUTE, add, route); err != nil {
+			t.Fatalf("route %d in another table: %v", i, err)
+		}
+	}
+	for i := range overrunBurst {
+		if _, err := conn.execute(unix.RTM_NEWADDR, add, hostAddrMessage(uplink.index, netip.PrefixFrom(netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}), 32))); err != nil {
+			t.Fatalf("address %d: %v", i, err)
+		}
+	}
+	socket.release()
+
+	fresh := hostReader{conn: conn}
+	caughtUp := func() bool {
+		want, err := fresh.read()
+		if err != nil {
+			t.Fatalf("read the host: %v", err)
+		}
+		got, _ := w.State()
+		return len(NetworkChange{Before: got, After: want}.Families()) == 0
+	}
+	deadline := time.Now().Add(quietWindow)
+	for !caughtUp() {
+		if time.Now().After(deadline) {
+			got, _ := w.State()
+			t.Fatalf("%d overrun(s) later the watch still reads %d IPv4 addresses, not the burst's %d", socket.overruns.Load(), len(got.IPv4.Addresses), overrunBurst)
+		}
+		time.Sleep(waitPoll)
+	}
+	if socket.overruns.Load() == 0 {
+		t.Fatal("the burst never overran the monitor, so the watch followed it by its notifications")
+	}
+
+	drainChanges()
+	if _, err := conn.execute(unix.RTM_NEWADDR, add, hostAddrMessage(uplink.index, prefix("192.0.2.77/32"))); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case change := <-w.Changes():
+		if moved := change.Families(); len(moved) != 1 || !slices.Equal(moved[0].Added, addrs("192.0.2.77")) {
+			t.Errorf("an address after the overrun signaled %+v", moved)
+		}
+	case <-time.After(quietWindow):
+		t.Error("an address after the overrun signaled nothing")
 	}
 }
 

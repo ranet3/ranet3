@@ -9,12 +9,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/netip"
 	"os"
 	"slices"
 	"strconv"
+	"sync"
 
 	"golang.org/x/sys/unix"
 )
@@ -460,9 +462,13 @@ func promoteSecondaries(conn netlinkConn, index uint32) error {
 // systemd-networkd removes every rule it did not ask for when it configures a link
 // the network watch reads its own groups through the same type
 type routeMonitor struct {
-	file    *os.File
+	name    string
+	source  io.ReadCloser
 	wakesOn func(nlMessage) bool
 	signal  chan struct{}
+	// stop ends a backoff before Close closes source
+	stop    chan struct{}
+	closing sync.Once
 	done    chan struct{}
 }
 
@@ -477,6 +483,14 @@ const reconcilerGroups = uint32(unix.RTMGRP_IPV4_ROUTE | unix.RTMGRP_IPV6_ROUTE 
 
 // openMonitor joins groups and wakes once per datagram holding a message wakesOn takes
 func openMonitor(name string, groups uint32, wakesOn func(nlMessage) bool) (*routeMonitor, error) {
+	file, err := monitorSocket(name, groups)
+	if err != nil {
+		return nil, err
+	}
+	return startMonitor(name, file, wakesOn), nil
+}
+
+func monitorSocket(name string, groups uint32) (*os.File, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK,
 		unix.SOCK_RAW|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.NETLINK_ROUTE)
 	if err != nil {
@@ -491,46 +505,31 @@ func openMonitor(name string, groups uint32, wakesOn func(nlMessage) bool) (*rou
 	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, monitorReceiveBuffer)
 	// the socket is nonblocking, so os.NewFile registers it with the runtime
 	// poller and Close unblocks the reader without racing on the descriptor.
+	return os.NewFile(uintptr(fd), name), nil
+}
+
+func startMonitor(name string, source io.ReadCloser, wakesOn func(nlMessage) bool) *routeMonitor {
 	monitor := &routeMonitor{
-		file:    os.NewFile(uintptr(fd), name),
+		name:    name,
+		source:  source,
 		wakesOn: wakesOn,
 		signal:  make(chan struct{}, 1),
+		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 	}
 	go monitor.run()
-	return monitor, nil
+	return monitor
 }
 
 func (m *routeMonitor) run() {
 	defer close(m.done)
-	buf := make([]byte, monitorReadSize)
-	for {
-		n, err := m.file.Read(buf)
-		if err != nil {
-			if errors.Is(err, os.ErrClosed) {
-				return
-			}
-			// ENOBUFS means notifications were dropped, which is exactly when
-			// a reconcile is most needed. Anything else is unexpected and
-			// would spin, so it is reported and the monitor stops. The
-			// periodic sweep in Run remains as the backstop.
-			m.wake()
-			if errors.Is(err, unix.ENOBUFS) {
-				slog.Debug("kernel notifications dropped, resyncing", "socket", m.file.Name())
-				continue
-			}
-			slog.Warn("kernel notifications stopped", "socket", m.file.Name(), "err", err)
-			return
-		}
-		messages, err := parseMessages(buf[:n])
-		if err != nil {
-			m.wake() // a notification we could not parse still means something changed
-			continue
-		}
-		if slices.ContainsFunc(messages, m.wakesOn) {
+	readNotifications(m.name, m.source, make([]byte, monitorReadSize), m.stop, m.wake, func(datagram []byte) {
+		messages, err := parseMessages(datagram)
+		// a notification that does not parse still means something changed
+		if err != nil || slices.ContainsFunc(messages, m.wakesOn) {
 			m.wake()
 		}
-	}
+	})
 }
 
 // reconcilerWakes takes a notification touching what the reconciler owns
@@ -573,7 +572,8 @@ func (m *routeMonitor) wake() {
 }
 
 func (m *routeMonitor) Close() error {
-	err := m.file.Close()
+	m.closing.Do(func() { close(m.stop) })
+	err := m.source.Close()
 	<-m.done
 	return err
 }

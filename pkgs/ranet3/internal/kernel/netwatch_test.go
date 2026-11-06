@@ -338,6 +338,18 @@ func TestNetworkWatchStartsItsBackoffOverAfterARead(t *testing.T) {
 // closeBudget is how soon Close returns while the watch or a monitor waits out a backoff, well under its first delay
 const closeBudget = minRetryInterval / 4
 
+// awaitClose fails the test unless shut returns within closeBudget
+func awaitClose(t *testing.T, shut func() error) {
+	t.Helper()
+	closed := make(chan error, 1)
+	go func() { closed <- shut() }()
+	select {
+	case <-closed:
+	case <-time.After(closeBudget):
+		t.Fatalf("Close waited out the backoff, more than %v", closeBudget)
+	}
+}
+
 // Close ends the wait for a retry at once, and the watch's goroutine ends with it
 func TestNetworkWatchClosesWhileRetrying(t *testing.T) {
 	host := &scriptedHost{state: withAddress("192.0.2.1")}
@@ -351,13 +363,7 @@ func TestNetworkWatchClosesWhileRetrying(t *testing.T) {
 	notify <- struct{}{}
 	// each failure leaves the watch waiting out a backoff of at least minRetryInterval, which Close must end at once
 	waitFor(t, func() bool { return host.readCount() >= 3 })
-	closed := make(chan error, 1)
-	go func() { closed <- w.Close() }()
-	select {
-	case <-closed:
-	case <-time.After(closeBudget):
-		t.Fatalf("Close waited out the backoff, more than %v", closeBudget)
-	}
+	awaitClose(t, w.Close)
 	select {
 	case <-w.done:
 	default:
