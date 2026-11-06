@@ -272,6 +272,39 @@ func TestDebugRouteFollowsAReadIntoTheMesh(t *testing.T) {
 	}
 }
 
+// This host's own packet to an address of this node's own that the kernel routes into the tun, as macOS routes one, goes on through the mesh's checks
+// which deliver it where the tun holds the address, the mesh writing it back into the tun, and drop it as looped where it does not, as ExplainRead names each
+// and the walk counts and writes nothing
+func TestDebugRouteFollowsAReadToAnAddressTheTunHolds(t *testing.T) {
+	own := netip.MustParseAddr("192.0.2.2")
+	intoTun := kernel.MatchedRoute{Prefix: netip.MustParsePrefix("192.0.2.2/32"), Table: 254, Type: "unicast", NextHops: []kernel.NextHop{{Device: "ranet0"}}}
+	for _, held := range []bool{false, true} {
+		c, _, written := meshRouteClient(t, intoTun, nil, nil)
+		if held {
+			c.Mesh.SetTunAddresses([]netip.Addr{own})
+		}
+		info, err := c.DebugRoute(own, own, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		decision, reason := netstack.TraceDrop, "looped"
+		if held {
+			decision, reason = netstack.TraceDeliver, ""
+		}
+		explained := c.Mesh.ExplainRead(routePacket(own, own))
+		m := info.Mesh
+		if m == nil || !info.Kernel.IntoTun || m.Decision != decision.String() || m.Reason != reason || explained.Decision != decision || m.Matched != netip.MustParsePrefix("192.0.2.2/32") {
+			t.Fatalf("with the tun holding %s %v, the mesh reads %+v, want %s %q as ExplainRead names it %+v", own, held, m, decision, reason, explained)
+		}
+		if got := c.Mesh.TransitCounters(); got != (netstack.TransitCounters{}) {
+			t.Errorf("the walk counted %+v", got)
+		}
+		if n := len(written.taken()); n != 0 {
+			t.Errorf("the walk wrote %d packets to the tun", n)
+		}
+	}
+}
+
 // The view's walk moves no counter, the answers sent and withheld among them, records nothing, and hands nothing to the tun or the exit
 // over a session's packets, a segment's and a read's, each followed more times than one source's bucket of ICMP tokens holds
 func TestDebugRouteSpendsNothing(t *testing.T) {

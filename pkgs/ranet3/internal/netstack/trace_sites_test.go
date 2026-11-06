@@ -52,12 +52,13 @@ func deliverTraced(n *transitNode, feed *TraceFeed, packets ...[]byte) []TraceRe
 	return queued(feed)
 }
 
-// tracedLeaf is carriedLeaf, its peer carrying tracedMTU and its IPv4 answers a TTL of 64, with a feed selecting every packet
+// tracedLeaf is carriedLeaf, its peer carrying tracedMTU, its IPv4 answers a TTL of 64 and its tun holding edgeHeld, with a feed selecting every packet
 func tracedLeaf(t testing.TB) (*Mesh, *TraceFeed) {
 	t.Helper()
 	m, peer := carriedLeaf(t)
 	peer.SetMTU(tracedMTU)
 	m.SetAnswerTTL(64)
+	holdOwn(m)
 	return m, openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
 }
 
@@ -184,6 +185,7 @@ var outcomeCases = func() []outcomeCase {
 		{"a read from the LAN to the internet", transitUnownedSource, classified(udp(4, edgeLAN, edgeInternet, 100, false)), read(TraceDrop, "unowned_source")},
 		{"a read carrying a carried packet", transitNested, classified(encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udp(6, transitOwn, transitFar, 100, false)))), read(TraceDrop, "nested")},
 		{"a read to this node", transitLooped, classified(udp(4, transitOwn, edgeAssigned, 100, false)), read(TraceDrop, "looped")},
+		{"a read to an address the tun holds", transitDelivered, classified(udp(6, transitOwn, edgeHeld, 100, false)), read(TraceDeliver, "")},
 		{"a read queued for its peer", transitForwarded, classified(udp(4, transitOwn, transitFar, 100, false)), with(read(TraceForward, ""), func(r *TraceRecord) { r.Next = "peer" })},
 		{"a read a policy steers", transitForwarded, func(t *testing.T) []TraceRecord {
 			m, batch, _ := classifyRead(t, oneSteeredRead)

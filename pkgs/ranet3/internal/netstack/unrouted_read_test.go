@@ -4,9 +4,12 @@
 package netstack
 
 import (
+	"bytes"
+	"encoding/binary"
 	"net/netip"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -129,6 +132,223 @@ func TestTunReadIsLeftUnansweredWhereItLoopsOrItsSourceIsSpent(t *testing.T) {
 		}
 		if looped, dropped, answered := m.transitCounts[transitLooped].Load(), m.transitCounts[transitNoRoute].Load(), m.transitCounts[transitAnswered].Load(); looped != 1 || dropped != 1 || answered != 0 {
 			t.Errorf("ipv%d: the reads were counted %d times looped, %d no_route and %d answered, want once, once and never", family, looped, dropped, answered)
+		}
+	}
+}
+
+// heldMesh is unroutedMesh with its tun holding ownSource and recording every write
+func heldMesh(tb testing.TB, set func(*RouteTable)) (*Mesh, *recordingDevice) {
+	tb.Helper()
+	m, dev := unroutedMesh(tb, set)
+	dev.writes = make(chan recordedWrite, 16)
+	m.SetTunAddresses([]netip.Addr{ownSource[4], ownSource[6]})
+	return m, dev
+}
+
+// classifyWritten runs classify over reads as one read off the tun and returns every packet the mesh wrote into the tun on the way, in order
+func classifyWritten(m *Mesh, dev *recordingDevice, reads ...[]byte) [][]byte {
+	b := newOutboundBatch(len(reads))
+	fill(b, reads...)
+	m.classify(b)
+	var written [][]byte
+	for {
+		select {
+		case write := <-dev.writes:
+			written = append(written, write.packets...)
+		default:
+			return written
+		}
+	}
+}
+
+// pseudoSum is the sum of the pseudo-header of the transport segment at offset in raw, its next header protocol
+// RFC 9293 section 3.1's under IPv4 and RFC 8200 section 8.1's under IPv6
+func pseudoSum(raw []byte, offset int, protocol byte) uint32 {
+	length := len(raw) - offset
+	if raw[0]>>4 == 4 {
+		return packet.Sum(packet.Sum(0, raw[12:20]), []byte{0, protocol, byte(length >> 8), byte(length)})
+	}
+	return packet.Sum(packet.Sum(0, raw[8:40]), append(binary.BigEndian.AppendUint32(nil, uint32(length)), 0, 0, 0, protocol))
+}
+
+// transportField is where raw's UDP or TCP checksum lies, raw an IPv6 packet with no extension header, false for another protocol or an IPv4 packet
+func transportField(raw []byte) (int, bool) {
+	if raw[0]>>4 != 6 {
+		return 0, false
+	}
+	switch raw[6] {
+	case 17:
+		return 40 + 6, true
+	case tcpProtocol:
+		return 40 + tcpChecksum, true
+	}
+	return 0, false
+}
+
+// withTransportSum is raw, an IPv6 UDP or TCP packet with no extension header, its checksum over RFC 8200 section 8.1's pseudo-header set
+// or, unfinished, its checksum field holding the pseudo-header's sum alone, which a host leaves for its interface's offload to complete
+func withTransportSum(raw []byte, unfinished bool) []byte {
+	out := bytes.Clone(raw)
+	field, _ := transportField(out)
+	binary.BigEndian.PutUint16(out[field:], 0)
+	pseudo := pseudoSum(out, 40, out[6])
+	sum := uint16(pseudo)
+	if !unfinished {
+		sum = ^uint16(packet.Sum(pseudo, out[40:]))
+		if sum == 0 && out[6] == 17 {
+			sum = 0xffff
+		}
+	}
+	binary.BigEndian.PutUint16(out[field:], sum)
+	return out
+}
+
+// tcpBetween is a TCP SYN from source to destination, IPv6 addresses, carrying 10 bytes, its checksum stale for its addresses, which withTransportSum sets
+func tcpBetween(source, destination netip.Addr) []byte {
+	raw := tcpPacket(6, 0, false, synFlag, nil, 0, 10)
+	copy(raw[8:24], source.AsSlice())
+	copy(raw[24:40], destination.AsSlice())
+	return raw
+}
+
+// a read the table answers as this node's own whose destination the tun holds goes back into the tun once, byte for byte as read
+// from that address itself and from an uplink address, counted delivered and not looped, in each family
+func TestTunReadToAnAddressTheTunHoldsIsWrittenBack(t *testing.T) {
+	for _, family := range []int{4, 6} {
+		m, dev := heldMesh(t, nil)
+		reads := [][]byte{
+			udpPacket(ownSource[family], ownSource[family], 200, false),
+			udpPacket(uplinkSource[family], ownSource[family], 200, false),
+		}
+		if family == 6 {
+			for i := range reads {
+				reads[i] = withTransportSum(reads[i], false)
+			}
+		}
+		written := classifyWritten(m, dev, reads...)
+		if len(written) != len(reads) {
+			t.Fatalf("ipv%d: %d reads to %s put %d packets into the tun, want each once", family, len(reads), ownSource[family], len(written))
+		}
+		for i := range reads {
+			if !bytes.Equal(written[i], reads[i]) {
+				t.Errorf("ipv%d: read %d went back into the tun as %x, want it as read, %x", family, i, written[i], reads[i])
+			}
+		}
+		if got := m.TransitCounters(); got != (TransitCounters{Delivered: 2}) {
+			t.Errorf("ipv%d: the reads counted %+v, want 2 delivered", family, got)
+		}
+	}
+}
+
+// summingToZero is raw, an IPv6 UDP or TCP packet with no extension header, its payload word at offset set so that the checksum its bytes call for is zero, and its checksum field zero
+func summingToZero(raw []byte, offset int) []byte {
+	out := bytes.Clone(raw)
+	binary.BigEndian.PutUint16(out[offset:], 0)
+	field, _ := transportField(out)
+	// the word takes the checksum the rest calls for, so that the whole adds up to all ones
+	copy(out[offset:offset+2], withTransportSum(out, false)[field:])
+	binary.BigEndian.PutUint16(out[field:], 0)
+	return out
+}
+
+// an IPv6 UDP or TCP read written back whose checksum the host left unfinished goes back with it completed, and nothing else changed
+// a UDP checksum completed as zero goes back as all ones, and a UDP checksum field of zero is completed whatever the rest adds up to
+// a read whose checksum verifies, in either form of zero too, a segment shorter than its header, an IPv6 read behind an extension header, of another protocol, and an IPv4 read go back as read, whatever their checksum
+func TestTunReadWrittenBackHasItsUnfinishedChecksumCompleted(t *testing.T) {
+	own4, own6 := ownSource[4], ownSource[6]
+	udp6, tcp6 := udpPacket(own6, own6, 200, false), tcpBetween(own6, own6)
+	behindOptions := withDestinationOptions(withTransportSum(udp6, true))
+	icmp := withTransportSum(udp6, true)
+	icmp[6] = 58
+	badUDP4 := udpPacket(own4, own4, 200, false)
+	binary.BigEndian.PutUint16(badUDP4[20+6:], 0x1234)
+	// a later fragment whose identification and fragment octet an IPv6 reading takes for a payload length and next header UDP
+	fragment4 := bytes.Clone(badUDP4)
+	binary.BigEndian.PutUint16(fragment4[4:], 8)
+	fragment4[6] = 17
+	udpZero, tcpZero := summingToZero(udp6, 40+8), summingToZero(tcp6, 40+tcpHeaderLen)
+	if binary.BigEndian.Uint16(withTransportSum(udpZero, false)[40+6:]) != 0xffff || binary.BigEndian.Uint16(withTransportSum(tcpZero, false)[40+tcpChecksum:]) != 0 {
+		t.Fatalf("the segments %x and %x do not call for a checksum of zero", udpZero, tcpZero)
+	}
+	tcpAlternate := bytes.Clone(tcpZero)
+	binary.BigEndian.PutUint16(tcpAlternate[40+tcpChecksum:], 0xffff)
+	shortUDP := udpPacket(own6, own6, 48, false)[:44]
+	binary.BigEndian.PutUint16(shortUDP[4:], 4)
+	shortTCP := tcpBetween(own6, own6)[:50]
+	binary.BigEndian.PutUint16(shortTCP[4:], 10)
+	for _, c := range []struct {
+		name       string
+		read, want []byte
+	}{
+		{"udp unfinished", withTransportSum(udp6, true), withTransportSum(udp6, false)},
+		{"tcp unfinished", withTransportSum(tcp6, true), withTransportSum(tcp6, false)},
+		{"udp unfinished summing to zero", withTransportSum(udpZero, true), withTransportSum(udpZero, false)},
+		{"udp zero field summing to zero", udpZero, withTransportSum(udpZero, false)},
+		{"udp verified", withTransportSum(udp6, false), withTransportSum(udp6, false)},
+		{"tcp verified", withTransportSum(tcp6, false), withTransportSum(tcp6, false)},
+		{"tcp verifying in its other zero", tcpAlternate, tcpAlternate},
+		{"udp segment shorter than its header", shortUDP, shortUDP},
+		{"tcp segment shorter than its header", shortTCP, shortTCP},
+		{"udp behind a destination options header", behindOptions, behindOptions},
+		{"icmpv6", icmp, icmp},
+		{"ipv4 udp failing its checksum", badUDP4, badUDP4},
+		{"ipv4 fragment reading as ipv6 udp", fragment4, fragment4},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, dev := heldMesh(t, nil)
+			written := classifyWritten(m, dev, bytes.Clone(c.read))
+			if len(written) != 1 || !bytes.Equal(written[0], c.want) {
+				t.Fatalf("the read %x went back into the tun as %x, want %x", c.read, written, c.want)
+			}
+			if got := m.TransitCounters(); got != (TransitCounters{Delivered: 1}) {
+				t.Errorf("the read counted %+v, want 1 delivered", got)
+			}
+		})
+	}
+}
+
+// a read the table answers as this node's own whose destination the tun does not hold is dropped as looped and writes nothing into the tun
+// to an address inside a prefix this node originates, to a host route of its own, and to the internet through its own default
+func TestTunReadToAnOwnDestinationTheTunDoesNotHoldStaysLooped(t *testing.T) {
+	inPrefix := map[int]netip.Addr{4: segAddr("192.0.2.130"), 6: segAddr("3fff:0:0:80::9")}
+	ownHost := map[int]netip.Addr{4: segAddr("192.0.2.9"), 6: segAddr("3fff::9")}
+	for _, family := range []int{4, 6} {
+		m, dev := heldMesh(t, func(r *RouteTable) {
+			for _, prefix := range []string{"192.0.2.128/25", "3fff:0:0:80::/64", "0.0.0.0/0", "::/0"} {
+				r.Set(netip.Prefix{}, segPrefix(prefix), Local)
+			}
+			r.Set(netip.Prefix{}, hostPrefix(ownHost[family]), Local)
+		})
+		written := classifyWritten(m, dev,
+			udpPacket(ownSource[family], inPrefix[family], 200, false),
+			udpPacket(ownSource[family], ownHost[family], 200, false),
+			udpPacket(ownSource[family], edgeInternet[family], 200, false),
+		)
+		if len(written) != 0 {
+			t.Errorf("ipv%d: reads to this node's own destinations the tun does not hold put %d packets into the tun", family, len(written))
+		}
+		if got := m.TransitCounters(); got != (TransitCounters{Looped: 3}) {
+			t.Errorf("ipv%d: the reads counted %+v, want 3 looped", family, got)
+		}
+	}
+}
+
+// a read toward an address the tun holds that the edge refuses writes nothing into the tun
+// from a source the mesh routes to another node, counted forged, and under ownedOnly from an uplink address, counted unowned_source
+func TestTunReadTheEdgeRefusesTowardAHeldAddressIsNotWrittenBack(t *testing.T) {
+	another := map[int]netip.Addr{4: segAddr("192.0.2.77"), 6: segAddr("3fff::77")}
+	for _, family := range []int{4, 6} {
+		peer := (&recordingPeer{}).peer(t, "peer")
+		m, dev := heldMesh(t, func(r *RouteTable) { r.Set(netip.Prefix{}, hostPrefix(another[family]), peer) })
+		if written := classifyWritten(m, dev, udpPacket(another[family], ownSource[family], 200, false)); len(written) != 0 {
+			t.Errorf("ipv%d: a forged read to a held address put %d packets into the tun", family, len(written))
+		}
+		m.ownedOnly = true
+		if written := classifyWritten(m, dev, udpPacket(uplinkSource[family], ownSource[family], 200, false)); len(written) != 0 {
+			t.Errorf("ipv%d: an unowned read to a held address under ownedOnly put %d packets into the tun", family, len(written))
+		}
+		if got := m.TransitCounters(); got != (TransitCounters{Forged: 1, UnownedSource: 1}) {
+			t.Errorf("ipv%d: the reads counted %+v, want 1 forged and 1 unowned_source", family, got)
 		}
 	}
 }

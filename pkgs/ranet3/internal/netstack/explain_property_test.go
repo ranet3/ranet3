@@ -62,7 +62,7 @@ var explainSteers = []srv6.Steer{
 	{To: schema.PrefixFrom(segPrefix("203.0.113.0/24"))},
 }
 
-// explainMesh is a transit node's mesh, its tun recording, with a feed of every record, this node's SID, and the table, settings, ownedOnly among them, and steering hegel draws
+// explainMesh is a transit node's mesh, its tun recording, with a feed of every record, this node's SID, and the table, settings, ownedOnly among them, the addresses its tun holds and steering hegel draws
 // from is the peer of the session its packets arrive through, which the table may route to as to any other
 func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
 	m, _ := startTransitMesh(nil)
@@ -107,6 +107,8 @@ func explainMesh(ht *hegel.T) (*Mesh, *Peer, *TraceFeed) {
 		}
 	}
 	m.SetEgressPrefixes(advertised)
+	// the addresses the tun holds, among this node's own, an address cap.table assigns it and another node's
+	m.SetTunAddresses(pbt.Subset(ht, []netip.Addr{transitOwn[4], transitOwn[6], edgeAssigned[4], edgeAssigned[6], transitFar[4], transitFar[6]}, 0, 6))
 	segments, err := srv6.NewLocalTable([]srv6.Segment{{SID: schema.AddrFrom(edgeOwnSID), Behavior: srv6.BehaviorEndDT46}}, transitOverlay)
 	if err != nil {
 		ht.Fatal(err)

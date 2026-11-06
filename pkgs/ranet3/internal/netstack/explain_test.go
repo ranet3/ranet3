@@ -180,6 +180,7 @@ var readCases = func() []explainCase {
 		{"an unowned source toward a link-local address, ownedOnly", explainOwnedOnly, udpPacket(edgeLAN[6], segAddr("fe80::9"), 100, false), explainedDrop("unowned_source", exit)},
 		{"a carried packet carrying another", explainLeaf, encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udpPacket(transitOwn[6], transitFar[6], 100, false))), explainedDrop("nested", Match{Bits: 64})},
 		{"this node's own", explainLeaf, udpPacket(transitOwn[4], edgeAssigned[4], 100, false), explainedDrop("looped", Match{Bits: 32})},
+		{"an address the tun holds", explainLeaf, udpPacket(transitOwn[6], edgeHeld[6], 100, false), Explanation{Decision: TraceDeliver, Match: Match{Bits: 128}}},
 		{"a hold", explainLeaf, udpPacket(transitOwn[4], transitHeldHost[4], 100, false), explainedAnswer("held", "host_unreachable", Match{Bits: 32})},
 		{"no route", explainBare, udpPacket(transitOwn[6], transitUnrouted[6], 100, false), explainedAnswer("no_route", "no_route", Match{})},
 		{"a forward", explainLeaf, udpPacket(transitOwn[4], transitFar[4], 100, false), heldTo(Explanation{Decision: TraceForward, Match: far4}, "peer", tracedMTU)},

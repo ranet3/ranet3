@@ -59,6 +59,7 @@ var readOutcomes = []readOutcome{
 		return encapsulated(transitOwn[6], edgeOtherSID, encapsulated(transitOwn[4], transitFar[4], udpPacket(transitOwn[6], transitFar[6], 100, false)))
 	}, "Nested"},
 	{"looped", both, func(f int) []byte { return udpPacket(transitOwn[f], edgeAssigned[f], 100, false) }, "Looped"},
+	{"written back", both, func(f int) []byte { return udpPacket(transitOwn[f], edgeHeld[f], 100, false) }, "Delivered"},
 	{"held", both, func(f int) []byte { return udpPacket(transitOwn[f], transitHeldHost[f], 100, false) }, "Held"},
 	{"stranded", v6, func(int) []byte { return udpPacket(transitOwn[6], strandedTo, 100, false) }, "NoRoute"},
 	{"too big", v6, func(f int) []byte { return udpPacket(transitOwn[f], transitFar[f], tracedMTU+100, false) }, "TooBig"},
@@ -71,12 +72,13 @@ var readOutcomes = []readOutcome{
 	{"unencapsulable", v6, func(int) []byte { return udpPacket(transitOwn[6], steeredTo, unencapsulable, false) }, "TooBig"},
 }
 
-// conservingLeaf is carriedLeaf with its peer carrying tracedMTU, and two cap.segment steer policies, toward steeredTo through edgeOtherSID and toward strandedTo through a hold
+// conservingLeaf is carriedLeaf with its peer carrying tracedMTU, its tun holding edgeHeld, and two cap.segment steer policies, toward steeredTo through edgeOtherSID and toward strandedTo through a hold
 func conservingLeaf(tb testing.TB) *Mesh {
 	tb.Helper()
 	m, peer := carriedLeaf(tb)
 	peer.SetMTU(tracedMTU)
 	m.SetAnswerTTL(64)
+	holdOwn(m)
 	steering, err := srv6.NewSteerTable([]srv6.Steer{
 		{To: schema.PrefixFrom(netip.PrefixFrom(steeredTo, 48).Masked()), Via: []schema.Addr{schema.AddrFrom(edgeOtherSID)}},
 		{To: schema.PrefixFrom(netip.PrefixFrom(strandedTo, 48).Masked()), Via: []schema.Addr{schema.MustAddr("3fff:8::1")}},
@@ -90,7 +92,8 @@ func conservingLeaf(tb testing.TB) *Mesh {
 }
 
 // over drawn reads off the tun of every outcome classify gives, one read moves exactly one of the counters a read can move
-// the reads in are the transit drops, by the reason each kind meets, and the reads classify queued or cut for their peer, which the peer's own counters take from there
+// the reads in are the transit drops, by the reason each kind meets, the reads written back to an address the tun holds, counted delivered
+// and the reads classify queued or cut for their peer, which the peer's own counters take from there
 // a read cut into fragments counting once, by its first fragment
 func TestClassifyCountsEveryReadOnce(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
@@ -130,8 +133,8 @@ func TestClassifyCountsEveryReadOnce(t *testing.T) {
 		for _, drop := range control.TransitCounters(counters).Drops() {
 			dropped += drop.Packets
 		}
-		if moved := dropped + uint64(queuedReads+cutReads); moved != uint64(len(packets)) {
-			ht.Fatalf("%d reads moved %d drops, %d queued and %d cut, %+v", len(packets), dropped, queuedReads, cutReads, counters)
+		if moved := dropped + counters.Delivered + uint64(queuedReads+cutReads); moved != uint64(len(packets)) {
+			ht.Fatalf("%d reads moved %d drops, %d delivered, %d queued and %d cut, %+v", len(packets), dropped, counters.Delivered, queuedReads, cutReads, counters)
 		}
 		if uint64(queuedReads+cutReads) != want[""] {
 			ht.Fatalf("%d reads to be queued or cut, %d queued and %d cut", want[""], queuedReads, cutReads)

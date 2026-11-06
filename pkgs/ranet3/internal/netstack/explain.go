@@ -152,6 +152,9 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 	}
 	switch verdict {
 	case RouteLocal:
+		if m.holdsAddress(dst) {
+			return e.decided(readSite(TraceDeliver, transitDelivered))
+		}
 		return e.decided(readSite(TraceDrop, transitLooped))
 	case RouteNone, RouteHeld:
 		return e.decided(readSite(TraceAnswer, unroutedReason(verdict)).answered(m.unreachable(verdict, match, dst), TraceNoAnswer))

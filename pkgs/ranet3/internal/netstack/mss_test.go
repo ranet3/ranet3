@@ -68,14 +68,7 @@ func tcpPacket(family int, field uint16, extension bool, flags byte, options []b
 func tcpSum(raw []byte, offset int) uint16 {
 	segment := bytes.Clone(raw[offset:])
 	binary.BigEndian.PutUint16(segment[tcpChecksum:], 0)
-	var pseudo []byte
-	if raw[0]>>4 == 4 {
-		pseudo = append(bytes.Clone(raw[12:20]), 0, tcpProtocol, byte(len(segment)>>8), byte(len(segment)))
-	} else {
-		pseudo = append(bytes.Clone(raw[8:40]), binary.BigEndian.AppendUint32(nil, uint32(len(segment)))...)
-		pseudo = append(pseudo, 0, 0, 0, tcpProtocol)
-	}
-	return ^uint16(packet.Sum(packet.Sum(0, pseudo), segment))
+	return ^uint16(packet.Sum(pseudoSum(raw, offset, tcpProtocol), segment))
 }
 
 // a SYN read off the tun has its MSS clamped to what its peer's session carries, less the IP and TCP headers

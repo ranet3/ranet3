@@ -55,6 +55,15 @@ func ownHosts(m *Mesh, addresses ...map[int]netip.Addr) {
 	}
 }
 
+// edgeHeld is an address of this node's own that its tun holds, as cap.table assigns it
+var edgeHeld = map[int]netip.Addr{4: segAddr("192.0.2.8"), 6: segAddr("3fff::8")}
+
+// holdOwn gives m a host route of its own for edgeHeld and has its tun hold it
+func holdOwn(m *Mesh) {
+	ownHosts(m, edgeHeld)
+	m.SetTunAddresses([]netip.Addr{edgeHeld[4], edgeHeld[6]})
+}
+
 // ownSources is ownHosts for the source of each packet
 func ownSources(m *Mesh, packets ...[]byte) {
 	for _, raw := range packets {

@@ -47,8 +47,8 @@ func TestTUNDropsAnUnownedReadTowardAnotherNode(t *testing.T) {
 	requireUTUN(t)
 	routesKept(t)
 	m, uplink := openUTUNMesh(t, true), openUTUNMesh(t, false)
-	aliasUTUN(t, m.Name, entryOwn)
-	aliasUTUN(t, uplink.Name, entryUplink)
+	aliasUTUN(t, m.Name, netip.PrefixFrom(entryOwn, 128))
+	aliasUTUN(t, uplink.Name, netip.PrefixFrom(entryUplink, 128))
 	routeIntoUTUN(t, entryNode, m.Name)
 	link, err := net.InterfaceByName(m.Name)
 	if err != nil {
@@ -97,14 +97,20 @@ func openUTUNMesh(t *testing.T, ownedOnly bool) *Mesh {
 	return m
 }
 
-// aliasUTUN adds address to the utun name as a /128 until the test ends
-func aliasUTUN(t *testing.T, name string, address netip.Addr) {
+// aliasUTUN adds prefix's address to the utun name as ranet3 does until the test ends, an IPv4 address with itself as the destination and an IPv6 address with none
+func aliasUTUN(t *testing.T, name string, prefix netip.Prefix) {
 	t.Helper()
-	if err := runTool(ifconfigBin, name, "inet6", netip.PrefixFrom(address, 128).String(), "alias"); err != nil {
+	add := []string{name, "inet6", prefix.String(), "alias"}
+	remove := []string{name, "inet6", prefix.Addr().String(), "-alias"}
+	if prefix.Addr().Is4() {
+		add = []string{name, "inet", prefix.String(), prefix.Addr().String(), "alias"}
+		remove = []string{name, "inet", prefix.Addr().String(), "-alias"}
+	}
+	if err := runTool(ifconfigBin, add...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := runTool(ifconfigBin, name, "inet6", address.String(), "-alias"); err != nil {
+		if err := runTool(ifconfigBin, remove...); err != nil {
 			t.Error(err)
 		}
 	})
@@ -113,11 +119,15 @@ func aliasUTUN(t *testing.T, name string, address netip.Addr) {
 // routeIntoUTUN routes prefix out of the utun name until the test ends
 func routeIntoUTUN(t *testing.T, prefix netip.Prefix, name string) {
 	t.Helper()
-	if err := runTool(routeBin, "-q", "-n", "add", "-inet6", prefix.String(), "-interface", name); err != nil {
+	family := "-inet"
+	if prefix.Addr().Is6() {
+		family = "-inet6"
+	}
+	if err := runTool(routeBin, "-q", "-n", "add", family, prefix.String(), "-interface", name); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := runTool(routeBin, "-q", "-n", "delete", "-inet6", prefix.String(), "-interface", name); err != nil {
+		if err := runTool(routeBin, "-q", "-n", "delete", family, prefix.String(), "-interface", name); err != nil {
 			t.Error(err)
 		}
 	})

@@ -469,6 +469,13 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		if verdict != RoutePeer {
 			switch {
+			case verdict == RouteLocal && m.holdsAddress(dst):
+				// raw is the read itself, since a steered read whose first segment is this node's own is RouteNone
+				m.writeBack(raw)
+				tally.add(transitDelivered)
+				if trace != nil {
+					trace.read(TraceDeliver, transitDelivered, netip.Addr{}, raw)
+				}
 			case verdict == RouteLocal:
 				m.dropTransit(&tally, transitLooped, src, dst)
 				if trace != nil {
@@ -770,9 +777,7 @@ func addrsOf(raw []byte) (src, dst netip.Addr, nextHeader byte, ok bool) {
 // mtu is the largest packet the session it came through carries, as DeliverInboundBatch takes it
 // only tests call it, those of internal/babel, internal/client and internal/netstack
 func (m *Mesh) DeliverInbound(raw []byte, mtu int) {
-	frame := make([]byte, TUNHeadroom+len(raw))
-	copy(frame[TUNHeadroom:], raw)
-	m.DeliverInboundBatch([][]byte{frame}, mtu, nil)
+	m.DeliverInboundBatch([][]byte{m.hostFrame(raw)}, mtu, nil)
 }
 
 // DeliverInboundBatch hands the mesh a group of already-decapsulated tunnel-mode IP packets a session delivered, in the order it delivered them
@@ -792,14 +797,66 @@ func (m *Mesh) DeliverInboundBatch(frames [][]byte, mtu int, from *Peer) {
 	m.WriteHost(m.decide(routed, granted, from))
 }
 
-// writeHostPacket writes one packet to the tun, copied into a frame of its own
-func (m *Mesh) writeHostPacket(raw []byte) {
+// hostFrame is raw copied into a frame of its own for the tun, TUNHeadroom bytes and then the packet, nil for a mesh with no device
+func (m *Mesh) hostFrame(raw []byte) []byte {
 	if m.dev == nil {
-		return
+		return nil
 	}
 	frame := make([]byte, TUNHeadroom+len(raw))
 	copy(frame[TUNHeadroom:], raw)
-	m.WriteHost([][]byte{frame})
+	return frame
+}
+
+// writeHostPacket writes one packet to the tun, copied into a frame of its own
+func (m *Mesh) writeHostPacket(raw []byte) {
+	if frame := m.hostFrame(raw); frame != nil {
+		m.WriteHost([][]byte{frame})
+	}
+}
+
+// writeBack writes raw, a read off the tun to an address the tun holds, back into it, where the host's kernel takes it as arriving for that address
+// as read, but for the transport checksum completeChecksum completes
+func (m *Mesh) writeBack(raw []byte) {
+	if frame := m.hostFrame(raw); frame != nil {
+		completeChecksum(frame[TUNHeadroom:])
+		m.WriteHost([][]byte{frame})
+	}
+}
+
+// completeChecksum sets the checksum of raw, an IPv6 packet whose next header is UDP or TCP, to the one its bytes call for where it does not verify, and changes nothing else
+// a host sending to an address of its own computes that checksum for its loopback interface, whose offload never runs on the copy it routes into the tun
+// with an extension header the host computes the checksum itself, and an IPv4 packet routed into the tun carries a computed one
+// raw is a read addrsOf took, which is exactly one packet, so an IPv6 read's segment runs from its fixed header to its end
+func completeChecksum(raw []byte) {
+	if raw[0]>>4 != 6 {
+		return
+	}
+	segment, protocol := raw[40:], raw[6]
+	var field int
+	switch {
+	// RFC 768
+	case protocol == 17 && len(segment) >= 8:
+		field = 6
+	case protocol == tcpProtocol && len(segment) >= tcpHeaderLen:
+		field = tcpChecksum
+	default:
+		return
+	}
+	old := binary.BigEndian.Uint16(segment[field:])
+	// the pseudo-header of RFC 8200 section 8.1, its upper-layer length the payload length, which fits 16 bits
+	sum := tun.Checksum(segment, tun.PseudoHeaderChecksum(protocol, raw[8:24], raw[24:40], uint16(len(segment))))
+	// RFC 8200 section 8.1 has a receiver discard an IPv6 UDP datagram whose checksum field is zero, whatever the sum
+	if sum == 0xffff && (protocol != 17 || old != 0) {
+		return
+	}
+	// RFC 1624 section 3, the field's old value taken out of the sum
+	without := uint32(sum) + uint32(^old)
+	checksum := ^uint16(without&0xffff + without>>16)
+	// RFC 8200 section 8.1 sends a UDP checksum computed as zero as all ones
+	if checksum == 0 && protocol == 17 {
+		checksum = 0xffff
+	}
+	binary.BigEndian.PutUint16(segment[field:], checksum)
 }
 
 // WriteHost writes frames to the tun, on a multiqueue tun each to the persistent writer lane of its inner flow

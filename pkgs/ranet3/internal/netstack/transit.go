@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,7 @@ const (
 	// transitForwarded counts packets handed to the next peer's send, one cut into fragments once
 	transitForwarded transitReason = iota
 	// transitDelivered counts packets written to the tun, for this node's own destinations and the ones linkScoped takes, and those handed to the exit through a prefix cap.egress advertises that counts as a default
+	// and the reads off the tun written back into it to an address the tun holds
 	transitDelivered
 	transitExpired
 	transitNoRoute
@@ -58,7 +60,7 @@ const (
 	transitUnownedSource
 	// transitNested counts IPv6 reads off the tun whose carried packet carries another, past the one level the checks open
 	transitNested
-	// transitLooped counts reads off the tun to a destination of this node's own, which the mesh could only hand back to the tun
+	// transitLooped counts reads off the tun to a destination of this node's own that the tun does not hold, which the mesh could only hand back to the host
 	transitLooped
 	transitAnswered
 	// transitUnsent counts the answers the decision built and could not send
@@ -84,6 +86,8 @@ type transitState struct {
 	transitOn atomic.Bool
 	// overlay is the overlay, which a reload may move, nil on a node that writes none
 	overlay atomic.Pointer[[]schema.Prefix]
+	// tunAddresses are the addresses the tun holds, which a reload may move, nil for none
+	tunAddresses atomic.Pointer[[]netip.Addr]
 	// transitCounts counts each reason since startup
 	transitCounts [transitReasonCount]atomic.Uint64
 	// transitReport spaces the drop reports, its next claimed by the one report of each interval
@@ -116,6 +120,19 @@ func (m *Mesh) SetOverlay(overlay []schema.Prefix) {
 	m.Routes.SetOverlay(overlay)
 }
 
+// SetTunAddresses sets the addresses the tun holds, none for nil
+// a read the table answers as this node's own goes back into the tun where the tun holds its destination, and the host's kernel delivers it
+// any other such read is dropped, since a host that does not hold the address would route it into the tun again, or drop it
+func (m *Mesh) SetTunAddresses(addresses []netip.Addr) {
+	m.tunAddresses.Store(&addresses)
+}
+
+// holdsAddress reports whether the tun holds address
+func (m *Mesh) holdsAddress(address netip.Addr) bool {
+	held := m.tunAddresses.Load()
+	return held != nil && slices.Contains(*held, address)
+}
+
 // SetEgressPrefixes sets the prefixes cap.egress advertises, which flags this node's own entries for them
 // a packet egressing through one that counts as a default waits on the readiness SetAdvertisedReady gives its family
 func (m *Mesh) SetEgressPrefixes(advertised []netip.Prefix) { m.Routes.SetEgress(advertised) }
@@ -137,12 +154,13 @@ func (m *Mesh) inOverlay(address netip.Addr) bool {
 // TransitCounters counts the forwarding decision's outcomes since startup, and those of the checks of a read off the tun
 type TransitCounters struct {
 	// Forwarded counts the packets the decision handed to the next peer's send, one cut into fragments once
-	// Delivered the ones written to the tun or handed to the exit
+	// Delivered the ones written to the tun or handed to the exit, and the reads off the tun written back into it to an address the tun holds
 	Forwarded, Delivered uint64
 	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
 	// NoRoute, Held, Invalid and TooBig count the reads off the tun dropped for them as well
 	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
 	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
+	// and Looped those to a destination of this node's own that the tun does not hold
 	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
 	// Answered counts the ICMP errors sent about dropped packets and reads
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
