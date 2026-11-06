@@ -198,13 +198,14 @@ address and its far end, each a `/32`.
   table in place of an equal overlay hold, so the host reaches the network's
   neighbors by main, and a route of the mesh inside the lease still wins by its
   length, as rows L5 and L6 of
-  [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give.
-  [Exit mode](routing.md#exit-mode-on-linux) selects the lease's address and
-  network for main at 5405 and 5435 unless an entry of the mesh's table inside
-  the carve-out holds them, so an exit's default leaves them selected.
-  [The kill switch](routing.md#the-kill-switch-on-linux) gives what a carve-out
-  adds to its sets and to 5445, and what of its network outside the overlay its
-  LAN holds.
+  [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give. Where the
+  mesh's table holds the carve-out's own prefix for every source, the reconciler
+  throws nothing. [Exit mode](routing.md#exit-mode-on-linux) selects the lease's
+  address and network for main at 5405 and 5435 unless an entry of the mesh's
+  table inside the carve-out holds them, so an exit's default leaves them
+  selected. [The kill switch](routing.md#the-kill-switch-on-linux) gives what a
+  carve-out adds to its sets and to 5445, and what of its network outside the
+  overlay its LAN holds.
 
 Each carve-out that comes is logged at warning,
 `antispoof carves the overlay for a link that holds part of it`, with `link` and

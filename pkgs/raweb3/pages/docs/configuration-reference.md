@@ -72,8 +72,11 @@ nest the same names. A key not listed here is refused when the file loads.
   source.
 - An `overlay` entry of length 0, an IPv4 entry shorter than `/8`, an IPv6 entry
   shorter than `/12`, an entry with bits set below its length, an IPv4 address
-  written as IPv6 and an entry written twice are refused. The order does not
-  matter.
+  written as IPv6 and an entry written twice are refused. So is an entry holding
+  any address the mesh forwards no unicast packet from or to, in `0.0.0.0/8`,
+  `127.0.0.0/8`, `169.254.0.0/16`, `224.0.0.0/4`, `240.0.0.0/4`, `::`, `::1`,
+  `::ffff:0:0/96`, `fe80::/10` or `ff00::/8`, such as `169.0.0.0/8`, which holds
+  `169.254.0.0/16`. The order does not matter.
 - Every node of the mesh writes the same `overlay`, which covers every exit's
   `allow` entry that admits an outer source.
 - On an exit, `overlay` enables the kernel lookups of its
@@ -85,12 +88,12 @@ nest the same names. A key not listed here is refused when the file loads.
   `overlay` sends an address no node announces out of its uplink as any other
   destination outside the mesh.
 - With `cap.table` on Linux, each `overlay` prefix gets a policy rule at 5110
-  that reads the mesh's table for its destinations and, unless it holds its
-  family's unspecified address or the mesh cannot carry it, an unreachable hold
-  in that table. A lookup bound to no device for an overlay address then ends as
-  rows L1 to L5 of
+  that reads the mesh's table for its destinations and, unless a carve-out
+  equals it, an unreachable hold in that table. A lookup bound to no device for
+  an overlay address then ends as rows L1 to L5 of
   [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give. A link's
-  network inside a prefix is thrown in place of the hold, as
+  network inside a prefix is thrown, in place of the hold where the two are
+  equal, unless the mesh's table holds that network itself for every source, as
   [carve-outs](antispoof.md#carve-outs) describe. macOS installs neither, as
   [platforms](antispoof.md#platforms) says.
 - A file with a local segment and no `overlay` is refused, and so is one whose

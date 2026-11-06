@@ -329,10 +329,10 @@ nameserver on the host itself, such as systemd-resolved's `127.0.0.53`, takes
 the query at row L1, and its own query upstream carries no mark, so it can wait
 on such a session. A query to a nameserver inside the overlay carries no mark,
 whatever zone follows its address in `/etc/resolv.conf`, and where `cap.table`
-is written ends as rows L1 to L5 give. A link-local nameserver lies outside an
-overlay of the mesh's own prefixes, so its query is marked where the process may
-set the mark. An IPv6 one ends by main's route out of the link its zone names,
-and an IPv4 one at row L2 by main's route for it.
+is written ends as rows L1 to L5 give. A link-local nameserver lies outside the
+overlay, since `overlay` refuses a link-local prefix, so its query is marked
+where the process may set the mark. An IPv6 one ends by main's route out of the
+link its zone names, and an IPv4 one at row L2 by main's route for it.
 
 ## Routes that carry the host's own traffic
 
@@ -1089,12 +1089,12 @@ limits.
 
 ### Kernel routes
 
-| Route                                                               | What the reconciler does                                                                           |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| An IPv4 source-specific route                                       | Never installs it, and warns once. The mesh's own table still applies it                           |
-| A multicast, link-local or loopback prefix, or `255.255.255.255/32` | Never installs it. Each names a link or the host rather than a destination                         |
-| On macOS, a route of a family the utun holds no address of          | Installs none of them, as [the host's own traffic](#routes-that-carry-the-hosts-own-traffic) gives |
-| A route another program changed without a notification              | Repairs it at the next pass, every 30 seconds unless `cap.table.reconcile` says otherwise          |
+| Route                                                                                                  | What the reconciler does                                                                                     |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| An IPv4 source-specific route                                                                          | Never installs it, and warns once. The mesh's own table still applies it                                     |
+| A prefix lying wholly in a range `overlay` refuses, such as a multicast, link-local or loopback prefix | Never installs it, and warns once. Each names a link, a group, the host or no host rather than a destination |
+| On macOS, a route of a family the utun holds no address of                                             | Installs none of them, as [the host's own traffic](#routes-that-carry-the-hosts-own-traffic) gives           |
+| A route another program changed without a notification                                                 | Repairs it at the next pass, every 30 seconds unless `cap.table.reconcile` says otherwise                    |
 
 The kernel's IPv4 table has no source-specific lookup. Installing such a route
 as an ordinary one would take traffic from every other source. The mesh's own

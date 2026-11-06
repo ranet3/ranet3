@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-11-05
+updated: 2026-11-06
 order: 38
 ---
 
@@ -91,8 +91,9 @@ The node's full name is `organization/common_name`, written as
   own query upstream carries no mark, so it can wait on such a session. A query
   to a nameserver inside the overlay carries none, whatever zone follows its
   address, and where `cap.table` is written ends as rows L1 to L5 give. A
-  link-local nameserver lies outside an overlay of the mesh's own prefixes, so
-  its query carries the mark where the process may set it.
+  link-local nameserver lies outside the overlay, since
+  [`overlay`](configuration-reference.md#top-level) refuses a link-local prefix,
+  so its query carries the mark where the process may set it.
   [Sharing a host](coexistence.md#the-underlays-mark) describes the mark.
 - An endpoint with no address, an empty one, or a name holding `:`, `/` or a
   space is never dialed. Its node can still dial out and be answered.

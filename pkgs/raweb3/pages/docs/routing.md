@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-06
+updated: 2026-11-07
 order: 45
 ---
 
@@ -436,17 +436,17 @@ Linux it also installs the [policy rules](#policy-rules-on-linux) it derives.
 
 Each entry of the mesh's table becomes:
 
-| Entry in the mesh's table                                                              | In the kernel table                                                                                                                                                                                                                                                                                                                     |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A learned route                                                                        | a route out of the tun                                                                                                                                                                                                                                                                                                                  |
-| A learned route that [counts as a default](#routes-that-count-as-a-default)            | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS under `cap.exit`, in a family the tun holds an overlay address of, one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
-| A hold that does not count                                                             | a hold                                                                                                                                                                                                                                                                                                                                  |
-| A hold that counts, or this node's own prefix that counts                              | nothing                                                                                                                                                                                                                                                                                                                                 |
-| This node's own prefix outside `overlay`                                               | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                                                                      |
-| This node's own prefix inside the overlay                                              | a hold                                                                                                                                                                                                                                                                                                                                  |
-| An address only `cap.table` assigns                                                    | nothing                                                                                                                                                                                                                                                                                                                                 |
-| Each prefix of `overlay` that holds no unspecified address and that the mesh can carry | a hold, on Linux only, since a hold goes only beside the policy rules, which macOS has none of, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                                                       |
-| Each [carve-out](antispoof.md#carve-outs), a link's network inside the overlay         | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself                                                                                                                                                                       |
+| Entry in the mesh's table                                                      | In the kernel table                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A learned route                                                                | a route out of the tun                                                                                                                                                                                                                                                                                                                  |
+| A learned route that [counts as a default](#routes-that-count-as-a-default)    | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS under `cap.exit`, in a family the tun holds an overlay address of, one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
+| A hold that does not count                                                     | a hold                                                                                                                                                                                                                                                                                                                                  |
+| A hold that counts, or this node's own prefix that counts                      | nothing                                                                                                                                                                                                                                                                                                                                 |
+| This node's own prefix outside `overlay`                                       | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                                                                      |
+| This node's own prefix inside the overlay                                      | a hold                                                                                                                                                                                                                                                                                                                                  |
+| An address only `cap.table` assigns                                            | nothing                                                                                                                                                                                                                                                                                                                                 |
+| Each prefix of `overlay`                                                       | a hold for each but one a carve-out equals, on Linux only, since a hold goes only beside the policy rules, which macOS has none of, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                   |
+| Each [carve-out](antispoof.md#carve-outs), a link's network inside the overlay | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself for every source                                                                                                                                                      |
 
 A throw ends the table's lookup, and the rules after the one that looked it up
 decide, as row L10 of [where a lookup ends](#where-a-lookup-ends-on-linux)
@@ -853,7 +853,7 @@ A lookup bound to no device:
 | --- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | L1  | an address of the host's own                                                                                                           | any                                                 | the local table at 0, which delivers it on the host                                      |
 | L2  | any other                                                                                                                              | marked                                              | main at 32766, since the gotos at 5100 and 5400 skip every rule reading the mesh's table |
-| L3  | inside `overlay`, where the mesh's longest match is a route, a default among them                                                      | unmarked                                            | 5110, into the tun                                                                       |
+| L3  | inside `overlay`, where the mesh's longest match is a route                                                                            | unmarked                                            | 5110, into the tun                                                                       |
 | L4  | inside the overlay, where the mesh's longest match is a hold                                                                           | unmarked                                            | 5110, refused                                                                            |
 | L5  | inside the overlay, where the mesh's longest match is a throw or the table holds nothing for it                                        | unmarked                                            | on through the rows below, as for a destination outside the overlay                      |
 | L6  | outside the overlay, under a route of main longer than /0                                                                              | unmarked                                            | 5410, by main's route, whatever the mesh's table holds for it                            |
@@ -864,10 +864,12 @@ A lookup bound to no device:
 | L11 | outside the overlay, where the mesh's longest match is a route of /7 or shorter for IPv4 or /15 or shorter for IPv6, such as a default | unmarked, from a source in this node's own prefixes | 5430, into the tun                                                                       |
 | L12 | outside the overlay, any other                                                                                                         | unmarked                                            | main at 32766                                                                            |
 
-- L3 and L5: every overlay prefix has a hold of its own but one that holds its
-  family's unspecified address and one the mesh cannot carry, so only inside
-  those can the mesh's longest match be a route shorter than the prefix, a
-  throw, or nothing. Without `overlay` no destination is inside the overlay.
+- L3 and L5: every overlay prefix has a hold of its own, or where a carve-out
+  equals it, in its place that carve-out's throw or the mesh's own route at it,
+  but one whose carve-out is an address `cap.table` assigns this node gets none
+  of them. So inside the overlay the mesh's longest match is never a route
+  shorter than the prefix but at such an address. Without `overlay` no
+  destination is inside the overlay.
 - L5: a [carve-out](antispoof.md#carve-outs)'s throw is the mesh's longest match
   for an address of the carve-out no route of the mesh holds, so a lookup to the
   link's gateway or neighbor ends at L6 by main's route for the link.
@@ -939,8 +941,10 @@ zero-free cover the line [the cover](#the-zero-free-cover-on-macos) gives.
 
 Some routes are never installed:
 
-- multicast, link-local and loopback prefixes, and `255.255.255.255/32`, with
-  the warning `kernel is not installing a prefix the mesh cannot carry`
+- a prefix lying wholly in a range `overlay` refuses, such as `ff02::/16`,
+  `169.254.0.0/16` or `0.0.0.0/8`, with the warning
+  `kernel is not installing a prefix the mesh cannot carry`. A route that only
+  holds such addresses, such as `128.0.0.0/1`, is installed as any other
 - source-specific IPv4 routes, with the warning
   `kernel cannot install source-specific IPv4 route`
 
@@ -1089,7 +1093,7 @@ the rules in full.
 | Policy rules                                     | derived and installed                                                                                                                 | none                                                                                                                                                                                                                                        |
 | An underlay datagram                             | marked 0x72, so its lookup ends past the mesh's routes                                                                                | names the interface the selection answers, or the source its pin holds, as [the underlay's interface](#the-underlays-interface-on-macos) says                                                                                               |
 | This node's own prefix outside the overlay       | throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source                               | nothing, so a lookup for it from a socket bound to no interface and no address of the utun ends as row D2 of [where a lookup ends on macOS](#where-a-lookup-ends-on-macos) gives                                                            |
-| Hold of each overlay prefix                      | installed for each that holds no unspecified address and that the mesh can carry                                                      | not installed, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                                            |
+| Hold of each overlay prefix                      | installed for each, but one a carve-out equals, as [carve-outs](antispoof.md#carve-outs) describe                                     | not installed, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                                            |
 | `where` in the logs                              | `table 200 protocol 155`                                                                                                              | `interface utun6`, for example                                                                                                                                                                                                              |
 
 On both platforms a route that counts as a default, the `/0` default among them,
@@ -1294,11 +1298,13 @@ send no route. No member holds it, so a member holding an address the underlay
 sends to goes in whole wherever the host's own route to that address is the one
 holding the zero address, and nothing is written outside the utun.
 
-A route holding its zero address inside `0.0.0.0/8` or `::/8`, such as a
-`0.0.0.0/24`, contains no member. The reconciler installs nothing of it, counts
-it as desired and skipped, and logs
-`kernel is not installing a route its cover holds nothing of` once while the
-mesh announces it.
+A route holding its zero address inside `::/8`, such as `::/16`, contains no
+member. The reconciler installs nothing of it, counts it as desired and skipped,
+and logs `kernel is not installing a route its cover holds nothing of` once
+while the mesh announces it. A route inside `0.0.0.0/8`, such as `0.0.0.0/24`,
+and `::/128` never reach the cover: each lies wholly in a range `overlay`
+refuses, so the reconciler never installs it and logs
+`kernel is not installing a prefix the mesh cannot carry` instead.
 
 Only the kernel's table holds the cover. Babel's table, the updates it sends and
 `ranet3 exit list` keep the route, so no route's prefix is replaced by a longer
