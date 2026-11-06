@@ -259,8 +259,8 @@ func BelowSourceFloor(prefix netip.Prefix) bool {
 //     gives where such a lookup ends. The antispoof filter reads the overlay as
 //     the same union.
 //
-//   - Any prefix containing the family's unspecified address, however small,
-//     inside the overlay or not. That is the darwin kernel's own trigger,
+//   - Any prefix containing the family's unspecified address, however small.
+//     That is the darwin kernel's own trigger,
 //     measured on Darwin 27.2.0 by TestZMeasureWhichSetsStrandABoundSocket and
 //     kept as TestDarwinStrandsABoundSocketOnlyThroughTheZeroAddress: a socket
 //     bound with IP_BOUND_IF loses a destination exactly when the tun's
@@ -268,9 +268,8 @@ func BelowSourceFloor(prefix netip.Prefix) bool {
 //     address of its family. The scoped lookup falls back to a longest-prefix
 //     match on the unspecified address and requires the answer to be on the
 //     bound interface, so a route as small as 0.0.0.0/24 out of the tun takes
-//     the fallback away, and an overlay holding it changes nothing in that
-//     lookup. 0.0.0.0/24 with 192.0.2.0/24 strands, but 64.0.0.0/2 with
-//     192.0.2.0/24 does not.
+//     the fallback away. 0.0.0.0/24 with 192.0.2.0/24 strands, but 64.0.0.0/2
+//     with 192.0.2.0/24 does not.
 //
 // The second arm makes this a property of the set rather than of one route: no
 // set can cover a family without some member containing that family's zero
@@ -344,6 +343,48 @@ func insideOverlay(prefix netip.Prefix, overlay []Prefix) bool {
 
 // HoldsUnspecified reports a prefix holding its family's all-zeros address.
 func HoldsUnspecified(prefix netip.Prefix) bool { return prefix.Masked().Addr().IsUnspecified() }
+
+// Unroutable names, as a clause following the prefix, a class of addresses the
+// mesh forwards no unicast packet from or to: a class holding every address of
+// prefix where one does, with whole true, and otherwise the first class in
+// order holding one of its addresses, empty for none. A list of the mesh's own
+// addresses takes no prefix holding any such address, and the host's routes
+// into the mesh take no route a class holds whole, since the data path
+// forwards no unicast packet anywhere in it.
+func Unroutable(prefix netip.Prefix) (reason string, whole bool) {
+	prefix = prefix.Masked()
+	for _, class := range unroutableClasses {
+		switch {
+		// a class holding the prefix whole names it ahead of one holding a part,
+		// since the limited broadcast lies in class E
+		case class.Bits() <= prefix.Bits() && class.Contains(prefix.Addr()):
+			return class.reason, true
+		case reason == "" && class.Overlaps(prefix):
+			reason = class.reason
+		}
+	}
+	return reason, false
+}
+
+// unroutableClasses are the classes Unroutable names, in its order: RFC 1122
+// section 3.2.1.3, RFC 1112 section 4 and RFC 3927 for IPv4, RFC 4291 sections
+// 2.4 and 2.5.5.2 for IPv6
+var unroutableClasses = []struct {
+	netip.Prefix
+	reason string
+}{
+	{netip.MustParsePrefix("0.0.0.0/8"), "holds addresses of this network, 0.0.0.0/8, which name the sender's own network"},
+	{netip.MustParsePrefix("127.0.0.0/8"), "holds loopback addresses, 127.0.0.0/8, which belong to the host"},
+	{netip.MustParsePrefix("169.254.0.0/16"), "holds link-local addresses, 169.254.0.0/16, which name the link they arrive on"},
+	{netip.MustParsePrefix("224.0.0.0/4"), "holds multicast addresses, 224.0.0.0/4, which name a group rather than a host"},
+	{netip.MustParsePrefix("255.255.255.255/32"), "holds the limited broadcast address 255.255.255.255, which names every host of the link"},
+	{netip.MustParsePrefix("240.0.0.0/4"), "holds class E addresses, 240.0.0.0/4, which are reserved and name no host"},
+	{netip.MustParsePrefix("::/128"), "holds the unspecified address ::, which names no host"},
+	{netip.MustParsePrefix("::1/128"), "holds the loopback address ::1, which belongs to the host"},
+	{netip.MustParsePrefix("::ffff:0:0/96"), "holds IPv4-mapped addresses, ::ffff:0:0/96, which stand for IPv4 addresses inside a host"},
+	{netip.MustParsePrefix("fe80::/10"), "holds link-local addresses, fe80::/10, which name the link they arrive on"},
+	{netip.MustParsePrefix("ff00::/8"), "holds multicast addresses, ff00::/8, which name a group rather than a host"},
+}
 
 // Addr is one address, with no prefix length and no zone. Every field written
 // as one names a host, a segment or a source and never a link, so a zone is
