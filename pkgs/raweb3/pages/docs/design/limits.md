@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-05
+updated: 2026-11-06
 order: 10
 ---
 
@@ -187,21 +187,11 @@ delay, by which time the pass has cut the address. The Mac's own traffic to such
 an address leaves by the host's route too, where on Linux it would take the
 mesh's.
 
-On macOS an answer names the address the peer reached as its source, and the
-kernel picks the interface it leaves by
-([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)).
-Over IPv4, an answer sent on the shared socket right after a datagram that named
-the selection's interface to the same address rides the route that datagram
-cached
-([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L631)),
-until the cached route moves, and a datagram naming the selection's interface
-right after an answer rides the answer's route the same way
-([in_pcbladdr](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1610)).
-Neither enters the utun. On a Mac with 2 uplinks, where a peer has a session
-this node dialed and a session the peer opened to an address of the other
-uplink, the answer can then leave the selection's uplink with the other uplink's
-address as its source, which a reverse path check upstream of that uplink may
-drop.
+On macOS a datagram sent on the shared socket while another send on it is in
+flight can leave by the interface that other send names, or by the one an
+earlier send to its destination named. Once those sends end, every datagram
+leaves by the interface it names, as
+[the underlay's interface](../routing.md#the-underlays-interface-on-macos) says.
 
 On Linux the transport binds the wildcard address, and for a session this node
 dialed it lets the kernel pick each datagram's source by route. On a node whose

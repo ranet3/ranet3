@@ -149,13 +149,11 @@ These commands take flags of their own:
   its index where the host has no interface of that index, and no matched route.
   A row without one shows `dev` with the interface
   [the selection](../routing.md#the-underlays-interface-on-macos) names and the
-  route it matched, or `no route`. No row is taken. An IPv4 datagram can ride
-  the shared socket's cached route of another interface instead, as
-  [limits](../design/limits.md#the-underlay-socket) gives. Then, under
-  `cap.exit.via`, `Steered defaults in table <id>` with the path `up`, or `down`
-  at the first segment that does not resolve and the mesh's answer, and each
-  family's steered default `installed`, on macOS in a family the mode covers as
-  its zero-free cover, or `not installed`. Then, on Linux, the
+  route it matched, or `no route`. No row is taken. Then, under `cap.exit.via`,
+  `Steered defaults in table <id>` with the path `up`, or `down` at the first
+  segment that does not resolve and the mesh's answer, and each family's steered
+  default `installed`, on macOS in a family the mode covers as its zero-free
+  cover, or `not installed`. Then, on Linux, the
   [antispoof filter's](../antispoof.md) table: when its last pass read it and
   whether it is ready, then each chain, `antispoof` with `overlay` and
   `mesh_entry`, with the hook and priority it is written at and each rule read

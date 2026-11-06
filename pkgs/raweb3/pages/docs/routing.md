@@ -1163,14 +1163,14 @@ looked up scoped to it by
 which passes over an unscoped route of another interface. A route scoped for any
 reason is never cut. Where a lookup ends:
 
-| Row | Lookup                                                                                                                                                             | Where it ends                                                                                                                                                                                                                                                                                          |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| D1  | a socket bound to no interface and no address of the utun                                                                                                          | the longest unscoped match, so a route of the mesh installed unscoped takes it into the utun wherever no longer route of the host's covers the destination                                                                                                                                             |
-| D2  | a socket bound to no interface and no address of the utun, for a destination under a scoped route of the mesh, a hold among them, or inside this node's own prefix | the scoped route is passed over, or there is none, and D1 gives the end: a wider unscoped route of the mesh takes it into the utun ahead of a shorter route of the host's                                                                                                                              |
-| D3  | a socket bound to the utun                                                                                                                                         | the routes scoped to the utun answer it too, so a hold refuses it                                                                                                                                                                                                                                      |
-| D4  | ranet3's underlay datagram that names no source, in mode off and under `cap.exit` alike                                                                            | names the interface [the selection](#the-underlays-interface-on-macos) answers, never the utun, and the kernel's lookup scoped to it gives where it ends, but for the cached route [limits](design/limits.md#the-underlay-socket) gives                                                                |
-| D5  | ranet3's underlay datagram answering from the address a peer reached, in mode off and under `cap.exit` alike                                                       | names that address as its source, an IPv6 link-local one also its arrival interface, and leaves by the interface the kernel then takes ([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)), and as D4 once the kernel refuses that address |
-| D6  | a socket bound to an address of the utun and to no interface                                                                                                       | a route scoped to the utun answers it, a source-specific route whose source prefix holds that address among them                                                                                                                                                                                       |
+| Row | Lookup                                                                                                                                                             | Where it ends                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | a socket bound to no interface and no address of the utun                                                                                                          | the longest unscoped match, so a route of the mesh installed unscoped takes it into the utun wherever no longer route of the host's covers the destination                                                                                                                                                                                                                                                                                                                                                                                                 |
+| D2  | a socket bound to no interface and no address of the utun, for a destination under a scoped route of the mesh, a hold among them, or inside this node's own prefix | the scoped route is passed over, or there is none, and D1 gives the end: a wider unscoped route of the mesh takes it into the utun ahead of a shorter route of the host's                                                                                                                                                                                                                                                                                                                                                                                  |
+| D3  | a socket bound to the utun                                                                                                                                         | the routes scoped to the utun answer it too, so a hold refuses it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| D4  | ranet3's underlay datagram that names no source, in mode off and under `cap.exit` alike                                                                            | names the interface [the selection](#the-underlays-interface-on-macos) answers, never the utun, and the kernel's lookup scoped to it gives where it ends                                                                                                                                                                                                                                                                                                                                                                                                   |
+| D5  | ranet3's underlay datagram answering from the address a peer reached, in mode off and under `cap.exit` alike                                                       | names that address as its source, and an IPv6 one also the interface holding it, or for a link-local one its arrival interface. An IPv6 one leaves by the kernel's lookup scoped to that interface ([selectroute](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6_src.c#L1021)), an IPv4 one by the interface the kernel takes ([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)), and either as D4 once the kernel refuses the address or the interface |
+| D6  | a socket bound to an address of the utun and to no interface                                                                                                       | a route scoped to the utun answers it, a source-specific route whose source prefix holds that address among them                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ### The underlay's interface on macOS
 
@@ -1181,10 +1181,9 @@ without a pin names the interface the selection answers, in `IP_PKTINFO` or
 `IPV6_PKTINFO`
 ([udp_check_pktinfo](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/udp_usrreq.c#L1580)).
 A datagram sent from a pin, the address a peer reached, names that address as
-its source and names an interface only for an IPv6 link-local one, its arrival
-interface
-([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)),
-and [moving hosts](platforms.md#moving-hosts) gives which sends carry a pin. The
+its source, and an IPv6 one also the interface holding the address, or for a
+link-local one its arrival interface, as the answers below give, and
+[moving hosts](platforms.md#moving-hosts) gives which sends carry a pin. The
 selection's interface is the longest match for the destination among the host's
 unscoped routes, those out of ranet3's utun, cloned routes and multicast and
 broadcast entries left out. Another program's reject route stays a candidate. A
@@ -1204,32 +1203,50 @@ A datagram that names no source carries the selection's interface in
 `IP_PKTINFO` or `IPV6_PKTINFO`
 ([udp_check_pktinfo](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/udp_usrreq.c#L1580)),
 and the kernel's lookup scoped to that interface gives where it ends
-([rt_lookup_common](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/route.c#L3183)),
-but for a route the shared socket already caches, which
-[limits](design/limits.md#the-underlay-socket) gives. A socket connected to 1
-peer for a session whose sends leave the source to the kernel is bound to the
-selection's interface with `IP_BOUND_IF` or `IPV6_BOUND_IF`, and a change of
-interface opens a new one. One for a session the peer opened binds the address
-the peer's latest fresh request or answer reached, and an IPv6 link-local one
-its arrival interface. Where the selection holds no route for a peer, the
-datagram is refused with `ENETUNREACH` and nothing is written, as a marked
-lookup ending in an empty `main` refuses on Linux.
+([rt_lookup_common](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/route.c#L3183)).
+A socket connected to 1 peer for a session whose sends leave the source to the
+kernel is bound to the selection's interface with `IP_BOUND_IF` or
+`IPV6_BOUND_IF`, and a change of interface opens a new one. One for a session
+the peer opened binds the address the peer's latest fresh request or answer
+reached, and an IPv6 link-local one its arrival interface. Where the selection
+holds no route for a peer, the datagram is refused with `ENETUNREACH` and
+nothing is written, as a marked lookup ending in an empty `main` refuses on
+Linux.
 
-The shared socket's first send naming the selection's interface after a read
-that found the routes changed releases the socket's cached route, which the
-kernel keeps whatever interface a later send names
-([in_pcbladdr](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1538)),
-by setting `IP_BOUND_IF` or `IPV6_BOUND_IF` to 0
+The kernel keeps the route the shared socket cached for a destination whatever
+interface a later send to it names
+([in_pcbladdr](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L1610),
+[selectroute](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6_src.c#L1278)).
+The socket releases that route, by setting `IP_BOUND_IF` or `IPV6_BOUND_IF` to 0
 ([inp_bindif_common](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/in_pcb.c#L3198)),
-and a send built under the earlier read that reaches the socket after it
-releases the route again. A datagram that names its source releases nothing.
+whenever a send names another interface than the send before it did, and
+releases it again after a write where another send named another interface
+meanwhile. A datagram that names its source counts as naming the interface
+holding that address, or for an IPv6 link-local one its arrival interface, and
+one from an address no interface holds as naming an interface of its own. The
+interface holding each address is read at most once for each read of the routing
+table the selection makes, which an address that moves wakes as a route does, at
+the first send from a pin after it, and again at the next such send where that
+read failed. Each change of interface costs 1 `setsockopt`, which waits for the
+socket's sends in flight
+([ip_ctloutput](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L2343),
+[ip6_ctloutput](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/ip6_output.c#L2457)),
+and 1 route lookup at the next send
+([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L785),
+[selectroute](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6_src.c#L1278)),
+and sends at once naming 2 interfaces cost up to 2 `setsockopt` a datagram.
+[Limits](design/limits.md#the-underlay-socket) gives the datagram sent while
+another send is in flight.
 
-An answer to a peer names the address the peer reached as its source, and an
-IPv6 link-local one also its arrival interface (RFC 7296 section 2.11). The
-kernel picks the interface it leaves by
-([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)),
-and [limits](design/limits.md#the-underlay-socket) gives the case where that is
-not the interface holding the address. Once the kernel refuses that address, the
+An answer to a peer names the address the peer reached as its source (RFC 7296
+section 2.11). An IPv6 answer also names the interface holding that address, or
+for a link-local one its arrival interface, so the kernel looks its route up
+scoped to that interface
+([selectroute](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6_src.c#L1021)).
+An IPv4 answer names no interface, and the kernel takes the interface holding
+the address
+([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)).
+Once the kernel refuses that address, or the interface an IPv6 answer names, the
 datagram names the selection's interface instead. The path MTU is read from the
 interface a datagram names, or for one that names its source, the interface
 holding it.
@@ -1242,9 +1259,7 @@ pin their sends carry where that pin has one
 ([debugging](development/debug.md#commands)). A row with a pin's interface shows
 that interface in its answer, and the others the interface the selection names
 with the route it matched, or `no route`. Each row's `Source` and `Interface`
-columns, which Linux's lookups fill, read `-`. An IPv4 datagram that rides the
-shared socket's cached route of another interface is a declared limit, listed in
-[limits](design/limits.md#the-underlay-socket).
+columns, which Linux's lookups fill, read `-`.
 
 ### The zero-free cover on macOS
 

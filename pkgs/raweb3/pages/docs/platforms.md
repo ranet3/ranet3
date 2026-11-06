@@ -282,8 +282,8 @@ answer moves it to the address that one arrived on. On other platforms but iOS
 and Android the kernel always chooses.
 
 The session falls back to the kernel's choice whenever the kernel refuses a send
-from the address with `ENETUNREACH`, `EHOSTUNREACH`, `EINVAL`, `ENODEV` or
-`EADDRNOTAVAIL`. Once a send from the kernel's choice has gone after
+from the address with `ENETUNREACH`, `EHOSTUNREACH`, `EINVAL`, `ENODEV`,
+`EADDRNOTAVAIL` or `ENXIO`. Once a send from the kernel's choice has gone after
 `EHOSTUNREACH`, a fresh request or answer to the address within 1 minute changes
 nothing, and the session keeps sending from the kernel's choice. The first one
 after that minute moves the session back to the address, and a send refused with
