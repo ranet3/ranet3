@@ -114,6 +114,7 @@ func addressSet(addresses []netip.Addr) []netip.Addr {
 
 // NetworkWatch says when the host's defaults, its addresses or its links outside the mesh changed
 // a notification starts a settle window, and the state read after it is signaled only where it differs from the last one signaled
+// a read that fails is read again on a backoff from minRetryInterval doubling to watchSweep, which no notification shortens
 type NetworkWatch struct {
 	notify <-chan struct{}
 	// read takes the state through what the platform opened, and only the watch's own goroutine calls it after the first read
@@ -173,19 +174,39 @@ func (w *NetworkWatch) Close() error {
 func (w *NetworkWatch) run() {
 	defer close(w.done)
 	signaled := w.current
+	retry := NewRetryTimer()
+	defer retry.Stop()
+	failures := 0
 	for {
-		select {
-		case <-w.stop:
-			return
-		case <-w.notify:
-		}
-		if !settle(w.notify, w.stop, watchSettle) {
-			return
+		if failures > 0 {
+			select {
+			case <-w.stop:
+				return
+			case <-retry.C:
+			}
+		} else {
+			select {
+			case <-w.stop:
+				return
+			case <-w.notify:
+			}
+			if !settle(w.notify, w.stop, watchSettle) {
+				return
+			}
 		}
 		state, err := w.read()
 		if err != nil {
-			slog.Warn("kernel could not read the host's network after a change", "err", err)
+			if failures == 0 {
+				slog.Warn("kernel could not read the host's network, reading it again on a backoff", "err", err)
+			}
+			failures++
+			retry.Failed(watchSweep)
 			continue
+		}
+		if failures > 0 {
+			slog.Info("kernel read the host's network again", "failures", failures)
+			failures = 0
+			retry.Passed()
 		}
 		w.mu.Lock()
 		w.current = state

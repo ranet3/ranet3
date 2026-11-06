@@ -4,6 +4,7 @@
 package kernel
 
 import (
+	"errors"
 	"net/netip"
 	"slices"
 	"sync"
@@ -55,9 +56,13 @@ func TestNetworkChangeReportsWhatMovedPerFamily(t *testing.T) {
 }
 
 // scriptedHost is a host whose state a test sets, read the way a platform's reader is
+// each queued failure fails one read, and a standing failure fails every read while it is set
 type scriptedHost struct {
-	mu    sync.Mutex
-	state NetworkState
+	mu       sync.Mutex
+	state    NetworkState
+	failures []error
+	standing error
+	reads    int
 }
 
 func (h *scriptedHost) set(state NetworkState) {
@@ -66,11 +71,41 @@ func (h *scriptedHost) set(state NetworkState) {
 	h.state = state
 }
 
+func (h *scriptedHost) fail(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.failures = append(h.failures, err)
+}
+
+func (h *scriptedHost) failEvery(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.standing = err
+}
+
+func (h *scriptedHost) readCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.reads
+}
+
 func (h *scriptedHost) read() (NetworkState, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.reads++
+	if h.standing != nil {
+		return NetworkState{}, h.standing
+	}
+	if len(h.failures) > 0 {
+		err := h.failures[0]
+		h.failures = h.failures[1:]
+		return NetworkState{}, err
+	}
 	return h.state, nil
 }
+
+// errScriptedRead is a read of the host that failed, as a dump the kernel could not allocate fails
+var errScriptedRead = errors.New("kernel: dump addresses: no buffer space available")
 
 func withAddress(address string) NetworkState {
 	return NetworkState{IPv4: NetworkFamily{Addresses: addrs(address)}}
@@ -200,6 +235,136 @@ func TestNetworkWatchSignalsALinkAlone(t *testing.T) {
 		case <-time.After(quietWindow):
 			t.Fatalf("%s signaled nothing", step.name)
 		}
+	}
+}
+
+// a read that fails is read again on the backoff, and the change it missed is signaled once a read succeeds
+// nothing else wakes the watch here, as nothing does after a move that has settled
+func TestNetworkWatchReadsAgainAfterAFailedRead(t *testing.T) {
+	first, second := withAddress("192.0.2.1"), withAddress("192.0.2.2")
+	host := &scriptedHost{state: first}
+	notify := make(chan struct{}, 1)
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	host.fail(errScriptedRead)
+	host.set(second)
+	notify <- struct{}{}
+	select {
+	case change := <-w.Changes():
+		if !slices.Equal(change.Before.IPv4.Addresses, first.IPv4.Addresses) || !slices.Equal(change.After.IPv4.Addresses, second.IPv4.Addresses) {
+			t.Errorf("the change read again went from %v to %v", change.Before.IPv4.Addresses, change.After.IPv4.Addresses)
+		}
+	case <-time.After(minRetryInterval + quietWindow):
+		t.Fatalf("a change whose first read failed was not signaled within a retry, after %d reads", host.readCount())
+	}
+	if current, _ := w.State(); !slices.Equal(current.IPv4.Addresses, second.IPv4.Addresses) {
+		t.Errorf("the watch reads %v after the retry", current.IPv4.Addresses)
+	}
+}
+
+// backoffWindow is how long a test counts the reads of a host whose every read fails
+const backoffWindow = 9 * minRetryInterval / 2
+
+// maxReadsIn bounds from above the reads a window holds of a source read immediate times with no wait and then on a backoff
+// doubling from minRetryInterval, as the immediate reads plus one for each doubling no longer than the window on its own
+func maxReadsIn(window time.Duration, immediate int) int {
+	reads := immediate
+	for wait := minRetryInterval; wait <= window; wait *= 2 {
+		reads++
+	}
+	return reads
+}
+
+// a host whose every read fails is read on a backoff doubling from minRetryInterval, notifications or not
+func TestNetworkWatchBacksOffWhileReadsFail(t *testing.T) {
+	host := &scriptedHost{state: withAddress("192.0.2.1")}
+	notify := make(chan struct{}, 1)
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	host.failEvery(errScriptedRead)
+	notify <- struct{}{}
+	waitFor(t, func() bool { return host.readCount() >= 2 })
+	failed := host.readCount()
+	for end := time.Now().Add(backoffWindow); time.Now().Before(end); time.Sleep(burstGap) {
+		select {
+		case notify <- struct{}{}:
+		default:
+		}
+	}
+	if reads, limit := host.readCount()-failed+1, maxReadsIn(backoffWindow, 1); reads > limit {
+		t.Errorf("a host failing every read was read %d times in %v, want at most %d", reads, backoffWindow, limit)
+	}
+}
+
+// a streak of failed reads that ended leaves no backoff behind, so a later streak reads again after minRetryInterval and not after
+// the longer backoff the first streak doubled to
+func TestNetworkWatchStartsItsBackoffOverAfterARead(t *testing.T) {
+	first, second, third := withAddress("192.0.2.1"), withAddress("192.0.2.2"), withAddress("192.0.2.3")
+	host := &scriptedHost{state: first}
+	notify := make(chan struct{}, 1)
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	host.fail(errScriptedRead)
+	host.fail(errScriptedRead)
+	host.set(second)
+	notify <- struct{}{}
+	select {
+	case <-w.Changes():
+	case <-time.After(3*minRetryInterval + quietWindow):
+		t.Fatalf("a change whose first two reads failed was not signaled within two retries, after %d reads", host.readCount())
+	}
+	host.fail(errScriptedRead)
+	host.set(third)
+	notify <- struct{}{}
+	select {
+	case change := <-w.Changes():
+		if !slices.Equal(change.After.IPv4.Addresses, third.IPv4.Addresses) {
+			t.Errorf("the later streak's read again signaled the addresses %v", change.After.IPv4.Addresses)
+		}
+	case <-time.After(minRetryInterval + quietWindow):
+		t.Fatal("a later streak's first read again waited out the backoff of the streak before it")
+	}
+}
+
+// closeBudget is how soon Close returns while the watch or a monitor waits out a backoff, well under its first delay
+const closeBudget = minRetryInterval / 4
+
+// Close ends the wait for a retry at once, and the watch's goroutine ends with it
+func TestNetworkWatchClosesWhileRetrying(t *testing.T) {
+	host := &scriptedHost{state: withAddress("192.0.2.1")}
+	notify := make(chan struct{}, 1)
+	released := 0
+	w, err := newNetworkWatch(notify, host.read, func() error { released++; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.failEvery(errScriptedRead)
+	notify <- struct{}{}
+	// each failure leaves the watch waiting out a backoff of at least minRetryInterval, which Close must end at once
+	waitFor(t, func() bool { return host.readCount() >= 3 })
+	closed := make(chan error, 1)
+	go func() { closed <- w.Close() }()
+	select {
+	case <-closed:
+	case <-time.After(closeBudget):
+		t.Fatalf("Close waited out the backoff, more than %v", closeBudget)
+	}
+	select {
+	case <-w.done:
+	default:
+		t.Error("the watch's goroutine still runs after Close returned")
+	}
+	if released != 1 {
+		t.Errorf("Close released %d times", released)
 	}
 }
 
