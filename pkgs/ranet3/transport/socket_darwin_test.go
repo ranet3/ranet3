@@ -749,28 +749,47 @@ func TestDarwinReceiveRecordCarriesEachDatagramsSource(t *testing.T) {
 	}
 }
 
-// an IPv4 answer names the address its request reached in ipi_spec_dst and leaves ipi_ifindex 0, whatever interface the request arrived on
+// an IPv4 answer names the address its request reached in ipi_spec_dst and leaves ipi_ifindex 0, whatever interface holds it or the request arrived on
 // XNU takes a nonzero ipi_ifindex over ipi_spec_dst, which would drop the source
-// an IPv6 answer names the interface for a link-local source alone, which needs its zone
-func TestDarwinPinNamesAnInterfaceForALinkLocalSourceAlone(t *testing.T) {
+// an IPv6 answer names the interface holding its source beside it, the one the request arrived on for a link-local source, which needs its zone,
+// and none for a source no interface holds, and its control that fragments names the same
+// the pin's interface is the one holding the source, or the arrival interface for a link-local source, whatever the host's addresses list for it
+func TestDarwinPinNamesTheInterfaceHoldingItForIPv6Alone(t *testing.T) {
 	from := netip.MustParseAddrPort("198.51.100.1:4500")
+	const arrival, holder = 7, 9
+	bind := &darwinBind{selection: newTestSelection(holder), readHeld: func() (map[netip.Addr]int, error) {
+		return map[netip.Addr]int{netip.MustParseAddr("192.0.2.7"): holder, netip.MustParseAddr("2001:db8::7"): holder}, nil
+	}}
 	for _, test := range []struct {
 		reached string
 		ipv6    bool
-		index   int
+		// index is the interface the control names, and held the pin's
+		index, held int
 	}{
-		{reached: "192.0.2.7"},
-		{reached: "2001:db8::7", ipv6: true},
-		{reached: "fe80::7", ipv6: true, index: 7},
+		{reached: "192.0.2.7", held: holder},
+		{reached: "2001:db8::7", ipv6: true, index: holder, held: holder},
+		{reached: "2001:db8::8", ipv6: true},
+		{reached: "fe80::7", ipv6: true, index: arrival, held: arrival},
 	} {
 		reached := netip.MustParseAddr(test.reached)
-		ep, err := (&darwinSocket{ipv6: test.ipv6}).replyEndpoint(from, receivedControl(test.ipv6, reached, 7))
+		ep, err := (&darwinSocket{ipv6: test.ipv6}).replyEndpoint(from, receivedControl(test.ipv6, reached, arrival))
 		if err != nil {
-			t.Fatalf("a request that reached %s on interface 7: %v", reached, err)
+			t.Fatalf("a request that reached %s on interface %d: %v", reached, arrival, err)
 		}
-		source, index, fragments, err := sentPin(ep.pinnedControl())
+		pin := bind.pinned(ep)
+		if pin.index != test.held || bind.pinInterface(ep) != test.held {
+			t.Errorf("the pin %s reached on interface %d is held by interface %d, and its sends by %d, want %d", reached, arrival, pin.index, bind.pinInterface(ep), test.held)
+		}
+		source, index, fragments, err := sentPin(pin.control)
 		if err != nil || source != reached || index != test.index || fragments {
-			t.Errorf("the answer to a request that reached %s on interface 7 names %s at interface %d, fragmenting %v, %v, want %s at interface %d",
+			t.Errorf("the answer to a request that reached %s on interface %d names %s at interface %d, fragmenting %v, %v, want %s at interface %d",
+				reached, arrival, source, index, fragments, err, reached, test.index)
+		}
+		if !test.ipv6 {
+			continue
+		}
+		if source, index, fragments, err := sentPin(pin.fragmentingControl); err != nil || source != reached || index != test.index || !fragments {
+			t.Errorf("the answer that fragments to a request that reached %s names %s at interface %d, fragmenting %v, %v, want %s at interface %d fragmenting",
 				reached, source, index, fragments, err, reached, test.index)
 		}
 	}
@@ -1193,11 +1212,16 @@ func TestDarwinSessionReturnsToAPinThatRoutesAgain(t *testing.T) {
 }
 
 // a send whose pinned try and unpinned resend are both refused keeps the pin and records nothing, so a later send tries the pin again
-// a reject ARP entry for the pin's gateway, which stands for one whose ARP failed, has darwin refuse both with EHOSTUNREACH
-// once the gateway answers again, sends leave from the pin
+// the resend names another interface than the pinned try, so the socket releases the route the try cached and the resend takes the host's own route,
+// by the far gateway: a reject ARP entry for each gateway, which stands for one whose ARP failed, has darwin refuse both with EHOSTUNREACH
+// once the gateways answer again, sends leave from the pin
 func TestDarwinSendRefusedWithAndWithoutThePinKeepsIt(t *testing.T) {
 	requireHostNet(t, "a feth pair")
 	pinDetour(t, true)
+	near, err := net.InterfaceByName(fethNear)
+	if err != nil {
+		t.Fatal(err)
+	}
 	far, err := net.InterfaceByName(fethFar)
 	if err != nil {
 		t.Fatal(err)
@@ -1207,6 +1231,8 @@ func TestDarwinSendRefusedWithAndWithoutThePinKeepsIt(t *testing.T) {
 	hostCommand(t, "arp", "-d", path.nearGateway)
 	hostCommand(t, "arp", "-s", path.nearGateway, far.HardwareAddr.String(), "reject")
 	t.Cleanup(func() { _ = exec.Command("arp", "-d", path.nearGateway).Run() })
+	hostCommand(t, "arp", "-d", path.farGateway)
+	hostCommand(t, "arp", "-s", path.farGateway, near.HardwareAddr.String(), "reject")
 	events := &eventLog{}
 	hub, err := NewHub(0, Runtime{Events: events.record})
 	if err != nil {
@@ -1224,6 +1250,8 @@ func TestDarwinSendRefusedWithAndWithoutThePinKeepsIt(t *testing.T) {
 	}
 	hostCommand(t, "arp", "-d", path.nearGateway)
 	hostCommand(t, "arp", "-s", path.nearGateway, far.HardwareAddr.String())
+	hostCommand(t, "arp", "-d", path.farGateway)
+	hostCommand(t, "arp", "-s", path.farGateway, near.HardwareAddr.String())
 	frames.leftFrom(t, int(hub.port), 101, path.pin, func() error { return hub.bind.Send([][]byte{make([]byte, 101)}, ep) })
 	if got := events.recorded(); len(got) != 0 {
 		t.Errorf("the hub recorded %q, want nothing", got)

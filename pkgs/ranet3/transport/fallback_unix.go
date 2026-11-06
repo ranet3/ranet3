@@ -16,10 +16,11 @@ import (
 )
 
 // unpinnable reports whether err is the kernel refusing a pinned source address or interface that a send without the pin may get past
-// a source the host no longer holds draws EADDRNOTAVAIL, and a source whose interface holds no route to the peer EHOSTUNREACH
+// a source the host no longer holds draws EADDRNOTAVAIL, a source whose interface holds no route to the peer EHOSTUNREACH,
+// and packet info naming an interface gone since the pin's was read ENXIO on darwin, ip6_setpktopt in bsd/netinet6/ip6_output.c
 func unpinnable(err error) bool {
 	return errors.Is(err, unix.ENETUNREACH) || errors.Is(err, unix.EHOSTUNREACH) || errors.Is(err, unix.EINVAL) ||
-		errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EADDRNOTAVAIL)
+		errors.Is(err, unix.ENODEV) || errors.Is(err, unix.EADDRNOTAVAIL) || errors.Is(err, unix.ENXIO)
 }
 
 // pinFallback records whether sends to an endpoint left the pin it arrived with, and why

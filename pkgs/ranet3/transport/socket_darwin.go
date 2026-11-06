@@ -24,6 +24,7 @@ import (
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/packet"
@@ -37,10 +38,13 @@ import (
 // by every program, so a route out of the mesh tun would otherwise carry this
 // node's own ESP into the tunnel that ESP is carrying. The interface is the
 // one Runtime.Selection answers, and rt_lookup_common in bsd/net/route.c
-// refuses a send scoped to it rather than taking another interface's route,
-// unless the socket caches a route to that address, as in_pcbladdr in
-// bsd/netinet/in_pcb.c keeps whatever a send names. The second is the address
-// and interface each datagram reached, and the third its outer ECN field.
+// refuses a send scoped to it rather than taking another interface's route.
+// The kernel keeps the route a socket cached for an address whatever
+// interface a later send to it names, in_pcbladdr in bsd/netinet/in_pcb.c and
+// selectroute in bsd/netinet6/in6_src.c, so the shared socket releases that
+// route whenever a send names another interface than the last send did. The
+// second is the address and interface each datagram reached, and the third its
+// outer ECN field.
 //
 // The portable bind is wireguard's StdNetBind, which keeps its descriptors to
 // itself, so there is no seam to set a socket option through. The socket work
@@ -53,7 +57,7 @@ import (
 // RFC 7296 section 2.11: "It MUST specify the address and port at which the request was received as the source address and port in the response."
 type darwinEndpoint struct {
 	addr netip.AddrPort
-	// source and index are the address and interface control names, invalid and zero where the kernel chooses
+	// source is the pin, invalid where the kernel chooses, and index the interface it was reached on, zero but for an IPv6 link-local pin
 	source netip.Addr
 	index  int
 	// control names source, and fragmentingControl names it beside fragmentControl, both immutable and nil without a source
@@ -63,27 +67,70 @@ type darwinEndpoint struct {
 	fragments atomic.Bool
 	// selected is the interface the bind's Selection named for addr, nil until a send asks
 	selected atomic.Pointer[selected]
+	// holder is how sends from source go, nil until a send or a reader asks
+	holder atomic.Pointer[pinHolder]
+}
+
+// pinHolder is how sends from a pin go under one Selection generation, immutable: the interface holding the pin,
+// zero where none holds it, and the control messages they carry, the second beside fragmentControl
+// an IPv6 one names that interface, so in6_selectsrc in bsd/netinet6/in6_src.c looks the route up scoped to it rather than with no scope,
+// which finds none where only the interface's own routes hold the peer, as on every uplink but the primary one
+type pinHolder struct {
+	generation                  uint64
+	index                       int
+	control, fragmentingControl []byte
+}
+
+func (h *pinHolder) key() int64 {
+	if h.index != 0 {
+		return int64(h.index)
+	}
+	return unheldPin
+}
+
+// heldPin is how sends from address, which interface index holds, go under generation
+// an IPv4 one names no interface, for the reason replyEndpoint gives
+func heldPin(generation uint64, address netip.Addr, index int) *pinHolder {
+	named := index
+	if address.Is4() {
+		named = 0
+	}
+	pin := &pinHolder{generation: generation, index: index}
+	pin.control, pin.fragmentingControl = pinControls(address, named)
+	return pin
+}
+
+// heldAddresses is how sends from each address of the host go, as one read under one Selection generation found them, immutable
+type heldAddresses struct {
+	generation uint64
+	pins       map[netip.Addr]*pinHolder
 }
 
 // selected is the interface a Selection named for one endpoint under one generation, zero for no route,
 // and the control messages naming it, the second beside fragmentControl, all immutable
 type selected struct {
-	generation         uint64
-	index              int
+	generation uint64
+	index      int
+	// asked is the address the Selection answered for, a zone named by name named by its interface's index once that resolved
+	asked              netip.Addr
 	control            []byte
 	fragmentingControl []byte
 }
 
-// pinnedEndpoint is addr answered from source by interface index, which zero leaves to the socket and the route
+// pinnedEndpoint is addr answered from source, which a request reached on interface index, zero but for an IPv6 link-local source
 func pinnedEndpoint(addr netip.AddrPort, source netip.Addr, index int) *darwinEndpoint {
 	ep := &darwinEndpoint{addr: addr, source: source, index: index}
-	if source.Is4() {
-		ep.control = (&ipv4.ControlMessage{Src: source.AsSlice(), IfIndex: index}).Marshal()
-		return ep
-	}
-	ep.control = (&ipv6.ControlMessage{Src: source.AsSlice(), IfIndex: index}).Marshal()
-	ep.fragmentingControl = append(slices.Clip(ep.control), fragmentControl...)
+	ep.control, ep.fragmentingControl = pinControls(source, index)
 	return ep
+}
+
+// pinControls are the control messages naming source and interface index, the second beside fragmentControl and nil for IPv4
+func pinControls(source netip.Addr, index int) (control, fragmenting []byte) {
+	if source.Is4() {
+		return (&ipv4.ControlMessage{Src: source.AsSlice(), IfIndex: index}).Marshal(), nil
+	}
+	control = (&ipv6.ControlMessage{Src: source.AsSlice(), IfIndex: index}).Marshal()
+	return control, append(slices.Clip(control), fragmentControl...)
 }
 
 // pin is the control message naming e's source, nil where sends leave the source to the kernel
@@ -94,20 +141,16 @@ func (e *darwinEndpoint) pin() []byte {
 	return e.control
 }
 
-// pinnedControl is the control message a send from e's pin carries, beside an IPV6_DONTFRAG of 0 while e fragments
-func (e *darwinEndpoint) pinnedControl() []byte {
-	if e.fragments.Load() {
-		return e.fragmentingControl
-	}
-	return e.control
-}
-
 // unpinnedControl is the control message a send to e that names neither a source nor an interface carries
 func (e *darwinEndpoint) unpinnedControl() []byte {
+	return e.carried(nil, fragmentControl)
+}
+
+func (e *darwinEndpoint) carried(control, fragmenting []byte) []byte {
 	if e.fragments.Load() {
-		return fragmentControl
+		return fragmenting
 	}
-	return nil
+	return control
 }
 
 func (*darwinEndpoint) transportEndpoint() {}
@@ -137,6 +180,10 @@ type darwinSocket struct {
 	conn *net.UDPConn
 	raw  syscall.RawConn
 	ipv6 bool
+	// named is the key of the interface the shared socket's last send named
+	// a send stores its own key before it releases the cached route, and releases it again after its write where another key was stored since,
+	// so once no send is in flight the socket caches no route or one a send of the stored key took
+	named atomic.Int64
 	// released is the latest Selection generation this shared socket's cached route was released at
 	released atomic.Uint64
 	// fragmenting counts the muxes letting this IPv4 socket's sends fragment
@@ -237,6 +284,14 @@ type darwinBind struct {
 	pairs map[*darwinPair]struct{}
 	// setDontFragment sets or clears a socket's DF, which a test answers in place of darwin
 	setDontFragment func(socket *darwinSocket, on bool) error
+	// dropRoute releases a socket's cached route, which a test counts beside darwin
+	dropRoute func(socket *darwinSocket) error
+	// held is how sends from each address of the host go, read once per Selection generation
+	held atomic.Pointer[heldAddresses]
+	// reading holds one read of the host's addresses at a time, so the senders that found held stale take the one read
+	reading sync.Mutex
+	// readHeld reads the interface holding each address of the host, which a test counts or answers in place of darwin
+	readHeld func() (map[netip.Addr]int, error)
 	// port is the listener's, which a socket connected to one peer binds too
 	port uint16
 	// connecting holds one connect at a time
@@ -269,18 +324,47 @@ func (b *darwinBind) selectedFor(ep *darwinEndpoint) *selected {
 	if last != nil && last.generation == b.selection.Generation() {
 		return last
 	}
-	index, generation := b.selection.Interface(ep.addr.Addr())
-	s := &selected{generation: generation, index: index}
-	if index != 0 && ep.addr.Addr().Is4() {
-		s.control = (&ipv4.ControlMessage{IfIndex: index}).Marshal()
-	} else if index != 0 {
-		s.control = (&ipv6.ControlMessage{IfIndex: index}).Marshal()
+	asked := ep.addr.Addr()
+	if last != nil {
+		asked = last.asked
+	}
+	asked = zoneByIndex(asked)
+	index, generation := b.selection.Interface(asked)
+	s := &selected{generation: generation, index: index, asked: asked}
+	if index != 0 {
+		s.control = interfaceControl(ep.addr.Addr(), index)
+	}
+	if index != 0 && ep.addr.Addr().Is6() {
 		s.fragmentingControl = append(slices.Clip(s.control), fragmentControl...)
 	}
 	if ep.selected.CompareAndSwap(last, s) && (last == nil || last.index != index) {
 		b.selectedNow(ep, index)
 	}
 	return s
+}
+
+// zoneByIndex is addr with a zone that names an interface by name named by its index instead, which a Selection reads with no lookup,
+// and addr itself where its zone is empty, an index already or a name no interface has
+func zoneByIndex(addr netip.Addr) netip.Addr {
+	zone := addr.Zone()
+	if zone == "" {
+		return addr
+	}
+	if _, err := strconv.Atoi(zone); err == nil {
+		return addr
+	}
+	link, err := net.InterfaceByName(zone)
+	if err != nil {
+		return addr
+	}
+	return addr.WithZone(strconv.Itoa(link.Index))
+}
+
+func interfaceControl(peer netip.Addr, index int) []byte {
+	if peer.Is4() {
+		return (&ipv4.ControlMessage{IfIndex: index}).Marshal()
+	}
+	return (&ipv6.ControlMessage{IfIndex: index}).Marshal()
 }
 
 // selectedNow records index as the interface ep's datagrams name, an empty name and zero where no route holds ep
@@ -436,10 +520,7 @@ func (b *darwinBind) Send(packets [][]byte, endpoint Endpoint) error {
 	if !ok {
 		return fmt.Errorf("transport: endpoint %T did not come from this bind", endpoint)
 	}
-	socket := b.v6
-	if ep.addr.Addr().Is4() {
-		socket = b.v4
-	}
+	socket := b.socketFor(ep.addr.Addr())
 	if socket == nil {
 		return unix.EAFNOSUPPORT
 	}
@@ -455,6 +536,13 @@ func (b *darwinBind) Send(packets [][]byte, endpoint Endpoint) error {
 	return nil
 }
 
+func (b *darwinBind) socketFor(addr netip.Addr) *darwinSocket {
+	if addr.Is4() {
+		return b.v4
+	}
+	return b.v6
+}
+
 // fragmentControl is the control message that lets darwin fragment one IPv6 datagram whatever IPV6_DONTFRAG its socket holds
 var fragmentControl = func() []byte {
 	control := make([]byte, unix.CmsgSpace(4))
@@ -468,21 +556,15 @@ var fragmentControl = func() []byte {
 // where ep has no pin or once darwin refused it
 func (b *darwinBind) sendFrom(socket *darwinSocket, packet []byte, ep *darwinEndpoint) error {
 	if ep.pin() == nil {
-		control, generation, err := b.selectedControl(socket, ep)
-		if err != nil {
-			return err
-		}
-		return socket.writeSelected(packet, ep, control, generation)
+		return b.sendSelected(socket, packet, ep)
 	}
-	refused := socket.write(packet, ep, ep.pinnedControl())
+	pin := b.pinned(ep)
+	control := ep.carried(pin.control, pin.fragmentingControl)
+	refused := b.writeNaming(socket, packet, ep, control, pin.key())
 	if refused == nil || !unpinnable(refused) {
 		return refused
 	}
-	control, generation, err := b.selectedControl(socket, ep)
-	if err != nil {
-		return err
-	}
-	err = socket.writeSelected(packet, ep, control, generation)
+	err := b.sendSelected(socket, packet, ep)
 	// darwin refuses a datagram as too large only once it has routed it from the source it chose
 	if (err == nil || errors.Is(err, unix.EMSGSIZE)) && ep.unpin(refused) {
 		unpinned(b.events, ep, refused)
@@ -490,25 +572,42 @@ func (b *darwinBind) sendFrom(socket *darwinSocket, packet []byte, ep *darwinEnd
 	return err
 }
 
-// selectedControl is the control message a send to ep that leaves the source to the kernel carries on socket, and the generation it names an interface under:
+// sendSelected sends one datagram to ep from the kernel's choice of source, by the interface the selection names
+func (b *darwinBind) sendSelected(socket *darwinSocket, packet []byte, ep *darwinEndpoint) error {
+	control, generation, key, err := b.selectedControl(socket, ep)
+	if err != nil {
+		return err
+	}
+	if err := b.beforeWrite(socket, key); err != nil {
+		return err
+	}
+	err = socket.writeSelected(packet, ep, control, generation)
+	if released := b.afterWrite(socket, key); released != nil {
+		return errors.Join(err, released)
+	}
+	return err
+}
+
+// selectedControl is the control message a send to ep that leaves the source to the kernel carries on socket, the generation it names an interface under
+// and the key of that interface:
 // the interface the selection names, beside an IPV6_DONTFRAG of 0 while ep fragments, after the socket released a route it cached under an older generation
 // it refuses a send the selection names no interface for, as a marked lookup that ends in an empty main does on linux
 // with no selection it names no interface, under generation 0
-func (b *darwinBind) selectedControl(socket *darwinSocket, ep *darwinEndpoint) ([]byte, uint64, error) {
+func (b *darwinBind) selectedControl(socket *darwinSocket, ep *darwinEndpoint) ([]byte, uint64, int64, error) {
 	if b.selection == nil {
-		return ep.unpinnedControl(), 0, nil
+		return ep.unpinnedControl(), 0, noInterface, nil
 	}
 	s := b.selectedFor(ep)
 	if s.index == 0 {
-		return nil, 0, unix.ENETUNREACH
+		return nil, 0, 0, unix.ENETUNREACH
 	}
 	if err := socket.releaseRoute(s.generation); err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	if ep.fragments.Load() {
-		return s.fragmentingControl, s.generation, nil
+		return s.fragmentingControl, s.generation, int64(s.index), nil
 	}
-	return s.control, s.generation, nil
+	return s.control, s.generation, int64(s.index), nil
 }
 
 // writeSelected sends one datagram to ep carrying control, which selectedControl built under generation
@@ -520,6 +619,33 @@ func (s *darwinSocket) writeSelected(packet []byte, ep *darwinEndpoint, control 
 		return errors.Join(err, s.dropRoute())
 	}
 	return err
+}
+
+func (b *darwinBind) writeNaming(socket *darwinSocket, packet []byte, ep *darwinEndpoint, control []byte, key int64) error {
+	if err := b.beforeWrite(socket, key); err != nil {
+		return err
+	}
+	err := socket.write(packet, ep, control)
+	if released := b.afterWrite(socket, key); released != nil {
+		return errors.Join(err, released)
+	}
+	return err
+}
+
+func (b *darwinBind) beforeWrite(socket *darwinSocket, key int64) error {
+	if socket.named.Load() == key {
+		return nil
+	}
+	socket.named.Store(key)
+	return b.dropRoute(socket)
+}
+
+// afterWrite releases the route a write naming key may have cached where another send stored its key since
+func (b *darwinBind) afterWrite(socket *darwinSocket, key int64) error {
+	if socket.named.Load() == key {
+		return nil
+	}
+	return b.dropRoute(socket)
 }
 
 // write sends one datagram to ep carrying control
@@ -571,7 +697,7 @@ func (b *darwinBind) readPathMTU(endpoint Endpoint) (int, error) {
 // sendInterface is the interface sends to ep name, the interface of the pin they carry, or on a hub with no selection the one the host routes them by
 // a send that names no source, since ep fell back or never had one, names the selection's interface, as does one from a source no interface holds, which falls back
 func (b *darwinBind) sendInterface(ep *darwinEndpoint) (int, error) {
-	if index := ep.pinInterface(); index != 0 {
+	if index := b.pinInterface(ep); index != 0 {
 		return index, nil
 	}
 	if b.selection == nil {
@@ -583,18 +709,69 @@ func (b *darwinBind) sendInterface(ep *darwinEndpoint) (int, error) {
 	return 0, unix.ENETUNREACH
 }
 
-// pinInterface is the interface ep's pin sends by, an IPv6 link-local pin's arrival interface or the one holding its address,
-// and zero where ep sends from no pin or no interface holds it
-// ip_output in bsd/netinet/ip_output.c takes a send from a source by a route of the interface holding it, unless a route the socket cached decides
-func (e *darwinEndpoint) pinInterface() int {
-	if e.pin() == nil {
+// pinInterface is the interface ep's pin sends by, and zero where ep sends from no pin or no interface holds it
+// ip_output in bsd/netinet/ip_output.c takes a send from a source by a route of the interface holding it
+func (b *darwinBind) pinInterface(ep *darwinEndpoint) int {
+	if ep.pin() == nil {
 		return 0
 	}
-	if e.index != 0 {
-		return e.index
+	return b.pinned(ep).index
+}
+
+// pinned is how sends from ep's pin go under the current Selection generation, found at the first ask of each, generation 0 on a hub with no selection
+// an IPv6 link-local pin's interface is the one its datagram arrived on, and any other's the one holding its address
+// a read of the host's addresses that fails keys the send apart, which leaves the pin to the kernel's own check, and is not kept, so the next send reads them again
+func (b *darwinBind) pinned(ep *darwinEndpoint) *pinHolder {
+	var generation uint64
+	if b.selection != nil {
+		generation = b.selection.Generation()
 	}
-	index, _ := interfaceHolding(e.source)
-	return index
+	if last := ep.holder.Load(); last != nil && last.generation == generation {
+		return last
+	}
+	if ep.index == 0 {
+		held, err := b.heldUnder(generation)
+		if err != nil {
+			return &pinHolder{generation: generation, control: ep.control, fragmentingControl: ep.fragmentingControl}
+		}
+		if pin := held.pins[ep.source]; pin != nil {
+			ep.holder.Store(pin)
+			return pin
+		}
+	}
+	pin := &pinHolder{generation: generation, index: ep.index, control: ep.control, fragmentingControl: ep.fragmentingControl}
+	ep.holder.Store(pin)
+	return pin
+}
+
+// heldUnder is how sends from each address of the host go under generation, from one read of the host's addresses a generation,
+// which the senders that find the last one stale wait for
+// a hub with no selection reads them at each ask, since nothing there moves a generation when an address moves
+func (b *darwinBind) heldUnder(generation uint64) (*heldAddresses, error) {
+	fresh := func() *heldAddresses {
+		if last := b.held.Load(); b.selection != nil && last != nil && last.generation >= generation {
+			return last
+		}
+		return nil
+	}
+	if held := fresh(); held != nil {
+		return held, nil
+	}
+	b.reading.Lock()
+	defer b.reading.Unlock()
+	if held := fresh(); held != nil {
+		return held, nil
+	}
+	read, err := b.readHeld()
+	if err != nil {
+		return nil, err
+	}
+	held := &heldAddresses{generation: generation, pins: make(map[netip.Addr]*pinHolder, len(read))}
+	for address, index := range read {
+		held.pins[address] = heldPin(generation, address, index)
+	}
+	b.held.Store(held)
+	return held, nil
 }
 
 // underlayPath is where sendInterface takes ep's datagrams, false where b names no interface
@@ -604,7 +781,7 @@ func (b *darwinBind) underlayPath(endpoint Endpoint) (UnderlayPath, bool) {
 		return UnderlayPath{}, false
 	}
 	path := UnderlayPath{Address: ep.addr.Addr()}
-	if index := ep.pinInterface(); index != 0 {
+	if index := b.pinInterface(ep); index != 0 {
 		path.Pin = strconv.Itoa(index)
 		if link, err := net.InterfaceByIndex(index); err == nil {
 			path.Pin = link.Name
@@ -630,27 +807,48 @@ func routedInterface(addr netip.AddrPort) (int, error) {
 		}
 		return link.Index, nil
 	}
-	return interfaceHolding(local.AddrPort().Addr().Unmap())
-}
-
-// interfaceHolding is the interface that holds address
-func interfaceHolding(address netip.Addr) (int, error) {
-	links, err := net.Interfaces()
+	held, err := readHeldAddresses()
 	if err != nil {
 		return 0, err
 	}
-	for _, link := range links {
-		addresses, err := link.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, held := range addresses {
-			if prefix, ok := held.(*net.IPNet); ok && prefix.IP.Equal(address.AsSlice()) {
-				return link.Index, nil
-			}
-		}
+	address := local.AddrPort().Addr().Unmap()
+	if index, ok := held[address]; ok {
+		return index, nil
 	}
 	return 0, fmt.Errorf("transport: no interface holds %s", address)
+}
+
+// readHeldAddresses is the interface holding each address of the host, from one dump of the interfaces' addresses,
+// the first one the dump lists where two hold an address
+func readHeldAddresses() (map[netip.Addr]int, error) {
+	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeInterface, 0)
+	if err != nil {
+		return nil, err
+	}
+	messages, err := route.ParseRIB(route.RIBTypeInterface, rib)
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[netip.Addr]int)
+	for _, message := range messages {
+		m, ok := message.(*route.InterfaceAddrMessage)
+		if !ok || len(m.Addrs) <= unix.RTAX_IFA {
+			continue
+		}
+		var address netip.Addr
+		switch a := m.Addrs[unix.RTAX_IFA].(type) {
+		case *route.Inet4Addr:
+			address = netip.AddrFrom4(a.IP)
+		case *route.Inet6Addr:
+			address = netip.AddrFrom16(a.IP)
+		default:
+			continue
+		}
+		if _, ok := held[address]; !ok {
+			held[address] = m.Index
+		}
+	}
+	return held, nil
 }
 
 // fragment clears DF on the IPv4 socket while any mux asks, since IP_DONTFRAG holds for a whole socket
@@ -773,8 +971,8 @@ func (s *darwinSocket) replyEndpoint(from netip.AddrPort, control []byte) (*darw
 		return nil, errors.New("transport: a datagram arrived without its destination address")
 	}
 	source = source.Unmap()
-	// udp_output in bsd/netinet/udp_usrreq.c takes a nonzero ipi_ifindex over both ipi_spec_dst and IP_BOUND_IF
-	// so only a link-local source, which needs its zone, names its interface
+	// an IPv4 source names no interface, since udp_output in bsd/netinet/udp_usrreq.c takes a nonzero ipi_ifindex over both ipi_spec_dst and IP_BOUND_IF
+	// an IPv6 link-local source keeps the interface it arrived on, which its zone needs, and pinned names the interface holding any other
 	if !source.Is6() || !source.IsLinkLocalUnicast() {
 		index = 0
 	}
@@ -800,7 +998,10 @@ func openPacketBind(port uint16, selection Selection, events func(string, ...slo
 }
 
 func listenPacketBind(port uint16, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
-	b := &darwinBind{selection: selection, events: events, pairs: make(map[*darwinPair]struct{}), setDontFragment: (*darwinSocket).setDontFragment}
+	b := &darwinBind{
+		selection: selection, events: events, pairs: make(map[*darwinPair]struct{}),
+		setDontFragment: (*darwinSocket).setDontFragment, dropRoute: (*darwinSocket).dropRoute, readHeld: readHeldAddresses,
+	}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
 		ipv6 := i == 1

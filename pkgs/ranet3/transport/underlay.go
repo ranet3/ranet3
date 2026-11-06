@@ -47,6 +47,6 @@ type Selection interface {
 	// Interface is the index of the interface a datagram to addr names, zero where no route holds it,
 	// and the generation the answer comes from
 	Interface(addr netip.Addr) (index int, generation uint64)
-	// Generation moves on whenever an answer may have changed
+	// Generation moves on whenever an answer may have changed, and whenever an address of the host may have moved between interfaces
 	Generation() uint64
 }

@@ -31,7 +31,7 @@ type Selection struct {
 	watcher Watcher
 	// current is replaced whole by follow and loaded by every answer without a lock
 	current atomic.Pointer[selectionSnapshot]
-	// changed carries each generation after the first to the one reconciler that reads it, coalesced
+	// changed carries each generation whose candidate routes changed to the one reconciler that reads it, coalesced
 	changed   chan struct{}
 	done      chan struct{}
 	stopped   chan struct{}
@@ -77,10 +77,10 @@ func (s *Selection) Interface(addr netip.Addr) (int, uint64) {
 	return r.index, snapshot.generation
 }
 
-// Generation names the snapshot the answers come from, and moves on when a dump finds the candidate routes changed
+// Generation names the snapshot the answers come from, and moves on at every read of the table after a wake of the watcher
 func (s *Selection) Generation() uint64 { return s.current.Load().generation }
 
-// Changed is signaled once a generation after the first is published, several coalesced into one
+// Changed is signaled once a generation whose candidate routes changed is published, several coalesced into one
 func (s *Selection) Changed() <-chan struct{} { return s.changed }
 
 func (s *Selection) table() hostTable {
@@ -116,30 +116,43 @@ func (s *Selection) zoneIndex(zone string) int {
 	return index
 }
 
-// read publishes the candidate routes of one dump, under the next generation where they changed
+// read publishes the candidate routes of one dump under the next generation, or the last ones where the dump fails, and signals Changed where they changed
+// every read after the first follows a wake of the watcher, which may be an address moving between interfaces with no candidate route moving,
+// so the generation moves at each of them for the readers keyed on it
 func (s *Selection) read() error {
-	rib, err := s.host.Dump()
-	if err != nil {
-		return fmt.Errorf("kernel: dump the routing table for the underlay: %w", err)
-	}
-	routes, err := hostRoutes(rib)
-	if err != nil {
-		return fmt.Errorf("kernel: parse the routing table for the underlay: %w", err)
-	}
-	routes = slices.DeleteFunc(routes, func(r hostRoute) bool { return !r.candidate(s.mesh) })
+	routes, err := s.dump()
 	last := s.current.Load()
 	if last == nil {
+		if err != nil {
+			return err
+		}
 		s.current.Store(&selectionSnapshot{generation: 1, routes: routes})
 		return nil
 	}
-	if !slices.Equal(last.routes, routes) {
-		s.current.Store(&selectionSnapshot{generation: last.generation + 1, routes: routes})
+	if err != nil {
+		routes = last.routes
+	}
+	s.current.Store(&selectionSnapshot{generation: last.generation + 1, routes: routes})
+	if err == nil && !slices.Equal(last.routes, routes) {
 		select {
 		case s.changed <- struct{}{}:
 		default:
 		}
 	}
-	return nil
+	return err
+}
+
+// dump is the candidate routes of one dump of the table
+func (s *Selection) dump() ([]hostRoute, error) {
+	rib, err := s.host.Dump()
+	if err != nil {
+		return nil, fmt.Errorf("kernel: dump the routing table for the underlay: %w", err)
+	}
+	routes, err := hostRoutes(rib)
+	if err != nil {
+		return nil, fmt.Errorf("kernel: parse the routing table for the underlay: %w", err)
+	}
+	return slices.DeleteFunc(routes, func(r hostRoute) bool { return !r.candidate(s.mesh) }), nil
 }
 
 // follow reads the table again after each settled run of changes until Close

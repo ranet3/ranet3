@@ -36,7 +36,8 @@ func receivedAddresses(ipv6 bool) hegel.Generator[netip.Addr] {
 	})
 }
 
-// an answer names the address its request reached, and the interface it arrived on for a link-local IPv6 address alone
+// an answer names the address its request reached, and an IPv6 one the interface holding it, the one it arrived on for a link-local address
+// its sends are keyed on the interface holding that address, or the one it arrived on for an IPv6 link-local address
 // an IPv6 answer that fragments carries IPV6_DONTFRAG of 0 beside the pin
 // two endpoints are one destination only where the peer and the source and interface sends carry are
 // one whose sends fell back to the kernel's choice is the endpoint without its source, unless the pin fell back after EHOSTUNREACH, where it stays the pinned one until unroutedHold ends
@@ -48,8 +49,12 @@ func TestDarwinRepliesNameTheAddressTheRequestReached(t *testing.T) {
 		peer := netip.AddrPortFrom(hegel.Draw(ht, receivedAddresses(ipv6)), hegel.Draw(ht, hegel.Integers[uint16](1, math.MaxUint16)))
 		reached := hegel.Draw(ht, receivedAddresses(ipv6))
 		other := hegel.Draw(ht, hegel.Filter(receivedAddresses(ipv6), func(a netip.Addr) bool { return a != reached }))
-		index := hegel.Draw(ht, pbt.Spanning(0, math.MaxUint16))
-		otherIndex := hegel.Draw(ht, hegel.Filter(pbt.Spanning(0, math.MaxUint16), func(i int) bool { return i != index }))
+		// the interface a request arrived on is never zero: ip6_input in bsd/netinet6/ip6_input.c requires a receive interface, which ip6_savecontrol names in IPV6_PKTINFO
+		index := hegel.Draw(ht, pbt.Spanning(1, math.MaxUint16))
+		otherIndex := hegel.Draw(ht, hegel.Filter(pbt.Spanning(1, math.MaxUint16), func(i int) bool { return i != index }))
+		// holder is the interface holding reached, zero for none
+		holder := hegel.Draw(ht, pbt.Spanning(0, math.MaxUint16))
+		holding := &darwinBind{selection: newTestSelection(1), readHeld: func() (map[netip.Addr]int, error) { return map[netip.Addr]int{reached: holder}, nil }}
 		fragments := ipv6 && hegel.Draw(ht, hegel.Booleans())
 		socket := &darwinSocket{ipv6: ipv6}
 		arrived := func(at netip.Addr, on int) *darwinEndpoint {
@@ -62,14 +67,26 @@ func TestDarwinRepliesNameTheAddressTheRequestReached(t *testing.T) {
 		}
 		ep, same, moved, elsewhere := arrived(reached, index), arrived(reached, index), arrived(other, index), arrived(reached, otherIndex)
 		linkLocal := ipv6 && reached.IsLinkLocalUnicast()
-		wantIndex := 0
+		wantIndex, pairIndex, wantKey := 0, 0, unheldPin
 		if linkLocal {
-			wantIndex = index
+			wantIndex, pairIndex = index, index
+		} else if ipv6 {
+			wantIndex = holder
 		}
-		source, gotIndex, gotFragments, err := sentPin(ep.pinnedControl())
+		switch {
+		case linkLocal:
+			wantKey = int64(index)
+		case holder != 0:
+			wantKey = int64(holder)
+		}
+		pin := holding.pinned(ep)
+		if key := pin.key(); key != wantKey {
+			ht.Fatalf("the sends answering %s that reached %s on interface %d, held by %d, are keyed %d, want %d", peer, reached, index, holder, key, wantKey)
+		}
+		source, gotIndex, gotFragments, err := sentPin(ep.carried(pin.control, pin.fragmentingControl))
 		if err != nil || source != reached || gotIndex != wantIndex || gotFragments != fragments {
-			ht.Fatalf("the answer to %s that reached %s on interface %d names %s at interface %d, fragmenting %v, %v, want %s at interface %d, fragmenting %v",
-				peer, reached, index, source, gotIndex, gotFragments, err, reached, wantIndex, fragments)
+			ht.Fatalf("the answer to %s that reached %s on interface %d, held by %d, names %s at interface %d, fragmenting %v, %v, want %s at interface %d, fragmenting %v",
+				peer, reached, index, holder, source, gotIndex, gotFragments, err, reached, wantIndex, fragments)
 		}
 		if !ep.sameDestination(same) || !same.sameDestination(ep) {
 			ht.Fatalf("two requests from %s that reached %s are not one destination", peer, reached)
@@ -80,11 +97,11 @@ func TestDarwinRepliesNameTheAddressTheRequestReached(t *testing.T) {
 		if ep.sameDestination(elsewhere) == linkLocal || elsewhere.sameDestination(ep) == linkLocal {
 			ht.Fatalf("requests from %s that reached %s on interfaces %d and %d read as one destination %v, want %v", peer, reached, index, otherIndex, ep.sameDestination(elsewhere), !linkLocal)
 		}
-		if got := bind.pairOf(ep); got != (pairKey{local: reached, index: wantIndex, remote: peer}) {
-			ht.Fatalf("the pair of %s pinned to %s at interface %d is %+v", peer, reached, wantIndex, got)
+		if got := bind.pairOf(ep); got != (pairKey{local: reached, index: pairIndex, remote: peer}) {
+			ht.Fatalf("the pair of %s pinned to %s at interface %d is %+v", peer, reached, pairIndex, got)
 		}
 		bare := ep.withoutSource().(*darwinEndpoint)
-		if bare.pin() != nil || bare.pinnedControl() != nil || bare.AddrPort() != ep.AddrPort() {
+		if bare.pin() != nil || bare.AddrPort() != ep.AddrPort() {
 			ht.Fatalf("%s without its source still names one, or moved to %s", ep, bare.AddrPort())
 		}
 		refused := hegel.Draw(ht, hegel.SampledFrom([]unix.Errno{unix.ENETUNREACH, unix.EHOSTUNREACH, unix.EINVAL, unix.ENODEV, unix.EADDRNOTAVAIL}))

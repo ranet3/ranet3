@@ -26,8 +26,6 @@ const (
 	selectionWait = 5 * time.Second
 	// selectionPoll is how often the wait looks
 	selectionPoll = 10 * time.Millisecond
-	// selectionQuiet is how long a test waits for a change the selection reads to have been read, a few settles long
-	selectionQuiet = 4 * selectionSettle
 	// selectionMeshName is the name the recorded host gives ranet3's interface
 	selectionMeshName = "mesh0"
 	// selectionUplink and selectionOther are interfaces of the recorded host other than ranet3's
@@ -171,10 +169,11 @@ func signaled(selection *Selection) bool {
 }
 
 // a change the watcher reports is read after the settle and moves the
-// generation where the candidate routes changed, a change of none of them
-// leaves it, a dump that fails keeps the last answers, and the next dump that
-// works is read. Each new generation signals Changed once, after it is
-// published, and the first and a dump that changes nothing signal nothing
+// generation, a change of no candidate route and a dump that fails included,
+// since the wake may be an address that moved between interfaces. A dump that
+// fails keeps the last answers, and the next dump that works is read. A
+// generation whose candidate routes changed signals Changed once, after it is
+// published, and the first and one that changes no route signal nothing
 func TestDarwinSelectionFollowsTheWatcher(t *testing.T) {
 	target := netip.MustParseAddr("203.0.113.9")
 	moved := selectionEntry(selectionOther, 0, "203.0.113.0/24")
@@ -194,7 +193,7 @@ func TestDarwinSelectionFollowsTheWatcher(t *testing.T) {
 	if !waitSelection(func() bool { return signaled(selection) }) {
 		t.Error("generation 2 was published and signaled no change")
 	}
-	for _, step := range []struct {
+	for i, step := range []struct {
 		name    string
 		failing error
 		entries []dumpEntry
@@ -203,21 +202,21 @@ func TestDarwinSelectionFollowsTheWatcher(t *testing.T) {
 		{"a dump that fails", errors.New("the dump failed"), nil},
 	} {
 		host.set(step.failing, step.entries...)
-		time.Sleep(selectionQuiet)
-		if !answers(selectionOther, 2) {
+		want := uint64(3 + i)
+		if !waitSelection(func() bool { return answers(selectionOther, want) }) {
 			got, generation := selection.Interface(target)
-			t.Errorf("after %s, %s selects %d at generation %d, want %d at 2", step.name, target, got, generation, selectionOther)
+			t.Errorf("after %s, %s selects %d at generation %d, want %d at %d", step.name, target, got, generation, selectionOther, want)
 		}
 		if signaled(selection) {
 			t.Errorf("after %s the selection signaled a change", step.name)
 		}
 	}
 	host.set(nil, selectionEntry(selectionUplink, 0, "203.0.113.0/24"))
-	if !waitSelection(func() bool { return answers(selectionUplink, 3) }) {
-		t.Errorf("the dump works again with the route back on interface %d, and %s does not select it at generation 3", selectionUplink, target)
+	if !waitSelection(func() bool { return answers(selectionUplink, 5) }) {
+		t.Errorf("the dump works again with the route back on interface %d, and %s does not select it at generation 5", selectionUplink, target)
 	}
 	if !waitSelection(func() bool { return signaled(selection) }) {
-		t.Error("generation 3 was published and signaled no change")
+		t.Error("generation 5 was published and signaled no change")
 	}
 }
 

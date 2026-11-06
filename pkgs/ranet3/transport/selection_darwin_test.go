@@ -61,8 +61,11 @@ func (s *testSelection) move(index int) {
 
 var _ Selection = (*testSelection)(nil)
 
-// loopbackFamilies are the two families a unit test sends in over lo0
-var loopbackFamilies = []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}}
+// loopbackFamilies are the two families a unit test sends in over lo0, each with an address no interface holds
+var loopbackFamilies = []struct {
+	network, loopback string
+	gone              netip.Addr
+}{{"udp4", "127.0.0.1", underlayV4.gone}, {"udp6", "::1", underlayV6.gone}}
 
 // a selection that names no interface for a peer refuses its datagrams with ENETUNREACH and writes none
 // as a marked lookup that ends in an empty main does on linux, and opens no pair to it
@@ -123,8 +126,8 @@ func TestDarwinHubWithNoSelectionNamesNothing(t *testing.T) {
 			if ep.addr.Addr().Is6() {
 				socket = bind.v6
 			}
-			if control, generation, err := bind.selectedControl(socket, ep); control != nil || generation != 0 || err != nil {
-				t.Errorf("a send to %s from a hub with no selection carries %x under generation %d, %v, want no control message", at, control, generation, err)
+			if control, generation, key, err := bind.selectedControl(socket, ep); control != nil || generation != 0 || key != noInterface || err != nil {
+				t.Errorf("a send to %s from a hub with no selection carries %x under generation %d keyed %d, %v, want no control message keyed noInterface", at, control, generation, key, err)
 			}
 			if k := bind.pairOf(ep); k.index != 0 {
 				t.Errorf("the pair to %s from a hub with no selection is keyed to interface %d", at, k.index)
@@ -744,12 +747,12 @@ func TestDarwinUnderlayReleasesTheRouteALateSendCached(t *testing.T) {
 			if family.peer.Is6() {
 				socket = bind.v6
 			}
-			late, lateGeneration, err := bind.selectedControl(socket, ep)
+			late, lateGeneration, _, err := bind.selectedControl(socket, ep)
 			if err != nil {
 				t.Fatal(err)
 			}
 			selection.move(u2.index)
-			next, nextGeneration, err := bind.selectedControl(socket, ep)
+			next, nextGeneration, _, err := bind.selectedControl(socket, ep)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -769,6 +772,50 @@ func TestDarwinUnderlayReleasesTheRouteALateSendCached(t *testing.T) {
 				}
 				leftBy(t, d, step.want, step.other)
 			}
+		})
+	}
+}
+
+// a send naming U whose write follows the check of a send naming X to the same peer caches U's route, and releases it after the write,
+// so the next send naming X leaves X
+// the steps are ordered by hand: U's check, X's check, U's write, X's write and its check after, then U's check after
+// U and X each hold the peer's route scoped to them
+func TestDarwinSharedSocketReleasesTheRouteAnOverlappingSendCached(t *testing.T) {
+	requireHostNet(t, "test utuns")
+	u, x := newTestTUN(t, uplinkV4, uplinkV6), newTestTUN(t, secondV4, secondV6)
+	for _, family := range underlayFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			u.route(t, family.wide, true)
+			x.route(t, family.wide, true)
+			bind := selectedHub(t, newTestSelection(u.index)).bind.(*darwinBind)
+			ep := &darwinEndpoint{addr: netip.AddrPortFrom(family.peer, underlayPort)}
+			socket := bind.socketFor(family.peer)
+			onU, onX := int64(u.index), int64(x.index)
+			first := datagram{ep.addr, []byte(family.name + ", the send naming U")}
+			overlapping := datagram{ep.addr, []byte(family.name + ", the overlapping send naming X")}
+			next := datagram{ep.addr, []byte(family.name + ", the next send naming X")}
+			drainAll(u, x)
+			for _, step := range []struct {
+				name string
+				run  func() error
+			}{
+				{"U's check", func() error { return bind.beforeWrite(socket, onU) }},
+				{"X's check", func() error { return bind.beforeWrite(socket, onX) }},
+				{"U's write", func() error { return socket.write(first.payload, ep, interfaceControl(family.peer, u.index)) }},
+				{"X's write", func() error { return socket.write(overlapping.payload, ep, interfaceControl(family.peer, x.index)) }},
+				{"X's check after", func() error { return bind.afterWrite(socket, onX) }},
+				{"U's check after", func() error { return bind.afterWrite(socket, onU) }},
+				{"the next send naming X", func() error {
+					return bind.writeNaming(socket, next.payload, ep, interfaceControl(family.peer, x.index), onX)
+				}},
+			} {
+				if err := step.run(); err != nil {
+					t.Fatalf("%s to %s: %v", step.name, ep.addr, err)
+				}
+			}
+			got := departuresOf(arrivalBudget, []datagram{first, overlapping, next}, u, x)
+			leftOnce(t, got, first, u, u.address(family.peer))
+			leftOnce(t, got, next, x, x.address(family.peer))
 		})
 	}
 }
@@ -846,10 +893,7 @@ func TestDarwinSharedSocketTakesANewRouteOnTheSameInterface(t *testing.T) {
 		bind := selectedHub(t, selection).bind.(*darwinBind)
 		ep := &darwinEndpoint{addr: netip.AddrPortFrom(peer, underlayPort)}
 		ep.fragments.Store(peer.Is6())
-		socket := bind.v4
-		if peer.Is6() {
-			socket = bind.v6
-		}
+		socket := bind.socketFor(peer)
 		return selection, func(payload []byte) (datagram, error) {
 			drainAll(u)
 			return datagram{ep.addr, payload}, bind.sendFrom(socket, payload, ep)
