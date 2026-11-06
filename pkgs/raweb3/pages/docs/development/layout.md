@@ -66,10 +66,6 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/babel`             | the Babel speaker (RFC 8966)                                                                                                                      |
 | `internal/client`            | the mesh runtime: peers, sessions, reload, path MTU, up and down, metrics and the daemon's side of the debug views                                |
 | `internal/cmd/notices`       | writes `internal/notices/third_party.md`                                                                                                          |
-| `internal/cmd/babeltest`     | test tool: runs the client stack against a strongSwan responder and a Babel peer such as BIRD, and reports the routes it learns                   |
-| `internal/cmd/esptest`       | test tool: sends 1 ICMP echo sealed in ESP to a strongSwan responder's kernel, to check the ESP framing                                           |
-| `internal/cmd/gendn`         | test tool: prints the strongSwan `asn1dn:#hex` identity for an organization, common name and serial number                                        |
-| `internal/cmd/iketest`       | test tool: runs 1 IKEv2 initiator handshake against a strongSwan responder and prints the negotiated Child SA                                     |
 | `internal/config`            | reads the config file                                                                                                                             |
 | `internal/dnstest`           | a nameserver on lo recording each query's mark, behind a resolv.conf of the test's own, imported by test files alone                              |
 | `internal/egress`            | the `cap.egress` and `cap.antispoof` capabilities, the `Exit` every exit backend sits behind, and the antispoof filter's reports                  |
