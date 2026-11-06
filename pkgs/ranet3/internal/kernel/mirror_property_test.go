@@ -13,7 +13,9 @@ import (
 
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -44,34 +46,94 @@ type mirrorEntry struct {
 
 var learned = &netstack.Peer{ID: "example/peer"}
 
-// mirrorEntries draws entries of every kind, an IPv6 one with a source now and then
+// classBases are the ranges the data path forwards no unicast in, which
+// aroundClass draws prefixes around
+var classBases = []netip.Prefix{
+	prefix("0.0.0.0/8"), prefix("127.0.0.0/8"), prefix("169.254.0.0/16"), prefix("224.0.0.0/4"),
+	prefix("240.0.0.0/4"), prefix("255.255.255.255/32"), prefix("::/128"), prefix("::1/128"),
+	prefix("::ffff:0:0/96"), prefix("fe80::/10"), prefix("ff00::/8"),
+}
+
+// aroundClass draws a prefix at a class's base, as long as the class, up to
+// two bits longer, or up to two bits shorter
+func aroundClass() hegel.Generator[netip.Prefix] {
+	return hegel.Composite(func(tc hegel.TestCase) netip.Prefix {
+		class := hegel.Draw(tc, hegel.SampledFrom(classBases))
+		bits := min(class.Addr().BitLen(), class.Bits()+hegel.Draw(tc, pbt.Spanning(-2, 2)))
+		return netip.PrefixFrom(class.Addr(), bits).Masked()
+	})
+}
+
+// mirrorEntries draws entries of every kind, an IPv6 one with a source now
+// and then, up to eight near prefixes and up to two around a class
 func mirrorEntries() hegel.Generator[[]mirrorEntry] {
-	return hegel.Lists(hegel.Composite(func(tc hegel.TestCase) mirrorEntry {
-		entry := mirrorEntry{
-			destination: hegel.Draw(tc, anyNearPrefix()),
-			value:       hegel.Draw(tc, hegel.SampledFrom([]*netstack.Peer{learned, netstack.Unreachable, netstack.Local, netstack.Assigned})),
-		}
-		if !entry.destination.Addr().Is4() && hegel.Draw(tc, hegel.Booleans()) {
-			entry.source = hegel.Draw(tc, nearPrefixes(true))
-		}
-		return entry
-	})).MaxSize(8)
+	entries := func(destinations hegel.Generator[netip.Prefix]) hegel.Generator[mirrorEntry] {
+		return hegel.Composite(func(tc hegel.TestCase) mirrorEntry {
+			entry := mirrorEntry{
+				destination: hegel.Draw(tc, destinations),
+				value:       hegel.Draw(tc, hegel.SampledFrom([]*netstack.Peer{learned, netstack.Unreachable, netstack.Local, netstack.Assigned})),
+			}
+			if !entry.destination.Addr().Is4() && hegel.Draw(tc, hegel.Booleans()) {
+				entry.source = hegel.Draw(tc, nearPrefixes(true))
+			}
+			return entry
+		})
+	}
+	return hegel.Composite(func(tc hegel.TestCase) []mirrorEntry {
+		near := hegel.Draw(tc, hegel.Lists(entries(anyNearPrefix())).MaxSize(8))
+		return append(near, hegel.Draw(tc, hegel.Lists(entries(aroundClass())).MaxSize(2))...)
+	})
+}
+
+// classOf names the class of an address ranet3's data path forwards no unicast
+// packet from or to by the predicate of netip's that holds for it, rather than
+// by schema's list, or is empty for an address of none. The limited broadcast
+// is named with class E, which holds it. An address packet refuses that no
+// predicate here names is a class of its own.
+func classOf(address netip.Addr) string {
+	if !packet.InvalidSource(address) && !address.Is4In6() && address != packet.LimitedBroadcast {
+		return ""
+	}
+	v4 := address.Is4()
+	switch {
+	case address.Is4In6():
+		return "IPv4-mapped"
+	case address.IsMulticast():
+		return "multicast"
+	case address.IsLinkLocalUnicast():
+		return "link-local"
+	case address.IsLoopback():
+		return "loopback"
+	case !v4 && address.IsUnspecified():
+		return "unspecified"
+	case v4 && address.As4()[0] == 0:
+		return "this network"
+	case v4 && address.As4()[0] >= 240:
+		return "class E"
+	}
+	return address.String()
+}
+
+// classWhole reports a prefix one class holds every address of: each class is
+// a prefix, so its first and last address lie in the same one
+func classWhole(prefix netip.Prefix) bool {
+	first := classOf(prefix.Masked().Addr())
+	return first != "" && first == classOf(lastAddress(prefix.Masked()))
 }
 
 // sectionOneThree is routing.md's table of what the reconciler installs, row
-// by row, for one table of entries: what the kernel's table holds for each,
-// and on a platform with the policy rules an unreachable hold for each overlay
-// prefix the mesh can carry that holds no unspecified address, and a throw for
-// each carve-out of the same kind, which takes the place of the hold of an
-// overlay prefix it equals and gives way to an entry of its own destination
-// for every source. policy is a platform with the policy rules, gate the
-// capture gate's answer.
+// by row, for one table of entries: what the kernel's table holds for each but
+// one a class holds whole, and on a platform with the policy rules an
+// unreachable hold for each overlay prefix and a throw for each carve-out,
+// which takes the place of the hold of an overlay prefix it equals and gives
+// way to an entry of its own destination for every source. policy is a
+// platform with the policy rules, gate the capture gate's answer.
 func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []netip.Prefix, exit, gate, policy bool) map[Route]bool {
 	out := map[Route]bool{}
 	counts := func(prefix netip.Prefix) bool { return schema.CapturesTheMachine(prefix, overlay) }
 	for _, entry := range entries {
 		d := entry.destination
-		if entry.value == netstack.Assigned || unroutable(d) != "" || entry.source.IsValid() && d.Addr().Is4() {
+		if entry.value == netstack.Assigned || classWhole(d) || entry.source.IsValid() && d.Addr().Is4() {
 			continue
 		}
 		route := Route{Destination: d, Source: entry.source}
@@ -97,13 +159,13 @@ func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []ne
 		out[route] = true
 	}
 	for _, prefix := range overlay {
-		if policy && !counts(prefix.Prefix) && unroutable(prefix.Masked()) == "" && !slices.Contains(carved, prefix.Masked()) {
+		if policy && !slices.Contains(carved, prefix.Masked()) {
 			out[Route{Destination: prefix.Masked(), Metric: holdMetric, Unreachable: true}] = true
 		}
 	}
 	for _, prefix := range carved {
 		own := slices.ContainsFunc(entries, func(entry mirrorEntry) bool { return entry.destination == prefix && !entry.source.IsValid() })
-		if policy && !counts(prefix) && unroutable(prefix) == "" && !own {
+		if policy && !own {
 			out[Route{Destination: prefix, Metric: holdMetric, Throw: true}] = true
 		}
 	}
@@ -114,11 +176,14 @@ func sectionOneThree(entries []mirrorEntry, overlay []schema.Prefix, carved []ne
 // on an exit and on a node that is none, with the gate open and shut, on a
 // platform with the policy rules and on one without, and each route once,
 // half the time with a carve-out of a whole overlay prefix holding an entry.
+// The overlay is one the loader takes, as the reconciler's always is.
 func TestMirrorIsSectionOneThreesTable(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		var overlay []schema.Prefix
 		for _, prefix := range hegel.Draw(ht, hegel.Lists(anyNearPrefix()).MaxSize(2)) {
-			overlay = append(overlay, schema.PrefixFrom(prefix))
+			if taken := append(slices.Clone(overlay), schema.PrefixFrom(prefix)); (egress.Border{Overlay: taken}).Validate() == nil {
+				overlay = taken
+			}
 		}
 		network := drawnCarveNetwork(ht)
 		// half the time a link's network equal to or around an overlay prefix, a carve-out of it whole, and a learned entry inside it
@@ -213,9 +278,9 @@ func TestEachExitInputWithholdsALearnedDefault(t *testing.T) {
 	}
 }
 
-// An overlay prefix the mesh cannot carry gets no hold, and one the pass
-// already holds, as this node's own prefix or the mesh's hold, is held once
-func TestOverlayHoldsLeaveOutTheUnroutableAndHoldEachPrefixOnce(t *testing.T) {
+// An overlay prefix the pass already holds, as this node's own prefix or the
+// mesh's hold, is held once
+func TestOverlayHoldsHoldEachPrefixOnce(t *testing.T) {
 	hold := func(destination string) Route {
 		return Route{Destination: prefix(destination), Metric: holdMetric, Unreachable: true}
 	}
@@ -224,10 +289,6 @@ func TestOverlayHoldsLeaveOutTheUnroutableAndHoldEachPrefixOnce(t *testing.T) {
 		entries []mirrorEntry
 		want    []Route
 	}{
-		"link-local and multicast overlay prefixes": {
-			overlay: []netip.Prefix{prefix("fe80::/10"), prefix("ff00::/8"), prefix("169.254.0.0/16"), prefix("224.0.0.0/4"), prefix("3fff::/20")},
-			want:    []Route{hold("3fff::/20")},
-		},
 		"an overlay prefix this node originates": {
 			overlay: []netip.Prefix{prefix("3fff::/20")},
 			entries: []mirrorEntry{{destination: prefix("3fff::/20"), value: netstack.Local}},

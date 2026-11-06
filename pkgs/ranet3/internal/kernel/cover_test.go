@@ -888,22 +888,23 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 	}
 }
 
-// A route holding the zero address inside 0.0.0.0/8 or ::/8 contains no
-// member, so the cover installs nothing of it: it counts as desired and
-// skipped, and is logged once while the mesh keeps announcing it. The covers
-// beside it go in whole.
+// A route holding the zero address inside ::/8 contains no member, so the
+// cover installs nothing of it: it counts as desired and skipped, and is
+// logged once while the mesh keeps announcing it. The covers beside it go in
+// whole. One inside 0.0.0.0/8 never reaches the cover, since this network
+// holds it whole.
 func TestZeroRouteInsideTheHoleIsSkippedAndLoggedOnce(t *testing.T) {
 	logs := captureKernelLogs(t)
 	reconciler, fake, set := coveringHarness(t, Table{}, Runtime{Sessions: func() int { return 1 }})
 	reconciler.now = func() time.Time { return start }
-	for _, destination := range []string{"0.0.0.0/0", "::/0", "0.0.0.0/24", "::/16"} {
+	for _, destination := range []string{"0.0.0.0/0", "::/0", "::/12", "::/16"} {
 		set(prefix(destination))
 	}
 	for pass := range 2 {
 		if err := reconciler.reconcile(); err != nil {
 			t.Fatal(err)
 		}
-		if fake.has(Route{Destination: prefix("0.0.0.0/24")}) || fake.has(Route{Destination: prefix("::/16"), Metric: defaultIPv6Metric}) {
+		if fake.has(Route{Destination: prefix("::/12"), Metric: defaultIPv6Metric}) || fake.has(Route{Destination: prefix("::/16"), Metric: defaultIPv6Metric}) {
 			t.Errorf("pass %d installed a route inside the hole: %v", pass, fake.snapshot())
 		}
 		if members, _ := coverHeld(fake); members != 16 {

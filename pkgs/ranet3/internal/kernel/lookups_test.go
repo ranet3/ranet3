@@ -138,10 +138,10 @@ func TestLookupAddressSkipsTheNetworkAddressAndEveryAssignedOne(t *testing.T) {
 	}
 }
 
-// a pass asks into each overlay hold it installed and into no prefix it holds
-// none for, at the address the assignments leave free
+// a pass asks into each overlay hold it installed, at the address the
+// assignments leave free
 func TestPassAsksIntoEachOverlayHoldItInstalled(t *testing.T) {
-	overlay := prefixes(prefix("192.0.2.0/24"), prefix("3fff::/20"), prefix("fe80::/64"))
+	overlay := prefixes(prefix("192.0.2.0/24"), prefix("3fff::/20"))
 	reconciler, _, look := lookingHarness(t,
 		Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))},
 		Runtime{Overlay: overlay})

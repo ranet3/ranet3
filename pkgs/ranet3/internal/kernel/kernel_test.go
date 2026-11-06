@@ -1117,39 +1117,66 @@ func TestWhereComesFromThePlatform(t *testing.T) {
 	}
 }
 
-// A prefix whose meaning is the link it sits on has no business in a routing
-// table that forwards out of a tunnel. The kernel keys its own entries for
-// these per interface, and only a default or a source-specific route is
-// interface-scoped on darwin, so an announced "ff00::/8" or "fe80::/64" went
-// into the one FIB every program on that machine shares and shadowed its own
-// multicast and link-local plumbing. Coexisting with whatever else is on the
-// box is a requirement of this tool, not a nicety.
+// A learned prefix a class holds whole is not installed, warning once with the
+// class, since the host keys its own entries for that space per interface and
+// a route at the same key shadows them. A learned default's halves only hold
+// class addresses, and go on to the capture rules: installed with the gate
+// open and held back with it shut, unwarned.
 func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
-	r, table, kernel := harness(t, Table{})
-	peer := &netstack.Peer{ID: "peer"}
-	refused := []netip.Prefix{
-		prefix("ff00::/8"),
-		prefix("ff02::1/128"),
-		prefix("fe80::/64"),
-		prefix("224.0.0.0/4"),
-		prefix("169.254.0.0/16"),
-		prefix("127.0.0.0/8"),
-		prefix("::1/128"),
-		limitedBroadcast,
+	refused := map[netip.Prefix]string{
+		prefix("ff00::/8"):             "holds multicast addresses, ff00::/8,",
+		prefix("ff02::/16"):            "holds multicast addresses, ff00::/8,",
+		prefix("ff02::1/128"):          "holds multicast addresses, ff00::/8,",
+		prefix("fe80::/64"):            "holds link-local addresses, fe80::/10,",
+		prefix("224.0.0.0/4"):          "holds multicast addresses, 224.0.0.0/4,",
+		prefix("169.254.0.0/16"):       "holds link-local addresses, 169.254.0.0/16,",
+		prefix("127.0.0.0/8"):          "holds loopback addresses, 127.0.0.0/8,",
+		prefix("::1/128"):              "holds the loopback address ::1,",
+		limitedBroadcast:               "holds the limited broadcast address 255.255.255.255,",
+		prefix("0.0.0.0/8"):            "holds addresses of this network, 0.0.0.0/8,",
+		prefix("240.0.0.0/8"):          "holds class E addresses, 240.0.0.0/4,",
+		prefix("::/128"):               "holds the unspecified address ::,",
+		prefix("::ffff:0:0/96"):        "holds IPv4-mapped addresses, ::ffff:0:0/96,",
+		prefix("::ffff:192.0.2.0/120"): "holds IPv4-mapped addresses, ::ffff:0:0/96,",
 	}
-	wanted := prefix("2001:db8::/48")
-	for _, p := range append(refused, wanted) {
-		table.Set(netip.Prefix{}, p, peer)
-	}
-	if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	installed := kernel.snapshot()
-	if len(installed) != 1 {
-		t.Fatalf("the reconciler installed %v, want only %s", installed, wanted)
-	}
-	if installed[0].Destination != wanted {
-		t.Errorf("the reconciler installed %s rather than %s", installed[0].Destination, wanted)
+	wanted, halves := prefix("2001:db8::/48"), []netip.Prefix{prefix("128.0.0.0/1"), prefix("::/1")}
+	for _, gate := range []bool{true, false} {
+		said := logged(t)
+		r, table, kernel := harness(t, Table{})
+		r.capture = gate
+		peer := &netstack.Peer{ID: "example/peer"}
+		for p := range refused {
+			table.Set(netip.Prefix{}, p, peer)
+		}
+		for _, p := range append(halves, wanted) {
+			table.Set(netip.Prefix{}, p, peer)
+		}
+		for range 2 {
+			if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var installed []netip.Prefix
+		for _, route := range kernel.snapshot() {
+			installed = append(installed, route.Destination)
+		}
+		want := []netip.Prefix{wanted}
+		if gate {
+			want = append(want, halves...)
+		}
+		slices.SortFunc(installed, comparePrefixes)
+		slices.SortFunc(want, comparePrefixes)
+		if !slices.Equal(installed, want) {
+			t.Errorf("with the gate open %v the reconciler installed %v, want %v", gate, installed, want)
+		}
+		if n := strings.Count(said.String(), `msg="kernel is not installing a prefix the mesh cannot carry"`); n != len(refused) {
+			t.Errorf("with the gate open %v the reconciler warned %d times, want once for each of %d:\n%s", gate, n, len(refused), said)
+		}
+		for p, class := range refused {
+			if n := strings.Count(said.String(), "destination="+p.String()+" detail=\""+class); n != 1 {
+				t.Errorf("with the gate open %v %s was warned of %d times naming %q:\n%s", gate, p, n, class, said)
+			}
+		}
 	}
 }
 

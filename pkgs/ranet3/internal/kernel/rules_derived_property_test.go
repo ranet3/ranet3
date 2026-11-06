@@ -527,8 +527,9 @@ func TestDerivedRulesAreModeOffAndEachNopPrecedesItsGoto(t *testing.T) {
 
 // This node's own prefixes hold every address cap.table assigns and every
 // prefix it originates that counts as no default, but for one the mesh cannot
-// carry, a link-local, loopback or multicast one or the limited broadcast,
-// whether assigned or originated, and a LAN cap.egress advertises, and nothing
+// carry, which a class holds whole, as it does 240.0.0.0/8 and not
+// 169.0.0.0/8, whether assigned or originated, and a LAN cap.egress
+// advertises, and nothing
 // a peer announces or a hold carries. A prefix shorter than its family's floor
 // counts unless the overlay holds it and it holds no zero address, so
 // 10.0.0.0/7 is own and 2000::/3 is not.
@@ -552,6 +553,8 @@ func TestOwnPrefixesAreTheAssignedAndTheUncountedOriginated(t *testing.T) {
 		"2001:db8:3::/48":  peer,
 		"3fff::/20":        netstack.Local,
 		"169.254.0.0/16":   netstack.Local,
+		"240.0.0.0/8":      netstack.Local,
+		"169.0.0.0/8":      netstack.Local,
 		"2001:db8:4::1/48": netstack.Assigned,
 	} {
 		routes.Set(netip.Prefix{}, netip.MustParsePrefix(prefix), value)
@@ -560,7 +563,7 @@ func TestOwnPrefixesAreTheAssignedAndTheUncountedOriginated(t *testing.T) {
 	own := reconciler.ownPrefixes(routes.Snapshot())
 	got := slices.Concat(familyPrefixes(FamilyIPv4, own), familyPrefixes(FamilyIPv6, own))
 	want := []netip.Prefix{
-		netip.MustParsePrefix("10.0.0.0/7"), netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("203.0.113.7/32"),
+		netip.MustParsePrefix("10.0.0.0/7"), netip.MustParsePrefix("169.0.0.0/8"), netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("203.0.113.7/32"),
 		netip.MustParsePrefix("2001:db8:1::/48"), netip.MustParsePrefix("2001:db8:4::/48"), netip.MustParsePrefix("3fff::/20"),
 	}
 	if !slices.Equal(got, want) {

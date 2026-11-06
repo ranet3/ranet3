@@ -120,14 +120,14 @@ func TestLeftOutFamilyKeepsModeOffsForm(t *testing.T) {
 	}
 }
 
-// A zero route inside 0.0.0.0/8 in a family the mode leaves out, the tun
-// holding an address of it outside the overlay alone, keeps mode off's form
-// too: it goes in as itself, scoped, and the pass neither skips it nor warns
-// that the cover holds nothing of it.
+// A zero route inside ::/8 in a family the mode leaves out, the tun holding an
+// address of it outside the overlay alone, keeps mode off's form too: it goes
+// in as itself, scoped, and the pass neither skips it nor warns that the cover
+// holds nothing of it.
 func TestLeftOutFamilysRouteInsideTheHoleGoesInAsItself(t *testing.T) {
 	logs := captureKernelLogs(t)
-	reconciler, table, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses[1], prefix("203.0.113.1/24"))
-	inside := Route{Destination: prefix("0.0.0.0/8")}
+	reconciler, table, kernel := modeCovering(t, Table{}.WithMode(&ExitMode{}), nil, coverAddresses[0], prefix("2001:db8:1::1/64"))
+	inside := Route{Destination: prefix("::/16"), Metric: defaultIPv6Metric}
 	table.Set(netip.Prefix{}, inside.Destination, nil)
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)

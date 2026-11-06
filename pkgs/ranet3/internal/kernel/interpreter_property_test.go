@@ -251,21 +251,16 @@ func addressIn(tc hegel.TestCase, prefix netip.Prefix) netip.Addr {
 	return out
 }
 
-// overlays draws the overlay: up to two prefixes, each as long as
-// Border.Validate takes or longer, MinSourceBits4 or MinSourceBits6, mostly of
-// mesh space and now and then one holding its family's unspecified address or
-// one the mesh cannot carry, neither of which gets a hold
+// overlays draws the overlay: up to two prefixes of mesh space, each as long as
+// Border.Validate takes or longer, MinSourceBits4 or MinSourceBits6
 func overlays() hegel.Generator[[]schema.Prefix] {
 	return hegel.Composite(func(tc hegel.TestCase) []schema.Prefix {
 		var out []schema.Prefix
 		for range hegel.Draw(tc, hegel.Integers(0, 2)) {
 			v6 := hegel.Draw(tc, hegel.Booleans())
-			bases, unheld, least := []string{"10.0.0.0", "192.0.2.0"}, []string{"0.0.0.0", "224.0.0.0"}, schema.MinSourceBits4
+			bases, least := []string{"10.0.0.0", "192.0.2.0"}, schema.MinSourceBits4
 			if v6 {
-				bases, unheld, least = []string{"3fff::", "2001:db8::"}, []string{"::", "fe80::"}, schema.MinSourceBits6
-			}
-			if hegel.Draw(tc, hegel.WeightedBooleans(0.25)) {
-				bases = unheld
+				bases, least = []string{"3fff::", "2001:db8::"}, schema.MinSourceBits6
 			}
 			base := netip.MustParseAddr(hegel.Draw(tc, hegel.SampledFrom(bases)))
 			out = append(out, schema.PrefixFrom(netip.PrefixFrom(base, hegel.Draw(tc, edges(least, base.BitLen()))).Masked()))
@@ -479,7 +474,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 		switch entry.Value {
 		case netstack.Assigned:
 			sources, assigned = append(sources, destination), append(assigned, entry.Destination)
-			if unroutable(destination) == "" && !counts(destination) && !advertised[destination] {
+			if !classWhole(destination) && !counts(destination) && !advertised[destination] {
 				own = append(own, destination)
 			}
 		case netstack.Local:
@@ -491,7 +486,7 @@ func interpret(t *testing.T, overlay []schema.Prefix, entries []mirrorEntry, adv
 				rt.Announced = append(rt.Announced, destination)
 			}
 			// D from S routes D to this node only from S, and a LAN cap.egress advertises holds hosts behind it
-			if !entry.Source.IsValid() && !advertised[destination] && !counts(destination) && unroutable(destination) == "" {
+			if !entry.Source.IsValid() && !advertised[destination] && !counts(destination) && !classWhole(destination) {
 				own = append(own, destination)
 			}
 		}
@@ -665,12 +660,13 @@ func (h interpreted) packets(ht *hegel.T) []fibPacket {
 }
 
 // lookedUp reports a packet whose way routing.md's tables write out: no
-// unroutable space, which the mirror leaves out, no unspecified space, where
-// 5420 answers a route that counts by its length, and no address of the
-// host's own, its uplink's, a link's or one cap.table assigns, which the
-// host's local table answers and the model holds no local table for
+// address of a class, to which ranet3's data path forwards nothing, no
+// unspecified space, where 5420 answers a route that counts by its length, and
+// no address of the host's own, its uplink's, a link's or one cap.table
+// assigns, which the host's local table answers and the model holds no local
+// table for
 func (h interpreted) lookedUp(p fibPacket) bool {
-	return unroutable(netip.PrefixFrom(p.destination, p.destination.BitLen())) == "" && !unspecifiedSpace.Contains(p.destination) && !unspecifiedSpace6.Contains(p.destination) &&
+	return classOf(p.destination) == "" && !unspecifiedSpace.Contains(p.destination) && !unspecifiedSpace6.Contains(p.destination) &&
 		p.destination != uplink[p.destination.Is6()] &&
 		!slices.ContainsFunc(h.assigned, func(address netip.Prefix) bool { return address.Contains(p.destination) }) &&
 		!slices.ContainsFunc(h.mode.links(), func(link Link) bool {
@@ -791,20 +787,16 @@ func (h interpreted) landing(p fibPacket) uint32 {
 	return 0
 }
 
-// overlayOf reports whether the overlay holds destination, and the length of
-// the longest prefix holding it that gets a hold, or -1 where none does
-func (h interpreted) overlayOf(destination netip.Addr) (bool, int) {
-	inside, held := false, -1
+// overlayOf is the length of the longest overlay prefix holding destination,
+// each of which gets a hold, or -1 where none does
+func (h interpreted) overlayOf(destination netip.Addr) int {
+	held := -1
 	for _, prefix := range h.rt.Overlay {
-		if !prefix.Contains(destination) {
-			continue
-		}
-		inside = true
-		if unroutable(prefix.Masked()) == "" && !schema.CapturesTheMachine(prefix.Masked(), h.rt.Overlay) {
+		if prefix.Contains(destination) {
 			held = max(held, prefix.Bits())
 		}
 	}
-	return inside, held
+	return held
 }
 
 // answer is where a route of the mirror ends a lookup
@@ -817,9 +809,8 @@ func answer(route fibRoute) string {
 
 // expected is where routing.md's tables of the routes and the policy rules the
 // reconciler installs send p, written out rather than walked: at 5110 an
-// overlay destination under a held overlay prefix from ranet3's own lookup and
-// one under no held prefix from the mirror's longest match, every other overlay
-// destination from the mirror's longest match, and a destination outside the
+// overlay destination from ranet3's own lookup, since each overlay prefix gets
+// a hold, every other overlay destination from the mirror's longest match, and a destination outside the
 // overlay from ranet3's own lookup, as "Where a lookup ends on Linux" gives it.
 // Mode 2, in a family the tun holds an overlay address of, sends the host's own
 // lookup from a link's address to main ahead of 5410, and past 5430 one from a
@@ -835,21 +826,16 @@ func (h interpreted) expected(p fibPacket) string {
 	reaches := func(priority uint32) bool { return priority >= landing }
 	marked := p.mark == schema.UnderlayMark
 	_, verdict, match := h.routes.Resolve(p.source, p.destination)
-	inside, held := h.overlayOf(p.destination)
+	held := h.overlayOf(p.destination)
+	inside := held >= 0
 	mirror := h.kernel.tables[DefaultTable]
 	// 5100's goto takes a marked lookup past 5110, and so does another program's goto landing past it
 	if inside && reaches(priorityOverlay) && !(marked && reaches(priorityUnderlayPastOverlay)) {
-		if held >= 0 {
-			// the overlay's hold outranks an entry wider than the overlay prefix
-			if verdict == netstack.RoutePeer && !match.Counted && match.Bits >= held {
-				return tunDevice
-			}
-			return "unreachable"
+		// the overlay's hold outranks an entry wider than the overlay prefix
+		if verdict == netstack.RoutePeer && !match.Counted && match.Bits >= held {
+			return tunDevice
 		}
-		// no overlay prefix holding it gets a hold, so 5110 answers by the mirror's longest match, whatever its length
-		if route, ok := lookup(mirror, p); ok && !route.throw {
-			return answer(route)
-		}
+		return "unreachable"
 	}
 	if between := h.others(p, max(landing, priorityUnderlayPastOverlay), priorityUnderlayPastMesh); between != "none" {
 		return between
@@ -1215,18 +1201,6 @@ func TestRuleWalkNamedCases(t *testing.T) {
 				from("198.51.100.10", "203.0.113.9"): tunDevice, from("192.0.2.5", "203.0.113.40"): "eth0",
 				arriving("br-1a", from("203.0.113.130", "203.0.113.40")): "eth0",
 			},
-		},
-		"an overlay prefix holding the unspecified address, which gets no hold": {
-			entries: []mirrorEntry{learnedAt("::/0"), learnedAt("0.0.0.0/0")},
-			overlay: []schema.Prefix{schema.MustPrefix("::/12"), schema.MustPrefix("0.0.0.0/8")},
-			packets: map[fibPacket]string{
-				from("2001:db8:a::10", "5::1"): tunDevice, from("2001:db8:a::10", "2001:db8:c::1"): "eth0",
-			},
-		},
-		"an overlay prefix the mesh cannot carry, which gets no hold": {
-			entries: []mirrorEntry{learnedAt("2000::/3")},
-			overlay: []schema.Prefix{schema.MustPrefix("3fff::/20"), schema.MustPrefix("fe80::/12")},
-			packets: map[fibPacket]string{from("2001:db8:a::10", "3fff::1"): "unreachable", from("2001:db8:a::10", "2001:db8:c::1"): "eth0"},
 		},
 		"the floors": {
 			entries: []mirrorEntry{learnedAt("2.0.0.0/7"), learnedAt("4.0.0.0/8"), learnedAt("2400::/15"), learnedAt("2600::/16")},

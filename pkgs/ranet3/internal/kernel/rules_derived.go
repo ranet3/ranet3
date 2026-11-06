@@ -225,15 +225,16 @@ func familyPrefixes(family Family, prefixes []netip.Prefix) []netip.Prefix {
 
 // ownPrefixes is this node's own prefixes as the snapshot holds them, the
 // sources OwnedSources owns less three kinds: a prefix the mesh cannot carry,
-// which unroutable names, a LAN cap.egress advertises, whose hosts are no
-// sources of this node's own, and a source-specific announcement D from S,
-// which under RFC 9079 section 4's destination-first lookup routes D to this
-// node only for packets from S, so a reply to D from outside S never comes
-// back through the mesh.
+// which a class schema.Unroutable names holds whole, a LAN cap.egress
+// advertises, whose hosts are no sources of this node's own, and a
+// source-specific announcement D from S, which under RFC 9079 section 4's
+// destination-first lookup routes D to this node only for packets from S, so a
+// reply to D from outside S never comes back through the mesh.
 func (r *Reconciler) ownPrefixes(snapshot []sadr.Route[*netstack.Peer]) []netip.Prefix {
 	var out []netip.Prefix
 	for _, entry := range ownedEntries(snapshot, r.rt.Overlay) {
-		if prefix := entry.Destination; !entry.Source.IsValid() && unroutable(prefix) == "" && !slices.Contains(r.rt.Advertised, prefix) {
+		prefix := entry.Destination
+		if _, whole := schema.Unroutable(prefix); !entry.Source.IsValid() && !whole && !slices.Contains(r.rt.Advertised, prefix) {
 			out = append(out, prefix)
 		}
 	}

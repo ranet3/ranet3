@@ -1713,9 +1713,9 @@ func (r *Reconciler) reportCover(now []Family) {
 }
 
 // reportMemberless returns the zero routes of desired in families a cover
-// installs as nothing, those inside 0.0.0.0/8, this network (RFC 1122 section
-// 3.2.1.3), or ::/8, and warns once for each while the mesh keeps announcing
-// it.
+// installs as nothing, those inside ::/8, and warns once for each while the
+// mesh keeps announcing it. desired holds none inside 0.0.0.0/8, a class
+// schema.Unroutable names.
 func (r *Reconciler) reportMemberless(desired []Route, families []Family) []Route {
 	var out []Route
 	reported := make(map[Route]bool, len(r.memberless))
@@ -1727,7 +1727,7 @@ func (r *Reconciler) reportMemberless(desired []Route, families []Family) []Rout
 		if !r.memberless[route] {
 			slog.Warn("kernel is not installing a route its cover holds nothing of",
 				"destination", route.Destination,
-				"detail", "the cover leaves 0.0.0.0/8 and ::/8 to the host, and every address of the route lies there")
+				"detail", "the cover leaves ::/8 to the host, and every address of the route lies there")
 			r.refusedAnew = true
 		}
 		reported[route] = true
@@ -1757,7 +1757,7 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 		if !ok {
 			continue
 		}
-		if reason := unroutable(destination); reason != "" {
+		if reason, whole := schema.Unroutable(destination); whole {
 			key := Route{Destination: destination}
 			if !r.warned[key] {
 				slog.Warn("kernel is not installing a prefix the mesh cannot carry",
@@ -1832,31 +1832,35 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 }
 
 // overlayHolds adds an unreachable hold to the pass's routes, once, for each
-// prefix of the overlay that the mesh can carry, that holds no unspecified
-// address and that no carve-out equals. A lookup the walk ends at the hold is
-// refused (routing.md, where a lookup ends on Linux), where without it an
-// overlay destination no route of the mesh covers would follow an exit's
-// default into the mesh, or leave by main, which on a host whose uplink shares
-// the space carries it to a stranger holding the same address.
+// prefix of the overlay that no carve-out equals. The loader refuses an
+// overlay prefix holding an address of a class schema.Unroutable names
+// (egress.Border.Validate), the unspecified addresses among them, so no hold
+// sits at a key of those classes or counts as a default. A lookup the
+// walk ends at the hold is refused (routing.md, where a lookup ends on Linux),
+// where without it an overlay destination no route of the mesh covers would
+// follow an exit's default into the mesh, or leave by main, which on a host
+// whose uplink shares the space carries it to a stranger holding the same
+// address.
 func (r *Reconciler) overlayHolds(out []Route, carved []netip.Prefix) []Route {
 	for _, entry := range r.rt.Overlay {
 		destination, ok := canonicalPrefix(entry.Prefix)
-		if !ok || unroutable(destination) != "" || slices.Contains(carved, destination) {
+		if !ok || slices.Contains(carved, destination) {
 			continue
 		}
 		hold := Route{Destination: destination, Metric: holdMetric, Unreachable: true}
-		if !r.captures(hold) && !slices.Contains(out, hold) {
+		if !slices.Contains(out, hold) {
 			out = append(out, hold)
 		}
 	}
 	return out
 }
 
-// carveThrows adds a throw to the pass's routes, once, for each carve-out the
-// mesh can carry that holds no unspecified address, so a lookup inside it that
-// no route of the mesh answers goes on to the rules after the mesh's table and
-// meets main's route for the link. An entry of the mesh's table for
-// the carve-out's own prefix and every source keeps the prefix in the mesh.
+// carveThrows adds a throw to the pass's routes, once, for each carve-out, so
+// a lookup inside it that no route of the mesh answers goes on to the rules
+// after the mesh's table and meets main's route for the link. A carve-out
+// lies inside an overlay prefix, so it holds no address of a class either. An
+// entry of the mesh's table for the carve-out's own prefix and every source
+// keeps the prefix in the mesh.
 func (r *Reconciler) carveThrows(out []Route, carved []netip.Prefix, snapshot []sadr.Route[*netstack.Peer]) []Route {
 	for _, destination := range carved {
 		throw := Route{Destination: destination, Metric: holdMetric, Throw: true}
@@ -1864,7 +1868,7 @@ func (r *Reconciler) carveThrows(out []Route, carved []netip.Prefix, snapshot []
 			prefix, ok := canonicalPrefix(entry.Destination)
 			return ok && prefix == destination && !entry.Source.IsValid()
 		})
-		if !held && unroutable(destination) == "" && !r.captures(throw) && !slices.Contains(out, throw) {
+		if !held && !slices.Contains(out, throw) {
 			out = append(out, throw)
 		}
 	}
@@ -1885,27 +1889,6 @@ func (r *Reconciler) exit() bool {
 // excluded), but it is present on every broadcast-capable interface on that
 // machine and on the utun another overlay configures differently.
 var limitedBroadcast = netip.MustParsePrefix("255.255.255.255/32")
-
-// unroutable names why a prefix has no business in a routing table that
-// forwards out of a mesh tunnel, or is empty for one that does. These are
-// prefixes whose meaning is the link they sit on: the kernel keys its own
-// entries for them per interface, and a route the mesh installs at the same
-// key shadows the machine's own plumbing. On darwin that is the single FIB
-// every program shares, which this tool has to coexist with, and only a
-// default or a source-specific route is interface-scoped there.
-func unroutable(destination netip.Prefix) string {
-	switch addr := destination.Addr(); {
-	case addr.IsMulticast():
-		return "multicast is delivered on a link, not routed through a tunnel"
-	case addr.IsLinkLocalUnicast():
-		return "a link-local prefix names the link it arrived on"
-	case addr.IsLoopback():
-		return "loopback belongs to the host"
-	case destination == limitedBroadcast:
-		return "the limited broadcast address is not a destination"
-	}
-	return ""
-}
 
 // holdMetric is where a retraction sits among the routes to the same prefix:
 // last. A lookup is longest prefix first and only then by metric, so a hold
