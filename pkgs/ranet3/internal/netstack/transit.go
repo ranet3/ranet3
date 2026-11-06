@@ -120,9 +120,9 @@ func (m *Mesh) SetOverlay(overlay []schema.Prefix) {
 	m.Routes.SetOverlay(overlay)
 }
 
-// SetTunAddresses sets the addresses the tun holds, none for nil
-// a read the table answers as this node's own goes back into the tun where the tun holds its destination, and the host's kernel delivers it
-// any other such read is dropped, since a host that does not hold the address would route it into the tun again, or drop it
+// SetTunAddresses sets the addresses the tun holds, none for nil, the ones cap.table assigns, which the reconciler's next pass puts on the tun
+// a read the table answers as this node's own goes back into the tun where the set holds its destination, for the host's kernel to take as its own
+// any other such read is dropped, since the mesh could only hand it back to the host
 func (m *Mesh) SetTunAddresses(addresses []netip.Addr) {
 	m.tunAddresses.Store(&addresses)
 }

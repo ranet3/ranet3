@@ -198,6 +198,7 @@ func assignedPrefixes(cfg *config.Config) []netip.Prefix {
 }
 
 // assignedAddresses is every address cap.table assigns, whatever the length of its prefix, each of which the speaker takes as owned by this node
+// and the mesh as one its tun holds
 func assignedAddresses(cfg *config.Config) []netip.Addr {
 	assigned := assignedPrefixes(cfg)
 	out := make([]netip.Addr, 0, len(assigned))

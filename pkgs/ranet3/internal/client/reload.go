@@ -167,7 +167,9 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	c.sessions.resuite()
 	c.Republish()
 	c.retakeTTL()
-	c.speaker.SetAssigned(assignedAddresses(cfg))
+	assigned := assignedAddresses(cfg)
+	c.speaker.SetAssigned(assigned)
+	c.Mesh.SetTunAddresses(assigned)
 	c.syncPeers()
 	c.speaker.SetConfig(cfg.Babel())
 	if old.Link.Listen != cfg.Link.Listen {
