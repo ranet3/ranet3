@@ -13,11 +13,11 @@ var defaultTTL = hostDefaultTTL
 
 // ttlOf is the TTL a host's default TTL setting holds, read as value, refusing a value no TTL can carry and 0, which RFC 1812 section 4.2.2.9 has no router originate
 func ttlOf(setting string, value uint64, err error) (uint8, error) {
-	if err == nil && (value == 0 || value > 0xff) {
-		err = fmt.Errorf("%d is no TTL a router may send", value)
-	}
 	if err != nil {
 		return 0, fmt.Errorf("%s: %w", setting, err)
+	}
+	if value == 0 || value > 0xff {
+		return 0, fmt.Errorf("%s: %d is no TTL a router may send", setting, value)
 	}
 	return uint8(value), nil
 }
