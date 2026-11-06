@@ -26,6 +26,5 @@ Thumbs.db
 ehthumbs.db
 
 /*.pem
-/testpki/
 registry.json
 !pkgs/ranet3/internal/registry/testdata/registry.json

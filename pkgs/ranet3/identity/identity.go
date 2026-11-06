@@ -54,7 +54,9 @@ func Parse(text string) (Identity, error) {
 	return From(decoded[0], decoded[1], decoded[2])
 }
 
-// MustParse is Parse for a text known to be canonical, and panics on any other
+// MustParse is Parse for a text known to be canonical, and panics on any other.
+// Only tests call it, those of identity, ike, internal/babel, internal/client,
+// internal/config and internal/registry.
 func MustParse(text string) Identity {
 	id, err := Parse(text)
 	if err != nil {

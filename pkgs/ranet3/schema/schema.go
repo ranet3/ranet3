@@ -138,7 +138,10 @@ func ParsePrefix(s string) (Prefix, error) {
 	return Prefix{prefix}, nil
 }
 
-// MustPrefix is ParsePrefix for a literal written in this tree.
+// MustPrefix is ParsePrefix for a literal written in this tree. Only tests call
+// it, those of cmd/ranet3, internal/babel, internal/client, internal/config,
+// internal/egress, internal/egress/kernel, internal/kernel, internal/netstack,
+// schema and srv6.
 func MustPrefix(s string) Prefix { return Prefix{netip.MustParsePrefix(s)} }
 
 // IsZero decides whether an omitempty field is written out. It is spelled out
@@ -349,6 +352,8 @@ type Addr struct{ netip.Addr }
 
 // AddrFrom carries a parsed address into the file's spelling of one. An
 // address carrying a zone has no spelling, and every marshaller refuses it.
+// Only tests call it, those of internal/client, internal/config,
+// internal/kernel, internal/netstack, schema and srv6.
 func AddrFrom(address netip.Addr) Addr { return Addr{address} }
 
 func ParseAddr(s string) (Addr, error) {
@@ -362,7 +367,9 @@ func ParseAddr(s string) (Addr, error) {
 	return Addr{address}, nil
 }
 
-// MustAddr is ParseAddr for a literal written in this tree.
+// MustAddr is ParseAddr for a literal written in this tree. Only tests call it,
+// those of internal/client, internal/config, internal/kernel, internal/netstack,
+// schema and srv6.
 func MustAddr(s string) Addr {
 	address, err := ParseAddr(s)
 	if err != nil {

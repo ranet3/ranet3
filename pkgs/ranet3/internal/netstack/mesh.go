@@ -768,6 +768,7 @@ func addrsOf(raw []byte) (src, dst netip.Addr, nextHeader byte, ok bool) {
 // DeliverInbound hands the mesh one already-decapsulated tunnel-mode IP packet of no session, as DeliverInboundBatch does
 // it copies raw into a frame of its own, raw staying the caller's
 // mtu is the largest packet the session it came through carries, as DeliverInboundBatch takes it
+// only tests call it, those of internal/babel, internal/client and internal/netstack
 func (m *Mesh) DeliverInbound(raw []byte, mtu int) {
 	frame := make([]byte, TUNHeadroom+len(raw))
 	copy(frame[TUNHeadroom:], raw)
