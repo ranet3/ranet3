@@ -65,11 +65,6 @@ type captureGate struct {
 	liveAt time.Time
 	seen   bool
 	open   bool
-	// waiting is set while the grace is running, which is the one state that
-	// needs a wake-up of its own: nothing else will happen at the moment it
-	// expires, so a caller that only reconciles on a change would leave the
-	// machine's traffic in a dead tun until the next periodic sweep.
-	waiting bool
 }
 
 // sample records one liveness observation and reports whether a route that
@@ -80,14 +75,13 @@ func (g *captureGate) sample(now time.Time, live int) (open, changed bool) {
 	was := g.open
 	switch {
 	case live > 0:
-		g.seen, g.liveAt, g.open, g.waiting = true, now, true, false
+		g.seen, g.liveAt, g.open = true, now, true
 	case !g.seen:
-		g.open, g.waiting = false, false
+		g.open = false
 	default:
 		// Strictly less, so a grace of zero withdraws on the first pass that
 		// finds nothing live rather than one pass later.
 		g.open = now.Sub(g.liveAt) < g.grace
-		g.waiting = g.open
 	}
 	return g.open, g.open != was
 }
