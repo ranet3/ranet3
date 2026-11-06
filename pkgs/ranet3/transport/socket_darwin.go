@@ -184,8 +184,6 @@ type darwinSocket struct {
 	// a send stores its own key before it releases the cached route, and releases it again after its write where another key was stored since,
 	// so once no send is in flight the socket caches no route or one a send of the stored key took
 	named atomic.Int64
-	// released is the latest Selection generation this shared socket's cached route was released at
-	released atomic.Uint64
 	// fragmenting counts the muxes letting this IPv4 socket's sends fragment
 	// it is stored under its bind's fragmentMu and loaded without the lock
 	// the socket clears IP_DONTFRAG while it is above zero
@@ -247,18 +245,6 @@ func boundInterfaceOption(ipv6 bool) (level, option int) {
 		return unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
 	}
 	return unix.IPPROTO_IP, unix.IP_BOUND_IF
-}
-
-// releaseRoute drops the route the socket caches once generation is past the last one it was dropped at
-// in_pcbladdr in bsd/netinet/in_pcb.c reuses a socket's cached route for its destination whatever interface a send names,
-// so a send naming the interface a selection left would take a later send naming its new one there
-// the generation is stored before the drop, so a send of an older one that writes meanwhile finds it and drops what it cached
-func (s *darwinSocket) releaseRoute(generation uint64) error {
-	if s.released.Load() >= generation {
-		return nil
-	}
-	s.released.Store(generation)
-	return s.dropRoute()
 }
 
 // dropRoute releases the route the socket caches
@@ -572,53 +558,27 @@ func (b *darwinBind) sendFrom(socket *darwinSocket, packet []byte, ep *darwinEnd
 	return err
 }
 
-// sendSelected sends one datagram to ep from the kernel's choice of source, by the interface the selection names
 func (b *darwinBind) sendSelected(socket *darwinSocket, packet []byte, ep *darwinEndpoint) error {
-	control, generation, key, err := b.selectedControl(socket, ep)
+	control, key, err := b.selectedControl(ep)
 	if err != nil {
 		return err
 	}
-	if err := b.beforeWrite(socket, key); err != nil {
-		return err
-	}
-	err = socket.writeSelected(packet, ep, control, generation)
-	if released := b.afterWrite(socket, key); released != nil {
-		return errors.Join(err, released)
-	}
-	return err
+	return b.writeNaming(socket, packet, ep, control, key)
 }
 
-// selectedControl is the control message a send to ep that leaves the source to the kernel carries on socket, the generation it names an interface under
-// and the key of that interface:
-// the interface the selection names, beside an IPV6_DONTFRAG of 0 while ep fragments, after the socket released a route it cached under an older generation
+// selectedControl is the control message a send to ep that leaves the source to the kernel carries, and the key of the interface it names:
+// the interface the selection names, beside an IPV6_DONTFRAG of 0 while ep fragments
 // it refuses a send the selection names no interface for, as a marked lookup that ends in an empty main does on linux
-// with no selection it names no interface, under generation 0
-func (b *darwinBind) selectedControl(socket *darwinSocket, ep *darwinEndpoint) ([]byte, uint64, int64, error) {
+// with no selection it names no interface
+func (b *darwinBind) selectedControl(ep *darwinEndpoint) ([]byte, int64, error) {
 	if b.selection == nil {
-		return ep.unpinnedControl(), 0, noInterface, nil
+		return ep.unpinnedControl(), noInterface, nil
 	}
 	s := b.selectedFor(ep)
 	if s.index == 0 {
-		return nil, 0, 0, unix.ENETUNREACH
+		return nil, 0, unix.ENETUNREACH
 	}
-	if err := socket.releaseRoute(s.generation); err != nil {
-		return nil, 0, 0, err
-	}
-	if ep.fragments.Load() {
-		return s.fragmentingControl, s.generation, int64(s.index), nil
-	}
-	return s.control, s.generation, int64(s.index), nil
-}
-
-// writeSelected sends one datagram to ep carrying control, which selectedControl built under generation
-// a send whose generation is older than the socket's last release, which ran between the two, cached the route of the interface the old generation named,
-// and a later send naming the new one would take that route, so the socket releases it again
-func (s *darwinSocket) writeSelected(packet []byte, ep *darwinEndpoint, control []byte, generation uint64) error {
-	err := s.write(packet, ep, control)
-	if generation < s.released.Load() {
-		return errors.Join(err, s.dropRoute())
-	}
-	return err
+	return ep.carried(s.control, s.fragmentingControl), int64(s.index), nil
 }
 
 func (b *darwinBind) writeNaming(socket *darwinSocket, packet []byte, ep *darwinEndpoint, control []byte, key int64) error {
