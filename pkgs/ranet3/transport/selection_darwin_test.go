@@ -14,12 +14,15 @@ import (
 	"net/netip"
 	"os/exec"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
 // testSelection names one interface for every address, under a generation each move advances
@@ -291,6 +294,12 @@ const (
 	tunQuiet = 200 * time.Millisecond
 	// underlayPort is the port every peer behind a test utun is sent to
 	underlayPort = 4500
+	// sameInterfaceMTU is the MTU a test utun is given where a datagram must exceed a route's lower MTU and fit the utun's
+	sameInterfaceMTU = 1500
+	// sameInterfaceRouteMTU is the MTU of that route, IPv6's least
+	sameInterfaceRouteMTU = 1280
+	// sameInterfacePayload makes an IPv6 datagram larger than sameInterfaceRouteMTU and smaller than sameInterfaceMTU
+	sameInterfacePayload = 1300
 )
 
 // testTUN is a utun a test makes, and the control descriptor every packet the kernel routes out of it is read from
@@ -356,8 +365,9 @@ func newTestTUN(t *testing.T, v4, v6 string) *testTUN {
 // destroy removes u with every route and address on it
 func (u *testTUN) destroy() { u.once.Do(func() { _ = unix.Close(u.fd) }) }
 
-// route adds a route to destination out of u, scoped to u where scoped is set, and answers its removal, which the test's end runs too
-func (u *testTUN) route(t *testing.T, destination string, scoped bool) func() {
+// route adds a route to destination out of u, scoped to u where scoped is set and carrying the modifiers of route(8) in modifiers,
+// and answers its removal, which the test's end runs too
+func (u *testTUN) route(t *testing.T, destination string, scoped bool, modifiers ...string) func() {
 	t.Helper()
 	family := "-inet"
 	if netip.MustParsePrefix(destination).Addr().Is6() {
@@ -367,7 +377,7 @@ func (u *testTUN) route(t *testing.T, destination string, scoped bool) func() {
 	if scoped {
 		args = append(args, "-ifscope", u.name)
 	}
-	hostCommand(t, append([]string{"route", "-n", "add"}, args...)...)
+	hostCommand(t, append(append([]string{"route", "-n", "add"}, args...), modifiers...)...)
 	var once sync.Once
 	remove := func() {
 		once.Do(func() { _ = exec.Command("route", append([]string{"-n", "delete"}, args...)...).Run() })
@@ -458,15 +468,89 @@ func drainAll(tuns ...*testTUN) {
 	}
 }
 
-// the addresses the test utuns hold: U stands in for an uplink, U2 for a second one and M for ranet3's own tun
+// departure is a packet one of the test utuns carried
+type departure struct {
+	by     *testTUN
+	packet []byte
+}
+
+// departures reads every packet tuns carry until enough holds of the ones match accepted, or within passed, then for tunQuiet more,
+// and answers the ones match accepted in the order they were read
+func departures(within time.Duration, match func(raw []byte) bool, enough func(got []departure) bool, tuns ...*testTUN) []departure {
+	var got []departure
+	buf := make([]byte, readBufferSize)
+	quiet := false
+	for deadline := time.Now().Add(within); time.Now().Before(deadline); {
+		read := false
+		for _, u := range tuns {
+			n, err := unix.Read(u.fd, buf)
+			if err != nil || n <= utunHeader {
+				continue
+			}
+			read = true
+			if !match(buf[utunHeader:n]) {
+				continue
+			}
+			got = append(got, departure{by: u, packet: slices.Clone(buf[utunHeader:n])})
+			if !quiet && enough(got) {
+				quiet, deadline = true, time.Now().Add(tunQuiet)
+			}
+		}
+		if !read {
+			time.Sleep(tunPoll)
+		}
+	}
+	return got
+}
+
+// departuresOf reads every packet tuns carry until each of datagrams came out of one of them or within passed, then for tunQuiet more,
+// and answers those carrying one of datagrams in the order they were read
+func departuresOf(within time.Duration, datagrams []datagram, tuns ...*testTUN) []departure {
+	carries := func(raw []byte) bool {
+		return slices.ContainsFunc(datagrams, func(d datagram) bool { return d.in(raw) })
+	}
+	all := func(got []departure) bool {
+		return !slices.ContainsFunc(datagrams, func(d datagram) bool {
+			return !slices.ContainsFunc(got, func(out departure) bool { return d.in(out.packet) })
+		})
+	}
+	return departures(within, carries, all, tuns...)
+}
+
+// leftOnce asserts that d came out of got once, by want and from source
+func leftOnce(t *testing.T, got []departure, d datagram, want *testTUN, source netip.Addr) {
+	t.Helper()
+	var carried []string
+	for _, out := range got {
+		if d.in(out.packet) {
+			from, _, _ := packet.Addrs(out.packet)
+			carried = append(carried, fmt.Sprintf("%s from %s", out.by.name, from))
+		}
+	}
+	if wanted := fmt.Sprintf("%s from %s", want.name, source); len(carried) != 1 || carried[0] != wanted {
+		t.Errorf("%q to %s came out of %q, want %s alone", d.payload, d.to, carried, wanted)
+	}
+}
+
+// the addresses the test utuns hold: U stands in for an uplink, U2 or X for a second one and M for ranet3's own tun
+// and a second IPv4 address U takes where a test needs one
 const (
 	uplinkV4, uplinkV6 = "198.51.100.1", "2001:db8:a::1"
 	secondV4, secondV6 = "198.51.100.2", "2001:db8:b::1"
 	meshV4, meshV6     = "192.0.2.1", "2001:db8:c::1"
+	uplinkAliasV4      = "198.51.100.3"
 )
 
-// underlayFamilies are the peers behind U in each family and the routes that hold them
-var underlayFamilies = []struct {
+// address is the address u holds in the family of peer
+func (u *testTUN) address(peer netip.Addr) netip.Addr {
+	if peer.Is4() {
+		return u.v4
+	}
+	return u.v6
+}
+
+// underlayFamily is the peers behind U in one family and the routes that hold them
+type underlayFamily struct {
 	name string
 	// peer and neighbor are two peers inside narrow, which is inside wide
 	peer, neighbor netip.Addr
@@ -478,20 +562,23 @@ var underlayFamilies = []struct {
 	// unrouted is the errno darwin answers a send naming an interface that holds no route to the peer with
 	// in_pcbladdr in bsd/netinet/in_pcb.c answers ENETUNREACH, and selectroute in bsd/netinet6/in6_src.c EHOSTUNREACH
 	unrouted unix.Errno
-}{
-	{
-		name: "IPv4", peer: netip.MustParseAddr("203.0.113.9"), neighbor: netip.MustParseAddr("203.0.113.10"),
-		narrow: "203.0.113.0/25", wide: "203.0.113.0/24", gone: netip.MustParseAddr("198.51.100.77"),
-		cover:    []string{"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5", "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1"},
-		unrouted: unix.ENETUNREACH,
-	},
-	{
-		name: "IPv6", peer: netip.MustParseAddr("2001:db8:e::9"), neighbor: netip.MustParseAddr("2001:db8:e::a"),
-		narrow: "2001:db8:e::/64", wide: "2001:db8:e::/48", gone: netip.MustParseAddr("2001:db8:a::77"),
-		cover:    []string{"100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1"},
-		unrouted: unix.EHOSTUNREACH,
-	},
 }
+
+var underlayV4 = underlayFamily{
+	name: "IPv4", peer: netip.MustParseAddr("203.0.113.9"), neighbor: netip.MustParseAddr("203.0.113.10"),
+	narrow: "203.0.113.0/25", wide: "203.0.113.0/24", gone: netip.MustParseAddr("198.51.100.77"),
+	cover:    []string{"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5", "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1"},
+	unrouted: unix.ENETUNREACH,
+}
+
+var underlayV6 = underlayFamily{
+	name: "IPv6", peer: netip.MustParseAddr("2001:db8:e::9"), neighbor: netip.MustParseAddr("2001:db8:e::a"),
+	narrow: "2001:db8:e::/64", wide: "2001:db8:e::/48", gone: netip.MustParseAddr("2001:db8:a::77"),
+	cover:    []string{"100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1"},
+	unrouted: unix.EHOSTUNREACH,
+}
+
+var underlayFamilies = []underlayFamily{underlayV4, underlayV6}
 
 // selectedHub is a hub whose sends name the interface selection answers
 func selectedHub(t *testing.T, selection Selection) *Hub {
@@ -684,6 +771,145 @@ func TestDarwinUnderlayReleasesTheRouteALateSendCached(t *testing.T) {
 			}
 		})
 	}
+}
+
+// a send on the shared socket leaves by the interface it names, whatever a send before it to the same peer address named
+// U and X each hold the peer's route scoped to them, and the selection names U
+// each arm's datagrams go back to back and are read only once all went, so the host's own route changes have the least time
+// to make the route a send cached unusable before the next send
+func TestDarwinSharedSocketSendLeavesTheInterfaceItNames(t *testing.T) {
+	requireHostNet(t, "test utuns")
+	u, x := newTestTUN(t, uplinkV4, uplinkV6), newTestTUN(t, secondV4, secondV6)
+	for _, family := range underlayFamilies {
+		t.Run(family.name, func(t *testing.T) {
+			u.route(t, family.wide, true)
+			x.route(t, family.wide, true)
+			peer := netip.AddrPortFrom(family.peer, underlayPort)
+			// one send of an arm, to to from pin or naming U where pin is invalid, which must come out of want from the address want holds
+			type send struct {
+				to   netip.AddrPort
+				pin  netip.Addr
+				want *testTUN
+			}
+			selected := send{peer, netip.Addr{}, u}
+			onX := x.address(family.peer)
+			for _, arm := range []struct {
+				name  string
+				sends []send
+			}{
+				{"a pin no interface holds after a send naming U", []send{selected, {peer, family.gone, u}}},
+				{"a pin on X between sends naming U", []send{selected, {peer, onX, x}, selected}},
+				{"a pin on X to another port between sends naming U", []send{selected, {netip.AddrPortFrom(family.peer, underlayPort+1), onX, x}, selected}},
+			} {
+				t.Run(arm.name, func(t *testing.T) {
+					hub := selectedHub(t, newTestSelection(u.index))
+					drainAll(u, x)
+					datagrams := make([]datagram, len(arm.sends))
+					endpoints := make([]*darwinEndpoint, len(arm.sends))
+					for i, s := range arm.sends {
+						endpoints[i] = &darwinEndpoint{addr: s.to}
+						if s.pin.IsValid() {
+							endpoints[i] = pinnedEndpoint(s.to, s.pin, 0)
+						}
+						datagrams[i] = datagram{s.to, fmt.Appendf(nil, "%s, %s, send %d", family.name, arm.name, i)}
+						if err := hub.bind.Send([][]byte{datagrams[i].payload}, endpoints[i]); err != nil {
+							t.Fatalf("send %d to %s from %s: %v", i, s.to, s.pin, err)
+						}
+					}
+					got := departuresOf(arrivalBudget, datagrams, u, x)
+					for i, s := range arm.sends {
+						if s.pin == family.gone && !endpoints[i].unpinned.Load() {
+							t.Errorf("send %d to %s kept the pin %s, which no interface holds", i, s.to, family.gone)
+						}
+						leftOnce(t, got, datagrams[i], s.want, s.want.address(family.peer))
+					}
+				})
+			}
+		})
+	}
+}
+
+// a send after a new selection generation naming the same interface leaves by the route the kernel looks up then, not by the one the socket cached before
+// the new route is a narrower one on U, which moves the kernel's generation of its family as any route added does, rtrequest in bsd/net/route.c
+// IPv4 takes a source from its route's address, which the narrow route gives as a second address U holds,
+// and IPv6 fragments a datagram that may fragment past its route's MTU, which the wide route lowers and the narrow one leaves at U's
+// an IPv6 datagram with IPV6_DONTFRAG meets the interface's MTU alone, ip6_fragment_packet in bsd/netinet6/ip6_output.c
+func TestDarwinSharedSocketTakesANewRouteOnTheSameInterface(t *testing.T) {
+	requireHostNet(t, "test utuns")
+	u := newTestTUN(t, uplinkV4, uplinkV6)
+	hostCommand(t, "ifconfig", u.name, "inet", uplinkAliasV4, uplinkAliasV4, "netmask", "255.255.255.255", "alias")
+	hostCommand(t, "ifconfig", u.name, "mtu", strconv.Itoa(sameInterfaceMTU))
+	// sender is a selection naming U and a send on its hub's shared socket to peer, which drains U first
+	// an IPv6 peer's datagrams may fragment
+	sender := func(t *testing.T, peer netip.Addr) (*testSelection, func(payload []byte) (datagram, error)) {
+		selection := newTestSelection(u.index)
+		bind := selectedHub(t, selection).bind.(*darwinBind)
+		ep := &darwinEndpoint{addr: netip.AddrPortFrom(peer, underlayPort)}
+		ep.fragments.Store(peer.Is6())
+		socket := bind.v4
+		if peer.Is6() {
+			socket = bind.v6
+		}
+		return selection, func(payload []byte) (datagram, error) {
+			drainAll(u)
+			return datagram{ep.addr, payload}, bind.sendFrom(socket, payload, ep)
+		}
+	}
+	t.Run("IPv4", func(t *testing.T) {
+		family := underlayV4
+		u.route(t, family.wide, true)
+		selection, send := sender(t, family.peer)
+		before, err := send([]byte("IPv4, before the new route"))
+		if err != nil {
+			t.Fatalf("the send to %s before the new route: %v", before.to, err)
+		}
+		leftOnce(t, departuresOf(arrivalBudget, []datagram{before}, u), before, u, u.v4)
+		u.route(t, family.narrow, true, "-ifa", uplinkAliasV4)
+		selection.move(u.index)
+		after, err := send([]byte("IPv4, after the new route"))
+		if err != nil {
+			t.Fatalf("the send to %s after the new route: %v", after.to, err)
+		}
+		leftOnce(t, departuresOf(arrivalBudget, []datagram{after}, u), after, u, netip.MustParseAddr(uplinkAliasV4))
+	})
+	t.Run("IPv6", func(t *testing.T) {
+		family := underlayV6
+		u.route(t, family.wide, true, "-mtu", strconv.Itoa(sameInterfaceRouteMTU))
+		selection, send := sender(t, family.peer)
+		before, err := send(append([]byte("IPv6, before the new route"), make([]byte, sameInterfacePayload)...))
+		if err != nil {
+			t.Fatalf("the send of %d bytes to %s before the new route: %v", len(before.payload), before.to, err)
+		}
+		if fragments, whole := u.fragmentsOf(before); fragments < 2 || whole {
+			t.Fatalf("the send of %d bytes to %s past the wide route's MTU of %d came out of U in %d fragments, whole %v, want fragmented", len(before.payload), before.to, sameInterfaceRouteMTU, fragments, whole)
+		}
+		u.route(t, family.narrow, true)
+		selection.move(u.index)
+		after, err := send(append([]byte("IPv6, after the new route"), make([]byte, sameInterfacePayload)...))
+		if err != nil {
+			t.Fatalf("the send of %d bytes to %s after the new route: %v", len(after.payload), after.to, err)
+		}
+		leftOnce(t, departuresOf(arrivalBudget, []datagram{after}, u), after, u, u.v6)
+	})
+}
+
+// fragmentsOf reads u until two IPv6 fragments to d's address came out or arrivalBudget passed, then for tunQuiet more,
+// and answers how many came out and whether d came out whole
+func (u *testTUN) fragmentsOf(d datagram) (fragments int, whole bool) {
+	fragment := func(raw []byte) bool {
+		return len(raw) >= 40 && raw[0]>>4 == 6 && raw[6] == unix.IPPROTO_FRAGMENT && netip.AddrFrom16([16]byte(raw[24:40])) == d.to.Addr()
+	}
+	got := departures(arrivalBudget, func(raw []byte) bool { return d.in(raw) || fragment(raw) }, func(got []departure) bool {
+		return len(got) >= 2
+	}, u)
+	for _, out := range got {
+		if d.in(out.packet) {
+			whole = true
+		} else {
+			fragments++
+		}
+	}
+	return fragments, whole
 }
 
 // goneErrnos answer a send scoped to an interface that is gone
