@@ -2438,6 +2438,11 @@ func TestMovedSessionWakesTheReconciler(t *testing.T) {
 // set only in its own serve's release.
 func TestEndedSessionWakesTheReconciler(t *testing.T) {
 	alpha, bravo := newLoopbackMesh(t)
+	// alpha answers and never dials, so it serves no session a simultaneous open resolves away, whose end's wake would read the one
+	// bravo ends among the live sends between that one's mux closing and its release
+	quiet := *alpha.cfg
+	quiet.Dial.To = nil
+	alpha.client.cfg.Store(&quiet)
 	// emptied counts the wakes that found alpha's set empty, and stale those that found an ended session in it
 	var emptied, stale atomic.Int32
 	alpha.client.SetReconciler(Reconciler{Endpoints: func() {
