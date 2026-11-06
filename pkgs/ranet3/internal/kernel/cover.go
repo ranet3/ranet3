@@ -11,10 +11,13 @@ import (
 )
 
 // zeroFreeCover holds, per family, the prefixes a route holding its family's
-// zero address is installed as where the platform asks for it. Together the
-// members hold every address but 0.0.0.0/8 and ::/8, and none holds its
-// family's zero address, so a socket scoped to an interface keeps falling back
-// to the host's own default there.
+// zero address is installed as where the platform asks for it, IPv6's
+// holding NAT64's two prefixes inside ::/8. The hole is the addresses no
+// member holds: 0.0.0.0/8, and ::/8 less NAT64's two prefixes. No member
+// holds its family's zero address, so a socket scoped to an interface keeps
+// falling back to the host's own default there. While darwin's kill switch is
+// asked for, its rejects hold these keys, and each member goes in as its two
+// halves (splitAtKeys).
 // Measured by TestZMeasureTheZeroFreeCoverKeepsABoundSocket.
 var zeroFreeCover = map[bool][]netip.Prefix{
 	true: {
@@ -28,6 +31,7 @@ var zeroFreeCover = map[bool][]netip.Prefix{
 		netip.MustParsePrefix("400::/6"), netip.MustParsePrefix("800::/5"),
 		netip.MustParsePrefix("1000::/4"), netip.MustParsePrefix("2000::/3"),
 		netip.MustParsePrefix("4000::/2"), netip.MustParsePrefix("8000::/1"),
+		netip.MustParsePrefix("64:ff9b::/96"), netip.MustParsePrefix("64:ff9b:1::/48"),
 	},
 }
 
@@ -55,7 +59,7 @@ func zeroRoute(r Route) bool {
 }
 
 // membersOf is the members of destination's family's cover that lie within
-// it, none for a destination inside 0.0.0.0/8 or ::/8
+// it, none for a destination inside the hole
 func membersOf(destination netip.Prefix) []netip.Prefix {
 	var out []netip.Prefix
 	for _, member := range zeroFreeCover[destination.Addr().Is4()] {
@@ -66,8 +70,8 @@ func membersOf(destination netip.Prefix) []netip.Prefix {
 	return out
 }
 
-// memberless is a zero route inside 0.0.0.0/8 or ::/8, which a cover installs
-// as nothing
+// memberless is a zero route inside the hole, which a cover
+// installs as nothing
 func memberless(r Route) bool { return zeroRoute(r) && len(membersOf(r.Destination)) == 0 }
 
 // coverDefaults replaces each zero route of families with the cover's members
@@ -80,7 +84,10 @@ func memberless(r Route) bool { return zeroRoute(r) && len(membersOf(r.Destinati
 // itself (RFC 8966 Appendix C: the protocol keeps the route, only the kernel
 // holds the cover). unmet names the routes that withhold no member: those the
 // kernel does not hold, or holds scoped apart from row L6, since row L6 scopes
-// the member at the route's own key as well.
+// the member at the route's own key as well. The members are whole here, and
+// a pass that splits them at the switch's keys splits them after this, so
+// withheld judges a whole member and Stats.Members counts the halves that went
+// in.
 func coverDefaults(desired []Route, families []Family, unmet func(Route) bool) []Route {
 	covered := func(r Route) bool { return zeroRoute(r) && slices.Contains(families, familyOf(r.Destination.Addr())) }
 	if !slices.ContainsFunc(desired, covered) {
@@ -114,11 +121,12 @@ func coverDefaults(desired []Route, families []Family, unmet func(Route) bool) [
 
 // withheld reports a route of routes unmet does not name, of length 1 up to
 // the member's own, containing member. A zero route is installed as members
-// and withholds nothing. Every member holds one set bit, at its own length, so
-// a shorter route containing it holds the zero address, and is a zero route or
-// a hold or a source route, which scopeRoute scopes: in effect only a route at
-// the member's own key withholds it. The range keeps this correct where a
-// shorter route goes unscoped.
+// and withholds nothing. A member holding one set bit, at its own length, is
+// contained by no shorter route but one holding the zero address, a zero
+// route or a hold or a source route, which scopeRoute scopes, so in effect
+// only a route at its own key withholds it. The range keeps this correct where
+// a shorter route goes unscoped, and withholds a NAT64 member beneath any
+// shorter route of the mesh's containing it.
 func withheld(member netip.Prefix, routes []Route, unmet func(Route) bool) bool {
 	return slices.ContainsFunc(routes, func(r Route) bool {
 		bits := r.Destination.Bits()

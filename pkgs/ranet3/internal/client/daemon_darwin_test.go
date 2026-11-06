@@ -60,7 +60,7 @@ const otherProgramIndex = 425
 var (
 	capturingPrefix = netip.MustParsePrefix("::/0")
 	// halfCapture takes the machine too and holds ::, so under cap.exit it
-	// goes in as the members it contains, the first seven of ipv6Cover
+	// goes in as the members it contains, all of ipv6Cover but 8000::/1
 	halfCapture    = netip.MustParsePrefix("::/1")
 	ordinaryPrefix = netip.MustParsePrefix("2001:db8:2::/64")
 	// ipv6Cover holds the members cap.exit installs capturingPrefix as
@@ -69,6 +69,7 @@ var (
 		netip.MustParsePrefix("400::/6"), netip.MustParsePrefix("800::/5"),
 		netip.MustParsePrefix("1000::/4"), netip.MustParsePrefix("2000::/3"),
 		netip.MustParsePrefix("4000::/2"), netip.MustParsePrefix("8000::/1"),
+		netip.MustParsePrefix("64:ff9b::/96"), netip.MustParsePrefix("64:ff9b:1::/48"),
 	}
 	// witnessPrefix is announced beside a route the daemon should hold back,
 	// so that its arrival says a pass has run over both (see daemon.heldBack).

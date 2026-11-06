@@ -1435,8 +1435,24 @@ func TestDarwinInstallsTheCoverUnscopedInACoveredFamily(t *testing.T) {
 		{Destination: prefix("0.0.0.0/0")},
 		{Destination: prefix("::/0"), Metric: defaultIPv6Metric},
 	}, families, plat.scopes)
-	if len(desired) != 16 {
-		t.Fatalf("the cover is %d routes, want 16: %v", len(desired), desired)
+	// every address but the hole, 0.0.0.0/8 and ::/8, with NAT64's two prefixes
+	// inside ::/8
+	var want []Route
+	for _, member := range []string{
+		"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5",
+		"16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1",
+	} {
+		want = append(want, Route{Destination: prefix(member), Cover: true})
+	}
+	for _, member := range []string{
+		"100::/8", "200::/7", "400::/6", "800::/5",
+		"1000::/4", "2000::/3", "4000::/2", "8000::/1",
+		"64:ff9b::/96", "64:ff9b:1::/48",
+	} {
+		want = append(want, Route{Destination: prefix(member), Metric: defaultIPv6Metric, Cover: true})
+	}
+	if !slices.Equal(desired, want) {
+		t.Fatalf("the cover is %v, want %v", desired, want)
 	}
 	var entries []dumpEntry
 	for _, member := range desired {

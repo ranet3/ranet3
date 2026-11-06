@@ -311,3 +311,117 @@ func TestSwitchOutlivesAFailedStopAndGoesAtAnOperatorsStop(t *testing.T) {
 		t.Errorf("the operator's stop left rejects at %v", held)
 	}
 }
+
+// routesAt is each route the fake holds at destination
+func routesAt(fake *fakeKernel, destinations ...string) []Route {
+	var out []Route
+	for _, r := range fake.snapshot() {
+		for _, destination := range destinations {
+			if r.Destination == prefix(destination) {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
+// An announced 128.0.0.0/1 in mode 2 goes in as 128.0.0.0/2 and 192.0.0.0/2
+// while the switch is asked for, whole once it is not, and the reject takes
+// its key
+func TestSwitchSplitsARouteAtAKey(t *testing.T) {
+	reconciler, table, k := rejectingHarness(t, &ExitMode{Fallback: FallbackNone}, coverAddresses...)
+	table.Set(netip.Prefix{}, prefix("128.0.0.0/1"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []Route{{Destination: prefix("128.0.0.0/2")}, {Destination: prefix("192.0.0.0/2")}}
+	if got := routesAt(k.fakeKernel, "128.0.0.0/1", "128.0.0.0/2", "192.0.0.0/2"); !slices.Equal(got, want) || switchReads(reconciler) != string(FallbackPassing) {
+		t.Errorf("under the switch the kernel holds %v and the switch reads %s, want %v and passing", got, switchReads(reconciler), want)
+	}
+	if err := reconciler.SetTable(reconciler.table.WithMode(&ExitMode{Fallback: FallbackUplink}), coverOverlay, nil); err != nil {
+		t.Fatal(err)
+	}
+	reconciler.adopt()
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want = []Route{{Destination: prefix("128.0.0.0/1")}}
+	if got := routesAt(k.fakeKernel, "128.0.0.0/1", "128.0.0.0/2", "192.0.0.0/2"); !slices.Equal(got, want) {
+		t.Errorf("with the switch off the kernel holds %v, want %v", got, want)
+	}
+}
+
+// Under the switch a member row L6 scopes beneath the host's 64.0.0.0/2 goes
+// in whole, keyed apart from the reject, and every other member as its
+// halves, 15 IPv4 routes of the cover. With the switch off every member goes
+// in whole.
+func TestSwitchKeepsAScopedMemberWhole(t *testing.T) {
+	for _, switched := range []bool{true, false} {
+		mode := &ExitMode{Fallback: FallbackUplink}
+		if switched {
+			mode = &ExitMode{Fallback: FallbackNone}
+		}
+		reconciler, table, k := rejectingHarness(t, mode, coverAddresses...)
+		reconciler.rt.Selection = newFakeSelection(hostRoute{destination: prefix("64.0.0.0/2"), index: 2})
+		table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+		if err := reconciler.reconcile(); err != nil {
+			t.Fatal(err)
+		}
+		member := Route{Destination: prefix("64.0.0.0/2"), Cover: true, Scoped: true}
+		v4, _ := coverMembers(k.fakeKernel)
+		want := map[bool]int{true: 15, false: 8}[switched]
+		if !k.has(member) || v4 != want {
+			t.Errorf("with the switch asked for %v the cover is %d IPv4 routes holding %+v %v, want %d: %v", switched, v4, member, k.has(member), want, k.snapshot())
+		}
+	}
+}
+
+// A mesh route at a half's key that row L6 scopes beneath the host's route
+// there withholds that half under the switch, as it withholds the whole member
+// at its own key, and the other half goes in
+func TestSwitchWithholdsAHalfUnderAScopedRouteAtItsKey(t *testing.T) {
+	reconciler, table, k := rejectingHarness(t, &ExitMode{Fallback: FallbackNone}, coverAddresses...)
+	reconciler.rt.Selection = newFakeSelection(hostRoute{destination: prefix("128.0.0.0/2"), index: 2})
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+	table.Set(netip.Prefix{}, prefix("128.0.0.0/2"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	want := []Route{{Destination: prefix("128.0.0.0/2"), Scoped: true}, {Destination: prefix("192.0.0.0/2"), Cover: true}}
+	if got := routesAt(k.fakeKernel, "128.0.0.0/1", "128.0.0.0/2", "192.0.0.0/2"); !slices.Equal(got, want) {
+		t.Errorf("the kernel holds %v, want %v", got, want)
+	}
+}
+
+// A half gives way to a route of ours at its own key, so one route goes in at
+// that key, and the other half goes in
+func TestSplitHalfGivesWayToARouteOfOursAtItsKey(t *testing.T) {
+	member := Route{Destination: prefix("128.0.0.0/1"), Cover: true}
+	announced := Route{Destination: prefix("128.0.0.0/2"), Metric: 7}
+	got := splitAtKeys([]Route{member, announced}, rejectKeys, func(Route) bool { return false })
+	want := []Route{announced, {Destination: prefix("192.0.0.0/2"), Cover: true}}
+	if !slices.Equal(got, want) {
+		t.Errorf("the split of %v beside %v is %v, want %v", member, announced, got, want)
+	}
+}
+
+// Under the switch an endpoint in the overlay that the host routes by its
+// 128.0.0.0/1 is cut out of the overlay's piece of the half that holds it, and
+// the hole names that half, which goes in in place of the member, not the
+// member
+func TestSwitchCutsAnEndpointOutOfAHalf(t *testing.T) {
+	reconciler, table, _ := rejectingHarness(t, &ExitMode{Fallback: FallbackNone}, coverAddresses...)
+	endpoint := netip.MustParseAddr("192.0.2.9")
+	reconciler.rt.Selection = newFakeSelection(hostRoute{destination: prefix("128.0.0.0/1"), index: 2})
+	reconciler.rt.Underlay = func() []netip.Addr { return []netip.Addr{endpoint} }
+	table.Set(netip.Prefix{}, prefix("0.0.0.0/0"), nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	half := prefix("192.0.0.0/2")
+	pieces := without(prefix("192.0.2.0/24"), hostPrefixes(endpoint))
+	slices.SortFunc(pieces, comparePrefixes)
+	if holes := reconciler.Stats().Holes; len(holes) != 1 || holes[0].Route != half || !slices.Equal(holes[0].Endpoints, []netip.Addr{endpoint}) || !slices.Equal(holes[0].Pieces, pieces) {
+		t.Errorf("the pass reports the holes %+v, want %s cut around %s into %v", holes, half, endpoint, pieces)
+	}
+}

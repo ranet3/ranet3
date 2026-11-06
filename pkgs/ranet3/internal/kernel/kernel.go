@@ -747,12 +747,14 @@ type Reconciler struct {
 	// exitStatus is cap.exit's mode as the last pass that judged it ran it, nil in mode off, and belongs to the same goroutine
 	// a pass replaces it whole, so a Stats holding it reads one pass
 	exitStatus *ExitStatus
-	// fallbackFault is why the table ranet3_fallback did not read back as
-	// written at the last pass that asked for it, empty where it did, and
-	// fallbackClear says a pass deleted the table, or found none, since the
-	// last that asked for it. Both belong to the pass's goroutine.
+	// fallbackFault is why the switch did not read back as written at the
+	// last pass that asked for it, empty where it did, fallbackClear says a
+	// pass deleted the switch, or found none, since the last that asked for
+	// it, and switchAsked says the last pass that judged the mode asked for
+	// it. Each belongs to the pass's goroutine.
 	fallbackFault string
 	fallbackClear bool
+	switchAsked   bool
 	// fallbackDropped and fallbackBytes are the table's drops as the last read that succeeded found them, zero once a pass deletes or rewrites the table,
 	// and fallbackDropsRead says a read of this process has succeeded, the pass's goroutine's
 	fallbackDropped, fallbackBytes uint64
@@ -770,7 +772,7 @@ type Reconciler struct {
 // and did not get: one the platform cannot represent, one whose key
 // another writer or a route of this reconciler's that has not left yet
 // holds, a cover member left out with the rest of
-// its family, or a zero route inside 0.0.0.0/8 or ::/8, of which a cover
+// its family, or a zero route inside the cover's hole, of which a cover
 // installs nothing. A prefix the mesh has and the kernel does not
 // is explained by Skipped or by Err and by nothing else.
 type Stats struct {
@@ -1276,6 +1278,9 @@ func (r *Reconciler) reconcile() error {
 	_, asked := r.fallbackFor(exit)
 	var fallback *FallbackStatus
 	var fallbackErr error
+	if judged {
+		r.switchAsked = asked
+	}
 	if judged && !asked {
 		fallback, fallbackErr = r.applyFallback(exit)
 	}
@@ -1488,8 +1493,11 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	}
 	unmet := func(route Route) bool { return apart(route) || unheld[route] }
 	endpoints := r.endpoints()
+	// the halves go in after withheld has judged the whole members, and
+	// before the holes are cut out of them
+	keys := r.splitKeys()
 	cut := func(routes []Route) ([]Route, []Hole) {
-		return cutHoles(routes, scoped, endpoints, hosts, r.rt.Overlay)
+		return cutHoles(splitAtKeys(routes, keys, scoped), scoped, endpoints, hosts, r.rt.Overlay)
 	}
 	bare := desired
 	// After the capture grace check, which judges the zero route whole: a
@@ -1724,9 +1732,9 @@ func (r *Reconciler) reportCover(now []Family) {
 }
 
 // reportMemberless returns the zero routes of desired in families a cover
-// installs as nothing, those inside ::/8, and warns once for each while the
-// mesh keeps announcing it. desired holds none inside 0.0.0.0/8, a class
-// schema.Unroutable names.
+// installs as nothing, those inside ::/8 holding no NAT64 prefix, and warns
+// once for each while the mesh keeps announcing it. desired holds none inside
+// 0.0.0.0/8, a class schema.Unroutable names.
 func (r *Reconciler) reportMemberless(desired []Route, families []Family) []Route {
 	var out []Route
 	reported := make(map[Route]bool, len(r.memberless))
@@ -1738,7 +1746,7 @@ func (r *Reconciler) reportMemberless(desired []Route, families []Family) []Rout
 		if !r.memberless[route] {
 			slog.Warn("kernel is not installing a route its cover holds nothing of",
 				"destination", route.Destination,
-				"detail", "the cover leaves ::/8 to the host, and every address of the route lies there")
+				"detail", "the cover leaves ::/8 but NAT64's prefixes to the host, and every address of the route lies there")
 			r.refusedAnew = true
 		}
 		reported[route] = true

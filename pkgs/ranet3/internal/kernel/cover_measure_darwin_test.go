@@ -31,8 +31,9 @@ var (
 	measuredCover6 = []string{
 		"100::/8", "200::/7", "400::/6", "800::/5",
 		"1000::/4", "2000::/3", "4000::/2", "8000::/1",
+		"64:ff9b::/96", "64:ff9b:1::/48",
 	}
-	measuredHole = []string{"0.1.2.3", "1::1", "64:ff9b::c000:201"}
+	measuredHole = []string{"0.1.2.3", "1::1", "64:ff9c::c000:201"}
 )
 
 // Every member goes in unscoped out of a test utun with no default scoped to

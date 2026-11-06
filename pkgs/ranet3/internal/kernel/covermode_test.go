@@ -52,7 +52,7 @@ func wantZeroRoutes(t *testing.T, what string, kernel *coveringKernel, covered .
 	}{{FamilyIPv4, v4, zero4}, {FamilyIPv6, v6, zero6}} {
 		want, held := 0, !slices.Contains(covered, c.family)
 		if !held {
-			want = 8
+			want = len(zeroFreeCover[c.family == FamilyIPv4])
 		}
 		if c.members != want || kernel.has(scopedAs(c.zero)) != held || kernel.has(c.zero) {
 			t.Errorf("%s: %s holds %d members and its zero route scoped %v, unscoped %v, want %d members and the zero route scoped %v: %v",

@@ -65,12 +65,16 @@ func coverCases() hegel.Generator[coverCase] {
 	})
 }
 
+// nat64Prefixes are the well-known and the local-use NAT64 prefixes, which lie
+// inside ::/8 and which the cover holds all the same
+var nat64Prefixes = []netip.Prefix{netip.MustParsePrefix("64:ff9b::/96"), netip.MustParsePrefix("64:ff9b:1::/48")}
+
 // inHole is an address no member holds, which stays on the host's own route.
 func inHole(a netip.Addr) bool {
 	if a.Is4() {
 		return netip.MustParsePrefix("0.0.0.0/8").Contains(a)
 	}
-	return netip.MustParsePrefix("::/8").Contains(a)
+	return netip.MustParsePrefix("::/8").Contains(a) && !slices.ContainsFunc(nat64Prefixes, func(p netip.Prefix) bool { return p.Contains(a) })
 }
 
 // longest is the unscoped route an unbound lookup of a takes.
@@ -152,8 +156,8 @@ func addressCount(p netip.Prefix) *big.Int {
 // For every route P holding its family's zero address, the cover installs it
 // as members that hold no zero address, lie within P and overlap no other, and
 // that with the hole cover exactly P: every address of P outside 0.0.0.0/8 or
-// ::/8 lies in one member, and the members hold as many addresses as P holds
-// outside the hole.
+// ::/8, or inside a NAT64 prefix, lies in one member, and the members hold as
+// many addresses as P holds outside the hole.
 func TestCoverMembersAreAZeroRouteLessTheHole(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		v6 := hegel.Draw(ht, hegel.Booleans())
@@ -187,22 +191,36 @@ func TestCoverMembersAreAZeroRouteLessTheHole(t *testing.T) {
 		} else {
 			want.SetInt64(0)
 		}
+		for _, nat64 := range nat64Prefixes {
+			if v6 && p.Bits() <= nat64.Bits() && p.Contains(nat64.Addr()) {
+				want.Add(want, addressCount(nat64))
+			}
+		}
 		if total.Cmp(want) != 0 {
-			ht.Fatalf("the members of %s hold %s addresses, want %s, the addresses of %s outside %s", p, total, want, p, hole)
+			ht.Fatalf("the members of %s hold %s addresses, want %s, the addresses of %s outside %s but NAT64's", p, total, want, p, hole)
 		}
 		raw := hegel.Draw(ht, hegel.IPAddresses().IPv4()).AsSlice()
 		if v6 {
 			raw = hegel.Draw(ht, hegel.IPAddresses().IPv6()).AsSlice()
 		}
 		raw[0] = hegel.Draw(ht, pbt.Spanning[uint8](0, 255))
+		if v6 && hegel.Draw(ht, hegel.Booleans()) {
+			// an address in a NAT64 prefix, or one bit off it
+			nat64 := nat64Prefixes[hegel.Draw(ht, pbt.Spanning(0, len(nat64Prefixes)-1))]
+			copy(raw, nat64.Addr().AsSlice()[:nat64.Bits()/8])
+			if hegel.Draw(ht, hegel.Booleans()) {
+				bit := hegel.Draw(ht, pbt.Spanning(0, nat64.Bits()-1))
+				raw[bit/8] ^= 0x80 >> (bit % 8)
+			}
+		}
 		// the bits P fixes are all zero, and the rest are the drawn address's
 		for i := range p.Bits() {
 			raw[i/8] &^= 0x80 >> (i % 8)
 		}
 		a, _ := netip.AddrFromSlice(raw)
 		holding := slices.ContainsFunc(installed, func(r Route) bool { return r.Destination.Contains(a) })
-		if hole.Contains(a) == holding {
-			ht.Fatalf("%s within %s lies in the hole %v and in a member %v\nmembers %v", a, p, hole.Contains(a), holding, installed)
+		if inHole(a) == holding {
+			ht.Fatalf("%s within %s lies in the hole %v and in a member %v\nmembers %v", a, p, inHole(a), holding, installed)
 		}
 	})
 }

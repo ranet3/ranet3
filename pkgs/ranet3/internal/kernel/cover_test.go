@@ -66,9 +66,14 @@ func TestPlainDefaultBecomesItsZeroFreeCover(t *testing.T) {
 			t.Errorf("%s did not carry the default's metric: %+v", r.Destination, r)
 		}
 	}
-	for _, hole := range []string{"0.1.2.3", "1::1", "64:ff9b::c000:201"} {
+	for _, hole := range []string{"0.1.2.3", "1::1", "64:ff9c::c000:201"} {
 		if slices.ContainsFunc(got, func(r Route) bool { return r.Destination.Contains(addr(hole)) }) {
 			t.Errorf("a member holds %s, which the hole leaves on the host", hole)
+		}
+	}
+	for _, nat64 := range []string{"64:ff9b::c000:201", "64:ff9b:1::c000:201"} {
+		if !slices.ContainsFunc(got, func(r Route) bool { return r.Destination.Contains(addr(nat64)) }) {
+			t.Errorf("no member holds %s, which linux's exit carries", nat64)
 		}
 	}
 }
@@ -290,11 +295,11 @@ func TestCoverIsInstalledAndWithdrawnWholeAcrossTheGate(t *testing.T) {
 		members int
 	}{
 		{0, 0, 0},
-		{time.Second, 1, 16},
-		{2 * time.Second, 0, 16},
-		{10 * time.Second, 0, 16},
+		{time.Second, 1, len(rejectKeys)},
+		{2 * time.Second, 0, len(rejectKeys)},
+		{10 * time.Second, 0, len(rejectKeys)},
 		{11 * time.Second, 0, 0},
-		{12 * time.Second, 1, 16},
+		{12 * time.Second, 1, len(rejectKeys)},
 	} {
 		clock, live = start.Add(step.at), step.live
 		if err := reconciler.reconcile(); err != nil {
@@ -344,8 +349,8 @@ func TestRefusedMemberLeavesNoPartialCover(t *testing.T) {
 		if err := reconciler.reconcile(); err != nil {
 			t.Fatal(err)
 		}
-		if v4, v6 := coverMembers(fake); v4 != 0 || v6 != 8 {
-			t.Errorf("pass %d leaves %d IPv4 and %d IPv6 members, want none and 8", pass, v4, v6)
+		if v4, v6 := coverMembers(fake); v4 != 0 || v6 != len(zeroFreeCover[false]) {
+			t.Errorf("pass %d leaves %d IPv4 and %d IPv6 members, want none and %d", pass, v4, v6, len(zeroFreeCover[false]))
 		}
 		stats := reconciler.Stats()
 		if !slices.Equal(stats.Cover, []Family{FamilyIPv6}) || stats.Skipped != 8 {
@@ -432,8 +437,8 @@ func TestCoverRefusalStaysWithinTheCover(t *testing.T) {
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if v4, v6 := coverMembers(fake); v4 != 0 || v6 != 8 {
-		t.Errorf("the kernel holds %d IPv4 and %d IPv6 members, want none and 8", v4, v6)
+	if v4, v6 := coverMembers(fake); v4 != 0 || v6 != len(zeroFreeCover[false]) {
+		t.Errorf("the kernel holds %d IPv4 and %d IPv6 members, want none and %d", v4, v6, len(zeroFreeCover[false]))
 	}
 	if !fake.has(Route{Destination: prefix("198.51.100.0/24")}) {
 		t.Error("a route outside the cover left with its family's cover")
@@ -457,8 +462,8 @@ func TestRefusedIPv6MemberLeavesNoPartialCover(t *testing.T) {
 		if v4, v6 := coverMembers(fake); v4 != 8 || v6 != 0 {
 			t.Errorf("pass %d leaves %d IPv4 and %d IPv6 members, want 8 and none", pass, v4, v6)
 		}
-		if stats := reconciler.Stats(); !slices.Equal(stats.Cover, []Family{FamilyIPv4}) || stats.Skipped != 8 {
-			t.Errorf("pass %d reports the cover %v with %d skipped, want IPv4 alone and the 8 IPv6 members skipped", pass, stats.Cover, stats.Skipped)
+		if stats := reconciler.Stats(); !slices.Equal(stats.Cover, []Family{FamilyIPv4}) || stats.Skipped != len(zeroFreeCover[false]) {
+			t.Errorf("pass %d reports the cover %v with %d skipped, want IPv4 alone and the %d IPv6 members skipped", pass, stats.Cover, stats.Skipped, len(zeroFreeCover[false]))
 		}
 		if nowAdds, nowDels := fake.counts(); pass == 1 && (nowAdds != adds || nowDels != dels) {
 			t.Errorf("a pass with the member still refused added %d and deleted %d routes", nowAdds-adds, nowDels-dels)
@@ -586,9 +591,9 @@ func TestRefusedRouteAtAMemberKeyLeavesNoPartialCover(t *testing.T) {
 				if test.family == FamilyIPv6 {
 					members, kept = v6, v4
 				}
-				if members != 0 || kept != 8 {
-					t.Errorf("pass %d leaves %d members of %s beside the refused %s and %d of %s, want none and 8",
-						pass, members, test.family, test.upper, kept, test.kept)
+				if whole := len(zeroFreeCover[test.kept == FamilyIPv4]); members != 0 || kept != whole {
+					t.Errorf("pass %d leaves %d members of %s beside the refused %s and %d of %s, want none and %d",
+						pass, members, test.family, test.upper, kept, test.kept, whole)
 				}
 				stats := reconciler.Stats()
 				if !slices.Equal(stats.Cover, []Family{test.kept}) {
@@ -616,9 +621,10 @@ func TestRefusedRouteAtAMemberKeyLeavesNoPartialCover(t *testing.T) {
 			if test.family == FamilyIPv6 {
 				members = v6
 			}
-			if held, member := heldAt(kernel.fakeKernel, test.upper); !held || member || members != 7 {
-				t.Errorf("once %s is free the kernel holds it %v as a member %v beside %d members, want the real route beside 7",
-					test.upper, held, member, members)
+			rest := len(zeroFreeCover[test.family == FamilyIPv4]) - 1
+			if held, member := heldAt(kernel.fakeKernel, test.upper); !held || member || members != rest {
+				t.Errorf("once %s is free the kernel holds it %v as a member %v beside %d members, want the real route beside %d",
+					test.upper, held, member, members, rest)
 			}
 		})
 	}
@@ -808,7 +814,7 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 				{slices.Concat(v4, v6), []string{"8000::/1"}},
 				{slices.Concat([]string{"::/0"}, v4, v6), []string{"1.0.0.0/8", "100::/8"}},
 			},
-			5,
+			7,
 		},
 		{
 			"IPv6 member the pass would add a pass later",
@@ -817,7 +823,7 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 				{slices.Concat(v4, v6), []string{"8000::/1"}},
 				{slices.Concat([]string{"::/0"}, v4, v6), []string{"100::/8"}},
 			},
-			5,
+			7,
 		},
 		{
 			"IPv6 member beside a member refused with its route",
@@ -825,7 +831,7 @@ func TestWithheldMemberIsNotSkippedWithItsFamily(t *testing.T) {
 				{slices.Concat([]string{"::/0"}, v6), []string{"2000::/3", "8000::/1"}},
 				{slices.Concat([]string{"::/0"}, v4, v6), []string{"8000::/1"}},
 			},
-			7,
+			9,
 		},
 		{
 			"IPv4 member an earlier pass installed",
@@ -907,12 +913,13 @@ func TestZeroRouteInsideTheHoleIsSkippedAndLoggedOnce(t *testing.T) {
 		if fake.has(Route{Destination: prefix("::/12"), Metric: defaultIPv6Metric}) || fake.has(Route{Destination: prefix("::/16"), Metric: defaultIPv6Metric}) {
 			t.Errorf("pass %d installed a route inside the hole: %v", pass, fake.snapshot())
 		}
-		if members, _ := coverHeld(fake); members != 16 {
-			t.Errorf("pass %d leaves the cover %d members beside the routes inside the hole, want 16", pass, members)
+		members := len(rejectKeys)
+		if held, _ := coverHeld(fake); held != members {
+			t.Errorf("pass %d leaves the cover %d members beside the routes inside the hole, want %d", pass, held, members)
 		}
 		stats := reconciler.Stats()
-		if stats.Desired != 18 || stats.Installed != 16 || stats.Skipped != 2 {
-			t.Errorf("pass %d reports %d desired, %d installed and %d skipped, want 18, 16 and 2", pass, stats.Desired, stats.Installed, stats.Skipped)
+		if stats.Desired != members+2 || stats.Installed != members || stats.Skipped != 2 {
+			t.Errorf("pass %d reports %d desired, %d installed and %d skipped, want %d, %d and 2", pass, stats.Desired, stats.Installed, stats.Skipped, members+2, members)
 		}
 	}
 	var reported []string
@@ -939,9 +946,36 @@ func TestScopedRouteWithholdsNoMember(t *testing.T) {
 		if err := reconciler.reconcile(); err != nil {
 			t.Fatal(err)
 		}
-		if _, v6 := coverMembers(fake); v6 != 8 {
-			t.Errorf("pass %d holds %d IPv6 members beside a scoped 2000::/3 from a source, want 8: %v", pass, v6, fake.snapshot())
+		if _, v6 := coverMembers(fake); v6 != len(zeroFreeCover[false]) {
+			t.Errorf("pass %d holds %d IPv6 members beside a scoped 2000::/3 from a source, want %d: %v", pass, v6, len(zeroFreeCover[false]), fake.snapshot())
 		}
+	}
+}
+
+// A route of the mesh's holding both NAT64 prefixes withholds their members,
+// so it carries their traffic as linux's table does, and the rest of the
+// family's members go in beside it
+func TestShorterRouteWithholdsNAT64sMembers(t *testing.T) {
+	reconciler, table, kernel := coveredHarness(t, Table{}.WithMode(&ExitMode{}), Runtime{Sessions: func() int { return 1 }}, coverAddresses...)
+	fake := kernel.fakeKernel
+	reconciler.now = func() time.Time { return start }
+	nat64 := prefix("64:ff9b::/32")
+	table.Set(netip.Prefix{}, prefix("::/0"), nil)
+	table.Set(netip.Prefix{}, nat64, nil)
+	if err := reconciler.reconcile(); err != nil {
+		t.Fatal(err)
+	}
+	var members []Route
+	for _, r := range fake.snapshot() {
+		if r.Cover && r.Destination.Addr().Is6() {
+			members = append(members, r)
+		}
+	}
+	if want := coverOf(false, "64:ff9b::/96", "64:ff9b:1::/48"); !slices.Equal(destinations(members), want) {
+		t.Errorf("the IPv6 members are %v beside the mesh's %s, want %v", destinations(members), nat64, want)
+	}
+	if !slices.ContainsFunc(fake.snapshot(), func(r Route) bool { return r.Destination == nat64 && !r.Cover && !r.Scoped }) {
+		t.Errorf("the mesh's %s left the table: %v", nat64, fake.snapshot())
 	}
 }
 
