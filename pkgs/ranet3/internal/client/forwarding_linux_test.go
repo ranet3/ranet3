@@ -27,3 +27,15 @@ func TestForwardingSettingThatCannotBeReadIsUnknown(t *testing.T) {
 		t.Errorf("a setting that does not exist is read as %s, want it unread", got)
 	}
 }
+
+// a path that is absolute or rises above /proc/sys reads nothing, though a file exists where it would end
+func TestSysctlReadsNothingOutsideProcSys(t *testing.T) {
+	if Sysctl("kernel/ostype") == "" {
+		t.Fatal("kernel/ostype was not read, so nothing below is shown")
+	}
+	for _, path := range []string{"../self/stat", "kernel/../../self/stat", "/kernel/ostype"} {
+		if got := Sysctl(path); got != "" {
+			t.Errorf("%q read %q, want nothing", path, got)
+		}
+	}
+}
