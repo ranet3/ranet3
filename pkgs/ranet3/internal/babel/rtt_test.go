@@ -10,19 +10,19 @@ import (
 )
 
 func TestCostFormula(t *testing.T) {
-	p := CostParams{RxCost: 32, RTT: RTTCost{Max: dur(1024 * time.Millisecond), Weight: 1024}}
+	p := CostParams{RTT: RTTCost{Max: dur(1024 * time.Millisecond), Weight: 1024}}
 
-	if c := p.Cost(0, false); c != 32 {
-		t.Errorf("no RTT sample: got %d, want 32", c)
+	if c := p.RTTPenalty(2*time.Second, false); c != 0 {
+		t.Errorf("no RTT sample: got %d, want 0", c)
 	}
-	if c := p.Cost(0, true); c != 32 {
-		t.Errorf("rtt=0: got %d, want 32", c)
+	if c := p.RTTPenalty(0, true); c != 0 {
+		t.Errorf("rtt=0: got %d, want 0", c)
 	}
-	if c := p.Cost(2*time.Second, true); c != 32+1024 {
-		t.Errorf("rtt above max: got %d, want %d", c, 32+1024)
+	if c := p.RTTPenalty(2*time.Second, true); c != 1024 {
+		t.Errorf("rtt above max: got %d, want 1024", c)
 	}
-	if c := p.Cost(512*time.Millisecond, true); c != 32+512 {
-		t.Errorf("rtt at midpoint: got %d, want %d", c, 32+512)
+	if c := p.RTTPenalty(512*time.Millisecond, true); c != 512 {
+		t.Errorf("rtt at midpoint: got %d, want 512", c)
 	}
 }
 
@@ -52,10 +52,8 @@ func TestRoundTripPenaltyLandsOnTheCostThisNodeComputes(t *testing.T) {
 	if farCost <= nearCost {
 		t.Fatalf("a 307ms link costs %d and a 10ms one %d, so selection cannot tell them apart", farCost, nearCost)
 	}
-	// The two ends measure the same round trip, so a node that also inflated
-	// what it advertises would have the penalty counted twice.
-	if got := params.Cost(307*time.Millisecond, true); got != farCost {
-		t.Errorf("the advertised cost %d and the computed cost %d disagree", got, farCost)
+	if farCost != 96+299 {
+		t.Errorf("a 307ms link costs %d, want the reported 96 and a penalty of 299", farCost)
 	}
 }
 

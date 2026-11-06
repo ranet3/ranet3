@@ -122,13 +122,8 @@ func DefaultCostParams() CostParams {
 	}
 }
 
-// Cost implements the standard babeld/RFC 9616 RTT-cost formula: rx cost alone
-// below RTT.Min, rx cost plus RTT.Weight at or above RTT.Max, linear between.
-func (p CostParams) Cost(rtt time.Duration, haveRTT bool) uint16 {
-	return saturatingAdd(p.RxCost, p.RTTPenalty(rtt, haveRTT))
-}
-
-// RTTPenalty is the same mapping without the nominal hop cost. RFC 9616
+// RTTPenalty is the RFC 9616 RTT-cost mapping without the nominal hop cost:
+// zero below RTT.Min, RTT.Weight at or above RTT.Max, linear between. RFC 9616
 // section 4.2 asks for it as input to "the metric computation procedure
 // (Section 3.5.2 of [RFC8966])". That procedure is the one a node runs on its
 // own routes, so the penalty belongs on the cost this node computes for the
