@@ -34,8 +34,9 @@ type recordedKernel struct {
 	mu sync.Mutex
 	// uplink is where the host's own traffic leaves by and mesh is the tun
 	// this node carries the overlay on, which no lookup may answer with.
-	uplink, mesh int
-	devices      map[int]string
+	// loopback is lo0, which a route via 127.0.0.1 or ::1 leaves by.
+	uplink, mesh, loopback int
+	devices                map[int]string
 	// v4 and v6 are the host's own default of each family, a zero Index
 	// meaning the host has none.
 	v4, v6 kernel.RouteAnswer
@@ -80,9 +81,14 @@ type recordedWrite struct {
 	recordedRoute
 }
 
+// loopbackDeviceIndex is the recorded host's lo0, an index no socket names,
+// since the real lo0's stands for its uplink. It names lo0 to InterfaceIndex
+// and InterfaceName alone, so Links lists the devices it did before.
+const loopbackDeviceIndex = 426
+
 func newRecordedKernel(uplink, mesh int) *recordedKernel {
 	return &recordedKernel{
-		uplink: uplink, mesh: mesh,
+		uplink: uplink, mesh: mesh, loopback: loopbackDeviceIndex,
 		devices:  map[int]string{uplink: "uplink0", mesh: "mesh0"},
 		held:     make(map[recordedRoute]bool),
 		assigned: make(map[int][]netip.Prefix),
@@ -171,6 +177,9 @@ func (k *recordedKernel) Links() ([]kernel.HostInterface, error) {
 func (k *recordedKernel) InterfaceIndex(name string) (int, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if name == kernel.Loopback {
+		return k.loopback, nil
+	}
 	for index, device := range k.devices {
 		if device == name {
 			return index, nil
@@ -182,6 +191,9 @@ func (k *recordedKernel) InterfaceIndex(name string) (int, error) {
 func (k *recordedKernel) InterfaceName(index int) (string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if index == k.loopback {
+		return kernel.Loopback, nil
+	}
 	if device, ok := k.devices[index]; ok {
 		return device, nil
 	}
@@ -398,6 +410,10 @@ func (w *recordedWriter) apply(rm *route.RouteMessage) error {
 	}
 	w.k.mu.Lock()
 	defer w.k.mu.Unlock()
+	if entry.index == 0 && entry.gateway.IsLoopback() {
+		// the kernel takes the interface of a route naming none from its gateway
+		entry.index = w.k.loopback
+	}
 	add := rm.Type == unix.RTM_ADD
 	w.k.sent = append(w.k.sent, recordedWrite{add: add, recordedRoute: entry})
 	// a delete finds its route by destination and scope alone, as the kernel finds it

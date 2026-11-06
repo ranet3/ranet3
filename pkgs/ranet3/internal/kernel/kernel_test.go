@@ -96,6 +96,21 @@ type fakeKernel struct {
 	failListing     error
 	// fallbackDropped is the packets the table's last line has dropped, each of 60 bytes
 	fallbackDropped uint64
+	// switchForm is the form the fake's switch reads in, fakeTableForm where zero
+	switchForm fallbackForm
+}
+
+// fakeTableForm is the fake's switch read as linux's table
+var fakeTableForm = fallbackForm{
+	where: "nftables table inet " + FallbackTable, fix: "nft delete table inet " + FallbackTable,
+	unheld: "the host's own lookups from the uplink's addresses reach main only for its routes longer than /0",
+}
+
+func (f *fakeKernel) form() fallbackForm {
+	if f.switchForm.where == "" {
+		return fakeTableForm
+	}
+	return f.switchForm
 }
 
 func (f *fakeKernel) writeFallback(s fallbackSets, _ bool) error {

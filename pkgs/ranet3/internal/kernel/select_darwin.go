@@ -217,6 +217,7 @@ func hostRoutes(rib []byte) ([]hostRoute, error) {
 			cloned:      rm.Flags&unix.RTF_WASCLONED != 0,
 			multicast:   rm.Flags&unix.RTF_MULTICAST != 0,
 			broadcast:   rm.Flags&unix.RTF_BROADCAST != 0,
+			switched:    slices.Contains(rejectKeys, destination) && loopFlagged(rm, destination),
 		})
 	}
 	return out, nil

@@ -49,8 +49,8 @@ type Host interface {
 	// InterfaceIndex resolves a device name, and InterfaceName the reverse.
 	InterfaceIndex(name string) (int, error)
 	InterfaceName(index int) (string, error)
-	// Watch reports changes to the routing of one interface, or of every
-	// interface when index is zero, minus the one skip names, which then
+	// Watch reports changes to the routing of one interface and of lo0, or of
+	// every interface when index is zero, minus the one skip names, which then
 	// reports a link's flags and addresses moving too. The caller closes it.
 	Watch(index, skip int) (Watcher, error)
 	// Assign puts prefix on device, or takes it off again.

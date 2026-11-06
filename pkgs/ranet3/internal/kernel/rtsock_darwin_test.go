@@ -324,6 +324,7 @@ func drain(signal <-chan struct{}) {
 func TestLinkWatcherIgnoresTheMeshsOwnChurn(t *testing.T) {
 	const meshIndex = 42
 	const otherIndex = 16
+	const loopbackIndex = 1
 	self := uintptr(os.Getpid())
 	for name, test := range map[string]struct {
 		monitor *routeMonitor
@@ -343,7 +344,11 @@ func TestLinkWatcherIgnoresTheMeshsOwnChurn(t *testing.T) {
 			&routeMonitor{index: meshIndex, self: self}, meshIndex, self, true,
 		},
 		"the reconciler's monitor on another interface": {
-			&routeMonitor{index: meshIndex, self: self}, otherIndex, 1, false,
+			&routeMonitor{index: meshIndex, loopback: loopbackIndex, self: self}, otherIndex, 1, false,
+		},
+		// lo0 holds the kill switch's rejects and the overlay's holds
+		"the reconciler's monitor on another writer's change of lo0": {
+			&routeMonitor{index: meshIndex, loopback: loopbackIndex, self: self}, loopbackIndex, 1, true,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

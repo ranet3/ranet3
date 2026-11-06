@@ -56,9 +56,37 @@ import (
 // There is no per-route metric either, so Route.Metric is mirrored into every
 // dump as routeMetric gives it. It is a diff key field, and reporting anything
 // else would make every pass add and delete the same route forever.
+//
+// # The kill switch
+//
+// cap.exit fallback = "none" is a reject route on lo0 at each of the zero-free
+// cover's 16 keys (zeroFreeCover), both families whatever the tun holds:
+// unscoped, RTF_UP, RTF_STATIC, RTF_REJECT and RTF_GATEWAY via 127.0.0.1 or
+// ::1. An unbound lookup ending at one refuses the send with ENETUNREACH
+// (rt_lookup_common in bsd/net/route.c). RTF_GATEWAY keeps a route out of a
+// loopback interface from answering a scoped lookup, so a socket scoped to an
+// interface, the underlay's among them, passes the rejects over. They do not
+// leave with the utun, so after a crash the Mac's unbound traffic is refused
+// until ranet3 starts again.
+//
+// A reject is owned by its shape alone: lo0, those four flags, that gateway,
+// unscoped, at one of the 16 keys. No record or marker says who wrote it, so
+// one of exactly that shape another program wrote is taken over and deleted at
+// a stop, as linux deletes its table by name, and a route of any other shape
+// at a key is reported and never removed. The kernel holds one unscoped route
+// per key and mask, so a route of ours out of the utun and a reject at one key
+// cannot both go in (the second add is EEXIST in either order, measured), and
+// while the switch is asked for no route of ours sits at a key (splitAtKeys).
+// The IPv4 rejects count the sends they refuse in rmx_pksent and the IPv6 ones
+// count none, measured, so the switch reports no drops. A delete on lo0 wakes
+// a watcher of its index within about 20 ms and an add wakes none, measured,
+// so a reject another program deletes is written again at once and a route
+// another program adds at a key waits for the periodic pass.
 type routePlatform struct {
 	rt    Runtime
 	index int
+	// loopback is lo0's index, which the rejects leave by
+	loopback int
 
 	// host is the machine this writes to and reads back, the running kernel
 	// unless the caller named another. See Host.
@@ -136,6 +164,11 @@ type routePlatform struct {
 	// shared, the pass pays for one.
 	assigned   []netip.Prefix
 	assignedAt bool
+
+	// loops is the unscoped route at each key of the switch's as the pass's
+	// dump read it and its writes left it, nil until a dump of the pass has
+	// parsed
+	loops rejectRows
 }
 
 func newPlatform(t Table, rt Runtime) (platform, error) {
@@ -153,8 +186,12 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 	if err != nil {
 		return nil, err
 	}
+	loopback, err := host.InterfaceIndex(Loopback)
+	if err != nil {
+		return nil, err
+	}
 	plat := &routePlatform{
-		rt: rt, index: index, host: host,
+		rt: rt, index: index, loopback: loopback, host: host,
 		scoped:   make(map[netip.Prefix]netip.Prefix),
 		covering: make(map[routeKey]bool),
 		warned:   make(map[Route]bool),
@@ -186,7 +223,8 @@ func refuseMeaningless(t Table) error {
 
 // open takes the descriptors the platform holds for its whole lifetime: the
 // route socket every install goes out of, and the watcher that says when
-// somebody else changed this interface's routing.
+// somebody else changed this interface's routing or lo0's, where the rejects
+// and holds are.
 func (p *routePlatform) open() error {
 	sock, err := routeSocket(p.host)
 	if err != nil {
@@ -237,6 +275,8 @@ func (p *routePlatform) rotateWarnings() {
 }
 
 func (p *routePlatform) Routes() ([]Route, error) {
+	// a pass whose dump fails reads no switch from the last one's
+	p.loops = nil
 	rib, err := p.host.Dump()
 	if err != nil {
 		return nil, fmt.Errorf("kernel: dump the routing table: %w", err)
@@ -265,7 +305,9 @@ func (p *routePlatform) ownedRoutes(rib []byte) ([]Route, error) {
 	// between two passes stops being claimed as ours and is reported as held
 	// the next time an install of it is refused.
 	p.ours = make(map[routeKey]bool, len(p.ours))
+	p.loops = make(rejectRows, len(rejectKeys))
 	for _, message := range messages {
+		p.readLoop(message)
 		decoded, ok := p.decodeRoute(message)
 		if !ok {
 			continue
@@ -579,12 +621,18 @@ func (p *routePlatform) holder(destination netip.Prefix) string {
 	if err != nil {
 		return "unknown: " + err.Error()
 	}
-	device, err := p.host.InterfaceName(held.Index)
+	return p.describe(destination, held.Gateway, held.Index)
+}
+
+// describe names a route as route(8) prints one: its destination, its next
+// hop where it has one and its interface
+func (p *routePlatform) describe(destination netip.Prefix, gateway netip.Addr, index int) string {
+	device, err := p.host.InterfaceName(index)
 	if err != nil {
-		device = fmt.Sprintf("interface %d", held.Index)
+		device = fmt.Sprintf("interface %d", index)
 	}
-	if held.Gateway.IsValid() {
-		return fmt.Sprintf("%s via %s on %s", destination, held.Gateway, device)
+	if gateway.IsValid() {
+		return fmt.Sprintf("%s via %s on %s", destination, gateway, device)
 	}
 	return fmt.Sprintf("%s on %s", destination, device)
 }

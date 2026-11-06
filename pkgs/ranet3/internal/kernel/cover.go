@@ -31,6 +31,11 @@ var zeroFreeCover = map[bool][]netip.Prefix{
 	},
 }
 
+// rejectKeys is the keys of the kill switch where a platform writes it as
+// reject routes, the zero-free cover's of both families whatever the tun
+// holds, as linux's inet table drops both
+var rejectKeys = slices.Concat(zeroFreeCover[true], zeroFreeCover[false])
+
 // coverer is implemented by a platform that installs a route holding the zero
 // address of a family cap.exit covers as the zero-free cover's members, which
 // is darwin. cover hands it, before each pass's routes, the overlay in force,

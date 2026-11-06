@@ -20,6 +20,15 @@ import (
 
 var _ switcher = (*netlinkPlatform)(nil)
 
+// tableForm is the table ranet3_fallback as a log line and a status read it
+var tableForm = fallbackForm{
+	where:  "nftables table inet " + FallbackTable,
+	fix:    "nft delete table inet " + FallbackTable,
+	unheld: "the host's own lookups from the uplink's addresses reach main only for its routes longer than /0",
+}
+
+func (p *netlinkPlatform) form() fallbackForm { return tableForm }
+
 // fallbackDrop is each chain's last line, whose counters status reads summed
 const fallbackDrop = "counter drop"
 
@@ -538,6 +547,6 @@ func DeleteFallback() {
 		_ = conn.Close()
 	}
 	if err != nil && !withoutNFTables(err) {
-		warnFallbackLeft(err)
+		warnFallbackLeft(tableForm, err)
 	}
 }

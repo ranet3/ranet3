@@ -284,10 +284,13 @@ type routeMonitor struct {
 	// follows moves between wifi, ethernet and a dock, so it cannot name one
 	// interface, but the mesh tun's own churn is the one thing it must not
 	// wake on, and that churn is one broadcast per route this process writes.
-	// skipName is skip's name, by which a kernel event names it.
+	// skipName is skip's name, by which a kernel event names it. loopback is
+	// lo0, whose changes wake a monitor of one interface too, since the
+	// reconciler writes its kill switch and overlay holds there.
 	index    int
 	skip     int
 	skipName string
+	loopback int
 	// self is this process, which stamps every route message it writes. XNU
 	// broadcasts the result of a route_output to every PF_ROUTE listener,
 	// including the writer's own monitor, and SO_USELOOPBACK is off only on
@@ -312,6 +315,13 @@ func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 		self:   uintptr(os.Getpid()),
 		signal: make(chan struct{}, 1),
 		stop:   make(chan struct{}),
+	}
+	if index != 0 {
+		loopback, err := net.InterfaceByName(Loopback)
+		if err != nil {
+			return nil, fmt.Errorf("kernel: find %s, whose routes the route monitor of interface %d wakes on: %w", Loopback, index, err)
+		}
+		monitor.loopback = loopback.Index
 	}
 	if index == 0 {
 		if skip != 0 {
@@ -461,7 +471,7 @@ func (m *routeMonitor) wakesOn(message []byte) bool {
 		return false
 	}
 	index := int(binary.NativeEndian.Uint16(message[rtmIndexOffset:]))
-	if m.index != 0 && index != m.index {
+	if m.index != 0 && index != m.index && index != m.loopback {
 		return false
 	}
 	if m.skip != 0 && index == m.skip {

@@ -15,11 +15,13 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// FallbackTable is the nf_tables inet table cap.exit fallback = "none" writes,
-// whose chains let a packet leave by a link outside the mesh only where one of
-// their lines passes it, and drop the rest. It carries no owner flag, so it
-// outlives the process that wrote it. routing.md's "The kill switch on Linux"
-// lists the lines and what each stop leaves of the table.
+// FallbackTable is the nf_tables inet table cap.exit fallback = "none" writes
+// on Linux, whose chains let a packet leave by a link outside the mesh only
+// where one of their lines passes it, and drop the rest. It carries no owner
+// flag, so it outlives the process that wrote it. routing.md's "The kill
+// switch on Linux" lists the lines and what each stop leaves of the table. On
+// macOS the switch is reject routes on lo0 instead, which "The kill switch on
+// macOS" lists.
 const FallbackTable = "ranet3_fallback"
 
 // FallbackState is the switch fallback = "none" asks for, as a pass leaves it
@@ -44,11 +46,15 @@ type FallbackStatus struct {
 	Fault string
 	// Dropped and DroppedBytes are the packets and bytes the last lines of
 	// both chains have dropped, summed, as the last read that succeeded found
-	// them, and DropsRead says a read of this process has
+	// them, and DropsRead says a read of this process has. Uncounted says the
+	// switch counts nothing it refuses, as darwin's rejects, whose drops are
+	// never read
 	Dropped, DroppedBytes uint64
 	DropsRead             bool
+	Uncounted             bool
 	// Captured is each connected network left out of the LAN, since its
-	// length counts as capturing the machine
+	// length counts as capturing the machine, empty where the switch passes
+	// the LAN by no line, as on darwin
 	Captured []netip.Prefix
 	// Public is each connected network of a link forward does not name, or of
 	// one sharing an address with the overlay each prefix of its part outside
@@ -68,23 +74,27 @@ type LinkResolver struct {
 	Address netip.Addr
 }
 
-// FallbackDebug is the table ranet3_fallback as a read finds it now
+// FallbackDebug is the switch as a read finds it now, the table
+// ranet3_fallback on linux and the rejects on lo0 on darwin, which have no
+// hook, priority or sets
 type FallbackDebug struct {
 	Where    string
 	Hook     string
 	Priority int
-	// Held is whether the kernel holds the table at all
+	// Held is whether the kernel holds the switch at all
 	Held  bool
 	Rules []FallbackDebugRule
 	Sets  []FallbackDebugSet
 }
 
 // FallbackDebugRule is one line of a chain, by the comment it was written
-// under, with what it counted
+// under, with what it counted, or on darwin one reject with the sends it
+// refused where Counted says it counts them
 type FallbackDebugRule struct {
 	Chain          string
 	Spec           string
 	Packets, Bytes uint64
+	Counted        bool
 }
 
 // FallbackDebugSet is one named set with its elements, a range that is no
@@ -121,6 +131,9 @@ type fallbackSets struct {
 	// the overlay, that lan leaves out in whole or in part, lying outside
 	// lanRanges and the prefixes cap.exit lan lists
 	public []netip.Prefix
+	// rejects is the keys of a switch written as reject routes, which reads
+	// none of the above
+	rejects []netip.Prefix
 }
 
 // lanRanges is the ranges a connected network counts as the LAN inside: the
@@ -228,16 +241,20 @@ func (r *Reconciler) fallbackFor(exit exitView) (fallbackSets, bool) {
 	return exit.fallbackSetsOf(r.rt.Interface, r.rt.Overlay, mode.Services(), exit.carvedLAN()), true
 }
 
-// applyFallback writes the table where the pass asks for it, rewriting it
+// applyFallback writes the switch where the pass asks for it, rewriting it
 // whenever it does not read back as written, and deletes one an earlier pass
 // or instance left where the pass does not ask for it. It reports the switch
-// as the pass leaves it, nil where the pass does not ask for it.
+// as the pass leaves it, nil where the pass does not ask for it. reconcile
+// runs it after the route pass where the pass asks for the switch and before
+// it where the pass does not, so on darwin a route of ours out of the tun
+// never meets a reject at its key (see splitAtKeys).
 func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 	sw, ok := r.plat.(switcher)
 	if !ok {
 		r.reportFallbackState(nil)
 		return nil, nil
 	}
+	form := sw.form()
 	sets, asked := r.fallbackFor(exit)
 	if !asked {
 		r.reportFallbackState(nil)
@@ -252,14 +269,17 @@ func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 			r.fallbackDropped, r.fallbackBytes = 0, 0
 		}
 		if err != nil {
-			warnFallbackLeft(err)
+			warnFallbackLeft(form, err)
 		}
 		return nil, nil
+	}
+	if form.routes {
+		sets = fallbackSets{rejects: rejectKeys}
 	}
 	r.fallbackClear = false
 	// a read that fails on a table no write touched keeps the drops the last read found, and a rewrite starts them from zero
 	read, err := sw.readFallback(sets)
-	r.fallbackDropsRead = r.fallbackDropsRead || err == nil
+	r.fallbackDropsRead = r.fallbackDropsRead || err == nil && !form.uncounted
 	switch {
 	case err != nil:
 		read.dropped, read.bytes = r.fallbackDropped, r.fallbackBytes
@@ -271,10 +291,10 @@ func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 	r.fallbackDropped, r.fallbackBytes = read.dropped, read.bytes
 	if err != nil {
 		read.fault = err.Error()
-		err = fmt.Errorf("write table inet %s: %w", FallbackTable, err)
+		err = fmt.Errorf("write the kill switch, %s: %w", form.where, err)
 	}
 	status := &FallbackStatus{
-		State: FallbackHolding, Fault: read.fault, Dropped: read.dropped, DroppedBytes: read.bytes, DropsRead: r.fallbackDropsRead,
+		State: FallbackHolding, Fault: read.fault, Dropped: read.dropped, DroppedBytes: read.bytes, DropsRead: r.fallbackDropsRead, Uncounted: form.uncounted,
 		Captured: sets.captured, Public: sets.public, tun: sets.tun, passed: slices.Concat(sets.lan4, sets.lan6, sets.own4, sets.own6),
 	}
 	switch {
@@ -287,10 +307,10 @@ func (r *Reconciler) applyFallback(exit exitView) (*FallbackStatus, error) {
 	return status, err
 }
 
-// warnFallbackLeft is the one line for a delete of the table that failed
-func warnFallbackLeft(err error) {
-	slog.Warn("kernel could not delete a fallback table an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted",
-		"table", FallbackTable, "err", err, "fix", "nft delete table inet "+FallbackTable)
+// warnFallbackLeft is the one line for a delete of the switch that failed
+func warnFallbackLeft(form fallbackForm, err error) {
+	slog.Warn("kernel could not delete a kill switch an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted",
+		"where", form.where, "err", err, "fix", form.fix)
 }
 
 // FallbackResolvers is each DNS server systemd-resolved queries now through a
@@ -343,16 +363,16 @@ func (r *Reconciler) reportFallbackState(status *FallbackStatus) {
 	if state == r.fallbackState && fault == r.fallbackFault {
 		return
 	}
+	form := r.switchForm()
 	switch state {
 	case FallbackNotHolding:
-		slog.Warn("kernel's fallback table does not read back as written, so the host's own lookups from the uplink's addresses reach main only for its routes longer than /0",
-			"table", FallbackTable, "fault", fault)
+		slog.Warn("kernel's kill switch does not read back as written", "where", form.where, "fault", fault, "detail", form.unheld)
 	case FallbackHolding:
-		slog.Info("kernel's fallback table holds the host's traffic to the LAN while no exit is live", "table", FallbackTable)
+		slog.Info("kernel's kill switch holds the host's traffic while no exit is live", "where", form.where)
 	case FallbackPassing:
-		slog.Info("kernel's fallback table passes the host's traffic to the exit live through the tun", "table", FallbackTable)
+		slog.Info("kernel's kill switch passes the host's traffic to the exit live through the tun", "where", form.where)
 	case "":
-		slog.Info("kernel's fallback table is no longer asked for", "table", FallbackTable)
+		slog.Info("kernel's kill switch is no longer asked for", "where", form.where)
 	}
 	if state != r.fallbackState {
 		r.rt.Events.Emit("kernel.fallback", "", slog.String("state", cmp.Or(string(state), "off")), slog.String("was", cmp.Or(string(r.fallbackState), "off")))
@@ -360,20 +380,46 @@ func (r *Reconciler) reportFallbackState(status *FallbackStatus) {
 	r.fallbackState, r.fallbackFault = state, fault
 }
 
-// switcher is the optional half of a platform that writes the table
-// ranet3_fallback. A platform without one runs no fallback = "none", which its
-// start refuses.
+// switchForm is the form of the platform's switch, the zero form on a
+// platform with none
+func (r *Reconciler) switchForm() fallbackForm {
+	if sw, ok := r.plat.(switcher); ok {
+		return sw.form()
+	}
+	return fallbackForm{}
+}
+
+// switcher is the optional half of a platform that writes the kill switch,
+// the table ranet3_fallback on linux and the rejects on lo0 on darwin. A
+// platform without one runs no fallback = "none", which its start refuses.
 type switcher interface {
-	// writeFallback writes the table whole in one transaction, its sets
-	// flushed and filled and its chains rewritten, the table deleted first
-	// where remake, as the read before it found
+	// writeFallback writes the switch whole, on linux in one transaction with
+	// its sets flushed and filled and its chains rewritten, the table deleted
+	// first where remake, as the read before it found
 	writeFallback(sets fallbackSets, remake bool) error
-	// readFallback reads the table back against what writeFallback writes for sets, the zero fallbackRead where the read fails
+	// readFallback reads the switch back against what writeFallback writes for sets, the zero fallbackRead where the read fails
 	readFallback(fallbackSets) (fallbackRead, error)
-	// deleteFallback deletes the table where one is held, whoever wrote it
+	// deleteFallback deletes the switch where one is held, whoever wrote it
 	deleteFallback() error
-	// holdsFallback is whether a listing finds the table, whoever wrote it
+	// holdsFallback is whether a listing finds the switch, whoever wrote it
 	holdsFallback() (bool, error)
+	form() fallbackForm
+}
+
+// fallbackForm is how a platform's switch reads in a log line and a status
+type fallbackForm struct {
+	// where names the switch, and fix says how an operator deletes one left
+	// behind
+	where, fix string
+	// unheld says what the host's traffic meets while the switch does not
+	// read back as written
+	unheld string
+	// routes says the switch is reject routes at rejectKeys, keyed as the
+	// tun's routes are, as darwin's is, where linux's is a table whose lines
+	// pass the LAN and this node's own prefixes as fallbackSets derives them
+	routes bool
+	// uncounted says the switch counts nothing it refuses
+	uncounted bool
 }
 
 // fallbackRead is the table as a read finds it

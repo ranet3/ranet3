@@ -203,12 +203,13 @@ func runThroughFirstPass(t *testing.T, reconciler *Reconciler) func(cause error)
 }
 
 // leftLine, noneLine and unlistedLine are the warnings of a failed mesh's stop
-// that leaves the table, as its listing words them: the table there, none
-// there, or the listing failed
+// that leaves the switch, as its listing words them: the switch there, none
+// there, or the listing failed. fakeWhere is the fake's switch as they name it.
 const (
-	leftLine     = "kernel is leaving its fallback table after the mesh failed"
-	noneLine     = "kernel found no fallback table to leave after the mesh failed, so the host's traffic leaves by its routes"
-	unlistedLine = "kernel is leaving any fallback table there after the mesh failed, which it could not list"
+	leftLine     = "kernel is leaving its kill switch after the mesh failed"
+	noneLine     = "kernel found no kill switch to leave after the mesh failed, so the host's traffic leaves by its routes"
+	unlistedLine = "kernel is leaving any kill switch there after the mesh failed, which it could not list"
+	fakeWhere    = `" where="nftables table inet ranet3_fallback"`
 )
 
 // logged is slog's text from here to the end of t, read once what writes it has returned
@@ -249,7 +250,7 @@ func TestFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	if left := held(); !left.table || left.routes+left.addresses+left.rules > 0 {
 		t.Fatalf("the failed mesh's stop left %+v, want the table alone", left)
 	}
-	if n := strings.Count(said.String(), leftLine); n != 1 || !strings.Contains(said.String(), leftLine+`" table=ranet3_fallback state=holding`) {
+	if n := strings.Count(said.String(), leftLine); n != 1 || !strings.Contains(said.String(), leftLine+fakeWhere+" state=holding") {
 		t.Errorf("the failed mesh's stop warned %d times, want once with the state holding:\n%s", n, said)
 	}
 	stop = start()
@@ -330,7 +331,7 @@ func TestFailedMeshsStopLeavesATableWhereTheSwitchIsAskedFor(t *testing.T) {
 								t.Errorf("the stop warned %q %d times, want the warning %q alone:\n%s", each, n, line, said)
 							}
 						}
-						if line != "" && !strings.Contains(said.String(), line+`" table=ranet3_fallback state=`+c.state) {
+						if line != "" && !strings.Contains(said.String(), line+fakeWhere+" state="+c.state) {
 							t.Errorf("the stop's warning did not carry the state %s:\n%s", c.state, said)
 						}
 						if asked && strings.Contains(said.String(), "is no longer asked for") {

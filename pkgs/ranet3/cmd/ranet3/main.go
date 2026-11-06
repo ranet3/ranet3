@@ -492,7 +492,7 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			firstPass = routes.FirstPass()
 		}
 	} else {
-		// no reconciler runs to delete a table an earlier instance left, which holds the host's traffic whatever this file asks
+		// no reconciler runs to delete a kill switch an earlier instance left, which holds the host's traffic whatever this file asks
 		kernel.DeleteFallback()
 		slog.Info(fmt.Sprintf("tun device %s ready with %d queues, configure its addresses and kernel routes externally",
 			mesh.Name, mesh.QueueCount()))
@@ -566,15 +566,15 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 }
 
 // awaitFirstPass reports whether the start goes on to dial. firstPass is nil
-// where the capability asks for no wait, and the pass writes the kill
-// switch's table where it does not fail.
+// where the capability asks for no wait, and the pass writes the kill switch
+// where it does not fail.
 func awaitFirstPass(ctx context.Context, firstPass <-chan struct{}, wait time.Duration) bool {
 	if firstPass != nil {
 		select {
 		case <-firstPass:
 		case <-ctx.Done():
 		case <-time.After(wait):
-			slog.Warn("kernel's first pass has not ended, so sessions are dialed before the fallback table is written", "waited", wait)
+			slog.Warn("kernel's first pass has not ended, so sessions are dialed before the kill switch is written", "waited", wait)
 		}
 	}
 	return ctx.Err() == nil

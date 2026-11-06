@@ -1267,12 +1267,31 @@ func (r *Reconciler) reconcile() error {
 	if listed {
 		r.bare = bareFamilies(held)
 	}
+	if exit.fallback {
+		exit.own = thrown(desired)
+	}
+	// the switch goes before the routes where the pass no longer asks for it
+	// and after them where it does, so on darwin the rejects and the routes
+	// out of the tun never contend for a key (see splitAtKeys)
+	_, asked := r.fallbackFor(exit)
+	var fallback *FallbackStatus
+	var fallbackErr error
+	if judged && !asked {
+		fallback, fallbackErr = r.applyFallback(exit)
+	}
 	routesErr := r.applyRoutes(desired, r.coverFamilies(status), r.bare)
 	// after the route writes, so kernel.exit and kernel.forward follow the pass's kernel.path and kernel.cover
 	if judged {
 		r.reportExit(status)
 	}
-	err := errors.Join(addressErr, routesErr, r.applyRules(snapshot, thrown(desired), exit, judged))
+	if judged && asked {
+		fallback, fallbackErr = r.applyFallback(exit)
+	}
+	if judged && r.exitStatus != nil {
+		r.exitStatus.Fallback = fallback
+	}
+	exit.unheld = fallback == nil || fallback.State == FallbackNotHolding
+	err := errors.Join(addressErr, routesErr, r.applyRules(snapshot, exit, judged), fallbackErr)
 	// a pass missing a rule or a hold would find its own fault, which err reports
 	if err == nil {
 		r.lookUp()
@@ -1366,20 +1385,12 @@ func (r *Reconciler) audit() {
 // rather than trusting a record, so rules an earlier instance left behind are
 // adopted, and withdrawn where no longer derived, rather than duplicated. It
 // adds in the set's order, which puts each nop ahead of its goto. exit is the
-// mode as the pass judged it, where judged, and throws the own prefixes the
-// pass's mirror throws.
-func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], throws []netip.Prefix, exit exitView, judged bool) error {
+// mode as the pass judged it, where judged, with the switch as the pass left
+// it.
+func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], exit exitView, judged bool) error {
 	if r.rules == nil || !judged {
 		return nil
 	}
-	if exit.fallback {
-		exit.own = throws
-	}
-	fallback, fallbackErr := r.applyFallback(exit)
-	if r.exitStatus != nil {
-		r.exitStatus.Fallback = fallback
-	}
-	exit.unheld = fallback == nil || fallback.State == FallbackNotHolding
 	ruleSet := derivedRules(r.table.ID, r.rt.Overlay, r.ownPrefixes(snapshot), exit)
 	r.derived.Store(&ruleSet)
 	actual, err := r.rules.Rules()
@@ -1420,7 +1431,7 @@ func (r *Reconciler) applyRules(snapshot []sadr.Route[*netstack.Peer], throws []
 		r.changed = true
 		slog.Info("kernel rules reconciled", "added", added, "removed", removed)
 	}
-	return errors.Join(append(errs, fallbackErr)...)
+	return errors.Join(errs...)
 }
 
 // applyRoutes removes before it installs, so a changed non-key attribute does
@@ -2102,9 +2113,9 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 
 // withdraw removes what this reconciler holds for a stop of cause: every route
 // and rule still carrying its marker, every address it added itself, and the
-// table ranet3_fallback, whoever wrote it, but where cause is ErrMeshFailed
-// and the capability in force asks for the table, which it leaves, listing it
-// only to say in a warning whether one is there.
+// kill switch, whoever wrote it, but where cause is ErrMeshFailed and the
+// capability in force asks for the switch, which it leaves, listing it only
+// to say in a warning whether one is there.
 // Routes are read back rather than remembered, so routes an earlier crashed
 // instance left behind go with them.
 func (r *Reconciler) withdraw(cause error) error {
@@ -2161,21 +2172,22 @@ func (r *Reconciler) withdraw(cause error) error {
 			}
 		}
 	}
-	// the table goes after the rules, so its chains hold the host's traffic while they go
+	// the switch goes after the rules and the routes, so it holds the host's traffic while they go
 	if sw, ok := r.plat.(switcher); ok && !r.fallbackClear {
+		where := sw.form().where
 		if errors.Is(cause, ErrMeshFailed) && r.table.writesFallback() {
 			// the listing words the warning alone, so one that fails deletes nothing
 			switch held, err := sw.holdsFallback(); {
 			case err != nil:
-				slog.Warn("kernel is leaving any fallback table there after the mesh failed, which it could not list", "table", FallbackTable, "state", r.fallbackState, "err", err)
+				slog.Warn("kernel is leaving any kill switch there after the mesh failed, which it could not list", "where", where, "state", r.fallbackState, "err", err)
 			case held:
-				slog.Warn("kernel is leaving its fallback table after the mesh failed", "table", FallbackTable, "state", r.fallbackState)
+				slog.Warn("kernel is leaving its kill switch after the mesh failed", "where", where, "state", r.fallbackState)
 			default:
-				slog.Warn("kernel found no fallback table to leave after the mesh failed, so the host's traffic leaves by its routes", "table", FallbackTable, "state", r.fallbackState)
+				slog.Warn("kernel found no kill switch to leave after the mesh failed, so the host's traffic leaves by its routes", "where", where, "state", r.fallbackState)
 			}
 		} else {
 			if err := sw.deleteFallback(); err != nil {
-				errs = append(errs, fmt.Errorf("delete table inet %s: %w", FallbackTable, err))
+				errs = append(errs, fmt.Errorf("delete the kill switch, %s: %w", where, err))
 			} else {
 				r.fallbackClear = true
 				r.fallbackDropped, r.fallbackBytes = 0, 0
