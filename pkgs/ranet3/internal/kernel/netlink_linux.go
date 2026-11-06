@@ -69,10 +69,30 @@ type nlMessage struct {
 	Data  []byte
 }
 
-// execute sends one request and collects every reply the kernel sends for it.
+// execute sends a request and collects every reply the kernel sends for it.
 // A dump ends at NLMSG_DONE and a modify request at its NLMSG_ERROR ack, so
-// every modify request must carry NLM_F_ACK or this blocks forever.
+// every modify request must carry NLM_F_ACK or this blocks forever. A dump the
+// kernel flags as interrupted is asked again, dumpAttempts asks in all.
 func (c *nlConn) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
+	return dumpAgainIfInterrupted(flags, func() ([]nlMessage, error) { return c.request(kind, flags, body) })
+}
+
+// dumpAgainIfInterrupted asks again only after collect has read the interrupted dump to its end, so the next ask meets no dump
+// still running on the socket
+func dumpAgainIfInterrupted(flags uint16, ask func() ([]nlMessage, error)) ([]nlMessage, error) {
+	attempts := 1
+	if flags&unix.NLM_F_DUMP == unix.NLM_F_DUMP {
+		attempts = dumpAttempts
+	}
+	for attempt := 1; ; attempt++ {
+		replies, err := ask()
+		if !errors.Is(err, errDumpInterrupted) || attempt == attempts {
+			return replies, err
+		}
+	}
+}
+
+func (c *nlConn) request(kind, flags uint16, body []byte) ([]nlMessage, error) {
 	c.seq++
 	request := make([]byte, unix.SizeofNlMsghdr+len(body))
 	binary.NativeEndian.PutUint32(request[0:], uint32(len(request)))
@@ -87,12 +107,23 @@ func (c *nlConn) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
 	return collect(c.seq, c.pid, c.receive)
 }
 
+// errDumpInterrupted is a dump a change interrupted, whose replies may miss or repeat an entry
+var errDumpInterrupted = errors.New("kernel: dump interrupted by a change")
+
 // collect reads datagrams until the message ending request seq of port pid, and returns the replies before it
 // NLMSG_DONE carries an errno as an ack does, and a dump the kernel cut short still ends at DONE
 // so a nonzero errno comes back as the error with none of the replies, never as a table that looks complete
+// nor does a dump whose reply or end carries NLM_F_DUMP_INTR, which comes back as errDumpInterrupted
 // it takes the socket's read as a function so any sequence of messages can be decoded without a socket
 func collect(seq, pid uint32, receive func() ([]nlMessage, error)) ([]nlMessage, error) {
 	var replies []nlMessage
+	interrupted := func(message nlMessage) bool { return message.Flags&unix.NLM_F_DUMP_INTR != 0 }
+	finish := func(end nlMessage) ([]nlMessage, error) {
+		if interrupted(end) || slices.ContainsFunc(replies, interrupted) {
+			return nil, errDumpInterrupted
+		}
+		return replies, nil
+	}
 	for {
 		messages, err := receive()
 		if err != nil {
@@ -111,11 +142,11 @@ func collect(seq, pid uint32, receive func() ([]nlMessage, error)) ([]nlMessage,
 				if code := int32(binary.NativeEndian.Uint32(message.Data)); code != 0 {
 					return nil, unix.Errno(-code)
 				}
-				return replies, nil
+				return finish(message)
 			default:
 				replies = append(replies, message)
 				if message.Flags&unix.NLM_F_MULTI == 0 {
-					return replies, nil
+					return finish(message)
 				}
 			}
 		}

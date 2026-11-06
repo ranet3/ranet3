@@ -225,8 +225,8 @@ func takenEvents(bus *events.Bus) []string {
 
 // a send carrying a source and an interface is asked under the mark with both
 // and one carrying neither with neither, and each is published and reported
-// with what it carries, its interface by the name the batch's dump of the links
-// gave it, and by its index where the dump held none
+// with what it carries, its interface by the name the batch's lookup of its
+// index gave it, and by its index where no device held it
 func TestPinnedSendIsAskedWithItsSourceAndInterface(t *testing.T) {
 	pinned := Send{Destination: addr("203.0.113.70"), Source: addr("198.51.100.10"), Interface: 2}
 	gone := Send{Destination: addr("2001:db8:400::7"), Source: addr("2001:db8:a::10"), Interface: 9}

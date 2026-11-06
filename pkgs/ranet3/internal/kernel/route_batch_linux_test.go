@@ -8,6 +8,7 @@ package kernel
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net/netip"
 	"os"
 	"slices"
@@ -386,6 +387,70 @@ func TestNetlinkRouteGetBatchAnswersEachReadAsRouteGetDoes(t *testing.T) {
 	const missing = "batch9"
 	if answers, err := RouteGetBatch([]RouteRead{{Source: v4.source, Destination: v4.destination(0), IIF: missing}}); answers != nil || !errors.Is(err, unix.ENODEV) {
 		t.Errorf("a read arriving on %s, which nothing holds, answered %+v and %v, want the batch failed with ENODEV", missing, answers, err)
+	}
+}
+
+// churnedLinks is how many devices a test holds while another comes and goes, enough that the churn interrupts most dumps of
+// them, and churnedBatches how many batches it reads meanwhile
+const churnedLinks, churnedBatches = 3000, 200
+
+// the exit's lookups answer every time while a device comes and goes beside thousands of others, since the batch names each
+// next hop and each read's interface by its index, which a change to the links never interrupts as it does a dump of them
+func TestNetlinkRouteGetBatchAnswersWhileADeviceComesAndGoes(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
+	const uplinkName, churnName = "ranetup0", "ranetflap0"
+	if err := createLink(conn, uplinkName, "dummy"); err != nil {
+		t.Fatalf("create the dummy %s: %v", uplinkName, err)
+	}
+	uplink, err := conn.link(0, uplinkName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, uplink.index, unix.IFF_UP)
+	writeBatchAddress(t, conn, uplink.index, prefix("192.0.2.10/24"))
+	for i := range churnedLinks {
+		if err := createLink(conn, fmt.Sprintf("ranetd%d", i), "dummy"); err != nil {
+			t.Fatalf("create dummy %d: %v", i, err)
+		}
+	}
+	del := putAttrString(make([]byte, unix.SizeofIfInfomsg), unix.IFLA_IFNAME, churnName)
+	churn(t, func(conn *nlConn) {
+		_ = createLink(conn, churnName, "dummy")
+		_, _ = conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, del)
+	})
+	awaitInterruptedDump(t, conn, unix.RTM_GETLINK, make([]byte, unix.SizeofIfInfomsg))
+
+	reads := []RouteRead{{Destination: addr("192.0.2.10")}, {Destination: addr("192.0.2.1")}, {Destination: addr("192.0.2.1"), OIF: uplink.index}}
+	failed := 0
+	var first error
+	for range churnedBatches {
+		answers, err := RouteGetBatch(reads)
+		if err != nil {
+			if failed++; first == nil {
+				first = err
+			}
+			continue
+		}
+		for i, answer := range answers {
+			if answer.Err != nil || len(answer.Route.NextHops) != 1 || answer.Route.NextHops[0].Device != uplinkName {
+				t.Fatalf("read %d answered %+v and %v, want a route out of %s", i, answer.Route, answer.Err, uplinkName)
+			}
+		}
+		if answers[2].OIF != uplinkName {
+			t.Fatalf("the read naming %s's index named it %q", uplinkName, answers[2].OIF)
+		}
+	}
+	if failed > 0 {
+		t.Fatalf("%d of %d batches failed, the first with: %v", failed, churnedBatches, first)
 	}
 }
 

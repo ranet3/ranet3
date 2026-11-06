@@ -47,8 +47,8 @@ func (s Send) asksAs(other Send) bool {
 // of the mesh's: an unmarked lookup of Address inside the overlay hold Prefix,
 // or, with Prefix invalid, the lookup under the underlay's mark of a live
 // session's send to Address from Source out of Interface, either absent where
-// the send carries none. Interface is named as the pass's dump of the links
-// named it, and by its index where the dump held none. Answer is the kernel's
+// the send carries none. Interface is named as the pass's lookup of its index
+// named it, and by its index where no device held it. Answer is the kernel's
 // answer as text, and Taken says it is not the mesh's for an overlay lookup,
 // or is for the underlay's
 type Lookup struct {

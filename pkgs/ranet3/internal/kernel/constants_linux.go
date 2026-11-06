@@ -22,6 +22,8 @@ const (
 	// monitorReadSize is one read of the route monitor, in bytes
 	// it is larger than any notification datagram the kernel sends
 	monitorReadSize = 64 << 10
+	// dumpAttempts is how many times a dump a change keeps interrupting is asked before the read fails
+	dumpAttempts = 3
 	// resolvedWait bounds one question to systemd-resolved, which answers from
 	// its own state without a query of its own
 	resolvedWait = time.Second

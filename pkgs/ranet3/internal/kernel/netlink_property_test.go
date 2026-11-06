@@ -28,11 +28,15 @@ const maxErrno = 4095
 // answers draws a reply to the request
 // most are one part of a multipart dump
 // one without NLM_F_MULTI is the whole answer to a keyed request
+// a few carry NLM_F_DUMP_INTR, which the kernel sets on a part of a dump a change interrupted
 func answers() hegel.Generator[nlMessage] {
 	return hegel.Composite(func(tc hegel.TestCase) nlMessage {
-		flags := unix.NLM_F_MULTI | hegel.Draw(tc, hegel.Integers[uint16](0, math.MaxUint16))
+		flags := unix.NLM_F_MULTI | hegel.Draw(tc, hegel.Integers[uint16](0, math.MaxUint16))&^unix.NLM_F_DUMP_INTR
 		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/8)) {
 			flags &^= unix.NLM_F_MULTI
+		}
+		if hegel.Draw(tc, hegel.WeightedBooleans(1.0/8)) {
+			flags |= unix.NLM_F_DUMP_INTR
 		}
 		return nlMessage{
 			Kind:  hegel.Draw(tc, pbt.Spanning[uint16](unix.NLMSG_MIN_TYPE, math.MaxUint16)),
@@ -90,6 +94,8 @@ func sameMessage(a, b nlMessage) bool {
 // its replies are a table missing what the kernel did not send
 // an end carrying zero ends the request with every reply in the order sent
 // a reply without NLM_F_MULTI ends it the same way, as the one answer to a keyed request
+// a reply or an end of the request carrying NLM_F_DUMP_INTR turns either into errDumpInterrupted and none of the replies,
+// where the end's errno is zero
 // everything else is passed over
 // the end is NLMSG_DONE or the ack, which carry the errno in the same place
 // what follows the errno is the request's header in an ack and the attributes of an extended one
@@ -110,11 +116,16 @@ func TestEndCarryingAnErrnoYieldsItAndNoReplies(t *testing.T) {
 				break
 			}
 		}
+		interrupted := slices.ContainsFunc(want, func(answer nlMessage) bool { return answer.Flags&unix.NLM_F_DUMP_INTR != 0 })
 		code, truncated := int32(0), false
 		if !keyed {
 			end := nlMessage{Kind: unix.NLMSG_DONE, Flags: unix.NLM_F_MULTI, Seq: answeredSeq, Pid: answeredPid}
 			if hegel.Draw(ht, hegel.Booleans()) {
 				end.Kind, end.Flags = unix.NLMSG_ERROR, 0
+			}
+			if hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)) {
+				end.Flags |= unix.NLM_F_DUMP_INTR
+				interrupted = true
 			}
 			if truncated = hegel.Draw(ht, hegel.WeightedBooleans(1.0/8)); truncated {
 				end.Data = hegel.Draw(ht, hegel.Binary(0, 3))
@@ -156,6 +167,12 @@ func TestEndCarryingAnErrnoYieldsItAndNoReplies(t *testing.T) {
 		case code != 0:
 			if err != unix.Errno(-code) || got != nil {
 				ht.Fatalf("an end carrying %d after %d replies read as %d replies and %v", code, len(want), len(got), err)
+			}
+			return
+		}
+		if interrupted {
+			if err != errDumpInterrupted || got != nil {
+				ht.Fatalf("a request interrupted after %d replies read as %d replies and %v", len(want), len(got), err)
 			}
 			return
 		}

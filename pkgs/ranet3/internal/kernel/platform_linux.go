@@ -354,9 +354,17 @@ func (p *netlinkPlatform) DelRoute(route Route) error {
 func (p *netlinkPlatform) Addrs() ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	for _, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
+		// the kernel dumps the tun alone and never flags a dump of one device interrupted
+		// so no change to another device's addresses fails the pass
 		body := make([]byte, unix.SizeofIfAddrmsg)
 		body[0] = family
+		binary.NativeEndian.PutUint32(body[4:], p.index)
 		replies, err := p.conn.execute(unix.RTM_GETADDR, unix.NLM_F_DUMP, body)
+		// a dump naming a tun the kernel no longer holds ends on ENODEV
+		// no address is left on it to release, so it reads as empty
+		if errors.Is(err, unix.ENODEV) {
+			return nil, nil
+		}
 		if err != nil {
 			return nil, err
 		}

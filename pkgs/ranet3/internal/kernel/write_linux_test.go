@@ -280,6 +280,29 @@ func TestLinuxReadsATableNothingWroteAsEmpty(t *testing.T) {
 	}
 }
 
+// both address dumps name the tun, so the kernel dumps that device alone
+// a tun the kernel no longer holds ends the dump on ENODEV, which reads as no addresses, so the withdraw after the tun
+// closed releases nothing and returns no error
+func TestLinuxAddressDumpsNameTheTun(t *testing.T) {
+	plat, conn := writePlatform(t)
+	if _, err := plat.Addrs(); err != nil {
+		t.Fatal(err)
+	}
+	if len(conn.sent) != 2 {
+		t.Fatalf("the read sent %d requests, want an address dump per family", len(conn.sent))
+	}
+	for i, family := range []uint8{unix.AF_INET, unix.AF_INET6} {
+		sent := conn.sent[i]
+		if index := binary.NativeEndian.Uint32(sent.body[4:]); sent.kind != unix.RTM_GETADDR || sent.flags&unix.NLM_F_DUMP != unix.NLM_F_DUMP || sent.body[0] != family || index != plat.index {
+			t.Errorf("request %d is type %d, flags %#x, family %d and interface %d, want an address dump of family %d on interface %d", i, sent.kind, sent.flags, sent.body[0], index, family, plat.index)
+		}
+	}
+	plat.conn = endingOn(unix.ENODEV)
+	if addresses, err := plat.Addrs(); err != nil || len(addresses) != 0 {
+		t.Errorf("an address dump of a tun the kernel no longer holds read as %v and %v, want no addresses and no error", addresses, err)
+	}
+}
+
 // The report reaches an operator through slog, whose text handler quotes
 // anything shaped like a byte slice rather than listing it, so a []uint8 of
 // protocols 2 and 12 arrived on a live fleet node as protocols="\x02\f" and
@@ -395,56 +418,83 @@ func TestBatchSendsAReadsMarkOnItsLookupAlone(t *testing.T) {
 	}
 }
 
-// linkedNetlink answers a dump of the links with one link, and every other
-// request with route, recording each request
+// linkedNetlink holds the links of names, but made's, which a device made since
+// its first lookup holds from its second on. It answers a lookup of a
+// destination routes holds with that route and every other request with route,
+// recording each request and each index looked up
 type linkedNetlink struct {
 	fakeNetlink
-	index uint32
-	name  string
-	route []byte
+	names  map[uint32]string
+	made   uint32
+	route  []byte
+	routes map[netip.Addr][]byte
+	looked []uint32
 }
 
 func (f *linkedNetlink) execute(kind, flags uint16, body []byte) ([]nlMessage, error) {
 	f.fakeNetlink.execute(kind, flags, body)
-	if kind == unix.RTM_GETLINK {
-		link := make([]byte, unix.SizeofIfInfomsg)
-		binary.NativeEndian.PutUint32(link[4:], f.index)
-		return []nlMessage{{Kind: unix.RTM_NEWLINK, Data: putAttr(link, unix.IFLA_IFNAME, append([]byte(f.name), 0))}}, nil
+	route := f.route
+	if dst, _ := lookupOf(body); kind == unix.RTM_GETROUTE && f.routes[dst] != nil {
+		route = f.routes[dst]
 	}
-	return []nlMessage{{Kind: unix.RTM_NEWROUTE, Data: f.route}}, nil
+	return []nlMessage{{Kind: unix.RTM_NEWROUTE, Data: route}}, nil
+}
+
+func (f *linkedNetlink) link(index uint32, _ string) (linkInfo, error) {
+	name, held := f.names[index]
+	if index == f.made && !slices.Contains(f.looked, index) {
+		held = false
+	}
+	f.looked = append(f.looked, index)
+	if !held {
+		return linkInfo{}, unix.ENODEV
+	}
+	return linkInfo{index: index, name: name}, nil
 }
 
 // lookupsSent is each RTM_GETROUTE f was sent, as its RTA_DST and its RTA_OIF, 0 where it carried none
 func (f *linkedNetlink) lookupsSent() []string {
 	var sent []string
 	for _, request := range f.sent {
-		if request.kind != unix.RTM_GETROUTE {
-			continue
+		if request.kind == unix.RTM_GETROUTE {
+			dst, oif := lookupOf(request.body)
+			sent = append(sent, fmt.Sprintf("%s oif %d", dst, oif))
 		}
-		var dst netip.Addr
-		var oif uint32
-		for attr, value := range (nlMessage{Kind: unix.RTM_GETROUTE, Data: request.body}).attributes(unix.SizeofRtMsg) {
-			switch attr {
-			case unix.RTA_DST:
-				dst, _ = addressFromBytes(value)
-			case unix.RTA_OIF:
-				oif = binary.NativeEndian.Uint32(value)
-			}
-		}
-		sent = append(sent, fmt.Sprintf("%s oif %d", dst, oif))
 	}
 	return sent
 }
 
+// lookupOf is the RTA_DST and the RTA_OIF of an RTM_GETROUTE's body, 0 where it carries none
+func lookupOf(body []byte) (dst netip.Addr, oif uint32) {
+	for attr, value := range (nlMessage{Kind: unix.RTM_GETROUTE, Data: body}).attributes(unix.SizeofRtMsg) {
+		switch attr {
+		case unix.RTA_DST:
+			dst, _ = addressFromBytes(value)
+		case unix.RTA_OIF:
+			oif = binary.NativeEndian.Uint32(value)
+		}
+	}
+	return dst, oif
+}
+
 // a read's interface goes out as RTA_OIF on its own lookup alone and is named
-// as the dump of the links names it, which names the hops too, and a read
-// naming an interface the dump does not hold answers ENODEV with no lookup
-// sent, in both families, but for an IPv6 pair's, which is asked
+// by a lookup of its index, as the hops are, each index looked up once and the
+// links never dumped, and a read naming an interface no device holds answers
+// ENODEV with no lookup sent, in both families, but for an IPv6 pair's, which
+// is asked. A hop out of a device made since the reads named it is asked again
+// and named
 func TestBatchSendsAReadsInterfaceOnItsLookupAlone(t *testing.T) {
-	route := make([]byte, unix.SizeofRtMsg)
-	route[0], route[7] = unix.AF_INET, unix.RTN_UNICAST
-	route = putAttrU32(route, unix.RTA_OIF, 2)
-	conn := &linkedNetlink{index: 2, name: "eth0", route: route}
+	routeOut := func(index uint32) []byte {
+		route := make([]byte, unix.SizeofRtMsg)
+		route[0], route[7] = unix.AF_INET, unix.RTN_UNICAST
+		return putAttrU32(route, unix.RTA_OIF, index)
+	}
+	conn := &linkedNetlink{
+		names:  map[uint32]string{2: "eth0", 9: "wg0"},
+		made:   9,
+		route:  routeOut(2),
+		routes: map[netip.Addr][]byte{addr("203.0.113.73"): routeOut(9)},
+	}
 	reads := []RouteRead{
 		{Source: addr("198.51.100.10"), Destination: addr("203.0.113.70"), OIF: 2, Mark: 0x72},
 		{Destination: addr("203.0.113.70"), Mark: 0x72},
@@ -452,12 +502,13 @@ func TestBatchSendsAReadsInterfaceOnItsLookupAlone(t *testing.T) {
 		{Source: addr("198.51.100.10"), Destination: addr("203.0.113.71"), OIF: 9, Mark: 0x72},
 		{Source: addr("198.51.100.10"), Destination: addr("203.0.113.72"), OIF: 9, Pair: true, Mark: 0x72},
 		{Source: addr("2001:db8:a::10"), Destination: addr("2001:db8:400::7"), OIF: 9, Mark: 0x72},
+		{Destination: addr("203.0.113.73"), Mark: 0x72},
 	}
 	answers, err := routeGetBatch(conn, reads)
 	if err != nil {
 		t.Fatalf("batch: %v", err)
 	}
-	if want := []string{"203.0.113.70 oif 2", "203.0.113.70 oif 0", "2001:db8:400::8 oif 9"}; !slices.Equal(conn.lookupsSent(), want) {
+	if want := []string{"203.0.113.70 oif 2", "203.0.113.70 oif 0", "2001:db8:400::8 oif 9", "203.0.113.73 oif 0"}; !slices.Equal(conn.lookupsSent(), want) {
 		t.Errorf("the batch sent the lookups %q, want %q", conn.lookupsSent(), want)
 	}
 	dumps := 0
@@ -466,8 +517,11 @@ func TestBatchSendsAReadsInterfaceOnItsLookupAlone(t *testing.T) {
 			dumps++
 		}
 	}
-	if dumps != 1 {
-		t.Errorf("the batch dumped the links %d times, want once", dumps)
+	if dumps != 0 {
+		t.Errorf("the batch dumped the links %d times, want never", dumps)
+	}
+	if want := []uint32{2, 9, 9}; !slices.Equal(conn.looked, want) {
+		t.Errorf("the batch looked up the links of indexes %v, want %v", conn.looked, want)
 	}
 	if answers[0].Err != nil || answers[0].OIF != "eth0" || answers[1].Err != nil || answers[1].OIF != "" {
 		t.Errorf("the reads naming a held interface and none answered %+v and %+v, want routes, the first out of eth0", answers[0], answers[1])
@@ -475,9 +529,12 @@ func TestBatchSendsAReadsInterfaceOnItsLookupAlone(t *testing.T) {
 	if errors.Is(answers[2].Err, unix.ENODEV) || answers[2].OIF != "" {
 		t.Errorf("an IPv6 pair's read naming interface 9, which no link holds, answered %+v, want the kernel's answer", answers[2])
 	}
-	for _, gone := range answers[3:] {
+	for _, gone := range answers[3:6] {
 		if !errors.Is(gone.Err, unix.ENODEV) || gone.OIF != "" {
 			t.Errorf("a read naming interface 9, which no link holds, answered %+v, want ENODEV", gone)
 		}
+	}
+	if made := answers[6]; made.Err != nil || len(made.Route.NextHops) != 1 || made.Route.NextHops[0].Device != "wg0" {
+		t.Errorf("a read routed out of interface 9, which a device made since holds, answered %+v and %v, want a route out of wg0", made.Route, made.Err)
 	}
 }

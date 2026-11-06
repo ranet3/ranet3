@@ -33,8 +33,8 @@ type RouteRead struct {
 type BatchAnswer struct {
 	Route MatchedRoute
 	Err   error
-	// OIF names the read's OIF as the batch's dump of the links did, empty
-	// where the read names none or the dump held none
+	// OIF names the read's OIF as the batch's lookup of its index did, empty
+	// where the read names none or no device held it
 	OIF      string
 	ReplyIIF string
 	Reply    MatchedRoute

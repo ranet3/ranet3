@@ -505,6 +505,295 @@ func TestNetlinkReloadRenumberingTheOnlyAddressKeepsAnotherWritersRoutes(t *test
 	}
 }
 
+// a dump whose reply or end carries NLM_F_DUMP_INTR comes back as errDumpInterrupted with none of its replies, and one that carries it
+// nowhere comes back whole
+func TestCollectRefusesAnInterruptedDump(t *testing.T) {
+	reply := func(flags uint16) nlMessage {
+		return nlMessage{Kind: unix.RTM_NEWADDR, Flags: unix.NLM_F_MULTI | flags, Seq: 1, Pid: 1, Data: []byte{1, 2, 3, 4}}
+	}
+	done := func(flags uint16) nlMessage {
+		return nlMessage{Kind: unix.NLMSG_DONE, Flags: unix.NLM_F_MULTI | flags, Seq: 1, Pid: 1, Data: make([]byte, 4)}
+	}
+	for name, arm := range map[string]struct {
+		messages    []nlMessage
+		interrupted bool
+	}{
+		"the flag on a reply":       {[]nlMessage{reply(0), reply(unix.NLM_F_DUMP_INTR), done(0)}, true},
+		"the flag on the end alone": {[]nlMessage{reply(0), reply(0), done(unix.NLM_F_DUMP_INTR)}, true},
+		"the flag nowhere":          {[]nlMessage{reply(0), reply(0), done(0)}, false},
+	} {
+		got, err := collect(1, 1, func() ([]nlMessage, error) { return arm.messages, nil })
+		switch {
+		case arm.interrupted && (err != errDumpInterrupted || got != nil):
+			t.Errorf("%s: the dump read as %d replies and %v, want none and %v", name, len(got), err, errDumpInterrupted)
+		case !arm.interrupted && (err != nil || len(got) != 2):
+			t.Errorf("%s: the dump read as %d replies and %v, want both", name, len(got), err)
+		}
+	}
+}
+
+// a dump a change interrupts twice and leaves whole on the third ask comes back whole, one it interrupts three times is refused after
+// the third ask, and a keyed request a change interrupts or a dump that fails otherwise is asked once
+func TestInterruptedDumpIsAskedAgain(t *testing.T) {
+	for name, arm := range map[string]struct {
+		flags       uint16
+		interrupted int
+		failure     error
+		asks        int
+		want        error
+	}{
+		"a dump interrupted twice":       {flags: unix.NLM_F_DUMP, interrupted: 2, asks: 3},
+		"a dump interrupted three times": {flags: unix.NLM_F_DUMP, interrupted: 3, asks: 3, want: errDumpInterrupted},
+		"a keyed request interrupted":    {interrupted: 1, asks: 1, want: errDumpInterrupted},
+		"a dump that fails otherwise":    {flags: unix.NLM_F_DUMP, failure: unix.ENOBUFS, asks: 1, want: unix.ENOBUFS},
+	} {
+		asks := 0
+		got, err := dumpAgainIfInterrupted(arm.flags, func() ([]nlMessage, error) {
+			asks++
+			if arm.failure != nil {
+				return nil, arm.failure
+			}
+			seq, flags := uint32(asks), uint16(0)
+			if asks <= arm.interrupted {
+				flags = unix.NLM_F_DUMP_INTR
+			}
+			messages := []nlMessage{
+				{Kind: unix.RTM_NEWADDR, Flags: unix.NLM_F_MULTI | flags, Seq: seq, Pid: 1, Data: []byte{1, 2, 3, 4}},
+				{Kind: unix.NLMSG_DONE, Flags: unix.NLM_F_MULTI, Seq: seq, Pid: 1, Data: make([]byte, 4)},
+			}
+			return collect(seq, 1, func() ([]nlMessage, error) { return messages, nil })
+		})
+		if asks != arm.asks {
+			t.Errorf("%s: asked %d times, want %d", name, asks, arm.asks)
+		}
+		switch {
+		case arm.want != nil && (!errors.Is(err, arm.want) || got != nil):
+			t.Errorf("%s: read as %d replies and %v, want none and %v", name, len(got), err, arm.want)
+		case arm.want == nil && (err != nil || len(got) != 1):
+			t.Errorf("%s: read as %d replies and %v, want the whole dump", name, len(got), err)
+		}
+	}
+}
+
+// dumpedAddresses is how many addresses a test dumps while another address comes and goes, more than one datagram of a dump holds
+// interruptedDumps is how many dumps it takes
+// churnBiteDumps is how many dumps a test takes at most waiting for its churn to interrupt one
+const dumpedAddresses, interruptedDumps, churnBiteDumps = 512, 100, 1000
+
+// an address dump that another address coming and going keeps interrupting comes back whole, with no reply the kernel flagged, or as
+// errDumpInterrupted, and never as a table that may miss or repeat an entry
+func TestAddressDumpUnderChurnIsWholeOrRefused(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
+	const dumpedName, churnName = "ranetdump0", "ranetchurn0"
+	createTUN(t, dumpedName)
+	createTUN(t, churnName)
+	dumped, err := conn.link(0, dumpedName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	churned, err := conn.link(0, churnName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, dumped.index, unix.IFF_UP)
+	setLinkFlags(t, conn, churned.index, unix.IFF_UP)
+	addDumpedAddresses(t, conn, dumped.index)
+	churnAddress(t, churned.index, prefix("192.0.2.1/32"))
+
+	body := make([]byte, unix.SizeofIfAddrmsg)
+	body[0] = unix.AF_INET
+	awaitInterruptedDump(t, conn, unix.RTM_GETADDR, body)
+	refused := 0
+	for range interruptedDumps {
+		replies, err := conn.execute(unix.RTM_GETADDR, unix.NLM_F_DUMP, body)
+		if errors.Is(err, errDumpInterrupted) {
+			refused++
+			continue
+		}
+		if err != nil {
+			t.Fatalf("dump the addresses: %v", err)
+		}
+		held := 0
+		for _, reply := range replies {
+			if reply.Flags&unix.NLM_F_DUMP_INTR != 0 {
+				t.Fatal("a dump came back with a reply the kernel flagged as interrupted")
+			}
+			if reply.Kind == unix.RTM_NEWADDR && len(reply.Data) >= unix.SizeofIfAddrmsg && binary.NativeEndian.Uint32(reply.Data[4:]) == dumped.index {
+				held++
+			}
+		}
+		if held != dumpedAddresses {
+			t.Fatalf("a dump that came back whole holds %d of the %d addresses", held, dumpedAddresses)
+		}
+	}
+	if refused == 0 {
+		t.Fatalf("none of %d dumps was interrupted, so the churn proved nothing", interruptedDumps)
+	}
+	t.Logf("%d of %d dumps were interrupted", refused, interruptedDumps)
+}
+
+// the reconciler reads the tun's addresses whole every time while another device's addresses keep changing, since its dumps name
+// the tun and the kernel never flags a dump of one device interrupted
+func TestNetlinkReadsTheTunsAddressesWhileAnotherDeviceChurns(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
+	const device, churnName = "ranetaddrs0", "ranetchurn0"
+	createTUN(t, device)
+	tun, err := conn.link(0, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := createLink(conn, churnName, "dummy"); err != nil {
+		t.Fatalf("create the dummy %s: %v", churnName, err)
+	}
+	churned, err := conn.link(0, churnName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
+	setLinkFlags(t, conn, churned.index, unix.IFF_UP)
+	plat := &netlinkPlatform{index: tun.index, conn: conn}
+	held := []netip.Prefix{prefix("192.0.2.1/32"), prefix("2001:db8::1/128")}
+	for _, address := range held {
+		if err := plat.AddAddr(address); err != nil {
+			t.Fatalf("assign %s: %v", address, err)
+		}
+	}
+	addDumpedAddresses(t, conn, churned.index)
+	churnAddress(t, churned.index, prefix("192.0.2.100/32"))
+
+	for read := range interruptedDumps {
+		addresses, err := plat.Addrs()
+		if err != nil {
+			t.Fatalf("read %d of the tun's addresses failed: %v", read+1, err)
+		}
+		for _, address := range held {
+			if !slices.Contains(addresses, address) {
+				t.Fatalf("read %d of the tun's addresses holds %v, not %s", read+1, addresses, address)
+			}
+		}
+	}
+}
+
+// the kernel ends a dump naming a tun it no longer holds on ENODEV, which the reconciler reads as a tun holding no address, so
+// its withdraw after the tun closed releases nothing and returns no error
+func TestNetlinkReadsATunTheKernelNoLongerHoldsAsEmpty(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getuid() != 0 {
+		t.Skip("the real netlink path needs root on linux")
+	}
+	enterThrowawayNamespace(t)
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatalf("dial rtnetlink: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	requireEmptyNamespace(t, conn)
+	const device = "ranetclosed0"
+	createTUN(t, device)
+	tun, err := conn.link(0, device)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
+	plat := &netlinkPlatform{index: tun.index, conn: conn}
+	if err := plat.AddAddr(prefix("192.0.2.1/32")); err != nil {
+		t.Fatalf("assign 192.0.2.1/32: %v", err)
+	}
+	body := make([]byte, unix.SizeofIfInfomsg)
+	binary.NativeEndian.PutUint32(body[4:], tun.index)
+	if _, err := conn.execute(unix.RTM_DELLINK, unix.NLM_F_ACK, body); err != nil {
+		t.Fatalf("delete %s: %v", device, err)
+	}
+	if addresses, err := plat.Addrs(); err != nil || len(addresses) != 0 {
+		t.Errorf("the read of a tun the kernel no longer holds is %v and %v, want no addresses and no error", addresses, err)
+	}
+}
+
+// addDumpedAddresses puts dumpedAddresses IPv4 host addresses on the device of index
+func addDumpedAddresses(t *testing.T, conn *nlConn, index uint32) {
+	t.Helper()
+	add := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL | unix.NLM_F_ACK)
+	for i := range dumpedAddresses {
+		block := [4]byte{198, 51, 100, byte(i)}
+		if i >= 256 {
+			block = [4]byte{203, 0, 113, byte(i)}
+		}
+		if _, err := conn.execute(unix.RTM_NEWADDR, add, hostAddrMessage(index, netip.PrefixFrom(netip.AddrFrom4(block), 32))); err != nil {
+			t.Fatalf("address %d: %v", i, err)
+		}
+	}
+}
+
+// churnAddress adds address to the device of index and takes it off again, without a pause, until the test ends
+func churnAddress(t *testing.T, index uint32, address netip.Prefix) {
+	t.Helper()
+	add := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL | unix.NLM_F_ACK)
+	message := hostAddrMessage(index, address)
+	churn(t, func(conn *nlConn) {
+		_, _ = conn.execute(unix.RTM_NEWADDR, add, message)
+		_, _ = conn.execute(unix.RTM_DELADDR, unix.NLM_F_ACK, message)
+	})
+}
+
+// churn runs step over a socket of its own, again and again without a pause, until the test ends
+func churn(t *testing.T, step func(conn *nlConn)) {
+	t.Helper()
+	conn, err := dialNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		defer func() { _ = conn.Close() }()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			step(conn)
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		<-stopped
+	})
+}
+
+// awaitInterruptedDump takes dumps of kind with body until the kernel flags one as interrupted, at most churnBiteDumps of them,
+// so a test counts only once its churn bites
+func awaitInterruptedDump(t *testing.T, conn *nlConn, kind uint16, body []byte) {
+	t.Helper()
+	for range churnBiteDumps {
+		replies, err := conn.request(kind, unix.NLM_F_DUMP, body)
+		if errors.Is(err, errDumpInterrupted) || slices.ContainsFunc(replies, func(reply nlMessage) bool { return reply.Flags&unix.NLM_F_DUMP_INTR != 0 }) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("dump: %v", err)
+		}
+	}
+	t.Fatalf("the churn interrupted none of %d dumps, so it proved nothing", churnBiteDumps)
+}
+
 // enterThrowawayNamespace moves this test's thread into a fresh network
 // namespace. The thread is never unlocked, so the Go runtime destroys it when
 // this goroutine exits and takes the namespace with it.

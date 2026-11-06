@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -15,8 +16,10 @@ import (
 
 // RouteGetBatch answers each read as RouteGet does, through one rtnetlink
 // socket rather than one a read. A read's failure is its own answer, and the
-// batch fails whole only when the socket, an arrival device's lookup or a dump
-// of the links does
+// batch fails whole only when the socket or an arrival device's lookup does, or
+// a lookup naming a device by its index fails otherwise than with ENODEV, which
+// leaves that device unnamed. Each device is named by a keyed
+// RTM_GETLINK, which a change to the links never interrupts as it does a dump
 func RouteGetBatch(reads []RouteRead) ([]BatchAnswer, error) {
 	conn, err := dialNetlink()
 	if err != nil {
@@ -39,10 +42,27 @@ func routeGetBatch(conn netlinkConn, reads []RouteRead) ([]BatchAnswer, error) {
 		}
 		arrivals[read.IIF] = link.index
 	}
-	var names map[uint32]string
-	if slices.ContainsFunc(reads, func(read RouteRead) bool { return read.OIF != 0 }) {
-		var err error
-		if names, err = linkNames(conn); err != nil {
+	names := make(map[uint32]string)
+	missing := make(map[uint32]bool)
+	nameIndexes := func(indexes ...uint32) error {
+		for _, index := range indexes {
+			if _, held := names[index]; held || index == 0 || missing[index] {
+				continue
+			}
+			link, err := conn.link(index, "")
+			switch {
+			case errors.Is(err, unix.ENODEV):
+				missing[index] = true
+			case err != nil:
+				return fmt.Errorf("kernel: name interface %d: %w", index, err)
+			default:
+				names[index] = link.name
+			}
+		}
+		return nil
+	}
+	for _, read := range reads {
+		if err := nameIndexes(read.OIF); err != nil {
 			return nil, err
 		}
 	}
@@ -50,8 +70,8 @@ func routeGetBatch(conn netlinkConn, reads []RouteRead) ([]BatchAnswer, error) {
 	unnamed := make([]batchIndexes, len(reads))
 	for i, read := range reads {
 		answer, indexes := &answers[i], &unnamed[i]
-		// a read naming an interface the dump does not hold answers ENODEV with
-		// no request, but an IPv6 pair's, which is asked (ip6_datagram_send_ctl,
+		// a read naming an interface no device holds answers ENODEV with no
+		// request, but an IPv6 pair's, which is asked (ip6_datagram_send_ctl,
 		// ip_route_output_key_hash_rcu, udpv6_sendmsg)
 		if name, held := names[read.OIF]; read.OIF == 0 || held || read.Pair && read.Destination.Is6() {
 			answer.OIF = name
@@ -73,20 +93,14 @@ func routeGetBatch(conn netlinkConn, reads []RouteRead) ([]BatchAnswer, error) {
 			answer.Reply, indexes.reply, answer.ReplyErr = batchRead(conn, read.Destination, read.Source, indexes.arrival, 0, 0)
 		}
 	}
-	if !slices.ContainsFunc(unnamed, func(indexes batchIndexes) bool { return len(indexes.route) > 0 }) {
-		return answers, nil
-	}
-	// the hops are named by the dump a read naming an interface took, and a hop
-	// that dump does not hold takes another
-	unheld := func(index uint32) bool {
-		_, ok := names[index]
-		return !ok
-	}
-	if slices.ContainsFunc(unnamed, func(indexes batchIndexes) bool {
-		return slices.ContainsFunc(indexes.route, unheld) || slices.ContainsFunc(indexes.reply, unheld)
-	}) {
-		var err error
-		if names, err = linkNames(conn); err != nil {
+	// an interface no device held at its read may be a device made since, so a
+	// hop naming it is asked again
+	clear(missing)
+	for _, indexes := range unnamed {
+		if err := nameIndexes(indexes.route...); err != nil {
+			return nil, err
+		}
+		if err := nameIndexes(indexes.reply...); err != nil {
 			return nil, err
 		}
 	}
@@ -111,7 +125,7 @@ func routeGetBatch(conn netlinkConn, reads []RouteRead) ([]BatchAnswer, error) {
 	return answers, nil
 }
 
-// batchIndexes holds one read's next hop indexes until the dump names them, and
+// batchIndexes holds one read's next hop indexes until the batch names them, and
 // the index its reply read arrived on, 0 where none was made
 type batchIndexes struct {
 	route, reply []uint32
@@ -129,24 +143,9 @@ func replyUnread(read RouteRead) error {
 	return fmt.Errorf("kernel: no reply lookup from %s to %s: the forward lookup failed", read.Destination, read.Source)
 }
 
-func linkNames(c netlinkConn) (map[uint32]string, error) {
-	replies, err := c.execute(unix.RTM_GETLINK, unix.NLM_F_DUMP, make([]byte, unix.SizeofIfInfomsg))
-	if err != nil {
-		return nil, fmt.Errorf("kernel: dump links: %w", err)
-	}
-	names := make(map[uint32]string, len(replies))
-	for _, reply := range replies {
-		if reply.Kind == unix.RTM_NEWLINK && len(reply.Data) >= unix.SizeofIfInfomsg {
-			link := decodeLink(reply)
-			names[link.index] = link.name
-		}
-	}
-	return names, nil
-}
-
 // nameHops names each next hop of route from names, indexes holding their
-// interface indexes in order. An index the dump does not hold is a device gone
-// since the lookup, and answers ENODEV as RouteGet's naming of it would
+// interface indexes in order. An index that names lacks is a device gone since
+// its lookup, and answers ENODEV as RouteGet's naming of it would
 func nameHops(route MatchedRoute, indexes []uint32, names map[uint32]string) (MatchedRoute, error) {
 	for i, index := range indexes {
 		name, ok := names[index]
