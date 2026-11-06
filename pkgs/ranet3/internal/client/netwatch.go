@@ -19,6 +19,8 @@ import (
 type networkSource interface {
 	Changes() <-chan kernel.NetworkChange
 	State() (kernel.NetworkState, kernel.NetworkChange)
+	Health() kernel.WatchHealth
+	HealthChanged() <-chan struct{}
 	Close() error
 }
 
@@ -43,10 +45,16 @@ func openNetwork(host kernel.Host, mesh string, watcher kernel.Watcher) (network
 // a dialer that finds its session healthy stands down as it does after any wake
 // a link that comes or goes alone moves no session's path, so a container starting costs no probe
 func (c *Client) followNetwork(ctx context.Context) {
+	failing := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.network.HealthChanged():
+			if health := c.network.Health(); health.Failing() != failing {
+				failing = health.Failing()
+				c.events.Emit("network.read", "", readAttrs(health)...)
+			}
 		case change := <-c.network.Changes():
 			if wake := c.reconcilerNow().Network; wake != nil {
 				wake(change)
@@ -81,6 +89,15 @@ func (c *Client) networkState() kernel.NetworkState {
 	}
 	state, _ := c.network.State()
 	return state
+}
+
+// readAttrs says whether the watch's reads fail, how many in a row and the last error, which is empty while they succeed
+func readAttrs(health kernel.WatchHealth) []slog.Attr {
+	err := ""
+	if health.Err != nil {
+		err = health.Err.Error()
+	}
+	return []slog.Attr{slog.Bool("failing", health.Failing()), slog.Int("failures", health.Failures), slog.String("err", err)}
 }
 
 // changeAttrs names what moved in each family that moved, the default with what it was, the addresses added and removed, and the links added, removed and whose prefixes or far ends moved

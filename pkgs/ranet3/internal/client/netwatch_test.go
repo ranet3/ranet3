@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -75,10 +76,14 @@ func busyPeer(t *testing.T, hub *transport.Hub, bus *events.Bus) *transport.Mux 
 }
 
 // fakeNetwork is a watch whose changes a test sends and whose reading it sets
+// its health is the one a test sets, healthy where it sets none, and a nil healthChanged never wakes
 type fakeNetwork struct {
-	changes chan kernel.NetworkChange
-	current kernel.NetworkState
-	last    kernel.NetworkChange
+	changes       chan kernel.NetworkChange
+	current       kernel.NetworkState
+	last          kernel.NetworkChange
+	healthChanged chan struct{}
+	mu            sync.Mutex
+	health        kernel.WatchHealth
 }
 
 func (f *fakeNetwork) Changes() <-chan kernel.NetworkChange { return f.changes }
@@ -86,6 +91,20 @@ func (f *fakeNetwork) Changes() <-chan kernel.NetworkChange { return f.changes }
 func (f *fakeNetwork) State() (kernel.NetworkState, kernel.NetworkChange) {
 	return f.current, f.last
 }
+
+func (f *fakeNetwork) Health() kernel.WatchHealth {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.health
+}
+
+func (f *fakeNetwork) setHealth(health kernel.WatchHealth) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.health = health
+}
+
+func (f *fakeNetwork) HealthChanged() <-chan struct{} { return f.healthChanged }
 
 func (f *fakeNetwork) Close() error { return nil }
 
@@ -159,6 +178,49 @@ func TestNetworkChangeProbesEverySessionAndWakesEveryDialer(t *testing.T) {
 	}
 	if _, ok := event.Attrs["ipv6_default"]; ok {
 		t.Errorf("a change to IPv4 alone recorded IPv6 as well: %v", event.Attrs)
+	}
+}
+
+// the watch's reads turning to failing are recorded once as network.read with the count and the error, however often the watch
+// wakes while they fail, and turning back once more, with neither
+func TestFollowNetworkRecordsAFailingRead(t *testing.T) {
+	c := writable(t)
+	c.events = events.New()
+	// unbuffered, so a wake sent has been taken and the one before it acted on
+	network := &fakeNetwork{changes: make(chan kernel.NetworkChange), healthChanged: make(chan struct{})}
+	c.network = network
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.followNetwork(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	read := time.Now().Add(-time.Minute)
+	failed := errors.New("kernel: dump addresses: no buffer space available")
+	for failures := 1; failures <= 3; failures++ {
+		network.setHealth(kernel.WatchHealth{ReadAt: read, FailingSince: read.Add(time.Second), Failures: failures, Err: failed})
+		network.healthChanged <- struct{}{}
+		// the follower reads the health after it takes the wake, so the next failure waits until it has acted on the first
+		if failures == 1 {
+			waitFor(t, convergeBudget, "the first failure recorded", func() bool { return len(recorded(c.events, "network.read")) == 1 })
+		}
+	}
+	network.setHealth(kernel.WatchHealth{ReadAt: time.Now()})
+	network.healthChanged <- struct{}{}
+	network.healthChanged <- struct{}{}
+
+	got := recorded(c.events, "network.read")
+	if len(got) != 2 {
+		t.Fatalf("three wakes while failing and two after were recorded as %d network.read events, want 2: %v", len(got), got)
+	}
+	for i, want := range []map[string]string{
+		{"failing": "true", "failures": "1", "err": failed.Error()},
+		{"failing": "false", "failures": "0", "err": ""},
+	} {
+		for key, value := range want {
+			if got[i].Attrs[key] != value {
+				t.Errorf("network.read %d carries %s=%q, want %q (all %v)", i, key, got[i].Attrs[key], value, got[i].Attrs)
+			}
+		}
 	}
 }
 

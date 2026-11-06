@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"slices"
 	"testing"
@@ -64,6 +65,22 @@ func TestNetmonViewReportsTheWatchAndItsLastChange(t *testing.T) {
 	}
 	if info.LastChange == nil || len(info.LastChange.Families) != 1 || len(info.LastChange.Families[0].Links) != 2 || info.LastChange.Families[0].Default != nil {
 		t.Errorf("a bridge coming up reports %+v, want the IPv4 links alone", info.LastChange)
+	}
+
+	// a watch whose reads fail says since when, how many and the last error, beside when it last read the host whole
+	read := time.Now().Add(-2 * time.Minute)
+	busy := errors.New("kernel: dump links: device or resource busy")
+	network.setHealth(kernel.WatchHealth{ReadAt: read, FailingSince: read.Add(time.Minute), Failures: 4, Err: busy})
+	info = c.DebugNetmon()
+	if !info.ReadAt.Equal(read) || time.Duration(info.ReadAgo) < 2*time.Minute {
+		t.Errorf("a read two minutes old reads as at %v, %v ago", info.ReadAt, time.Duration(info.ReadAgo))
+	}
+	if failing := info.ReadFailing; failing == nil || !failing.Since.Equal(read.Add(time.Minute)) || failing.Failures != 4 || failing.Err != busy.Error() {
+		t.Errorf("reads failing four times report %+v", info.ReadFailing)
+	}
+	network.setHealth(kernel.WatchHealth{ReadAt: time.Now()})
+	if info := c.DebugNetmon(); info.ReadFailing != nil {
+		t.Errorf("reads that succeed again report %+v", info.ReadFailing)
 	}
 }
 

@@ -10,16 +10,20 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
-// DebugNetmon reads the network watch's latest reading and the last change it signaled
+// DebugNetmon reads the network watch's latest reading, how its reads go and the last change it signaled
 func (c *Client) DebugNetmon() control.NetmonInfo {
 	if c.network == nil {
 		return control.NetmonInfo{}
 	}
 	current, last := c.network.State()
+	health := c.network.Health()
 	info := control.NetmonInfo{Watching: true, Families: []control.NetmonFamily{
 		{Family: string(kernel.FamilyIPv4), Default: netmonDefault(current.IPv4.Default), Addresses: current.IPv4.Addresses, Links: netmonLinks(current.IPv4.Links)},
 		{Family: string(kernel.FamilyIPv6), Default: netmonDefault(current.IPv6.Default), Addresses: current.IPv6.Addresses, Links: netmonLinks(current.IPv6.Links)},
-	}}
+	}, ReadAt: health.ReadAt.UTC(), ReadAgo: control.Duration(time.Since(health.ReadAt))}
+	if health.Failing() {
+		info.ReadFailing = &control.NetmonReadFailing{Since: health.FailingSince.UTC(), Failures: health.Failures, Err: health.Err.Error()}
+	}
 	if last.At.IsZero() {
 		return info
 	}
