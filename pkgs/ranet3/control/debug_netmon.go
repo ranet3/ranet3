@@ -27,8 +27,20 @@ type NetmonInfo struct {
 	// Watching is false on a platform without a network watch, which leaves the rest empty
 	Watching bool           `json:"watching"`
 	Families []NetmonFamily `json:"families,omitempty"`
+	// ReadAt is when the watch last read the host whole, and ReadAgo how long before the answer
+	ReadAt  time.Time `json:"read_at,omitzero"`
+	ReadAgo Duration  `json:"read_ago,omitzero"`
+	// ReadFailing is present while the watch's reads of the host fail, which leaves the families as ReadAt found them
+	ReadFailing *NetmonReadFailing `json:"read_failing,omitempty"`
 	// LastChange is absent before the first
 	LastChange *NetmonChange `json:"last_change,omitempty"`
+}
+
+// NetmonReadFailing is the watch's reads failing now, which it reads again on a backoff
+type NetmonReadFailing struct {
+	Since    time.Time `json:"since"`
+	Failures int       `json:"failures"`
+	Err      string    `json:"err"`
 }
 
 // NetmonDefault is the host's own default route of one family, empty where it has none
@@ -89,7 +101,8 @@ type NetmonFamilyChange struct {
 // Netmon reads the host's network as the daemon's watch last read it
 func (c *Client) Netmon() (NetmonInfo, error) { return read[NetmonInfo](c, PathDebugNetmon) }
 
-// RenderNetmon writes each family's default, addresses and links, then the last change by what moved
+// RenderNetmon writes each family's default, addresses and links, when the watch read them and whether its reads fail, then the
+// last change by what moved
 func RenderNetmon(w io.Writer, info NetmonInfo) {
 	if !info.Watching {
 		pairs(w, [][]string{{"Watching", "no, this platform has no network watch"}})
@@ -104,6 +117,13 @@ func RenderNetmon(w io.Writer, info NetmonInfo) {
 		if len(family.Links) > 0 {
 			rows = append(rows, []string{name + " links", linkText(family.Links)})
 		}
+	}
+	if !info.ReadAt.IsZero() {
+		rows = append(rows, []string{"Read", sinceText(time.Duration(info.ReadAgo)) + " ago, at " + info.ReadAt.UTC().Format(time.DateTime) + " UTC"})
+	}
+	if failing := info.ReadFailing; failing != nil {
+		rows = append(rows, []string{"Read failing", "since " + failing.Since.UTC().Format(time.DateTime) + " UTC, " +
+			countOf(failing.Failures, "failed read") + ", " + failing.Err})
 	}
 	if info.LastChange == nil {
 		rows = append(rows, []string{"Changed", "not since the watch started"})

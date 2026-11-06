@@ -3,4 +3,5 @@ IPv4 addresses  none
 IPv6 default    none
 IPv6 addresses  2001:db8:7::20
 IPv6 links      docker0, eth1 2001:db8:7::20/64, lo
+Read            12 seconds ago, at 2026-10-08 09:16:54 UTC
 Changed         not since the watch started

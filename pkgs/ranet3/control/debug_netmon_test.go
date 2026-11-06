@@ -13,7 +13,8 @@ import (
 	"time"
 )
 
-// netmonFixture is a laptop that moved from wifi to a dock three minutes ago, beside a container bridge and a point-to-point link
+// netmonFixture is a laptop that moved from wifi to a dock three minutes ago, beside a container bridge and a point-to-point link,
+// its host read 12 seconds ago
 func netmonFixture() NetmonInfo {
 	dock := NetmonDefault{Interface: "eth1", Gateway: netip.MustParseAddr("198.51.100.1")}
 	wifi := NetmonDefault{Interface: "wlan0", Gateway: netip.MustParseAddr("203.0.113.1")}
@@ -28,6 +29,8 @@ func netmonFixture() NetmonInfo {
 			{Family: "ipv4", Default: dock, Addresses: []netip.Addr{netip.MustParseAddr("198.51.100.20"), netip.MustParseAddr("198.51.100.129"), netip.MustParseAddr("203.0.113.33")}, Links: links4},
 			{Family: "ipv6", Addresses: []netip.Addr{netip.MustParseAddr("2001:db8:7::20")}, Links: links6},
 		},
+		ReadAt:  time.Date(2026, 10, 8, 9, 16, 54, 0, time.UTC),
+		ReadAgo: Duration(12 * time.Second),
 		LastChange: &NetmonChange{
 			At:  time.Date(2026, 10, 8, 9, 14, 2, 0, time.UTC),
 			Ago: Duration(3*time.Minute + 4*time.Second),
@@ -57,6 +60,15 @@ func TestNetmonRendersAsTheGoldenFiles(t *testing.T) {
 	out.Reset()
 	RenderNetmon(&out, NetmonInfo{})
 	golden(t, "netmon-unwatched.txt", []byte(out.String()))
+
+	// a watch whose reads have failed for a minute, the families left as its last read found them
+	info = netmonFixture()
+	info.ReadAt, info.ReadAgo = time.Date(2026, 10, 8, 9, 15, 6, 0, time.UTC), Duration(2*time.Minute)
+	info.ReadFailing = &NetmonReadFailing{Since: time.Date(2026, 10, 8, 9, 16, 6, 0, time.UTC), Failures: 6, Err: "kernel: dump addresses: no buffer space available"}
+	out.Reset()
+	RenderNetmon(&out, info)
+	golden(t, "netmon-failing.txt", []byte(out.String()))
+	goldenJSON(t, "netmon-failing.json", info)
 }
 
 // netmonSource serves the netmon view and the probe action, recording what the action was asked
