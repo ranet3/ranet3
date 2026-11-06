@@ -6,12 +6,10 @@
 package kernel
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
 	"slices"
-	"unsafe"
 
 	"golang.org/x/net/route"
 	"golang.org/x/sys/unix"
@@ -43,11 +41,6 @@ const (
 	loopFlags = unix.RTF_UP | unix.RTF_STATIC | unix.RTF_REJECT | unix.RTF_GATEWAY
 	loopApart = unix.RTF_IFSCOPE | unix.RTF_HOST | unix.RTF_WASCLONED | unix.RTF_LLINFO | unix.RTF_BLACKHOLE
 )
-
-// rtmUseOffset is where a dumped rt_msghdr carries rtm_use, which is rt_use,
-// the rt_rmx.rmx_pksent ip_output counts each send it looks up in
-// (bsd/net/route_private.h)
-const rtmUseOffset = int(unsafe.Offsetof(unix.RtMsghdr{}.Use))
 
 // loopGateway is the next hop of a route in the rejects' shape, the loopback
 // address of its family, through which the kernel takes lo0
@@ -163,47 +156,27 @@ func (p *routePlatform) holdsFallback() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(rejectKeys, func(key netip.Prefix) bool {
-		_, ok := held[key]
-		return ok
-	}), nil
+	return slices.ContainsFunc(rejectKeys, func(key netip.Prefix) bool { return held[key] }), nil
 }
 
 // loopRows is each key a dump of host holds a route in the rejects' shape at
-// on the interface at loopback, with the sends it counted
-func loopRows(host Host, loopback int) (map[netip.Prefix]uint64, error) {
+// on the interface at loopback
+func loopRows(host Host, loopback int) (map[netip.Prefix]bool, error) {
 	rib, err := host.Dump()
 	if err != nil {
 		return nil, fmt.Errorf("kernel: dump the routing table: %w", err)
 	}
-	held := make(map[netip.Prefix]uint64)
-	for len(rib) > 0 {
-		size := 0
-		if len(rib) >= 2 {
-			size = int(binary.NativeEndian.Uint16(rib))
+	messages, err := route.ParseRIB(route.RIBTypeRoute, rib)
+	if err != nil {
+		return nil, fmt.Errorf("kernel: parse the route dump: %w", err)
+	}
+	held := make(map[netip.Prefix]bool)
+	for _, message := range messages {
+		if rm, ok := message.(*route.RouteMessage); ok {
+			if destination, ok := loopShaped(rm, loopback); ok {
+				held[destination] = true
+			}
 		}
-		if size < 4 || size > len(rib) {
-			return nil, errors.New("kernel: the route dump holds a message cut short")
-		}
-		one := rib[:size]
-		rib = rib[size:]
-		messages, err := route.ParseRIB(route.RIBTypeRoute, one)
-		if err != nil || len(messages) != 1 {
-			continue
-		}
-		rm, ok := messages[0].(*route.RouteMessage)
-		if !ok {
-			continue
-		}
-		destination, ok := loopShaped(rm, loopback)
-		if !ok {
-			continue
-		}
-		var used uint64
-		if size >= rtmUseOffset+4 {
-			used = uint64(binary.NativeEndian.Uint32(one[rtmUseOffset:]))
-		}
-		held[destination] = used
 	}
 	return held, nil
 }
@@ -220,7 +193,7 @@ func deleteLoops(host Host, sock rtSocket, loopback int, keys []netip.Prefix) er
 	}
 	var errs []error
 	for _, key := range keys {
-		if _, ok := held[key]; !ok {
+		if !held[key] {
 			continue
 		}
 		message, err := loopMessage(unix.RTM_DELETE, key)
@@ -259,9 +232,7 @@ func deleteRejects(host Host, keys []netip.Prefix) error {
 // ResolvedLinkServers has no systemd-resolved to ask here
 func ResolvedLinkServers() ([]LinkResolver, error) { return nil, nil }
 
-// ReadFallback reads the rejects for debug rules, each with the sends it
-// refused where it counts them, which an IPv4 reject does and an IPv6 one
-// does not (measured)
+// ReadFallback reads the rejects for debug rules
 func ReadFallback() (FallbackDebug, error) {
 	return readRejects(runningKernel{})
 }
@@ -277,15 +248,9 @@ func readRejects(host Host) (FallbackDebug, error) {
 		return out, err
 	}
 	for _, key := range rejectKeys {
-		used, ok := held[key]
-		if !ok {
-			continue
+		if held[key] {
+			out.Rules = append(out.Rules, FallbackDebugRule{Spec: fmt.Sprintf("%s via %s reject", key, loopGateway(key))})
 		}
-		rule := FallbackDebugRule{Spec: fmt.Sprintf("%s via %s reject", key, loopGateway(key)), Counted: key.Addr().Is4()}
-		if rule.Counted {
-			rule.Packets = used
-		}
-		out.Rules = append(out.Rules, rule)
 	}
 	out.Held = len(out.Rules) > 0
 	return out, nil

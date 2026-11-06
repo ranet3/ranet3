@@ -234,6 +234,35 @@ func TestRulesRenderTheFallbackTable(t *testing.T) {
 	golden(t, "rules-fallback-unheld.txt", []byte(out.String()))
 }
 
+// On macOS the switch renders as its rejects on lo0 beside the platform's
+// lack of policy rules, with neither hook nor priority nor a count, and the
+// overlay's lookups name the route each ends at
+func TestRulesRenderTheDarwinSwitch(t *testing.T) {
+	var rejects []FallbackTableRule
+	for _, key := range []string{"1.0.0.0/8", "2.0.0.0/7", "4.0.0.0/6", "8.0.0.0/5", "16.0.0.0/4", "32.0.0.0/3", "64.0.0.0/2", "128.0.0.0/1"} {
+		rejects = append(rejects, FallbackTableRule{Spec: key + " via 127.0.0.1 reject"})
+	}
+	for _, key := range []string{"100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1"} {
+		rejects = append(rejects, FallbackTableRule{Spec: key + " via ::1 reject"})
+	}
+	darwin := RulesInfo{
+		Policy:    []PolicyRule{},
+		PolicyErr: "this platform has no policy rules",
+		Missing:   []PolicyRule{},
+		Border:    &BorderTable{UnenforcedOn: "darwin"},
+		Lookups: []RuleLookup{
+			{Lookup: "overlay", Family: "ipv4", Prefix: netip.MustParsePrefix("192.0.2.0/24"), Address: netip.MustParseAddr("192.0.2.2"), Answer: "192.0.2.0/24 via 127.0.0.1 on lo0 reject"},
+			{Lookup: "overlay", Family: "ipv6", Prefix: netip.MustParsePrefix("3fff::/20"), Address: netip.MustParseAddr("3fff::2"), Answer: "3fff::/21 on utun5", Taken: true},
+			{Lookup: "underlay", Family: "ipv4", Prefix: netip.MustParsePrefix("0.0.0.0/0"), Address: netip.MustParseAddr("203.0.113.70"), Answer: "dev en0"},
+		},
+		Fallback: &FallbackTable{Where: "rejects on lo0", State: "holding", Held: true, Rules: rejects, Sets: []FallbackTableSet{}},
+	}
+	var out strings.Builder
+	RenderRules(&out, darwin)
+	golden(t, "rules-darwin-switch.txt", []byte(out.String()))
+	goldenJSON(t, "rules-darwin-switch.json", darwin)
+}
+
 // in mode 3 the view lists the two steered defaults of the reconciler's table
 // after the lookups and before the antispoof filter's table, which every Linux
 // node writes, installed while the path is up and the mesh holds a live

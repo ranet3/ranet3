@@ -2,3 +2,5 @@ table 200 protocol 155, 4 installed, no pass yet, exit mode, fallback none passi
 table 200 protocol 155, 4 installed, no pass yet, exit mode, fallback none holding, 12 packets, 720 B dropped, 198.0.0.0/7 left out of the LAN as it captures the machine, 203.0.113.0/24 left out of the LAN as public, outside the private and link-local ranges and cap.exit lan, 2001:db8:a::/64 left out of the LAN as public, outside the private and link-local ranges and cap.exit lan, gateway.example.org does not resolve, DNS server 203.0.113.53 on eth0 lies beyond the LAN
 table 200 protocol 155, 4 installed, no pass yet, exit mode, fallback none not holding, its set lan4 holds { }, where { 198.51.100.0/25 } was written, 3 packets, 180 B dropped
 table 200 protocol 155, 4 installed, no pass yet, exit mode, fallback none not holding, netlink: dump interrupted, drops not read yet
+table 200 protocol 155, 4 installed, no pass yet, exit mode, fallback none holding
+table 200 protocol 155, 4 installed, no pass yet, exit mode, fallback none not holding, another program's route 2000::/3 on utun5 holds a key of the switch's

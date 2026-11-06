@@ -469,17 +469,21 @@ type KernelExit struct {
 	Fallback *KernelFallback `json:"fallback,omitempty"`
 }
 
-// KernelFallback is the table ranet3_fallback as the reconciler's last pass
-// read it back
+// KernelFallback is the kill switch as the reconciler's last pass read it
+// back, Linux's table ranet3_fallback or macOS's rejects on lo0
 type KernelFallback struct {
-	// State is holding while no exit is live and the table reads back as
-	// written, passing while an exit is live, and not holding while the table
-	// does not read back as written, for the Reason given. routing.md's "The
-	// kill switch on Linux" lists the table's lines.
+	// State is holding while no exit is live and the switch reads back as
+	// written, passing while an exit is live, and not holding while it does
+	// not read back as written, for the Reason given. routing.md's "The kill
+	// switch on Linux" lists the table's lines, and "The kill switch on macOS"
+	// the rejects.
 	State  string `json:"state"`
 	Reason string `json:"reason,omitempty"`
 	// Dropped holds the packets and bytes the last lines of both chains have dropped, summed, as the last read of the table that succeeded found them, left out until a read of the table by this process has succeeded
 	Dropped *FallbackDrops `json:"dropped,omitempty"`
+	// Uncounted is a switch that counts nothing it refuses, macOS's, whose
+	// Dropped stays absent
+	Uncounted bool `json:"uncounted,omitempty"`
 	// Captured is each connected network left out of the LAN, since its
 	// length counts as capturing the machine
 	Captured []string `json:"captured,omitempty"`

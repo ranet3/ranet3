@@ -88,13 +88,11 @@ type FallbackDebug struct {
 }
 
 // FallbackDebugRule is one line of a chain, by the comment it was written
-// under, with what it counted, or on darwin one reject with the sends it
-// refused where Counted says it counts them
+// under, with what it counted, or on darwin one reject
 type FallbackDebugRule struct {
 	Chain          string
 	Spec           string
 	Packets, Bytes uint64
-	Counted        bool
 }
 
 // FallbackDebugSet is one named set with its elements, a range that is no

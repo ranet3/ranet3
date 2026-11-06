@@ -110,7 +110,7 @@ func kernelExit(exit *kernel.ExitStatus) *control.KernelExit {
 		out.Skipped = append(out.Skipped, control.KernelSkip{Entry: skip.Entry, Link: skip.Link, Reason: skip.Reason})
 	}
 	if f := exit.Fallback; f != nil {
-		out.Fallback = &control.KernelFallback{State: string(f.State), Reason: f.Fault}
+		out.Fallback = &control.KernelFallback{State: string(f.State), Reason: f.Fault, Uncounted: f.Uncounted}
 		if f.DropsRead {
 			out.Fallback.Dropped = &control.FallbackDrops{Packets: f.Dropped, Bytes: f.DroppedBytes}
 		}

@@ -49,23 +49,25 @@ type RulesInfo struct {
 	Fallback *FallbackTable `json:"fallback,omitempty"`
 }
 
-// FallbackTable is the table ranet3_fallback as a debug read finds it now,
-// beside the state the reconciler's last pass gave it
+// FallbackTable is the kill switch as a debug read finds it now, beside the
+// state the reconciler's last pass gave it: the table ranet3_fallback with its
+// chain's hook and priority on Linux, and the rejects on lo0 on macOS, which
+// have neither
 type FallbackTable struct {
 	Where    string `json:"where"`
-	Hook     string `json:"hook"`
-	Priority int    `json:"priority"`
+	Hook     string `json:"hook,omitempty"`
+	Priority int    `json:"priority,omitempty"`
 	State    string `json:"state"`
 	Reason   string `json:"reason,omitempty"`
-	// Held is whether the kernel holds the table at all
+	// Held is whether the kernel holds the table, or any reject, at all
 	Held  bool                `json:"held"`
 	Rules []FallbackTableRule `json:"rules"`
 	Sets  []FallbackTableSet  `json:"sets"`
 	Err   string              `json:"err,omitempty"`
 }
 
-// FallbackTableRule is one line of a chain as the kernel holds it, with
-// what it counted where it counts
+// FallbackTableRule is one line of a chain, or one reject, as the kernel
+// holds it, with what it counted where it counts, which a reject does not
 type FallbackTableRule struct {
 	Chain   string `json:"chain,omitempty"`
 	Spec    string `json:"spec"`
@@ -291,14 +293,18 @@ func RenderRules(w io.Writer, info RulesInfo) {
 	}
 }
 
-// renderFallback writes the switch's table: its lines with the drop's count,
-// then each set's elements
+// renderFallback writes the switch: its table's lines with the drop's count,
+// then each set's elements, or on macOS each reject
 func renderFallback(w io.Writer, table *FallbackTable) {
 	state := table.State
 	if table.Reason != "" {
 		state += ", " + table.Reason
 	}
-	fmt.Fprintf(w, "\nFallback table, %s, %s at priority %d, %s\n", table.Where, table.Hook, table.Priority, state)
+	if table.Hook != "" {
+		fmt.Fprintf(w, "\nFallback table, %s, %s at priority %d, %s\n", table.Where, table.Hook, table.Priority, state)
+	} else {
+		fmt.Fprintf(w, "\nFallback, %s, %s\n", table.Where, state)
+	}
 	switch {
 	case table.Err != "":
 		fmt.Fprintf(w, "  read now: %s\n", table.Err)

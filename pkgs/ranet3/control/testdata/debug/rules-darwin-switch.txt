@@ -1,0 +1,26 @@
+Policy rules: this platform has no policy rules
+Lookups
+  Lookup    Family  Prefix        Address       Source  Interface  Taken  Answer
+  overlay   ipv4    192.0.2.0/24  192.0.2.2     -       -          no     192.0.2.0/24 via 127.0.0.1 on lo0 reject
+  overlay   ipv6    3fff::/20     3fff::2       -       -          yes    3fff::/21 on utun5
+  underlay  ipv4    0.0.0.0/0     203.0.113.70  -       -          no     dev en0
+
+Antispoof filter, not enforced on darwin
+
+Fallback, rejects on lo0, holding
+  1.0.0.0/8 via 127.0.0.1 reject
+  2.0.0.0/7 via 127.0.0.1 reject
+  4.0.0.0/6 via 127.0.0.1 reject
+  8.0.0.0/5 via 127.0.0.1 reject
+  16.0.0.0/4 via 127.0.0.1 reject
+  32.0.0.0/3 via 127.0.0.1 reject
+  64.0.0.0/2 via 127.0.0.1 reject
+  128.0.0.0/1 via 127.0.0.1 reject
+  100::/8 via ::1 reject
+  200::/7 via ::1 reject
+  400::/6 via ::1 reject
+  800::/5 via ::1 reject
+  1000::/4 via ::1 reject
+  2000::/3 via ::1 reject
+  4000::/2 via ::1 reject
+  8000::/1 via ::1 reject

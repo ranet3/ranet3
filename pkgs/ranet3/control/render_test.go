@@ -474,7 +474,8 @@ func TestKernelLineOnDarwinNamesTheCoverAndTheFamilyLeftOut(t *testing.T) {
 // The kernel line names fallback = "none"'s state and what its drop counted in
 // each state, or that no read has found the drops yet, with each network the
 // LAN leaves out, each endpoint name that does not resolve and each DNS server
-// beyond the LAN, and says nothing of the switch under "uplink".
+// beyond the LAN, and says nothing of the switch under "uplink". macOS's
+// switch counts nothing, and its line names no drops.
 func TestKernelLineNamesTheSwitchsState(t *testing.T) {
 	exit := func(fallback *KernelFallback) KernelStatus {
 		return KernelStatus{Enabled: true, Where: "table 200 protocol 155", Table: 200, Protocol: 155, Installed: 4, Exit: &KernelExit{Fallback: fallback}}
@@ -489,6 +490,8 @@ func TestKernelLineNamesTheSwitchsState(t *testing.T) {
 			Resolvers:  []KernelResolver{{Link: "eth0", Address: "203.0.113.53"}}},
 		{State: "not holding", Reason: "its set lan4 holds { }, where { 198.51.100.0/25 } was written", Dropped: &FallbackDrops{Packets: 3, Bytes: 180}},
 		{State: "not holding", Reason: "netlink: dump interrupted"},
+		{State: "holding", Uncounted: true},
+		{State: "not holding", Reason: "another program's route 2000::/3 on utun5 holds a key of the switch's", Uncounted: true},
 	} {
 		lines.WriteString(kernelLine(exit(fallback)) + "\n")
 	}

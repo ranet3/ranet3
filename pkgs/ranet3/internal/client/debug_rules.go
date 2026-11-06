@@ -129,8 +129,8 @@ func underlayLookups(routes underlayRoutes, paths []transport.UnderlayPath) []co
 	return rows
 }
 
-// fallbackTable is the table ranet3_fallback as a read through a socket of
-// its own finds it, beside the state the reconciler's last pass gave it
+// fallbackTable is the kill switch as a read through a socket of its own
+// finds it, beside the state the reconciler's last pass gave it
 func (c *Client) fallbackTable(state control.KernelFallback) *control.FallbackTable {
 	read := c.fallbackRead
 	if read == nil {

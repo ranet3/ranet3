@@ -60,6 +60,18 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	if got := c.DebugRules().Fallback; got == nil || got.Err != readErr.Error() {
 		t.Errorf("debug rules carries the table %+v after a read that failed, want its error", got)
 	}
+	// macOS's rejects, with neither hook nor priority, which count nothing
+	debug, readErr = kernel.FallbackDebug{Where: "rejects on lo0", Held: true, Rules: []kernel.FallbackDebugRule{
+		{Spec: "128.0.0.0/1 via 127.0.0.1 reject"}, {Spec: "8000::/1 via ::1 reject"},
+	}}, nil
+	want = &control.FallbackTable{
+		Where: "rejects on lo0", State: "holding", Held: true,
+		Rules: []control.FallbackTableRule{{Spec: "128.0.0.0/1 via 127.0.0.1 reject"}, {Spec: "8000::/1 via ::1 reject"}},
+		Sets:  []control.FallbackTableSet{},
+	}
+	if got := c.DebugRules().Fallback; !reflect.DeepEqual(got, want) {
+		t.Errorf("debug rules carries the rejects %+v, want %+v", got, want)
+	}
 
 	c.SetReconciler(Reconciler{Status: func() control.KernelStatus { return control.KernelStatus{Enabled: true, Exit: &control.KernelExit{}} }})
 	if got := c.Status().Kernel.Exit.Fallback; got != nil {
@@ -83,6 +95,7 @@ func TestMetricsCarryTheSwitchUnderFallbackNone(t *testing.T) {
 		{&control.KernelFallback{State: string(kernel.FallbackPassing), Dropped: &control.FallbackDrops{}}, 1},
 		{&control.KernelFallback{State: string(kernel.FallbackNotHolding), Reason: "the table is missing", Dropped: &control.FallbackDrops{Packets: 5}}, 0},
 		{&control.KernelFallback{State: string(kernel.FallbackNotHolding), Reason: "netlink: dump interrupted"}, 0},
+		{&control.KernelFallback{State: string(kernel.FallbackHolding), Uncounted: true}, 1},
 		{nil, 0},
 	} {
 		c.SetReconciler(Reconciler{Status: func() control.KernelStatus {

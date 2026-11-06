@@ -8,6 +8,7 @@ package kernel
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"slices"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -205,11 +207,23 @@ func switchReads(reconciler *Reconciler) string {
 // On a covering platform with no policy rules a pass under fallback = "none"
 // writes a reject at each key of both families' covers, though the tun holds
 // an address of IPv4 alone, and reads them back as holding, reporting no drops
-// since the rejects count none
+// since the rejects count none, and kernel.fallback says so. A public
+// connected network is named neither captured nor public, since the rejects
+// pass it by length whatever lan lists.
 func TestSwitchWithoutRulesWritesTheRejectsOfBothFamilies(t *testing.T) {
 	reconciler, _, k := rejectingHarness(t, &ExitMode{Fallback: FallbackNone}, prefix("192.0.2.1/24"))
+	bus := events.New()
+	reconciler.rt.Events = bus
+	network := NetworkState{
+		IPv4: NetworkFamily{Links: []Link{{Name: "en0", Prefixes: []netip.Prefix{prefix("198.51.100.0/24")}}}},
+		IPv6: NetworkFamily{Links: []Link{{Name: "en0", Prefixes: []netip.Prefix{prefix("2001:db8:a::/64")}}}},
+	}
+	reconciler.rt.Network = func() NetworkState { return network }
 	if err := reconciler.reconcile(); err != nil {
 		t.Fatal(err)
+	}
+	if got := bus.Recorded(func(kind, _ string, _ []slog.Attr) bool { return kind == "kernel.fallback" }, 0); len(got) != 1 || got[0].Attrs["state"] != string(FallbackHolding) {
+		t.Errorf("the pass emitted kernel.fallback %+v, want one, holding", got)
 	}
 	if held, _ := k.held(); !slices.Equal(held, rejectKeys) {
 		t.Errorf("the pass holds rejects at %v, want at %v", held, rejectKeys)
@@ -217,8 +231,12 @@ func TestSwitchWithoutRulesWritesTheRejectsOfBothFamilies(t *testing.T) {
 	if got := switchReads(reconciler); got != string(FallbackHolding) {
 		t.Errorf("the switch reads %s, want holding", got)
 	}
-	if fallback := reconciler.Stats().Exit.Fallback; fallback.DropsRead || !fallback.Uncounted {
+	fallback := reconciler.Stats().Exit.Fallback
+	if fallback.DropsRead || !fallback.Uncounted {
 		t.Errorf("the switch reports drops read %v and uncounted %v, want unread and uncounted", fallback.DropsRead, fallback.Uncounted)
+	}
+	if len(fallback.Captured) != 0 || len(fallback.Public) != 0 {
+		t.Errorf("beside a public connected network the switch names %v captured and %v public, want none", fallback.Captured, fallback.Public)
 	}
 }
 

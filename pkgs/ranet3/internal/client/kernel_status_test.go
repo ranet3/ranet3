@@ -48,6 +48,10 @@ func TestExitStatusCarriesTheSwitchsDropsOnceRead(t *testing.T) {
 			t.Errorf("the switch %+v reports drops %+v, want %+v", c.fallback, got.Dropped, c.want)
 		}
 	}
+	// macOS's rejects count nothing, which the status says rather than waiting for a read
+	if got := kernelExit(&kernel.ExitStatus{Fallback: &kernel.FallbackStatus{State: kernel.FallbackHolding, Uncounted: true}}).Fallback; got.Dropped != nil || !got.Uncounted {
+		t.Errorf("an uncounted switch reports %+v, want no drops and uncounted", got)
+	}
 }
 
 // the control surface carries the reconciler's path as each state reads it, up with the families installed and down with the SID and the table's answer, and none outside mode 3

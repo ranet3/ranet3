@@ -1,0 +1,126 @@
+{
+  "policy": [],
+  "policy_err": "this platform has no policy rules",
+  "missing": [],
+  "lookups": [
+    {
+      "lookup": "overlay",
+      "family": "ipv4",
+      "prefix": "192.0.2.0/24",
+      "address": "192.0.2.2",
+      "answer": "192.0.2.0/24 via 127.0.0.1 on lo0 reject",
+      "taken": false
+    },
+    {
+      "lookup": "overlay",
+      "family": "ipv6",
+      "prefix": "3fff::/20",
+      "address": "3fff::2",
+      "answer": "3fff::/21 on utun5",
+      "taken": true
+    },
+    {
+      "lookup": "underlay",
+      "family": "ipv4",
+      "prefix": "0.0.0.0/0",
+      "address": "203.0.113.70",
+      "answer": "dev en0",
+      "taken": false
+    }
+  ],
+  "antispoof": {
+    "unenforced_on": "darwin",
+    "read_ago": "0s",
+    "ready": false,
+    "chains": null,
+    "sets": null
+  },
+  "fallback": {
+    "where": "rejects on lo0",
+    "state": "holding",
+    "held": true,
+    "rules": [
+      {
+        "spec": "1.0.0.0/8 via 127.0.0.1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "2.0.0.0/7 via 127.0.0.1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "4.0.0.0/6 via 127.0.0.1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "8.0.0.0/5 via 127.0.0.1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "16.0.0.0/4 via 127.0.0.1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "32.0.0.0/3 via 127.0.0.1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "64.0.0.0/2 via 127.0.0.1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "128.0.0.0/1 via 127.0.0.1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "100::/8 via ::1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "200::/7 via ::1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "400::/6 via ::1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "800::/5 via ::1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "1000::/4 via ::1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "2000::/3 via ::1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "4000::/2 via ::1 reject",
+        "packets": 0,
+        "bytes": 0
+      },
+      {
+        "spec": "8000::/1 via ::1 reject",
+        "packets": 0,
+        "bytes": 0
+      }
+    ],
+    "sets": []
+  }
+}

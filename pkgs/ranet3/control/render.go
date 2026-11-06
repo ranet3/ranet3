@@ -170,7 +170,7 @@ func kernelLine(k KernelStatus) string {
 			}
 			if d := f.Dropped; d != nil {
 				fmt.Fprintf(&line, ", %d packets, %d B dropped", d.Packets, d.Bytes)
-			} else {
+			} else if !f.Uncounted {
 				line.WriteString(", drops not read yet")
 			}
 			for _, network := range f.Captured {

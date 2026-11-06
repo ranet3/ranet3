@@ -217,8 +217,7 @@ func TestDarwinSwitchWritesReadsAndDeletesTheRejects(t *testing.T) {
 
 // The start with no reconciler deletes the rejects at the switch's keys and
 // the holds at its overlay's, and leaves a reject of their shape another
-// program wrote at another key, and a debug read lists each reject with the
-// sends of IPv4's alone counted
+// program wrote at another key, and a debug read lists each reject
 func TestDarwinDeleteFallbackTakesTheRejectsAlone(t *testing.T) {
 	overlay := prefixes(prefix("192.0.2.0/24"), prefix("2001:db8:ee::/48"))
 	host := &switchHost{t: t, entries: []dumpEntry{rejectEntry(prefix("10.0.0.0/8"))}}
@@ -231,7 +230,7 @@ func TestDarwinDeleteFallbackTakesTheRejectsAlone(t *testing.T) {
 	}
 	for i, rule := range read.Rules {
 		key := rejectKeys[i]
-		if rule.Spec != key.String()+" via "+loopGateway(key).String()+" reject" || rule.Counted != key.Addr().Is4() {
+		if rule.Spec != key.String()+" via "+loopGateway(key).String()+" reject" || rule.Packets != 0 {
 			t.Errorf("the reject at %s reads %+v", key, rule)
 		}
 	}
