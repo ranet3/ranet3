@@ -37,11 +37,10 @@ type PeerConfig struct {
 	// and the endpoint each ID the responder may send as IDr names, which has to be Remote
 	Aliases Aliases
 
-	LocalAddr  net.IP // "" => wildcard
-	LocalPort  int    // 0 => ephemeral
 	RemoteAddr net.IP
 	RemotePort int // ranet registry endpoint port (often non-standard, e.g. 13000), the only port ever used, IKE and ESP alike
-	Hub        *transport.Hub
+	// Hub is required, and the session's mux is made on it
+	Hub *transport.Hub
 
 	RekeyTiming
 
@@ -499,7 +498,7 @@ func newChildSPI(replaced uint32) uint32 {
 	}
 }
 
-// Initiate runs IKE_SA_INIT, an IKE_INTERMEDIATE exchange for the
+// InitiateContext runs IKE_SA_INIT, an IKE_INTERMEDIATE exchange for the
 // additional key exchange of RFC 9370 where the responder took one, then IKE_AUTH
 // against cfg.RemoteAddr:RemotePort and returns an established Session with
 // one Child SA. It implements exactly RFC 7815's minimal-initiator surface
@@ -508,12 +507,9 @@ func newChildSPI(replaced uint32) uint32 {
 // that one explicit port. Every IKE message, from IKE_SA_INIT onward, carries
 // the non-ESP marker. There is no NAT-T floating to a separate port,
 // certificates, EAP, or MOBIKE.
-func Initiate(cfg PeerConfig) (*Session, error) {
-	return InitiateContext(context.Background(), cfg)
-}
-
-// InitiateContext cancels only the handshake's mux
-// it neither closes a shared hub nor binds the established session's lifetime to ctx
+//
+// ctx cancels only the handshake's mux
+// it neither closes the hub nor binds the established session's lifetime to ctx
 // Session.Run owns that lifetime
 // a cancel once IKE_AUTH is under way waits canceledAuthWait for the answer and deletes the SA an answer in that time established
 func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err error) {
@@ -523,18 +519,7 @@ func InitiateContext(ctx context.Context, cfg PeerConfig) (session *Session, err
 	if err := cfg.RekeyTiming.validate(); err != nil {
 		return nil, err
 	}
-	local := ""
-	if cfg.LocalAddr != nil {
-		local = cfg.LocalAddr.String()
-	}
-	local = net.JoinHostPort(local, fmt.Sprint(cfg.LocalPort))
-
-	var mux *transport.Mux
-	if cfg.Hub != nil {
-		mux, err = cfg.Hub.NewMux(cfg.RemoteAddr, cfg.RemotePort)
-	} else {
-		mux, err = transport.Dial(local, cfg.RemoteAddr, cfg.RemotePort)
-	}
+	mux, err := cfg.Hub.NewMux(cfg.RemoteAddr, cfg.RemotePort)
 	if err != nil {
 		return nil, err
 	}

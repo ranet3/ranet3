@@ -196,6 +196,17 @@ func trust(t testing.TB, document registry.Registry) *registry.Index {
 	return x
 }
 
+// testHub is a hub on a memory network of its own, where a dial reaches nothing, closed when the test ends
+func testHub(t *testing.T) *transport.Hub {
+	t.Helper()
+	hub, err := transport.NewMemoryNetwork().NewHub()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	return hub
+}
+
 type trustFunc func(identity.Identity) (ed25519.PublicKey, error)
 
 // Key gives no family, since the session set asks about a node alone
@@ -439,7 +450,7 @@ func TestValidateESPTunnelPayload(t *testing.T) {
 func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet()}
+	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
 	c.cfg.Store(&config.Config{
 		Node: identity.MustParse("example/node"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
@@ -1086,7 +1097,7 @@ func TestSessionSetKeepsActivePreferredSession(t *testing.T) {
 func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet()}
+	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
 	// A serial number sends runPeer through the pre-checks, which fail against
 	// an empty registry and return rather than looping.
 	c.cfg.Store(&config.Config{
@@ -1131,7 +1142,7 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 func TestSyncPeersNoticesChangedSerialNumber(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet()}
+	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
 	base := func(serial string) *config.Config {
 		return &config.Config{
 			Node: identity.MustParse("example/node"),
@@ -1214,7 +1225,7 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 		// A dialer that resolves its peer asks the set whether that path is
 		// already held, and this fixture's organization carries a public key,
 		// so a dialer gets that far.
-		sessions: newSessionSet(),
+		sessions: newSessionSet(), hub: testHub(t),
 	}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))

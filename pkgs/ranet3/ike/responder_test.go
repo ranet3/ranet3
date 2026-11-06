@@ -186,27 +186,6 @@ func (h *responderHarness) dial(t *testing.T) (*Session, error) {
 	return InitiateContext(ctx, h.peerConfig())
 }
 
-// Initiate is the blocking form, and the one the package documents its whole
-// profile on. Only the cmd test binaries call it, so without this no test
-// reaches it and it could stop compiling to the same thing.
-func TestInitiateIsInitiateContextWithNoDeadline(t *testing.T) {
-	bubble.Run(testInitiateIsInitiateContextWithNoDeadline)(t)
-}
-
-func testInitiateIsInitiateContextWithNoDeadline(t *testing.T) {
-	h := newResponderHarness(t, nil)
-	session, err := Initiate(h.peerConfig())
-	if err != nil {
-		t.Fatalf("initiate: %v", err)
-	}
-	defer session.Mux().Close()
-	responder := <-h.sessions
-	defer responder.Mux().Close()
-	if accepted := <-h.identities; accepted.Peer != identity.MustParse("testorg/client:2") {
-		t.Fatalf("the responder accepted %s", accepted.Peer)
-	}
-}
-
 // a cancel that lands while the responder handles IKE_AUTH still lets the answer in and deletes the SA it established
 // the responder's session ends on that Delete instead of holding the SA until its liveness check expires
 // the Delete follows the answer that completes the initial exchanges, and is an exchange that takes its own answer

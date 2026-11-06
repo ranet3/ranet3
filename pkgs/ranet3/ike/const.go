@@ -28,8 +28,8 @@
 // the caller binds and hands in, because IKE and the ESP it negotiates share
 // one UDP port.
 //
-//   - Dialing. [Initiate] or [InitiateContext] take a [PeerConfig] naming both
-//     identities and both keys, and return a [Session] holding the negotiated
+//   - Dialing. [InitiateContext] takes a [PeerConfig] naming both
+//     identities and both keys, and returns a [Session] holding the negotiated
 //     [ChildSA]. [Session.Run] then drives that SA for its lifetime, answering
 //     the peer's liveness checks and deletes and rekeying before a key
 //     expires. [Session.SetChildHandler] and [Session.SetChildRetireHandler]
