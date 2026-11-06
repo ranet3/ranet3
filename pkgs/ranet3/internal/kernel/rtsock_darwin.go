@@ -340,12 +340,14 @@ func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 	}
 	// a routing socket that overflows drops the excess without telling the
 	// reader, unlike netlink's ENOBUFS, so a large receive buffer is the only
-	// defense against a route flood and the periodic sweep the only backstop.
+	// defense against a route flood and a periodic sweep the only backstop,
+	// the reconciler's for its own interface and the network watch's for a
+	// monitor of every interface, whose other follower, the underlay's
+	// selection, has none.
 	_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, routeReceiveBuffer)
 	// the socket is nonblocking, so os.NewFile registers it with the runtime
 	// poller and Close unblocks the reader without racing on the descriptor.
 	monitor.file = os.NewFile(uintptr(fd), "pf-route-monitor")
-	// no sweep reads the host's routes again for a monitor of every interface, as the reconciler's does for its own
 	monitor.readers.Go(func() { monitor.read(monitor.file.Name(), monitor.file, monitor.interesting) })
 	if monitor.events != nil {
 		monitor.readers.Go(func() {

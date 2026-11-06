@@ -27,7 +27,7 @@ const (
 	// watchSettle is how long the network watch lets a change finish before it reads the host
 	// a laptop moving networks drops an address, a route and a link in one burst, and every session is probed once for it
 	watchSettle = 250 * time.Millisecond
-	// watchSweep is the longest wait of the network watch between two reads that fail
+	// watchSweep is how often the network watch reads the host with no notification, and its longest wait between two reads that fail
 	watchSweep = DefaultReconcileInterval
 )
 

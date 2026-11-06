@@ -220,7 +220,7 @@ func TestNetworkWatchReadsNothingForMainRoutesThatAreNoDefault(t *testing.T) {
 		reads.Add(1)
 		return host.read()
 	}
-	w, err := newNetworkWatch(monitor.signal, read, func() error { return errors.Join(monitor.Close(), reader.Close()) })
+	w, err := newNetworkWatch(monitor.signal, read, func() error { return errors.Join(monitor.Close(), reader.Close()) }, idleSweep)
 	if err != nil {
 		t.Fatalf("open the watch: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestNetworkWatchFollowsAnOverrun(t *testing.T) {
 		_ = monitor.Close()
 		t.Fatal(err)
 	}
-	w, err := newNetworkWatch(monitor.signal, hostReader{conn: reader}.read, func() error { return errors.Join(monitor.Close(), reader.Close()) })
+	w, err := newNetworkWatch(monitor.signal, hostReader{conn: reader}.read, func() error { return errors.Join(monitor.Close(), reader.Close()) }, idleSweep)
 	if err != nil {
 		t.Fatalf("open the watch: %v", err)
 	}

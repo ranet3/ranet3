@@ -126,6 +126,53 @@ func TestDarwinNetworkReadSkipsTheMeshAndDownInterfaces(t *testing.T) {
 	}
 }
 
+// failingLinks is a readHost whose interface list a test moves and whose next listings fail as often as it asks
+type failingLinks struct {
+	readHost
+	mu       sync.Mutex
+	failures int
+}
+
+func (h *failingLinks) Links() ([]HostInterface, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failures > 0 {
+		h.failures--
+		return nil, errors.New("route: message too short")
+	}
+	return h.interfaces, nil
+}
+
+func (h *failingLinks) move(interfaces []HostInterface, failures int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.interfaces, h.failures = interfaces, failures
+}
+
+// a read whose interface listing fails is read again on the backoff, and the interfaces that moved meanwhile are signaled
+func TestDarwinNetworkWatchReadsAgainAfterAFailedRead(t *testing.T) {
+	uplink := HostInterface{Index: uplinkIndex, Name: "uplink0", Up: true, Addresses: []HostAddress{{Prefix: prefix("192.0.2.10/24")}}}
+	host := &failingLinks{readHost: readHost{interfaces: []HostInterface{uplink}, v4: RouteAnswer{Index: uplinkIndex}}}
+	notify := make(chan struct{}, 1)
+	w, err := newNetworkWatch(notify, hostReader{host: host}.read, func() error { return nil }, idleSweep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	docked := uplink
+	docked.Addresses = []HostAddress{{Prefix: prefix("198.51.100.10/24")}}
+	host.move([]HostInterface{docked}, 1)
+	notify <- struct{}{}
+	select {
+	case change := <-w.Changes():
+		if !slices.Equal(change.After.IPv4.Addresses, addrs("198.51.100.10")) {
+			t.Errorf("the read again signaled the addresses %v", change.After.IPv4.Addresses)
+		}
+	case <-time.After(minRetryInterval + quietWindow):
+		t.Fatal("a change whose interface listing failed once was not signaled within a retry")
+	}
+}
+
 // watchRig takes the steps of a real kernel's links under a network watch, each signaling once or not at all
 // it reads only the changes that touch an interface of owned, since the host moves its own interfaces meanwhile
 type watchRig struct {

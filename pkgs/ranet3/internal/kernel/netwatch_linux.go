@@ -39,7 +39,7 @@ func WatchNetwork(_ Host, mesh string, _ Watcher) (*NetworkWatch, error) {
 		return nil, err
 	}
 	host := hostReader{conn: conn, mesh: index}
-	return newNetworkWatch(monitor.signal, host.read, func() error { return errors.Join(monitor.Close(), conn.Close()) })
+	return newNetworkWatch(monitor.signal, host.read, func() error { return errors.Join(monitor.Close(), conn.Close()) }, watchSweep)
 }
 
 // watchGroups are the rtnetlink groups whose notifications can move what hostReader reads

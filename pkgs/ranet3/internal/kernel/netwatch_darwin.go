@@ -47,7 +47,7 @@ func WatchNetwork(host Host, mesh string, watcher Watcher) (*NetworkWatch, error
 		return nil, err
 	}
 	reader := hostReader{host: host, mesh: index}
-	return newNetworkWatch(watcher.Changed(), reader.read, watcher.Close)
+	return newNetworkWatch(watcher.Changed(), reader.read, watcher.Close, watchSweep)
 }
 
 // hostReader reads the host's network through a Host

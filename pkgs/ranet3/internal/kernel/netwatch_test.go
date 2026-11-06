@@ -16,6 +16,12 @@ import (
 // the settle window and a read are over well inside it
 const quietWindow = 4 * watchSettle
 
+// idleSweep is a sweep no test outlasts, for a watch whose test makes every read happen itself
+const idleSweep = time.Hour
+
+// testSweep is the sweep of a watch whose test waits on it
+const testSweep = quietWindow / 2
+
 // burstGap is how far into a settle window a test makes its second change
 // a watch without the window has read the first change well before it
 const burstGap = watchSettle / 4
@@ -118,7 +124,7 @@ func TestNetworkWatchSignalsOnlyAMovedState(t *testing.T) {
 	first, second, third, fourth := withAddress("192.0.2.1"), withAddress("192.0.2.2"), withAddress("192.0.2.3"), withAddress("192.0.2.4")
 	host := &scriptedHost{state: first}
 	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +221,7 @@ func TestNetworkWatchSignalsALinkAlone(t *testing.T) {
 	farEndMoved.IPv4.Links = []Link{{Name: "eth0", Prefixes: []netip.Prefix{netip.MustParsePrefix("198.51.100.10/32")}, Peers: []netip.Prefix{netip.MustParsePrefix("203.0.113.16/28")}}}
 	host := &scriptedHost{state: first}
 	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +250,7 @@ func TestNetworkWatchReadsAgainAfterAFailedRead(t *testing.T) {
 	first, second := withAddress("192.0.2.1"), withAddress("192.0.2.2")
 	host := &scriptedHost{state: first}
 	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +288,7 @@ func maxReadsIn(window time.Duration, immediate int) int {
 func TestNetworkWatchBacksOffWhileReadsFail(t *testing.T) {
 	host := &scriptedHost{state: withAddress("192.0.2.1")}
 	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +314,7 @@ func TestNetworkWatchStartsItsBackoffOverAfterARead(t *testing.T) {
 	first, second, third := withAddress("192.0.2.1"), withAddress("192.0.2.2"), withAddress("192.0.2.3")
 	host := &scriptedHost{state: first}
 	notify := make(chan struct{}, 1)
-	w, err := newNetworkWatch(notify, host.read, func() error { return nil })
+	w, err := newNetworkWatch(notify, host.read, func() error { return nil }, idleSweep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +361,7 @@ func TestNetworkWatchClosesWhileRetrying(t *testing.T) {
 	host := &scriptedHost{state: withAddress("192.0.2.1")}
 	notify := make(chan struct{}, 1)
 	released := 0
-	w, err := newNetworkWatch(notify, host.read, func() error { released++; return nil })
+	w, err := newNetworkWatch(notify, host.read, func() error { released++; return nil }, idleSweep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,10 +380,47 @@ func TestNetworkWatchClosesWhileRetrying(t *testing.T) {
 	}
 }
 
+// a sweep of a host that holds still signals nothing, and one of a host that moved with no notification signals the move once
+// a sweep that finds nothing moved records no change either
+func TestNetworkWatchSweepsWithoutANotification(t *testing.T) {
+	first, second := withAddress("192.0.2.1"), withAddress("192.0.2.2")
+	host := &scriptedHost{state: first}
+	w, err := newNetworkWatch(make(chan struct{}), host.read, func() error { return nil }, testSweep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	select {
+	case change := <-w.Changes():
+		t.Fatalf("a sweep of a host holding still signaled %+v", change.Families())
+	case <-time.After(3 * testSweep):
+	}
+	if reads := host.readCount(); reads < 3 {
+		t.Fatalf("the host was read %d times in three sweeps", reads)
+	}
+	if _, last := w.State(); !last.At.IsZero() {
+		t.Fatalf("sweeps of a host holding still recorded a change at %v", last.At)
+	}
+	host.set(second)
+	select {
+	case change := <-w.Changes():
+		if !slices.Equal(change.Before.IPv4.Addresses, first.IPv4.Addresses) || !slices.Equal(change.After.IPv4.Addresses, second.IPv4.Addresses) {
+			t.Errorf("the sweep signaled %v to %v", change.Before.IPv4.Addresses, change.After.IPv4.Addresses)
+		}
+	case <-time.After(testSweep + quietWindow):
+		t.Fatal("a host that moved with no notification signaled nothing within a sweep")
+	}
+	select {
+	case change := <-w.Changes():
+		t.Errorf("the move signaled again: %+v", change.Families())
+	case <-time.After(2 * testSweep):
+	}
+}
+
 // a watch closes once however often it is asked, and releases what the platform opened
 func TestNetworkWatchClosesOnce(t *testing.T) {
 	released := 0
-	w, err := newNetworkWatch(make(chan struct{}), (&scriptedHost{}).read, func() error { released++; return nil })
+	w, err := newNetworkWatch(make(chan struct{}), (&scriptedHost{}).read, func() error { released++; return nil }, idleSweep)
 	if err != nil {
 		t.Fatal(err)
 	}

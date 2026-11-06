@@ -113,13 +113,15 @@ func addressSet(addresses []netip.Addr) []netip.Addr {
 }
 
 // NetworkWatch says when the host's defaults, its addresses or its links outside the mesh changed
-// a notification starts a settle window, and the state read after it is signaled only where it differs from the last one signaled
-// a read that fails is read again on a backoff from minRetryInterval doubling to watchSweep, which no notification shortens
+// a notification starts a settle window, a sweep reads the host as well, and the state read is signaled only where it differs from the last one signaled
+// a read that fails is read again on a backoff from minRetryInterval doubling to the sweep, which no notification shortens
 type NetworkWatch struct {
 	notify <-chan struct{}
 	// read takes the state through what the platform opened, and only the watch's own goroutine calls it after the first read
 	read    func() (NetworkState, error)
 	release func() error
+	// a read every sweep finds a change whose notification was lost
+	sweep   time.Duration
 	changes chan NetworkChange
 	stop    chan struct{}
 	done    chan struct{}
@@ -130,16 +132,16 @@ type NetworkWatch struct {
 	last    NetworkChange
 }
 
-// newNetworkWatch reads the state once and follows notify from there
+// newNetworkWatch reads the state once and follows notify and a sweep every sweep from there
 // it takes over release, which it calls when the first read fails or when the watch closes
-func newNetworkWatch(notify <-chan struct{}, read func() (NetworkState, error), release func() error) (*NetworkWatch, error) {
+func newNetworkWatch(notify <-chan struct{}, read func() (NetworkState, error), release func() error, sweep time.Duration) (*NetworkWatch, error) {
 	current, err := read()
 	if err != nil {
 		_ = release()
 		return nil, err
 	}
 	w := &NetworkWatch{
-		notify: notify, read: read, release: release,
+		notify: notify, read: read, release: release, sweep: sweep,
 		changes: make(chan NetworkChange, 1),
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
@@ -176,6 +178,8 @@ func (w *NetworkWatch) run() {
 	signaled := w.current
 	retry := NewRetryTimer()
 	defer retry.Stop()
+	sweep := time.NewTicker(w.sweep)
+	defer sweep.Stop()
 	failures := 0
 	for {
 		if failures > 0 {
@@ -188,10 +192,11 @@ func (w *NetworkWatch) run() {
 			select {
 			case <-w.stop:
 				return
+			case <-sweep.C:
 			case <-w.notify:
-			}
-			if !settle(w.notify, w.stop, watchSettle) {
-				return
+				if !settle(w.notify, w.stop, watchSettle) {
+					return
+				}
 			}
 		}
 		state, err := w.read()
@@ -200,7 +205,7 @@ func (w *NetworkWatch) run() {
 				slog.Warn("kernel could not read the host's network, reading it again on a backoff", "err", err)
 			}
 			failures++
-			retry.Failed(watchSweep)
+			retry.Failed(w.sweep)
 			continue
 		}
 		if failures > 0 {
