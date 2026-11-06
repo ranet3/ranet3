@@ -25,11 +25,15 @@ import (
 func endpointTo(t *testing.T, address string) transport.Endpoint {
 	t.Helper()
 	to := netip.MustParseAddrPort(address)
-	mux, err := transport.Dial(":0", net.IP(to.Addr().AsSlice()), int(to.Port()))
+	hub, err := transport.NewHub(":0", transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = mux.Close() })
+	t.Cleanup(func() { _ = hub.Close() })
+	mux, err := hub.NewMux(net.IP(to.Addr().AsSlice()), int(to.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
 	return mux.Endpoint()
 }
 

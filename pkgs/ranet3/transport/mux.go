@@ -19,8 +19,7 @@
 // [Mux.RecvIKE] carry control messages while [Mux.SendESP], [Mux.RecvESP] and
 // their batch forms carry the data. An IKE datagram whose SPI no Mux has
 // registered arrives on [Hub.Listen] as an [Unclaimed], which is how a peer
-// that has never dialed this node opens an IKE_SA_INIT. [Dial] is the one-peer
-// shorthand: a hub and a single mux, closed together.
+// that has never dialed this node opens an IKE_SA_INIT.
 //
 // A peer that moves keeps working because a received datagram carries the
 // [Endpoint] it came from. [Mux.AdoptEndpoint] repoints the channel at it once
@@ -761,16 +760,6 @@ func (m *Mux) dispatchESP(batch espDatagramBatch) bool {
 func (m *Mux) takeESP(batch espDatagramBatch) [][]byte {
 	m.espQueued.Add(-int64(batch.bytes))
 	return batch.packets
-}
-
-// Dial preserves the one-peer convenience path. The returned mux owns its
-// newly-created hub and closes it when closed.
-func Dial(localAddr string, remoteIP net.IP, remotePort int) (*Mux, error) {
-	h, err := NewHub(localAddr, Runtime{})
-	if err != nil {
-		return nil, err
-	}
-	return dialOn(h, remoteIP, remotePort)
 }
 
 func dialOn(h *Hub, remoteIP net.IP, remotePort int) (*Mux, error) {

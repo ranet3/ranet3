@@ -115,11 +115,15 @@ func TestReceiveESPOrderAndShutdown(t *testing.T) {
 			}
 			defer remote.Close()
 			addr := remote.LocalAddr().(*net.UDPAddr)
-			mux, err := transport.Dial(":0", addr.IP, addr.Port)
+			hub, err := transport.NewHub(":0", transport.Runtime{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer mux.Close()
+			defer hub.Close()
+			mux, err := hub.NewMux(addr.IP, addr.Port)
+			if err != nil {
+				t.Fatal(err)
+			}
 			child := tunnelChild(1)
 			if err := mux.RegisterESP(child.LocalSPI); err != nil {
 				t.Fatal(err)

@@ -120,11 +120,15 @@ func TestProbeRefusedPastThePathIsNoFailedSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux, err := transport.Dial(":0", net.IPv4(198, 51, 100, 1), 4500)
+	hub, err := transport.NewHub(":0", transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer mux.Close()
+	t.Cleanup(func() { hub.Close() })
+	mux, err := hub.NewMux(net.IPv4(198, 51, 100, 1), 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
 	report := &transport.PathMTUError{Endpoint: mux.Endpoint(), MTU: srv6.MinimumIPv6MTU}
 	refused := make(chan struct{})
 	var once sync.Once

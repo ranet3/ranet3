@@ -55,11 +55,7 @@ func testSendESPBatch(t *testing.T, network, addr string) {
 	peer := listenPeer(t, network, addr)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 
-	m, err := Dial("", peerAddr.IP, peerAddr.Port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+	m := dial(t, peerAddr.IP, peerAddr.Port)
 
 	// A batch larger than Bind's limit exercises the send path's splitting and
 	// pending-batch handling as well as the ordinary batched send path.
@@ -267,11 +263,7 @@ func TestSendIKEUnbatchedAndMarked(t *testing.T) {
 	peer := listenPeer(t, "udp4", "127.0.0.1")
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
 
-	m, err := Dial("", peerAddr.IP, peerAddr.Port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+	m := dial(t, peerAddr.IP, peerAddr.Port)
 
 	payload := []byte("fake ike header")
 	if err := m.SendIKE(payload); err != nil {
@@ -380,18 +372,12 @@ func testRecvESPBatch(t *testing.T, network, addr string) {
 	server := listenPeer(t, network, addr)
 	serverAddr := server.LocalAddr().(*net.UDPAddr)
 
-	m, err := Dial("", serverAddr.IP, serverAddr.Port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+	m := dial(t, serverAddr.IP, serverAddr.Port)
 	if err := m.RegisterESP(0xaabbccdd); err != nil {
 		t.Fatal(err)
 	}
 	clientAddr := m.LocalAddr().(*net.UDPAddr)
-	// LocalAddr() on this Mux is wildcard-bound ("::" or "0.0.0.0"), which
-	// isn't a valid destination. Send to the actual loopback address the
-	// test is using instead, at the port Dial picked.
+	// the hub binds the wildcard, which is no destination
 	dst := &net.UDPAddr{IP: net.ParseIP(addr), Port: clientAddr.Port}
 
 	// Sent back-to-back with no synchronization, so receiveLoop's batch read
@@ -438,15 +424,7 @@ func TestRecvESPAndIKEDemux(t *testing.T) {
 	defer server.Close()
 	serverAddr := server.LocalAddr().(*net.UDPAddr)
 
-	// Dial always binds all interfaces regardless of what's passed here
-	// (see Dial's doc comment). LocalAddr()'s IP is unspecified: only its
-	// port is meaningful, so the destination below is built from the
-	// known loopback address plus that port, not from LocalAddr() directly.
-	m, err := Dial(":0", serverAddr.IP, serverAddr.Port)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Close()
+	m := dial(t, serverAddr.IP, serverAddr.Port)
 	if err := m.RegisterESP(0xaabbccdd); err != nil {
 		t.Fatal(err)
 	}

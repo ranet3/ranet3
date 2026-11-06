@@ -217,11 +217,15 @@ func TestThresholdIsThePathMTUOrTheFloorOfItsFamily(t *testing.T) {
 		"IPv6 under a path MTU below its floor":  {v6, pathMTUOf(1000), 1280, 1228},
 	} {
 		t.Run(name, func(t *testing.T) {
-			mux, err := transport.Dial(":0", test.peer, 4500)
+			hub, err := transport.NewHub(":0", transport.Runtime{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { mux.Close() })
+			t.Cleanup(func() { hub.Close() })
+			mux, err := hub.NewMux(test.peer, 4500)
+			if err != nil {
+				t.Fatal(err)
+			}
 			s := &Session{mux: mux, fragments: true, pathMTU: test.mtu}
 			if threshold, room := s.path(); threshold != test.threshold || room != test.room {
 				t.Errorf("the threshold is %d with room for %d octets, want %d and %d", threshold, room, test.threshold, test.room)
@@ -248,11 +252,15 @@ func TestThresholdIsThePathMTUOrTheFloorOfItsFamily(t *testing.T) {
 // a session that sets no path MTU of its own takes the one the host holds for the path its mux sends on, and sends whole a message that path carries though the family's floor would cut it
 // RFC 7383 section 2.5.1: "If the sender has information about the PMTU size, it SHOULD use it."
 func TestThresholdIsThePathMTUTheHostHolds(t *testing.T) {
-	mux, err := transport.Dial(":0", net.IPv4(127, 0, 0, 1), 4500)
+	hub, err := transport.NewHub(":0", transport.Runtime{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { mux.Close() })
+	t.Cleanup(func() { hub.Close() })
+	mux, err := hub.NewMux(net.IPv4(127, 0, 0, 1), 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := &Session{mux: mux, current: testContext(), fragments: true}
 	mtu, err := s.mux.PathMTU()
 	if errors.Is(err, errors.ErrUnsupported) {
