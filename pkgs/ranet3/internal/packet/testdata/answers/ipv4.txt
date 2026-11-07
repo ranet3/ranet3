@@ -10,6 +10,12 @@ host unreachable answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, ty
 communication administratively prohibited answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 13, quoting 32
 00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
 00000010  c0 00 02 07 03 0d fc d0  00 00 00 00              |............|
+port unreachable relayed answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 3, quoting 32
+00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
+00000010  c0 00 02 07 03 03 fc da  00 00 00 00              |............|
+protocol unreachable relayed answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 2, quoting 32
+00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
+00000010  c0 00 02 07 03 02 fc db  00 00 00 00              |............|
 fragmentation needed answering 32 bytes: 60 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 4, quoting 32
 00000000  45 c8 00 3c 00 00 40 00  40 01 4d bd c6 33 64 01  |E..<..@.@.M..3d.|
 00000010  c0 00 02 07 03 04 f7 61  00 00 05 78              |.......a...x|
@@ -28,6 +34,12 @@ host unreachable answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7,
 communication administratively prohibited answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 13, quoting 548
 00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
 00000010  c0 00 02 07 03 0d 70 39  00 00 00 00              |......p9....|
+port unreachable relayed answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 3, quoting 548
+00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
+00000010  c0 00 02 07 03 03 70 43  00 00 00 00              |......pC....|
+protocol unreachable relayed answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 2, quoting 548
+00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
+00000010  c0 00 02 07 03 02 70 44  00 00 00 00              |......pD....|
 fragmentation needed answering 1240 bytes: 576 bytes from 198.51.100.1 to 192.0.2.7, type 3 code 4, quoting 548
 00000000  45 c8 02 40 00 00 40 00  40 01 4b b9 c6 33 64 01  |E..@..@.@.K..3d.|
 00000010  c0 00 02 07 03 04 6a ca  00 00 05 78              |......j....x|

@@ -57,6 +57,12 @@ var errorBuilders = []errorBuilder{
 	{"communication administratively prohibited", 3, 13, func(raw []byte, source netip.Addr, ttl uint8, _ int, allow func() bool) []byte {
 		return Prohibited(raw, source, ttl, allow)
 	}, noValue},
+	{"port unreachable relayed", 3, 3, func(raw []byte, source netip.Addr, ttl uint8, _ int, allow func() bool) []byte {
+		return Unreachable(raw, source, ttl, 3, allow)
+	}, noValue},
+	{"protocol unreachable relayed", 3, 2, func(raw []byte, source netip.Addr, ttl uint8, _ int, allow func() bool) []byte {
+		return Unreachable(raw, source, ttl, 2, allow)
+	}, noValue},
 	{"fragmentation needed", 3, 4, FragmentationNeeded, func(mtu int) uint32 { return uint32(mtu) }},
 	{"parameter problem", 12, 0, ParameterProblem, func(pointer int) uint32 { return uint32(pointer) << 24 }},
 }

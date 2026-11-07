@@ -91,6 +91,12 @@ func Prohibited(offending []byte, source netip.Addr, allow func() bool) []byte {
 	return icmpError(offending, source, icmpUnreachable, icmpProhibited, 0, allow)
 }
 
+// Unreachable answers a packet with destination unreachable of code, any of RFC 4443 section 3.1's, from source
+// an exit relaying a server's or a router's error to the leaf it is about sends it from that offender with the offender's code, and allow is icmpError's
+func Unreachable(offending []byte, source netip.Addr, code uint8, allow func() bool) []byte {
+	return icmpError(offending, source, icmpUnreachable, code, 0, allow)
+}
+
 // BeyondScope answers a packet whose destination lies past the scope of its source, RFC 4443 section 3.1 code 2, from source, and allow is icmpError's
 // a link-local source with a wider destination, which no router forwards off its link
 func BeyondScope(offending []byte, source netip.Addr, allow func() bool) []byte {

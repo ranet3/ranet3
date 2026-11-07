@@ -59,6 +59,12 @@ func Prohibited(offending []byte, source netip.Addr, ttl uint8, allow func() boo
 	return icmpError(offending, source, ttl, icmpUnreachable, icmpProhibited, 0, allow)
 }
 
+// Unreachable answers an IPv4 packet with destination unreachable of code, any of RFC 1812 section 5.2.7.1's, from source with ttl
+// an exit relaying a server's or a router's error to the leaf it is about sends it from that offender with the offender's code, and allow is icmpError's
+func Unreachable(offending []byte, source netip.Addr, ttl, code uint8, allow func() bool) []byte {
+	return icmpError(offending, source, ttl, icmpUnreachable, code, 0, allow)
+}
+
 // FragmentationNeeded answers an IPv4 packet with DF that is larger than the next link carries, RFC 1191 section 4
 // mtu is that link's, carried as the next-hop MTU, source the address the answer comes from with ttl, and allow is icmpError's
 func FragmentationNeeded(offending []byte, source netip.Addr, ttl uint8, mtu int, allow func() bool) []byte {

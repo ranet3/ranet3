@@ -338,6 +338,12 @@ var errorBuilders = []errorBuilder{
 	{"no route to destination", 1, 0, NoRoute},
 	{"communication administratively prohibited", 1, 1, Prohibited},
 	{"beyond scope of source address", 1, 2, BeyondScope},
+	{"port unreachable relayed", 1, 4, func(raw []byte, source netip.Addr, allow func() bool) []byte {
+		return Unreachable(raw, source, 4, allow)
+	}},
+	{"address unreachable relayed", 1, 3, func(raw []byte, source netip.Addr, allow func() bool) []byte {
+		return Unreachable(raw, source, 3, allow)
+	}},
 }
 
 // verify sums a finished message the way a receiver does, with the checksum
