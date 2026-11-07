@@ -439,12 +439,12 @@ the count for each reason a steered packet was lost once it is above 0. Those
 counts are the totals, `cap.exit.via`'s path among them, and a node whose one
 policy is that path reads `off` there, its Kernel line carrying the path's own
 counts, as [the command line](cli.md#reading-state) gives.
-`ranet3 debug segments` shows each segment and each `cap.segment.steer` policy
-field by field, `ranet3 debug route --peer` whether a segment admits the source
-of a packet arriving through a session, and `ranet3 debug trace` what the
-packets a segment acts on meet, as [debugging](development/debug.md) describes.
-A packet a segment answers shows there as an `answer` record, with its ICMP
-error and what became of it.
+`ranet3 debug segments` shows each segment, each `cap.segment.steer` policy and
+`cap.exit.via`'s path field by field, `ranet3 debug route --peer` whether a
+segment admits the source of a packet arriving through a session, and
+`ranet3 debug trace` what the packets a segment acts on meet, as
+[debugging](development/debug.md) describes. A packet a segment answers shows
+there as an `answer` record, with its ICMP error and what became of it.
 
 An egress segment's packets are counted 3 ways. Egressed is a packet handed to
 the exit. Refused is a packet whose outer source is outside every entry of the

@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-07
+updated: 2026-11-08
 order: 30
 ---
 
@@ -19,12 +19,13 @@ daemon built from the same revision agree, and nothing wider is promised.
 `ranet3 debug --help` lists its commands, and [command line](../cli.md) lists
 every command, this tree included.
 
-Every command but `debug socket` prints text, or the wire form with `--json`.
-`debug socket` prints the answer's body as it arrives. Every command that could
-run for long is bounded by a flag, `--for` or `--timeout`, so a script can call
-one without having to interrupt it. Arguments and flags that name a peer, an
-event kind, a path or the socket complete in bash, zsh and fish, the shells
-`ranet3 completion` writes for.
+Every command but `debug socket` prints text, or the wire form with `--json`,
+and `debug trace` writes pcapng with `--pcap`. `debug socket` prints the
+answer's body as it arrives. Every command that could run for long is bounded by
+a flag, `--for` or `--timeout`, so a script can call one without having to
+interrupt it. Arguments and flags that name a peer, an event kind, a path or the
+socket complete in bash, zsh and fish, the shells `ranet3 completion` writes
+for.
 
 ## Debug paths
 
@@ -69,29 +70,30 @@ Every command in the tree takes these 2 flags:
 
 These commands take flags of their own:
 
-| Command        | Flag             | Default              | What it sets                                                    |
-| -------------- | ---------------- | -------------------- | --------------------------------------------------------------- |
-| `debug socket` | `--timeout`      | 10 seconds           | how long the whole exchange may take, a stream included         |
-| `debug probe`  | `--all`          | off                  | probe every session instead of one peer's                       |
-| `debug events` | `-f`, `--follow` | off                  | print later events as they come                                 |
-| `debug events` | `--for`          | 30 seconds           | how long `-f` follows                                           |
-| `debug events` | `--kind`         | every kind           | a kind, or the part of one before a dot, given up to 16 times   |
-| `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                           |
-| `debug events` | `--since`        | every recorded event | how recent a recorded event must be                             |
-| `debug route`  | `--iif`          | none                 | the link the packet arrives on, none for this host's own        |
-| `debug route`  | `--peer`         | none                 | the node whose session the packet arrives through               |
-| `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times        |
-| `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait       |
-| `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                           |
-| `debug wait`   | `--timeout`      | 10 seconds           | how long to wait                                                |
-| `debug trace`  | `--src`          | every source         | a prefix or an address the source lies in, given up to 16 times |
-| `debug trace`  | `--dst`          | every destination    | a prefix or an address the destination lies in, up to 16 times  |
-| `debug trace`  | `--proto`        | every protocol       | a protocol by name, such as `udp` or `icmpv6`, or by number     |
-| `debug trace`  | `--decision`     | every decision       | `deliver`, `forward`, `egress`, `answer` or `drop`              |
-| `debug trace`  | `--peer`         | every peer           | one peer, named as `redial` names one                           |
-| `debug trace`  | `--rate`         | 1000                 | the most records a second, from 1 to 10000                      |
-| `debug trace`  | `--payload`      | 0                    | the bytes of each packet a record carries, up to 65535          |
-| `debug trace`  | `--for`          | 30 seconds           | how long to trace                                               |
+| Command        | Flag             | Default              | What it sets                                                                    |
+| -------------- | ---------------- | -------------------- | ------------------------------------------------------------------------------- |
+| `debug socket` | `--timeout`      | 10 seconds           | how long the whole exchange may take, a stream included                         |
+| `debug probe`  | `--all`          | off                  | probe every session instead of one peer's                                       |
+| `debug events` | `-f`, `--follow` | off                  | print later events as they come                                                 |
+| `debug events` | `--for`          | 30 seconds           | how long `-f` follows                                                           |
+| `debug events` | `--kind`         | every kind           | a kind, or the part of one before a dot, given up to 16 times                   |
+| `debug events` | `--peer`         | every peer           | one peer, named as `redial` names one                                           |
+| `debug events` | `--since`        | every recorded event | how recent a recorded event must be                                             |
+| `debug route`  | `--iif`          | none                 | the link the packet arrives on, none for this host's own                        |
+| `debug route`  | `--peer`         | none                 | the node whose session the packet arrives through                               |
+| `debug wait`   | `--attr`         | none                 | a `key=value` the event must carry, given up to 16 times                        |
+| `debug wait`   | `--past`         | 0                    | how recent a recorded event may be and still end the wait                       |
+| `debug wait`   | `--peer`         | every peer           | one peer, named as `redial` names one                                           |
+| `debug wait`   | `--timeout`      | 10 seconds           | how long to wait                                                                |
+| `debug trace`  | `--src`          | every source         | a prefix or an address the source lies in, given up to 16 times                 |
+| `debug trace`  | `--dst`          | every destination    | a prefix or an address the destination lies in, up to 16 times                  |
+| `debug trace`  | `--proto`        | every protocol       | a protocol by name, such as `udp` or `icmpv6`, or by number                     |
+| `debug trace`  | `--decision`     | every decision       | `deliver`, `forward`, `egress`, `answer` or `drop`                              |
+| `debug trace`  | `--peer`         | every peer           | one peer, named as `redial` names one                                           |
+| `debug trace`  | `--rate`         | 1000                 | the most records a second, from 1 to 10000                                      |
+| `debug trace`  | `--payload`      | 0                    | the bytes of each packet a record carries, up to 65535                          |
+| `debug trace`  | `--pcap`         | none                 | a pcapng file the records go to, or `-` for stdout, readable by its owner alone |
+| `debug trace`  | `--for`          | 30 seconds           | how long to trace                                                               |
 
 - `debug socket [METHOD] PATH [BODY|-]` sends 1 request as written and prints
   the answer's body as it arrives, with the status line on standard error, and
@@ -306,9 +308,10 @@ These commands take flags of their own:
 - `debug segments` is each segment the node answers for, an egress segment with
   whether its SID is announced and the families the mesh hands to the exit
   through it, then the steering policies, on or stopped, with the overhead the
-  tun's MTU leaves room for, `cap.exit.via`'s path counted in it, and each
-  `cap.segment.steer` policy's selector, source, path and overhead, then the
-  segment counters `ranet3 status` reports. A node with neither says so.
+  tun's MTU leaves room for, `cap.exit.via`'s path with its source and overhead,
+  which a stop of steering leaves on, and each `cap.segment.steer` policy's
+  selector, source, path and overhead, then the segment counters `ranet3 status`
+  reports. A node with neither says so.
 - `debug pmtu [peer]` is the path MTU of every session, or of one peer's: first
   `link.mtu`, the steering header and the tun's MTU, with the answers sent to
   packets past a session's budget and the lowerings of a SYN or SYN-ACK's MSS,
@@ -386,7 +389,7 @@ These commands take flags of their own:
   prints 1 object with the `event` and `after`, the time from the start of the
   wait to the event. `after` is negative for an event recorded before the wait
   began.
-- `debug trace [--src P]... [--dst P]... [--proto P] [--decision D] [--peer P] [--rate 1000] [--payload 0] [--for 30s]`
+- `debug trace [--src P]... [--dst P]... [--proto P] [--decision D] [--peer P] [--rate 1000] [--payload 0] [--pcap FILE] [--for 30s]`
   prints a record of each packet the node's forwarding decision handles and the
   filter selects, as the node decides it, until `--for` has passed, and then
   exits 0. A record is described below. A packet the forwarding decision never
@@ -456,7 +459,9 @@ and what became of it: `sent`, `withheld` by the
 the node holds no address of the family to send it from, `not_answerable` for a
 packet no ICMP error may answer, or `unsent` for one due and not sent, to a
 source the mesh routes it no way back to or through a session with no room for
-it.
+it. Each record carries the time on the daemon's clock at which the node read
+the packet for it, or for a `budget` drop at which the peer's budget refused the
+packet, which `--json` and `--pcap` show and its line leaves out.
 
 A packet a segment of this node refused, or one End rewrote that went no
 further, is an `answer` record where its refusal is due an ICMP error, and a
@@ -476,23 +481,26 @@ and has no record of its own.
 
 A record carries none of the packet's bytes unless `--payload` asks for them,
 and then that many bytes from the IP header on, or the whole packet where it is
-shorter. The filter takes a packet whose source lies in any one of the `--src`
-prefixes and whose destination lies in any one of the `--dst` prefixes, where an
-IPv4-mapped IPv6 address lies in no IPv4 prefix, and `--peer` takes a packet
-that arrived on that peer's session or goes to it. The rate is a bucket of 1
-second's worth, which only a packet the filter takes draws on, and a packet past
-it builds no record. Before the node rewrites a packet, a trace whose bucket has
-room copies it if its filter may still take its record, as a filter of
-`--decision drop` or `answer` may take a forward's, which may yet drop or answer
-the packet, and a filter of `--peer` that of each IPv6 packet a session delivers
-to a node with segments of its own, which an End segment may send on to any
-peer. A packet past the rate is counted, but not one that arrived at a segment
-of this node while no trace whose filter may take it had room, whether End sent
-it on or a segment refused it before or after End's rewrite. An inner packet an
-egress segment took out past its allow list is counted, whether the segment sent
-it out or refused it. Each trace has a queue of its own, and what the rate and
-the queue refused is counted in a `stream.dropped` line once a second, with
-`rate` and `queue` each the records refused since the line before.
+shorter. Under `--pcap` a record is one packet of link type raw IP, whose bytes
+are those `--payload` asks for, whose original length is the packet's, and whose
+comment holds the record's other fields as its line names them. The stream's
+notes go to stderr. The filter takes a packet whose source lies in any one of
+the `--src` prefixes and whose destination lies in any one of the `--dst`
+prefixes, where an IPv4-mapped IPv6 address lies in no IPv4 prefix, and `--peer`
+takes a packet that arrived on that peer's session or goes to it. The rate is a
+bucket of 1 second's worth, which only a packet the filter takes draws on, and a
+packet past it builds no record. Before the node rewrites a packet, a trace
+whose bucket has room copies it if its filter may still take its record, as a
+filter of `--decision drop` or `answer` may take a forward's, which may yet drop
+or answer the packet, and a filter of `--peer` that of each IPv6 packet a
+session delivers to a node with segments of its own, which an End segment may
+send on to any peer. A packet past the rate is counted, but not one that arrived
+at a segment of this node while no trace whose filter may take it had room,
+whether End sent it on or a segment refused it before or after End's rewrite. An
+inner packet an egress segment took out past its allow list is counted, whether
+the segment sent it out or refused it. Each trace has a queue of its own, and
+what the rate and the queue refused is counted in a `stream.dropped` line once a
+second, with `rate` and `queue` each the records refused since the line before.
 
 Each session's packets are decided on a goroutine of their own, and so are each
 tun queue's reads. Records of one session or one queue come in the order the
