@@ -6,6 +6,7 @@
 package tun
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -228,7 +229,7 @@ func (tun *NativeTun) Read(slab []byte, packets []ReadPacket) (int, error) {
 		buf := slab[ReadPacketSpacing-4 : len(slab)-ReadPacketSpacing]
 		n, err := tun.tunFile.Read(buf[:])
 		if n < 4 {
-			return 0, err
+			return 0, cmp.Or(err, ErrInvalidFrame)
 		}
 		packets[0].Offset = ReadPacketSpacing
 		packets[0].Size = n - 4
