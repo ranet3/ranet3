@@ -21,8 +21,7 @@ const (
 	// so it holds a packet of 65535 bytes whatever the device's MTU
 	outboundSlabSize = 2 * 65535
 	// inboundWriteBatchSize is the most packets one write to the mesh tun carries
-	// wireguard-go's tun write sizes its GRO tables for that many
-	inboundWriteBatchSize = 128
+	inboundWriteBatchSize = conn.IdealBatchSize
 	// inboundWriteQueueSize is the batches one inbound writer lane queues before a delivery to it waits
 	// a busy writer merges the ones ready into its next tun write
 	inboundWriteQueueSize = 64
