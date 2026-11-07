@@ -130,7 +130,8 @@ type exitView struct {
 
 // thrown is the destination of each throw of the mirror's desired routes that
 // holds no source, each of this node's own prefixes outside the overlay that
-// counts as no default and each carve-out. A source-specific one is left out,
+// counts as no default and each carve-out whose own prefix the mesh's table
+// does not hold for every source. A source-specific one is left out,
 // so the host's own unmarked lookup from its source the mesh's table passes on
 // meets 5450.
 func thrown(desired []Route) []netip.Prefix {
