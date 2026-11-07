@@ -8,12 +8,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -121,7 +124,7 @@ func socketPath(t *testing.T) string {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	path := filepath.Join(dir, "control.sock")
-	if len(path) > MaxSocketPath {
+	if len(path)+bindPathExtra > MaxSocketPath {
 		t.Fatalf("this TMPDIR leaves no room for a socket: %s is %d bytes", path, len(path))
 	}
 	return path
@@ -191,6 +194,88 @@ func TestListenRefusesOverlongPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(path)); err == nil {
 		t.Error("the refusal created the directory on its way out")
+	}
+}
+
+// The socket is bound first in a directory beside its path, which
+// os.MkdirTemp names with a uint32 in decimal, so the longest path Listen
+// takes binds under the longest name it can draw, and a byte more is refused
+// by name rather than as the bind's "invalid argument".
+func TestListenBindsTheLongestPathItTakes(t *testing.T) {
+	dir := filepath.Dir(socketPath(t))
+	path := filepath.Join(dir, strings.Repeat("s", MaxSocketPath-bindPathExtra-len(dir)-1))
+	// linux binds past MaxSocketPath, so the length is checked as well as the bind
+	longest := filepath.Join(dir, strings.Replace(bindPattern, "*", strconv.FormatUint(math.MaxUint32, 10), 1))
+	first := filepath.Join(longest, filepath.Base(path))
+	if len(first) > MaxSocketPath {
+		t.Fatalf("a path of %d bytes is accepted and bound first at %d bytes, past the %d a unix socket holds", len(path), len(first), MaxSocketPath)
+	}
+	if err := os.Mkdir(longest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socket, err := net.Listen("unix", first)
+	if err != nil {
+		t.Fatalf("binding at the longest first path, %d bytes: %v", len(first), err)
+	}
+	socket.Close()
+	if err := os.Remove(longest); err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatalf("a path of %d bytes was refused: %v", len(path), err)
+	}
+	listener.Close()
+	if _, err := Listen(path + "s"); err == nil {
+		t.Fatalf("a path of %d bytes was accepted, which leaves its first path past the %d a unix socket holds", len(path)+1, MaxSocketPath)
+	} else if !strings.Contains(err.Error(), "unix socket holds") {
+		t.Errorf("the refusal reads %q, want it to name the limit", err)
+	}
+}
+
+// The socket is renamed onto its path once its group and mode are set, so
+// the directory holds the socket and its lock and nothing else, and Close
+// takes the socket away from the path it was renamed to.
+func TestListenLeavesOnlyTheSocketAndCloseRemovesIt(t *testing.T) {
+	path := socketPath(t)
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode, gid := modeAndGroup(t, path)
+	if mode&os.ModeSocket == 0 || mode.Perm() != 0o660 {
+		t.Errorf("%s is %v, want a socket at mode 660", path, mode)
+	}
+	if gid != os.Getegid() {
+		t.Errorf("%s is in group %d, want the effective %d", path, gid, os.Getegid())
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if want := []string{"control.sock", "control.sock.lock"}; !slices.Equal(names, want) {
+		t.Errorf("the directory holds %q, want %q", names, want)
+	}
+
+	if err := listener.Close(); err != nil {
+		t.Fatalf("closing reported %v", err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the socket outlived Close: %v", err)
+	}
+	again, err := Listen(path)
+	if err != nil {
+		t.Fatalf("the path was not free after Close: %v", err)
+	}
+	defer again.Close()
+	listener.Close()
+	if _, err := os.Lstat(path); err != nil {
+		t.Errorf("a second Close of the first listener took the socket of the one after it: %v", err)
 	}
 }
 

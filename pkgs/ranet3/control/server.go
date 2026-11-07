@@ -54,8 +54,8 @@ const lockSuffix = ".lock"
 // own the socket. An empty file is the cheaper end of that trade, and a unit
 // with RuntimeDirectory set clears it anyway.
 func Listen(path string) (net.Listener, error) {
-	if len(path) > MaxSocketPath {
-		return nil, fmt.Errorf("control: socket path is %d bytes, over the %d a unix socket holds: %s", len(path), MaxSocketPath, path)
+	if len(path)+bindPathExtra > MaxSocketPath {
+		return nil, fmt.Errorf("control: socket path is %d bytes, and the directory it is bound in first adds %d, over the %d a unix socket holds: %s", len(path), bindPathExtra, MaxSocketPath, path)
 	}
 	if err := MakeDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
@@ -68,27 +68,53 @@ func Listen(path string) (net.Listener, error) {
 		lock.Close()
 		return nil, err
 	}
-	socket, err := net.Listen("unix", path)
+	socket, err := bind(path)
 	if err != nil {
 		lock.Close()
+		return nil, err
+	}
+	return &ownedListener{Listener: socket, path: path, lock: lock}, nil
+}
+
+// bind makes the socket in a directory only the daemon can enter, sets its
+// group and mode there and renames it onto path. A bind at path leaves the
+// socket at the mode the process umask gives it until the chmod, and the
+// umask belongs to whoever started the process, on linux and darwin alike.
+func bind(path string) (*net.UnixListener, error) {
+	dir, err := os.MkdirTemp(filepath.Dir(path), bindPattern)
+	if err != nil {
 		return nil, fmt.Errorf("control: %w", err)
 	}
-	// BSD hands a new socket the group of its directory rather than the process's
-	// the daemon's group comes before the mode that lets a group in
-	if err := os.Lchown(path, -1, os.Getegid()); err != nil {
+	private := filepath.Join(dir, filepath.Base(path))
+	socket, err := net.ListenUnix("unix", &net.UnixAddr{Name: private, Net: "unix"})
+	if err == nil {
+		// the name it was bound at is gone once it is at path
+		socket.SetUnlinkOnClose(false)
+		if err = place(private, path); err != nil {
+			socket.Close()
+		}
+	}
+	if removed := os.RemoveAll(dir); removed != nil && err == nil {
 		socket.Close()
-		lock.Close()
+		err = errors.Join(removed, os.Remove(path))
+	}
+	if err != nil {
 		return nil, fmt.Errorf("control: %w", err)
 	}
-	// After the bind rather than through a umask: the umask is the process's
-	// and belongs to whoever started it, and a socket left at 0755 by one is a
-	// socket the group cannot read.
-	if err := os.Chmod(path, socketMode); err != nil {
-		socket.Close()
-		lock.Close()
-		return nil, fmt.Errorf("control: %w", err)
+	return socket, nil
+}
+
+// place settles the socket at private and moves it to path
+// BSD hands a new socket the group of its directory rather than the process's
+// the daemon's group comes before the mode that lets a group in
+func place(private, path string) error {
+	if err := os.Lchown(private, -1, os.Getegid()); err != nil {
+		return err
 	}
-	return &ownedListener{Listener: socket, lock: lock}, nil
+	if err := os.Chmod(private, socketMode); err != nil {
+		return err
+	}
+	return os.Rename(private, path)
 }
 
 // MakeDirectory creates dir at a mode the daemon's group can traverse. Mkdir
@@ -158,14 +184,21 @@ func clearStale(path string) error {
 
 // ownedListener ties the lock to the socket. Closing unlinks the socket first
 // and releases the lock after, so the path is never free for another daemon to
-// bind while this one is still unlinking.
+// bind while this one is still unlinking. Only the first Close unlinks, since
+// past it the path may be another daemon's.
 type ownedListener struct {
 	net.Listener
-	lock *os.File
+	path   string
+	lock   *os.File
+	closed sync.Once
+	err    error
 }
 
 func (l *ownedListener) Close() error {
-	return errors.Join(l.Listener.Close(), l.lock.Close())
+	l.closed.Do(func() {
+		l.err = errors.Join(l.Listener.Close(), os.Remove(l.path), l.lock.Close())
+	})
+	return l.err
 }
 
 // Handler serves src. Every answer is built whole before anything reaches the

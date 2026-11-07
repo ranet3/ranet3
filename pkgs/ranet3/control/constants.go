@@ -15,6 +15,11 @@ const (
 	socketMode = 0o660
 	// dirMode lets that group reach the socket through its directory
 	dirMode = 0o750
+	// bindPattern names the directory beside the socket that Listen binds it in first
+	bindPattern = ".control-*"
+	// bindPathExtra is how much longer than its path the socket's first path is at most
+	// a slash and the pattern, whose star os.MkdirTemp replaces with at most the 10 digits of a uint32
+	bindPathExtra = len("/"+bindPattern) - len("*") + 10
 	// maxRequest is the largest write body the daemon reads, in bytes
 	// a request is a few short fields, so a client near this has lost track of what it sends
 	maxRequest = 64 << 10
