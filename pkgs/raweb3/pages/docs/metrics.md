@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-11-06
+updated: 2026-11-07
 order: 90
 ---
 
@@ -65,9 +65,12 @@ nothing. Segment routing writes its series on every node, zeros included.
 
 The reconciler's, the egress and the antispoof filter's series hold their last
 pass as it read them, as the paragraphs above say. Every other series is read
-from live state at scrape time, so a scrape reflects the instant it happened. A
-counter cannot carry the route table. `ranet3 routes` reads it, with each
-prefix's next hop, from the control socket.
+from live state at scrape time. The `forwarded`, `delivered` and `dropped`
+counts of `ranet3_transit_packets_total`, `ranet3_steered_total` and
+`ranet3_steer_dropped_total{reason="no_route"}` take each read off the tun and
+each batch a session delivered once it is decided, so a scrape leaves out the
+ones being decided as it runs. A counter cannot carry the route table.
+`ranet3 routes` reads it, with each prefix's next hop, from the control socket.
 
 ## Series
 
