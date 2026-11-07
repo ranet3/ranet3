@@ -41,6 +41,11 @@ func TestTUNSetsGSOMaxSegsToTheReadBatch(t *testing.T) {
 		{"multiqueue attach", "gsocap0", "gsocap0", func(t *testing.T, device string) {
 			persistTUN(t, device, unix.IFF_MULTI_QUEUE)
 		}},
+		{"multiqueue attach at one core", "gsocap0", "gsocap0", func(t *testing.T, device string) {
+			persistTUN(t, device, unix.IFF_MULTI_QUEUE)
+			previous := runtime.GOMAXPROCS(1)
+			t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
+		}},
 		{"single-queue attach at one core", "gsocap0", "gsocap0", func(t *testing.T, device string) {
 			persistTUN(t, device, 0)
 			previous := runtime.GOMAXPROCS(1)
@@ -94,8 +99,9 @@ func TestTUNMeshWarnsAtItsFirstCutRead(t *testing.T) {
 // a queue opened under the name of a multiqueue tun joins that device
 // and a mesh under the default name has to be refused instead when a device of that name is there
 // whether its link.tun is empty or names ranet3
-// at one core a multiqueue open that a single-queue device refuses is tried again single-queue
-// and that open has to refuse the device too
+// at one core the open is multiqueue all the same
+// and a single-queue device of that name refuses the exclusive open before it compares the mode
+// so no single-queue open follows
 func TestTUNUnderTheDefaultNameIsNeverShared(t *testing.T) {
 	heldByAMesh := func(t *testing.T) {
 		first, err := NewNamed(0, "", false, nil)
@@ -170,6 +176,53 @@ func TestTUNLanesJoinTheDeviceTheFirstLaneMade(t *testing.T) {
 			}
 		})
 	}
+}
+
+// a mesh of one lane, as on a host of one core, makes a multiqueue device all the same
+// so a second instance under its name opens lanes on it, one or several
+// a single-queue device would refuse it with EBUSY for one lane and EINVAL for several
+func TestTUNMadeWithOneLaneTakesASecondInstance(t *testing.T) {
+	enterEmptyNamespace(t)
+	first, name, err := createTUNQueues("solo0", DefaultMTU, 1)
+	if err != nil {
+		t.Fatalf("open 1 lane: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	if flags := tunFlags(t, first); flags&unix.IFF_MULTI_QUEUE == 0 {
+		t.Errorf("the device of 1 lane holds flags %#x, without IFF_MULTI_QUEUE", flags)
+	}
+	for _, lanes := range []int{1, 4} {
+		second, got, err := createTUNQueues(name, DefaultMTU, lanes)
+		if err != nil {
+			t.Errorf("%s refused a second instance of %d lanes: %v", name, lanes, err)
+			continue
+		}
+		if got != name {
+			t.Errorf("a second instance of %d lanes opened %s, want %s", lanes, got, name)
+		}
+		_ = second.Close()
+	}
+}
+
+// tunFlags are the flags the kernel holds for the device, read with TUNGETIFF on its first queue
+func tunFlags(t *testing.T, device tun.Device) uint16 {
+	t.Helper()
+	conn, err := tun.QueuesOf(device)[0].File().SyscallConn()
+	if err != nil {
+		t.Fatalf("reach the descriptor of the first queue: %v", err)
+	}
+	ifr, err := unix.NewIfreq("")
+	if err != nil {
+		t.Fatalf("build an ifreq: %v", err)
+	}
+	var ioctlErr error
+	if err := conn.Control(func(fd uintptr) { ioctlErr = unix.IoctlIfreq(int(fd), unix.TUNGETIFF, ifr) }); err != nil {
+		t.Fatalf("reach the descriptor of the first queue: %v", err)
+	}
+	if ioctlErr != nil {
+		t.Fatalf("read the device's flags: %v", ioctlErr)
+	}
+	return ifr.Uint16()
 }
 
 // the kernel attaches at most 256 queues to one tun and refuses the next with E2BIG
@@ -493,9 +546,10 @@ func namespaceOf(t *testing.T) uint64 {
 // it outlives its descriptor with no queue attached
 func persistTUN(t *testing.T, name string, flags uint16) {
 	t.Helper()
-	fd, err := unix.Open(cloneDevicePath, unix.O_RDWR|unix.O_CLOEXEC, 0)
+	const cloneDevice = "/dev/net/tun"
+	fd, err := unix.Open(cloneDevice, unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
-		t.Fatalf("open %s: %v", cloneDevicePath, err)
+		t.Fatalf("open %s: %v", cloneDevice, err)
 	}
 	defer unix.Close(fd)
 	ifr, err := unix.NewIfreq(name)
