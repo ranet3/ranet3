@@ -377,7 +377,7 @@ type forwardedSegment struct {
 // forwardSegments sends the packets a waypoint has rewritten on to the peers
 // their new destinations select.
 //
-// Each peer's share of the batch takes one ticket and one sequence range and
+// Each peer's share of the batch takes one place and one sequence range and
 // is sealed in one call, as a share of a tun read is, against the bytes of the
 // peer's budget it carries.
 //
@@ -484,7 +484,7 @@ func (m *Mesh) forwardSegments(segments []forwardedSegment, arrived [][]byte, fr
 		if batch == nil {
 			continue
 		}
-		if err := batch.enqueue(); err != nil {
+		if err := batch.finish(); err != nil {
 			m.segmentsDropped.Add(uint64(counts[peer].count))
 			m.reportSegmentDrop("the transport lost a forwarded segment", "err", err)
 			continue
@@ -760,7 +760,7 @@ func (m *Mesh) sendThrough(peer *Peer, raw []byte, nextHeader byte) bool {
 		return false
 	}
 	batch.append(raw, nextHeader)
-	if err := batch.enqueue(); err != nil {
+	if err := batch.finish(); err != nil {
 		m.reportSegmentDrop("the transport lost an icmp error", "err", err)
 		return false
 	}

@@ -6,7 +6,9 @@
 package netstack
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -62,10 +64,11 @@ func (v *valve) set(open, fail bool) {
 }
 
 // heldBatch is a reservation the machine has made and not yet seen to its end
-// count is its packets, bytes what they come to and charge what the model says it holds of its budget
+// index is its place among the machine's reservations, count its packets, bytes what they come to and charge what the model says it holds of its budget
 type heldBatch struct {
 	batch   *peerBatch
 	place   *Place
+	index   uint64
 	count   int
 	bytes   int
 	charge  int
@@ -124,17 +127,26 @@ func (h *heldBatch) send() error {
 	if h.place != nil {
 		return h.place.Send()
 	}
-	return h.batch.enqueue()
+	return h.batch.finish()
 }
 
 // budgetMachine drives one peer beside a model of what each budget holds
-// its rules reserve any size on both budgets, send in any order and have transmits succeed or fail
+// its rules reserve any size on both budgets, send in any order, have transmits succeed or fail and close the peer
 // the transport returns only while a drain step holds it open
 // so the model knows at every step which packets have come back
 type budgetMachine struct {
 	peer  *Peer
 	valve *valve
 	held  []*heldBatch
+	// reserved counts the reservations the peer's SA was asked for, each sealed into packets that carry its index
+	// written under the peer's reserveMu
+	reserved uint64
+	// orderMu guards last and disorder, the index the transport was last handed and the first index it was handed after a later one
+	orderMu  sync.Mutex
+	last     uint64
+	disorder string
+	// all is every batch the peer handed the machine, whose done channels must be empty once the peer has closed
+	all []*peerBatch
 	// data and control are the model's counts of the data budget in bytes and the control budget in packets
 	data, control int
 	// dataBytes and dataPackets are the bytes and the packets of the data shares held from their reservation until their transmit returns
@@ -142,16 +154,55 @@ type budgetMachine struct {
 	// dropped, failed and offered count packets
 	dropped, failed uint64
 	offered         uint64
+	closed          bool
+}
+
+// newBudgetMachine is a machine whose peer seals each packet as the index of its reservation
+// and whose transport notes the first packet it is handed after one of a later reservation, whether or not the valve then lets it through
+func newBudgetMachine() *budgetMachine {
+	m := &budgetMachine{valve: newValve()}
+	m.peer = NewPeer("peer", func(int) (BatchSealer, error) {
+		tag := binary.BigEndian.AppendUint64(nil, m.reserved)
+		m.reserved++
+		return func(raw [][]byte, _ []byte, out [][]byte) ([][]byte, error) {
+			out = out[:0]
+			for range raw {
+				out = append(out, tag)
+			}
+			return out, nil
+		}, nil
+	}, func(sealed [][]byte) error {
+		m.orderMu.Lock()
+		for _, packet := range sealed {
+			index := binary.BigEndian.Uint64(packet)
+			if index < m.last && m.disorder == "" {
+				m.disorder = fmt.Sprintf("reservation %d after %d", index, m.last)
+			}
+			m.last = index
+		}
+		m.orderMu.Unlock()
+		return m.valve.transmit(sealed)
+	}, nil)
+	return m
 }
 
 // reserveData asks the data budget for a share of packets of the sizes given
 // a refusal the model has room for is an error, and an admission it has no room for is left to the invariants
 // stamped an hour ahead, so the delay control reads it below its target however long the case runs
 // and the model need not count delay drops
+// a closed peer refuses it and counts its packets
 func (m *budgetMachine) reserveData(tc hegel.TestCase, sizes []int) {
 	room, bytes := peerDataBudget-m.data, total(sizes)
 	m.offered += uint64(len(sizes))
+	index := m.reserved
 	b := reserveSized(m.peer, sizes)
+	if m.closed {
+		if b != nil {
+			tc.Errorf("a closed peer admitted a share of %d packets", len(sizes))
+		}
+		m.dropped += uint64(len(sizes))
+		return
+	}
 	if b == nil {
 		if m.data == 0 {
 			tc.Errorf("an empty budget refused a share of %d packets coming to %d bytes", len(sizes), bytes)
@@ -162,7 +213,8 @@ func (m *budgetMachine) reserveData(tc hegel.TestCase, sizes []int) {
 		return
 	}
 	b.admitted += time.Hour
-	h := &heldBatch{batch: b, count: len(sizes), bytes: bytes, charge: charge(len(sizes), bytes)}
+	m.all = append(m.all, b)
+	h := &heldBatch{batch: b, index: index, count: len(sizes), bytes: bytes, charge: charge(len(sizes), bytes)}
 	m.data += h.charge
 	m.dataBytes += h.bytes
 	m.dataPackets += h.count
@@ -191,9 +243,10 @@ func (m *budgetMachine) RuleReserveData(tc hegel.TestCase) {
 // RuleReserveControl asks the control budget for one packet's place, as babel does
 func (m *budgetMachine) RuleReserveControl(tc hegel.TestCase) {
 	m.offered++
+	index := m.reserved
 	place, err := m.peer.ReserveRawOrDrop([]byte{2}, 41)
-	if fits := m.control < controlQueueSize; (err == nil) != fits {
-		tc.Errorf("a control packet with %d of %d places taken was admitted %v, the model says %v", m.control, controlQueueSize, err == nil, fits)
+	if fits := !m.closed && m.control < controlQueueSize; (err == nil) != fits {
+		tc.Errorf("a control packet with %d of %d places taken, the peer closed %v, was admitted %v, the model says %v", m.control, controlQueueSize, m.closed, err == nil, fits)
 		return
 	}
 	if err != nil {
@@ -201,10 +254,12 @@ func (m *budgetMachine) RuleReserveControl(tc hegel.TestCase) {
 		return
 	}
 	m.control++
-	m.held = append(m.held, &heldBatch{batch: place.batch, place: place, count: 1, charge: 1, control: true})
+	m.all = append(m.all, place.batch)
+	m.held = append(m.held, &heldBatch{batch: place.batch, place: place, index: index, count: 1, charge: 1, control: true})
 }
 
 // RuleSend sends one reservation the machine holds, in any order
+// a closed peer refuses it, counts its packets and gives back what it held
 func (m *budgetMachine) RuleSend(tc hegel.TestCase) {
 	var unsent []*heldBatch
 	for _, h := range m.held {
@@ -214,22 +269,72 @@ func (m *budgetMachine) RuleSend(tc hegel.TestCase) {
 	}
 	tc.Assume(len(unsent) > 0)
 	h := unsent[hegel.Draw(tc, hegel.Integers(0, len(unsent)-1))]
-	if err := h.send(); err != nil {
-		tc.Errorf("an open peer refused ticket %d: %v", h.batch.ticket, err)
-	}
+	err := h.send()
 	h.queued = true
+	if !m.closed {
+		if err != nil {
+			tc.Errorf("an open peer refused reservation %d: %v", h.index, err)
+		}
+		return
+	}
+	if err == nil {
+		tc.Errorf("a closed peer queued reservation %d", h.index)
+	}
+	m.giveBack(h)
+	m.dropped += uint64(h.count)
+	m.held = slices.DeleteFunc(m.held, func(held *heldBatch) bool { return held == h })
 }
 
-// RuleDrain lets the transport take everything the sender can reach, every ticket sent before the first one that is not
-// and has the transport succeed or fail
-// those packets come back to their budgets and nothing else does
-func (m *budgetMachine) RuleDrain(tc hegel.TestCase) {
-	fail := hegel.Draw(tc, hegel.Booleans())
-	slices.SortFunc(m.held, func(a, b *heldBatch) int { return int(a.batch.ticket) - int(b.batch.ticket) })
+// giveBack takes what h holds off the model's budgets
+func (m *budgetMachine) giveBack(h *heldBatch) {
+	if h.control {
+		m.control -= h.charge
+		return
+	}
+	m.data -= h.charge
+	m.dataBytes -= h.bytes
+	m.dataPackets -= h.count
+}
+
+// reach is how many of the reservations held, from the first, were sent before the first that was not
+func (m *budgetMachine) reach() int {
 	reach := 0
 	for reach < len(m.held) && m.held[reach].queued {
 		reach++
 	}
+	return reach
+}
+
+// RuleClose closes the peer with its transport open
+// the sender transmits every reservation sent before the first that was not, and gives back every other sent one, counting its packets
+// the reservations not yet sent keep what they hold until they are sent
+func (m *budgetMachine) RuleClose(tc hegel.TestCase) {
+	tc.Assume(!m.closed)
+	reach := m.reach()
+	var kept []*heldBatch
+	for i, h := range m.held {
+		switch {
+		case i < reach:
+			m.giveBack(h)
+		case h.queued:
+			m.giveBack(h)
+			m.dropped += uint64(h.count)
+		default:
+			kept = append(kept, h)
+		}
+	}
+	m.valve.set(true, false)
+	m.peer.Close()
+	m.held, m.closed = kept, true
+}
+
+// RuleDrain lets the transport take everything the sender can reach, every reservation sent before the first one that is not
+// and has the transport succeed or fail
+// those packets come back to their budgets and nothing else does
+func (m *budgetMachine) RuleDrain(tc hegel.TestCase) {
+	tc.Assume(!m.closed)
+	fail := hegel.Draw(tc, hegel.Booleans())
+	reach := m.reach()
 	data, control, dataBytes, dataPackets := m.data, m.control, m.dataBytes, m.dataPackets
 	var packets uint64
 	for _, h := range m.held[:reach] {
@@ -312,20 +417,30 @@ func (m *budgetMachine) InvariantPeerAgreesWithModel(tc hegel.TestCase) {
 	}
 }
 
+// InvariantSentInReservationOrder holds the transport to packets in the order of their reservations
+func (m *budgetMachine) InvariantSentInReservationOrder(tc hegel.TestCase) {
+	m.orderMu.Lock()
+	defer m.orderMu.Unlock()
+	if m.disorder != "" {
+		tc.Errorf("the transport was handed %s", m.disorder)
+	}
+}
+
 // a peer's data budget counts bytes, at least leastPacketBytes a packet and at most the whole budget a share, and its control budget packets
 // from their reservation until the transmit that carried them returns
 // whatever sizes up to the largest link.mtu the machine reserves on either budget, in whatever order it sends, and whether its transmits succeed or fail
 // a reservation is admitted exactly when the model has room for it, and an empty budget admits a share of any size
 // the data packets held never come to more bytes than the budget, nor to more packets than it holds of 1400 bytes each, but for one share admitted alone
 // a refusal counts all of its packets, and everything held comes back once its transmit returns
-// then the peer closes with reservations still held, or sent and waiting behind one that is held
+// the transport is handed packets in the order of their reservations
+// the peer may close at any step, after which it refuses every reservation and every send and counts their packets
+// and at the end the peer closes, if it has not, with reservations still held, or sent and waiting behind one that is held
 // and every packet it was offered is counted once, as transmitted, lost in the transport or dropped
-// and both budgets are back to empty
+// both budgets are back to empty, and no batch it handed out holds a token of its seal
 func TestBudgetAgreesWithItsModel(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
-		v := newValve()
-		m := &budgetMachine{valve: v, peer: NewPeer("peer",
-			func(int) (BatchSealer, error) { return passThrough, nil }, v.transmit, nil)}
+		m := newBudgetMachine()
+		v := m.valve
 		// reads of one size and count taken up front, up to one more than the budget holds of the smallest full ones
 		// so a case reaches its edge in a few steps, by bytes or by packets
 		// a read cut into more packets than the budget holds of leastPacketBytes each among them
@@ -337,7 +452,7 @@ func TestBudgetAgreesWithItsModel(t *testing.T) {
 		for range hegel.Draw(ht, pbt.Spanning(0, controlQueueSize)) {
 			m.RuleReserveControl(ht)
 		}
-		hegel.RunStateful(ht, m, hegel.WithAlwaysCheckInvariants("InvariantBytesHeldWithinBudget", "InvariantPacketsHeldWithinBudget", "InvariantPeerAgreesWithModel"))
+		hegel.RunStateful(ht, m, hegel.WithAlwaysCheckInvariants("InvariantBytesHeldWithinBudget", "InvariantPacketsHeldWithinBudget", "InvariantPeerAgreesWithModel", "InvariantSentInReservationOrder"))
 
 		// then the session ends
 		// and the peer closes with whatever is held, sent or on its way to the transport
@@ -348,7 +463,7 @@ func TestBudgetAgreesWithItsModel(t *testing.T) {
 				continue
 			}
 			if h.send() == nil {
-				ht.Fatalf("a closed peer queued ticket %d", h.batch.ticket)
+				ht.Fatalf("a closed peer queued reservation %d", h.index)
 			}
 		}
 		select {
@@ -360,6 +475,12 @@ func TestBudgetAgreesWithItsModel(t *testing.T) {
 		if counted := uint64(v.transmitted.Load()) + m.peer.SendFailed() + m.peer.Dropped(); counted != m.offered {
 			ht.Fatalf("the peer was offered %d packets and counted %d: %d transmitted, %d lost in the transport, %d dropped",
 				m.offered, counted, v.transmitted.Load(), m.peer.SendFailed(), m.peer.Dropped())
+		}
+		m.InvariantSentInReservationOrder(ht)
+		for _, b := range m.all {
+			if len(b.done) != 0 {
+				ht.Fatal("a batch went back to the pool holding the token of its seal")
+			}
 		}
 	})
 }

@@ -231,7 +231,7 @@ func TestPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
 
 	first := peer.reserveBatch(1, 1)
 	first.append([]byte{1}, 0)
-	if err := first.enqueue(); err != nil {
+	if err := first.finish(); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -243,7 +243,7 @@ func TestPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
 	second := peer.reserveBatch(1, 1)
 	second.append([]byte{2}, 0)
 	enqueued := make(chan error, 1)
-	go func() { enqueued <- second.enqueue() }()
+	go func() { enqueued <- second.finish() }()
 	select {
 	case err := <-enqueued:
 		if err != nil {
@@ -266,12 +266,12 @@ func TestPeerWorkersDoNotWaitForOrderedSender(t *testing.T) {
 	}
 }
 
-func TestSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
+func TestSenderMergesReadyBatchesAndCompletesEveryPlace(t *testing.T) {
 	sendErr := errors.New("send failed")
 	cryptoErr := errors.New("crypto failed")
 	transmitted := make(chan []byte, 1)
 	p := &Peer{
-		ID: "peer", completed: make(chan *peerBatch, 3), started: time.Now(),
+		ID: "peer", queued: make(chan struct{}, 1), started: time.Now(),
 		stop: make(chan struct{}), senderDone: make(chan struct{}),
 		transmitBatchFn: func(packets [][]byte) error {
 			var order []byte
@@ -283,14 +283,22 @@ func TestSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 		},
 	}
 	var failures []chan error
+	var last *peerBatch
 	for i := range 3 {
 		failed := make(chan error, 1)
-		b := &peerBatch{peer: p, ticket: uint64(i), held: 1, sealed: [][]byte{{byte(i)}}, onFailure: func(err error) { failed <- err }}
+		b := &peerBatch{peer: p, done: make(chan struct{}, 1), held: 1, sealed: [][]byte{{byte(i)}}, onFailure: func(err error) { failed <- err }}
 		if i == 1 {
 			b.sealed, b.err = nil, cryptoErr
 		}
+		b.state.Store(batchSealed)
+		b.done <- struct{}{}
 		p.dataBudget.used.Add(1)
-		p.completed <- b
+		if last == nil {
+			p.head = b
+		} else {
+			last.next = b
+		}
+		p.tail, last = b, b
 		failures = append(failures, failed)
 	}
 	go p.senderLoop()
@@ -311,10 +319,10 @@ func TestSenderMergesReadyBatchesAndCompletesEveryTicket(t *testing.T) {
 		select {
 		case err := <-result:
 			if !errors.Is(err, want) {
-				t.Fatalf("ticket %d error = %v, want %v", i, err, want)
+				t.Fatalf("place %d error = %v, want %v", i, err, want)
 			}
 		case <-time.After(time.Second):
-			t.Fatalf("ticket %d never completed", i)
+			t.Fatalf("place %d never completed", i)
 		}
 	}
 	if got := p.dataBudget.used.Load(); got != 0 {

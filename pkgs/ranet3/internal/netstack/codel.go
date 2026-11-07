@@ -9,7 +9,7 @@ import (
 )
 
 // codel is the controlled delay of RFC 8289 over one peer's queue
-// the delay is measured where the sender takes each data batch in ticket order, from the batch's reservation
+// the delay is measured where the sender takes each data batch in reservation order, from the batch's reservation
 // a batch whose turn comes while the delay calls for a drop loses the packet at its head
 // the sender runs it alone, so it needs no lock
 // its times are durations since the peer started, off the monotonic clock

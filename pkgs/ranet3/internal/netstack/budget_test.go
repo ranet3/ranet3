@@ -41,7 +41,7 @@ func waitForBudget(tb testing.TB, p *Peer) {
 
 // the data budget counts bytes rather than packets or reads, and a packet holds at least leastPacketBytes of it
 // a read that fits is admitted however the rest of the budget is split
-// and one that does not fit is refused whole and counted in packets, without taking a ticket or a sequence range
+// and one that does not fit is refused whole and counted in packets, without taking a place or a sequence range
 func TestDataBudgetAdmitsByBytes(t *testing.T) {
 	var asked atomic.Int64
 	peer := NewPeer("peer", func(count int) (BatchSealer, error) {
@@ -61,7 +61,6 @@ func TestDataBudgetAdmitsByBytes(t *testing.T) {
 		t.Fatalf("the budget holds %d bytes, want the jumbo read's %d and the least a packet holds, %d", got, jumbo, leastPacketBytes)
 	}
 	room := int(peerDataBudget - peer.dataBudget.used.Load())
-	tickets := peer.reserved
 
 	if peer.reserveBatchNow(2, room+1) != nil {
 		t.Fatalf("a read of %d bytes was admitted with room for %d", room+1, room)
@@ -69,9 +68,9 @@ func TestDataBudgetAdmitsByBytes(t *testing.T) {
 	if got := peer.Dropped(); got != 2 {
 		t.Errorf("the refused read counted %d drops, want its 2 packets", got)
 	}
-	if peer.reserved != tickets || asked.Load() != transmitBatchSize+1 {
-		t.Errorf("the refused read took a ticket or a sequence range: %d tickets against %d, %d packets asked of the SA",
-			peer.reserved, tickets, asked.Load())
+	// a place and its sequence range are taken in one step, so the SA not being asked says neither was
+	if asked.Load() != transmitBatchSize+1 {
+		t.Errorf("the refused read took a place and a sequence range: %d packets asked of the SA", asked.Load())
 	}
 	if peer.reserveBatchNow(3, room) == nil {
 		t.Fatal("a read of exactly the room left was refused")
@@ -94,7 +93,7 @@ func TestShareLargerThanTheBudgetIsAdmittedOnlyAlone(t *testing.T) {
 	if peer.reserveBatchNow(transmitBatchSize, largest) != nil {
 		t.Fatal("a budget holding one packet admitted a share larger than the whole of it")
 	}
-	if err := small.enqueue(); err != nil {
+	if err := small.finish(); err != nil {
 		t.Fatal(err)
 	}
 	waitForBudget(t, peer)
@@ -133,16 +132,18 @@ func TestReservationHoldsTheBytesItSends(t *testing.T) {
 		if batch == nil {
 			t.Fatal("the budget refused the read")
 		}
-		// the ticket goes to the sender with nothing in it, or the forwarded segments behind it wait for it
-		if err := batch.enqueue(); err != nil {
+		// read before the batch goes to the sender, which owns it from then on
+		size := batch.size
+		// the place goes to the sender with nothing in it, or the forwarded segments behind it wait for it
+		if err := batch.finish(); err != nil {
 			t.Fatal(err)
 		}
 		if len(b.cut.fragments) != 2 {
 			t.Fatalf("the read cut %d fragments, want the two of its IPv4 packet", len(b.cut.fragments))
 		}
 		want := 2000 + len(b.cut.bytes)
-		if used != int64(want) || batch.size != want {
-			t.Errorf("the read holds %d bytes of the budget and is keyed by %d, want its %d", used, batch.size, want)
+		if used != int64(want) || size != want {
+			t.Errorf("the read holds %d bytes of the budget and is keyed by %d, want its %d", used, size, want)
 		}
 		waitUntil(t, "the peer to give back the read's bytes", func() bool { return peer.dataBudget.used.Load() == 0 })
 	})
@@ -275,7 +276,7 @@ func TestBudgetComesBackOnEveryPath(t *testing.T) {
 		if b == nil {
 			t.Fatal("an empty budget refused the batch")
 		}
-		_ = b.enqueue()
+		_ = b.finish()
 	}
 	for _, test := range []path{
 		{name: "sent", reserve: sealing, send: sent, drive: sendThree},
@@ -287,20 +288,20 @@ func TestBudgetComesBackOnEveryPath(t *testing.T) {
 		{name: "closed before the batch was queued", reserve: sealing, send: sent, dropped: 3, drive: func(t *testing.T, p *Peer) {
 			b := filled(p, 3)
 			p.Close()
-			if b.enqueue() == nil {
+			if b.finish() == nil {
 				t.Error("a closed peer queued the batch")
 			}
 		}},
-		{name: "closed with the batch queued behind an earlier ticket", reserve: sealing, send: sent, dropped: 5, drive: func(t *testing.T, p *Peer) {
+		{name: "closed with the batch queued behind an earlier place", reserve: sealing, send: sent, dropped: 5, drive: func(t *testing.T, p *Peer) {
 			first, second := filled(p, 2), filled(p, 3)
-			if err := second.enqueue(); err != nil {
+			if err := second.finish(); err != nil {
 				t.Fatalf("an open peer refused the batch: %v", err)
 			}
 			p.Close()
-			_ = first.enqueue()
+			_ = first.finish()
 		}},
 		{name: "closed with the batch inside a transport that returns later", reserve: sealing, graceful: true, drive: func(t *testing.T, p *Peer) {
-			if err := filled(p, 3).enqueue(); err != nil {
+			if err := filled(p, 3).finish(); err != nil {
 				t.Fatalf("an open peer refused the batch: %v", err)
 			}
 		}},
@@ -356,12 +357,12 @@ func TestBudgetComesBackOnEveryPath(t *testing.T) {
 	}
 }
 
-// every batch with a ticket holds at least leastPacketBytes of the data budget or one packet of the control one
-// so a queue of peerDataBudget / leastPacketBytes and controlQueueSize together takes every batch they admit
-// and enqueue never has to give a batch back for want of room, however few bytes each batch carries
+// every batch with a place holds at least leastPacketBytes of the data budget or one packet of the control one
+// so the budgets admit peerDataBudget / leastPacketBytes single data packets and controlQueueSize control ones together, the data budget refusing the next
+// and the queue carries every one they admit to the transport, or to the delay control's drops, however few bytes each carries
 // the sender is held where it holds nothing of either budget, in the failure callback of a control packet the transport lost
-// so both budgets fill the queue to exactly their sum
-func TestQueueHoldsEverythingTheBudgetsAdmit(t *testing.T) {
+// so both budgets fill to exactly their limits while it is held
+func TestQueueCarriesEverythingTheBudgetsAdmit(t *testing.T) {
 	var lose atomic.Bool
 	lose.Store(true)
 	var transmitted atomic.Int64
@@ -403,7 +404,7 @@ func TestQueueHoldsEverythingTheBudgetsAdmit(t *testing.T) {
 		if b == nil {
 			break
 		}
-		if err := b.enqueue(); err != nil {
+		if err := b.finish(); err != nil {
 			t.Fatalf("batch %d of the data budget was given back rather than queued: %v", queued, err)
 		}
 		queued++

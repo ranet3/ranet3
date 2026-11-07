@@ -5,28 +5,41 @@
 package netstack
 
 import (
-	"fmt"
 	"runtime"
+	"testing"
 )
 
-// reserveBatch assigns the peer's transmission ticket and its ESP sequence
+// reserveBatch takes the peer's place in its queue and its ESP sequence
 // range under one lock, waiting for room in the data budget
 // rather than dropping. Nothing in the dataplane does that: Mesh reserves
 // through reserveBatchNow so one backpressured peer cannot stall the readers
 // feeding every other peer. This is the unthrottled producer the ordering
 // tests and the benchmarks need, which is why it lives here rather than beside
 // them.
+// a closed peer hands back a batch in no queue, which finish refuses and counts
 func (p *Peer) reserveBatch(count, bytes int) *peerBatch {
 	charge := dataCharge(count, bytes)
 	for !p.dataBudget.take(charge) {
 		select {
 		case <-p.stop:
-			return &peerBatch{peer: p, err: fmt.Errorf("netstack: peer %s closed", p.ID)}
+			return orphanedBatch(p, false)
 		default:
 			runtime.Gosched()
 		}
 	}
-	return p.reserveTicket(count, charge, false)
+	if b := p.reservePlace(count, charge, false); b != nil {
+		return b
+	}
+	return orphanedBatch(p, true)
+}
+
+// orphanedBatch is a batch of p in no queue, as the stopped sender leaves one it found filling
+// counted says its packets were counted when it was refused
+func orphanedBatch(p *Peer, counted bool) *peerBatch {
+	b := batchPool(1).Get().(*peerBatch)
+	b.peer, b.counted = p, counted
+	b.state.Store(batchOrphaned)
+	return b
 }
 
 // filled reserves count one-byte packets of the data budget without waiting and appends that many
@@ -45,6 +58,16 @@ func filledSized(p *Peer, count, size int) *peerBatch {
 		}
 	}
 	return b
+}
+
+// taken waits until p's sender has taken every batch reserved
+func taken(t *testing.T, p *Peer) {
+	t.Helper()
+	waitUntil(t, "the sender to take the queue", func() bool {
+		p.reserveMu.Lock()
+		defer p.reserveMu.Unlock()
+		return p.head == nil
+	})
 }
 
 // sendOrDrop takes a place and sends it in one step, as a caller with

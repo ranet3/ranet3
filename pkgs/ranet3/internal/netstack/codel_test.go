@@ -172,7 +172,7 @@ func aged(t *testing.T, p *Peer, age time.Duration, packets ...string) *peerBatc
 // queue hands b to its peer's sender
 func queue(t *testing.T, b *peerBatch) {
 	t.Helper()
-	if err := b.enqueue(); err != nil {
+	if err := b.finish(); err != nil {
 		t.Fatalf("an open peer refused the batch: %v", err)
 	}
 }
@@ -433,5 +433,58 @@ func TestBatchIsStampedWhenReserved(t *testing.T) {
 	b := peer.reserveBatchNow(1, 1)
 	if age := time.Since(peer.started) - b.admitted; age < 0 || age >= deliveryTimeout {
 		t.Errorf("a batch just reserved reads %s old", age)
+	}
+}
+
+// mergeLate is how long after the sender read its clock for a merge a batch is reserved and sealed during that merge
+const mergeLate = 2 * time.Millisecond
+
+// a batch reserved and sealed while the sender merges, after the merge read its clock, and taken in that merge
+// is measured against a clock read after its reservation
+// so the sojourn it ends the dropping state with, and the delay control reads, is never negative
+func TestBatchReservedDuringAMergeNeverWaitsANegativeTime(t *testing.T) {
+	h := newHoldingTransport(false)
+	bus := events.New()
+	var peer *Peer
+	var during sync.Once
+	emit := func(kind, id string, attrs ...slog.Attr) {
+		bus.Emit(kind, id, attrs...)
+		if kind != "netstack.codel.dropping" {
+			return
+		}
+		// on the sender, inside the merge of the batch that began the dropping state
+		during.Do(func() {
+			time.Sleep(mergeLate)
+			b := peer.reserveBatchNow(1, len("during"))
+			if b == nil {
+				t.Error("the budget refused a batch while the sender merged")
+				return
+			}
+			b.append([]byte("during"), 0)
+			if err := b.finish(); err != nil {
+				t.Errorf("an open peer refused the batch: %v", err)
+			}
+		})
+	}
+	peer = NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, emit)
+	defer peer.Close()
+	defer h.letGo()
+
+	stand(t, h, func() {
+		queue(t, aged(t, peer, time.Second, "first"))
+	}, func() {
+		queue(t, aged(t, peer, time.Second, "head", "tail"))
+	})
+	waitForBudget(t, peer)
+	got := codelEvents(bus)
+	if len(got) != 2 || got[0].Kind != "netstack.codel.dropping" || got[1].Kind != "netstack.codel.drained" {
+		t.Fatalf("the peer recorded %+v, want it to start dropping and then drain", got)
+	}
+	if sojourn := sojournOf(t, got[1]); sojourn < 0 {
+		t.Errorf("the batch reserved during the merge ended the dropping state with a sojourn of %s", sojourn)
+	}
+	want := [][]byte{[]byte("first"), []byte("tail"), []byte("during")}
+	if got := h.transmitted(); !slices.EqualFunc(got, want, bytes.Equal) {
+		t.Errorf("the transport was handed %q, want %q", got, want)
 	}
 }

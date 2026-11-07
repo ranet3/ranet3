@@ -32,11 +32,11 @@ func benchPeer(b *testing.B) *Peer {
 
 // The send pipeline's own cost on the path routed traffic takes, with the
 // crypto and the syscall replaced by nothing. What remains is the price of
-// ordered transmission: the packet budget, the ticket and sequence-range
-// allocation under one lock, the allocations ReportAllocs counts, the handoff
-// to the ordered sender, and its reorder map.
+// ordered transmission: the packet budget, the place and sequence range taken
+// under one lock, the allocations ReportAllocs counts, and the handoff to the
+// ordered sender.
 //
-// enqueue does not wait for the send, which BenchmarkPeerSenderRoundTrip waits for.
+// finish does not wait for the send, which BenchmarkPeerSenderRoundTrip waits for.
 func benchmarkPeerEnqueue(b *testing.B, workers, batch int) {
 	peer := benchPeer(b)
 	payload := make([]byte, 1400)
@@ -56,7 +56,7 @@ func benchmarkPeerEnqueue(b *testing.B, workers, batch int) {
 				for range batch {
 					pb.append(payload, 4)
 				}
-				if err := pb.enqueue(); err != nil {
+				if err := pb.finish(); err != nil {
 					b.Error(err)
 					return
 				}
@@ -97,7 +97,7 @@ func BenchmarkPeerSenderRoundTrip(b *testing.B) {
 	for range b.N {
 		pb := peer.reserveBatch(1, len(payload))
 		pb.append(payload, 4)
-		if err := pb.enqueue(); err != nil {
+		if err := pb.finish(); err != nil {
 			b.Fatal(err)
 		}
 		<-carried

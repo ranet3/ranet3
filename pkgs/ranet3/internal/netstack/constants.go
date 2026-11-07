@@ -61,7 +61,7 @@ const leastPacketBytes = 1400
 
 // codelTarget is the delay a peer's sender holds its queue to, and codelInterval how long the delay may stay above it before the sender starts dropping
 // both are the defaults RFC 8289 gives and the kernel's CoDel uses
-// the interval is long enough that one late ticket, which delays every batch behind it at once, drops nothing
+// the interval is long enough that one late batch, which delays every batch behind it at once, drops nothing
 const (
 	codelTarget   = 5 * time.Millisecond
 	codelInterval = 100 * time.Millisecond

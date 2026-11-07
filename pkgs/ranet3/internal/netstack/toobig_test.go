@@ -691,7 +691,7 @@ func reservingPeer(t *testing.T) (*Peer, func() []int) {
 }
 
 // a peer every packet of a batch was answered for rather than sent to is asked for no place in its session
-// a place for nothing still takes a ticket and a slot of the sender's queue, which has room only for places holding a packet
+// a place for nothing still takes a place in the sender's queue and a sequence range
 // a read off the tun and a batch of forwarded segments each go to the peer next with one packet that fits, and ask for one place
 func TestPeerAnsweredForEveryPacketIsAskedForNoPlace(t *testing.T) {
 	source, destination := tooBigSource[6], tooBigDestination[6]

@@ -685,9 +685,9 @@ func (c *reportedCount) claim(now, next int64) bool {
 }
 
 // a reservation takes its peer's reserveMu alone
-// so a reader preempted between two reservations holds back only the peers whose tickets it holds
+// so a reader preempted between two reservations holds back only the peers whose places it holds
 //
-// Nothing here waits. A batch read off one queue carries whichever
+// Nothing here waits for a peer's budget, only for room in the job queue. A batch read off one queue carries whichever
 // destinations the kernel hashed onto it, so waiting for room in one peer's
 // budget would stop forwarding to every other peer as well: a single
 // backpressured socket would take the whole dataplane down with it, and a
@@ -706,9 +706,9 @@ func (m *Mesh) dispatchOutbound(b *outboundBatch) {
 			}
 		}
 	}
-	// Submission never blocks: outboundFree is sized so that every batch in
-	// flight fits here. Workers drain the queue during Close, including every
-	// reserved ticket.
+	// a send that finds the queue full waits, which holds back the tun reader or the session delivery sending b
+	// and the peers whose places b holds, whose senders wait for b's batches to be sealed
+	// workers drain the queue during Close, every reserved place included
 	m.outboundJobs <- b
 }
 
@@ -717,7 +717,7 @@ func (m *Mesh) outboundWorker() {
 	for b := range m.outboundJobs {
 		for i := 0; i < b.n; i++ {
 			// A peer with no batch had no room in its budget, so its share of
-			// this read was dropped before the tickets were handed out.
+			// this read was dropped before the places were handed out.
 			if peer := b.peers[i]; peer != nil && b.batches[peer] != nil {
 				b.batches[peer].append(b.packets[i], b.headers[i])
 			}
@@ -730,7 +730,7 @@ func (m *Mesh) outboundWorker() {
 			if batch == nil {
 				continue
 			}
-			if err := batch.enqueue(); err != nil {
+			if err := batch.finish(); err != nil {
 				peer.noteSendError(err, false)
 			}
 		}

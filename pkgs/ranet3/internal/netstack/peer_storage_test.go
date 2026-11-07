@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/logtest"
+	"ranet3.com/pkgs/wireguard/conn"
 )
 
 func TestPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
@@ -48,7 +49,7 @@ func TestPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
 			first := p.reserveBatch(1, 1)
 			first.append([]byte{1}, 0)
 			first.onFailure = func(err error) { failures <- err }
-			if err := first.enqueue(); err != nil {
+			if err := first.finish(); err != nil {
 				t.Fatal(err)
 			}
 			select {
@@ -56,13 +57,14 @@ func TestPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("sender did not start")
 			}
-			if first.storage == nil {
+			// read while the transport holds the batch, before it goes back to the pool
+			if first.storage == nil || first.sealed == nil {
 				t.Fatal("ciphertext recycled while transport still owns it")
 			}
 			second := p.reserveBatch(1, 1)
 			second.append([]byte{2}, 0)
 			second.onFailure = func(err error) { failures <- err }
-			if err := second.enqueue(); err != nil {
+			if err := second.finish(); err != nil {
 				t.Fatal(err)
 			}
 			once.Do(func() { close(release) })
@@ -84,11 +86,6 @@ func TestPeerKeepsCiphertextUntilSendCompletes(t *testing.T) {
 			}
 			if len(failures) != 0 {
 				t.Fatalf("a batch the transport took was told it failed: %v", <-failures)
-			}
-			for _, b := range []*peerBatch{first, second} {
-				if b.storage != nil || b.sealed != nil {
-					t.Fatal("completed batch retained pooled ciphertext")
-				}
 			}
 			if !bytes.Equal(sent, []byte{1, 2}) {
 				t.Fatalf("in-flight ciphertext was overwritten: got %v", sent)
@@ -140,7 +137,7 @@ func TestSendRawOrDropDoesNotWaitForBackedUpPeer(t *testing.T) {
 		t.Fatal("nothing was dropped, so the queue never filled and this proves nothing")
 	}
 
-	// A dropped packet must not have consumed a ticket or a sequence range,
+	// A dropped packet must not have consumed a place or a sequence range,
 	// or the ordered sender would never reach the batches behind it.
 	unblock()
 	drained := time.Now().Add(10 * time.Second)
@@ -268,18 +265,41 @@ func TestClosedPeerRefusesAndCountsEverything(t *testing.T) {
 	}
 }
 
-// p.completed is sized to hold every batch the two budgets can hand a ticket
-// to, so on a closing peer both arms of the enqueue select are ready and Go
-// picks uniformly. Half of what was reserved before Close and encrypted after
-// it was reported as sent, never transmitted, and counted by nothing, which is
-// the one signal that would have shown it. Every session teardown and
-// replacement creates that overlap.
+// a reserver that passed the stop check and took its budget before the sender stopped is refused at the queue
+// counted, its budget given back, since no sender is left to take the batch
+func TestReservationPastTheStopCheckIsRefusedAtTheQueue(t *testing.T) {
+	peer := NewPeer("peer",
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { t.Error("a closed peer transmitted"); return nil }, nil)
+	peer.Close()
+	size := dataCharge(1, 1)
+	if !peer.dataBudget.take(size) {
+		t.Fatal("an empty budget refused one packet")
+	}
+	if b := peer.reservePlace(1, size, false); b != nil {
+		b.append([]byte{1}, 0)
+		_ = b.finish()
+		t.Fatal("the queue of a stopped sender took a batch")
+	}
+	if got := peer.Dropped(); got != 1 {
+		t.Errorf("the peer counted %d packets dropped, want the 1 it refused", got)
+	}
+	if got := peer.dataBudget.used.Load(); got != 0 {
+		t.Errorf("%d of the data budget stayed held", got)
+	}
+}
+
+// A batch reserved before Close and sealed after it is in the queue the
+// stopped sender no longer reads. Accepted, it would be reported as sent,
+// never transmitted, and counted by nothing, which is the one signal that
+// would have shown it. Every session teardown and replacement creates that
+// overlap.
 func TestBatchReservedBeforeCloseIsRefusedAndCounted(t *testing.T) {
 	peer := NewPeer("peer",
 		func(int) (BatchSealer, error) { return passThrough, nil },
 		func([][]byte) error { t.Error("a closed peer transmitted"); return nil }, nil)
 
-	// Reserved while the peer is open, so each holds a ticket and its bytes
+	// Reserved while the peer is open, so each holds a place and its bytes
 	// of the budget, all of it between them.
 	const size, packets = 1400, peerDataBudget / 1400
 	var batches []*peerBatch
@@ -293,7 +313,7 @@ func TestBatchReservedBeforeCloseIsRefusedAndCounted(t *testing.T) {
 	peer.Close()
 
 	for i, b := range batches {
-		if err := b.enqueue(); err == nil {
+		if err := b.finish(); err == nil {
 			t.Fatalf("batch %d was accepted by a closed peer and will never be transmitted", i)
 		}
 	}
@@ -326,7 +346,7 @@ func TestReservationFailureIsCountedOnce(t *testing.T) {
 		t.Fatalf("the sealer failure counted %d, want one", peer.Dropped())
 	}
 	peer.Close()
-	if err := b.enqueue(); err == nil {
+	if err := b.finish(); err == nil {
 		t.Fatal("a closed peer accepted the batch")
 	}
 	if got := peer.Dropped(); got != 1 {
@@ -357,7 +377,7 @@ func TestSealFailureOnAClosedPeerIsStillCounted(t *testing.T) {
 		t.Fatalf("a reservation that succeeded counted %d drops", got)
 	}
 	peer.Close()
-	if err := b.enqueue(); err == nil {
+	if err := b.finish(); err == nil {
 		t.Fatal("a closed peer accepted the batch")
 	}
 	if got := peer.Dropped(); got != 2 {
@@ -375,43 +395,46 @@ func TestBatchesStrandedInTheSenderAreCounted(t *testing.T) {
 		func(int) (BatchSealer, error) { return passThrough, nil },
 		func([][]byte) error { return nil }, nil)
 
-	var discarded []uint64
-	peer.noteDiscarded = func(ticket uint64) { discarded = append(discarded, ticket) }
-	first, second, third := peer.reserveBatchNow(3, 3), peer.reserveBatchNow(5, 5), peer.reserveBatchNow(7, 7)
-	if first == nil || second == nil || third == nil {
-		t.Fatal("the peer refused a reservation while it was open")
-	}
-	for _, reserved := range []struct {
-		batch *peerBatch
-		count int
-	}{{first, 3}, {second, 5}, {third, 7}} {
-		for range reserved.count {
-			reserved.batch.append([]byte{1}, 0)
+	// each batch is told its failure under its reservation's index, from whichever goroutine gives it back
+	var mu sync.Mutex
+	var discarded []int
+	var batches [3]*peerBatch
+	for i, count := range []int{3, 5, 7} {
+		b := peer.reserveBatchNow(count, count)
+		if b == nil {
+			t.Fatal("the peer refused a reservation while it was open")
 		}
+		for range count {
+			b.append([]byte{1}, 0)
+		}
+		b.onFailure = func(error) { mu.Lock(); discarded = append(discarded, i); mu.Unlock() }
+		batches[i] = b
 	}
-	// The first never goes in, so the sender holds the other two waiting for
-	// it, which is where Close finds them. They are queued out of order so the
+	// The first is never sealed, so the sender holds the other two waiting for
+	// it, which is where Close finds them. They are sealed out of order so the
 	// order they come back in is the sender's doing rather than the caller's.
-	for _, batch := range []*peerBatch{third, second} {
-		if err := batch.enqueue(); err != nil {
+	for _, batch := range []*peerBatch{batches[2], batches[1]} {
+		if err := batch.finish(); err != nil {
 			t.Fatalf("an open peer refused the batch: %v", err)
 		}
 	}
 	peer.Close()
-	if err := first.enqueue(); err == nil {
+	mu.Lock()
+	byTheSender := slices.Clone(discarded)
+	mu.Unlock()
+	if err := batches[0].finish(); err == nil {
 		t.Fatal("a closed peer accepted the batch")
 	}
 	if got := peer.Dropped(); got != 15 {
 		t.Errorf("the peer counted %d of the 15 packets it will never send", got)
 	}
-	if len(discarded) != 2 {
-		t.Fatalf("the sender gave back %d batches, want the two it was holding", len(discarded))
+	// Given back in reservation order, which is the order everything else in
+	// this peer observes, and the first by its own filler after them.
+	if !slices.Equal(byTheSender, []int{1, 2}) {
+		t.Errorf("the sender gave back the batches reserved %v, want the two it was holding in reservation order", byTheSender)
 	}
-	// Given back in ticket order, which is the order everything else in this
-	// peer observes: a caller watching the counter while its own batch is
-	// discarded would otherwise see them arrive in map order.
-	if !slices.IsSorted(discarded) {
-		t.Errorf("the sender gave batches back in ticket order %v", discarded)
+	if !slices.Equal(discarded, []int{1, 2, 0}) {
+		t.Errorf("the batches were given back in the order %v, want the unsealed one last, by its filler", discarded)
 	}
 }
 
@@ -420,7 +443,7 @@ func failure(t *testing.T, b *peerBatch) error {
 	t.Helper()
 	told := make(chan error, 1)
 	b.onFailure = func(err error) { told <- err }
-	if err := b.enqueue(); err != nil {
+	if err := b.finish(); err != nil {
 		return err
 	}
 	select {
@@ -513,7 +536,7 @@ func TestTransportFailureIsSaidRarely(t *testing.T) {
 			continue
 		}
 		b.append([]byte{1}, 0)
-		if err := b.enqueue(); err != nil {
+		if err := b.finish(); err != nil {
 			t.Fatalf("an open peer refused the batch: %v", err)
 		}
 		sent++
@@ -536,12 +559,12 @@ type countingWriter struct{ n *atomic.Int64 }
 
 func (w countingWriter) Write(b []byte) (int, error) { w.n.Add(1); return len(b), nil }
 
-// A batch that lands in the queue after the sender's last drain is read by
-// nobody: never transmitted, never counted, its budget never given back, and its
-// caller told it went. Testing the stop channel before the send cannot close
-// that, because the drain happens between the test and the send, and the queue
-// is sized so its send arm is always ready. Every teardown and every session
-// replacement creates the window.
+// A batch that joins the queue after the sender's stop has taken it is read
+// by nobody: never transmitted, never counted, its budget never given back,
+// and its caller told it went. Testing the stop channel before the
+// reservation cannot close that, because the stop can happen between the test
+// and the append. Every teardown and every session replacement creates the
+// window.
 //
 // The window is narrow without help: reverting the fix loses about one batch
 // in ninety thousand here and none at all in some runs. Under -race, which is
@@ -567,7 +590,7 @@ func TestNoBatchIsLostBetweenTheStopCheckAndTheQueue(t *testing.T) {
 						continue // the budget was full, which is counted where it happens
 					}
 					b.append([]byte{1}, 0)
-					if err := b.enqueue(); err == nil {
+					if err := b.finish(); err == nil {
 						sent.Add(1)
 					}
 				}
@@ -585,7 +608,7 @@ func TestNoBatchIsLostBetweenTheStopCheckAndTheQueue(t *testing.T) {
 			t.Fatalf("%d packets were reserved, %d reached the transport and %d were counted as dropped",
 				offered, transmitted.Load(), peer.Dropped())
 		}
-		// enqueue returning nil promises the queue took the batch, not that it
+		// finish returning nil promises the queue took the batch, not that it
 		// left: the sender may still give it back, and that is counted above.
 		_ = sent.Load()
 		// And every packet of the budgets came back, or the next session on
@@ -614,7 +637,7 @@ func TestBatchInTheTransportWhenThePeerClosesIsNotToldItFailed(t *testing.T) {
 	b.append([]byte{1}, 0)
 	failed := make(chan error, 1)
 	b.onFailure = func(err error) { failed <- err }
-	if err := b.enqueue(); err != nil {
+	if err := b.finish(); err != nil {
 		t.Fatalf("an open peer refused the batch: %v", err)
 	}
 
@@ -628,4 +651,270 @@ func TestBatchInTheTransportWhenThePeerClosesIsNotToldItFailed(t *testing.T) {
 		t.Fatalf("the batch the transport took was told %v", err)
 	default:
 	}
+}
+
+// senderIdle is how long a test leaves a sender with nothing queued, so it is waiting on its queue when the next reservation comes
+const senderIdle = 20 * time.Millisecond
+
+// a sender with nothing queued waits on its queue, and the seal of a batch reserved into it wakes the sender, however long it has waited
+// the reservation alone does not, so the sender never takes the batch unsealed only to wait on it and wake a second time
+func TestIdleSenderWakesForASealedBatch(t *testing.T) {
+	carried := make(chan struct{}, 1)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { carried <- struct{}{}; return nil }, nil)
+	defer peer.Close()
+	for i := range 3 {
+		time.Sleep(senderIdle)
+		b := filled(peer, 1)
+		// a sender the reservation woke would take the batch meanwhile
+		time.Sleep(senderIdle)
+		peer.reserveMu.Lock()
+		untaken := peer.head == b
+		peer.reserveMu.Unlock()
+		if !untaken {
+			t.Errorf("the sender took batch %d out of its queue before it was sealed", i)
+		}
+		if err := b.finish(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-carried:
+		case <-time.After(deliveryTimeout):
+			t.Fatalf("an idle sender never sent batch %d sealed into its empty queue", i)
+		}
+	}
+}
+
+// the sender holds every batch behind the head of its queue until the head is sealed, however long that takes
+// and then sends the head before them, its sealed packets and not the nothing it held unsealed
+// no batch goes back to the pool holding the token of its seal
+func TestSenderWaitsForAnUnsealedHead(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var hold sync.Once
+	var mu sync.Mutex
+	var carried []byte
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func(sealed [][]byte) error {
+		hold.Do(func() { close(entered); <-release })
+		mu.Lock()
+		defer mu.Unlock()
+		for _, packet := range sealed {
+			carried = append(carried, packet[0])
+		}
+		return nil
+	}, nil)
+	defer peer.Close()
+	marked := func(mark byte) *peerBatch {
+		b := peer.reserveBatchNow(1, 1)
+		if b == nil {
+			t.Fatal("the peer refused a reservation while it was open")
+		}
+		b.append([]byte{mark}, 0)
+		return b
+	}
+	if err := marked(1).finish(); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	// the head is reserved and left unsealed, and the batch behind it sealed
+	head, behind := marked(2), marked(3)
+	done := [...]chan struct{}{head.done, behind.done}
+	if err := behind.finish(); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	taken(t, peer)
+	time.Sleep(senderIdle)
+	mu.Lock()
+	early := slices.Clone(carried)
+	mu.Unlock()
+	if !slices.Equal(early, []byte{1}) {
+		// the sender went on past the head, which it may have put back in the pool, so the head is not sealed here
+		t.Fatalf("the transport carried %v while the head was unsealed, want only the batch before it", early)
+	}
+	if err := head.finish(); err != nil {
+		t.Fatal(err)
+	}
+	waitForBudget(t, peer)
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(carried, []byte{1, 2, 3}) {
+		t.Errorf("the transport carried %v, want the head's sealed packet before the batch sealed behind it", carried)
+	}
+	for _, d := range done {
+		if len(d) != 0 {
+			t.Error("a batch went back to the pool holding the token of its seal")
+		}
+	}
+}
+
+// a pooled batch has room for less than twice the packets of the reservation that takes it, or for 1 when it takes 1
+// so a backlog of single packets behind full reads holds none of the slices the reads grew
+// and a batch grown past the packets a read holds, for a share cut into fragments, keeps no slices for the next
+func TestPooledBatchHasRoomForLessThanTwiceItsPackets(t *testing.T) {
+	sizes := []int{1, 2, 3, 64, 65, conn.IdealBatchSize, conn.IdealBatchSize + 1, peerDataBudget / leastPacketBytes}
+	for _, grown := range sizes {
+		for _, count := range sizes {
+			b := batchPool(grown).Get().(*peerBatch)
+			b.raw, b.headers = slices.Grow(b.raw, grown), slices.Grow(b.headers, grown)
+			b.recycle()
+			got := batchPool(count).Get().(*peerBatch)
+			if room := cap(got.raw); room > 1 && room >= 2*count {
+				t.Errorf("a reservation of %d packets after a batch grown for %d was handed room for %d", count, grown, room)
+			}
+			got.recycle()
+		}
+	}
+}
+
+// a batch fitted for a read has room for its packets, and goes back to the pool its reservation took it from with its slices
+// whatever room it had for the reservation before, so reads of changing sizes do not grow batches out of their pools
+func TestFittedBatchGoesBackToItsPool(t *testing.T) {
+	for _, count := range []int{1, 2, 3, 64, 65, 100, conn.IdealBatchSize} {
+		for _, room := range []int{0, 1, count / 2, count - 1, count} {
+			b := &peerBatch{raw: make([][]byte, 0, room), headers: make([]byte, 0, room)}
+			b.fit(count)
+			if cap(b.raw) < count || cap(b.headers) < count || cap(b.raw) > conn.IdealBatchSize || batchPool(cap(b.raw)) != batchPool(count) {
+				t.Errorf("a batch with room for %d fitted for %d packets has room for %d and %d headers, which leaves the pool it came from", room, count, cap(b.raw), cap(b.headers))
+			}
+		}
+	}
+}
+
+// a recycled batch goes back to the pool of its slices' room, whichever pool it came from
+// so the batch of a full read never reaches a reservation of a few packets, and the next full read takes it rather than a new one
+func TestRecycledBatchGoesBackToThePoolOfItsRoom(t *testing.T) {
+	for _, room := range []int{1, 2, 3, 64, 65, conn.IdealBatchSize} {
+		if !comesBackFrom(room) {
+			t.Errorf("a recycled batch with room for %d packets never came out of the pool for %d", room, room)
+		}
+	}
+}
+
+// comesBackFrom says whether a batch with room for room packets, once recycled, comes out of the pool for room
+// the pool hands out what this goroutine gave it before ahead of the batch, so a few draws are held until the batch comes
+// and the race detector drops a quarter of what the pool is given, so it tries again with a new batch
+func comesBackFrom(room int) bool {
+	for range 100 {
+		b := &peerBatch{raw: make([][]byte, 0, room), headers: make([]byte, 0, room), done: make(chan struct{}, 1)}
+		b.recycle()
+		held := make([]*peerBatch, 0, 8)
+		found := false
+		for range cap(held) {
+			got := batchPool(room).Get().(*peerBatch)
+			held = append(held, got)
+			if got == b {
+				found = true
+				break
+			}
+		}
+		for _, h := range held {
+			h.recycle()
+		}
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// the stopped sender takes the token of a sealed batch it gives back
+// a batch back in the pool holding one would read as sealed to the sender of its next reservation before anything filled it
+func TestStoppedSenderLeavesNoTokenBehind(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	peer := NewPeer("peer",
+		func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error {
+			close(entered)
+			<-release
+			return nil
+		}, nil)
+
+	first := filled(peer, 1)
+	if err := first.finish(); err != nil {
+		t.Fatalf("an open peer refused the batch: %v", err)
+	}
+	<-entered
+	// the second is never sealed before the stop, so the sender waits on it with the third sealed behind it
+	second, third := filled(peer, 2), filled(peer, 3)
+	if second == nil || third == nil {
+		t.Fatal("the peer refused a reservation while it was open")
+	}
+	if err := third.finish(); err != nil {
+		t.Fatalf("an open peer refused the batch: %v", err)
+	}
+	// closed directly rather than through Close, which would wait on the sender this test holds inside the transport
+	close(peer.stop)
+	close(release)
+	<-peer.senderDone
+	if len(third.done) != 0 {
+		t.Error("the stopped sender gave back a sealed batch with the token of its seal still in it")
+	}
+	if err := second.finish(); err == nil {
+		t.Fatal("a stopped sender's peer accepted the batch")
+	}
+	if got := peer.Dropped(); got != 5 {
+		t.Errorf("the peer counted %d of the 5 packets it will never send", got)
+	}
+	if data, control := peer.dataBudget.used.Load(), peer.controlBudget.used.Load(); data != 0 || control != 0 {
+		t.Errorf("the stopped peer holds %d bytes and %d control places", data, control)
+	}
+}
+
+// a batch's cycle from its reservation through its seal and transmit back to the pool allocates nothing once the pools hold what it needs
+// but what cycleAllocations allows the race detector's pool drops
+func TestBatchCycleAllocatesNothing(t *testing.T) {
+	carried := make(chan struct{}, 1)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil },
+		func([][]byte) error { carried <- struct{}{}; return nil }, nil)
+	defer peer.Close()
+	payload := []byte{1}
+	// the sender gives the last batch back before it transmits the next, so the pools never need more than two
+	cycle := func() {
+		b := peer.reserveBatchNow(1, 1)
+		if b == nil {
+			t.Fatal("the budget refused one packet with nothing else held")
+		}
+		b.append(payload, 0)
+		if err := b.finish(); err != nil {
+			t.Fatal(err)
+		}
+		<-carried
+	}
+	cycle()
+	cycle()
+	if allocations := testing.AllocsPerRun(1000, cycle); allocations > cycleAllocations {
+		t.Errorf("a batch's cycle allocates %v times", allocations)
+	}
+}
+
+// a batch taken from the pool carries nothing of its last reservation
+// a callback, an error or a count left in it would be told or read for a packet it never held
+func TestRecycledBatchCarriesNothing(t *testing.T) {
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, func([][]byte) error { return nil }, nil)
+	defer peer.Close()
+	// the pool hands back what this goroutine put in it last, but under the race detector, which drops a quarter of what it is given
+	for range 100 {
+		b := batchPool(1).Get().(*peerBatch)
+		*b = peerBatch{peer: peer, next: b, done: b.done, sealer: passThrough, sealed: [][]byte{{1}}, storage: new([][]byte),
+			raw: append(b.raw[:0], []byte{1}), headers: append(b.headers[:0], 1), err: errors.New("seal"), counted: true,
+			onFailure: func(error) {}, failed: true, size: 1, held: 1, control: true, probe: true, admitted: time.Second, shed: 1}
+		b.state.Store(batchSealed)
+		raw := b.raw
+		b.recycle()
+		got := batchPool(1).Get().(*peerBatch)
+		if got != b {
+			got.recycle()
+			continue
+		}
+		if got.peer != nil || got.next != nil || got.sealer != nil || got.sealed != nil || got.storage != nil || got.err != nil || got.counted ||
+			got.onFailure != nil || got.failed || got.size != 0 || got.held != 0 || got.control || got.probe || got.admitted != 0 || got.shed != 0 {
+			t.Errorf("a batch came back from the pool holding its last reservation: %+v", got)
+		}
+		if got.state.Load() != batchFilling || len(got.raw) != 0 || len(got.headers) != 0 || raw[0] != nil {
+			t.Error("a batch came back from the pool sealed, holding packets or a view of the last plaintext")
+		}
+		got.recycle()
+		return
+	}
+	t.Fatal("the pool never handed back the batch just put in it")
 }

@@ -93,7 +93,7 @@ func TestPathReportFailsOnlyWhatItRefused(t *testing.T) {
 			for _, size := range []int{fits, past, past, 64} {
 				data.append(make([]byte, size), 0)
 			}
-			if err := data.enqueue(); err != nil {
+			if err := data.finish(); err != nil {
 				t.Fatal(err)
 			}
 			close(release)
@@ -243,7 +243,7 @@ func TestSenderMarksTheDataItHandsTheTransport(t *testing.T) {
 	}
 	data := peer.reserveBatchNow(1, len("data"))
 	data.append([]byte("data"), 0)
-	if err := data.enqueue(); err != nil {
+	if err := data.finish(); err != nil {
 		t.Fatal(err)
 	}
 	waitForBudget(t, peer)
@@ -255,10 +255,10 @@ func TestSenderMarksTheDataItHandsTheTransport(t *testing.T) {
 	}
 }
 
-// a reservation takes its ticket and its sequence range in one section of its peer's reserveMu
-// so a second reservation on the peer, made while the first is parked in reserveFn after its ticket, waits for the first
-// and the wire carries the first's sequence numbers before the second's, as their tickets order them
-func TestReservationsOverlappingOnOnePeerLeaveInTicketOrder(t *testing.T) {
+// a reservation takes its place and its sequence range in one section of its peer's reserveMu
+// so a second reservation on the peer, made while the first is parked in reserveFn, waits for the first
+// and the wire carries the first's sequence numbers before the second's, as their places order them
+func TestReservationsOverlappingOnOnePeerLeaveInReservationOrder(t *testing.T) {
 	parked, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int64
 	var next uint64
@@ -301,14 +301,14 @@ func TestReservationsOverlappingOnOnePeerLeaveInTicketOrder(t *testing.T) {
 		// the second has taken its budget and waits on the section the first holds
 		waitUntil(t, "the second reservation to take its budget", func() bool { return peer.dataBudget.used.Load() == int64(2*dataCharge(2, 2)) })
 	} else {
-		// with no section held, the second takes its ticket and its sequence range before the first takes its range
+		// with no section held, the second takes its place and its sequence range before the first takes its range
 		<-secondReserved
 	}
 	close(release)
 	<-firstReserved
 	<-secondReserved
 	for _, b := range []*peerBatch{first, second} {
-		if err := b.enqueue(); err != nil {
+		if err := b.finish(); err != nil {
 			t.Fatalf("an open peer refused the batch: %v", err)
 		}
 	}
@@ -323,6 +323,6 @@ func TestReservationsOverlappingOnOnePeerLeaveInTicketOrder(t *testing.T) {
 		}
 	}
 	if !slices.Equal(wire, []uint64{0, 1, 2, 3}) {
-		t.Errorf("the wire carried sequence numbers %v in ticket order, want them rising from 0", wire)
+		t.Errorf("the wire carried sequence numbers %v in reservation order, want them rising from 0", wire)
 	}
 }
