@@ -33,6 +33,24 @@ func TestDirectoryReplacementShipsUnderThePathItReplaces(t *testing.T) {
 	}
 }
 
+// The notice covers both daemons, so it lists a module either one links, a
+// module both link once, in the order of the paths
+func TestUnionListsEveryModuleEitherBinaryLinksOnce(t *testing.T) {
+	toml := module{path: "github.com/BurntSushi/toml", version: "v1.6.0"}
+	wireguard := module{path: "ranet3.com/pkgs/wireguard", version: "v0.0.0-00010101000000-000000000000", dir: "../wireguard"}
+	sys := module{path: "golang.org/x/sys", version: "v0.49.0"}
+	stack := module{path: "gvisor.dev/gvisor", version: "v0.0.0-20261008000517-3b87f090dbda"}
+	linux := []module{toml, sys, wireguard}
+	darwin := []module{toml, stack, sys, wireguard}
+	want := []module{toml, sys, stack, wireguard}
+	if got := union(linux, darwin); !slices.Equal(got, want) {
+		t.Errorf("union %+v, want %+v", got, want)
+	}
+	if got := union(darwin, linux); !slices.Equal(got, want) {
+		t.Errorf("union in the other order %+v, want %+v", got, want)
+	}
+}
+
 // A copy's LICENSE names no holder, so its notice carries each holder that
 // REUSE.toml gives a file under LICENSE's license, once and in the order the
 // file names them, and no holder of a file under another license.

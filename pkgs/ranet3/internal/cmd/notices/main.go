@@ -10,9 +10,10 @@
 // embedded in the daemon and printed by `ranet3 licenses`, so the
 // obligation travels with the binary rather than with the repository.
 //
-// Only modules actually linked are listed. The module graph is far larger than
-// the link set, because one dependency's own test and tooling requirements
-// reach it, and nothing in that tail is distributed.
+// Only modules actually linked are listed, into the linux daemon for amd64 or
+// the darwin daemon for arm64. The module graph is far larger than the link
+// set, because one dependency's own test and tooling requirements reach it,
+// and nothing in that tail is distributed.
 //
 // The formatter regenerates the file. A nix build has no module cache to read
 // license texts from, which rules out running this there, and the tests in
@@ -78,23 +79,65 @@ This file is generated. Run the formatter rather than editing it.
 // with, relative to this module's root, and empty for a module of the cache.
 type module struct{ path, version, dir string }
 
-// linkedModules is the modules the built binary actually contains, read back
-// out of the binary rather than asked of the source tree. `go list -deps`
-// reports no module for a package when the build is vendored, which a nix
-// build's is, so asking the source gives an empty answer there and a correct
-// one here. The binary answers the same way everywhere. It is also the more
-// honest question, since the obligation attaches to what is distributed.
+// target is one binary the notice covers, built for an operating system and
+// an architecture
+type target struct{ goos, goarch string }
+
+// targets is the binaries the notice covers: the daemon for linux on amd64 and
+// for darwin on arm64, both without cgo. They are built for these two wherever
+// the formatter runs, never for the host it runs on, so it writes the same file
+// on every machine, and each links a module the other does not: the darwin
+// daemon's userspace exit links gVisor, which the linux daemon never does.
+var targets = []target{{goos: "linux", goarch: "amd64"}, {goos: "darwin", goarch: "arm64"}}
+
+// linkedModules is the modules the built binaries actually contain, read back
+// out of each binary rather than asked of the source tree, and the union of
+// what each contains. `go list -deps` reports no module for a package when the
+// build is vendored, which a nix build's is, so asking the source gives an
+// empty answer there and a correct one here. The binary answers the same way
+// everywhere. It is also the more honest question, since the obligation
+// attaches to what is distributed.
 func linkedModules() ([]module, error) {
-	binary := filepath.Join(os.TempDir(), "ranet3-notices-subject")
+	lists := make([][]module, 0, len(targets))
+	for _, t := range targets {
+		modules, err := builtModules(t)
+		if err != nil {
+			return nil, err
+		}
+		lists = append(lists, modules)
+	}
+	return union(lists...), nil
+}
+
+// builtModules builds the daemon for t and reads its modules back out of it
+func builtModules(t target) ([]module, error) {
+	binary := filepath.Join(os.TempDir(), "ranet3-notices-subject-"+t.goos+"-"+t.goarch)
 	defer os.Remove(binary)
-	if _, err := output("go", "build", "-o", binary, "./cmd/ranet3"); err != nil {
-		return nil, err
+	build := exec.Command("go", "build", "-o", binary, "./cmd/ranet3")
+	build.Env = append(os.Environ(), "GOOS="+t.goos, "GOARCH="+t.goarch, "CGO_ENABLED=0")
+	build.Stderr = os.Stderr
+	if err := build.Run(); err != nil {
+		return nil, fmt.Errorf("go build ./cmd/ranet3 for %s/%s: %w", t.goos, t.goarch, err)
 	}
 	listed, err := output("go", "version", "-m", binary)
 	if err != nil {
 		return nil, err
 	}
 	return modulesOf(listed)
+}
+
+// union is every module of lists once, ordered by path as modulesOf orders
+// each list
+func union(lists ...[]module) []module {
+	seen := map[module]bool{}
+	for _, list := range lists {
+		for _, m := range list {
+			seen[m] = true
+		}
+	}
+	modules := slices.Collect(maps(seen))
+	slices.SortFunc(modules, func(a, b module) int { return strings.Compare(a.path, b.path) })
+	return modules
 }
 
 // modulesOf is the modules `go version -m` lists for a binary.
