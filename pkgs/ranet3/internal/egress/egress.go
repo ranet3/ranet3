@@ -181,22 +181,11 @@ func (e Egress) families() []uint8 {
 	return out
 }
 
-// SourceLimit is the share in force, FlowsPerSource with its default applied,
-// which every backend writes and reports
-func (e Egress) SourceLimit() int {
-	if e.FlowsPerSource == 0 {
-		return DefaultFlowsPerSource
-	}
-	return int(e.FlowsPerSource)
-}
+// SourceLimit is the share in force, which every backend writes and reports
+func (e Egress) SourceLimit() int { return int(e.Normalized().FlowsPerSource) }
 
-// SweepInterval is the interval with its default applied.
-func (e Egress) SweepInterval() time.Duration {
-	if e.Sweep <= 0 {
-		return DefaultSweep
-	}
-	return e.Sweep.Duration()
-}
+// SweepInterval is the interval in force
+func (e Egress) SweepInterval() time.Duration { return e.Normalized().Sweep.Duration() }
 
 // FamilyName is family as a log line and an operator's message name it
 func FamilyName(family uint8) string {
@@ -262,7 +251,7 @@ func (e Egress) ReturnSource(family uint8, mesh []netip.Addr) (netip.Addr, error
 func MeshSources(family uint8, mesh []netip.Addr) []netip.Addr {
 	var out []netip.Addr
 	for _, address := range mesh {
-		if AddressFamily(address) == family && (address.IsGlobalUnicast() || address.IsPrivate()) {
+		if AddressFamily(address) == family && address.IsGlobalUnicast() {
 			out = append(out, address)
 		}
 	}

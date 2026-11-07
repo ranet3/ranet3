@@ -109,7 +109,7 @@ func (c Class) check() error {
 		return fmt.Errorf("%s to %s is an IPv4 address written as IPv6, so write it as %s", name, to.Addr, to.Addr.Unmap())
 	case AddressFamily(to.Addr) != AddressFamily(c.From.Addr()):
 		return fmt.Errorf("%s to %s is not of its from's family", name, to.Addr)
-	case !to.Addr.IsGlobalUnicast() && !to.Addr.IsPrivate():
+	case !to.Addr.IsGlobalUnicast():
 		// A translated packet has to be answerable, and a loopback, multicast or
 		// unspecified source is one nothing replies to. A backend would install
 		// it, and the failure would show only as a flow that never completes.
