@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"ranet3.com/pkgs/wireguard/conn"
 )
 
 const testMTU = 1420
@@ -443,6 +444,58 @@ func TestSetGSOMaxSegs(t *testing.T) {
 	}
 	if got := gsoMaxSegs(t, name); got != want {
 		t.Errorf("gso_max_segs = %d, want %d", got, want)
+	}
+
+	// The kernel refuses more than GSO_MAX_SEGS.
+	if err := dev.(*NativeTun).SetGSOMaxSegs(1 << 16); !errors.Is(err, unix.EINVAL) {
+		t.Errorf("SetGSOMaxSegs(%d) = %v, want EINVAL", 1<<16, err)
+	}
+	if got := gsoMaxSegs(t, name); got != want {
+		t.Errorf("gso_max_segs = %d after a refused change, want %d", got, want)
+	}
+}
+
+func TestCreateUnmonitoredTUNFromFD(t *testing.T) {
+	requireNetAdmin(t)
+	name := testTUNName(t)
+	file, err := openTUNFile(name, unix.IFF_TUN|unix.IFF_NO_PI|unix.IFF_VNET_HDR)
+	if err != nil {
+		t.Fatalf("openTUNFile: %v", err)
+	}
+	fd, err := unix.Dup(int(file.Fd()))
+	file.Close()
+	if err != nil {
+		t.Fatalf("Dup: %v", err)
+	}
+
+	dev, got, err := CreateUnmonitoredTUNFromFD(fd)
+	if err != nil {
+		t.Fatalf("CreateUnmonitoredTUNFromFD: %v", err)
+	}
+	t.Cleanup(func() { dev.Close() })
+	if got != name {
+		t.Errorf("CreateUnmonitoredTUNFromFD named %q, want %q", got, name)
+	}
+	if n := len(QueuesOf(dev)); n != 1 {
+		t.Errorf("QueuesOf returned %d queues, want 1", n)
+	}
+	if dev.BatchSize() != conn.IdealBatchSize {
+		t.Errorf("BatchSize = %d, want %d of a tun with a virtio header", dev.BatchSize(), conn.IdealBatchSize)
+	}
+
+	if err := dev.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case ev, ok := <-dev.Events():
+		if ok {
+			t.Errorf("the device sent event %d", ev)
+		}
+	case <-time.After(eventSettle):
+		t.Error("Close did not close the Events channel")
+	}
+	if _, err := os.Stat(fmt.Sprintf("/proc/self/fd/%d", fd)); err == nil {
+		t.Errorf("fd %d still open after Close", fd)
 	}
 }
 
