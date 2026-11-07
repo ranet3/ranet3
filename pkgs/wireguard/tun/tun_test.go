@@ -79,7 +79,7 @@ func TestQueuesOf(t *testing.T) {
 }
 
 func TestTUNConfig(t *testing.T) {
-	if c := defaultConfig(); c.queues != 1 || c.unmonitored {
+	if c := defaultConfig(); c.queues != 1 || c.unmonitored || c.exclusive || c.multiQueue {
 		t.Fatalf("default tun config: %+v", c)
 	}
 }
@@ -88,7 +88,9 @@ func TestTUNOptions(t *testing.T) {
 	c := defaultConfig()
 	WithQueues(4).apply(&c)
 	Unmonitored().apply(&c)
-	if c.queues != 4 || !c.unmonitored {
+	Exclusive().apply(&c)
+	MultiQueue().apply(&c)
+	if c.queues != 4 || !c.unmonitored || !c.exclusive || !c.multiQueue {
 		t.Fatalf("configured tun config: %+v", c)
 	}
 }

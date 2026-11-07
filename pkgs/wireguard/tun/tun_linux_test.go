@@ -6,13 +6,16 @@
 package tun
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -127,6 +130,19 @@ func TestTUNLifecycle(t *testing.T) {
 			return dev, nil
 		},
 	}, {
+		// Only the first queue may refuse an existing interface, or no
+		// exclusive device would get a second queue.
+		name: "CreateTUN/exclusive",
+		create: func(tb testing.TB, queues int) (Device, []*os.File) {
+			tb.Helper()
+			name := testTUNName(tb)
+			dev, err := CreateTUN(name, testMTU, WithQueues(queues), Exclusive())
+			if err != nil {
+				tb.Fatalf("CreateTUN(%q, %d queues, Exclusive): %v", name, queues, err)
+			}
+			return dev, nil
+		},
+	}, {
 		name: "CreateTUNFromFiles",
 		create: func(tb testing.TB, queues int) (Device, []*os.File) {
 			tb.Helper()
@@ -212,6 +228,260 @@ func TestTUNLifecycle(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestCreateTUNExclusive(t *testing.T) {
+	requireNetAdmin(t)
+	name := testTUNName(t)
+	held, err := CreateTUN(name, testMTU, WithQueues(2))
+	if err != nil {
+		t.Fatalf("CreateTUN(%q, 2 queues): %v", name, err)
+	}
+	t.Cleanup(func() { held.Close() })
+
+	// A multiqueue interface takes more queues, so only Exclusive refuses it.
+	joined, err := CreateTUN(name, testMTU, WithQueues(2))
+	if err != nil {
+		t.Fatalf("CreateTUN(%q, 2 queues) on the existing interface: %v", name, err)
+	}
+	joined.Close()
+
+	dev, err := CreateTUN(name, testMTU, WithQueues(2), Exclusive())
+	if err == nil {
+		dev.Close()
+		t.Fatalf("CreateTUN(%q, Exclusive) attached to the existing interface", name)
+	}
+	if !errors.Is(err, unix.EBUSY) {
+		t.Errorf("CreateTUN(%q, Exclusive) = %v, want EBUSY", name, err)
+	}
+}
+
+func TestCreateTUNSingleQueueAttachesToMultiQueue(t *testing.T) {
+	requireNetAdmin(t)
+	name := testTUNName(t)
+	held, err := CreateTUN(name, testMTU, WithQueues(2))
+	if err != nil {
+		t.Fatalf("CreateTUN(%q, 2 queues): %v", name, err)
+	}
+	t.Cleanup(func() { held.Close() })
+
+	dev, err := CreateTUN(name, testMTU)
+	if err != nil {
+		t.Fatalf("CreateTUN(%q, 1 queue) on a multiqueue interface: %v", name, err)
+	}
+	t.Cleanup(func() { dev.Close() })
+	if flags := tunFlags(t, dev.(*NativeTun)); flags&unix.IFF_MULTI_QUEUE == 0 {
+		t.Errorf("the attached queue does not declare IFF_MULTI_QUEUE (flags = %#x)", flags)
+	}
+}
+
+func TestCreateTUNMultiQueue(t *testing.T) {
+	requireNetAdmin(t)
+	name := testTUNName(t)
+	dev, err := CreateTUN(name, testMTU, MultiQueue())
+	if err != nil {
+		t.Fatalf("CreateTUN(%q, MultiQueue): %v", name, err)
+	}
+	t.Cleanup(func() { dev.Close() })
+	if n := len(QueuesOf(dev)); n != 1 {
+		t.Errorf("QueuesOf returned %d queues, want 1", n)
+	}
+	if flags := tunFlags(t, dev.(*NativeTun)); flags&unix.IFF_MULTI_QUEUE == 0 {
+		t.Errorf("the interface does not declare IFF_MULTI_QUEUE (flags = %#x)", flags)
+	}
+
+	// A single-queue interface would refuse a second queue.
+	joined, err := CreateTUN(name, testMTU, WithQueues(2))
+	if err != nil {
+		t.Fatalf("CreateTUN(%q, 2 queues) on the interface: %v", name, err)
+	}
+	joined.Close()
+}
+
+func TestCreateTUNMultiQueueAttachesToSingleQueue(t *testing.T) {
+	requireNetAdmin(t)
+	name := testTUNName(t)
+	persistTUN(t, name, unix.IFF_TUN|unix.IFF_NO_PI|unix.IFF_VNET_HDR)
+
+	dev, err := CreateTUN(name, testMTU, MultiQueue())
+	if err != nil {
+		t.Fatalf("CreateTUN(%q, MultiQueue) on a single-queue interface: %v", name, err)
+	}
+	t.Cleanup(func() { dev.Close() })
+	if flags := tunFlags(t, dev.(*NativeTun)); flags&unix.IFF_MULTI_QUEUE != 0 {
+		t.Errorf("the interface declares IFF_MULTI_QUEUE (flags = %#x)", flags)
+	}
+}
+
+// persistTUN creates an interface that outlives its file, as a network manager
+// does, and removes it when the test ends.
+func persistTUN(tb testing.TB, name string, flags uint16) {
+	tb.Helper()
+	persist := func(value int) error {
+		file, err := openTUNFile(name, flags)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		return unix.IoctlSetInt(int(file.Fd()), unix.TUNSETPERSIST, value)
+	}
+	if err := persist(1); err != nil {
+		tb.Fatalf("persisting %q: %v", name, err)
+	}
+	tb.Cleanup(func() {
+		if err := persist(0); err != nil {
+			tb.Errorf("removing %q: %v", name, err)
+		}
+	})
+}
+
+// eventSettle is how long a device that watches its interface takes to send
+// the events of a link change.
+const eventSettle = 500 * time.Millisecond
+
+func TestCreateTUNUnmonitored(t *testing.T) {
+	requireNetAdmin(t)
+	name := testTUNName(t)
+	dev, err := CreateTUN(name, testMTU, WithQueues(2), Unmonitored())
+	if err != nil {
+		t.Fatalf("CreateTUN(%q, Unmonitored): %v", name, err)
+	}
+	t.Cleanup(func() { dev.Close() })
+
+	setLinkUp(t, name)
+	time.Sleep(eventSettle)
+	select {
+	case ev := <-dev.Events():
+		t.Errorf("an unmonitored device sent event %d", ev)
+	default:
+	}
+
+	if err := dev.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case ev, ok := <-dev.Events():
+		if ok {
+			t.Errorf("an unmonitored device sent event %d after Close", ev)
+		}
+	case <-time.After(eventSettle):
+		t.Error("Close did not close the Events channel")
+	}
+}
+
+func TestCreateTUNUnmonitoredHoldsOnlyItsQueues(t *testing.T) {
+	requireNetAdmin(t)
+	const queues = 2
+	before := openFiles(t)
+	dev, err := CreateTUN(testTUNName(t), testMTU, WithQueues(queues), Unmonitored())
+	if err != nil {
+		t.Fatalf("CreateTUN(Unmonitored): %v", err)
+	}
+	during := openFiles(t)
+	if err := dev.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	after := openFiles(t)
+
+	// No route socket, and no pipe to cancel a read of one.
+	tuns := 0
+	for fd, file := range during {
+		if before[fd] == file {
+			continue
+		}
+		if file == cloneDevicePath {
+			tuns++
+		} else {
+			t.Errorf("an unmonitored device holds fd %s on %s", fd, file)
+		}
+	}
+	if tuns != queues {
+		t.Errorf("an unmonitored device holds %d fds on %s, want %d", tuns, cloneDevicePath, queues)
+	}
+	for fd, file := range after {
+		if before[fd] != file {
+			t.Errorf("fd %s on %s outlived Close", fd, file)
+		}
+	}
+}
+
+// openFiles maps each open fd of the process to the file it refers to.
+func openFiles(tb testing.TB) map[string]string {
+	tb.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		tb.Fatalf("ReadDir: %v", err)
+	}
+	files := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		file, err := os.Readlink("/proc/self/fd/" + entry.Name())
+		if err != nil {
+			// The fd ReadDir read the directory through, closed since.
+			continue
+		}
+		files[entry.Name()] = file
+	}
+	return files
+}
+
+func TestSetGSOMaxSegs(t *testing.T) {
+	requireNetAdmin(t)
+	name := testTUNName(t)
+	dev, err := CreateTUN(name, testMTU, Unmonitored())
+	if err != nil {
+		t.Fatalf("CreateTUN(%q): %v", name, err)
+	}
+	t.Cleanup(func() { dev.Close() })
+	before := gsoMaxSegs(t, name)
+	want := uint32(dev.BatchSize())
+	if before == want {
+		t.Fatalf("gso_max_segs is already %d, so this proves nothing", before)
+	}
+
+	if err := dev.(*NativeTun).SetGSOMaxSegs(dev.BatchSize()); err != nil {
+		t.Fatalf("SetGSOMaxSegs(%d): %v", want, err)
+	}
+	if got := gsoMaxSegs(t, name); got != want {
+		t.Errorf("gso_max_segs = %d, want %d", got, want)
+	}
+}
+
+// gsoMaxSegs reads the interface's gso_max_segs from a link dump, which,
+// unlike sysfs, shows the caller's network namespace.
+func gsoMaxSegs(tb testing.TB, name string) uint32 {
+	tb.Helper()
+	index, err := getIFIndex(name)
+	if err != nil {
+		tb.Fatalf("getIFIndex(%q): %v", name, err)
+	}
+	rib, err := syscall.NetlinkRIB(unix.RTM_GETLINK, unix.AF_UNSPEC)
+	if err != nil {
+		tb.Fatalf("NetlinkRIB: %v", err)
+	}
+	msgs, err := syscall.ParseNetlinkMessage(rib)
+	if err != nil {
+		tb.Fatalf("ParseNetlinkMessage: %v", err)
+	}
+	for i := range msgs {
+		msg := &msgs[i]
+		if msg.Header.Type != unix.RTM_NEWLINK || len(msg.Data) < unix.SizeofIfInfomsg {
+			continue
+		}
+		if int32(binary.NativeEndian.Uint32(msg.Data[4:])) != index {
+			continue
+		}
+		attrs, err := syscall.ParseNetlinkRouteAttr(msg)
+		if err != nil {
+			tb.Fatalf("ParseNetlinkRouteAttr: %v", err)
+		}
+		for _, attr := range attrs {
+			if attr.Attr.Type == unix.IFLA_GSO_MAX_SEGS && len(attr.Value) == 4 {
+				return binary.NativeEndian.Uint32(attr.Value)
+			}
+		}
+	}
+	tb.Fatalf("no IFLA_GSO_MAX_SEGS for %q", name)
+	return 0
 }
 
 func TestTooManyQueues(t *testing.T) {

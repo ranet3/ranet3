@@ -141,7 +141,9 @@ func (f optionFunc) apply(config *config) {
 
 type config struct {
 	queues      int  // Tun fd's in IFF_MULTI_QUEUE group to open.
-	unmonitored bool // No route socket and no listener reading it.
+	unmonitored bool // No route socket and no goroutine watching the interface.
+	exclusive   bool // Fail rather than attach to an existing interface.
+	multiQueue  bool // Declare IFF_MULTI_QUEUE with a single queue too.
 }
 
 func defaultConfig() config {
@@ -170,15 +172,33 @@ func WithQueues(n int) Option {
 }
 
 // Unmonitored requests that the [Device] not watch its interface. It opens no
-// route socket and starts no goroutine to read one, so it sends no [Event]s,
-// and its Events channel is closed by [Device.Close]. A failure of that route
-// socket is then never returned by [Reader.Read].
-//
-// Only Darwin, FreeBSD and OpenBSD implement Unmonitored. On Linux, use
-// [CreateUnmonitoredTUNFromFDs].
+// route socket and starts no goroutine to watch the interface, so it sends no
+// [Event]s, and its Events channel is closed by [Device.Close]. A failure of
+// that route socket is then never returned by [Reader.Read].
 func Unmonitored() Option {
 	return optionFunc(func(config *config) {
 		config.unmonitored = true
+	})
+}
+
+// Exclusive requests that [CreateTUN] fail with EBUSY if an interface of the
+// given name exists, rather than attach to it.
+//
+// Only Linux implements Exclusive.
+func Exclusive() Option {
+	return optionFunc(func(config *config) {
+		config.exclusive = true
+	})
+}
+
+// MultiQueue requests that [CreateTUN] create a multiqueue interface even with
+// a single queue, so that more queues can attach to it later. With a single
+// queue, an existing interface that is not multiqueue is attached to as it is.
+//
+// Only Linux implements MultiQueue.
+func MultiQueue() Option {
+	return optionFunc(func(config *config) {
+		config.multiQueue = true
 	})
 }
 

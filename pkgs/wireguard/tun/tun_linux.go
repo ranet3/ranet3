@@ -713,11 +713,21 @@ func CreateTUN(name string, mtu int, opts ...Option) (Device, error) {
 	// IFF_VNET_HDR enables the "tun status hack" via routineHackListener()
 	// where a null write will return EINVAL indicating the TUN is up.
 	flags := uint16(unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_VNET_HDR)
-	if config.queues > 1 {
+	if config.queues > 1 || config.multiQueue {
 		// all members must declare multiqueue
 		flags |= unix.IFF_MULTI_QUEUE
 	}
-	first, err := openTUNFile(name, flags)
+	firstFlags := flags
+	if config.exclusive {
+		// Only the first queue creates the interface, the others join it.
+		firstFlags |= unix.IFF_TUN_EXCL
+	}
+	first, err := openTUNFile(name, firstFlags)
+	if config.queues == 1 && errors.Is(err, unix.EINVAL) {
+		// An existing interface refuses a queue whose IFF_MULTI_QUEUE differs
+		// from its own, see tun_set_iff() in drivers/net/tun.c.
+		first, err = openTUNFile(name, firstFlags^unix.IFF_MULTI_QUEUE)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -743,7 +753,7 @@ func CreateTUN(name string, mtu int, opts ...Option) (Device, error) {
 			files = append(files, f)
 		}
 	}
-	return CreateTUNFromFiles(files, mtu)
+	return createTUNFromFiles(files, mtu, config)
 }
 
 // CreateTUNFromFile creates a Device from an os.File with the provided MTU.
@@ -755,13 +765,19 @@ func CreateTUNFromFile(file *os.File, mtu int) (Device, error) {
 // kernel queue. It satisfies [MultiQueueDevice] when there is more than one.
 // Files must be distinct and ownership transfers.
 func CreateTUNFromFiles(files []*os.File, mtu int) (Device, error) {
+	return createTUNFromFiles(files, mtu, defaultConfig())
+}
+
+func createTUNFromFiles(files []*os.File, mtu int, config config) (Device, error) {
 	if len(files) == 0 {
 		return nil, errors.New("CreateTUNFromFiles requires at least one file")
 	}
 	tun := &NativeTun{
-		events:                  make(chan Event, 5),
-		errors:                  make(chan error, 5),
-		statusListenersShutdown: make(chan struct{}),
+		events: make(chan Event, 5),
+		errors: make(chan error, 5),
+	}
+	if !config.unmonitored {
+		tun.statusListenersShutdown = make(chan struct{})
 	}
 	// Append every queue before spawning routineHackListener et al.
 	for _, file := range files {
@@ -797,29 +813,31 @@ func CreateTUNFromFiles(files []*os.File, mtu int) (Device, error) {
 		return nil, err
 	}
 
-	// start event listener
-	tun.index, err = getIFIndex(name)
-	if err != nil {
-		tun.Close()
-		return nil, err
-	}
+	if !config.unmonitored {
+		// start event listener
+		tun.index, err = getIFIndex(name)
+		if err != nil {
+			tun.Close()
+			return nil, err
+		}
 
-	tun.netlinkSock, err = createNetlinkSocket()
-	if err != nil {
-		tun.Close()
-		return nil, err
-	}
-	tun.netlinkCancel, err = rwcancel.NewRWCancel(tun.netlinkSock)
-	if err != nil {
-		// No goroutine owns netlinkSock yet, and tun.Close won't reach it.
-		unix.Close(tun.netlinkSock)
-		tun.Close()
-		return nil, err
-	}
+		tun.netlinkSock, err = createNetlinkSocket()
+		if err != nil {
+			tun.Close()
+			return nil, err
+		}
+		tun.netlinkCancel, err = rwcancel.NewRWCancel(tun.netlinkSock)
+		if err != nil {
+			// No goroutine owns netlinkSock yet, and tun.Close won't reach it.
+			unix.Close(tun.netlinkSock)
+			tun.Close()
+			return nil, err
+		}
 
-	tun.hackListenerClosed.Lock()
-	go tun.routineNetlinkListener()
-	go tun.routineHackListener() // cross namespace
+		tun.hackListenerClosed.Lock()
+		go tun.routineNetlinkListener()
+		go tun.routineHackListener() // cross namespace
+	}
 
 	err = tun.setMTU(mtu)
 	if err != nil {
@@ -905,4 +923,62 @@ func CreateUnmonitoredTUNFromFDs(fds []int) (Device, string, error) {
 		return nil, "", err
 	}
 	return tun, name, nil
+}
+
+// SetGSOMaxSegs sets the most segments the kernel puts in one GSO frame it
+// hands to the Device. Given fewer packets than a frame has segments, Read
+// returns the segments that fit together with [ErrTooManySegments]. Those
+// remain valid, but the rest of the frame is lost, so callers pass
+// [Device.BatchSize].
+func (tun *NativeTun) SetGSOMaxSegs(n int) error {
+	name, err := tun.Name()
+	if err != nil {
+		return err
+	}
+	index, err := getIFIndex(name)
+	if err != nil {
+		return err
+	}
+	// A socket of its own, since the event listener's joins multicast groups
+	// whose messages would precede the ack.
+	sock, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_ROUTE)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(sock)
+
+	req := struct {
+		hdr  unix.NlMsghdr
+		info unix.IfInfomsg
+		attr unix.RtAttr
+		segs uint32
+	}{
+		hdr:  unix.NlMsghdr{Type: unix.RTM_NEWLINK, Flags: unix.NLM_F_REQUEST | unix.NLM_F_ACK},
+		info: unix.IfInfomsg{Family: unix.AF_UNSPEC, Index: index},
+		attr: unix.RtAttr{Len: unix.SizeofRtAttr + 4, Type: unix.IFLA_GSO_MAX_SEGS},
+		segs: uint32(n),
+	}
+	req.hdr.Len = uint32(unsafe.Sizeof(req))
+	err = unix.Sendto(sock, (*[unsafe.Sizeof(req)]byte)(unsafe.Pointer(&req))[:], 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK})
+	if err != nil {
+		return err
+	}
+
+	// The reply is an NLMSG_ERROR whose error is zero for an ack. A refusal
+	// also carries the request, which this buffer cuts off.
+	var reply struct {
+		hdr unix.NlMsghdr
+		err unix.NlMsgerr
+	}
+	got, _, err := unix.Recvfrom(sock, (*[unsafe.Sizeof(reply)]byte)(unsafe.Pointer(&reply))[:], 0)
+	if err != nil {
+		return err
+	}
+	if got < int(unsafe.Sizeof(reply)) || reply.hdr.Type != unix.NLMSG_ERROR {
+		return fmt.Errorf("unexpected reply of type %d to RTM_NEWLINK", reply.hdr.Type)
+	}
+	if reply.err.Error != 0 {
+		return unix.Errno(-reply.err.Error)
+	}
+	return nil
 }
