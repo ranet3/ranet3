@@ -516,10 +516,32 @@ func TestFallbackStatusNamesEachPublicNetwork(t *testing.T) {
 	}
 }
 
-// FirstPass stays open until Run's first pass has written the table, which the
-// start waits on under "none" before it dials a session
+// heldWrite is a fake whose table write reports that it has begun and then
+// waits to be released, so a test holds the first pass inside the write
+type heldWrite struct {
+	*fakeKernel
+	began   chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (h *heldWrite) writeFallback(s fallbackSets, remake bool) error {
+	h.once.Do(func() { close(h.began) })
+	<-h.release
+	return h.fakeKernel.writeFallback(s, remake)
+}
+
+// FirstPass stays open while Run's first pass is inside the table's write and
+// closes only once the table is written, which the start waits on under
+// "none" before it dials a session
 func TestFallbackFirstPassEndsWithTheTableWritten(t *testing.T) {
-	reconciler, fake := fallbackHarness(t, &ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
+	network := &hostNetwork{state: exitPassHost("docker0")}
+	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN}).Normalized()
+	rt := Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read, Sessions: func() int { return 1 }}
+	routes := netstack.NewRouteTable()
+	routes.Set(netip.Prefix{}, prefix("203.0.113.0/24"), netstack.Local)
+	held := &heldWrite{fakeKernel: newFakeKernel(t), began: make(chan struct{}), release: make(chan struct{})}
+	reconciler := newReconciler(tbl, rt, tbl.Assigned(nil), routes, held)
 	select {
 	case <-reconciler.FirstPass():
 		t.Fatal("the first pass ended before Run started")
@@ -528,19 +550,33 @@ func TestFallbackFirstPassEndsWithTheTableWritten(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- reconciler.Run(ctx) }()
+	var released sync.Once
+	release := func() { released.Do(func() { close(held.release) }) }
 	t.Cleanup(func() {
+		release()
 		cancel()
 		<-done
 	})
+	select {
+	case <-held.began:
+	case <-time.After(waitBudget):
+		t.Fatalf("the first pass did not begin writing the table within %s", waitBudget)
+	}
+	select {
+	case <-reconciler.FirstPass():
+		t.Fatal("the first pass ended while the table's write was still held")
+	default:
+	}
+	release()
 	select {
 	case <-reconciler.FirstPass():
 	case <-time.After(waitBudget):
 		t.Fatalf("the first pass did not end within %s", waitBudget)
 	}
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	if fake.fallbackWrites != 1 || fake.fallback == nil {
-		t.Errorf("the first pass ended with %d writes of the table, want it written once", fake.fallbackWrites)
+	held.mu.Lock()
+	defer held.mu.Unlock()
+	if held.fallbackWrites != 1 || held.fallback == nil {
+		t.Errorf("the first pass ended with %d writes of the table, want it written once", held.fallbackWrites)
 	}
 }
 
