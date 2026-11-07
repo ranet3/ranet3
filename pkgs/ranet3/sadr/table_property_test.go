@@ -400,6 +400,41 @@ func (m *tableMachine) InvariantEveryRouteAnswersLikeReference(tc hegel.TestCase
 	}
 }
 
+// InvariantSpecificFollowsTheReference holds every node's specific flag to
+// whether the reference holds a route at the node's destination whose source
+// is valid. A flag left false hides a source-specific route behind the
+// match-all one, which the lookups catch, and a flag left true costs every
+// walk the source scan while answering right, which only this catches.
+func (m *tableMachine) InvariantSpecificFollowsTheReference(tc hegel.TestCase) {
+	specific := make(map[netip.Prefix]bool)
+	for _, route := range m.model.routes {
+		if route.Source.IsValid() {
+			specific[route.Destination] = true
+		}
+	}
+	var walk func(*trieNode[int], bool)
+	walk = func(n *trieNode[int], ipv4 bool) {
+		if n == nil {
+			return
+		}
+		address, prefixLen := netip.AddrFrom16(n.address), int(n.prefixLen)
+		if ipv4 {
+			address, prefixLen = address.Unmap(), prefixLen-96
+		}
+		destination := netip.PrefixFrom(address, prefixLen).Masked()
+		if n.specific != specific[destination] {
+			tc.Errorf("the node at %v holds specific %v where the reference's routes there say %v",
+				destination, n.specific, specific[destination])
+		}
+		walk(n.child[0], ipv4)
+		walk(n.child[1], ipv4)
+	}
+	if current := m.table.roots.Load(); current != nil {
+		walk(current.ipv4, true)
+		walk(current.ipv6, false)
+	}
+}
+
 func (m *tableMachine) InvariantEarlierWalksHoldTheirOwnRoutes(tc hegel.TestCase) {
 	for _, s := range m.snapshots {
 		sameRoutes(tc, fmt.Sprintf("in walk %d", s.taken), s.routes, s.want)
@@ -452,6 +487,7 @@ func TestTableAgreesWithReferenceModel(t *testing.T) {
 		)).MinSize(1).MaxSize(3))
 		machine := &tableMachine{pools: [2]prefixPool{drawPrefixPool(ht, anchors4), drawPrefixPool(ht, anchors6)}}
 		hegel.RunStateful(ht, machine, hegel.WithAlwaysCheckInvariants(
-			"InvariantWalkHoldsReferenceRoutes", "InvariantEveryRouteAnswersLikeReference"))
+			"InvariantWalkHoldsReferenceRoutes", "InvariantEveryRouteAnswersLikeReference",
+			"InvariantSpecificFollowsTheReference"))
 	})
 }

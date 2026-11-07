@@ -7,6 +7,7 @@ package sadr
 import (
 	"net/netip"
 	"testing"
+	"unsafe"
 )
 
 func prefix(s string) netip.Prefix { return netip.MustParsePrefix(s) }
@@ -103,6 +104,92 @@ func TestZonedDestinationMatchesNoPrefix(t *testing.T) {
 	}
 	if got, ok := table.Lookup(addr("2000::1"), addr("1000::1")); !ok || got != 2 {
 		t.Errorf("the same destination without its zone answered %d, %v, want 2", got, ok)
+	}
+}
+
+// A lookup reads a node's sources only where its specific flag says one is
+// specific, so every edit that writes a node's sources or copies a node keeps
+// the flag: a flag left false answers a source-specific route's packets with
+// the match-all entry beside it, or with nothing.
+func TestSourceSpecificRouteAnswersAfterEveryEdit(t *testing.T) {
+	var table Table[string]
+	from, elsewhere := addr("2001:db8:ff::1"), addr("2001:db8:ee::1")
+	want := func(step string, src, dst netip.Addr, value string) {
+		t.Helper()
+		if got, ok := table.Lookup(src, dst); !ok || got != value {
+			t.Errorf("after %s, %v to %v answered %q, %v, want %q", step, src, dst, got, ok, value)
+		}
+	}
+	table.Set(netip.Prefix{}, prefix("2001:db8::/32"), "any")
+	table.Set(prefix("2001:db8:ff::/48"), prefix("2001:db8::/32"), "specific")
+	want("a specific source joins the match-all one", from, addr("2001:db8:1::1"), "specific")
+	want("a specific source joins the match-all one", elsewhere, addr("2001:db8:1::1"), "any")
+
+	table.Set(netip.Prefix{}, prefix("2001:db8:2::/48"), "below")
+	want("a route is set below the node", from, addr("2001:db8:1::1"), "specific")
+
+	table.Remove(prefix("2001:db8:ff::/48"), prefix("2001:db8::/32"))
+	want("the specific source is removed", from, addr("2001:db8:1::1"), "any")
+
+	table.Set(prefix("2001:db8:ff::/48"), prefix("2001:db8::/32"), "specific")
+	table.RemoveFunc(func(held string) bool { return held == "below" })
+	want("the route below the node is removed by value", from, addr("2001:db8:1::1"), "specific")
+
+	table.Set(prefix("2001:db8:ff::/48"), prefix("2001:d00::/24"), "split")
+	want("a destination is split above the node", from, addr("2001:d00::1"), "split")
+	want("a destination is split above the node", from, addr("2001:db8:1::1"), "specific")
+
+	table.Set(prefix("2001:db8:ff::/48"), prefix("2001:e00::/32"), "beside")
+	want("a destination is set beside the root", from, addr("2001:e00::1"), "beside")
+	want("a destination is set beside the root", from, addr("2001:db8:1::1"), "specific")
+}
+
+// A walk reads the same fields at every node on its path and the sources only
+// where one is specific, so for a value of 9 to 24 bytes those fields lie in
+// the first cache line of every node allocated.
+func TestWalkFieldsShareTheNodesFirstLine(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("the field order is set for 8-byte pointers")
+	}
+	for _, check := range []func(*testing.T){
+		walkFieldsInFirstLine[[9]byte], walkFieldsInFirstLine[[10]byte], walkFieldsInFirstLine[[11]byte], walkFieldsInFirstLine[[12]byte],
+		walkFieldsInFirstLine[[13]byte], walkFieldsInFirstLine[[14]byte], walkFieldsInFirstLine[[15]byte], walkFieldsInFirstLine[[16]byte],
+		walkFieldsInFirstLine[[17]byte], walkFieldsInFirstLine[[18]byte], walkFieldsInFirstLine[[19]byte], walkFieldsInFirstLine[[20]byte],
+		walkFieldsInFirstLine[[21]byte], walkFieldsInFirstLine[[22]byte], walkFieldsInFirstLine[[23]byte], walkFieldsInFirstLine[[24]byte],
+	} {
+		check(t)
+	}
+}
+
+// walkFieldsInFirstLine fails t when a node of a V table holds the fields a
+// walk reads across a cache line.
+func walkFieldsInFirstLine[V comparable](t *testing.T) {
+	const line, nodes = 64, 4096
+	var n trieNode[V]
+	end := uintptr(0)
+	for _, field := range [][2]uintptr{
+		{unsafe.Offsetof(n.address), unsafe.Sizeof(n.address)},
+		{unsafe.Offsetof(n.prefixLen), unsafe.Sizeof(n.prefixLen)},
+		{unsafe.Offsetof(n.byteIndex), unsafe.Sizeof(n.byteIndex)},
+		{unsafe.Offsetof(n.bitShift), unsafe.Sizeof(n.bitShift)},
+		{unsafe.Offsetof(n.haveAny), unsafe.Sizeof(n.haveAny)},
+		{unsafe.Offsetof(n.specific), unsafe.Sizeof(n.specific)},
+		{unsafe.Offsetof(n.child), unsafe.Sizeof(n.child)},
+		{unsafe.Offsetof(n.anySrc), unsafe.Sizeof(n.anySrc)},
+	} {
+		end = max(end, field[0]+field[1])
+	}
+	held := make([]*trieNode[V], nodes)
+	straddling := 0
+	for i := range held {
+		held[i] = newTrieNode[V]([16]byte{byte(i), byte(i >> 8)}, 128, nil)
+		if uintptr(unsafe.Pointer(held[i]))%line+end > line {
+			straddling++
+		}
+	}
+	if straddling > 0 {
+		t.Errorf("%d of %d nodes of %d bytes for a %d-byte value hold the fields a walk reads, bytes 0 to %d, across a %d-byte line",
+			straddling, nodes, unsafe.Sizeof(n), unsafe.Sizeof(n.anySrc), end-1, line)
 	}
 }
 

@@ -41,11 +41,20 @@ type srcEntry[V comparable] struct {
 type trieNode[V comparable] struct {
 	// Only the first prefixLen bits of address are significant. IPv4 uses
 	// its mapped 128-bit representation, with lengths from 96 through 128.
+	//
+	// The fields a walk reads at every node come first. For a value of 9 to
+	// 24 bytes they share the node's first cache line.
 	address   [16]byte
 	prefixLen uint8
 	byteIndex uint8 // cached branch position (fits in the node's padding)
 	bitShift  uint8
-	srcs      []srcEntry[V]
+	haveAny   bool
+	// specific is whether srcs holds an entry with a valid source. setSrcs
+	// and clone keep it beside anySrc and haveAny.
+	specific bool
+	child    [2]*trieNode[V]
+	anySrc   V
+	srcs     []srcEntry[V]
 	// byLen is srcs as one map per distinct source prefix length, longest
 	// first, and anySrc is the entry whose source matches everything. Both are
 	// derived from srcs, which stays the record. A walk of srcs was linear in
@@ -78,9 +87,6 @@ type trieNode[V comparable] struct {
 	// and BenchmarkFillOneDestination.
 	byLen     []srcIndex[V]
 	indexOnce sync.Once
-	anySrc    V
-	haveAny   bool
-	child     [2]*trieNode[V]
 }
 
 // srcIndex is every source prefix of one length at one destination node.
@@ -162,21 +168,17 @@ func newTrieNode[V comparable](address [16]byte, prefixLen uint8, srcs []srcEntr
 	return n
 }
 
-// setSrcs replaces a node's sources and the match-all entry derived from them.
-// Nodes are copied rather than mutated once published, so this only ever runs
-// on a node the caller still owns.
+// setSrcs replaces a node's sources and the match-all entry and specific flag
+// derived from them. Nodes are copied rather than mutated once published, so
+// this only ever runs on a node the caller still owns.
 //
-// The per-length index is deliberately not built here. Building it on every
-// edit made filling one destination quadratic in map operations rather than in
-// the slice copies the copy-on-write discipline already costs: each Set
-// rebuilt every map from scratch, so n sources cost n rebuilds of up to n
-// entries, measured at 267 ms and about a gigabyte of allocator traffic for
-// 4096 sources on one destination, all of it under the babel speaker lock.
-// The index is worth its cost to a lookup and nothing to an edit, so index
-// builds it on the first lookup that needs it instead.
+// The per-length index is built by the first lookup that needs it rather than
+// here, since a build on every edit makes filling one destination quadratic in
+// map operations.
 func (n *trieNode[V]) setSrcs(srcs []srcEntry[V]) {
 	n.srcs = srcs
 	n.anySrc, n.haveAny = matchAllSource(srcs)
+	n.specific = slices.ContainsFunc(srcs, func(entry srcEntry[V]) bool { return entry.src.IsValid() })
 }
 
 // index is the per-length index, built once. A node is immutable from the
@@ -206,7 +208,7 @@ func (n *trieNode[V]) clone() *trieNode[V] {
 	return &trieNode[V]{
 		address: n.address, prefixLen: n.prefixLen,
 		byteIndex: n.byteIndex, bitShift: n.bitShift,
-		srcs: n.srcs, anySrc: n.anySrc, haveAny: n.haveAny,
+		srcs: n.srcs, anySrc: n.anySrc, haveAny: n.haveAny, specific: n.specific,
 		child: n.child,
 	}
 }
@@ -405,25 +407,27 @@ func (t *Table[V]) LookupBits(src, dst netip.Addr) (V, int, bool) {
 		// cannot beat it. See trieNode.byLen for what walking every entry
 		// instead cost, and indexSrcs for when the walk is the cheaper of the
 		// two and there is no index to use. A deeper node still overwrites
-		// this, which is destination specificity beating source specificity,
-		// as before. A zoned source takes the scan: PrefixFrom drops its
-		// zone, where Contains matches it against no prefix at all.
+		// this, which is destination specificity beating source specificity.
+		// A zoned source takes the scan: PrefixFrom drops its zone, where
+		// Contains matches it against no prefix at all.
 		matched := false
-		if byLen := n.index(); byLen != nil && src.Zone() == "" {
-			for _, group := range byLen {
-				if value, ok := group.m[netip.PrefixFrom(src, int(group.bits)).Masked()]; ok {
-					result, found, matched = value, true, true
-					break
+		if n.specific {
+			if byLen := n.index(); byLen != nil && src.Zone() == "" {
+				for _, group := range byLen {
+					if value, ok := group.m[netip.PrefixFrom(src, int(group.bits)).Masked()]; ok {
+						result, found, matched = value, true, true
+						break
+					}
 				}
-			}
-		} else {
-			for _, entry := range n.srcs {
-				if !entry.src.IsValid() {
-					continue // the match-all entry is held apart, below
-				}
-				if entry.src.Contains(src) {
-					result, found, matched = entry.value, true, true
-					break
+			} else {
+				for _, entry := range n.srcs {
+					if !entry.src.IsValid() {
+						continue // the match-all entry is held apart, below
+					}
+					if entry.src.Contains(src) {
+						result, found, matched = entry.value, true, true
+						break
+					}
 				}
 			}
 		}
