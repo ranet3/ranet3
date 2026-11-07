@@ -8,11 +8,15 @@
       formatter = pkgs.writeShellScriptBin "formatter" ''
         set -eoux pipefail
         shopt -s globstar
+        # staticcheck, the notices command and templ fmt run the go on PATH
+        export PATH="${lib.makeBinPath [ pkgs.go_latest ]}:$PATH"
 
         root="$(${lib.getExe pkgs.git} rev-parse --show-toplevel)"
         pushd "$root" > /dev/null
 
-        ${lib.getExe pkgs.deno} fmt **/*.md pkgs/ranet3/examples/*.json pkgs/raweb3
+        # the notices command generates third_party.md. deno takes --ignore for a glob it expands, not beside paths
+        ${lib.getExe pkgs.deno} fmt --ignore=pkgs/ranet3/internal/notices/third_party.md '**/*.md'
+        ${lib.getExe pkgs.deno} fmt pkgs/ranet3/examples/*.json pkgs/raweb3
         ${lib.getExe pkgs.nixfmt-tree} .
 
         pushd pkgs/ranet3 > /dev/null
@@ -27,9 +31,8 @@
         ${lib.getExe' pkgs.gomod2nix "gomod2nix"}
         popd > /dev/null
 
-        # templ fmt formats the go inside the components with the go on PATH
         pushd pkgs/raweb3 > /dev/null
-        PATH="${lib.makeBinPath [ pkgs.go_latest ]}:$PATH" ${lib.getExe pkgs.templ} fmt .
+        ${lib.getExe pkgs.templ} fmt .
         ${lib.getExe pkgs.go_latest} fmt ./...
         ${lib.getExe' pkgs.gomod2nix "gomod2nix"}
         popd > /dev/null
