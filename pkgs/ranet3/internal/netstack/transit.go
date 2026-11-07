@@ -63,7 +63,7 @@ const (
 	// transitLooped counts reads off the tun to a destination of this node's own that the tun does not hold, which the mesh could only hand back to the host
 	transitLooped
 	transitAnswered
-	// transitUnsent counts the answers the decision built and could not send
+	// transitUnsent counts the answers due that no way back carries
 	transitUnsent
 	transitReasonCount
 )
@@ -165,7 +165,7 @@ type TransitCounters struct {
 	// Answered counts the ICMP errors sent about dropped packets and reads
 	// Unanswered counts the dropped packets the decision would answer that find no address of their family to come from
 	// counted before the rules that keep an error from answering a packet and before the rate limits
-	// Unsent counts the answers the decision built and could not send
+	// Unsent counts the answers due that no way back carries
 	Answered, Unanswered, Unsent uint64
 }
 

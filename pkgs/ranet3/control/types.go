@@ -349,7 +349,7 @@ type SegmentCounters struct {
 // the fields from Expired to TooBig count the packets a session delivered that were dropped, by reason, and Multicast to Looped the reads off the tun, which NoRoute, Held, Invalid and TooBig count as well
 // Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
 // counted before the rules that keep an error from answering a packet and before the rate limits
-// Unsent counts the answers the decision built and could not send
+// Unsent counts the answers due that no way back carries
 type TransitCounters struct {
 	Forwarded      uint64 `json:"forwarded"`
 	Delivered      uint64 `json:"delivered"`

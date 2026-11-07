@@ -291,7 +291,7 @@ func (c *Client) renderTransitCounters(w io.Writer) {
 }
 
 func writeTransitCounters(w io.Writer, transit control.TransitCounters) {
-	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision took and reads off the tun it dropped, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or built and not sent.\n")
+	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision took and reads off the tun it dropped, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or due and not sent.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transit_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"forwarded\",reason=\"\"} %d\n", transit.Forwarded)
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"delivered\",reason=\"\"} %d\n", transit.Delivered)
