@@ -72,7 +72,7 @@ var loopbackFamilies = []struct {
 func TestDarwinSendWithNoSelectedInterfaceIsRefused(t *testing.T) {
 	for _, family := range loopbackFamilies {
 		t.Run(family.network, func(t *testing.T) {
-			hub, err := NewHub(0, Runtime{Selection: newTestSelection(0)})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Selection: newTestSelection(0)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +109,7 @@ func TestDarwinSendWithNoSelectedInterfaceIsRefused(t *testing.T) {
 func TestDarwinHubWithNoSelectionNamesNothing(t *testing.T) {
 	for _, family := range loopbackFamilies {
 		t.Run(family.network, func(t *testing.T) {
-			hub, err := NewHub(0, Runtime{})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,7 +146,7 @@ func TestDarwinSelectedControlIsBuiltOncePerGeneration(t *testing.T) {
 	for _, family := range loopbackFamilies {
 		t.Run(family.network, func(t *testing.T) {
 			selection := newTestSelection(loopback.Index)
-			hub, err := NewHub(0, Runtime{Selection: selection})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Selection: selection})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -202,7 +202,7 @@ func TestDarwinSelectionIsRecordedOncePerChange(t *testing.T) {
 		t.Run(family.network, func(t *testing.T) {
 			selection := newTestSelection(loopback.Index)
 			log := &eventLog{}
-			hub, err := NewHub(0, Runtime{Selection: selection, Events: log.record})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Selection: selection, Events: log.record})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -255,7 +255,7 @@ func TestDarwinUnderlayPathIsWhereTheDatagramsLeave(t *testing.T) {
 			t.Errorf("%s leaves by %+v, %v, want %+v", test.name, got, ok, test.want)
 		}
 	}
-	unselected, err := NewHub(0, Runtime{})
+	unselected, err := NewHub(0, Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,7 +570,7 @@ var underlayFamilies = []underlayFamily{underlayV4, underlayV6}
 // selectedHub is a hub whose sends name the interface selection answers
 func selectedHub(t *testing.T, selection Selection) *Hub {
 	t.Helper()
-	hub, err := NewHub(0, Runtime{Selection: selection})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Selection: selection})
 	if err != nil {
 		t.Fatal(err)
 	}

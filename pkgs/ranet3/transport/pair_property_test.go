@@ -488,7 +488,7 @@ func TestPairSocketsAgreeWithTheModel(t *testing.T) {
 	}
 	pbt.Check(t, func(ht *hegel.T) {
 		events := &eventLog{}
-		hub, err := NewHub(0, Runtime{Events: events.record})
+		hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Events: events.record})
 		if err != nil {
 			ht.Fatal(err)
 		}

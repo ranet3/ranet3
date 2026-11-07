@@ -687,7 +687,7 @@ func TestDialedSessionFollowsItsPeerFromTheKernelsSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { moved.Close() })
-	hub, err := transport.NewHub(0, transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}

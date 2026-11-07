@@ -168,7 +168,7 @@ func TestMemoryNetworkCarriesWhatLoopbackCarries(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		memory := NewMemoryNetwork()
 		networks := []*scriptNetwork{
-			{newHub: func() (*Hub, error) { return NewHub(0, Runtime{}) },
+			{newHub: func() (*Hub, error) { return NewHub(0, Runtime{Prepare: testPrepare()}) },
 				newSocket: func(ip net.IP) (scriptSocket, error) { return net.ListenUDP("udp", &net.UDPAddr{IP: ip}) }},
 			{newHub: memory.NewHub, newSocket: func(ip net.IP) (scriptSocket, error) { return memory.ListenUDP(ip) }},
 		}

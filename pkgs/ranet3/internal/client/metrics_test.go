@@ -70,7 +70,7 @@ func TestRefusedESPPacketsAreCountedExactlyAndSaidRarely(t *testing.T) {
 // their session's receive queue was full or held all its receive buffers, means
 // something else entirely.
 func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
-	hub, err := transport.NewHub(0, transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}

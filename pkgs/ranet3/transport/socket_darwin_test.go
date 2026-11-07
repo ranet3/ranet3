@@ -85,7 +85,7 @@ func dontFragmentSet(t *testing.T, socket *darwinSocket) bool {
 // openMuxes opens a hub and a mux to each of addresses at port 4500
 func openMuxes(t *testing.T, addresses ...string) (*Hub, []*Mux) {
 	t.Helper()
-	hub, err := NewHub(0, Runtime{})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestPathMTUIsTheSelectedInterfaceMTU(t *testing.T) {
 	if link.MTU == loopback.MTU {
 		t.Skipf("%s carries the MTU of %s, %d, so a read of either looks the same", link.Name, loopback.Name, link.MTU)
 	}
-	hub, err := NewHub(0, Runtime{Selection: newTestSelection(index)})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Selection: newTestSelection(index)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestPathMTUOfALinkLocalPinIsItsInterfaceMTU(t *testing.T) {
 	if link.MTU == loopback.MTU {
 		t.Skipf("%s carries the MTU of %s, %d, so a read of either looks the same", link.Name, loopback.Name, link.MTU)
 	}
-	hub, err := NewHub(0, Runtime{})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +591,7 @@ func markedRequest() []byte {
 // darwin routes the answer to client by lo0, whose own address it takes for the source of a send that names none
 func replyLeavesFrom(t *testing.T, network string, client, reached netip.Addr) {
 	t.Helper()
-	hub, err := NewHub(0, Runtime{})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -946,7 +946,7 @@ func TestDarwinReplyFromAGoneSourceFallsBack(t *testing.T) {
 	} {
 		t.Run(family.network, func(t *testing.T) {
 			events := &eventLog{}
-			hub, err := NewHub(0, Runtime{Events: events.record})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Events: events.record})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1085,7 +1085,7 @@ func TestDarwinPinnedPathMTUIsThePinsInterface(t *testing.T) {
 	pinDetour(t, true)
 	for _, path := range pinPaths {
 		t.Run(path.name, func(t *testing.T) {
-			hub, err := NewHub(0, Runtime{})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1121,7 +1121,7 @@ func TestDarwinReplyWithNoRouteFromThePinFallsBack(t *testing.T) {
 	for _, path := range pinPaths {
 		t.Run(path.name, func(t *testing.T) {
 			events := &eventLog{}
-			hub, err := NewHub(0, Runtime{Events: events.record})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Events: events.record})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1170,7 +1170,7 @@ func TestDarwinSessionReturnsToAPinThatRoutesAgain(t *testing.T) {
 	for i, path := range pinPaths {
 		t.Run(path.name, func(t *testing.T) {
 			events := &eventLog{}
-			hub, err := NewHub(0, Runtime{Events: events.record})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Events: events.record})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1234,7 +1234,7 @@ func TestDarwinSendRefusedWithAndWithoutThePinKeepsIt(t *testing.T) {
 	hostCommand(t, "arp", "-d", path.farGateway)
 	hostCommand(t, "arp", "-s", path.farGateway, near.HardwareAddr.String(), "reject")
 	events := &eventLog{}
-	hub, err := NewHub(0, Runtime{Events: events.record})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Events: events.record})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1276,7 +1276,7 @@ func messagesSent(t *testing.T) int64 {
 func TestDarwinRefusedSendWithoutAPinIsTriedOnce(t *testing.T) {
 	for _, loopback := range []string{"127.0.0.1", "::1"} {
 		events := &eventLog{}
-		hub, err := NewHub(0, Runtime{Events: events.record})
+		hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Events: events.record})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1332,7 +1332,7 @@ func TestDarwinDatagramsAfterASizeRefusalLeaveFromThePin(t *testing.T) {
 				t.Fatalf("the host sends to %s from %s, want one of %v", peer, chosen, family.addresses)
 			}
 			pin := family.addresses[1-index]
-			hub, err := NewHub(0, Runtime{})
+			hub, err := NewHub(0, Runtime{Prepare: testPrepare()})
 			if err != nil {
 				t.Fatal(err)
 			}

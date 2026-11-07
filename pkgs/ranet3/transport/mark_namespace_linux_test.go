@@ -38,7 +38,7 @@ func TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark(t *testing.
 	}
 	conn := masquerade(t)
 
-	hub, err := NewHub(0, Runtime{})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}

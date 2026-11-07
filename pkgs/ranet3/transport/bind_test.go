@@ -23,7 +23,7 @@ func TestHubRefusesAPortSomethingElseHolds(t *testing.T) {
 	defer held.Close()
 	addr := held.LocalAddr().(*net.UDPAddr)
 
-	hub, err := NewHub(uint16(addr.Port), Runtime{})
+	hub, err := NewHub(uint16(addr.Port), Runtime{Prepare: testPrepare()})
 	if err == nil {
 		hub.Close()
 		t.Fatalf("the hub took %s while another socket held it", addr)

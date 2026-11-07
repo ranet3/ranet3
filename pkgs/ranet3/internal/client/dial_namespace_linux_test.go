@@ -30,7 +30,7 @@ func TestDialerTheHostHasNoRouteForDialsAtOnceWhenWoken(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	unrouted := "192.0.2.1"
 	reg[0].Nodes[1].Endpoints[0].Address = &unrouted
-	hub, err := transport.NewHub(0, transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}
