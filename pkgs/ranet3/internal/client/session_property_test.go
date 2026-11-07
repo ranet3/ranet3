@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"maps"
+	"slices"
 	"testing"
 
 	"hegel.dev/go/hegel"
@@ -93,7 +94,7 @@ func indexOf(ht *hegel.T, nodes []trustedNode) *registry.Index {
 	return x
 }
 
-// drawnSession is a session with node trustPool[node], verified under trustKeys[key]
+// drawnSession is a session with node trustPool[node], or naming no peer where node is noPeer, verified under trustKeys[key]
 type drawnSession struct {
 	path        string
 	node        int
@@ -103,8 +104,19 @@ type drawnSession struct {
 	session     *ike.Session
 }
 
+const noPeer = -1
+
+// refusal is the error the trust after a reload gives s, or "" where it admits s
+func (s drawnSession) refusal(after []trustedNode) string {
+	if s.node == noPeer {
+		return "the session names no peer"
+	}
+	return after[s.node].refusal(s.key)
+}
+
 // drawSessions draws whether a session runs between each endpoint the trust before a reload lists and each of this node's two
 // a session's key is its node's key before the reload or any key
+// and whether one session naming no peer runs, at a drawn place among them
 func drawSessions(ht *hegel.T, before []trustedNode) []drawnSession {
 	var drawn []drawnSession
 	for i, node := range before {
@@ -122,6 +134,12 @@ func drawSessions(ht *hegel.T, before []trustedNode) []drawnSession {
 					dialed: hegel.Draw(ht, hegel.Booleans()), session: &ike.Session{}})
 			}
 		}
+	}
+	if hegel.Draw(ht, hegel.Booleans()) {
+		local := identity.MustParse("alpha/self:" + fmt.Sprint(hegel.Draw(ht, pbt.Spanning(0, 1))))
+		at := hegel.Draw(ht, pbt.Spanning(0, len(drawn)))
+		drawn = slices.Insert(drawn, at, drawnSession{path: identity.Path(identity.Identity{}, local), node: noPeer, local: local,
+			key: hegel.Draw(ht, pbt.Spanning(0, len(trustKeys)-1)), dialed: hegel.Draw(ht, hegel.Booleans()), session: &ike.Session{}})
 	}
 	return drawn
 }
@@ -172,6 +190,11 @@ func TestRevokeKeepsExactlyTheSessionsTheTrustHoldsUnderTheirKey(t *testing.T) {
 		set, closed := revokingSet()
 		drawn := drawSessions(ht, before)
 		for _, s := range drawn {
+			if s.node == noPeer {
+				// adopt refuses it, so it stands for a session the set came to hold without adopt asking the trust
+				set.live[s.path] = &liveSession{session: s.session, dialed: s.dialed, local: s.local, key: trustKeys[s.key]}
+				continue
+			}
 			set.trust = admittingUnder(trustKeys[s.key], s.peer)
 			if _, ok := set.adopt(s.path, s.session, s.local, s.peer, trustKeys[s.key], s.dialed, nil, nil); !ok {
 				ht.Fatalf("%s was refused under a trust holding its key, so this proves nothing", s.path)
@@ -181,7 +204,7 @@ func TestRevokeKeepsExactlyTheSessionsTheTrustHoldsUnderTheirKey(t *testing.T) {
 		set.revoke()
 		kept, refused := make(map[string]*ike.Session), make(map[string]drawnRefusal)
 		for _, s := range drawn {
-			if why := after[s.node].refusal(s.key); why != "" {
+			if why := s.refusal(after); why != "" {
 				refused[s.path] = drawnRefusal{s.session, map[string]string{"reason": "reload", "peer": s.peer.String(), "endpoint": set.endpoint(s.session), "err": why}}
 			} else {
 				kept[s.path] = s.session
@@ -201,9 +224,9 @@ func TestAdoptAdmitsExactlyTheHandshakesTheTrustHoldsUnderTheirKey(t *testing.T)
 		kept, refused := make(map[string]*ike.Session), make(map[string]drawnRefusal)
 		for _, s := range drawSessions(ht, before) {
 			_, admitted := set.adopt(s.path, s.session, s.local, s.peer, trustKeys[s.key], s.dialed, nil, nil)
-			why := after[s.node].refusal(s.key)
+			why := s.refusal(after)
 			if admitted != (why == "") {
-				ht.Fatalf("%s verified under key %d was admitted %t under %+v", s.path, s.key, admitted, after[s.node])
+				ht.Fatalf("%s verified under key %d was admitted %t, where the trust gives %q", s.path, s.key, admitted, why)
 			}
 			if admitted {
 				kept[s.path] = s.session

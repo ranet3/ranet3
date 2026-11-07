@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -348,13 +349,6 @@ func (s *sessionSet) adopt(path string, sess *ike.Session, local, remote identit
 	return s.adoptFor(path, sess, preferInitiator(initiator, responder), dialed, contact, local, remote, key, pmtu, attach)
 }
 
-// adoptPreferred is adopt with the rule already applied and no peer identity,
-// for a test that drives the resolution without two identities to derive it
-// from.
-func (s *sessionSet) adoptPreferred(path string, sess *ike.Session, preferred bool, attach func() func()) (func(), bool) {
-	return s.adoptFor(path, sess, preferred, false, time.Time{}, identity.Identity{}, identity.Identity{}, nil, nil, attach)
-}
-
 // adoptFor is adopt with the rule applied, and contact, where it is not zero, the start of sess, whose IKE_AUTH carried the peer's INITIAL_CONTACT
 func (s *sessionSet) adoptFor(path string, sess *ike.Session, preferred, dialed bool, contact time.Time, local, remote identity.Identity, key ed25519.PublicKey, pmtu *pathDriver, attach func() func()) (func(), bool) {
 	s.mu.Lock()
@@ -543,11 +537,11 @@ func (s *sessionSet) liveCount() int {
 	return count
 }
 
-// refuses is why the trust in force no longer admits remote's node under key, the key that verified it, asked under mu, or nil for a session that named no peer
+// refuses is why the trust in force no longer admits remote's node under key, the key that verified it, asked under mu
 // it asks about the node alone, since a serial selects which endpoint a dial uses and renumbering one is a registry edit rather than a revocation
 func (s *sessionSet) refuses(remote identity.Identity, key ed25519.PublicKey) error {
 	if remote.IsZero() {
-		return nil
+		return errors.New("the session names no peer")
 	}
 	trusted, _, err := s.trust.Key(remote.Node())
 	if err != nil {

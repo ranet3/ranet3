@@ -1938,14 +1938,6 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 		}
 	}
 
-	// A session whose handshake has not named a peer yet is not evidence of
-	// anything, and closing it would drop a tunnel still coming up.
-	anonymous := &ike.Session{}
-	set.mu.Lock()
-	set.live["example/anonymous:0@0"] = &liveSession{session: anonymous}
-	set.mu.Unlock()
-
-	// trusted by name rather than as anything but goes, so the anonymous entry is untrusted too and only the guard above keeps it
 	set.trust = admitting(stays)
 	set.revoke()
 	if len(closed) != 1 || closed[0] != gone {
@@ -1956,9 +1948,6 @@ func TestReloadClosesASessionTheRegistryNoLongerNames(t *testing.T) {
 	}
 	if _, held := set.live["example/keeper:0@0"]; !held {
 		t.Error("the sweep took a session the registry still names")
-	}
-	if _, held := set.live["example/anonymous:0@0"]; !held {
-		t.Error("the sweep took a session whose handshake had not named a peer yet")
 	}
 	want := map[string]string{"reason": "reload", "peer": "example/gone:0", "endpoint": "198.51.100.7:4500", "err": "example/gone is not admitted"}
 	if got := recorded(set.events, "ike.session.revoked"); len(got) != 1 || got[0].Peer != "example/gone:0@0" || !maps.Equal(got[0].Attrs, want) {
