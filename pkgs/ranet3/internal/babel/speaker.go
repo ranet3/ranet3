@@ -201,6 +201,8 @@ type Speaker struct {
 	// ID is never empty: it is a session's identity.Path.
 	raiseOwedTo   string
 	updatePending bool
+	// badUpdateLog spaces the warning of an Update that does not decode, touched only under s.mu
+	badUpdateLog spacedLog
 	// routeChanges and routeLogged bound the selection-change log, see
 	// routeLogInterval. Both are touched only under s.mu, with installRoute.
 	routeChanges int

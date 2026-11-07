@@ -100,23 +100,25 @@ func (rt *routeTable) feasible(key routeKey, adv advertisement, from string) boo
 		// A distance we have never recorded is feasible by definition, and
 		// recording it is the cost of selecting the route, so this is also
 		// where the table is bounded. See maxSources.
-		switch {
-		case len(rt.sources) >= maxSources:
-			rt.tooManyOrigins(key, adv.routerID, "the source table is full", maxSources)
-			return false
-		case rt.originsPerKey[key] >= maxOriginsPerPrefix:
-			rt.tooManyOrigins(key, adv.routerID, "this prefix has too many origins", maxOriginsPerPrefix)
-			return false
-		case rt.sourcesByPeer[from] >= maxSourcesPerNeighbor:
-			rt.tooManyOrigins(key, adv.routerID, "this neighbor has spent its share of the source table", maxSourcesPerNeighbor)
-			return false
-		case rt.originsBy[originShare{route: key, peer: from}] >= maxOriginsPerPrefixPerNeighbor:
-			rt.tooManyOrigins(key, adv.routerID, "this neighbor has spent its share of this prefix", maxOriginsPerPrefixPerNeighbor)
-			return false
-		}
-		return true
+		why, _ := rt.originRefusal(key, from)
+		return why == ""
 	}
 	return entry.better(adv.seqno, adv.metric)
+}
+
+// originRefusal names the bound a new origin for key from the neighbor from would pass, with its limit, and is empty where none would
+func (rt *routeTable) originRefusal(key routeKey, from string) (why string, limit int) {
+	switch {
+	case len(rt.sources) >= maxSources:
+		return "the source table is full", maxSources
+	case rt.originsPerKey[key] >= maxOriginsPerPrefix:
+		return "this prefix has too many origins", maxOriginsPerPrefix
+	case rt.sourcesByPeer[from] >= maxSourcesPerNeighbor:
+		return "this neighbor has spent its share of the source table", maxSourcesPerNeighbor
+	case rt.originsBy[originShare{route: key, peer: from}] >= maxOriginsPerPrefixPerNeighbor:
+		return "this neighbor has spent its share of this prefix", maxOriginsPerPrefixPerNeighbor
+	}
+	return "", 0
 }
 
 // observe records a feasibility distance before an update leaves this node,

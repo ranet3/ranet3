@@ -19,6 +19,10 @@ const defaultPacketSize = srv6.MinimumIPv6MTU - ipv6HeaderLen - udpHeaderLen
 // defaultMargin is cap.babel.margin where the file leaves it out
 const defaultMargin = 4
 
+// refusalLogInterval is the least time between two warnings of one kind of refusal, each with the count since the one before
+// a neighbor past a bound is refused for every update it repeats, and a line a minute says the bound still holds it without the refusals flooding the log
+const refusalLogInterval = time.Minute
+
 // maxTriggerPace is the longest triggerPace spaces two triggered updates to one neighbor
 const maxTriggerPace = time.Second
 

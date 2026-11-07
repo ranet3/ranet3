@@ -148,10 +148,9 @@ type routeTable struct {
 	// at infinity is left to carry. A key can be held while this node owns it
 	// again, since its own entry ends nothing a neighbor was told.
 	held map[routeKey]struct{}
-	// warnedOverfull keeps a refused flood from becoming a log flood, and
-	// warnedOrigins does the same for the source table.
-	warnedOverfull bool
-	warnedOrigins  bool
+
+	overfullWarning, originsWarning spacedLog
+
 	// nextExpiryAt is the earliest route.expiresAt or end of a hold in the
 	// table, the deadline the run loop sleeps on, kept rather than recomputed
 	// by a walk of the whole table on every pass. Only ever moved earlier
@@ -191,6 +190,10 @@ func (rt *routeTable) update(n *neighborState, key routeKey, adv advertisement, 
 	// leaves no route from its neighbor: it creates none, and it retracts the
 	// route it replaces.
 	refused := !feasible && rt.sources[sourceKey{route: key, routerID: adv.routerID}] == nil
+	if refused {
+		why, limit := rt.originRefusal(key, n.peer.ID)
+		rt.tooManyOrigins(key, adv.routerID, why, limit, now)
+	}
 	entry := rt.entries[key]
 	var route *routeInfo
 	if entry != nil {
@@ -217,7 +220,7 @@ func (rt *routeTable) update(n *neighborState, key routeKey, adv advertisement, 
 				// Without a ceiling one misbehaving or compromised neighbor
 				// decides how much memory this node uses, and the per-wake
 				// selection sweep is linear in the same number.
-				rt.overfull(key)
+				rt.overfull(key, now)
 				return
 			}
 			entry = &keyEntry{routes: make(map[*neighborState]*routeInfo)}
@@ -280,7 +283,7 @@ func (rt *routeTable) offer(n *neighborState, key routeKey, adv advertisement, h
 		}
 		if offers == nil {
 			if rt.full() {
-				rt.overfull(key)
+				rt.overfull(key, now)
 				return
 			}
 			offers = make(map[*neighborState]*routeInfo)
@@ -768,24 +771,16 @@ func earlier(a, b time.Time) time.Time {
 // Babel sequence numbers wrap at 16 bits (RFC 8966 section 3.2.1).
 func seqnoGT(a, b uint16) bool { return int16(a-b) > 0 }
 
-// overfull reports a refused prefix once rather than once per update, which
-// would otherwise turn a flood into a second flood in the log.
-func (rt *routeTable) overfull(key routeKey) {
-	if rt.warnedOverfull {
-		return
+func (rt *routeTable) overfull(key routeKey, now time.Time) {
+	if refused, ok := rt.overfullWarning.due(now, refusalLogInterval); ok {
+		slog.Warn("babel route table is full, refusing new prefixes",
+			"limit", maxRouteKeys, "refused", key.dest, "refused_since_last", refused)
 	}
-	rt.warnedOverfull = true
-	slog.Warn("babel route table is full, refusing new prefixes",
-		"limit", maxRouteKeys, "refused", key.dest)
 }
 
-// tooManyOrigins reports a refused origin once rather than once per update,
-// for the same reason overfull does.
-func (rt *routeTable) tooManyOrigins(key routeKey, routerID [8]byte, why string, limit int) {
-	if rt.warnedOrigins {
-		return
+func (rt *routeTable) tooManyOrigins(key routeKey, routerID [8]byte, why string, limit int, now time.Time) {
+	if refused, ok := rt.originsWarning.due(now, refusalLogInterval); ok {
+		slog.Warn("babel is refusing a new origin: "+why,
+			"limit", limit, "prefix", key.dest, "refused", fmt.Sprintf("%x", routerID), "refused_since_last", refused)
 	}
-	rt.warnedOrigins = true
-	slog.Warn("babel is refusing a new origin: "+why,
-		"limit", limit, "prefix", key.dest, "refused", fmt.Sprintf("%x", routerID))
 }

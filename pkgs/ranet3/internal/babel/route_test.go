@@ -5,12 +5,15 @@
 package babel
 
 import (
+	"log/slog"
 	"math"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
@@ -773,5 +776,46 @@ func TestSmoothTakesTheShortcutOnlyWhereItAgrees(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// a bound that refuses a neighbor's updates says so at most once per refusalLogInterval, each line with the refusals since the one before
+// a bound still refusing after its first line is said again
+func TestRefusalsAreSaidOncePerIntervalWithTheirCount(t *testing.T) {
+	var said strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&said, nil)))
+	n := &neighborState{peer: &netstack.Peer{ID: "peer"}}
+	makeNeighborReachable(n)
+	key := routeKey{dest: netip.MustParsePrefix("2001:db8::/64")}
+	full := newRouteTable(func(routeKey, routeSelection) {})
+	for i := range maxRouteKeys {
+		full.entries[routeKey{dest: netip.PrefixFrom(netip.AddrFrom4([4]byte{192, 0, byte(i >> 8), byte(i)}), 32)}] = &keyEntry{}
+	}
+	spent := newRouteTable(func(routeKey, routeSelection) {})
+	spent.originsBy[originShare{route: key, peer: n.peer.ID}] = maxOriginsPerPrefixPerNeighbor
+	start := time.Now()
+	for _, test := range []struct {
+		name, msg string
+		rt        *routeTable
+	}{
+		{"full table", "babel route table is full", full},
+		{"spent share", "babel is refusing a new origin", spent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			said.Reset()
+			for i, at := range []time.Duration{0, refusalLogInterval / 2, refusalLogInterval + time.Second} {
+				test.rt.update(n, key, advertisement{routerID: [8]byte{byte(i + 1)}, seqno: 1, metric: 64}, time.Minute, start.Add(at))
+			}
+			var counts []string
+			for line := range strings.Lines(said.String()) {
+				if strings.Contains(line, test.msg) {
+					_, count, _ := strings.Cut(line, "refused_since_last=")
+					counts = append(counts, strings.TrimSpace(count))
+				}
+			}
+			if want := []string{"1", "2"}; !slices.Equal(counts, want) {
+				t.Fatalf("three refusals, the second inside the interval, were said with counts %q, want %q, in\n%s", counts, want, said.String())
+			}
+		})
 	}
 }

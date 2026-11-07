@@ -39,9 +39,6 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 	// babel packet here is sent from an IPv6 link-local address, which is the
 	// next hop an IPv6 prefix falls back to.
 	var haveIPv4NextHop bool
-	// A packet costs two log lines at most, however many malformed Updates a
-	// peer packs into it.
-	badUpdates := 0
 	linkChanged, cameUp := false, false
 	for _, t := range tlvs {
 		switch t.Type {
@@ -166,10 +163,9 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 		case TLVUpdate:
 			u, err := prefixDec.Decode(t.Body)
 			if err != nil {
-				if badUpdates == 0 {
-					slog.Warn("babel bad update", "peer", n.peer.ID, "err", err)
+				if ignored, ok := s.badUpdateLog.due(now, refusalLogInterval); ok {
+					slog.Warn("babel bad update", "peer", n.peer.ID, "err", err, "ignored_since_last", ignored)
 				}
-				badUpdates++
 				continue
 			}
 			if u.HasRouterID {
@@ -265,10 +261,6 @@ func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time
 				actions = append(actions, s.seqnoReply(n, request, now)...)
 			}
 		}
-	}
-	if badUpdates > 1 {
-		slog.Warn("babel ignored more malformed updates in the same packet",
-			"peer", n.peer.ID, "count", badUpdates-1)
 	}
 	if cameUp {
 		// after the loop, so a returning neighbor reads as alive and the IHU echoes this Hello's timestamps
