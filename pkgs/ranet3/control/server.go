@@ -349,15 +349,16 @@ func answerResult(w http.ResponseWriter, result Result, err error) {
 	writeJSON(w, result)
 }
 
-// Serve runs the control surface on listener until it is closed. It returns
-// nil for an ordinary close so a caller can tell a shutdown from a failure.
+// Serve runs the control surface on listener until it is closed, and closes
+// every connection it still holds before it returns. It returns nil for an
+// ordinary close so a caller can tell a shutdown from a failure.
 func Serve(listener net.Listener, src Source) error {
 	server := newServer(src)
 	err := server.Serve(&boundedListener{Listener: listener, places: make(chan struct{}, maxConnections)})
-	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-		return err
+	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+		err = nil
 	}
-	return nil
+	return errors.Join(err, server.Close())
 }
 
 // newServer is the configured server, apart so that a test can assert on the

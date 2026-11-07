@@ -429,6 +429,56 @@ func TestIdleConnectionsAreBounded(t *testing.T) {
 	}
 }
 
+// closeWait bounds how long a client waits for a connection Serve should have
+// closed, well short of idleTimeout
+const closeWait = 2 * time.Second
+
+// A connection that finished a request and stayed open for the next one is
+// closed when Serve returns, rather than living out idleTimeout on a daemon
+// that has stopped serving.
+func TestServeClosesIdleConnectionsWhenItReturns(t *testing.T) {
+	path := socketPath(t)
+	listener, err := Listen(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- Serve(listener, fakeSource{}) }()
+
+	conn, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("GET " + PathStatus + " HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if response.Close {
+		t.Fatal("the server ended the connection after one request, which leaves nothing idle to close")
+	}
+
+	listener.Close()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("an ordinary close reported %v", err)
+		}
+	case <-time.After(closeWait):
+		t.Fatal("Serve did not return after its listener closed")
+	}
+	conn.SetReadDeadline(time.Now().Add(closeWait))
+	if _, err := reader.ReadByte(); !errors.Is(err, io.EOF) {
+		t.Errorf("the idle connection is still open after Serve returned: %v", err)
+	}
+}
+
 // a handler's panic the server recovers is logged at warn, which a log at warn keeps
 func TestRecoveredPanicIsLoggedAtWarn(t *testing.T) {
 	logged := &lockedBuffer{}
