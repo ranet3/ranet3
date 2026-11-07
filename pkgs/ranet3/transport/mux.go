@@ -18,9 +18,9 @@
 // [Mux.RegisterIKE] and [Mux.RegisterESP], and from then on [Mux.SendIKE]
 // sends control messages, which arrive on [Mux.IKE] or through
 // [Mux.RecvIKEFromUntil], while [Mux.SendESPBatch] and
-// [Mux.RecvESPBatchConcurrent] carry the data. An IKE datagram whose SPI no Mux has
-// registered arrives on [Hub.Listen] as an [Unclaimed], which is how a peer
-// that has never dialed this node opens an IKE_SA_INIT.
+// [Mux.RecvESPBatchConcurrent] carry the data. An IKE datagram whose SPI no
+// Mux has registered arrives on [Hub.Listen] as an [Unclaimed], which is how
+// a peer that has never dialed this node opens an IKE_SA_INIT.
 //
 // A peer that moves keeps working because a received datagram carries the
 // [Endpoint] it came from. [Mux.AdoptEndpoint] repoints the channel at it once

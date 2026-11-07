@@ -111,7 +111,8 @@ type heldAddresses struct {
 type selected struct {
 	generation uint64
 	index      int
-	// asked is the address the Selection answered for, a zone named by name named by its interface's index once that resolved
+	// asked is the address the Selection answered for, whose zone, where it named an interface by name, holds the index
+	// that name had at the first answer that resolved it, kept for every later generation
 	asked              netip.Addr
 	control            []byte
 	fragmentingControl []byte
@@ -329,8 +330,8 @@ func (b *darwinBind) selectedFor(ep *darwinEndpoint) *selected {
 	return s
 }
 
-// zoneByIndex is addr with a zone that names an interface by name named by its index instead, which a Selection reads with no lookup,
-// and addr itself where its zone is empty, an index already or a name no interface has
+// zoneByIndex is addr with a zone that names an interface by name replaced by that interface's index, which a Selection reads
+// with no lookup, and addr itself where its zone is empty, an index already or a name no interface has
 func zoneByIndex(addr netip.Addr) netip.Addr {
 	zone := addr.Zone()
 	if zone == "" {

@@ -644,7 +644,7 @@ func appendUDPSegment(control []byte, size int) []byte {
 	return control
 }
 
-// prepare coalesces adjacent ciphertext from SealBatch without copying it.
+// prepare coalesces adjacent ciphertext from SealBatchInto without copying it.
 // Nonadjacent packets stay separate: using spare capacity for packing could
 // overwrite another packet that has not been sent yet.
 // a nil to sends to the peer a connected socket holds
