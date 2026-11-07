@@ -415,12 +415,14 @@ selected routes and its holds into a kernel table. Each prefix this node
 originates is a hold there inside `overlay`, and outside it a throw on Linux and
 nothing on macOS, but for one that
 [counts as a default](#routes-that-count-as-a-default), which gets nothing. An
-address `cap.table` assigns gets no route there unless this node originates it
-too, since the host's kernel holds it as one of its own already. On Linux a hold
-or a throw names no device, though an IPv6 one reads back as `dev lo`, and every
-other route leaves through the tun. On macOS every route it installs, a hold
-among them, is on the utun. The reconciler also assigns the tun's addresses. On
-Linux it also installs the [policy rules](#policy-rules-on-linux) it derives.
+address `cap.table` assigns gets no route of its own there unless this node
+originates it too, since the host's kernel holds it as one of its own already,
+though on Linux an overlay prefix equal to it still gets its hold, unless a
+carve-out equals it, as the table below gives. On Linux a hold or a throw names
+no device, though an IPv6 one reads back as `dev lo`, and every other route
+leaves through the tun. On macOS every route it installs, a hold among them, is
+on the utun. The reconciler also assigns the tun's addresses. On Linux it also
+installs the [policy rules](#policy-rules-on-linux) it derives.
 
 ### What it installs
 
@@ -436,28 +438,29 @@ Linux it also installs the [policy rules](#policy-rules-on-linux) it derives.
 
 Each entry of the mesh's table becomes:
 
-| Entry in the mesh's table                                                      | In the kernel table                                                                                                                                                                                                                                                                                                                     |
-| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A learned route                                                                | a route out of the tun                                                                                                                                                                                                                                                                                                                  |
-| A learned route that [counts as a default](#routes-that-count-as-a-default)    | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS under `cap.exit`, in a family the tun holds an overlay address of, one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
-| A hold that does not count                                                     | a hold                                                                                                                                                                                                                                                                                                                                  |
-| A hold that counts, or this node's own prefix that counts                      | nothing                                                                                                                                                                                                                                                                                                                                 |
-| This node's own prefix outside `overlay`                                       | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                                                                      |
-| This node's own prefix inside the overlay                                      | a hold                                                                                                                                                                                                                                                                                                                                  |
-| An address only `cap.table` assigns                                            | nothing                                                                                                                                                                                                                                                                                                                                 |
-| Each prefix of `overlay`                                                       | a hold for each but one a carve-out equals, on Linux only, since a hold goes only beside the policy rules, which macOS has none of, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                   |
-| Each [carve-out](antispoof.md#carve-outs), a link's network inside the overlay | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself for every source                                                                                                                                                      |
+| Entry in the mesh's table                                                                                     | In the kernel table                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A learned route                                                                                               | a route out of the tun                                                                                                                                                                                                                                                                                                                  |
+| A learned route that [counts as a default](#routes-that-count-as-a-default)                                   | out of the tun once a session has been live, and never on an exit or in [mode 3](#mode-3-on-linux). On macOS under `cap.exit`, in a family the tun holds an overlay address of, one holding its family's zero address goes in as the members of [the zero-free cover](#the-zero-free-cover-on-macos) it contains, on the same condition |
+| A hold that does not count                                                                                    | a hold                                                                                                                                                                                                                                                                                                                                  |
+| A hold that counts, or this node's own prefix that counts                                                     | nothing                                                                                                                                                                                                                                                                                                                                 |
+| This node's own prefix outside `overlay`                                                                      | on Linux a throw, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, and nothing on macOS                                                                                                                                                                                                      |
+| This node's own prefix inside the overlay                                                                     | a hold                                                                                                                                                                                                                                                                                                                                  |
+| An address only `cap.table` assigns                                                                           | nothing                                                                                                                                                                                                                                                                                                                                 |
+| Each prefix of `overlay`                                                                                      | a hold for each but one a carve-out equals, on Linux only, since a hold goes only beside the policy rules, which macOS has none of, as [the antispoof filter's platforms](antispoof.md#platforms) say                                                                                                                                   |
+| Each [carve-out](antispoof.md#carve-outs), where a link's network or point-to-point far end meets the overlay | a throw at metric 4294967295, on Linux only, in place of an overlay prefix's hold of the same prefix, and nothing where the mesh's table holds that prefix itself for every source                                                                                                                                                      |
 
 A throw ends the table's lookup, and the rules after the one that looked it up
 decide, as row L10 of [where a lookup ends](#where-a-lookup-ends-on-linux)
 gives. A hold of an overlay prefix refuses an unmarked lookup bound to no device
-for an overlay destination no route of the mesh holds, row L4, rather than
-letting it follow another route, such as an exit's default, or leave by main. A
-route for a longer prefix inside the overlay still wins by its length. A route
-of the mesh wider than an overlay prefix carries a peer's packet for an address
-inside that prefix, since the forwarding decision keeps no hold of an overlay
-prefix, while the host's own packet for the same address ends as rows L2, L4 and
-B1 to B4 give, by its mark and the device its lookup is bound to.
+for an overlay destination that neither a route of the mesh nor a carve-out's
+throw holds, row L4, rather than letting it follow another route, such as an
+exit's default, or leave by main. A route for a longer prefix inside the overlay
+still wins by its length. A route of the mesh wider than an overlay prefix
+carries a peer's packet for an address inside that prefix, since the forwarding
+decision keeps no hold of an overlay prefix, while the host's own packet for the
+same address ends as rows L2, L4 and B1 to B4 give, by its mark and the device
+its lookup is bound to.
 
 A node is an exit when its `cap.route` announces, or its `cap.egress`
 advertises, a prefix that counts, or its `cap.segment` holds an egress segment.
@@ -1191,7 +1194,9 @@ link-local one its arrival interface, as the answers below give, and
 selection's interface is the longest match for the destination among the host's
 unscoped routes, those out of ranet3's utun, cloned routes and multicast and
 broadcast entries left out. Another program's reject route stays a candidate. A
-link-local destination takes the interface its zone names. The daemon reads the
+link-local destination takes the interface its zone names, and a zone that names
+it by name takes the index the name had at its first answer, as
+[limits](design/limits.md#the-underlay-socket) gives. The daemon reads the
 routing table once at its start, reads it again 250 milliseconds after a
 change's first notification, and again after any that arrives later, so a
 datagram sent before that read names the interface the last read found. A

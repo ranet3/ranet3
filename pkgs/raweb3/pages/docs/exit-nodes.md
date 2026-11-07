@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-04
+updated: 2026-11-07
 order: 50
 ---
 
@@ -417,6 +417,9 @@ the host's traffic leave by its own uplink, and gives the rules and the table,
 the switch's reach, what each stop leaves of it, and what counts as the LAN. An
 exit installs no default for its own traffic and refuses `cap.exit`, so no
 exit's egress meets the table.
+
+Application DNS is not yet kept on the exit, on Linux or macOS, as
+[limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) gives.
 
 ## What an exit carries out
 

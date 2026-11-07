@@ -305,6 +305,14 @@ earlier send to its destination named. Once those sends end, every datagram
 leaves by the interface it names, as
 [the underlay's interface](../routing.md#the-underlays-interface-on-macos) says.
 
+On macOS an endpoint at a link-local address whose zone names its interface by
+name, such as `fe80::1%en5`, keeps the index that name had at the first answer
+that found an interface by it. If that interface comes back under the same name
+with another index, a send to the endpoint that names no source carries the old
+index, so it fails or leaves by whichever interface now holds that index, until
+the peer's next authenticated request replaces the endpoint or the daemon
+restarts.
+
 On Linux the transport binds the wildcard address, and for a session this node
 dialed it lets the kernel pick each datagram's source by route. On a node whose
 mesh address is its only global address of a family, the kernel picks that
@@ -599,6 +607,15 @@ no traffic cannot resolve a peer's endpoint name until the hold's grace has run
 after its last live session, by when every other program on the Mac has lost its
 traffic too. There the daemon sends no query of its own bound to the selection's
 interface, as it marks its own on Linux.
+
+Application DNS is not yet kept on the exit, on Linux or macOS. Under `cap.exit`
+the host's DNS settings stay as the host has them, and ranet3 runs no DNS server
+or forwarder. An application's query leaves as any other packet of the host's
+does, as
+[where a lookup ends on Linux](../routing.md#where-a-lookup-ends-on-linux) and
+[on macOS](../routing.md#where-a-lookup-ends-on-macos) give, so a query to a
+server on the LAN, a link-local server or one reached through a named link can
+leave by the uplink.
 
 On macOS an unscoped `/0` out of the tun would collide with the host's own
 default, because macOS has no route replace. Under `cap.exit`, in a family the
