@@ -119,7 +119,7 @@ func TestReceiveESPOrderAndShutdown(t *testing.T) {
 			}
 			defer remote.Close()
 			addr := remote.LocalAddr().(*net.UDPAddr)
-			hub, err := transport.NewHub(0, transport.Runtime{})
+			hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
 			if err != nil {
 				t.Fatal(err)
 			}

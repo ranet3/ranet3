@@ -27,7 +27,7 @@ const (
 // groPair is a socket of a bind as a hub opens it, UDP_GRO on, and a bind sending to it over loopback with UDP_SEGMENT
 func groPair(tb testing.TB) (*udpSocket, packetBind, Endpoint) {
 	tb.Helper()
-	bind, _, port, err := openPacketBind(0, nil, nil)
+	bind, _, port, err := openPacketBind(0, testPrepare(), nil, nil)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func groPair(tb testing.TB) (*udpSocket, packetBind, Endpoint) {
 	if socket == nil {
 		tb.Skip("IPv4 unavailable")
 	}
-	sender, _, _, err := openPacketBind(0, nil, nil)
+	sender, _, _, err := openPacketBind(0, testPrepare(), nil, nil)
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestGROReadLeavesAHeldBlockAlone(t *testing.T) {
 // a sender seals nothing and sends datagrams on a registered SPI with UDP_SEGMENT, which the hub's socket coalesces back, and a drain takes and releases each batch as the workers would
 // it reports the datagrams a second the hub took, what it allocated, and the collector's cycles for each million datagrams
 func BenchmarkHubReceivesGRO(b *testing.B) {
-	hub, err := NewHub(0, Runtime{})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare()})
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func BenchmarkHubReceivesGRO(b *testing.B) {
 	if err := mux.RegisterESP(groSPI); err != nil {
 		b.Fatal(err)
 	}
-	sender, _, _, err := openPacketBind(0, nil, nil)
+	sender, _, _, err := openPacketBind(0, testPrepare(), nil, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

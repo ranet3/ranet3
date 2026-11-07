@@ -25,7 +25,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/packet"
-	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 type udpEndpoint struct {
@@ -112,9 +112,10 @@ type udpBind struct {
 	discover func(socket *udpSocket, fragment bool) error
 	// cookie reads the cookie of a socket's network namespace, which a test answers in place of linux
 	cookie func(syscall.RawConn) (uint64, error)
-	// port and mark are the listener's, which a socket connected to one peer takes too
+	// port is the listener's, which a socket connected to one peer binds too
 	port uint16
-	mark uint32
+	// prepare readies every socket the bind opens
+	prepare underlay.Prepare
 }
 
 func (b *udpBind) ParseEndpoint(s string) (Endpoint, error) {
@@ -135,35 +136,9 @@ func (b *udpBind) Close() error {
 	return errors.Join(errs...)
 }
 
-// underlayMark is the mark every underlay socket of this process carries,
-// schema.UnderlayMark, or none where the process may not set one. SO_MARK
-// needs CAP_NET_ADMIN or CAP_NET_RAW in the socket's network namespace, and a
-// policy rule needs CAP_NET_ADMIN there, so a process that cannot mark its
-// sockets writes no rule that reads the mark.
-var underlayMark = sync.OnceValue(func() uint32 {
-	var fd int
-	var err error
-	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
-		if fd, err = unix.Socket(family, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err == nil {
-			break
-		}
-	}
-	if err != nil {
-		// the listener's own open reports what keeps a socket from opening
-		return schema.UnderlayMark
-	}
-	defer unix.Close(fd)
-	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(schema.UnderlayMark)); errors.Is(err, unix.EPERM) {
-		slog.Info("transport leaves the underlay sockets unmarked", "err", err,
-			"detail", "this process holds neither CAP_NET_ADMIN nor CAP_NET_RAW, and without CAP_NET_ADMIN it writes no policy rule that reads the mark")
-		return 0
-	}
-	return schema.UnderlayMark
-})
-
-// openPacketBind takes the one socket this node's IKE and ESP share.
-func openPacketBind(port uint16, _ Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
-	mark := underlayMark()
+// openPacketBind takes the one socket this node's IKE and ESP share, and
+// readies each socket it opens with prepare.
+func openPacketBind(port uint16, prepare underlay.Prepare, _ Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation, but an explicitly requested port still fails.
 	var err error
@@ -171,7 +146,7 @@ func openPacketBind(port uint16, _ Selection, events func(string, ...slog.Attr))
 		var bind packetBind
 		var receivers []receiveFunc
 		var bound uint16
-		bind, receivers, bound, err = listenPacketBind(port, mark, events)
+		bind, receivers, bound, err = listenPacketBind(port, prepare, events)
 		if port != 0 || !errors.Is(err, unix.EADDRINUSE) {
 			return bind, receivers, bound, err
 		}
@@ -179,12 +154,12 @@ func openPacketBind(port uint16, _ Selection, events func(string, ...slog.Attr))
 	return nil, nil, 0, err
 }
 
-func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
-	b := &udpBind{events: events, started: time.Now(), pathMTU: func(ep *udpEndpoint) (int, error) { return routeMTU(ep, fwmark) },
-		discover: setDiscovery, cookie: namespaceCookie, mark: fwmark, pairs: make(map[*udpPair]struct{})}
+func listenPacketBind(port uint16, prepare underlay.Prepare, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+	b := &udpBind{events: events, started: time.Now(), pathMTU: func(ep *udpEndpoint) (int, error) { return routeMTU(ep, prepare) },
+		discover: setDiscovery, cookie: namespaceCookie, prepare: prepare, pairs: make(map[*udpPair]struct{})}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
-		lc := net.ListenConfig{Control: socketControl(i == 1, fwmark, socketBufferSize, false)}
+		lc := net.ListenConfig{Control: socketControl(i == 1, prepare, netip.AddrPort{}, socketBufferSize, false)}
 		pc, err := lc.ListenPacket(context.Background(), network, fmt.Sprintf(":%d", port))
 		if err != nil {
 			if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EPROTONOSUPPORT) {
@@ -224,11 +199,15 @@ func listenPacketBind(port uint16, fwmark uint32, events func(string, ...slog.At
 	return b, receivers, port, nil
 }
 
-// socketControl sets the buffers, UDP_GRO, the underlay's mark and DF on a socket before it binds
+// socketControl readies a socket toward to with prepare, then sets the buffers, UDP_GRO and DF before it binds
 // and SO_REUSEPORT where it binds the listener's port on one address
-func socketControl(ipv6 bool, fwmark uint32, buffer int, reusePort bool) func(string, string, syscall.RawConn) error {
+// to is zero for the listener, which only receives
+func socketControl(ipv6 bool, prepare underlay.Prepare, to netip.AddrPort, buffer int, reusePort bool) func(string, string, syscall.RawConn) error {
 	level, discover, mode := discovery(ipv6, false)
-	return func(_, _ string, raw syscall.RawConn) error {
+	return func(network, _ string, raw syscall.RawConn) error {
+		if err := prepare(network, to, raw); err != nil {
+			return err
+		}
 		var optionErr error
 		if err := raw.Control(func(fd uintptr) {
 			for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF, unix.SO_RCVBUFFORCE, unix.SO_SNDBUFFORCE} {
@@ -237,11 +216,6 @@ func socketControl(ipv6 bool, fwmark uint32, buffer int, reusePort bool) func(st
 			_ = unix.SetsockoptInt(int(fd), unix.IPPROTO_UDP, unix.UDP_GRO, 1)
 			if reusePort {
 				optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
-			}
-			if fwmark != 0 && optionErr == nil {
-				// Reported rather than ignored like the tuning above: an
-				// unmarked datagram can follow the mesh's table into our own tun.
-				optionErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(fwmark))
 			}
 			if optionErr == nil {
 				// DF on every datagram, and linux refusing one past its route's path MTU rather than fragmenting it, which Send reports
@@ -326,7 +300,7 @@ func (b *udpBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
 	if zoned {
 		local = local.WithZone(strconv.Itoa(k.index))
 	}
-	control := socketControl(network == "udp6", b.mark, pairBuffer, true)
+	control := socketControl(network == "udp6", b.prepare, k.remote, pairBuffer, true)
 	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, b.port)), Control: func(network, address string, raw syscall.RawConn) error {
 		if err := sameNamespace(b.cookie, raw, listener.raw); err != nil {
 			return err
@@ -420,9 +394,9 @@ func (b *udpBind) join(p *udpPair, listener *udpSocket) error {
 	return nil
 }
 
-// routeSource is the source the route to remote picks under the underlay's mark, read off a socket connected there and closed
+// routeSource is the source the route to remote picks for a socket the bind's prepare readied, read off a socket connected there and closed
 func (b *udpBind) routeSource(network string, remote netip.AddrPort) (netip.Addr, error) {
-	dialer := net.Dialer{Control: socketControl(network == "udp6", b.mark, pairBuffer, false)}
+	dialer := net.Dialer{Control: socketControl(network == "udp6", b.prepare, remote, pairBuffer, false)}
 	conn, err := dialer.Dial(network, remote.String())
 	if err != nil {
 		return netip.Addr{}, err

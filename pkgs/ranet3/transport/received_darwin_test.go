@@ -17,7 +17,7 @@ const heldSPI = 0x4242
 // darwin's receiver reads each datagram into a block of the hub's pool, and a block a batch still holds is not read into again, and its bytes stay those of the first read while the next goes into a fresh block
 // a block nothing holds any more is read into again in place
 func TestDarwinReadLeavesAHeldBlockAlone(t *testing.T) {
-	bind, receivers, port, err := openPacketBind(0, nil, nil)
+	bind, receivers, port, err := openPacketBind(0, testPrepare(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestDarwinReadLeavesAHeldBlockAlone(t *testing.T) {
 // darwin reads one datagram a call, so the receive loop copies each of a mux's datagrams into a copy of the least power of two from 2 KiB that holds it and charges the mux that copy
 // the block it was read into stays the reader's alone, and the next read goes into it again while the batch is still held
 func TestDarwinCopiesEachDatagramOutOfItsBlock(t *testing.T) {
-	bind, receivers, port, err := openPacketBind(0, nil, nil)
+	bind, receivers, port, err := openPacketBind(0, testPrepare(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

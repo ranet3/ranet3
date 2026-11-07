@@ -19,6 +19,8 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 // groFlood is how many datagrams each sender of the GRO test sends, enough that the near end's GRO coalesces some
@@ -31,7 +33,7 @@ var otherFarAddresses = []netip.Prefix{netip.MustParsePrefix("192.0.2.4/24"), ne
 // GRO on the near end coalesces each sender's datagrams into messages of many, and the record of each datagram holds its own sender
 func TestReceiveRecordSourcesUnderGRO(t *testing.T) {
 	far, link, _ := vethPairTo(t, 3, nearAddresses, slices.Concat(farAddresses, otherFarAddresses))
-	opened, _, port, err := listenPacketBind(0, 0, nil)
+	opened, _, port, err := listenPacketBind(0, underlay.Unchanged, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 // pairAddresses are the near end's addresses, a kept one before a lost one for each family on the prefixes of farAddresses
@@ -36,7 +38,7 @@ var pairAddresses = []netip.Prefix{
 // sharing the port needs SO_REUSEPORT on both sockets, which UDP has had since 3.9
 func TestConnectedSocketReceivesItsPeerWhileTheListenerKeepsTheRest(t *testing.T) {
 	far, _, _ := vethPair(t, 2, nearAddresses)
-	listening, _, _, err := listenPacketBind(0, 0, nil)
+	listening, _, _, err := listenPacketBind(0, underlay.Unchanged, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +72,7 @@ func TestPairConnectsOnlyInItsListenersNamespace(t *testing.T) {
 	if err := loopbackNamespace(); err != nil {
 		t.Fatal(err)
 	}
-	listening, _, _, err := listenPacketBind(0, 0, nil)
+	listening, _, _, err := listenPacketBind(0, underlay.Unchanged, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,27 +8,30 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
-// routeMTU reads the path MTU of the route linux takes for a send to ep from a socket marked mark
-// a socket with that mark, and with the source and interface of ep's pin while sends carry it, connects to ep
+// routeMTU reads the path MTU of the route linux takes for a send to ep from a socket prepare readied
+// that socket, with the source and interface of ep's pin while sends carry it, connects to ep
 // connecting looks the route up as the send did and sends nothing
 // IP_MTU and IPV6_MTU then read the route's MTU, a path MTU linux learned for it included
-func routeMTU(ep *udpEndpoint, mark uint32) (int, error) {
+func routeMTU(ep *udpEndpoint, prepare underlay.Prepare) (int, error) {
 	network, level, option := "udp4", unix.IPPROTO_IP, unix.IP_MTU
 	if ep.addr.IP.To4() == nil {
 		network, level, option = "udp6", unix.IPPROTO_IPV6, unix.IPV6_MTU
 	}
 	pinned := ep.pin() != nil
-	dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
+	dialer := net.Dialer{Control: func(network, _ string, raw syscall.RawConn) error {
+		if err := prepare(network, ep.addr.AddrPort(), raw); err != nil {
+			return err
+		}
+		if !pinned || ep.index == 0 {
+			return nil
+		}
 		var err error
 		if controlErr := raw.Control(func(fd uintptr) {
-			if mark != 0 {
-				err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, int(mark))
-			}
-			if err == nil && pinned && ep.index != 0 {
-				err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX, ep.index)
-			}
+			err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX, ep.index)
 		}); controlErr != nil {
 			return controlErr
 		}

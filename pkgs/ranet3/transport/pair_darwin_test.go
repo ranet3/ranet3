@@ -11,12 +11,15 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 // the kernel hands a socket bound to one address on the listener's port and connected to a peer that peer's datagrams
@@ -25,7 +28,7 @@ import (
 func TestConnectedSocketReceivesItsPeerWhileTheListenerKeepsTheRest(t *testing.T) {
 	for _, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			listening, _, _, err := listenPacketBind(0, nil, nil)
+			listening, _, _, err := listenPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -377,6 +380,42 @@ func TestDarwinPairBindsThePinnedSource(t *testing.T) {
 		pairBindsThePin(t, "udp6", "::1", reached.WithZone(""), index)
 	})
 	t.Run("host address", func(t *testing.T) { pairBindsThePin(t, "udp4", "127.0.0.1", hostAddress(t, false), 0) })
+}
+
+// a pair passes its hub's Prepare toward the peer, as the daemon's scopes it to the interface the selection names,
+// and a pin's interface then holds over it, so a pinned reply leaves by the link its request came in on
+// the pin names lo0, where fe80::1 lives, and the selection another live interface
+// the hub's listener passes the Prepare too, with no destination
+func TestDarwinPinnedPairKeepsItsPinsInterfaceOverThePrepare(t *testing.T) {
+	_, other := twoInterfaces(t)
+	reached, index := loopbackLinkLocal(t)
+	selection := newTestSelection(other)
+	recording := &recordingPrepare{then: underlay.Bound(selection.Interface)}
+	hub, err := NewHub(0, Runtime{Prepare: recording.prepare, Selection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = hub.Close() })
+	if seen := recording.take(); !slices.Equal(seen, []readied{{"udp4", netip.AddrPort{}}, {"udp6", netip.AddrPort{}}}) {
+		t.Errorf("the hub's listener readied %v, want each family's with no destination", seen)
+	}
+	peer := listenPeer(t, "udp6", "::1")
+	at := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+	to := netip.AddrPortFrom(at.Addr().Unmap(), at.Port())
+	mux, err := hub.NewMuxTo(pinnedEndpoint(to, reached.WithZone(""), index))
+	if err != nil {
+		t.Fatal(err)
+	}
+	socket := openNow(mux).socket.Load()
+	if socket == nil {
+		t.Fatalf("the pair to %s pinned to %s opened no socket", to, reached)
+	}
+	if seen := recording.take(); !slices.Equal(seen, []readied{{"udp6", to}}) {
+		t.Errorf("the pinned pair to %s readied %v, want its own socket toward the peer", to, seen)
+	}
+	if got := boundInterface(t, (*socket).(*darwinPair).socket); got != index {
+		t.Errorf("the pair pinned to %s on interface %d is scoped to %d, want the pin's over the selection's %d", reached, index, got, other)
+	}
 }
 
 // pairBindsThePin opens the pair of an endpoint at a peer on loopback pinned to reached by interface index, and checks what it binds and sends from

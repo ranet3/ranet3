@@ -31,7 +31,10 @@ import (
 // socket rather than on the bookkeeping beside it.
 func boundInterface(t *testing.T, socket *darwinSocket) int {
 	t.Helper()
-	level, option := boundInterfaceOption(socket.ipv6)
+	level, option := unix.IPPROTO_IP, unix.IP_BOUND_IF
+	if socket.ipv6 {
+		level, option = unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
+	}
 	var index int
 	var readErr error
 	if err := socket.raw.Control(func(fd uintptr) {
@@ -658,7 +661,7 @@ func TestDarwinReplyLeavesFromTheAddressTheRequestReachedOverIPv6(t *testing.T) 
 func TestDarwinReceiverPinsIKEAlone(t *testing.T) {
 	for i, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, nil, nil)
+			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -710,7 +713,7 @@ func TestDarwinReceiverPinsIKEAlone(t *testing.T) {
 func TestDarwinReceiveRecordCarriesEachDatagramsSource(t *testing.T) {
 	for i, family := range []struct{ network, loopback string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
 		t.Run(family.network, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, nil, nil)
+			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -817,7 +820,7 @@ func TestDarwinReceiverDropsADatagramWhoseControlMessageWasCut(t *testing.T) {
 		{"udp4 monotonic", "udp4", "127.0.0.1", false, unix.SO_TIMESTAMP_MONOTONIC},
 	} {
 		t.Run(family.name, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, nil, nil)
+			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -883,7 +886,7 @@ func TestDarwinReceiverRefusesTheEndpointOfAnIKEDatagramWithNoDestination(t *tes
 		{"udp6", "::1", true},
 	} {
 		t.Run(family.network, func(t *testing.T) {
-			opened, receivers, port, err := listenPacketBind(0, nil, nil)
+			opened, receivers, port, err := listenPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

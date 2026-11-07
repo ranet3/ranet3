@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/logtest"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -25,7 +26,7 @@ import (
 func endpointTo(t *testing.T, address string) transport.Endpoint {
 	t.Helper()
 	to := netip.MustParseAddrPort(address)
-	hub, err := transport.NewHub(0, transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{Prepare: underlay.Unchanged})
 	if err != nil {
 		t.Fatal(err)
 	}

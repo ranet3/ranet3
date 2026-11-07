@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/packet"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 const (
@@ -29,7 +30,7 @@ const (
 // every datagram's record holds the ECN field it was sent with, which its payload carries, so no message mixes two fields and a read of many messages reads each one's
 func TestOuterECNReachesTheRecord(t *testing.T) {
 	far, link, _ := vethPair(t, 1, nearAddresses)
-	opened, _, port, err := listenPacketBind(0, 0, nil)
+	opened, _, port, err := listenPacketBind(0, underlay.Unchanged, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

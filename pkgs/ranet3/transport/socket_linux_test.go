@@ -19,6 +19,7 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -175,7 +176,7 @@ func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
 func TestUDPKernelGSORoundTrip(t *testing.T) {
 	for _, address := range []string{"127.0.0.1", "::1"} {
 		t.Run(address, func(t *testing.T) {
-			receiver, receivers, port, err := openPacketBind(0, nil, nil)
+			receiver, receivers, port, err := openPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -193,7 +194,7 @@ func TestUDPKernelGSORoundTrip(t *testing.T) {
 			if err := socket.conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				t.Fatal(err)
 			}
-			sender, _, _, err := openPacketBind(0, nil, nil)
+			sender, _, _, err := openPacketBind(0, testPrepare(), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -441,18 +442,19 @@ func TestUDPReceiveRefusesAMessageWhoseControlWillNotParse(t *testing.T) {
 }
 
 // The listener's sockets carry the underlay's mark wherever the process may
-// set one, root among them, and none where it may not. SO_MARK needs
-// CAP_NET_ADMIN or CAP_NET_RAW, which the sandbox does not grant and the root
-// tests' namespace does, so both outcomes are asserted rather than one skipped.
+// set one, root among them, and none where it may not, as underlay.Marked
+// readies them. SO_MARK needs CAP_NET_ADMIN or CAP_NET_RAW, which the sandbox
+// does not grant and the root tests' namespace does, so both outcomes are
+// asserted rather than one skipped.
 func TestListenerCarriesTheUnderlayMarkWhereTheProcessMaySetOne(t *testing.T) {
 	want := schema.UnderlayMark
-	if underlayMark() == 0 {
+	if underlay.Mark() == 0 {
 		if os.Geteuid() == 0 {
 			t.Fatal("root could not set the underlay's mark")
 		}
 		want = 0
 	}
-	bind, _, _, err := openPacketBind(0, nil, nil)
+	bind, _, _, err := openPacketBind(0, underlay.Marked(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,9 +484,9 @@ func TestListenerCarriesTheUnderlayMarkWhereTheProcessMaySetOne(t *testing.T) {
 	}
 }
 
-// Zero asks for nothing and must not touch the socket.
-func TestNoFWMarkLeavesTheSocketUnmarked(t *testing.T) {
-	bind, _, _, err := listenPacketBind(0, 0, nil)
+// Unchanged asks for nothing and must not touch the socket.
+func TestUnchangedLeavesTheSocketUnmarked(t *testing.T) {
+	bind, _, _, err := listenPacketBind(0, underlay.Unchanged, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

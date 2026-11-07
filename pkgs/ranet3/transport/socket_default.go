@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/netip"
 
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/wireguard/conn"
 )
 
@@ -52,7 +53,8 @@ func (b *portableBind) Send(packets [][]byte, endpoint Endpoint) error {
 	return b.Bind.Send(packets, endpoint.(*portableEndpoint).Endpoint, 0)
 }
 
-func openPacketBind(port uint16, _ Selection, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+// openPacketBind opens wireguard's StdNetBind, which offers no hook to ready a socket before it binds
+func openPacketBind(port uint16, _ underlay.Prepare, _ Selection, _ func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &portableBind{conn.NewStdNetBind()}
 	fns, port, err := b.Open(port)
 	if err != nil {

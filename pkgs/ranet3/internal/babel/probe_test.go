@@ -15,6 +15,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
 )
@@ -120,7 +121,7 @@ func TestProbeRefusedPastThePathIsNoFailedSend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub, err := transport.NewHub(0, transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{Prepare: underlay.Unchanged})
 	if err != nil {
 		t.Fatal(err)
 	}

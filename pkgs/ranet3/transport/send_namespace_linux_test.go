@@ -25,6 +25,7 @@ import (
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -63,8 +64,8 @@ const sentinel = math.MaxUint32
 func TestKernelRefusesWhatALockedPathCannotCarry(t *testing.T) {
 	far, link := lockedFarEnd(t)
 	events := &eventLog{}
-	marked, markedLogs := listenHanded(t, testMark, events)
-	plain, plainLogs := listenHanded(t, 0, events)
+	marked, markedLogs := listenHanded(t, underlay.Marked(), events)
+	plain, plainLogs := listenHanded(t, underlay.Unchanged, events)
 	for i, address := range farAddresses {
 		listener := far.listeners[i]
 		to := net.UDPAddrFromAddrPort(netip.AddrPortFrom(address.Addr(), uint16(listener.LocalAddr().(*net.UDPAddr).Port)))
@@ -154,7 +155,7 @@ func TestKernelRefusesWhatALockedPathCannotCarry(t *testing.T) {
 func TestKernelFragmentsPastALockedPathOnlyWhileTheFamilyAsks(t *testing.T) {
 	far, _ := lockedFarEnd(t)
 	events := &eventLog{}
-	bind, logs := listenHanded(t, testMark, events)
+	bind, logs := listenHanded(t, underlay.Marked(), events)
 	var eps, unders []*udpEndpoint
 	for i, address := range farAddresses {
 		port := far.listeners[i].LocalAddr().(*net.UDPAddr).Port
@@ -273,7 +274,7 @@ func TestKernelSendsWithoutDFWhatTheRouteCarriesWhileIPv4Fragments(t *testing.T)
 	t.Cleanup(func() { _ = sink.Close() })
 	to := sink.LocalAddr().(*net.UDPAddr)
 	ep := &udpEndpoint{addr: to}
-	bind, _ := listenHanded(t, 0, &eventLog{})
+	bind, _ := listenHanded(t, underlay.Unchanged, &eventLog{})
 	// flags sends the floor's datagram to the sink
 	// it returns the flags and fragment offset of the datagram's IP header as it arrived
 	flags := func(when string) uint16 {
@@ -418,10 +419,10 @@ func handedMessage(m *ipv4.Message, errno unix.Errno) triedMessage {
 	return triedMessage{pinned: pinned, segment: segment, size: len(m.Buffers[0]), errno: errno}
 }
 
-// listenHanded opens a bind with mark whose sockets hand their messages over through a log of each, in the order of farAddresses
-func listenHanded(t *testing.T, mark uint32, events *eventLog) (*udpBind, []*handedConn) {
+// listenHanded opens a bind whose sockets prepare readies and hand their messages over through a log of each, in the order of farAddresses
+func listenHanded(t *testing.T, prepare underlay.Prepare, events *eventLog) (*udpBind, []*handedConn) {
 	t.Helper()
-	opened, _, _, err := listenPacketBind(0, mark, events.record)
+	opened, _, _, err := listenPacketBind(0, prepare, events.record)
 	if err != nil {
 		t.Fatal(err)
 	}

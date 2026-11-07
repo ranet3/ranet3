@@ -13,7 +13,8 @@ import (
 // Runtime carries what the caller resolves at startup rather than writes in a
 // file.
 type Runtime struct {
-	// Prepare readies every socket the hub opens to stay out of the mesh
+	// Prepare readies every socket the hub opens to stay out of the mesh, and
+	// NewHub refuses a nil one
 	Prepare underlay.Prepare
 	// Selection names the interface of every underlay datagram on darwin, and nil names none
 	Selection Selection

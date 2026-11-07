@@ -217,7 +217,7 @@ func TestThresholdIsThePathMTUOrTheFloorOfItsFamily(t *testing.T) {
 		"IPv6 under a path MTU below its floor":  {v6, pathMTUOf(1000), 1280, 1228},
 	} {
 		t.Run(name, func(t *testing.T) {
-			hub, err := transport.NewHub(0, transport.Runtime{})
+			hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -252,7 +252,7 @@ func TestThresholdIsThePathMTUOrTheFloorOfItsFamily(t *testing.T) {
 // a session that sets no path MTU of its own takes the one the host holds for the path its mux sends on, and sends whole a message that path carries though the family's floor would cut it
 // RFC 7383 section 2.5.1: "If the sender has information about the PMTU size, it SHOULD use it."
 func TestThresholdIsThePathMTUTheHostHolds(t *testing.T) {
-	hub, err := transport.NewHub(0, transport.Runtime{})
+	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
 	if err != nil {
 		t.Fatal(err)
 	}

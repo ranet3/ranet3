@@ -28,6 +28,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/packet"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 // This backend exists for what the portable one cannot offer. The first is
@@ -240,24 +241,8 @@ func (s *darwinSocket) setDontFragment(on bool) error {
 	return setErr
 }
 
-// boundInterfaceOption is the level and option name that binds a socket of this family to one interface
-func boundInterfaceOption(ipv6 bool) (level, option int) {
-	if ipv6 {
-		return unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
-	}
-	return unix.IPPROTO_IP, unix.IP_BOUND_IF
-}
-
-// dropRoute releases the route the socket caches
-// IP_BOUND_IF and IPV6_BOUND_IF of 0 leave the socket scoped to nothing and release the route, inp_bindif_common in bsd/netinet/in_pcb.c
-func (s *darwinSocket) dropRoute() error {
-	level, option := boundInterfaceOption(s.ipv6)
-	var setErr error
-	if err := s.raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, 0) }); err != nil {
-		return err
-	}
-	return setErr
-}
+// dropRoute releases the route the socket caches by scoping it to no interface
+func (s *darwinSocket) dropRoute() error { return underlay.Scope(s.raw, s.ipv6, 0) }
 
 // darwinBind holds the one socket per family every session shares.
 type darwinBind struct {
@@ -281,6 +266,8 @@ type darwinBind struct {
 	readHeld func() (map[netip.Addr]int, error)
 	// port is the listener's, which a socket connected to one peer binds too
 	port uint16
+	// prepare readies every socket the bind opens
+	prepare underlay.Prepare
 	// connecting holds one connect at a time
 	// XNU refuses to bind an address and port while another socket holds it unconnected
 	connecting sync.Mutex
@@ -375,14 +362,7 @@ func boundSource(index int, target netip.AddrPort) (netip.Addr, error) {
 	if target.Addr().Is6() {
 		network = "udp6"
 	}
-	level, option := boundInterfaceOption(target.Addr().Is6())
-	dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
-		var setErr error
-		if err := raw.Control(func(fd uintptr) { setErr = unix.SetsockoptInt(int(fd), level, option, index) }); err != nil {
-			return err
-		}
-		return setErr
-	}}
+	dialer := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error { return underlay.Scope(raw, target.Addr().Is6(), index) }}
 	conn, err := dialer.Dial(network, target.String())
 	if err != nil {
 		return netip.Addr{}, err
@@ -433,7 +413,7 @@ func (b *darwinBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
 			return nil, nil, err
 		}
 	}
-	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, b.port)), Control: socketControl(v6, k.index, pairBuffer, true)}
+	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, b.port)), Control: socketControl(v6, b.prepare, k.remote, k.index, pairBuffer, true)}
 	conn, err := dialer.Dial(network, k.remote.String())
 	if err != nil {
 		return nil, nil, err
@@ -942,8 +922,9 @@ func (s *darwinSocket) replyEndpoint(from netip.AddrPort, control []byte) (*darw
 }
 
 // openPacketBind takes the one socket this node's IKE and ESP share, whose
-// unpinned sends name the interface selection answers.
-func openPacketBind(port uint16, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+// unpinned sends name the interface selection answers, and readies each socket
+// it opens with prepare.
+func openPacketBind(port uint16, prepare underlay.Prepare, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	// The port selected by the IPv4 bind may already be occupied on IPv6.
 	// Retry ephemeral allocation, but an explicitly requested port still fails.
 	var err error
@@ -951,7 +932,7 @@ func openPacketBind(port uint16, selection Selection, events func(string, ...slo
 		var bind packetBind
 		var receivers []receiveFunc
 		var bound uint16
-		bind, receivers, bound, err = listenPacketBind(port, selection, events)
+		bind, receivers, bound, err = listenPacketBind(port, prepare, selection, events)
 		if port != 0 || !errors.Is(err, unix.EADDRINUSE) {
 			return bind, receivers, bound, err
 		}
@@ -959,10 +940,10 @@ func openPacketBind(port uint16, selection Selection, events func(string, ...slo
 	return nil, nil, 0, err
 }
 
-func listenPacketBind(port uint16, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
+func listenPacketBind(port uint16, prepare underlay.Prepare, selection Selection, events func(string, ...slog.Attr)) (packetBind, []receiveFunc, uint16, error) {
 	b := &darwinBind{
 		selection: selection, events: events, pairs: make(map[*darwinPair]struct{}),
-		setDontFragment: (*darwinSocket).setDontFragment, dropRoute: (*darwinSocket).dropRoute, readHeld: readHeldAddresses,
+		setDontFragment: (*darwinSocket).setDontFragment, dropRoute: (*darwinSocket).dropRoute, readHeld: readHeldAddresses, prepare: prepare,
 	}
 	var receivers []receiveFunc
 	for i, network := range []string{"udp4", "udp6"} {
@@ -970,7 +951,7 @@ func listenPacketBind(port uint16, selection Selection, events func(string, ...s
 		// the listener never sets SO_REUSEPORT, not even once bound as on linux
 		// in_pcbbind in bsd/netinet/in_pcb.c and in6_pcbbind in bsd/netinet6/in6_pcb.c (xnu f6217f8) read a held socket's options again at each later bind
 		// and skip the user check for a second bind of the wildcard address where the held socket has SO_REUSEPORT, which lets a process of any user share the port
-		lc := net.ListenConfig{Control: socketControl(ipv6, 0, socketBufferSize, false)}
+		lc := net.ListenConfig{Control: socketControl(ipv6, prepare, netip.AddrPort{}, 0, socketBufferSize, false)}
 		pc, err := lc.ListenPacket(context.Background(), network, fmt.Sprintf(":%d", port))
 		if err != nil {
 			if errors.Is(err, unix.EAFNOSUPPORT) || errors.Is(err, unix.EPROTONOSUPPORT) {
@@ -1000,10 +981,16 @@ func listenPacketBind(port uint16, selection Selection, events func(string, ...s
 	return b, receivers, port, nil
 }
 
-// socketControl sets the buffers, DF and, where index is nonzero, the interface binding on a socket before it binds
+// socketControl readies a socket toward to with prepare, then sets the buffers, DF and, where index is nonzero, the interface binding before it binds
 // and SO_REUSEADDR where it binds the listener's port on one address, which XNU then allows beside the wildcard listener
-func socketControl(ipv6 bool, index, buffer int, reuseAddr bool) func(string, string, syscall.RawConn) error {
-	return func(_, _ string, raw syscall.RawConn) error {
+// to is zero for the listener, which only receives
+// index is a pair's own interface as pairOf takes it, set after prepare and so over whatever prepare scoped the socket to,
+// so a pinned reply leaves by the link its request came in on (RFC 7296 section 2.11)
+func socketControl(ipv6 bool, prepare underlay.Prepare, to netip.AddrPort, index, buffer int, reuseAddr bool) func(string, string, syscall.RawConn) error {
+	return func(network, _ string, raw syscall.RawConn) error {
+		if err := prepare(network, to, raw); err != nil {
+			return err
+		}
 		var optionErr error
 		if err := raw.Control(func(fd uintptr) {
 			for _, option := range []int{unix.SO_RCVBUF, unix.SO_SNDBUF} {
@@ -1019,15 +1006,12 @@ func socketControl(ipv6 bool, index, buffer int, reuseAddr bool) func(string, st
 				level, option := dontFragmentOption(ipv6)
 				optionErr = unix.SetsockoptInt(int(fd), level, option, 1)
 			}
-			if index == 0 || optionErr != nil {
-				return
-			}
-			// reported rather than ignored like the tuning above, since a socket scoped to nothing follows a route out of the tun
-			level, option := boundInterfaceOption(ipv6)
-			optionErr = unix.SetsockoptInt(int(fd), level, option, index)
 		}); err != nil {
 			return err
 		}
-		return optionErr
+		if optionErr != nil || index == 0 {
+			return optionErr
+		}
+		return underlay.Scope(raw, ipv6, index)
 	}
 }

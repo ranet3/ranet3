@@ -30,13 +30,14 @@
 // # Keeping the sockets out of their own tunnel
 //
 // No setting keeps these sockets off the routes a mesh running over it
-// installs. On linux every socket carries schema.UnderlayMark where the
-// process may set it, which the reconciler's derived rules read to keep them
-// off, as routing.md's "Where a lookup ends on Linux" gives with its scope. On
-// darwin every datagram names the interface [Runtime]'s [Selection] answers,
-// the host's own routes with ranet3's interface left out. [Runtime] carries
-// what the caller has to resolve at startup, so a caller that wants none of it
-// passes it zero.
+// installs. Every socket passes [Runtime]'s Prepare before it binds or
+// connects, which a caller always supplies. A linux daemon's sets
+// schema.UnderlayMark where the process may set it, which the reconciler's
+// derived rules read to keep them off, as routing.md's "Where a lookup ends on
+// Linux" gives with its scope. A darwin daemon's scopes each socket connected
+// to a peer to the interface its [Selection] names for the peer, and each
+// datagram of the shared socket names that interface, the host's own routes
+// with ranet3's interface left out. [Runtime] carries what the caller has to resolve at startup.
 //
 // # What it does not do
 //
@@ -324,11 +325,18 @@ type espChain struct {
 	marked bool
 }
 
+// errUnprepared refuses a hub whose runtime names no Prepare, never read as one that does nothing,
+// since a socket left to the host's routes can follow the mesh's own into its tun
+var errUnprepared = errors.New("transport: the runtime names no Prepare to keep the hub's sockets out of the mesh")
+
 // NewHub binds the one UDP socket every session shares, on port, an ephemeral
 // one where it is zero, and on all local IPv4 and IPv6 interfaces. rt carries
 // what the caller resolved at startup.
 func NewHub(port uint16, rt Runtime) (*Hub, error) {
-	bind, fns, port, err := openPacketBind(port, rt.Selection, rt.Events)
+	if rt.Prepare == nil {
+		return nil, errUnprepared
+	}
+	bind, fns, port, err := openPacketBind(port, rt.Prepare, rt.Selection, rt.Events)
 	if err != nil {
 		return nil, fmt.Errorf("transport: open bind: %w", err)
 	}

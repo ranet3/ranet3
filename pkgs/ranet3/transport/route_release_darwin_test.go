@@ -50,7 +50,7 @@ type loopbackShared struct {
 // overLoopback is a hub whose sends name the interface selection answers, or none where selection is nil, and its shared socket to a peer on loopback
 func overLoopback(t *testing.T, network, loopback string, selection Selection) loopbackShared {
 	t.Helper()
-	hub, err := NewHub(0, Runtime{Selection: selection})
+	hub, err := NewHub(0, Runtime{Prepare: testPrepare(), Selection: selection})
 	if err != nil {
 		t.Fatal(err)
 	}
