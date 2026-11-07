@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-// Package ui holds the components and the stylesheet every ranet3 web page
-// shares, whichever site or service renders it.
+// Package ui holds the components and the stylesheet shared by every page
+// raweb3 renders.
 package ui
 
 import "time"

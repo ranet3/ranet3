@@ -46,9 +46,10 @@ type frontmatter struct {
 	Updated     time.Time `yaml:"updated"`
 	// Order sorts a docs page among the others in its directory
 	Order *int `yaml:"order"`
-	// Layout is the template the page renders through. A page under docsDir
-	// takes the docs layout and any other the page layout, unless this names
-	// another
+	// Layout is the template the page renders through. Under newsDir the place
+	// of a page decides it, and naming one fails. Elsewhere a page under
+	// docsDir takes the docs layout and any other the page layout, unless this
+	// names another
 	Layout string `yaml:"layout"`
 	// Authors wrote a news post, which names at least one
 	Authors []string `yaml:"authors"`
