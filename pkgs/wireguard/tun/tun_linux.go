@@ -851,74 +851,28 @@ func createTUNFromFiles(files []*os.File, mtu int, config config) (Device, error
 // CreateUnmonitoredTUNFromFD creates a Device from the provided file
 // descriptor.
 func CreateUnmonitoredTUNFromFD(fd int) (Device, string, error) {
-	return CreateUnmonitoredTUNFromFDs([]int{fd})
-}
-
-// CreateUnmonitoredTUNFromFDs creates a Device from one descriptor per kernel
-// queue. It satisfies [MultiQueueDevice] when there is more than one.
-func CreateUnmonitoredTUNFromFDs(fds []int) (Device, string, error) {
-	if len(fds) == 0 {
-		return nil, "", errors.New("CreateUnmonitoredTUNFromFDs requires at least one fd")
+	// See openTUNFile: this must precede os.NewFile.
+	err := unix.SetNonblock(fd, true)
+	if err != nil {
+		unix.Close(fd)
+		return nil, "", err
 	}
-	// Error if passed duplicate FDs.
-	var dupes []int
-	set := map[int]struct{}{}
-	for _, v := range fds {
-		if _, dup := set[v]; dup {
-			dupes = append(dupes, v)
-			continue
-		}
-		set[v] = struct{}{}
-	}
-	if len(dupes) != 0 {
-		for fd := range set {
-			unix.Close(fd)
-		}
-		return nil, "", fmt.Errorf("passed duplicate file descriptors: %v", dupes)
-	}
+	file := os.NewFile(uintptr(fd), "/dev/tun")
 	tun := &NativeTun{
 		events: make(chan Event, 5),
 		errors: make(chan error, 5),
 	}
-	for i, fd := range fds {
-		// See openTUNFile: this must precede os.NewFile.
-		if err := unix.SetNonblock(fd, true); err != nil {
-			tun.Close()
-			for _, rest := range fds[i:] {
-				unix.Close(rest)
-			}
-			return nil, "", err
-		}
-		file := os.NewFile(uintptr(fd), "/dev/tun")
-		if err := appendQueue(tun, file); err != nil {
-			file.Close() // not saved, so tun.Close won't reach it
-			tun.Close()
-			for _, rest := range fds[i+1:] {
-				unix.Close(rest)
-			}
-			return nil, "", err
-		}
+	if err := appendQueue(tun, file); err != nil {
+		file.Close()
+		return nil, "", err
 	}
-
 	name, err := tun.Name()
 	if err != nil {
 		tun.Close()
 		return nil, "", err
 	}
-	for i, q := range tun.queues[1:] {
-		got, err := tunNameOf(q.file)
-		if err != nil {
-			tun.Close()
-			return nil, "", fmt.Errorf("tun queue %d: %w", i+1, err)
-		}
-		if got != name {
-			tun.Close()
-			return nil, "", fmt.Errorf("tun queue %d is attached to %q, want %q", i+1, got, name)
-		}
-	}
-
-	// Offload is negotiated once for the whole device, on queue 0.
-	if err := tun.initFromFlags(name); err != nil {
+	err = tun.initFromFlags(name)
+	if err != nil {
 		tun.Close()
 		return nil, "", err
 	}
