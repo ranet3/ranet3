@@ -8,7 +8,7 @@ updated: 2026-11-07
 order: 110
 ---
 
-ranet3 is built to run next to Tailscale, NetBird, ZeroTier, an SD-WAN agent, or
+A node is built to run next to Tailscale, NetBird, ZeroTier, an SD-WAN agent, or
 anything else that owns interfaces and routes on the same host, and the
 reconciler's ownership rules make that true rather than a hope. `cap.egress`
 follows the same rules in the host's packet filter, see below.
@@ -121,9 +121,9 @@ still meet 0x72, as [another program's rules](#another-programs-rules) gives.
 
 ### Another program's rules
 
-ranet3 leaves another program's rules alone, and they share the policy database
-with its own. The kernel walks the rules in priority order, and a rule of
-another program that the walk meets before the rule of ranet3's that would
+The reconciler leaves another program's rules alone, and they share the policy
+database with its own. The kernel walks the rules in priority order, and a rule
+of another program that the walk meets before the rule of ranet3's that would
 answer a lookup it selects changes where the lookup ends:
 
 - A lookup of another table ends at that table's longest match, unless the
@@ -158,8 +158,8 @@ table, with the host's own addresses at row L1 ahead of every one:
 - **Tailscale on OpenWrt with mwan3** moves its rules to 1310 to 1370, ahead of
   5100. A lookup of table 52 ahead of 5100 takes every destination table 52
   covers, an overlay destination live or held and a marked one among them, so
-  while Tailscale uses an exit node, that exit's default takes them all. ranet3
-  reports each overlay prefix taken, as below.
+  while Tailscale uses an exit node, that exit's default takes them all. The
+  reconciler reports each overlay prefix taken, as below.
 - **A full tunnel of wg-quick** adds 2 rules with no priority, so added after
   the reconciler's, with no rule between local's and 5100, they go to 5099 and
   5098: `lookup main suppress_prefixlength 0` at 5098 and
@@ -170,10 +170,10 @@ table, with the host's own addresses at row L1 ahead of every one:
   Added before the reconciler's, with no rule but the kernel's own, they go to
   32765 and 32764, and 5110 answers every overlay destination ahead of them.
 
-ranet3 takes no lookup back from another program's rule, and reports one that
-takes it. After each pass that applies without error, among the passes
-[when a pass runs](routing.md#when-a-pass-runs) lists, the reconciler asks the
-kernel where 2 kinds of lookup end, on the socket it writes with:
+The reconciler takes no lookup back from another program's rule, and reports one
+that takes it. After each pass that applies without error, among the passes
+[when a pass runs](routing.md#when-a-pass-runs) lists, it asks the kernel where
+2 kinds of lookup end, on the socket it writes with:
 
 - An unmarked lookup of one address of each overlay prefix it holds: the first
   address after the prefix's network address outside every prefix `cap.table`
@@ -212,8 +212,8 @@ changes and when it stops being taken, in the log, on the Kernel line of
   unreachable route at that address reads as the hold.
 - It asks the addresses live sessions send to, so a rule that takes the underlay
   toward a peer no session reaches is not reported.
-- ranet3 sends an overlay lookup its destination, and an underlay lookup its
-  destination, the mark and the source and interface its send carries, and
+- The reconciler sends an overlay lookup its destination, and an underlay lookup
+  its destination, the mark and the source and interface its send carries, and
   nothing else. The kernel fills in the rest
   ([inet_rtm_getroute](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv4/route.c#L3319),
   [inet6_rtm_getroute](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/route.c#L6232)),
@@ -282,7 +282,7 @@ overlay destination is refused by its hold.
   comes ahead of 5440, so in every state table 52's default takes the host's own
   traffic, the bridge's and the LAN's into Tailscale's tun. An overlay
   destination still reaches the mesh at 5110. Tailscale's own sockets, marked
-  `0x80000/0xff0000`, leave by main at 5210. ranet3's underlay skips 5110 to
+  `0x80000/0xff0000`, leave by main at 5210. The node's underlay skips 5110 to
   5190 and then meets 5270, so it leaves by Tailscale's tun, but toward the
   uplink's own network, which table 52 throws. This is a case ranet3 cannot
   hold: while Tailscale uses an exit node, ranet3's sessions to a peer beyond

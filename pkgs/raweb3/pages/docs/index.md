@@ -5,11 +5,11 @@
 title: "ranet3"
 description: "What ranet3 is, and where each part of it is documented."
 created: 2026-08-17
-updated: 2026-11-03
+updated: 2026-11-07
 order: 10
 ---
 
-ranet3 is a mesh node in a single Go binary. Nodes authenticate each other with
+Every mesh node runs as a single Go binary. Nodes authenticate each other with
 IKEv2 and carry packets in ESP, both in userspace. An embedded Babel speaker
 chooses the route to every prefix. Local applications reach the mesh through the
 tun, a TUN device on Linux or a utun on macOS, over the kernel's own TCP/IP

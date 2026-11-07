@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-04
+updated: 2026-11-07
 order: 60
 ---
 
@@ -232,8 +232,8 @@ forwarding decision checks it, past every extension header a SID of the mesh
 walks past: a routing header of type 0, 1 or 4, or a type the mesh does not
 recognize, is dropped and counted `routing_header`, and one of this node's own
 SIDs is dropped and counted `sid`. A packet arriving on a link outside the mesh
-with a routing header goes by its destination, as RFC 7045 section 2.1 asks.
-ranet3 sets no `seg6_enabled` and installs no `seg6local` route, and the kernel
+with a routing header goes by its destination, as RFC 7045 section 2.1 asks. The
+node sets no `seg6_enabled` and installs no `seg6local` route, and the kernel
 drops a segment routing header addressed to the host while `seg6_enabled` is off
 ([exthdrs.c](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/net/ipv6/exthdrs.c#L381)).
 A packet from outside addressed to one of this node's own SIDs never reaches the

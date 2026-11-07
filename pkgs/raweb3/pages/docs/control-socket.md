@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-06
+updated: 2026-11-07
 order: 80
 ---
 
@@ -511,5 +511,5 @@ seqno limit, which a restart starts from, as
 and an `up` keep the router id, and the speaker the `up` starts sends a seqno
 past every one it sent before the `down`.
 
-ranet3 has no login flow. A node's identity is its private key and its entry in
+There is no login flow. A node's identity is its private key and its entry in
 the trust document, both in place before the daemon starts.

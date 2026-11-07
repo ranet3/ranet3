@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-11-04
+updated: 2026-11-07
 order: 65
 ---
 
@@ -165,7 +165,7 @@ them, before the answer is sent, and `icmpv4_xrlim_allow` takes 1 second more as
 it is sent (net/ipv4/route.c:119-120 and 1024-1037, net/ipv4/icmp.c:334-336 and
 net/ipv4/inetpeer.c:277-301 at Linux `940de590`). A source new to that router
 gets 2 Destination Unreachable answers to a burst, and none after while it sends
-more often than once a second. ranet3 answers such a burst from an IPv4 source 6
+more often than once a second. A node answers such a burst from an IPv4 source 6
 times, and then once a second.
 
 Every ICMPv4 answer carries the host's default TTL: `net.ipv4.ip_default_ttl` on
@@ -224,7 +224,7 @@ rules.
 
 ## MSS clamping
 
-ranet3 lowers the MSS option of TCP SYN and SYN-ACK packets so that each TCP
+The node lowers the MSS option of TCP SYN and SYN-ACK packets so that each TCP
 segment fits its session:
 
 - A SYN read off the tun gets the budget of its session, less 40 bytes under

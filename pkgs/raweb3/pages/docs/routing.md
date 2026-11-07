@@ -8,8 +8,8 @@ updated: 2026-11-07
 order: 45
 ---
 
-Babel (RFC 8966) decides which neighbor carries each prefix. ranet3 forwards by
-those decisions in its own table, keyed by source and destination prefix. The
+Babel (RFC 8966) decides which neighbor carries each prefix. The node forwards
+by those decisions in its own table, keyed by source and destination prefix. The
 route reconciler copies the same decisions into a kernel routing table, out of
 the tun, and each lookup the host makes ends as
 [where a lookup ends on Linux](#where-a-lookup-ends-on-linux) and
@@ -25,7 +25,7 @@ default goes in scoped to the utun, as
 
 ## The Babel speaker
 
-ranet3 runs a Babel speaker over its ESP sessions. Each ESP session is a
+Each node runs a Babel speaker over its ESP sessions. Each ESP session is a
 point-to-point Babel link. Babel packets use UDP port 6696 and the group
 `ff02::1:6`, sent from a random link-local address. They travel inside ESP and
 never pass through the tun.
@@ -261,13 +261,13 @@ own for its own hold time, 56 seconds at the defaults.
 
 ## Transit
 
-ranet3 decides each packet a session delivers in its own table, after this
-node's [segments](segment-routing.md) take the ones addressed to them. Nothing
-of the host takes part: its forwarding settings, its firewall's forward chain
-and its kernel tables do not. The tun carries what the mesh delivers to this
-host and the networks behind it, what the host sends or its kernel forwards into
-it from its other links, which the checks at the mesh's edge below meet, and, on
-an exit, the egress it hands the host to carry out, as
+This node decides each packet a session delivers in its own table, after its
+[segments](segment-routing.md) take the ones addressed to them. Nothing of the
+host takes part: its forwarding settings, its firewall's forward chain and its
+kernel tables do not. The tun carries what the mesh delivers to this host and
+the networks behind it, what the host sends or its kernel forwards into it from
+its other links, which the checks at the mesh's edge below meet, and, on an
+exit, the egress it hands the host to carry out, as
 [exit nodes](exit-nodes.md#what-an-exit-carries-out) describe. The checks run in
 RFC 1812's order for both families, each before any answer, so a malformed
 packet draws none but the first check's:

@@ -486,8 +486,8 @@ it still go.
 A batch of ESP for 1 peer goes out as segmented messages where it can. Linux can
 refuse a segmented message where it takes single datagrams. This happens on a
 route through an IPsec policy, on a kernel before 6.14 when a segment exceeds
-the path MTU, and on a socket that fragments for a session under the floor.
-ranet3 then sends those datagrams again, 1 per message. That peer gets single
+the path MTU, and on a socket that fragments for a session under the floor. The
+node then sends those datagrams again, 1 per message. That peer gets single
 datagrams for 10 minutes, the time Linux keeps a path MTU it learned. Every
 other peer keeps segmenting. On a socket that fragments, a message refused with
 `EMSGSIZE` is first sent once more segmented, because a socket connected to 1

@@ -8,8 +8,8 @@ updated: 2026-11-07
 order: 10
 ---
 
-ranet3 is 1 repository holding every package it ships, each under `pkgs/`, with
-the Nix that builds and deploys them beside it.
+The project is 1 repository holding every package it ships, each under `pkgs/`,
+with the Nix that builds and deploys them beside it.
 
 ```text
 flake.nix               the flake, loaded by directory through autopilot

@@ -14,7 +14,7 @@ to. [Limits by area](#limits-by-area) lists the bounds in tables.
 
 ## Transit
 
-**ranet3 carries transit where `cap.transit` allows it.** The Babel speaker
+**A node carries transit where `cap.transit` allows it.** The Babel speaker
 re-advertises the routes it selects. Loop freedom comes from the source table
 and the feasibility condition of
 [RFC 8966 section 3.5.1](https://www.rfc-editor.org/rfc/rfc8966.html#section-3.5.1).
@@ -31,7 +31,7 @@ follows that packet's `forward` record. A packet the peer's queue drops for its
 delay, or the session's SA refuses, is counted in
 `ranet3_peer_send_dropped_total` and has no record.
 
-ranet3 forwards transit itself. A packet a session delivers goes to the next
+The node forwards transit itself. A packet a session delivers goes to the next
 session by the mesh's own route table, with its hop limit or TTL taken down, and
 never through the host. A relay needs its tun and nothing more: the host's
 forwarding settings, its firewall's forward chain and its kernel tables play no
@@ -632,7 +632,7 @@ exit serving Macs advertises the `/0` only, as
 
 ## Source-specific routing
 
-ranet3 implements source-specific routing
+The mesh routes by source as well as destination
 ([RFC 9079](https://www.rfc-editor.org/rfc/rfc9079)). The mesh's route table is
 keyed by `(source, destination)` prefix pairs. A lookup uses each packet's real
 source address as it arrives on the tun, not a single configured address.
@@ -644,9 +644,9 @@ destination.
 
 ## The tun device
 
-**ranet3 does not manage the tun device's address or routes unless you ask it
-to.** It creates the device and brings it up. On Linux it attaches instead to an
-existing device that `link.tun` names, but never to one of the default name
+**The daemon does not manage the tun device's address or routes unless you ask
+it to.** It creates the device and brings it up. On Linux it attaches instead to
+an existing device that `link.tun` names, but never to one of the default name
 `ranet3`. An optional reconciler, `internal/kernel`, mirrors the learned routes
 into 1 routing table it owns, or on macOS into the single table that platform
 has, and it can assign the configured addresses. On macOS in mode off it scopes
@@ -699,7 +699,7 @@ On Linux, ranet3 opens 1 tun queue per CPU the Go runtime uses, up to 256, and
 keeps each inner flow on 1 queue. When the Go runtime uses more than 1 CPU, an
 existing named tun must therefore be created with `IFF_MULTI_QUEUE` (for a
 systemd-networkd `.netdev`, set `MultiQueue=yes` in its `[Tun]` section). A
-process on 1 CPU can also attach to a single-queue tun. ranet3 sets that
+process on 1 CPU can also attach to a single-queue tun. The daemon sets that
 device's `gso_max_segs` to the 128 packets 1 read holds, so the kernel splits a
 larger GSO frame before a read would cut it. 1 read lays its packets out in 1
 buffer of 131070 bytes, which holds the largest GSO frame the tun hands over and

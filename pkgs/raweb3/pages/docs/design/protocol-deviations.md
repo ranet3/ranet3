@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-06
+updated: 2026-11-07
 order: 20
 ---
 
@@ -104,7 +104,7 @@ sections below give the details.
 | RFC 6633 section 8                                                                     | Log the drop of a Source Quench as a security fault (SHOULD)                                                                                                                                                              | While it runs and `cap.egress` translates IPv4, the kernel exit drops each Source Quench it forwards out of the mesh or into it, counts it in its rule's counter, and logs none                                                                                                                                                                                                                                                       | A log line for each message any host can send would let a sender fill the log, see Exit translation                                                                                                                                                                                                        |
 | RFC 6633 section 8                                                                     | Hosts, security gateways and firewalls silently discard a received Source Quench (MUST)                                                                                                                                   | Outside the kernel exit's drop, which holds while it runs and `cap.egress` translates IPv4, a node carries a Source Quench between its host and the mesh in either direction                                                                                                                                                                                                                                                          | A known gap, see Exit translation                                                                                                                                                                                                                                                                          |
 | RFC 6888 section 3 (REQ-3)                                                             | Put no limit on the size or contiguity of the external address pool, and take contiguous or non-contiguous IPv4 address ranges (SHOULD NOT, MUST)                                                                         | A class naming an address translates to it alone, and an `auto` class to the address the host's route gives each flow, as the pooling row above says, and no class names a pool or a range                                                                                                                                                                                                                                            | An exit carries the mesh's own nodes, which split its addresses by class, see Exit translation                                                                                                                                                                                                             |
-| RFC 6888 section 3 (REQ-10)                                                            | Make the CGN manageable, by the NAT MIB of RFC 4008 by preference (SHOULD, RECOMMENDED)                                                                                                                                   | The exit reports through status, metrics and events, and implements no MIB                                                                                                                                                                                                                                                                                                                                                            | ranet3 speaks no SNMP, see Exit translation                                                                                                                                                                                                                                                                |
+| RFC 6888 section 3 (REQ-10)                                                            | Make the CGN manageable, by the NAT MIB of RFC 4008 by preference (SHOULD, RECOMMENDED)                                                                                                                                   | The exit reports through status, metrics and events, and implements no MIB                                                                                                                                                                                                                                                                                                                                                            | The node speaks no SNMP, see Exit translation                                                                                                                                                                                                                                                              |
 | RFC 4787 section 4.3                                                                   | An idle UDP mapping is kept 5 minutes or more by default (RECOMMENDED)                                                                                                                                                    | The kernel exit keeps a translated UDP flow 2 minutes until it has a reply and a packet more than 2 seconds after its first, and 5 minutes from then on                                                                                                                                                                                                                                                                               | An unanswered flow carries nothing back, and the shorter timer bounds what a source's unanswered flows hold, see Exit translation                                                                                                                                                                          |
 | RFC 5508 section 3.2                                                                   | Make the ICMP query session timer configurable (RECOMMENDED)                                                                                                                                                              | The kernel exit keeps a translated query 60 seconds, fixed in code                                                                                                                                                                                                                                                                                                                                                                    | No deployment found needing another value, see Exit translation                                                                                                                                                                                                                                            |
 | RFC 7857 section 2.1                                                                   | Make the timeouts of a TCP connection opening and closing configurable apart (SHOULD)                                                                                                                                     | The kernel exit's timeouts for a translated connection are fixed in code                                                                                                                                                                                                                                                                                                                                                              | No deployment found needing other values, see Exit translation                                                                                                                                                                                                                                             |
@@ -138,7 +138,7 @@ sections below give the details.
 | RFC 8966 section 3.5.3                                                                 | Create a route table entry for each finite update a neighbor sends                                                                                                                                                        | An update under this node's own router-id takes out the route or offer its neighbor last sent, as a retraction does                                                                                                                                                                                                                                                                                                                   | It is this node's own route come back, so the neighbor has no other to give                                                                                                                                                                                                                                |
 | RFC 8966 section 3.5.4                                                                 | End a hold once every neighbor acknowledges a retraction                                                                                                                                                                  | The hold lasts until an expiry timer runs out, transit for the prefix answered unreachable meanwhile                                                                                                                                                                                                                                                                                                                                  | The RFC's own reason: "The former option is simpler"                                                                                                                                                                                                                                                       |
 | RFC 8966 section 3.5.4                                                                 | Forward no packet inside a held prefix by a shorter route                                                                                                                                                                 | The kernel keeps no hold that counts as a default, so the host's traffic there ends by the routes left, the host's own or a shorter route back into the tun, as [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) gives                                                                                                                                                                                               | That hold in the kernel would cut the host off                                                                                                                                                                                                                                                             |
-| RFC 8966 section 3.5.4                                                                 | Forward no packet inside a held prefix by a shorter route                                                                                                                                                                 | A packet inside a hold that does not count from a socket carrying the underlay's mark, from one bound to a device, or on macOS from one bound to no interface and no address of the tun ends where rows L2 and B1 to B4 of [where a lookup ends on Linux](../routing.md#where-a-lookup-ends-on-linux) and rows D1 and D2 of [where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos) give                           | ranet3's marked underlay stays out of the tun that carries it, a bound socket asked for its device, and on macOS an unscoped hold would shadow every other way to its prefix, see Updates and requests                                                                                                     |
+| RFC 8966 section 3.5.4                                                                 | Forward no packet inside a held prefix by a shorter route                                                                                                                                                                 | A packet inside a hold that does not count from a socket carrying the underlay's mark, from one bound to a device, or on macOS from one bound to no interface and no address of the tun ends where rows L2 and B1 to B4 of [where a lookup ends on Linux](../routing.md#where-a-lookup-ends-on-linux) and rows D1 and D2 of [where a lookup ends on macOS](../routing.md#where-a-lookup-ends-on-macos) give                           | The node's marked underlay stays out of the tun that carries it, a bound socket asked for its device, and on macOS an unscoped hold would shadow every other way to its prefix, see Updates and requests                                                                                                   |
 | RFC 8966 section 3.5.4                                                                 | Forward no packet inside a held prefix by a shorter route                                                                                                                                                                 | On Linux, a packet the host sends or forwards inside a hold that does not count ends outside `overlay` at a route of main longer than /0 that covers it, as row L6 of [where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) gives, and where another program's rule comes first as [sharing a host](../coexistence.md#another-programs-rules) describes                                                                   | Outside the overlay every route of main longer than /0 answers ahead of the mesh's table, which keeps the host's LAN reachable, and ranet3 leaves another program's rules ahead of its own alone, see Updates and requests                                                                                 |
 | RFC 8966 section 3.7.2                                                                 | Try to reach every neighbor with a triggered update                                                                                                                                                                       | It is sent once                                                                                                                                                                                                                                                                                                                                                                                                                       | Each link is 1 ESP tunnel that delivers in order                                                                                                                                                                                                                                                           |
 | RFC 8966 sections 3.8.1.1, 3.8.1.2                                                     | Answer a request when a selected route exists                                                                                                                                                                             | Split horizon applies to replies                                                                                                                                                                                                                                                                                                                                                                                                      | The requester is the route's next hop                                                                                                                                                                                                                                                                      |
@@ -161,7 +161,7 @@ sections below give the details.
 | RFC 8754 section 4.2                                                                   | A transit node forwards an SRH it is not the destination of                                                                                                                                                               | The tun read's walk drops an SRH whatever its destination                                                                                                                                                                                                                                                                                                                                                                             | The mesh is the SR domain and the tun its edge, section 5.1                                                                                                                                                                                                                                                |
 | RFC 8754 section 5.4                                                                   | Handle errors as RFC 2473 does, and send them to sources in the SR domain                                                                                                                                                 | `End` answers a segment it admits too large for its next session about the packet it carries, to that packet's source, in the mesh or not                                                                                                                                                                                                                                                                                             | The headend relays no answer to the sender, see ICMP answers                                                                                                                                                                                                                                               |
 | RFC 8754 section 5.4                                                                   | Handle the errors an encapsulated packet meets as RFC 2473 does                                                                                                                                                           | A headend writes an ICMPv6 error about its encapsulation into its tun, for a steer entry's packets and, under `cap.exit.via`, for every packet of the host that only a default would carry                                                                                                                                                                                                                                            | A known gap, declared for mode 3 in limits, see ICMP answers                                                                                                                                                                                                                                               |
-| RFC 8986 section 4.8                                                                   | The End.DT46 SID MUST be the last segment in an SR Policy                                                                                                                                                                 | A headend takes any SID as the last of `cap.exit.via` or a steer entry's `via`                                                                                                                                                                                                                                                                                                                                                        | ranet3 keeps no list of other nodes' SIDs, so the operator writes the End.DT46 last, see ICMP answers                                                                                                                                                                                                      |
+| RFC 8986 section 4.8                                                                   | The End.DT46 SID MUST be the last segment in an SR Policy                                                                                                                                                                 | A headend takes any SID as the last of `cap.exit.via` or a steer entry's `via`                                                                                                                                                                                                                                                                                                                                                        | A node keeps no list of other nodes' SIDs, so the operator writes the End.DT46 last, see ICMP answers                                                                                                                                                                                                      |
 | RFC 8986 section 6                                                                     | Keep a pair of traffic counters, one for packets and one for bytes, per local SID entry (SHOULD)                                                                                                                          | Node totals of what its SIDs forward, deliver, egress, refuse and drop, in `ranet3 status` and `ranet3 debug segments`, none per SID                                                                                                                                                                                                                                                                                                  | A counter per SID costs an atomic write a packet on each SID's path, and the node counts all its SIDs together                                                                                                                                                                                             |
 | RFC 8200 sections 4.5 and 5                                                            | Reassemble fragments at the destination, one of up to 1500 octets once whole                                                                                                                                              | `End` and `End.DT46` drop a fragment of a larger packet with no answer                                                                                                                                                                                                                                                                                                                                                                | A fragment of a larger packet needs reassembly the SID does not do, see ICMP answers                                                                                                                                                                                                                       |
 | RFC 8200 section 4.1                                                                   | Accept and attempt to process extension headers in any order, occurring any number of times                                                                                                                               | `End` and `End.DT46` refuse a packet with a ninth extension header they would step past, with RFC 8883's Parameter Problem, code 8                                                                                                                                                                                                                                                                                                    | A sender cannot choose what one packet costs, see ICMP answers                                                                                                                                                                                                                                             |
@@ -177,7 +177,7 @@ sections below give the details.
 
 ## NAT traversal and ports
 
-ranet3 uses a private IKEv2 transport profile rather than general-purpose
+A node uses a private IKEv2 transport profile rather than general-purpose
 [RFC 7296 NAT traversal](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23).
 The RFC uses UDP ports 500 and 4500, hashes the actual source and destination
 address/port pairs in the `NAT_DETECTION_*_IP` notifications, and moves
@@ -216,7 +216,7 @@ node's own request, can update the stored peer endpoint. It is deliberately not
 interoperable with an otherwise generic peer expecting standard RFC 7296 port
 selection or raw ESP.
 
-ranet3 sends no NAT keepalive, which
+A node sends no NAT keepalive, which
 [RFC 3948 section 4](https://www.rfc-editor.org/rfc/rfc3948.html#section-4) asks
 of a peer behind a NAT. Babel Hellos and IKE liveness checks keep the mapping
 open instead. An end that has received nothing authenticated from its peer for
@@ -242,7 +242,7 @@ yet, and a dial sends each of its requests to the endpoint it dials.
 [RFC 7296 section 2.23](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.23)
 asks a host that is not behind a NAT to follow "a packet whose integrity
 protection validates", which takes in ESP packets as well, and asks a host
-behind a NAT not to follow at all. ranet3 departs from both. An ESP packet from
+behind a NAT not to follow at all. A node departs from both. An ESP packet from
 a new address moves nothing, and ESP following a validated packet too is
 scheduled. A fresh request or answer moves the endpoint whether or not the node
 is behind a NAT. A node never learns whether it is behind one, because it does
@@ -281,7 +281,7 @@ the kernel's choice. Neither platform is supported beyond building.
 
 ## Rekeying
 
-ranet3 departs from a SHOULD of
+A node departs from a SHOULD of
 [RFC 7296 section 2.25.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.25.1).
 If both peers initiate a rekey of the same Child SA concurrently, ranet3 answers
 the peer's rekey with `TEMPORARY_FAILURE`. The RFC recommends completing both
@@ -411,7 +411,7 @@ once its lifetime expires, an SA "MUST NOT be used", and a rekey answered on it
 would use its keys for the exchange and for the new SA's keys. Before the
 lifetime, such a rekey is answered as usual, except while this end's own rekey
 of the IKE SA has had its `CREATE_CHILD_SA` answered and runs its
-`IKE_FOLLOWUP_KE` exchange. ranet3 then answers the peer's rekey with
+`IKE_FOLLOWUP_KE` exchange. This end then answers the peer's rekey with
 `TEMPORARY_FAILURE`, as
 [RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
 requires for a rekey that arrives while "the CREATE_CHILD_SA exchange initiated
@@ -422,15 +422,15 @@ response to such a request."
 [RFC 9370 section 2.2.4](https://www.rfc-editor.org/rfc/rfc9370.html#section-2.2.4)
 has a responder delete the state of a rekey whose `IKE_FOLLOWUP_KE` request it
 "does not receive ... after some reasonable period of time", and says "In
-general, 5-20 seconds of waiting time should be appropriate in most cases."
-ranet3 waits 62 seconds, the time it resends 1 cut of a request to a silent peer
+general, 5-20 seconds of waiting time should be appropriate in most cases." This
+end waits 62 seconds, the time it resends 1 cut of a request to a silent peer
 before it deems the IKE SA failed. A peer that resends as ranet3 does makes the
 sends of that request within those 62 seconds through a step to its family's
 floor and 1 or 2 falls of the path MTU, the last at most 40 seconds after the
 answer before it where its schedule's own sends see the falls and at most 52
 where probes see them, and finds the state kept. A chain of falls can carry its
 last send past them, 4 falls that probes see or 13 that the schedule's sends
-see. ranet3's own rekey then fails as late and is retried, with no SA lost. The
+see. A node's own rekey then fails as late and is retried, with no SA lost. The
 wait and what follows it are in [limits](limits.md#ike).
 
 ## Lifetimes
@@ -467,8 +467,8 @@ it started with, as every batch does across a rekey.
 ## Closing SAs
 
 [RFC 7296 section 1.3.1](https://www.rfc-editor.org/rfc/rfc7296.html#section-1.3.1)
-says "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA".
-ranet3 holds to that for a `CREATE_CHILD_SA` exchange. When the Child SA that
+says "A failed attempt to create a Child SA SHOULD NOT tear down the IKE SA". A
+node holds to that for a `CREATE_CHILD_SA` exchange. When the Child SA that
 `IKE_AUTH` carries fails, both ends delete the IKE SA. A responder that refuses
 it answers with its `AUTH` and the error, as
 [section 1.2](https://www.rfc-editor.org/rfc/rfc7296.html#section-1.2) asks, and
@@ -490,7 +490,7 @@ leaves the IKE SA uncreated without a Delete.
 
 [RFC 7296 section 2.4](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.4)
 asks an end that closes an IKE SA to send a Delete for it "unless the other
-endpoint is no longer responding". ranet3 does so wherever the peer may still
+endpoint is no longer responding". A node does so wherever the peer may still
 answer, except in 5 cases where it closes without one:
 
 - This end's Message ID space is spent. A Delete is a request and needs one.
@@ -523,7 +523,7 @@ encodings disagree and a Delete's answer would come from the same encoder.
 
 [Section 2.21.3](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.21.3)
 says "After the IKE SA is authenticated, all requests having errors MUST result
-in a response notifying the other end of the error." ranet3 answers a request
+in a response notifying the other end of the error." A node answers a request
 that does not parse with `INVALID_SYNTAX`, and an `INVALID_SYNTAX` sent or
 received ends the IKE SA it came on without a Delete, since that section makes
 the error fatal to both ends. A `CREATE_CHILD_SA` on an IKE SA that is busy, as
@@ -538,14 +538,14 @@ such an IKE SA takes only the answer to this end's own Delete on it, as
 
 ## IKE fragmentation
 
-ranet3 sends a message larger than the path in the fragments of
+A node sends a message larger than the path in the fragments of
 [RFC 7383](https://www.rfc-editor.org/rfc/rfc7383.html) where both ends sent
 `IKEV2_FRAGMENTATION_SUPPORTED`, and reassembles the peer's, as
 [limits](limits.md#paths-under-1280-bytes) describes. It departs from the RFCs
 in these places.
 
 [Section 2.5.1](https://www.rfc-editor.org/rfc/rfc7383.html#section-2.5.1) says
-"If the sender has information about the PMTU size, it SHOULD use it." ranet3
+"If the sender has information about the PMTU size, it SHOULD use it." A node
 reads the path MTU the host holds at each send, but never cuts for less than
 1280 bytes over IPv6 or 576 over IPv4, the values the same section recommends
 where the path MTU is unknown, though the host knows a smaller one. IPv6 carries
@@ -555,7 +555,7 @@ situations".
 
 [Section 5](https://www.rfc-editor.org/rfc/rfc7383.html#section-5) recommends
 bounding the "sum of the sizes of Encrypted Fragment payload contents (after
-decryption)" in a reassembly queue. ranet3 bounds the stored fragments as the
+decryption)" in a reassembly queue. A node bounds the stored fragments as the
 IKE messages they arrived as instead, 16 KiB of them. Those hold more than their
 content, and the bound covers what each fragment costs beside it. The bound
 leaves the largest message a peer sends room at the IPv4 floor.
@@ -607,7 +607,7 @@ octets at most.
 [RFC 7296 section 2.11](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.11)
 says an implementation "MUST respond to the address and port from which the
 request was received", and section 2.1 has a retransmitted request draw the
-answer again. ranet3 answers a repeat of a request it has answered under 1 rule,
+answer again. A node answers a repeat of a request it has answered under 1 rule,
 in a half-open SA, an established session and the wait after `IKE_AUTH` alike,
 as [limits](limits.md#ike) gives it in full. From the origin, the peer's own
 address and port, it answers at most 20 repeats of each exchange, every counted
@@ -657,11 +657,11 @@ Authentication is an Ed25519 signature
 shared key or EAP.
 [RFC 7296 section 4](https://www.rfc-editor.org/rfc/rfc7296.html#section-4)
 requires that every implementation can be configured to accept PKIX certificates
-signed by RSA keys and shared key authentication. ranet3 supports neither.
+signed by RSA keys and shared key authentication. Neither is supported.
 
 The minimal profile of [RFC 7815](https://www.rfc-editor.org/rfc/rfc7815.html)
 does not cover this. It describes an initiator only (section 1), and it carries
-a raw public key in a CERT payload (Appendix B.2). ranet3 also answers as a
+a raw public key in a CERT payload (Appendix B.2). A node also answers as a
 responder and sends no CERT payload. Refusing additional Child SAs with
 `NO_ADDITIONAL_SAS` is within RFC 7296.
 
@@ -686,14 +686,14 @@ so where the rule keeps that session here, this node holds it alone for the 72
 seconds its liveness check takes to fail, 10 of silence and 62 of
 retransmissions as [limits](limits.md#ike) gives.
 
-Identities are compared by the endpoint they name rather than by their bytes.
-ranet3 writes `O` and `CN` as `UTF8String`, while strongSwan picks the string
-type from the value. The same name therefore reaches the wire in 2 encodings,
-and an endpoint `auth.aliases` names by other IDs reaches it in more. AUTH signs
-the bytes as received either way, so the ID only selects which key must verify
-it. A responder asked in IDr for an ID other than a DN answers with the ID type
-and data it was asked for, in its own encoding with RESERVED zero. Asked for a
-DN, it answers with its own encoding of the DN.
+Identities are compared by the endpoint they name rather than by their bytes. A
+node writes `O` and `CN` as `UTF8String`, while strongSwan picks the string type
+from the value. The same name therefore reaches the wire in 2 encodings, and an
+endpoint `auth.aliases` names by other IDs reaches it in more. AUTH signs the
+bytes as received either way, so the ID only selects which key must verify it. A
+responder asked in IDr for an ID other than a DN answers with the ID type and
+data it was asked for, in its own encoding with RESERVED zero. Asked for a DN,
+it answers with its own encoding of the DN.
 
 ## Errors outside an exchange
 
@@ -705,7 +705,7 @@ INFORMATIONAL exchange with a Notify payload describing the problem."
 which IKE SA carries it: "if the receiving node has an active IKE SA to the IP
 address from whence the packet came, it MAY send an INVALID_SPI notification of
 the wayward packet over that IKE SA in an INFORMATIONAL exchange. The
-Notification Data contains the SPI of the invalid packet." ranet3 counts ESP on
+Notification Data contains the SPI of the invalid packet." A node counts ESP on
 an SPI it does not hold in `ranet3_receive_refused_total` and drops it. Where
 the ESP came from the address and port a session sends to, that session sends
 its peer an `INFORMATIONAL` request carrying `INVALID_SPI`, with the SPI as its
@@ -729,28 +729,28 @@ by the time the report would go, nor while a request of its own is outstanding
 or while its IKE SA's rekey holds every other request, and the next look that
 finds it after the request ends sends one. Section 1.5 also allows "an
 informational message without cryptographic protection to the source IP address"
-where no IKE SA to it exists. ranet3 sends none, since that would let anyone
-make the node send to any address. A peer's `INVALID_SPI` changes no SA here:
-the request is answered empty, and the session logs the SPI it names at debug
-level, as section 2.21.4 has the recipient do: "The recipient MUST NOT change
-the state of any SAs as a result".
+where no IKE SA to it exists. None is sent, since that would let anyone make the
+node send to any address. A peer's `INVALID_SPI` changes no SA here: the request
+is answered empty, and the session logs the SPI it names at debug level, as
+section 2.21.4 has the recipient do: "The recipient MUST NOT change the state of
+any SAs as a result".
 
 The same section says "A node receiving a suspicious message from an IP address
 (and port, if NAT traversal is used) with which it has an IKE SA SHOULD send an
 IKE Notify payload in an IKE INFORMATIONAL exchange over that SA." For ESP on an
 unknown SPI from a session's exact address and port, that is the `INVALID_SPI`
 above, at most once for each session from each look, and at most 1 look every 10
-seconds for the whole node. ranet3 drops any other suspicious message, such as
-an IKE message that fails its integrity check, and sends nothing over the SA. A
-node that answers every stray datagram from a peer's address can be made to send
-over that SA by anyone able to spoof the address, which the 10 seconds bound for
-ESP. The section warns of the same for the liveness checks such a message
-prompts: "An implementation SHOULD limit the frequency of such tests to avoid
-being tricked into participating in a DoS attack."
+seconds for the whole node. This node drops any other suspicious message, such
+as an IKE message that fails its integrity check, and sends nothing over the SA.
+A node that answers every stray datagram from a peer's address can be made to
+send over that SA by anyone able to spoof the address, which the 10 seconds
+bound for ESP. The section warns of the same for the liveness checks such a
+message prompts: "An implementation SHOULD limit the frequency of such tests to
+avoid being tricked into participating in a DoS attack."
 
 ## Algorithms
 
-ranet3 offers and accepts only these algorithms:
+A node offers and accepts only these algorithms:
 
 | Use            | Algorithms                                                                |
 | -------------- | ------------------------------------------------------------------------- |
@@ -774,14 +774,14 @@ allows specification (by a user or system administrator) of Diffie-Hellman
 parameters (the generator, modulus, and exponent lengths and values) for new
 Diffie-Hellman groups", and "Implementations SHOULD provide a management
 interface through which these parameters and the associated Transform IDs may be
-entered". ranet3 has neither. Its groups are elliptic curves fixed in code,
+entered". A node has neither. Its groups are elliptic curves fixed in code,
 which no generator or modulus describes, and `cap.crypto.ike.kex` chooses among
 them.
 
 [Section 3.3.5](https://www.rfc-editor.org/rfc/rfc7296.html#section-3.3.5) says
 that an implementation offered a cipher "with a larger key length" than it is
-configured for "SHOULD accept the offer if it supports use of the longer key".
-ranet3 refuses a key length its lists leave out, so a node whose `cipher` names
+configured for "SHOULD accept the offer if it supports use of the longer key". A
+node refuses a key length its lists leave out, so one whose `cipher` names
 `aes128gcm` alone refuses an offer of `aes256gcm` alone. Each name stands for 1
 key length, and section 3.3.4 says "The implementation MUST reject SA proposals
 that are not authorized by these IKE suite controls."
@@ -794,13 +794,13 @@ that are not authorized by these IKE suite controls."
 `ENCR_NULL` (section 5) and `AUTH_HMAC_SHA2_256_128` (section 6) MUST for ESP,
 and `AUTH_HMAC_SHA1_96` (section 6) MUST-. Both define the level the same way:
 "MUST- This term means the same as MUST." RFC 8247 also makes
-`PRF_HMAC_SHA2_512` (section 2.2) SHOULD+. ranet3 implements none of them. A
+`PRF_HMAC_SHA2_512` (section 2.2) SHOULD+. A node implements none of them. A
 peer has to support at least 1 algorithm in each row of the table.
 
 ## Traffic selectors
 
 Every Child SA carries exactly 2 traffic selectors on each side, the full IPv4
-range and the full IPv6 range. ranet3 proposes those, and as an initiator takes
+range and the full IPv6 range. A node proposes those, and as an initiator takes
 an answer of those alone. As a responder it takes a TSi and a TSr that each hold
 both ranges among their selectors, whatever else they hold, such as a first
 selector of the packet that started the request, and answers each with the 2
@@ -811,7 +811,7 @@ or holds no selector is malformed instead, and is answered `INVALID_SYNTAX` on
 an IKE SA that is not busy, as [Closing SAs](#closing-sas) describes.
 [RFC 7296 section 2.9](https://www.rfc-editor.org/rfc/rfc7296.html#section-2.9)
 has a responder narrow the selectors to a subset its policy accepts, and refuse
-with `TS_UNACCEPTABLE` only selectors it accepts no part of. ranet3 never
+with `TS_UNACCEPTABLE` only selectors it accepts no part of. A node never
 narrows below the 2 ranges, so it refuses narrower selectors where section 2.9
 has it accept them or narrow to a part of them. Babel picks the peer for each
 packet after the kernel routes it to the tun, so every session carries all
@@ -821,24 +821,24 @@ traffic of both families.
 
 [RFC 4303 section 2.6](https://www.rfc-editor.org/rfc/rfc4303.html#section-2.6)
 says a transmitter must be capable of generating dummy packets, with next header
-59. ranet3 generates none, and discards those it receives. It also sends no
+59. A node generates none, and discards those it receives. It also sends no
 traffic flow confidentiality padding
 ([section 2.7](https://www.rfc-editor.org/rfc/rfc4303.html#section-2.7)), which
-the SA management protocol would have to negotiate. ranet3 treats the 2 as a
-known gap rather than a decision.
+the SA management protocol would have to negotiate. Both are a known gap rather
+than a decision.
 
 [RFC 4303 section 3.3.3](https://www.rfc-editor.org/rfc/rfc4303.html#section-3.3.3)
 asks that an attempt to send past the last sequence number be logged with the
 SPI, the date and time, the source and destination addresses and, for IPv6, the
 Flow ID, and [section 4](https://www.rfc-editor.org/rfc/rfc4303.html#section-4)
-adds the sequence number. ranet3 logs `ike Child SA ran out of sequence numbers`
+adds the sequence number. A node logs `ike Child SA ran out of sequence numbers`
 once for each such SA, with both SPIs, both identities, the peer's address and
 the sequence number, and the log line carries its own time. Its `src` names only
 the local port. The socket is bound to the wildcard address. A session this node
 dialed sends from the address the kernel picks for each datagram, which the
 session never learns. A session the peer opened sends from the address its
 request reached, and the log does not name that one either. No Flow ID is
-logged. ranet3 sets no flow label, so the label on each outer IPv6 header is the
+logged. A node sets no flow label, so the label on each outer IPv6 header is the
 kernel's.
 
 [RFC 4303 section 3.4.2](https://www.rfc-editor.org/rfc/rfc4303.html#section-3.4.2)
@@ -849,7 +849,7 @@ Address, Sequence Number, and (in IPv6) the cleartext Flow ID."
 [Section 4](https://www.rfc-editor.org/rfc/rfc4303.html#section-4) says the
 same, and so does step 3a of
 [RFC 4301 section 5.2](https://www.rfc-editor.org/rfc/rfc4301.html#section-5.2)
-for traffic that matches no SA. ranet3 discards such ESP. ESP on an SPI no
+for traffic that matches no SA. A node discards such ESP. ESP on an SPI no
 session holds is counted in `ranet3_receive_refused_total`, and a session
 records an `ike.notify.invalid_spi`, with the SPI, the time and the session's
 peer, only for the datagram it reports to its peer, as
@@ -863,8 +863,8 @@ able to reach the port can send ESP on an unknown SPI, and a log line for each
 would let a flood fill the log.
 
 Section 4 also says an implementation "MUST allow a system administrator to
-enable or disable auditing for ESP". ranet3 has no such switch. Both counters
-and `ike.notify.invalid_spi` are always on. The debug line a session logs for a
+enable or disable auditing for ESP". There is no such switch. Both counters and
+`ike.notify.invalid_spi` are always on. The debug line a session logs for a
 peer's `INVALID_SPI` follows `--log-level`, and so does the
 `esp inbound packets dropped` warning, which `--log-level error` leaves out. The
 record holds at most 1 report for each session from each look, and at most 1
@@ -1277,7 +1277,7 @@ says:
 
 [RFC 1812 section 4.3.2.8](https://www.rfc-editor.org/rfc/rfc1812.html#section-4.3.2.8)
 says "The rate limit parameters SHOULD be settable as part of the configuration
-of the router". ranet3 takes the limits of the Linux kernel, which sent these
+of the router". A node takes the limits of the Linux kernel, which sent these
 answers before ranet3 did: a bucket for each source of a packet answered and a
 cap for the node, as [path MTU](../path-mtu.md#packets-that-do-not-fit) gives
 them. Their intervals, burst and cap are the kernel's defaults, and the number
@@ -1511,7 +1511,7 @@ carries no BCP 14 keyword.
 [RFC 9079 section 5.1](https://www.rfc-editor.org/rfc/rfc9079.html#section-5.1)
 has a node receiving a source-specific update behave "as described in [RFC8966],
 Section 3.5.3, except that the entry under consideration is indexed by (prefix,
-plen, sprefix, splen, neigh)". ranet3 keeps an update whose destination and
+plen, sprefix, splen, neigh)". A node keeps an update whose destination and
 source prefix are those of a prefix it announces, or of the host route of an
 address `cap.table` assigns it, as its neighbor's offer outside the route table,
 so while the key is its own a route a neighbor offers for it never enters the
@@ -1538,15 +1538,15 @@ is preferred for packets from its source.
 An update under this node's own router-id is its own route come back through a
 neighbor that selected it, as split horizon's retraction or as a finite update
 from a neighbor that keeps no split horizon. Section 3.5.3 would make it that
-neighbor's entry. ranet3 takes it as a retraction of whatever the neighbor last
-sent for the prefix, a route or an offer, so it is never stored, selected or
-advertised, and the entry keeps its origin, as every retraction does by
+neighbor's entry. This node takes it as a retraction of whatever the neighbor
+last sent for the prefix, a route or an offer, so it is never stored, selected
+or advertised, and the entry keeps its origin, as every retraction does by
 [section 4.6.9](https://www.rfc-editor.org/rfc/rfc8966.html#section-4.6.9): "the
 router-id, next hop, and seqno are not used".
 
 [RFC 8966 section 4.1.3](https://www.rfc-editor.org/rfc/rfc8966.html#section-4.1.3)
 says "A router-id MUST NOT consist of either all binary zeroes (0000000000000000
-hexadecimal) or all binary ones (FFFFFFFFFFFFFFFF hexadecimal)." ranet3 takes no
+hexadecimal) or all binary ones (FFFFFFFFFFFFFFFF hexadecimal)." A node takes no
 route from a finite update whose router-id, from a Router-Id TLV or an Update's
 Router-Id flag, is all zeroes or all ones, as it takes none from one with no
 router-id at all, since it would relay the route under that id. A route already
@@ -1562,7 +1562,7 @@ with a next hop that is not the requesting node, then the node MUST forward the
 request to the next hop of one such route", and "otherwise, if the node has one
 or more (not feasible) routes to the requested prefix with a next hop that is
 not the requesting node, then the node SHOULD forward the request to the next
-hop of one such route". ranet3 forwards no seqno request whose router-id is all
+hop of one such route". A node forwards no seqno request whose router-id is all
 zeroes or all ones, through a feasible route or an unfeasible one, since the
 forwarded request would carry it, and answers one as it answers any other.
 
@@ -1578,7 +1578,7 @@ gives 2 ways to end the hold of a retracted prefix: "waiting until the route's
 expiry timer has expired", or "sending a retraction with an acknowledgment
 request (Section 3.3) to every reachable neighbour that has not explicitly
 retracted prefix P, and waiting for all acknowledgments", of which "The latter
-option is RECOMMENDED". ranet3 takes the former, for the reason the section
+option is RECOMMENDED". A node takes the former, for the reason the section
 gives: "The former option is simpler". It pays the cost the section names:
 "since the expiry time can be as high as a few minutes, doing that prevents
 automatic aggregation by creating spurious black-holes for aggregated routes". A
@@ -1660,7 +1660,7 @@ selection to local policy: "the route selection policy MUST only satisfy the
 following properties", that a retracted route and an unfeasible route are never
 selected.
 [Appendix A.3](https://www.rfc-editor.org/rfc/rfc8966.html#appendix-A.3)
-switches "to a route R' only when both m(R') < m(R) and ms(R') < ms(R)". ranet3
+switches "to a route R' only when both m(R') < m(R) and ms(R') < ms(R)". A node
 also asks for the margin [route selection](../routing.md#route-selection) gives,
 so 2 routes whose costs move around 1 value stop trading places.
 [RFC 9616 section 4.3](https://www.rfc-editor.org/rfc/rfc9616.html#section-4.3)
@@ -1678,7 +1678,7 @@ gives, as BIRD paces its triggered updates. A route that flaps then costs each
 neighbor 1 update a pace, and the seqno raises that requests owe in it go out
 together as 1 raise. Appendix B also RECOMMENDS a request timeout "initially 2
 seconds, doubled every time a request is resent, up to a maximum of three
-times". ranet3 repeats a seqno request up to 4 times, 3, 3, 6 and 12 seconds
+times". A node repeats a seqno request up to 4 times, 3, 3, 6 and 12 seconds
 apart. A repeat after 2 seconds would fall inside the 2 seconds in which the
 node holds back a second request for the same source and seqno as redundant, in
 the sense of section 3.8.1.2.
@@ -1689,7 +1689,7 @@ the sense of section 3.8.1.2.
 "outgoing TLVs are buffered and SHOULD be sent with a random delay", so that
 speakers across a network do not fall into step and TLVs share packets, and "a
 delay SHOULD be introduced between successive packets sent out on the same
-interface". ranet3 jitters no send, and the packets of 1 pass go back to back.
+interface". A node jitters no send, and the packets of 1 pass go back to back.
 Each link is 1 ESP session to 1 neighbor, so no medium is shared with other
 speakers whose sends could fall into step or collide, and the session's control
 queue takes a pass's packets together. Triggered updates alone are paced, and
@@ -1699,20 +1699,20 @@ leaves within the half Hello interval the section gives it.
 [Section 3.4.2](https://www.rfc-editor.org/rfc/rfc8966.html#section-3.4.2) says
 IHUs "SHOULD be sent less often than Hellos", and Appendix B RECOMMENDS that
 "the advertised IHU interval is always 3 times the Multicast Hello interval",
-with IHUs sent "only with every third Multicast Hello on lossless links". ranet3
+with IHUs sent "only with every third Multicast Hello on lossless links". A node
 sends an IHU with every Hello, naming the Hello interval.
 [RFC 9616 section 3.2](https://www.rfc-editor.org/rfc/rfc9616.html#section-3.2)
 has both ends "produce one RTT sample for each received (Hello, IHU) pair", so
 every Hello interval brings a round-trip sample of the link.
 
 Appendix B RECOMMENDS a link cost "estimated using ETX on wireless links" and
-"2-out-of-3 with C=96 on wired links". ranet3 estimates ETX on every link unless
+"2-out-of-3 with C=96 on wired links". A node estimates ETX on every link unless
 `cap.babel.quality` is `none`, which keeps the fixed cost. Every link is a
 tunnel, wired or not underneath, and ETX measures the loss of whatever path it
 crosses.
 [RFC 9616 section 4.2](https://www.rfc-editor.org/rfc/rfc9616.html#section-4.2)
 says "The default values rtt-min = 10 ms, rtt-max = 120 ms, and max-rtt-penalty
-= 150 are RECOMMENDED". ranet3 keeps rtt-min at 10 milliseconds and sets rtt-max
+= 150 are RECOMMENDED". A node keeps rtt-min at 10 milliseconds and sets rtt-max
 to 1024 milliseconds and the penalty to 1024. In a global mesh 120 milliseconds
 saturates every intercontinental path, so the penalty stops ranking the links it
 exists to rank, and a penalty of 150 against a wired cost of 96 makes a
@@ -1720,17 +1720,17 @@ satellite hop cost less than 3 wired ones.
 
 [Section 6](https://www.rfc-editor.org/rfc/rfc8966.html#section-6) says "Every
 implementation of Babel SHOULD implement BABEL-MAC", and RECOMMENDS "that all
-Babel traffic be protected by an application-layer cryptographic protocol".
-ranet3 implements neither BABEL-MAC nor Babel over DTLS. Its Babel packets
-travel only inside ESP sessions, each of which authenticated its neighbor and
-protects what it carries against change and replay.
+Babel traffic be protected by an application-layer cryptographic protocol". A
+node implements neither BABEL-MAC nor Babel over DTLS. Its Babel packets travel
+only inside ESP sessions, each of which authenticated its neighbor and protects
+what it carries against change and replay.
 
 ### Reassembly
 
 A Babel packet a neighbor's stack cut into fragments is put back together before
 the speaker reads it. Other speakers send packets of up to 1443 UDP octets,
 which their stacks may fragment. A speaker on a kernel socket has the kernel
-reassemble them. ranet3 reads the inner packets of each session itself, so it
+reassemble them. This node reads the inner packets of each session itself, so it
 reassembles, as
 [RFC 8200 section 4.5](https://www.rfc-editor.org/rfc/rfc8200.html#section-4.5)
 describes, the fragments sent to its speaker: an IPv6 packet whose next header
