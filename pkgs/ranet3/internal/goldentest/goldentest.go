@@ -9,10 +9,12 @@ package goldentest
 
 import (
 	"bytes"
+	"encoding/hex"
 	"flag"
 	"os"
 	"path/filepath"
 	"testing"
+	"unicode/utf8"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files from what the code writes now")
@@ -36,6 +38,14 @@ func Check(tb testing.TB, pkg, path string, got []byte) {
 		tb.Fatalf("%v, and go test %s -update writes it", err, pkg)
 	}
 	if !bytes.Equal(got, want) {
-		tb.Errorf("%s no longer matches, and go test %s -update rewrites it\n--- golden\n%s\n--- now\n%s", path, pkg, want, got)
+		tb.Errorf("%s no longer matches, and go test %s -update rewrites it\n--- golden\n%s\n--- now\n%s", path, pkg, shown(want), shown(got))
 	}
+}
+
+// shown is a golden file's bytes as a failure prints them, as text or as a hex dump of a file that is not UTF-8
+func shown(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	return hex.Dump(b)
 }

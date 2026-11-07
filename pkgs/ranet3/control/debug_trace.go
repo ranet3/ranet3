@@ -322,6 +322,15 @@ var tcpFlagNames = []string{"fin", "syn", "rst", "psh", "ack", "urg", "ece", "cw
 
 // RenderTracePacket writes one record as one line: the decision, the protocol, source and destination, then the record's other fields by name
 func RenderTracePacket(w io.Writer, p TracePacket) {
+	line := traceComment(p)
+	if len(p.Payload) != 0 {
+		line += " payload=" + hex.EncodeToString(p.Payload)
+	}
+	fmt.Fprintln(w, line)
+}
+
+// traceComment is the line of a record but its payload, which its packet's comment holds
+func traceComment(p TracePacket) string {
 	protocol := strconv.Itoa(int(p.Protocol))
 	for name, number := range TraceProtocols {
 		if number == p.Protocol {
@@ -369,8 +378,7 @@ func RenderTracePacket(w io.Writer, p TracePacket) {
 	}
 	add("answer", p.Answer)
 	add("outcome", p.Outcome)
-	add("payload", hex.EncodeToString(p.Payload))
-	fmt.Fprintln(w, strings.Join(line, " "))
+	return strings.Join(line, " ")
 }
 
 // RenderTraceLine writes a record as RenderTracePacket does and a note as RenderEvent does

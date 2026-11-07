@@ -6,6 +6,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -360,6 +361,93 @@ func traceLines() []TraceLine {
 		TraceLine{Note: &Event{At: at, Kind: "stream.dropped", Attrs: map[string]string{"rate": "12", "queue": "0"}}},
 		TraceLine{Note: &Event{At: at, Kind: "stream.closed", Attrs: map[string]string{"reason": "the daemon is stopping"}}},
 	)
+}
+
+// ipv4Packet is an IPv4 packet from src to dst of protocol, behind a header of no options with its checksum, carrying rest
+func ipv4Packet(src, dst string, protocol byte, rest []byte) []byte {
+	header := []byte{0x45, 0, 0, 0, 0, 0, 0, 0, 64, protocol, 0, 0}
+	binary.BigEndian.PutUint16(header[2:], uint16(20+len(rest)))
+	header = append(append(header, netip.MustParseAddr(src).AsSlice()...), netip.MustParseAddr(dst).AsSlice()...)
+	sum := 0
+	for i := 0; i < 20; i += 2 {
+		sum += int(binary.BigEndian.Uint16(header[i:]))
+	}
+	for sum > 0xffff {
+		sum = sum&0xffff + sum>>16
+	}
+	binary.BigEndian.PutUint16(header[10:], ^uint16(sum))
+	return append(header, rest...)
+}
+
+// ipv6Packet is an IPv6 packet from src to dst whose first header after the fixed one is next, carrying rest
+func ipv6Packet(src, dst string, next byte, rest []byte) []byte {
+	header := []byte{0x60, 0, 0, 0, 0, 0, next, 64}
+	binary.BigEndian.PutUint16(header[4:], uint16(len(rest)))
+	header = append(append(header, netip.MustParseAddr(src).AsSlice()...), netip.MustParseAddr(dst).AsSlice()...)
+	return append(header, rest...)
+}
+
+// tracePcapPackets is a record of each kind the pcapng golden file holds, each with the packet's bytes from its IP header on
+// an IPv4 forward, an IPv6 answer with its reason and outcome, a packet a policy steered, and a payload shorter than its packet
+func tracePcapPackets() []TracePacket {
+	at := time.Date(2026, 10, 28, 19, 30, 0, 123456789, time.UTC)
+	gateway, relay := "example/gateway:0@1", "example/relay:1@0"
+	udp := []byte{0x9c, 0x40, 0x23, 0x28, 0, 28, 0, 0}
+	forward := ipv4Packet("192.0.2.1", "192.0.2.3", 17, append(udp, make([]byte, 20)...))
+	echo := ipv6Packet("3fff::1", "3fff::3", 58, []byte{128, 0, 0, 0, 0, 1, 0, 1})
+	// a segment routing header of one segment, RFC 8754 section 2, before a UDP header
+	srh := append([]byte{17, 2, 4, 0, 0, 0, 0, 0}, netip.MustParseAddr("3fff:b:0:206::1").AsSlice()...)
+	steered := ipv6Packet("3fff:b:0:100::1", "3fff:b:0:206::1", 43, append(srh, 0x9c, 0x40, 0x23, 0x28, 0, 8, 0, 0))
+	syn := append([]byte{0x9c, 0x41, 0, 80, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x02, 0xff, 0xff, 0, 0, 0, 0}, make([]byte, 20)...)
+	egress := ipv4Packet("192.0.2.1", "203.0.113.9", 6, syn)
+	return []TracePacket{
+		{Time: at, Arrival: "session", From: gateway, Decision: "forward", Next: relay, Source: netip.MustParseAddr("192.0.2.1"), Destination: netip.MustParseAddr("192.0.2.3"),
+			Protocol: 17, Transport: true, SourcePort: 40000, DestinationPort: 9000, HopLimit: 64, Length: len(forward), Payload: forward},
+		{Time: at.Add(time.Millisecond), Arrival: "session", From: gateway, Decision: "answer", Reason: "held", Source: netip.MustParseAddr("3fff::1"), Destination: netip.MustParseAddr("3fff::3"),
+			Protocol: 58, Transport: true, ICMPType: 128, HopLimit: 64, Length: len(echo), Answer: "no_route", Outcome: "withheld", Payload: echo},
+		{Time: at.Add(2 * time.Millisecond), Arrival: "tun", Decision: "forward", Next: relay, Segment: netip.MustParseAddr("3fff:b:0:206::1"),
+			Source: netip.MustParseAddr("3fff:b:0:100::1"), Destination: netip.MustParseAddr("3fff:b:0:206::1"), Protocol: 17, Headers: []string{"routing"},
+			Transport: true, SourcePort: 40000, DestinationPort: 9000, HopLimit: 64, Length: len(steered), Payload: steered},
+		{Time: at.Add(3 * time.Millisecond), Arrival: "session", From: gateway, Decision: "egress", Source: netip.MustParseAddr("192.0.2.1"), Destination: netip.MustParseAddr("203.0.113.9"),
+			Protocol: 6, Transport: true, SourcePort: 40001, DestinationPort: 80, TCPFlags: 0x02, HopLimit: 64, Length: len(egress), Payload: egress[:42]},
+	}
+}
+
+// records written as pcapng hold the golden file's bytes
+func TestTracePcapGolden(t *testing.T) {
+	var file bytes.Buffer
+	w, err := NewTracePcap(&file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range tracePcapPackets() {
+		if err := w.Write(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	golden(t, "trace.pcapng", file.Bytes())
+}
+
+// a record whose payload stops inside its IPv6 header writes the addresses and ports its bytes leave out in its packet's comment
+func TestTracePcapCommentHoldsWhatThePayloadCuts(t *testing.T) {
+	packet := ipv6Packet("3fff::1", "3fff::3", 17, []byte{0x9c, 0x40, 0x23, 0x28, 0, 8, 0, 0})
+	p := TracePacket{Time: time.Date(2026, 10, 28, 19, 30, 0, 0, time.UTC), Arrival: "session", From: "example/gateway:0@1", Decision: "forward", Next: "example/relay:1@0",
+		Source: netip.MustParseAddr("3fff::1"), Destination: netip.MustParseAddr("3fff::3"), Protocol: 17, Transport: true, SourcePort: 40000, DestinationPort: 9000,
+		HopLimit: 64, Length: len(packet), Payload: packet[:16]}
+	var file bytes.Buffer
+	w, err := NewTracePcap(&file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Write(p); err != nil {
+		t.Fatal(err)
+	}
+	comment := "forward udp [3fff::1]:40000 > [3fff::3]:9000 arrival=session from=example/gateway:0@1 next=example/relay:1@0 hop_limit=64 length=48"
+	// opt_comment, code 1, of the comment's length, section 3.5
+	option := append(binary.LittleEndian.AppendUint16(binary.LittleEndian.AppendUint16(nil, 1), uint16(len(comment))), comment...)
+	if !bytes.Contains(file.Bytes(), option) {
+		t.Errorf("--pcap wrote %q, want the comment %q", file.Bytes(), comment)
+	}
 }
 
 // a trace prints one line a record or note, and its wire form one JSON line each that reads back as it was
