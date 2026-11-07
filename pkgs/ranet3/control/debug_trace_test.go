@@ -353,6 +353,7 @@ func traceLines() []TraceLine {
 	}
 	lines := []TraceLine{{Note: &Event{At: at, Kind: "stream.live"}}}
 	for i := range packets {
+		packets[i].Time = at.Add(time.Duration(i+1) * 1001 * time.Microsecond)
 		lines = append(lines, TraceLine{Packet: &packets[i]})
 	}
 	return append(lines,
@@ -384,6 +385,9 @@ func TestTraceGoldens(t *testing.T) {
 		RenderTraceLine(&read, got)
 		if sent.String() != read.String() {
 			t.Errorf("line %d reads back as %q, sent as %q", i, read.String(), sent.String())
+		}
+		if want.Packet != nil && (got.Packet == nil || !got.Packet.Time.Equal(want.Packet.Time)) {
+			t.Errorf("line %d reads back as %+v, sent at %v", i, got.Packet, want.Packet.Time)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/events"
@@ -70,12 +71,14 @@ func TestTraceIsRecordedAsItOpensAndCloses(t *testing.T) {
 // a record's wire form carries each of its fields under its own name
 func TestTracePacketCarriesEveryField(t *testing.T) {
 	record := netstack.TraceRecord{
+		Time:    time.Date(2026, 10, 28, 19, 30, 0, 123456789, time.UTC),
 		Arrival: netstack.TraceArrivedSession, From: "example/gateway:0@1", Decision: netstack.TraceAnswer, Reason: "expired", Next: "example/relay:0@1",
 		Segment: netip.MustParseAddr("3fff:0:0:b::46"), Source: netip.MustParseAddr("3fff::1"), Destination: netip.MustParseAddr("3fff::3"),
 		Protocol: 17, Headers: []string{"hop-by-hop"}, Transport: true, SourcePort: 4000, DestinationPort: 9000, TCPFlags: 2, ICMPType: 3, ICMPCode: 4,
 		HopLimit: 1, Length: 1280, Fragments: 2, Answer: "expired", Outcome: netstack.TraceWithheld, Payload: []byte{0x60, 0},
 	}
 	want := control.TracePacket{
+		Time:    record.Time,
 		Arrival: "session", From: "example/gateway:0@1", Decision: "answer", Reason: "expired", Next: "example/relay:0@1",
 		Segment: record.Segment, Source: record.Source, Destination: record.Destination,
 		Protocol: 17, Headers: []string{"hop-by-hop"}, Transport: true, SourcePort: 4000, DestinationPort: 9000, TCPFlags: 2, ICMPType: 3, ICMPCode: 4,

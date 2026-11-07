@@ -119,6 +119,8 @@ type TraceFilter struct {
 // TraceRecord is one packet's forwarding decision, every field read from the packet as it arrived
 // but a budget drop's, which follows the packet's forward record and is read from the packet as it was queued for its peer
 type TraceRecord struct {
+	// Time is the wall clock read as the node held the packet for this record, or for a budget drop as its peer's budget refused it
+	Time    time.Time
 	Arrival TraceArrival
 	// From is the ID of the peer whose session the packet arrived on, empty for any other arrival
 	From     string
@@ -502,7 +504,8 @@ type traceHold struct {
 	taken, refused uint64
 	// final is a hold whose decision was made, so taken and refused mark only clients whose filter selects it
 	final bool
-	// now is the time of the hold on the tracer's clock, which the room and the draw are read at
+	// at is the wall clock at the hold, the time of the records it makes, and now the hold on the tracer's clock, which the room and the draw are read at
+	at       time.Time
 	now      int64
 	src, dst netip.Addr
 	fields   traceFields
@@ -805,8 +808,9 @@ func (t *tracer) hold(site *traceSite, final bool, view, raw []byte) traceHold {
 				continue
 			}
 		}
-		if h.now == 0 {
-			h.now = t.now()
+		if h.at.IsZero() {
+			h.at = time.Now()
+			h.now = int64(h.at.Sub(t.start))
 		}
 		if !c.room(h.now) {
 			h.refused |= 1 << i
@@ -844,6 +848,7 @@ func (t *tracer) release(h *traceHold, site traceSite) {
 			continue
 		}
 		record := h.build(&site, c.payload)
+		record.Time = h.at
 		select {
 		case c.queue <- record:
 			c.recorded.Add(1)

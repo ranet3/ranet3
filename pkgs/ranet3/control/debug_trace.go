@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // PathDebugTrace streams each packet's forwarding decision as the node makes it
@@ -151,6 +152,8 @@ func parseTraceQuery(values url.Values) (TraceQuery, error) {
 // TracePacket is one packet's forwarding decision as a trace carries it, every field read from the packet as it arrived
 // but a budget drop's, which follows the packet's forward record and is read from the packet as it was queued for its peer
 type TracePacket struct {
+	// Time is the daemon's wall clock read as the node held the packet for this record, or for a budget drop as its peer's budget refused it
+	Time time.Time `json:"time"`
 	// Arrival is session, tun, or none for a packet of no session
 	Arrival string `json:"arrival"`
 	// From is the path of the session the packet arrived on

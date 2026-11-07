@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
 )
@@ -293,6 +294,7 @@ func TestTraceRecordReadsThePacketsFields(t *testing.T) {
 			want := c.want
 			want.Arrival, want.Decision = TraceArrivedTUN, TraceDeliver
 			want.Source, want.Destination = tracedAddresses(c.raw)
+			want.Time = got.Time
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("the record is %+v, want %+v", got, want)
 			}
@@ -395,6 +397,36 @@ func TestTraceRefusesWhatItsBoundsLeaveOut(t *testing.T) {
 	}
 	if m.TraceClients() != 0 {
 		t.Errorf("the refusals left %d feeds", m.TraceClients())
+	}
+}
+
+// tracePause is the wait before each packet and between its hold and its release, so each lies apart from the moments around it
+const tracePause = 2 * time.Millisecond
+
+// a record's time is read as its packet is held, before the release that records it, and a later packet's is later
+func TestTraceRecordTimeIsWhenItsPacketWasHeld(t *testing.T) {
+	m := traceMesh(t)
+	feed := openTrace(t, m, TraceFilter{}, 0, control.TraceRateMax)
+	raw := udpPacket(transitSender[4], transitFar[4], 100, false)
+	var last time.Time
+	for i := range 2 {
+		time.Sleep(tracePause)
+		trace := m.tracer.Load()
+		var h traceHold
+		before := time.Now()
+		trace.holdForward(&h, traceGateway, traceLaptop, raw)
+		time.Sleep(tracePause)
+		mark := time.Now()
+		trace.releaseForward(&h, traceGateway, traceLaptop, transitForwarded, 0, TraceNoAnswer)
+		records := queued(feed)
+		if len(records) != 1 {
+			t.Fatalf("packet %d: the feed took %d records", i, len(records))
+		}
+		got := records[0].Time
+		if got.Before(before) || !got.Before(mark) || !got.After(last) {
+			t.Errorf("packet %d held after %v and released after %v, a packet of %v before it, has the time %v", i, before, mark, last, got)
+		}
+		last = got
 	}
 }
 

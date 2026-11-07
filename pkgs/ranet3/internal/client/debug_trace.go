@@ -98,7 +98,7 @@ func (t *clientTrace) Close(why string) {
 
 func (*clientTrace) Packet(r netstack.TraceRecord) control.TracePacket {
 	return control.TracePacket{
-		Arrival: r.Arrival.String(), From: r.From, Decision: r.Decision.String(), Reason: r.Reason, Next: r.Next,
+		Time: r.Time, Arrival: r.Arrival.String(), From: r.From, Decision: r.Decision.String(), Reason: r.Reason, Next: r.Next,
 		Segment: r.Segment, Source: r.Source, Destination: r.Destination, Protocol: r.Protocol, Headers: r.Headers,
 		Transport: r.Transport, SourcePort: r.SourcePort, DestinationPort: r.DestinationPort, TCPFlags: r.TCPFlags, ICMPType: r.ICMPType, ICMPCode: r.ICMPCode,
 		HopLimit: r.HopLimit, Length: r.Length, Fragments: r.Fragments, Answer: r.Answer, Outcome: r.Outcome.String(), Payload: r.Payload,
