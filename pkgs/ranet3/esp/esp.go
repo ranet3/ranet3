@@ -72,8 +72,9 @@ var ErrSequenceExhausted = errors.New("esp: sequence number space exhausted, SA 
 
 // SequenceRange is an ordered run of sequence numbers reserved from one SA.
 // A range belongs to one worker, which seals it whole with SealBatchInto,
-// while separate ranges can perform their AEAD work in parallel. Values can only be created by OutboundSA.ReserveSequenceRange, so
-// callers cannot accidentally choose or reuse a nonce.
+// while separate ranges can perform their AEAD work in parallel. Only this
+// package creates one, through OutboundSA.ReserveSequenceRange or inside
+// OutboundSA.Seal, so callers cannot accidentally choose or reuse a nonce.
 type SequenceRange struct {
 	sa   *OutboundSA
 	next uint64

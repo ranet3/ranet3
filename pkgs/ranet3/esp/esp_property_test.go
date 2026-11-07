@@ -134,10 +134,10 @@ func sequenceOf(ht *hegel.T, packet []byte) uint64 {
 // reserved range sealed as a batch, which is how the data plane sends.
 var sealPaths = []string{"Seal", "SealBatch"}
 
-// openPaths are the three ways a receiver gets it back: Open, which checks
-// and commits in one call, one packet authenticated in place and committed,
-// and a batch authenticated in place and committed in order, which is how
-// the data plane receives.
+// openPaths are the three entry points a receiver can take, each ending in
+// AuthenticateBatchInPlace, the data plane's receive path. They are Open over a
+// copy of the datagram, the test helper AuthenticateInPlace over a batch of
+// one, and AuthenticateBatchInPlace itself.
 var openPaths = []string{"Open", "AuthenticateInPlace", "AuthenticateBatchInPlace"}
 
 // sealVia seals every payload, in order, through one of sealPaths.
