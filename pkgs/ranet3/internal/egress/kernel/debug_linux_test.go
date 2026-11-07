@@ -40,8 +40,11 @@ const (
 
 // debugExit is the kernel exit translating 0.0.0.0/0 in a namespace of its own
 // with sweep, whose uplink up0 routes 203.0.113.0/24 and whose loopback holds
-// its mesh address, and the exit's debug read. Its Run is the caller's.
-func debugExit(t *testing.T, sweep time.Duration) (exit egress.Exit, debug func() egress.ExitDebug, host *netnstest.Thread, mesh netip.Addr) {
+// its mesh address, and the exit's debug read on a thread joined to that
+// namespace, which the daemon's process runs in whole. A read never runs on
+// host, whose thread the read's own sysctl reads take. Its Run is the
+// caller's.
+func debugExit(t *testing.T, sweep time.Duration) (exit egress.Exit, debug func(*netnstest.Thread) egress.ExitDebug, host *netnstest.Thread, mesh netip.Addr) {
 	t.Helper()
 	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -81,7 +84,11 @@ func debugExit(t *testing.T, sweep time.Duration) (exit egress.Exit, debug func(
 	if !ok {
 		t.Fatal("the kernel exit answers no debug read")
 	}
-	return exit, debugged.Debug, host, mesh
+	debug = func(on *netnstest.Thread) (read egress.ExitDebug) {
+		_ = on.Do(func() error { read = debugged.Debug(); return nil })
+		return read
+	}
+	return exit, debug, host, mesh
 }
 
 // runDebugExit runs exit until the test ends or stop is called, which waits
@@ -125,15 +132,17 @@ func awaitPasses(t *testing.T, exit egress.Exit) {
 	}
 }
 
-// readDebug calls debug from debugReaders goroutines, each in a loop until
-// the returned function is called, which answers each read error by the reads
-// that answered it, no error under ""
-func readDebug(debug func() egress.ExitDebug) (stop func() map[string]int) {
+// readDebug calls debug from debugReaders threads, each joined to host's
+// namespace and reading in a loop until the returned function is called,
+// which answers each read error by the reads that answered it, no error under
+// ""
+func readDebug(t *testing.T, host *netnstest.Thread, debug func(*netnstest.Thread) egress.ExitDebug) (stop func() map[string]int) {
 	var mu sync.Mutex
 	errs := map[string]int{}
 	done := make(chan struct{})
 	var readers sync.WaitGroup
 	for range debugReaders {
+		reader := netnstest.JoinThread(t, host.Path)
 		readers.Go(func() {
 			for {
 				select {
@@ -141,7 +150,7 @@ func readDebug(debug func() egress.ExitDebug) (stop func() map[string]int) {
 					return
 				default:
 				}
-				read := debug()
+				read := debug(reader)
 				mu.Lock()
 				errs[read.ReadErr]++
 				mu.Unlock()
@@ -173,7 +182,7 @@ func TestDebugReadsARulesCounterWithoutAPass(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("send from the mesh address: %v", err)
 	}
-	read := debug()
+	read := debug(netnstest.JoinThread(t, host.Path))
 	spec := "local via ranet0 ipv4 from 192.0.2.1/32 masquerade"
 	at := slices.IndexFunc(read.Rules, func(rule egress.RuleReading) bool { return rule.Spec == spec })
 	if read.ReadErr != "" || at < 0 || !read.Rules[at].Held || read.Rules[at].Counter != "flows" || read.Rules[at].Packets != 1 {
@@ -188,9 +197,9 @@ func TestDebugReadsARulesCounterWithoutAPass(t *testing.T) {
 // each read and each pass with no error: a read takes no socket a pass writes
 // through, and no reader the socket another reads through
 func TestDebugReadsBesidePassesAndAnotherReader(t *testing.T) {
-	exit, debug, _, _ := debugExit(t, debugBusySweep)
+	exit, debug, host, _ := debugExit(t, debugBusySweep)
 	runDebugExit(t, exit)
-	stop := readDebug(debug)
+	stop := readDebug(t, host, debug)
 	awaitPasses(t, exit)
 	if errs := stop(); errs[""] == 0 || len(errs) != 1 {
 		t.Errorf("the reads answered %v by their read error, want every one read", errs)
@@ -198,25 +207,24 @@ func TestDebugReadsBesidePassesAndAnotherReader(t *testing.T) {
 }
 
 // Reads go on while the exit stops and after Run has returned, which closed
-// the backend's sockets: each reads the rules, finds a table the stop removed
-// between the read's look at the tables and its read of one, or answers the
-// error a read after the stop answers, which names no descriptor Close
-// released
+// the backend's sockets: each reads the rules or finds a table the stop
+// removed between the read's look at the tables and its read of one, and a
+// read after the stop finds no rule held
 func TestDebugReadsAcrossTheExitsStop(t *testing.T) {
-	exit, debug, _, _ := debugExit(t, debugBusySweep)
+	exit, debug, host, _ := debugExit(t, debugBusySweep)
 	stopExit := runDebugExit(t, exit)
-	stopReads := readDebug(debug)
+	stopReads := readDebug(t, host, debug)
 	awaitPasses(t, exit)
 	stopExit()
 	errs := stopReads()
-	after := debug()
-	if after.ReadErr == "" || strings.Contains(after.ReadErr, syscall.EBADF.Error()) {
-		t.Fatalf("a debug read after Run returned answers %q, want the error of a stopped exit", after.ReadErr)
+	after := debug(netnstest.JoinThread(t, host.Path))
+	if after.ReadErr != "" || slices.ContainsFunc(after.Rules, func(rule egress.RuleReading) bool { return rule.Held }) {
+		t.Fatalf("a debug read after Run returned answers %q and the rules %+v, want none held", after.ReadErr, after.Rules)
 	}
 	for err, reads := range errs {
 		removed := strings.HasPrefix(err, "egress: read table ") && strings.HasSuffix(err, ": "+syscall.ENOENT.Error())
-		if err != "" && err != after.ReadErr && !removed {
-			t.Errorf("%d reads across the stop answered %q, want the rules, a table the stop removed or %q", reads, err, after.ReadErr)
+		if err != "" && !removed {
+			t.Errorf("%d reads across the stop answered %q, want the rules or a table the stop removed", reads, err)
 		}
 	}
 }

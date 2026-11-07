@@ -12,7 +12,6 @@ import (
 	"net"
 	"slices"
 	"strings"
-	"sync"
 
 	"golang.org/x/sys/unix"
 
@@ -24,20 +23,11 @@ import (
 // address family in use, and the limit their sets count each source's flows
 // against.
 type natTables struct {
-	conn    *nftables.Conn
-	monitor *nftables.Monitor
-	// reads is Read's socket, opened beside conn so it reads the namespace
-	// conn writes whichever thread calls Read. readMu holds it and closed,
-	// which Close sets as it closes it, for one reader at a time.
-	reads    *nftables.Conn
-	readMu   sync.Mutex
-	closed   bool
+	conn     *nftables.Conn
+	monitor  *nftables.Monitor
 	families []uint8
 	limit    int
 }
-
-// errClosed is Read's error once Close has run
-var errClosed = errors.New("egress: the exit's tables are no longer read, the exit having stopped")
 
 // New validates the capability and opens the tables the backend owns, so a
 // deployment that cannot have it fails at startup rather than on the first
@@ -92,20 +82,10 @@ func newBackend(cfg egress.Egress, rt Runtime) (backend, error) {
 		conn.Close()
 		return nil, err
 	}
-	if be.reads, err = nftables.Dial(); err != nil {
-		be.monitor.Close()
-		conn.Close()
-		return nil, err
-	}
 	return be, nil
 }
 
-func (n *natTables) Close() error {
-	n.readMu.Lock()
-	defer n.readMu.Unlock()
-	n.closed = true
-	return errors.Join(n.monitor.Close(), n.conn.Close(), n.reads.Close())
-}
+func (n *natTables) Close() error { return errors.Join(n.monitor.Close(), n.conn.Close()) }
 
 func (n *natTables) Changed() <-chan struct{} { return n.monitor.Changed() }
 
@@ -119,7 +99,7 @@ var (
 )
 
 // where names the tables this backend owns, for a log line.
-func (n *natTables) where(egress.Egress) string {
+func (n *natTables) where() string {
 	names := make([]string, 0, len(n.families))
 	for _, family := range n.families {
 		names = append(names, tableFamilyName(family))
@@ -165,13 +145,15 @@ func (n *natTables) Rules(desired []Rule) (map[uint8]chainReadback, error) {
 	return n.read(n.conn, desired, true)
 }
 
+// Read dumps through a socket of its own, so the run goroutine's stays with
+// its one user
 func (n *natTables) Read(desired []Rule) (map[uint8]chainReadback, error) {
-	n.readMu.Lock()
-	defer n.readMu.Unlock()
-	if n.closed {
-		return nil, errClosed
+	conn, err := nftables.Dial()
+	if err != nil {
+		return nil, err
 	}
-	return n.read(n.reads, desired, false)
+	defer conn.Close()
+	return n.read(conn, desired, false)
 }
 
 // read reads each family's table and the chains desired writes there, their

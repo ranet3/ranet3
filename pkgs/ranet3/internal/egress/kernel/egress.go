@@ -493,8 +493,7 @@ type backend interface {
 	Rules(desired []Rule) (map[uint8]chainReadback, error)
 	// Read is Rules with desired naming the chains alone, through a socket of
 	// its own, for a reader off the run goroutine, which owns the backend's
-	// socket, one reader at a time. After Close it reads nothing and answers an
-	// error of its own.
+	// socket
 	Read(desired []Rule) (map[uint8]chainReadback, error)
 	// Apply brings this tool's own chains to rules, deleting the table of each
 	// family in remake first. It replaces the chains' contents in one
@@ -516,7 +515,7 @@ type backend interface {
 	Missed() <-chan struct{}
 	Close() error
 	// where names the space this backend owns, for a log line.
-	where(egress.Egress) string
+	where() string
 }
 
 // passStats is one finished pass, which Status reports. Installed counts the
@@ -692,7 +691,7 @@ func (t *Translator) Debug() egress.ExitDebug {
 	return out
 }
 
-func (t *Translator) where() string { return t.be.where(t.cfg) }
+func (t *Translator) where() string { return t.be.where() }
 
 // lastPass is the last pass, and the zero value before the first has run, which At tells apart
 func (t *Translator) lastPass() passStats {
@@ -820,7 +819,9 @@ func (t *Translator) reconcile() error {
 	}
 	conflicts, conflictErr := t.be.Conflicts()
 	err = errors.Join(err, conflictErr)
-	t.reportConflicts(conflicts)
+	if conflictErr == nil {
+		t.reportConflicts(conflicts)
+	}
 
 	// Readiness is per family and is read from the host on every pass rather
 	// than captured at startup, because each part of it changes under a

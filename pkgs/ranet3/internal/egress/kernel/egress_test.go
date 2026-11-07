@@ -19,6 +19,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -57,6 +58,8 @@ type fakeBackend struct {
 	// reads counts the debug reads, and failRead makes them fail
 	reads    int
 	failRead bool
+	// failConflicts makes a host whose other chains cannot be listed
+	failConflicts bool
 }
 
 func (f *fakeBackend) record(entry string) {
@@ -161,6 +164,9 @@ func (f *fakeBackend) Apply(rules []Rule, remake []uint8) error {
 func (f *fakeBackend) Conflicts() ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failConflicts {
+		return nil, errors.New("no")
+	}
 	return slices.Clone(f.conflicts), nil
 }
 
@@ -182,7 +188,7 @@ func (f *fakeBackend) Changed() <-chan struct{} { return f.changed }
 
 func (f *fakeBackend) Missed() <-chan struct{} { return f.missed }
 
-func (f *fakeBackend) where(egress.Egress) string { return "a fake host" }
+func (f *fakeBackend) where() string { return "a fake host" }
 
 func (f *fakeBackend) specs() []string {
 	f.mu.Lock()
@@ -1135,6 +1141,26 @@ func TestConflictsAreReportedRatherThanRemoved(t *testing.T) {
 	}
 	if got := tr.Announce(); len(got) != 1 {
 		t.Errorf("a conflict withheld the advertisement: %v", got)
+	}
+}
+
+// A pass whose listing of other chains fails between two that list the same
+// conflict reports it once, the warning of the first pass standing
+func TestConflictsAreReportedOnceAcrossAFailedListing(t *testing.T) {
+	var lines strings.Builder
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(&lines, nil)))
+	be := &fakeBackend{conflicts: []string{"ip table nat chain POSTROUTING at priority 100"}}
+	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}, Runtime{}, be)
+	for _, fails := range []bool{false, true, false} {
+		be.mu.Lock()
+		be.failConflicts = fails
+		be.mu.Unlock()
+		if err := tr.reconcile(); (err != nil) != fails {
+			t.Fatalf("a pass whose listing fails %v answered %v", fails, err)
+		}
+	}
+	if got := strings.Count(lines.String(), "level=WARN msg=\"egress is sharing the source translation hook with another writer\""); got != 1 {
+		t.Errorf("the conflict was warned of %d times, want once:\n%s", got, lines.String())
 	}
 }
 
