@@ -243,7 +243,7 @@ func TestDebugAccessIsAnUnknownFlag(t *testing.T) {
 	}
 }
 
-// notDaemon is the directories of the module no daemon is built from: the test tools and generators under internal/cmd,
+// notDaemon is the directories of the module no daemon is built from: the generator under internal/cmd,
 // and the packages only tests import
 var notDaemon = []string{"internal/cmd", "internal/dnstest", "internal/egress/egresstest", "internal/goldentest", "internal/logtest", "internal/netnstest"}
 
