@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-06
+updated: 2026-11-07
 order: 30
 ---
 
@@ -449,7 +449,7 @@ how many fragments a forward cut the packet into. An answer names its ICMP error
 and what became of it: `sent`, `withheld` by the
 [ICMP rate limits](../path-mtu.md#packets-that-do-not-fit), `unanswered` where
 the node holds no address of the family to send it from, `not_answerable` for a
-packet no ICMP error may answer, or `unsent` for one built and not sent, to a
+packet no ICMP error may answer, or `unsent` for one due and not sent, to a
 source the mesh routes it no way back to or through a session with no room for
 it.
 

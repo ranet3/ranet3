@@ -42,11 +42,13 @@ and, on an exit, the egress it hands the host to carry out. An exit or a subnet
 router carries transit the same way, so transit for a prefix another node
 announces never leaves by the uplink.
 
-A packet this node does not forward is answered as a router answers it, from the
-node's router-id: Time Exceeded at a hop limit or TTL of 1, Packet Too Big or
-Fragmentation Needed past the next session's size, and Destination Unreachable
-with no route or inside a held prefix. [Routing](../routing.md#transit) lists
-the answers and their codes.
+A packet this node does not forward is answered as a router answers it: Time
+Exceeded at a hop limit or TTL of 1, Packet Too Big or Fragmentation Needed past
+the next session's size, and Destination Unreachable with no route or inside a
+held prefix. A packet from a source only this node's own default reaches draws
+no answer, so an exit answers none from a host beyond the mesh.
+[Routing](../routing.md#transit) lists the answers, their codes and the address
+each comes from.
 
 [`cap.egress`](../exit-nodes.md) still reads the host's forwarding, for what an
 exit sends out of its uplink. A prefix an exit node offers to carry is

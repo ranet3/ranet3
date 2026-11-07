@@ -124,6 +124,29 @@ stay apart.
   [sharing a host](coexistence.md#another-programs-rules) describes. macOS has
   no policy rules and asks none.
 
+### Kernels with tun GRO bugs
+
+The tun coalesces the packets the mesh writes into the host, TCP on every kernel
+and UDP where the kernel takes UDP segmentation offload on a tun, from Linux
+6.2. The daemon turns neither off, so two kernel bugs reach it:
+
+- Linux 5.15.165 and 5.15.166, 6.1.103 to 6.1.106, 6.6.44 and 6.6.45, and 6.10.3
+  and 6.10.4 carry
+  [`e269d79c7d35`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=e269d79c7d35aa3808b1f3c1737d63dab504ddc8)
+  without its fix,
+  [`89add40066f9`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=89add40066f9ed9abe5f7f886fe5789ff7e0c50e).
+  The tun refuses some coalesced writes with EINVAL, and the packets each holds
+  are lost. `ranet3_tun_writes_failed_total` climbs, the
+  [`netstack tun refused a write`](metrics.md#tun-reads) warning carries
+  `invalid argument`, and TCP into the host through the mesh slows. The fix is
+  5.15.167, 6.1.107, 6.6.46, 6.10.5 or a later release of the same series.
+- Linux 6.2 to 6.8.4 lacks
+  [`3d010c8031e3`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=3d010c8031e39f5fa1e8b13ada77e0321091011f),
+  but for 6.6.26 and every later 6.6. A coalesced UDP write bound for a vxlan or
+  geneve interface on the host is lost after the tun takes it, and no counter of
+  the daemon's sees the loss. The fix is 6.8.5 or later, or 6.6.26 or later on
+  6.6.
+
 ## macOS
 
 macOS has 1 forwarding table and lacks policy rules, so its reconciler installs
