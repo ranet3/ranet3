@@ -514,9 +514,9 @@ type egressAnswer struct{ routed, forMesh bool }
 // where no node announces it, an exit with an overlay whose table selects its own entry counting as a default answers it as no route, and a node whose table selects that exit's entry routes it there
 // an exit with no overlay written has none, so its decision egresses such an address as any destination outside the mesh
 func (m *Mesh) pairAnswer(check *egressCheck, source, destination netip.Addr, segment bool) egressAnswer {
-	pair := [2]netip.Addr{source, destination}
 	for i := range check.kept {
-		if check.pairs[i] == pair {
+		// the compiler compares a netip.Addr inline and a [2]netip.Addr through a call to memequal
+		if check.pairs[i][0] == source && check.pairs[i][1] == destination {
 			return check.answers[i]
 		}
 	}
@@ -528,7 +528,7 @@ func (m *Mesh) pairAnswer(check *egressCheck, source, destination netip.Addr, se
 		answer.forMesh = !match.Counted && verdict != RouteNone || m.inOverlay(destination)
 	}
 	if check.kept < egressPairs {
-		check.pairs[check.kept], check.answers[check.kept] = pair, answer
+		check.pairs[check.kept], check.answers[check.kept] = [2]netip.Addr{source, destination}, answer
 		check.kept++
 	}
 	return answer
