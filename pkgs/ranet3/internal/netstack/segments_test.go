@@ -331,8 +331,8 @@ func TestSteeredPacketIsRoutedByItsFirstSegment(t *testing.T) {
 	if got := netip.AddrFrom16([16]byte(steered[24:40])); got != exit {
 		t.Errorf("the steered packet is addressed to %s, want the first segment %s", got, exit)
 	}
-	if counters := mesh.SegmentCounters(); counters.Steered != 1 || counters.Unsteered != 0 {
-		t.Errorf("steering counted %+v", counters)
+	if counters := mesh.SegmentCounters(); counters != (SegmentCounters{}) {
+		t.Errorf("steer counted %+v, where classify counts a read's steered packets once it is classified", counters)
 	}
 
 	// A packet from another address is claimed by no policy.

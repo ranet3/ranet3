@@ -5,6 +5,8 @@ package netstack
 
 import (
 	"net/netip"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -115,33 +117,34 @@ func TestReadTooLargeToSteerIsCountedTooBig(t *testing.T) {
 	}
 }
 
-// sealingPeer records what a peer was handed, so a test can tell which peer a
 // A stopped steering passes the packet its policy claims, unencapsulated and
 // uncounted, so the route table decides where it goes: the node behaves as one
 // whose file carries no steer policy at all. The table stays loaded, so a
 // diagnostic still reports what was stopped.
 func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
+	exit := segAddr("3fff:b:0:206::1")
 	table, err := srv6.NewSteerTable([]srv6.Steer{{
 		From: schema.PrefixFrom(segPrefix("3fff:a::17/128")),
-		Via:  []schema.Addr{schema.MustAddr("3fff:b:0:206::1")},
+		Via:  []schema.Addr{schema.AddrFrom(exit)},
 	}}, schema.MustAddr("3fff:b:0:100::1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := &Mesh{Routes: NewRouteTable()}
+	m, dev := recordingMesh(t)
 	m.SetSteering(table)
 	source, destination := segAddr("3fff:a::17"), segAddr("2001:4860:4860::8888")
+	segmentPeer := (&recordingPeer{}).peer(t, "segment")
+	destinationPeer := (&recordingPeer{}).peer(t, "destination")
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(exit, 128), segmentPeer)
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(destination, 128), destinationPeer)
+	read := plainV6(source, destination, "payload")
 
-	policy, _ := m.steerPolicy(m.Steering(), source, destination, false)
-	if policy == nil {
-		t.Fatal("the fixture policy did not claim the packet, so this proves nothing")
-	}
-	if _, ok := m.steer(nil, plainV6(source, destination, "payload"), policy); !ok {
-		t.Fatal("the fixture policy could not encapsulate the packet, so this proves nothing")
+	if b, _ := classifyOne(m, dev, read); b.peers[0] != segmentPeer {
+		t.Fatalf("the fixture policy sent the read to %v rather than to its first segment's peer, so this proves nothing", b.peers[0])
 	}
 	m.SetSteeringEnabled(false)
-	if policy, _ := m.steerPolicy(m.Steering(), source, destination, false); policy != nil {
-		t.Errorf("a stopped steering claimed the packet for %v", policy)
+	if b, _ := classifyOne(m, dev, read); b.peers[0] != destinationPeer {
+		t.Errorf("a stopped steering sent the claimed read to %v, want the peer its destination selects", b.peers[0])
 	}
 	if got := m.SegmentCounters().Steered; got != 1 {
 		t.Errorf("%d encapsulations counted, want only the one before the stop", got)
@@ -155,6 +158,68 @@ func TestStoppedSteeringPassesTheClaimedPacket(t *testing.T) {
 	}
 }
 
+// Each tun reader adds its read's steering counts once the read is classified,
+// so readers classifying reads of one mesh at once leave every counter at the
+// sum of their reads' own: a read steered along a cap.segment steer entry to a
+// routed segment, one to an unrouted segment, one too large to steer, two along
+// cap.exit via's path and one no steering claims.
+func TestSteeringCountsAddUpAcrossReaders(t *testing.T) {
+	const readers, reads = 8, 64
+	m, _, _, waypoint := pathMesh(t)
+	entryPeer := (&recordingPeer{}).peer(t, "entry's segment")
+	m.Routes.Set(netip.Prefix{}, segPrefix("3fff:9::/64"), entryPeer)
+	routed, unrouted := segAddr("2001:db8::9"), segAddr("2001:db8::a")
+	m.SetSteering(pathSteering(t,
+		srv6.Steer{To: schema.PrefixFrom(hostPrefix(routed)), Via: []schema.Addr{schema.MustAddr("3fff:9::1")}},
+		srv6.Steer{To: schema.PrefixFrom(hostPrefix(unrouted)), Via: []schema.Addr{schema.MustAddr("3fff:a::1")}},
+	))
+	packets := [][]byte{
+		udpPacket(transitOwn[6], routed, 100, false),
+		udpPacket(transitOwn[6], unrouted, 100, false),
+		udpPacket(transitOwn[6], routed, unencapsulable, false),
+		udpPacket(transitOwn[6], edgeInternet[6], 100, false),
+		udpPacket(transitOwn[4], edgeInternet[4], 100, false),
+		udpPacket(transitOwn[6], edgeSubnetHost[6], 100, false),
+	}
+	// a read's counts as the list above has them, two of its steered packets the path's
+	perRead := SegmentCounters{Steered: 4, Unsteered: 1, Unrouted: 1}
+
+	b := classifiedBatch(m, packets...)
+	unclaimed := b.peers[5]
+	if unclaimed == nil || unclaimed == waypoint || unclaimed == entryPeer {
+		t.Fatalf("the packet no steering claims went to %v, so this proves nothing", unclaimed)
+	}
+	if want := []*Peer{entryPeer, nil, nil, waypoint, waypoint, unclaimed}; !slices.Equal(b.peers, want) {
+		t.Fatalf("the read went to %v, want %v, so this proves nothing", b.peers, want)
+	}
+	if got := m.SegmentCounters(); got != perRead {
+		t.Fatalf("one read counted %+v, want %+v", got, perRead)
+	}
+
+	var wg sync.WaitGroup
+	for range readers {
+		wg.Go(func() {
+			b := newOutboundBatch(len(packets))
+			fill(b, packets...)
+			for range reads {
+				b.n = len(packets)
+				m.classify(b)
+				b.reset()
+			}
+		})
+	}
+	wg.Wait()
+	times := uint64(1 + readers*reads)
+	want := SegmentCounters{Steered: times * perRead.Steered, Unsteered: times * perRead.Unsteered, Unrouted: times * perRead.Unrouted}
+	if got := m.SegmentCounters(); got != want {
+		t.Errorf("%d readers of %d reads each counted %+v, want %+v", readers, reads, got, want)
+	}
+	if got, want := m.PathCounters(), (PathCounters{Steered: times * 2}); got != want {
+		t.Errorf("%d readers of %d reads each counted %+v for the path, want %+v", readers, reads, got, want)
+	}
+}
+
+// sealingPeer records what a peer was handed, so a test can tell which peer a
 // packet went to rather than only that it left.
 func sealingPeer(t *testing.T, id string, seen chan []byte) *Peer {
 	t.Helper()

@@ -167,8 +167,12 @@ func TestDefaultSteerTakesExactlyWhatTheModelSends(t *testing.T) {
 				ht.Fatalf("a packet to %s the model leaves alone went to the waypoint", destination)
 			}
 		}
-		if got := m.SegmentCounters().Steered; got != steered {
-			ht.Fatalf("%d packets were counted steered, the model steers %d", got, steered)
+		// every steer drawn is the path's, and pathMesh routes its first segment
+		if got := m.SegmentCounters(); got.Steered != steered || got.Unrouted != 0 {
+			ht.Fatalf("%d packets were counted steered and %d unrouted, the model steers %d and routes them all", got.Steered, got.Unrouted, steered)
+		}
+		if got := m.PathCounters(); got != (PathCounters{Steered: steered}) {
+			ht.Fatalf("the path was counted %+v, the model steers %d along it and routes them all", got, steered)
 		}
 		if got := m.TransitCounters().UnownedSource; got != unowned {
 			ht.Fatalf("%d packets were counted unowned_source, the model drops %d", got, unowned)

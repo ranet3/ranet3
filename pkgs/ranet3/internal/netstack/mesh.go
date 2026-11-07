@@ -399,6 +399,8 @@ func (m *Mesh) classify(b *outboundBatch) {
 	trace := m.tracer.Load()
 	var tally transitTally
 	defer m.addTally(&tally)
+	var steers steerTally
+	defer m.addSteerTally(&steers)
 	segments := m.segmentTable.Load()
 	// read once a read beside the segments, so the owned-source arm and the steer judge each packet by one table
 	steering := m.steerTable.Load()
@@ -449,8 +451,9 @@ func (m *Mesh) classify(b *outboundBatch) {
 				}
 				continue
 			}
+			steers.steered++
 			if path {
-				m.pathSteered.Add(1)
+				steers.pathSteered++
 			}
 			sent = b.steered[i]
 			var outer, first netip.Addr
@@ -459,9 +462,9 @@ func (m *Mesh) classify(b *outboundBatch) {
 			}
 			var firstMatch Match
 			if peer, verdict, firstMatch = m.Routes.Resolve(outer, first); firstUnrouted(path, verdict, firstMatch) {
-				m.segmentsUnrouted.Add(1)
+				steers.unrouted++
 				if path {
-					m.pathUnrouted.Add(1)
+					steers.pathUnrouted++
 				}
 				m.reportUnroutedSegment(first, verdict, firstMatch)
 				verdict, match, segment = RouteNone, Match{}, first

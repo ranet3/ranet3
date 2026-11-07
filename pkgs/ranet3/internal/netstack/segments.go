@@ -96,6 +96,7 @@ func (m *Mesh) PathCounters() PathCounters {
 
 // steer appends raw, encapsulated under policy, to dst, never touching raw
 // false is a packet the policy claimed and this node could not encapsulate, which is dropped rather than sent as it was
+// the caller counts a packet steered
 //
 // A steering policy here selects an exit, so sending the packet by the metric
 // instead puts it out of a different node under a source address that node
@@ -110,7 +111,6 @@ func (m *Mesh) steer(dst, raw []byte, policy *srv6.Policy) ([]byte, bool) {
 		m.reportSegmentDrop("a packet a policy claimed could not be encapsulated", "policy", policy, "err", err)
 		return dst, false
 	}
-	m.segmentsSteered.Add(1)
 	return encapsulated, true
 }
 
@@ -139,7 +139,8 @@ type SegmentCounters struct {
 	// route of its own. Both failures drop the packet rather than send it by
 	// the route the policy exists to override, and both are this node's own
 	// steering rather than anything a peer did, so neither is counted in
-	// Dropped.
+	// Dropped. Steered and Unrouted take a read off the tun once it is
+	// classified.
 	Steered   uint64
 	Unsteered uint64
 	Unrouted  uint64
@@ -867,6 +868,30 @@ type segmentCounters struct {
 	// wall clock cannot suppress every report until it catches up.
 	segmentsStarted time.Time
 	segmentReported atomic.Int64
+}
+
+// steerTally is one read's steering counts, added to the mesh's once the read is classified
+// so the tun readers share no counter per steered packet
+type steerTally struct {
+	steered, unrouted, pathSteered, pathUnrouted uint32
+}
+
+// addSteerTally adds tally to the mesh's counts, steered first
+// the other three are parts of steered, so a read that steered none has none of them
+func (m *Mesh) addSteerTally(tally *steerTally) {
+	if tally.steered == 0 {
+		return
+	}
+	m.segmentsSteered.Add(uint64(tally.steered))
+	if tally.pathSteered != 0 {
+		m.pathSteered.Add(uint64(tally.pathSteered))
+	}
+	if tally.unrouted != 0 {
+		m.segmentsUnrouted.Add(uint64(tally.unrouted))
+	}
+	if tally.pathUnrouted != 0 {
+		m.pathUnrouted.Add(uint64(tally.pathUnrouted))
+	}
 }
 
 // startSegmentReports lets the first refused packet report immediately and
