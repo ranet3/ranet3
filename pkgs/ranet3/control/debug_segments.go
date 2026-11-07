@@ -11,8 +11,8 @@ import (
 )
 
 // PathDebugSegments is cap.segment: each local segment, each cap.segment
-// steer policy, the overhead the longest list takes, cap.exit via's path
-// among them, and the node's segment counters
+// steer policy, cap.exit via's path, the overhead the longest list takes,
+// and the node's segment counters
 const PathDebugSegments = PathDebug + "segments"
 
 func init() {
@@ -53,16 +53,19 @@ type SegmentEgress struct {
 // Steering is the policies deciding which of this node's own packets go
 // through a segment list: Enabled false while they are stopped, Overhead the
 // most any adds, cap.exit via's path among them, which the tun's MTU leaves
-// room for, and each cap.segment steer policy in the order it was written
+// room for, each cap.segment steer policy in the order it was written, and
+// Via, cap.exit via's path, which a stop of steering leaves on, absent where
+// the node has none
 type Steering struct {
 	Enabled  bool          `json:"enabled"`
 	Overhead int           `json:"overhead"`
 	Policies []SteerPolicy `json:"policies"`
+	Via      *SteerPolicy  `json:"via,omitempty"`
 }
 
 // SteerPolicy is one steering policy: its selector, a half absent where the
-// entry left it out, the outer source, the segments in the order visited and
-// the bytes it adds in front of a packet
+// entry left it out and both for cap.exit via's path, the outer source, the
+// segments in the order visited and the bytes it adds in front of a packet
 type SteerPolicy struct {
 	From     netip.Prefix `json:"from,omitzero"`
 	To       netip.Prefix `json:"to,omitzero"`
@@ -74,8 +77,8 @@ type SteerPolicy struct {
 // Segments reads cap.segment with its policies and counters
 func (c *Client) Segments() (SegmentsInfo, error) { return read[SegmentsInfo](c, PathDebugSegments) }
 
-// RenderSegments writes each local segment, the steering policies as a table,
-// then the counters
+// RenderSegments writes each local segment, cap.exit via's path, the steering
+// policies as a table where there are any, then the counters
 func RenderSegments(w io.Writer, info SegmentsInfo) {
 	if len(info.Segments) == 0 && info.Steering == nil {
 		fmt.Fprintln(w, "No local segment and no steering policy")
@@ -90,21 +93,28 @@ func RenderSegments(w io.Writer, info SegmentsInfo) {
 			state = "stopped"
 		}
 		rows = append(rows, []string{"Steering", fmt.Sprintf("%s, the tun's MTU leaving %d B for the longest segment list", state, s.Overhead)})
-	}
-	pairs(w, rows)
-	if s := info.Steering; s != nil {
-		policies := make([][]string, 0, len(s.Policies))
-		for _, policy := range s.Policies {
-			policies = append(policies, []string{selectorText(policy), policy.Source.String(), pathText(policy), fmt.Sprintf("%d B", policy.Overhead)})
+		if v := s.Via; v != nil {
+			rows = append(rows, []string{"Exit path", fmt.Sprintf("%s from %s, %d B, on whether or not steering is stopped", pathText(*v), v.Source, v.Overhead)})
 		}
-		indented(w, func(w io.Writer) { table(w, []string{"Selects", "Source", "Path", "Overhead"}, policies) })
 	}
 	c := info.Counters
-	pairs(w, [][]string{
+	counters := [][]string{
 		{"Counters", fmt.Sprintf("%d forwarded, %d delivered, %d dropped, %d answered, %d egressed, %d refused, %d not ready",
 			c.Forwarded, c.Delivered, c.Dropped, c.Answered, c.Egressed, c.Refused, c.NotReady)},
 		{"Steered", fmt.Sprintf("%d steered, %d too large to encapsulate, %d with no route to their first segment", c.Steered, c.Unsteered, c.Unrouted)},
-	})
+	}
+	s := info.Steering
+	if s == nil || len(s.Policies) == 0 {
+		pairs(w, append(rows, counters...))
+		return
+	}
+	pairs(w, rows)
+	policies := make([][]string, 0, len(s.Policies))
+	for _, policy := range s.Policies {
+		policies = append(policies, []string{selectorText(policy), policy.Source.String(), pathText(policy), fmt.Sprintf("%d B", policy.Overhead)})
+	}
+	indented(w, func(w io.Writer) { table(w, []string{"Selects", "Source", "Path", "Overhead"}, policies) })
+	pairs(w, counters)
 }
 
 // segmentText is a segment as the file spells it, then an egress segment's

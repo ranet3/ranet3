@@ -1,0 +1,4 @@
+Steering   on, the tun's MTU leaving 64 B for the longest segment list
+Exit path  3fff:b:0:406::1 from 3fff:b:0:100::1, 64 B, on whether or not steering is stopped
+Counters   0 forwarded, 0 delivered, 0 dropped, 0 answered, 0 egressed, 0 refused, 0 not ready
+Steered    9 steered, 0 too large to encapsulate, 0 with no route to their first segment

@@ -1,0 +1,27 @@
+{
+  "steering": {
+    "enabled": true,
+    "overhead": 64,
+    "policies": null,
+    "via": {
+      "source": "3fff:b:0:100::1",
+      "path": [
+        "3fff:b:0:406::1"
+      ],
+      "overhead": 64
+    }
+  },
+  "counters": {
+    "forwarded": 0,
+    "delivered": 0,
+    "dropped": 0,
+    "steered": 9,
+    "unsteered": 0,
+    "unrouted": 0,
+    "answered": 0,
+    "egressed": 0,
+    "refused": 0,
+    "not_ready": 0,
+    "ecn_unused": 0
+  }
+}

@@ -18,9 +18,9 @@ func (r *reader) segmentsCommand() *cobra.Command {
 		Long: `The output covers each segment this node answers for, an egress segment
 with whether its SID is announced and the families the mesh hands to the exit
 through it, each cap.segment steer policy with its selector, source, path and
-overhead, stopped or not, the overhead the longest list takes, cap.exit via's
-path among them, and the node's segment counters as ranet3 status reports
-them.`,
+overhead, stopped or not, cap.exit via's path with its source and overhead,
+which a stop of steering leaves on, the overhead the longest list takes, and
+the node's segment counters as ranet3 status reports them.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) error {

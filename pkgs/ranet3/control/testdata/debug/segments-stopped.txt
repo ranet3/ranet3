@@ -1,5 +1,6 @@
-Segment   3fff:b:0:200::3 End.DT46 deliver egress allow 192.0.2.0/24 3fff:a::/32, not served, ready for none
-Steering  stopped, the tun's MTU leaving 80 B for the longest segment list
+Segment    3fff:b:0:200::3 End.DT46 deliver egress allow 192.0.2.0/24 3fff:a::/32, not served, ready for none
+Steering   stopped, the tun's MTU leaving 80 B for the longest segment list
+Exit path  3fff:b:0:406::1 from 3fff:b:0:100::1, 64 B, on whether or not steering is stopped
   Selects                            Source           Path                             Overhead
   from 192.0.2.1/32                  3fff:b:0:100::1  3fff:b:0:206::1                  64 B
   from 3fff:a::/48 to 2001:db8::/32  3fff:b:0:100::1  3fff:b:0:206::1 3fff:b:0:406::1  80 B
