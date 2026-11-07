@@ -32,8 +32,12 @@ func (a sourceAnswer) forged() bool {
 // keptAnswers holds answers for the sources of reads off the tun, kept from read to read while the table's generation holds
 // each source and destination is looked up once, and again only once keptPairs pairs have filled the answers and started them over
 // a route announced from a source prefix covers a source only for replies to some destinations, so the answer is kept per pair
-// the zero value holds none
+// the zero value holds none, for a tun reader
 type keptAnswers struct {
+	// exit is the answers of an exit's lane, whose packets the exit built from
+	// the destinations its leaves sent to, so the unowned-source drop under
+	// ownedOnly passes them, and every other check stays
+	exit bool
 	// generation is the table's generation the answers were looked up under
 	generation uint64
 	// last is the pair of the last lookup, reads mostly carrying one flow's packets in a row
@@ -128,7 +132,8 @@ func (m *Mesh) checkPacket(kept *keptAnswers, segments *srv6.LocalTable, raw []b
 	}
 	// a packet leaving the mesh through an exit comes from this node, so a host's neighbor reaches no exit through it
 	// and under ownedOnly so does every packet entering the mesh but one to an IPv6 link-local destination, which mesh_entry passes too
-	if !answer.owned() && (leaves || m.ownedOnly && !linkLocal6(destination)) {
+	// and one an exit's lane lays, which the exit built from a destination its leaf sent to
+	if !answer.owned() && (leaves || m.ownedOnly && !linkLocal6(destination) && !kept.exit) {
 		return transitUnownedSource, true, 0, 0
 	}
 	if next == esp.NextHeaderIPv4 || next == esp.NextHeaderIPv6 {

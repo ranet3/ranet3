@@ -80,6 +80,7 @@ type Mesh struct {
 	// that does.
 	segmentCounters
 	egressReadiness
+	laneState
 	answerState
 	transitState
 	traceState
@@ -1041,6 +1042,7 @@ func (m *Mesh) Close() {
 		if m.dev != nil {
 			_ = m.dev.Close()
 		}
+		m.closeLanes()
 		m.outboundReaderWG.Wait()
 		// a session's delivery may still be submitting a forward batch, and one submitted after the close would panic
 		m.submitMu.Lock()

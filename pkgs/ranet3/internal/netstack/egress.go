@@ -4,9 +4,12 @@
 package netstack
 
 import (
+	"net/netip"
+	"sync"
 	"sync/atomic"
 
 	"ranet3.com/pkgs/ranet3/srv6"
+	"ranet3.com/pkgs/wireguard/tun"
 )
 
 // egressReadiness is the families cap.egress carries out of the mesh, as the exit and the republish last named them, and the exit carrying them
@@ -77,4 +80,164 @@ func (m *Mesh) egress(frames [][]byte, hold Hold) {
 		return
 	}
 	m.exit.Egress(frames, hold)
+}
+
+// laneState holds the mesh's record of the exit's lanes
+type laneState struct {
+	// lanesMu orders a lane's opening against Close, so no lane joins
+	// outboundReaderWG once Close waits on it, and lanesClosed is Close having
+	// begun to wait
+	lanesMu     sync.Mutex
+	lanesClosed bool
+}
+
+// Lane is one of an exit's ways into the outbound path, which the mesh counts
+// among its readers as it counts a tun queue. What the exit lays in it meets
+// the checks a read off the tun meets, but for the drop of a source this node
+// does not own under ownedOnly, since every packet an exit builds comes from
+// the destination a leaf sent to.
+type Lane struct {
+	m       *Mesh
+	answers keptAnswers
+	// open is the lane counted in outboundReaderWG until Close gives it back
+	open      bool
+	closeOnce sync.Once
+}
+
+// OpenLane opens a lane, which the mesh's Close then waits for as it waits for
+// a tun reader. A lane opened once the mesh is closing is open to nothing:
+// Fill reports false at once.
+func (m *Mesh) OpenLane() *Lane {
+	l := &Lane{m: m, answers: keptAnswers{exit: true}}
+	m.lanesMu.Lock()
+	defer m.lanesMu.Unlock()
+	if !m.lanesClosed {
+		l.open = true
+		m.outboundReaderWG.Add(1)
+	}
+	return l
+}
+
+// closeLanes has Close wait for the lanes open now and refuse any opened later
+func (m *Mesh) closeLanes() {
+	m.lanesMu.Lock()
+	defer m.lanesMu.Unlock()
+	m.lanesClosed = true
+}
+
+// Fill takes a free outbound batch, has fill lay packets in its slab as a tun
+// read lays them and report how many, and sends them through the checks a read
+// off the tun meets. It waits for a batch as a tun reader does, and reports
+// false once the mesh is closing or the lane closed, having laid nothing.
+func (l *Lane) Fill(fill func(slab []byte, reads []tun.ReadPacket) int) bool {
+	if !l.open {
+		return false
+	}
+	m := l.m
+	// a free batch and a closed mesh both ready, the select picks either
+	select {
+	case <-m.closed:
+		return false
+	default:
+	}
+	var b *outboundBatch
+	select {
+	case b = <-m.outboundFree:
+	case <-m.closed:
+		return false
+	}
+	b.n, b.answers = fill(b.slab, b.reads), &l.answers
+	m.classify(b)
+	if len(b.peerOrder) == 0 {
+		b.reset()
+		m.outboundFree <- b
+		return true
+	}
+	m.dispatchOutbound(b)
+	return true
+}
+
+// ExitAnswer is an ICMP error an exit answers a leaf's packet with from this
+// node
+type ExitAnswer uint8
+
+const (
+	// ExitExpired is time exceeded, for a packet whose TTL or hop limit runs
+	// out at the exit
+	ExitExpired ExitAnswer = iota
+	// ExitProhibited is destination unreachable, administratively prohibited:
+	// code 13 over IPv4 and code 1 over IPv6, for a protocol the exit does not
+	// carry and a destination the host holds
+	ExitProhibited
+	// ExitTooBig is fragmentation needed or packet too big, carrying the MTU
+	// of the path that refused the packet
+	ExitTooBig
+	// ExitPastLimit answers a new flow past a source's share or the exit's
+	// total: host unreachable over IPv4 and administratively prohibited over
+	// IPv6, as RFC 6888 REQ-11 has a translator answer it
+	ExitPastLimit
+)
+
+// answerKind is the decision's kind an exit's answer is built as over version
+func (a ExitAnswer) answerKind(version byte) answerKind {
+	switch a {
+	case ExitExpired:
+		return answerExpired
+	case ExitTooBig:
+		return answerTooBig
+	case ExitPastLimit:
+		if version == 4 {
+			return answerHostUnreachable
+		}
+	}
+	return answerProhibited
+}
+
+// Answer sends this node's ICMP error of kind about offending, one whole IP
+// packet a session delivered to the exit, toward its source, within the node's
+// ICMP limits and from its answer source, as the node answers a packet it does
+// not forward. mtu is the path's MTU a too big carries, unread for the other
+// kinds. It reports whether an answer went out.
+func (l *Lane) Answer(offending []byte, kind ExitAnswer, mtu int) bool {
+	if len(offending) == 0 {
+		return false
+	}
+	version := offending[0] >> 4
+	if version != 4 && version != 6 || len(offending) < ipHeaderLen(version) {
+		return false
+	}
+	return l.m.answerTaking(offending, version, kind.answerKind(version), mtu, (*Mesh).takeICMPToken) == TraceSent
+}
+
+// ipHeaderLen is the shortest header of version
+func ipHeaderLen(version byte) int {
+	if version == 4 {
+		return 20
+	}
+	return 40
+}
+
+// MTU is the largest packet the session the mesh sends a packet from source
+// to destination through carries, zero where the mesh routes it to no peer
+func (l *Lane) MTU(source, destination netip.Addr) int {
+	peer, verdict, _ := l.m.Routes.Resolve(source, destination)
+	if verdict != RoutePeer {
+		return 0
+	}
+	return peer.MTU()
+}
+
+// Done is closed once the mesh closes
+func (l *Lane) Done() <-chan struct{} { return l.m.closed }
+
+// Close gives the lane back, after which Fill reports false, and the mesh's
+// Close no longer waits for it. The lane's goroutine calls it once it fills no
+// more.
+func (l *Lane) Close() {
+	l.closeOnce.Do(func() {
+		if l.open {
+			l.open = false
+			l.m.outboundReaderWG.Done()
+		}
+	})
 }

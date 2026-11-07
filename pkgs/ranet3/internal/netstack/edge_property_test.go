@@ -103,7 +103,7 @@ var edgeStrangers = map[bool]netip.Addr{true: segAddr("203.0.113.250"), false: s
 
 // over drawn tables, a read off the tun carrying packets between the entries' edges and addresses drawn inside them and anywhere is forged exactly where a model passing over every counted entry says
 // and dropped for its source otherwise exactly where no uncounted entry of this node's own covers the source and its destination resolves through an entry counting as a default
-// or, on a mesh drawn ownedOnly, lies anywhere outside fe80::/10
+// or, on a mesh drawn ownedOnly, lies anywhere outside fe80::/10, but for a read an exit's lane lays, drawn too, which passes that drop alone
 // a source an entry of this node's own covers always passes, one the table routes to a peer or holds never does, whatever the read's other packets
 // each table's reads end in a sweep of linkLocalEdges from a stranger's source of their family
 func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testing.T) {
@@ -111,7 +111,8 @@ func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testi
 	pbt.Check(t, func(ht *hegel.T) {
 		m, model, sources, destinations := drawEdgeTable(ht)
 		m.ownedOnly = hegel.Draw(ht, hegel.Booleans())
-		var kept keptAnswers
+		lane := hegel.Draw(ht, hegel.Booleans())
+		kept := keptAnswers{exit: lane}
 		var pairs [][2]netip.Addr
 		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
 			pairs = append(pairs, [2]netip.Addr{hegel.Draw(ht, hegel.SampledFrom(sources)), hegel.Draw(ht, hegel.SampledFrom(destinations))})
@@ -136,12 +137,12 @@ func TestTUNReadIsDroppedExactlyWhereTheModelSkippingCountedEntriesSays(t *testi
 			switch {
 			case forged:
 				want, drop = transitForged, true
-			case (toward.Counted || m.ownedOnly && !linkLocal.Contains(destination)) && !owned:
+			case (toward.Counted || m.ownedOnly && !linkLocal.Contains(destination) && !lane) && !owned:
 				want, drop = transitUnownedSource, true
 			}
 			switch {
 			case dropped != drop || dropped && reason != want:
-				ht.Fatalf("a read from %v to %v was dropped %t for reason %d, the model drops it %t for reason %d, in %#v under the overlay %v, ownedOnly %t", source, destination, dropped, reason, drop, want, model.entries, model.overlay, m.ownedOnly)
+				ht.Fatalf("a read from %v to %v was dropped %t for reason %d, the model drops it %t for reason %d, in %#v under the overlay %v, ownedOnly %t, lane %t", source, destination, dropped, reason, drop, want, model.entries, model.overlay, m.ownedOnly, lane)
 			case owned && dropped, others && !dropped:
 				ht.Fatalf("a read from %v to %v that an entry of this node's covers %t or another node's %t was dropped %t", source, destination, owned, others, dropped)
 			}
