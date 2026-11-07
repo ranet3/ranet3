@@ -110,6 +110,21 @@ func (l *link) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
 	return n, nil
 }
 
+// next is the next packet the stack sent, waiting for one until stop or done
+// closes or the link does, and nil then
+func (l *link) next(stop, done <-chan struct{}) *stack.PacketBuffer {
+	select {
+	case pkt := <-l.queue:
+		return pkt
+	case <-stop:
+		return nil
+	case <-done:
+		return nil
+	case <-l.closing:
+		return nil
+	}
+}
+
 // poll is the next packet the stack sent where one is queued, nil otherwise
 func (l *link) poll() *stack.PacketBuffer {
 	select {

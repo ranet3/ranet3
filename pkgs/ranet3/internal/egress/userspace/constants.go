@@ -3,6 +3,12 @@
 
 package userspace
 
+import (
+	"gvisor.dev/gvisor/pkg/tcpip/header"
+
+	"ranet3.com/pkgs/wireguard/tun"
+)
+
 const (
 	// nicID is the stack's one NIC, the link toward the lanes
 	nicID = 1
@@ -19,4 +25,21 @@ const (
 	// beside Limits.Link's bytes, so a burst of small packets meets a bound
 	// as a burst of frames does
 	linkQueuePackets = 4096
+
+	// maxWorkers caps the lanes' workers, one per CPU below it, since the
+	// stack's own goroutines take the rest
+	maxWorkers = 16
+	// workerQueuePackets bounds the packets queued to one worker beside
+	// Limits.Lanes' bytes, so a burst of small packets meets a bound as a
+	// burst of large ones does
+	workerQueuePackets = 1024
+	// smallBuffer holds a packet off any common link, and largeBuffer the
+	// largest IP packet, the two sizes of Egress's copies
+	smallBuffer = 2048
+	largeBuffer = 1<<16 - 1
+	// cutReads and cutSlab hold the segments of the largest frame the stack
+	// writes at the least segment size its TCP sends, each with the largest
+	// headers and ReadPacketSpacing around it
+	cutReads = linkGSOMaxSize/header.TCPMinimumSendMSS + 1
+	cutSlab  = cutReads*(header.IPv4MaximumHeaderSize+header.TCPHeaderMaximumSize+tun.ReadPacketSpacing) + linkGSOMaxSize + tun.ReadPacketSpacing
 )
