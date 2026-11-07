@@ -89,6 +89,14 @@ type Exit struct {
 	workers []*worker
 	pump    *pump
 	counts  counts
+	tcp     *tcpRelay
+	flows   *flows
+	// answers is the pump's lane, which answers a new flow past a limit, set
+	// at Run's start before any packet is taken
+	answers Lane
+	// ttl and hopLimit hold the TTL and the hop limit of the IPv4 and IPv6
+	// packets the exit builds, relayedTTL until SetHopLimits gives the host's
+	ttl, hopLimit atomic.Uint32
 
 	// taking is whether Egress queues what it takes, from Run's start while
 	// the exit is enabled, and laneHeld the bytes queued to the workers
@@ -193,10 +201,13 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 		return nil, err
 	}
 	x.stack = s
+	x.flows = newFlows(cfg.SourceLimit(), rt.Limits.Flows)
+	x.tcp = newTCPRelay(x)
 	for range min(max(1, runtime.GOMAXPROCS(0)), maxWorkers) {
 		x.workers = append(x.workers, &worker{queue: make(chan *[]byte, workerQueuePackets)})
 	}
 	x.enabled.Store(true)
+	x.SetHopLimits(relayedTTL, relayedTTL)
 	return x, nil
 }
 
@@ -210,6 +221,13 @@ func (x *Exit) takeUDP(stack.TransportEndpointID, *stack.PacketBuffer) {
 // counted as a protocol the exit does not carry
 func (x *Exit) takeICMP(stack.TransportEndpointID, *stack.PacketBuffer) {
 	x.counts.refuse(reasonProtocol)
+}
+
+// sourceFor is the address a flow from leaf leaves under: the address its
+// class names, and the zero Addr under auto, where the host's route to the
+// server picks the address of the link it leaves by
+func (x *Exit) sourceFor(leaf netip.Addr) netip.Addr {
+	return x.cfg.ClassOf(leaf).To.Addr
 }
 
 // SetEnabled withdraws everything while Run runs, in the order Run's end
@@ -268,11 +286,12 @@ func (x *Exit) Run(ctx context.Context) error {
 			x.work(w, lane)
 		}(w, x.rt.Mesh.OpenLane())
 	}
+	x.answers = x.rt.Mesh.OpenLane()
 	x.running.Add(1)
-	go func(lane Lane) {
+	go func() {
 		defer x.running.Done()
-		x.pump.run(lane, x.stop)
-	}(x.rt.Mesh.OpenLane())
+		x.pump.run(x.answers, x.stop)
+	}()
 	ticker := time.NewTicker(x.cfg.SweepInterval())
 	defer ticker.Stop()
 
@@ -286,6 +305,7 @@ func (x *Exit) Run(ctx context.Context) error {
 		} else {
 			if x.withdrawn {
 				x.withdrawn = false
+				x.tcp.resume()
 				slog.Info("egress userspace exit started again")
 			}
 			x.taking.Store(true)
@@ -309,22 +329,26 @@ func (x *Exit) Run(ctx context.Context) error {
 }
 
 // withdraw takes nothing more from the sessions, reports both families not
-// ready, so the mesh hands the exit nothing more, and then publishes an empty
-// announcement
+// ready, so the mesh hands the exit nothing more, publishes an empty
+// announcement, and then ends each dial and resets each connection
 func (x *Exit) withdraw(why string) {
 	x.taking.Store(false)
 	x.setReady(false, false, why, why)
 	x.publish(nil)
 	x.stats.Store(&passStats{At: time.Now(), Unready: x.unready})
+	x.tcp.withdraw()
 }
 
-// Close closes the stack, the link and Raw, once. Run's end calls it last, and
-// it closes an exit whose Run never ran.
+// Close closes the link, the stack, once each request the forwarder handed
+// over has ended, and Raw, once. Run's end calls it last, and it closes an
+// exit whose Run never ran.
 func (x *Exit) Close() error {
 	var err error
 	x.closeOnce.Do(func() {
 		x.link.Close()
 		x.stack.Close()
+		x.tcp.withdraw()
+		x.tcp.running.Wait()
 		x.stack.Wait()
 		if x.rt.Platform.Raw != nil {
 			err = x.rt.Platform.Raw.Close()

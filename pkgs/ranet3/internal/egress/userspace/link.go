@@ -110,6 +110,17 @@ func (l *link) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
 	return n, nil
 }
 
+// send queues raw, an IP packet the exit built itself, for the pump within
+// the queue's bound, and reports whether it was queued
+func (l *link) send(raw []byte) bool {
+	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(raw)})
+	defer pkt.DecRef()
+	var list stack.PacketBufferList
+	list.PushBack(pkt)
+	n, _ := l.WritePackets(list)
+	return n == 1
+}
+
 // next is the next packet the stack sent, waiting for one until stop or done
 // closes or the link does, and nil then
 func (l *link) next(stop, done <-chan struct{}) *stack.PacketBuffer {

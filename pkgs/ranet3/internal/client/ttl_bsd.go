@@ -12,3 +12,9 @@ func hostDefaultTTL() (uint8, error) {
 	value, err := unix.SysctlUint32("net.inet.ip.ttl")
 	return ttlOf("net.inet.ip.ttl", uint64(value), err)
 }
+
+// hostDefaultHopLimit is net.inet6.ip6.hlim, the hop limit darwin and the BSDs send their own IPv6 packets with
+func hostDefaultHopLimit() (uint8, error) {
+	value, err := unix.SysctlUint32("net.inet6.ip6.hlim")
+	return ttlOf("net.inet6.ip6.hlim", uint64(value), err)
+}

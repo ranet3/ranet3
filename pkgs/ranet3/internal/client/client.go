@@ -496,11 +496,16 @@ func (c *Client) Close() {
 // and leaves the exit unread. The mesh hands it both egress verdicts' batches,
 // Republish reads its announcement, the status renders its Status, and down and
 // up reach its SetEnabled, a node that starts down handing it its stop here.
+// An exit that builds packets of its own takes the host's default TTL and hop
+// limit here and at each reload.
 func (c *Client) SetExit(exit egress.Exit) {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
 	c.Mesh.SetExit(exit)
 	c.exit.Store(&exit)
+	if limited, ok := exit.(hopLimited); ok {
+		c.handHopLimits(limited)
+	}
 	if c.downSince.Load() != nil {
 		exit.SetEnabled(false)
 	}

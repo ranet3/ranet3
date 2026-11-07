@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // hostDefaultTTL is net.ipv4.ip_default_ttl, the TTL Linux sends its own IPv4 packets with
@@ -23,4 +25,16 @@ func readDefaultTTL(root string) (uint8, error) {
 		value, err = strconv.ParseUint(strings.TrimSpace(string(body)), 10, 64)
 	}
 	return ttlOf("net.ipv4.ip_default_ttl", value, err)
+}
+
+// hostDefaultHopLimit is net.ipv6.conf.all.hop_limit, the hop limit Linux sends its own IPv6 packets with, which an unconnected socket's IPV6_UNICAST_HOPS reads with no file under /proc to open
+func hostDefaultHopLimit() (uint8, error) {
+	const setting = "net.ipv6.conf.all.hop_limit"
+	fd, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return ttlOf(setting, 0, err)
+	}
+	defer unix.Close(fd)
+	value, err := unix.GetsockoptInt(fd, unix.IPPROTO_IPV6, unix.IPV6_UNICAST_HOPS)
+	return ttlOf(setting, uint64(value), err)
 }

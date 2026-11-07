@@ -36,6 +36,8 @@ type fakeMesh struct {
 	// holds every Fill once it has laid its packets until the mesh closes
 	answerGate chan struct{}
 	fillGate   bool
+	// laidTo, where set, takes each packet a lane laid as it is laid
+	laidTo func(raw []byte)
 
 	mu      sync.Mutex
 	lanes   []*fakeLane
@@ -104,6 +106,11 @@ func (l *fakeLane) Fill(fill func(slab []byte, reads []tun.ReadPacket) int) bool
 		l.m.laid = append(l.m.laid, bytes.Clone(slab[r.Offset:r.Offset+r.Size]))
 	}
 	l.m.mu.Unlock()
+	if l.m.laidTo != nil {
+		for _, r := range reads[:n] {
+			l.m.laidTo(slab[r.Offset : r.Offset+r.Size])
+		}
+	}
 	if l.m.fillGate {
 		<-l.m.done
 		return false
@@ -131,7 +138,8 @@ func (l *fakeLane) Close() {
 }
 
 // fakePlatform is a platform whose links reach every address of the families
-// it routes, holding the addresses in held
+// it routes, holding the addresses in held. Its Prepare refuses every socket,
+// so no dial leaves the host unless a test readies its own.
 type fakePlatform struct {
 	routes4, routes6 bool
 	held             []netip.Addr
@@ -139,7 +147,7 @@ type fakePlatform struct {
 
 func (p *fakePlatform) platform() Platform {
 	return Platform{
-		Prepare: func(string, netip.AddrPort, syscall.RawConn) error { return nil },
+		Prepare: func(string, netip.AddrPort, syscall.RawConn) error { return syscall.ENETUNREACH },
 		Route: func(address netip.Addr) (Link, bool, error) {
 			if address.Is4() && p.routes4 || address.Is6() && p.routes6 {
 				return Link{Name: "uplink0", MTU: 1500}, true, nil
@@ -333,9 +341,9 @@ func TestNewRefusesWhatTheExitCannotCarry(t *testing.T) {
 	})
 }
 
-// A SYN no forwarder takes draws the stack's reset, which the pump lays into
-// a lane as a tun read lays a packet, and Run's end reports both families not
-// ready, publishes nothing and gives every lane back
+// A segment no endpoint holds draws the stack's reset, which the pump lays
+// into a lane as a tun read lays a packet, and Run's end reports both families
+// not ready, publishes nothing and gives every lane back
 func TestSegmentNoEndpointHoldsComesBackAsResetThroughALane(t *testing.T) {
 	mesh := newFakeMesh()
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
@@ -348,7 +356,7 @@ func TestSegmentNoEndpointHoldsComesBackAsResetThroughALane(t *testing.T) {
 	}
 	for _, family := range []struct{ leaf, server netip.Addr }{{leaf4, server4}, {leaf6, server6}} {
 		leaf, server := netip.AddrPortFrom(family.leaf, 40000), netip.AddrPortFrom(family.server, 80)
-		h.exit.Egress(frames(tcpSegment(leaf, server, 1000, 0, tcpSYN, nil)), nil)
+		h.exit.Egress(frames(tcpSegment(leaf, server, 1000, 1, tcpACK, nil)), nil)
 		h.waitFor(t, "reset toward "+leaf.String(), func() bool {
 			for _, raw := range mesh.laidPackets() {
 				if p, ok := parse(raw); ok && p.protocol == protoTCP && p.flags&tcpRST != 0 && netip.AddrPortFrom(p.dst, p.dstPort) == leaf && netip.AddrPortFrom(p.src, p.srcPort) == server {
@@ -508,11 +516,11 @@ func TestMeshClosingUnderARunningExitEndsItsLanes(t *testing.T) {
 	mesh.fillGate = true
 	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
 	h.run(t)
-	h.exit.Egress(frames(tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 0, tcpSYN, nil)), nil)
+	h.exit.Egress(frames(tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)), nil)
 	h.waitFor(t, "the pump's batch", func() bool { return len(mesh.laidPackets()) != 0 })
 	mesh.closeMesh()
 	h.waitFor(t, "every lane given back", func() bool { return mesh.openLanes() == 0 })
-	h.exit.Egress(frames(tcpSegment(netip.AddrPortFrom(leaf4, 40001), netip.AddrPortFrom(server4, 80), 1000, 0, tcpSYN, nil)), nil)
+	h.exit.Egress(frames(tcpSegment(netip.AddrPortFrom(leaf4, 40001), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)), nil)
 	h.stopRun(t)
 }
 
@@ -530,12 +538,12 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 	if got := h.exit.Announce(); len(got) != 0 {
 		t.Errorf("announced %v while withdrawn", got)
 	}
-	syn := tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 0, tcpSYN, nil)
+	segment := tcpSegment(netip.AddrPortFrom(leaf4, 40000), netip.AddrPortFrom(server4, 80), 1000, 1, tcpACK, nil)
 	dropped := h.exit.counts.laneDropped.Load()
-	h.exit.Egress(frames(syn), nil)
+	h.exit.Egress(frames(segment), nil)
 	time.Sleep(stackSettle)
 	if laid := mesh.laidPackets(); len(laid) != 0 {
-		t.Errorf("a withdrawn exit carried a SYN, laying %d packets", len(laid))
+		t.Errorf("a withdrawn exit carried a segment, laying %d packets", len(laid))
 	}
 	if got := h.exit.counts.laneDropped.Load(); got != dropped+1 {
 		t.Errorf("dropped %d of the one packet taken while withdrawn", got-dropped)
@@ -545,7 +553,7 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 		calls := h.readyCalls()
 		return calls[len(calls)-1] == readyCall{true, true, true}
 	})
-	h.exit.Egress(frames(syn), nil)
+	h.exit.Egress(frames(segment), nil)
 	h.waitFor(t, "the reset once enabled again", func() bool { return len(mesh.laidPackets()) != 0 })
 }
 

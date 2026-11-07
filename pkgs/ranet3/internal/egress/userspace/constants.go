@@ -42,4 +42,11 @@ const (
 	// headers and ReadPacketSpacing around it
 	cutReads = linkGSOMaxSize/header.TCPMinimumSendMSS + 1
 	cutSlab  = cutReads*(header.IPv4MaximumHeaderSize+header.TCPHeaderMaximumSize+tun.ReadPacketSpacing) + linkGSOMaxSize + tun.ReadPacketSpacing
+
+	// copyBuffer is the bytes one copy of a relayed connection moves at
+	// most, a socket read's worth
+	copyBuffer = 32 << 10
+	// relayedTTL is the TTL of an ICMP error the exit relays toward a leaf
+	// from the router that raised it
+	relayedTTL = 64
 )

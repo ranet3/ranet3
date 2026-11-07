@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 // the host's default TTL is the TTL the host sends its own datagrams with, read here off one it sent over loopback
@@ -46,5 +47,41 @@ func TestHostDefaultTTLIsTheTTLTheHostSendsWith(t *testing.T) {
 	}
 	if control == nil || control.TTL != int(ttl) {
 		t.Errorf("the host's default TTL reads %d, and a datagram it sent arrived with %+v", ttl, control)
+	}
+}
+
+// the host's default hop limit is the hop limit the host sends its own IPv6 datagrams with, read here off one it sent over loopback
+func TestHostDefaultHopLimitIsTheHopLimitTheHostSendsWith(t *testing.T) {
+	hopLimit, err := hostDefaultHopLimit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.ListenPacket("udp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback to send over: %v", err)
+	}
+	defer listener.Close()
+	if err := listener.SetReadDeadline(time.Now().Add(convergeBudget)); err != nil {
+		t.Fatal(err)
+	}
+	received := ipv6.NewPacketConn(listener)
+	if err := received.SetControlMessage(ipv6.FlagHopLimit, true); err != nil {
+		t.Fatal(err)
+	}
+	sender, err := net.Dial("udp6", listener.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	if _, err := sender.Write([]byte("hop limit")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 16)
+	_, control, _, err := received.ReadFrom(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control == nil || control.HopLimit != int(hopLimit) {
+		t.Errorf("the host's default hop limit reads %d, and a datagram it sent arrived with %+v", hopLimit, control)
 	}
 }
