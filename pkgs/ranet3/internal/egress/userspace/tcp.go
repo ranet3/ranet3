@@ -52,10 +52,12 @@ type tcpRelay struct {
 	// waits for
 	running sync.WaitGroup
 	copies  copies
+	closed  closedEndpoints
 }
 
 func newTCPRelay(x *Exit) *tcpRelay {
 	r := &tcpRelay{x: x, dialing: map[stack.TransportEndpointID][]byte{}, flows: map[*tcpFlow]struct{}{}}
+	r.closed.limit = x.rt.Limits.TimeWait
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	r.forwarder = tcp.NewForwarder(x.stack, x.rt.Limits.Window, x.rt.Limits.Dials+1, r.accept)
 	x.stack.SetTransportProtocolHandler(tcp.ProtocolNumber, r.handle)
@@ -166,6 +168,9 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 	ep.Close()
 	_ = conn.Close()
 	r.end(id, leaf.Addr(), false)
+	if e, ok := ep.(*tcp.Endpoint); ok {
+		r.x.counts.closed.Add(uint64(r.closed.add(e)))
+	}
 }
 
 // dial opens the host's connection from the address the leaf's class names

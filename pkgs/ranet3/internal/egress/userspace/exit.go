@@ -83,14 +83,15 @@ type Exit struct {
 	cfg egress.Egress
 	rt  Runtime
 
-	link    *link
-	stack   *stack.Stack
-	seed    maphash.Seed
-	workers []*worker
-	pump    *pump
-	counts  counts
-	tcp     *tcpRelay
-	flows   *flows
+	link     *link
+	stack    *stack.Stack
+	seed     maphash.Seed
+	workers  []*worker
+	pump     *pump
+	counts   counts
+	tcp      *tcpRelay
+	flows    *flows
+	timeWait *timeWait
 	// answers is the pump's lane, which answers a new flow past a limit, set
 	// at Run's start before any packet is taken
 	answers Lane
@@ -141,10 +142,12 @@ type passStats struct {
 }
 
 // counts holds the exit's counters by reason: the packets the lanes dropped
-// past their bound, those the pump could lay into no batch, and the packets
-// a lane's judgment answered or dropped
+// past their bound, those the pump could lay into no batch, the endpoints in
+// TIME_WAIT a new connection reused and those closed past Limits.TimeWait,
+// and the packets a lane's judgment answered or dropped
 type counts struct {
 	laneDropped, unlaid atomic.Uint64
+	reused, closed      atomic.Uint64
 
 	mu      sync.Mutex
 	refused map[string]uint64
@@ -203,6 +206,7 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	x.stack = s
 	x.flows = newFlows(cfg.SourceLimit(), rt.Limits.Flows)
 	x.tcp = newTCPRelay(x)
+	x.timeWait = newTimeWait(rt.Limits.TimeWait)
 	for range min(max(1, runtime.GOMAXPROCS(0)), maxWorkers) {
 		x.workers = append(x.workers, &worker{queue: make(chan *[]byte, workerQueuePackets)})
 	}

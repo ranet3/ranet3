@@ -143,6 +143,9 @@ func (x *Exit) handle(lane Lane, raw []byte) {
 	j := judge(raw, x.heldDestination)
 	switch j.act {
 	case deliver:
+		if x.timeWait.see(x.stack, raw) {
+			x.counts.reused.Add(1)
+		}
 		x.link.deliver(raw)
 	case answer:
 		x.counts.refuse(j.reason)
