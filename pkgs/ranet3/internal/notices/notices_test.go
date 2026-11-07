@@ -26,11 +26,20 @@ var testOnly = []string{
 	"hegel.dev/go/hegel",
 }
 
+// unlinked is the direct requirements that only packages no binary links yet
+// import, so the notice has no section for them yet. Unlike testOnly's, a
+// package outside the tests may import one. gVisor is one: the userspace exit
+// imports it, and no daemon links the exit until the darwin daemon selects it,
+// after which the formatter writes its section and it leaves this list.
+var unlinked = []string{
+	"gvisor.dev/gvisor",
+}
+
 // The notice is generated, so the thing worth holding is not its text but that
 // nobody added a dependency and shipped without regenerating it. A direct
 // requirement gets added by hand, so every one of them has to be
-// named here, except the ones only tests use, and nothing may be named that
-// go.mod no longer requires at all.
+// named here, except the ones only tests use and the ones no binary links yet,
+// and nothing may be named that go.mod no longer requires at all.
 //
 // The check reads go.mod rather than asking the toolchain. A nix build has no
 // module cache and builds from the vendor directory it links into the module
@@ -48,23 +57,52 @@ func TestEveryDirectRequirementIsNoticed(t *testing.T) {
 	}
 	// a heading inside a license text is no section, though a substring search
 	// would take it for one
-	noticed := sections(ThirdParty)
+	for _, problem := range noticeProblems(direct, all, sections(ThirdParty), modulePath(string(body)), unlinked) {
+		t.Error(problem)
+	}
+}
+
+// noticeProblems lists the faults of a notice whose sections are noticed,
+// read against go.mod's direct requirements and every requirement it names, all,
+// for the module self: a direct requirement with no section but one of
+// testOnly or unlinked, a section for a module go.mod does not require, and a
+// section for one of unlinked, which then belongs in that list no longer
+func noticeProblems(direct []string, all map[string]bool, noticed []string, self string, unlinked []string) []string {
+	var problems []string
 	for _, module := range direct {
-		if slices.Contains(testOnly, module) {
+		if slices.Contains(testOnly, module) || slices.Contains(unlinked, module) {
 			continue
 		}
 		if !slices.Contains(noticed, module) {
-			t.Errorf("%s is a direct requirement with no license section: run the formatter", module)
+			problems = append(problems, module+" is a direct requirement with no license section: run the formatter")
 		}
 	}
-	self := modulePath(string(body))
 	for _, module := range noticed {
 		if module == self {
 			continue
 		}
 		if !all[module] {
-			t.Errorf("%s has a license section and go.mod does not require it: run the formatter", module)
+			problems = append(problems, module+" has a license section and go.mod does not require it: run the formatter")
 		}
+		if slices.Contains(unlinked, module) {
+			problems = append(problems, module+" has a license section, so a binary links it: take it out of unlinked")
+		}
+	}
+	return problems
+}
+
+// A module of unlinked is skipped while it has no section, and named the
+// moment the formatter gives it one, so the list cannot outlive its reason
+func TestUnlinkedModuleIsNamedOnceNoticeHasItsSection(t *testing.T) {
+	const self, module = "ranet3.com/pkgs/ranet3", "example.com/stack"
+	direct := []string{"golang.org/x/sys", module}
+	all := map[string]bool{"golang.org/x/sys": true, module: true}
+	if problems := noticeProblems(direct, all, []string{self, "golang.org/x/sys"}, self, []string{module}); len(problems) != 0 {
+		t.Errorf("a notice with no section for %s, which no binary links yet, drew %q", module, problems)
+	}
+	problems := noticeProblems(direct, all, []string{self, "golang.org/x/sys", module}, self, []string{module})
+	if len(problems) != 1 || !strings.Contains(problems[0], module) || !strings.Contains(problems[0], "unlinked") {
+		t.Errorf("a notice with a section for %s, which unlinked holds, drew %q, want one problem naming it and unlinked", module, problems)
 	}
 }
 

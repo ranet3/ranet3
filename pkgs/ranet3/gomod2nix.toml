@@ -9,6 +9,10 @@ hash = 'sha256-ptdUJvuc21ixeLt+M5way/na3aCnCO4MYHWulWp8NEY='
 version = 'v0.12.0-alpha.1.0.20261017145726-715acd0097ea'
 hash = 'sha256-ZU6uyu6e1+H9MvhBmvsxi6FLKiMeL7VgeTsLx4wGVjY='
 
+[mod.'github.com/google/btree']
+version = 'v1.1.2'
+hash = 'sha256-K7V2obq3pLM71Mg0vhhHtZ+gtaubwXPQx3xcIyZDCjM='
+
 [mod.'github.com/inconshreveable/mousetrap']
 version = 'v1.1.0'
 hash = 'sha256-XWlYH0c8IcxAwQTnIi6WYqq44nOKUylSWxWO/vi+8pE='
@@ -29,6 +33,10 @@ hash = 'sha256-ygho+GU5kE7vPMx+dZYyNfCaeMjNxj66XmrcVf3afFE='
 version = 'v0.58.0'
 hash = 'sha256-33ioL7suoYfgBIEQDAeqy+lwhbCgy885BkcXavowffo='
 
+[mod.'golang.org/x/exp']
+version = 'v0.0.0-20261014143641-f0251eb4aa3e'
+hash = 'sha256-PLzyWDt9Ni7Qdd6uHw7avHSJxdSc+VEzf5JG9gFCywo='
+
 [mod.'golang.org/x/net']
 version = 'v0.62.0'
 hash = 'sha256-BX+i/MyhVigz/sDRJNGydfkimaeAHAFtrRN//eXuZFY='
@@ -36,6 +44,14 @@ hash = 'sha256-BX+i/MyhVigz/sDRJNGydfkimaeAHAFtrRN//eXuZFY='
 [mod.'golang.org/x/sys']
 version = 'v0.49.0'
 hash = 'sha256-/1S3yy3in72ygZT1CKymvOzJZqCMYiGSqZDfvSyB3LI='
+
+[mod.'golang.org/x/time']
+version = 'v0.16.0'
+hash = 'sha256-OvekWcaTHMs5n3Img4EmYaORRgSmybBS+tObSnPqftY='
+
+[mod.'gvisor.dev/gvisor']
+version = 'v0.0.0-20261008000517-3b87f090dbda'
+hash = 'sha256-tLjf85zi68+eTIiTAs9FzMUtwy0JKfHXCqQupGtGzzA='
 
 [mod.'hegel.dev/go/hegel']
 version = 'v0.9.29'
