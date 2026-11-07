@@ -61,6 +61,9 @@
 // mesh_entry, written with or without an overlay, lets into the tun from another device only a reply, a
 // source this node owns, an IPv6 link-local or multicast destination, or a
 // destination a none class takes. desired lists each chain's rules in order.
+// On macOS, where overlay is written, chain antispoof is the one chain, kept
+// in a pf anchor under com.apple, and the filter keeps pf enabled while it
+// runs (antispoof.md, "The pf anchor on macOS").
 //
 // It is a second owner beside Translator, with its own run goroutine, socket
 // and change monitor, and neither writes, replaces or deletes the other's
