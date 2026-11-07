@@ -97,9 +97,8 @@ func (c Class) check() error {
 		// A file writes one of the three, and a to carrying more is written as
 		// one of them and read back without the rest.
 		return fmt.Errorf("%s has the to %s at once, and a to is one of none, auto and an address", name, strings.Join(written, " and "))
-	case to.None && c.From.Bits() == 0:
-		return fmt.Errorf("%s is none, which leaves every %s source untranslated: an exit that translates nothing for anyone is an open relay for the overlay's sources onto its upstream",
-			name, FamilyName(AddressFamily(c.From.Addr())))
+	case !to.None && sourceless(c.From.Prefix):
+		return fmt.Errorf("%s to %s holds only sources a router forwards no packet from, so it translates nothing", name, to)
 	case !to.Addr.IsValid():
 		return nil
 	case to.Addr.Is4In6():
@@ -117,6 +116,70 @@ func (c Class) check() error {
 		return fmt.Errorf("%s to %s is not an address a reply can be sent to", name, to.Addr)
 	}
 	return nil
+}
+
+// sourceless reports whether from lies inside a block of sources a router
+// forwards no packet from, RFC 1812 section 5.3.7, RFC 3927 section 7 and RFC
+// 4291 sections 2.5.2, 2.5.3, 2.5.6 and 2.7, which the mesh drops before it
+// hands a packet to an exit, as packet.InvalidSource has it. Each block runs as
+// far as such sources do, 224.0.0.0/3 multicast with class E and ::/127 the
+// unspecified and loopback addresses, so a from holding only such sources lies
+// inside one.
+func sourceless(from netip.Prefix) bool {
+	return slices.ContainsFunc([]netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("224.0.0.0/3"),
+		netip.MustParsePrefix("::/127"), netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8"),
+	}, func(block netip.Prefix) bool {
+		return block.Contains(from.Addr()) && from.Bits() >= block.Bits()
+	})
+}
+
+// checkTranslated refuses family's classes where every source of the family a
+// router forwards a packet from takes one of none: an exit that translates
+// nothing for anyone is an open relay for the overlay's sources onto its
+// upstream
+func (e Egress) checkTranslated(family uint8) error {
+	classes := e.Classes(family)
+	if !untranslated(classes, everySource(family)) {
+		return nil
+	}
+	var nones []string
+	for _, class := range classes {
+		if class.To.None {
+			nones = append(nones, class.From.String())
+		}
+	}
+	name := "class " + nones[0] + " is"
+	if len(nones) > 1 {
+		name = "classes " + strings.Join(nones, " and ") + " are"
+	}
+	return fmt.Errorf("egress: cap.egress translate %s none, which leaves every %s source untranslated: an exit that translates nothing for anyone is an open relay for the overlay's sources onto its upstream",
+		name, FamilyName(family))
+}
+
+// untranslated reports whether every source of prefix a router forwards a
+// packet from takes a class of none among classes, which are in the order
+// Classes gives. A prefix inside a block sourceless names counts as none
+// whatever class it takes. Any other prefix holding a longer From splits in
+// two, and one holding none takes its longest covering class.
+func untranslated(classes []Class, prefix netip.Prefix) bool {
+	if sourceless(prefix) {
+		return true
+	}
+	split := slices.ContainsFunc(classes, func(class Class) bool {
+		return class.From.Bits() > prefix.Bits() && prefix.Contains(class.From.Addr())
+	})
+	if !split {
+		i := slices.IndexFunc(classes, func(class Class) bool {
+			return class.From.Bits() <= prefix.Bits() && class.From.Contains(prefix.Addr())
+		})
+		return i >= 0 && classes[i].To.None
+	}
+	bits := prefix.Bits()
+	raw := prefix.Addr().AsSlice()
+	raw[bits/8] |= 0x80 >> (bits % 8)
+	high, _ := netip.AddrFromSlice(raw)
+	return untranslated(classes, netip.PrefixFrom(prefix.Addr(), bits+1)) && untranslated(classes, netip.PrefixFrom(high, bits+1))
 }
 
 // IsZero reports a translation nothing was written for, which Validate

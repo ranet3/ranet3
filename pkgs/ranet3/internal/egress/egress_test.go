@@ -14,6 +14,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"go.yaml.in/yaml/v3"
 
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -151,7 +152,30 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 		{
 			"none from every IPv6 source",
 			Egress{Advertise: prefixes(t, "::/0"), Translate: []Class{class(t, "2001:db8::/32", "none"), class(t, "::/0", "none")}},
-			"egress: cap.egress translate class ::/0 is none, which leaves every ipv6 source untranslated",
+			"egress: cap.egress translate classes 2001:db8::/32 and ::/0 are none, which leaves every ipv6 source untranslated",
+		},
+		{
+			"none from both halves of IPv4",
+			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Translate: []Class{class(t, "128.0.0.0/1", "none"), class(t, "0.0.0.0/1", "none")}},
+			"egress: cap.egress translate classes 0.0.0.0/1 and 128.0.0.0/1 are none, which leaves every ipv4 source untranslated: an exit that translates nothing for anyone is an open relay",
+		},
+		// the auto class takes no address, both halves of it taking none
+		{
+			"none from every IPv6 source past an auto class it splits",
+			Egress{Advertise: prefixes(t, "::/0"), Translate: []Class{
+				class(t, "::/0", "none"), class(t, "2001:db8::/32", "auto"), class(t, "2001:db8::/33", "none"), class(t, "2001:db8:8000::/33", "none"),
+			}},
+			"egress: cap.egress translate classes 2001:db8::/33 and 2001:db8:8000::/33 and ::/0 are none, which leaves every ipv6 source untranslated",
+		},
+		{
+			"none from every IPv4 source beside an auto class a longer none leaves only multicast and class E",
+			Egress{Advertise: prefixes(t, "0.0.0.0/0"), Translate: []Class{class(t, "0.0.0.0/0", "none"), class(t, "192.0.0.0/2", "auto"), class(t, "192.0.0.0/3", "none")}},
+			"egress: cap.egress translate classes 192.0.0.0/3 and 0.0.0.0/0 are none, which leaves every ipv4 source untranslated",
+		},
+		{
+			"none from every IPv6 source beside an auto class a longer none leaves only the unspecified and loopback addresses",
+			Egress{Advertise: prefixes(t, "::/0"), Translate: []Class{class(t, "::/0", "none"), class(t, "::/126", "auto"), class(t, "::2/127", "none")}},
+			"egress: cap.egress translate classes ::2/127 and ::/0 are none, which leaves every ipv6 source untranslated",
 		},
 		{
 			"a negative sweep",
@@ -170,6 +194,101 @@ func TestValidateRefusesWhatCannotBeTranslated(t *testing.T) {
 				t.Fatalf("refused with %v, want a message containing %q", err, one.want)
 			}
 		})
+	}
+}
+
+// Classes of none that leave some source of each family translated load: a
+// longer translating class inside a none from every source, and a none
+// narrower than its family beside the auto every other source takes
+func TestNoneLeavingASourceTranslatedLoads(t *testing.T) {
+	for _, cfg := range []Egress{
+		{Advertise: prefixes(t, "::/0"), Translate: []Class{class(t, "::/0", "none"), class(t, "2001:db8::/32", "auto")}},
+		{Advertise: prefixes(t, "0.0.0.0/0", "::/0"), Translate: []Class{class(t, "0.0.0.0/1", "none"), class(t, "2001:db8::/32", "none")}},
+	} {
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("%v refused: %v", cfg.Translate, err)
+		}
+	}
+}
+
+// A class that translates only sources no router forwards a packet from
+// translates nothing, and is refused by its from whether or not a class of
+// none from every source stands beside it, while a class of none over the same
+// sources, which relays nothing, loads. A class reaching past them holds a
+// source a router forwards and loads beside the none from every source.
+func TestClassTranslatingOnlySourcesNoRouterForwardsIsRefused(t *testing.T) {
+	for _, from := range []string{
+		"ff00::/8", "fe80::/10", "::1/128", "::/127",
+		"224.0.0.0/4", "224.0.0.0/3", "240.0.0.0/4", "255.255.255.255/32", "127.0.0.0/8", "0.0.0.0/32", "0.0.0.0/8", "169.254.0.0/16",
+	} {
+		every, address := "0.0.0.0/0", "198.51.100.9"
+		if strings.Contains(from, ":") {
+			every, address = "::/0", "2001:db8::9"
+		}
+		for _, to := range []string{"auto", address} {
+			want := "egress: cap.egress translate class " + from + " to " + to + " holds only sources a router forwards no packet from, so it translates nothing"
+			for _, translate := range [][]Class{{class(t, every, "none"), class(t, from, to)}, {class(t, from, to)}} {
+				if err := (Egress{Advertise: prefixes(t, every), Translate: translate}).Validate(); err == nil || err.Error() != want {
+					t.Errorf("%v refused with %v, want %q", translate, err, want)
+				}
+			}
+		}
+		if err := (Egress{Advertise: prefixes(t, every), Translate: []Class{class(t, from, "none")}}).Validate(); err != nil {
+			t.Errorf("%s none refused: %v", from, err)
+		}
+	}
+	for _, from := range []string{"0.0.0.0/7", "126.0.0.0/7", "169.254.0.0/15", "192.0.0.0/2", "::/126", "fe80::/9", "fe00::/7"} {
+		every := "0.0.0.0/0"
+		if strings.Contains(from, ":") {
+			every = "::/0"
+		}
+		translate := []Class{class(t, every, "none"), class(t, from, "auto")}
+		if err := (Egress{Advertise: prefixes(t, every), Translate: translate}).Validate(); err != nil {
+			t.Errorf("%v refused: %v", translate, err)
+		}
+	}
+}
+
+// sourceless holds exactly where packet.InvalidSource does, since untranslated
+// takes every other source for one the exit forwards: a block InvalidSource
+// gains alone lets a class translating only its sources stand beside a none
+// from every source. The two are compared on each side of every edge of their
+// blocks and of every IPv4 and IPv6 /16, so any block of a /16 or shorter that
+// either gains holds an address compared. One class takes ::ffff:0:0/96 whole,
+// since no From lies inside it, so sourceless holds for it exactly when
+// InvalidSource holds at every mapped address, read at the mapped form of each
+// IPv4 address compared.
+func TestSourcelessHoldsExactlyWhereInvalidSourceDoes(t *testing.T) {
+	mapped := true
+	check := func(address netip.Addr) {
+		if !address.IsValid() {
+			return
+		}
+		if address.Is4() {
+			mapped = mapped && packet.InvalidSource(netip.AddrFrom16(address.As16()))
+		}
+		if got, want := sourceless(netip.PrefixFrom(address, address.BitLen())), packet.InvalidSource(address); got != want {
+			t.Errorf("sourceless at %s is %t, and packet.InvalidSource %t", address, got, want)
+		}
+	}
+	// the first address of each block and the one past its last
+	for _, edge := range []string{
+		"0.0.0.0", "1.0.0.0", "127.0.0.0", "128.0.0.0", "169.254.0.0", "169.255.0.0", "224.0.0.0", "240.0.0.0",
+		"::", "::1", "::2", "fe80::", "fec0::", "ff00::",
+	} {
+		check(netip.MustParseAddr(edge).Prev())
+		check(netip.MustParseAddr(edge))
+	}
+	for i := range 1 << 16 {
+		for _, first := range []netip.Addr{netip.AddrFrom4([4]byte{byte(i >> 8), byte(i)}), netip.AddrFrom16([16]byte{byte(i >> 8), byte(i)})} {
+			check(first.Prev())
+			check(first)
+		}
+	}
+	check(netip.MustParseAddr("255.255.255.255"))
+	check(netip.MustParseAddr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"))
+	if got := sourceless(netip.MustParsePrefix("::ffff:0:0/96")); got != mapped {
+		t.Errorf("sourceless of ::ffff:0:0/96 is %t, and packet.InvalidSource at every mapped address %t", got, mapped)
 	}
 }
 
@@ -208,8 +327,27 @@ func TestReturnWithoutOneMeshAddressIsRefusedByName(t *testing.T) {
 	}
 }
 
+// Under a class of none from every source a node carrying no mesh address or
+// several is told to carry one, since naming the address as the to of that
+// class would undo its none
+func TestReturnUnderNoneFromEverySourceAsksForOneMeshAddress(t *testing.T) {
+	cfg := Egress{Return: true, Advertise: prefixes(t, "198.51.100.0/24"), Translate: []Class{class(t, "0.0.0.0/0", "none"), class(t, "198.51.100.0/24", "auto")}}
+	for _, one := range []struct {
+		addresses []netip.Addr
+		carries   string
+	}{
+		{nil, "0"},
+		{[]netip.Addr{netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("192.0.2.3")}, "2"},
+	} {
+		want := "egress: return is set and the class from 0.0.0.0/0 is none, so this node translates to its own ipv4 mesh address, and it carries " + one.carries + " rather than one: give it exactly one through cap.route and cap.table"
+		if _, err := cfg.ReturnSource(FamilyIPv4, one.addresses); err == nil || err.Error() != want {
+			t.Errorf("with mesh addresses %v refused with %v, want %q", one.addresses, err, want)
+		}
+	}
+}
+
 // The In direction translates to the address of its family's class from
-// every source, and to the one mesh address where that class is auto or
+// every source, and to the one mesh address where that class is auto, none or
 // absent, whatever a narrower class names
 func TestReturnTakesTheAddressOfTheClassFromEverySource(t *testing.T) {
 	mesh := []netip.Addr{netip.MustParseAddr("192.0.2.2"), netip.MustParseAddr("3fff::2")}
@@ -221,6 +359,7 @@ func TestReturnTakesTheAddressOfTheClassFromEverySource(t *testing.T) {
 		{"no class", nil, "192.0.2.2"},
 		{"an address from every source", []Class{class(t, "198.51.100.0/25", "198.51.100.9"), class(t, "0.0.0.0/0", "198.51.100.7")}, "198.51.100.7"},
 		{"auto from every source", []Class{class(t, "0.0.0.0/0", "auto")}, "192.0.2.2"},
+		{"none from every source", []Class{class(t, "0.0.0.0/0", "none")}, "192.0.2.2"},
 		{"an address from a narrower prefix alone", []Class{class(t, "0.0.0.0/1", "198.51.100.7")}, "192.0.2.2"},
 		{"an address from every IPv6 source", []Class{class(t, "::/0", "2001:db8::7")}, "192.0.2.2"},
 	} {

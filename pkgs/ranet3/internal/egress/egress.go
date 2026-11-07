@@ -48,10 +48,10 @@ type Egress struct {
 	// Return translates the other direction too: a packet arriving from one of
 	// the advertised prefixes and leaving through the mesh goes out under the
 	// address of its family's class from 0.0.0.0/0 or ::/0, or this node's own
-	// mesh address where that class is auto or absent. A subnet router needs it
-	// where the mesh has no route back to the LAN, which is every deployment
-	// that advertises a prefix the far end does not hold a route for. An exit
-	// node does not: nothing sits behind it to start a flow.
+	// mesh address where that class is auto, none or absent. A subnet router
+	// needs it where the mesh has no route back to the LAN, which is every
+	// deployment that advertises a prefix the far end does not hold a route
+	// for. An exit node does not: nothing sits behind it to start a flow.
 	Return bool `yaml:"return,omitempty" json:"return,omitempty" toml:"return,omitempty"`
 	// FlowsPerSource is the most flows one mesh source address under a class
 	// that translates holds open through this node in each family, every
@@ -126,6 +126,11 @@ func (e Egress) Validate() error {
 	}
 	for _, class := range e.Translate {
 		if err := class.check(); err != nil {
+			return err
+		}
+	}
+	for _, family := range []uint8{FamilyIPv4, FamilyIPv6} {
+		if err := e.checkTranslated(family); err != nil {
 			return err
 		}
 	}
@@ -224,15 +229,24 @@ func (e Egress) ReturnSource(family uint8, mesh []netip.Addr) (netip.Addr, error
 		return netip.Addr{}, nil
 	}
 	every := everySource(family)
+	none := false
 	for _, class := range e.Translate {
-		if class.From.Prefix == every && class.To.Addr.IsValid() {
+		if class.From.Prefix != every {
+			continue
+		}
+		if class.To.Addr.IsValid() {
 			return class.To.Addr, nil
 		}
+		none = class.To.None
 	}
-	switch candidates := MeshSources(family, mesh); len(candidates) {
-	case 1:
+	switch candidates := MeshSources(family, mesh); {
+	case len(candidates) == 1:
 		return candidates[0], nil
-	case 0:
+	case none:
+		// naming the address as the to of that class would undo its none
+		return netip.Addr{}, fmt.Errorf("egress: return is set and the class from %s is none, so this node translates to its own %s mesh address, and it carries %d rather than one: give it exactly one through cap.route and cap.table",
+			every, FamilyName(family), len(candidates))
+	case len(candidates) == 0:
 		return netip.Addr{}, fmt.Errorf("egress: return is set and this node carries no %s mesh address to translate to, so name one in cap.egress translate as the to of the class from %s",
 			FamilyName(family), every)
 	default:

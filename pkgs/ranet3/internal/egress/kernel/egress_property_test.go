@@ -78,13 +78,9 @@ func exits() hegel.Generator[exit] {
 		depth := hegel.Draw(tc, pbt.Spanning(0, len(nestedFroms)))
 		alternate := hegel.Draw(tc, hegel.Booleans())
 		for i, from := range slices.Concat(nestedFroms[:depth], pbt.Subset(tc, classFroms, 0, 4)) {
-			translations := []egress.Translation{{Auto: true}, {Addr: netip.MustParseAddr("198.51.100.7")}}
+			translations := []egress.Translation{{Auto: true}, {Addr: netip.MustParseAddr("198.51.100.7")}, {None: true}}
 			if from.Addr().Is6() {
 				translations[1] = egress.Translation{Addr: netip.MustParseAddr("2001:db8::7")}
-			}
-			// none from every source of a family is refused
-			if from.Bits() > 0 {
-				translations = append(translations, egress.Translation{None: true})
 			}
 			to := hegel.Draw(tc, hegel.SampledFrom(translations))
 			if alternate && i < depth {
