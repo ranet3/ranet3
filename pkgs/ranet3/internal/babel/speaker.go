@@ -201,13 +201,11 @@ type Speaker struct {
 	// ID is never empty: it is a session's identity.Path.
 	raiseOwedTo   string
 	updatePending bool
-	// badUpdateLog spaces the warning of an Update that does not decode, touched only under s.mu
-	badUpdateLog spacedLog
-	// routeChanges and routeLogged bound the selection-change log, see
-	// routeLogInterval. Both are touched only under s.mu, with installRoute.
-	routeChanges int
-	routeLogged  time.Time
-	changed      chan struct{}
+	// routeLog, malformedLog and badUpdateLog space the selection-change line, the malformed packet warning and the bad Update warning
+	// each is touched only under s.mu
+	routeLog, malformedLog, badUpdateLog spacedLog
+
+	changed chan struct{}
 
 	// lost holds the undos of packets a peer's sender queued and then could
 	// not transmit. The sender reports them from its own goroutine, so they
@@ -423,20 +421,35 @@ func (s *Speaker) removePeer(n *neighborState) {
 	s.wake()
 }
 
-// Receive consumes Babel packets from the exact registered ESP session.
-// Everything else is returned to the caller for normal IP delivery.
-// a fragment sent to this speaker is consumed too, whether it completes a packet or not, see receiveFragment
+// Receive consumes every packet whose fixed IPv6 header is followed directly by a UDP header to the Babel port or by a Fragment header, sent from a link-local address to the group or to this speaker, RFC 8966 section 4
+// it does so whichever session the packet came through and whether or not it parses, see receiveFragment for a fragment
+// only the neighbor registered for peer, the exact session, reads a packet, and only one that parses
+// every other packet, one whose fixed header is followed by another extension header among them, is returned to the caller for normal IP delivery
 func (s *Speaker) Receive(peer *netstack.Peer, raw []byte) bool {
 	babel, fragment := isBabelPacket(raw)
 	if !babel {
 		return fragment && s.receiveFragment(peer, raw)
 	}
-	src, payload, err := parsePacket(raw, s.linkLocal)
-	if err != nil {
+	src, dst := addresses(raw)
+	if !forSpeaker(src, dst, s.linkLocal) {
 		return false
+	}
+	payload, err := parsePacket(raw)
+	if err != nil {
+		s.mu.Lock()
+		s.malformedLocked(src, err, time.Now())
+		s.mu.Unlock()
+		return true
 	}
 	s.receive(peer, src, payload)
 	return true
+}
+
+// malformedLocked warns of a packet from src the speaker consumed and could not parse, at most once per refusalLogInterval
+func (s *Speaker) malformedLocked(src netip.Addr, err error, now time.Time) {
+	if refused, ok := s.malformedLog.due(now, refusalLogInterval); ok {
+		slog.Warn("babel dropped a malformed packet", "from", src, "err", err, "refused_since_last", refused)
+	}
 }
 
 // receive hands the payload of one Babel packet from src to the neighbor registered for peer
@@ -447,8 +460,7 @@ func (s *Speaker) receive(peer *netstack.Peer, src netip.Addr, payload []byte) {
 		s.mu.Unlock()
 		return // never deliver a retired session's control traffic to TUN
 	}
-	n.addr = src
-	actions, acked := s.handlePacketLocked(n, payload, time.Now())
+	actions, acked := s.handlePacketLocked(n, src, payload, time.Now())
 	send := s.emitLocked(actions)
 	s.wakeForPacketLocked()
 	s.mu.Unlock()
@@ -919,13 +931,10 @@ func (s *Speaker) installRoute(key routeKey, sel routeSelection) {
 		slog.Debug("babel route retracted", "route", desc)
 		s.events.Emit("babel.route.retracted", "", slog.String("route", desc))
 	}
-	s.routeChanges++
-	now := time.Now()
-	if now.Sub(s.routeLogged) < routeLogInterval {
+	changes, ok := s.routeLog.due(time.Now(), routeLogInterval)
+	if !ok {
 		return
 	}
-	changes := s.routeChanges
-	s.routeChanges, s.routeLogged = 0, now
 	if sel.neighbor != nil {
 		slog.Info("babel route installed", "route", desc, "peer", peer,
 			"metric", sel.cost, "changes_since_last", changes)

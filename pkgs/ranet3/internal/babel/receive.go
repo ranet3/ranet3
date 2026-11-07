@@ -10,14 +10,17 @@ import (
 	"time"
 )
 
-// handlePacketLocked returns what the packet is answered with and the nonce of every Ack it carries
+// handlePacketLocked reads one packet from src, n's address, and returns what the packet is answered with and the nonce of every Ack it carries
+// a packet that does not decode leaves n as it was, its address too
+// RFC 8966 section 4.2 has one with a wrong magic or version silently ignored, and one whose header or body runs past the packet's end, or with a TLV that runs past the body's end, cannot be framed
 // the caller reports the nonces once s.mu is released
-func (s *Speaker) handlePacketLocked(n *neighborState, raw []byte, now time.Time) (actions []sendAction, acked []uint16) {
+func (s *Speaker) handlePacketLocked(n *neighborState, src netip.Addr, raw []byte, now time.Time) (actions []sendAction, acked []uint16) {
 	tlvs, err := DecodePacket(raw)
 	if err != nil {
-		slog.Warn("babel bad packet", "err", err)
+		s.malformedLocked(src, err, now)
 		return nil, nil
 	}
+	n.addr = src
 	recvTS := uint32(now.UnixMicro())
 	var helloTxTS uint32
 	var haveHelloTS bool

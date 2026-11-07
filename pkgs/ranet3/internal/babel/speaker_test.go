@@ -5,9 +5,12 @@
 package babel
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -855,7 +858,7 @@ func TestUnscheduledHelloDoesNotFlapANeighbor(t *testing.T) {
 	lapsed := now.Add(deadTimeout(neighbor.helloInterval) + time.Second)
 	s.mu.Lock()
 	s.sweepExpiredLocked(lapsed)
-	actions, _ := s.handlePacketLocked(neighbor, unscheduled, lapsed)
+	actions, _ := s.handlePacketLocked(neighbor, neighbor.addr, unscheduled, lapsed)
 	s.emitLocked(actions)
 	alive := neighbor.alive
 	s.mu.Unlock()
@@ -2330,12 +2333,12 @@ func TestRepeatedWildcardRetractionsCostNothing(t *testing.T) {
 		AEWildcard, 0, 0, 0, 0x00, 0x64, 0, 0, 0xff, 0xff,
 	}}})
 	first := time.Now()
-	speaker.handlePacketLocked(neighbor, wildcard, now)
+	speaker.handlePacketLocked(neighbor, neighbor.addr, wildcard, now)
 	one := time.Since(first)
 
 	rest := time.Now()
 	for range 111 {
-		speaker.handlePacketLocked(neighbor, wildcard, now)
+		speaker.handlePacketLocked(neighbor, neighbor.addr, wildcard, now)
 	}
 	many := time.Since(rest)
 	speaker.mu.Unlock()
@@ -2379,7 +2382,7 @@ func TestSelectionChangesAreNotOneLogLineEach(t *testing.T) {
 		t.Errorf("a selection change is said at most once every %v, which is not a log anybody can follow a flapping mesh with",
 			routeLogInterval)
 	}
-	if speaker.routeChanges == 0 {
+	if speaker.routeLog.count == 0 {
 		t.Error("the changes were not counted, so the line that stands for them says nothing")
 	}
 
@@ -2388,8 +2391,8 @@ func TestSelectionChangesAreNotOneLogLineEach(t *testing.T) {
 	// back, or one that does not count, is a selection log that says nothing.
 	var said strings.Builder
 	slog.SetDefault(slog.New(slog.NewTextHandler(&said, nil)))
-	speaker.routeLogged = now.Add(-routeLogInterval - time.Second)
-	suppressed := speaker.routeChanges
+	speaker.routeLog.said = now.Add(-routeLogInterval - time.Second)
+	suppressed := speaker.routeLog.count
 	speaker.routes.update(neighbor, key, advertisement{routerID: [8]byte{1}, seqno: 1, metric: 64},
 		time.Minute, now)
 	if got := said.String(); !strings.Contains(got, "changes_since_last="+strconv.Itoa(suppressed+1)) {
@@ -3414,5 +3417,67 @@ func TestStaleRTTHasADeadlineOfItsOwn(t *testing.T) {
 
 	if got := speaker.deadlineLocked(); !got.Equal(neighbor.rttExpiry) {
 		t.Errorf("the deadline is %v, want the RTT expiry at %v that nothing else carries", got, neighbor.rttExpiry)
+	}
+}
+
+// edited applies edit to a copy of raw, a packet buildPacket wrote, and with seal computes its UDP checksum again over the edited bytes
+func edited(raw []byte, seal bool, edit func([]byte)) []byte {
+	raw = bytes.Clone(raw)
+	edit(raw)
+	if seal {
+		src, dst := addresses(raw)
+		udp := raw[ipv6HeaderLen:]
+		udp[6], udp[7] = 0, 0
+		binary.BigEndian.PutUint16(udp[6:8], udpChecksum(src, dst, udp))
+	}
+	return raw
+}
+
+// a packet to the Babel port from a link-local address to the group or to the speaker is the speaker's, RFC 8966 section 4
+// one that fails to parse is consumed and read by no neighbor, rather than handed back to reach the host
+// one from or to any other address is handed back as it arrived
+func TestMalformedPacketToTheSpeakerIsConsumed(t *testing.T) {
+	logtest.SetDefault(t, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	speaker, neighbor, _ := captureSpeaker(t, Config{})
+	hello := EncodePacket([]RawTLV{EncodeHello(Hello{Seqno: 1, Interval: 100})})
+	header := func(magic, version byte) []byte {
+		payload := bytes.Clone(hello)
+		payload[0], payload[1] = magic, version
+		return payload
+	}
+	from, mesh := neighbor.addr, netip.MustParseAddr("2001:db8::1")
+	toGroup := buildPacket(from, multicastGroup, hello)
+	badChecksum := func(p []byte) { p[46] ^= 0xff }
+	for _, test := range []struct {
+		name     string
+		raw      []byte
+		consumed bool
+	}{
+		{"wrong source port", edited(toGroup, true, func(p []byte) { binary.BigEndian.PutUint16(p[40:42], Port+1) }), true},
+		{"bad checksum", edited(toGroup, false, badChecksum), true},
+		{"no checksum", edited(toGroup, false, func(p []byte) { p[46], p[47] = 0, 0 }), true},
+		{"IPv6 length past the packet", edited(toGroup, false, func(p []byte) { p[5]++ }), true},
+		{"UDP length short of the packet", edited(toGroup, true, func(p []byte) { p[45]-- }), true},
+		{"magic 41", buildPacket(from, multicastGroup, header(41, Version)), true},
+		{"version 3", buildPacket(from, multicastGroup, header(Magic, 3)), true},
+		{"bad checksum to the speaker", edited(buildPacket(from, speaker.linkLocal, hello), false, badChecksum), true},
+		{"bad checksum from a mesh address", edited(buildPacket(mesh, multicastGroup, hello), false, badChecksum), false},
+		{"bad checksum to another link-local address", edited(buildPacket(from, netip.MustParseAddr("fe80::9"), hello), false, badChecksum), false},
+		{"bad checksum to a mesh address", edited(buildPacket(from, mesh, hello), false, badChecksum), false},
+		{"well formed from a mesh address", buildPacket(mesh, multicastGroup, hello), false},
+		{"wrong destination port", edited(toGroup, true, func(p []byte) { binary.BigEndian.PutUint16(p[42:44], Port+1) }), false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sent := bytes.Clone(test.raw)
+			if consumed := speaker.Receive(neighbor.peer, test.raw); consumed != test.consumed || !bytes.Equal(test.raw, sent) {
+				t.Fatalf("Receive took the packet %v, want %v, and it reads %x where %x was sent", consumed, test.consumed, test.raw, sent)
+			}
+			if !neighbor.lastHelloTime.IsZero() {
+				t.Fatal("the neighbor read the Hello of a packet the speaker could not parse or does not take")
+			}
+		})
+	}
+	if !speaker.Receive(neighbor.peer, toGroup) || neighbor.lastHelloTime.IsZero() {
+		t.Fatal("the well formed packet was not read, so the cases above prove nothing")
 	}
 }

@@ -315,8 +315,10 @@ func TestEveryTLVTheSpeakerWritesDecodesBackToItself(t *testing.T) {
 			}
 		}
 		payload := EncodePacket(tlvs)
-		src, got, err := parsePacket(buildPacket(from, to, payload), local)
-		if err != nil || src != from || !bytes.Equal(got, payload) {
+		raw := buildPacket(from, to, payload)
+		src, dst := addresses(raw)
+		got, err := parsePacket(raw)
+		if err != nil || src != from || !forSpeaker(src, dst, local) || !bytes.Equal(got, payload) {
 			ht.Fatalf("the packet from %v to %v came back from %v with %d of %d payload bytes: %v",
 				from, to, src, len(got), len(payload), err)
 		}
@@ -560,7 +562,6 @@ func TestPacketParserNeverPanicsOnArbitraryBytes(t *testing.T) {
 		if hegel.Draw(ht, hegel.Booleans()) {
 			payload = misframed(ht, payload)
 		}
-		local := hegel.Draw(ht, linkLocals())
 		raw := buildPacket(hegel.Draw(ht, linkLocals()), multicastGroup, payload)
 		for range hegel.Draw(ht, hegel.Integers(0, 2)) {
 			raw[hegel.Draw(ht, hegel.Integers(0, ipv6HeaderLen+udpHeaderLen-1))] = hegel.Draw(ht, hegel.Integers[byte](0, 255))
@@ -571,7 +572,7 @@ func TestPacketParserNeverPanicsOnArbitraryBytes(t *testing.T) {
 		raw = slices.Clip(raw)
 
 		isBabelPacket(raw)
-		if _, carried, err := parsePacket(raw, local); err == nil {
+		if carried, err := parsePacket(raw); err == nil {
 			decodeEvery(carried)
 		}
 		decodeEvery(payload)
@@ -606,7 +607,8 @@ func TestProbeIsOneAckRequestPaddedToItsSize(t *testing.T) {
 		if len(raw) != size {
 			ht.Fatalf("a probe of %d bytes came out %d", size, len(raw))
 		}
-		src, payload, err := parsePacket(raw, to)
+		src, _ := addresses(raw)
+		payload, err := parsePacket(raw)
 		if err != nil || src != from {
 			ht.Fatalf("a probe of %d bytes from %v parsed as from %v: %v", size, from, src, err)
 		}

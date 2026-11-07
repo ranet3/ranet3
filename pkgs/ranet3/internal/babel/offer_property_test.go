@@ -80,7 +80,7 @@ func TestOffersFollowTheirModel(t *testing.T) {
 				EncodeHello(Hello{Seqno: hellos, Interval: uint16(offerHello / (10 * time.Millisecond))}),
 				EncodeIHU(IHU{RxCost: offerRxCost, Interval: uint16(offerHello / (10 * time.Millisecond))}),
 			}, tlvs...)
-			s.handlePacketLocked(neighbors[i], EncodePacket(packet), now)
+			s.handlePacketLocked(neighbors[i], neighbors[i].addr, EncodePacket(packet), now)
 			heard[i], down[i] = now, false
 		}
 		dropOf := func(table map[routeKey]map[int]offerModel, gone func(int, offerModel) bool) {

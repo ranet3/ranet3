@@ -58,53 +58,56 @@ func isBabelPacket(raw []byte) (babel, fragment bool) {
 	return binary.BigEndian.Uint16(raw[42:44]) == Port, false
 }
 
+// addresses reads the source and destination of raw, an IPv6 header at least
+func addresses(raw []byte) (src, dst netip.Addr) {
+	return netip.AddrFrom16([16]byte(raw[8:24])), netip.AddrFrom16([16]byte(raw[24:40]))
+}
+
 // forSpeaker is whether a packet from src to dst is the speaker's, from a link-local address to the Babel group or to local, its own address
 func forSpeaker(src, dst, local netip.Addr) bool {
 	return src.IsLinkLocalUnicast() && (dst == multicastGroup || dst == local)
 }
 
-// parsePacket extracts the Babel payload and source address from a raw
-// IPv6+UDP packet, rejecting anything not addressed to the Babel port.
-func parsePacket(raw []byte, localAddr netip.Addr) (src netip.Addr, payload []byte, err error) {
+// parsePacket extracts the Babel payload from a raw IPv6+UDP packet,
+// rejecting anything not addressed to the Babel port.
+// whether the packet is the speaker's is forSpeaker's to say
+func parsePacket(raw []byte) (payload []byte, err error) {
 	if len(raw) < ipv6HeaderLen+udpHeaderLen {
-		return netip.Addr{}, nil, fmt.Errorf("babel: packet too short")
+		return nil, fmt.Errorf("babel: packet too short")
 	}
 	if raw[0]>>4 != 6 {
-		return netip.Addr{}, nil, fmt.Errorf("babel: not IPv6")
+		return nil, fmt.Errorf("babel: not IPv6")
 	}
 	if raw[6] != nextHeaderUDP {
-		return netip.Addr{}, nil, fmt.Errorf("babel: not UDP")
+		return nil, fmt.Errorf("babel: not UDP")
 	}
 	payloadLen := int(binary.BigEndian.Uint16(raw[4:6]))
 	if payloadLen < udpHeaderLen || ipv6HeaderLen+payloadLen != len(raw) {
-		return netip.Addr{}, nil, fmt.Errorf("babel: invalid IPv6 payload length")
-	}
-	srcAddr, dstAddr := netip.AddrFrom16([16]byte(raw[8:24])), netip.AddrFrom16([16]byte(raw[24:40]))
-	if !forSpeaker(srcAddr, dstAddr, localAddr) {
-		return netip.Addr{}, nil, fmt.Errorf("babel: packet is not from a link-local address to this speaker")
+		return nil, fmt.Errorf("babel: invalid IPv6 payload length")
 	}
 	udp := raw[ipv6HeaderLen:]
 	if binary.BigEndian.Uint16(udp[0:2]) != Port {
-		return netip.Addr{}, nil, fmt.Errorf("babel: wrong UDP source port")
+		return nil, fmt.Errorf("babel: wrong UDP source port")
 	}
 	dport := binary.BigEndian.Uint16(udp[2:4])
 	if dport != Port {
-		return netip.Addr{}, nil, fmt.Errorf("babel: not addressed to the babel port")
+		return nil, fmt.Errorf("babel: not addressed to the babel port")
 	}
 	udpLen := int(binary.BigEndian.Uint16(udp[4:6]))
 	if udpLen != payloadLen {
-		return netip.Addr{}, nil, fmt.Errorf("babel: invalid UDP length")
+		return nil, fmt.Errorf("babel: invalid UDP length")
 	}
 	receivedChecksum := binary.BigEndian.Uint16(udp[6:8])
 	if receivedChecksum == 0 {
-		return netip.Addr{}, nil, fmt.Errorf("babel: missing IPv6 UDP checksum")
+		return nil, fmt.Errorf("babel: missing IPv6 UDP checksum")
 	}
+	src, dst := addresses(raw)
 	// Including a valid checksum folds to all ones. No packet copy or
 	// mutation is needed to validate it.
-	if udpChecksum(srcAddr, dstAddr, udp) != 0xffff {
-		return netip.Addr{}, nil, fmt.Errorf("babel: invalid UDP checksum")
+	if udpChecksum(src, dst, udp) != 0xffff {
+		return nil, fmt.Errorf("babel: invalid UDP checksum")
 	}
-	return srcAddr, udp[udpHeaderLen:udpLen], nil
+	return udp[udpHeaderLen:udpLen], nil
 }
 
 // udpChecksum computes the IPv6 pseudo-header UDP checksum, RFC 8200 section 8.1,

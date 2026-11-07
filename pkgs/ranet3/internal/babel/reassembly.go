@@ -99,7 +99,7 @@ type datagram struct {
 // any other goes back to the caller unchanged, as ordinary traffic the kernel reassembles for its own sockets
 // the packet a fragment completes reaches the neighbor as an unfragmented one does
 func (s *Speaker) receiveFragment(peer *netstack.Peer, raw []byte) bool {
-	src, dst := netip.AddrFrom16([16]byte(raw[8:24])), netip.AddrFrom16([16]byte(raw[24:40]))
+	src, dst := addresses(raw)
 	if !forSpeaker(src, dst, s.linkLocal) {
 		return false
 	}
@@ -114,7 +114,7 @@ func (s *Speaker) receiveFragment(peer *netstack.Peer, raw []byte) bool {
 		s.mu.Unlock()
 		return true
 	}
-	from, payload, err := parsePacket(whole, s.linkLocal)
+	payload, err := parsePacket(whole)
 	if err != nil {
 		n.reassembly.stats.Dropped[dropMalformed]++
 		s.mu.Unlock()
@@ -127,7 +127,7 @@ func (s *Speaker) receiveFragment(peer *netstack.Peer, raw []byte) bool {
 	stats.Read++
 	stats.Largest = max(stats.Largest, len(whole))
 	s.mu.Unlock()
-	s.receive(peer, from, payload)
+	s.receive(peer, src, payload)
 	return true
 }
 

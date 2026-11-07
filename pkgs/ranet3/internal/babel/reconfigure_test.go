@@ -47,8 +47,7 @@ func sentHellos(t tester, packets [][]byte) []uint16 {
 	t.Helper()
 	var out []uint16
 	for _, raw := range packets {
-		to, _ := netip.AddrFromSlice(raw[24:40])
-		_, payload, err := parsePacket(raw, to)
+		payload, err := parsePacket(raw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,8 +171,7 @@ func TestRunningSpeakerTakesShorterIntervalsAtOnce(t *testing.T) {
 	after := sent()[before:]
 	updates := 0
 	for _, raw := range after {
-		to, _ := netip.AddrFromSlice(raw[24:40])
-		_, payload, err := parsePacket(raw, to)
+		payload, err := parsePacket(raw)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,7 +240,7 @@ func TestReloadedCostReselectsEveryPrefix(t *testing.T) {
 	var decoder PrefixDecoder
 	b.settle(t)
 	for _, raw := range toB {
-		_, payload, err := parsePacket(raw, multicastGroup)
+		payload, err := parsePacket(raw)
 		if err != nil {
 			t.Fatal(err)
 		}

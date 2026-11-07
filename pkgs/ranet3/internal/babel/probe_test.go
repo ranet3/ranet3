@@ -54,7 +54,7 @@ func TestProbeLeavesAsOnePacketOfItsSize(t *testing.T) {
 		if counted := ipv6HeaderLen + int(binary.BigEndian.Uint16(packet[4:6])); counted != size {
 			t.Fatalf("a probe of %d bytes counts %d in its IPv6 header", size, counted)
 		}
-		_, payload, err := parsePacket(packet, neighbor.addr)
+		payload, err := parsePacket(packet)
 		if err != nil {
 			t.Fatalf("a probe of %d bytes: %v", size, err)
 		}

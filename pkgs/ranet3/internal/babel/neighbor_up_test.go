@@ -149,9 +149,9 @@ func TestNeighborComingUpIsSentAHelloAndAskedForItsWholeTable(t *testing.T) {
 	sent := func() (greetings []greeting, requests []RouteRequest) {
 		t.Helper()
 		for _, raw := range packets.sent() {
-			to, _ := netip.AddrFromSlice(raw[24:40])
-			from, payload, err := parsePacket(raw, neighbor.addr)
-			if err != nil || from != speaker.linkLocal {
+			from, to := addresses(raw)
+			payload, err := parsePacket(raw)
+			if err != nil || from != speaker.linkLocal || !forSpeaker(from, to, neighbor.addr) {
 				t.Fatalf("a packet from %v was sent, want one from %v: %v", from, speaker.linkLocal, err)
 			}
 			tlvs, err := DecodePacket(payload)
@@ -226,7 +226,7 @@ func TestNeighborComingUpIsSentAHelloAndAskedForItsWholeTable(t *testing.T) {
 	later := time.Now().Add(deadTimeout(neighbor.helloInterval) + time.Second)
 	speaker.mu.Lock()
 	speaker.sweepExpiredLocked(later)
-	actions, _ := speaker.handlePacketLocked(neighbor, hello(4, 100), later)
+	actions, _ := speaker.handlePacketLocked(neighbor, neighbor.addr, hello(4, 100), later)
 	send := speaker.emitLocked(actions)
 	speaker.mu.Unlock()
 	send()

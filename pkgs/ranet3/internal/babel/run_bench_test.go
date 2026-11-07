@@ -184,7 +184,7 @@ func BenchmarkReceiveHello(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				s.mu.Lock()
-				s.handlePacketLocked(n, hello, time.Now())
+				s.handlePacketLocked(n, n.addr, hello, time.Now())
 				s.mu.Unlock()
 			}
 		})
