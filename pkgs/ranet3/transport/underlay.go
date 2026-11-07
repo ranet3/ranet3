@@ -6,11 +6,15 @@ package transport
 import (
 	"log/slog"
 	"net/netip"
+
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 // Runtime carries what the caller resolves at startup rather than writes in a
 // file.
 type Runtime struct {
+	// Prepare readies every socket the hub opens to stay out of the mesh
+	Prepare underlay.Prepare
 	// Selection names the interface of every underlay datagram on darwin, and nil names none
 	Selection Selection
 	// Events records each fallback a send to a peer took, each socket

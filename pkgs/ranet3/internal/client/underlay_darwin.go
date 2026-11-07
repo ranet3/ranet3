@@ -7,13 +7,15 @@ package client
 
 import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // underlayRuntime opens the host's one watcher of every interface but the
 // mesh, and the selection the hub names each underlay datagram's interface
-// from, which follows it through a reader of its own. It returns a second
-// reader of the same watcher for the network watch, which takes it over.
+// from and scopes each socket by, which follows it through a reader of its
+// own. It returns a second reader of the same watcher for the network watch,
+// which takes it over.
 //
 // mesh is this node's own tun, which no selection may answer with, and empty
 // on a node without one. host is the machine it reads, nil for the one this
@@ -35,5 +37,5 @@ func underlayRuntime(mesh string, host kernel.Host) (transport.Runtime, kernel.W
 		_ = selection.Close()
 		_ = watcher.Close()
 	}
-	return transport.Runtime{Selection: selection}, watcher.Reader(), closeAll, nil
+	return transport.Runtime{Prepare: underlay.Bound(selection.Interface), Selection: selection}, watcher.Reader(), closeAll, nil
 }
