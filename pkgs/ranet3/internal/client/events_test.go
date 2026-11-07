@@ -203,7 +203,7 @@ func TestCanceledDialIsNoFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bus := events.New()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: bus}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: bus}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
 
@@ -286,7 +286,7 @@ func TestDialerRecordsFailuresAndWakes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bus := events.New()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Hour, events: bus}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
@@ -456,7 +456,7 @@ func TestDialLineBracketsAnIPv6Endpoint(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bus := events.New()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: bus}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: bus}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
 	done := make(chan error, 1)

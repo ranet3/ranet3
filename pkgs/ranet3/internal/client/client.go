@@ -32,6 +32,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/ranet3/transport"
@@ -56,6 +57,8 @@ type Client struct {
 	underlayRoutes underlayRoutes
 	// selection is the same selection as the route reconciler reads it, nil where the transport selects none
 	selection kernel.UnderlaySelection
+	// prepare readies every underlay socket of the node, the hub's and the resolver's
+	prepare underlay.Prepare
 	// host is the machine the underlay and the route reconciler read and
 	// write, nil for the one this process is running on. It is kept so the
 	// reconciler this client hands the command is built against the same
@@ -279,7 +282,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		return nil, err
 	}
 	mesh.SetAnswerTTL(ttl)
-	underlay, watcher, closeUnderlay, err := underlayRuntime(mesh.Name, host)
+	hubRuntime, watcher, closeUnderlay, err := underlayRuntime(mesh.Name, host)
 	if err != nil {
 		return nil, err
 	}
@@ -288,8 +291,8 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 			closeUnderlay()
 		}
 	}()
-	underlay.Events = func(kind string, attrs ...slog.Attr) { bus.Emit(kind, "", attrs...) }
-	hub, err := transport.NewHub(cfg.Link.Port, underlay)
+	hubRuntime.Events = func(kind string, attrs ...slog.Attr) { bus.Emit(kind, "", attrs...) }
+	hub, err := transport.NewHub(cfg.Link.Port, hubRuntime)
 	if err != nil {
 		return nil, err
 	}
@@ -315,12 +318,12 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		_ = network.Close()
 		return nil, err
 	}
-	routes, _ := underlay.Selection.(underlayRoutes)
-	selection, _ := underlay.Selection.(kernel.UnderlaySelection)
+	routes, _ := hubRuntime.Selection.(underlayRoutes)
+	selection, _ := hubRuntime.Selection.(kernel.UnderlaySelection)
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		Mesh: mesh, privateKey: privateKey,
-		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, underlayRoutes: routes, selection: selection,
+		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, underlayRoutes: routes, selection: selection, prepare: hubRuntime.Prepare,
 		host:     host,
 		sessions: sessions,
 		workers:  max(1, runtime.GOMAXPROCS(0)),

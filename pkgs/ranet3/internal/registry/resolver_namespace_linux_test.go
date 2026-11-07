@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/dnstest"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -41,7 +42,7 @@ func TestResolverQueryFollowsTheOverlayResolveRemoteIsHanded(t *testing.T) {
 		{"outside the overlay", overlayOf("192.0.2.0/24", "3fff::/20"), schema.UnderlayMark},
 	} {
 		ctx, cancel := context.WithTimeout(context.Background(), handoverLookup)
-		_, err := endpoint.ResolveRemote(ctx, test.overlay)
+		_, err := endpoint.ResolveRemote(ctx, test.overlay, underlay.Marked())
 		cancel()
 		queries := nameserver.Take()
 		if len(queries) != len(handoverNameservers) {

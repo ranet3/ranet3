@@ -43,7 +43,7 @@ func TestEndpointQueryFollowsTheOverlayInForceAcrossReloads(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), handoverDials)
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, sessions: newSessionSet(), events: events.New()}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, sessions: newSessionSet(), events: events.New()}
 	c.cfg.Store(&inside)
 	c.storeIndex(trust(t, reg))
 	// the endpoint and its node, which resolveEndpoint resolves on two paths

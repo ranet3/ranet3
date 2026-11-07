@@ -452,7 +452,7 @@ func TestValidateESPTunnelPayload(t *testing.T) {
 func TestSyncPeersStartsAndStopsDialers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
 	c.cfg.Store(&config.Config{
 		Node: identity.MustParse("example/node"),
 		Link: config.Link{Endpoints: []config.Endpoint{{Serial: "0", Family: "ip4"}}},
@@ -701,7 +701,7 @@ func TestReloadRefusesARotatedPrivateKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
@@ -752,7 +752,7 @@ func reloadFixture(t *testing.T) (*Client, string) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
-		ctx: ctx, cancel: cancel, privateKey: privateKey,
+		ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		speaker: speaker, dialers: make(map[string]*dialer), Mesh: netstack.NewRoutesOnly(),
 	}
 	c.cfg.Store(cfg)
@@ -1100,7 +1100,7 @@ func TestSessionSetKeepsActivePreferredSession(t *testing.T) {
 func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
 	// A serial number sends runPeer through the pre-checks, which fail against
 	// an empty registry and return rather than looping.
 	c.cfg.Store(&config.Config{
@@ -1145,7 +1145,7 @@ func TestSyncPeersRestartsDialerThatGaveUp(t *testing.T) {
 func TestSyncPeersNoticesChangedSerialNumber(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), dialers: make(map[string]*dialer), sessions: newSessionSet(), hub: testHub(t)}
 	base := func(serial string) *config.Config {
 		return &config.Config{
 			Node: identity.MustParse("example/node"),
@@ -1223,7 +1223,7 @@ func TestReloadAppliesRegistryPeersAndOriginations(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := &Client{
-		ctx: ctx, cancel: cancel, privateKey: privateKey,
+		ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh,
 		// A dialer that resolves its peer asks the set whether that path is
 		// already held, and this fixture's organization carries a public key,
@@ -1585,7 +1585,7 @@ func TestReloadSkipsPeerRegistryNoLongerNames(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := &Client{
-		ctx: ctx, cancel: cancel, privateKey: privateKey,
+		ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		speaker: speaker, dialers: make(map[string]*dialer), Mesh: mesh,
 	}
 	c.cfg.Store(cfg)
@@ -1686,7 +1686,7 @@ func TestDialerStandsDownForSessionPeerOpened(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
 	c.sessions.close = func(*ike.Session) {}
@@ -1726,7 +1726,7 @@ func TestDialerStandsDownBehindAPreferredSessionUntilItEnds(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: events.New()}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
 	c.sessions.close = func(*ike.Session) {}
@@ -1768,7 +1768,7 @@ func TestDialerGivesUpOnAPeerItCannotReach(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, sessions: newSessionSet()}
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, sessions: newSessionSet()}
 	c.cfg.Store(cfg)
 
 	// "wrong family" is a node that exists and simply cannot be reached from
@@ -2002,7 +2002,7 @@ func TestDialerRepeatingOneFailureSaysItOnce(t *testing.T) {
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
@@ -2196,7 +2196,7 @@ func TestDialerGivesUpOnAPeerWithNoAddress(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
@@ -2231,7 +2231,7 @@ func TestResolveEndpointAnswersWithTheAddress(t *testing.T) {
 	}}}}})
 	for name, peer := range map[string]string{"pinned to a serial": "example/gateway:1", "unpinned": "example/gateway"} {
 		t.Run(name, func(t *testing.T) {
-			endpoint, resolved, err := resolveEndpoint(context.Background(), x, nil, identity.MustParse(peer), "ip4", &names{})
+			endpoint, resolved, err := resolveEndpoint(context.Background(), x, nil, testPrepare(), identity.MustParse(peer), "ip4", &names{})
 			if err != nil {
 				t.Fatalf("resolving an endpoint carrying a literal: %v", err)
 			}
@@ -2254,10 +2254,10 @@ func TestResolveEndpointNotesEachNameThatFails(t *testing.T) {
 		{CommonName: "relay", Endpoints: []registry.Endpoint{{SerialNumber: "0", AddressFamily: "ip4", Address: &literal, Port: 13000}}},
 	}}})
 	var failed names
-	if _, _, err := resolveEndpoint(context.Background(), x, nil, identity.MustParse("example/gateway"), "ip4", &failed); err == nil {
+	if _, _, err := resolveEndpoint(context.Background(), x, nil, testPrepare(), identity.MustParse("example/gateway"), "ip4", &failed); err == nil {
 		t.Fatalf("%s resolved", unresolvable)
 	}
-	if _, _, err := resolveEndpoint(context.Background(), x, nil, identity.MustParse("example/relay"), "ip4", &failed); err != nil {
+	if _, _, err := resolveEndpoint(context.Background(), x, nil, testPrepare(), identity.MustParse("example/relay"), "ip4", &failed); err != nil {
 		t.Fatal(err)
 	}
 	if got := failed.list(); !slices.Equal(got, []string{unresolvable}) {
@@ -2315,7 +2315,7 @@ func dialedClient(t *testing.T, address string) (*Client, *config.Config, *atomi
 	reg[0].Nodes[1].Endpoints[0].Address = &address
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, sessions: newSessionSet(), events: events.New(),
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, sessions: newSessionSet(), events: events.New(),
 		dialers: make(map[string]*dialer), dialRetry: dialedPoll}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))
@@ -2531,7 +2531,7 @@ func TestDialerGivesUpOnANodeAReloadRemoved(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Millisecond}
 	c.cfg.Store(cfg)
 

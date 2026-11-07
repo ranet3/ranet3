@@ -383,7 +383,7 @@ func TestDialerWakesBeforeItsReconnectDelay(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey,
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
 		dialers: make(map[string]*dialer), dialRetry: time.Hour}
 	c.cfg.Store(cfg)
 

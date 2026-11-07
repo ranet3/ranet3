@@ -575,7 +575,7 @@ func dialOnce(t *testing.T, ctx context.Context, node *loopbackNode, decide func
 	t.Helper()
 	x := node.client.index()
 	d := dials(node.cfg, x)[0]
-	ep, remoteIP, err := resolveEndpoint(ctx, x, nil, d.peer, d.local.Family, &names{})
+	ep, remoteIP, err := resolveEndpoint(ctx, x, nil, testPrepare(), d.peer, d.local.Family, &names{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,6 +22,7 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
 	"ranet3.com/pkgs/ranet3/internal/registry"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -164,10 +165,10 @@ func (f *repeatedFailure) alreadySaid(err error) bool {
 
 // resolveEndpoint returns the address it resolved with the endpoint, since
 // resolving a name again costs a resolver round trip, and notes in failed
-// whether each name it looked up failed
-func resolveEndpoint(ctx context.Context, x *registry.Index, overlay []schema.Prefix, peer identity.Identity, family string, failed *names) (registry.Target, net.IP, error) {
+// whether each name it looked up failed. prepare readies the resolver's sockets.
+func resolveEndpoint(ctx context.Context, x *registry.Index, overlay []schema.Prefix, prepare underlay.Prepare, peer identity.Identity, family string, failed *names) (registry.Target, net.IP, error) {
 	resolve := func(target registry.Target) (net.IP, error) {
-		address, err := target.ResolveRemote(ctx, overlay)
+		address, err := target.ResolveRemote(ctx, overlay, prepare)
 		if target.Address != nil && net.ParseIP(*target.Address) == nil && ctx.Err() == nil {
 			failed.note(*target.Address, err != nil)
 		}
@@ -298,7 +299,7 @@ func (c *Client) connectPeer(ctx context.Context, d dial, level slog.Level) (err
 	}()
 	cfg, x := c.config(), c.index()
 	crypto := cfg.Crypto()
-	ep, remoteIP, err := resolveEndpoint(ctx, x, cfg.Overlay, d.peer, d.local.Family, &c.unresolved)
+	ep, remoteIP, err := resolveEndpoint(ctx, x, cfg.Overlay, c.prepare, d.peer, d.local.Family, &c.unresolved)
 	if err != nil {
 		return err
 	}

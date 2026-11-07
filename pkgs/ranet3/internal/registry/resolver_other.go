@@ -8,6 +8,7 @@ package registry
 import (
 	"net"
 
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -15,7 +16,8 @@ import (
 // whatever the build, and never through the C library
 const PrefersGo = false
 
-// resolverFor looks endpoint names up as the host does, with no mark. On
-// android that is bionic's resolver, which Go's net package defers to since
-// android has no /etc/resolv.conf for its own.
-func resolverFor([]schema.Prefix) *net.Resolver { return net.DefaultResolver }
+// resolverFor looks endpoint names up as the host does, and the Prepare it is
+// handed reaches none of the resolver's sockets. On android that is bionic's
+// resolver, which Go's net package defers to since android has no
+// /etc/resolv.conf for its own.
+func resolverFor([]schema.Prefix, underlay.Prepare) *net.Resolver { return net.DefaultResolver }

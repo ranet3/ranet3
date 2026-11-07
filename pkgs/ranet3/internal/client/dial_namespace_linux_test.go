@@ -38,7 +38,7 @@ func TestDialerTheHostHasNoRouteForDialsAtOnceWhenWoken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	bus := events.New()
-	c := &Client{ctx: ctx, cancel: cancel, privateKey: privateKey, hub: hub, sessions: newSessionSet(),
+	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(),
 		dialers: make(map[string]*dialer), dialRetry: redialAfter, events: bus}
 	c.cfg.Store(cfg)
 	c.storeIndex(trust(t, reg))

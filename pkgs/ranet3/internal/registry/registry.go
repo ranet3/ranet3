@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	jsonv2 "encoding/json/v2"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -20,8 +21,13 @@ import (
 	"strings"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
+
+// errUnprepared refuses a resolution handed no Prepare, never read as one that does nothing,
+// since a query left to the host's routes can follow the mesh's own into its tun
+var errUnprepared = errors.New("registry: no Prepare to keep the resolver's sockets out of the mesh")
 
 type Registry []Organization
 
@@ -213,10 +219,14 @@ func (o Organization) publicKey() (ed25519.PublicKey, error) {
 // unreachable otherwise holds the dialer for the resolver's own timeout, and
 // the client waits for every dialer before it returns.
 //
-// overlay is the overlay as the dial reads it, which a reload moves,
-// and on linux, where the process may set the mark, decides which nameservers
-// the query reaches unmarked.
-func (e Endpoint) ResolveRemote(ctx context.Context, overlay []schema.Prefix) (net.IP, error) {
+// overlay is the overlay as the dial reads it, which a reload moves. On linux,
+// where Go's resolver opens its own sockets, prepare readies each query's
+// socket toward a nameserver outside the overlay, and one inside it goes as it
+// is. Elsewhere the platform's resolver opens them. A nil prepare is refused.
+func (e Endpoint) ResolveRemote(ctx context.Context, overlay []schema.Prefix, prepare underlay.Prepare) (net.IP, error) {
+	if prepare == nil {
+		return nil, errUnprepared
+	}
 	if e.Address == nil {
 		return nil, fmt.Errorf("registry: endpoint %s has no address", e.SerialNumber)
 	}
@@ -226,7 +236,7 @@ func (e Endpoint) ResolveRemote(ctx context.Context, overlay []schema.Prefix) (n
 		}
 		return ip, nil
 	}
-	ips, err := resolverFor(overlay).LookupIP(ctx, resolverNetwork(e.AddressFamily), *e.Address)
+	ips, err := resolverFor(overlay, prepare).LookupIP(ctx, resolverNetwork(e.AddressFamily), *e.Address)
 	if err != nil {
 		return nil, fmt.Errorf("registry: resolve %s: %w", *e.Address, err)
 	}

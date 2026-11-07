@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 // TestLoadRegistry exercises the real-world edge cases a production ranet
@@ -45,7 +47,7 @@ func TestLoadRegistry(t *testing.T) {
 	if ep.Address != nil {
 		t.Fatalf("expected nil address, got %v", *ep.Address)
 	}
-	if _, err := ep.ResolveRemote(t.Context(), nil); err == nil {
+	if _, err := ep.ResolveRemote(t.Context(), nil, underlay.Unchanged); err == nil {
 		t.Fatal("expected ResolveRemote to fail for a nil address")
 	}
 
@@ -55,7 +57,7 @@ func TestLoadRegistry(t *testing.T) {
 	if ep.Address == nil || *ep.Address != "" {
 		t.Fatalf("expected empty-string address, got %v", ep.Address)
 	}
-	if _, err := ep.ResolveRemote(t.Context(), nil); err == nil {
+	if _, err := ep.ResolveRemote(t.Context(), nil, underlay.Unchanged); err == nil {
 		t.Fatal("expected ResolveRemote to fail for an empty-string address")
 	}
 
@@ -76,7 +78,7 @@ func TestLoadRegistry(t *testing.T) {
 	onlyTarget(t, x, "example/non-sequential-serials:6")
 
 	// A literal (non-hostname) address should resolve directly without DNS.
-	ip, err := onlyTarget(t, x, "other-org/literal-address:0").ResolveRemote(t.Context(), nil)
+	ip, err := onlyTarget(t, x, "other-org/literal-address:0").ResolveRemote(t.Context(), nil, underlay.Unchanged)
 	if err != nil {
 		t.Fatalf("ResolveRemote: %v", err)
 	}
@@ -166,11 +168,21 @@ func TestResolveRemoteStopsWhenTheContextDoes(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	start := time.Now()
-	if _, err := ep.ResolveRemote(ctx, nil); err == nil {
+	if _, err := ep.ResolveRemote(ctx, nil, underlay.Unchanged); err == nil {
 		t.Fatal("a canceled lookup reported an address")
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Errorf("a canceled lookup took %s, so shutdown waits on the resolver", elapsed)
+	}
+}
+
+// ResolveRemote handed no Prepare refuses, never read as one that does nothing, a literal address it would answer at once among them
+func TestResolveRemoteRefusesAMissingPrepare(t *testing.T) {
+	for _, address := range []string{"192.0.2.1", "gateway.example."} {
+		endpoint := Endpoint{SerialNumber: "1", AddressFamily: "ip4", Address: &address, Port: 13000}
+		if _, err := endpoint.ResolveRemote(t.Context(), nil, nil); !errors.Is(err, errUnprepared) {
+			t.Errorf("resolving %s with no Prepare answered %v, want the refusal", address, err)
+		}
 	}
 }
 

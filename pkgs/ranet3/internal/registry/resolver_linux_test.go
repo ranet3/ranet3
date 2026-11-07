@@ -10,11 +10,13 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -50,7 +52,7 @@ func TestResolverSocketsCarryTheUnderlayMark(t *testing.T) {
 		{"inside the overlay", overlayOf("192.0.2.0/24", "127.0.0.0/8"), 0},
 	} {
 		for _, network := range []string{"udp", "tcp"} {
-			conn, err := resolverFor(overlay.prefixes).Dial(context.Background(), network, listener.Addr().String())
+			conn, err := resolverFor(overlay.prefixes, underlay.Marked()).Dial(context.Background(), network, listener.Addr().String())
 			if err != nil {
 				t.Fatalf("dial %s: %v", network, err)
 			}
@@ -67,6 +69,49 @@ func TestResolverSocketsCarryTheUnderlayMark(t *testing.T) {
 			if uint32(got) != overlay.want {
 				t.Errorf("the resolver's %s socket to a nameserver %s carries mark %#x, want %#x", network, overlay.name, got, overlay.want)
 			}
+		}
+	}
+}
+
+// The Prepare the resolver is handed sees each socket of a query to a
+// nameserver outside the overlay, by its network and the nameserver, a query's
+// datagram and its fallback over TCP alike, and none to a nameserver inside it
+func TestResolverPreparesOnlyQueriesOutsideTheOverlay(t *testing.T) {
+	if mayMark(t) {
+		// the root tests' namespace holds lo down
+		loopbackUp(t)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	nameserver := netip.MustParseAddrPort(listener.Addr().String())
+	for _, overlay := range []struct {
+		name     string
+		prefixes []schema.Prefix
+		want     []string
+	}{
+		{"outside the overlay", overlayOf("192.0.2.0/24"), []string{"udp4", "tcp4"}},
+		{"inside the overlay", overlayOf("127.0.0.0/8"), nil},
+	} {
+		var seen []string
+		prepare := func(network string, to netip.AddrPort, _ syscall.RawConn) error {
+			if to != nameserver {
+				t.Errorf("a query to a nameserver %s readied a socket toward %s, want %s", overlay.name, to, nameserver)
+			}
+			seen = append(seen, network)
+			return nil
+		}
+		for _, network := range []string{"udp", "tcp"} {
+			conn, err := resolverFor(overlay.prefixes, prepare).Dial(context.Background(), network, nameserver.String())
+			if err != nil {
+				t.Fatalf("dial %s: %v", network, err)
+			}
+			_ = conn.Close()
+		}
+		if !slices.Equal(seen, overlay.want) {
+			t.Errorf("the queries to a nameserver %s readied %v, want %v", overlay.name, seen, overlay.want)
 		}
 	}
 }
