@@ -344,7 +344,8 @@ type SegmentCounters struct {
 }
 
 // TransitCounters counts the forwarding decision's outcomes since startup, and those of the checks of a read off the tun
-// Forwarded counts the packets the decision handed to the next peer's send, and Delivered the ones written to the tun or handed to the exit
+// Forwarded counts the packets the decision handed to the next peer's send, and Delivered the ones written to the tun or handed to the exit,
+// and the reads off the tun written back into it to an address the tun holds
 // the fields from Expired to TooBig count the packets a session delivered that were dropped, by reason, and Multicast to Looped the reads off the tun, which NoRoute, Held, Invalid and TooBig count as well
 // Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
 // counted before the rules that keep an error from answering a packet and before the rate limits
