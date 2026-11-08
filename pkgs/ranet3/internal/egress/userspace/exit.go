@@ -90,6 +90,7 @@ type Exit struct {
 	pump     *pump
 	counts   counts
 	tcp      *tcpRelay
+	udp      *udpRelay
 	flows    *flows
 	timeWait *timeWait
 	// answers is the pump's lane, which answers a new flow past a limit, set
@@ -144,22 +145,26 @@ type passStats struct {
 // counts holds the exit's counters by reason: the packets the lanes dropped
 // past their bound, those the pump could lay into no batch, the endpoints in
 // TIME_WAIT a new connection reused and those closed past Limits.TimeWait,
-// and the packets a lane's judgment answered or dropped
+// the packets a lane's judgment answered and the flows refused, and the
+// packets a judgment or a relay dropped
 type counts struct {
 	laneDropped, unlaid atomic.Uint64
 	reused, closed      atomic.Uint64
 
-	mu      sync.Mutex
-	refused map[string]uint64
+	mu               sync.Mutex
+	refused, dropped map[string]uint64
 }
 
-func (c *counts) refuse(reason string) {
+func (c *counts) refuse(reason string) { c.add(&c.refused, reason) }
+func (c *counts) drop(reason string)   { c.add(&c.dropped, reason) }
+
+func (c *counts) add(into *map[string]uint64, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.refused == nil {
-		c.refused = map[string]uint64{}
+	if *into == nil {
+		*into = map[string]uint64{}
 	}
-	c.refused[reason]++
+	(*into)[reason]++
 }
 
 // New builds the userspace exit for cfg. It refuses what this exit cannot
@@ -206,6 +211,7 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	x.stack = s
 	x.flows = newFlows(cfg.SourceLimit(), rt.Limits.Flows)
 	x.tcp = newTCPRelay(x)
+	x.udp = newUDPRelay(x)
 	x.timeWait = newTimeWait(rt.Limits.TimeWait)
 	for range min(max(1, runtime.GOMAXPROCS(0)), maxWorkers) {
 		x.workers = append(x.workers, &worker{queue: make(chan *[]byte, workerQueuePackets)})
@@ -213,12 +219,6 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	x.enabled.Store(true)
 	x.SetHopLimits(relayedTTL, relayedTTL)
 	return x, nil
-}
-
-// takeUDP drops each UDP datagram the stack hands it, counted as a protocol
-// the exit does not carry
-func (x *Exit) takeUDP(stack.TransportEndpointID, *stack.PacketBuffer) {
-	x.counts.refuse(reasonProtocol)
 }
 
 // takeICMP drops each ICMP message the stack hands its ICMP transport,
@@ -291,10 +291,14 @@ func (x *Exit) Run(ctx context.Context) error {
 		}(w, x.rt.Mesh.OpenLane())
 	}
 	x.answers = x.rt.Mesh.OpenLane()
-	x.running.Add(1)
+	x.running.Add(2)
 	go func() {
 		defer x.running.Done()
 		x.pump.run(x.answers, x.stop)
+	}()
+	go func() {
+		defer x.running.Done()
+		x.sweep()
 	}()
 	ticker := time.NewTicker(x.cfg.SweepInterval())
 	defer ticker.Stop()
@@ -310,6 +314,7 @@ func (x *Exit) Run(ctx context.Context) error {
 			if x.withdrawn {
 				x.withdrawn = false
 				x.tcp.resume()
+				x.udp.resume()
 				slog.Info("egress userspace exit started again")
 			}
 			x.taking.Store(true)
@@ -334,25 +339,43 @@ func (x *Exit) Run(ctx context.Context) error {
 
 // withdraw takes nothing more from the sessions, reports both families not
 // ready, so the mesh hands the exit nothing more, publishes an empty
-// announcement, and then ends each dial and resets each connection
+// announcement, and then ends each dial, resets each connection and ends each
+// mapping
 func (x *Exit) withdraw(why string) {
 	x.taking.Store(false)
 	x.setReady(false, false, why, why)
 	x.publish(nil)
 	x.stats.Store(&passStats{At: time.Now(), Unready: x.unready})
 	x.tcp.withdraw()
+	x.udp.withdraw()
+}
+
+// sweep ends the mappings past their time until the exit stops
+func (x *Exit) sweep() {
+	ticker := time.NewTicker(mappingSweep)
+	defer ticker.Stop()
+	for {
+		select {
+		case now := <-ticker.C:
+			x.udp.expire(now)
+		case <-x.stop:
+			return
+		}
+	}
 }
 
 // Close closes the link, the stack, once each request the forwarder handed
-// over has ended, and Raw, once. Run's end calls it last, and it closes an
-// exit whose Run never ran.
+// over has ended and each mapping's readers have, and Raw, once. Run's end
+// calls it last, and it closes an exit whose Run never ran.
 func (x *Exit) Close() error {
 	var err error
 	x.closeOnce.Do(func() {
 		x.link.Close()
 		x.stack.Close()
 		x.tcp.withdraw()
+		x.udp.withdraw()
 		x.tcp.running.Wait()
+		x.udp.readers.Wait()
 		x.stack.Wait()
 		if x.rt.Platform.Raw != nil {
 			err = x.rt.Platform.Raw.Close()

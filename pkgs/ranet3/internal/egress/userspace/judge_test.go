@@ -15,7 +15,8 @@ import (
 // Over any bytes a session may hand the exit, the judgment never reads past
 // them, answers time exceeded only where the TTL or hop limit is 1 or less,
 // and delivers only a whole packet with a TTL or hop limit left toward a
-// destination the host does not hold
+// destination the host does not hold, or a UDP datagram toward one the host
+// holds, which the relay judges by its port
 func FuzzJudge(f *testing.F) {
 	for _, c := range []judgeCase{
 		{ipv4: true, ttl: 64, protocol: 6},
@@ -33,13 +34,14 @@ func FuzzJudge(f *testing.F) {
 		if j.act == drop {
 			return
 		}
-		var ttl byte
+		var ttl, protocol byte
 		var destination netip.Addr
 		switch raw[0] >> 4 {
 		case 4:
-			ttl, destination = raw[8], netip.AddrFrom4([4]byte(raw[16:20]))
+			ttl, protocol, destination = raw[8], raw[9], netip.AddrFrom4([4]byte(raw[16:20]))
 		case 6:
 			ttl, destination = raw[7], netip.AddrFrom16([16]byte(raw[24:40]))
+			protocol, _ = upperLayer6(raw)
 		default:
 			t.Fatalf("judged %+v a packet of version %d", j, raw[0]>>4)
 		}
@@ -48,8 +50,8 @@ func FuzzJudge(f *testing.F) {
 			t.Fatalf("answered expired with %d left", ttl)
 		case j.act == deliver && ttl <= 1:
 			t.Fatalf("delivered with %d left", ttl)
-		case j.act == deliver && (heldByHost(destination) || unservable(destination)):
-			t.Fatalf("delivered toward %s", destination)
+		case j.act == deliver && (heldByHost(destination) && protocol != protoUDP || unservable(destination)):
+			t.Fatalf("delivered protocol %d toward %s", protocol, destination)
 		}
 	})
 }

@@ -120,7 +120,9 @@ func extension(kind, next, segmentsLeft byte) []byte {
 // other than TCP, UDP and the family's ICMP answered prohibited, where an
 // IPv6 routing header with segments left and an extension header opening a
 // fragment's fragmentable part count as such a protocol, then a destination
-// the host holds or no server may hold answered prohibited
+// the host holds or no server may hold answered prohibited, but for a UDP
+// datagram toward one the host holds, delivered for the relay to judge by its
+// port
 func (c judgeCase) want() judgment {
 	if c.damage != 0 {
 		return judgment{act: drop, reason: reasonMalformed}
@@ -146,7 +148,7 @@ func (c judgeCase) want() judgment {
 	if protocol != 6 && protocol != 17 && protocol != icmp {
 		return judgment{act: answer, kind: netstack.ExitProhibited, reason: reasonProtocol}
 	}
-	if c.destination != 0 {
+	if c.destination != 0 && (c.destination != 1 || protocol != 17) {
 		return judgment{act: answer, kind: netstack.ExitProhibited, reason: reasonDestination}
 	}
 	return judgment{act: deliver}
@@ -161,7 +163,8 @@ func (c judgeCase) String() string {
 // fragment, behind any chain of IPv6 extension headers, damaged or not, the
 // lane's judgment is the model's: so a protocol the exit does not carry never
 // reaches the stack on any fragment, nor a packet toward an address the host
-// holds, which is the exit's refusal of the host's own services
+// holds but a UDP datagram, which the relay refuses there unless a mapping
+// holds its port: the exit's refusal of the host's own services
 func TestJudgmentIsTheModels(t *testing.T) {
 	check := func(tb testing.TB, c judgeCase) {
 		tb.Helper()

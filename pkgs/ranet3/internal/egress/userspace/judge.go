@@ -44,7 +44,9 @@ const (
 // TTL or hop limit runs out here is answered with time exceeded, one of a
 // protocol the exit does not carry, and one toward an address the host holds,
 // with administratively prohibited, and the rest delivered. held reports an
-// address the host holds.
+// address the host holds. A UDP datagram toward one is delivered, since the
+// relay carries it to the mapping holding its port there and refuses it
+// otherwise, which only the port shows, past reassembly.
 //
 // The protocol is judged on every fragment, since the stack answers a
 // protocol it does not register with a protocol unreachable as the
@@ -77,7 +79,7 @@ func judge(raw []byte, held func(netip.Addr) bool) judgment {
 		return judgment{act: answer, kind: netstack.ExitExpired, reason: reasonExpired}
 	case !carried(protocol, destination.Is4()):
 		return judgment{act: answer, kind: netstack.ExitProhibited, reason: reasonProtocol}
-	case unservable(destination) || held(destination):
+	case unservable(destination) || protocol != 17 && held(destination):
 		return judgment{act: answer, kind: netstack.ExitProhibited, reason: reasonDestination}
 	}
 	return judgment{act: deliver}

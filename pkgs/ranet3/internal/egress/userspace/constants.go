@@ -4,6 +4,8 @@
 package userspace
 
 import (
+	"time"
+
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 
 	"ranet3.com/pkgs/wireguard/tun"
@@ -46,7 +48,23 @@ const (
 	// copyBuffer is the bytes one copy of a relayed connection moves at
 	// most, a socket read's worth
 	copyBuffer = 32 << 10
-	// relayedTTL is the TTL of an ICMP error the exit relays toward a leaf
-	// from the router that raised it
+	// relayedTTL is the TTL or hop limit of a packet the exit builds toward a
+	// leaf, a reply or an error it relays from the host that raised it
 	relayedTTL = 64
+
+	// mappingTimeout keeps a UDP mapping past its last datagram out, RFC
+	// 4787 REQ-5's recommended default, and dnsTimeout a mapping whose
+	// datagrams go to port 53 alone, as REQ-5a lets a well-known port's
+	// application have
+	mappingTimeout = 5 * time.Minute
+	dnsTimeout     = 30 * time.Second
+	// mappingSweep spaces the passes that end the mappings past their time,
+	// each ending at most this late. A new mapping holds it before its first
+	// datagram's time, so no pass ends it while it opens, and one that no
+	// datagram goes out of ends within two passes.
+	mappingSweep = 5 * time.Second
+	// lowPortSearch bounds the other ports below 1024 a new mapping tries
+	// for a leaf's port below 1024 that the host holds, so one datagram costs
+	// at most this many binds past the leaf's own and the host's
+	lowPortSearch = 16
 )

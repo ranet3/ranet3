@@ -38,6 +38,8 @@ type fakeMesh struct {
 	fillGate   bool
 	// laidTo, where set, takes each packet a lane laid as it is laid
 	laidTo func(raw []byte)
+	// mtu, where set, is the MTU each lane reports, and a session's otherwise
+	mtu int
 
 	mu      sync.Mutex
 	lanes   []*fakeLane
@@ -48,6 +50,7 @@ type fakeMesh struct {
 type fakeAnswer struct {
 	offending []byte
 	kind      netstack.ExitAnswer
+	mtu       int
 }
 
 func newFakeMesh() *fakeMesh { return &fakeMesh{reads: fakeReads, done: make(chan struct{})} }
@@ -118,18 +121,23 @@ func (l *fakeLane) Fill(fill func(slab []byte, reads []tun.ReadPacket) int) bool
 	return true
 }
 
-func (l *fakeLane) Answer(offending []byte, kind netstack.ExitAnswer, _ int) bool {
+func (l *fakeLane) Answer(offending []byte, kind netstack.ExitAnswer, mtu int) bool {
 	if l.m.answerGate != nil {
 		<-l.m.answerGate
 	}
 	l.m.mu.Lock()
 	defer l.m.mu.Unlock()
-	l.m.answers = append(l.m.answers, fakeAnswer{bytes.Clone(offending), kind})
+	l.m.answers = append(l.m.answers, fakeAnswer{bytes.Clone(offending), kind, mtu})
 	return true
 }
 
-func (l *fakeLane) MTU(netip.Addr, netip.Addr) int { return 1420 }
-func (l *fakeLane) Done() <-chan struct{}          { return l.m.done }
+func (l *fakeLane) MTU(netip.Addr, netip.Addr) int {
+	if l.m.mtu != 0 {
+		return l.m.mtu
+	}
+	return 1420
+}
+func (l *fakeLane) Done() <-chan struct{} { return l.m.done }
 
 func (l *fakeLane) Close() {
 	l.m.mu.Lock()

@@ -227,8 +227,9 @@ func (r *tcpRelay) control(server netip.AddrPort, reuse bool, queue *errorQueue)
 	}
 }
 
-// portTaken is a dial's failure that another port may not meet: the port
-// held by another socket, refused to this process, or its four-tuple held
+// portTaken is a dial's or a mapping's failure that another port may not
+// meet: the port held by another socket, refused to this process, or a dial's
+// four-tuple held
 func portTaken(err error) bool {
 	return errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EADDRNOTAVAIL)
 }

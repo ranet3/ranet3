@@ -39,6 +39,10 @@ var (
 	rigMesh6   = netip.MustParseAddr("2001:db8:1::1")
 	rigServer4 = netip.MustParsePrefix("203.0.113.5/32")
 	rigServer6 = netip.MustParsePrefix("2001:db8:3::5/128")
+	// rigOthers4 and rigOthers6 are two more servers' addresses of each
+	// family, on loopback beside the first
+	rigOthers4 = [2]netip.Prefix{netip.MustParsePrefix("203.0.113.6/32"), netip.MustParsePrefix("203.0.113.7/32")}
+	rigOthers6 = [2]netip.Prefix{netip.MustParsePrefix("2001:db8:3::6/128"), netip.MustParsePrefix("2001:db8:3::7/128")}
 )
 
 var (
@@ -61,7 +65,7 @@ func addServers() error {
 		return err
 	}
 	defer netlink.Close()
-	return netlink.AddAddresses("lo", rigServer4, rigServer6)
+	return netlink.AddAddresses("lo", rigServer4, rigServer6, rigOthers4[0], rigOthers4[1], rigOthers6[0], rigOthers6[1])
 }
 
 // claim skips the test without root and refuses it in a namespace that held

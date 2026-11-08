@@ -140,6 +140,57 @@ func tcpSegment(src, dst netip.AddrPort, seq, ack uint32, flags byte, payload []
 	return ipPacket(src.Addr(), dst.Addr(), protoTCP, b)
 }
 
+// udpMessage is a UDP header and payload from src to dst, its checksum set,
+// unwrapped
+func udpMessage(src, dst netip.AddrPort, payload []byte) []byte {
+	b := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint16(b[0:2], src.Port())
+	binary.BigEndian.PutUint16(b[2:4], dst.Port())
+	binary.BigEndian.PutUint16(b[4:6], uint16(len(b)))
+	copy(b[8:], payload)
+	checksum := fold(sum(pseudo(src.Addr(), dst.Addr(), protoUDP, len(b)), b))
+	if checksum == 0 {
+		checksum = 0xffff
+	}
+	binary.BigEndian.PutUint16(b[6:8], checksum)
+	return b
+}
+
+// udpDatagram is an unfragmented IP packet holding a UDP datagram, its
+// checksum set
+func udpDatagram(src, dst netip.AddrPort, payload []byte) []byte {
+	return ipPacket(src.Addr(), dst.Addr(), protoUDP, udpMessage(src, dst, payload))
+}
+
+// reassemble6 joins IPv6 fragments of one packet, each laid with its fixed
+// header and fragment header and nothing between, into the packet they were
+// cut from, false where they do not make one whole
+func reassemble6(fragments [][]byte) ([]byte, bool) {
+	if len(fragments) == 0 {
+		return nil, false
+	}
+	var data []byte
+	next, last := byte(0), false
+	for _, f := range fragments {
+		if len(f) < 48 || f[6] != ipv6Fragment || int(binary.BigEndian.Uint16(f[4:6])) != len(f)-40 {
+			return nil, false
+		}
+		offset := int(binary.BigEndian.Uint16(f[42:44]) &^ 7)
+		if offset != len(data) || last {
+			return nil, false
+		}
+		next, last = f[40], binary.BigEndian.Uint16(f[42:44])&1 == 0
+		data = append(data, f[48:]...)
+	}
+	if !last {
+		return nil, false
+	}
+	whole := append([]byte(nil), fragments[0][:40]...)
+	binary.BigEndian.PutUint16(whole[4:6], uint16(len(data)))
+	whole[6] = next
+	return append(whole, data...), true
+}
+
 // echoRequest is an ICMP or ICMPv6 echo request from src to dst, its checksum
 // set, unwrapped
 func echoRequest(src, dst netip.Addr, id, seq uint16, payload []byte) []byte {
