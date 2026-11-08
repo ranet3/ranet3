@@ -150,11 +150,16 @@ func (r *rows) timerOpening(t *testing.T) {
 	r.keeps(t, began, timer{protocol: syscall.IPPROTO_TCP, from: r.family.Leaf, to: to, phase: Opening, floor: transitoryFloor, held: r.class != None})
 }
 
-// timerUnacked has the server send data whose acknowledgment the leaf's path
-// loses
+// timerUnacked has the leaf send data the server reads, which carries the
+// leaf's end of the handshake past a backend that terminates, since the server
+// accepts once the backend's own dial is up, then the server send data whose
+// acknowledgment the leaf's path loses
 func (r *rows) timerUnacked(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, unackedPort)
 	leaf, server := r.connect(t, listen(t, r.network.Server, to), to, netip.AddrPort{})
+	opened := []byte("opened over " + r.family.Name)
+	write(t, leaf, opened)
+	readFull(t, server, opened)
 	r.withhold(t, addrPort(leaf.LocalAddr()), addrPort(leaf.RemoteAddr()))
 	began := time.Now()
 	data := []byte("never acknowledged over " + r.family.Name)
