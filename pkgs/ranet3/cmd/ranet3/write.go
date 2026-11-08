@@ -35,7 +35,7 @@ command for a subsystem it does not run.`, true),
 		r.reloadCommand(),
 		r.meshCommand("down", "Take this node off the mesh", `The node closes every session with an IKE Delete and stops dialing,
 answering and speaking Babel, and it withdraws the routes, rules,
-addresses and egress tables it installed and the kill switch.
+addresses and egress chains it installed and the kill switch.
 The daemon, its tun, the control socket and the metrics stay. A flag in
 the state directory keeps the node down through a restart or a reboot
 until ranet3 up.`, false),

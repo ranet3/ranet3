@@ -23,13 +23,18 @@ const (
 	// translation runs, so this chain runs ahead of every chain there whatever
 	// order they were made in. See Conflicts.
 	natPriority = 99
-	// filterPriority is NF_IP_PRI_FILTER, where the limit's chain runs
+	// filterPriority is NF_IP_PRI_FILTER, where the forward hook's chain runs
 	filterPriority = 0
-	// flowsSet starts the name of the set LimitChain counts each source's flows
-	// in, the family's digit ending it
+	// retiredChain is the regular chain an earlier translator held IPv4's lines
+	// at the forward hook in, which a pass empties and deletes as it does a
+	// stray chain of a class of none
+	retiredChain = LimitChain + "4"
+	// flowsSet starts the name of the set each family's limit line counts each
+	// source's flows in, the family's digit ending it
 	flowsSet = "flows"
 	// setSize is the most sources a family's set of flows holds. The set then
-	// takes no new one, and LimitChain leaves that source's flows uncounted.
+	// takes no new one, and the limit line leaves that source's flows
+	// uncounted.
 	setSize = 65535
 	// udpDestinationOffset is where the destination port sits in a UDP header
 	udpDestinationOffset = 2

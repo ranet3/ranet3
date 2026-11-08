@@ -211,8 +211,8 @@ func startExitDaemon(t *testing.T, leaf *netnstest.Thread) *exitDaemon {
 	}
 	d.stop = func() { d.stopFor(nil) }
 	t.Cleanup(d.stop)
-	// in the leaf's namespace, as every thread of the daemon shares its one, so the socket for the table ranet3_fallback a
-	// reload's pass opens goes in it
+	// in the leaf's namespace, as every thread of the daemon shares its one, so the socket for the kill switch a reload's pass
+	// opens goes in it
 	runner := netnstest.JoinThread(t, leaf.Path)
 	runs.Go(func() {
 		if err := runner.Do(func() error { return d.routes.Run(ctx) }); err != nil {

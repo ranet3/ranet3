@@ -30,9 +30,6 @@ const (
 	// to the table, the settle window and one pass, where the periodic pass the
 	// test sets takes an hour
 	fallbackRestoreBudget = time.Second
-	// tableOwner is NFT_TABLE_F_OWNER of linux/netfilter/nf_tables.h, which
-	// x/sys does not carry
-	tableOwner = 0x2
 )
 
 // fallbackLines is the lines of the chain at postrouting in fallbackSample's
@@ -59,7 +56,7 @@ const fallbackLines = `		oifname { "lo", "ranetsw0" } accept
 // comment the platform writes for it
 func fallbackText(t *testing.T) string {
 	t.Helper()
-	text := `table inet ranet3_fallback {
+	text := `table inet ranet3 {
 	set forwarded { type ifname; elements = { "lo", "ranetfw0" } }
 	set lan4 { type ipv4_addr; flags interval; elements = { 198.51.100.0/25 } }
 	set lan6 { type ipv6_addr; flags interval; elements = { 2001:db8:a::/64 } }
@@ -88,6 +85,89 @@ func fallbackText(t *testing.T) string {
 		text += "\t}\n"
 	}
 	return text + "}\n"
+}
+
+// The switch's rewrite of a set nf_tables will not change in place, and its
+// withdrawal, leave the antispoof filter's and the translator's chains, rules,
+// sets and objects in the same table as they were, each by its handle, as
+// another writer's socket wrote them under the names those owners write, and
+// the switch's withdrawal leaves the table to them
+func TestNetlinkFallbackKeepsTheOtherOwnersObjects(t *testing.T) {
+	plat := rootRulePlatform(t, "ranetsw0")
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		t.Fatal("the other owners' chains are written through nft, which is not on the path")
+	}
+	run := func(script string) {
+		t.Helper()
+		cmd := exec.Command(nft, "-f", "-")
+		cmd.Stdin = strings.NewReader(script)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("nft -f %q: %v\n%s", script, err, out)
+		}
+	}
+	if err := plat.writeFallback(fallbackSample, false); err != nil {
+		t.Fatal(err)
+	}
+	run(fmt.Sprintf(`add chain inet %[1]s antispoof { type filter hook prerouting priority -300; policy accept; }
+add rule inet %[1]s antispoof iifname "lo" accept comment "accept via lo"
+add set inet %[1]s owned4 { type ipv4_addr; flags interval; elements = { 192.0.2.7 } }
+add chain inet %[1]s postrouting { type nat hook postrouting priority 99; policy accept; }
+add rule inet %[1]s postrouting oifname != "ranet0" counter masquerade comment "ipv4 out via ranet0 masquerade"
+add set inet %[1]s flows4 { type ipv4_addr; size 65535; flags dynamic; }
+add ct timeout inet %[1]s translated-udp4 { protocol udp; l3proto ip; policy = { unreplied: 120s, replied: 120s }; }
+`, nftables.Table))
+	// every line of the listing outside the switch's chains and sets, which carries its handle
+	others := func() []string {
+		listing, err := exec.Command(nft, "-a", "list", "table", "inet", nftables.Table).CombinedOutput()
+		if err != nil {
+			t.Fatalf("nft list: %v\n%s", err, listing)
+		}
+		var out []string
+		inSwitch := false
+		for _, line := range strings.Split(string(listing), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "chain ") || strings.HasPrefix(trimmed, "set ") || strings.HasPrefix(trimmed, "ct timeout ") {
+				name := strings.Fields(trimmed)[1]
+				if strings.HasPrefix(trimmed, "ct timeout ") {
+					name = strings.Fields(trimmed)[2]
+				}
+				inSwitch = slices.ContainsFunc(fallbackNamed, func(s nftables.Set) bool { return s.Name == name }) || slices.ContainsFunc(fallbackChains, func(c nftables.Chain) bool { return c.Name == name })
+			}
+			if !inSwitch && strings.Contains(line, "# handle") {
+				out = append(out, trimmed)
+			}
+		}
+		return out
+	}
+	before := others()
+	if len(before) < 7 {
+		t.Fatalf("the other owners' listing holds %d lines with handles, want every chain, rule, set and object of theirs:\n%s", len(before), strings.Join(before, "\n"))
+	}
+	// lan4 made again without its interval flag, which only a delete mends
+	run(fmt.Sprintf("flush chain inet %[1]s fallback; flush chain inet %[1]s output; delete set inet %[1]s lan4; add set inet %[1]s lan4 { type ipv4_addr; }", nftables.Table))
+	read, err := plat.readFallback(fallbackSample)
+	if err != nil || read.fault == "" || !read.remake {
+		t.Fatalf("with lan4 made again the switch reads back as %+v (%v), want a fault that remakes it", read, err)
+	}
+	if err := plat.writeFallback(fallbackSample, read.remake); err != nil {
+		t.Fatal(err)
+	}
+	if read, err := plat.readFallback(fallbackSample); read.fault != "" || err != nil {
+		t.Errorf("after the remake the switch reads back with %q (%v)", read.fault, err)
+	}
+	if after := others(); !slices.Equal(after, before) {
+		t.Errorf("the switch's remake changed the other owners' listing from\n%s\nto\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+	if err := plat.deleteFallback(); err != nil {
+		t.Fatal(err)
+	}
+	if after := others(); !slices.Equal(after, before) {
+		t.Errorf("the switch's withdrawal changed the other owners' listing from\n%s\nto\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+	if read, err := plat.readFallback(fallbackSample); read.fault != "its chains are missing" || err != nil {
+		t.Errorf("after the withdrawal the switch reads back with %q (%v)", read.fault, err)
+	}
 }
 
 // fallbackSample is a table of every line, on the tun ranetsw0, each port set
@@ -133,7 +213,7 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 		}
 	}
 	list := func() string {
-		return regexp.MustCompile(` comment "[^"]*"`).ReplaceAllString(run("list", "table", "inet", FallbackTable), "")
+		return regexp.MustCompile(` comment "[^"]*"`).ReplaceAllString(run("list", "table", "inet", nftables.Table), "")
 	}
 	run("-f", "-")
 	theirs := list()
@@ -261,22 +341,22 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	mark := regexp.MustCompile(`meta mark 0x00000072 accept (comment "[^"]*") # handle (\d+)`)
 	oifname := regexp.MustCompile(`oifname \{[^}]*\} accept (comment "[^"]*") # handle (\d+)`)
 	for _, change := range []func() string{
-		func() string { run("flush", "set", "inet", FallbackTable, "lan4"); return "a flushed set" },
-		func() string { run("flush", "chain", "inet", FallbackTable, "fallback"); return "a flushed chain" },
+		func() string { run("flush", "set", "inet", nftables.Table, "lan4"); return "a flushed set" },
+		func() string { run("flush", "chain", "inet", nftables.Table, "fallback"); return "a flushed chain" },
 		func() string {
-			found := mark.FindStringSubmatch(run("-a", "list", "chain", "inet", FallbackTable, "output"))
+			found := mark.FindStringSubmatch(run("-a", "list", "chain", "inet", nftables.Table, "output"))
 			if found == nil {
 				t.Fatal("the output chain lists no mark line")
 			}
-			run("replace", "rule", "inet", FallbackTable, "output", "handle", found[2], "meta", "mark", "0x72", "drop", found[1])
+			run("replace", "rule", "inet", nftables.Table, "output", "handle", found[2], "meta", "mark", "0x72", "drop", found[1])
 			return "a verdict edited under its comment"
 		},
 		func() string {
-			found := oifname.FindStringSubmatch(run("-a", "list", "chain", "inet", FallbackTable, "output"))
+			found := oifname.FindStringSubmatch(run("-a", "list", "chain", "inet", nftables.Table, "output"))
 			if found == nil {
 				t.Fatal("the output chain lists no oifname line")
 			}
-			run("replace", "rule", "inet", FallbackTable, "output", "handle", found[2], `oifname { "lo", "ranetup0" } accept`, found[1])
+			run("replace", "rule", "inet", nftables.Table, "output", "handle", found[2], `oifname { "lo", "ranetup0" } accept`, found[1])
 			return "a line's own set naming the uplink under its comment"
 		},
 		func() string {
@@ -286,9 +366,9 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 				t.Fatal(err)
 			}
 			lines := strings.Split(strings.TrimSuffix(fallbackLines, "\n"), "\n")
-			script := "flush chain inet " + FallbackTable + " fallback\n"
+			script := "flush chain inet " + nftables.Table + " fallback\n"
 			for j, rule := range slices.Backward(rules) {
-				script += fmt.Sprintf("insert rule inet %s output %s comment %q\n", FallbackTable, strings.TrimSpace(lines[j]), rule.spec)
+				script += fmt.Sprintf("insert rule inet %s output %s comment %q\n", nftables.Table, strings.TrimSpace(lines[j]), rule.spec)
 			}
 			runScript(script)
 			return "the postrouting chain's lines moved ahead of output's"
@@ -310,8 +390,8 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	if err := plat.deleteFallback(); err != nil {
 		t.Fatal(err)
 	}
-	if read, err := plat.readFallback(fallbackSample); read.fault != "the table is missing" || err != nil {
-		t.Errorf("after the delete the table reads back with %q (err %v)", read.fault, err)
+	if read, err := plat.readFallback(fallbackSample); read.fault != "its chains are missing" || err != nil {
+		t.Errorf("after the delete the switch reads back with %q (err %v)", read.fault, err)
 	}
 	if err := sendFrom(t, beyond[0], 9, ""); err != nil {
 		t.Errorf("with the table gone a datagram beyond the LAN was refused: %v", err)
@@ -325,8 +405,8 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	DeleteFallback(nil)
-	if read, err := plat.readFallback(fallbackSample); read.fault != "the table is missing" || err != nil {
-		t.Errorf("after a start with no reconciler the table reads back with %q (err %v)", read.fault, err)
+	if read, err := plat.readFallback(fallbackSample); read.fault != "its chains are missing" || err != nil {
+		t.Errorf("after a start with no reconciler the switch reads back with %q (err %v)", read.fault, err)
 	}
 }
 
@@ -501,20 +581,20 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	handle := regexp.MustCompile(`comment "counter drop" # handle (\d+)`)
 	for _, change := range []func() string{
 		func() string {
-			run("flush", "set", "inet", FallbackTable, "lan4")
+			run("flush", "set", "inet", nftables.Table, "lan4")
 			return "a flushed set"
 		},
 		func() string {
-			found := handle.FindStringSubmatch(run("-a", "list", "chain", "inet", FallbackTable, "fallback"))
+			found := handle.FindStringSubmatch(run("-a", "list", "chain", "inet", nftables.Table, "fallback"))
 			if found == nil {
 				t.Fatal("the chain lists no drop")
 			}
-			run("delete", "rule", "inet", FallbackTable, "fallback", "handle", found[1])
+			run("delete", "rule", "inet", nftables.Table, "fallback", "handle", found[1])
 			return "a deleted drop"
 		},
 		func() string {
 			// in one transaction, so no pass writes the table between them, and nf_tables changes no set's flags in place
-			run("delete table inet " + FallbackTable + "; add table inet " + FallbackTable + "; add set inet " + FallbackTable + " lan4 { type ipv4_addr; }")
+			run("delete table inet " + nftables.Table + "; add table inet " + nftables.Table + "; add set inet " + nftables.Table + " lan4 { type ipv4_addr; }")
 			return "a set remade without its interval flag"
 		},
 	} {
@@ -526,32 +606,26 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 		}
 	}
 
-	holder, err := nftables.Dial()
-	if err != nil {
-		t.Fatal(err)
-	}
-	owned := nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
-		Body: nftables.PutAttrBE32(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, FallbackTable), unix.NFTA_TABLE_FLAGS, tableOwner)}
-	if err := holder.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, FallbackTable), owned}); err != nil {
-		_ = holder.Close()
-		t.Fatalf("take the table under another writer's socket: %v", err)
-	}
+	// the switch's chains flushed and lan4 made again without its interval
+	// flag, which only a delete mends, under a rule of another writer's chain
+	// that looks it up, so the switch's delete of it fails until that chain goes
+	run(fmt.Sprintf("flush chain inet %[1]s fallback; flush chain inet %[1]s output; delete set inet %[1]s lan4; add set inet %[1]s lan4 { type ipv4_addr; }; "+
+		"add chain inet %[1]s other; add rule inet %[1]s other ip daddr @lan4 accept", nftables.Table))
 	changed := time.Now()
 	settle(false, 0)
 	if took := time.Since(changed); took > fallbackRestoreBudget {
-		t.Errorf("with the table held by another writer 5405 and 5435 took %s to go, want at most %s", took, fallbackRestoreBudget)
+		t.Errorf("with its set held by another writer's rule 5405 and 5435 took %s to go, want at most %s", took, fallbackRestoreBudget)
 	}
-	if err := holder.Close(); err != nil {
-		t.Fatal(err)
-	}
+	run(fmt.Sprintf("delete chain inet %[1]s other; add element inet %[1]s lan4 { 192.0.2.1 }", nftables.Table))
 	settle(true, sources)
 }
 
-// A Run the failed mesh's stop ends leaves the table ranet3_fallback, which a
-// listing finds, and no rule, route or address of its own, so the table's drop
+// A Run the failed mesh's stop ends leaves the kill switch's chains, which a
+// listing finds, and no rule, route or address of its own, so the switch's drop
 // alone refuses the host's datagram beyond the LAN. The next Run puts the rules
-// back and takes the table over as it finds it, its drop's count kept, and a
-// Run stopped plainly leaves nothing for a listing to find.
+// back and takes the chains over as it finds them, its drop's count kept, and a
+// Run stopped plainly leaves nothing for a listing to find, even with the
+// antispoof filter's entry chain in the table.
 func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	const device, uplink = "ranetsw0", "ranetup0"
 	plat := rootRulePlatform(t, device)
@@ -629,18 +703,32 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 		t.Errorf("the next start holds %+v, want the table as written with the one drop and %d rules", left, written)
 	}
 	stop(nil)
-	if left := held(); left.read.fault != "the table is missing" || left.listed || left.rules+left.routes+left.addresses > 0 {
+	if left := held(); left.read.fault != "its chains are missing" || left.listed || left.rules+left.routes+left.addresses > 0 {
 		t.Errorf("a plain stop left %+v, want nothing", left)
+	}
+	filter, err := nftables.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = filter.Close() })
+	entry := nftables.Chain{Table: nftables.Table, Name: "mesh_entry", Hook: nftables.NoHook}
+	if err := filter.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_INET, nftables.Table), entry.Create(unix.NFPROTO_INET)}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = filter.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, nftables.Table)}) })
+	if left := held(); left.read.fault != "its chains are missing" || left.listed {
+		t.Errorf("with the antispoof filter's entry chain alone in the table the switch reads %+v, want no switch listed", left)
 	}
 }
 
-// The socket for the table ranet3_fallback, its monitor and their goroutine
-// are open only while the table is written: a platform built for mode off opens
-// none, one built for fallback = "none" opens them, a reload into it opens them
-// at its pass, a refused reload out of it leaves them and the table, a reload
-// out of it deletes the table and closes them, a stop deletes the table and
+// The socket for the kill switch, its monitor and their goroutine are open
+// only while the switch is written: a platform built for mode off opens none,
+// one built for fallback = "none" opens them, a reload into it opens them at
+// its pass, a refused reload out of it leaves them and the switch, a reload out
+// of it deletes the switch and closes them, a stop deletes the switch and
 // closes them, a reload taken while stopped opens nothing, and the first pass
-// of a start under the mode opens them again.
+// of a start under the mode opens them again. Nothing else writes in the
+// table here, so the switch's withdrawal takes the table with it.
 func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) {
 	const device, uplink = "ranetsw0", "ranetup0"
 	plat := rootRulePlatform(t, device)
@@ -688,7 +776,7 @@ func TestNetlinkFallbackWatchIsOpenOnlyWhileTheModeWritesTheTable(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = reader.Close() })
 	held := func() bool {
-		tables, err := nftables.Tables(reader, FallbackTable)
+		tables, err := nftables.Tables(reader, nftables.Table)
 		if err != nil {
 			t.Fatalf("list the table: %v", err)
 		}

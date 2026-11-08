@@ -1,4 +1,4 @@
-Exit  nftables table ip and ip6 ranet3 chains limit and egress, 5 rules, 12 flows, withholding 203.0.113.0/24 2001:db8::/32 until its family is ready, egress not ready for ipv4 ipv6, the reply lookup of 192.0.2.65 for 203.0.113.0/24 from 203.0.113.128 arriving on up0 leaves by up0 rather than ranet0, last pass 2 minutes ago
+Exit  nftables table inet ranet3 chains forward, forward6 and postrouting and a none_ chain for each class of none, 5 rules, 12 flows, withholding 203.0.113.0/24 2001:db8::/32 until its family is ready, egress not ready for ipv4 ipv6, the reply lookup of 192.0.2.65 for 203.0.113.0/24 from 203.0.113.128 arriving on up0 leaves by up0 rather than ranet0, last pass 2 minutes ago
 Rules
   read now: egress: read table ip ranet3: operation not permitted
 Family ipv4, not ready, the reply lookup of 192.0.2.65 for 203.0.113.0/24 from 203.0.113.128 arriving on up0 leaves by up0 rather than ranet0

@@ -197,7 +197,7 @@ func TestTranslatorNamesWhatWokeIt(t *testing.T) {
 	}
 }
 
-// a running translator told to stop retracts its advertisement, then withdraws its tables, and holds nothing across its sweeps
+// a running translator told to stop retracts its advertisement, then withdraws its chains, and holds nothing across its sweeps
 // told to start again it installs the rules and announces on its next pass
 // a sweep may run the pass of a stop or a start before its wake is read, so neither is told by the trigger its pass records
 func TestStoppedTranslatorWithdrawsUntilItIsStartedAgain(t *testing.T) {
@@ -323,9 +323,9 @@ func TestStartTheSweepReachedFirstIsStoppedAgain(t *testing.T) {
 }
 
 // a stop whose withdrawal failed is still a stop the translator owes
-// it tries again rather than recording the tables as gone
+// it tries again rather than recording its chains as gone
 // the sweep is out past the wait
-// only the retry a failed pass takes can then withdraw the tables within it
+// only the retry a failed pass takes can then withdraw its chains within it
 func TestStoppedTranslatorRetriesAWithdrawalThatFailed(t *testing.T) {
 	be := &fakeBackend{}
 	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0"), Sweep: schema.Duration(lateSweep)}, Runtime{Events: events.New()}, be)
@@ -360,7 +360,7 @@ func TestStoppedTranslatorRetriesAWithdrawalThatFailed(t *testing.T) {
 	be.mu.Lock()
 	be.failWithdraw = false
 	be.mu.Unlock()
-	await("the retry to withdraw the tables", func() bool { return held() == 0 && tr.lastPass().Err == "" })
+	await("the retry to withdraw its chains", func() bool { return held() == 0 && tr.lastPass().Err == "" })
 }
 
 // a pass the sweep woke, putting back rules somebody else flushed, is named for the sweep

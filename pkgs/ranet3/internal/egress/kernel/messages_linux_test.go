@@ -102,21 +102,23 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		}
 	}
 	both, rules, limit := []uint8{egress.FamilyIPv4, egress.FamilyIPv6}, everyTranslation(), egress.DefaultFlowsPerSource
-	requests, err := translatorBatch(both, limit, rules, nil, nil)
+	contents := translatorContents(both, limit, rules)
+	requests, err := translatorBatch(contents, rules, nftables.Contents{}, nil)
 	write("translator in both families", requests, err)
-	requests, err = translatorBatch(both, limit, rules, both, nil)
-	write("translator remaking both families", requests, err)
-	requests, err = translatorBatch([]uint8{egress.FamilyIPv6}, limit, rules, []uint8{egress.FamilyIPv6}, nil)
-	write("translator remaking ipv6 alone", requests, err)
-	requests, err = translatorBatch([]uint8{egress.FamilyIPv4}, limit, nil, nil, nil)
+	requests, err = translatorBatch(contents, rules, nftables.Contents{Chains: []nftables.Chain{forward}, Sets: contents.Sets, Timeouts: contents.Timeouts}, nil)
+	write("translator remaking its forward chain and both families' sets and timeout objects", requests, err)
+	ipv6 := translatorContents([]uint8{egress.FamilyIPv6}, limit, nil)
+	requests, err = translatorBatch(contents, rules, nftables.Contents{Sets: ipv6.Sets, Timeouts: ipv6.Timeouts[:1]}, nil)
+	write("translator remaking the ipv6 set and one ipv6 timeout object alone", requests, err)
+	ipv4 := translatorContents([]uint8{egress.FamilyIPv4}, limit, nil)
+	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, nil)
 	write("translator in ipv4 with no rule", requests, err)
 	// a table holding three chains of classes of none no rule names, one of
 	// which a goto of another names and one a rule of another writer's chain
 	// goes to, which stays
-	stray := map[uint8][]noneStray{egress.FamilyIPv4: {{name: "none_198_51_100_0_24"}, {name: "none_198_51_100_0_25"}, {name: "none_203_0_113_0_24", heldBy: "chain other"}}}
-	requests, err = translatorBatch([]uint8{egress.FamilyIPv4}, limit, nil, nil, stray)
+	stray := []noneStray{{name: "none_198_51_100_0_24"}, {name: "none_198_51_100_0_25"}, {name: "none_203_0_113_0_24", heldBy: "chain other"}}
+	requests, err = translatorBatch(ipv4, nil, nftables.Contents{}, stray)
 	write("translator in ipv4 deleting the chains of classes of none it no longer writes", requests, err)
-	write("translator withdrawal", []nftables.Request{delTable(egress.FamilyIPv4), delTable(egress.FamilyIPv6)}, nil)
 	// what a pass writes for the default capability and for one of each kind of
 	// class, one that translates inside one of none among them, without return
 	// and under it
@@ -140,7 +142,8 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		{"translator of a capability of classes", classes},
 		{"translator of that capability under return", returned},
 	} {
-		requests, err = translatorBatch(both, limit, newTranslator(c.cfg, node, &fakeBackend{}).desired(), nil, nil)
+		desired := newTranslator(c.cfg, node, &fakeBackend{}).desired()
+		requests, err = translatorBatch(translatorContents(both, limit, desired), desired, nftables.Contents{}, nil)
 		write(c.name, requests, err)
 	}
 
@@ -156,18 +159,17 @@ func TestTranslatorAndBorderMessagesKeepTheirBytes(t *testing.T) {
 		"eth1": {Exempt: prefixes(t, "2001:db8:1::7/128")}, "wl*": {Exempt: prefixes(t, "192.0.2.128/26")},
 	}}
 	desired, written, _ := newBorderFilter(exempted, rt, &fakeBorder{}).desired()
-	requests, err = borderBatch(desired, written, false)
+	requests, err = borderBatch(desired, written, nftables.Contents{}, nil)
 	write("antispoof filter", requests, err)
-	requests, err = borderBatch(desired, written, true)
-	write("antispoof filter remaking its table", requests, err)
+	requests, err = borderBatch(desired, written, nftables.Contents{Chains: []nftables.Chain{prerouting}, Sets: borderNamed[2:3]}, []string{BorderChain, EntryChain})
+	write("antispoof filter remaking its antispoof chain and one set", requests, err)
 	// none4 gains a range below its own and grows its own downward, and owned6 empties
 	moved := borderSets{noneSet + "4": ranges("198.51.100.0/24", "203.0.112.0/23"), ownedSet + "6": nil}
 	requests, err = fillBatch(written, moved)
 	write("antispoof filter moving two sets", requests, err)
 	desired, written, _ = newBorderFilter(nil, rt, &fakeBorder{}).desired()
-	requests, err = borderBatch(desired, written, true)
-	write("entry chain with no antispoof chain", requests, err)
-	write("antispoof filter withdrawal", []nftables.Request{delBorderTable()}, nil)
+	requests, err = borderBatch(desired, written, nftables.Contents{}, []string{BorderChain, EntryChain})
+	write("entry chain deleting the antispoof chain it no longer writes", requests, err)
 
 	path := filepath.Join("testdata", "messages.golden")
 	if *update {

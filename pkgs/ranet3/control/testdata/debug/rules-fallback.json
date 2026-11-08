@@ -1,5 +1,5 @@
 {
-  "where": "nftables table inet ranet3_fallback chain fallback",
+  "where": "nftables table inet ranet3 chains fallback and output",
   "hook": "postrouting",
   "priority": 2147483646,
   "state": "holding",

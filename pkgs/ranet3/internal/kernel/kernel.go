@@ -461,7 +461,7 @@ type platform interface {
 	// Notify carries one coalesced wake-up per batch of kernel notifications
 	// touching what the reconciler holds: on linux a route in its table, an
 	// address of its tun, a deleted rule of its protocol or another writer's
-	// change to the table ranet3_fallback, on darwin a route of its interface
+	// change to the kill switch's chains, on darwin a route of its interface
 	// or of lo0, where its kill switch and overlay holds are.
 	Notify() <-chan struct{}
 	// retable takes the capability a reload installed, on the id and proto the platform was opened with

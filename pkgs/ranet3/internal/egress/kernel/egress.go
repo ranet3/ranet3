@@ -9,23 +9,27 @@
 //
 // # Ownership
 //
-// On linux the translation is an nftables table named after this tool, one per
-// address family, holding a nat postrouting chain that translates, the timeout
-// objects it attaches, a filter forward chain with a set that holds each mesh
+// On linux the translation is chains in the nftables inet table named after
+// this tool, nftables.Table, which the antispoof filter and internal/kernel's
+// kill switch write their own chains in: a nat postrouting chain that
+// translates, a filter forward chain, which sends IPv6's packets on to a
+// regular chain of IPv6's and holds IPv4's lines itself, a regular chain for
+// each class of none, which that class's pass goes to, and for each family the
+// timeout objects the translation attaches and a set that holds each mesh
 // source under a class that translates to its share of the flows
-// (exit-nodes.md, "Each source's share of the flows"), and a regular chain for
-// each class of none, which that class's pass goes to. That name is the
-// ownership marker, the way Table.Proto is the reconciler's in internal/kernel.
-// This package creates the table, writes only inside it and withdraws it whole
-// at shutdown. It reads other writers' tables, chains and rules to find its own
-// and to report conflicts, and writes, replaces or deletes nothing outside its
-// own tables. A rule another writer puts in this package's chains is removed by
-// the next pass. Other source translation already on the host is reported
-// rather than fought over: several nat postrouting chains coexist at the same
-// hook, the first to translate a connection wins it, and taking somebody else's
-// rule away to win that race would break whatever put it there.
+// (exit-nodes.md, "Each source's share of the flows"). Their names are the
+// ownership marker, the way Table.Proto is the reconciler's in
+// internal/kernel. This package writes only those, and withdraws them at
+// shutdown, with the table where nothing of another writer's is left in it.
+// It reads other writers' tables, chains and rules to find its own and to
+// report conflicts, and writes, replaces or deletes nothing else. A rule
+// another writer puts in this package's chains is removed by the next pass.
+// Other source translation already on the host is reported rather than fought
+// over: several nat postrouting chains coexist at the same hook, the first to
+// translate a connection wins it, and taking somebody else's rule away to win
+// that race would break whatever put it there.
 //
-// A table a previous instance left behind carries the same name and is
+// Chains a previous instance left behind carry the same names and are
 // therefore adopted, then brought to the rules the configuration now asks for,
 // exactly as a route carrying the reconciler's protocol is.
 //
@@ -41,8 +45,8 @@
 // An exit whose rule will not install, or whose kernel will not forward, would
 // therefore attract traffic and drop it with nothing to tell the sender. So the
 // advertisement is published by this package rather than by the configuration:
-// Announce answers the prefixes of each family that is ready, whose table
-// reads back as written, which the kernel forwards and whose route lookups
+// Announce answers the prefixes of each family that is ready, whose chains
+// read back as written, which the kernel forwards and whose route lookups
 // take a translated packet's path, and nothing at all while no family is, and
 // Republish says when that answer moves. Forwarding is the same fact
 // internal/client warns about for transit, read from the same place, and acted
@@ -54,25 +58,29 @@
 // it is authorization rather than a filter: a host on any link of a forwarding
 // node can send that node a packet with a mesh source, which chain mesh_entry
 // keeps out of the mesh on every Linux node and chain antispoof keeps off the
-// host's own services. BorderFilter owns a second table of this tool's name,
-// inet rather than ip and ip6, on every Linux node: chain antispoof, written
-// wherever overlay is, drops a source in the overlay or a carved one arriving
-// from outside the mesh that no exemption passes, before conntrack, and chain
-// mesh_entry, written with or without an overlay, lets into the tun from another device only a reply, a
-// source this node owns, an IPv6 link-local or multicast destination, or a
-// destination a none class takes. desired lists each chain's rules in order.
-// On macOS, where overlay is written, chain antispoof is the one chain, kept
-// in a pf anchor under com.apple, and the filter keeps pf enabled while it
-// runs (antispoof.md, "The pf anchor on macOS").
+// host's own services. BorderFilter owns two chains of the same table on every
+// Linux node: chain antispoof, written wherever overlay is, drops a source in
+// the overlay or a carved one arriving from outside the mesh that no exemption
+// passes, before conntrack, and chain mesh_entry, written with or without an
+// overlay, lets into the tun from another device only a reply, a source this
+// node owns, an IPv6 link-local or multicast destination, or a destination a
+// none class takes. desired lists each chain's rules in order. On macOS, where
+// overlay is written, chain antispoof is the one chain, kept in a pf anchor
+// under com.apple, and the filter keeps pf enabled while it runs (antispoof.md,
+// "The pf anchor on macOS").
 //
 // It is a second owner beside Translator, with its own run goroutine, socket
 // and change monitor, and neither writes, replaces or deletes the other's
-// table. The filter keeps its table through `ranet3 down`, since it guards
-// the host's links rather than the mesh, withdraws it last at a stop the
-// operator asks for, after nothing routes into the tun, and leaves it at the
-// stop for the mesh's failure (antispoof.md, "Where it runs"). Its readiness
-// is a report, in status and the metrics, and holds back nothing the
-// translator or a segment carries.
+// chains or sets, nor wakes the other's monitor by writing them. A table
+// message wakes every owner unless it makes the table with no flags or clears
+// them, so a flush of the ruleset or another program setting the dormant flag wakes
+// each owner once, and the owner whose pass then makes the table again or
+// clears the flag wakes no other. The filter keeps its chains through
+// `ranet3 down`, since it guards the host's links rather than the mesh,
+// withdraws them last at a stop the operator asks for, after nothing routes
+// into the tun, and leaves them at the stop for the mesh's failure
+// (antispoof.md, "Where it runs"). Its readiness is a report, in status and
+// the metrics, and holds back nothing the translator or a segment carries.
 package kernel
 
 import (
@@ -343,8 +351,8 @@ const (
 	// timing attaches timeouts ahead of a translation and keeps no counter,
 	// so a flow is counted once, by the translation after it
 	timing
-	// limiting refuses a source's new flow past the limit, in the forward
-	// hook's chain, counting the packets it refuses
+	// limiting refuses a source's new flow past the limit, at the forward
+	// hook, counting the packets it refuses
 	limiting
 	// dropping drops a packet no flow is tracked for, counting the packets
 	dropping
@@ -352,7 +360,7 @@ const (
 	// past the limit and the rules after it, keeping no counter
 	passing
 	// screening drops an ICMP message of a kind or refuses a packet by its
-	// protocol, in the forward hook's chain, counting the packets
+	// protocol, at the forward hook, counting the packets
 	screening
 )
 
@@ -372,7 +380,7 @@ func (r Rule) kind() ruleKind {
 	return translating
 }
 
-// chain is the chain a rule of the kind sits in
+// chain is the base chain whose hook meets a rule of the kind
 func (k ruleKind) chain() string {
 	if k == translating || k == timing {
 		return ChainName
@@ -380,12 +388,35 @@ func (k ruleKind) chain() string {
 	return LimitChain
 }
 
-// chain is the chain the rule sits in, its kind's or the one Under names
+// chain is the chain the rule sits in: the one Under names, else its family's
+// for a kind of the forward hook's, else the translation's
 func (r Rule) chain() string {
-	if r.Under.IsValid() {
+	switch {
+	case r.Under.IsValid():
 		return noneChain(r.Under)
+	case r.kind().chain() == LimitChain:
+		return familyChain(r.Family)
 	}
-	return r.kind().chain()
+	return ChainName
+}
+
+// familyChain names the chain family's lines at the forward hook sit in: for
+// IPv4 the hook's own, past the first line, which sends IPv6's packets on, and
+// for IPv6 the regular chain that line sends them to
+func familyChain(family uint8) string {
+	if family == egress.FamilyIPv4 {
+		return LimitChain
+	}
+	return LimitChain + digit(family)
+}
+
+// digit ends the name of each of the translator's chains, sets and objects of
+// family
+func digit(family uint8) string {
+	if family == egress.FamilyIPv4 {
+		return "4"
+	}
+	return "6"
 }
 
 // noneChain names the chain of the class of none from prefix in letters,
@@ -398,8 +429,8 @@ func noneChain(prefix netip.Prefix) string {
 func (k ruleKind) counted() bool { return k != timing && k != passing }
 
 // counterUnit names the unit of a counter read from chain: flows in the
-// translation's chain, which meets a flow's first packet alone, packets in the
-// forward hook's, and none where the rule keeps no counter
+// translation's chain, which meets a flow's first packet alone, packets in
+// those past the forward hook's, and none where the rule keeps no counter
 func counterUnit(chain string, counted bool) string {
 	switch {
 	case !counted:
@@ -446,15 +477,14 @@ func (r Rule) String() string {
 }
 
 // Installed is one rule as the backend read it back: the spelling it was
-// written under, the family whose table it was read from and what it has
-// carried since. The counters are outside the diff on purpose, because they
-// change on every packet and a diff holding them would rewrite the ruleset on
-// every pass.
+// written under, the family it is placed in and what it has carried since.
+// The counters are outside the diff on purpose, because they change on every
+// packet and a diff holding them would rewrite the ruleset on every pass.
 type Installed struct {
 	Spec string
-	// Family places a rule another writer put in a chain, which reads back with
-	// no spelling, in its family's readback. The antispoof filter's one inet
-	// table leaves it 0.
+	// Family is the family of the translator's rule written under Spec, which
+	// places a rule another writer put in a chain, read back with no spelling,
+	// by the chain it was read from. The antispoof filter leaves it 0.
 	Family uint8
 	// Chain is the chain it was read from, and Counted whether it keeps a
 	// counter, which say what a rule another writer put there counts
@@ -475,12 +505,14 @@ type chainReadback struct {
 	// unready says why the filter is not ready where its own rules read back
 	// as written, which a rewrite would not change
 	unready string
-	remake  bool
+	// remake is a chain, set or object the readback found that a rewrite
+	// cannot mend in place, which the write deletes and makes again
+	remake bool
 	// pf is pf's state beside the anchor as the antispoof filter's pf backend
 	// read it, nil on every other backend
 	pf *egress.BorderPF
-	// held is whether the table is there at all, which the antispoof filter's
-	// readback alone sets
+	// held is whether any of the antispoof filter's chains or sets is there,
+	// which its readback alone sets
 	held bool
 }
 
@@ -488,28 +520,30 @@ type chainReadback struct {
 // portable and syscall-free, so the diff and the refusal rules are testable
 // against a fake.
 type backend interface {
-	// Rules reads back this tool's own chains and the table holding them in
-	// each family it owns, keyed by family, each chain's lines against desired
+	// Rules reads back the translator's own chains, sets and objects and the
+	// table holding them, keyed by family, each chain's lines against desired
 	// by their comments and their expressions.
 	Rules(desired []Rule) (map[uint8]chainReadback, error)
 	// Read is Rules with desired naming the chains alone, through a socket of
 	// its own, for a reader off the run goroutine, which owns the backend's
 	// socket
 	Read(desired []Rule) (map[uint8]chainReadback, error)
-	// Apply brings this tool's own chains to rules, deleting the table of each
-	// family in remake first. It replaces the chains' contents in one
-	// transaction rather than editing them, because nftables commits a batch
-	// atomically and a chain rewritten rule by rule has a window in which a
-	// packet leaves untranslated.
-	Apply(rules []Rule, remake []uint8) error
+	// Apply brings the translator's own chains to rules, deleting first where
+	// remake each chain, set or object that cannot change in place. It
+	// replaces the chains' contents in one transaction rather than editing
+	// them, because nftables commits a batch atomically and a chain rewritten
+	// rule by rule has a window in which a packet leaves untranslated.
+	Apply(rules []Rule, remake bool) error
 	// Conflicts names the source translation already on the host that this
 	// node's traffic could meet, for an operator rather than as a number.
 	Conflicts() ([]string, error)
-	// Withdraw removes this tool's own tables. A table that is already gone is
+	// Withdraw removes the translator's own chains, sets and objects, and the
+	// table with them where it holds nothing else. What is already gone is
 	// success.
 	Withdraw() error
 	// Changed carries one coalesced wake-up per batch of changes another
-	// writer made to this tool's own tables, a deletion or an addition.
+	// writer made to the table or to the translator's own chains and sets, a
+	// deletion or an addition.
 	Changed() <-chan struct{}
 	// Missed carries one coalesced wake-up per batch of notifications the
 	// backend lost or could not read, any of which may have been a change.
@@ -553,7 +587,7 @@ type passStats struct {
 	judged map[uint8]judgment
 }
 
-// Translator owns the capability on one node: the rules, the tables they live
+// Translator owns the capability on one node: the rules, the chains they live
 // in, and the advertisement that depends on both.
 type Translator struct {
 	cfg egress.Egress
@@ -673,7 +707,7 @@ func (t *Translator) lastPass() passStats {
 	return passStats{}
 }
 
-// Run reconciles until ctx is canceled, then withdraws the tables this
+// Run reconciles until ctx is canceled, then withdraws the chains this
 // translator owns and closes what the backend holds. It is called once.
 //
 // Run returns the withdrawal error, never a reconcile error: a failed pass is
@@ -694,7 +728,7 @@ func (t *Translator) Run(ctx context.Context) error {
 			// failed is retried on the backoff a failed pass takes
 			if !t.withdrawn {
 				if err := t.stop(); err != nil {
-					slog.Warn("egress could not withdraw its tables, retrying", "err", err, "retry_in", retry.Failed(sweep))
+					slog.Warn("egress could not withdraw its chains, retrying", "err", err, "retry_in", retry.Failed(sweep))
 				} else {
 					t.withdrawn = true
 					retry.Passed()
@@ -905,26 +939,22 @@ func (t *Translator) reportRefused(last, now passStats) {
 }
 
 // flatten is every family's rules in the order desired groups them, whether
-// any family's table or chain reads back with a fault, and the families whose
-// table Apply deletes and makes again
-func flatten(read map[uint8]chainReadback) (held []Installed, faulted bool, remake []uint8) {
+// any family reads back with a fault, and whether any reads back with a chain,
+// set or object Apply deletes and makes again
+func flatten(read map[uint8]chainReadback) (held []Installed, faulted, remake bool) {
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
 		held = append(held, read[family].rules...)
 		faulted = faulted || read[family].fault != ""
-		if read[family].remake {
-			remake = append(remake, family)
-		}
+		remake = remake || read[family].remake
 	}
 	return held, faulted, remake
 }
 
 // desired is the rules this configuration asks for, grouped by family and
-// then in the order a packet meets them within one chain. The grouping is not
-// presentation: each family is a table of its own, so a backend reads them back
-// one family at a time, and a list ordered any other way would never compare
-// equal to its own readback and would be rewritten on every pass forever.
-// Within a family the forward hook's chain comes first, as a forwarded packet
-// meets it before the translation's.
+// then in the order a packet meets them within one chain, which is the order a
+// backend writes each chain's lines in and reads them back. Within a family
+// the forward hook's rules come first, as a forwarded packet meets them before
+// the translation's.
 func (t *Translator) desired() []Rule {
 	var out []Rule
 	for _, family := range t.cfg.Translated(t.rt.Steered) {
@@ -1106,7 +1136,7 @@ func (t *Translator) reportConflicts(conflicts []string) {
 	t.warned = slices.Clone(conflicts)
 }
 
-// stop retracts the advertisement and withdraws the tables, in the order Run's
+// stop retracts the advertisement and withdraws the chains, in the order Run's
 // exit takes, and records the pass. The pass reads zero installed, so a
 // diagnostic does not go on reporting the rules of the last pass that ran.
 func (t *Translator) stop() error {
@@ -1126,9 +1156,10 @@ func (t *Translator) stop() error {
 	return err
 }
 
-// withdraw removes the tables this translator owns. It is best effort by
-// construction: the caller usually stops the mesh at the same moment, and a
-// table that is already gone is not an error.
+// withdraw removes the chains, sets and objects this translator owns, and the
+// table with them where nothing else is in it. It is best effort by
+// construction: the caller usually stops the mesh at the same moment, and what
+// is already gone is not an error.
 func (t *Translator) withdraw() error {
 	if err := t.be.Withdraw(); err != nil {
 		return fmt.Errorf("withdraw %s: %w", t.where(), err)

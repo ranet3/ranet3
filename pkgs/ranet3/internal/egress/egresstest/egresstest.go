@@ -261,6 +261,14 @@ type Arm struct {
 	// host in one transaction, as another writer would, nil for a backend
 	// nothing else on the host can change
 	Remove func(host Host) error
+	// Beside starts a second owner of the table the backend writes in, on the
+	// exit's host as that host runs it beside the backend, nil for a backend
+	// that shares its table with no other owner
+	Beside func(t *testing.T, network Network) Owner
+	// Reload is another writer's reload of the whole ruleset of host, as a
+	// host firewall's restart makes it, which takes what the backend and the
+	// second owner write. It is set where Beside is.
+	Reload func(host Host) error
 	// Masquerade has another writer masquerade every packet leaving host, made
 	// after the backend's translation, where the host's own source translation
 	// runs, or where ahead is set at a place the host runs ahead of the
@@ -272,9 +280,20 @@ type Arm struct {
 	Flows func(host Host) ([]Flow, error)
 }
 
+// Owner is a second owner of a backend's table, as Arm.Beside starts it
+type Owner struct {
+	// Ready is whether the owner's last pass read its own back as written
+	Ready func() bool
+	// Unready is how often the owner has reported itself not ready
+	Unready func() int
+}
+
 func (a Arm) check() error {
 	if len(a.Classes) == 0 {
 		return errors.New("the arm names no class it carries, so no row would run")
+	}
+	if (a.Beside == nil) != (a.Reload == nil) {
+		return errors.New("the arm names a second owner without the reload it is held to, or a reload without the owner")
 	}
 	for limit, declared := range a.Limits {
 		if declared.Reason == "" || declared.Row == "" {
@@ -356,12 +375,15 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 			if arm.Remove != nil {
 				under.run("another writer", func(t *testing.T) { exit.overwritten(t, network, class, arm.Remove) })
 			}
+			if arm.Beside != nil {
+				under.run("another writer's reload beside a second owner", func(t *testing.T) { exit.reloaded(t, network, arm.Beside, arm.Reload) })
+			}
 			if arm.Masquerade != nil {
 				under.run("another writer's translation", func(t *testing.T) { exit.masqueraded(t, network, class, arm.Masquerade) })
 			}
 			under.run("stop", exit.stop)
 			// a class runs both families, the disabling, another writer for each the arm can play, and the stop
-			under.holds(4 + ones(arm.Remove != nil, arm.Masquerade != nil))
+			under.holds(4 + ones(arm.Remove != nil, arm.Beside != nil, arm.Masquerade != nil))
 		})
 	}
 	top.run("a share the capability names", func(t *testing.T) {
@@ -835,6 +857,81 @@ func (r *running) overwritten(t *testing.T, network Network, class Class, remove
 		if n > 1 {
 			t.Errorf("the backend told Ready of %d losses of %s for another writer's one change, want one", n, flows[i].family.family.Name)
 		}
+	}
+}
+
+// reloaded starts a second owner of the backend's table and, once both read
+// back ready, has another writer reload the host's whole ruleset. The backend
+// says each family is not ready once, the second owner says it is not ready
+// once, and both read back ready again. Whichever owner makes the table again
+// first takes nothing of the other's, so a second not-ready of either for the
+// one reload would drop every frame of a family, or withdraw what the second
+// owner holds, for a pass and for nothing.
+func (r *running) reloaded(t *testing.T, network Network, beside func(*testing.T, Network) Owner, reload func(Host) error) {
+	owner := beside(t, network)
+	both := func() bool {
+		return r.carries4.Load() && r.carries6.Load() && announcesDefaults(r.Announce()) && owner.Ready()
+	}
+	for deadline := time.Now().Add(readyBudget); !both(); time.Sleep(pollInterval) {
+		if time.Now().After(deadline) {
+			t.Fatalf("within %s the backend and the second owner did not both read back ready", readyBudget)
+		}
+	}
+	var mu sync.Mutex
+	var drops [2]int
+	r.mu.Lock()
+	r.dropped = func(v4, v6 bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		for i, went := range []bool{v4, v6} {
+			if went {
+				drops[i]++
+			}
+		}
+	}
+	r.mu.Unlock()
+	t.Cleanup(func() {
+		r.mu.Lock()
+		r.dropped = nil
+		r.mu.Unlock()
+	})
+	before := owner.Unready()
+	counted := func() (backend [2]int, second int) {
+		mu.Lock()
+		defer mu.Unlock()
+		return drops, owner.Unready() - before
+	}
+	if err := reload(r.host); err != nil {
+		t.Fatalf("reload the host's ruleset as another writer: %v", err)
+	}
+	for deadline := time.Now().Add(stepBudget); ; time.Sleep(pollInterval) {
+		if n, second := counted(); n[0] != 0 && n[1] != 0 && second != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			n, second := counted()
+			t.Fatalf("within %s of another writer's reload the backend told Ready of %d losses of %s and %d of %s, and the second owner reported itself not ready %d times, want one each", stepBudget, n[0], network.Family(false).Name, n[1], network.Family(true).Name, second)
+		}
+	}
+	for deadline := time.Now().Add(readyBudget); !both(); time.Sleep(pollInterval) {
+		if time.Now().After(deadline) {
+			t.Fatalf("within %s of another writer's reload the backend and the second owner did not both read back ready", readyBudget)
+		}
+	}
+	// a second not-ready for the one reload is waited for as an answer that must not come
+	for deadline := time.Now().Add(quietPeriod); time.Now().Before(deadline); time.Sleep(pollInterval) {
+		if n, second := counted(); n[0] > 1 || n[1] > 1 || second > 1 {
+			break
+		}
+	}
+	n, second := counted()
+	for i, v6 := range []bool{false, true} {
+		if n[i] > 1 {
+			t.Errorf("the backend told Ready of %d losses of %s for another writer's one reload, want one", n[i], network.Family(v6).Name)
+		}
+	}
+	if second > 1 {
+		t.Errorf("the second owner reported itself not ready %d times for another writer's one reload, want once", second)
 	}
 }
 

@@ -63,6 +63,14 @@ func (s Set) Create(proto uint8) (Request, error) {
 	return Request{Kind: Command(unix.NFT_MSG_NEWSET), Flags: unix.NLM_F_CREATE, Body: body}, nil
 }
 
+// Delete fails while a rule uses the set
+func (s Set) Delete(proto uint8) Request {
+	body := PutNfgenmsg(nil, proto)
+	body = PutAttrString(body, unix.NFTA_SET_TABLE, s.Table)
+	body = PutAttrString(body, unix.NFTA_SET_NAME, s.Name)
+	return Request{Kind: Command(unix.NFT_MSG_DELSET), Body: body}
+}
+
 // DecodeSet reads a set out of a dump, with no ID
 func DecodeSet(message Message) Set {
 	var s Set

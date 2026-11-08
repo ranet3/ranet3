@@ -63,7 +63,7 @@ func TestStatusRendersTheExitsStatusFieldForField(t *testing.T) {
 	advertise := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
 	count, most := uint64(9000), uint64(262144)
 	status := egress.Status{
-		Backend: "nftables", Where: "nftables table ip and ip6 ranet3 chain egress",
+		Backend: "nftables", Where: "nftables table inet ranet3 chains forward, forward6 and postrouting and a none_ chain for each class of none",
 		Ready4: true, Unready: "ipv6 is not forwarded", Skipped: "ipv6 has no member to read from",
 		Advertise: advertise, Announced: advertise[:1],
 		Translate: []egress.Class{

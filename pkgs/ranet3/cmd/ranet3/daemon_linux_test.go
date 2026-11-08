@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -296,10 +297,8 @@ func leftNothing(t *testing.T, f *daemonFiles, was beforeStart) {
 		t.Fatal(err)
 	}
 	defer nft.Close()
-	for _, name := range []string{kernelexit.TableName, kernel.FallbackTable} {
-		if held, err := nftables.Tables(nft, name); err != nil || len(held) != 0 {
-			t.Errorf("the table %s is held in the families %v (%v)", name, held, err)
-		}
+	if held, err := nftables.Tables(nft, nftables.Table); err != nil || len(held) != 0 {
+		t.Errorf("the table %s is held in the families %v (%v)", nftables.Table, held, err)
 	}
 	rules, err := kernel.DumpRules()
 	if err != nil {
@@ -338,7 +337,7 @@ func ownRoutes(t *testing.T) int {
 
 // A refusal at each part of the start, the first and the last of them included, is logged as that part's, closes what the
 // start built before it, logs none of it started and returns 1 with no goroutine of the start running and nothing of it
-// bound: the listeners, the control socket, the node's port, the tun, the antispoof filter's table and the exit's tables. The
+// bound: the listeners, the control socket, the node's port, the tun, the antispoof filter's chains and the exit's chains. The
 // listeners and the control socket refuse on an address already held and a path under a file.
 func TestDaemonRefusedAtEachPartLeavesNothingRunningOrBound(t *testing.T) {
 	claimNamespace(t)
@@ -519,10 +518,23 @@ func (e closingExit) Close() error {
 	return e.Exit.Close()
 }
 
-// A start refused after the antispoof filter's first pass, or stopped while it builds, leaves the antispoof filter's table
-// and the kill switch's that an earlier instance left, the antispoof filter's as that pass rewrote it, and withdraws neither
-func TestDaemonEndedInItsBuildLeavesTheTablesItFound(t *testing.T) {
+// A start refused after the antispoof filter's first pass, or stopped while it builds, leaves the antispoof filter's chains
+// and the kill switch's that an earlier instance left, the antispoof filter's as that pass rewrote them, and withdraws
+// neither, the filter's both where it found either. Where the earlier instance left the kill switch's chain alone, the
+// filter's chains are the pass's, and go.
+func TestDaemonEndedInItsBuildLeavesTheChainsItFound(t *testing.T) {
 	claimNamespace(t)
+	// empty, as no start writes them, so the antispoof filter's first pass rewrites its own
+	switchChain := nftables.Chain{Table: nftables.Table, Name: "fallback", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: 2147483646}
+	entryChain := nftables.Chain{Table: nftables.Table, Name: kernelexit.EntryChain, Hook: nftables.NoHook}
+	found := []struct {
+		what   string
+		chains []nftables.Chain
+		left   []string
+	}{
+		{"the kill switch's chain alone", []nftables.Chain{switchChain}, []string{"fallback"}},
+		{"the kill switch's chain and the antispoof filter's entry chain", []nftables.Chain{switchChain, entryChain}, []string{kernelexit.BorderChain, "fallback", kernelexit.EntryChain}},
+	}
 	for name, arm := range map[string]struct {
 		end  func(*stages)
 		code int
@@ -540,34 +552,36 @@ func TestDaemonEndedInItsBuildLeavesTheTablesItFound(t *testing.T) {
 		}, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := writeDaemon(t, leafCaps)
 			nft, err := nftables.Dial()
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer nft.Close()
-			// empty, as no start writes them, so the antispoof filter's first pass rewrites its own
-			tables := []string{kernelexit.TableName, kernel.FallbackTable}
-			for _, table := range tables {
-				if err := nft.Batch([]nftables.Request{nftables.NewTable(unix.NFPROTO_INET, table)}); err != nil {
+			for _, earlier := range found {
+				f := writeDaemon(t, leafCaps)
+				requests := []nftables.Request{nftables.NewTable(unix.NFPROTO_INET, nftables.Table)}
+				for _, chain := range earlier.chains {
+					requests = append(requests, chain.Create(unix.NFPROTO_INET))
+				}
+				if err := nft.Batch(requests); err != nil {
 					t.Fatal(err)
 				}
-			}
-			was := before(t)
-			s := production
-			arm.end(&s)
-			if code := exited(t, runAsync(f, s)); code != arm.code {
-				t.Errorf("a start %s exited %d, want %d", name, code, arm.code)
-			}
-			for _, table := range tables {
-				if held, err := nftables.Tables(nft, table); err != nil || len(held) == 0 {
-					t.Errorf("a start %s left the table %s it found in the families %v (%v), want it held", name, table, held, err)
+				was := before(t)
+				s := production
+				arm.end(&s)
+				if code := exited(t, runAsync(f, s)); code != arm.code {
+					t.Errorf("a start %s over %s exited %d, want %d", name, earlier.what, code, arm.code)
 				}
-				if err := nft.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, table)}); err != nil {
-					t.Errorf("delete the table %s: %v", table, err)
+				chains, err := nftables.TableChains(nft, unix.NFPROTO_INET, nftables.Table)
+				slices.Sort(chains)
+				if err != nil || !slices.Equal(chains, earlier.left) {
+					t.Errorf("a start %s over %s left the chains %q in the table %s (%v), want %q", name, earlier.what, chains, nftables.Table, err, earlier.left)
 				}
+				if err := nft.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, nftables.Table)}); err != nil {
+					t.Errorf("delete the table %s: %v", nftables.Table, err)
+				}
+				leftNothing(t, f, was)
 			}
-			leftNothing(t, f, was)
 		})
 	}
 }
@@ -879,9 +893,9 @@ func TestDaemonRefusesUpReloadAndRedialOnceItStops(t *testing.T) {
 	leftNothing(t, f, was)
 }
 
-// The mesh failing, its tun deleted under it, stops the daemon for that cause with 1, leaving the antispoof filter's table
-// and the kill switch's: the next start takes the antispoof filter's over without a write, and its SIGTERM withdraws both
-func TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable(t *testing.T) {
+// The mesh failing, its tun deleted under it, stops the daemon for that cause with 1, leaving the antispoof filter's chains
+// and the kill switch's: the next start takes the antispoof filter's over without a write, and its SIGTERM withdraws both with the table
+func TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofChains(t *testing.T) {
 	claimNamespace(t)
 	f := writeDaemon(t, leafCaps)
 	was := before(t)
@@ -898,9 +912,10 @@ func TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{kernelexit.TableName, kernel.FallbackTable} {
-		if held, err := nftables.Tables(nft, name); err != nil || len(held) == 0 {
-			t.Errorf("the stop for the mesh's failure left the table %s in the families %v (%v), want it held", name, held, err)
+	chains, err := nftables.TableChains(nft, unix.NFPROTO_INET, nftables.Table)
+	for _, chain := range []string{kernelexit.EntryChain, "fallback", "output"} {
+		if err != nil || !slices.Contains(chains, chain) {
+			t.Errorf("the stop for the mesh's failure left the chains %q in the table %s (%v), want %s among them", chains, nftables.Table, err, chain)
 		}
 	}
 	_ = nft.Close()
@@ -908,7 +923,7 @@ func TestDaemonStoppedForTheMeshsFailureLeavesTheAntispoofTable(t *testing.T) {
 	code = runAsync(f, watched(&again))
 	waitTill(t, "the next start", func() bool { return recorded(&again, "daemon.started") != 0 })
 	if passes := recorded(&again, "antispoof.pass"); passes != 0 {
-		t.Errorf("the next start wrote the antispoof filter's table in %d passes, want it taken over as it was left", passes)
+		t.Errorf("the next start wrote the antispoof filter's chains in %d passes, want them taken over as they were left", passes)
 	}
 	signalSelf(t, syscall.SIGTERM)
 	if got := exited(t, code); got != 0 {

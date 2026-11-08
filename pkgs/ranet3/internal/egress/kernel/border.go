@@ -231,24 +231,26 @@ func (s borderSets) changed(was borderSets) borderSets {
 
 // borderBackend is the kernel surface the filter drives
 type borderBackend interface {
-	// Rules reads the filter's own table back whole: both chains' rules against
-	// rules, each by its comment and by what it does, and each set's elements
-	// against sets
+	// Rules reads the filter's own chains and sets back: both chains' rules
+	// against rules, each by its comment and by what it does, and each set's
+	// elements against sets
 	Rules(rules []BorderRule, sets borderSets) (chainReadback, error)
-	// Apply writes the table whole in one transaction: it deletes the table
-	// where the host holds one, with every chain and set in it, then writes the
-	// table, the sets filled with sets, and the chains holding rules
+	// Apply writes the filter's chains and sets whole in one transaction: the
+	// sets filled with sets and the chains holding rules, deleting first each
+	// of its own the host holds that cannot change in place and a chain no
+	// rule sits in, and nothing else
 	Apply(rules []BorderRule, sets borderSets) error
 	// Fill moves each set sets names from the ranges was gives it, which the
-	// table holds under rules, to those sets gives it, in one transaction that
+	// host holds under rules, to those sets gives it, in one transaction that
 	// leaves the chains as they are. nftables sends the ranges that differ
 	// alone, and pf sends each table rules read whole.
 	Fill(rules []BorderRule, was, sets borderSets) error
-	// Withdraw removes the filter's table and reports whether it removed one,
-	// a table already gone being success
+	// Withdraw removes what the filter writes and reports whether it removed
+	// any, what is already gone being success. nftables removes the filter's
+	// chains and sets, and the table with them where nothing else is in it.
 	Withdraw() (removed bool, err error)
 	// Changed carries one coalesced wake-up per batch of another writer's
-	// changes to the filter's table
+	// changes to what the filter writes
 	Changed() <-chan struct{}
 	// Missed carries one coalesced wake-up per batch of notifications the
 	// backend lost or could not read, any of which may have been a change
@@ -259,10 +261,11 @@ type borderBackend interface {
 	Read(rules []BorderRule) (chainReadback, error)
 	// Close closes the backend of a filter that ends, a start refused before
 	// it ran among them, and gives back what opening it took for the filter
-	// beyond the table where no earlier run left it so
+	// beyond what it writes where no earlier run left it so
 	Close() error
-	// Leave closes the backend at the mesh's failure and keeps the table and
-	// whatever else the backend holds for it, so the next start takes them over
+	// Leave closes the backend at the mesh's failure and keeps what it writes
+	// and whatever else the backend holds for it, so the next start takes them
+	// over
 	Leave() error
 	// where names what the backend writes for cfg, nil where overlay is not
 	// written
@@ -301,15 +304,15 @@ type BorderFilter struct {
 	stats atomic.Pointer[egress.BorderStats]
 	// wake carries a SetConfig to the run goroutine
 	wake chan struct{}
-	// finish withdraws the table and closes the backend once, at the end of
-	// Run or at Close where the first pass made the table
+	// finish withdraws what the filter writes and closes the backend once, at
+	// the end of Run or at Close where the first pass made it
 	finish func() error
 
 	// the rest belong to the run goroutine, and to NewBorderFilter before it
 	// starts. held is nil where no write's sets are known, last is the rules
-	// of the last pass that read the table back as written, made is whether
-	// the first pass's read found no table, so any table there is this
-	// start's, and found whether that read found one.
+	// of the last pass that read the filter back as written, made is whether
+	// the first pass's read found nothing the filter writes, so whatever is
+	// there is this start's, and found whether that read found any of it.
 	made      bool
 	found     bool
 	trigger   string
@@ -362,19 +365,19 @@ func startBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBac
 }
 
 // Close ends a filter whose Run was never called and reports it not ready.
-// Where the first read found no table it withdraws the one the pass made,
-// logging it withdrawn only where one was there to remove, and it leaves any
-// other for the next start: one the first read found, adopted or rewritten,
-// and whatever is there where that read failed, which it names nothing of.
-// Either way the backend's close gives back what opening it took beyond the
-// table, where no earlier run left it so.
+// Where the first read found nothing the filter writes it withdraws what the
+// pass made, logging it withdrawn only where any was there to remove, and it
+// leaves the rest for the next start: what the first read found, adopted or
+// rewritten, and whatever is there where that read failed, which it names
+// nothing of. Either way the backend's close gives back what opening it took
+// beyond what it writes, where no earlier run left it so.
 func (f *BorderFilter) Close() error {
 	if f.made {
 		return f.finish()
 	}
 	f.setReady(false, "the antispoof filter is stopping")
 	if f.found {
-		slog.Info("antispoof filter is leaving the table it found", "where", f.Where())
+		slog.Info("antispoof filter is leaving the chains it found", "where", f.Where())
 	}
 	return f.be.Close()
 }
@@ -436,11 +439,11 @@ func (f *BorderFilter) Stats() egress.BorderStats {
 	return egress.BorderStats{}
 }
 
-// Run keeps the table until ctx is canceled, then reports it not ready,
-// withdraws the table and closes the backend. Where ctx's cause is
-// internal/kernel's ErrMeshFailed it leaves the table for the next start to
-// take over. NewBorderFilter ran the first pass. Run returns the withdrawal's
-// or the close's error, never a pass's.
+// Run keeps the filter until ctx is canceled, then reports it not ready,
+// withdraws what it writes and closes the backend. Where ctx's cause is
+// internal/kernel's ErrMeshFailed it leaves that for the next start to take
+// over. NewBorderFilter ran the first pass. Run returns the withdrawal's or
+// the close's error, never a pass's.
 func (f *BorderFilter) Run(ctx context.Context) error {
 	ticker := time.NewTicker(f.sweep)
 	defer ticker.Stop()
@@ -451,7 +454,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			if errors.Is(context.Cause(ctx), meshkernel.ErrMeshFailed) {
 				f.setReady(false, "the antispoof filter is stopping")
-				slog.Warn("antispoof filter is leaving its table after the mesh failed", "where", f.Where())
+				slog.Warn("antispoof filter is leaving its chains after the mesh failed", "where", f.Where())
 				return f.be.Leave()
 			}
 			return f.finish()
@@ -624,7 +627,7 @@ func (f *BorderFilter) reconcile() error {
 	case err != nil:
 		err = fmt.Errorf("list rules: %w", err)
 	case read.fault != "":
-		// the table is the filter's whole, so a rewrite makes it again, and a chain the filter does not write goes
+		// a rewrite makes what the filter writes again whole, and touches nothing beside it
 		if applyErr := f.be.Apply(rules, sets); applyErr != nil {
 			f.held = nil
 			err = fmt.Errorf("install rules: %w", applyErr)
@@ -764,7 +767,7 @@ func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress
 	return now
 }
 
-// setReady logs and records the table's readiness when it moved, with detail
+// setReady logs and records the filter's readiness when it moved, with detail
 // saying why it is not ready
 func (f *BorderFilter) setReady(ok bool, detail string) {
 	f.unready = ""

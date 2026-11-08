@@ -114,13 +114,12 @@ long they take, and reads the config again at each look. Meanwhile the
 socket answers a reload with the config's refusal or success, and refuses
 every other command. The tun, the node's sockets, the network watch and the
 parts' monitors start their own workers as they are built, and the
-antispoof filter writes its table, but nothing dials, and nothing but the
+antispoof filter writes its chains, but nothing dials, and nothing but the
 wait answers on the socket, before the build ends. A refusal, or
 SIGINT or SIGTERM before the build ends, undoes what was built and starts
-nothing: the antispoof filter's table goes where the start made it, and
-stays where an earlier instance left it, as the kill switch does. The
-egress translator's stay in the families the file translates, since
-building the exit removes one in a family the file no longer translates.
+nothing: the antispoof filter's chains go where the start made them, and
+stay where an earlier instance left them, as the kill switch and the
+egress translator's chains do.
 SIGHUP, SIGINT, SIGTERM and SIGUSR1 are taken from the start on, a second
 SIGINT or SIGTERM exits at once, and a SIGHUP or SIGUSR1 that comes before
 the node dials is acted on once it does.`,
@@ -266,7 +265,7 @@ type daemon struct {
 // the antispoof filter, the exit and the reconciler. It runs none of them, but
 // the constructors start the workers of their own, the tun's, the hub's, the
 // network watch and the parts' monitors, and the antispoof filter's first pass
-// writes its table. A refusal closes what was built, which stops and waits
+// writes its chains. A refusal closes what was built, which stops and waits
 // for each of those workers. Nothing dials, and nothing but the wait for the
 // key and the trust document serves the control socket, before it returns.
 func assemble(opts options, s stages, asked <-chan struct{}) (*daemon, error) {
@@ -325,10 +324,10 @@ func (d *daemon) build(s stages, asked <-chan struct{}) (err error) {
 	if err = d.node.SetStateDir(d.opts.stateDir); err != nil {
 		return err
 	}
-	// The table inet ranet3 is on before the reconciler routes anything into
-	// the tun, and goes only once the reconciler has withdrawn those routes and
-	// the mesh has closed, so nothing forwards into the mesh while it is gone.
-	// down leaves it running, since the kernel still forwards and the host's
+	// The antispoof filter's chains are on before the reconciler routes
+	// anything into the tun, and go only once the reconciler has withdrawn
+	// those routes and the mesh has closed, so nothing forwards into the mesh
+	// while they are gone. down leaves the filter running, since the kernel still forwards and the host's
 	// services still trust mesh sources. A platform with no backend for it
 	// builds no filter.
 	if d.border, err = s.border(d.cfg.Border(), d.node.BorderRuntime()); err != nil {
@@ -353,11 +352,10 @@ func (d *daemon) build(s stages, asked <-chan struct{}) (err error) {
 }
 
 // close undoes what build built, with none of it run: the reconciler, the
-// exit and the antispoof filter close without a withdrawal, but for an
-// antispoof table the first pass made, and then the node closes its tun and
-// the listeners close. The antispoof filter's table and the kill switch an
-// earlier instance left stay, and the translator's stay in the families the
-// file translates, since building the exit removed one in any other. No close
+// exit and the antispoof filter close without a withdrawal, but for the
+// antispoof chains the first pass made, and then the node closes its tun and
+// the listeners close. What an earlier instance's antispoof filter, kill
+// switch and translator left stays. No close
 // reads another part, so the order sets nothing. It reports whether a close
 // failed.
 func (d *daemon) close() (failed bool) {
@@ -458,7 +456,7 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			// the error is the withdrawal failing, which leaves the table in
+			// the error is the withdrawal failing, which leaves the chains in
 			// the host's ruleset and is no clean exit
 			if err := d.border.Run(borderCtx); err != nil {
 				fail("antispoof", err)
@@ -596,7 +594,7 @@ func read(ctx context.Context, signals <-chan os.Signal, act func()) {
 // stopInOrder ends a daemon whose mesh has stopped: it cancels the reconciler
 // and the translator, waits for both to withdraw, and only then stops the
 // antispoof filter, so no route into the tun outlives it. The filter
-// withdraws its table then, and leaves it where the stop is for the mesh's
+// withdraws its chains then, and leaves them where the stop is for the mesh's
 // failure.
 func stopInOrder(cancel context.CancelFunc, wait, stopBorder func()) {
 	cancel()

@@ -19,11 +19,12 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// Every request the table's transaction sends, written whole, with nothing
-// forwarded, no LAN, no own prefix and no service, and withdrawn, keeps the
-// kind, flags and body testdata/fallback.golden holds, and a remade table is
-// the whole one behind the withdrawal's request. The root test holds the same
-// table beside nft's own listing of it.
+// Every request the switch's transaction sends, written whole, with nothing
+// forwarded, no LAN, no own prefix and no service, and remaking a stale chain
+// and a stale set, keeps the kind, flags and body testdata/fallback.golden
+// holds, and the remaking one is the whole one with the two deletions and no
+// deletion of the table. The root test holds the same chains beside nft's own
+// listing of them.
 func TestFallbackBatchKeepsItsBytes(t *testing.T) {
 	var out bytes.Buffer
 	write := func(name string, requests []nftables.Request, err error) {
@@ -36,16 +37,20 @@ func TestFallbackBatchKeepsItsBytes(t *testing.T) {
 			fmt.Fprintf(&out, "  kind %#06x flags %#06x body %x\n", request.Kind, request.Flags, request.Body)
 		}
 	}
-	whole, err := fallbackBatch(fallbackSample, false)
-	write("the table of every line", whole, err)
-	requests, err := fallbackBatch(fallbackSets{tun: "ranetsw0"}, false)
-	write("the table with nothing forwarded, no LAN, no own prefix and no service", requests, err)
-	withdrawal := nftables.DeleteTable(unix.NFPROTO_INET, FallbackTable)
-	write("the withdrawal", []nftables.Request{withdrawal}, nil)
+	whole, err := fallbackBatch(fallbackSample, nftables.Contents{})
+	write("the switch of every line", whole, err)
+	requests, err := fallbackBatch(fallbackSets{tun: "ranetsw0"}, nftables.Contents{})
+	write("the switch with nothing forwarded, no LAN, no own prefix and no service", requests, err)
+	stale := nftables.Contents{Chains: fallbackChains[:1], Sets: fallbackNamed[:1]}
+	remade, err := fallbackBatch(fallbackSample, stale)
+	write("the switch remaking its first chain and its first set", remade, err)
 	goldentest.Check(t, "./internal/kernel", "testdata/fallback.golden", out.Bytes())
-	remade, err := fallbackBatch(fallbackSample, true)
-	if err != nil || !reflect.DeepEqual(remade, append([]nftables.Request{withdrawal}, whole...)) {
-		t.Errorf("the table remade sends %+v (err %v), want the withdrawal's request and the whole table's", remade, err)
+	deletions := slices.DeleteFunc(slices.Clone(remade), func(r nftables.Request) bool {
+		return r.Kind != nftables.Command(unix.NFT_MSG_DELCHAIN) && r.Kind != nftables.Command(unix.NFT_MSG_DELSET) && r.Kind != nftables.Command(unix.NFT_MSG_DELTABLE)
+	})
+	want := []nftables.Request{stale.Chains[0].Delete(unix.NFPROTO_INET), stale.Sets[0].Delete(unix.NFPROTO_INET)}
+	if len(remade) != len(whole)+2 || !reflect.DeepEqual(deletions, want) {
+		t.Errorf("the switch remade sends %d requests deleting %+v, want the %d of the whole switch and the deletions %+v", len(remade), deletions, len(whole), want)
 	}
 }
 
@@ -59,7 +64,7 @@ func TestFallbackBatchTakesAnyNumberOfServices(t *testing.T) {
 		many.tcp = append(many.tcp, Service{Protocol: "tcp", First: port, Last: port})
 		many.udp = append(many.udp, Service{Protocol: "udp", First: port, Last: port})
 	}
-	if _, err := fallbackBatch(many, false); err != nil {
+	if _, err := fallbackBatch(many, nftables.Contents{}); err != nil {
 		t.Fatalf("the table of a hundred services of each protocol: %v", err)
 	}
 }

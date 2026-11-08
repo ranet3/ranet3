@@ -27,6 +27,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -200,10 +201,14 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 		t.Fatalf("start the exit: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	var runs sync.WaitGroup
+	// the antispoof filter stops last, as the daemon stops it, so its withdrawal alone finds the table holding nothing else
+	filterCtx, cancelFilter := context.WithCancel(context.Background())
+	var runs, filter sync.WaitGroup
 	stop := sync.OnceFunc(func() {
 		cancel()
 		runs.Wait()
+		cancelFilter()
+		filter.Wait()
 		node.Close()
 	})
 	t.Cleanup(stop)
@@ -244,13 +249,18 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 	for _, owner := range []struct {
 		name string
 		run  func(context.Context) error
-	}{{"the reconciler", routes.Run}, {"the translator", translator.Run}, {"the antispoof filter", border.Run}} {
+	}{{"the reconciler", routes.Run}, {"the translator", translator.Run}} {
 		runs.Go(func() {
 			if err := owner.run(ctx); err != nil {
 				t.Errorf("%s: %v", owner.name, err)
 			}
 		})
 	}
+	filter.Go(func() {
+		if err := border.Run(filterCtx); err != nil {
+			t.Errorf("the antispoof filter: %v", err)
+		}
+	})
 	// the exit's own traffic from a mesh address meets the rule at 5430 from it, whose table holds none of another exit's halves
 	waitFor(t, convergeBudget, "both families ready, the SID's /128 originated, the leaves in the mesh table and a rule at 5430 from each mesh address", func() bool {
 		stats := translator.Status()
@@ -494,7 +504,7 @@ func TestTUNExitTranslatesEachClassUnderTheDerivedRules(t *testing.T) {
 			return fmt.Errorf("%s outlived the node", labTUN)
 		}
 		for _, family := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6, unix.NFPROTO_INET} {
-			if err := labDeleteTable(family, kernelexit.TableName); !errors.Is(err, unix.ENOENT) {
+			if err := labDeleteTable(family, nftables.Table); !errors.Is(err, unix.ENOENT) {
 				return fmt.Errorf("deleting the table of family %d once the node stopped answered %v, want it gone", family, err)
 			}
 		}

@@ -20,7 +20,7 @@ import (
 func egressFixtures(passAt time.Time) map[string]EgressInfo {
 	advertise := []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("2001:db8::/32")}
 	status := EgressStatus{
-		Enabled: true, Where: "nftables table ip and ip6 ranet3 chains limit and egress",
+		Enabled: true, Where: "nftables table inet ranet3 chains forward, forward6 and postrouting and a none_ chain for each class of none",
 		Ready: []string{"ipv4"}, Unready: "the kernel does not forward ipv6",
 		Advertise: advertise, Announced: advertise[:1], FlowsPerSource: 1000,
 		PassAt: passAt, Installed: 5, Flows: 12, Bytes: 960,

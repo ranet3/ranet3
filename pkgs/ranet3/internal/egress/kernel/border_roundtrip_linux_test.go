@@ -27,7 +27,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// What nf_tables takes of the antispoof filter's table and hands back, against a real
+// What nf_tables takes of the antispoof filter's chains and hands back, against a real
 // kernel in a namespace this test made and proved empty: every spec of both
 // chains in order with its counter at zero, each chain's hook and priority,
 // nft's own reading of the
@@ -50,7 +50,7 @@ func TestBorderRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	if inetTables(t, conn) != 0 {
-		t.Fatalf("the namespace already holds an inet table named %s", TableName)
+		t.Fatalf("the namespace already holds an inet table named %s", nftables.Table)
 	}
 
 	bus := events.New()
@@ -99,7 +99,7 @@ func TestBorderRoundTrip(t *testing.T) {
 	chains := 0
 	for _, reply := range replies {
 		table, chain, kind, hook, priority := nftables.DecodeChain(reply)
-		if table != TableName {
+		if table != nftables.Table {
 			continue
 		}
 		chains++
@@ -111,7 +111,7 @@ func TestBorderRoundTrip(t *testing.T) {
 		}
 	}
 	if chains != 2 {
-		t.Errorf("the kernel holds %d chains in table inet %s, want two", chains, TableName)
+		t.Errorf("the kernel holds %d chains in table inet %s, want two", chains, nftables.Table)
 	}
 
 	// nft decodes the expressions itself, so an encoding it cannot read back
@@ -119,9 +119,9 @@ func TestBorderRoundTrip(t *testing.T) {
 	if nft, err := exec.LookPath("nft"); err != nil {
 		t.Log("nft is not installed, so the chain is not read back through it")
 	} else {
-		out, err := exec.Command(nft, "list", "table", "inet", TableName).CombinedOutput()
+		out, err := exec.Command(nft, "list", "table", "inet", nftables.Table).CombinedOutput()
 		if err != nil {
-			t.Fatalf("nft list table inet %s: %v\n%s", TableName, err, out)
+			t.Fatalf("nft list table inet %s: %v\n%s", nftables.Table, err, out)
 		}
 		listing := string(out)
 		if !strings.Contains(listing, "type filter hook prerouting priority raw; policy accept;") &&
@@ -163,7 +163,7 @@ func TestBorderRoundTrip(t *testing.T) {
 		name    string
 		request nftables.Request
 	}{
-		{"deleted the table", nftables.DeleteTable(unix.NFPROTO_INET, TableName)},
+		{"deleted the table", nftables.DeleteTable(unix.NFPROTO_INET, nftables.Table)},
 		{"inserted an accept at the head of the chain", anotherWritersAccept(unix.NFPROTO_INET, BorderChain)},
 		{"set the table dormant", dormantTable(unix.NFPROTO_INET)},
 	} {
@@ -207,7 +207,7 @@ func TestBorderRoundTrip(t *testing.T) {
 // inetTables counts the inet tables of this tool's name
 func inetTables(t *testing.T, conn *nftables.Conn) int {
 	t.Helper()
-	tables, err := nftables.Tables(conn, TableName)
+	tables, err := nftables.Tables(conn, nftables.Table)
 	if err != nil {
 		t.Fatalf("list inet tables: %v", err)
 	}
@@ -220,16 +220,14 @@ func inetTables(t *testing.T, conn *nftables.Conn) int {
 // A rule another writer puts in the antispoof chain with no comment, a line of
 // either chain written again doing otherwise under its own comment, a line
 // written again under another comment, the table set dormant, the chain's
-// policy turned to drop, the chain made again at
-// another priority or as a regular chain, and the table made again with a flag
-// nf_tables will not clear in place each wake the filter, read back as
-// other than the filter wrote them, and the next pass writes the table and the
-// chain back, waking nothing, and reads them ready. The readback asks for a
-// remake where nf_tables will not change a chain in place, and every pass that
-// writes deletes the table and makes it again in any case, which takes a chain
-// another writer put in it along from the start on. Another inet table holding
-// a rule under the filter's own spelling stays out of the readback and the
-// passes.
+// policy turned to drop, and the chain made again at another priority or as a
+// regular chain each wake the filter, read back as other than the filter wrote
+// them, and the next pass writes the table and the chain back, waking nothing,
+// and reads them ready. The readback asks for a remake where nf_tables will
+// not change a chain in place, and the pass then deletes that chain alone and
+// makes it again. A chain another writer put in the table, and another inet
+// table holding a rule under the filter's own spelling, stay out of the
+// readback and the passes, and the withdrawal leaves the table to that chain.
 func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
@@ -251,9 +249,9 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	run("add", "chain", "inet", "other", BorderChain, "{ type filter hook prerouting priority 0; policy accept; }")
 	run("add", "rule", "inet", "other", BorderChain, "accept")
 	run("add", "rule", "inet", "other", BorderChain, "iifname", "eth0", "accept", "comment", `"accept via ranet3"`)
-	run("add", "table", "inet", TableName)
-	run("add", "chain", "inet", TableName, "extra")
-	run("add", "rule", "inet", TableName, "extra", "iifname", "eth0", "accept", "comment", `"accept via ranet3"`)
+	run("add", "table", "inet", nftables.Table)
+	run("add", "chain", "inet", nftables.Table, "extra")
+	run("add", "rule", "inet", nftables.Table, "extra", "iifname", "eth0", "accept", "comment", `"accept via ranet3"`)
 	be, err := newBorderBackend(nil, egress.BorderRuntime{})
 	if err != nil {
 		t.Fatalf("open the antispoof filter's backend: %v", err)
@@ -269,12 +267,12 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	const foreign = `iifname "eth0" accept comment "accept via ranet3"`
 	// replace is nft's replace of the line chain holds under comment by rule
 	replace := func(chain, comment, rule string) []string {
-		listing := run("-a", "list", "chain", "inet", TableName, chain)
+		listing := run("-a", "list", "chain", "inet", nftables.Table, chain)
 		handle := regexp.MustCompile(`comment "` + regexp.QuoteMeta(comment) + `" # handle (\d+)`).FindStringSubmatch(listing)
 		if handle == nil {
 			t.Fatalf("no line of chain %s is commented %q in:\n%s", chain, comment, listing)
 		}
-		return append([]string{"replace", "rule", "inet", TableName, chain, "handle", handle[1]}, strings.Fields(rule)...)
+		return append([]string{"replace", "rule", "inet", nftables.Table, chain, "handle", handle[1]}, strings.Fields(rule)...)
 	}
 	for _, change := range []struct {
 		name string
@@ -286,7 +284,7 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 		// remade is whether the readback asks for the table made again
 		remade bool
 	}{
-		{name: "an uncommented accept at the head of the chain", args: [][]string{{"insert", "rule", "inet", TableName, BorderChain, "accept"}}, gone: "\t\taccept\n"},
+		{name: "an uncommented accept at the head of the chain", args: [][]string{{"insert", "rule", "inet", nftables.Table, BorderChain, "accept"}}, gone: "\t\taccept\n"},
 		// a line edited under its own comment reads by its comment as written, so only its expressions tell
 		{name: "the overlay's drop made an accept under its comment", replaced: [3]string{BorderChain, "drop ipv4 source 198.18.0.0/15", `meta nfproto ipv4 accept comment "drop ipv4 source 198.18.0.0/15"`},
 			gone: `ipv4 accept comment "drop ipv4 source 198.18.0.0/15"`},
@@ -295,20 +293,16 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 		// as many lines as written, one under another comment
 		{name: "the overlay's drop written again under another comment", replaced: [3]string{BorderChain, "drop ipv4 source 198.18.0.0/15", `ip saddr 198.18.0.0/15 counter drop comment "another writer drops"`},
 			gone: `comment "another writer drops"`},
-		{"the table set dormant", [][]string{{"add", "table", "inet", TableName, "{ flags dormant; }"}}, [3]string{}, "flags dormant", false},
-		{"the chain's policy turned to drop", [][]string{{"chain", "inet", TableName, BorderChain, "{ policy drop; }"}}, [3]string{}, "policy drop;", false},
+		{"the table set dormant", [][]string{{"add", "table", "inet", nftables.Table, "{ flags dormant; }"}}, [3]string{}, "flags dormant", false},
+		{"the chain's policy turned to drop", [][]string{{"chain", "inet", nftables.Table, BorderChain, "{ policy drop; }"}}, [3]string{}, "policy drop;", false},
 		{"the chain made again at priority 0", [][]string{
-			{"delete", "chain", "inet", TableName, BorderChain},
-			{"add", "chain", "inet", TableName, BorderChain, "{ type filter hook prerouting priority 0; policy accept; }"},
+			{"delete", "chain", "inet", nftables.Table, BorderChain},
+			{"add", "chain", "inet", nftables.Table, BorderChain, "{ type filter hook prerouting priority 0; policy accept; }"},
 		}, [3]string{}, "priority filter;", true},
 		{"the chain made again as a regular chain", [][]string{
-			{"delete", "chain", "inet", TableName, BorderChain},
-			{"add", "chain", "inet", TableName, BorderChain},
+			{"delete", "chain", "inet", nftables.Table, BorderChain},
+			{"add", "chain", "inet", nftables.Table, BorderChain},
 		}, [3]string{}, "chain antispoof {\n\t}", true},
-		// nft's socket owns the table until nft exits, and the kernel then keeps it with the persist flag alone
-		{"the table made again to persist past its owner", [][]string{
-			{fmt.Sprintf("delete table inet %[1]s; add table inet %[1]s { flags owner, persist; }", TableName)},
-		}, [3]string{}, "flags persist", true},
 	} {
 		if change.replaced[0] != "" {
 			change.args = [][]string{replace(change.replaced[0], change.replaced[1], change.replaced[2])}
@@ -316,7 +310,7 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 		for _, args := range change.args {
 			run(args...)
 		}
-		if listing := run("list", "table", "inet", TableName); !strings.Contains(listing, change.gone) {
+		if listing := run("list", "table", "inet", nftables.Table); !strings.Contains(listing, change.gone) {
 			t.Fatalf("%s: nft does not list %q in:\n%s", change.name, change.gone, listing)
 		}
 		if !woken(be.Changed()) {
@@ -332,12 +326,12 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 		if err != nil || read.fault != "" || !f.ready {
 			t.Errorf("%s: after the pass the filter reads ready %v (%q) over %v with the fault %q (%v)", change.name, f.ready, f.unready, read.rules, read.fault, err)
 		}
-		listing := run("list", "table", "inet", TableName)
+		listing := run("list", "table", "inet", nftables.Table)
 		if strings.Contains(listing, change.gone) {
 			t.Errorf("%s: after the pass nft still lists %q in:\n%s", change.name, change.gone, listing)
 		}
-		if strings.Contains(listing, foreign) {
-			t.Errorf("%s: after a pass, another writer's chain in the table lists:\n%s", change.name, listing)
+		if !strings.Contains(listing, "chain extra {") || !strings.Contains(listing, foreign) {
+			t.Errorf("%s: after a pass, another writer's chain in the table is gone:\n%s", change.name, listing)
 		}
 		select {
 		case <-be.Changed():
@@ -348,19 +342,24 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 	if listing := run("list", "table", "inet", "other"); !strings.Contains(listing, foreign) {
 		t.Errorf("the filter's passes reached another writer's table:\n%s", listing)
 	}
-	// withdrawn twice beside another writer's inet table, the second finds no
-	// table of this tool's name and deletes nothing
+	// withdrawn twice beside another writer's inet table and chain, the first
+	// takes the filter's chains and sets and leaves the table to that chain, and
+	// the second finds nothing of the filter's and deletes nothing
 	for i := range 2 {
 		removed, err := be.Withdraw()
 		if err != nil {
 			t.Fatalf("withdrawal %d beside another writer's inet table: %v", i+1, err)
 		}
 		if removed != (i == 0) {
-			t.Errorf("withdrawal %d beside another writer's inet table reported a table removed %t", i+1, removed)
+			t.Errorf("withdrawal %d beside another writer's inet table reported the filter's chains removed %t", i+1, removed)
 		}
 	}
-	if listing := run("list", "table", "inet", "other"); !strings.Contains(listing, `iifname "eth0" accept comment "accept via ranet3"`) {
+	if listing := run("list", "table", "inet", "other"); !strings.Contains(listing, foreign) {
 		t.Errorf("the withdrawals reached another writer's table:\n%s", listing)
+	}
+	listing := run("list", "table", "inet", nftables.Table)
+	if !strings.Contains(listing, "chain extra {") || strings.Contains(listing, BorderChain) || strings.Contains(listing, EntryChain) || strings.Contains(listing, "set ") {
+		t.Errorf("the withdrawal left, beside another writer's chain:\n%s", listing)
 	}
 }
 
@@ -426,12 +425,12 @@ func TestBorderRoundTripRefillsAFlushedSet(t *testing.T) {
 		// nft lists listed in the table once the pass put it back
 		listed string
 	}{
-		{"the set owned4 flushed", []string{"flush", "set", "inet", TableName, ownedSet + "4"}, "192.0.2.7"},
-		{"the set none6 flushed", []string{"flush", "set", "inet", TableName, noneSet + "6"}, "2001:db8:9::/48"},
-		{"the chain mesh_entry flushed", []string{"flush", "chain", "inet", TableName, EntryChain}, `comment "return a reply"`},
+		{"the set owned4 flushed", []string{"flush", "set", "inet", nftables.Table, ownedSet + "4"}, "192.0.2.7"},
+		{"the set none6 flushed", []string{"flush", "set", "inet", nftables.Table, noneSet + "6"}, "2001:db8:9::/48"},
+		{"the chain mesh_entry flushed", []string{"flush", "chain", "inet", nftables.Table, EntryChain}, `comment "return a reply"`},
 	} {
 		run(change.args...)
-		if listing := run("list", "table", "inet", TableName); strings.Contains(listing, change.listed) {
+		if listing := run("list", "table", "inet", nftables.Table); strings.Contains(listing, change.listed) {
 			t.Fatalf("%s: nft still lists %q in:\n%s", change.name, change.listed, listing)
 		}
 		if !woken(be.Changed()) {
@@ -446,7 +445,7 @@ func TestBorderRoundTripRefillsAFlushedSet(t *testing.T) {
 		if read, err := be.Rules(desired, sets); err != nil || read.fault != "" || !f.ready {
 			t.Errorf("%s: after the pass the filter reads ready %v (%q) over %v with the fault %q (%v)", change.name, f.ready, f.unready, read.rules, read.fault, err)
 		}
-		if listing := run("list", "table", "inet", TableName); !strings.Contains(listing, change.listed) {
+		if listing := run("list", "table", "inet", nftables.Table); !strings.Contains(listing, change.listed) {
 			t.Errorf("%s: after the pass nft does not list %q in:\n%s", change.name, change.listed, listing)
 		}
 	}
@@ -501,29 +500,28 @@ func TestBorderRoundTripHoldsTheEntryChainAloneWithNoBorder(t *testing.T) {
 	}
 	var chains []string
 	for _, reply := range replies {
-		if table, chain, _, _, _ := nftables.DecodeChain(reply); table == TableName {
+		if table, chain, _, _, _ := nftables.DecodeChain(reply); table == nftables.Table {
 			chains = append(chains, chain)
 		}
 	}
 	if !slices.Equal(chains, []string{EntryChain}) {
-		t.Errorf("table inet %s holds the chains %q, want %s alone", TableName, chains, EntryChain)
+		t.Errorf("table inet %s holds the chains %q, want %s alone", nftables.Table, chains, EntryChain)
 	}
 	desired, sets, _ := f.desired()
 	if read, err := be.Rules(desired, sets); err != nil || read.fault != "" {
 		t.Errorf("the kernel holds %v with the fault %q (%v), want %v", read.rules, read.fault, err, desired)
 	}
-	if got := f.Where(); got != "nftables table inet "+TableName+" chain "+EntryChain {
+	if got := f.Where(); got != "nftables table inet "+nftables.Table+" chain "+EntryChain {
 		t.Errorf("the filter says it is in %s", got)
 	}
 }
 
 // A start over a table holding a prerouting chain the filter does not write,
-// named border, takes that chain away with the rest of the table, with
-// overlay written and without it, the second over an entry chain and sets
-// that read back exactly as the filter writes them. The table then holds the
-// filter's chains alone and reads back ready, so nothing of the other chain
-// drops a packet beside the filter.
-func TestBorderRoundTripTakesOverATableWithAStrayChain(t *testing.T) {
+// named border, leaves that chain as another writer's, with overlay written
+// and without it, the second over an entry chain and sets that read back
+// exactly as the filter writes them. The filter's chains then read back ready
+// beside it, as they would beside a chain at the same hook in another table.
+func TestBorderRoundTripLeavesAnotherWritersChainInTheTable(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")
 	}
@@ -539,8 +537,8 @@ func TestBorderRoundTripTakesOverATableWithAStrayChain(t *testing.T) {
 		cfg  *egress.Border
 		want []string
 	}{
-		{"with overlay", overlay(t, "198.18.0.0/15", "3fff::/20"), []string{BorderChain, EntryChain}},
-		{"without overlay", nil, []string{EntryChain}},
+		{"with overlay", overlay(t, "198.18.0.0/15", "3fff::/20"), []string{BorderChain, "border", EntryChain}},
+		{"without overlay", nil, []string{"border", EntryChain}},
 	} {
 		// the entry chain and sets are the filter's, and the filter that wrote
 		// them ends without its withdrawal, as a killed process ends it
@@ -552,9 +550,9 @@ func TestBorderRoundTripTakesOverATableWithAStrayChain(t *testing.T) {
 			t.Fatalf("%s: write the entry chain: %v", c.name, err)
 		}
 		_ = earlier.Close()
-		run("add", "chain", "inet", TableName, "border", "{ type filter hook prerouting priority -300; policy accept; }")
-		run("add", "rule", "inet", TableName, "border", "iifname", "ranet3", "accept", "comment", `"accept via ranet3"`)
-		run("add", "rule", "inet", TableName, "border", "ip", "saddr", "198.18.0.0/15", "counter", "drop", "comment", `"drop ipv4 source 198.18.0.0/15"`)
+		run("add", "chain", "inet", nftables.Table, "border", "{ type filter hook prerouting priority -300; policy accept; }")
+		run("add", "rule", "inet", nftables.Table, "border", "iifname", "ranet3", "accept", "comment", `"accept via ranet3"`)
+		run("add", "rule", "inet", nftables.Table, "border", "ip", "saddr", "198.18.0.0/15", "counter", "drop", "comment", `"drop ipv4 source 198.18.0.0/15"`)
 
 		be, err := newBorderBackend(nil, egress.BorderRuntime{})
 		if err != nil {
@@ -570,23 +568,24 @@ func TestBorderRoundTripTakesOverATableWithAStrayChain(t *testing.T) {
 		}
 		var chains []string
 		for _, reply := range replies {
-			if table, chain, _, _, _ := nftables.DecodeChain(reply); table == TableName {
+			if table, chain, _, _, _ := nftables.DecodeChain(reply); table == nftables.Table {
 				chains = append(chains, chain)
 			}
 		}
 		if !slices.Equal(slices.Sorted(slices.Values(chains)), c.want) {
-			t.Errorf("%s: table inet %s holds the chains %q, want %q alone", c.name, TableName, chains, c.want)
+			t.Errorf("%s: table inet %s holds the chains %q, want %q alone", c.name, nftables.Table, chains, c.want)
 		}
 		desired, sets, _ := f.desired()
 		if read, err := be.Rules(desired, sets); err != nil || read.fault != "" || !f.ready {
-			t.Errorf("%s: over a table with a stray chain the filter reads ready %v (%q) over %v with the fault %q (%v)", c.name, f.ready, f.unready, read.rules, read.fault, err)
-		}
-		if listing := run("list", "table", "inet", TableName); strings.Contains(listing, "chain border") {
-			t.Errorf("%s: the stray chain outlived the start:\n%s", c.name, listing)
+			t.Errorf("%s: beside another writer's chain the filter reads ready %v (%q) over %v with the fault %q (%v)", c.name, f.ready, f.unready, read.rules, read.fault, err)
 		}
 		if err := f.finish(); err != nil {
 			t.Fatal(err)
 		}
+		if listing := run("list", "table", "inet", nftables.Table); !strings.Contains(listing, `ip saddr 198.18.0.0/15 counter packets 0 bytes 0 drop comment "drop ipv4 source 198.18.0.0/15"`) {
+			t.Errorf("%s: another writer's chain did not outlive the filter's withdrawal whole:\n%s", c.name, listing)
+		}
+		run("delete", "chain", "inet", nftables.Table, "border")
 	}
 }
 
@@ -658,7 +657,7 @@ func TestBorderRoundTripOutlivesAKilledOwner(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 	if inetTables(t, conn) != 1 {
-		t.Fatalf("table inet %s went with its owner", TableName)
+		t.Fatalf("table inet %s went with its owner", nftables.Table)
 	}
 	bus := events.New()
 	rt := entryRuntime(bus)

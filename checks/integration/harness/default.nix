@@ -1264,15 +1264,16 @@ testers.runNixOSTest {
             # The mesh first, so a failure below is the exit rather than the tunnel.
             client.wait_until_succeeds("ping -c 1 ${gatewayTunnel}", timeout=timeout)
 
-            # Only this tree's own tables exist: the translator's in the families
-            # it was asked for, and the antispoof filter's inet table, which holds
-            # chain mesh_entry alone on a node with no overlay. Anything else
-            # here would be a rule written outside what the ownership rules allow.
-            client.wait_until_succeeds("nft list table ip ranet3", timeout=timeout)
+            # Only this tree's own table exists, holding the translator's two
+            # base chains and IPv6's chain, which forward's first line sends
+            # IPv6 on to, and the antispoof filter's, which is chain mesh_entry
+            # alone on a node with no overlay. Anything else here would be a
+            # rule written outside what the ownership rules allow.
+            client.wait_until_succeeds("nft list chain inet ranet3 postrouting", timeout=timeout)
             tables = sorted(t for t in client.succeed("nft list tables").splitlines() if t.strip())
-            assert tables == ["table inet ranet3", "table ip ranet3", "table ip6 ranet3"], tables
-            chains = [line.split()[1] for line in client.succeed("nft list table inet ranet3").splitlines() if line.strip().startswith("chain ")]
-            assert chains == ["mesh_entry"], f"table inet ranet3 holds the chains {chains}, where a node with no overlay holds mesh_entry alone"
+            assert tables == ["table inet ranet3"], tables
+            chains = sorted(line.split()[1] for line in client.succeed("nft list table inet ranet3").splitlines() if line.strip().startswith("chain "))
+            assert chains == ["forward", "forward6", "mesh_entry", "postrouting"], f"table inet ranet3 holds the chains {chains}, where this exit with no overlay holds the translator's three and mesh_entry"
             ruleset = client.succeed("nft list ruleset")
             print(ruleset)
             for want in ["chain postrouting", "type nat hook postrouting", "masquerade",
@@ -1328,9 +1329,9 @@ testers.runNixOSTest {
                 "ranet3 status --json | jq -e '.egress.announced | length == 2'", timeout=timeout)
             gateway.wait_until_succeeds("ip -4 route show ${exitNetV4} | grep -q swan0", timeout=timeout)
 
-            # Shutdown takes the tables with it, the antispoof filter's inet table
-            # among them. A rule left behind would go on translating for a
-            # process that is no longer running.
+            # Shutdown takes the table with it, the antispoof filter's chains
+            # among its contents. A rule left behind would go on translating for
+            # a process that is no longer running.
             client.succeed("systemctl stop ranet3.service")
             assert client.succeed("systemctl show -p Result --value ranet3.service").strip() == "success"
             left = client.succeed("nft list tables").strip()
@@ -1339,7 +1340,7 @@ testers.runNixOSTest {
             # And a restart installs them again, so the withdrawal above was a
             # shutdown rather than a failure to write.
             client.succeed("systemctl start ranet3.service")
-            client.wait_until_succeeds("nft list table ip ranet3", timeout=timeout)
+            client.wait_until_succeeds("nft list chain inet ranet3 postrouting", timeout=timeout)
         finally:
             print(client.execute("nft list ruleset")[1])
             print(client.execute("ip -4 rule show")[1])
@@ -1388,11 +1389,12 @@ testers.runNixOSTest {
                 rules = client.succeed(f"ip {family} rule show")
                 print(rules)
                 assert " iif " not in rules, f"the exit holds a rule keyed on an arrival device:\n{rules}"
-            for family in ["ip", "ip6"]:
-                table = client.succeed(f"nft list table {family} ranet3")
-                print(table)
+            chain = client.succeed("nft list chain inet ranet3 postrouting")
+            print(chain)
+            for family in ["ipv4", "ipv6"]:
+                lines = [line for line in chain.splitlines() if f"meta nfproto {family}" in line]
                 for want in ["masquerade", f'iifname "{client_device}"', f'oifname != "{client_device}"']:
-                    assert want in table, f"the {family} table does not carry {want}:\n{table}"
+                    assert any(want in line for line in lines), f"the {family} lines do not carry {want}:\n{chain}"
 
             # the kernel builds the header from the address the tunnel source names, which the allow list covers
             gateway.succeed("ip sr tunsrc set ${gatewayTunnel}")
@@ -2389,7 +2391,6 @@ testers.runNixOSTest {
           ${exitMode}
           # an empty image, and the VM's own store and programs in the container
           docker_run = "docker run --rm -v /nix/store:/nix/store -v /run/current-system/sw/bin:/bin scratch"
-          ranet3_tables = ["inet", "ip", "ip6"]
 
           def behind_reached():
               """the gateway routes behind's network by the client's announcement and reaches behind through the exit,
@@ -2422,7 +2423,7 @@ testers.runNixOSTest {
               metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics").splitlines()
               assert "ranet3_egress_conflicts 0" in metrics, "the scrape does not carry ranet3_egress_conflicts 0"
               tables = client.succeed("nft list tables").splitlines()
-              for want in [f"table {family} ranet3" for family in ranet3_tables] + ["table ip nat", "table ip filter"]:
+              for want in ["table inet ranet3", "table ip nat", "table ip filter"]:
                   assert want in tables, f"{want} is not among {tables}"
 
           def docker_works():
@@ -2461,15 +2462,15 @@ testers.runNixOSTest {
               leaves_by_mesh_exit("container", f"{docker_run} ping", ["ipv4"], f" from {web} iif docker0")
 
           def ranet3_rules():
-              return [client.succeed(f"nft -s -t list table {family} ranet3") for family in ranet3_tables]
+              return client.succeed("nft -s -t list table inet ranet3")
 
           def disturbed(reading):
-              """reading holds after Docker's restart, which leaves ranet3's tables as they were, and after ranet3's"""
-              tables = ranet3_rules()
+              """reading holds after Docker's restart, which leaves ranet3's table as it was, and after ranet3's"""
+              table = ranet3_rules()
               client.succeed("systemctl restart docker.service")
               holds_beside()
               reading()
-              assert ranet3_rules() == tables, "Docker's restart changed ranet3's tables"
+              assert ranet3_rules() == table, "Docker's restart changed ranet3's table"
               restart_ranet3()
               reading()
 

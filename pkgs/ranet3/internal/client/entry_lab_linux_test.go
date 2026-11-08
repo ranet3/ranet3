@@ -495,7 +495,7 @@ func entryCounted(t *testing.T, leaf *netnstest.Thread) map[string]uint64 {
 	return out
 }
 
-// entrySwitchDrops is the packets the last line of each chain of the kill switch's table has dropped, by chain, read now
+// entrySwitchDrops is the packets the last line of each chain of the kill switch has dropped, by chain, read now
 func entrySwitchDrops(t *testing.T, leaf *netnstest.Thread) map[string]uint64 {
 	t.Helper()
 	out := map[string]uint64{}
@@ -508,7 +508,7 @@ func entrySwitchDrops(t *testing.T, leaf *netnstest.Thread) map[string]uint64 {
 		}
 		return err
 	}); err != nil {
-		t.Fatalf("read the kill switch's table: %v", err)
+		t.Fatalf("read the kill switch's chains: %v", err)
 	}
 	return out
 }
@@ -612,7 +612,7 @@ func TestTUNEntryPassesASubnetRoutersLANAndItsRepliesBesideTheKillSwitch(t *test
 	switchDrain(lab.tunCapture)
 	before, counted, switched := entryDropped(t, lab.leaf, border), entryCounted(t, lab.leaf), entrySwitchDrops(t, lab.leaf)
 	if len(switched) != 2 {
-		t.Fatalf("the kill switch's table holds a drop in the chains %v, want fallback and output", switched)
+		t.Fatalf("the kill switch holds a drop in the chains %v, want fallback and output", switched)
 	}
 	next := lab.probe
 	sent := entrySend(t, probes, &next)

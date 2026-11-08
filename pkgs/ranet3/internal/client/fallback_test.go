@@ -31,7 +31,7 @@ func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	}})
 	c.ruleDump = func() ([]kernel.DumpedRule, error) { return nil, nil }
 	debug := kernel.FallbackDebug{
-		Where: "nftables table inet ranet3_fallback chain fallback", Hook: "postrouting", Priority: 2147483646, Held: true,
+		Where: "nftables table inet ranet3 chains fallback and output", Hook: "postrouting", Priority: 2147483646, Held: true,
 		Rules: []kernel.FallbackDebugRule{{Spec: "counter drop", Packets: 3, Bytes: 180}},
 		Sets:  []kernel.FallbackDebugSet{{Name: "lan4", Elements: []string{"198.51.100.0/25"}}},
 	}
@@ -93,7 +93,7 @@ func TestMetricsCarryTheSwitchUnderFallbackNone(t *testing.T) {
 	}{
 		{&control.KernelFallback{State: string(kernel.FallbackHolding), Dropped: &control.FallbackDrops{Packets: 3, Bytes: 180}}, 1},
 		{&control.KernelFallback{State: string(kernel.FallbackPassing), Dropped: &control.FallbackDrops{}}, 1},
-		{&control.KernelFallback{State: string(kernel.FallbackNotHolding), Reason: "the table is missing", Dropped: &control.FallbackDrops{Packets: 5}}, 0},
+		{&control.KernelFallback{State: string(kernel.FallbackNotHolding), Reason: "its chains are missing", Dropped: &control.FallbackDrops{Packets: 5}}, 0},
 		{&control.KernelFallback{State: string(kernel.FallbackNotHolding), Reason: "netlink: dump interrupted"}, 0},
 		{&control.KernelFallback{State: string(kernel.FallbackHolding), Uncounted: true}, 1},
 		{nil, 0},

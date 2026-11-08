@@ -25,10 +25,9 @@ let
   ]
   ++ lib.optional (generated && cfg.settings.link ? tun) cfg.settings.link.tun;
   # creating the tun, and the routes, rules and addresses cap.table owns.
-  # cap.egress and the antispoof filter, whose table holds the entry chain with
-  # or without overlay, additionally write nftables tables of their own, which
-  # is why the set is not
-  # narrower than this
+  # cap.egress, the kill switch and the antispoof filter, whose entry chain is
+  # there with or without overlay, additionally write their chains in one
+  # nftables table, which is why the set is not narrower than this
   capabilities = [
     "CAP_NET_ADMIN"
   ]

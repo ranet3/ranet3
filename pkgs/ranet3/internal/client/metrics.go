@@ -127,7 +127,7 @@ func (c *Client) renderBorder(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_antispoof_ready Whether the antispoof filter's rules and sets read back as the configuration asks.\n")
 	fmt.Fprint(w, "# TYPE ranet3_antispoof_ready gauge\n")
 	fmt.Fprintf(w, "ranet3_antispoof_ready %d\n", boolValue(border.Ready))
-	fmt.Fprint(w, "# HELP ranet3_antispoof_dropped_packets_total Packets the antispoof filter dropped, arriving from outside the mesh with an overlay source no exemption passes or a mesh source inside a carve-out or an exemption, or kept out of the tun by the entry chain, as of its last pass. A rewrite of the table starts them from zero.\n")
+	fmt.Fprint(w, "# HELP ranet3_antispoof_dropped_packets_total Packets the antispoof filter dropped, arriving from outside the mesh with an overlay source no exemption passes or a mesh source inside a carve-out or an exemption, or kept out of the tun by the entry chain, as of its last pass. A rewrite of its chains starts them from zero.\n")
 	fmt.Fprint(w, "# TYPE ranet3_antispoof_dropped_packets_total counter\n")
 	for _, kind := range egress.BorderDropKinds {
 		if count, ok := border.Dropped[kind.Name()]; ok {
@@ -409,7 +409,7 @@ func writeFallback(w io.Writer, fallback control.KernelFallback) {
 	if fallback.Dropped == nil {
 		return
 	}
-	fmt.Fprint(w, "# HELP ranet3_kernel_fallback_dropped_packets_total Packets the last lines of the kill switch's chains dropped, as the last read of its table that succeeded found them, which a rewrite of the table starts from zero, absent until a read of this process succeeds.\n")
+	fmt.Fprint(w, "# HELP ranet3_kernel_fallback_dropped_packets_total Packets the last lines of the kill switch's chains dropped, as the last read of the chains that succeeded found them, which a rewrite of the chains starts from zero, absent until a read of this process succeeds.\n")
 	fmt.Fprint(w, "# TYPE ranet3_kernel_fallback_dropped_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_kernel_fallback_dropped_packets_total %d\n", fallback.Dropped.Packets)
 }

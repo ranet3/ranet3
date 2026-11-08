@@ -17,10 +17,10 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
-// borderTable is the antispoof filter's linux backend: the inet table of
-// this tool's name, holding the antispoof chain at prerouting, the entry chain at
-// postrouting and their sets. An inet chain sees both families, so every rule
-// matching an address tests the family first (nftables.NFProto).
+// borderTable is the antispoof filter's linux backend: the antispoof chain at
+// prerouting, the entry chain at postrouting and their sets, in
+// nftables.Table. An inet chain sees both families, so every rule matching an
+// address tests the family first (nftables.NFProto).
 type borderTable struct {
 	conn    *nftables.Conn
 	monitor *nftables.Monitor
@@ -34,14 +34,15 @@ func Filters(*egress.Border) bool { return true }
 // loader takes
 func RefuseBorder(*egress.Border) error { return nil }
 
-// newBorderBackend opens the netlink socket and the monitor of the table,
-// with overlay written or not, since the entry chain runs on every node here
+// newBorderBackend opens the netlink socket and the monitor of the filter's
+// chains and sets, with overlay written or not, since the entry chain runs on
+// every node here
 func newBorderBackend(*egress.Border, egress.BorderRuntime) (borderBackend, error) {
 	conn, err := nftables.Dial()
 	if err != nil {
 		return nil, err
 	}
-	monitor, err := nftables.OpenMonitor(conn, borderTables)
+	monitor, err := nftables.OpenMonitor(conn, borderScope)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -51,7 +52,8 @@ func newBorderBackend(*egress.Border, egress.BorderRuntime) (borderBackend, erro
 
 func (b *borderTable) Close() error { return errors.Join(b.monitor.Close(), b.conn.Close()) }
 
-// Leave is Close, since the table is all the backend holds for the filter
+// Leave is Close, since the chains and sets are all the backend holds for the
+// filter
 func (b *borderTable) Leave() error { return b.Close() }
 
 func (b *borderTable) Changed() <-chan struct{} { return b.monitor.Changed() }
@@ -60,19 +62,19 @@ func (b *borderTable) Missed() <-chan struct{} { return b.monitor.Missed() }
 
 func (b *borderTable) where(cfg *egress.Border) string {
 	if cfg == nil {
-		return fmt.Sprintf("nftables table inet %s chain %s", TableName, EntryChain)
+		return fmt.Sprintf("nftables table inet %s chain %s", nftables.Table, EntryChain)
 	}
-	return fmt.Sprintf("nftables table inet %s chains %s and %s", TableName, BorderChain, EntryChain)
+	return fmt.Sprintf("nftables table inet %s chains %s and %s", nftables.Table, BorderChain, EntryChain)
 }
 
 // writes every rule, each a line of its chain
 func (b *borderTable) writes(BorderRule) bool { return true }
 
-// holds every set, each a set of the table its chains read
+// holds every set, each a set its chains read
 func (b *borderTable) holds(string) bool { return true }
 
-// sweep is the default, since the table's monitor wakes a pass for another
-// writer's change
+// sweep is the default, since the monitor wakes a pass for another writer's
+// change
 func (b *borderTable) sweep() time.Duration { return 0 }
 
 // wildcards is true, since nft matches iifname "wl*" by the bytes before the *
@@ -103,44 +105,39 @@ func (b *borderTable) Read([]BorderRule) (chainReadback, error) {
 	return readBorder(conn, nil, nil)
 }
 
-// readBorder reads the table back, each chain's lines against rules and each
-// set's elements against sets where it is not nil
+// readBorder reads the filter's chains and sets back, each chain's lines
+// against rules and each set's elements against sets where it is not nil
 func readBorder(conn *nftables.Conn, rules []BorderRule, sets borderSets) (chainReadback, error) {
-	tables, err := nftables.Tables(conn, TableName)
-	if err != nil {
-		return chainReadback{}, err
-	}
-	contents := nftables.Contents{Chains: []nftables.Chain{prerouting, entry}, Sets: borderNamed}
+	contents := borderContents
 	if sets != nil {
 		contents.Elements = sets.elements()
 	}
-	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+	read, err := readBorderContents(conn, contents)
 	if err != nil {
-		return chainReadback{}, fmt.Errorf("egress: read table inet %s: %w", TableName, err)
+		return chainReadback{}, err
 	}
-	out := readback(read, 0)
-	_, out.held = tables[unix.NFPROTO_INET]
+	out := chainReadback{fault: read.Fault, remake: read.Remake(), held: read.Held}
+	for _, rule := range read.Rules {
+		out.rules = append(out.rules, Installed{Spec: rule.Spec, Chain: rule.Chain, Counted: rule.Counted, Packets: rule.Packets, Bytes: rule.Bytes})
+	}
 	if rules != nil && out.fault == "" {
 		if out.fault, err = borderRulesFault(rules, read.Rules); err != nil {
 			return chainReadback{}, err
 		}
 	}
-	if out.fault == "" {
-		out.fault = strayChain(read.Chains)
-	}
 	return out, nil
 }
 
-// strayChain names a chain of chains, the table's, that the filter does not
-// write, which the readback above passes over since it reads the filter's
-// chains by name. A pass then makes the table again without it.
-func strayChain(chains []string) string {
-	for _, chain := range chains {
-		if chain != BorderChain && chain != EntryChain {
-			return fmt.Sprintf("its table holds the chain %s, which the filter does not write", chain)
-		}
+func readBorderContents(conn *nftables.Conn, contents nftables.Contents) (nftables.Readback, error) {
+	tables, err := nftables.Tables(conn, nftables.Table)
+	if err != nil {
+		return nftables.Readback{}, err
 	}
-	return ""
+	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
+	if err != nil {
+		return nftables.Readback{}, fmt.Errorf("egress: read table inet %s: %w", nftables.Table, err)
+	}
+	return read, nil
 }
 
 // borderRulesFault names how either chain holds lines other than rules write,
@@ -166,21 +163,26 @@ func borderRulesFault(rules []BorderRule, held []nftables.Installed) (string, er
 }
 
 // prerouting is the antispoof chain
-var prerouting = nftables.Chain{Table: TableName, Name: BorderChain, Type: "filter", Hook: unix.NF_INET_PRE_ROUTING, Priority: rawPriority}
+var prerouting = nftables.Chain{Table: nftables.Table, Name: BorderChain, Type: "filter", Hook: unix.NF_INET_PRE_ROUTING, Priority: rawPriority}
 
 // entry is the entry chain
-var entry = nftables.Chain{Table: TableName, Name: EntryChain, Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: entryPriority}
+var entry = nftables.Chain{Table: nftables.Table, Name: EntryChain, Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: entryPriority}
 
-// borderNamed is the table's sets, the IDs naming them to the rules of the
+// borderNamed is the filter's sets, the IDs naming them to the rules of the
 // transaction that makes them
 var borderNamed = []nftables.Set{
-	{Table: TableName, Name: carvedSet + "4", ID: 1, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
-	{Table: TableName, Name: carvedSet + "6", ID: 2, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
-	{Table: TableName, Name: ownedSet + "4", ID: 3, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
-	{Table: TableName, Name: ownedSet + "6", ID: 4, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
-	{Table: TableName, Name: noneSet + "4", ID: 5, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
-	{Table: TableName, Name: noneSet + "6", ID: 6, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: carvedSet + "4", ID: 1, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: carvedSet + "6", ID: 2, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: ownedSet + "4", ID: 3, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: ownedSet + "6", ID: 4, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: noneSet + "4", ID: 5, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: noneSet + "6", ID: 6, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
 }
+
+// borderContents is the filter's chains and sets as a readback reads them
+var borderContents = nftables.Contents{Chains: []nftables.Chain{prerouting, entry}, Sets: borderNamed}
+
+var borderScope = borderContents.Scope()
 
 func borderSet(name string) nftables.Set {
 	return borderNamed[slices.IndexFunc(borderNamed, func(set nftables.Set) bool { return set.Name == name })]
@@ -204,31 +206,38 @@ func intervals(ranges []egress.Range) []nftables.Interval {
 	return out
 }
 
-// Apply writes the table in one transaction, so no packet meets half a chain
-// or a set half filled. It deletes nothing where the host holds no table,
-// since deleting a table that is not there fails the batch.
+// Apply writes the filter's chains and sets in one transaction, so no packet
+// meets half a chain or a set half filled, reading them first for each that
+// nf_tables will not change in place, which the transaction deletes and makes
+// again
 func (b *borderTable) Apply(rules []BorderRule, sets borderSets) error {
-	tables, err := nftables.Tables(b.conn, TableName)
+	read, err := readBorderContents(b.conn, borderContents)
 	if err != nil {
 		return err
 	}
-	_, remake := tables[unix.NFPROTO_INET]
-	requests, err := borderBatch(rules, sets, remake)
+	requests, err := borderBatch(rules, sets, read.Stale, read.Chains)
 	if err != nil {
 		return err
 	}
 	return b.conn.Batch(requests)
 }
 
-// borderBatch is the transaction Apply sends: the table with no owner flag,
-// so it outlives this process, its sets made, emptied and filled, the chains
-// the rules sit in made and emptied, and the rules
-func borderBatch(rules []BorderRule, sets borderSets, remake bool) ([]nftables.Request, error) {
-	var requests []nftables.Request
-	if remake {
-		requests = append(requests, delBorderTable())
+// borderBatch is the transaction Apply sends over the chains the table holds,
+// held, and those of the filter's chains and sets stale names: the table with
+// no owner flag, so it outlives this process, the chains the rules sit in made
+// and emptied, a chain of the filter's no rule sits in deleted where it is
+// held, the sets made, emptied and filled, and the rules
+func borderBatch(rules []BorderRule, sets borderSets, stale nftables.Contents, held []string) ([]nftables.Request, error) {
+	var written nftables.Contents
+	for _, chain := range borderContents.Chains {
+		switch {
+		case slices.ContainsFunc(rules, func(rule BorderRule) bool { return rule.Chain() == chain.Name }):
+			written.Chains = append(written.Chains, chain)
+		case slices.Contains(held, chain.Name) && !slices.Contains(stale.Chains, chain):
+			stale.Chains = append(stale.Chains, chain)
+		}
 	}
-	requests = append(requests, nftables.NewTable(unix.NFPROTO_INET, TableName))
+	requests := written.Rewrite(unix.NFPROTO_INET, stale, nil)
 	elements := sets.elements()
 	for _, set := range borderNamed {
 		replaced, err := set.Replace(unix.NFPROTO_INET, elements[set.Name])
@@ -236,11 +245,6 @@ func borderBatch(rules []BorderRule, sets borderSets, remake bool) ([]nftables.R
 			return nil, err
 		}
 		requests = append(requests, replaced...)
-	}
-	for _, chain := range []nftables.Chain{prerouting, entry} {
-		if slices.ContainsFunc(rules, func(rule BorderRule) bool { return rule.Chain() == chain.Name }) {
-			requests = append(requests, chain.Create(unix.NFPROTO_INET), chain.Flush(unix.NFPROTO_INET))
-		}
 	}
 	for _, rule := range rules {
 		request, err := newBorderRule(rule)
@@ -280,21 +284,9 @@ func fillBatch(was, sets borderSets) ([]nftables.Request, error) {
 	return requests, nil
 }
 
-// Withdraw lists first, since deleting a table that is not there fails the
-// batch
-func (b *borderTable) Withdraw() (bool, error) {
-	tables, err := nftables.Tables(b.conn, TableName)
-	if err != nil {
-		return false, err
-	}
-	if _, held := tables[unix.NFPROTO_INET]; !held {
-		return false, nil
-	}
-	err = b.conn.Batch([]nftables.Request{delBorderTable()})
-	return err == nil, err
-}
-
-func delBorderTable() nftables.Request { return nftables.DeleteTable(unix.NFPROTO_INET, TableName) }
+// Withdraw removes the filter's chains and sets, and the table with them
+// where nothing else is in it
+func (b *borderTable) Withdraw() (bool, error) { return nftables.Withdraw(b.conn, borderScope) }
 
 func newBorderRule(rule BorderRule) (nftables.Request, error) {
 	line, err := borderLine(rule)

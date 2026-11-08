@@ -102,7 +102,7 @@ func newBenchHost(b *testing.B) *benchHost {
 
 // benchOpenTun opens the tun name, brings it up and answers its descriptor,
 // which the device lives as long as
-func benchOpenTun(b *testing.B, name string) int {
+func benchOpenTun(b testing.TB, name string) int {
 	b.Helper()
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {

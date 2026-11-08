@@ -2,7 +2,7 @@
   "enabled": true,
   "status": {
     "enabled": true,
-    "where": "nftables table ip and ip6 ranet3 chains limit and egress",
+    "where": "nftables table inet ranet3 chains forward, forward6 and postrouting and a none_ chain for each class of none",
     "ready": [
       "ipv4"
     ],

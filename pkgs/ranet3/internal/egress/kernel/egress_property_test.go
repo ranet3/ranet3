@@ -259,14 +259,15 @@ func translatedTimeouts(packet crossing) Timeouts {
 	return NoTimeouts
 }
 
-// forwardWalk is the rules of the forward chain of a packet's family and of its
-// classes of none's chains that the packet meets in order, as nf_tables reads
-// them: the forward chain's from its first, then the rules of the chain a pass
-// meant for it names in place of the rest, up to the first drop or screen meant
-// for it, which ends the walk
+// forwardWalk is the rules of the chain the lines of a packet's family at the
+// forward hook sit in, forward for IPv4 past the first line, which sends IPv6
+// on to IPv6's chain, and of its classes of none's chains that the packet
+// meets in order, as nf_tables reads them: that chain's from its first, then
+// the rules of the chain a pass meant for it names in place of the rest, up to
+// the first drop or screen meant for it, which ends the walk
 func forwardWalk(desired []Rule, packet crossing) []Rule {
 	var met []Rule
-	chain := LimitChain
+	chain := familyChain(egress.AddressFamily(packet.source))
 	for i := 0; i < len(desired); i++ {
 		rule := desired[i]
 		if rule.Family != egress.AddressFamily(packet.source) || rule.chain() != chain {
@@ -403,7 +404,7 @@ func TestEachClassOfNonesSetHoldsTheClassesDirectlyInsideIt(t *testing.T) {
 }
 
 // For every capability New takes, the rules a pass installs, read top to
-// bottom in each family's chain as nf_tables reads one, take each packet as
+// bottom in each chain as nf_tables reads one, take each packet as
 // the class model says. A packet from the mesh device out of another link, in
 // a family advertised or steered, leaves under the class of its source. One
 // this node sends from a mesh source of its own out of another link leaves
@@ -412,7 +413,7 @@ func TestEachClassOfNonesSetHoldsTheClassesDirectlyInsideIt(t *testing.T) {
 // and one under a class of none takes none. With return, one entering the mesh from an
 // advertised prefix leaves under the return source, and every other packet
 // entering the mesh, or crossing it, is taken by no rule. Read as nf_tables
-// reads the forward chain and the chain each pass sends a packet on to, in
+// reads the family's lines at the forward hook and the chain each pass sends a packet on to, in
 // IPv4 translated, a Source Quench or
 // an Information Request or Reply out of the mesh or into it is dropped under
 // every class, whether or not a flow is tracked for it. Past that, a packet out
@@ -425,7 +426,7 @@ func TestEachClassOfNonesSetHoldsTheClassesDirectlyInsideIt(t *testing.T) {
 // it under return, and a reply meets neither. Any other packet out of the mesh
 // in a family translated under a class that translates meets that family's
 // limit once, the share the capability names, and no other packet meets a
-// limit. Each family's forward chain holds the ICMP drops first. A second pass
+// limit. Each family's lines at the forward hook start with the ICMP drops. A second pass
 // writes nothing, so the host holds the order it reads back, and only
 // advertised prefixes are announced.
 func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
@@ -453,7 +454,7 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 		// walk is the rule a packet meets first that translates it, and the
 		// timeouts the last of the timeout rules it meets on the way attaches.
 		// A limit and a rule taking what no flow is tracked for are in the
-		// forward chain, which translates nothing.
+		// forward hook, which translates nothing.
 		walk := func(packet crossing) (rule Rule, taken bool, attached Timeouts) {
 			for _, rule := range desired {
 				switch {
@@ -492,9 +493,10 @@ func TestRulesFollowWhatIsAdvertisedAndSteered(t *testing.T) {
 			}
 			return Rule{}, decision{}, limits
 		}
-		// in each family's forward chain the ICMP drops come first, ahead of
-		// every other rule of the chain and of its classes of none's chains,
-		// which come ahead of every rule of the translation's chain
+		// among each family's lines at the forward hook the ICMP drops come
+		// first, ahead of every other of those lines and every rule of its
+		// classes of none's chains, which come ahead of every rule of the
+		// translation's chain
 		rank := func(rule Rule) int {
 			switch {
 			case rule.Drops != NoMessage:
@@ -733,9 +735,9 @@ func readyAfter(rt Runtime, desired []Rule, now step) [2]bool {
 // Over a run of passes on a host drawn anew for each, the readiness handed to
 // Ready and kept for Status is readyAfter's, and neither is ready after a
 // listing that failed. The prefixes announced are those of each family whose
-// chain reads back as written and which the host forwards. Ready is told only
+// lines read back as written and which the host forwards. Ready is told only
 // of a change, never what it already holds, and the pair is false in both
-// whenever the tables are withdrawn.
+// whenever the chains are withdrawn.
 func TestEgressSegmentsReadinessFollowsWhatThePassReadBack(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		drawn := hegel.Draw(ht, exits())
@@ -802,7 +804,7 @@ func TestEgressSegmentsReadinessFollowsWhatThePassReadBack(t *testing.T) {
 			case strings.HasPrefix(entry, "ready"):
 				state = entry
 			case entry == "withdraw" && state != "ready false false":
-				ht.Fatalf("the tables were withdrawn while %s, in %v", state, be.entries())
+				ht.Fatalf("the chains were withdrawn while %s, in %v", state, be.entries())
 			}
 		}
 	})

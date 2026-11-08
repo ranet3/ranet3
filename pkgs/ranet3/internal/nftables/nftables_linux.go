@@ -231,8 +231,8 @@ type Installed struct {
 }
 
 // Contents names the chains, sets and ct timeout objects one owner writes in a
-// table of its own in one nf_tables family, each read back by its name. Any
-// other in the table is another writer's.
+// table in one nf_tables family, each read back by its name. Any other in the
+// table is another writer's.
 type Contents struct {
 	Chains   []Chain
 	Sets     []Set
@@ -253,13 +253,20 @@ type Readback struct {
 	// from what NewTable and the Create methods write, a missing set or object
 	// among them, empty where none does
 	Fault string
-	// Remake holds where one differs in what nf_tables will not change in
-	// place, so its owner deletes the table and makes it again in one
-	// transaction
-	Remake bool
+	// Stale is each chain, set and object of Contents that differs in what
+	// nf_tables will not change in place, which Rewrite deletes and its owner
+	// makes again in one transaction
+	Stale Contents
 	// Chains is the name of each chain the table holds, as the dump finds
 	// them, those Contents names and those it does not
 	Chains []string
+	// Held is whether the table holds any chain, set or object Contents names
+	Held bool
+}
+
+// Remake is whether the read found anything stale
+func (r Readback) Remake() bool {
+	return len(r.Stale.Chains) > 0 || len(r.Stale.Sets) > 0 || len(r.Stale.Timeouts) > 0
 }
 
 // Read takes tables as Tables read them
@@ -269,33 +276,43 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 		return Readback{}, nil
 	}
 	var read Readback
-	note := func(fault string, remake bool) {
+	note := func(fault string) {
 		if read.Fault == "" {
 			read.Fault = fault
 		}
-		read.Remake = read.Remake || remake
 	}
 	if flags != 0 {
-		// nf_tables clears no flag of a table in place but dormant
-		note(fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags), flags&^unix.NFT_TABLE_F_DORMANT != 0)
+		// NewTable clears a dormant flag in place, and only deleting the table, with every other owner's chains in it, clears another
+		fault := fmt.Sprintf("its table carries flags %#x, where none are written and 0x1 is dormant", flags)
+		if flags&^unix.NFT_TABLE_F_DORMANT != 0 {
+			fault += fmt.Sprintf(", and only nft delete table inet %s clears another", c.table())
+		}
+		note(fault)
 	}
 	// the kernel dumps the sets, objects and rules of the table and chain a
-	// request names alone, but the chains of every table of the family, which
-	// Chain.Fault tells apart by table and name
-	request := PutNfgenmsg(nil, proto)
+	// request names alone, but the chains of every table of the family
 	if len(c.Chains) > 0 {
-		request = PutAttrString(request, unix.NFTA_CHAIN_TABLE, c.Chains[0].Table)
-	}
-	chains, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), request)
-	if err != nil {
-		return Readback{}, fmt.Errorf("dump chains: %w", err)
-	}
-	for _, reply := range chains {
-		for _, chain := range c.Chains {
-			note(chain.Fault(reply))
+		chains, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_CHAIN_TABLE, c.Chains[0].Table))
+		if err != nil {
+			return Readback{}, fmt.Errorf("dump chains: %w", err)
 		}
-		if table, name, _, _, _ := DecodeChain(reply); len(c.Chains) > 0 && table == c.Chains[0].Table {
+		for _, reply := range chains {
+			table, name, _, _, _ := DecodeChain(reply)
+			if table != c.Chains[0].Table {
+				continue
+			}
 			read.Chains = append(read.Chains, name)
+			for _, chain := range c.Chains {
+				if chain.Name != name {
+					continue
+				}
+				read.Held = true
+				fault, remake := chain.Fault(reply)
+				note(fault)
+				if remake {
+					read.Stale.Chains = append(read.Stale.Chains, chain)
+				}
+			}
 		}
 	}
 	if len(c.Sets) > 0 {
@@ -309,13 +326,18 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 				return held.Table == set.Table && held.Name == set.Name
 			})
 			if found < 0 {
-				note(fmt.Sprintf("its set %s is missing", set.Name), false)
+				note(fmt.Sprintf("its set %s is missing", set.Name))
 				continue
 			}
+			read.Held = true
 			fault, remake := set.Fault(sets[found])
-			note(fault, remake)
+			note(fault)
+			if remake {
+				read.Stale.Sets = append(read.Stale.Sets, set)
+				continue
+			}
 			written, filled := c.Elements[set.Name]
-			if !filled || remake {
+			if !filled {
 				continue
 			}
 			held, err := set.Elements(conn, proto)
@@ -323,7 +345,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 				return Readback{}, err
 			}
 			if fault := set.elementFault(written, held); fault != "" {
-				note(fault, false)
+				note(fault)
 			}
 		}
 	}
@@ -333,13 +355,228 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 			return Readback{}, fmt.Errorf("dump objects: %w", err)
 		}
 		for _, timeout := range c.Timeouts {
-			note(readTimeout(timeout, objects))
+			fault, remake, found := readTimeout(timeout, objects)
+			note(fault)
+			read.Held = read.Held || found
+			if remake {
+				read.Stale.Timeouts = append(read.Stale.Timeouts, timeout)
+			}
 		}
 	}
-	if read.Rules, err = c.rules(conn, proto); err != nil {
+	rules, err := c.rules(conn, proto)
+	if err != nil {
 		return Readback{}, fmt.Errorf("dump rules: %w", err)
 	}
+	read.Rules = rules
 	return read, nil
+}
+
+// Scope is c's chains, sets and timeout objects by name
+func (c Contents) Scope() Scope {
+	var s Scope
+	for _, chain := range c.Chains {
+		s.Chains = append(s.Chains, chain.Name)
+	}
+	for _, set := range c.Sets {
+		s.Sets = append(s.Sets, set.Name)
+	}
+	for _, timeout := range c.Timeouts {
+		s.Timeouts = append(s.Timeouts, timeout.Name)
+	}
+	return s
+}
+
+// table is the table c's objects live in
+func (c Contents) table() string {
+	switch {
+	case len(c.Chains) > 0:
+		return c.Chains[0].Table
+	case len(c.Sets) > 0:
+		return c.Sets[0].Table
+	case len(c.Timeouts) > 0:
+		return c.Timeouts[0].Table
+	}
+	return ""
+}
+
+// Rewrite is the head of the one transaction that writes c over what its read
+// found stale: Table, adopted where it is there, each chain of stale deleted
+// with its rules, each chain of c made and flushed, which makes a deleted one
+// again, each of strays flushed, then each set and object of stale deleted.
+// strays are the owner's chains the table holds that c does not write, which
+// the owner deletes after the head. Every chain of the owner's is flushed
+// before any set or object goes, since nf_tables refuses to delete one a rule
+// still uses, so only another writer's rule using one fails the transaction.
+// Its owner then makes c's sets and objects, fills the sets and writes its
+// rules, which makes every one stale named again.
+func (c Contents) Rewrite(proto uint8, stale Contents, strays []string) []Request {
+	requests := []Request{NewTable(proto, Table)}
+	for _, chain := range stale.Chains {
+		requests = append(requests, chain.Delete(proto))
+	}
+	for _, chain := range c.Chains {
+		requests = append(requests, chain.Create(proto), chain.Flush(proto))
+	}
+	for _, name := range strays {
+		requests = append(requests, Chain{Table: Table, Name: name}.Flush(proto))
+	}
+	for _, set := range stale.Sets {
+		requests = append(requests, set.Delete(proto))
+	}
+	for _, timeout := range stale.Timeouts {
+		requests = append(requests, timeout.Delete(proto))
+	}
+	return requests
+}
+
+// Withdraw removes what s names from Table in one transaction and reports
+// whether the table held any of it, a table that is not there being success.
+// Where the table holds nothing of another writer's and no flag but dormant,
+// it deletes the table, which takes s's chains, sets and objects with it.
+// Otherwise it flushes each chain of s's, deletes each but one another
+// writer's rule or map element goes to, which nf_tables refuses to delete
+// and which stays flushed, then deletes s's sets and timeout objects, which a
+// rule of another writer's still using one fails. A table carrying the owner
+// or persist flag is never deleted, since it belongs to the socket that set
+// the flag or to a start that adopts it.
+func Withdraw(conn *Conn, s Scope) (removed bool, err error) {
+	tables, err := Tables(conn, Table)
+	if err != nil {
+		return false, err
+	}
+	flags, held := tables[unix.NFPROTO_INET]
+	if !held {
+		return false, nil
+	}
+	l, err := list(conn, flags)
+	if err != nil {
+		return false, err
+	}
+	requests := s.withdrawal(l)
+	if len(requests) == 0 {
+		return false, nil
+	}
+	err = conn.Batch(requests)
+	return err == nil, err
+}
+
+// listing is Table as a withdrawal finds it: its flags, the name of each
+// chain and named set, each object by type and name, every rule and every
+// verdict map, which say what goes to a chain
+type listing struct {
+	flags   uint32
+	chains  []string
+	sets    []string
+	objects []object
+	rules   []Installed
+	maps    []VerdictMap
+}
+
+type object struct {
+	kind uint32
+	name string
+}
+
+func list(conn *Conn, flags uint32) (listing, error) {
+	l := listing{flags: flags}
+	var err error
+	if l.chains, err = TableChains(conn, unix.NFPROTO_INET, Table); err != nil {
+		return listing{}, err
+	}
+	sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, Table))
+	if err != nil {
+		return listing{}, fmt.Errorf("nftables: dump sets: %w", err)
+	}
+	for _, reply := range sets {
+		if set := DecodeSet(reply); set.Table == Table && set.Flags&unix.NFT_SET_ANONYMOUS == 0 {
+			l.sets = append(l.sets, set.Name)
+		}
+	}
+	objects, err := conn.Dump(Command(unix.NFT_MSG_GETOBJ), PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_OBJ_TABLE, Table))
+	if err != nil {
+		return listing{}, fmt.Errorf("nftables: dump objects: %w", err)
+	}
+	for _, reply := range objects {
+		var table string
+		var o object
+		for kind, value := range reply.Attributes() {
+			switch {
+			case kind == unix.NFTA_OBJ_TABLE:
+				table = unix.ByteSliceToString(value)
+			case kind == unix.NFTA_OBJ_NAME:
+				o.name = unix.ByteSliceToString(value)
+			case kind == unix.NFTA_OBJ_TYPE && len(value) == 4:
+				o.kind = binary.BigEndian.Uint32(value)
+			}
+		}
+		if table == Table {
+			l.objects = append(l.objects, o)
+		}
+	}
+	if l.rules, err = TableRules(conn, unix.NFPROTO_INET, Table); err != nil {
+		return listing{}, err
+	}
+	if l.maps, err = VerdictMaps(conn, unix.NFPROTO_INET, Table); err != nil {
+		return listing{}, err
+	}
+	return l, nil
+}
+
+// withdrawal is the transaction Withdraw sends over l, none where l holds
+// nothing of s's
+func (s Scope) withdrawal(l listing) []Request {
+	timeout := func(o object) bool {
+		return o.kind == unix.NFT_OBJECT_CT_TIMEOUT && slices.Contains(s.Timeouts, o.name)
+	}
+	chains := slices.DeleteFunc(slices.Clone(l.chains), func(name string) bool { return !s.chain(name) })
+	sets := slices.DeleteFunc(slices.Clone(l.sets), func(name string) bool { return !s.set(name) })
+	objects := slices.DeleteFunc(slices.Clone(l.objects), func(o object) bool { return !timeout(o) })
+	if len(chains) == 0 && len(sets) == 0 && len(objects) == 0 {
+		return nil
+	}
+	if l.flags&^unix.NFT_TABLE_F_DORMANT == 0 && len(chains) == len(l.chains) && len(sets) == len(l.sets) && len(objects) == len(l.objects) {
+		return []Request{DeleteTable(unix.NFPROTO_INET, Table)}
+	}
+	var requests []Request
+	// every chain is flushed before any is deleted, since a goto in one keeps another it names from being deleted
+	for _, name := range chains {
+		requests = append(requests, Chain{Table: Table, Name: name}.Flush(unix.NFPROTO_INET))
+	}
+	for _, name := range chains {
+		if Holder(name, l.rules, l.maps, s.chain) == "" {
+			requests = append(requests, Chain{Table: Table, Name: name}.Delete(unix.NFPROTO_INET))
+		}
+	}
+	for _, name := range sets {
+		requests = append(requests, Set{Table: Table, Name: name}.Delete(unix.NFPROTO_INET))
+	}
+	for _, o := range objects {
+		requests = append(requests, Timeout{Table: Table, Name: o.name}.Delete(unix.NFPROTO_INET))
+	}
+	return requests
+}
+
+// Holder names what goes to the chain named chain from a chain flushed does
+// not take: "chain c" for a rule of chain c, by a goto, a jump or its vmap,
+// "map m" for an element of the named map m, empty where nothing does.
+// nf_tables refuses to delete a chain either holds.
+func Holder(chain string, rules []Installed, maps []VerdictMap, flushed func(chain string) bool) string {
+	goesTo := func(m VerdictMap) bool { return slices.Contains(m.Chains, chain) }
+	for _, rule := range rules {
+		if flushed(rule.Chain) {
+			continue
+		}
+		vmap := slices.ContainsFunc(LookupSets(rule.Expressions), func(set string) bool {
+			return slices.ContainsFunc(maps, func(m VerdictMap) bool { return m.Anonymous && m.Name == set && goesTo(m) })
+		})
+		if vmap || slices.Contains(VerdictChains(rule.Expressions), chain) {
+			return "chain " + rule.Chain
+		}
+	}
+	if i := slices.IndexFunc(maps, func(m VerdictMap) bool { return !m.Anonymous && goesTo(m) }); i >= 0 {
+		return "map " + maps[i].Name
+	}
+	return ""
 }
 
 // rules dumps each chain's rules alone, which the kernel filters by the table
@@ -877,10 +1114,13 @@ func ConnectionsOver(set string, limit uint32) []byte {
 	return Expression("dynset", dynset)
 }
 
-// RejectUnreachable answers a packet with a destination unreachable of code,
-// of ICMP in an ip table and of ICMPv6 in an ip6 one, and drops it
-func RejectUnreachable(code uint8) []byte {
-	reject := PutAttrBE32(nil, unix.NFTA_REJECT_TYPE, unix.NFT_REJECT_ICMP_UNREACH)
+// RejectICMPX answers a packet with a destination unreachable and drops it,
+// code being an NFT_REJECT_ICMPX_ value, which the kernel gives as its own
+// family's code, ICMP's for an IPv4 packet and ICMPv6's for an IPv6 one
+// (nft_reject.c, nft_reject_icmp_code and nft_reject_icmpv6_code). nft lists
+// it with no family named, as it can a rule that tests none.
+func RejectICMPX(code uint8) []byte {
+	reject := PutAttrBE32(nil, unix.NFTA_REJECT_TYPE, unix.NFT_REJECT_ICMPX_UNREACH)
 	reject = PutAttr(reject, unix.NFTA_REJECT_ICMP_CODE, []byte{code})
 	return Expression("reject", reject)
 }

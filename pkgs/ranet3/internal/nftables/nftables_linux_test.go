@@ -19,9 +19,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// translatorTables is a scope of the shape the translator watches, the ip and
-// ip6 tables of one name
-var translatorTables = Scope{Name: "ranet3", Families: []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6}}
+// translatorNames is a scope of the shape the translator watches, two chains,
+// those of a prefix and two sets
+var translatorNames = Scope{Chains: []string{"forward", "postrouting"}, Prefix: "none_", Sets: []string{"flows4", "flows6"}}
 
 // A prefix narrows a rule by the bits it actually covers, so a /24 masks the
 // last octet away and a /0 is never encoded at all.
@@ -155,7 +155,7 @@ func TestExpressionsCarryTheAttributesNftWrites(t *testing.T) {
 			`dynset 1="flows4" 3=00000000 4=00000001 7{1="connlimit" 2{1=00001000 2=00000001}}`,
 		}},
 		{"ip6 saddr", [][]byte{SourceLoad(unix.NFPROTO_IPV6)}, []string{"payload 1=00000001 2=00000001 3=00000008 4=00000010"}},
-		{"reject with icmp admin-prohibited", [][]byte{RejectUnreachable(13)}, []string{"reject 1=00000000 2=0d"}},
+		{"reject with icmpx admin-prohibited", [][]byte{RejectICMPX(unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED)}, []string{"reject 1=00000002 2=03"}},
 		{`ct timeout set "translated-udp"`, [][]byte{ObjectReference(unix.NFT_OBJECT_CT_TIMEOUT, "translated-udp")}, []string{`objref 1=00000007 2="translated-udp"`}},
 		{"udp dport", [][]byte{TransportLoad(2, 2)}, []string{"payload 1=00000001 2=00000002 3=00000002 4=00000002"}},
 		{"snat to ip saddr", [][]byte{SourceNAT(unix.NFPROTO_IPV4)}, []string{"nat 1=00000000 2=00000002 3=00000001"}},
@@ -232,50 +232,79 @@ func TestMalformedMessageLengthIsRefused(t *testing.T) {
 	}
 }
 
-// Only another writer's deletion or addition of the owner's table, of a chain,
-// a rule, a set or a set's element in it wakes the owner, a table update
-// setting it dormant among them. Its own writes reach the notification group stamped with its
-// own socket, and another table's churn is none of its business.
-func TestOnlyAnotherWritersChangeToTheTableWakes(t *testing.T) {
+// Only another writer's deletion of the table, a NEWTABLE of it that sets a
+// flag or carries none, or a change to one of the owner's chains, a rule in
+// one, one of its sets or a set's element wakes the owner. A NEWTABLE of flags
+// 0 makes the table or clears its flags, which takes no owner's chain. Its own
+// writes reach the notification group stamped with its own socket, and
+// another owner's names in the same table, like another table's churn, are
+// none of its business.
+func TestOnlyAnotherWritersChangeToItsNamesWakes(t *testing.T) {
 	const own, other = 7, 9
-	const name = "ranet3"
-	notification := func(command int, family uint8, naming uint16, table string, pid uint32) Message {
-		return Message{
-			Kind: Command(command),
-			Pid:  pid,
-			Data: PutAttrString(PutNfgenmsg(nil, family), naming, table),
-		}
+	tableOnly := func(command int, family uint8, table string, pid uint32) Message {
+		return Message{Kind: Command(command), Pid: pid, Data: PutAttrString(PutNfgenmsg(nil, family), unix.NFTA_TABLE_NAME, table)}
+	}
+	flagged := func(flags uint32) Message {
+		m := tableOnly(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, Table, other)
+		m.Data = PutAttrBE32(m.Data, unix.NFTA_TABLE_FLAGS, flags)
+		return m
+	}
+	named := func(command int, tableKind, nameKind uint16, table, name string, pid uint32) Message {
+		return Message{Kind: Command(command), Pid: pid, Data: PutAttrString(PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), tableKind, table), nameKind, name)}
+	}
+	chain := func(command int, name string, pid uint32) Message {
+		return named(command, unix.NFTA_CHAIN_TABLE, unix.NFTA_CHAIN_NAME, Table, name, pid)
+	}
+	rule := func(command int, table, name string, pid uint32) Message {
+		return named(command, unix.NFTA_RULE_TABLE, unix.NFTA_RULE_CHAIN, table, name, pid)
+	}
+	set := func(command int, name string, pid uint32) Message {
+		return named(command, unix.NFTA_SET_TABLE, unix.NFTA_SET_NAME, Table, name, pid)
+	}
+	element := func(command int, table, name string, pid uint32) Message {
+		return named(command, unix.NFTA_SET_ELEM_LIST_TABLE, unix.NFTA_SET_ELEM_LIST_SET, table, name, pid)
 	}
 	for label, c := range map[string]struct {
 		message Message
 		wakes   bool
 	}{
-		"its table deleted":              {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, name, other), true},
-		"its chain deleted":              {notification(unix.NFT_MSG_DELCHAIN, unix.NFPROTO_IPV6, unix.NFTA_CHAIN_TABLE, name, other), true},
-		"a rule of it deleted":           {notification(unix.NFT_MSG_DELRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, name, other), true},
-		"its table added or set dormant": {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, name, other), true},
-		"a chain added or changed":       {notification(unix.NFT_MSG_NEWCHAIN, unix.NFPROTO_IPV6, unix.NFTA_CHAIN_TABLE, name, other), true},
-		"a rule added":                   {notification(unix.NFT_MSG_NEWRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, name, other), true},
-		"its own flush":                  {notification(unix.NFT_MSG_DELRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, name, own), false},
-		"its own withdrawal":             {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV6, unix.NFTA_TABLE_NAME, name, own), false},
-		"its own table":                  {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, name, own), false},
-		"its own rule":                   {notification(unix.NFT_MSG_NEWRULE, unix.NFPROTO_IPV6, unix.NFTA_RULE_TABLE, name, own), false},
-		"a set added":                    {notification(unix.NFT_MSG_NEWSET, unix.NFPROTO_IPV4, unix.NFTA_SET_TABLE, name, other), true},
-		"a set deleted":                  {notification(unix.NFT_MSG_DELSET, unix.NFPROTO_IPV6, unix.NFTA_SET_TABLE, name, other), true},
-		"an element added":               {notification(unix.NFT_MSG_NEWSETELEM, unix.NFPROTO_IPV4, unix.NFTA_SET_ELEM_LIST_TABLE, name, other), true},
-		"an element deleted":             {notification(unix.NFT_MSG_DELSETELEM, unix.NFPROTO_IPV6, unix.NFTA_SET_ELEM_LIST_TABLE, name, other), true},
-		"its own refill":                 {notification(unix.NFT_MSG_NEWSETELEM, unix.NFPROTO_IPV4, unix.NFTA_SET_ELEM_LIST_TABLE, name, own), false},
-		"an element of another table":    {notification(unix.NFT_MSG_NEWSETELEM, unix.NFPROTO_IPV4, unix.NFTA_SET_ELEM_LIST_TABLE, "nat", other), false},
-		"another table deleted":          {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, "nat", other), false},
-		"a rule added to another table":  {notification(unix.NFT_MSG_NEWRULE, unix.NFPROTO_IPV4, unix.NFTA_RULE_TABLE, "nat", other), false},
-		"an inet table of its name":      {notification(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, unix.NFTA_TABLE_NAME, name, other), false},
-		"a name it starts":               {notification(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, unix.NFTA_TABLE_NAME, name+"x", other), false},
+		"the table deleted":                     {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, Table, other), true},
+		"the table set dormant":                 {flagged(unix.NFT_TABLE_F_DORMANT), true},
+		"the table given the owner flag":        {flagged(0x2), true},
+		"the table with no flags attribute":     {tableOnly(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, Table, other), true},
+		"the table made or its flags cleared":   {flagged(0), false},
+		"its chain deleted":                     {chain(unix.NFT_MSG_DELCHAIN, "forward", other), true},
+		"its chain added or changed":            {chain(unix.NFT_MSG_NEWCHAIN, "postrouting", other), true},
+		"a chain of its prefix added":           {chain(unix.NFT_MSG_NEWCHAIN, "none_a", other), true},
+		"a rule of its chain deleted":           {rule(unix.NFT_MSG_DELRULE, Table, "forward", other), true},
+		"a rule added to a chain of its prefix": {rule(unix.NFT_MSG_NEWRULE, Table, "none_b", other), true},
+		"its set added":                         {set(unix.NFT_MSG_NEWSET, "flows4", other), true},
+		"its set deleted":                       {set(unix.NFT_MSG_DELSET, "flows6", other), true},
+		"an element of its set added":           {element(unix.NFT_MSG_NEWSETELEM, Table, "flows4", other), true},
+		"an element of its set deleted":         {element(unix.NFT_MSG_DELSETELEM, Table, "flows6", other), true},
+		"its own flush":                         {rule(unix.NFT_MSG_DELRULE, Table, "forward", own), false},
+		"its own withdrawal":                    {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, Table, own), false},
+		"its own table":                         {tableOnly(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, Table, own), false},
+		"its own refill":                        {element(unix.NFT_MSG_NEWSETELEM, Table, "flows4", own), false},
+		"another owner's chain":                 {chain(unix.NFT_MSG_NEWCHAIN, "antispoof", other), false},
+		"a rule of another owner's chain":       {rule(unix.NFT_MSG_NEWRULE, Table, "fallback", other), false},
+		"another owner's set":                   {set(unix.NFT_MSG_NEWSET, "lan4", other), false},
+		"an element of another owner's set":     {element(unix.NFT_MSG_NEWSETELEM, Table, "carved4", other), false},
+		"an anonymous set":                      {set(unix.NFT_MSG_NEWSET, "__set0", other), false},
+		"a name its prefix ends":                {chain(unix.NFT_MSG_NEWCHAIN, "none", other), false},
+		"an element of another table":           {element(unix.NFT_MSG_NEWSETELEM, "nat", "flows4", other), false},
+		"a rule added to another table":         {rule(unix.NFT_MSG_NEWRULE, "nat", "forward", other), false},
+		"another table deleted":                 {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, "nat", other), false},
+		"an ip table of its name":               {tableOnly(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV4, Table, other), false},
+		"an ip6 table of its name":              {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV6, Table, other), false},
+		"a name it starts":                      {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, Table+"x", other), false},
+		"an object of its table":                {named(unix.NFT_MSG_NEWOBJ, unix.NFTA_OBJ_TABLE, unix.NFTA_OBJ_NAME, Table, "translated-udp4", other), false},
 		"another subsystem": {
-			Message{Kind: uint16(unix.NFNL_SUBSYS_CTNETLINK)<<8 | unix.NFT_MSG_DELTABLE, Pid: other, Data: PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, name)},
+			Message{Kind: uint16(unix.NFNL_SUBSYS_CTNETLINK)<<8 | unix.NFT_MSG_DELTABLE, Pid: other, Data: PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, Table)},
 			false,
 		},
 	} {
-		if got := translatorTables.ChangedByAnother(c.message, own); got != c.wakes {
+		if got := translatorNames.ChangedByAnother(c.message, own); got != c.wakes {
 			t.Errorf("%s: woke %v, want %v", label, got, c.wakes)
 		}
 	}

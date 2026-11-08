@@ -56,11 +56,11 @@ type netlinkPlatform struct {
 	occupied map[Route]bool
 	refused  map[Route]bool
 
-	// fallback writes the table ranet3_fallback and wakes Notify on another
-	// writer's change to it, open while the table is written: from the
-	// platform's start under a capability that writes it or the first pass
-	// that asks for it, to Close or a delete of the table, a stop's or a
-	// pass's under a capability that does not write it. Only the reconcile
+	// fallback writes the kill switch's chains and wakes Notify on another
+	// writer's change to them, open while they are written: from the
+	// platform's start under a capability that writes them or the first pass
+	// that asks for them, to Close or a delete of them, a stop's or a
+	// pass's under a capability that does not write them. Only the reconcile
 	// loop touches it once the platform is built.
 	fallback *fallbackWatch
 }
@@ -81,7 +81,7 @@ func (p *netlinkPlatform) lookups(reads []RouteRead) ([]BatchAnswer, error) {
 // RefuseExitMode is nil here, where the reconciler's policy rules carry cap.exit
 func RefuseExitMode(ExitMode) error { return nil }
 
-// RefuseFallback is nil here, where the table ranet3_fallback carries
+// RefuseFallback is nil here, where the kill switch's chains carry
 // fallback = "none"
 func RefuseFallback(ExitMode) error { return nil }
 

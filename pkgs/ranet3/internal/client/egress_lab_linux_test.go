@@ -32,6 +32,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -121,10 +122,14 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		t.Fatalf("start the exit: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	var runs sync.WaitGroup
+	// the antispoof filter stops last, as the daemon stops it, so its withdrawal alone finds the table holding nothing else
+	filterCtx, cancelFilter := context.WithCancel(context.Background())
+	var runs, filter sync.WaitGroup
 	stop := sync.OnceFunc(func() {
 		cancel()
 		runs.Wait()
+		cancelFilter()
+		filter.Wait()
 		node.Close()
 	})
 	t.Cleanup(stop)
@@ -179,8 +184,8 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 			t.Errorf("the translator: %v", err)
 		}
 	})
-	runs.Go(func() {
-		if err := border.Run(ctx); err != nil {
+	filter.Go(func() {
+		if err := border.Run(filterCtx); err != nil {
 			t.Errorf("the antispoof filter: %v", err)
 		}
 	})
@@ -448,10 +453,10 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 		labQuietFor(t, listeners[0], payload)
 	})
 
-	t.Run("another writer deleting the ip table", func(t *testing.T) {
+	t.Run("another writer deleting the table", func(t *testing.T) {
 		mark := len(readiness(bus))
-		if err := exit.Do(func() error { return labDeleteTable(unix.NFPROTO_IPV4, kernelexit.TableName) }); err != nil {
-			t.Fatalf("delete the ip table: %v", err)
+		if err := exit.Do(func() error { return labDeleteTable(unix.NFPROTO_INET, nftables.Table) }); err != nil {
+			t.Fatalf("delete the table: %v", err)
 		}
 		waitFor(t, convergeBudget, "the translator to report the egress segments not ready and then ready again", func() bool {
 			moved := readiness(bus)[mark:]
@@ -572,9 +577,9 @@ func TestTUNExitEgressesBothModesThroughItsOneTun(t *testing.T) {
 				return fmt.Errorf("a rule of the reconciler's outlived it: %v", rule)
 			}
 		}
-		for _, family := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
-			if err := labDeleteTable(family, kernelexit.TableName); !errors.Is(err, unix.ENOENT) {
-				return fmt.Errorf("deleting the translator's table of family %d once it stopped answered %v, want it gone", family, err)
+		for _, family := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6, unix.NFPROTO_INET} {
+			if err := labDeleteTable(family, nftables.Table); !errors.Is(err, unix.ENOENT) {
+				return fmt.Errorf("deleting the table of family %d once the translator stopped answered %v, want it gone", family, err)
 			}
 		}
 		return nil

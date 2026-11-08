@@ -66,7 +66,7 @@ func TestLoopbackNamesTheHostsLoopbackLink(t *testing.T) {
 }
 
 // Under fallback = "none" a lease as wide as the overlay is looked up in main
-// past the mesh's throw, and the fallback table passes the lease less the
+// past the mesh's throw, and the kill switch passes the lease less the
 // mesh's prefixes inside it, so the gateway answers and a mesh peer's address
 // never leaves by the link
 func TestFallbackPassesACarvedLeaseLessTheMeshsPrefixes(t *testing.T) {

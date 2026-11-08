@@ -210,8 +210,8 @@ func (lab *pathLab) startRoutes(t *testing.T) {
 		runs.Wait()
 	})
 	t.Cleanup(lab.stopRoutes)
-	// in the leaf's namespace, as every thread of the daemon shares its one, so the socket for the table ranet3_fallback a
-	// reload's pass opens goes in it
+	// in the leaf's namespace, as every thread of the daemon shares its one, so the socket for the kill switch a reload's pass
+	// opens goes in it
 	runner := netnstest.JoinThread(t, leaf.ns.Path)
 	runs.Go(func() {
 		if err := runner.Do(func() error { return routes.Run(ctx) }); err != nil {
@@ -540,7 +540,7 @@ func (lab *pathLab) lastPathEvent() string {
 // a datagram sent before the steered defaults go is answered at the leaf and nothing toward the SID leaves b's uplink, then the defaults go, down at that SID, and the sockets leave by no uplink
 // and with b announcing a subnet over that SID, a route counting as no default, the path stays down at the SID with no route of its own,
 // and the sockets leave by no uplink and nothing toward the SID leaves b's uplink
-// and a clean stop of the reconciler leaves no rule or route of its protocol and no table ranet3_fallback
+// and a clean stop of the reconciler leaves no rule or route of its protocol and no chain of the kill switch
 func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 	lab := startPathLab(t, pathSIDA)
 	leaf, a, w := lab.nodes[pathLeaf], lab.nodes[pathExitA], lab.nodes[pathWaypoint]
@@ -742,7 +742,7 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 		lab.stopRoutes()
 		var rules []kernelRule
 		var left []kernelRoute
-		var tables map[uint8]uint32
+		var chains []string
 		if err := leaf.ns.Do(func() (err error) {
 			if rules, err = dumpRules(); err != nil {
 				return err
@@ -755,13 +755,13 @@ func TestTUNExitPathLeavesByTheNamedExitAndNoOther(t *testing.T) {
 				return err
 			}
 			defer conn.Close()
-			tables, err = nftables.Tables(conn, kernel.FallbackTable)
+			chains, err = nftables.TableChains(conn, unix.NFPROTO_INET, nftables.Table)
 			return err
 		}); err != nil {
 			t.Fatalf("read the leaf back: %v", err)
 		}
-		if len(tables) > 0 {
-			t.Errorf("the stop left the table %s in the families %v", kernel.FallbackTable, tables)
+		if slices.Contains(chains, "fallback") || slices.Contains(chains, "output") {
+			t.Errorf("the stop left the kill switch's chains among %q in the table %s", chains, nftables.Table)
 		}
 		for _, rule := range rules {
 			if rule.protocol == kernel.DefaultProtocol {

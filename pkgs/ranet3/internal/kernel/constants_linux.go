@@ -27,7 +27,7 @@ const (
 	// resolvedWait bounds one question to systemd-resolved, which answers from
 	// its own state without a query of its own
 	resolvedWait = time.Second
-	// fallbackPriority runs each chain of the table ranet3_fallback after every
+	// fallbackPriority runs each chain of the kill switch after every
 	// priority nft and iptables name, conntrack's and NAT's among them, and at
 	// postrouting ahead of conntrack's confirmation at the last one, so a packet
 	// it drops confirms no entry

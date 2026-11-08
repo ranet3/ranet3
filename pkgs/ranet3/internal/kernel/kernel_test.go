@@ -82,7 +82,7 @@ type fakeKernel struct {
 	byLength bool
 	emptied  bool
 
-	// fallback is the table ranet3_fallback the fake holds, nil for none.
+	// fallback is the kill switch the fake holds, nil for none.
 	// spoiled is a fault every read reports, as another writer's change no
 	// rewrite outlasts, failFallback fails every write, read, delete and
 	// listing, failWrite fails the writes alone and failListing the listings
@@ -100,9 +100,9 @@ type fakeKernel struct {
 	switchForm fallbackForm
 }
 
-// fakeTableForm is the fake's switch read as linux's table
+// fakeTableForm is the fake's switch read as linux's chains
 var fakeTableForm = fallbackForm{
-	where: "nftables table inet " + FallbackTable, fix: "nft delete table inet " + FallbackTable,
+	where: "nftables table inet ranet3 chains fallback and output", fix: "nft delete chain inet ranet3 fallback and nft delete chain inet ranet3 output",
 	unheld: "the host's own lookups from the uplink's addresses reach main only for its routes longer than /0",
 }
 
@@ -134,7 +134,7 @@ func (f *fakeKernel) readFallback(s fallbackSets) (fallbackRead, error) {
 	case f.failFallback != nil:
 		return fallbackRead{}, f.failFallback
 	case f.fallback == nil:
-		return fallbackRead{fault: "the table is missing"}, nil
+		return fallbackRead{fault: "its chains are missing"}, nil
 	case f.spoiled != "":
 		return fallbackRead{fault: f.spoiled, dropped: f.fallbackDropped}, nil
 	case !reflect.DeepEqual(*f.fallback, s):

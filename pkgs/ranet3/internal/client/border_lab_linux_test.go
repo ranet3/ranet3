@@ -25,6 +25,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
 )
@@ -492,7 +493,7 @@ func borderDropped(t *testing.T, exit *netnstest.Thread, border *kernelexit.Bord
 	}
 	index := slices.IndexFunc(rules, func(rule egress.BorderReading) bool { return rule.Spec == spec })
 	if index < 0 || !rules[index].Held {
-		t.Fatalf("the antispoof filter's table holds no %q in %+v", spec, rules)
+		t.Fatalf("the antispoof filter's chains hold no %q in %+v", spec, rules)
 	}
 	return rules[index].Packets
 }
@@ -542,7 +543,7 @@ func (lab *borderLab) withoutTable(t *testing.T) {
 	t.Helper()
 	if err := lab.exit.Do(func() error {
 		for _, family := range []uint8{unix.NFPROTO_INET, unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
-			if err := labDeleteTable(family, kernelexit.TableName); !errors.Is(err, unix.ENOENT) {
+			if err := labDeleteTable(family, nftables.Table); !errors.Is(err, unix.ENOENT) {
 				return fmt.Errorf("deleting the exit's table of family %d answered %v, want it gone", family, err)
 			}
 		}

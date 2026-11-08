@@ -183,37 +183,67 @@ func switchUnlistedProbes(state switchState) []switchProbe {
 	return probes
 }
 
-// switchTableOwner is NFT_TABLE_F_OWNER of linux/netfilter/nf_tables.h, which x/sys does not carry
-const switchTableOwner = 0x2
+// switchLAN4 is the switch's set lan4 as another writer makes it again, without its interval flag, which only a delete mends,
+// and switchHolder another writer's chain in the same table whose rule looks it up, so nf_tables refuses that delete
+var (
+	switchLAN4   = nftables.Set{Table: nftables.Table, Name: "lan4", ID: 1, KeyType: nftables.TypeIPv4Addr, KeyLen: 4}
+	switchHolder = nftables.Chain{Table: nftables.Table, Name: "other", Hook: nftables.NoHook}
+)
 
-// notHolding takes the table under a socket of the test's own, owned, so the reconciler can neither write nor read it back, and
-// while the switch reads not holding sends the internet host the host's own unbound and uplink-bound probes and the forwarded
-// pings of an arm forwarding the bridge in state, the tun holding no IPv4 overlay address: 5450 refuses each in IPv4, and in
-// IPv6 5440 takes it into the tun while the defaults are present and 5450 refuses it once they are retracted. Then it lets the
-// table go and waits for the switch to read want again.
-func (lab *switchLab) notHolding(t *testing.T, state switchState, want kernel.FallbackState) {
-	t.Helper()
-	var holder *nftables.Conn
-	if err := lab.leaf.Do(func() (err error) {
-		if holder, err = nftables.Dial(); err != nil {
+// switchBatch sends requests from a socket of the test's own in the leaf's namespace
+func (lab *switchLab) switchBatch(requests func() ([]nftables.Request, error)) error {
+	return lab.leaf.Do(func() error {
+		batch, err := requests()
+		if err != nil {
 			return err
 		}
-		owned := nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
-			Body: nftables.PutAttrBE32(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, kernel.FallbackTable), unix.NFTA_TABLE_FLAGS, switchTableOwner)}
-		return holder.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, kernel.FallbackTable), owned})
+		conn, err := nftables.Dial()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		return conn.Batch(batch)
+	})
+}
+
+// notHolding flushes the switch's chains and makes its set lan4 again under another writer's rule that looks it up, so the
+// reconciler's rewrite, which deletes the set first, fails, and while the switch reads not holding sends the internet host the
+// host's own unbound and uplink-bound probes and the forwarded pings of an arm forwarding the bridge in state, the tun holding
+// no IPv4 overlay address: 5450 refuses each in IPv4, and in IPv6 5440 takes it into the tun while the defaults are present and
+// 5450 refuses it once they are retracted. Then it deletes the other writer's chain, adding an element to lan4 in the same
+// transaction so the switch wakes, and waits for the switch to read want again.
+func (lab *switchLab) notHolding(t *testing.T, state switchState, want kernel.FallbackState) {
+	t.Helper()
+	if err := lab.switchBatch(func() ([]nftables.Request, error) {
+		made, err := switchLAN4.Create(unix.NFPROTO_INET)
+		if err != nil {
+			return nil, err
+		}
+		lookup, err := switchHolder.Rule(unix.NFPROTO_INET, "another writer's",
+			slices.Concat(nftables.NFProto(unix.NFPROTO_IPV4), [][]byte{nftables.DestinationLoad(unix.NFPROTO_IPV4), nftables.Lookup(switchLAN4, false), nftables.Verdict(nftables.Accept)}))
+		if err != nil {
+			return nil, err
+		}
+		return []nftables.Request{
+			nftables.Chain{Table: nftables.Table, Name: "fallback"}.Flush(unix.NFPROTO_INET), nftables.Chain{Table: nftables.Table, Name: "output"}.Flush(unix.NFPROTO_INET),
+			switchLAN4.Delete(unix.NFPROTO_INET), made, switchHolder.Create(unix.NFPROTO_INET), lookup,
+		}, nil
 	}); err != nil {
-		t.Fatalf("take the table under another writer's socket: %v", err)
+		t.Fatalf("hold the switch's set under another writer's rule: %v", err)
 	}
 	released := false
 	release := func() {
 		if !released {
 			released = true
-			_ = holder.Close()
+			_ = lab.switchBatch(func() ([]nftables.Request, error) {
+				filled, err := switchLAN4.Fill(unix.NFPROTO_INET, []nftables.Interval{nftables.Key([]byte{192, 0, 2, 1})})
+				return append([]nftables.Request{switchHolder.Delete(unix.NFPROTO_INET)}, filled...), err
+			})
 		}
 	}
 	t.Cleanup(release)
 	waitFor(t, convergeBudget, "the switch to read not holding", func() bool { return lab.switchStatus() == string(kernel.FallbackNotHolding) })
-	t.Logf("with the table held by another writer the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
+	t.Logf("with its set held by another writer the leaf holds the rules\n%s", exitAllRules(t, lab.leaf))
 	internet6 := switchTun
 	if state != switchPresent {
 		internet6 = switchRefused
@@ -513,7 +543,7 @@ func (lab *switchLab) crash(t *testing.T, arm switchArm) {
 		t.Fatalf("read the table back: %v", err)
 	}
 	if held.Held == arm.uplink {
-		t.Errorf("the table %s is held %v after the helper, under fallback = \"uplink\" %v", kernel.FallbackTable, held.Held, arm.uplink)
+		t.Errorf("the kill switch is held %v after the helper, under fallback = \"uplink\" %v", held.Held, arm.uplink)
 	}
 }
 
@@ -986,7 +1016,7 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 			lab.stopBorder(nil)
 			lab.border = nil
 		}
-		tables := map[string]map[uint8]uint32{}
+		var tables map[uint8]uint32
 		var rules []kernelRule
 		if err := lab.leaf.Do(func() error {
 			conn, err := nftables.Dial()
@@ -994,20 +1024,16 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 				return err
 			}
 			defer conn.Close()
-			for _, name := range []string{kernel.FallbackTable, kernelexit.TableName} {
-				if tables[name], err = nftables.Tables(conn, name); err != nil {
-					return err
-				}
+			if tables, err = nftables.Tables(conn, nftables.Table); err != nil {
+				return err
 			}
 			rules, err = dumpRules()
 			return err
 		}); err != nil {
 			t.Fatalf("read the leaf back: %v", err)
 		}
-		for name, families := range tables {
-			if len(families) > 0 {
-				t.Errorf("the stop left the table %s in the families %v", name, families)
-			}
+		if len(tables) > 0 {
+			t.Errorf("the stop left the table %s in the families %v", nftables.Table, tables)
 		}
 		for _, rule := range rules {
 			if rule.protocol == kernel.DefaultProtocol {
@@ -1018,27 +1044,27 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 }
 
 // failedBorder starts the leaf's node and antispoof filter with no route of the mesh's, fails the mesh and stops both for it,
-// checks that the stop left the filter's table, has the far host send the leaf a datagram forged from an overlay source in each
-// family while no node runs, starts the node and filter again, which adopt the table without a write, its drops holding the
-// forged datagrams, and stops them as asked, which withdraws it. A start whose sets differ from the table's rewrites it in 1
+// checks that the stop left the filter's chains, has the far host send the leaf a datagram forged from an overlay source in each
+// family while no node runs, starts the node and filter again, which adopt the chains without a write, their drops holding the
+// forged datagrams, and stops them as asked, which withdraws them. A start whose sets differ from the table's rewrites them in 1
 // transaction.
 func (lab *switchLab) failedBorder(t *testing.T) {
 	lab.restart(t)
 	lab.failMesh(t)
-	var left map[uint8]uint32
-	if err := lab.leaf.Do(func() error {
+	var left []string
+	if err := lab.leaf.Do(func() (err error) {
 		conn, err := nftables.Dial()
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		left, err = nftables.Tables(conn, kernelexit.TableName)
+		left, err = nftables.TableChains(conn, unix.NFPROTO_INET, nftables.Table)
 		return err
 	}); err != nil {
-		t.Fatalf("read the leaf's tables: %v", err)
+		t.Fatalf("read the leaf's chains: %v", err)
 	}
-	if _, held := left[unix.NFPROTO_INET]; !held {
-		t.Fatalf("the stop for the mesh's failure left the table %s in the families %v, want inet", kernelexit.TableName, left)
+	if !slices.Contains(left, kernelexit.EntryChain) {
+		t.Fatalf("the stop for the mesh's failure left the chains %q in the table %s, want the antispoof filter's among them", left, nftables.Table)
 	}
 	forged := map[int]netip.Addr{4: netip.MustParseAddr("192.0.2.77"), 6: netip.MustParseAddr("3fff::77")}
 	if err := lab.far.Do(func() error {
@@ -1484,24 +1510,24 @@ func TestTUNKillSwitchHoldsInModeThree(t *testing.T) {
 			if state == switchCrashed {
 				return
 			}
-			var tables map[uint8]uint32
+			var chains []string
 			if err := lab.leaf.Do(func() error {
 				conn, err := nftables.Dial()
 				if err != nil {
 					return err
 				}
 				defer conn.Close()
-				tables, err = nftables.Tables(conn, kernel.FallbackTable)
+				chains, err = nftables.TableChains(conn, unix.NFPROTO_INET, nftables.Table)
 				return err
 			}); err != nil {
-				t.Fatalf("read the leaf's tables: %v", err)
+				t.Fatalf("read the leaf's chains: %v", err)
 			}
-			if len(tables) > 0 {
-				t.Errorf("under fallback = \"uplink\" the leaf holds the table %s in the families %v", kernel.FallbackTable, tables)
+			if slices.Contains(chains, "fallback") || slices.Contains(chains, "output") {
+				t.Errorf("under fallback = \"uplink\" the leaf holds the chains %q in the table %s", chains, nftables.Table)
 			}
 		})
 	}
-	t.Run("the antispoof filter's table the stop for the mesh's failure leaves", lab.failedBorder)
+	t.Run("the antispoof filter's chains the stop for the mesh's failure leaves", lab.failedBorder)
 }
 
 // a leaf in mode 2 with fallback = "none" under NAT at output, in each state: a packet the host addressed to its own uplink address, translated

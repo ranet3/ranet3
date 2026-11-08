@@ -49,7 +49,7 @@ import (
 //     the mesh holds no default, where the filter's drop alone would leave it
 //     waiting
 //
-// While the table ranet3_fallback does not hold (exit.unheld) it leaves 5405
+// While the kill switch does not hold (exit.unheld) it leaves 5405
 // and 5435 out, so the host's own unmarked lookups from the uplink's addresses
 // and networks meet 5440, 5445 and 5450 rather than main, but for a route of
 // main longer than /0, which 5410 still takes.

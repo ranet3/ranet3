@@ -27,7 +27,7 @@ import (
 // rootWait bounds a wait for a datagram the kernel delivers on loopback at once
 const rootWait = 2 * time.Second
 
-// filterSets is named sets of each key the switch's table writes, an ifname
+// filterSets is named sets of each key the switch writes, an ifname
 // and an address of each family, in table, with their elements
 func filterSets(table string) ([]Set, map[string][]Interval) {
 	sets := []Set{
@@ -179,10 +179,10 @@ func TestNftablesSetElementsReadBackAndWakeOnAnothersChange(t *testing.T) {
 	}
 	enterThrowawayNamespace(t)
 	conn := dial(t)
-	const table = "owned"
+	const table = Table
 	sets, elements := filterSets(table)
 	contents := Contents{Sets: sets, Elements: elements}
-	monitor, err := OpenMonitor(conn, Scope{Name: table, Families: []uint8{unix.NFPROTO_INET}})
+	monitor, err := OpenMonitor(conn, contents.Scope())
 	if err != nil {
 		t.Fatal(err)
 	}

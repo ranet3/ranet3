@@ -36,21 +36,21 @@ type fakeBackend struct {
 	// failApply makes a host that will not take the rules, which is the
 	// condition an exit has to refuse to advertise over.
 	failApply bool
-	// failWithdraw makes a host that will not let the tables go, which a stop tries again rather than records as done
+	// failWithdraw makes a host that will not let its chains go, which a stop tries again rather than records as done
 	failWithdraw bool
 	// flows is added to each counted rule's counter on every readback, so a
 	// test can tell a rule the pass rewrote from one it left alone.
 	flows uint64
-	// changed stands for another writer's changes to the tables and missed
+	// changed stands for another writer's changes to its chains and missed
 	// for notifications lost, nil for none
 	changed, missed chan struct{}
 	// failRules makes a host whose rules cannot be listed, and failReadback one
 	// whose rules cannot be listed right after an apply, which readback is due
 	// for
 	failRules, failReadback, readback bool
-	// faults is how a family's table or chain differs from what Apply writes.
+	// faults is how a family's chains or objects differ from what Apply writes.
 	// An apply clears it unless stuck holds it, or remake names the family and
-	// the apply does not delete its table first.
+	// the apply does not delete the stale objects first.
 	faults map[uint8]string
 	remake map[uint8]bool
 	stuck  bool
@@ -128,17 +128,17 @@ func (f *fakeBackend) holding() map[uint8]chainReadback {
 	return out
 }
 
-// Apply stores the rules grouped by family, as the nftables backend does: each
-// family is a table of its own, written and read back one at a time. A fake
-// that kept the order it was handed would hide a desired list ordered any other
-// way, which never compares equal to its own readback. It logs remake and the
-// families for an apply that deletes tables first.
-func (f *fakeBackend) Apply(rules []Rule, remake []uint8) error {
+// Apply stores the rules grouped by family, as the nftables backend reads them
+// back: each rule placed in its family. A fake that kept the order it was
+// handed would hide a desired list ordered any other way, which never compares
+// equal to its own readback. It logs remake for an apply that deletes stale
+// objects first.
+func (f *fakeBackend) Apply(rules []Rule, remake bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	entry := "apply"
-	if len(remake) != 0 {
-		entry = fmt.Sprint("remake ", remake)
+	if remake {
+		entry = "remake"
 	}
 	f.log = append(f.log, entry)
 	if f.failApply {
@@ -147,7 +147,7 @@ func (f *fakeBackend) Apply(rules []Rule, remake []uint8) error {
 	f.applied++
 	f.readback = true
 	for family := range f.faults {
-		if !f.stuck && (!f.remake[family] || slices.Contains(remake, family)) {
+		if !f.stuck && (!f.remake[family] || remake) {
 			delete(f.faults, family)
 		}
 	}
@@ -799,12 +799,13 @@ func TestUnreadChainsHoldBothFamiliesNotReady(t *testing.T) {
 	}
 }
 
-// Another writer's rule at the head of a family's chain, which a host refusing
-// the rewrite leaves there, holds that family not ready and its prefixes
-// withheld although every rule the translator wrote still reads back, since
-// the chain no longer does to a packet what was written. The pass that
-// rewrites the chain makes the family ready again, and the other family,
-// whose chain reads back as written, stays ready throughout.
+// Another writer's rule the read of one family alone finds at the head of the
+// chain, which a host refusing the rewrite leaves there, holds that family not
+// ready and its prefixes withheld although every rule the translator wrote
+// still reads back, since the chain no longer does to a packet what was
+// written. The pass that rewrites the chain makes the family ready again, and
+// the other family, whose read finds the chain as written, stays ready
+// throughout.
 func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
 	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
 	tr, be := readyLog(t, cfg, events.New())
@@ -823,11 +824,11 @@ func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
 		t.Fatalf("the host holds %q, want another writer's rule ahead of every rule the translator wrote, %q", got, written)
 	}
 	if stats := tr.lastPass(); stats.Ready4 || !stats.Ready6 || stats.Unready != "its chains read back other than they were written" {
-		t.Errorf("with another writer's rule in the ip chain the pass reports ready %v and %v with the reason %q, want IPv4 alone not ready for its chain",
+		t.Errorf("with another writer's rule in the IPv4 read the pass reports ready %v and %v with the reason %q, want IPv4 alone not ready for its chain",
 			stats.Ready4, stats.Ready6, stats.Unready)
 	}
 	if got, want := tr.Announce(), plain(prefixes(t, "::/0")); !slices.Equal(got, want) {
-		t.Errorf("with another writer's rule in the ip chain the translator announces %v, want %v", got, want)
+		t.Errorf("with another writer's rule in the IPv4 read the translator announces %v, want %v", got, want)
 	}
 	be.mu.Lock()
 	be.failApply = false
@@ -855,27 +856,27 @@ func TestAnotherWritersRuleInAChainHoldsItsFamilyNotReady(t *testing.T) {
 	}
 }
 
-// A family's table set dormant, or its chain made again where nf_tables will
-// not change it in place, makes the pass rewrite it, deleting that family's
-// table first in the second case, after which both families read ready. A
-// setting the rewrite cannot put back holds that family alone not ready,
-// named, and its prefixes withheld.
-func TestTranslatorRewritesATableOrChainReadingBackOtherThanWritten(t *testing.T) {
+// A family's timeout object deleted, or its set made again where nf_tables
+// will not change it in place, makes the pass rewrite it, deleting the stale
+// set first in the second case, after which both families read ready. A fault
+// of one family's the rewrite cannot put back holds that family alone not
+// ready, named, and its prefixes withheld.
+func TestTranslatorRewritesAnObjectReadingBackOtherThanWritten(t *testing.T) {
 	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0", "::/0")}
 	be := &fakeBackend{}
 	tr := translator(t, cfg, Runtime{Interface: "ranet0", Steered: true, Forwarding: func() (bool, bool) { return true, true }}, be)
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	const dormant = "its table carries flags 0x1, where none are written and 0x1 is dormant"
+	const missing = "its ct timeout translated-udp6 is missing"
 	for _, change := range []struct {
 		name   string
 		faults map[uint8]string
 		remake map[uint8]bool
 		pass   []string
 	}{
-		{"an ip6 table set dormant", map[uint8]string{egress.FamilyIPv6: dormant}, nil, []string{"rules", "apply", "rules"}},
-		{"the ip chain made again at another priority", map[uint8]string{egress.FamilyIPv4: "its chain reads back at priority 0"}, map[uint8]bool{egress.FamilyIPv4: true}, []string{"rules", fmt.Sprint("remake ", []uint8{egress.FamilyIPv4}), "rules"}},
+		{"an ip6 timeout object deleted", map[uint8]string{egress.FamilyIPv6: missing}, nil, []string{"rules", "apply", "rules"}},
+		{"the ip set made again under another share", map[uint8]string{egress.FamilyIPv4: `its set flows4 reads back with comment "limit 2"`}, map[uint8]bool{egress.FamilyIPv4: true}, []string{"rules", "remake", "rules"}},
 	} {
 		be.mu.Lock()
 		be.faults, be.remake, be.log = change.faults, change.remake, nil
@@ -888,16 +889,16 @@ func TestTranslatorRewritesATableOrChainReadingBackOtherThanWritten(t *testing.T
 		}
 	}
 	be.mu.Lock()
-	be.faults, be.stuck = map[uint8]string{egress.FamilyIPv6: dormant}, true
+	be.faults, be.stuck = map[uint8]string{egress.FamilyIPv6: missing}, true
 	be.mu.Unlock()
 	if err := tr.reconcile(); err != nil {
 		t.Fatal(err)
 	}
-	if stats := tr.lastPass(); !stats.Ready4 || stats.Ready6 || stats.Unready != dormant {
-		t.Errorf("an ip6 table the rewrite leaves dormant reads ready %v and %v, unready %q", stats.Ready4, stats.Ready6, stats.Unready)
+	if stats := tr.lastPass(); !stats.Ready4 || stats.Ready6 || stats.Unready != missing {
+		t.Errorf("an ip6 object the rewrite leaves missing reads ready %v and %v, unready %q", stats.Ready4, stats.Ready6, stats.Unready)
 	}
 	if got, want := tr.Announce(), plain(prefixes(t, "0.0.0.0/0")); !slices.Equal(got, want) {
-		t.Errorf("with the ip6 table left dormant the translator announces %v, want %v", got, want)
+		t.Errorf("with the ip6 object left missing the translator announces %v, want %v", got, want)
 	}
 }
 
@@ -934,7 +935,7 @@ func TestShutdownRetractsBeforeItWithdraws(t *testing.T) {
 		t.Errorf("withdrew %d times, want once", be.withdrawn)
 	}
 	if withdrawnWhenRetracted != 0 {
-		t.Errorf("the tables were already down when the advertisement was retracted, after %d withdrawals", withdrawnWhenRetracted)
+		t.Errorf("its chains were already down when the advertisement was retracted, after %d withdrawals", withdrawnWhenRetracted)
 	}
 }
 

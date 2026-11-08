@@ -427,10 +427,14 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 				run.timeouts = unix.ByteSliceToString(fields[unix.NFTA_OBJREF_IMM_NAME])
 			case "reject":
 				// the answer goes back to the source, and the packet is dropped
-				if kind := be32(t, fields[unix.NFTA_REJECT_TYPE]); kind != unix.NFT_REJECT_ICMP_UNREACH || len(fields[unix.NFTA_REJECT_ICMP_CODE]) != 1 {
-					t.Fatalf("reject of type %d with a code of %d bytes, where the interpreter models a destination unreachable", kind, len(fields[unix.NFTA_REJECT_ICMP_CODE]))
+				kind, code := be32(t, fields[unix.NFTA_REJECT_TYPE]), fields[unix.NFTA_REJECT_ICMP_CODE]
+				if kind != unix.NFT_REJECT_ICMP_UNREACH && kind != unix.NFT_REJECT_ICMPX_UNREACH || len(code) != 1 {
+					t.Fatalf("reject of type %d with a code of %d bytes, where the interpreter models a destination unreachable", kind, len(code))
 				}
-				run.code, run.rejected = nftables.Drop, fields[unix.NFTA_REJECT_ICMP_CODE][0]
+				run.code, run.rejected = nftables.Drop, code[0]
+				if kind == unix.NFT_REJECT_ICMPX_UNREACH {
+					run.rejected = icmpxCode(t, packet.nfproto, code[0])
+				}
 				return run, true
 			default:
 				t.Fatalf("the rule holds a %q expression, which the interpreter does not model", name)
@@ -438,6 +442,18 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 		}
 	}
 	return undecided()
+}
+
+// icmpxCode is the code of the destination unreachable the kernel answers an
+// ICMPX code with in the family nfproto, as nft_reject.c's icmp_code_v4 and
+// icmp_code_v6 give it
+func icmpxCode(t testing.TB, nfproto, code uint8) uint8 {
+	t.Helper()
+	codes := map[uint8][]uint8{unix.NFPROTO_IPV4: {0, 3, 1, 13}, unix.NFPROTO_IPV6: {0, 4, 3, 1}}[nfproto]
+	if int(code) >= len(codes) {
+		t.Fatalf("reject of ICMPX code %d in family %d, where the interpreter models codes 0 to 3 in IPv4 and IPv6", code, nfproto)
+	}
+	return codes[code]
 }
 
 // modeled is the attributes the interpreter reads of each expression. Any
@@ -745,7 +761,7 @@ func TestBorderChainDropsWhatTheModelDrops(t *testing.T) {
 			ht.Fatalf("drew exemptions Validate refuses: %v", err)
 		}
 		all, sets, _ := newBorderFilter(&cfg, egress.BorderRuntime{Tun: "ranet3", Inside: inside, Sets: drawn.borderSets}, &fakeBorder{}).desired()
-		requests, err := borderBatch(all, sets, false)
+		requests, err := borderBatch(all, sets, nftables.Contents{}, nil)
 		refused := slices.ContainsFunc(inside, func(name string) bool { return len(name) >= unix.IFNAMSIZ })
 		if refused != (err != nil) {
 			ht.Fatalf("the chain over inside %q encoded with %v, want refused %v", inside, err, refused)
@@ -893,7 +909,7 @@ func TestEntryChainReturnsWhatTheModelReturns(t *testing.T) {
 			cfg = &egress.Border{Overlay: []schema.Prefix{schema.MustPrefix("198.18.0.0/15"), schema.MustPrefix("3fff::/20")}}
 		}
 		all, sets, _ := newBorderFilter(cfg, egress.BorderRuntime{Tun: tun, Inside: []string{tun, "lo"}, Sets: drawn.borderSets}, &fakeBorder{}).desired()
-		requests, err := borderBatch(all, sets, false)
+		requests, err := borderBatch(all, sets, nftables.Contents{}, nil)
 		if err != nil {
 			ht.Fatalf("encode the table: %v", err)
 		}

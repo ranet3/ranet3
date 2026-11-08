@@ -181,7 +181,7 @@ func policyRule(rule kernel.DumpedRule) control.PolicyRule {
 	return policy
 }
 
-// borderTable is the antispoof filter's table as the wire carries it
+// borderTable is the antispoof filter's chains and sets as the wire carries them
 func borderTable(debug egress.BorderDebug) *control.BorderTable {
 	table := &control.BorderTable{
 		Where: debug.Where, Ready: debug.Ready, Unready: debug.Unready, Err: debug.Err,

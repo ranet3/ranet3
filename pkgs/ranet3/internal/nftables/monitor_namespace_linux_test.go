@@ -50,8 +50,7 @@ func TestMonitorWakesOnceForATransactionAfterAnOverflowDrains(t *testing.T) {
 	}
 	enterThrowawayNamespace(t)
 	owner, another := dial(t), dial(t)
-	const table = "owned"
-	monitor, err := openMonitor(owner, Scope{Name: table, Families: []uint8{unix.NFPROTO_INET}})
+	monitor, err := openMonitor(owner, Scope{Sets: []string{keysSet}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +102,7 @@ func TestMonitorWakesOnceForATransactionAfterAnOverflowDrains(t *testing.T) {
 		return nil
 	})
 
-	if err := another.Batch(keysTable(t, table, wholeKeys)); err != nil {
+	if err := another.Batch(keysTable(t, Table, wholeKeys)); err != nil {
 		t.Fatalf("commit another writer's transaction to the scope: %v", err)
 	}
 	wakes := 0
@@ -127,11 +126,14 @@ count:
 	t.Logf("the kernel dropped a notification after %d transactions of %d keys", transactions, floodKeys)
 }
 
-// keysTable is one transaction that makes table in the inet family with a set
-// of count IPv6 addresses
+// keysSet is the set keysTable makes, the one set of the monitor's scope
+const keysSet = "addresses"
+
+// keysTable is one transaction that makes table in the inet family with the
+// set keysSet of count IPv6 addresses
 func keysTable(t *testing.T, table string, count int) []Request {
 	t.Helper()
-	set := Set{Table: table, Name: "addresses", ID: 1, KeyType: TypeIPv6Addr, KeyLen: 16}
+	set := Set{Table: table, Name: keysSet, ID: 1, KeyType: TypeIPv6Addr, KeyLen: 16}
 	made, err := set.Create(unix.NFPROTO_INET)
 	if err != nil {
 		t.Fatal(err)

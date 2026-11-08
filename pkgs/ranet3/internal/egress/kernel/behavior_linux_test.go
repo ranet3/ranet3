@@ -6,10 +6,13 @@
 package kernel_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
+	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,7 +25,9 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/egress/egresstest"
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
+	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // noTranslationPerEndpoint is why the kernel exit neither filters by address
@@ -36,8 +41,9 @@ const noTranslationPerEndpoint = "an external endpoint can name several leaves a
 // under a class that translates, holding each source to the share of flows
 // its capability names, the default or another, with no total of its own
 // beside conntrack's table
-// its stop leaves no table of its name in either family
-// another writer's deletion of its tables is the change it is held to notice
+// its stop leaves no table of its name
+// another writer's deletion of its table is the change it is held to notice
+// the second owner of its table is the antispoof filter, and the reload a host firewall's flush of the ruleset
 // another writer's masquerade is a nat chain at srcnat made after the exit's, or one below the exit's
 // the idle timers are each flow's conntrack entry as the namespace lists it
 func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
@@ -64,6 +70,8 @@ func TestKernelExitPassesTheExitBehaviorSuite(t *testing.T) {
 		New:        newKernelExit,
 		Holds:      kernelExitTables,
 		Remove:     deleteKernelExitTables,
+		Beside:     besideFilter,
+		Reload:     reloadFirewall,
 		Masquerade: masqueradeAsAnotherWriter,
 		Flows:      conntrackFlows,
 	})
@@ -237,8 +245,8 @@ func newKernelExit(t testing.TB, host egresstest.Host, cfg egress.Egress, hooks 
 	return exit
 }
 
-// kernelExitTables names each table of the kernel exit's name in the exit's
-// namespace, of either family it translates
+// kernelExitTables names the table the kernel exit writes in the exit's
+// namespace and each chain in it, which no other writer there adds to
 func kernelExitTables(host egresstest.Host) ([]string, error) {
 	var held []string
 	err := host.Do(func() error {
@@ -247,19 +255,99 @@ func kernelExitTables(host egresstest.Host) ([]string, error) {
 			return err
 		}
 		defer conn.Close()
-		tables, err := nftables.Tables(conn, kernelexit.TableName)
+		tables, err := nftables.Tables(conn, nftables.Table)
 		if err != nil {
 			return err
 		}
-		for family, name := range map[uint8]string{unix.NFPROTO_IPV4: "ip", unix.NFPROTO_IPV6: "ip6"} {
-			if _, ok := tables[family]; ok {
-				held = append(held, "table "+name+" "+kernelexit.TableName)
-			}
+		if _, ok := tables[unix.NFPROTO_INET]; !ok {
+			return nil
 		}
-		return nil
+		held = append(held, "table inet "+nftables.Table)
+		chains, err := nftables.TableChains(conn, unix.NFPROTO_INET, nftables.Table)
+		for _, chain := range chains {
+			held = append(held, "chain "+chain)
+		}
+		return err
 	})
 	slices.Sort(held)
 	return held, err
+}
+
+// filterStopWait bounds the wait for the antispoof filter's Run to return
+const filterStopWait = 30 * time.Second
+
+// besideFilter starts the antispoof filter over the network's overlay in the
+// exit's namespace, as a node that carries cap.egress runs it beside the
+// kernel exit, and stops it at the end of t, which withdraws its chains
+func besideFilter(t *testing.T, network egresstest.Network) egresstest.Owner {
+	t.Helper()
+	host := network.Exit()
+	bus := events.New()
+	cfg := &egress.Border{Overlay: []schema.Prefix{schema.PrefixFrom(network.Family(false).Overlay), schema.PrefixFrom(network.Family(true).Overlay)}}
+	var f *kernelexit.BorderFilter
+	if err := host.Do(func() (err error) {
+		f, err = kernelexit.NewBorderFilter(cfg, egress.BorderRuntime{Tun: host.TUN, Inside: []string{host.TUN, "lo"}, Events: bus})
+		return err
+	}); err != nil {
+		t.Fatalf("start the antispoof filter: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- f.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("the antispoof filter's Run returned %v", err)
+			}
+		case <-time.After(filterStopWait):
+			t.Errorf("the antispoof filter's Run had not returned %s after its context ended", filterStopWait)
+		}
+	})
+	unready := func() int {
+		return len(bus.Recorded(func(kind, _ string, attrs []slog.Attr) bool {
+			return kind == "antispoof.ready" && slices.ContainsFunc(attrs, func(a slog.Attr) bool { return a.Key == "ready" && !a.Value.Bool() })
+		}, 0))
+	}
+	return egresstest.Owner{Ready: func() bool { return f.Stats().Ready }, Unready: unready}
+}
+
+// hostFirewall is a host firewall's ruleset as its restart writes it, in one
+// transaction that flushes every table first
+const hostFirewall = `flush ruleset
+table inet host-firewall {
+	chain input-allow {
+		tcp dport 22 accept
+		icmp type echo-request accept
+		icmpv6 type { nd-neighbor-solicit, nd-router-advert, nd-neighbor-advert } accept
+	}
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iifname "lo" accept
+		ct state vmap { invalid : drop, established : accept, related : accept, new : jump input-allow, untracked : jump input-allow }
+	}
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+	}
+}
+`
+
+// reloadFirewall writes hostFirewall with nft in the exit's namespace, as
+// another writer
+func reloadFirewall(host egresstest.Host) error {
+	nft, err := exec.LookPath("nft")
+	if err != nil {
+		return fmt.Errorf("another writer's reload is made through nft, which is not on the path: %w", err)
+	}
+	return host.Do(func() error {
+		cmd := exec.Command(nft, "-f", "/dev/stdin")
+		cmd.Stdin = strings.NewReader(hostFirewall)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("nft -f: %w: %s", err, out)
+		}
+		return nil
+	})
 }
 
 // the socket is not the exit's, so the exit reads the deletion as another
@@ -271,9 +359,6 @@ func deleteKernelExitTables(host egresstest.Host) error {
 			return err
 		}
 		defer conn.Close()
-		return conn.Batch([]nftables.Request{
-			nftables.DeleteTable(unix.NFPROTO_IPV4, kernelexit.TableName),
-			nftables.DeleteTable(unix.NFPROTO_IPV6, kernelexit.TableName),
-		})
+		return conn.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, nftables.Table)})
 	})
 }

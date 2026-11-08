@@ -15,7 +15,7 @@ import (
 )
 
 // PathDebugRules is the host's policy rules beside the ones the reconciler
-// derives, and the antispoof filter's table with its counters
+// derives, and the antispoof filter's chains and sets with their counters
 const PathDebugRules = PathDebug + "rules"
 
 func init() {
@@ -28,7 +28,7 @@ type RulesSource interface {
 }
 
 // RulesInfo is every policy rule the kernel holds, the rules the reconciler
-// derives that it does not, and the antispoof filter's table
+// derives that it does not, and the antispoof filter's chains and sets
 type RulesInfo struct {
 	Policy []PolicyRule `json:"policy"`
 	// PolicyErr says why Policy is empty: a platform with no policy rules, or
@@ -50,8 +50,8 @@ type RulesInfo struct {
 }
 
 // FallbackTable is the kill switch as a debug read finds it now, beside the
-// state the reconciler's last pass gave it: the table ranet3_fallback with its
-// chain's hook and priority on Linux, and the rejects on lo0 on macOS, which
+// state the reconciler's last pass gave it: its chains in the table ranet3 with
+// their hook and priority on Linux, and the rejects on lo0 on macOS, which
 // have neither
 type FallbackTable struct {
 	Where    string `json:"where"`
@@ -151,8 +151,8 @@ type PolicyRule struct {
 	Wanted bool `json:"wanted"`
 }
 
-// BorderTable is the antispoof filter's table as a debug read finds it: its
-// chains and its sets
+// BorderTable is the antispoof filter as a debug read finds it: its chains and
+// its sets
 type BorderTable struct {
 	Where string `json:"where,omitempty"`
 	// UnenforcedOn names the platform where overlay is written and no filter
@@ -213,11 +213,11 @@ type BorderChainRule struct {
 	Bytes   uint64 `json:"bytes"`
 }
 
-// Rules reads the policy rules and the antispoof filter's table
+// Rules reads the policy rules and the antispoof filter's chains and sets
 func (c *Client) Rules() (RulesInfo, error) { return read[RulesInfo](c, PathDebugRules) }
 
 // RenderRules writes the policy rules of each family as a table, the wanted
-// rules the kernel does not hold, then the antispoof filter's table with the
+// rules the kernel does not hold, then the antispoof filter's chains with the
 // packets each drop counted
 func RenderRules(w io.Writer, info RulesInfo) {
 	if info.PolicyErr != "" {
@@ -293,7 +293,7 @@ func RenderRules(w io.Writer, info RulesInfo) {
 	}
 }
 
-// renderFallback writes the switch: its table's lines with the drop's count,
+// renderFallback writes the switch: its chains' lines with the drop's count,
 // then each set's elements, or on macOS each reject
 func renderFallback(w io.Writer, table *FallbackTable) {
 	state := table.State
@@ -301,7 +301,7 @@ func renderFallback(w io.Writer, table *FallbackTable) {
 		state += ", " + table.Reason
 	}
 	if table.Hook != "" {
-		fmt.Fprintf(w, "\nFallback table, %s, %s at priority %d, %s\n", table.Where, table.Hook, table.Priority, state)
+		fmt.Fprintf(w, "\nFallback, %s, %s at priority %d, %s\n", table.Where, table.Hook, table.Priority, state)
 	} else {
 		fmt.Fprintf(w, "\nFallback, %s, %s\n", table.Where, state)
 	}
@@ -336,7 +336,7 @@ func renderFallback(w io.Writer, table *FallbackTable) {
 	indented(w, func(w io.Writer) { pairs(w, rows) })
 }
 
-// renderBorder writes the antispoof filter's table: each chain with the
+// renderBorder writes the antispoof filter: each chain with the
 // packets each drop counted, then each set's elements, then on pf the
 // reference and the main ruleset's call with every reference pf lists, or one
 // line where no filter runs for the overlay

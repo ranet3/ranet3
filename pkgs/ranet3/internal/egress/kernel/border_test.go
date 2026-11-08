@@ -800,11 +800,11 @@ func TestBorderNeedsTheDevicesInsideTheMesh(t *testing.T) {
 
 // A node that asked for the filter does not start without it: the first pass
 // runs before NewBorderFilter returns, and a chain that will not install or
-// does not read back as written refuses the start, which withdraws a table the
-// pass made and leaves any other: one it found, which the log names as left,
-// and whatever is there where the first read failed, which it names nothing of.
-// The log names a table withdrawn only where one went, which a first write
-// that failed on a host with none leaves out.
+// does not read back as written refuses the start, which withdraws the chains
+// the pass made and leaves any other: those it found, which the log names as
+// left, and whatever is there where the first read failed, which it names
+// nothing of. The log names the filter withdrawn only where its chains went,
+// which a first write that failed on a host with none leaves out.
 func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 	for _, one := range []struct {
 		name      string
@@ -816,7 +816,7 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 	}{
 		{"a chain the host will not take", &fakeBorder{failApply: true}, "could not be installed in nftables table inet ranet3 chains antispoof and mesh_entry: install rules: no", 1, false, false},
 		{"a chain that reads back otherwise", &fakeBorder{garble: true}, "is not ready, since its chains read back other than they were written", 1, false, true},
-		{"a found table the host will not let be rewritten", &fakeBorder{failApply: true, fault: "its table holds no chain"}, "install rules: no", 0, true, false},
+		{"found chains the host will not let be rewritten", &fakeBorder{failApply: true, fault: "its chain antispoof is missing"}, "install rules: no", 0, true, false},
 		{"a table the first read cannot list", &fakeBorder{failRules: true}, "list rules: no", 0, false, false},
 	} {
 		t.Run(one.name, func(t *testing.T) {
@@ -833,11 +833,11 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 			if one.be.withdrawn != one.withdrawn {
 				t.Errorf("the refused start withdrew %d times, want %d", one.be.withdrawn, one.withdrawn)
 			}
-			if named := strings.Contains(lines.String(), "antispoof filter is leaving the table it found"); named != one.named {
-				t.Errorf("the refused start named a table it found as left %t, want %t:\n%s", named, one.named, lines.String())
+			if named := strings.Contains(lines.String(), "antispoof filter is leaving the chains it found"); named != one.named {
+				t.Errorf("the refused start named the chains it found as left %t, want %t:\n%s", named, one.named, lines.String())
 			}
 			if gone := strings.Contains(lines.String(), "antispoof filter withdrawn"); gone != one.gone {
-				t.Errorf("the refused start named a table withdrawn %t, want %t:\n%s", gone, one.gone, lines.String())
+				t.Errorf("the refused start named the filter withdrawn %t, want %t:\n%s", gone, one.gone, lines.String())
 			}
 			if moves := readyMoves(bus); slices.Contains(moves, "true") {
 				t.Errorf("the refused start reported the antispoof filter ready: %q", moves)
@@ -982,7 +982,7 @@ func TestBorderDropsAfterARewriteCountFromZero(t *testing.T) {
 	}
 }
 
-// Another writer changing the filter's table wakes it, and it reports the
+// Another writer changing the filter's chains wakes it, and it reports the
 // border not ready before the pass that puts the chain back and ready again
 // after it, with no sweep due
 func TestAnotherWritersChangeTakesTheBorderDownUntilThePassRestoresIt(t *testing.T) {

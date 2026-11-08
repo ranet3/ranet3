@@ -23,7 +23,7 @@ func encodedTable(t testing.TB, cfg *egress.Border, sets egress.BorderSets) ([]B
 	t.Helper()
 	rt := egress.BorderRuntime{Tun: "ranet3", Inside: []string{"ranet3", "lo"}, Sets: func(*egress.Border) egress.BorderSets { return sets }}
 	rules, written, _ := newBorderFilter(cfg, rt, &fakeBorder{}).desired()
-	requests, err := borderBatch(rules, written, false)
+	requests, err := borderBatch(rules, written, nftables.Contents{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			t.Errorf("%s went to family %d, want inet", desired[i], request.Body[0])
 		}
 		table, chain, spec, _, _, _ := nftables.DecodeRule(nftables.Message{Data: request.Body})
-		if table != TableName || chain != desired[i].Chain() || spec != desired[i].String() {
+		if table != nftables.Table || chain != desired[i].Chain() || spec != desired[i].String() {
 			t.Errorf("%s was written as %q into %s/%s", desired[i], spec, table, chain)
 		}
 	}
@@ -127,24 +127,48 @@ func TestBorderRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 // postrouting at srcnat + 10, after every source translation, both in the
 // inet table of this tool's name with its six interval sets, and the batch
 // empties each chain by naming no handle before writing it. A batch that
-// remakes the table deletes it first, in the same transaction.
+// remakes a stale chain and a stale set deletes the chain before it creates it
+// again and the set after both chains are flushed, in the same transaction,
+// and never deletes the table.
 func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
-	requests, err := borderBatch(rules, sets, false)
+	requests, err := borderBatch(rules, sets, nftables.Contents{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remade, err := borderBatch(rules, sets, true)
+	stale := nftables.Contents{Chains: []nftables.Chain{prerouting}, Sets: borderNamed[:1]}
+	remade, err := borderBatch(rules, sets, stale, []string{BorderChain, EntryChain})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(remade) != len(requests)+1 || remade[0].Kind != nftables.Command(unix.NFT_MSG_DELTABLE) {
-		t.Fatalf("a remaking batch of %d requests starts with kind %d, want the table's deletion ahead of the %d others", len(remade), remade[0].Kind, len(requests))
+	if len(remade) != len(requests)+2 {
+		t.Fatalf("a remaking batch of %d requests, want the %d others and two deletions", len(remade), len(requests))
 	}
-	for kind, value := range (nftables.Message{Data: remade[0].Body}).Attributes() {
-		if kind == unix.NFTA_TABLE_NAME && unix.ByteSliceToString(value) != TableName {
-			t.Errorf("a remaking batch deletes table %s", value)
+	at := func(kind int, name string) int {
+		return slices.IndexFunc(remade, func(r nftables.Request) bool {
+			if r.Kind != nftables.Command(kind) {
+				return false
+			}
+			for attr, value := range (nftables.Message{Data: r.Body}).Attributes() {
+				if (attr == unix.NFTA_CHAIN_NAME || attr == unix.NFTA_SET_NAME) && unix.ByteSliceToString(value) == name {
+					return true
+				}
+			}
+			return false
+		})
+	}
+	chainDeleted, chainMade, setDeleted, setMade := at(unix.NFT_MSG_DELCHAIN, BorderChain), at(unix.NFT_MSG_NEWCHAIN, BorderChain), at(unix.NFT_MSG_DELSET, stale.Sets[0].Name), at(unix.NFT_MSG_NEWSET, stale.Sets[0].Name)
+	lastFlush := -1
+	for i, request := range remade {
+		if request.Kind == nftables.Command(unix.NFT_MSG_DELRULE) {
+			lastFlush = i
 		}
+		if request.Kind == nftables.Command(unix.NFT_MSG_DELTABLE) {
+			t.Errorf("a remaking batch deletes the table at %d", i)
+		}
+	}
+	if chainDeleted < 0 || chainDeleted > chainMade || setDeleted < lastFlush || setDeleted > setMade {
+		t.Errorf("the remaking batch deletes the chain at %d and makes it at %d, flushes last at %d, deletes the set at %d and makes it at %d", chainDeleted, chainMade, lastFlush, setDeleted, setMade)
 	}
 	if requests[0].Kind != nftables.Command(unix.NFT_MSG_NEWTABLE) {
 		t.Errorf("the batch's first request is kind %d, want the table", requests[0].Kind)
@@ -158,7 +182,7 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 	for _, request := range requests {
 		if request.Kind == nftables.Command(unix.NFT_MSG_NEWSET) {
 			set := nftables.DecodeSet(nftables.Message{Data: request.Body})
-			if set.Flags&unix.NFT_SET_INTERVAL == 0 || set.Table != TableName {
+			if set.Flags&unix.NFT_SET_INTERVAL == 0 || set.Table != nftables.Table {
 				t.Errorf("set %s is made in %s with flags %#x", set.Name, set.Table, set.Flags)
 			}
 			made = append(made, set.Name)
@@ -174,8 +198,8 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 	}{{BorderChain, unix.NF_INET_PRE_ROUTING, -300}, {EntryChain, unix.NF_INET_POST_ROUTING, 110}} {
 		request := chainRequest(t, requests, want.name)
 		table, chain, kind, hook, priority := nftables.DecodeChain(nftables.Message{Data: request.Body})
-		if table != TableName || kind != "filter" || hook != want.hook || priority != want.priority {
-			t.Errorf("created a %q chain %s/%s at hook %d priority %d, want a filter chain %s/%s at %d priority %d", kind, table, chain, hook, priority, TableName, want.name, want.hook, want.priority)
+		if table != nftables.Table || kind != "filter" || hook != want.hook || priority != want.priority {
+			t.Errorf("created a %q chain %s/%s at hook %d priority %d, want a filter chain %s/%s at %d priority %d", kind, table, chain, hook, priority, nftables.Table, want.name, want.hook, want.priority)
 		}
 		next := requests[slices.IndexFunc(requests, func(r nftables.Request) bool { return slices.Equal(r.Body, request.Body) })+1]
 		if next.Kind != nftables.Command(unix.NFT_MSG_DELRULE) {
@@ -203,7 +227,7 @@ func TestBorderChainFiltersAtPreroutingBeforeConntrack(t *testing.T) {
 // chain held as a base chain is a fault nf_tables will not change in place.
 func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 	rules, sets, _ := newBorderFilter(overlay(t), borderRuntime(nil), &fakeBorder{}).desired()
-	requests, err := borderBatch(rules, sets, false)
+	requests, err := borderBatch(rules, sets, nftables.Contents{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,8 +237,8 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 		}
 	}
 	for _, family := range []uint8{egress.FamilyIPv4, egress.FamilyIPv6} {
-		for _, written := range translatorChains(family, underNone(family)) {
-			if fault, remake := written.Fault(nftables.Message{Data: written.Create(nftFamily(family)).Body}); fault != "" || remake {
+		for _, written := range translatorChains(underNone(family)) {
+			if fault, remake := written.Fault(nftables.Message{Data: written.Create(unix.NFPROTO_INET).Body}); fault != "" || remake {
 				t.Errorf("the translator's %s chain %s reads back with the fault %q, remade %v", egress.FamilyName(family), written.Name, fault, remake)
 			}
 		}
@@ -231,19 +255,19 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 		return nftables.Message{Data: body}
 	}
 	regular := nftables.PutNfgenmsg(nil, unix.NFPROTO_INET)
-	regular = nftables.PutAttrString(regular, unix.NFTA_CHAIN_TABLE, TableName)
+	regular = nftables.PutAttrString(regular, unix.NFTA_CHAIN_TABLE, nftables.Table)
 	regular = nftables.PutAttrString(regular, unix.NFTA_CHAIN_NAME, BorderChain)
 	for name, c := range map[string]struct {
 		message       nftables.Message
 		fault, remake bool
 	}{
-		"as written":          {chain(TableName, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, rawPriority, nftables.Accept), false, false},
-		"of another type":     {chain(TableName, BorderChain, "route", unix.NF_INET_PRE_ROUTING, rawPriority, nftables.Accept), true, true},
-		"at another hook":     {chain(TableName, BorderChain, "filter", unix.NF_INET_FORWARD, rawPriority, nftables.Accept), true, true},
-		"at another priority": {chain(TableName, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, 0, nftables.Accept), true, true},
-		"dropping by default": {chain(TableName, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, rawPriority, nftables.Drop), true, false},
+		"as written":          {chain(nftables.Table, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, rawPriority, nftables.Accept), false, false},
+		"of another type":     {chain(nftables.Table, BorderChain, "route", unix.NF_INET_PRE_ROUTING, rawPriority, nftables.Accept), true, true},
+		"at another hook":     {chain(nftables.Table, BorderChain, "filter", unix.NF_INET_FORWARD, rawPriority, nftables.Accept), true, true},
+		"at another priority": {chain(nftables.Table, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, 0, nftables.Accept), true, true},
+		"dropping by default": {chain(nftables.Table, BorderChain, "filter", unix.NF_INET_PRE_ROUTING, rawPriority, nftables.Drop), true, false},
 		"a regular chain":     {nftables.Message{Data: regular}, true, true},
-		"of another name":     {chain(TableName, "extra", "route", unix.NF_INET_FORWARD, 0, nftables.Drop), false, false},
+		"of another name":     {chain(nftables.Table, "extra", "route", unix.NF_INET_FORWARD, 0, nftables.Drop), false, false},
 		"in another table":    {chain("other", BorderChain, "route", unix.NF_INET_FORWARD, 0, nftables.Drop), false, false},
 	} {
 		fault, remake := prerouting.Fault(c.message)
@@ -252,8 +276,8 @@ func TestBorderChainReadsBackOnlyAsWritten(t *testing.T) {
 		}
 	}
 	none := regularChain("none_192_0_2_0_24")
-	if fault, remake := none.Fault(chain(TableName, none.Name, "filter", unix.NF_INET_FORWARD, 0, nftables.Accept)); fault == "" || !remake {
-		t.Errorf("a class of none's chain held as a base chain reads back with the fault %q, remade %v, want a fault that remakes the table", fault, remake)
+	if fault, remake := none.Fault(chain(nftables.Table, none.Name, "filter", unix.NF_INET_FORWARD, 0, nftables.Accept)); fault == "" || !remake {
+		t.Errorf("a class of none's chain held as a base chain reads back with the fault %q, remade %v, want a fault that remakes the chain", fault, remake)
 	}
 }
 
@@ -332,63 +356,60 @@ func TestBorderExemptionPassesFromTheInterfacesItNames(t *testing.T) {
 	}
 }
 
-// Another writer deleting or adding the filter's inet table, a chain, a rule
-// or a set in it wakes the filter, a table update setting it dormant among
-// them, and its own writes do not
-func TestAnotherWritersChangeToTheBorderWakesIt(t *testing.T) {
+// Another writer's deletion of the table, its setting a flag on it, or its
+// change to a chain, a rule or a set of the filter's wakes the filter, and its
+// own writes do not, nor does the NEWTABLE of flags 0 with which another owner
+// makes the table again. The translator's and the kill switch's chains and
+// sets in the same table wake the filter no more than the translator's ip and
+// ip6 tables of an older instance, and the filter's wake neither of them.
+func TestEachOwnerWakesOnItsOwnNames(t *testing.T) {
 	const own, other = 7, 9
+	tableMessage := func(command int, family uint8, pid uint32) nftables.Message {
+		return nftables.Message{Kind: nftables.Command(command), Pid: pid, Data: nftables.PutAttrString(nftables.PutNfgenmsg(nil, family), unix.NFTA_TABLE_NAME, nftables.Table)}
+	}
+	flagged := func(flags uint32) nftables.Message {
+		m := tableMessage(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, other)
+		m.Data = nftables.PutAttrBE32(m.Data, unix.NFTA_TABLE_FLAGS, flags)
+		return m
+	}
+	named := func(command int, tableKind, nameKind uint16, name string, pid uint32) nftables.Message {
+		body := nftables.PutAttrString(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), tableKind, nftables.Table), nameKind, name)
+		return nftables.Message{Kind: nftables.Command(command), Pid: pid, Data: body}
+	}
+	rule := func(chain string, pid uint32) nftables.Message {
+		return named(unix.NFT_MSG_NEWRULE, unix.NFTA_RULE_TABLE, unix.NFTA_RULE_CHAIN, chain, pid)
+	}
+	set := func(name string, pid uint32) nftables.Message {
+		return named(unix.NFT_MSG_NEWSET, unix.NFTA_SET_TABLE, unix.NFTA_SET_NAME, name, pid)
+	}
 	for name, c := range map[string]struct {
-		command int
-		naming  uint16
-		pid     uint32
-		wakes   bool
+		message             nftables.Message
+		border, translation bool
 	}{
-		"its table deleted":        {unix.NFT_MSG_DELTABLE, unix.NFTA_TABLE_NAME, other, true},
-		"its chain deleted":        {unix.NFT_MSG_DELCHAIN, unix.NFTA_CHAIN_TABLE, other, true},
-		"a rule of it deleted":     {unix.NFT_MSG_DELRULE, unix.NFTA_RULE_TABLE, other, true},
-		"its table set dormant":    {unix.NFT_MSG_NEWTABLE, unix.NFTA_TABLE_NAME, other, true},
-		"a chain added or changed": {unix.NFT_MSG_NEWCHAIN, unix.NFTA_CHAIN_TABLE, other, true},
-		"a rule added":             {unix.NFT_MSG_NEWRULE, unix.NFTA_RULE_TABLE, other, true},
-		"its own flush":            {unix.NFT_MSG_DELRULE, unix.NFTA_RULE_TABLE, own, false},
-		"its own withdrawal":       {unix.NFT_MSG_DELTABLE, unix.NFTA_TABLE_NAME, own, false},
-		"its own table":            {unix.NFT_MSG_NEWTABLE, unix.NFTA_TABLE_NAME, own, false},
-		"its own chain":            {unix.NFT_MSG_NEWCHAIN, unix.NFTA_CHAIN_TABLE, own, false},
-		"its own rule":             {unix.NFT_MSG_NEWRULE, unix.NFTA_RULE_TABLE, own, false},
-		"another writer's set":     {unix.NFT_MSG_NEWSET, unix.NFTA_SET_TABLE, other, true},
+		"the table deleted":                   {tableMessage(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, other), true, true},
+		"the table set dormant":               {flagged(unix.NFT_TABLE_F_DORMANT), true, true},
+		"the table made again":                {flagged(0), false, false},
+		"its own withdrawal":                  {tableMessage(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, own), false, false},
+		"a rule added to the antispoof chain": {rule(BorderChain, other), true, false},
+		"a rule added to the entry chain":     {rule(EntryChain, other), true, false},
+		"its own rule":                        {rule(BorderChain, own), false, false},
+		"an element of a filter's set":        {named(unix.NFT_MSG_NEWSETELEM, unix.NFTA_SET_ELEM_LIST_TABLE, unix.NFTA_SET_ELEM_LIST_SET, "carved4", other), true, false},
+		"a filter's set deleted":              {set("none6", other), true, false},
+		"a rule added to forward":             {rule(LimitChain, other), false, true},
+		"a rule added to IPv6's chain":        {rule(familyChain(egress.FamilyIPv6), other), false, true},
+		"a rule added to postrouting":         {rule(ChainName, other), false, true},
+		"a chain of a class of none":          {named(unix.NFT_MSG_NEWCHAIN, unix.NFTA_CHAIN_TABLE, unix.NFTA_CHAIN_NAME, NoneChain+"192_0_2_0_24", other), false, true},
+		"a translator's set":                  {set(flowsSet+"6", other), false, true},
+		"a rule added to the kill switch":     {rule("fallback", other), false, false},
+		"a kill switch's set":                 {set("lan4", other), false, false},
+		"an older ip table":                   {tableMessage(unix.NFT_MSG_DELTABLE, unix.NFPROTO_IPV4, other), false, false},
+		"an older ip6 table":                  {tableMessage(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_IPV6, other), false, false},
 	} {
-		message := nftables.Message{Kind: nftables.Command(c.command), Pid: c.pid, Data: nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_INET), c.naming, TableName)}
-		if got := borderTables.ChangedByAnother(message, own); got != c.wakes {
-			t.Errorf("%s: woke %v, want %v", name, got, c.wakes)
+		if got := borderScope.ChangedByAnother(c.message, own); got != c.border {
+			t.Errorf("%s: woke the antispoof filter %v, want %v", name, got, c.border)
 		}
-	}
-}
-
-// The translator's ip and ip6 tables share the filter's name, and their
-// churn, the translator's own startup and withdrawal among it, never wakes
-// the filter, nor does a table of the name in any other family
-func TestBorderIgnoresTheTranslatorsTables(t *testing.T) {
-	const own, other = 7, 9
-	for _, family := range []uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6, unix.NFPROTO_BRIDGE, unix.NFPROTO_NETDEV, unix.NFPROTO_ARP} {
-		for _, command := range []int{unix.NFT_MSG_DELTABLE, unix.NFT_MSG_NEWTABLE} {
-			message := nftables.Message{Kind: nftables.Command(command), Pid: other, Data: nftables.PutAttrString(nftables.PutNfgenmsg(nil, family), unix.NFTA_TABLE_NAME, TableName)}
-			if borderTables.ChangedByAnother(message, own) {
-				t.Errorf("a table %s written by command %d in family %d woke the antispoof filter", TableName, command, family)
-			}
-		}
-	}
-}
-
-// Another writer's change to the translator's ip or ip6 table wakes the
-// translator, and its change to the antispoof filter's inet table of the same
-// name does not
-func TestTranslatorIgnoresTheBordersTable(t *testing.T) {
-	const own, other = 7, 9
-	for family, wakes := range map[uint8]bool{unix.NFPROTO_IPV4: true, unix.NFPROTO_IPV6: true, unix.NFPROTO_INET: false} {
-		for _, command := range []int{unix.NFT_MSG_DELTABLE, unix.NFT_MSG_NEWTABLE} {
-			message := nftables.Message{Kind: nftables.Command(command), Pid: other, Data: nftables.PutAttrString(nftables.PutNfgenmsg(nil, family), unix.NFTA_TABLE_NAME, TableName)}
-			if got := translatorTables.ChangedByAnother(message, own); got != wakes {
-				t.Errorf("a table %s written by command %d in family %d: woke the translator %v, want %v", TableName, command, family, got, wakes)
-			}
+		if got := translatorScope.ChangedByAnother(c.message, own); got != c.translation {
+			t.Errorf("%s: woke the translator %v, want %v", name, got, c.translation)
 		}
 	}
 }

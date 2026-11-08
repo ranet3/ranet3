@@ -270,7 +270,7 @@ func TestSteeredDefaultsFollowTheSegmentAsTheReconcilerRuns(t *testing.T) {
 // A reload from mode 2 under fallback = "none" to mode 3, whose fallback is
 // "none" where unwritten, and back applies in the one pass after it: mode 3
 // holds the steered defaults in place of every route that counts, mode 2 the
-// learned routes again, and the rules and the switch's table stay mode 2's
+// learned routes again, and the rules and the switch's chains stay mode 2's
 // throughout
 func TestReloadBetweenModesTwoAndThreeTakesOnePass(t *testing.T) {
 	two := Table{}.WithMode(&ExitMode{Fallback: FallbackNone})
@@ -293,7 +293,7 @@ func TestReloadBetweenModesTwoAndThreeTakesOnePass(t *testing.T) {
 	}
 	rules, switched := fake.heldRules(), fake.fallback
 	if switched == nil {
-		t.Fatal("mode 2 under fallback = \"none\" holds no table ranet3_fallback")
+		t.Fatal("mode 2 under fallback = \"none\" holds no kill switch")
 	}
 	for _, step := range []struct {
 		name  string
@@ -319,7 +319,7 @@ func TestReloadBetweenModesTwoAndThreeTakesOnePass(t *testing.T) {
 			t.Errorf("%s: the rules moved to %v from %v", step.name, slices.Collect(maps.Keys(got)), slices.Collect(maps.Keys(rules)))
 		}
 		if fake.fallback == nil || !reflect.DeepEqual(*fake.fallback, *switched) || fake.fallbackDeletes != 0 {
-			t.Errorf("%s: the switch's table moved to %+v from %+v, deleted %d times", step.name, fake.fallback, switched, fake.fallbackDeletes)
+			t.Errorf("%s: the switch's chains moved to %+v from %+v, deleted %d times", step.name, fake.fallback, switched, fake.fallbackDeletes)
 		}
 	}
 }

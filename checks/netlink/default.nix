@@ -126,14 +126,14 @@ testers.runNixOSTest {
     # the subtests a step of these binaries stands on, which the cover of top-level tests leaves out
     subtests = {
         "egress-tests": ["TestKernelExitPassesTheExitBehaviorSuite/a_share_the_capability_names"],
-        "client-tests": ["TestTUNKillSwitchHoldsInModeThree/the_antispoof_filter's_table_the_stop_for_the_mesh's_failure_leaves"],
+        "client-tests": ["TestTUNKillSwitchHoldsInModeThree/the_antispoof_filter's_chains_the_stop_for_the_mesh's_failure_leaves"],
         "daemon-tests": [
             "TestDaemonStoppedWhileItBuildsStartsNothing/SIGTERM",
             "TestDaemonStoppedWhileItBuildsStartsNothing/SIGINT",
             "TestDaemonForcedOutOfItsBuildByASecondSignal/in_the_build",
             "TestDaemonForcedOutOfItsBuildByASecondSignal/in_the_undo",
-            "TestDaemonEndedInItsBuildLeavesTheTablesItFound/refused_at_the_reconciler",
-            "TestDaemonEndedInItsBuildLeavesTheTablesItFound/stopped_while_it_builds",
+            "TestDaemonEndedInItsBuildLeavesTheChainsItFound/refused_at_the_reconciler",
+            "TestDaemonEndedInItsBuildLeavesTheChainsItFound/stopped_while_it_builds",
         ],
     }
     passed: dict[str, set[str]] = {binary: set() for binary in binaries}

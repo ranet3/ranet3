@@ -209,7 +209,7 @@ const (
 	leftLine     = "kernel is leaving its kill switch after the mesh failed"
 	noneLine     = "kernel found no kill switch to leave after the mesh failed, so the host's traffic leaves by its routes"
 	unlistedLine = "kernel is leaving any kill switch there after the mesh failed, which it could not list"
-	fakeWhere    = `" where="nftables table inet ranet3_fallback"`
+	fakeWhere    = `" where="nftables table inet ranet3 chains fallback and output"`
 )
 
 // logged is slog's text from here to the end of t, read once what writes it has returned

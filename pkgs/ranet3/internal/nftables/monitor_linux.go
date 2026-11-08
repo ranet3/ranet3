@@ -6,28 +6,45 @@
 package nftables
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-// Scope is one table name in a set of nf_tables families, the tables one
-// owner holds and its monitor watches
+// Scope names the objects one owner writes in Table: its chains, those whose
+// name runs past Prefix among them, its named sets and its ct timeout
+// objects. Its monitor watches the chains and the sets, never a timeout
+// object, whose change the owner's next read finds, and Withdraw removes all
+// of them.
 type Scope struct {
-	Name     string
-	Families []uint8
+	Chains   []string
+	Prefix   string
+	Sets     []string
+	Timeouts []string
 }
 
-// Monitor wakes its owner for another writer's change to its scope's tables.
-// A NixOS firewall reload flushes the whole ruleset, which takes every chain
-// an owner wrote with it until its next pass, and a rule another writer adds,
-// or a table it sets dormant, bypasses the chain as surely.
+func (s Scope) chain(name string) bool {
+	return slices.Contains(s.Chains, name) || s.Prefix != "" && len(name) > len(s.Prefix) && strings.HasPrefix(name, s.Prefix)
+}
+
+func (s Scope) set(name string) bool { return slices.Contains(s.Sets, name) }
+
+// Monitor wakes its owner for another writer's change to Table or to its
+// scope. A NixOS firewall reload flushes the whole ruleset, which takes every
+// chain an owner wrote with it until its next pass, and a rule another writer
+// adds, or a table it sets dormant, bypasses the chain as surely. A table
+// message reaches every owner unless it is a NEWTABLE with no flags: a table
+// made with none holds no owner's chain, and one cleared to none bypasses no
+// chain, so the owner that makes the table again first after a flush wakes no
+// other, and a reload wakes each owner once.
 //
 // nf_tables sends a transaction's notifications as one run of datagrams that
 // no other transaction's interleaves and ends the run with NFT_MSG_NEWGEN.
@@ -158,7 +175,7 @@ func (m *Monitor) run() {
 			continue
 		case err != nil:
 			loss()
-			slog.Warn("stopped reading nf_tables notifications", "table", m.scope.Name, "err", err)
+			slog.Warn("stopped reading nf_tables notifications", "table", Table, "chains", m.scope.Chains, "err", err)
 			return
 		}
 		messages, err := parseMessages(buf[:n])
@@ -206,36 +223,47 @@ func (m *Monitor) Close() error {
 	return err
 }
 
-// ChangedByAnother is whether message is a change to a table of s, a chain, a
-// rule, a set or a set's elements in one, written through a socket other than
-// pid. The kernel notifies an element only from a transaction, never from a
-// set's garbage collection or a packet's dynset.
+// ChangedByAnother is whether message is a change to Table, or to one of s's
+// chains, a rule in one, one of its sets or a set's elements, written through
+// a socket other than pid. The table's deletion reaches every owner, and so
+// does a NEWTABLE that sets a flag or carries no NFTA_TABLE_FLAGS. A NEWTABLE
+// whose flags are 0 reaches none: it makes the table, which holds no chain
+// until another message names one, or clears its flags, which takes no
+// owner's chain and leaves nothing Contents.Read faults. The kernel puts the
+// flags in every NEWTABLE (nf_tables_fill_table_info), notifies an element
+// only from a transaction, never from a set's garbage collection or a
+// packet's dynset, and notifies nothing for an owner's NewTable over the
+// table as it stands (nf_tables_updtable).
 func (s Scope) ChangedByAnother(message Message, pid uint32) bool {
-	if message.Pid == pid || message.Kind>>8 != unix.NFNL_SUBSYS_NFTABLES || len(message.Data) < SizeofNfgenmsg {
+	if message.Pid == pid || message.Kind>>8 != unix.NFNL_SUBSYS_NFTABLES || len(message.Data) < SizeofNfgenmsg || message.Data[0] != unix.NFPROTO_INET {
 		return false
 	}
-	if !slices.Contains(s.Families, message.Data[0]) {
-		return false
-	}
-	var naming uint16
+	var table, name uint16
+	var own func(string) bool
 	switch message.Kind & 0xff {
 	case unix.NFT_MSG_NEWTABLE, unix.NFT_MSG_DELTABLE:
-		naming = unix.NFTA_TABLE_NAME
+		table = unix.NFTA_TABLE_NAME
 	case unix.NFT_MSG_NEWCHAIN, unix.NFT_MSG_DELCHAIN:
-		naming = unix.NFTA_CHAIN_TABLE
+		table, name, own = unix.NFTA_CHAIN_TABLE, unix.NFTA_CHAIN_NAME, s.chain
 	case unix.NFT_MSG_NEWRULE, unix.NFT_MSG_DELRULE:
-		naming = unix.NFTA_RULE_TABLE
+		table, name, own = unix.NFTA_RULE_TABLE, unix.NFTA_RULE_CHAIN, s.chain
 	case unix.NFT_MSG_NEWSET, unix.NFT_MSG_DELSET:
-		naming = unix.NFTA_SET_TABLE
+		table, name, own = unix.NFTA_SET_TABLE, unix.NFTA_SET_NAME, s.set
 	case unix.NFT_MSG_NEWSETELEM, unix.NFT_MSG_DELSETELEM:
-		naming = unix.NFTA_SET_ELEM_LIST_TABLE
+		table, name, own = unix.NFTA_SET_ELEM_LIST_TABLE, unix.NFTA_SET_ELEM_LIST_SET, s.set
 	default:
 		return false
 	}
+	inTable, named, unflagged := false, own == nil, false
 	for kind, value := range message.Attributes() {
-		if kind == naming && unix.ByteSliceToString(value) == s.Name {
-			return true
+		switch {
+		case kind == table:
+			inTable = unix.ByteSliceToString(value) == Table
+		case kind == name && own != nil:
+			named = own(unix.ByteSliceToString(value))
+		case message.Kind&0xff == unix.NFT_MSG_NEWTABLE && kind == unix.NFTA_TABLE_FLAGS:
+			unflagged = len(value) == 4 && binary.BigEndian.Uint32(value) == 0
 		}
 	}
-	return false
+	return inTable && named && !unflagged
 }

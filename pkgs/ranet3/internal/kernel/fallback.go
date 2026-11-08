@@ -15,16 +15,13 @@ import (
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
-// FallbackTable is the nf_tables inet table cap.exit fallback = "none" writes
-// on Linux, whose chains let a packet leave by a link outside the mesh only
-// where one of their lines passes it, and drop the rest. It carries no owner
-// flag, so it outlives the process that wrote it. routing.md's "The kill
-// switch on Linux" lists the lines and what each stop leaves of the table. On
-// macOS the switch is reject routes on lo0 instead, which "The kill switch on
-// macOS" lists.
-const FallbackTable = "ranet3_fallback"
-
-// FallbackState is the switch fallback = "none" asks for, as a pass leaves it
+// FallbackState is the switch fallback = "none" asks for, as a pass leaves it.
+// On Linux the switch is two chains of the nf_tables inet table ranet3, which
+// let a packet leave by a link outside the mesh only where one of their lines
+// passes it, and drop the rest. The table carries no owner flag, so they
+// outlive the process that wrote them. routing.md's "The kill switch on Linux"
+// lists the lines and what each stop leaves of them. On macOS the switch is
+// reject routes on lo0 instead, which "The kill switch on macOS" lists.
 type FallbackState string
 
 const (
@@ -73,9 +70,8 @@ type LinkResolver struct {
 	Address netip.Addr
 }
 
-// FallbackDebug is the switch as a read finds it now, the table
-// ranet3_fallback on linux and the rejects on lo0 on darwin, which have no
-// hook, priority or sets
+// FallbackDebug is the switch as a read finds it now, its chains and sets on
+// linux and the rejects on lo0 on darwin, which have no hook, priority or sets
 type FallbackDebug struct {
 	Where    string
 	Hook     string
@@ -101,7 +97,7 @@ type FallbackDebugSet struct {
 	Elements []string
 }
 
-// fallbackSets holds what the lines of one pass's table ranet3_fallback read:
+// fallbackSets holds what the lines of one pass's switch on linux read:
 // the tun for the oifname line, the links of the forwarded set, the LAN's and
 // this node's own prefixes and inbound's ports, derived from the same exitView
 // its rules come from. Each prefix list is masked, sorted and each once.
@@ -385,12 +381,13 @@ func (r *Reconciler) switchForm() fallbackForm {
 }
 
 // switcher is the optional half of a platform that writes the kill switch,
-// the table ranet3_fallback on linux and the rejects on lo0 on darwin. A
+// its chains in the table ranet3 on linux and the rejects on lo0 on darwin. A
 // platform without one runs no fallback = "none", which its start refuses.
 type switcher interface {
 	// writeFallback writes the switch whole, on linux in one transaction with
-	// its sets flushed and filled and its chains rewritten, the table deleted
-	// first where remake, as the read before it found
+	// its sets flushed and filled and its chains rewritten, each chain or set
+	// that cannot change in place deleted first where remake, as the read
+	// before it found
 	writeFallback(sets fallbackSets, remake bool) error
 	// readFallback reads the switch back against what writeFallback writes for sets, the zero fallbackRead where the read fails
 	readFallback(fallbackSets) (fallbackRead, error)
@@ -410,7 +407,7 @@ type fallbackForm struct {
 	// read back as written
 	unheld string
 	// keys is where a switch of reject routes, keyed as the tun's routes are,
-	// holds one, as darwin's does, and nil for a table whose lines pass the
+	// holds one, as darwin's does, and nil for chains whose lines pass the
 	// LAN and this node's own prefixes as fallbackSets derives them, as
 	// linux's
 	keys []netip.Prefix
@@ -420,11 +417,11 @@ type fallbackForm struct {
 
 // fallbackRead is the switch as a read finds it
 type fallbackRead struct {
-	// fault names the first way the switch differs from what was written, a
-	// missing table or reject among them, empty where none does
+	// fault names the first way the switch differs from what was written, its
+	// chains or a reject missing among them, empty where none does
 	fault string
 	// dropped and bytes are the packets and bytes the last lines of both chains have dropped, summed
 	dropped, bytes uint64
-	// remake is a table a rewrite cannot mend in place, which goes first
+	// remake is a chain or set a rewrite cannot mend in place, which goes first
 	remake bool
 }

@@ -20,10 +20,11 @@ import (
 
 var _ switcher = (*netlinkPlatform)(nil)
 
-// tableForm is the table ranet3_fallback as a log line and a status read it
+// tableForm is the switch's chains in nftables.Table as a log line and a
+// status read them
 var tableForm = fallbackForm{
-	where:  "nftables table inet " + FallbackTable,
-	fix:    "nft delete table inet " + FallbackTable,
+	where:  "nftables table inet " + nftables.Table + " chains " + fallbackChain.Name + " and " + fallbackOutput.Name,
+	fix:    "nft delete chain inet " + nftables.Table + " " + fallbackChain.Name + " and nft delete chain inet " + nftables.Table + " " + fallbackOutput.Name,
 	unheld: "the host's own lookups from the uplink's addresses reach main only for its routes longer than /0",
 }
 
@@ -32,9 +33,9 @@ func (p *netlinkPlatform) form() fallbackForm { return tableForm }
 // fallbackDrop is each chain's last line, whose counters status reads summed
 const fallbackDrop = "counter drop"
 
-// fallbackChain is the table's chain at postrouting, which reads the device a
+// fallbackChain is the switch's chain at postrouting, which reads the device a
 // packet leaves by (ip_output in ip_output.c, ip6_output in ip6_output.c)
-var fallbackChain = nftables.Chain{Table: FallbackTable, Name: "fallback", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: fallbackPriority}
+var fallbackChain = nftables.Chain{Table: nftables.Table, Name: "fallback", Type: "filter", Hook: unix.NF_INET_POST_ROUTING, Priority: fallbackPriority}
 
 // fallbackOutput holds postrouting's lines for the packets reaching output,
 // which carry no input link there (__ip_local_out in ip_output.c,
@@ -43,25 +44,28 @@ var fallbackChain = nftables.Chain{Table: FallbackTable, Name: "fallback", Type:
 // ip6_output.c), a kernel
 // tunnel's for its outer packet, which the forwarded line's iif match reads as
 // forwarded.
-var fallbackOutput = nftables.Chain{Table: FallbackTable, Name: "output", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: fallbackPriority}
+var fallbackOutput = nftables.Chain{Table: nftables.Table, Name: "output", Type: "filter", Hook: unix.NF_INET_LOCAL_OUT, Priority: fallbackPriority}
 
-// fallbackChains is the table's chains, in the order the readback lists their lines
+// fallbackChains is the switch's chains, in the order the readback lists their lines
 var fallbackChains = []nftables.Chain{fallbackChain, fallbackOutput}
 
-// fallbackNamed is the table's named sets, the IDs naming them to the rules of
-// the transaction that makes them
+// fallbackNamed is the switch's named sets, the IDs naming them to the rules
+// of the transaction that makes them
 var fallbackNamed = []nftables.Set{
-	{Table: FallbackTable, Name: "forwarded", ID: 1, KeyType: nftables.TypeIfname, KeyLen: unix.IFNAMSIZ},
-	{Table: FallbackTable, Name: "lan4", ID: 2, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
-	{Table: FallbackTable, Name: "lan6", ID: 3, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
-	{Table: FallbackTable, Name: "own4", ID: 4, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
-	{Table: FallbackTable, Name: "own6", ID: 5, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "forwarded", ID: 1, KeyType: nftables.TypeIfname, KeyLen: unix.IFNAMSIZ},
+	{Table: nftables.Table, Name: "lan4", ID: 2, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "lan6", ID: 3, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "own4", ID: 4, KeyType: nftables.TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "own6", ID: 5, KeyType: nftables.TypeIPv6Addr, KeyLen: 16, Flags: unix.NFT_SET_INTERVAL},
 	// inbound's ports of each protocol, named so the line reading them is
 	// spelled the same however many inbound lists, within the comment's 128
 	// bytes. nft reads tcp and udp as keywords, so neither names a set.
-	{Table: FallbackTable, Name: "tcp_ports", ID: 6, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
-	{Table: FallbackTable, Name: "udp_ports", ID: 7, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "tcp_ports", ID: 6, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
+	{Table: nftables.Table, Name: "udp_ports", ID: 7, KeyType: nftables.TypeInetService, KeyLen: 2, Flags: unix.NFT_SET_INTERVAL},
 }
+
+// fallbackContents is the switch's chains and sets as a readback reads them
+var fallbackContents = nftables.Contents{Chains: fallbackChains, Sets: fallbackNamed}
 
 // linkLocal4 and linkLocal6 are the link-local, multicast and broadcast
 // destinations that carry neighbor and router discovery and DHCP
@@ -113,7 +117,7 @@ func (s fallbackSets) rules(chain int) ([]fallbackRule, error) {
 	accept := nftables.Verdict(nftables.Accept)
 	id := chainFirstSet(chain)
 	anonymous := func(keyType, keyLen, flags uint32) *nftables.Set {
-		set := nftables.Anonymous(FallbackTable, id, keyType, keyLen, flags)
+		set := nftables.Anonymous(nftables.Table, id, keyType, keyLen, flags)
 		id++
 		return &set
 	}
@@ -248,16 +252,12 @@ func addressLine(proto uint8, set string, lookup []byte, anonymous *nftables.Set
 	}
 }
 
-// fallbackBatch is the table in one transaction: the table with no owner
-// flag, its named sets made, flushed and filled, each chain made and flushed,
-// and each line behind the anonymous set it reads. remake deletes the table
-// first, for one holding what nf_tables will not change in place.
-func fallbackBatch(s fallbackSets, remake bool) ([]nftables.Request, error) {
-	var requests []nftables.Request
-	if remake {
-		requests = append(requests, nftables.DeleteTable(unix.NFPROTO_INET, FallbackTable))
-	}
-	requests = append(requests, nftables.NewTable(unix.NFPROTO_INET, FallbackTable))
+// fallbackBatch is the switch in one transaction: the table with no owner
+// flag, each chain made and flushed, its named sets made, flushed and filled,
+// and each line behind the anonymous set it reads, deleting first each chain
+// and set of stale, which nf_tables will not change in place
+func fallbackBatch(s fallbackSets, stale nftables.Contents) ([]nftables.Request, error) {
+	requests := nftables.Contents{Chains: fallbackChains}.Rewrite(unix.NFPROTO_INET, stale, nil)
 	elements := s.elements()
 	for _, set := range fallbackNamed {
 		replaced, err := set.Replace(unix.NFPROTO_INET, elements[set.Name])
@@ -267,7 +267,6 @@ func fallbackBatch(s fallbackSets, remake bool) ([]nftables.Request, error) {
 		requests = append(requests, replaced...)
 	}
 	for i, chain := range fallbackChains {
-		requests = append(requests, chain.Create(unix.NFPROTO_INET), chain.Flush(unix.NFPROTO_INET))
 		rules, err := s.rules(i)
 		if err != nil {
 			return nil, err
@@ -299,11 +298,12 @@ func fallbackBatch(s fallbackSets, remake bool) ([]nftables.Request, error) {
 // chains before it
 func chainFirstSet(i int) uint32 { return uint32(fallbackSetIDs * (i + 1)) }
 
-// fallbackTables is the scope another writer's change wakes the reconciler in
-var fallbackTables = nftables.Scope{Name: FallbackTable, Families: []uint8{unix.NFPROTO_INET}}
+// fallbackScope is the switch's chains and sets, whose change by another
+// writer wakes the reconciler, as a change to the table does
+var fallbackScope = fallbackContents.Scope()
 
-// fallbackWatch is the socket the table is written through and the monitor of
-// every other writer's change to it. A pass that finds the table changed
+// fallbackWatch is the socket the switch is written through and the monitor
+// of every other writer's change to it. A pass that finds the switch changed
 // leaves 5405 and 5435 out until it reads back, so the change is answered at
 // once rather than at the next periodic pass.
 type fallbackWatch struct {
@@ -313,7 +313,7 @@ type fallbackWatch struct {
 	done    chan struct{}
 }
 
-// watchFallback is the socket the table is written through, opening it with
+// watchFallback is the socket the switch is written through, opening it with
 // its monitor where none is open
 func (p *netlinkPlatform) watchFallback() (*nftables.Conn, error) {
 	if p.fallback != nil {
@@ -323,7 +323,7 @@ func (p *netlinkPlatform) watchFallback() (*nftables.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	monitor, err := nftables.OpenMonitor(conn, fallbackTables)
+	monitor, err := nftables.OpenMonitor(conn, fallbackScope)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -360,12 +360,22 @@ func (p *netlinkPlatform) unwatchFallback() error {
 	return errors.Join(w.monitor.Close(), w.conn.Close())
 }
 
+// writeFallback reads the switch again where remake, for the chains and sets
+// the batch deletes first
 func (p *netlinkPlatform) writeFallback(s fallbackSets, remake bool) error {
 	conn, err := p.watchFallback()
 	if err != nil {
 		return err
 	}
-	requests, err := fallbackBatch(s, remake)
+	var stale nftables.Contents
+	if remake {
+		read, err := readFallback(conn, s)
+		if err != nil {
+			return err
+		}
+		stale = read.Stale
+	}
+	requests, err := fallbackBatch(s, stale)
 	if err != nil {
 		return err
 	}
@@ -380,14 +390,14 @@ func (p *netlinkPlatform) readFallback(s fallbackSets) (fallbackRead, error) {
 	return fallbackFault(conn, s)
 }
 
-// fallbackFault reads the table conn holds against what writeFallback writes
+// fallbackFault reads the switch conn holds against what writeFallback writes
 // for s
 func fallbackFault(conn *nftables.Conn, s fallbackSets) (fallbackRead, error) {
 	read, err := readFallback(conn, s)
 	if err != nil {
 		return fallbackRead{}, err
 	}
-	out := fallbackRead{remake: read.Remake}
+	out := fallbackRead{remake: read.Remake()}
 	for _, rule := range read.Rules {
 		if rule.Spec == fallbackDrop {
 			out.dropped, out.bytes = out.dropped+rule.Packets, out.bytes+rule.Bytes
@@ -443,30 +453,28 @@ func chainFault(conn *nftables.Conn, s fallbackSets, chain int, held []nftables.
 	return nftables.ChainFault(name, lines, held)
 }
 
-// ReadFallback reads the table through a socket of its own, so the
+// ReadFallback reads the switch through a socket of its own, so the
 // reconciler's stays with its one user
 func ReadFallback() (FallbackDebug, error) {
-	out := FallbackDebug{Where: "nftables table inet " + FallbackTable + " chains " + fallbackChain.Name + " and " + fallbackOutput.Name, Hook: "postrouting and output", Priority: fallbackPriority}
+	out := FallbackDebug{Where: tableForm.where, Hook: "postrouting and output", Priority: fallbackPriority}
 	conn, err := nftables.Dial()
 	if err != nil {
 		return out, err
 	}
 	defer conn.Close()
-	tables, err := nftables.Tables(conn, FallbackTable)
+	tables, err := nftables.Tables(conn, nftables.Table)
 	if err != nil {
 		return out, err
 	}
-	if _, out.Held = tables[unix.NFPROTO_INET]; !out.Held {
+	read, err := nftables.Contents{Chains: fallbackChains}.Read(conn, tables, unix.NFPROTO_INET)
+	if err != nil {
+		return out, err
+	}
+	if out.Held = read.Held; !out.Held {
 		return out, nil
 	}
-	for _, chain := range fallbackChains {
-		read, err := nftables.Contents{Chains: []nftables.Chain{chain}}.Read(conn, tables, unix.NFPROTO_INET)
-		if err != nil {
-			return out, err
-		}
-		for _, rule := range read.Rules {
-			out.Rules = append(out.Rules, FallbackDebugRule{Chain: chain.Name, Spec: rule.Spec, Packets: rule.Packets, Bytes: rule.Bytes})
-		}
+	for _, rule := range read.Rules {
+		out.Rules = append(out.Rules, FallbackDebugRule{Chain: rule.Chain, Spec: rule.Spec, Packets: rule.Packets, Bytes: rule.Bytes})
 	}
 	for _, set := range fallbackNamed {
 		held, err := set.Elements(conn, unix.NFPROTO_INET)
@@ -482,24 +490,32 @@ func ReadFallback() (FallbackDebug, error) {
 	return out, nil
 }
 
-// readFallback reads the table back, a missing one as a fault
+// readFallback reads the switch back, its chains missing from the table or
+// the table missing as a fault
 func readFallback(conn *nftables.Conn, s fallbackSets) (nftables.Readback, error) {
-	tables, err := nftables.Tables(conn, FallbackTable)
+	tables, err := nftables.Tables(conn, nftables.Table)
 	if err != nil {
 		return nftables.Readback{}, err
 	}
-	if _, held := tables[unix.NFPROTO_INET]; !held {
-		return nftables.Readback{Fault: "the table is missing"}, nil
-	}
-	read, err := nftables.Contents{Chains: fallbackChains, Sets: fallbackNamed, Elements: s.elements()}.Read(conn, tables, unix.NFPROTO_INET)
+	contents := fallbackContents
+	contents.Elements = s.elements()
+	read, err := contents.Read(conn, tables, unix.NFPROTO_INET)
 	if err != nil {
-		return nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", FallbackTable, err)
+		return nftables.Readback{}, fmt.Errorf("kernel: read table inet %s: %w", nftables.Table, err)
+	}
+	if !holdsSwitch(read.Chains) {
+		read.Fault = "its chains are missing"
 	}
 	return read, nil
 }
 
+// holdsSwitch is whether chains, a table's, hold either chain of the switch
+func holdsSwitch(chains []string) bool {
+	return slices.ContainsFunc(fallbackChains, func(chain nftables.Chain) bool { return slices.Contains(chains, chain.Name) })
+}
+
 // deleteFallback deletes through the watch's socket, so its own delete wakes
-// nothing, and closes the watch, which the next pass that asks for the table
+// nothing, and closes the watch, which the next pass that asks for the switch
 // opens again
 func (p *netlinkPlatform) deleteFallback() error {
 	conn, err := p.watchFallback()
@@ -509,34 +525,27 @@ func (p *netlinkPlatform) deleteFallback() error {
 	return errors.Join(deleteFallback(conn), p.unwatchFallback())
 }
 
-// holdsFallback lists through the watch's socket
+// holdsFallback lists the table's chains through the watch's socket
 func (p *netlinkPlatform) holdsFallback() (bool, error) {
 	conn, err := p.watchFallback()
 	if err != nil {
 		return false, err
 	}
-	tables, err := nftables.Tables(conn, FallbackTable)
+	chains, err := nftables.TableChains(conn, unix.NFPROTO_INET, nftables.Table)
 	if err != nil {
 		return false, err
 	}
-	_, held := tables[unix.NFPROTO_INET]
-	return held, nil
+	return holdsSwitch(chains), nil
 }
 
-// deleteFallback lists first, since deleting a table that is not there fails
-// the batch
+// deleteFallback removes the switch's chains and sets, and the table with
+// them where nothing else is in it
 func deleteFallback(conn *nftables.Conn) error {
-	tables, err := nftables.Tables(conn, FallbackTable)
-	if err != nil {
-		return err
-	}
-	if _, held := tables[unix.NFPROTO_INET]; !held {
-		return nil
-	}
-	return conn.Batch([]nftables.Request{nftables.DeleteTable(unix.NFPROTO_INET, FallbackTable)})
+	_, err := nftables.Withdraw(conn, fallbackScope)
+	return err
 }
 
-// DeleteFallback deletes the table an earlier instance left, for a start that
+// DeleteFallback deletes the switch an earlier instance left, for a start that
 // runs no reconciler to delete it. A kernel without nf_tables holds none. A
 // start without CAP_NET_ADMIN, which nfnetlink refuses with EPERM, cannot
 // tell whether one is held, and warns as any other refusal. The overlay names

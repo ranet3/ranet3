@@ -6,6 +6,7 @@
 package kernel
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net/netip"
 	"slices"
@@ -42,12 +43,18 @@ func expressionNames(t *testing.T, body []byte) []string {
 }
 
 // A rule reaches the kernel as the expressions its comment describes, in the
-// order a packet meets them: both interfaces, then the narrowing, then the
-// counter and the translation, or for a timeout rule its protocol and its
-// object, and for the limit's rule the connection's state and status first and
-// the count, the counter and the answer last, in the limit's chain, as are the
-// ICMP drops and the refusals, which take their protocol first, and a refusal
-// then its flow's direction
+// order a packet meets them: in the translation's chain its family's test,
+// which every case's list leaves out, then both interfaces, then the
+// narrowing, then the counter and the translation, or for a timeout rule its
+// protocol and its object, and for the limit's rule the connection's state and
+// status first and the count, the counter and the answer last, in its family's
+// chain, as are the ICMP drops and the refusals, which take their protocol
+// first, and a refusal then its flow's direction. A rule of the forward hook's
+// or of a class of none's tests no family first, since forward's first line
+// sends IPv6's packets on to IPv6's chain, which leaves IPv4's alone past it,
+// and a class's pass sends its own family's alone, and tests it just before
+// the source it keys a set by, which nft lists as an address only after that
+// test.
 func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 	for _, one := range []struct {
 		name string
@@ -106,7 +113,8 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 		{
 			"the limit on each source's flows out of the mesh",
 			Rule{Family: egress.FamilyIPv6, Direction: Out, Interface: "ranet0", Limit: egress.DefaultFlowsPerSource},
-			[]string{"ct", "bitwise", "cmp", "ct", "bitwise", "cmp", "meta", "cmp", "meta", "cmp", "payload", "dynset", "counter", "reject"},
+			// The family just before the source the count is keyed by.
+			[]string{"ct", "bitwise", "cmp", "ct", "bitwise", "cmp", "meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "dynset", "counter", "reject"},
 		},
 		{
 			"the drop of what no flow is tracked for out of the mesh",
@@ -124,8 +132,9 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			"the limit of the classes inside a class of none, in that class's chain",
 			Rule{Family: egress.FamilyIPv4, Direction: Out, Interface: "ranet0", Sources: prefixSet([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/26"), netip.MustParsePrefix("192.0.2.128/26")}),
 				Limit: egress.DefaultFlowsPerSource, Under: netip.MustParsePrefix("192.0.2.0/24")},
-			// The sources looked up in the line's set, in place of a prefix.
-			[]string{"ct", "bitwise", "cmp", "ct", "bitwise", "cmp", "meta", "cmp", "meta", "cmp", "payload", "lookup", "payload", "dynset", "counter", "reject"},
+			// The sources looked up in the line's set, in place of a prefix,
+			// after the one family test the line takes.
+			[]string{"ct", "bitwise", "cmp", "ct", "bitwise", "cmp", "meta", "cmp", "meta", "cmp", "meta", "cmp", "payload", "lookup", "payload", "dynset", "counter", "reject"},
 		},
 		{
 			"the pass of a class of none inside another, in that one's chain",
@@ -155,15 +164,25 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := expressionNames(t, request.Body); !slices.Equal(got, one.want) {
-				t.Errorf("encoded %q, want %q", got, one.want)
+			translation := one.rule.chain() == ChainName
+			want := one.want
+			if translation {
+				want = append([]string{"meta", "cmp"}, want...)
+			}
+			if got := expressionNames(t, request.Body); !slices.Equal(got, want) {
+				t.Errorf("encoded %q, want %q", got, want)
 			}
 			// the chain the rule names and the counter its kind says, which
 			// Debug names the counter's unit by
 			kind := one.rule.kind()
 			table, chain, spec, _, _, counted := nftables.DecodeRule(nftables.Message{Data: request.Body})
-			if table != TableName || chain != one.rule.chain() || counted != kind.counted() {
-				t.Errorf("wrote into %s/%s counted %v, want %s/%s counted %v", table, chain, counted, TableName, one.rule.chain(), kind.counted())
+			if table != nftables.Table || chain != one.rule.chain() || counted != kind.counted() || request.Body[0] != unix.NFPROTO_INET {
+				t.Errorf("wrote into %d %s/%s counted %v, want inet %s/%s counted %v", request.Body[0], table, chain, counted, nftables.Table, one.rule.chain(), kind.counted())
+			}
+			for attr, value := range (nftables.Message{Data: request.Body}).Attributes() {
+				if attr == unix.NFTA_RULE_EXPRESSIONS && bytes.HasPrefix(value, slices.Concat(nftables.NFProto(nftFamily(one.rule.Family))...)) != translation {
+					t.Errorf("the rule in the chain %s tests for %s first: %v, want %v", one.rule.chain(), egress.FamilyName(one.rule.Family), !translation, translation)
+				}
 			}
 			if spec != one.rule.String() {
 				t.Errorf("the rule reads back as %q, want %q, so the diff would rewrite it forever", spec, one.rule.String())
@@ -185,7 +204,8 @@ func TestInterfaceComparisonCoversTheWholePaddedName(t *testing.T) {
 		if kind != unix.NFTA_RULE_EXPRESSIONS {
 			continue
 		}
-		for _, element := range nftables.Nested(value) {
+		// past the family's test, the first meta and cmp
+		for _, element := range nftables.Nested(value)[2:] {
 			var name string
 			var data []byte
 			for _, field := range nftables.Nested(element.Value) {
@@ -231,10 +251,11 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 		direction Direction
 		want      []uint32
 	}{
-		{Out, []uint32{unix.NFT_CMP_EQ, unix.NFT_CMP_NEQ}},
-		// The leading NEQ is the local-origin test, which both directions of
+		// The leading EQ is the family's test.
+		{Out, []uint32{unix.NFT_CMP_EQ, unix.NFT_CMP_EQ, unix.NFT_CMP_NEQ}},
+		// The NEQ after it is the local-origin test, which both directions of
 		// the interface pair follow.
-		{In, []uint32{unix.NFT_CMP_NEQ, unix.NFT_CMP_NEQ, unix.NFT_CMP_EQ}},
+		{In, []uint32{unix.NFT_CMP_EQ, unix.NFT_CMP_NEQ, unix.NFT_CMP_NEQ, unix.NFT_CMP_EQ}},
 	} {
 		t.Run(one.direction.String(), func(t *testing.T) {
 			request, err := newRule(Rule{Family: egress.FamilyIPv4, Direction: one.direction, Interface: "ranet0"}, 0)
@@ -311,19 +332,24 @@ func TestLongestRuleFitsTheCommentLimit(t *testing.T) {
 			t.Errorf("the longest pass, drop or refusal was refused: %v", err)
 		}
 	}
-	if _, err := flowSet(egress.FamilyIPv6, egress.MaxFlowsPerSource).Create(unix.NFPROTO_IPV6); err != nil {
+	if _, err := flowSet(egress.FamilyIPv6, egress.MaxFlowsPerSource).Create(unix.NFPROTO_INET); err != nil {
 		t.Errorf("the set of the largest limit was refused: %v", err)
 	}
 }
 
 // The translating chain is a nat base chain at the source translation hook,
 // one below the priority the host's own source translation runs at, so it
-// runs ahead of every chain there whatever order they were made in. The
-// limit's chain filters at the forward hook, where a forwarded packet meets it
-// before the translation, as the host's own filters do. A class of none's chain
-// is a regular chain, which no packet enters but by its pass.
+// runs ahead of every chain there whatever order they were made in. Forward
+// filters at the forward hook, where a forwarded packet meets it before the
+// translation, as the host's own filters do. IPv6's chain, which forward's
+// first line sends IPv6's packets on to, and a class of none's chain are
+// regular chains, which no packet enters but by a goto. The translator writes
+// no chain of IPv4's own.
 func TestChainsHookWhereTheirRulesAct(t *testing.T) {
-	chains := translatorChains(egress.FamilyIPv4, underNone(egress.FamilyIPv4))
+	chains := translatorChains(underNone(egress.FamilyIPv4))
+	if slices.ContainsFunc(chains, func(c nftables.Chain) bool { return c.Name == retiredChain }) {
+		t.Errorf("the translator writes the chain %s", retiredChain)
+	}
 	for _, want := range []struct {
 		chain, kind string
 		hook        uint32
@@ -331,6 +357,7 @@ func TestChainsHookWhereTheirRulesAct(t *testing.T) {
 	}{
 		{ChainName, "nat", unix.NF_INET_POST_ROUTING, 99},
 		{LimitChain, "filter", unix.NF_INET_FORWARD, filterPriority},
+		{"forward6", "", nftables.NoHook, 0},
 		{"none_192_0_2_0_24", "", nftables.NoHook, 0},
 	} {
 		index := slices.IndexFunc(chains, func(c nftables.Chain) bool { return c.Name == want.chain })
@@ -338,25 +365,27 @@ func TestChainsHookWhereTheirRulesAct(t *testing.T) {
 			t.Errorf("the translator writes no chain %s", want.chain)
 			continue
 		}
-		request := chains[index].Create(unix.NFPROTO_IPV4)
+		request := chains[index].Create(unix.NFPROTO_INET)
 		table, chain, kind, hook, priority := nftables.DecodeChain(nftables.Message{Data: request.Body})
-		if table != TableName || chain != want.chain || kind != want.kind || hook != want.hook || priority != want.priority {
+		if table != nftables.Table || chain != want.chain || kind != want.kind || hook != want.hook || priority != want.priority {
 			t.Errorf("created %s/%s, a %s chain at hook %d, priority %d, want %s/%s, a %s chain at hook %d, priority %d",
-				table, chain, kind, hook, priority, TableName, want.chain, want.kind, want.hook, want.priority)
+				table, chain, kind, hook, priority, nftables.Table, want.chain, want.kind, want.hook, want.priority)
 		}
 	}
 }
 
 // A class of none's chain the table does not hold, or one the table holds whose
 // name starts as a class of none's that no class writes, is a fault naming the
-// chain, and another writer's chain of another name is none. A pass deletes
+// chain, and another writer's chain of another name, the start alone among
+// them, is none. A pass deletes
 // such a chain, but for one a rule of another writer's chain goes to, by a
 // goto or by its vmap, or an element of a named map, which nf_tables would
 // refuse to delete: the fault names that chain or map too, and the chain stays.
 // A rule going to it from a chain the pass empties, or a vmap going only to
-// other chains, keeps it from nothing.
+// other chains, keeps it from nothing. The chain an earlier translator held
+// IPv4's forward lines in reads back and goes as such a chain does.
 func TestChainsOfClassesOfNoneReadBackOnlyAsWritten(t *testing.T) {
-	chains := translatorChains(egress.FamilyIPv4, underNone(egress.FamilyIPv4))
+	chains := translatorChains(underNone(egress.FamilyIPv4))
 	stray := "none_198_51_100_0_24"
 	goes := func(chain, to string) nftables.Installed {
 		return nftables.Installed{Chain: chain, Expressions: nftables.Goto(to)}
@@ -378,6 +407,7 @@ func TestChainsOfClassesOfNoneReadBackOnlyAsWritten(t *testing.T) {
 		"missing":                    {[]string{LimitChain, ChainName}, holders{}, "its chain none_192_0_2_0_24 is missing", false},
 		"beside one no class writes": {append(slices.Clone(written), stray), holders{}, "its chain " + stray + " is not one a class of none writes", true},
 		"beside one whose name alone starts as a class of none's": {append(slices.Clone(written), "none_mine"), holders{}, "its chain none_mine is not one a class of none writes", true},
+		"beside another writer's chain named as the start alone":  {append(slices.Clone(written), NoneChain), holders{}, "", false},
 		"beside one another writer's chain goes to": {append(slices.Clone(written), "other", stray), holders{rules: []nftables.Installed{goes("other", stray)}},
 			"its chain " + stray + " is not one a class of none writes, and chain other holds a rule going to it, so it stays until that rule goes", false},
 		"beside one a chain a pass empties goes to": {append(slices.Clone(written), stray, "none_203_0_113_0_24"),
@@ -391,21 +421,28 @@ func TestChainsOfClassesOfNoneReadBackOnlyAsWritten(t *testing.T) {
 			"its chain " + stray + " is not one a class of none writes", true},
 		"beside one a named map goes to": {append(slices.Clone(written), "other", stray), holders{maps: named},
 			"its chain " + stray + " is not one a class of none writes, and map vm holds an element going to it, so it stays until that element goes", false},
+		"beside the chain of IPv4's an earlier translator wrote": {append(slices.Clone(written), retiredChain),
+			holders{rules: []nftables.Installed{goes(LimitChain, retiredChain), looksUp(LimitChain, "__map0")}, maps: []nftables.VerdictMap{{Name: "__map0", Anonymous: true, Chains: []string{retiredChain, "forward6"}}}},
+			"its chain " + retiredChain + " is not one the translator writes", true},
+		"beside the chain of IPv4's another writer's chain goes to": {append(slices.Clone(written), "other", retiredChain), holders{rules: []nftables.Installed{goes("other", retiredChain)}},
+			"its chain " + retiredChain + " is not one the translator writes, and chain other holds a rule going to it, so it stays until that rule goes", false},
 	} {
 		chain := stray
-		if slices.Contains(c.held, "none_mine") {
-			chain = "none_mine"
+		for _, other := range []string{"none_mine", NoneChain, retiredChain} {
+			if slices.Contains(c.held, other) {
+				chain = other
+			}
 		}
 		if got := noneChainsFault(chains, c.held, c.in); got != c.want {
 			t.Errorf("%s reads back with the fault %q, want %q", name, got, c.want)
 		}
-		requests, err := translatorBatch([]uint8{egress.FamilyIPv4}, egress.DefaultFlowsPerSource, underNone(egress.FamilyIPv4), nil,
-			map[uint8][]noneStray{egress.FamilyIPv4: strays(chains, c.held, c.in)})
+		rules := underNone(egress.FamilyIPv4)
+		requests, err := translatorBatch(translatorContents([]uint8{egress.FamilyIPv4}, egress.DefaultFlowsPerSource, rules), rules, nftables.Contents{}, strays(chains, c.held, c.in))
 		if err != nil {
 			t.Fatal(err)
 		}
 		deleted := slices.ContainsFunc(requests, func(r nftables.Request) bool {
-			return r.Kind == nftables.Command(unix.NFT_MSG_DELCHAIN) && slices.Equal(r.Body, regularChain(chain).Delete(unix.NFPROTO_IPV4).Body)
+			return r.Kind == nftables.Command(unix.NFT_MSG_DELCHAIN) && slices.Equal(r.Body, regularChain(chain).Delete(unix.NFPROTO_INET).Body)
 		})
 		if deleted != c.deleted {
 			t.Errorf("%s: a pass deletes the chain %s: %v, want %v", name, chain, deleted, c.deleted)
@@ -414,7 +451,7 @@ func TestChainsOfClassesOfNoneReadBackOnlyAsWritten(t *testing.T) {
 }
 
 // underNone is the pass of a class of none of family, 192.0.2.0/24 or
-// 2001:db8::/32, which gives the family's table that class's chain
+// 2001:db8::/32, which gives the translator that class's chain
 func underNone(family uint8) []Rule {
 	from := netip.MustParsePrefix("192.0.2.0/24")
 	if family == egress.FamilyIPv6 {
@@ -424,11 +461,11 @@ func underNone(family uint8) []Rule {
 }
 
 // Emptying a chain names a table and a chain and no handle, which nf_tables
-// reads as every rule in that chain. It can reach no other table, which is the
+// reads as every rule in that chain. It can reach no other chain, which is the
 // ownership claim this package makes.
 func TestFlushNamesOnlyThisToolsOwnChain(t *testing.T) {
-	for _, written := range translatorChains(egress.FamilyIPv6, underNone(egress.FamilyIPv6)) {
-		request := written.Flush(unix.NFPROTO_IPV6)
+	for _, written := range translatorChains(underNone(egress.FamilyIPv6)) {
+		request := written.Flush(unix.NFPROTO_INET)
 		var table, chain string
 		handles := 0
 		for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
@@ -441,8 +478,8 @@ func TestFlushNamesOnlyThisToolsOwnChain(t *testing.T) {
 				handles++
 			}
 		}
-		if table != TableName || chain != written.Name {
-			t.Errorf("would empty %s/%s, want %s/%s", table, chain, TableName, written.Name)
+		if table != nftables.Table || chain != written.Name {
+			t.Errorf("would empty %s/%s, want %s/%s", table, chain, nftables.Table, written.Name)
 		}
 		if handles != 0 {
 			t.Errorf("named %d handles, which would delete one rule rather than the chain", handles)
@@ -463,9 +500,10 @@ func TestInboundRuleExcludesThisNodesOwnTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// past the family's test, which every rule makes first
 	keys := metaKeys(t, inbound.Body)
-	if len(keys) == 0 || keys[0] != unix.NFT_META_IIF {
-		t.Fatalf("an inbound rule loads %v, want the interface index first", keys)
+	if len(keys) < 2 || keys[0] != unix.NFT_META_NFPROTO || keys[1] != unix.NFT_META_IIF {
+		t.Fatalf("an inbound rule loads %v, want the family and then the interface index first", keys)
 	}
 
 	// An outbound rule needs none of it: a locally generated packet fails

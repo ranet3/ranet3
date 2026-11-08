@@ -212,7 +212,7 @@ type Sink interface {
 	Reload(ctx context.Context) (Result, error)
 	// Down takes the node off the mesh and keeps its daemon, tun and socket
 	// every dialer, the responder and Babel stop, every session is closed with a Delete
-	// and the routes, rules, addresses and egress tables the node installed and the kill switch are withdrawn
+	// and the routes, rules, addresses and egress chains the node installed and the kill switch are withdrawn
 	// the flag it writes first keeps the node down through a restart until Up
 	Down(ctx context.Context) (Result, error)
 	// Up removes the flag and puts the node back on the mesh as a start would
@@ -470,7 +470,7 @@ type KernelExit struct {
 }
 
 // KernelFallback is the kill switch as the reconciler's last pass read it
-// back, Linux's table ranet3_fallback or macOS's rejects on lo0
+// back, Linux's chains in the table ranet3 or macOS's rejects on lo0
 type KernelFallback struct {
 	// State is holding while no exit is live and the switch reads back as
 	// written, passing while an exit is live, and not holding while it does

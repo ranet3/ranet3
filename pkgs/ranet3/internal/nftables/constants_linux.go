@@ -6,6 +6,11 @@
 package nftables
 
 const (
+	// Table is the inet table every owner writes in, the exit's translation, the
+	// antispoof filter and the kill switch, each owning its chains, sets and
+	// objects in it by their names. It is the binary's own name, so an operator
+	// reading `nft list ruleset` on a shared host can tell who wrote it.
+	Table = "ranet3"
 	// SizeofNfgenmsg is struct nfgenmsg, which x/sys does not carry
 	SizeofNfgenmsg = 4
 	// nfnetlinkV0 is NFNETLINK_V0, the only version there is

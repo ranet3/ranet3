@@ -19,9 +19,9 @@ import (
 // monitorWait bounds a wait on the monitor's goroutine
 const monitorWait = 30 * time.Second
 
-// the ports the kernel stamps on the notifications of the owner's socket and
-// of two other writers'
-const ownPort, otherPort, thirdPort = 7, 9, 11
+// the ports the kernel stamps on the notifications of the owner's socket, of
+// two other writers' and of another owner's of the table
+const ownPort, otherPort, thirdPort, siblingPort = 7, 9, 11, 13
 
 // monitorRead is one read of the monitor's socket, the datagram it returns or
 // its error
@@ -30,7 +30,15 @@ type monitorRead struct {
 	err      error
 }
 
-// fedMonitor is a monitor of translatorTables owned through ownPort whose
+// timeoutObjects are the kernel exit's ct timeout objects, in the order the
+// kernel notifies them
+var timeoutObjects = []string{"translated-udp4", "translated-tcp4", "translated-icmp4", "translated-udp6", "translated-tcp6", "translated-icmpv66"}
+
+// kernelExitNames is the scope the kernel exit's monitor watched where the
+// datagrams below were read
+var kernelExitNames = Scope{Chains: []string{"forward", "forward6", "postrouting", "forward4"}, Prefix: "none_", Sets: []string{"flows4", "flows6"}, Timeouts: timeoutObjects}
+
+// fedMonitor is a monitor of kernelExitNames owned through ownPort whose
 // every read waits for the test's answer
 type fedMonitor struct {
 	*Monitor
@@ -51,7 +59,7 @@ func feedMonitor(t *testing.T) *fedMonitor {
 			return copy(buf, a.datagram), a.err
 		},
 		pid:     ownPort,
-		scope:   translatorTables,
+		scope:   kernelExitNames,
 		changed: make(chan struct{}, 1),
 		missed:  make(chan struct{}, 1),
 		done:    make(chan struct{}),
@@ -105,11 +113,15 @@ func woke(signal <-chan struct{}) bool {
 }
 
 // notifications is count notifications of kind in family, each naming table
+// and, where its kind names one, the chain or set name, and a NEWTABLE the
+// table's flags
 type notifications struct {
 	count  int
 	kind   int
 	family uint8
 	table  string
+	name   string
+	flags  uint32
 }
 
 // naming is the attribute each kind of notification names its table in
@@ -120,6 +132,16 @@ var naming = map[int]uint16{
 	unix.NFT_MSG_NEWSET: unix.NFTA_SET_TABLE, unix.NFT_MSG_DELSET: unix.NFTA_SET_TABLE,
 	unix.NFT_MSG_NEWSETELEM: unix.NFTA_SET_ELEM_LIST_TABLE,
 	unix.NFT_MSG_NEWOBJ:     unix.NFTA_OBJ_TABLE, unix.NFT_MSG_DELOBJ: unix.NFTA_OBJ_TABLE,
+}
+
+// named is the attribute each kind of notification names its chain, set or
+// object in
+var named = map[int]uint16{
+	unix.NFT_MSG_NEWCHAIN: unix.NFTA_CHAIN_NAME, unix.NFT_MSG_DELCHAIN: unix.NFTA_CHAIN_NAME,
+	unix.NFT_MSG_NEWRULE: unix.NFTA_RULE_CHAIN, unix.NFT_MSG_DELRULE: unix.NFTA_RULE_CHAIN,
+	unix.NFT_MSG_NEWSET: unix.NFTA_SET_NAME, unix.NFT_MSG_DELSET: unix.NFTA_SET_NAME,
+	unix.NFT_MSG_NEWSETELEM: unix.NFTA_SET_ELEM_LIST_SET,
+	unix.NFT_MSG_NEWOBJ:     unix.NFTA_OBJ_NAME, unix.NFT_MSG_DELOBJ: unix.NFTA_OBJ_NAME,
 }
 
 // transaction is the reads of one transaction written through port, each
@@ -134,8 +156,16 @@ func transaction(port uint32, generation uint16, datagrams ...[]notifications) [
 	for _, datagram := range datagrams {
 		var buf []byte
 		for _, n := range datagram {
+			attributes := PutAttrString(stamped(n.family), naming[n.kind], n.table)
+			if attribute, ok := named[n.kind]; ok && n.name != "" {
+				attributes = PutAttrString(attributes, attribute, n.name)
+			}
+			// the kernel puts the table's flags in every NEWTABLE and in no DELTABLE (nf_tables_fill_table_info)
+			if n.kind == unix.NFT_MSG_NEWTABLE {
+				attributes = PutAttrBE32(attributes, unix.NFTA_TABLE_FLAGS, n.flags)
+			}
 			for range n.count {
-				buf = conn.appendMessage(buf, Command(n.kind), 0, 0, PutAttrString(stamped(n.family), naming[n.kind], n.table))
+				buf = conn.appendMessage(buf, Command(n.kind), 0, 0, attributes)
 			}
 		}
 		reads = append(reads, monitorRead{datagram: buf})
@@ -144,59 +174,155 @@ func transaction(port uint32, generation uint16, datagrams ...[]notifications) [
 	return append(reads, monitorRead{datagram: conn.appendMessage(nil, Command(unix.NFT_MSG_NEWGEN), 0, 0, end)})
 }
 
-// The datagrams linux 7.3.1 sent for the translator's ip and ip6 tables, 23
-// and 19 rules, a set, two chains and three timeouts each, and for nft 1.1.7
-// writing a firewall's inet table
+// The datagrams linux 7.3.1 sent to the kernel exit's monitor under auto for
+// its table inet Table of 42 rules in the chains forward, forward6 and
+// postrouting, two sets and six timeout objects, each datagram's notifications
+// in the order the kernel sent them, and for nft 1.1.7 flushing the ruleset
+// and writing a firewall's inet table in one transaction
 var (
+	// installed is the exit's install, and deleted another writer's deletion
+	// of the table, for which the exit's own withdrawal sends the same
+	// datagrams
 	installed = [][]notifications{
-		{ip(1, unix.NFT_MSG_NEWTABLE), ip(3, unix.NFT_MSG_NEWOBJ), ip(1, unix.NFT_MSG_NEWSET), ip(2, unix.NFT_MSG_NEWCHAIN), ip(4, unix.NFT_MSG_NEWRULE)},
-		{ip(6, unix.NFT_MSG_NEWRULE)},
-		{ip(7, unix.NFT_MSG_NEWRULE)},
-		{ip(6, unix.NFT_MSG_NEWRULE), ip6(1, unix.NFT_MSG_NEWTABLE), ip6(3, unix.NFT_MSG_NEWOBJ), ip6(1, unix.NFT_MSG_NEWSET), ip6(2, unix.NFT_MSG_NEWCHAIN)},
-		{ip6(6, unix.NFT_MSG_NEWRULE)},
-		{ip6(7, unix.NFT_MSG_NEWRULE)},
-		{ip6(6, unix.NFT_MSG_NEWRULE)},
+		slices.Concat([]notifications{exit(1, unix.NFT_MSG_NEWTABLE, ""), exit(1, unix.NFT_MSG_NEWCHAIN, "forward"), exit(1, unix.NFT_MSG_NEWCHAIN, "forward6"), exit(1, unix.NFT_MSG_NEWCHAIN, "postrouting")},
+			objects(unix.NFT_MSG_NEWOBJ, timeoutObjects...),
+			[]notifications{exit(1, unix.NFT_MSG_NEWSET, "flows4"), exit(1, unix.NFT_MSG_NEWSET, "flows6"), exit(4, unix.NFT_MSG_NEWRULE, "forward")}),
+		{exit(5, unix.NFT_MSG_NEWRULE, "forward")},
+		{exit(3, unix.NFT_MSG_NEWRULE, "forward"), exit(3, unix.NFT_MSG_NEWRULE, "postrouting")},
+		{exit(6, unix.NFT_MSG_NEWRULE, "postrouting")},
+		{exit(3, unix.NFT_MSG_NEWRULE, "postrouting"), exit(3, unix.NFT_MSG_NEWRULE, "forward6")},
+		{exit(4, unix.NFT_MSG_NEWRULE, "forward6"), exit(1, unix.NFT_MSG_NEWRULE, "postrouting")},
+		{exit(6, unix.NFT_MSG_NEWRULE, "postrouting")},
+		{exit(5, unix.NFT_MSG_NEWRULE, "postrouting")},
 	}
 	deleted = [][]notifications{
-		{ip(6, unix.NFT_MSG_DELRULE)},
-		{ip(6, unix.NFT_MSG_DELRULE)},
-		{ip(7, unix.NFT_MSG_DELRULE)},
-		{ip(4, unix.NFT_MSG_DELRULE), ip(1, unix.NFT_MSG_DELSET), ip(3, unix.NFT_MSG_DELOBJ), ip(2, unix.NFT_MSG_DELCHAIN), ip(1, unix.NFT_MSG_DELTABLE), ip6(2, unix.NFT_MSG_DELRULE)},
-		{ip6(6, unix.NFT_MSG_DELRULE)},
-		{ip6(7, unix.NFT_MSG_DELRULE)},
-		{ip6(4, unix.NFT_MSG_DELRULE), ip6(1, unix.NFT_MSG_DELSET), ip6(3, unix.NFT_MSG_DELOBJ), ip6(2, unix.NFT_MSG_DELCHAIN), ip6(1, unix.NFT_MSG_DELTABLE)},
+		{exit(6, unix.NFT_MSG_DELRULE, "forward")},
+		{exit(6, unix.NFT_MSG_DELRULE, "forward")},
+		{exit(6, unix.NFT_MSG_DELRULE, "forward6")},
+		{exit(1, unix.NFT_MSG_DELRULE, "forward6"), exit(5, unix.NFT_MSG_DELRULE, "postrouting")},
+		{exit(6, unix.NFT_MSG_DELRULE, "postrouting")},
+		{exit(7, unix.NFT_MSG_DELRULE, "postrouting")},
+		slices.Concat([]notifications{exit(6, unix.NFT_MSG_DELRULE, "postrouting"), exit(1, unix.NFT_MSG_DELSET, "flows4"), exit(1, unix.NFT_MSG_DELSET, "flows6")},
+			objects(unix.NFT_MSG_DELOBJ, timeoutObjects[:4]...)),
+		slices.Concat(objects(unix.NFT_MSG_DELOBJ, timeoutObjects[4:]...), dropped),
 	}
-	// flushed is nft -f of flush ruleset and the firewall's table, whose last
-	// datagram holds the firewall's notifications alone
-	flushed = slices.Concat(deleted[:6], [][]notifications{
-		append(slices.Clone(deleted[6]), firewall(1, unix.NFT_MSG_NEWTABLE), firewall(3, unix.NFT_MSG_NEWCHAIN), firewall(2, unix.NFT_MSG_NEWRULE), firewall(1, unix.NFT_MSG_NEWSET), firewall(3, unix.NFT_MSG_NEWSETELEM)),
-		{firewall(2, unix.NFT_MSG_NEWRULE), firewall(1, unix.NFT_MSG_NEWSET), firewall(5, unix.NFT_MSG_NEWSETELEM), firewall(1, unix.NFT_MSG_NEWRULE)},
-	})
-	// the deletions of the ip table, then of the ip6 table, by two writers one
-	// after the other
-	deletedIP = [][]notifications{
-		{ip(6, unix.NFT_MSG_DELRULE)},
-		{ip(6, unix.NFT_MSG_DELRULE)},
-		{ip(7, unix.NFT_MSG_DELRULE)},
-		{ip(4, unix.NFT_MSG_DELRULE), ip(1, unix.NFT_MSG_DELSET), ip(3, unix.NFT_MSG_DELOBJ), ip(2, unix.NFT_MSG_DELCHAIN), ip(1, unix.NFT_MSG_DELTABLE)},
+	// flushed is nft -f of flush ruleset and the firewall's table, whose
+	// notifications follow the deletion's in its last datagram
+	flushed = append(slices.Clone(deleted[:7]), slices.Concat(deleted[7], []notifications{
+		firewall(1, unix.NFT_MSG_NEWTABLE, ""), firewall(1, unix.NFT_MSG_NEWCHAIN, "input-allow"), firewall(1, unix.NFT_MSG_NEWCHAIN, "input"), firewall(1, unix.NFT_MSG_NEWCHAIN, "forward"),
+		firewall(2, unix.NFT_MSG_NEWRULE, "input-allow"), firewall(1, unix.NFT_MSG_NEWSET, "__set0"), firewall(3, unix.NFT_MSG_NEWSETELEM, "__set0"), firewall(1, unix.NFT_MSG_NEWRULE, "input-allow"),
+		firewall(1, unix.NFT_MSG_NEWRULE, "input"), firewall(1, unix.NFT_MSG_NEWSET, "__map0"), firewall(5, unix.NFT_MSG_NEWSETELEM, "__map0"), firewall(1, unix.NFT_MSG_NEWRULE, "input"),
+	}))
+	// ruled is nft -f of one rule added to postrouting
+	ruled = [][]notifications{{exit(1, unix.NFT_MSG_NEWRULE, "postrouting")}}
+	// flushedChain and deletedAfter are two writers one after the other, the
+	// first flushing postrouting and the second deleting the table
+	flushedChain = slices.Repeat([][]notifications{{exit(6, unix.NFT_MSG_DELRULE, "postrouting")}}, 4)
+	deletedAfter = [][]notifications{
+		{exit(6, unix.NFT_MSG_DELRULE, "forward")},
+		{exit(6, unix.NFT_MSG_DELRULE, "forward")},
+		{exit(6, unix.NFT_MSG_DELRULE, "forward6")},
+		slices.Concat([]notifications{exit(1, unix.NFT_MSG_DELRULE, "forward6"), exit(1, unix.NFT_MSG_DELSET, "flows4"), exit(1, unix.NFT_MSG_DELSET, "flows6")},
+			objects(unix.NFT_MSG_DELOBJ, timeoutObjects...), dropped),
 	}
-	deletedIP6 = [][]notifications{
-		{ip6(6, unix.NFT_MSG_DELRULE)},
-		{ip6(7, unix.NFT_MSG_DELRULE)},
-		{ip6(6, unix.NFT_MSG_DELRULE), ip6(1, unix.NFT_MSG_DELSET), ip6(3, unix.NFT_MSG_DELOBJ), ip6(2, unix.NFT_MSG_DELCHAIN), ip6(1, unix.NFT_MSG_DELTABLE)},
-	}
+	// keyedTable is keysTable's transaction of 1024 keys into Table as it
+	// stands, which notifies no table
+	keyedTable = keyed(Table, false, slices.Concat([]int{45}, slices.Repeat([]int{47}, 20), []int{39})...)
 )
 
-func ip(count, kind int) notifications {
-	return notifications{count, kind, unix.NFPROTO_IPV4, translatorTables.Name}
+// The datagrams linux 7.3.1 sent to the kernel exit's monitor under auto with
+// the antispoof filter in its namespace, the two owning Table, and to an
+// owner's monitor of the chain forward in Table alone, for nft 1.1.7 as
+// another writer
+var (
+	// reloaded is nft -f of flush ruleset and a firewall's inet table over
+	// both owners' chains, and remade the filter's pass after it, which makes
+	// the table again with a NEWTABLE of flags 0
+	reloaded = [][]notifications{
+		{exit(6, unix.NFT_MSG_DELRULE, "forward")},
+		{exit(6, unix.NFT_MSG_DELRULE, "forward")},
+		{exit(6, unix.NFT_MSG_DELRULE, "forward6")},
+		{exit(1, unix.NFT_MSG_DELRULE, "forward6"), exit(5, unix.NFT_MSG_DELRULE, "postrouting")},
+		{exit(6, unix.NFT_MSG_DELRULE, "postrouting")},
+		{exit(7, unix.NFT_MSG_DELRULE, "postrouting")},
+		{exit(6, unix.NFT_MSG_DELRULE, "postrouting"), exit(1, unix.NFT_MSG_DELRULE, "antispoof")},
+		{exit(3, unix.NFT_MSG_DELRULE, "antispoof"), exit(8, unix.NFT_MSG_DELRULE, "mesh_entry")},
+		slices.Concat([]notifications{exit(2, unix.NFT_MSG_DELRULE, "mesh_entry"), exit(1, unix.NFT_MSG_DELSET, "flows4"), exit(1, unix.NFT_MSG_DELSET, "flows6")},
+			objects(unix.NFT_MSG_DELSET, antispoofSets...), objects(unix.NFT_MSG_DELOBJ, timeoutObjects...),
+			objects(unix.NFT_MSG_DELCHAIN, "forward", "forward6", "postrouting", "antispoof", "mesh_entry"),
+			[]notifications{exit(1, unix.NFT_MSG_DELTABLE, ""), firewall(1, unix.NFT_MSG_NEWTABLE, ""), firewall(1, unix.NFT_MSG_NEWCHAIN, "input-allow"), firewall(1, unix.NFT_MSG_NEWCHAIN, "input"),
+				firewall(1, unix.NFT_MSG_NEWCHAIN, "forward"), firewall(2, unix.NFT_MSG_NEWRULE, "input-allow"), firewall(1, unix.NFT_MSG_NEWSET, "__set0"), firewall(3, unix.NFT_MSG_NEWSETELEM, "__set0"),
+				firewall(1, unix.NFT_MSG_NEWRULE, "input-allow")}),
+		{firewall(1, unix.NFT_MSG_NEWRULE, "input"), firewall(1, unix.NFT_MSG_NEWSET, "__map0"), firewall(5, unix.NFT_MSG_NEWSETELEM, "__map0"), firewall(1, unix.NFT_MSG_NEWRULE, "input")},
+	}
+	remade = [][]notifications{
+		slices.Concat([]notifications{flagged(0), exit(1, unix.NFT_MSG_NEWCHAIN, "antispoof"), exit(1, unix.NFT_MSG_NEWCHAIN, "mesh_entry")},
+			objects(unix.NFT_MSG_NEWSET, antispoofSets...), []notifications{exit(4, unix.NFT_MSG_NEWRULE, "antispoof"), exit(3, unix.NFT_MSG_NEWRULE, "mesh_entry")}),
+		{exit(7, unix.NFT_MSG_NEWRULE, "mesh_entry")},
+	}
+	// slept is nft add table inet Table setting the flag dormant over both
+	// owners' chains, and woken the filter's pass after it, whose NewTable clears the
+	// flag with a NEWTABLE of flags 0
+	slept = [][]notifications{{flagged(unix.NFT_TABLE_F_DORMANT)}}
+	woken = [][]notifications{
+		{flagged(0), exit(1, unix.NFT_MSG_NEWCHAIN, "antispoof"), exit(4, unix.NFT_MSG_DELRULE, "antispoof"), exit(1, unix.NFT_MSG_NEWCHAIN, "mesh_entry"), exit(6, unix.NFT_MSG_DELRULE, "mesh_entry")},
+		slices.Concat([]notifications{exit(4, unix.NFT_MSG_DELRULE, "mesh_entry")}, objects(unix.NFT_MSG_NEWSET, antispoofSets...),
+			[]notifications{exit(4, unix.NFT_MSG_NEWRULE, "antispoof"), exit(1, unix.NFT_MSG_NEWRULE, "mesh_entry")}),
+		{exit(9, unix.NFT_MSG_NEWRULE, "mesh_entry")},
+	}
+	// cleared is nft add table inet Table { } over the table set dormant
+	cleared = [][]notifications{{flagged(0)}}
+)
+
+// antispoofSets are the antispoof filter's sets, in the order the kernel
+// notifies them
+var antispoofSets = []string{"carved4", "carved6", "owned4", "owned6", "none4", "none6"}
+
+// flooded is keysTable's transaction of 256 keys into another table, which it makes
+func flooded(table string) [][]notifications { return keyed(table, true, 44, 47, 47, 47, 47, 24) }
+
+// dropped is the end of a deletion of the table: its chains, then the table
+var dropped = []notifications{exit(1, unix.NFT_MSG_DELCHAIN, "forward"), exit(1, unix.NFT_MSG_DELCHAIN, "forward6"), exit(1, unix.NFT_MSG_DELCHAIN, "postrouting"), exit(1, unix.NFT_MSG_DELTABLE, "")}
+
+// exit is notifications in Table naming name, the table alone where it is empty
+func exit(count, kind int, name string) notifications {
+	return notifications{count, kind, unix.NFPROTO_INET, Table, name, 0}
 }
 
-func ip6(count, kind int) notifications {
-	return notifications{count, kind, unix.NFPROTO_IPV6, translatorTables.Name}
+// flagged is one NEWTABLE of Table carrying flags
+func flagged(flags uint32) notifications {
+	n := exit(1, unix.NFT_MSG_NEWTABLE, "")
+	n.flags = flags
+	return n
 }
 
-func firewall(count, kind int) notifications {
-	return notifications{count, kind, unix.NFPROTO_INET, "nixos-fw"}
+// objects is one notification of kind in Table for each object of names
+func objects(kind int, names ...string) []notifications {
+	out := make([]notifications, 0, len(names))
+	for _, name := range names {
+		out = append(out, exit(1, kind, name))
+	}
+	return out
+}
+
+func firewall(count, kind int, name string) notifications {
+	return notifications{count, kind, unix.NFPROTO_INET, "nixos-fw", name, 0}
+}
+
+// keyed is keysTable's transaction into table as the kernel sent it: the
+// table where the transaction made it, the set, then the elements of each
+// datagram, as many as counts gives
+func keyed(table string, made bool, counts ...int) [][]notifications {
+	datagrams := make([][]notifications, len(counts))
+	for i, count := range counts {
+		datagrams[i] = []notifications{{count, unix.NFT_MSG_NEWSETELEM, unix.NFPROTO_INET, table, keysSet, 0}}
+	}
+	first := []notifications{{1, unix.NFT_MSG_NEWSET, unix.NFPROTO_INET, table, keysSet, 0}}
+	if made {
+		first = append([]notifications{{1, unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, table, "", 0}}, first...)
+	}
+	datagrams[0] = append(first, datagrams[0]...)
+	return datagrams
 }
 
 // drained is the read that finds the socket's queue empty
@@ -215,9 +341,11 @@ func readAsSent(reads []monitorRead) []monitorRead {
 // One transaction of another writer's that changes the owner's tables wakes
 // Changed once, at the NFT_MSG_NEWGEN that ends it, however many datagrams its
 // notifications fill and however often the monitor finds the queue empty
-// between them, and the owner's own transactions and another table's wake
-// nothing. A wake for each datagram would take the owner's readiness again
-// after the pass that put its rules back.
+// between them, and the owner's own transactions, another table's and a
+// NEWTABLE of flags 0, which makes the table or clears its flags, wake
+// nothing. A wake for each datagram, or for another owner's remake of the
+// table after a reload, would take the owner's readiness again after the pass
+// that put its rules back.
 func TestMonitorWakesOnceAtTheEndOfAnotherWritersTransaction(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -225,14 +353,28 @@ func TestMonitorWakesOnceAtTheEndOfAnotherWritersTransaction(t *testing.T) {
 		// changed is each read after which Changed woke
 		changed []int
 	}{
-		{"another writer's deletion of both tables", transaction(otherPort, 3, deleted...), []int{7}},
-		{"another writer's deletion read as the kernel sends it", readAsSent(transaction(otherPort, 3, deleted...)), []int{14}},
+		// the NEWGEN after the deletion's 8 datagrams
+		{"another writer's deletion of the table", transaction(otherPort, 3, deleted...), []int{8}},
+		// the same NEWGEN behind 8 datagrams and 8 drains
+		{"another writer's deletion read as the kernel sends it", readAsSent(transaction(otherPort, 3, deleted...)), []int{16}},
+		// the NEWGEN after the flush's 8 datagrams
 		{"a ruleset flush that writes a firewall's table", transaction(otherPort, 3, flushed...), []int{8}},
-		{"another writer's one rule", transaction(otherPort, 3, []notifications{ip(1, unix.NFT_MSG_NEWRULE)}), []int{1}},
-		{"two writers' deletions back to back", slices.Concat(transaction(otherPort, 3, deletedIP...), transaction(thirdPort, 4, deletedIP6...)), []int{4, 8}},
+		// the NEWGEN after the rule's datagram
+		{"another writer's one rule", transaction(otherPort, 3, ruled...), []int{1}},
+		// the NEWGEN after the flush of the chain's 4 datagrams, then the one
+		// after the deletion's 4
+		{"two writers one after the other", slices.Concat(transaction(otherPort, 3, flushedChain...), transaction(thirdPort, 4, deletedAfter...)), []int{4, 9}},
 		{"the owner's install", transaction(ownPort, 2, installed...), nil},
 		{"the owner's withdrawal", transaction(ownPort, 5, deleted...), nil},
-		{"another writer's firewall table alone", transaction(otherPort, 3, flushed[7]), nil},
+		{"another writer's tables of other names", slices.Concat(transaction(otherPort, 3, flooded("flood0")...), transaction(thirdPort, 4, flooded("flood1")...), transaction(otherPort, 5, flooded("flood2")...)), nil},
+		{"another writer's set of another name in the table", transaction(otherPort, 3, keyedTable...), nil},
+		// the NEWGEN after the reload's 10 datagrams, and nothing for the
+		// filter's remake's 3 reads after it
+		{"another owner making the table again after a reload", slices.Concat(transaction(otherPort, 4, reloaded...), transaction(siblingPort, 5, remade...)), []int{10}},
+		// the NEWGEN after the dormant set's datagram, and nothing for the
+		// filter's pass's 4 reads after it
+		{"another writer setting the table dormant", slices.Concat(transaction(otherPort, 4, slept...), transaction(siblingPort, 5, woken...)), []int{1}},
+		{"another writer clearing the table's flags", transaction(otherPort, 4, cleared...), nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := feedMonitor(t)
@@ -264,9 +406,9 @@ func TestMonitorWakesChangedAtOnceFromALossToTheDrain(t *testing.T) {
 	objects, end := deletion[:len(deletion)-1], deletion[len(deletion)-1:]
 	install := transaction(ownPort, 4, installed...)
 	flush := transaction(otherPort, 5, flushed...)
-	rule := transaction(otherPort, 5, []notifications{ip(1, unix.NFT_MSG_NEWRULE)})
-	deletionIP := transaction(otherPort, 3, deletedIP...)
-	deletionIP6 := transaction(thirdPort, 4, deletedIP6...)
+	rule := transaction(otherPort, 5, ruled...)
+	first := transaction(otherPort, 3, flushedChain...)
+	second := transaction(thirdPort, 4, deletedAfter...)
 	drain := []monitorRead{drained}
 	cut := end[0].datagram
 	for _, loss := range []struct {
@@ -284,13 +426,25 @@ func TestMonitorWakesChangedAtOnceFromALossToTheDrain(t *testing.T) {
 			// woke
 			changed, missed []int
 		}{
-			{"ahead of a deletion's objects", slices.Concat(lost, deletion, drain, flush), []int{1, 2, 3, 4, 5, 6, 7, 18}, []int{0}},
-			{"in the middle of a deletion", slices.Concat(deletion[:3], lost, deletion[3:], drain, rule), []int{3, 4, 5, 6, 7, 11}, []int{3}},
-			{"ahead of a deletion's end", slices.Concat(objects, lost, end, drain, install, rule), []int{7, 19}, []int{7}},
-			{"that took a deletion's end", slices.Concat(lost, objects, drain, install, flush), []int{1, 2, 3, 4, 5, 6, 7, 25}, []int{0}},
-			{"that took the second of two writers' ends", slices.Concat(lost, deletionIP, deletionIP6[:len(deletionIP6)-1], drain, install, rule), []int{1, 2, 3, 4, 6, 7, 8, 19}, []int{0}},
+			// each of the deletion's 8 datagrams at once, then the flush's NEWGEN
+			// after the drain
+			{"ahead of a deletion's objects", slices.Concat(lost, deletion, drain, flush), []int{1, 2, 3, 4, 5, 6, 7, 8, 19}, []int{0}},
+			// the loss for the 3 datagrams read before it, each of the other 5 at
+			// once, then the rule's NEWGEN after the drain
+			{"in the middle of a deletion", slices.Concat(deletion[:3], lost, deletion[3:], drain, rule), []int{3, 4, 5, 6, 7, 8, 12}, []int{3}},
+			// the loss for the deletion's 8 datagrams, then the rule's NEWGEN
+			// after the drain and the owner's install
+			{"ahead of a deletion's end", slices.Concat(objects, lost, end, drain, install, rule), []int{8, 21}, []int{8}},
+			// each of the deletion's 8 datagrams at once, then the flush's NEWGEN
+			{"that took a deletion's end", slices.Concat(lost, objects, drain, install, flush), []int{1, 2, 3, 4, 5, 6, 7, 8, 27}, []int{0}},
+			// each of the first writer's 4 datagrams and the second's 4 at once,
+			// then the rule's NEWGEN
+			{"that took the second of two writers' ends", slices.Concat(lost, first, second[:len(second)-1], drain, install, rule), []int{1, 2, 3, 4, 6, 7, 8, 9, 21}, []int{0}},
+			// the flush's NEWGEN after the drain
 			{"with nothing queued behind it", slices.Concat(lost, drain, flush), []int{10}, []int{0}},
-			{"and a second in its span", slices.Concat(lost, deletion[:3], lost, deletion[3:], drain, flush), []int{1, 2, 3, 5, 6, 7, 8, 19}, []int{0, 4}},
+			// each datagram at once on either side of the second loss, which ends
+			// nothing, then the flush's NEWGEN
+			{"and a second in its span", slices.Concat(lost, deletion[:3], lost, deletion[3:], drain, flush), []int{1, 2, 3, 5, 6, 7, 8, 9, 20}, []int{0, 4}},
 		} {
 			t.Run(loss.name+" "+c.name, func(t *testing.T) {
 				m := feedMonitor(t)
@@ -355,11 +509,13 @@ func TestMonitorWakesMissedAndAnyChangeReadBeforeAReadErrorAndStops(t *testing.T
 // for notifications it lost to an overflow or could not parse, since another
 // table's large transaction overflows the socket as readily as a flush of the
 // owner's. After such a loss, with no read since finding the queue empty, it
-// wakes Changed at once for another writer's deletion of the owner's table
-// and nothing at that transaction's end, and it stops on a closed socket
+// wakes Changed at once for the last datagram of another writer's deletion of
+// the owner's table, which holds the table's deletion, and nothing at that
+// transaction's end, and it stops on a closed socket
 func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	m := feedMonitor(t)
-	deletion := transaction(otherPort, 3, []notifications{ip(1, unix.NFT_MSG_DELTABLE)})
+	deletion := transaction(otherPort, 3, deleted...)
+	last, end := deletion[len(deletion)-2], deletion[len(deletion)-1]
 	for _, c := range []struct {
 		name            string
 		read            monitorRead
@@ -367,8 +523,8 @@ func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
 	}{
 		{"an overflow", monitorRead{err: unix.ENOBUFS}, false, true},
 		{"a datagram cut short", monitorRead{datagram: deletion[0].datagram[:unix.SizeofNlMsghdr+SizeofNfgenmsg]}, false, true},
-		{"another writer deleting its table", deletion[0], true, false},
-		{"the end of that writer's transaction", deletion[1], false, false},
+		{"another writer deleting its table", last, true, false},
+		{"the end of that writer's transaction", end, false, false},
 	} {
 		if changed, missed := m.answer(t, c.read); changed != c.changed || missed != c.missed {
 			t.Errorf("%s woke changed %v and missed %v, want %v and %v", c.name, changed, missed, c.changed, c.missed)

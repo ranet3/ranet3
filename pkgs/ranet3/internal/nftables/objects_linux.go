@@ -79,9 +79,18 @@ func DecodeTimeout(message Message) (t Timeout, ok bool) {
 	return t, ok
 }
 
+// Delete fails while a rule attaches the object
+func (t Timeout) Delete(proto uint8) Request {
+	body := PutNfgenmsg(nil, proto)
+	body = PutAttrString(body, unix.NFTA_OBJ_TABLE, t.Table)
+	body = PutAttrString(body, unix.NFTA_OBJ_NAME, t.Name)
+	body = PutAttrBE32(body, unix.NFTA_OBJ_TYPE, unix.NFT_OBJECT_CT_TIMEOUT)
+	return Request{Kind: Command(unix.NFT_MSG_DELOBJ), Body: body}
+}
+
 // Fault names how the object a dump holds differs from t as Create writes it,
 // empty for t as written and for any other object. Any difference remakes the
-// table, since nf_tables has no update for a ct timeout.
+// object, since nf_tables has no update for a ct timeout.
 func (t Timeout) Fault(message Message) (fault string, remake bool) {
 	held, ok := DecodeTimeout(message)
 	if !ok || held.Table != t.Table || held.Name != t.Name {
@@ -95,12 +104,13 @@ func (t Timeout) Fault(message Message) (fault string, remake bool) {
 }
 
 // readTimeout is t's fault among the objects a dump holds, one missing among
-// them
-func readTimeout(t Timeout, objects []Message) (fault string, remake bool) {
+// them, and whether one of its name is there
+func readTimeout(t Timeout, objects []Message) (fault string, remake, found bool) {
 	for _, reply := range objects {
 		if held, ok := DecodeTimeout(reply); ok && held.Table == t.Table && held.Name == t.Name {
-			return t.Fault(reply)
+			fault, remake = t.Fault(reply)
+			return fault, remake, true
 		}
 	}
-	return fmt.Sprintf("its ct timeout %s is missing", t.Name), false
+	return fmt.Sprintf("its ct timeout %s is missing", t.Name), false, false
 }

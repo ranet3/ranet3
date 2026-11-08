@@ -187,7 +187,7 @@ func TestBorderSetIsHeadedByTheWordItsBackendCallsItBy(t *testing.T) {
 // twelve packets, nothing forwarded and no own prefix of IPv6
 func fallbackFixture() *FallbackTable {
 	return &FallbackTable{
-		Where: "nftables table inet ranet3_fallback chain fallback", Hook: "postrouting", Priority: 2147483646,
+		Where: "nftables table inet ranet3 chains fallback and output", Hook: "postrouting", Priority: 2147483646,
 		State: "holding", Held: true,
 		Rules: []FallbackTableRule{
 			{Spec: "oifname { lo, ranet3 } accept"},
@@ -214,7 +214,7 @@ func fallbackFixture() *FallbackTable {
 	}
 }
 
-// The switch's table renders after the border's, holding with its lines and
+// The switch's chains render after the border's, holding with their lines and
 // sets, not held, and unread
 func TestRulesRenderTheFallbackTable(t *testing.T) {
 	info := rulesFixture()
@@ -225,7 +225,7 @@ func TestRulesRenderTheFallbackTable(t *testing.T) {
 	goldenJSON(t, "rules-fallback.json", info.Fallback)
 
 	gone := fallbackFixture()
-	gone.State, gone.Reason, gone.Held, gone.Rules, gone.Sets = "not holding", "the table is missing", false, nil, nil
+	gone.State, gone.Reason, gone.Held, gone.Rules, gone.Sets = "not holding", "its chains are missing", false, nil, nil
 	unread := fallbackFixture()
 	unread.Err, unread.Rules, unread.Sets = "nftables: dump tables: operation not permitted", nil, nil
 	out.Reset()
@@ -264,7 +264,7 @@ func TestRulesRenderTheDarwinSwitch(t *testing.T) {
 }
 
 // in mode 3 the view lists the two steered defaults of the reconciler's table
-// after the lookups and before the antispoof filter's table, which every Linux
+// after the lookups and before the antispoof filter's chains, which every Linux
 // node writes, installed while the path is up and the mesh holds a live
 // session, and withdrawn with the SID that took the path down and the table's
 // answer for it
