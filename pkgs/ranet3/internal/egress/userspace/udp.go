@@ -444,7 +444,7 @@ func socketReason(err error) string {
 // refuse counts a datagram refused for reason, and answers it past the limit
 // where a limit refused it: a source's share, the flows or the descriptors
 func (u *udpRelay) refuse(raw []byte, reason string) {
-	u.x.counts.refuse(reason)
+	u.x.refused(raw, reason)
 	switch reason {
 	case reasonShare, reasonTotal, reasonDescriptors:
 		u.x.answers.Answer(raw, netstack.ExitPastLimit, 0)
@@ -890,8 +890,8 @@ func (u *udpRelay) hairpin(raw []byte, d datagram) {
 	u.mu.RLock()
 	target := u.holding(d.to.Addr(), d.to.Port())
 	u.mu.RUnlock()
-	if target == nil || target.source.IsValid() && target.source != d.to.Addr() {
-		u.x.counts.refuse(reasonDestination)
+	if target == nil {
+		u.x.refused(raw, reasonDestination)
 		u.x.answers.Answer(raw, netstack.ExitProhibited, 0)
 		return
 	}
@@ -1033,7 +1033,7 @@ func (u *udpRelay) leafError(raw []byte) {
 	}
 	switch {
 	case !ok:
-		u.x.counts.drop(reasonLeafErrorUnmapped)
+		u.x.counts.dropUntracked(version == 6, reasonLeafErrorUnmapped)
 	case u.x.rt.Platform.Raw == nil:
 		u.x.counts.drop(reasonLeafErrorUnsent)
 	default:

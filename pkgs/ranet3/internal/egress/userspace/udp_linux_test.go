@@ -10,6 +10,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"syscall"
 	"testing"
@@ -17,6 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
@@ -161,6 +163,42 @@ func TestDatagramWithDFIsAnsweredTooBigPastThePath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The worst mix of flows, each a UDP mapping's first destination holding the
+// mapping's receiving socket and its own connected one, keeps the exit's
+// descriptors within the process's limit less the node's daemonFiles: Within
+// holds Flows to what those descriptors hold at flowFiles each, and the flow
+// past it is refused for the total
+func TestWorstMixOfFlowsKeepsTheNodesDescriptors(t *testing.T) {
+	const files = daemonFiles + 2*24
+	limits, err := Within(Memory{GoLimit: 32 << 20}, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Limits = limits })
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	before := openFiles(t)
+	for i := range limits.Flows + 6 {
+		leaf := netip.AddrPortFrom(leaf4, uint16(40000+i))
+		h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("one destination")), false)
+	}
+	if held := openFiles(t) - before; held > files-daemonFiles {
+		t.Errorf("%d flows hold %d descriptors, past the %d the process's limit leaves past the node's %d", limits.Flows, held, files-daemonFiles, daemonFiles)
+	}
+	if got := h.count(true, reasonTotal); got != 6 {
+		t.Errorf("refused %d flows for the total, want the 6 past Flows %d", got, limits.Flows)
+	}
+}
+
+// openFiles is how many descriptors the process holds open
+func openFiles(t *testing.T) int {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(entries)
 }
 
 // Withdrawing the exit ends every mapping and gives back its flows, and once

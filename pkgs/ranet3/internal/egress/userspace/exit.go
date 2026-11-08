@@ -98,6 +98,10 @@ type Exit struct {
 	// identification or an IPv6 fragment's
 	ident    atomic.Uint32
 	timeWait *timeWait
+	// refusals spaces the egress.refused records on reportClock, the
+	// nanoseconds since New on the monotonic clock
+	refusals    spaced
+	reportClock func() int64
 	// answers is the pump's lane, which answers a new flow past a limit, set
 	// at Run's start before any packet is taken
 	answers Lane
@@ -155,6 +159,9 @@ type passStats struct {
 type counts struct {
 	laneDropped, unlaid atomic.Uint64
 	reused, closed      atomic.Uint64
+	// share counts the flows refused past their source's share, by family,
+	// and untracked a leaf's packets dropped for want of a flow to take them
+	share, untracked [2]atomic.Uint64
 
 	mu               sync.Mutex
 	refused, dropped map[string]uint64
@@ -162,6 +169,13 @@ type counts struct {
 
 func (c *counts) refuse(reason string) { c.add(&c.refused, reason) }
 func (c *counts) drop(reason string)   { c.add(&c.dropped, reason) }
+
+// dropUntracked counts a leaf's packet of the family ipv6 names dropped for
+// reason, which is that no flow takes it
+func (c *counts) dropUntracked(ipv6 bool, reason string) {
+	c.drop(reason)
+	c.untracked[family(ipv6)].Add(1)
+}
 
 func (c *counts) add(into *map[string]uint64, reason string) {
 	c.mu.Lock()
@@ -208,6 +222,8 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 		}
 	}
 	x := &Exit{cfg: cfg, rt: rt, link: newLink(rt.Limits.Link), seed: maphash.MakeSeed(), stop: make(chan struct{}), wake: make(chan struct{}, 1)}
+	started := time.Now()
+	x.reportClock = func() int64 { return int64(time.Since(started)) }
 	x.pump = &pump{link: x.link, unlaid: func() { x.counts.unlaid.Add(1) }}
 	s, err := newStack(x.link, rt.Limits.Window, stackHandlers{udp: x.takeUDP, icmp: x.takeICMP})
 	if err != nil {
@@ -271,7 +287,8 @@ func (x *Exit) Announce() []netip.Prefix {
 	return nil
 }
 
-// Status is the last pass and the capability the exit carries
+// Status is the last pass, the capability the exit carries, the flows
+// refused past a source's share in each family, and the exit's detail
 func (x *Exit) Status() egress.Status {
 	pass := x.lastPass()
 	advertise := make([]netip.Prefix, 0, len(x.cfg.Advertise))
@@ -283,7 +300,10 @@ func (x *Exit) Status() egress.Status {
 		Ready4:  pass.Ready4, Ready6: pass.Ready6, Unready: pass.Unready,
 		Advertise: advertise, Announced: pass.Announced,
 		Translate: x.cfg.Translate, FlowsPerSource: x.cfg.SourceLimit(),
+		Refused4: x.counts.share[0].Load(), Refused6: x.counts.share[1].Load(),
+		Dropped4: x.counts.untracked[0].Load(), Dropped6: x.counts.untracked[1].Load(),
 		PassAt: pass.At,
+		Flows:  x.flowsStatus(),
 	}
 }
 

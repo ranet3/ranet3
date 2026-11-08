@@ -621,6 +621,69 @@ type EgressStatus struct {
 	// connection keeps it.
 	Conflicts []string `json:"conflicts,omitempty"`
 	Err       string   `json:"err,omitempty"`
+	// Userspace is the detail of an exit that carries each flow on sockets
+	// of its own rather than through rules, absent for one that installs
+	// rules. Where it is set, the rules' counts read zero and conntrack's are
+	// absent.
+	Userspace *EgressUserspace `json:"userspace,omitempty"`
+}
+
+// EgressUserspace is the userspace exit's detail: the flows it holds in each
+// family, a UDP mapping and each of its destinations one flow each, the TCP
+// connections being dialed and the leaf-side endpoints in TIME_WAIT, what it
+// runs under and the bytes its TCP buffers hold now, the new flows refused
+// and the packets dropped by why, the TIME_WAIT endpoints a new SYN reused
+// and those closed early past the limit, and the sources holding the most
+// flows, most first.
+type EgressUserspace struct {
+	TCP      EgressFlows         `json:"tcp"`
+	UDP      EgressFlows         `json:"udp"`
+	Echo     EgressFlows         `json:"echo"`
+	Dialing  int                 `json:"dialing"`
+	TimeWait int                 `json:"time_wait"`
+	Limits   EgressLimits        `json:"limits"`
+	Buffered uint64              `json:"buffered"`
+	Refused  map[string]uint64   `json:"refused,omitempty"`
+	Dropped  map[string]uint64   `json:"dropped,omitempty"`
+	Reused   uint64              `json:"reused"`
+	Closed   uint64              `json:"closed"`
+	Sources  []EgressSourceFlows `json:"sources,omitempty"`
+}
+
+// EgressFlows is a count of flows open in each family
+type EgressFlows struct {
+	IPv4 int `json:"ipv4"`
+	IPv6 int `json:"ipv6"`
+}
+
+// EgressLimits is the userspace exit's bounds: its budget in bytes
+// and the share of memory it is, go_limit for half of what Go's memory limit
+// leaves past the node's heap and host for a sixteenth of the host's memory,
+// then the most flows, TCP
+// connections, dials and TIME_WAIT endpoints it holds, the window of each
+// TCP flow, and the bytes the lanes and the link hold.
+type EgressLimits struct {
+	Budget      int64  `json:"budget"`
+	From        string `json:"from"`
+	Flows       int    `json:"flows"`
+	Connections int    `json:"connections"`
+	Dials       int    `json:"dials"`
+	TimeWait    int    `json:"time_wait"`
+	Window      int    `json:"window"`
+	Lanes       int64  `json:"lanes"`
+	Link        int64  `json:"link"`
+}
+
+// The shares of memory an EgressLimits budget is
+const (
+	EgressBudgetGoLimit = "go_limit"
+	EgressBudgetHost    = "host"
+)
+
+// EgressSourceFlows is the flows one source holds open through the exit
+type EgressSourceFlows struct {
+	Source netip.Addr `json:"source"`
+	Flows  int        `json:"flows"`
 }
 
 // EgressPackets is a count of packets in each family as the last pass read

@@ -6,6 +6,7 @@ package control
 import (
 	"encoding/json"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -323,6 +324,71 @@ func TestStatusEgressLineRendersAsTheGoldenFile(t *testing.T) {
 	}
 	out.WriteString(egressLine(EgressStatus{Enabled: true, Where: "nftables ip ranet3, ip6 ranet3", Installed: 64, Untranslated: 3108371}) + "\n")
 	golden(t, "status-egress.txt", []byte(out.String()))
+}
+
+// userspaceFixture is an exit carrying its flows itself, its budget from
+// from, with flows in both families, refusals and drops, and two sources
+func userspaceFixture(from string) EgressStatus {
+	budget := int64(16 << 20)
+	if from == EgressBudgetHost {
+		budget = 4 << 30
+	}
+	return EgressStatus{
+		Enabled: true, Ready: []string{"ipv4", "ipv6"}, FlowsPerSource: 4096,
+		Refused: EgressPackets{IPv4: 2},
+		Userspace: &EgressUserspace{
+			TCP: EgressFlows{IPv4: 11, IPv6: 3}, UDP: EgressFlows{IPv4: 4, IPv6: 2}, Echo: EgressFlows{IPv6: 1},
+			Dialing: 3, TimeWait: 210, Buffered: 3250586,
+			Limits: EgressLimits{
+				Budget: budget, From: from, Flows: 10240, Connections: 985, Dials: 985, TimeWait: 985,
+				Window: 1 << 20, Lanes: 4 << 20, Link: 4 << 20,
+			},
+			Refused: map[string]uint64{"share": 2, "descriptors": 1},
+			Dropped: map[string]uint64{"lane full": 7, "udp checksum": 1},
+			Reused:  5, Closed: 1,
+			Sources: []EgressSourceFlows{{Source: netip.MustParseAddr("192.0.2.65"), Flows: 18}, {Source: netip.MustParseAddr("3fff::41"), Flows: 6}},
+		},
+	}
+}
+
+// the userspace exit's egress line names it with its flows in place of the
+// rules, and the two lines under it give its flows against its limits and its
+// buffers against its budget with where the budget came from, for each source
+func TestStatusEgressUserspaceRendersAsTheGoldenFile(t *testing.T) {
+	var out strings.Builder
+	for _, from := range []string{EgressBudgetGoLimit, EgressBudgetHost} {
+		e := userspaceFixture(from)
+		pairs(&out, [][]string{{"Egress", egressLine(e)}, {"Flows", userspaceFlowsLine(*e.Userspace)}, {"Buffers", userspaceBuffersLine(*e.Userspace)}})
+	}
+	golden(t, "status-egress-userspace.txt", []byte(out.String()))
+}
+
+// the flows and buffers rows sit right under the egress row, above the
+// antispoof row, and appear for no exit that installs rules
+func TestStatusPlacesTheUserspaceRowsUnderEgress(t *testing.T) {
+	status := downStatus()
+	status.Down = nil
+	status.Border = &BorderStatus{Where: "nftables table inet ranet3 chain mesh_entry", Ready: true}
+	for _, test := range []struct {
+		egress EgressStatus
+		want   []string
+	}{
+		{userspaceFixture(EgressBudgetGoLimit), []string{"Egress", "Flows", "Buffers", "Antispoof"}},
+		{EgressStatus{Enabled: true, Where: "nftables ip ranet3", Installed: 1}, []string{"Egress", "Antispoof"}},
+	} {
+		status.Egress = test.egress
+		var out strings.Builder
+		RenderStatus(&out, status)
+		var names []string
+		for line := range strings.Lines(out.String()) {
+			if name, _, _ := strings.Cut(line, " "); slices.Contains([]string{"Egress", "Flows", "Buffers", "Antispoof"}, name) {
+				names = append(names, name)
+			}
+		}
+		if !slices.Equal(names, test.want) {
+			t.Errorf("the status rows read %v, want %v", names, test.want)
+		}
+	}
 }
 
 // the antispoof row follows the egress row, naming where the table is, what it

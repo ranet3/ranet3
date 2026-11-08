@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -108,6 +109,8 @@ type Client struct {
 	// whenever it is not ready and the set it may announce changes under a
 	// running node.
 	exit atomic.Pointer[egress.Exit]
+	// memory is Go's memory limit as the node holds it beside an exit sized within a budget
+	memory memoryLimit
 	// egressServes is the translator's last word on whether the egress SIDs are served
 	egressServes atomic.Bool
 	// republishMu runs one republish at a time, each reading the stored
@@ -333,6 +336,8 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 		started: time.Now(),
 		events:  bus,
 		network: network,
+		// read once, before the node sets a limit of its own
+		memory: memoryLimit{given: debug.SetMemoryLimit(-1)},
 
 		borderNetwork: make(chan struct{}, 1),
 	}
@@ -497,7 +502,8 @@ func (c *Client) Close() {
 // Republish reads its announcement, the status renders its Status, and down and
 // up reach its SetEnabled, a node that starts down handing it its stop here.
 // An exit that builds packets of its own takes the host's default TTL and hop
-// limit here and at each reload.
+// limit here and at each reload. Go's memory limit is held for an exit sized
+// within a budget here and at each reload, until ExitStopped.
 func (c *Client) SetExit(exit egress.Exit) {
 	c.runningMu.Lock()
 	defer c.runningMu.Unlock()
@@ -505,6 +511,9 @@ func (c *Client) SetExit(exit egress.Exit) {
 	c.exit.Store(&exit)
 	if limited, ok := exit.(hopLimited); ok {
 		c.handHopLimits(limited)
+	}
+	if b, ok := exit.(budgeted); ok {
+		c.weigh(b, "start")
 	}
 	if c.downSince.Load() != nil {
 		exit.SetEnabled(false)

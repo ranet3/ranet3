@@ -97,6 +97,55 @@ type Status struct {
 	// Rules is the detail of a backend that installs rules in the host's
 	// packet filter, nil for one that holds none
 	Rules *Rules
+	// Flows is the detail of a backend that carries each flow on sockets of
+	// its own, nil for one that installs rules
+	Flows *Flows
+}
+
+// Flows is a userspace exit's detail: the flows it holds, what it runs under,
+// and what it refused and dropped
+type Flows struct {
+	// TCP, UDP and Echo are the flows open in IPv4 and IPv6, a UDP mapping and
+	// each of its destinations one flow each
+	TCP, UDP, Echo [2]int
+	// Dialing is the TCP connections being dialed, and TimeWait the
+	// leaf-side endpoints in TIME_WAIT
+	Dialing, TimeWait int
+	// Limits holds the exit's bounds, and Buffered the bytes its TCP buffers
+	// hold now
+	Limits   FlowLimits
+	Buffered uint64
+	// Refused counts the new flows refused by why, and Dropped the packets
+	// dropped by why
+	Refused, Dropped map[string]uint64
+	// Reused counts the TIME_WAIT endpoints a new SYN took, and Closed those
+	// closed early past Limits.TimeWait
+	Reused, Closed uint64
+	// Sources is the sources holding the most flows, most first
+	Sources []SourceFlows
+}
+
+// FlowLimits is a userspace exit's bounds: its budget in bytes and the
+// share of memory it is, BudgetGoLimit or BudgetHost, and the limits the
+// budget gives
+type FlowLimits struct {
+	Budget                                      int64
+	From                                        string
+	Flows, Connections, Dials, TimeWait, Window int
+	Lanes, Link                                 int64
+}
+
+// The shares of memory a userspace exit's budget is: half of Go's memory
+// limit, or a sixteenth of the host's memory where no Go limit is set
+const (
+	BudgetGoLimit = "go_limit"
+	BudgetHost    = "host"
+)
+
+// SourceFlows is the flows one source holds open through the exit
+type SourceFlows struct {
+	Source netip.Addr
+	Flows  int
 }
 
 // ExitDebug is an exit's detail as a debug read finds it, which a backend

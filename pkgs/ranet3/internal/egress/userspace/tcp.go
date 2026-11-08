@@ -148,7 +148,7 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 	}
 	req.Complete(false)
 	ep.SocketOptions().SetKeepAlive(true)
-	f := &tcpFlow{ep: ep, queue: &queue, conn: conn, copies: &r.copies}
+	f := &tcpFlow{ep: ep, queue: &queue, conn: conn, copies: &r.copies, ipv6: leaf.Addr().Is6()}
 	r.mu.Lock()
 	delete(r.dialing, id)
 	r.dials--
@@ -277,9 +277,9 @@ func unreachableFrom(offending []byte, cause icmpError, ttl uint8) []byte {
 // refuse answers pkt, a new flow past a limit, past the limit through the
 // answer lane, and counts it
 func (x *Exit) refuse(pkt *stack.PacketBuffer, reason string) {
-	x.counts.refuse(reason)
 	view := pkt.ToView()
 	defer view.Release()
+	x.refused(view.AsSlice(), reason)
 	x.answers.Answer(view.AsSlice(), netstack.ExitPastLimit, 0)
 }
 
@@ -314,6 +314,8 @@ type tcpFlow struct {
 	// payload is the reader the flow hands the endpoint's Write, emptied
 	// after each call, since the endpoint keeps the last reader it was handed
 	payload payload
+	// ipv6 is the flow's family, which the status counts it under
+	ipv6 bool
 }
 
 // reset resets both ends: the leaf's from the stack and the server's from

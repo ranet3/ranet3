@@ -1,0 +1,18 @@
+Exit       userspace, 21 flows, 2 ipv4 packets refused past 4096 a source, egress ready for ipv4 ipv6, last pass 2 minutes ago
+Flows      14 TCP of 985, 6 UDP, 1 echo of 10240, 3 dialing, 210 in TIME_WAIT
+Buffers    3.1 MiB of 16.0 MiB, half of what Go's memory limit leaves past the node's heap
+TCP        11 ipv4, 3 ipv6
+UDP        4 ipv4, 2 ipv6
+Echo       0 ipv4, 1 ipv6
+Limits     10240 flows, 985 TCP connections, 985 dials, 985 in TIME_WAIT, a window of 1.0 MiB, lanes of 4.0 MiB, a link of 4.0 MiB
+TIME_WAIT  5 reused by a new SYN, 1 closed early past the limit
+Memory     Go's limit 64.0 MiB, given, the node's own heap 40.0 MiB past the 32.0 MiB the budget leaves it until a restart
+Refused
+  descriptors  1
+  share        2
+Dropped
+  lane full     7
+  udp checksum  1
+Sources
+  192.0.2.65  18 flows
+  3fff::41    6 flows

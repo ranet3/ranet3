@@ -67,6 +67,11 @@ func RenderStatus(w io.Writer, s Status) {
 	if s.Border != nil {
 		rows = slices.Insert(rows, slices.IndexFunc(rows, func(row []string) bool { return row[0] == "Egress" })+1, []string{"Antispoof", borderLine(*s.Border)})
 	}
+	// right under the egress line, and only on an exit that carries its flows itself
+	if u := s.Egress.Userspace; u != nil {
+		rows = slices.Insert(rows, slices.IndexFunc(rows, func(row []string) bool { return row[0] == "Egress" })+1,
+			[]string{"Flows", userspaceFlowsLine(*u)}, []string{"Buffers", userspaceBuffersLine(*u)})
+	}
 	// only on a node running less than its file says, since it would read none on every other
 	if len(s.Disabled) > 0 {
 		rows = append(rows, []string{"Disabled", disabledLine(s.Disabled)})
@@ -214,12 +219,16 @@ func kernelLine(k KernelStatus) string {
 // router, which is most of them. On one that is, it leads with what is being
 // announced rather than with what was configured, because the two differ
 // exactly when the capability is not working and that difference is the whole
-// reason to read the line.
+// reason to read the line. An exit carrying its flows itself is named with its
+// flows in place of the rules it does not install.
 func egressLine(e EgressStatus) string {
 	if !e.Enabled {
 		return "off, this node carries no traffic for others"
 	}
 	line := fmt.Sprintf("%s, %d rules, %d flows", e.Where, e.Installed, e.Flows)
+	if u := e.Userspace; u != nil {
+		line = fmt.Sprintf("userspace, %d flows", u.TCP.IPv4+u.TCP.IPv6+u.UDP.IPv4+u.UDP.IPv6+u.Echo.IPv4+u.Echo.IPv6)
+	}
 	if e.Untranslated > 0 {
 		line += fmt.Sprintf(", %d flows untranslated", e.Untranslated)
 	}
@@ -270,6 +279,30 @@ func egressLine(e EgressStatus) string {
 		line += ", " + e.Err
 	}
 	return line
+}
+
+// userspaceFlowsLine is the flows the userspace exit holds against its limits,
+// the TCP connections against theirs and every flow against the whole
+func userspaceFlowsLine(u EgressUserspace) string {
+	return fmt.Sprintf("%d TCP of %d, %d UDP, %d echo of %d, %d dialing, %d in TIME_WAIT",
+		u.TCP.IPv4+u.TCP.IPv6, u.Limits.Connections, u.UDP.IPv4+u.UDP.IPv6, u.Echo.IPv4+u.Echo.IPv6, u.Limits.Flows, u.Dialing, u.TimeWait)
+}
+
+// userspaceBuffersLine is the bytes the userspace exit's TCP buffers hold
+// against its budget, and where the budget came from
+func userspaceBuffersLine(u EgressUserspace) string {
+	return fmt.Sprintf("%s of %s, %s", bytesText(u.Buffered), bytesText(uint64(max(u.Limits.Budget, 0))), budgetText(u.Limits.From))
+}
+
+// budgetText says where the userspace exit's budget came from
+func budgetText(from string) string {
+	switch from {
+	case EgressBudgetGoLimit:
+		return "half of what Go's memory limit leaves past the node's heap"
+	case EgressBudgetHost:
+		return "a sixteenth of the host's memory"
+	}
+	return "from " + from
 }
 
 func packetsText(r EgressPackets) string {

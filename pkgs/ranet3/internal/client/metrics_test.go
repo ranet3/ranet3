@@ -332,3 +332,35 @@ func TestMetricsExposesWhatTheEgressCapabilityIsWithholding(t *testing.T) {
 		t.Errorf("a node with no egress capability wrote %q", off.String())
 	}
 }
+
+// An exit carrying its flows itself writes the series every exit has and none
+// of the rules', the translation's or connection tracking's, whose zeros
+// would read as an exit installing nothing
+func TestMetricsOfTheUserspaceExitWriteNoRulesSeries(t *testing.T) {
+	c := &Client{Mesh: &netstack.Mesh{}}
+	c.SetExit(&fakeExit{status: egress.Status{
+		Backend: "userspace", Ready4: true, Ready6: true, Refused4: 3,
+		Flows: &egress.Flows{TCP: [2]int{4, 1}, Limits: egress.FlowLimits{Budget: 16 << 20, From: egress.BudgetGoLimit, Connections: 23}},
+	}})
+	var out strings.Builder
+	c.renderEgress(&out)
+	for _, want := range []string{
+		`ranet3_egress_prefixes{state="advertised"} 0`,
+		`ranet3_egress_refused_total{family="ipv4"} 3`,
+		"ranet3_egress_pass_timestamp_seconds 0",
+		"ranet3_egress_pass_failed 0",
+		`ranet3_egress_ready{family="ipv6"} 1`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the scrape does not carry %q:\n%s", want, out.String())
+		}
+	}
+	for _, unwanted := range []string{
+		"ranet3_egress_rules_installed", "ranet3_egress_flows_total", "ranet3_egress_untranslated_flows_total",
+		"ranet3_egress_dropped_total", "ranet3_egress_conntrack", "ranet3_egress_conflicts",
+	} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Errorf("the scrape of the userspace exit carries %q:\n%s", unwanted, out.String())
+		}
+	}
+}

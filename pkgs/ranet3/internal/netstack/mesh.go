@@ -28,6 +28,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/packet"
@@ -357,6 +358,19 @@ func newForwardBatch(size int, free chan *outboundBatch) *outboundBatch {
 		peerOrder: make([]*Peer, 0, size),
 		free:      free,
 	}
+}
+
+// PoolBytes is the bytes the mesh's pools hold, which the node counts in its own Go heap: the read batches startOutboundPipeline makes, a slab each and their packets' slices, the forward batches' slices, and each tun queue's own buffers
+// none for a mesh with no device
+func (m *Mesh) PoolBytes() int64 {
+	if m.dev == nil {
+		return 0
+	}
+	size := int64(m.dev.BatchSize())
+	// packets, peers, peerOrder and headers, and a read batch's reads and steered beside them
+	forward := size * int64(unsafe.Sizeof([]byte(nil))+2*unsafe.Sizeof((*Peer)(nil))+1)
+	read := outboundSlabSize + forward + size*int64(unsafe.Sizeof(tun.ReadPacket{})+unsafe.Sizeof([]byte(nil)))
+	return int64(cap(m.outboundFree))*read + int64(cap(m.forwardFree))*forward + int64(len(m.queues))*tunQueueBytes
 }
 
 // outboundReader only reads and classifies packets. Reserving each peer's ESP

@@ -509,6 +509,8 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			if err := exit.Run(ctx); err != nil {
 				fail("egress", err)
 			}
+			// the limit a node sets for its exit goes once the exit has stopped
+			d.node.ExitStopped()
 		})
 		slog.Info(fmt.Sprintf("egress translating for %d prefixes in %s", len(d.cfg.Egress().Advertise), exit.Status().Where))
 	}

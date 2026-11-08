@@ -225,6 +225,34 @@ func egressStatus(status egress.Status) control.EgressStatus {
 		out.Installed, out.Flows, out.Bytes, out.Untranslated, out.Conflicts = rules.Installed, rules.Flows, rules.Bytes, rules.Untranslated, rules.Conflicts
 		out.ConntrackCount, out.ConntrackMax = rules.ConntrackCount, rules.ConntrackMax
 	}
+	if flows := status.Flows; flows != nil {
+		out.Userspace = userspaceStatus(*flows)
+	}
+	return out
+}
+
+// userspaceStatus is a userspace exit's detail as the control surface
+// reports it
+func userspaceStatus(f egress.Flows) *control.EgressUserspace {
+	l := f.Limits
+	from := control.EgressBudgetHost
+	if l.From == egress.BudgetGoLimit {
+		from = control.EgressBudgetGoLimit
+	}
+	out := &control.EgressUserspace{
+		TCP:     control.EgressFlows{IPv4: f.TCP[0], IPv6: f.TCP[1]},
+		UDP:     control.EgressFlows{IPv4: f.UDP[0], IPv6: f.UDP[1]},
+		Echo:    control.EgressFlows{IPv4: f.Echo[0], IPv6: f.Echo[1]},
+		Dialing: f.Dialing, TimeWait: f.TimeWait, Buffered: f.Buffered,
+		Limits: control.EgressLimits{
+			Budget: l.Budget, From: from, Flows: l.Flows, Connections: l.Connections, Dials: l.Dials,
+			TimeWait: l.TimeWait, Window: l.Window, Lanes: l.Lanes, Link: l.Link,
+		},
+		Refused: f.Refused, Dropped: f.Dropped, Reused: f.Reused, Closed: f.Closed,
+	}
+	for _, source := range f.Sources {
+		out.Sources = append(out.Sources, control.EgressSourceFlows{Source: source.Source, Flows: source.Flows})
+	}
 	return out
 }
 

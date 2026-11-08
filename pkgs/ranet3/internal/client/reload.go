@@ -170,6 +170,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	c.sessions.resuite()
 	c.Republish()
 	c.retakeTTL()
+	c.reweigh()
 	assigned := assignedAddresses(cfg)
 	c.speaker.SetAssigned(assigned)
 	c.Mesh.SetTunAddresses(assigned)

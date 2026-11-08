@@ -6,7 +6,9 @@ package control
 import (
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -31,6 +33,9 @@ type EgressInfo struct {
 	Enabled bool `json:"enabled"`
 	// Status is the exit's own report, as ranet3 status gives it
 	Status EgressStatus `json:"status,omitzero"`
+	// Memory is Go's memory limit beside an exit sized within a budget,
+	// absent for any other
+	Memory *EgressMemory `json:"memory,omitempty"`
 	// Rules is each rule the exit asks for in order, then each its chains hold
 	// that it does not ask for, and ReadErr why they could not be read now
 	Rules    []EgressRule   `json:"rules,omitempty"`
@@ -39,6 +44,19 @@ type EgressInfo struct {
 	// RPFilter is IPv4's rp_filter on all and on each device a route of the
 	// last pass's lookups leaves by, read now
 	RPFilter []RouteSetting `json:"rp_filter,omitempty"`
+}
+
+// EgressMemory is Go's memory limit L, which holds the exit's budget B twice,
+// live and as the collector's headroom, beside the node's own heap N: L =
+// 2B + N. Limit is L in force, zero once the node holds none, Given whether
+// it was given at the start rather than set by the node, Node is N as last
+// weighed, and Room is L - 2B, what the budget leaves the node. A given L
+// whose Room falls short of Node holds until a restart sizes the exit again.
+type EgressMemory struct {
+	Limit int64 `json:"limit"`
+	Given bool  `json:"given"`
+	Node  int64 `json:"node"`
+	Room  int64 `json:"room"`
 }
 
 // EgressRule is one rule of the exit's chains: Wanted where the exit asks for
@@ -97,14 +115,26 @@ type EgressRoute struct {
 // Egress reads cap.egress with its rules and readiness
 func (c *Client) Egress() (EgressInfo, error) { return read[EgressInfo](c, PathDebugEgress) }
 
-// RenderEgress writes the exit's status line, each rule with its counter, each
-// family's readiness with its lookups, then the rp_filter settings read
+// RenderEgress writes the exit's status line, for an exit carrying its flows
+// itself its flows, limits, refusals, drops and sources, then each rule with
+// its counter, each family's readiness with its lookups, then the rp_filter
+// settings read
 func RenderEgress(w io.Writer, info EgressInfo) {
 	if !info.Enabled {
 		fmt.Fprintln(w, "This node holds no cap.egress")
 		return
 	}
-	pairs(w, [][]string{{"Exit", egressLine(info.Status)}})
+	exit := [][]string{{"Exit", egressLine(info.Status)}}
+	if u := info.Status.Userspace; u != nil {
+		exit = append(exit, userspaceRows(*u)...)
+	}
+	if m := info.Memory; m != nil {
+		exit = append(exit, []string{"Memory", memoryLine(*m)})
+	}
+	pairs(w, exit)
+	if u := info.Status.Userspace; u != nil {
+		renderUserspace(w, *u)
+	}
 	if info.Rules == nil && info.Families == nil && info.ReadErr == "" {
 		return
 	}
@@ -151,6 +181,73 @@ func RenderEgress(w io.Writer, info EgressInfo) {
 		}
 		pairs(w, [][]string{{"Settings", strings.Join(settings, ", ")}})
 	}
+}
+
+// userspaceRows is the userspace exit's flows against its limits, its
+// buffers, its flows by family, its limits and its TIME_WAIT endpoints reused
+// and closed
+func userspaceRows(u EgressUserspace) [][]string {
+	l := u.Limits
+	return [][]string{
+		{"Flows", userspaceFlowsLine(u)},
+		{"Buffers", userspaceBuffersLine(u)},
+		{"TCP", flowsText(u.TCP)},
+		{"UDP", flowsText(u.UDP)},
+		{"Echo", flowsText(u.Echo)},
+		{"Limits", fmt.Sprintf("%d flows, %d TCP connections, %d dials, %d in TIME_WAIT, a window of %s, lanes of %s, a link of %s",
+			l.Flows, l.Connections, l.Dials, l.TimeWait, bytesText(uint64(max(l.Window, 0))), bytesText(uint64(max(l.Lanes, 0))), bytesText(uint64(max(l.Link, 0))))},
+		{"TIME_WAIT", fmt.Sprintf("%d reused by a new SYN, %d closed early past the limit", u.Reused, u.Closed)},
+	}
+}
+
+// memoryLine is Go's memory limit against the node's own heap: set by the
+// node to twice the budget and the node's heap, or given, with the node's
+// heap against what the budget leaves it
+func memoryLine(m EgressMemory) string {
+	node := bytesText(uint64(max(m.Node, 0)))
+	switch {
+	case m.Limit == 0:
+		return fmt.Sprintf("Go's limit none, the node's own heap %s", node)
+	case !m.Given:
+		return fmt.Sprintf("Go's limit %s, set to twice the budget and the node's own heap of %s", bytesText(uint64(m.Limit)), node)
+	case m.Node > m.Room:
+		return fmt.Sprintf("Go's limit %s, given, the node's own heap %s past the %s the budget leaves it until a restart", bytesText(uint64(m.Limit)), node, bytesText(uint64(max(m.Room, 0))))
+	}
+	return fmt.Sprintf("Go's limit %s, given, the node's own heap %s of the %s the budget leaves it", bytesText(uint64(m.Limit)), node, bytesText(uint64(max(m.Room, 0))))
+}
+
+// renderUserspace writes the userspace exit's new flows refused and packets
+// dropped by why, and the sources holding the most flows
+func renderUserspace(w io.Writer, u EgressUserspace) {
+	for _, counts := range []struct {
+		title string
+		by    map[string]uint64
+	}{{"Refused", u.Refused}, {"Dropped", u.Dropped}} {
+		if len(counts.by) == 0 {
+			continue
+		}
+		fmt.Fprintln(w, counts.title)
+		reasons := slices.Sorted(maps.Keys(counts.by))
+		rows := make([][]string, 0, len(reasons))
+		for _, reason := range reasons {
+			rows = append(rows, []string{reason, fmt.Sprint(counts.by[reason])})
+		}
+		indented(w, func(w io.Writer) { pairs(w, rows) })
+	}
+	if len(u.Sources) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Sources")
+	rows := make([][]string, 0, len(u.Sources))
+	for _, source := range u.Sources {
+		rows = append(rows, []string{source.Source.String(), countOf(source.Flows, "flow")})
+	}
+	indented(w, func(w io.Writer) { pairs(w, rows) })
+}
+
+// flowsText is a count of flows in each family
+func flowsText(f EgressFlows) string {
+	return fmt.Sprintf("%d ipv4, %d ipv6", f.IPv4, f.IPv6)
 }
 
 // ruleState is a rule's counter, or why it has none to read

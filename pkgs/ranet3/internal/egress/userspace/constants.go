@@ -70,4 +70,64 @@ const (
 	// echoIdle ends an echo mapping with no request out or reply in for this
 	// long, the least RFC 5508 REQ-2 allows
 	echoIdle = time.Minute
+
+	// The shares Within takes of memory: the budget B is half of what Go's
+	// limit leaves past the node's own heap, since the limit holds it twice,
+	// live and as the collector's headroom, else a sixteenth of the host's
+	// memory. Each of the two queues holds a thirty-second of B within its
+	// bounds, and the fixed part F is gVisor's reassembly and the two queues.
+	// Of R = B - F an eighth goes to the UDP and echo mappings and the rest,
+	// T, to TCP: Window is T / (2 * windowFlows) within its bounds, and
+	// Connections as many as T holds at two windows, perConnection and
+	// perTimeWait each. Flows is Connections and the mappings an eighth of R
+	// holds at perFlow each, within the descriptors past daemonFiles at
+	// flowFiles a flow, so the node keeps its own under any mix of flows, and
+	// Connections is cut to Flows where those hold fewer.
+	goLimitShare = 2
+	hostShare    = 16
+	queueShare   = 32
+	flowShare    = 8
+	// minQueue and maxQueue bound each queue's bytes, maxQueue at 512 frames
+	// of 64 KiB
+	minQueue = 256 << 10
+	maxQueue = 32 << 20
+	// reassembly is gVisor's ceiling on the fragments it holds, 4 MiB for each
+	// of the two network protocols, a fixed part of every budget
+	reassembly = 2 * 4 << 20
+	// windowFlows is the TCP flows a budget holds at the full window, and
+	// minWindow and maxWindow bound the window: an unscaled TCP window, and
+	// 6 MiB
+	windowFlows = 1024
+	minWindow   = 64 << 10
+	maxWindow   = 6 << 20
+	// minConnections is the fewest TCP connections a budget holds at
+	// minWindow, below which Within refuses
+	minConnections = 16
+	// perConnection is a TCP connection's memory past its two windows, as
+	// measured with both copy buffers moving, perTimeWait an endpoint's in
+	// TIME_WAIT, rounded up from its measure, and perFlow a UDP or echo
+	// mapping's, a guess no measure has settled
+	perConnection = 128 << 10
+	perTimeWait   = 8 << 10
+	perFlow       = 8 << 10
+	// daemonFiles is the descriptors the node keeps beside the exit's flows,
+	// its tun's queues, the transport's sockets, the control socket and the
+	// files it reads, a guess no measure has settled
+	daemonFiles = 256
+	// flowFiles is the most descriptors one flow holds at once: a UDP
+	// mapping's first destination holds the mapping's receiving socket and its
+	// own connected one, and a TCP flow being dialed its socket and the
+	// duplicate its error queue is read through. Every other flow holds one,
+	// or none.
+	flowFiles = 2
+	// maxDials bounds the connections dialed at once, below gVisor's bound on
+	// connections in flight
+	maxDials = 8192
+
+	// statusSources is the sources the status names, those holding the most
+	// flows
+	statusSources = 16
+	// refusedInterval spaces the egress.refused records, as the mesh spaces
+	// its reports of trouble
+	refusedInterval = 30 * time.Second
 )

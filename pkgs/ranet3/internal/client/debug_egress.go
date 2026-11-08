@@ -14,20 +14,25 @@ type exitDebugger interface {
 	Debug() egress.ExitDebug
 }
 
-// DebugEgress is the exit as a debug read finds it: its status, and where its
-// backend holds rules, each rule with its counter read now and each family's
-// readiness as the last pass judged it
+// DebugEgress is the exit as a debug read finds it: its status, Go's memory
+// limit beside an exit sized within a budget, and where its backend holds
+// rules, each rule with its counter read now and each family's readiness as
+// the last pass judged it
 func (c *Client) DebugEgress() control.EgressInfo {
 	exit := c.exit.Load()
 	if exit == nil {
 		return control.EgressInfo{}
 	}
+	var memory *control.EgressMemory
+	if b, ok := (*exit).(budgeted); ok {
+		memory = c.memoryReading(b)
+	}
 	detailed, ok := (*exit).(exitDebugger)
 	if !ok {
-		return control.EgressInfo{Enabled: true, Status: egressStatus((*exit).Status())}
+		return control.EgressInfo{Enabled: true, Status: egressStatus((*exit).Status()), Memory: memory}
 	}
 	debug := detailed.Debug()
-	info := control.EgressInfo{Enabled: true, Status: egressStatus(debug.Status), ReadErr: debug.ReadErr}
+	info := control.EgressInfo{Enabled: true, Status: egressStatus(debug.Status), Memory: memory, ReadErr: debug.ReadErr}
 	for _, rule := range debug.Rules {
 		info.Rules = append(info.Rules, control.EgressRule{Spec: rule.Spec, Wanted: rule.Wanted, Held: rule.Held, Counter: rule.Counter, Packets: rule.Packets, Bytes: rule.Bytes})
 	}

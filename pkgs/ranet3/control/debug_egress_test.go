@@ -12,8 +12,11 @@ import (
 
 // egressFixtures is one answer of the egress view for each golden file: an
 // exit ready in IPv4 with each kind of counter, a rule not held and another
-// writer's rule, and IPv6 not forwarded, a node with no exit, and an exit
-// whose reply lookup leaves by its uplink while its listing failed now
+// writer's rule, and IPv6 not forwarded, a node with no exit, an exit whose
+// reply lookup leaves by its uplink while its listing failed now, and an exit
+// carrying its flows itself with its refusals, drops and sources, under the
+// Go limit its node set to twice its budget beside the node's own heap, and
+// under a given one its node's heap has outgrown
 func egressFixtures(passAt time.Time) map[string]EgressInfo {
 	advertise := []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("2001:db8::/32")}
 	status := EgressStatus{
@@ -59,7 +62,18 @@ func egressFixtures(passAt time.Time) map[string]EgressInfo {
 			{Source: netip.MustParseAddr("3fff::41"), Destination: netip.MustParseAddr("2001:db8:8000::"), IIF: "ranet0", Reply: true},
 		}},
 	}
-	return map[string]EgressInfo{"egress": ready, "egress-off": {}, "egress-unready": unready}
+	userspace := userspaceFixture(EgressBudgetHost)
+	userspace.PassAt = passAt
+	const node = 59 << 20
+	set := &EgressMemory{Limit: 2*userspace.Userspace.Limits.Budget + node, Node: node, Room: node}
+	given := userspaceFixture(EgressBudgetGoLimit)
+	given.PassAt = passAt
+	outgrown := &EgressMemory{Limit: 64 << 20, Given: true, Node: 40 << 20, Room: 32 << 20}
+	return map[string]EgressInfo{
+		"egress": ready, "egress-off": {}, "egress-unready": unready,
+		"egress-userspace":       {Enabled: true, Status: userspace, Memory: set},
+		"egress-userspace-given": {Enabled: true, Status: given, Memory: outgrown},
+	}
 }
 
 func TestEgressRendersAsTheGoldenFiles(t *testing.T) {
@@ -68,5 +82,7 @@ func TestEgressRendersAsTheGoldenFiles(t *testing.T) {
 		RenderEgress(&out, info)
 		golden(t, name+".txt", []byte(out.String()))
 	}
-	goldenJSON(t, "egress.json", egressFixtures(time.Date(2026, 10, 28, 19, 0, 0, 0, time.UTC))["egress"])
+	for _, name := range []string{"egress", "egress-userspace", "egress-userspace-given"} {
+		goldenJSON(t, name+".json", egressFixtures(time.Date(2026, 10, 28, 19, 0, 0, 0, time.UTC))[name])
+	}
 }

@@ -162,7 +162,7 @@ func (x *Exit) handle(lane Lane, raw []byte) {
 		}
 		x.link.deliver(raw)
 	case answer:
-		x.counts.refuse(j.reason)
+		x.refused(raw, j.reason)
 		lane.Answer(raw, j.kind, 0)
 	case drop:
 		x.counts.drop(j.reason)

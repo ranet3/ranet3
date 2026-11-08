@@ -69,3 +69,7 @@ const (
 	// memoryPoison is the byte a memory network's hub fills each receive buffer put back in its pool with
 	memoryPoison = 0xa5
 )
+
+// HeldBytes is the receive storage one mux's batches hold from dispatch to release, queued or on their way to the tun, each receive buffer and copy counted whole
+// the node counts it in its own Go heap for each session it may hold
+const HeldBytes = espHeldBytes

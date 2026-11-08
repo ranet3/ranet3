@@ -161,7 +161,7 @@ func (e *echoRelay) take(raw []byte) {
 	request, ok := readEcho(raw)
 	switch {
 	case !ok:
-		e.x.counts.drop(reasonNotEcho)
+		e.x.counts.dropUntracked(len(raw) > 0 && raw[0]>>4 == 6, reasonNotEcho)
 		return
 	case !request.checksumValid():
 		e.x.counts.drop(reasonICMPChecksum)
@@ -231,7 +231,7 @@ func echoReason(err error) string {
 // where a limit refused it, and administratively prohibited where the
 // platform refused the socket (RFC 5508 REQ-8's code 13)
 func (e *echoRelay) refuse(raw []byte, reason string) {
-	e.x.counts.refuse(reason)
+	e.x.refused(raw, reason)
 	switch reason {
 	case reasonShare, reasonTotal, reasonDescriptors:
 		e.x.answers.Answer(raw, netstack.ExitPastLimit, 0)
