@@ -84,7 +84,7 @@ func scriptedHub() (*Hub, chan<- scriptedArrival) {
 	network := NewMemoryNetwork()
 	p := network.hold(netip.Addr{})
 	arrivals := make(chan scriptedArrival)
-	receive := func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
+	receive := func(_ *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
 		a, ok := <-arrivals
 		if !ok {
 			return 0, net.ErrClosed
@@ -92,7 +92,7 @@ func scriptedHub() (*Hub, chan<- scriptedArrival) {
 		bufs[0], sizes[0], endpoints[0], records[0] = a.data, len(a.data), nil, receiveRecord{source: a.source}
 		return 1, nil
 	}
-	return startHub(&memoryBind{network: network, port: p}, []receiveFunc{receive}, p.port, Runtime{}), arrivals
+	return startHub(&memoryBind{network: network, port: p}, []receiveFunc{pooledReads(receive)}, p.port, Runtime{}), arrivals
 }
 
 // told answers the SPI mux's channel holds and takes it, and false where it holds none

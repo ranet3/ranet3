@@ -649,9 +649,9 @@ type segmentRecords struct {
 // each packet is copied before act, since End rewrites it in place and a forward or drop it leads to is recorded as the packet arrived
 //
 //go:noinline
-func (t *tracer) actOnSegments(m *Mesh, frames [][]byte, mtu int, from *Peer, act func([]byte) srv6.Result) ([][]byte, []bool) {
+func (t *tracer) actOnSegments(m *Mesh, frames [][]byte, mtu int, from *Peer, hold Hold, act func([]byte) srv6.Result) ([][]byte, []bool) {
 	r := segmentRecords{trace: t, from: from}
-	return m.actOnSegments(frames, mtu, &r, func(packet []byte) srv6.Result {
+	return m.actOnSegments(frames, mtu, hold, &r, func(packet []byte) srv6.Result {
 		r.arena, r.arrived = t.arrive(r.arena[:r.kept], packet)
 		return act(packet)
 	})

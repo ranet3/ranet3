@@ -59,7 +59,7 @@ func TestUDPReceivePreservesGROOverflowAndFullBatchReads(t *testing.T) {
 	})
 	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 	for batch := range 2 {
-		n, err := receive(packets, sizes, endpoints, records, new(refusals))
+		n, err := receive(new(blockPool), packets, sizes, endpoints, records, new(refusals))
 		if err != nil || n != 128 || reads != 1 {
 			t.Fatalf("batch %d: n=%d err=%v reads=%d", batch, n, err, reads)
 		}
@@ -154,7 +154,7 @@ func TestUDPReceiveSkipsTruncatedMessagesAndPreservesGROTail(t *testing.T) {
 	})
 	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 	var refused refusals
-	n, err := receive(packets, sizes, endpoints, records, &refused)
+	n, err := receive(new(blockPool), packets, sizes, endpoints, records, &refused)
 	if err != nil || n != 3 {
 		t.Fatalf("receive: n=%d err=%v, want three intact GRO segments", n, err)
 	}
@@ -218,7 +218,7 @@ func TestUDPKernelGSORoundTrip(t *testing.T) {
 			bufs, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 			seen := 0
 			for seen < count {
-				n, err := receivers[index](bufs, sizes, endpoints, records, new(refusals))
+				n, err := receivers[index](new(blockPool), bufs, sizes, endpoints, records, new(refusals))
 				if err != nil {
 					t.Fatalf("received %d/%d packets: %v", seen, count, err)
 				}
@@ -264,7 +264,7 @@ func TestUDPReceiveDropsDatagramWithNoUsableSource(t *testing.T) {
 	})
 	packets, sizes, endpoints, records := make([][]byte, 8), make([]int, 8), make([]Endpoint, 8), make([]receiveRecord, 8)
 	var refused refusals
-	n, err := receive(packets, sizes, endpoints, records, &refused)
+	n, err := receive(new(blockPool), packets, sizes, endpoints, records, &refused)
 	if err != nil {
 		t.Fatalf("one unparseable control message failed the whole receive: %v", err)
 	}
@@ -318,7 +318,8 @@ func TestWalkRecordsESPSourcesWithoutAllocating(t *testing.T) {
 	})
 	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 	var refused refusals
-	n, err := receive(packets, sizes, endpoints, records, &refused)
+	var pool blockPool
+	n, err := receive(&pool, packets, sizes, endpoints, records, &refused)
 	if err != nil || n != segments*len(sources) {
 		t.Fatalf("receive: n=%d err=%v, want %d datagrams", n, err, segments*len(sources))
 	}
@@ -330,7 +331,7 @@ func TestWalkRecordsESPSourcesWithoutAllocating(t *testing.T) {
 			t.Errorf("datagram %d of a message with the ECN field %d came with %d", i, want, records[i].ecn)
 		}
 	}
-	if allocs := testing.AllocsPerRun(walkAllocRuns, func() { _, _ = receive(packets, sizes, endpoints, records, &refused) }); allocs != 0 {
+	if allocs := testing.AllocsPerRun(walkAllocRuns, func() { _, _ = receive(&pool, packets, sizes, endpoints, records, &refused) }); allocs != 0 {
 		t.Errorf("a read of %d ESP datagrams allocated %v times", n, allocs)
 	}
 }
@@ -403,7 +404,7 @@ func TestTruncatedGROReadIsCountedInDatagrams(t *testing.T) {
 	})
 	packets, sizes, endpoints, records := make([][]byte, 128), make([]int, 128), make([]Endpoint, 128), make([]receiveRecord, 128)
 	var refused refusals
-	n, err := receive(packets, sizes, endpoints, records, &refused)
+	n, err := receive(new(blockPool), packets, sizes, endpoints, records, &refused)
 	if err != nil || n != 0 {
 		t.Fatalf("receive: n=%d err=%v, want the whole truncated read discarded", n, err)
 	}
@@ -430,7 +431,7 @@ func TestUDPReceiveRefusesAMessageWhoseControlWillNotParse(t *testing.T) {
 	})
 	packets, sizes, endpoints, records := make([][]byte, 8), make([]int, 8), make([]Endpoint, 8), make([]receiveRecord, 8)
 	var refused refusals
-	n, err := receive(packets, sizes, endpoints, records, &refused)
+	n, err := receive(new(blockPool), packets, sizes, endpoints, records, &refused)
 	if err != nil || n != 1 {
 		t.Fatalf("receive: n=%d err=%v, want the message after the unparseable one", n, err)
 	}

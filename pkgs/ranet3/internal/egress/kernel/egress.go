@@ -89,6 +89,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	meshkernel "ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // Runtime holds the values the command resolves at startup rather than the
@@ -128,8 +129,8 @@ type Runtime struct {
 	Members func() []netip.Prefix
 	// Write is the mesh's tun writer, which Egress hands its frames to, so each
 	// flow keeps its lane and its order and the host routes and translates what
-	// the tun delivers
-	Write func(frames [][]byte)
+	// the tun delivers, with the hold on their storage Egress was handed
+	Write func(frames [][]byte, hold netstack.Hold)
 	// Hooks report what every exit reports. Republish is called once per pass
 	// whose announcement differs from the last. A family is ready while this
 	// node translates it, its chains, set and timeout objects read back exactly
@@ -613,9 +614,10 @@ func (t *Translator) SetEnabled(on bool) {
 	}
 }
 
-// Egress hands the frames to the mesh's tun writer, whose lanes keep each
-// flow in order, and the host routes and translates what the tun delivers
-func (t *Translator) Egress(frames [][]byte) { t.rt.Write(frames) }
+// Egress hands the frames and their hold to the mesh's tun writer, whose lanes
+// keep each flow in order and the hold until written, and the host routes and
+// translates what the tun delivers
+func (t *Translator) Egress(frames [][]byte, hold netstack.Hold) { t.rt.Write(frames, hold) }
 
 // Status is the last pass, the capability's translation and the rules the
 // host holds for this translator

@@ -113,6 +113,8 @@ type outboundBatch struct {
 	// from is the peer of the session whose packets a forward batch holds, nil for a tun reader's and for packets of no session
 	// decide sets it at every take, traced or not, since a trace that opens while decide holds the batch reads it for its budget drops, and reset leaves it
 	from *Peer
+	// hold keeps the frames a forward batch's packets lie in until reset, after every peer's share is sealed, nil for a tun reader's
+	hold Hold
 	// tun is a tun reader's batch, whose packets were read off the tun
 	tun bool
 }
@@ -173,8 +175,10 @@ func (l *fragmentList) appendTo(batches map[*Peer]*peerBatch) {
 	}
 }
 
+// inboundWriteBatch is frames for one writer lane, which keeps hold until it has written them
 type inboundWriteBatch struct {
 	frames [][]byte
+	hold   Hold
 }
 
 // NewRoutesOnly is a mesh with a forwarding table and no device, for a test
@@ -189,12 +193,14 @@ func NewRoutesOnly() *Mesh {
 
 // NewOnDevice is NewRoutesOnly writing what it delivers to dev, for a test
 // outside this package that must see a packet the mesh hands to the host
-// without the root a tun needs. It starts no reader, writer lane or forward
-// pipeline, so a delivery is written on the caller's goroutine and a forward
-// goes nowhere, finding no batch to join.
+// without the root a tun needs. It starts no reader or forward pipeline, so a
+// forward goes nowhere, finding no batch to join. A delivery is written on the
+// caller's goroutine where dev has one queue, and by the writer lanes it
+// starts where dev has more, which Close stops.
 func NewOnDevice(dev tun.Device) *Mesh {
 	m := NewRoutesOnly()
 	m.setDevice(dev)
+	m.startInboundWriters()
 	return m
 }
 
@@ -747,6 +753,10 @@ func (m *Mesh) outboundWorker() {
 }
 
 func (b *outboundBatch) reset() {
+	if b.hold != nil {
+		b.hold.Release()
+		b.hold = nil
+	}
 	for i := 0; i < b.n; i++ {
 		b.peers[i] = nil
 	}
@@ -780,24 +790,25 @@ func addrsOf(raw []byte) (src, dst netip.Addr, nextHeader byte, ok bool) {
 // mtu is the largest packet the session it came through carries, as DeliverInboundBatch takes it
 // only tests call it, those of internal/babel, internal/client and internal/netstack
 func (m *Mesh) DeliverInbound(raw []byte, mtu int) {
-	m.DeliverInboundBatch([][]byte{m.hostFrame(raw)}, mtu, nil)
+	m.DeliverInboundBatch([][]byte{m.hostFrame(raw)}, mtu, nil, nil)
 }
 
 // DeliverInboundBatch hands the mesh a group of already-decapsulated tunnel-mode IP packets a session delivered, in the order it delivered them
 // this node's segments act on the packets addressed to them, and the forwarding decision takes the rest
 // each frame is TUNHeadroom bytes a write to the tun may overwrite, then the packet to the frame's end
 // the frames are the mesh's from the call until a lane has written them or a worker has sealed them, and the tun is handed them as they are
+// hold covers their storage, and the caller keeps its own reference until the call returns, so a lane, a forward batch or an exit that reads a frame later retains it
 // mtu is the largest packet the session they came through carries, zero for packets of no session
 // a SYN that an End.DT46 of this node takes out of its outer header has its MSS clamped to it
 // from is the peer of that session, which an answer about a link-local source goes back to, nil for packets of no session
-func (m *Mesh) DeliverInboundBatch(frames [][]byte, mtu int, from *Peer) {
+func (m *Mesh) DeliverInboundBatch(frames [][]byte, mtu int, from *Peer, hold Hold) {
 	// A mesh with no device only exists in a test, where nothing should reach
 	// here: babel's own traffic is intercepted before delivery.
 	if len(frames) == 0 || m.dev == nil {
 		return
 	}
-	routed, granted := m.applySegments(frames, mtu, from)
-	m.WriteHost(m.decide(routed, granted, from))
+	routed, granted := m.applySegments(frames, mtu, from, hold)
+	m.WriteHost(m.decide(routed, granted, from, hold), hold)
 }
 
 // hostFrame is raw copied into a frame of its own for the tun, TUNHeadroom bytes and then the packet, nil for a mesh with no device
@@ -813,7 +824,7 @@ func (m *Mesh) hostFrame(raw []byte) []byte {
 // writeHostPacket writes one packet to the tun, copied into a frame of its own
 func (m *Mesh) writeHostPacket(raw []byte) {
 	if frame := m.hostFrame(raw); frame != nil {
-		m.WriteHost([][]byte{frame})
+		m.WriteHost([][]byte{frame}, nil)
 	}
 }
 
@@ -822,7 +833,7 @@ func (m *Mesh) writeHostPacket(raw []byte) {
 func (m *Mesh) writeBack(raw []byte) {
 	if frame := m.hostFrame(raw); frame != nil {
 		completeChecksum(frame[TUNHeadroom:])
-		m.WriteHost([][]byte{frame})
+		m.WriteHost([][]byte{frame}, nil)
 	}
 }
 
@@ -865,8 +876,9 @@ func completeChecksum(raw []byte) {
 // WriteHost writes frames to the tun, on a multiqueue tun each to the persistent writer lane of its inner flow
 // which keeps each flow's order and lets the kernel take unrelated flows in parallel
 // each frame is TUNHeadroom bytes and then the packet, the mesh's until a lane has written it
+// hold covers their storage as DeliverInboundBatch's does, and each lane handed a group retains it until that group is written
 // the kernel exit writes what it egresses through it, as the mesh writes what it delivers
-func (m *Mesh) WriteHost(frames [][]byte) {
+func (m *Mesh) WriteHost(frames [][]byte, hold Hold) {
 	if len(frames) == 0 {
 		return
 	}
@@ -888,11 +900,17 @@ func (m *Mesh) WriteHost(frames [][]byte) {
 		if len(group) == 0 {
 			continue
 		}
-		// an entry left in a lane after Close holds views of the session's own storage and nothing to give back
-		batch := inboundWriteBatch{frames: group}
+		// retained before the send, since the lane may write and release before the send returns
+		// an entry left in a lane after Close is never written or released, and its storage is the collector's
+		if hold != nil {
+			hold.Retain()
+		}
 		select {
-		case m.inboundWriters[lane] <- batch:
+		case m.inboundWriters[lane] <- inboundWriteBatch{frames: group, hold: hold}:
 		case <-m.closed:
+			if hold != nil {
+				hold.Release()
+			}
 		}
 	}
 }
@@ -907,6 +925,7 @@ func (m *Mesh) startInboundWriters() {
 		m.inboundWriters[lane] = queue
 		m.writerWG.Go(func() {
 			pending := make([][]byte, 0, inboundPendingBatches*inboundWriteBatchSize)
+			holds := make([]Hold, 0, inboundPendingBatches)
 			for {
 				var first inboundWriteBatch
 				select {
@@ -915,13 +934,19 @@ func (m *Mesh) startInboundWriters() {
 					return
 				}
 
-				pending = collectReadyInbound(first, queue, pending)
+				pending, holds = collectReadyInbound(first, queue, pending, holds)
 				for offset := 0; offset < len(pending); offset += inboundWriteBatchSize {
 					end := min(offset+inboundWriteBatchSize, len(pending))
 					m.writeInbound(lane, pending[offset:end])
 				}
+				// a tun write keeps no frame past its return
+				for _, hold := range holds {
+					hold.Release()
+				}
 				clear(pending)
 				pending = pending[:0]
+				clear(holds)
+				holds = holds[:0]
 			}
 		})
 	}
@@ -929,18 +954,26 @@ func (m *Mesh) startInboundWriters() {
 
 // collectReadyInbound drains only work that is already available. This keeps
 // the idle-path latency unchanged while giving a busy writer a full batch for
-// the tun write's GRO pass, reducing the number of TUN write syscalls.
-func collectReadyInbound(first inboundWriteBatch, queue <-chan inboundWriteBatch, pending [][]byte) [][]byte {
-	pending = append(pending, first.frames...)
+// the tun write's GRO pass, reducing the number of TUN write syscalls. It
+// appends the hold of each batch it takes to holds.
+func collectReadyInbound(first inboundWriteBatch, queue <-chan inboundWriteBatch, pending [][]byte, holds []Hold) ([][]byte, []Hold) {
+	pending, holds = appendInbound(first, pending, holds)
 	for len(pending) < inboundWriteBatchSize {
 		select {
 		case batch := <-queue:
-			pending = append(pending, batch.frames...)
+			pending, holds = appendInbound(batch, pending, holds)
 		default:
-			return pending
+			return pending, holds
 		}
 	}
-	return pending
+	return pending, holds
+}
+
+func appendInbound(batch inboundWriteBatch, pending [][]byte, holds []Hold) ([][]byte, []Hold) {
+	if batch.hold != nil {
+		holds = append(holds, batch.hold)
+	}
+	return append(pending, batch.frames...), holds
 }
 
 func (m *Mesh) writeInbound(lane int, frames [][]byte) {

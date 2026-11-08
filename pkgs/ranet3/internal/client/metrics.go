@@ -451,7 +451,7 @@ func unixOrZero(at time.Time) int64 {
 // raise any of them, so none is a fault by itself, and mixing them would make
 // the first two unreadable.
 func (c *Client) renderReceiveCounters(w io.Writer) {
-	fmt.Fprint(w, "# HELP ranet3_receive_dropped_total Inbound datagrams a full receive queue refused.\n")
+	fmt.Fprint(w, "# HELP ranet3_receive_dropped_total Inbound datagrams refused because their session's receive queue was full or held all its receive buffers.\n")
 	fmt.Fprint(w, "# TYPE ranet3_receive_dropped_total counter\n")
 	fmt.Fprintf(w, "ranet3_receive_dropped_total %d\n", c.hubDropped())
 

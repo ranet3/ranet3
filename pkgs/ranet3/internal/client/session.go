@@ -126,18 +126,18 @@ func (e *servedEnd) Error() string { return e.err.Error() }
 func (e *servedEnd) Unwrap() error { return e.err }
 
 // inboundEmit is the emit of the session at path, which receiveESP calls on one goroutine with each batch of results in receive order
-// beside the outer ECN field of each, nil when every one arrived Not-ECT
-func (c *Client) inboundEmit(path string, noteTraffic func(), peer *netstack.Peer) func([]inboundDecrypted, []inboundECN) {
+// beside the outer ECN field of each, nil when every one arrived Not-ECT, and the hold on the storage they lie in
+func (c *Client) inboundEmit(path string, noteTraffic func(), peer *netstack.Peer) func([]inboundDecrypted, []inboundECN, netstack.Hold) {
 	var frames [][]byte
 	var ecn sessionECN
-	return func(results []inboundDecrypted, outer []inboundECN) {
+	return func(results []inboundDecrypted, outer []inboundECN, hold netstack.Hold) {
 		esp.CommitBatch(results)
 		frames = frames[:0]
 		mtu := peer.MTU()
 		var dropped int
 		var lastError error
 		for i, result := range results {
-			// each datagram is this session's alone once received, so each packet the loop keeps goes on as a slice of the datagram it was decrypted in, and the loop copies nothing itself
+			// each datagram's view is this session's alone, so each packet the loop keeps goes on as a slice of the datagram it was decrypted in, under hold, and the loop copies nothing itself
 			frame, nextHeader, err := result.Frame(netstack.TUNHeadroom)
 			if err != nil {
 				dropped, lastError = dropped+1, err
@@ -165,7 +165,7 @@ func (c *Client) inboundEmit(path string, noteTraffic func(), peer *netstack.Pee
 		}
 		c.countInbound(len(results) - dropped)
 		c.settleECN(&ecn, path)
-		c.Mesh.DeliverInboundBatch(frames, mtu, peer)
+		c.Mesh.DeliverInboundBatch(frames, mtu, peer, hold)
 		clear(frames)
 	}
 }

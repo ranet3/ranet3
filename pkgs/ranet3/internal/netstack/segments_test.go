@@ -91,7 +91,7 @@ func (r *recordingPeer) nextHeaders() []byte {
 func TestBatchWithoutSegmentsIsUntouched(t *testing.T) {
 	mesh := &Mesh{Routes: NewRouteTable()}
 	batch := framed(plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::2"), "one"))
-	got, _ := mesh.applySegments(batch, DefaultMTU, nil)
+	got, _ := mesh.applySegments(batch, DefaultMTU, nil, nil)
 	if &got[0] != &batch[0] || len(got) != len(batch) {
 		t.Fatal("a batch with no segments configured was rebuilt")
 	}
@@ -120,7 +120,7 @@ func TestExitDeliversWhatWasInside(t *testing.T) {
 	passer := plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::2"), "not ours")
 
 	frames := framed(passer, outer)
-	left, granted := mesh.applySegments(frames, DefaultMTU, nil)
+	left, granted := mesh.applySegments(frames, DefaultMTU, nil, nil)
 	if len(left) != 2 {
 		t.Fatalf("the batch came back with %d packets", len(left))
 	}
@@ -163,7 +163,7 @@ func TestWaypointForwardsInsteadOfDelivering(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _ := mesh.applySegments(framed(outer), DefaultMTU, nil)
+	got, _ := mesh.applySegments(framed(outer), DefaultMTU, nil, nil)
 	if len(got) != 0 {
 		t.Fatalf("a forwarded packet was also delivered to the tun: %v", got)
 	}
@@ -192,7 +192,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	// Addressed to our waypoint with no routing header.
 	mesh := &Mesh{Routes: NewRouteTable()}
 	mesh.SetSegments(table)
-	if got, _ := mesh.applySegments(framed(plainV6(segAddr("2001:db8::1"), waypoint, "payload")), DefaultMTU, nil); len(got) != 0 {
+	if got, _ := mesh.applySegments(framed(plainV6(segAddr("2001:db8::1"), waypoint, "payload")), DefaultMTU, nil, nil); len(got) != 0 {
 		t.Fatalf("a refused segment reached the tun: %v", got)
 	}
 	if counters := mesh.SegmentCounters(); counters.Dropped != 1 {
@@ -209,7 +209,7 @@ func TestSegmentsThatCannotBeActedOnAreDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := unrouted.applySegments(framed(outer), DefaultMTU, nil); len(got) != 0 {
+	if got, _ := unrouted.applySegments(framed(outer), DefaultMTU, nil, nil); len(got) != 0 {
 		t.Fatalf("a segment with nowhere to go reached the tun: %v", got)
 	}
 	if counters := unrouted.SegmentCounters(); counters.Dropped != 1 || counters.Forwarded != 0 {
@@ -243,7 +243,7 @@ func TestEndDropsAPacketWhoseNextSegmentOnlyADefaultReaches(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got, _ := mesh.applySegments(framed(outer), DefaultMTU, nil); len(got) != 0 {
+			if got, _ := mesh.applySegments(framed(outer), DefaultMTU, nil, nil); len(got) != 0 {
 				t.Fatalf("toward %s, under its /64 %v, a forwarded packet reached the tun: %v", next, routed, got)
 			}
 			wantHop, wantForwarded, wantDropped := 0, uint64(0), uint64(1)
@@ -286,7 +286,7 @@ func TestPacketsBeforeAndAfterASegmentKeepTheirOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	left, granted := mesh.applySegments(framed(first, second, outer, last), DefaultMTU, nil)
+	left, granted := mesh.applySegments(framed(first, second, outer, last), DefaultMTU, nil, nil)
 	got := unframed(left)
 	if len(got) != 4 {
 		t.Fatalf("the batch came back with %d packets", len(got))
@@ -414,7 +414,7 @@ func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 		}
 		batch = append(batch, outer)
 	}
-	if left, _ := m.applySegments(framed(batch...), DefaultMTU, nil); len(left) != 0 {
+	if left, _ := m.applySegments(framed(batch...), DefaultMTU, nil, nil); len(left) != 0 {
 		t.Fatalf("%d waypointed packets reached the tun", len(left))
 	}
 	if got := batches.Load(); got != 1 {
@@ -466,7 +466,7 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 	for range flood {
 		batch = append(batch, refused(segAddr("3fff:b:0:100::1")))
 	}
-	m.applySegments(framed(batch...), DefaultMTU, nil)
+	m.applySegments(framed(batch...), DefaultMTU, nil, nil)
 
 	// the bucket starts full with 6 and earns one back every 100 milliseconds since the mesh started
 	most := 6 + uint64(time.Since(m.segmentsStarted)/(100*time.Millisecond))
@@ -480,7 +480,7 @@ func TestRefusedPacketsAreAnsweredAtABoundedRate(t *testing.T) {
 	if source, node := m.ICMPWithheld(); source != flood-counters.Answered || node != 0 {
 		t.Errorf("the limits withheld %d answers by source and %d by the node's cap, want %d and 0", source, node, flood-counters.Answered)
 	}
-	m.applySegments(framed(refused(segAddr("3fff:b:0:101::1"))), DefaultMTU, nil)
+	m.applySegments(framed(refused(segAddr("3fff:b:0:101::1"))), DefaultMTU, nil, nil)
 	if got := m.SegmentCounters().Answered; got != counters.Answered+1 {
 		t.Errorf("a second source's refused packet after the flood was answered %d times, want once", got-counters.Answered)
 	}
@@ -515,7 +515,7 @@ func TestHopLimitRunningOutAtAWaypointIsAnsweredWithTimeExceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	outer[7] = 1
-	m.applySegments(framed(outer), DefaultMTU, nil)
+	m.applySegments(framed(outer), DefaultMTU, nil, nil)
 	sent := recorder.packets(t)
 	if len(sent) != 1 {
 		t.Fatalf("a segment whose hop limit ran out here sent %d packets, want its one answer", len(sent))
@@ -598,7 +598,7 @@ func TestUnroutedNextSegmentIsAnsweredWithinItsSendersBucketAndTheCap(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			m.applySegments(framed(outer), DefaultMTU, nil)
+			m.applySegments(framed(outer), DefaultMTU, nil, nil)
 			sent := recorder.packets(t)
 			if len(sent) != c.answers || c.answers != 0 && sent[0][40] != 1 {
 				t.Errorf("%d packets went back, want %d destination unreachable", len(sent), c.answers)
@@ -642,7 +642,7 @@ func TestAssignedNextSegmentIsAnsweredWithinItsSendersBucketAndTheCap(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			m.applySegments(framed(outer), DefaultMTU, nil)
+			m.applySegments(framed(outer), DefaultMTU, nil, nil)
 			sent := recorder.packets(t)
 			if len(sent) != c.answers || c.answers != 0 && sent[0][40] != 4 {
 				t.Errorf("%d packets went back, want %d parameter problems", len(sent), c.answers)
@@ -777,7 +777,7 @@ func TestTwoSegmentsOfThisNodeInOneListAreBothActedOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	left, _ := mesh.applySegments(framed(outer), DefaultMTU, nil)
+	left, _ := mesh.applySegments(framed(outer), DefaultMTU, nil, nil)
 	got := unframed(left)
 	if len(got) != 1 || !bytes.Equal(got[0], inner) {
 		t.Fatalf("the exit on this node did not deliver the inner packet: %v", got)

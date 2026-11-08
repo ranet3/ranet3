@@ -180,22 +180,22 @@ func (m *Mesh) SegmentCounters() SegmentCounters {
 // granted marks those frames among the ones returned, nil where there are none, since configuring the segment grants what arrives on it transit
 // mtu is the largest packet the session the batch came through carries
 // a SYN an End.DT46 delivers or egresses has its MSS clamped to it here, since the session's clamp saw only the outer header
-// from is the peer of that session, nil for packets of no session
-func (m *Mesh) applySegments(frames [][]byte, mtu int, from *Peer) (routed [][]byte, granted []bool) {
+// from is the peer of that session, nil for packets of no session, and hold covers the frames' storage as DeliverInboundBatch's does
+func (m *Mesh) applySegments(frames [][]byte, mtu int, from *Peer, hold Hold) (routed [][]byte, granted []bool) {
 	table := m.segmentTable.Load()
 	if table == nil {
 		return frames, nil
 	}
 	act := func(packet []byte) srv6.Result { return actLocally(table, packet) }
 	if trace := m.tracer.Load(); trace != nil {
-		return trace.actOnSegments(m, frames, mtu, from, act)
+		return trace.actOnSegments(m, frames, mtu, from, hold, act)
 	}
-	return m.actOnSegments(frames, mtu, nil, act)
+	return m.actOnSegments(frames, mtu, hold, nil, act)
 }
 
 // actOnSegments is applySegments over act, which acts on each packet as the segment table does, records holding what a trace records each packet with, nil for none
 // an End.DT46's inner packet that goes on to the decision is the decision's to record
-func (m *Mesh) actOnSegments(frames [][]byte, mtu int, records *segmentRecords, act func([]byte) srv6.Result) ([][]byte, []bool) {
+func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segmentRecords, act func([]byte) srv6.Result) ([][]byte, []bool) {
 	var routed, egress [][]byte
 	var granted []bool
 	take := func(i int) {
@@ -316,7 +316,7 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, records *segmentRecords, 
 	m.forwardSegments(forward, arrivals, from, trace)
 	if len(egress) != 0 {
 		m.segmentsEgressed.Add(uint64(len(egress)))
-		m.egress(egress)
+		m.egress(egress, hold)
 	}
 	if routed == nil {
 		return frames, nil

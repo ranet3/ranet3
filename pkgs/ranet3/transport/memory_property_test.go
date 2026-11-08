@@ -121,7 +121,7 @@ func (n *scriptNetwork) drain(h, p int, m *Mux) {
 			n.note("hub %d mux %d IKE %x from %s", h, p, d.Raw, n.role(d.Endpoint.AddrPort()))
 			n.delivered[h]++
 		case batch := <-m.espCh:
-			for _, packet := range m.takeESP(batch) {
+			for _, packet := range clonedPackets(batch) {
 				n.note("hub %d mux %d ESP %x", h, p, packet)
 				n.delivered[h]++
 			}

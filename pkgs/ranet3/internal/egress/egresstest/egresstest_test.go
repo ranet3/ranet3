@@ -27,7 +27,7 @@ func (e *takenExit) Close() error { return nil }
 
 func (e *takenExit) SetEnabled(bool) {}
 
-func (e *takenExit) Egress(frames [][]byte) {
+func (e *takenExit) Egress(frames [][]byte, _ netstack.Hold) {
 	for _, frame := range frames {
 		e.taken = append(e.taken, frame[netstack.TUNHeadroom]>>4)
 	}

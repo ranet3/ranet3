@@ -16,7 +16,8 @@ import (
 
 const (
 	// hubAllocReads is how many more reads the allocation test's longer run takes than its shorter one
-	hubAllocReads = 64
+	// enough that under -race the spread of the count a read costs stays far below 0.5, from which that count rounds to 1
+	hubAllocReads = 1024
 	// hubAllocDatagrams is how many datagrams each read of the allocation test holds
 	hubAllocDatagrams = 16
 )
@@ -36,7 +37,7 @@ func ecnHub(n int) (*Hub, []*Mux) {
 	esp := make(map[uint32]*Mux)
 	muxes := make([]*Mux, n)
 	for i := range muxes {
-		muxes[i] = &Mux{hub: h, espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
+		muxes[i] = &Mux{hub: h, espCh: make(chan *Received, espChanSize), done: make(chan struct{})}
 		esp[uint32(i+1)] = muxes[i]
 	}
 	h.tables.Store(&spiTables{ike: make(map[uint64]*Mux), esp: esp})
@@ -44,7 +45,7 @@ func ecnHub(n int) (*Hub, []*Mux) {
 }
 
 // scriptedReads answers a receiver that hands out one read of reads per call and then fails with errScriptDone, each time it is called
-// each datagram is eight octets, the SPI of its mux and then its number among all the script's datagrams
+// each datagram is eight octets, the SPI of its mux and then its number among all the script's datagrams, laid into the hub's blocks
 func scriptedReads(reads [][]scriptedDatagram) func() receiveFunc {
 	var storage [][][]byte
 	number := uint32(0)
@@ -58,7 +59,7 @@ func scriptedReads(reads [][]scriptedDatagram) func() receiveFunc {
 	}
 	return func() receiveFunc {
 		next := 0
-		return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
+		return pooledReads(func(_ *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
 			if next == len(reads) {
 				return 0, errScriptDone
 			}
@@ -68,7 +69,19 @@ func scriptedReads(reads [][]scriptedDatagram) func() receiveFunc {
 			}
 			next++
 			return len(reads[next-1]), nil
+		})
+	}
+}
+
+// releasing is fn after it releases every batch muxes hold, as the workers of sessions that keep up would
+func releasing(muxes []*Mux, fn receiveFunc) receiveFunc {
+	return func(pool *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (int, error) {
+		for _, m := range muxes {
+			for len(m.espCh) > 0 {
+				(<-m.espCh).Release()
+			}
 		}
+		return fn(pool, bufs, sizes, endpoints, records, refused)
 	}
 }
 
@@ -98,29 +111,31 @@ func TestHubCarriesEachPacketsOuterECN(t *testing.T) {
 			if !slices.ContainsFunc(fields[i], func(e packet.ECN) bool { return e != packet.NotECT }) {
 				fields[i] = nil
 			}
-			var batch espDatagramBatch
+			var batch *Received
 			select {
 			case batch = <-m.espCh:
 			default:
 				t.Fatalf("read %d: mux %d was handed no batch", r, i)
 			}
 			var got []uint32
-			for _, p := range batch.packets {
+			for _, p := range batch.Packets() {
 				got = append(got, binary.BigEndian.Uint32(p[4:]))
 			}
 			if !slices.Equal(got, want[i]) {
 				t.Errorf("read %d: mux %d was handed the datagrams %v, want %v", r, i, got, want[i])
 			}
-			if (batch.ecn == nil) != (fields[i] == nil) || !slices.Equal(batch.ecn, fields[i]) {
-				t.Errorf("read %d: mux %d was handed the ECN fields %v, want %v", r, i, batch.ecn, fields[i])
+			if (batch.ECN() == nil) != (fields[i] == nil) || !slices.Equal(batch.ECN(), fields[i]) {
+				t.Errorf("read %d: mux %d was handed the ECN fields %v, want %v", r, i, batch.ECN(), fields[i])
 			}
+			batch.Release()
 		}
 	}
 }
 
-// demultiplexing a read to one peer allocates that peer's packet slices and one block for their bytes, and nothing per datagram
-// a batch whose datagrams carry an outer ECN field keeps the fields in that block
-func TestHubReadAllocatesOnlyEachPeersBatch(t *testing.T) {
+// demultiplexing a read to one peer allocates nothing once the batches of the reads before it are released, its packets, fields and batch all pooled
+// under -race a sync.Pool drops a quarter of what is put back, so a read's batch is allocated afresh a quarter of the time
+// which stays below the half the count rounds to none from, where a make per batch counts one or more
+func TestHubReadAllocatesNothingPerRead(t *testing.T) {
 	for _, field := range []packet.ECN{packet.NotECT, packet.CE} {
 		read := make([]scriptedDatagram, hubAllocDatagrams)
 		for i := range read {
@@ -133,13 +148,13 @@ func TestHubReadAllocatesOnlyEachPeersBatch(t *testing.T) {
 			}
 			receiver := scriptedReads(reads)
 			return testing.AllocsPerRun(1, func() {
-				h, _ := ecnHub(1)
-				h.receiveLoop(receiver(), func(error) {})
+				h, muxes := ecnHub(1)
+				h.receiveLoop(releasing(muxes, receiver()), func(error) {})
 			})
 		}
 		// under -race a run can count a stray allocation outside the loop, which moves the per-read count by 1/hubAllocReads
-		if perRead := (allocs(2*hubAllocReads) - allocs(hubAllocReads)) / hubAllocReads; math.Round(perRead) != 2 {
-			t.Errorf("a read of %d datagrams with the ECN field %d for one peer allocated %v times, want 2", hubAllocDatagrams, field, perRead)
+		if perRead := (allocs(2*hubAllocReads) - allocs(hubAllocReads)) / hubAllocReads; math.Round(perRead) != 0 {
+			t.Errorf("a read of %d datagrams with the ECN field %d for one peer allocated %v times, want none", hubAllocDatagrams, field, perRead)
 		}
 	}
 }

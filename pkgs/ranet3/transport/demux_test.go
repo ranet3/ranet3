@@ -46,7 +46,7 @@ func TestReceiveLoopsReadTablesThatRegistrationsReplace(t *testing.T) {
 	for range 2 {
 		left := churnBatches
 		loops.Go(func() {
-			hub.receiveLoop(func(bufs [][]byte, sizes []int, endpoints []Endpoint, _ []receiveRecord, _ *refusals) (int, error) {
+			hub.receiveLoop(pooledReads(func(_ *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, _ []receiveRecord, _ *refusals) (int, error) {
 				if left == 0 {
 					return 0, errors.New("the churn is over")
 				}
@@ -55,7 +55,7 @@ func TestReceiveLoopsReadTablesThatRegistrationsReplace(t *testing.T) {
 					bufs[i], sizes[i], endpoints[i] = datagram, len(datagram), nil
 				}
 				return len(datagrams), nil
-			}, hub.readFailed)
+			}), hub.readFailed)
 		})
 	}
 	var churn sync.WaitGroup
@@ -79,7 +79,7 @@ func TestReceiveLoopsReadTablesThatRegistrationsReplace(t *testing.T) {
 				for {
 					select {
 					case batch := <-mux.espCh:
-						for _, packet := range batch.packets {
+						for _, packet := range clonedPackets(batch) {
 							if got := binary.BigEndian.Uint32(packet); !ownsESP || got != spi {
 								t.Errorf("a mux that registered ESP SPI %d (%v) was handed SPI %d", spi, ownsESP, got)
 							}

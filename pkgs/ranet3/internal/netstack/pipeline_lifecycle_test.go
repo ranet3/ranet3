@@ -178,7 +178,7 @@ func TestCloseWaitsForInboundWriters(t *testing.T) {
 	m := ownEverything(&Mesh{closed: make(chan struct{})})
 	m.setDevice(lanesOf(dev, dev))
 	m.startInboundWriters()
-	m.DeliverInboundBatch(framed(ipv6TCPPacket(40000, 5201, 1)), DefaultMTU, nil)
+	m.DeliverInboundBatch(framed(ipv6TCPPacket(40000, 5201, 1)), DefaultMTU, nil, nil)
 	select {
 	case <-dev.entered:
 	case <-time.After(deliveryTimeout):
@@ -259,7 +259,7 @@ func TestDeliveriesRacingCloseAllReturn(t *testing.T) {
 			for session := range sessions {
 				delivering.Go(func() {
 					for i := range deliveries {
-						m.DeliverInboundBatch(framed(ipv6TCPPacket(uint16(40000+session), uint16(i), 1)), DefaultMTU, nil)
+						m.DeliverInboundBatch(framed(ipv6TCPPacket(uint16(40000+session), uint16(i), 1)), DefaultMTU, nil, nil)
 					}
 				})
 			}
@@ -294,7 +294,7 @@ func TestSingleQueueInboundSplitsLargeBatches(t *testing.T) {
 	for i := range packets {
 		packets[i] = []byte{byte(i)}
 	}
-	m.WriteHost(framed(packets...))
+	m.WriteHost(framed(packets...), nil)
 	if len(dev.writes) != 2 {
 		t.Fatalf("got %d TUN writes, want two bounded batches", len(dev.writes))
 	}

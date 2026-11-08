@@ -75,7 +75,7 @@ func TestDarwinRecordCarriesTheOuterECN(t *testing.T) {
 				}
 				records[0] = receiveRecord{}
 				var refused refusals
-				if n, err := receivers[i](bufs, sizes, endpoints, records, &refused); n != 1 || refused != (refusals{}) || err != nil {
+				if n, err := receivers[i](new(blockPool), bufs, sizes, endpoints, records, &refused); n != 1 || refused != (refusals{}) || err != nil {
 					t.Fatalf("the read of a datagram sent with %d answered %d datagrams, %v refused and %v", codepoint, n, refused, err)
 				}
 				if records[0].ecn != codepoint {

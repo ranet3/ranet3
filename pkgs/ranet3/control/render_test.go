@@ -248,7 +248,7 @@ func TestStatusTransitLineRendersAsTheGoldenFile(t *testing.T) {
 }
 
 // the ESP line always names in, the packets their sessions dropped and the datagrams refused
-// and names those a full receive queue dropped, the packets marked CE and those of an unused ECN combination only while each is above 0
+// and names those dropped because their session's receive queue was full or held all its receive buffers, the packets marked CE and those of an unused ECN combination only while each is above 0
 // and --json carries every count under esp
 func TestStatusESPLineRendersAsTheGoldenFile(t *testing.T) {
 	status := downStatus()

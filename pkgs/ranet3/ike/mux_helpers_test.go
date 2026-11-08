@@ -5,6 +5,7 @@ package ike
 
 import (
 	"errors"
+	"slices"
 	"time"
 
 	"ranet3.com/pkgs/ranet3/transport"
@@ -16,14 +17,19 @@ func recvIKEUntil(mux *transport.Mux, deadline time.Time) ([]byte, error) {
 	return raw, err
 }
 
-// recvESPUntil is the first packet of the next ESP batch mux holds, waiting for it until deadline
+// recvESPUntil is the first packet of the next ESP batch mux holds, copied out of the released batch, waiting for it until deadline
 // a wait that times out closes the mux, which ends the receive it started
 func recvESPUntil(mux *transport.Mux, deadline time.Time) ([]byte, error) {
 	var packets [][]byte
 	read := make(chan error, 1)
 	go func() {
-		var err error
-		_, packets, _, err = mux.RecvESPBatchConcurrent()
+		batch, err := mux.RecvESPBatchConcurrent()
+		if err == nil {
+			for _, packet := range batch.Packets() {
+				packets = append(packets, slices.Clone(packet))
+			}
+			batch.Release()
+		}
 		read <- err
 	}()
 	timer := time.NewTimer(time.Until(deadline))

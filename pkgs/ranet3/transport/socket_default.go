@@ -60,16 +60,17 @@ func openPacketBind(port uint16, _ Selection, _ func(string, ...slog.Attr)) (pac
 	}
 	var receivers []receiveFunc
 	for _, fn := range fns {
-		size := b.BatchSize()
-		// the next read reuses the slab, and the hub copies what it keeps of a read before the next
-		slab := make([]byte, readBufferSize*size)
-		packets := make([]conn.ReceivedPacket, size)
-		receivers = append(receivers, func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
-			n, err := fn(slab, packets)
+		// the slab is one block of the hub's pool, which holds a read while the bind's BatchSize is 1, as StdNetBind's is everywhere but linux
+		// a bind reading more would need a block for each datagram
+		var block *rxBlock
+		packets := make([]conn.ReceivedPacket, b.BatchSize())
+		receivers = append(receivers, func(pool *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
+			pool.refill(&block)
+			n, err := fn(block.data, packets)
 			for i := range n {
-				bufs[i], sizes[i] = packets[i].Bytes(slab), packets[i].Size
+				bufs[i], sizes[i] = packets[i].Bytes(block.data), packets[i].Size
 				endpoints[i] = &portableEndpoint{packets[i].Endpoint}
-				records[i] = receiveRecord{source: packets[i].Endpoint.(*conn.StdNetEndpoint).AddrPort}
+				records[i] = receiveRecord{source: packets[i].Endpoint.(*conn.StdNetEndpoint).AddrPort, block: block}
 			}
 			// This bind hands every datagram it reads straight through, so
 			// there is nothing it refuses of its own.

@@ -81,11 +81,11 @@ func TestTUNAnswerToThisHostPassesAReversePathCheck(t *testing.T) {
 				t.Cleanup(far.Close)
 				var toFar, back *Peer
 				toFar = NewPeer("far", func(int) (BatchSealer, error) { return cloning, nil }, func(sealed [][]byte) error {
-					far.DeliverInboundBatch(framed(sealed...), DefaultMTU, back)
+					far.DeliverInboundBatch(framed(sealed...), DefaultMTU, back, nil)
 					return nil
 				}, nil)
 				back = NewPeer("back", func(int) (BatchSealer, error) { return cloning, nil }, func(sealed [][]byte) error {
-					m.DeliverInboundBatch(framed(sealed...), DefaultMTU, toFar)
+					m.DeliverInboundBatch(framed(sealed...), DefaultMTU, toFar, nil)
 					return nil
 				}, nil)
 				t.Cleanup(toFar.Close)

@@ -12,6 +12,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -19,7 +20,7 @@ type fakeExit struct {
 	status   egress.Status
 	announce func() []netip.Prefix
 	enable   func(bool)
-	write    func(frames [][]byte)
+	write    func(frames [][]byte, hold netstack.Hold)
 }
 
 var _ egress.Exit = (*fakeExit)(nil)
@@ -37,9 +38,9 @@ func (f *fakeExit) SetEnabled(on bool) {
 	}
 }
 
-func (f *fakeExit) Egress(frames [][]byte) {
+func (f *fakeExit) Egress(frames [][]byte, hold netstack.Hold) {
 	if f.write != nil {
-		f.write(frames)
+		f.write(frames, hold)
 	}
 }
 

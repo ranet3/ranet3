@@ -14,19 +14,25 @@ const (
 	espSendBatch = 128
 	// espChanSize is the batches one mux's ESP receive queue holds, which absorbs a burst before the session's workers drain it
 	// a batch is one datagram on darwin, whose backend reads one at a time
-	// a half-open SA carries the queue while its handshake runs, 40 KiB at this size
+	// a half-open SA carries the queue's slots while its handshake runs, a pointer each
 	espChanSize = 1024
-	// espQueueBytes is the bytes one mux's ESP receive queue holds, the bound that holds it
-	// espChanSize batches of the largest datagrams would be 8.6 GB
+	// smallestCopy is the smallest buffer a datagram alone in its receive buffer is copied into, the least power of two that holds the largest datagram a 1500 byte path carries
+	smallestCopy = 2048
+	// copyClasses is how many sizes a copy comes in, each twice the one before from smallestCopy and the largest half a receive buffer
+	// so a copy is charged under twice its datagram above half the smallest, and a datagram past half a receive buffer would gain nothing from one
+	copyClasses = 5
+	// espHeldBytes is the receive storage one mux's batches hold from dispatch to release, queued or on their way to the tun, each receive buffer and copy counted whole
+	// without it a mux would hold espChanSize batches of whole buffers
 	// the queue fills before anything is authenticated, from an SPI anyone who saw one packet can aim at it
-	espQueueBytes = 8 << 20
+	// its size is set by a 20 Gbit/s flow, whose GRO reads fill 43 percent of a buffer
+	espHeldBytes = 16 << 20
 	// ikeQueueSize is the IKE datagrams one mux queues for its session
 	// IKE keeps one request in flight each way, so a few hold a burst of retransmissions and answers
 	ikeQueueSize = 16
 	// unclaimedQueueSize is the IKE datagrams no mux claimed that wait for the responder
 	// a full queue refuses the next one, which costs its sender a retransmission
 	unclaimedQueueSize = 64
-	// dropReportInterval is the least time between two log lines about a full receive queue
+	// dropReportInterval is the least time between two log lines about datagrams refused because their session's receive queue was full or held all its receive buffers
 	// the counter keeps the exact count, and the line only has to point at it
 	dropReportInterval = 10 * time.Second
 	// invalidSPIInterval is the least time between two looks for the session an unknown ESP SPI came from, between two SPIs the hub hands one mux, and how long the hub keeps an SPI a mux let go of
@@ -60,4 +66,6 @@ const (
 	// memoryLoopbackMTU is the MTU linux gives its loopback, the path MTU a mux on a memory network reads for IPv6
 	// IPv4 reads 65535, and the network carries a datagram of any size
 	memoryLoopbackMTU = 65536
+	// memoryPoison is the byte a memory network's hub fills each receive buffer put back in its pool with
+	memoryPoison = 0xa5
 )

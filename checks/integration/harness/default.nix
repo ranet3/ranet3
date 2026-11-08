@@ -1064,7 +1064,7 @@ testers.runNixOSTest {
             return f"journalctl -u {unit} --after-cursor='{cursor}' --no-pager"
 
         def no_esp_dropped():
-            """the scrape reads 0 in two series since ranet3 last started: ranet3_esp_inbound_dropped_total, the ESP datagrams a session dropped, and ranet3_receive_refused_total{cause="unknown_esp"}, those of an SPI no session holds. It reads neither ranet3_receive_dropped_total, the drops of a full receive queue, nor the hub's other causes of refusal."""
+            """the scrape reads 0 in two series since ranet3 last started: ranet3_esp_inbound_dropped_total, the ESP datagrams a session dropped, and ranet3_receive_refused_total{cause="unknown_esp"}, those of an SPI no session holds. It reads neither ranet3_receive_dropped_total, the datagrams refused because their session's receive queue was full or held all its receive buffers, nor the hub's other causes of refusal."""
             metrics = client.succeed("curl -sf http://127.0.0.1:9669/metrics").splitlines()
             for want in ["ranet3_esp_inbound_dropped_total 0", 'ranet3_receive_refused_total{cause="unknown_esp"} 0']:
                 assert want in metrics, f"the scrape does not carry {want}:\n" + "\n".join(metrics)

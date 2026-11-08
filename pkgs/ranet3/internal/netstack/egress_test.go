@@ -95,9 +95,11 @@ func (d *boundedDevice) Write(bufs [][]byte, offset int) (int, error) {
 }
 
 // tunExit hands what it takes to write, the mesh's tun writer as the kernel exit's Runtime holds it
-type tunExit struct{ write func(frames [][]byte) }
+type tunExit struct {
+	write func(frames [][]byte, hold Hold)
+}
 
-func (e tunExit) Egress(frames [][]byte) { e.write(frames) }
+func (e tunExit) Egress(frames [][]byte, hold Hold) { e.write(frames, hold) }
 
 // recordingExit keeps each batch it takes, every packet copied out of its frame
 type recordingExit struct {
@@ -105,7 +107,7 @@ type recordingExit struct {
 	batches [][][]byte
 }
 
-func (e *recordingExit) Egress(frames [][]byte) {
+func (e *recordingExit) Egress(frames [][]byte, _ Hold) {
 	batch := make([][]byte, len(frames))
 	for i, frame := range frames {
 		batch[i] = slices.Clone(frame[TUNHeadroom:])
@@ -271,7 +273,7 @@ func TestEgressThroughTheTunWriterKeepsEachFlowOnItsLaneInOrder(t *testing.T) {
 	run := func(ready func(family int, mode3 bool) bool) {
 		t.Helper()
 		frames, want := batch()
-		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 		total := 0
 		for flow := range flows {
 			family, mode3 := kind(flow)
@@ -376,7 +378,7 @@ func TestBothEgressHandOffsReachTheExit(t *testing.T) {
 		m.SetEgressReady(c.egress4, c.egress6)
 		m.SetAdvertisedReady(c.advert4, c.advert6)
 		segments, decisions := m.SegmentCounters(), m.TransitCounters()
-		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 		want3, want2 := ready(mode3, c.egress4, c.egress6), ready(mode2, c.advert4, c.advert6)
 		var want [][][]byte
 		for _, batch := range [][][]byte{want3, want2} {
@@ -410,12 +412,12 @@ type countReadingExit struct {
 
 type handOffCounts struct{ egressed, delivered uint64 }
 
-func (e *countReadingExit) Egress(frames [][]byte) {
+func (e *countReadingExit) Egress(frames [][]byte, hold Hold) {
 	read := handOffCounts{e.m.SegmentCounters().Egressed, e.m.TransitCounters().Delivered}
 	e.mu.Lock()
 	e.reads = append(e.reads, read)
 	e.mu.Unlock()
-	e.recordingExit.Egress(frames)
+	e.recordingExit.Egress(frames, hold)
 }
 
 // a reader that has a frame at the exit finds it counted
@@ -427,7 +429,7 @@ func TestEgressHandOffsCountEachBatchBeforeTheExitTakesIt(t *testing.T) {
 	m.SetEgressReady(true, true)
 	m.SetAdvertisedReady(true, true)
 	before := handOffCounts{m.SegmentCounters().Egressed, m.TransitCounters().Delivered}
-	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 	batches := exit.taken()
 	if len(batches) != 2 || len(exit.reads) != 2 {
 		t.Fatalf("the exit took %d batches and read the counters %d times, want mode 3's and then mode 2's", len(batches), len(exit.reads))
@@ -473,7 +475,7 @@ func TestEgressResultsReachTheTunInOneWrite(t *testing.T) {
 		middle,
 		steered(t, egressed4, headend, egressExit),
 		steered(t, last, headend, meshExit),
-	), DefaultMTU, nil)
+	), DefaultMTU, nil, nil)
 
 	writes := tunWrites(meshTUN)
 	if len(writes) != 2 || !slices.EqualFunc(writes[0], [][]byte{egressed6, egressed4}, bytes.Equal) || !slices.EqualFunc(writes[1], [][]byte{first, delivered, middle, last}, bytes.Equal) {
@@ -517,12 +519,12 @@ func TestEgressBatchAllocatesOnceMoreThanADelivery(t *testing.T) {
 		return framed(frames...)
 	}
 	delivered, egressed := batch(meshExit, egressOwned[2]), batch(egressExit, segAddr("2001:db8:4860::8888"))
-	m.applySegments(egressed, DefaultMTU, nil)
+	m.applySegments(egressed, DefaultMTU, nil, nil)
 	if got := m.SegmentCounters().Egressed; got != inboundWriteBatchSize {
 		t.Fatalf("%d of the batch's %d packets took the egress segment, so this proves nothing", got, inboundWriteBatchSize)
 	}
-	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU, nil) })
-	if egress := leastAllocs(func() { m.applySegments(egressed, DefaultMTU, nil) }); egress > deliver+1 {
+	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU, nil, nil) })
+	if egress := leastAllocs(func() { m.applySegments(egressed, DefaultMTU, nil, nil) }); egress > deliver+1 {
 		t.Errorf("a batch of %d egress results allocated %.0f times, want at most one more than the %.0f of delivering it", inboundWriteBatchSize, egress, deliver)
 	}
 }
@@ -537,7 +539,7 @@ func TestEgressOfAFamilyNotReadyIsNotReady(t *testing.T) {
 	egressed6 := plainV6(segAddr("3fff:a::1"), segAddr("2001:db8:4860::8888"), "egressed over IPv6")
 	egressed4 := udpPacket(tooBigSource[4], tooBigDestination[4], 64, false)
 	batch := func() {
-		m.DeliverInboundBatch(framed(steered(t, egressed6, headend, egressExit), steered(t, egressed4, headend, egressExit)), DefaultMTU, nil)
+		m.DeliverInboundBatch(framed(steered(t, egressed6, headend, egressExit), steered(t, egressed4, headend, egressExit)), DefaultMTU, nil, nil)
 	}
 
 	batch()
@@ -574,7 +576,7 @@ func TestEgressRefusedSourceIsCountedAndNeverAnswered(t *testing.T) {
 		steered(t, plainV6(segAddr("3fff:a::1"), segAddr("2001:db8:4860::8888"), "outer outside"), segAddr("3fff:bad::1"), egressExit),
 		steered(t, plainV6(stranger[6], segAddr("2001:db8:4860::8888"), "inner outside"), headend, egressExit),
 		steered(t, udpPacket(stranger[4], tooBigDestination[4], 64, false), headend, egressExit),
-	), DefaultMTU, nil)
+	), DefaultMTU, nil, nil)
 	if writes := tunWrites(meshTUN); len(writes) != 0 {
 		t.Errorf("a refused source reached the tun as %q", writes)
 	}
@@ -656,7 +658,7 @@ func TestEgressSegmentRefusesAnInnerPacketTheMeshRoutesNoReplyTo(t *testing.T) {
 			}
 		}
 	}
-	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 	if writes := tunWrites(meshTUN); len(writes) != 1 || !slices.EqualFunc(writes[0], want, bytes.Equal) {
 		t.Errorf("the tun took %q, want the packets the mesh routes a reply to of each family", writes)
 	}
@@ -698,7 +700,7 @@ func TestEgressSegmentAdmitsALANBehindAListedNodeByItsInnerSource(t *testing.T) 
 			steered(t, udpPacket(lan[family], internet[family], 64, false), unlisted, egressExit))
 		want = append(want, admitted)
 	}
-	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 	if writes := tunWrites(meshTUN); len(writes) != 1 || !slices.EqualFunc(writes[0], want, bytes.Equal) {
 		t.Errorf("the tun took %q, want the LAN host's packet of each family alone", writes)
 	}
@@ -726,7 +728,7 @@ func TestEgressRefusalAllocatesOnceMoreThanADelivery(t *testing.T) {
 		return framed(frames...)
 	}
 	delivered := batch(tooBigSource[6], segAddr("2001:db8::5"), meshExit)
-	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU, nil) })
+	deliver := leastAllocs(func() { m.applySegments(delivered, DefaultMTU, nil, nil) })
 	for _, refusal := range []struct {
 		name   string
 		frames [][]byte
@@ -736,13 +738,13 @@ func TestEgressRefusalAllocatesOnceMoreThanADelivery(t *testing.T) {
 	} {
 		count := func() uint64 {
 			before := m.SegmentCounters().Refused
-			m.applySegments(refusal.frames, DefaultMTU, nil)
+			m.applySegments(refusal.frames, DefaultMTU, nil, nil)
 			return m.SegmentCounters().Refused - before
 		}
 		if got := count(); got != inboundWriteBatchSize {
 			t.Fatalf("%d of the batch's %d packets were refused %s, so this proves nothing", got, inboundWriteBatchSize, refusal.name)
 		}
-		if refuse := leastAllocs(func() { m.applySegments(refusal.frames, DefaultMTU, nil) }); refuse > deliver+1 {
+		if refuse := leastAllocs(func() { m.applySegments(refusal.frames, DefaultMTU, nil, nil) }); refuse > deliver+1 {
 			t.Errorf("a batch of %d egress results refused %s allocated %.0f times, want at most one more than the %.0f of delivering it", inboundWriteBatchSize, refusal.name, refuse, deliver)
 		}
 		if got := count(); got != inboundWriteBatchSize {
@@ -810,7 +812,7 @@ func TestEgressSegmentRefusesAnInnerDestinationTheMeshRoutes(t *testing.T) {
 			refused++
 		}
 	}
-	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 	if writes := tunWrites(meshTUN); len(writes) != 1 || !slices.EqualFunc(writes[0], want, bytes.Equal) {
 		t.Errorf("the tun took %q, want the packets for destinations the mesh does not route of each family", writes)
 	}
@@ -828,7 +830,7 @@ func TestEgressSegmentRefusesAnInnerDestinationTheMeshRoutes(t *testing.T) {
 		mesh := udpPacket(sources[family][0], segAddr(map[int]string{4: "203.0.113.5", 6: "2001:db8:1::5"}[family]), 64, false)
 		elsewhere := udpPacket(sources[family][0], segAddr(map[int]string{4: "198.51.100.9", 6: "2001:db8:9::9"}[family]), 64, false)
 		before := m.SegmentCounters()
-		m.DeliverInboundBatch(framed(steered(t, mesh, headend, egressExit), steered(t, elsewhere, headend, egressExit)), DefaultMTU, nil)
+		m.DeliverInboundBatch(framed(steered(t, mesh, headend, egressExit), steered(t, elsewhere, headend, egressExit)), DefaultMTU, nil, nil)
 		if got := m.SegmentCounters(); got.Refused != before.Refused+1 || got.Dropped != before.Dropped+1 || got.NotReady != before.NotReady+1 || got.Egressed != before.Egressed {
 			t.Errorf("with IPv%d not ready a packet for the mesh and one past it moved the counters from %+v to %+v, want one refused and dropped and one not ready", family, before, got)
 		}
@@ -872,7 +874,7 @@ func TestEgressSegmentAnswersEachPacketAsTheFirstOfItsPair(t *testing.T) {
 			}
 		}
 	}
-	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 	if writes := tunWrites(meshTUN); len(writes) != 1 || !slices.EqualFunc(writes[0], want, bytes.Equal) {
 		t.Errorf("the tun took %q, want both packets of each pair that egresses, in order", writes)
 	}
@@ -893,7 +895,7 @@ func TestEgressClampsTheMSSOfASYN(t *testing.T) {
 		for _, flags := range []byte{synFlag, synFlag | 0x10} {
 			m, meshTUN := egressMesh(t)
 			inner := tcpPacket(family, 0, false, flags, binary.BigEndian.AppendUint16([]byte{optionMSS, mssLen}, offered), 0, 0)
-			m.DeliverInboundBatch(framed(steered(t, inner, headend, egressExit)), session, nil)
+			m.DeliverInboundBatch(framed(steered(t, inner, headend, egressExit)), session, nil, nil)
 			want := bytes.Clone(inner)
 			binary.BigEndian.PutUint16(want[header+tcpHeaderLen+2:], uint16(session-header-tcpHeaderLen))
 			binary.BigEndian.PutUint16(want[header+tcpChecksum:], tcpSum(want, header))
@@ -912,7 +914,7 @@ func TestUnknownActionIsDroppedAndReported(t *testing.T) {
 	before := plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::a"), "before")
 	unknown := plainV6(segAddr("2001:db8::1"), egressExit, "unknown")
 	after := plainV6(segAddr("2001:db8::1"), segAddr("2001:db8::b"), "after")
-	left, _ := m.actOnSegments(framed(before, unknown, after), DefaultMTU, nil, func(packet []byte) srv6.Result {
+	left, _ := m.actOnSegments(framed(before, unknown, after), DefaultMTU, nil, nil, func(packet []byte) srv6.Result {
 		if bytes.Equal(packet, unknown) {
 			return srv6.Result{Action: srv6.ActionDrop + 1}
 		}

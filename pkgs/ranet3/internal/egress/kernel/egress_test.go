@@ -20,6 +20,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -1227,14 +1228,27 @@ func TestStatusIsTheLastPassWithTheRulesAsItsDetail(t *testing.T) {
 	}
 }
 
-// Egress hands the frames, headroom and all, to the mesh's tun writer as they came
+// Egress hands the frames, headroom and all, to the mesh's tun writer as they came, with the hold on their storage, which the writer's lanes keep until they have written them
 func TestEgressHandsTheFramesToTheTunWriter(t *testing.T) {
 	var written [][][]byte
-	rt := Runtime{Write: func(frames [][]byte) { written = append(written, frames) }}
+	var holds []netstack.Hold
+	rt := Runtime{Write: func(frames [][]byte, hold netstack.Hold) {
+		written, holds = append(written, frames), append(holds, hold)
+	}}
 	tr := translator(t, egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}, rt, &fakeBackend{})
 	frames := [][]byte{{1, 2, 3}, {4, 5}}
-	tr.Egress(frames)
+	hold := new(markedHold)
+	tr.Egress(frames, hold)
 	if len(written) != 1 || len(written[0]) != 2 || &written[0][0][0] != &frames[0][0] || &written[0][1][0] != &frames[1][0] {
 		t.Errorf("the writer took %v, want the two frames as Egress was handed them", written)
 	}
+	if len(holds) != 1 || holds[0] != netstack.Hold(hold) {
+		t.Errorf("the writer took the holds %v, want the one Egress was handed", holds)
+	}
 }
+
+// markedHold is a hold told apart from another by its address, which a field of nonzero size gives it
+type markedHold struct{ _ byte }
+
+func (*markedHold) Retain()  {}
+func (*markedHold) Release() {}

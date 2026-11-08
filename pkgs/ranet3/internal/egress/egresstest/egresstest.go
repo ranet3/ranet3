@@ -129,7 +129,7 @@ type Host struct {
 	Do func(f func() error) error
 	// TUN is the mesh device's name, and Write its writer
 	TUN   string
-	Write func(frames [][]byte)
+	Write func(frames [][]byte, hold netstack.Hold)
 	// Mesh is the exit's addresses on the mesh, and Members the prefixes its
 	// mesh routes to other nodes, the leaf's
 	Mesh    []netip.Addr
@@ -523,7 +523,7 @@ func (r *running) hand(packets [][]byte) {
 	r.mu.Lock()
 	r.handed = append(r.handed, handed...)
 	r.mu.Unlock()
-	r.Egress(frames)
+	r.Egress(frames, nil)
 }
 
 // handedSince is every packet handed from the mark'th on

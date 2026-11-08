@@ -151,7 +151,7 @@ func TestExitClampsTheMSSOfASYNToTheSessionItArrivedThrough(t *testing.T) {
 				m := ownEverything(&Mesh{Name: "test0", closed: make(chan struct{})})
 				m.setDevice(dev)
 				m.SetSegments(table)
-				m.DeliverInboundBatch(framed(outer), mtu, nil)
+				m.DeliverInboundBatch(framed(outer), mtu, nil, nil)
 				want, clamps := bytes.Clone(inner), uint64(0)
 				if mtu != 0 {
 					binary.BigEndian.PutUint16(want[header+tcpHeaderLen+2:], uint16(mtu-header-tcpHeaderLen))

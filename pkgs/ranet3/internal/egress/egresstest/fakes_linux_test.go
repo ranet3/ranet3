@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -122,7 +123,7 @@ func (f *fakeExit) Close() error { return nil }
 
 func (f *fakeExit) SetEnabled(bool) {}
 
-func (f *fakeExit) Egress(frames [][]byte) { f.host.Write(frames) }
+func (f *fakeExit) Egress(frames [][]byte, hold netstack.Hold) { f.host.Write(frames, hold) }
 
 func (f *fakeExit) Announce() []netip.Prefix {
 	if announced := f.announced.Load(); announced != nil {

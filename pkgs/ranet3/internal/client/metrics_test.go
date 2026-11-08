@@ -66,7 +66,9 @@ func TestRefusedESPPacketsAreCountedExactlyAndSaidRarely(t *testing.T) {
 
 // A datagram naming no SPI this node holds is refused by the hub, and the
 // metric is the only way an operator tells that from silence. It is its own
-// series because the queue-full one means something else entirely.
+// series because ranet3_receive_dropped_total, of datagrams refused because
+// their session's receive queue was full or held all its receive buffers, means
+// something else entirely.
 func TestMetricsRendersWhatTheHubRefused(t *testing.T) {
 	hub, err := transport.NewHub(0, transport.Runtime{})
 	if err != nil {

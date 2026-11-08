@@ -57,7 +57,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
@@ -95,6 +94,8 @@ type Hub struct {
 	port uint16
 	// pairs is nil where the bind cannot connect a socket to one peer
 	pairs *pairTable
+	// pool holds the receive buffers every receiver of the hub reads into
+	pool blockPool
 
 	// events is Runtime.Events, nil where the caller records nothing
 	events func(kind string, attrs ...slog.Attr)
@@ -107,7 +108,7 @@ type Hub struct {
 	closed    atomic.Bool
 	closeOnce sync.Once
 
-	// dropped counts every datagram a full receive queue refused, and reported
+	// dropped counts every datagram refused because its session's receive queue was full or held all its receive buffers, and reported
 	// bounds how often that is said out loud. One receive loop serves every
 	// session on this hub, and anyone who can reach the port can fill a
 	// queue: at line rate a line per datagram is a synchronous write to
@@ -153,9 +154,10 @@ type spiTables struct {
 	listen chan Unclaimed
 }
 
-// Dropped is how many inbound datagrams a full receive queue has refused. It
-// is the inbound counterpart of Peer.Dropped, and the only signal that this
-// node is behind on receive rather than losing packets on the wire.
+// Dropped is how many inbound datagrams were refused because their session's
+// receive queue was full or held all its receive buffers. It is the inbound
+// counterpart of Peer.Dropped, and the only signal that this node is behind on
+// receive rather than losing packets on the wire.
 func (h *Hub) Dropped() uint64 { return h.dropped.Load() }
 
 // Refused is how many inbound datagrams this node read and had nowhere to put:
@@ -248,7 +250,7 @@ func (h *Hub) noteDrop(count int, reason string) {
 	if now-last < int64(dropReportInterval) || !h.reported.CompareAndSwap(last, now) {
 		return
 	}
-	slog.Warn("transport receive queue full", "detail", reason, "dropped_total", total)
+	slog.Warn("transport refused datagrams because their session's receive queue was full or held all its receive buffers", "detail", reason, "dropped_total", total)
 }
 
 // Unclaimed is one IKE datagram whose SPI belongs to no registered Mux, which
@@ -285,20 +287,25 @@ type packetBind interface {
 	Close() error
 }
 
-// A receiver owns its buffers. Their views remain valid until its next call.
+// A receiver reads into blocks of pool, the hub's. Before each read it keeps
+// a block nothing else holds and takes a fresh one in place of each a batch
+// still retains. A view stays valid until its next call unless a batch retains its block.
 // receiveFunc fills the vectors and reports how many datagrams it produced.
 // It adds those it read and could not use to refused, and returns an error
 // before it adds any, so an operator can tell a receive path that is
 // discarding from one that is idle.
 // It fills a record for every datagram and an endpoint for every IKE datagram, which the memory and portable binds fill for every datagram.
-type receiveFunc func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (n int, err error)
+// The datagrams of one block are consecutive in what one call hands out.
+type receiveFunc func(pool *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (n int, err error)
 
-// receiveRecord holds what a receiver read about one datagram beside its bytes, as values, so filling one allocates nothing
+// receiveRecord holds what a receiver read about one datagram beside its bytes, as values and the block's pointer, so filling one allocates nothing
 type receiveRecord struct {
 	// source is the address and port the datagram came from, with the zone the bind's endpoints name a link-local source's interface by
 	source netip.AddrPort
 	// ecn is the ECN field of the datagram's outer IP header, Not-ECT where the receiver reads none
 	ecn packet.ECN
+	// block is the receive buffer the datagram lies in
+	block *rxBlock
 }
 
 // Datagram is one received IKE message and the endpoint it arrived from.
@@ -307,20 +314,13 @@ type Datagram struct {
 	Endpoint Endpoint
 }
 
-type espDatagramBatch struct {
-	ticket  uint64
-	packets [][]byte
-	// ecn holds the outer ECN field of each packet, nil when every one arrived Not-ECT
-	ecn []packet.ECN
-	// bytes is this batch's charge against the queue's byte budget, kept with
-	// it so every receive path releases exactly what was reserved.
-	bytes int
-}
-
 // espChain is one mux's ESP datagrams of one read, linked from its last through receiveLoop's prev by their index in the read
 type espChain struct {
 	mux                *Mux
 	last, count, bytes int
+	// block is the receive buffer of the chain's last datagram not copied, and charge the size of each copy and of each distinct such buffer, which counts them exactly since a buffer's datagrams are consecutive in a read
+	block  *rxBlock
+	charge int
 	// marked says a datagram of the chain arrived with an outer ECN field other than Not-ECT
 	marked bool
 }
@@ -342,6 +342,9 @@ func startHub(bind packetBind, fns []receiveFunc, port uint16, rt Runtime) *Hub 
 	h.tables.Store(&spiTables{ike: map[uint64]*Mux{}, esp: map[uint32]*Mux{}})
 	h.reported.Store(-int64(dropReportInterval))
 	h.scanned.Store(-int64(invalidSPIInterval))
+	if p, ok := bind.(poisoner); ok {
+		h.pool.poison = p.poison
+	}
 	for _, fn := range fns {
 		go h.receiveLoop(fn, h.readFailed)
 	}
@@ -373,7 +376,7 @@ func (h *Hub) NewMuxTo(endpoint Endpoint) (*Mux, error) {
 }
 
 func (h *Hub) newMux(endpoint Endpoint, dialed bool) (*Mux, error) {
-	m := &Mux{hub: h, endpoint: endpoint, dialed: dialed, ikeCh: make(chan Datagram, ikeQueueSize), espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{}),
+	m := &Mux{hub: h, endpoint: endpoint, dialed: dialed, ikeCh: make(chan Datagram, ikeQueueSize), espCh: make(chan *Received, espChanSize), done: make(chan struct{}),
 		invalidSPI: make(chan uint32, 1)}
 	h.mu.Lock()
 	if h.closed.Load() {
@@ -472,20 +475,23 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 	batch := espSendBatch
 	bufs, sizes, eps, records := make([][]byte, batch), make([]int, batch), make([]Endpoint, batch), make([]receiveRecord, batch)
 	// demultiplexing records where each datagram goes and copies nothing
-	// a datagram is copied below, once its queue has room for it
+	// an IKE or unclaimed datagram is copied below once its queue has room for it
+	// an ESP datagram copies names a size for is copied once its mux has room for its batch, and any other the batch holds a view of in its block
 	type pendingIKE struct {
 		mux   *Mux
 		index int
 	}
 	// prev holds the index of the datagram before each ESP datagram in its mux's chain
 	prev := make([]int, batch)
+	// copies holds the size of the copy each ESP datagram goes into, 0 for one its batch holds a view of
+	copies := make([]int, batch)
 	// chains holds each mux's chain of one read, and chainOf a mux's index in chains
 	chains, chainOf := make([]espChain, 0, batch), make(map[*Mux]int)
 	ikeDatagrams := make([]pendingIKE, 0, batch)
 	unclaimed := make([]int, 0, batch)
 	var refused refusals
 	for {
-		n, err := fn(bufs, sizes, eps, records, &refused)
+		n, err := fn(&h.pool, bufs, sizes, eps, records, &refused)
 		if err != nil {
 			failed(err)
 			return
@@ -535,9 +541,8 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 			} else {
 				spi := uint32(raw[0])<<24 | uint32(raw[1])<<16 | uint32(raw[2])<<8 | uint32(raw[3])
 				if m := tables.esp[spi]; m != nil {
-					// A chain names datagrams of this read alone. Only the copy
-					// packReceivedBatch makes below outlives the read, so fn may
-					// reuse the buffers.
+					// A chain names datagrams of this read alone, and only the
+					// batch made of it below holds their blocks past the read.
 					k, ok := chainOf[m]
 					if !ok {
 						k = len(chains)
@@ -548,6 +553,19 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 					prev[i], c.last = c.last, i
 					c.count++
 					c.bytes += len(raw)
+					// a block's datagrams are consecutive in a read, so one whose neighbors lie in other blocks is the only one of its block the read hands out
+					// a copy charges its mux the copy's size, where a read of one datagram a buffer would otherwise pin a whole buffer for each
+					block := records[i].block
+					copies[i] = 0
+					if (i == 0 || records[i-1].block != block) && (i == n-1 || records[i+1].block != block) {
+						copies[i] = copySize(len(raw))
+					}
+					if copies[i] != 0 {
+						c.charge += copies[i]
+					} else if block != c.block {
+						c.block = block
+						c.charge += len(block.data)
+					}
 					c.marked = c.marked || records[i].ecn != packet.NotECT
 				} else {
 					refused.add(refusedUnknownESP, 1)
@@ -605,13 +623,40 @@ func (h *Hub) receiveLoop(fn receiveFunc, failed func(error)) {
 			if p := m.pair.Load(); p != nil {
 				h.carry(p, c.bytes)
 			}
-			// Tested before packReceivedBatch copies, so a flood is refused
-			// without allocating for it.
-			if !m.hasRoomForESP(c.bytes) || !m.dispatchESP(packReceivedBatch(c, bufs, sizes, records, prev)) {
+			// tested before the batch takes a block, a copy or a pooled batch, so a refused chain leaves each block to the reader's next read
+			if !m.hasRoomForESP(c.charge) || !m.dispatchESP(h.received(c, bufs, sizes, records, prev, copies)) {
 				h.noteDrop(c.count, "a peer's ESP receive queue")
 			}
 		}
 	}
+}
+
+// received is c's datagrams as a batch holding each copy copies names and a reference to each block the others lie in
+// each packet ends at its datagram, since past it lie datagrams other workers decrypt for other batches
+func (h *Hub) received(c espChain, bufs [][]byte, sizes []int, records []receiveRecord, prev, copies []int) *Received {
+	r := h.pool.batch()
+	r.packets, r.blocks, r.charge = r.packetSlots[:c.count], r.blockSlots[:0], c.charge
+	if c.marked {
+		r.ecn = r.ecnSlots[:c.count]
+	}
+	var last *rxBlock
+	for j, i := c.count-1, c.last; j >= 0; j, i = j-1, prev[i] {
+		if c.marked {
+			r.ecn[j] = records[i].ecn
+		}
+		if size := copies[i]; size != 0 {
+			b := h.pool.take(size)
+			r.packets[j] = b.data[:copy(b.data, bufs[i][:sizes[i]]):sizes[i]]
+			r.blocks = append(r.blocks, b)
+			continue
+		}
+		r.packets[j] = bufs[i][:sizes[i]:sizes[i]]
+		if block := records[i].block; block != last {
+			block.retain()
+			r.blocks, last = append(r.blocks, block), block
+		}
+	}
+	return r
 }
 
 // unknownSPI hands spi to each mux whose destination is source, unless the hub knows spi
@@ -664,36 +709,6 @@ func (h *Hub) forgetRetired(now int64) {
 	maps.DeleteFunc(h.retired, func(_ uint32, at int64) bool { return now-at >= int64(invalidSPIInterval) })
 }
 
-// packReceivedBatch detaches a chain's packets from receiveLoop's reusable
-// recvmmsg buffers with two allocations per peer and socket read, the packet
-// slices and one block that holds their bytes, rather than one heap allocation
-// per datagram. Packet slice boundaries are retained so parallel ESP workers
-// can authenticate the batch without any further framing work. A marked
-// chain's outer ECN fields share the block, ahead of the packets so that no
-// packet's capacity reaches them.
-func packReceivedBatch(c espChain, bufs [][]byte, sizes []int, records []receiveRecord, prev []int) espDatagramBatch {
-	fields := 0
-	if c.marked {
-		fields = c.count
-	}
-	storage := make([]byte, fields+c.bytes)
-	batch := espDatagramBatch{packets: make([][]byte, c.count), bytes: c.bytes}
-	if c.marked {
-		batch.ecn = unsafe.Slice((*packet.ECN)(&storage[0]), c.count)
-	}
-	end := len(storage)
-	for j, i := c.count-1, c.last; j >= 0; j, i = j-1, prev[i] {
-		start := end - sizes[i]
-		batch.packets[j] = storage[start:end]
-		copy(batch.packets[j], bufs[i][:sizes[i]])
-		if c.marked {
-			batch.ecn[j] = records[i].ecn
-		}
-		end = start
-	}
-	return batch
-}
-
 // Mux is one peer's logical IKE and ESP channel on a Hub.
 type Mux struct {
 	hub           *Hub
@@ -703,13 +718,14 @@ type Mux struct {
 	ikeCh         chan Datagram
 	espDispatchMu sync.Mutex
 	espTicket     uint64
-	espCh         chan espDatagramBatch
-	espQueued     atomic.Int64
-	done          chan struct{}
-	doneOnce      sync.Once
-	doneErr       atomic.Value
-	closed        atomic.Bool
-	ownHub        bool
+	espCh         chan *Received
+	// espHeld is the receive storage the batches dispatched to m and not yet released hold, queued or on their way to the tun
+	espHeld  atomic.Int64
+	done     chan struct{}
+	doneOnce sync.Once
+	doneErr  atomic.Value
+	closed   atomic.Bool
+	ownHub   bool
 	// fragmented is the endpoint Fragment let the host fragment sends to, nil while it lets none
 	fragmentMu sync.Mutex
 	fragmented Endpoint
@@ -719,39 +735,35 @@ type Mux struct {
 	invalidSPI chan uint32
 }
 
-// hasRoomForESP is consulted before packReceivedBatch copies a batch onto the
-// heap. dispatchESP still decides, while this only keeps the copy from happening for
-// a batch that is about to be dropped anyway.
-func (m *Mux) hasRoomForESP(bytes int) bool {
-	return len(m.espCh) < cap(m.espCh) && m.espQueued.Load()+int64(bytes) <= espQueueBytes
+// hasRoomForESP is consulted before a batch takes its blocks. dispatchESP
+// still decides, while this keeps a batch that is about to be dropped anyway
+// from holding a block the reader could read into again.
+func (m *Mux) hasRoomForESP(charge int) bool {
+	return len(m.espCh) < cap(m.espCh) && m.espHeld.Load()+int64(charge) <= espHeldBytes
 }
 
 // dispatchESP hands one demultiplexed batch to this peer's receive queue under
 // the ticket that fixes its order, and reports whether the queue took it. A
 // dropped batch consumes no ticket, because a hub may have separate IPv4 and
 // IPv6 receive loops and the gap would stall whichever emitter waits for it.
-func (m *Mux) dispatchESP(batch espDatagramBatch) bool {
+// A dropped batch is freed at once, and a taken one charged before a worker can release it.
+func (m *Mux) dispatchESP(batch *Received) bool {
 	m.espDispatchMu.Lock()
 	defer m.espDispatchMu.Unlock()
-	if m.espQueued.Load()+int64(batch.bytes) > espQueueBytes {
-		return false
+	charge := int64(batch.charge)
+	if m.espHeld.Load()+charge <= espHeldBytes {
+		batch.ticket, batch.mux = m.espTicket, m
+		m.espHeld.Add(charge)
+		select {
+		case m.espCh <- batch:
+			m.espTicket++
+			return true
+		default:
+			m.espHeld.Add(-charge)
+		}
 	}
-	batch.ticket = m.espTicket
-	select {
-	case m.espCh <- batch:
-		m.espQueued.Add(int64(batch.bytes))
-		m.espTicket++
-		return true
-	default:
-		return false
-	}
-}
-
-// takeESP releases a batch's share of the queue's byte budget. Every path that
-// reads from espCh goes through it, or the budget only ever shrinks.
-func (m *Mux) takeESP(batch espDatagramBatch) [][]byte {
-	m.espQueued.Add(-int64(batch.bytes))
-	return batch.packets
+	batch.free()
+	return false
 }
 
 func dialOn(h *Hub, remoteIP net.IP, remotePort int) (*Mux, error) {
@@ -997,18 +1009,19 @@ func (m *Mux) RecvIKEFromUntil(deadline time.Time) ([]byte, Endpoint, error) {
 	}
 }
 
-// RecvESPBatchConcurrent returns one complete socket-demultiplexed batch, its
-// receive-order ticket and the outer ECN field of each of its packets, which
-// is nil when every packet arrived Not-ECT. It is safe for multiple data-plane
-// workers to call concurrently: the transport channel distributes batches,
-// while the ticket lets their independently decrypted results be emitted in
-// original order.
-func (m *Mux) RecvESPBatchConcurrent() (uint64, [][]byte, []packet.ECN, error) {
+// RecvESPBatchConcurrent returns one complete socket-demultiplexed batch,
+// which holds its receive-order ticket and the outer ECN field of each of its
+// packets. It is safe for multiple data-plane workers to call concurrently,
+// since the transport channel distributes batches, while the ticket lets their
+// independently decrypted results be emitted in original order. The caller
+// releases the batch once nothing reads its packets any more, and until then
+// it counts against this mux's receive storage.
+func (m *Mux) RecvESPBatchConcurrent() (*Received, error) {
 	select {
 	case batch := <-m.espCh:
-		return batch.ticket, m.takeESP(batch), batch.ecn, nil
+		return batch, nil
 	case <-m.done:
-		return 0, nil, nil, m.doneError()
+		return nil, m.doneError()
 	}
 }
 

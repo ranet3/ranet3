@@ -65,8 +65,9 @@ func TestInboundBatchOrderMergesConsecutiveCompletedBatches(t *testing.T) {
 	delivered := make(chan byte, 2)
 	emitterDone := make(chan struct{})
 	calls := 0
+	received := receivedBatches(t, 2)
 	go func() {
-		emitInboundBatches(completed, recycled, func(results []inboundDecrypted, _ []inboundECN) {
+		emitInboundBatches(completed, recycled, func(results []inboundDecrypted, _ []inboundECN, _ netstack.Hold) {
 			calls++
 			for _, result := range results {
 				if result.Err == firstResult.Err {
@@ -78,13 +79,13 @@ func TestInboundBatchOrderMergesConsecutiveCompletedBatches(t *testing.T) {
 		})
 		close(emitterDone)
 	}()
-	completed <- &inboundBatch{ticket: second, results: []inboundDecrypted{secondResult}}
+	completed <- &inboundBatch{ticket: second, results: []inboundDecrypted{secondResult}, received: received[second]}
 	select {
 	case got := <-delivered:
 		t.Fatalf("later batch %d delivered before the first batch", got)
 	default:
 	}
-	completed <- &inboundBatch{ticket: first, results: []inboundDecrypted{firstResult}}
+	completed <- &inboundBatch{ticket: first, results: []inboundDecrypted{firstResult}, received: received[first]}
 	close(completed)
 	<-emitterDone
 	close(delivered)
@@ -113,9 +114,10 @@ func TestInboundBatchOrderKeepsEachResultsOuterECN(t *testing.T) {
 	recycled := make(chan *inboundBatch, 4)
 	calls := make(chan call, 2)
 	emitterDone := make(chan struct{})
+	received := receivedBatches(t, 4)
 	go func() {
 		defer close(emitterDone)
-		emitInboundBatches(completed, recycled, func(results []inboundDecrypted, ecn []inboundECN) {
+		emitInboundBatches(completed, recycled, func(results []inboundDecrypted, ecn []inboundECN, _ netstack.Hold) {
 			var c call
 			for _, r := range results {
 				c.names = append(c.names, r.Err.Error())
@@ -127,14 +129,14 @@ func TestInboundBatchOrderKeepsEachResultsOuterECN(t *testing.T) {
 		})
 	}()
 	// ticket 0 goes last, so the emitter holds the other two when it can first emit
-	completed <- &inboundBatch{ticket: 2, results: []inboundDecrypted{result("d")}}
-	completed <- &inboundBatch{ticket: 1, results: []inboundDecrypted{result("b"), result("c")}, ecn: []inboundECN{packet.CE, packet.ECT0}}
-	completed <- &inboundBatch{ticket: 0, results: []inboundDecrypted{result("a")}}
+	completed <- &inboundBatch{ticket: 2, results: []inboundDecrypted{result("d")}, received: received[2]}
+	completed <- &inboundBatch{ticket: 1, results: []inboundDecrypted{result("b"), result("c")}, ecn: []inboundECN{packet.CE, packet.ECT0}, received: received[1]}
+	completed <- &inboundBatch{ticket: 0, results: []inboundDecrypted{result("a")}, received: received[0]}
 	want := call{[]string{"a", "b", "c", "d"}, []inboundECN{packet.NotECT, packet.CE, packet.ECT0, packet.NotECT}}
 	if got := <-calls; !slices.Equal(got.names, want.names) || !slices.Equal(got.ecn, want.ecn) {
 		t.Errorf("the merged emit was handed %v with the ECN fields %v, want %v with %v", got.names, got.ecn, want.names, want.ecn)
 	}
-	completed <- &inboundBatch{ticket: 3, results: []inboundDecrypted{result("e")}}
+	completed <- &inboundBatch{ticket: 3, results: []inboundDecrypted{result("e")}, received: received[3]}
 	if got := <-calls; !slices.Equal(got.names, []string{"e"}) || got.ecn != nil {
 		t.Errorf("the emit of a Not-ECT batch was handed %v with the ECN fields %v, want [e] with none", got.names, got.ecn)
 	}
@@ -861,8 +863,9 @@ func TestMetricsExposesBabelAndSessionState(t *testing.T) {
 		// every datagram was an IKE_SA_INIT the full queue refused
 		fmt.Sprintf(`ranet3_receive_refused_total{cause="unclaimed_full"} %d`, refused),
 		`ranet3_receive_refused_total{cause="unknown_esp"} 0`,
-		// Nothing here fills a receive queue, which is the only thing that
-		// raises the other one, so it reads zero and says so.
+		// Nothing here fills a session's receive queue or holds all its
+		// receive buffers, the only things that raise the other one, so it
+		// reads zero and says so.
 		"ranet3_receive_dropped_total 0",
 		// nor does anything fail a tun write
 		"ranet3_tun_writes_failed_total 0",

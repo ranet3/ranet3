@@ -111,7 +111,7 @@ func forwardedAllocs(t *testing.T, family int, listen func(*Mesh)) float64 {
 		for _, frame := range frames {
 			copy(frame[TUNHeadroom:], raw[:headerLen(raw)])
 		}
-		m.decide(frames, nil, nil)
+		m.decide(frames, nil, nil, nil)
 	})
 }
 
@@ -154,7 +154,7 @@ func endForwardedAllocs(t *testing.T, listen func(*Mesh)) float64 {
 		for _, frame := range frames {
 			copy(frame[TUNHeadroom:], raw)
 		}
-		m.DeliverInboundBatch(frames, DefaultMTU, nil)
+		m.DeliverInboundBatch(frames, DefaultMTU, nil, nil)
 	})
 }
 

@@ -76,7 +76,7 @@ func TestExitAnswersSegmentsLeftAndAnUpperLayerHeaderItCannotDeliver(t *testing.
 		} {
 			t.Run(name+"/"+c.what, func(t *testing.T) {
 				m, recorder := refusalMesh(t, segment)
-				m.applySegments(framed(append([]byte(nil), c.raw...)), DefaultMTU, nil)
+				m.applySegments(framed(append([]byte(nil), c.raw...)), DefaultMTU, nil, nil)
 				answer := oneAnswer(t, recorder, 4, c.code, exit, steerer)
 				if pointer := binary.BigEndian.Uint32(answer[44:48]); pointer != c.pointer {
 					t.Errorf("the answer points at %d, want %d", pointer, c.pointer)
@@ -96,7 +96,7 @@ func TestWaypointAnswersANextSegmentNoRouteCarries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.applySegments(framed(outer), DefaultMTU, nil)
+	m.applySegments(framed(outer), DefaultMTU, nil, nil)
 	answer := oneAnswer(t, recorder, 1, 0, waypoint, steerer)
 	// the answer quotes the packet End rewrote, bound for the segment no route carries
 	if quoted := netip.AddrFrom16([16]byte(answer[48+24 : 48+40])); quoted != nowhere {
@@ -129,7 +129,7 @@ func TestWaypointAnswersANextSegmentAssignedThisNodeWithSegmentsLeft(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			m.applySegments(framed(outer), DefaultMTU, nil)
+			m.applySegments(framed(outer), DefaultMTU, nil, nil)
 			if counters := m.SegmentCounters(); counters.Dropped != 1 || counters.Forwarded != 0 {
 				t.Errorf("the waypoint counted %+v, want the segment dropped", counters)
 			}

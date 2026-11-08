@@ -417,7 +417,7 @@ func TestRefusedWritesAreCountedExactlyAndWarnedRarely(t *testing.T) {
 	m.setDevice(device)
 	const refused = 1000
 	for range refused {
-		m.WriteHost(refusedFrames(3))
+		m.WriteHost(refusedFrames(3), nil)
 	}
 	if got := m.TUNWritesFailed(); got != refused || device.refused.Load() != refused {
 		t.Errorf("the counter reads %d for %d refused writes of 3 packets each", got, device.refused.Load())
@@ -427,7 +427,7 @@ func TestRefusedWritesAreCountedExactlyAndWarnedRarely(t *testing.T) {
 	}
 
 	m.writesFailed.next.Add(-int64(reportInterval))
-	m.WriteHost(refusedFrames(3))
+	m.WriteHost(refusedFrames(3), nil)
 	if got := warned(); !slices.Equal(got, []uint64{1, refused}) {
 		t.Errorf("once the interval passed the warnings carried %v, want the %d refused since the first line", got, refused)
 	}
@@ -444,10 +444,10 @@ func TestRefusedWritesOfAClosingMeshAreCountedUnwarned(t *testing.T) {
 			m := startedMesh()
 			m.closed = make(chan struct{})
 			m.setDevice(&refusingDevice{})
-			m.WriteHost(refusedFrames(1))
+			m.WriteHost(refusedFrames(1), nil)
 			close(ended(m))
 			m.writesFailed.next.Add(-int64(reportInterval))
-			m.WriteHost(refusedFrames(1))
+			m.WriteHost(refusedFrames(1), nil)
 			if got := m.TUNWritesFailed(); got != 2 {
 				t.Errorf("the counter reads %d for 2 refused writes", got)
 			}
@@ -475,7 +475,7 @@ func TestRefusedWritesOfEveryQueueAreCounted(t *testing.T) {
 	for range 8 {
 		writers.Go(func() {
 			for range 50 {
-				m.WriteHost(refusedFrames(16))
+				m.WriteHost(refusedFrames(16), nil)
 			}
 		})
 	}

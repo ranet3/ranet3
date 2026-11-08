@@ -14,6 +14,7 @@ import (
 // MemoryNetwork carries UDP in this process between the hubs and sockets made on it
 // a datagram goes to what holds the port it is sent to, whatever address it names, whole, copied at its send, and in order between one sender and one receiver
 // a queue keeps what arrives until it is read, and a mux reads the path MTU of linux's loopback while no send is refused for its size
+// a hub reads into its pool's buffers as the kernel binds do, and overwrites each buffer put back there, so a packet read past its batch's release reads changed bytes once its buffer is put back or read into again
 // a hub or socket waits on channels and timers the call that opens it makes, so one a synctest bubble uses is opened in that bubble
 // a hub opened outside it receives outside it, and panics on the first datagram for a mux the bubble made
 type MemoryNetwork struct {
@@ -190,19 +191,38 @@ func (b *memoryBind) readPathMTU(ep Endpoint) (int, error) {
 func (b *memoryBind) fragment(Endpoint, bool) error { return nil }
 func (b *memoryBind) dontFragment(Endpoint) bool    { return true }
 
+// poisoner is a bind whose hub overwrites each receive buffer put back in its pool, so a test reads a view used past its release as bytes that changed
+type poisoner interface{ poison(data []byte) }
+
+func (b *memoryBind) poison(data []byte) {
+	for i := range data {
+		data[i] = memoryPoison
+	}
+}
+
 // receiver takes every datagram q holds up to the vector's length, as the kernel bind reads a batch from its socket of one family
+// it lays them into blocks of the hub's pool as layout does, and refuses one past a block as truncated, as the kernel bind's buffer would cut it
 func (b *memoryBind) receiver(q *memoryQueue) receiveFunc {
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, _ *refusals) (int, error) {
+	var layout blockLayout
+	return func(pool *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (int, error) {
 		for {
 			taken, held := b.network.take(b.port, q, len(bufs))
 			if !held {
 				return 0, net.ErrClosed
 			}
-			for i, d := range taken {
-				bufs[i], sizes[i], endpoints[i], records[i] = d.data, len(d.data), newMemoryEndpoint(d.source), receiveRecord{source: d.source}
+			layout.start(pool)
+			n := 0
+			for _, d := range taken {
+				raw, block, ok := layout.lay(pool, d.data, d.source)
+				if !ok {
+					refused.add(refusedTruncated, 1)
+					continue
+				}
+				bufs[n], sizes[n], endpoints[n], records[n] = raw, len(raw), newMemoryEndpoint(d.source), receiveRecord{source: d.source, block: block}
+				n++
 			}
 			if len(taken) > 0 {
-				return len(taken), nil
+				return n, nil
 			}
 			select {
 			case <-q.ready:
@@ -210,6 +230,41 @@ func (b *memoryBind) receiver(q *memoryQueue) receiveFunc {
 			}
 		}
 	}
+}
+
+// blockLayout is a reader's blocks of a pool, which lay holds datagrams in as GRO coalesces them
+// consecutive datagrams of one source share a block while they fit, and the next starts the next block
+type blockLayout struct {
+	blocks []*rxBlock
+	// used is how many blocks the call so far laid datagrams in, offset where the last one's next datagram goes and source whose datagrams it holds
+	used, offset int
+	source       netip.AddrPort
+}
+
+// start begins a call, refilling each block a batch still retains
+func (l *blockLayout) start(pool *blockPool) {
+	for i := range l.blocks {
+		pool.refill(&l.blocks[i])
+	}
+	l.used, l.offset = 0, 0
+}
+
+// lay copies data into a block and returns its view there and the block, and reports false for data past a block's size
+func (l *blockLayout) lay(pool *blockPool, data []byte, source netip.AddrPort) ([]byte, *rxBlock, bool) {
+	if len(data) > readBufferSize {
+		return nil, nil, false
+	}
+	if l.used == 0 || source != l.source || l.offset+len(data) > readBufferSize {
+		if l.used == len(l.blocks) {
+			l.blocks = append(l.blocks, pool.get())
+		}
+		l.used, l.offset, l.source = l.used+1, 0, source
+	}
+	block := l.blocks[l.used-1]
+	raw := block.data[l.offset : l.offset+len(data)]
+	copy(raw, data)
+	l.offset += len(data)
+	return raw, block, true
 }
 
 // NewHub opens a hub on the network at a port it draws, receiving in both families

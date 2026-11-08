@@ -25,7 +25,7 @@ import (
 
 // ecnSession is one session's emit on a node built by hand, with the SA its peer seals with
 type ecnSession struct {
-	emit   func([]inboundDecrypted, []inboundECN)
+	emit   func([]inboundDecrypted, []inboundECN, netstack.Hold)
 	tunnel *tunnel
 	remote *esp.OutboundSA
 }
@@ -85,7 +85,7 @@ func (s *ecnSession) receive(t *testing.T, inner [][]byte, outer []inboundECN) [
 		}
 	}
 	results := s.tunnel.decryptBatch(datagrams, nil)
-	s.emit(results, outer)
+	s.emit(results, outer, nil)
 	left := make([][]byte, len(results))
 	for i := range results {
 		if plain, _, err := results[i].Plaintext(); err == nil {

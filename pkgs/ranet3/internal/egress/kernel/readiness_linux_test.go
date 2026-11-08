@@ -17,6 +17,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/egress/egresstest"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -81,7 +82,7 @@ func TestClassAddressTakenOffLoopbackHoldsItsFamilyNotReady(t *testing.T) {
 		},
 		Sweep: schema.Duration(heldSweep),
 	}
-	exit := newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte) {}}, cfg, egress.Hooks{})
+	exit := newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte, netstack.Hold) {}}, cfg, egress.Hooks{})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- exit.Run(ctx) }()

@@ -23,7 +23,8 @@ type egressReadiness struct {
 // it is declared here so this package imports nothing of internal/egress
 type Exit interface {
 	// Egress takes frames of the families whose readiness the caller read, each TUNHeadroom bytes and then the packet, on the terms DeliverInboundBatch states
-	Egress(frames [][]byte)
+	// hold covers their storage, and an exit that reads a frame after it returns retains it until then
+	Egress(frames [][]byte, hold Hold)
 }
 
 // SetExit hands the mesh the exit both egress verdicts hand their batches to, once and before the exit's hooks name a family ready, since the mesh reads it only once a readiness word does
@@ -71,9 +72,9 @@ func egressReadyFor(family uint8) uint32 {
 // each caller has read its own family's readiness first, so every frame here is of a family the exit reported ready
 // a mesh with no exit holds both words at none, since only an exit's hooks move them, so no frame reaches here without one
 // an empty batch, most of decide's and every one of a mesh with no exit, returns before the exit is called
-func (m *Mesh) egress(frames [][]byte) {
+func (m *Mesh) egress(frames [][]byte, hold Hold) {
 	if len(frames) == 0 {
 		return
 	}
-	m.exit.Egress(frames)
+	m.exit.Egress(frames, hold)
 }

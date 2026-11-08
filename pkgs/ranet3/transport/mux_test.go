@@ -51,6 +51,20 @@ func listenPeer(t *testing.T, network, addr string) *net.UDPConn {
 	return conn
 }
 
+// warmReaders sends datagram to port on each family's loopback and waits for taken to read it, so each of a hub's receivers has taken its blocks before a test counts what a flood allocates
+func warmReaders(t *testing.T, port int, datagram []byte, taken func() bool) {
+	t.Helper()
+	for _, family := range []struct{ network, addr string }{{"udp4", "127.0.0.1"}, {"udp6", "::1"}} {
+		warm := listenPeer(t, family.network, family.addr)
+		if _, err := warm.WriteToUDP(datagram, &net.UDPAddr{IP: net.ParseIP(family.addr), Port: port}); err != nil {
+			t.Fatal(err)
+		}
+		if !taken() {
+			t.Fatalf("the %s datagram sent before the count did not arrive", family.network)
+		}
+	}
+}
+
 func testSendESPBatch(t *testing.T, network, addr string) {
 	peer := listenPeer(t, network, addr)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
@@ -92,33 +106,6 @@ func TestSendESPBatchIPv4(t *testing.T) {
 
 func TestSendESPBatchIPv6(t *testing.T) {
 	testSendESPBatch(t, "udp6", "::1")
-}
-
-// datagramBatch is a batch of packets as packReceivedBatch makes one, every packet Not-ECT
-func datagramBatch(packets ...[]byte) espDatagramBatch {
-	batch := espDatagramBatch{packets: packets}
-	for _, packet := range packets {
-		batch.bytes += len(packet)
-	}
-	return batch
-}
-
-func TestPackReceivedBatchDetachesReusableBuffers(t *testing.T) {
-	first := []byte("first")
-	second := []byte("second")
-	chain := espChain{last: 1, count: 2, bytes: len(first) + len(second)}
-	packets := packReceivedBatch(chain, [][]byte{first, second}, []int{len(first), len(second)}, make([]receiveRecord, 2), []int{0, 0}).packets
-
-	first[0] = 'x'
-	second[0] = 'y'
-	if string(packets[0]) != "first" || string(packets[1]) != "second" {
-		t.Fatalf("packed packets changed with receive buffers: got %q", packets)
-	}
-
-	packets[0][0] = 'F'
-	if packets[1][0] != 's' {
-		t.Fatalf("packet boundaries overlap: got %q", packets)
-	}
 }
 
 func TestHubFailureIsTerminal(t *testing.T) {
@@ -181,8 +168,9 @@ func TestSendOnAClosedMuxAnswersErrClosed(t *testing.T) {
 }
 
 func TestConcurrentESPReceiveCarriesDispatchOrder(t *testing.T) {
-	m := &Mux{espCh: make(chan espDatagramBatch, 2), done: make(chan struct{})}
-	if !m.dispatchESP(datagramBatch([]byte("first"))) || !m.dispatchESP(datagramBatch([]byte("second"))) {
+	var pool blockPool
+	m := &Mux{espCh: make(chan *Received, 2), done: make(chan struct{})}
+	if !m.dispatchESP(testBatch(&pool, []byte("first"))) || !m.dispatchESP(testBatch(&pool, []byte("second"))) {
 		t.Fatal("dispatch unexpectedly dropped a batch")
 	}
 
@@ -194,8 +182,12 @@ func TestConcurrentESPReceiveCarriesDispatchOrder(t *testing.T) {
 	results := make(chan received, 2)
 	for range 2 {
 		go func() {
-			ticket, packets, _, err := m.RecvESPBatchConcurrent()
-			results <- received{ticket: ticket, packets: packets, err: err}
+			batch, err := m.RecvESPBatchConcurrent()
+			if err != nil {
+				results <- received{err: err}
+				return
+			}
+			results <- received{ticket: batch.Ticket(), packets: clonedPackets(batch)}
 		}()
 	}
 	byTicket := make(map[uint64]string, 2)
@@ -212,24 +204,27 @@ func TestConcurrentESPReceiveCarriesDispatchOrder(t *testing.T) {
 }
 
 func TestDroppedESPBatchDoesNotLeaveTicketGap(t *testing.T) {
-	m := &Mux{espCh: make(chan espDatagramBatch, 1), done: make(chan struct{})}
-	if !m.dispatchESP(datagramBatch([]byte("accepted"))) {
+	var pool blockPool
+	m := &Mux{espCh: make(chan *Received, 1), done: make(chan struct{})}
+	if !m.dispatchESP(testBatch(&pool, []byte("accepted"))) {
 		t.Fatal("first dispatch was dropped")
 	}
-	if m.dispatchESP(datagramBatch([]byte("dropped"))) {
+	if m.dispatchESP(testBatch(&pool, []byte("dropped"))) {
 		t.Fatal("dispatch to a full queue succeeded")
 	}
-	if _, _, _, err := m.RecvESPBatchConcurrent(); err != nil {
-		t.Fatal(err)
-	}
-	if !m.dispatchESP(datagramBatch([]byte("next"))) {
-		t.Fatal("dispatch after draining was dropped")
-	}
-	ticket, _, _, err := m.RecvESPBatchConcurrent()
+	batch, err := m.RecvESPBatchConcurrent()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ticket != 1 {
+	batch.Release()
+	if !m.dispatchESP(testBatch(&pool, []byte("next"))) {
+		t.Fatal("dispatch after draining was dropped")
+	}
+	batch, err = m.RecvESPBatchConcurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ticket := batch.Ticket(); ticket != 1 {
 		t.Fatalf("ticket after a dropped batch = %d, want 1", ticket)
 	}
 }
@@ -612,40 +607,43 @@ func TestHubDoneIsClosedOnFailure(t *testing.T) {
 // An ESP SPI is cleartext on the wire and the receive queue is filled before
 // anything is authenticated, so whoever has seen one packet from a peer can
 // aim a flood at it. The batch count bounds nothing on its own: one batch
-// holds up to espSendBatch datagrams of up to readBufferSize each.
+// holds a view of up to espSendBatch receive buffers.
 func TestESPReceiveQueueIsBoundedInBytes(t *testing.T) {
-	m := &Mux{espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
-	packet := make([]byte, 1<<16)
-	queued, accepted := 0, 0
+	var pool blockPool
+	m := &Mux{espCh: make(chan *Received, espChanSize), done: make(chan struct{})}
+	packet := make([]byte, 1)
+	held, accepted := 0, 0
 	for range espChanSize {
-		if !m.hasRoomForESP(len(packet)) {
+		if !m.hasRoomForESP(readBufferSize) {
 			break
 		}
-		if !m.dispatchESP(datagramBatch(packet)) {
+		if !m.dispatchESP(testBatch(&pool, packet)) {
 			break
 		}
-		queued += len(packet)
+		held += readBufferSize
 		accepted++
 	}
 	if accepted == espChanSize {
 		t.Fatal("the queue filled to its batch count, so nothing bounded its bytes")
 	}
-	if queued > espQueueBytes {
-		t.Fatalf("the queue holds %d bytes, want at most %d", queued, espQueueBytes)
+	if held > espHeldBytes {
+		t.Fatalf("the queue holds %d bytes, want at most %d", held, espHeldBytes)
 	}
 
-	// Draining has to give the budget back, or the queue shrinks to nothing
+	// Releasing has to give the budget back, or the queue shrinks to nothing
 	// over the life of a session.
 	for range accepted {
-		if _, _, _, err := m.RecvESPBatchConcurrent(); err != nil {
+		batch, err := m.RecvESPBatchConcurrent()
+		if err != nil {
 			t.Fatal(err)
 		}
+		batch.Release()
 	}
-	if got := m.espQueued.Load(); got != 0 {
-		t.Fatalf("%d bytes are still charged after the queue drained", got)
+	if got := m.espHeld.Load(); got != 0 {
+		t.Fatalf("%d bytes are still charged after every batch was released", got)
 	}
-	if !m.hasRoomForESP(len(packet)) {
-		t.Fatal("a drained queue still reports itself full")
+	if !m.hasRoomForESP(readBufferSize) {
+		t.Fatal("a released queue still reports itself full")
 	}
 }
 
@@ -667,6 +665,14 @@ func TestFloodOfUnclaimedIKEDatagramsIsNotCopied(t *testing.T) {
 	// size a single UDP datagram carries on loopback.
 	datagram := withMarker(make([]byte, 8192))
 	binary.BigEndian.PutUint64(datagram[nonESPMarkerLen:], 0x1122334455667788)
+	warmReaders(t, dst.Port, datagram, func() bool {
+		select {
+		case <-unclaimed:
+			return true
+		case <-time.After(arrivalBudget):
+			return false
+		}
+	})
 
 	var allocated uint64
 	var before, after runtime.MemStats
@@ -721,6 +727,15 @@ func TestFloodOnMuxIKEQueueIsNotCopied(t *testing.T) {
 	datagram := withMarker(make([]byte, 8192))
 	binary.BigEndian.PutUint64(datagram[nonESPMarkerLen:], spi)
 
+	warmReaders(t, dst.Port, datagram, func() bool {
+		select {
+		case <-mux.IKE():
+			return true
+		case <-time.After(arrivalBudget):
+			return false
+		}
+	})
+
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
@@ -749,19 +764,20 @@ func TestFloodOnMuxIKEQueueIsNotCopied(t *testing.T) {
 // The byte bound is enforced twice and the two are not interchangeable.
 // dispatchESP decides, under the same lock the receive-order ticket is taken
 // with, which makes it right when a hub's IPv4 and IPv6 receive loops arrive
-// at once. hasRoomForESP is consulted before packReceivedBatch copies,
-// so a batch that is about to be dropped is never paid for. A test that calls
+// at once. hasRoomForESP is consulted before a batch takes its blocks,
+// so a batch that is about to be dropped never holds one. A test that calls
 // the two in sequence and stops on whichever refuses first cannot say which
 // one is enforcing, so each is driven alone here.
 func TestEachESPByteBoundRefusesOnItsOwn(t *testing.T) {
-	packet := make([]byte, 1<<16)
+	packet := make([]byte, 1)
 	t.Run("dispatchESP", func(t *testing.T) {
-		m := &Mux{espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
+		var pool blockPool
+		m := &Mux{espCh: make(chan *Received, espChanSize), done: make(chan struct{})}
 		accepted := 0
 		// Deliberately not consulting hasRoomForESP: this is the check that
 		// has to hold on its own.
 		for range espChanSize {
-			if !m.dispatchESP(datagramBatch(packet)) {
+			if !m.dispatchESP(testBatch(&pool, packet)) {
 				break
 			}
 			accepted++
@@ -769,22 +785,22 @@ func TestEachESPByteBoundRefusesOnItsOwn(t *testing.T) {
 		if accepted == espChanSize {
 			t.Fatal("the queue filled to its batch count, so dispatchESP bounded no bytes")
 		}
-		if got := m.espQueued.Load(); got > espQueueBytes {
-			t.Fatalf("the queue holds %d bytes, want at most %d", got, espQueueBytes)
+		if got := m.espHeld.Load(); got > espHeldBytes {
+			t.Fatalf("the queue holds %d bytes, want at most %d", got, espHeldBytes)
 		}
 	})
 	t.Run("hasRoomForESP", func(t *testing.T) {
-		m := &Mux{espCh: make(chan espDatagramBatch, espChanSize), done: make(chan struct{})}
+		m := &Mux{espCh: make(chan *Received, espChanSize), done: make(chan struct{})}
 		// Charged the way a queued batch charges it, without going through
-		// dispatchESP, so only the pre-copy check can notice.
-		m.espQueued.Store(espQueueBytes - int64(len(packet)))
-		if !m.hasRoomForESP(len(packet)) {
+		// dispatchESP, so only the check before the blocks can notice.
+		m.espHeld.Store(espHeldBytes - readBufferSize)
+		if !m.hasRoomForESP(readBufferSize) {
 			t.Error("a batch that exactly fits was refused")
 		}
-		if m.hasRoomForESP(len(packet) + 1) {
+		if m.hasRoomForESP(readBufferSize + 1) {
 			t.Error("a batch one byte past the budget was accepted")
 		}
-		m.espQueued.Store(espQueueBytes)
+		m.espHeld.Store(espHeldBytes)
 		if m.hasRoomForESP(1) {
 			t.Error("a full queue accepted another byte")
 		}
@@ -817,9 +833,10 @@ func TestZeroSPIIsRefusedOnBothProtocols(t *testing.T) {
 	}
 }
 
-// A full receive queue is the only signal that this node is behind on receive
+// A datagram refused because its session's receive queue was full or held all
+// its receive buffers is the only signal that this node is behind on receive
 // rather than losing packets on the wire, and anyone who can reach the port can
-// fill one. An operator reads the count, and the log line is rate limited
+// cause one. An operator reads the count, and the log line is rate limited
 // because one receive loop serves every session on the hub and a line per
 // datagram is a synchronous write to stderr per packet.
 func TestFullReceiveQueueIsCountedAndReportedOnce(t *testing.T) {
@@ -834,13 +851,14 @@ func TestFullReceiveQueueIsCountedAndReportedOnce(t *testing.T) {
 	}
 
 	const dropped = 500
+	const dropLine = "transport refused datagrams because their session's receive queue was full or held all its receive buffers"
 	for range dropped {
 		hub.noteDrop(1, "a peer's ESP receive queue")
 	}
 	if got := hub.Dropped(); got != dropped {
 		t.Errorf("the hub counted %d of %d refused datagrams", got, dropped)
 	}
-	if got := bytes.Count(logs.Bytes(), []byte("receive queue full")); got != 1 {
+	if got := bytes.Count(logs.Bytes(), []byte(dropLine)); got != 1 {
 		t.Errorf("%d datagrams produced %d log lines, want one", dropped, got)
 	}
 
@@ -848,7 +866,7 @@ func TestFullReceiveQueueIsCountedAndReportedOnce(t *testing.T) {
 	// silent for the life of the process.
 	hub.reported.Store(hub.reported.Load() - int64(dropReportInterval))
 	hub.noteDrop(1, "a peer's ESP receive queue")
-	if got := bytes.Count(logs.Bytes(), []byte("receive queue full")); got != 2 {
+	if got := bytes.Count(logs.Bytes(), []byte(dropLine)); got != 2 {
 		t.Errorf("the report never came back after the interval: %d lines", got)
 	}
 }
@@ -900,7 +918,7 @@ func TestDatagramsWithNowhereToGoAreCounted(t *testing.T) {
 				t.Errorf("one datagram raised the counter by %d", got)
 			}
 			if hub.Dropped() != 0 {
-				t.Errorf("it also raised the queue-full counter to %d, which means something else", hub.Dropped())
+				t.Errorf("it also raised the counter of dropped datagrams to %d, which means something else", hub.Dropped())
 			}
 		})
 	}
@@ -938,7 +956,7 @@ func TestWhatTheReceiverRefusedReachesTheCounter(t *testing.T) {
 	calls := 0
 	go func() {
 		defer close(done)
-		h.receiveLoop(func(_ [][]byte, _ []int, _ []Endpoint, _ []receiveRecord, refused *refusals) (int, error) {
+		h.receiveLoop(func(_ *blockPool, _ [][]byte, _ []int, _ []Endpoint, _ []receiveRecord, refused *refusals) (int, error) {
 			calls++
 			switch calls {
 			case 1:
@@ -961,7 +979,7 @@ func TestWhatTheReceiverRefusedReachesTheCounter(t *testing.T) {
 		t.Errorf("the hub counted %v by label, want %v", got, want)
 	}
 	if got := h.Dropped(); got != 0 {
-		t.Errorf("it also raised the queue-full counter to %d, which means something else", got)
+		t.Errorf("it also raised the counter of dropped datagrams to %d, which means something else", got)
 	}
 }
 
@@ -995,7 +1013,7 @@ func TestEachRefusalIsCountedUnderItsCause(t *testing.T) {
 	calls := 0
 	go func() {
 		defer close(done)
-		h.receiveLoop(func(bufs [][]byte, sizes []int, endpoints []Endpoint, _ []receiveRecord, _ *refusals) (int, error) {
+		h.receiveLoop(func(_ *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, _ []receiveRecord, _ *refusals) (int, error) {
 			calls++
 			if calls > 1 {
 				return 0, errors.New("closed")
@@ -1175,7 +1193,7 @@ func TestUnclaimedFloodDoesNotReadAsBeingBehind(t *testing.T) {
 	}
 	time.Sleep(settleWait)
 	if got := hub.Dropped(); got != 0 {
-		t.Errorf("the flood raised the queue-full counter to %d, which an operator reads as this node falling behind", got)
+		t.Errorf("the flood raised the counter of dropped datagrams to %d, which an operator reads as this node falling behind", got)
 	}
 	if hub.Refused() == 0 {
 		t.Error("the flood raised nothing an operator can see")

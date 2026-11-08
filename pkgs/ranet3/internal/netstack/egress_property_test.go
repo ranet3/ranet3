@@ -155,7 +155,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 		answers := back.peer(ht, "back")
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(headend, 128), answers)
 		m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(stranger[6], 128), answers)
-		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 
 		reached := make([][]segmentPlace, len(kinds))
 		order := map[segmentPlace][]int{}
@@ -373,7 +373,7 @@ func TestEgressSegmentEgressesNothingTheMeshRoutes(t *testing.T) {
 			}
 			want = append(want, inner)
 		}
-		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil)
+		m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
 
 		var got [][]byte
 		writes := tunWrites(meshTUN)

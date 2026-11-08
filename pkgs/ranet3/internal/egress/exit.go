@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/events"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 )
 
 // Exit carries other nodes' traffic out of the mesh: the packets of the
@@ -39,8 +40,9 @@ type Exit interface {
 	// write may overwrite and then the packet to the frame's end, and the
 	// frames are the exit's from the call on the terms the mesh's
 	// DeliverInboundBatch states for itself: until written, or copied before
-	// the call returns.
-	Egress(frames [][]byte)
+	// the call returns. hold covers their storage, and a backend that reads
+	// a frame after the call returns retains it until then.
+	Egress(frames [][]byte, hold netstack.Hold)
 	// Announce is the advertised prefixes of the families ready now, and
 	// nothing before the first pass
 	Announce() []netip.Prefix

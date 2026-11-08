@@ -163,7 +163,7 @@ func withTTL(raw []byte, hops byte) []byte {
 // and returns what reached the tun, what out was sent and what went back to the sender, each once every peer is done with it
 func (n *transitNode) deliver(tb testing.TB, packets ...[]byte) (tun, out, back [][]byte) {
 	tb.Helper()
-	n.m.DeliverInboundBatch(framed(packets...), DefaultMTU, n.fromPeer)
+	n.m.DeliverInboundBatch(framed(packets...), DefaultMTU, n.fromPeer, nil)
 	for _, write := range tunWrites(&n.tun.recordingDevice) {
 		tun = append(tun, write...)
 	}
@@ -488,7 +488,7 @@ func TestDecisionCountsAnAnswerWithNowhereToGoUnsent(t *testing.T) {
 			if full == nil {
 				t.Fatal("an empty budget refused a read of all of it")
 			}
-			n.m.DeliverInboundBatch(framed(c.raw), DefaultMTU, n.fromPeer)
+			n.m.DeliverInboundBatch(framed(c.raw), DefaultMTU, n.fromPeer, nil)
 			got := n.m.TransitCounters()
 			_ = full.abandon()
 			if back, out := n.from.packets(t), n.out.packets(t); len(back)+len(out) != 0 {
@@ -1132,7 +1132,7 @@ func TestDecisionWaitingForAForwardBatchReturnsOnClose(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		m.DeliverInboundBatch(framed(udpPacket(transitSender[4], transitFar[4], 100, true)), DefaultMTU, nil)
+		m.DeliverInboundBatch(framed(udpPacket(transitSender[4], transitFar[4], 100, true)), DefaultMTU, nil, nil)
 	}()
 	m.Close()
 	select {
@@ -1219,7 +1219,7 @@ func TestCloseWaitsForAForwardBatchBeingSubmitted(t *testing.T) {
 	n.m.Routes.Set(netip.Prefix{}, hostPrefix(transitFar[6]), held)
 	delivered := make(chan struct{})
 	go func() {
-		n.m.DeliverInboundBatch(framed(udpPacket(transitSender[6], transitFar[6], 100, false)), DefaultMTU, n.fromPeer)
+		n.m.DeliverInboundBatch(framed(udpPacket(transitSender[6], transitFar[6], 100, false)), DefaultMTU, n.fromPeer, nil)
 		close(delivered)
 	}()
 	select {
@@ -1246,7 +1246,7 @@ func TestCloseWaitsForAForwardBatchBeingSubmitted(t *testing.T) {
 	}
 	after := make(chan struct{})
 	go func() {
-		n.m.DeliverInboundBatch(framed(udpPacket(transitSender[6], transitFar[6], 100, false)), DefaultMTU, n.fromPeer)
+		n.m.DeliverInboundBatch(framed(udpPacket(transitSender[6], transitFar[6], 100, false)), DefaultMTU, n.fromPeer, nil)
 		close(after)
 	}()
 	select {
@@ -1266,7 +1266,7 @@ func TestForwardingRacingCloseAllReturn(t *testing.T) {
 			for i := range deliveries {
 				raw := udpPacket(transitSender[6], transitFar[6], 100, false)
 				binary.BigEndian.PutUint32(raw[48:], uint32(session<<16|i))
-				n.m.DeliverInboundBatch(framed(raw, raw, raw), DefaultMTU, n.fromPeer)
+				n.m.DeliverInboundBatch(framed(raw, raw, raw), DefaultMTU, n.fromPeer, nil)
 			}
 		})
 	}

@@ -854,14 +854,15 @@ func (b *darwinBind) dontFragment(endpoint Endpoint) bool {
 	return b.v4 != nil && b.v4.fragmenting.Load() == 0
 }
 
-// receiver reads one datagram per call. The buffer is the receiver's own and
-// its view stays valid until the next call, which is the contract every
-// backend holds. The hub copies anything it keeps. Only an IKE datagram gets
-// an endpoint, which the hub reads for nothing else.
+// receiver reads one datagram per call into a block of the hub's pool, and
+// into a fresh one where a batch still retains the block of the call before.
+// Only an IKE datagram gets an endpoint, which the hub reads for nothing else.
 func (s *darwinSocket) receiver() receiveFunc {
-	buf := make([]byte, readBufferSize)
+	var block *rxBlock
 	oob := make([]byte, controlMessageSize)
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (int, error) {
+	return func(pool *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (int, error) {
+		pool.refill(&block)
+		buf := block.data
 		n, oobn, flags, from, err := s.conn.ReadMsgUDPAddrPort(buf, oob)
 		if err != nil {
 			return 0, err
@@ -878,7 +879,7 @@ func (s *darwinSocket) receiver() receiveFunc {
 			refused.add(refusedControl, 1)
 			return 0, nil
 		}
-		bufs[0], sizes[0], endpoints[0], records[0] = buf[:n], n, nil, receiveRecord{source: from, ecn: ecn}
+		bufs[0], sizes[0], endpoints[0], records[0] = buf[:n], n, nil, receiveRecord{source: from, ecn: ecn, block: block}
 		if n >= nonESPMarkerLen && binary.BigEndian.Uint32(buf) == 0 {
 			ep, err := s.replyEndpoint(netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), oob[:oobn])
 			if err != nil {

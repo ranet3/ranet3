@@ -22,6 +22,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/egress/egresstest"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -79,7 +80,7 @@ func debugExit(t *testing.T, sweep time.Duration) (exit egress.Exit, debug func(
 		t.Fatalf("make the uplink: %v", err)
 	}
 	cfg := egress.Egress{Advertise: []schema.Prefix{schema.MustPrefix("0.0.0.0/0")}, Sweep: schema.Duration(sweep)}
-	exit = newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte) {}, Mesh: []netip.Addr{mesh}}, cfg, egress.Hooks{})
+	exit = newKernelExit(t, egresstest.Host{Do: host.Do, TUN: "ranet0", Write: func([][]byte, netstack.Hold) {}, Mesh: []netip.Addr{mesh}}, cfg, egress.Hooks{})
 	debugged, ok := exit.(interface{ Debug() egress.ExitDebug })
 	if !ok {
 		t.Fatal("the kernel exit answers no debug read")

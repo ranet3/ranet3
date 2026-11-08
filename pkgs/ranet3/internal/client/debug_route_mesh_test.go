@@ -90,7 +90,7 @@ type routeTun struct {
 	packets  [][]byte
 }
 
-func (d *routeTun) Egress([][]byte) { d.egressed.Add(1) }
+func (d *routeTun) Egress([][]byte, netstack.Hold) { d.egressed.Add(1) }
 
 // taken is each packet written to d since the last take
 func (d *routeTun) taken() [][]byte {

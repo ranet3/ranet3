@@ -96,7 +96,7 @@ func TestForwardingKeepsEachSessionsOrderPerPeer(t *testing.T) {
 		for _, batches := range plans {
 			delivering.Go(func() {
 				for _, batch := range batches {
-					m.DeliverInboundBatch(framed(batch...), DefaultMTU, nil)
+					m.DeliverInboundBatch(framed(batch...), DefaultMTU, nil, nil)
 				}
 			})
 		}
@@ -331,7 +331,7 @@ func TestModeTwoAndThreeReachExactlyTheExitSelectedOrNamed(t *testing.T) {
 		for i := range n {
 			for _, j := range links[i] {
 				peers[i][j] = NewPeer(fmt.Sprintf("node%d>node%d", i, j), func(int) (BatchSealer, error) { return cloning, nil }, func(sealed [][]byte) error {
-					meshes[j].DeliverInboundBatch(framed(sealed...), DefaultMTU, peers[j][i])
+					meshes[j].DeliverInboundBatch(framed(sealed...), DefaultMTU, peers[j][i], nil)
 					handoffs.Add(1)
 					return nil
 				}, nil)

@@ -278,7 +278,7 @@ func TestExplainNamesWhatTheDecisionRecords(t *testing.T) {
 		for range hegel.Draw(ht, pbt.Spanning(1, 16)) {
 			raw := explainPacket(ht, []int{from.MTU()}, [2]map[int]netip.Addr{transitSender, transitStranger}, [2]map[int]netip.Addr{transitNowhere, transitUnrouted}, func(a netip.Addr) bool { return !m.Segments().Holds(a) })
 			explained := m.Explain(raw)
-			m.DeliverInboundBatch(framed(bytes.Clone(raw)), from.MTU(), from)
+			m.DeliverInboundBatch(framed(bytes.Clone(raw)), from.MTU(), from, nil)
 			if got, want := walked(explained), recorded(decisionRecord(ht, queued(feed))); got != want {
 				ht.Fatalf("Explain of %x is %+v, the record %+v", raw, got, want)
 			}

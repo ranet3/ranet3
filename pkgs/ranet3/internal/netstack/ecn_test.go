@@ -45,7 +45,7 @@ func TestExitCountsAndRecordsTheUnusedECNCombinations(t *testing.T) {
 		}
 		return out
 	}
-	m.applySegments(framed(steered(packet.ECT1, packet.ECT0), steered(packet.ECT1, packet.ECT0), steered(packet.NotECT, packet.CE), steered(packet.ECT0, packet.CE), steered(packet.ECT0, packet.ECT0)), DefaultMTU, nil)
+	m.applySegments(framed(steered(packet.ECT1, packet.ECT0), steered(packet.ECT1, packet.ECT0), steered(packet.NotECT, packet.CE), steered(packet.ECT0, packet.CE), steered(packet.ECT0, packet.ECT0)), DefaultMTU, nil, nil)
 	want := []record{{"ECT(0)", "ECT(1)", "1", hex.EncodeToString(plainHeader(t, packet.ECT1))}}
 	if got := recordsOf(); !slices.Equal(got, want) {
 		t.Fatalf("within one interval the records are %+v, want %+v", got, want)
@@ -54,7 +54,7 @@ func TestExitCountsAndRecordsTheUnusedECNCombinations(t *testing.T) {
 		t.Errorf("two packets of an unused combination delivered and one dropped counted %+v, want 3 unused", got)
 	}
 	m.ecnUnused.next.Add(-int64(reportInterval))
-	m.applySegments(framed(steered(packet.NotECT, packet.ECT1)), DefaultMTU, nil)
+	m.applySegments(framed(steered(packet.NotECT, packet.ECT1)), DefaultMTU, nil, nil)
 	want = append(want, record{"ECT(1)", "Not-ECT", "3", hex.EncodeToString(plainHeader(t, packet.NotECT))})
 	if got := recordsOf(); !slices.Equal(got, want) {
 		t.Errorf("an interval later the records are %+v, want %+v", got, want)

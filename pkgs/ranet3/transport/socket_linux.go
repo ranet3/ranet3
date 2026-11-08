@@ -460,24 +460,25 @@ func (p *udpPair) Close() error {
 
 // receiver reads a full recvmmsg vector even when UDP_GRO is enabled. Each
 // message may contain many datagrams. Excess segments are returned on later
-// calls before any receive storage is reused. Only IKE packets retain a reply
+// calls before any message is read into again. Only IKE packets retain a reply
 // endpoint.
 func (s *udpSocket) receiver(vector int) receiveFunc {
 	messages := receiveVector(vector)
 	return s.walk(messages, newUDPReader(s.raw, messages).read)
 }
 
-// receiveVector is the storage of vector messages a socket receives into for its lifetime
+// receiveVector is the vector of messages a socket receives into for its lifetime, whose buffers walk takes from the hub's pool
 func receiveVector(vector int) []ipv4.Message {
 	messages := make([]ipv4.Message, vector)
 	for i := range messages {
-		messages[i].Buffers = [][]byte{make([]byte, readBufferSize)}
+		messages[i].Buffers = [][]byte{nil}
 		messages[i].OOB = make([]byte, controlMessageSize)
 	}
 	return messages
 }
 
 // walk hands out the datagrams read leaves in messages and reads again once it has handed out the last
+// before each read every message whose block a batch still retains reads into a fresh one, and read points the kernel at each message's buffer
 // a message is one sender's, since GRO coalesces only datagrams of one source address and port, so each of its datagrams takes the source read once for it
 // and it carries one outer ECN field, since GRO flushes a flow on any difference of TOS or traffic class, so each of its datagrams takes the field read once for it too
 func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) receiveFunc {
@@ -485,8 +486,14 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 	var source netip.AddrPort
 	var ecn packet.ECN
 	var zones scopeZone
-	return func(bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (int, error) {
+	blocks := make([]*rxBlock, len(messages))
+	return func(pool *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (int, error) {
 		if index == count {
+			for i := range messages {
+				if pool.refill(&blocks[i]) {
+					messages[i].Buffers[0] = blocks[i].data
+				}
+			}
 			var err error
 			count, err = read()
 			index, offset, segment = 0, 0, 0
@@ -526,7 +533,7 @@ func (s *udpSocket) walk(messages []ipv4.Message, read func() (int, error)) rece
 			}
 			end := min(offset+segment, m.N)
 			raw := m.Buffers[0][offset:end]
-			bufs[n], sizes[n], endpoints[n], records[n] = raw, len(raw), nil, receiveRecord{source: source, ecn: ecn}
+			bufs[n], sizes[n], endpoints[n], records[n] = raw, len(raw), nil, receiveRecord{source: source, ecn: ecn, block: blocks[index]}
 			if len(raw) >= 4 && binary.BigEndian.Uint32(raw[:4]) == 0 {
 				// A datagram whose control message will not parse is counted
 				// and dropped, not returned as an error: receiveLoop fails the

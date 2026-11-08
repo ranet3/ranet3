@@ -209,7 +209,7 @@ func TestTUNWritesAnInboundFrameIntoAUTUN(t *testing.T) {
 	for _, size := range []int{20 + 8 + 1, utunJumbo} {
 		packet := udpPacket(utunPeer, utunLocal, size, false)
 		binary.BigEndian.PutUint16(packet[20+2:], uint16(port))
-		m.DeliverInboundBatch(framed(packet), utunJumbo, nil)
+		m.DeliverInboundBatch(framed(packet), utunJumbo, nil, nil)
 		if err := socket.SetReadDeadline(time.Now().Add(deliveryTimeout)); err != nil {
 			t.Fatal(err)
 		}

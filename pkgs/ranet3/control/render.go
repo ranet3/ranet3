@@ -79,11 +79,11 @@ func RenderStatus(w io.Writer, s Status) {
 }
 
 // espLine always names the packets in, those their sessions dropped and the datagrams the hub refused
-// and the datagrams a full receive queue dropped, the packets marked CE and those of an unused ECN combination only while each is above 0
+// and the datagrams dropped because their session's receive queue was full or held all its receive buffers, the packets marked CE and those of an unused ECN combination only while each is above 0
 func espLine(e ESPCounters) string {
 	line := fmt.Sprintf("%d in, %d dropped by their sessions, %d datagrams refused", e.InboundPackets, e.InboundDropped, e.ReceiveRefused)
 	if e.ReceiveDropped > 0 {
-		line += fmt.Sprintf(", %d dropped at the receive queue", e.ReceiveDropped)
+		line += fmt.Sprintf(", %d dropped because their session's receive queue was full or held all its receive buffers", e.ReceiveDropped)
 	}
 	if e.InboundCE > 0 {
 		line += fmt.Sprintf(", %d marked CE", e.InboundCE)

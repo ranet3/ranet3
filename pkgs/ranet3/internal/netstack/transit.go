@@ -291,16 +291,16 @@ func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
 
 // decide runs the forwarding decision over frames, in the order they came, each a packet a session delivered that no segment of this node took or an inner packet an End.DT46 delivering to the mesh took out of its outer header
 // granted marks the inner packets, which go on whatever cap.transit says, nil where there are none
-// from is the peer of the session they came through, nil for frames of no session
+// from is the peer of the session they came through, nil for frames of no session, and hold covers their storage as DeliverInboundBatch's does
 // it returns the frames for the tun in the order they came, filtered in place, and hands egress the ones through a prefix cap.egress advertises that counts as a default
 // the checks run in RFC 1812's order for IPv6 as for IPv4, each before any answer, so a malformed packet draws none but the Payload Length answer of the first
-func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
+func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) [][]byte {
 	trace := m.tracer.Load()
 	transit := m.transitOn.Load()
 	var tally transitTally
 	var egressed [][]byte
 	// declared first so it runs after the tally is added, and a reader that has the frame finds it counted
-	defer func() { m.egress(egressed) }()
+	defer func() { m.egress(egressed, hold) }()
 	defer m.addTally(&tally)
 	out := frames[:0]
 	var b *outboundBatch
@@ -450,6 +450,11 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer) [][]byte {
 				return out
 			}
 			b.from = from
+			// a worker seals the batch's packets after this call returns, and reset releases the hold
+			if hold != nil {
+				hold.Retain()
+				b.hold = hold
+			}
 		}
 		reason, fragments := m.forwardOne(b, raw, version, peer, draw)
 		if reason != transitForwarded {

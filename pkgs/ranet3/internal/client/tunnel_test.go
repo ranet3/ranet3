@@ -19,6 +19,7 @@ import (
 	"golang.org/x/net/ipv4"
 
 	"ranet3.com/pkgs/ranet3/esp"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/ranet3/transport"
 )
@@ -166,7 +167,7 @@ func TestReceiveESPOrderAndShutdown(t *testing.T) {
 			t.Cleanup(func() { _ = mux.Close(); <-finished })
 			go func() {
 				defer close(finished)
-				done <- receiveESP(mux, workers, decrypt, func(results []inboundDecrypted, ecn []inboundECN) {
+				done <- receiveESP(mux, workers, decrypt, func(results []inboundDecrypted, ecn []inboundECN, _ netstack.Hold) {
 					esp.CommitBatch(results)
 					if ecn != nil && len(ecn) != len(results) {
 						t.Errorf("the emit was handed %d results and %d ECN fields", len(results), len(ecn))

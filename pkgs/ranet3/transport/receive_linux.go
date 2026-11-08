@@ -85,7 +85,8 @@ type udpReader struct {
 	err      syscall.Errno
 }
 
-// The vectors and all receive storage stay fixed for this socket's lifetime.
+// The vectors and the address and control storage stay fixed for this
+// socket's lifetime, and read points each iovec at its message's buffer.
 // x/net's general ReadBatch repacks them and allocates source addresses on
 // every call, including for ESP packets whose address is never consumed.
 func newUDPReader(conn syscall.RawConn, messages []ipv4.Message) *udpReader {
@@ -98,8 +99,6 @@ func newUDPReader(conn syscall.RawConn, messages []ipv4.Message) *udpReader {
 	r.receive = r.recv
 	for i := range messages {
 		m, h := &messages[i], &r.headers[i].header
-		r.iovecs[i].Base = &m.Buffers[0][0]
-		r.iovecs[i].SetLen(len(m.Buffers[0]))
 		h.Iov = &r.iovecs[i]
 		h.SetIovlen(1)
 		h.Name = &r.sources[i][0]
@@ -111,7 +110,9 @@ func newUDPReader(conn syscall.RawConn, messages []ipv4.Message) *udpReader {
 
 func (r *udpReader) read() (int, error) {
 	for i := range r.headers {
-		h := &r.headers[i].header
+		h, buffer := &r.headers[i].header, r.messages[i].Buffers[0]
+		r.iovecs[i].Base = &buffer[0]
+		r.iovecs[i].SetLen(len(buffer))
 		h.Namelen = uint32(len(r.sources[i]))
 		h.SetControllen(len(r.messages[i].OOB))
 	}

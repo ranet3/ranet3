@@ -348,7 +348,7 @@ func TestInboundWritesHandTheDeviceTheFramesThemselves(t *testing.T) {
 
 			want := [][]byte{ipv6TCPPacket(40000, 5201, 1), ipv6TCPPacket(40000, 5201, 2)}
 			frames := framed(want...)
-			m.DeliverInboundBatch(frames, DefaultMTU, nil)
+			m.DeliverInboundBatch(frames, DefaultMTU, nil, nil)
 			select {
 			case got := <-dev.writes:
 				if got.offset != TUNHeadroom {
@@ -411,7 +411,7 @@ func TestDeliverInboundBatchUsesFlowAffineQueues(t *testing.T) {
 			want[lane] = append(want[lane], packet)
 		}
 	}
-	m.DeliverInboundBatch(framed(packets...), DefaultMTU, nil)
+	m.DeliverInboundBatch(framed(packets...), DefaultMTU, nil, nil)
 
 	active := 0
 	for lane, expected := range want {
@@ -470,7 +470,7 @@ func TestWriteHostAllocatesNoMoreThanItsLanesGroups(t *testing.T) {
 			m.setDevice(lanesOf(devices...))
 			m.startInboundWriters()
 			t.Cleanup(m.Close)
-			if allocs := leastAllocs(func() { m.WriteHost(frames) }); allocs > c.most {
+			if allocs := leastAllocs(func() { m.WriteHost(frames, nil) }); allocs > c.most {
 				t.Errorf("a write of %d packets over %d lanes allocated %v times, want at most %v", len(frames), c.lanes, allocs, c.most)
 			}
 		})
@@ -482,10 +482,11 @@ func TestCollectReadyInboundCoalescesQueuedDeliveries(t *testing.T) {
 	queue <- inboundWriteBatch{frames: [][]byte{{2}, {3}}}
 	queue <- inboundWriteBatch{frames: [][]byte{{4}}}
 
-	got := collectReadyInbound(
+	got, _ := collectReadyInbound(
 		inboundWriteBatch{frames: [][]byte{{1}}},
 		queue,
 		make([][]byte, 0, inboundWriteBatchSize),
+		nil,
 	)
 	if len(got) != 4 {
 		t.Fatalf("collected %d packets, want 4", len(got))

@@ -685,7 +685,7 @@ func TestDarwinReceiverPinsIKEAlone(t *testing.T) {
 			for _, datagram := range [][]byte{esp, ike} {
 				endpoints[0] = &darwinEndpoint{}
 				var refused refusals
-				if n, err := receivers[i](bufs, sizes, endpoints, records, &refused); n != 1 || refused != (refusals{}) || err != nil {
+				if n, err := receivers[i](new(blockPool), bufs, sizes, endpoints, records, &refused); n != 1 || refused != (refusals{}) || err != nil {
 					t.Fatalf("a read answered %d datagrams, %v refused and %v", n, refused, err)
 				}
 				if got := bufs[0][:sizes[0]]; !bytes.Equal(got, datagram) {
@@ -738,7 +738,7 @@ func TestDarwinReceiveRecordCarriesEachDatagramsSource(t *testing.T) {
 			for _, from := range sent {
 				records[0] = receiveRecord{}
 				var refused refusals
-				if n, err := receivers[i](bufs, sizes, endpoints, records, &refused); n != 1 || refused != (refusals{}) || err != nil {
+				if n, err := receivers[i](new(blockPool), bufs, sizes, endpoints, records, &refused); n != 1 || refused != (refusals{}) || err != nil {
 					t.Fatalf("a read answered %d datagrams, %v refused and %v", n, refused, err)
 				}
 				if records[0].source != from {
@@ -855,7 +855,7 @@ func TestDarwinReceiverDropsADatagramWhoseControlMessageWasCut(t *testing.T) {
 			bufs, sizes, endpoints, records := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)
 			for _, what := range []string{"an IKE datagram", "an ESP datagram"} {
 				var refused refusals
-				if n, err := receivers[i](bufs, sizes, endpoints, records, &refused); n != 0 || refused != refusedAs(refusedTruncated, 1) || err != nil {
+				if n, err := receivers[i](new(blockPool), bufs, sizes, endpoints, records, &refused); n != 0 || refused != refusedAs(refusedTruncated, 1) || err != nil {
 					t.Fatalf("the read of %s whose control message was cut answered %d datagrams, %v refused and %v, want it refused as truncated", what, n, refused, err)
 				}
 			}
@@ -864,7 +864,7 @@ func TestDarwinReceiverDropsADatagramWhoseControlMessageWasCut(t *testing.T) {
 				t.Fatal(err)
 			}
 			var refused refusals
-			n, err := receivers[i](bufs, sizes, endpoints, records, &refused)
+			n, err := receivers[i](new(blockPool), bufs, sizes, endpoints, records, &refused)
 			if n != 1 || refused != (refusals{}) || err != nil || !bytes.Equal(bufs[0][:sizes[0]], after) || endpoints[0] != nil {
 				t.Fatalf("the read after them answered %d datagrams, %v refused and %v, %x with %v, want the ESP datagram %x alone", n, refused, err, bufs[0][:sizes[0]], endpoints[0], after)
 			}
@@ -918,11 +918,11 @@ func TestDarwinReceiverRefusesTheEndpointOfAnIKEDatagramWithNoDestination(t *tes
 			}
 			bufs, sizes, endpoints, records := make([][]byte, 1), make([]int, 1), make([]Endpoint, 1), make([]receiveRecord, 1)
 			var refused refusals
-			if n, err := receivers[i](bufs, sizes, endpoints, records, &refused); n != 0 || refused != refusedAs(refusedEndpoint, 1) || err != nil {
+			if n, err := receivers[i](new(blockPool), bufs, sizes, endpoints, records, &refused); n != 0 || refused != refusedAs(refusedEndpoint, 1) || err != nil {
 				t.Fatalf("the read of an IKE datagram with no destination answered %d datagrams, %v refused and %v, want it refused for its endpoint", n, refused, err)
 			}
 			refused = refusals{}
-			n, err := receivers[i](bufs, sizes, endpoints, records, &refused)
+			n, err := receivers[i](new(blockPool), bufs, sizes, endpoints, records, &refused)
 			if n != 1 || refused != (refusals{}) || err != nil || !bytes.Equal(bufs[0][:sizes[0]], esp) {
 				t.Fatalf("the read after it answered %d datagrams, %v refused and %v, %x, want the ESP datagram %x", n, refused, err, bufs[0][:sizes[0]], esp)
 			}
