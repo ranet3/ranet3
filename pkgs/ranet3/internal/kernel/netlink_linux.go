@@ -16,10 +16,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// nlConn is one rtnetlink socket used for synchronous request and reply. The
-// reconcile loop is its only caller, so it needs no locking. Notifications
-// arrive on a separate socket precisely so an unsolicited message can never be
-// mistaken for a reply.
+// nlConn is one rtnetlink socket used for synchronous request and reply. One
+// goroutine at a time uses each, so it needs no locking. The reconciler's
+// serves its constructor and then its reconcile loop alone, the network
+// watch's serves WatchNetwork and then the watch's own goroutine alone, and
+// RouteGet, RouteGetBatch and DumpRules each dial one for the call.
+// Notifications arrive on a separate socket precisely so an unsolicited
+// message can never be mistaken for a reply.
 type nlConn struct {
 	fd  int
 	pid uint32
