@@ -230,7 +230,6 @@ func drawTracePacket(ht *hegel.T) TracePacket {
 	}
 	p.SourcePort, p.DestinationPort = hegel.Draw(ht, pbt.Spanning[uint16](0, math.MaxUint16)), hegel.Draw(ht, pbt.Spanning[uint16](0, math.MaxUint16))
 	p.TCPFlags, p.ICMPType, p.ICMPCode = hegel.Draw(ht, pbt.Spanning[uint8](0, math.MaxUint8)), hegel.Draw(ht, pbt.Spanning[uint8](0, math.MaxUint8)), hegel.Draw(ht, pbt.Spanning[uint8](0, math.MaxUint8))
-	// TracePayloadMax is 4*16383 + 3, so the payload spans 0 to it
 	payload := 4*hegel.Draw(ht, pbt.Spanning(0, TracePayloadMax/4)) + hegel.Draw(ht, pbt.Spanning(0, 3))
 	p.Payload = make([]byte, payload)
 	seed := hegel.Draw(ht, pbt.Spanning[uint8](1, math.MaxUint8))

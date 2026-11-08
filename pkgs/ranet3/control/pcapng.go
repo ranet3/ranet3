@@ -15,7 +15,6 @@ import (
 
 // TracePcap writes trace records as one pcapng section, draft-ietf-opsawg-pcapng-06
 // a section of one interface of link type raw IP, each record an enhanced packet block of its payload whose comment holds the rest of its line
-// numbers are written little endian, which the section's byte-order magic tells a reader
 type TracePcap struct {
 	w io.Writer
 }
@@ -70,7 +69,7 @@ func (t *TracePcap) Write(p TracePacket) error {
 	return err
 }
 
-// pcapngBlock appends a block of type kind around body, whose length is a multiple of 4, its total length before and after it, section 3.1
+// pcapngBlock appends a block of type kind around body, whose length is a multiple of 4, section 3.1
 func pcapngBlock(out []byte, kind uint32, body []byte) []byte {
 	length := uint32(12 + len(body))
 	out = binary.LittleEndian.AppendUint32(out, kind)
@@ -86,7 +85,7 @@ func pcapngOption(out []byte, code uint16, value []byte) []byte {
 	return pcapngPadded(append(out, value...))
 }
 
-// pcapngPadded is out padded with zeros to 32 bits, section 3.6.2
+// pcapngPadded is out with the padding of section 3.6.2
 func pcapngPadded(out []byte) []byte {
 	return append(out, make([]byte, -len(out)&3)...)
 }

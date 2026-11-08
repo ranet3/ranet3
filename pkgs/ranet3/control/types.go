@@ -126,9 +126,9 @@ type Subsystem string
 
 const (
 	// SubsystemReconciler is the cap.table route reconciler. Stopping it
-	// withdraws every route, address and rule it installed and the table
-	// ranet3_fallback, the same as `birdc disable` on a kernel protocol while
-	// Babel lived in BIRD.
+	// withdraws every route, address and rule it installed and the kill switch,
+	// the same as `birdc disable` on a kernel protocol while Babel lived in
+	// BIRD.
 	SubsystemReconciler Subsystem = "reconciler"
 	// SubsystemSteering is cap.segment's steer policies, the decision to send
 	// this node's own packets through a segment list. Stopping it sends them
@@ -212,7 +212,7 @@ type Sink interface {
 	Reload(ctx context.Context) (Result, error)
 	// Down takes the node off the mesh and keeps its daemon, tun and socket
 	// every dialer, the responder and Babel stop, every session is closed with a Delete
-	// and the routes, rules, addresses and egress tables the node installed and the table ranet3_fallback are withdrawn
+	// and the routes, rules, addresses and egress tables the node installed and the kill switch are withdrawn
 	// the flag it writes first keeps the node down through a restart until Up
 	Down(ctx context.Context) (Result, error)
 	// Up removes the flag and puts the node back on the mesh as a start would
@@ -446,7 +446,7 @@ type KernelStatus struct {
 	// installed as its zero-free cover, on macOS under cap.exit.
 	Cover []string `json:"cover,omitempty"`
 	// Taken is each lookup of the last pass whose batch answered that another
-	// program's rule takes, on linux alone
+	// program's rule or route takes, the overlay's alone on macOS
 	Taken []KernelTaken `json:"taken,omitempty"`
 	// Exit is cap.exit's mode as the last pass ran it, absent in mode off
 	Exit *KernelExit `json:"exit,omitempty"`
@@ -539,7 +539,7 @@ type KernelExitPath struct {
 	Unrouted uint64 `json:"unrouted"`
 }
 
-// KernelTaken is one lookup another program's rule takes: an overlay prefix
+// KernelTaken is one lookup another program's rule or route takes: an overlay prefix
 // whose address the kernel answers outside the tun and its hold, or a live
 // session's send to a peer's endpoint whose lookup under the underlay's mark
 // the kernel answers through the tun
