@@ -93,7 +93,7 @@ const (
 var ErrUnsupported = errors.New("kernel: unsupported on this platform")
 
 // ErrMeshFailed is the cause a daemon cancels Run's context with once the
-// mesh's tun is gone, for which withdraw can leave the table ranet3_fallback
+// mesh's tun is gone, for which withdraw can leave the kill switch
 var ErrMeshFailed = errors.New("kernel: the mesh failed")
 
 // errRouteSkipped distinguishes a route that was deliberately not installed
@@ -160,7 +160,7 @@ func (t Table) WithMode(m *ExitMode) Table {
 // Mode is cap.exit as t runs it, nil in mode off
 func (t Table) Mode() *ExitMode { return t.mode }
 
-// writesFallback is whether t's mode writes the table ranet3_fallback
+// writesFallback is whether t's mode writes the kill switch
 func (t Table) writesFallback() bool { return t.mode != nil && t.mode.Refuses() }
 
 // Runtime holds what the reconciler reads from outside cap.table: the device
@@ -229,13 +229,14 @@ type Runtime struct {
 	// Selection is the underlay's selection, which darwin opens and linux and
 	// ios do not. A pass reads its last generation once and cuts each endpoint
 	// out of the routes a datagram to it would not reach past (see cutHoles),
-	// and each generation it publishes wakes a pass. Nil cuts and wakes nothing
+	// and each generation whose candidate routes changed wakes a pass. Nil cuts
+	// and wakes nothing
 	Selection UnderlaySelection
 }
 
 // UnderlaySelection is the underlay's selection as the reconciler reads it
 type UnderlaySelection interface {
-	// Changed is signaled once a generation after the first is published, several coalesced into one
+	// Changed is signaled once a generation whose candidate routes changed is published, several coalesced into one
 	Changed() <-chan struct{}
 	// table is the generation published last
 	table() hostTable
@@ -413,8 +414,9 @@ type auditor interface {
 // has FIB rules and 2^32 tables. darwin has one FIB and neither. A mobile
 // tunnel provider is handed a list of routes to include and exclude and never
 // sees a table at all. A platform without one does not implement this, and its
-// reconciler writes no rule and leaves out the routes only a rule reads: the
-// throw rows and the overlay holds.
+// reconciler writes no rule and leaves out the throw rows only a rule reads,
+// and the overlay holds too unless it writes them apart from the tun
+// (holdKeyer).
 //
 // What the rules express is portable even where the mechanism is not: the
 // underlay set apart, on linux by a mark the derived rules read, and the
@@ -433,7 +435,8 @@ type ruler interface {
 }
 
 // looker is implemented by a platform that answers route lookups in the
-// namespace it writes, as RouteGetBatch does, which is linux alone
+// namespace it writes: linux by RouteGetBatch, darwin by the unbound longest
+// match
 type looker interface {
 	lookups([]RouteRead) ([]BatchAnswer, error)
 }
@@ -458,7 +461,8 @@ type platform interface {
 	// Notify carries one coalesced wake-up per batch of kernel notifications
 	// touching what the reconciler holds: on linux a route in its table, an
 	// address of its tun, a deleted rule of its protocol or another writer's
-	// change to the table ranet3_fallback, on darwin a route of its interface.
+	// change to the table ranet3_fallback, on darwin a route of its interface
+	// or of lo0, where its kill switch and overlay holds are.
 	Notify() <-chan struct{}
 	// retable takes the capability a reload installed, on the id and proto the platform was opened with
 	retable(Table)
@@ -1012,8 +1016,8 @@ func (r *Reconciler) DerivedRules() []DumpedRule {
 
 // SetEnabled stops or starts this reconciler while it runs, which is the
 // `birdc disable` a kernel protocol took while Babel lived in BIRD. Stopping
-// withdraws every route, address and rule it installed and the table
-// ranet3_fallback, and starting puts back on the next pass what that pass asks
+// withdraws every route, address and rule it installed and the kill switch,
+// and starting puts back on the next pass what that pass asks
 // for, which is idempotent like every other pass. A table
 // left holding routes nobody maintains is the state a stop exists to avoid,
 // so the withdrawal is part of it rather than a separate ask.
@@ -1238,8 +1242,8 @@ func (r *Reconciler) Run(ctx context.Context) error {
 }
 
 // Close closes the netlink sockets and the monitors of a reconciler whose Run
-// was never called, and withdraws nothing, so the table ranet3_fallback and
-// the routes and rules an earlier instance left stay for the next start
+// was never called, and withdraws nothing, so the kill switch and the routes
+// and rules an earlier instance left stay for the next start
 func (r *Reconciler) Close() error { return r.plat.Close() }
 
 // settle waits out a fixed window, discarding further wake-ups, so a burst of

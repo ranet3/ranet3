@@ -305,8 +305,8 @@ type routeMonitor struct {
 	readers sync.WaitGroup
 }
 
-// newRouteMonitor watches one interface, or every interface when index is
-// zero, minus the one skip names. See routeMonitor for which caller wants
+// newRouteMonitor watches one interface and lo0, or every interface when index
+// is zero, minus the one skip names. See routeMonitor for which caller wants
 // which.
 func newRouteMonitor(index int, skip int) (*routeMonitor, error) {
 	monitor := &routeMonitor{

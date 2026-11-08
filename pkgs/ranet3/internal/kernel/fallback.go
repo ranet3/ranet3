@@ -28,21 +28,20 @@ const FallbackTable = "ranet3_fallback"
 type FallbackState string
 
 const (
-	// FallbackHolding is the table reading back as written while no exit is
-	// live, its chains holding the host's traffic to their lines
+	// FallbackHolding is the switch reading back as written while no exit is live
 	FallbackHolding FallbackState = "holding"
-	// FallbackPassing is the table in place while an exit is live, the
+	// FallbackPassing is the switch in place while an exit is live, the
 	// host's traffic going to it through the tun
 	FallbackPassing FallbackState = "passing"
-	// FallbackNotHolding is a table that does not read back as written or
-	// cannot be written, while 5405 and 5435 stay out
+	// FallbackNotHolding is a switch that does not read back as written or
+	// cannot be read or written, while on linux 5405 and 5435 stay out
 	FallbackNotHolding FallbackState = "not holding"
 )
 
 // FallbackStatus is the switch as the last pass left it
 type FallbackStatus struct {
 	State FallbackState
-	// Fault is why the table does not read back, under FallbackNotHolding
+	// Fault is why the switch does not read back, under FallbackNotHolding
 	Fault string
 	// Dropped and DroppedBytes are the packets and bytes the last lines of
 	// both chains have dropped, summed, as the last read that succeeded found
@@ -349,7 +348,7 @@ func withoutNFTables(err error) bool {
 }
 
 // reportFallbackState records the switch's state, nil where no pass asks for
-// it, with a line each time it or the table's fault changes and an event each
+// it, with a line each time it or the switch's fault changes and an event each
 // time the state does
 func (r *Reconciler) reportFallbackState(status *FallbackStatus) {
 	state, fault := FallbackState(""), ""
@@ -419,10 +418,10 @@ type fallbackForm struct {
 	uncounted bool
 }
 
-// fallbackRead is the table as a read finds it
+// fallbackRead is the switch as a read finds it
 type fallbackRead struct {
-	// fault names the first way the table differs from what was written, a
-	// missing table among them, empty where none does
+	// fault names the first way the switch differs from what was written, a
+	// missing table or reject among them, empty where none does
 	fault string
 	// dropped and bytes are the packets and bytes the last lines of both chains have dropped, summed
 	dropped, bytes uint64

@@ -93,7 +93,6 @@ func (s *Selection) table() hostTable {
 }
 
 // holdOverlay hands the selection the overlay in force and reads the table again under it
-// a dump that fails keeps the last snapshot, as follow's does
 func (s *Selection) holdOverlay(overlay []schema.Prefix) {
 	s.mu.Lock()
 	s.overlay = overlayKeys(overlay)
@@ -174,7 +173,6 @@ func (s *Selection) dump() ([]hostRoute, error) {
 }
 
 // follow reads the table again after each settled run of changes until Close
-// a dump that fails keeps the last snapshot, and says so once until one works
 func (s *Selection) follow() {
 	defer close(s.stopped)
 	failing := false

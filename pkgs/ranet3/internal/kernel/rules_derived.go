@@ -113,8 +113,8 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 // address of. The zero value is mode off, whatever it holds beside. fallback
 // is cap.exit fallback = "none", written or unwritten in mode 3, own is the
 // prefixes the mesh's table throws (see thrown), which a pass reads only under
-// it, lan is the prefixes cap.exit lan lists, and unheld is the table
-// ranet3_fallback not holding, which a pass reads only under fallback.
+// it, lan is the prefixes cap.exit lan lists, and unheld is the kill switch
+// not holding, which a pass reads only under fallback.
 type exitView struct {
 	on          bool
 	network     NetworkState
