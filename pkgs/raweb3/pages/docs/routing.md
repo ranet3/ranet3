@@ -488,7 +488,7 @@ notes. `<table>` is `cap.table.id`.
 | 5400     | `fwmark 0x72 goto 5490`                                              | a marked lookup skips 5410 to 5430                                                         |
 | 5410     | `lookup main suppress_prefixlength 0`                                | main's table, its routes of /0 skipped                                                     |
 | 5420     | `lookup <table> suppress_prefixlength 7` for IPv4, `15` for IPv6     | the mesh's table, its routes of /7 or shorter for IPv4 and /15 or shorter for IPv6 skipped |
-| 5430     | `from <prefix> lookup <table>`, for each of this node's own prefixes | the mesh's table for a lookup from this node's own prefixes, every length counted          |
+| 5430     | `from <prefix> lookup <table>`, for every own prefix in no other one | the mesh's table for a lookup from this node's own prefixes, every length counted          |
 | 5490     | `nop`                                                                | where the goto at 5400 lands                                                               |
 
 A skipped length skips only a route the lookup found, never an `unreachable`,
