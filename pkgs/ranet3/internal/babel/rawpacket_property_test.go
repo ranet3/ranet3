@@ -47,7 +47,7 @@ func TestReceiveConsumesExactlyTheSpeakersPackets(t *testing.T) {
 		copy(address[2:], hegel.Draw(ht, hegel.Binary(14, 14)))
 		var top uint16
 		if hegel.Draw(ht, hegel.Booleans()) {
-			// fe80::/10 runs from fe80 to febf, and the two past it either side are drawn too
+			// fe80::/10 runs from fe80 to febf, and the range drawn runs one past it either side
 			top = hegel.Draw(ht, pbt.Spanning[uint16](0xfe7f, 0xfec0))
 		} else {
 			top = hegel.Draw(ht, hegel.SampledFrom([]uint16{0x0000, 0x2001, 0xff02}))

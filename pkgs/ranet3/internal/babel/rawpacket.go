@@ -45,7 +45,7 @@ func buildPacket(src, dst netip.Addr, payload []byte) []byte {
 
 // isBabelPacket keeps ordinary IP traffic off the control parser without
 // allocations, checksum work, or a protocol-state lock. It is only a filter:
-// parsePacket performs full validation before any control state is changed.
+// forSpeaker and parsePacket check the rest before any control state is changed.
 // fragment is a packet whose next header is a Fragment header, for receiveFragment to sort further
 // telling one apart costs every packet that is not UDP a single comparison
 func isBabelPacket(raw []byte) (babel, fragment bool) {
