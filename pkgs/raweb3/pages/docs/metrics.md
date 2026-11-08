@@ -43,7 +43,15 @@ behind. The refused and dropped counts are read from the limit chain's rules at
 each pass, so they lag by up to 1 pass, and a rewrite of the chains starts them
 from 0, which a scrape reads as a counter reset. A pass that cannot read them
 back keeps the last pass's, unless it rewrote the chains, whose counts start
-from 0 whether or not it read them back.
+from 0 whether or not it read them back. The userspace exit on macOS installs no
+rules, so it writes the prefix counts, the refused counts, the pass and each
+family's readiness alone, and none of the rules', the translation's, the dropped
+counts, connection tracking's or the conflicts' series. Its refused counts are
+the flows it refused past their source's share, read at each scrape. The flows
+it holds and its buffers are in `ranet3 status`, as
+[exit nodes](exit-nodes.md#watching-it) describes, and its limits and what it
+refused or dropped by reason are in
+[`ranet3 debug egress`](development/debug.md).
 
 [The antispoof filter](antispoof.md) is reported as whether its table reads
 back, both chains and every set, and the packets each of its drops counted, by
@@ -60,19 +68,21 @@ call and no interface outside the mesh that pf skips too, as
 the anchor holds no entry chain.
 
 A node without `cap.table` writes none of the reconciler's series, a node
-without `cap.egress` writes none of the egress series, and a node that runs no
-antispoof filter, off Linux and macOS or on a Mac with no `overlay`, writes none
-of the antispoof filter's. Zeros there would read as a subsystem installing
-nothing. Segment routing writes its series on every node, zeros included.
+without `cap.egress` writes none of the egress series, a node with the userspace
+exit none of the rules' series, and a node that runs no antispoof filter, off
+Linux and macOS or on a Mac with no `overlay`, writes none of the antispoof
+filter's. Zeros there would read as a subsystem installing nothing. Segment
+routing writes its series on every node, zeros included.
 
 The reconciler's, the egress and the antispoof filter's series hold their last
-pass as it read them, as the paragraphs above say. Every other series is read
-from live state at scrape time. The `forwarded`, `delivered` and `dropped`
-counts of `ranet3_transit_packets_total`, `ranet3_steered_total` and
-`ranet3_steer_dropped_total{reason="no_route"}` take each read off the tun and
-each batch a session delivered once it is decided, so a scrape leaves out the
-ones being decided as it runs. A counter cannot carry the route table.
-`ranet3 routes` reads it, with each prefix's next hop, from the control socket.
+pass as it read them, as the paragraphs above say, but the userspace exit's
+refused counts. Every other series is read from live state at scrape time. The
+`forwarded`, `delivered` and `dropped` counts of `ranet3_transit_packets_total`,
+`ranet3_steered_total` and `ranet3_steer_dropped_total{reason="no_route"}` take
+each read off the tun and each batch a session delivered once it is decided, so
+a scrape leaves out the ones being decided as it runs. A counter cannot carry
+the route table. `ranet3 routes` reads it, with each prefix's next hop, from the
+control socket.
 
 ## Series
 

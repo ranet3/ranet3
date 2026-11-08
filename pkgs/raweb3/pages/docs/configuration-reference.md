@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-08
+updated: 2026-11-09
 order: 35
 ---
 
@@ -667,7 +667,10 @@ is deleted, and a new handshake replaces it.
 ## `cap.egress`
 
 Carry other nodes' traffic out of the mesh, as an exit node or a subnet router.
-Linux only, and the daemon refuses it at startup on other platforms.
+Linux carries it with the kernel exit and macOS with the userspace exit, which
+refuses a class of `none`, `return` and an `advertise` prefix that counts as no
+default at startup, as [the exit on macOS](exit-nodes.md#the-exit-on-macos)
+gives. The daemon refuses the block at startup on other platforms.
 [Exit nodes](exit-nodes.md) describes the translation and the return path it
 needs.
 
@@ -692,11 +695,11 @@ needs.
   unless it is a default.
 - A prefix is announced only while its family is
   [ready](exit-nodes.md#readiness).
-- The lookups of a translated packet and its reply read from the address of a
-  mesh member inside `overlay`. A node with no `overlay`, or whose mesh routes
-  no other node's prefix of a family inside the overlay, skips that family's
-  forward and reply lookups and judges it by its table, its forwarding and its
-  classes' addresses alone, and `status` says so.
+- On Linux the lookups of a translated packet and its reply read from the
+  address of a mesh member inside `overlay`. A node with no `overlay`, or whose
+  mesh routes no other node's prefix of a family inside the overlay, skips that
+  family's forward and reply lookups and judges it by its table, its forwarding
+  and its classes' addresses alone, and `status` says so.
 - A node with an egress segment translates both families, whatever `advertise`
   holds.
 - An `advertise` prefix with bits set below its length, written as IPv4-mapped
@@ -718,7 +721,8 @@ needs.
   unchanged, and `none` leaves the source as the packet carries it, under the
   conditions [exit nodes](exit-nodes.md#none) lists.
 - A family whose classes name an address is ready only while the host holds that
-  address, on any link or `lo`.
+  address, on any link or `lo`, or on macOS as
+  [exit nodes](exit-nodes.md#the-exit-on-macos) describes.
 - A `from` with bits set below its length, written as IPv4-mapped IPv6, or
   written twice is refused at load, and so is a class that names no `to`, an
   address of the other family, one with a zone, one written as IPv4-mapped IPv6,
@@ -747,6 +751,9 @@ needs.
   out is the default, and a value past 2147483647 is refused. The shares come
   out of the host's connection tracking table, which ranet3 never sizes, so size
   the two together.
+- On macOS a source meets the smaller of its share and what the userspace exit's
+  memory and descriptors hold, its totals of connections and flows, as
+  [the userspace exit's limits](design/limits.md#the-userspace-exit) give.
 - The periodic pass reinstalls a removed table and reads the forwarding sysctls
   again. `sweep` also caps the delay between retries of a failed pass. A
   negative `sweep` is refused.

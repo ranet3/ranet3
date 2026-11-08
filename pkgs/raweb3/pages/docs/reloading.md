@@ -320,6 +320,16 @@ stopped with `ranet3 disable reconciler` runs no pass when it takes the block,
 and the pass that installs it once the reconciler is started again is recorded
 with `trigger=enable`.
 
+A reload reads the host's default TTL and hop limit again for the answers the
+node builds and the userspace exit's, and records a `daemon.ttl` where it cannot
+read one, keeping the last. On a node whose userspace exit was sized within a
+budget, a reload weighs the node's own heap again, as
+[the userspace exit's limits](design/limits.md#the-userspace-exit) count it. A
+Go memory limit the node set is set again to hold it. Where the daemon was
+started with one, a heap past what that limit leaves beside the exit's budget is
+applied all the same, logged, and recorded as a `daemon.memory` with `limit`,
+`node` and `room`, and a restart sizes the exit again.
+
 ## A node that is down
 
 A node `ranet3 down` took off the mesh applies a reload and stays down. Its

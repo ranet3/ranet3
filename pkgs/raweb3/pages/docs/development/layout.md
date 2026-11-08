@@ -85,6 +85,7 @@ program's own. Go commands run from `pkgs/ranet3`.
 | `internal/registry`          | reads ranet's `registry.json` and Ed25519 key files, with a fixture in `testdata`                                                                                |
 | `internal/statefile`         | the file lock and the whole-file write of the daemon's state files: the record of the pf reference, the control socket's lock, the down flag and the Babel state |
 | `internal/version`           | the build's version and revision                                                                                                                                 |
+| `internal/codel`             | the controlled delay of RFC 8289 a peer's sender and the userspace exit's pump run over their queues                                                             |
 
 Beside the packages, `pkgs/ranet3` holds `go.mod` and `go.sum`, `gomod2nix.toml`
 for the Nix build, `version.txt` with the release version, a `license.txt` and a

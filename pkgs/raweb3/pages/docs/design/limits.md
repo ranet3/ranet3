@@ -51,12 +51,13 @@ goes back on the session it came by, so an exit answers none from a host beyond
 the mesh. [Routing](../routing.md#transit) lists the answers, their codes and
 the address each comes from.
 
-[`cap.egress`](../exit-nodes.md) still reads the host's forwarding, for what an
-exit sends out of its uplink. A prefix an exit node offers to carry is
-advertised only while its family is [ready](../exit-nodes.md#readiness), which
-takes the host's forwarding among the rest, and is retracted on the first pass
-that finds it not ready. A pass runs every 30 seconds unless `cap.egress.sweep`
-names another interval.
+On Linux [`cap.egress`](../exit-nodes.md) still reads the host's forwarding, for
+what the kernel exit sends out of its uplink. A prefix an exit node offers to
+carry is advertised only while its family is
+[ready](../exit-nodes.md#readiness), which takes the host's forwarding among the
+rest on Linux and a link to the prefix on macOS, and is retracted on the first
+pass that finds it not ready. A pass runs every 30 seconds unless
+`cap.egress.sweep` names another interval.
 
 With transit off, a node advertises only the prefixes it announces and never
 relays one it learned. A packet for another node that reaches it all the same is
@@ -1180,6 +1181,62 @@ between Linux and macOS, and describes the
 [sockets connected to 1 peer](../platforms.md#sockets-connected-to-1-peer).
 [Path MTU](../path-mtu.md#packets-that-do-not-fit) describes the ICMP rate
 limits.
+
+### The userspace exit
+
+[The exit on macOS](../exit-nodes.md#the-exit-on-macos) sizes everything it
+holds from 1 budget B of bytes when it starts, and no key sets any of it.
+
+| Limit                                | Value                                                                                                                                                                                                                         | Past it                                                                                                                                                                                                          |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The bytes it holds, B                | half of what Go's memory limit leaves past the node's own heap, else a sixteenth of the host's physical memory                                                                                                                | A start with neither figure is refused, and so is a budget that holds fewer than 16 connections                                                                                                                  |
+| TCP connections                      | `Connections`, as many as T holds at 2 windows and 136 KiB beside them, T being seven eighths of R, B less reassembly and the 2 queues, about 985 on a 64 GiB Mac                                                             | A new connection is refused with Host Unreachable or administratively prohibited, and counted                                                                                                                    |
+| Open flows                           | `Flows`, the connections and the UDP and echo mappings the other eighth of R holds at 8 KiB each, within half the descriptors past the node's 256, and `Connections` cut to it                                                | A new flow is refused the same way, and counted                                                                                                                                                                  |
+| Connections being dialed             | `Dials`, below gVisor's bound on connections in flight                                                                                                                                                                        | A new connection is refused the same way, and counted                                                                                                                                                            |
+| Endpoints in TIME_WAIT               | `TimeWait`, 1 a connection                                                                                                                                                                                                    | The oldest is closed, and counted                                                                                                                                                                                |
+| A TCP flow's window                  | `Window`, T over 2,048, within 64 KiB and 6 MiB, the most memory gVisor's buffer holds each way                                                                                                                               | The leaf or the server is held to the window                                                                                                                                                                     |
+| The lanes' and the link's bytes      | a thirty-second of B each, within 256 KiB and 32 MiB, and 4,096 packets in the link's queue                                                                                                                                   | Each packet past them is dropped at the tail, and counted as `lane full` or `link full`                                                                                                                          |
+| The delay through the link's queue   | 5 ms below the queue's 4,096 packets, held by RFC 8289's controlled delay with an interval of 100 ms, as a peer's sender runs it                                                                                              | Once the delay has stayed above 5 ms for 100 ms, the pump drops the packet at the queue's head on the schedule RFC 8289 gives, counted as `link codel`, until the delay is back under 5 ms or the queue is empty |
+| Reassembly                           | 4 MiB a family, fixed                                                                                                                                                                                                         | gVisor drops the oldest fragments                                                                                                                                                                                |
+| Idle UDP mappings                    | 5 minutes, 30 seconds toward port 53                                                                                                                                                                                          | The mapping ends                                                                                                                                                                                                 |
+| Idle echo mappings                   | 60 seconds                                                                                                                                                                                                                    | The mapping ends                                                                                                                                                                                                 |
+| Descriptors                          | 1 per TCP flow and 2 while it is dialed, 2 for a UDP mapping's first destination and 1 for each after, 1 per echo mapping on Linux, so `Flows` at 2 each stays within the process's limit less 256 for the node under any mix | A flow that cannot open one is refused, and counted, and a start where half the limit less 256 holds fewer than 16 connections is refused                                                                        |
+| Other programs' ICMP the relay reads | every message macOS hands its ICMP sockets                                                                                                                                                                                    | A message about no flow of the exit's is discarded, and counted as `icmp not ours`                                                                                                                               |
+
+**Go's memory limit, L = 2B + N.** Go's collector lets the heap grow to twice
+what is live before it collects, so L holds B twice, live and as the collector's
+headroom, beside N, the most heap the node holds outside the exit. N counts the
+receive buffers of 1 session, 16 MiB, for each path the configuration and the
+trust document allow, each local endpoint to each endpoint of every other node
+the document names where `link.listen` is on, else each peer dialed, and the
+mesh's read and forward batches and its tun queues. Where the daemon was started
+with Go's memory limit, B is (L - N) / 2, and a start where that holds fewer
+than 16 connections is refused, naming L, N and B. Where it was started with
+none, B is a sixteenth of physical memory and the node sets L to 2B + N before
+the exit runs. Either way N is taken again at each reload: with a limit the node
+set, the reload sets L again, and with a given one, a reload whose N passes L -
+2B is applied, logged and recorded as `daemon.memory`, and a restart sizes the
+exit again. The node puts L back to none once the exit stops.
+`ranet3 debug egress` shows L, whether it was given, N and L - 2B as its
+`Memory` row.
+
+**The link's queue.** Every packet the exit's stack sends toward the leaves
+waits in 1 queue for the pump, the one goroutine that takes from it and writes
+each packet to its lane. The queue holds at most a thirty-second of B in bytes,
+within 256 KiB and 32 MiB, and 4,096 packets. The bound drops at the tail what
+the queue has no room for as it arrives, counted as `link full`, and the
+controlled delay drops at the head what has waited too long, counted as
+`link codel`. `ranet3 debug egress` counts the two apart among the drops by
+reason. On the exit's bench on Linux at full rate the queue reached its 4,096
+packets long before its bytes, and the bound's tail drop took far more than the
+controlled delay, as [the deviations](protocol-deviations.md#the-userspace-exit)
+record with the figures.
+
+**The windows.** gVisor holds a flow's received segments within its receive
+buffer of `Window`, each segment's bytes counted with its structs. Its send
+queue is counted the same way against its send buffer of `Window`, so the send
+side holds about `Window` however short the server's reads. That count is
+[the fork's](protocol-deviations.md#the-userspace-exit).
 
 ### Kernel routes
 

@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-08
+updated: 2026-11-09
 order: 100
 ---
 
@@ -29,8 +29,8 @@ setting or skips a route instead.
 | An own prefix this node originates outside the overlay | a throw route, for one that counts as no default, that the mesh can carry and that carries no IPv4 source, row L10 of [where a lookup ends](routing.md#where-a-lookup-ends-on-linux)                                                                                     | nothing, row D2 of [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) for a socket bound to no interface and no address of the utun                                                                                            |
 | Hold of each overlay prefix                            | installed for each, but one a carve-out equals, as [carve-outs](antispoof.md#carve-outs) describe                                                                                                                                                                        | the same, as a reject route on `lo0`, unscoped, in every mode, as [the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives                                                                                                             |
 | A link's network inside the overlay                    | a throw of each carve-out, in place of the hold of an overlay prefix it equals, but none where the mesh's table holds the carve-out itself for every source, and accepted from its own interface by chain `antispoof`, as [carve-outs](antispoof.md#carve-outs) describe | no hold where the network holds the overlay prefix whole, and otherwise the network's own route, longer than the hold, and accepted from its own interface by chain `antispoof` in the pf anchor, as [carve-outs](antispoof.md#carve-outs) describe |
-| `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                                                             | refused, naming the platform                                                                                                                                                                                                                        |
-| Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                                                                 | refused                                                                                                                                                                                                                                             |
+| `cap.egress`                                           | the kernel exit, translating each class of `translate` with nftables, with its timeouts and each source's share of the flows                                                                                                                                             | the userspace exit, ending each TCP connection and relaying UDP and echo through the host's sockets, `none`, `return` and a subnet refused                                                                                                          |
+| Egress segments                                        | the mesh tun, translated by `cap.egress`                                                                                                                                                                                                                                 | the userspace exit, through `cap.egress`                                                                                                                                                                                                            |
 | A `cap.route` entry that counts as a default           | loaded, with a warning unless it is a default, making this node an exit for its family                                                                                                                                                                                   | refused, as [gaps on macOS](#gaps-on-macos) gives                                                                                                                                                                                                   |
 | `overlay`                                              | loaded, and chain `antispoof` at prerouting in the nftables table `inet ranet3`, with an accept for each `cap.antispoof` exemption                                                                                                                                       | loaded, bounding the local segments' outer sources and the forwarding decision, and chain `antispoof` in the pf anchor `com.apple/ranet3`, which turns pf on, with a pass for each `cap.antispoof` exemption                                        |
 | Local segments                                         | `End` and `End.DT46`, the outer source checked against the overlay                                                                                                                                                                                                       | `End` and `End.DT46` delivering to the mesh, the outer source checked against the overlay                                                                                                                                                           |
@@ -46,13 +46,14 @@ setting or skips a route instead.
 | Default state directory                                | `/var/lib/ranet3`                                                                                                                                                                                                                                                        | `/var/db/ranet3`                                                                                                                                                                                                                                    |
 
 The forwarding settings decide whether a node with no antispoof filter warns
-about forwarding, and whether `cap.egress` advertises its prefixes. Transit
-needs neither, since the mesh forwards it between sessions itself on every
-platform. On macOS `overlay` turns pf on and writes chain `antispoof` into the
-anchor `com.apple/ranet3`, as [the antispoof filter](antispoof.md#on-macos)
-gives, and a Mac with no `overlay` that forwards gets the warning. A Mac whose
-main ruleset does not call `anchor "com.apple/*"` for every packet in, or skips
-an interface outside the mesh, does not start with `overlay`, as
+about forwarding, and whether the kernel exit advertises its prefixes. The
+userspace exit reads no forwarding setting. Transit needs neither, since the
+mesh forwards it between sessions itself on every platform. On macOS `overlay`
+turns pf on and writes chain `antispoof` into the anchor `com.apple/ranet3`, as
+[the antispoof filter](antispoof.md#on-macos) gives, and a Mac with no `overlay`
+that forwards gets the warning. A Mac whose main ruleset does not call
+`anchor "com.apple/*"` for every packet in, or skips an interface outside the
+mesh, does not start with `overlay`, as
 [pf on macOS](coexistence.md#pf-on-macos) says. [Gaps on macOS](#gaps-on-macos)
 lists what `cap.exit` refuses there. The BSDs, Android and iOS refuse `cap.exit`
 at startup and on a reload, as
@@ -68,14 +69,17 @@ Linux build carries the kernel exit, which writes what it carries into the tun
 and translates it with nftables on the way out of the host: every class of
 `translate`, `none` among them, the timeouts of the flows it translates and
 [the share of the flows](exit-nodes.md#each-sources-share-of-the-flows) of each
-source under a class that translates. Every other build carries none and refuses
+source under a class that translates. A macOS build carries the userspace exit,
+which ends each TCP connection the mesh hands it and dials the destination from
+this host's own sockets, relays UDP and echo through them, and carries the
+classes `auto` and an address. Every other build carries none and refuses
 `cap.egress` at startup with
-`egress: cap.egress asks this node to carry other nodes' traffic out of the mesh, and this build for darwin carries no exit`,
-naming its own platform where this one names `darwin`. The loader is the same on
-every build, so a block it refuses, such as one whose classes leave under `none`
-every IPv4 source a router forwards a packet from, is refused for the same
-reason everywhere, before a build without an exit refuses the block whole. A
-node that accepted the block and carried nothing would advertise an exit and
+`egress: cap.egress asks this node to carry other nodes' traffic out of the mesh, and this build for freebsd carries no exit`,
+naming its own platform where this one names `freebsd`. The loader is the same
+on every build, so a block it refuses, such as one whose classes leave under
+`none` every IPv4 source a router forwards a packet from, is refused for the
+same reason everywhere, before a build without an exit refuses the block whole.
+A node that accepted the block and carried nothing would advertise an exit and
 drop every flow that took it. A node on any platform still uses an exit.
 
 ## The tun device
@@ -241,7 +245,13 @@ network by its own route.
 A `cap.route` entry that
 [counts as a default](routing.md#routes-that-count-as-a-default) is refused at
 startup and on a reload too, with
-`config: cap.route announces ::/0, which counts as a default and asks this node to carry other nodes' traffic out of the mesh, and this build for darwin carries no exit, since it runs no entry chain to pass that traffic's replies into the mesh`.
+`config: cap.route announces ::/0, which counts as a default and asks this node to carry other nodes' traffic out of the mesh, and this build for darwin carries that traffic only through cap.egress, since it runs no entry chain to pass the replies of what its kernel forwards into the mesh`.
+
+`cap.egress` on macOS is the userspace exit. It refuses a class of `none`,
+`return` and a subnet at startup, answers every protocol but TCP, UDP and ICMP
+as refused, and carries no connection from outside to a leaf, as
+[the exit on macOS](exit-nodes.md#the-exit-on-macos) gives with each refusal and
+what it carries.
 
 A Mac that forwards under `cap.exit` loses some of what it forwards toward an
 exit, and the daemon warns, as
