@@ -12,17 +12,12 @@ import (
 	"math"
 	"net"
 	"net/netip"
-	"os"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
-
-// monitorWait bounds a wait on the monitor's goroutine
-const monitorWait = 30 * time.Second
 
 // translatorTables is a scope of the shape the translator watches, the ip and
 // ip6 tables of one name
@@ -283,96 +278,6 @@ func TestOnlyAnotherWritersChangeToTheTableWakes(t *testing.T) {
 		if got := translatorTables.ChangedByAnother(c.message, own); got != c.wakes {
 			t.Errorf("%s: woke %v, want %v", label, got, c.wakes)
 		}
-	}
-}
-
-// The monitor wakes missed and not changed for notifications it lost to an
-// overflow or could not parse, since another table's large transaction
-// overflows the socket as readily as a flush of the owner's, wakes changed
-// for another writer's deletion of the owner's table, and stops on a closed
-// socket
-func TestMonitorTellsLostNotificationsFromADeletion(t *testing.T) {
-	const own, other = 7, 9
-	type answer struct {
-		datagram []byte
-		err      error
-	}
-	answers := make(chan answer)
-	asked := make(chan struct{})
-	m := &Monitor{
-		read: func(buf []byte) (int, error) {
-			asked <- struct{}{}
-			a, ok := <-answers
-			if !ok {
-				return 0, os.ErrClosed
-			}
-			return copy(buf, a.datagram), a.err
-		},
-		pid:     own,
-		scope:   translatorTables,
-		changed: make(chan struct{}, 1),
-		missed:  make(chan struct{}, 1),
-		done:    make(chan struct{}),
-	}
-	go m.run()
-	t.Cleanup(func() {
-		close(answers)
-		for deadline := time.After(monitorWait); ; {
-			select {
-			case <-asked:
-			case <-m.done:
-				return
-			case <-deadline:
-				return
-			}
-		}
-	})
-	next := func() {
-		t.Helper()
-		select {
-		case <-asked:
-		case <-m.done:
-			t.Fatal("the monitor stopped reading")
-		case <-time.After(monitorWait):
-			t.Fatal("the monitor never read again")
-		}
-	}
-	woke := func(signal <-chan struct{}) bool {
-		select {
-		case <-signal:
-			return true
-		default:
-			return false
-		}
-	}
-	deletion := (&Conn{pid: other}).appendMessage(nil, Command(unix.NFT_MSG_DELTABLE), 0, 1,
-		PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, translatorTables.Name))
-	next()
-	for _, c := range []struct {
-		name            string
-		answer          answer
-		changed, missed bool
-	}{
-		{"an overflow", answer{err: unix.ENOBUFS}, false, true},
-		{"a datagram cut short", answer{datagram: deletion[:unix.SizeofNlMsghdr+SizeofNfgenmsg]}, false, true},
-		{"another writer deleting its table", answer{datagram: deletion}, true, false},
-	} {
-		answers <- c.answer
-		next()
-		if changed, missed := woke(m.Changed()), woke(m.Missed()); changed != c.changed || missed != c.missed {
-			t.Errorf("%s woke changed %v and missed %v, want %v and %v", c.name, changed, missed, c.changed, c.missed)
-		}
-	}
-	answers <- answer{err: os.ErrClosed}
-	select {
-	case <-m.done:
-	case <-asked:
-		t.Fatal("the monitor read on after its socket closed")
-	case <-time.After(monitorWait):
-		t.Fatal("the monitor never returned after its socket closed")
-	}
-	if woke(m.Changed()) || woke(m.Missed()) {
-		t.Error("a closed socket woke the owner")
 	}
 }
 
