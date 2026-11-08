@@ -259,7 +259,7 @@ func TestLeafErrorAboutAHairpinnedDatagramReachesItsSender(t *testing.T) {
 	host := netip.MustParseAddr("198.51.100.9")
 	raw := &fakeRaw{}
 	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
-		rt.Platform.Held = func(address netip.Addr) bool { return address == host }
+		holdOnly(rt, host)
 		rt.Platform.Raw = raw
 	})
 	h.x.SetHopLimits(hostTTL, hostHopLimit)

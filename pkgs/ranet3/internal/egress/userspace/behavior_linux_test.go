@@ -147,8 +147,9 @@ func namespaceRoute(mesh string) func(netip.Addr) (Link, bool, error) {
 	}
 }
 
-// namespaceHolds is Platform.Held from this namespace's addresses
-func namespaceHolds(address netip.Addr) bool {
+// namespaceHolds is Platform.Held from this namespace's addresses, on any of
+// its links whatever link is asked
+func namespaceHolds(address netip.Addr, _ string) bool {
 	addresses, err := net.InterfaceAddrs()
 	if err != nil {
 		return false

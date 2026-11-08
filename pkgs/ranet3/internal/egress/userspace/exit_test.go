@@ -8,8 +8,10 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -168,30 +170,27 @@ func (l *fakeLane) Close() {
 	l.closed = true
 }
 
-// fakePlatform is a platform whose links reach every address of the families
-// it routes, holding the addresses in held. Its Prepare refuses every socket,
-// so no dial leaves the host unless a test readies its own.
+// fakePlatform is a platform whose link uplink0 reaches every address of the
+// families it routes and each address in reaches, holding the addresses in
+// held, and whose other link holds those in beside, which a socket scoped to
+// uplink0 sends from none of. Its Prepare refuses every socket, so no dial
+// leaves the host unless a test readies its own.
 type fakePlatform struct {
-	routes4, routes6 bool
-	held             []netip.Addr
+	routes4, routes6      bool
+	reaches, held, beside []netip.Addr
 }
 
 func (p *fakePlatform) platform() Platform {
 	return Platform{
 		Prepare: func(string, netip.AddrPort, syscall.RawConn) error { return syscall.ENETUNREACH },
 		Route: func(address netip.Addr) (Link, bool, error) {
-			if address.Is4() && p.routes4 || address.Is6() && p.routes6 {
+			if address.Is4() && p.routes4 || address.Is6() && p.routes6 || slices.Contains(p.reaches, address) {
 				return Link{Name: "uplink0", MTU: 1500}, true, nil
 			}
 			return Link{}, false, nil
 		},
-		Held: func(address netip.Addr) bool {
-			for _, held := range p.held {
-				if held == address {
-					return true
-				}
-			}
-			return false
+		Held: func(address netip.Addr, link string) bool {
+			return (link == "" || link == "uplink0") && slices.Contains(p.held, address) || link == "" && slices.Contains(p.beside, address)
 		},
 	}
 }
@@ -436,8 +435,9 @@ func TestLaneAnswersWhatItsJudgmentRefuses(t *testing.T) {
 }
 
 // A family is ready while a link outside the mesh routes its prefixes and the
-// host holds its classes' addresses, and the egress SIDs are served while
-// every family so routed is ready
+// host holds its classes' addresses where a socket scoped to that link sends
+// from them, and the egress SIDs are served while every family so routed is
+// ready
 func TestReadinessFollowsTheRoutesAndTheHeldAddresses(t *testing.T) {
 	class := netip.MustParseAddr("198.51.100.9")
 	for _, c := range []struct {
@@ -447,8 +447,11 @@ func TestReadinessFollowsTheRoutesAndTheHeldAddresses(t *testing.T) {
 		why      string
 	}{
 		{"both routed", fakePlatform{routes4: true, routes6: true, held: []netip.Addr{class}}, readyCall{true, true, true}, ""},
-		{"ipv6 not routed", fakePlatform{routes4: true, held: []netip.Addr{class}}, readyCall{true, false, true}, "no link outside the mesh reaches 8000::"},
-		{"the class address not held", fakePlatform{routes4: true, routes6: true}, readyCall{false, true, false}, "does not hold 198.51.100.9"},
+		{"ipv6 not routed", fakePlatform{routes4: true, held: []netip.Addr{class}}, readyCall{true, false, true}, "no link outside the mesh reaches 8000:: for ::/0"},
+		{"the class address not held", fakePlatform{routes4: true, routes6: true}, readyCall{false, true, false},
+			"this host does not hold 198.51.100.9, an address cap.egress translate names"},
+		{"the class address held on another link", fakePlatform{routes4: true, routes6: true, beside: []netip.Addr{class}}, readyCall{false, true, false},
+			"this host does not hold 198.51.100.9, an address cap.egress translate names, on uplink0, the link this host reaches 0.0.0.0/0 by"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			mesh := newFakeMesh()
@@ -481,13 +484,97 @@ func TestReadinessFollowsTheRoutesAndTheHeldAddresses(t *testing.T) {
 			if got := (readyCall{status.Ready4, status.Ready6, false}); got.v4 != c.want.v4 || got.v6 != c.want.v6 {
 				t.Errorf("ready %v, want %v", got, c.want)
 			}
-			if !strings.Contains(status.Unready, c.why) {
-				t.Errorf("unready %q, want it to say %q", status.Unready, c.why)
+			if status.Unready != c.why {
+				t.Errorf("unready %q, want %q", status.Unready, c.why)
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			if c.want != (readyCall{}) && (len(calls) == 0 || calls[0] != c.want) {
 				t.Errorf("ready calls %v, want %v first", calls, c.want)
+			}
+		})
+	}
+}
+
+// A family is carried out by a route outside the mesh where any prefix it
+// reads is so routed, judged over every prefix whichever fails first, so a
+// family routed in part withdraws the egress SIDs while it is not ready in
+// either order of its prefixes. Why it is not ready names the first prefix
+// that fails, and a pass looks each prefix up once at most
+func TestReadinessJudgesEveryPrefixForItsRouteWhicheverFailsFirst(t *testing.T) {
+	low, high := schema.MustPrefix("0.0.0.0/1"), schema.MustPrefix("128.0.0.0/1")
+	// the addresses readAddress reads for low and high
+	lowRead, highRead := netip.MustParseAddr("64.0.0.0"), netip.MustParseAddr("192.0.0.0")
+	lowUnrouted := "no link outside the mesh reaches 64.0.0.0 for 0.0.0.0/1"
+	highUnrouted := "no link outside the mesh reaches 192.0.0.0 for 128.0.0.0/1"
+	for _, c := range []struct {
+		name    string
+		order   []schema.Prefix
+		reaches []netip.Addr
+		carried bool
+		why     string
+	}{
+		{"the unrouted prefix first", []schema.Prefix{low, high}, []netip.Addr{highRead}, true, lowUnrouted},
+		{"the routed prefix first", []schema.Prefix{high, low}, []netip.Addr{highRead}, true, lowUnrouted},
+		{"the other prefix routed", []schema.Prefix{high, low}, []netip.Addr{lowRead}, true, highUnrouted},
+		{"neither routed", []schema.Prefix{low, high}, nil, false, lowUnrouted},
+		{"neither routed, the other order", []schema.Prefix{high, low}, nil, false, highUnrouted},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := fakePlatform{routes6: true, reaches: c.reaches}
+			platform := p.platform()
+			var lookups atomic.Int64
+			route := platform.Route
+			platform.Route = func(address netip.Addr) (Link, bool, error) {
+				if address.Is4() {
+					lookups.Add(1)
+				}
+				return route(address)
+			}
+			rt := Runtime{Mesh: newFakeMesh(), Platform: platform, Limits: testLimits()}
+			var calls []readyCall
+			var mu sync.Mutex
+			rt.Ready = func(v4, v6, serves bool) {
+				mu.Lock()
+				defer mu.Unlock()
+				calls = append(calls, readyCall{v4, v6, serves})
+			}
+			cfg := egress.Egress{Advertise: append(slices.Clone(c.order), schema.MustPrefix("::/0"))}
+			x, err := New(cfg, rt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ready, routed, why := x.readiness(egress.FamilyIPv4)
+			if ready || routed != c.carried || why != c.why {
+				t.Errorf("readiness ready %t, routed %t, why %q, want not ready, routed %t, why %q", ready, routed, why, c.carried, c.why)
+			}
+			if n := lookups.Load(); n > int64(len(c.order)) {
+				t.Errorf("%d route lookups for %d prefixes, want one each at most", n, len(c.order))
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- x.Run(ctx) }()
+			deadline := time.Now().Add(exitWait)
+			for x.Status().PassAt.IsZero() && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			status := x.Status()
+			cancel()
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
+			if status.PassAt.IsZero() {
+				t.Fatalf("no pass within %s", exitWait)
+			}
+			if status.Ready4 || !status.Ready6 || status.Unready != c.why {
+				t.Errorf("status ready %t and %t, unready %q, want ipv6 alone ready and unready %q", status.Ready4, status.Ready6, status.Unready, c.why)
+			}
+			// the SIDs are served while every family carried out is ready
+			want := readyCall{false, true, !c.carried}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) == 0 || calls[0] != want {
+				t.Errorf("ready calls %v, want %v first", calls, want)
 			}
 		})
 	}

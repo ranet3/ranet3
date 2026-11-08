@@ -61,15 +61,20 @@ func (c *Client) UnderlaySelection() transport.Selection {
 	return c.underlaySelection
 }
 
-// HeldAddress reports an address the host holds on a link outside the mesh,
-// as the network watch read them last, false where no watch runs
-func (c *Client) HeldAddress(address netip.Addr) bool {
+// HeldAddress reports an address the host holds on the link outside the mesh
+// named link, or on any such link where link is empty, as the network watch
+// read them last, false where no watch runs
+func (c *Client) HeldAddress(address netip.Addr, link string) bool {
 	state := c.networkState()
-	held := state.IPv4.Addresses
+	family := state.IPv4
 	if address.Is6() {
-		held = state.IPv6.Addresses
+		family = state.IPv6
 	}
-	return slices.Contains(held, address)
+	if link == "" {
+		return slices.Contains(family.Addresses, address)
+	}
+	i := slices.IndexFunc(family.Links, func(l kernel.Link) bool { return l.Name == link })
+	return i >= 0 && slices.ContainsFunc(family.Links[i].Prefixes, func(p netip.Prefix) bool { return p.Addr() == address })
 }
 
 // memberPrefixes is each destination routes sends by the tun to another node:

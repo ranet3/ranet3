@@ -18,9 +18,15 @@ import (
 // IP_BOUND_IF or IPV6_BOUND_IF and refuses the flow where it names none
 // (underlay.Bound). The route to an address is that interface, by its name and
 // MTU, read when asked, so a provider's sandbox never needs the ioctl. held is
-// the addresses the network watch reads off the links outside the mesh, and
-// raw the root daemon's raw sockets, nil where the process may open none.
-func Darwin(interfaceOf func(netip.Addr) (index int, generation uint64), held func(netip.Addr) bool, raw Raw) Platform {
+// the addresses the network watch reads off the links outside the mesh, on
+// link, or on any where link is empty, and raw the root daemon's raw sockets,
+// nil where the process may open none.
+//
+// Held asks an IPv4 address of the link a socket is scoped to, and an IPv6
+// address of any link: with its sockets scoped to a utun, an exit had every
+// IPv4 flow from an address on lo0 refused, while its IPv6 flows from an
+// address on lo0 carried.
+func Darwin(interfaceOf func(netip.Addr) (index int, generation uint64), held func(address netip.Addr, link string) bool, raw Raw) Platform {
 	return Platform{
 		Prepare: underlay.Bound(interfaceOf),
 		Route: func(address netip.Addr) (Link, bool, error) {
@@ -34,7 +40,12 @@ func Darwin(interfaceOf func(netip.Addr) (index int, generation uint64), held fu
 			}
 			return Link{Name: ifi.Name, MTU: ifi.MTU}, true, nil
 		},
-		Held: held,
-		Raw:  raw,
+		Held: func(address netip.Addr, link string) bool {
+			if address.Is6() {
+				link = ""
+			}
+			return held(address, link)
+		},
+		Raw: raw,
 	}
 }

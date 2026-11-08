@@ -88,7 +88,7 @@ func (t *Translator) judge(unwritten map[uint8]string, forwards map[uint8]bool) 
 		} else {
 			reads.source, reads.first = source, len(lookups)
 			var unread []netip.Prefix
-			for _, prefix := range t.readPrefixes(family) {
+			for _, prefix := range t.cfg.ReadPrefixes(family) {
 				address, ok := readAddress(prefix)
 				if !ok {
 					unread = append(unread, prefix)
@@ -171,26 +171,6 @@ func memberSource(members []netip.Prefix, family uint8) (netip.Addr, bool) {
 		}
 	}
 	return netip.Addr{}, false
-}
-
-// readPrefixes is the prefixes a family's forward lookups read, those it
-// advertises, or its default where it advertises none, which only a family
-// translated beside an egress segment does
-func (t *Translator) readPrefixes(family uint8) []netip.Prefix {
-	var prefixes []netip.Prefix
-	for _, entry := range t.cfg.Advertise {
-		if egress.AddressFamily(entry.Addr()) == family {
-			prefixes = append(prefixes, entry.Prefix)
-		}
-	}
-	if len(prefixes) == 0 {
-		unspecified := netip.IPv6Unspecified()
-		if family == egress.FamilyIPv4 {
-			unspecified = netip.IPv4Unspecified()
-		}
-		prefixes = []netip.Prefix{netip.PrefixFrom(unspecified, 0)}
-	}
-	return prefixes
 }
 
 // readsFail is why a family's lookups found a path a translated packet cannot

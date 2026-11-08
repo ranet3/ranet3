@@ -16,28 +16,45 @@ import (
 
 // The userspace exit's Held reads the addresses the network watch read last,
 // each family's own, so an address of either family the host holds on a link
-// outside the mesh is held, and one it does not hold or holds no more is not.
-// With no watch, nothing is held.
+// outside the mesh is held on that link and on any, and one it does not hold,
+// holds on another link alone or holds no more is not. With no watch, nothing
+// is held.
 func TestHeldAddressIsWhatTheWatchReadLast(t *testing.T) {
 	v4, v6 := netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("2001:db8::9")
 	other4, other6 := netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("2001:db8::10")
 	c := &Client{}
-	if c.HeldAddress(v4) || c.HeldAddress(v6) {
+	if c.HeldAddress(v4, "") || c.HeldAddress(v6, "") || c.HeldAddress(v4, "lo0") {
 		t.Fatal("an address is held with no watch")
 	}
+	on := func(name string, prefixes ...string) kernel.Link {
+		link := kernel.Link{Name: name}
+		for _, prefix := range prefixes {
+			link.Prefixes = append(link.Prefixes, netip.MustParsePrefix(prefix))
+		}
+		return link
+	}
 	network := &fakeNetwork{changes: make(chan kernel.NetworkChange), current: kernel.NetworkState{
-		IPv4: kernel.NetworkFamily{Addresses: []netip.Addr{v4}},
-		IPv6: kernel.NetworkFamily{Addresses: []netip.Addr{v6}},
+		IPv4: kernel.NetworkFamily{Addresses: []netip.Addr{v4, other4}, Links: []kernel.Link{on("en0", "198.51.100.10/24"), on("lo0", "198.51.100.9/32")}},
+		IPv6: kernel.NetworkFamily{Addresses: []netip.Addr{v6}, Links: []kernel.Link{on("en0"), on("lo0", "2001:db8::9/128")}},
 	}}
 	c.network = network
-	for address, held := range map[netip.Addr]bool{v4: true, v6: true, other4: false, other6: false} {
-		if got := c.HeldAddress(address); got != held {
-			t.Errorf("%s held %t, want %t", address, got, held)
+	for _, h := range []struct {
+		address netip.Addr
+		link    string
+		held    bool
+	}{
+		{v4, "", true}, {v4, "lo0", true}, {v4, "en0", false}, {v4, "en1", false},
+		{other4, "", true}, {other4, "en0", true}, {other4, "lo0", false},
+		{v6, "", true}, {v6, "lo0", true}, {v6, "en0", false},
+		{other6, "", false}, {other6, "lo0", false},
+	} {
+		if got := c.HeldAddress(h.address, h.link); got != h.held {
+			t.Errorf("%s held on %q %t, want %t", h.address, h.link, got, h.held)
 		}
 	}
-	network.current = kernel.NetworkState{IPv6: kernel.NetworkFamily{Addresses: []netip.Addr{v6}}}
-	if c.HeldAddress(v4) || !c.HeldAddress(v6) {
-		t.Errorf("held %s %t and %s %t once the host gave the first up, want only the second", v4, c.HeldAddress(v4), v6, c.HeldAddress(v6))
+	network.current = kernel.NetworkState{IPv6: kernel.NetworkFamily{Addresses: []netip.Addr{v6}, Links: []kernel.Link{on("lo0", "2001:db8::9/128")}}}
+	if c.HeldAddress(v4, "") || c.HeldAddress(v4, "lo0") || !c.HeldAddress(v6, "lo0") {
+		t.Errorf("held %s %t and %s %t once the host gave the first up, want only the second", v4, c.HeldAddress(v4, ""), v6, c.HeldAddress(v6, "lo0"))
 	}
 }
 

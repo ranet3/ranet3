@@ -13,6 +13,9 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/schema"
 )
 
 // The daemon's platform routes an address by the interface the selection
@@ -31,7 +34,7 @@ func TestDarwinPlatformRoutesAndScopesByTheSelection(t *testing.T) {
 			return loopback.Index, 1
 		}
 		return 0, 1
-	}, func(address netip.Addr) bool { return address == held }, nil)
+	}, func(address netip.Addr, _ string) bool { return address == held }, nil)
 	for _, c := range []struct {
 		address netip.Addr
 		link    Link
@@ -46,8 +49,8 @@ func TestDarwinPlatformRoutesAndScopesByTheSelection(t *testing.T) {
 			t.Errorf("Route(%s) = %+v %t %v, want %+v %t", c.address, link, ok, err, c.link, c.ok)
 		}
 	}
-	if !p.Held(held) || p.Held(unrouted) {
-		t.Errorf("Held(%s) %t and Held(%s) %t, want the watch's alone", held, p.Held(held), unrouted, p.Held(unrouted))
+	if !p.Held(held, "") || p.Held(unrouted, "") {
+		t.Errorf("Held(%s) %t and Held(%s) %t, want the watch's alone", held, p.Held(held, ""), unrouted, p.Held(unrouted, ""))
 	}
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -70,5 +73,50 @@ func TestDarwinPlatformRoutesAndScopesByTheSelection(t *testing.T) {
 	}
 	if err := p.Prepare("udp4", netip.AddrPortFrom(unrouted, 9), raw); !errors.Is(err, syscall.ENETUNREACH) {
 		t.Errorf("Prepare toward %s: %v, want ENETUNREACH", unrouted, err)
+	}
+}
+
+// The daemon's platform holds an IPv4 address for a socket scoped to a link
+// only where the watch reads it on that link, and an IPv6 address on any link
+// the watch reads it on, so a family whose IPv4 class address the selection's
+// link does not hold is not ready, with a reason naming the address and the
+// link
+func TestDarwinHoldsAnIPv4ClassOnTheScopedLinkAlone(t *testing.T) {
+	v4, v6 := netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("2001:db8::9")
+	onLoopback := func(address netip.Addr, link string) bool {
+		return (address == v4 || address == v6) && (link == "" || link == "lo0")
+	}
+	p := Darwin(func(netip.Addr) (int, uint64) { return 0, 1 }, onLoopback, nil)
+	for _, c := range []struct {
+		address netip.Addr
+		link    string
+		held    bool
+	}{
+		{v4, "", true},
+		{v4, "lo0", true},
+		{v4, "en9", false},
+		{v6, "", true},
+		{v6, "en9", true},
+		{netip.MustParseAddr("198.51.100.10"), "", false},
+		{netip.MustParseAddr("2001:db8::10"), "en9", false},
+	} {
+		if got := p.Held(c.address, c.link); got != c.held {
+			t.Errorf("Held(%s, %q) %t, want %t", c.address, c.link, got, c.held)
+		}
+	}
+	p.Route = func(netip.Addr) (Link, bool, error) { return Link{Name: "en9", MTU: 1500}, true, nil }
+	cfg := exitConfig()
+	cfg.Translate = []egress.Class{
+		{From: schema.MustPrefix("0.0.0.0/0"), To: egress.Translation{Addr: v4}},
+		{From: schema.MustPrefix("::/0"), To: egress.Translation{Addr: v6}},
+	}
+	x := &Exit{cfg: cfg, rt: Runtime{Platform: p}}
+	ready4, _, why4 := x.readiness(egress.FamilyIPv4)
+	ready6, _, why6 := x.readiness(egress.FamilyIPv6)
+	if want := "this host does not hold 198.51.100.9, an address cap.egress translate names, on en9, the link this host reaches 0.0.0.0/0 by"; ready4 || why4 != want {
+		t.Errorf("ipv4 ready %t, %q, want not ready, %q", ready4, why4, want)
+	}
+	if !ready6 || why6 != "" {
+		t.Errorf("ipv6 ready %t, %q, want ready", ready6, why6)
 	}
 }

@@ -315,7 +315,7 @@ func (x *Exit) heldDestination(address netip.Addr) bool {
 			return true
 		}
 	}
-	return x.rt.Platform.Held(address)
+	return x.rt.Platform.Held(address, "")
 }
 
 // pump lays what the stack sends into batches of its own lane, as a tun read

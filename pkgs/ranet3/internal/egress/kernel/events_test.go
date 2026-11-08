@@ -316,7 +316,7 @@ func TestStartTheSweepReachedFirstIsStoppedAgain(t *testing.T) {
 	await("the first pass", installed)
 	tr.SetEnabled(false)
 	await("the stop", stopped(1))
-	tr.enabled.Store(true)
+	tr.Enabled.Store(true)
 	await("a sweep to install the rules again", installed)
 	tr.SetEnabled(false)
 	await("the second stop", stopped(2))

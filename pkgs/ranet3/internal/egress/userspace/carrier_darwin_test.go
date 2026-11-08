@@ -82,7 +82,7 @@ func TestUserspaceExitHostOverTheCarrier(t *testing.T) {
 		if err != nil {
 			return Platform{}, err
 		}
-		return Darwin(selection, rigHolds, sockets), nil
+		return Darwin(selection, rigHolds(&current), sockets), nil
 	}, limits, uplink)
 	if err := h.serve(); err != nil && !errors.Is(err, errWireEnded) {
 		t.Errorf("the wire: %v", err)
@@ -159,10 +159,24 @@ func routeInterface(address netip.Addr) (string, error) {
 	return "", errors.New("route get names no interface")
 }
 
-// rigHolds is Platform.Held on the rig: the utun's addresses, the IPv4 class
-// among them, and the IPv6 class on lo0
-func rigHolds(address netip.Addr) bool {
-	return slices.ContainsFunc(append(slices.Clone(rigAddresses), rigClasses...), func(p netip.Prefix) bool { return p.Addr() == address })
+// rigHolds is Platform.Held on the rig, by link as the watch reads them: the
+// utun's addresses, the IPv4 class among them, on the utun of index current,
+// and the IPv6 class on lo0
+func rigHolds(current *atomic.Int64) func(netip.Addr, string) bool {
+	return func(address netip.Addr, link string) bool {
+		utun := []netip.Prefix{rigAddresses[0], rigAddresses[1], rigClasses[0]}
+		loopback := []netip.Prefix{rigClasses[1]}
+		var on []netip.Prefix
+		switch ifi, err := net.InterfaceByIndex(int(current.Load())); {
+		case link == "":
+			on = append(utun, loopback...)
+		case link == "lo0":
+			on = loopback
+		case err == nil && link == ifi.Name:
+			on = utun
+		}
+		return slices.ContainsFunc(on, func(p netip.Prefix) bool { return p.Addr() == address })
+	}
 }
 
 // classesOnLoopback gives lo0 the IPv6 class address where add is set and

@@ -19,7 +19,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"runtime"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,8 +58,10 @@ type Platform struct {
 	// Route is the link a prepared socket reaches address by, with the link's
 	// MTU, false where only the mesh would carry it. Readiness reads it.
 	Route func(address netip.Addr) (link Link, ok bool, err error)
-	// Held reports an address this host holds on any of its links
-	Held func(address netip.Addr) bool
+	// Held reports an address this host holds that a socket scoped to link
+	// sends from: on link itself where the platform sends from no other
+	// link's, and on any of its links where it does or link is empty
+	Held func(address netip.Addr, link string) bool
 	// Raw is the raw ICMP socket the leaves' own errors are sent to a server
 	// through, nil where the process may open none
 	Raw Raw
@@ -124,24 +125,14 @@ type Exit struct {
 	// Close
 	closeOnce sync.Once
 
-	// enabled is whether the exit carries at all, and wake carries a change of
-	// it to the run goroutine
-	enabled atomic.Bool
-	wake    chan struct{}
+	*egress.Shell
+	// stats is the last pass as a reader takes it, stored whole
+	stats atomic.Pointer[passStats]
 
-	// stats is the last pass as a reader takes it, and announced the prefixes
-	// Announce answers, each stored whole
-	stats     atomic.Pointer[passStats]
-	announced atomic.Pointer[[]netip.Prefix]
-
-	// trigger names what woke the run goroutine, withdrawn is its record of
-	// having acted on a stop, and the rest what Ready was last given, each
-	// family's route and why a family is not ready, all the run goroutine's
-	trigger                string
-	withdrawn              bool
-	ready4, ready6, serves bool
-	routed4, routed6       bool
-	unready                string
+	// trigger names what woke the run goroutine, and withdrawn is its record
+	// of having acted on a stop, both the run goroutine's
+	trigger   string
+	withdrawn bool
 }
 
 var _ egress.Exit = (*Exit)(nil)
@@ -224,7 +215,8 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 				prefix, schema.MinSubnetBits4, schema.MinSubnetBits6)
 		}
 	}
-	x := &Exit{cfg: cfg, rt: rt, link: newLink(rt.Limits.Link), seed: maphash.MakeSeed(), stop: make(chan struct{}), wake: make(chan struct{}, 1)}
+	x := &Exit{cfg: cfg, rt: rt, link: newLink(rt.Limits.Link), seed: maphash.MakeSeed(), stop: make(chan struct{})}
+	x.Shell = egress.NewShell(&x.rt.Hooks)
 	started := time.Now()
 	x.reportClock = func() int64 { return int64(time.Since(started)) }
 	x.pump = &pump{link: x.link, unlaid: func() { x.counts.unlaid.Add(1) }}
@@ -242,7 +234,6 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	for range min(max(1, runtime.GOMAXPROCS(0)), maxWorkers) {
 		x.workers = append(x.workers, &worker{queue: make(chan *[]byte, workerQueuePackets)})
 	}
-	x.enabled.Store(true)
 	x.SetHopLimits(relayedTTL, relayedTTL)
 	return x, nil
 }
@@ -269,26 +260,6 @@ func (x *Exit) takeICMP(_ stack.TransportEndpointID, pkt *stack.PacketBuffer) {
 // server picks the address of the link it leaves by
 func (x *Exit) sourceFor(leaf netip.Addr) netip.Addr {
 	return x.cfg.ClassOf(leaf).To.Addr
-}
-
-// SetEnabled withdraws everything while Run runs, in the order Run's end
-// takes, and restores it. The work runs on the run goroutine, so a caller
-// returns before it has caught up, which Status then reports.
-func (x *Exit) SetEnabled(on bool) {
-	x.enabled.Store(on)
-	select {
-	case x.wake <- struct{}{}:
-	default:
-	}
-}
-
-// Announce is the advertised prefixes of the families ready at the last pass,
-// and nothing before the first
-func (x *Exit) Announce() []netip.Prefix {
-	if prefixes := x.announced.Load(); prefixes != nil {
-		return slices.Clone(*prefixes)
-	}
-	return nil
 }
 
 // Status is the last pass, the capability the exit carries, the flows
@@ -346,7 +317,7 @@ func (x *Exit) Run(ctx context.Context) error {
 
 	x.trigger = "start"
 	for ctx.Err() == nil {
-		if !x.enabled.Load() {
+		if !x.Enabled.Load() {
 			if !x.withdrawn {
 				x.withdraw("the exit is stopped")
 				x.withdrawn = true
@@ -366,9 +337,9 @@ func (x *Exit) Run(ctx context.Context) error {
 		case <-ctx.Done():
 		case <-ticker.C:
 			x.trigger = "sweep"
-		case <-x.wake:
+		case <-x.Wake():
 			x.trigger = "disable"
-			if x.enabled.Load() {
+			if x.Enabled.Load() {
 				x.trigger = "enable"
 			}
 		}
@@ -385,9 +356,9 @@ func (x *Exit) Run(ctx context.Context) error {
 // mapping
 func (x *Exit) withdraw(why string) {
 	x.taking.Store(false)
-	x.setReady(false, false, why, why)
-	x.publish(nil)
-	x.stats.Store(&passStats{At: time.Now(), Unready: x.unready})
+	x.SetUnready(why)
+	x.Publish(nil)
+	x.stats.Store(&passStats{At: time.Now(), Unready: x.Unready()})
 	x.tcp.withdraw()
 	x.udp.withdraw()
 	x.echo.withdraw()
@@ -452,156 +423,72 @@ func (x *Exit) pass() {
 			announced = append(announced, entry.Prefix)
 		}
 	}
-	x.routed4, x.routed6 = routed[egress.FamilyIPv4], routed[egress.FamilyIPv6]
 	v4, v6 := ready[egress.FamilyIPv4], ready[egress.FamilyIPv6]
-	x.setReady(v4, v6, why[egress.FamilyIPv4], why[egress.FamilyIPv6])
-	moved := x.publish(announced)
-	x.stats.Store(&passStats{At: time.Now(), Ready4: v4, Ready6: v6, Unready: x.unready, Announced: announced})
+	x.SetReady(egress.Readiness{Ready4: v4, Ready6: v6, Why4: why[egress.FamilyIPv4], Why6: why[egress.FamilyIPv6],
+		Carries4: routed[egress.FamilyIPv4], Carries6: routed[egress.FamilyIPv6]})
+	moved := x.Publish(announced)
+	x.stats.Store(&passStats{At: time.Now(), Ready4: v4, Ready6: v6, Unready: x.Unready(), Announced: announced})
 	if moved {
 		x.rt.Events.Emit("egress.pass", "", slog.String("trigger", x.trigger), slog.Int("announced", len(announced)))
 	}
 }
 
 // readiness is whether family is ready, whether a link outside the mesh
-// reaches any of its prefixes, and why it is not ready: the host must route
-// each prefix the family advertises, or its default where it advertises none,
-// over a link outside the mesh, and hold each address its classes name
+// reaches any prefix the family reads, judged over all of them whichever
+// fails first, and why it is not ready, the first failure in the prefixes'
+// order and then the classes': the host must route each prefix the family
+// advertises, or its default where it advertises none, over a link outside the
+// mesh, and hold each address its classes name where a socket scoped to each
+// such link sends from it
 func (x *Exit) readiness(family uint8) (ready, routed bool, why string) {
-	for _, prefix := range readPrefixes(x.cfg, family) {
-		address, ok := readAddress(prefix)
-		if !ok {
-			return false, routed, "cap.egress advertises " + prefix.String() + ", which holds no unicast address to look its route up for"
+	type read struct {
+		prefix netip.Prefix
+		link   string
+	}
+	var reads []read
+	for _, prefix := range x.cfg.ReadPrefixes(family) {
+		failed := ""
+		if address, ok := readAddress(prefix); !ok {
+			failed = "cap.egress advertises " + prefix.String() + ", which holds no unicast address to look its route up for"
+		} else if link, found, err := x.rt.Platform.Route(address); err != nil {
+			failed = "the route lookup of " + address.String() + " for " + prefix.String() + " failed: " + err.Error()
+		} else if !found {
+			failed = "no link outside the mesh reaches " + address.String() + " for " + prefix.String()
+		} else {
+			routed = true
+			reads = append(reads, read{prefix, link.Name})
 		}
-		_, found, err := x.rt.Platform.Route(address)
-		switch {
-		case err != nil:
-			return false, routed, "the route lookup of " + address.String() + " for " + prefix.String() + " failed: " + err.Error()
-		case !found:
-			return false, routed, "no link outside the mesh reaches " + address.String() + " for " + prefix.String()
+		if why == "" {
+			why = failed
 		}
-		routed = true
+	}
+	if why != "" {
+		return false, routed, why
 	}
 	for _, class := range x.cfg.Classes(family) {
-		if class.To.Addr.IsValid() && !x.rt.Platform.Held(class.To.Addr) {
-			return false, routed, "this host does not hold " + class.To.Addr.String() + ", an address cap.egress translate names"
+		named := class.To.Addr
+		if !named.IsValid() {
+			continue
+		}
+		if !x.rt.Platform.Held(named, "") {
+			return false, routed, "this host does not hold " + named.String() + ", an address cap.egress translate names"
+		}
+		for _, r := range reads {
+			if !x.rt.Platform.Held(named, r.link) {
+				return false, routed, "this host does not hold " + named.String() + ", an address cap.egress translate names, on " + r.link + ", the link this host reaches " + r.prefix.String() + " by"
+			}
 		}
 	}
 	return true, routed, ""
 }
 
-// readPrefixes is the prefixes a family's lookups read, those it advertises,
-// or its default where it advertises none, which only a family translated
-// beside an egress segment does
-func readPrefixes(cfg egress.Egress, family uint8) []netip.Prefix {
-	var prefixes []netip.Prefix
-	for _, entry := range cfg.Advertise {
-		if egress.AddressFamily(entry.Addr()) == family {
-			prefixes = append(prefixes, entry.Prefix)
-		}
-	}
-	if len(prefixes) == 0 {
-		unspecified := netip.IPv6Unspecified()
-		if family == egress.FamilyIPv4 {
-			unspecified = netip.IPv4Unspecified()
-		}
-		prefixes = []netip.Prefix{netip.PrefixFrom(unspecified, 0)}
-	}
-	return prefixes
-}
-
-// readAddress is the address a readiness lookup reads for prefix: its middle
-// address, then its base plus one, then its last less one, the first a server
-// may hold. The middle alone falls short, since 192.0.0.0/2's is the group
-// 224.0.0.0.
+// readAddress is the address a readiness lookup reads for prefix, the first
+// of its candidates a server may hold
 func readAddress(prefix netip.Prefix) (netip.Addr, bool) {
-	prefix = prefix.Masked()
-	base := prefix.Addr()
-	candidates := []netip.Addr{base}
-	if !prefix.IsSingleIP() {
-		middle, last := base.AsSlice(), base.AsSlice()
-		middle[prefix.Bits()/8] |= 0x80 >> (prefix.Bits() % 8)
-		for bit := prefix.Bits(); bit < base.BitLen(); bit++ {
-			last[bit/8] |= 0x80 >> (bit % 8)
-		}
-		mid, _ := netip.AddrFromSlice(middle)
-		end, _ := netip.AddrFromSlice(last)
-		candidates = []netip.Addr{mid, base.Next(), end.Prev()}
-	}
-	for _, address := range candidates {
+	for _, address := range egress.ReadCandidates(prefix) {
 		if !packet.InvalidSource(address) {
 			return address, true
 		}
 	}
 	return netip.Addr{}, false
-}
-
-// publish stores prefixes for Announce and calls Republish where they moved,
-// and reports whether they did
-func (x *Exit) publish(prefixes []netip.Prefix) bool {
-	previous := x.announced.Load()
-	if previous != nil && slices.Equal(*previous, prefixes) {
-		return false
-	}
-	stored := slices.Clone(prefixes)
-	x.announced.Store(&stored)
-	if previous != nil {
-		slog.Warn("egress advertisement changed", "prefixes", len(prefixes), "was", len(*previous),
-			"detail", "a family is advertised only while it is ready, as ranet3 status says")
-	}
-	if x.rt.Republish != nil {
-		x.rt.Republish()
-	}
-	return true
-}
-
-// setReady records each family's readiness and why a family is not ready.
-// Ready is told when either family or whether the egress SIDs are served
-// moves, and egress.ready is recorded then. The SIDs are served while a
-// family is ready and every family a link outside the mesh routes is.
-func (x *Exit) setReady(v4, v6 bool, why4, why6 string) {
-	x.unready = unreadyText(v4, v6, why4, why6)
-	serves := (v4 || v6) && (v4 || !x.routed4) && (v6 || !x.routed6)
-	if v4 == x.ready4 && v6 == x.ready6 && serves == x.serves {
-		return
-	}
-	for _, family := range []struct {
-		family     uint8
-		was, ready bool
-		why        string
-	}{{egress.FamilyIPv4, x.ready4, v4, why4}, {egress.FamilyIPv6, x.ready6, v6, why6}} {
-		switch {
-		case family.was == family.ready:
-		case family.ready:
-			slog.Info("egress ready", "family", egress.FamilyName(family.family))
-		default:
-			slog.Warn("egress not ready", "family", egress.FamilyName(family.family), "detail", family.why)
-		}
-	}
-	x.ready4, x.ready6, x.serves = v4, v6, serves
-	if x.rt.Ready != nil {
-		x.rt.Ready(v4, v6, serves)
-	}
-	x.rt.Events.Emit("egress.ready", "", slog.Bool("ipv4", v4), slog.Bool("ipv6", v6), slog.Bool("sid", serves),
-		slog.String("reason", x.unready))
-}
-
-// unreadyText is why the families not ready are not, a family the exit does
-// not translate giving no reason, and each reason named by its family where
-// both families are not ready
-func unreadyText(v4, v6 bool, why4, why6 string) string {
-	switch {
-	case v4 && v6:
-		return ""
-	case v6:
-		return why4
-	case v4:
-		return why6
-	case why4 == why6:
-		return why4
-	case why6 == "":
-		return "ipv4 " + why4
-	case why4 == "":
-		return "ipv6 " + why6
-	}
-	return "ipv4 " + why4 + ", ipv6 " + why6
 }

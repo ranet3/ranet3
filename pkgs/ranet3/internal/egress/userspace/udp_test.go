@@ -766,7 +766,7 @@ func TestRepliesComeBackFromTheirServer(t *testing.T) {
 func TestHairpinReachesAnotherMappingFromTheSendersOwn(t *testing.T) {
 	host := netip.MustParseAddr("198.51.100.9")
 	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
-		rt.Platform.Held = func(address netip.Addr) bool { return address == host }
+		holdOnly(rt, host)
 	})
 	h.x.SetHopLimits(hostTTL, hostHopLimit)
 	anchor := h.anchor(t)

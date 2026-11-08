@@ -564,54 +564,24 @@ type Translator struct {
 	// publishes a whole value and a reader takes one, so this needs no lock
 	// and a reader can never see half a pass.
 	stats atomic.Pointer[passStats]
-	// announced holds the prefixes Announce answers, stored before Republish
-	// is called, so a pass that changes nothing does not republish and a
-	// caller reading it directly gets the same answer the speaker has.
-	announced atomic.Pointer[[]netip.Prefix]
+	*egress.Shell
 	// warned holds the conflicts already reported, so a shared host costs one
 	// log line per new conflict rather than one per pass.
 	warned []string
 	// trigger names what woke the run goroutine for the pass it runs, and belongs to that goroutine
 	trigger string
-	// enabled is whether this translator writes to the host at all, and wake
-	// carries a change of it to the run goroutine. Both are touched from
-	// outside that goroutine, and withdrawn is its own record of having acted
-	// on a stop, as kernel.Reconciler keeps one.
-	enabled   atomic.Bool
-	wake      chan struct{}
+	// withdrawn is the run goroutine's record of having acted on a stop, as
+	// kernel.Reconciler keeps one
 	withdrawn bool
-	// ready4, ready6 and serves hold what Ready was last given,
-	// forwards4 and forwards6 the forwarding the last pass read, unready the
-	// reason a family is not ready and skipped what its lookups left out, all
-	// of them the run goroutine's
-	ready4, ready6, serves bool
-	forwards4, forwards6   bool
-	unready, skipped       string
 }
 
 var _ egress.Exit = (*Translator)(nil)
 
 // newTranslator is a translator over a backend that is already open, writing to the host until SetEnabled stops it
 func newTranslator(cfg egress.Egress, rt Runtime, be backend) *Translator {
-	t := &Translator{cfg: cfg, rt: rt, be: be, wake: make(chan struct{}, 1)}
-	t.enabled.Store(true)
+	t := &Translator{cfg: cfg, rt: rt, be: be}
+	t.Shell = egress.NewShell(&t.rt.Hooks)
 	return t
-}
-
-// SetEnabled stops or starts this translator while it runs, which a node
-// taken off the mesh asks for. Stopping retracts the advertisement and then
-// withdraws the tables, in the order Run's own exit takes, and starting puts
-// them back on the next pass.
-//
-// The work runs on the run goroutine, which owns every field it touches. This
-// records the request and wakes it, so a caller returns before the host has
-// caught up and reads Status to see that it has.
-func (t *Translator) SetEnabled(on bool) {
-	t.enabled.Store(on)
-	select {
-	case t.wake <- struct{}{}:
-	default:
-	}
 }
 
 // Egress hands the frames and their hold to the mesh's tun writer, whose lanes
@@ -703,18 +673,6 @@ func (t *Translator) lastPass() passStats {
 	return passStats{}
 }
 
-// Announce is the prefixes this node may advertise right now: the configured
-// list narrowed to the families that are ready, and nothing at all before the
-// first pass has run. A caller announces from this rather than from the
-// configuration, which is how an exit that cannot translate refuses to
-// advertise rather than advertising and dropping.
-func (t *Translator) Announce() []netip.Prefix {
-	if prefixes := t.announced.Load(); prefixes != nil {
-		return slices.Clone(*prefixes)
-	}
-	return nil
-}
-
 // Run reconciles until ctx is canceled, then withdraws the tables this
 // translator owns and closes what the backend holds. It is called once.
 //
@@ -731,7 +689,7 @@ func (t *Translator) Run(ctx context.Context) error {
 
 	t.trigger = "start"
 	for ctx.Err() == nil {
-		if !t.enabled.Load() {
+		if !t.Enabled.Load() {
 			// once per stop rather than once per wake, and a withdrawal that
 			// failed is retried on the backoff a failed pass takes
 			if !t.withdrawn {
@@ -760,17 +718,16 @@ func (t *Translator) Run(ctx context.Context) error {
 			t.trigger = "sweep"
 		case <-retry.C:
 			t.trigger = "retry"
-		case <-t.wake:
+		case <-t.Wake():
 			// SetEnabled wakes the loop whichever way it went
 			t.trigger = "disable"
-			if t.enabled.Load() {
+			if t.Enabled.Load() {
 				t.trigger = "enable"
 			}
 		case <-t.be.Changed():
 			// the steered rule may be gone or bypassed already, so the mesh stops handing this exit its packets before the pass that puts it back
 			t.trigger = "changed"
-			const why = "another writer changed its table"
-			t.setReady(false, false, why, why, "")
+			t.SetUnready("another writer changed its table")
 		case <-t.be.Missed():
 			// another table's large transaction overflows the socket as readily as a flush of this one, so only the pass's readback decides
 			t.trigger = "missed"
@@ -780,9 +737,8 @@ func (t *Translator) Run(ctx context.Context) error {
 	// keeps selecting this node while its table is being taken down is a peer
 	// whose traffic leaves untranslated, and babel's own retraction is the
 	// only thing that can tell it otherwise.
-	const why = "the translator is stopping"
-	t.setReady(false, false, why, why, "")
-	t.publish(nil)
+	t.SetUnready("the translator is stopping")
+	t.Publish(nil)
 	return errors.Join(t.withdraw(), t.be.Close())
 }
 
@@ -852,10 +808,10 @@ func (t *Translator) reconcile() error {
 			announced = append(announced, entry.Prefix)
 		}
 	}
-	t.forwards4, t.forwards6 = v4, v6
 	j4, j6 := judged[egress.FamilyIPv4], judged[egress.FamilyIPv6]
-	t.setReady(j4.ready, j6.ready, j4.why, j6.why, skippedText(j4, j6))
-	moved := t.publish(announced)
+	skipped := skippedText(j4, j6)
+	t.SetReady(egress.Readiness{Ready4: j4.ready, Ready6: j6.ready, Why4: j4.why, Why6: j6.why, Carries4: v4, Carries6: v6, Skipped: skipped})
+	moved := t.Publish(announced)
 
 	kinds := map[string]Rule{}
 	for _, rule := range desired {
@@ -897,7 +853,7 @@ func (t *Translator) reconcile() error {
 		Dropped4: dropped[egress.FamilyIPv4], Dropped6: dropped[egress.FamilyIPv6],
 		ConntrackCount: t.conntrack("count"), ConntrackMax: t.conntrack("max"),
 		Announced: announced, Conflicts: conflicts,
-		Ready4: t.ready4, Ready6: t.ready6, Unready: t.unready, Skipped: t.skipped,
+		Ready4: j4.ready, Ready6: j6.ready, Unready: t.Unready(), Skipped: skipped,
 		judged: judged,
 	}
 	if err != nil {
@@ -1133,85 +1089,6 @@ func (t *Translator) inbound(family uint8) []Rule {
 	return out
 }
 
-// publish hands the announcement to the caller, and only when it changed. A
-// republish rebuilds the speaker's originated set, which an unchanged pass
-// every thirty seconds has no reason to do.
-//
-// it reports whether the announcement moved
-func (t *Translator) publish(prefixes []netip.Prefix) bool {
-	previous := t.announced.Load()
-	if previous != nil && slices.Equal(*previous, prefixes) {
-		return false
-	}
-	stored := slices.Clone(prefixes)
-	t.announced.Store(&stored)
-	if previous != nil {
-		// Said out loud on every transition, because a prefix silently leaving
-		// the advertisement is a customer's exit node going away and the
-		// counters alone would not name it.
-		slog.Warn("egress advertisement changed", "prefixes", len(prefixes),
-			"was", len(*previous), "detail", "a family is advertised only while it is ready, as ranet3 status says")
-	}
-	if t.rt.Republish != nil {
-		t.rt.Republish()
-	}
-	return true
-}
-
-// setReady records each family's readiness, why a family is not ready and
-// what the lookups skipped. Ready is told when either family or whether the
-// SIDs are served moves, and the egress.ready event is recorded when any of
-// them or the skip does
-func (t *Translator) setReady(v4, v6 bool, why4, why6, skipped string) {
-	t.unready = unreadyText(v4, v6, why4, why6)
-	// a leaf reads the SID's /128 as the exit's liveness, so a family the host forwards and cannot carry out withdraws it
-	serves := (v4 || v6) && (v4 || !t.forwards4) && (v6 || !t.forwards6)
-	moved := v4 != t.ready4 || v6 != t.ready6 || serves != t.serves
-	if !moved && skipped == t.skipped {
-		return
-	}
-	for _, family := range []struct {
-		family     uint8
-		was, ready bool
-		why        string
-	}{{egress.FamilyIPv4, t.ready4, v4, why4}, {egress.FamilyIPv6, t.ready6, v6, why6}} {
-		switch {
-		case family.was == family.ready:
-		case family.ready:
-			slog.Info("egress ready", "family", egress.FamilyName(family.family))
-		default:
-			slog.Warn("egress not ready", "family", egress.FamilyName(family.family), "detail", family.why)
-		}
-	}
-	t.ready4, t.ready6, t.serves, t.skipped = v4, v6, serves, skipped
-	if moved && t.rt.Ready != nil {
-		t.rt.Ready(v4, v6, serves)
-	}
-	t.rt.Events.Emit("egress.ready", "", slog.Bool("ipv4", v4), slog.Bool("ipv6", v6), slog.Bool("sid", serves),
-		slog.String("reason", t.unready), slog.String("skipped", skipped))
-}
-
-// unreadyText is why the families not ready are not, a family this node does
-// not translate giving no reason, and each reason named by its family where
-// both families are not ready
-func unreadyText(v4, v6 bool, why4, why6 string) string {
-	switch {
-	case v4 && v6:
-		return ""
-	case v6:
-		return why4
-	case v4:
-		return why6
-	case why4 == why6:
-		return why4
-	case why6 == "":
-		return "ipv4 " + why4
-	case why4 == "":
-		return "ipv6 " + why6
-	}
-	return "ipv4 " + why4 + ", ipv6 " + why6
-}
-
 // reportConflicts names, once per new entry, other source translation on this
 // host that can run ahead of this node's. It is a report rather than an
 // action: several nat postrouting chains coexist, the first to translate a
@@ -1234,9 +1111,8 @@ func (t *Translator) reportConflicts(conflicts []string) {
 // diagnostic does not go on reporting the rules of the last pass that ran.
 func (t *Translator) stop() error {
 	started := time.Now()
-	const why = "the translator is stopped"
-	t.setReady(false, false, why, why, "")
-	t.publish(nil)
+	t.SetUnready("the translator is stopped")
+	t.Publish(nil)
 	err := t.withdraw()
 	stats := passStats{At: time.Now()}
 	attrs := []slog.Attr{slog.String("trigger", t.trigger), slog.Duration("took", time.Since(started)),
