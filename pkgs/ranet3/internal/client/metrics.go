@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/transport"
 )
 
@@ -104,6 +106,7 @@ func (c *Client) Metrics(w io.Writer) {
 	fmt.Fprintf(w, "ranet3_tun_writes_failed_total %d\n", c.Mesh.TUNWritesFailed())
 
 	c.renderPathMTU(w)
+	c.renderSenders(w)
 	c.renderReceiveCounters(w)
 	c.renderPairSockets(w)
 	c.renderSegmentCounters(w)
@@ -175,6 +178,60 @@ func (c *Client) renderPathMTU(w io.Writer) {
 	fmt.Fprint(w, "# TYPE ranet3_pmtu_probes_total counter\n")
 	fmt.Fprintf(w, "ranet3_pmtu_probes_total{result=\"acked\"} %d\n", c.probes.acked.Load())
 	fmt.Fprintf(w, "ranet3_pmtu_probes_total{result=\"lost\"} %d\n", c.probes.lost.Load())
+}
+
+// renderSenders writes how each session's sender releases packets, waits for the head of its queue and sees its data batches sealed
+// as histograms whose buckets are the powers of two of their unit, in packets and in seconds
+func (c *Client) renderSenders(w io.Writer) {
+	type sender struct {
+		path  string
+		stats netstack.SendStats
+	}
+	var senders []sender
+	for _, live := range c.sessions.snapshot() {
+		if live.pmtu != nil {
+			senders = append(senders, sender{live.path, live.pmtu.peer.SendStats()})
+		}
+	}
+	slices.SortFunc(senders, func(a, b sender) int { return strings.Compare(a.path, b.path) })
+	for _, series := range []struct {
+		name, help string
+		of         func(netstack.SendStats) netstack.Histogram
+		bound      func(i int) string
+		sum        func(uint64) string
+	}{
+		{"ranet3_peer_send_release_packets", "Packets a peer's sender handed the transport between two of its waits, on its queue or on the head of its queue to be sealed.",
+			func(s netstack.SendStats) netstack.Histogram { return s.Releases },
+			func(i int) string { return strconv.FormatUint(1<<i, 10) }, func(sum uint64) string { return strconv.FormatUint(sum, 10) }},
+		{"ranet3_peer_send_head_wait_seconds", "Time a peer's sender waited for the head of its queue to be sealed.",
+			func(s netstack.SendStats) netstack.Histogram { return s.HeadWaits }, waitBound, waitSum},
+		{"ranet3_peer_send_seal_seconds", "Time a peer's data batch took from its reservation to its seal.",
+			func(s netstack.SendStats) netstack.Histogram { return s.Seals }, waitBound, waitSum},
+	} {
+		fmt.Fprintf(w, "# HELP %s %s\n", series.name, series.help)
+		fmt.Fprintf(w, "# TYPE %s histogram\n", series.name)
+		for _, s := range senders {
+			h := series.of(s.stats)
+			var count uint64
+			for i, n := range h.Counts {
+				count += n
+				le := "+Inf"
+				if i < len(h.Counts)-1 {
+					le = series.bound(i)
+				}
+				fmt.Fprintf(w, "%s_bucket{peer=\"%s\",le=\"%s\"} %d\n", series.name, label(s.path), le, count)
+			}
+			fmt.Fprintf(w, "%s_sum{peer=\"%s\"} %s\n", series.name, label(s.path), series.sum(h.Sum))
+			fmt.Fprintf(w, "%s_count{peer=\"%s\"} %d\n", series.name, label(s.path), count)
+		}
+	}
+}
+
+// waitBound is the bound of a wait histogram's bucket i in seconds, and waitSum a sum of its observations in seconds
+func waitBound(i int) string { return waitSum(1 << i) }
+
+func waitSum(units uint64) string {
+	return strconv.FormatFloat((time.Duration(units) * netstack.WaitUnit).Seconds(), 'g', -1, 64)
 }
 
 // renderEgress writes the exit node and subnet router capability. A node that

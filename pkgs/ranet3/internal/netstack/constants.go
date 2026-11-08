@@ -71,6 +71,13 @@ const (
 // the transport hands its socket at most espSendBatch datagrams per send, so one merge fills one send
 const transmitBatchSize = 128
 
+// histogramBounds is how many powers of two bound the buckets of a sender's histograms, from 1 of their unit up
+// WaitUnit is the unit of its head wait and seal time histograms, whose largest bound stays above codelTarget so a wait of the delay control's target falls under a bound
+const (
+	histogramBounds = 16
+	WaitUnit        = time.Microsecond
+)
+
 // controlQueueSize is how many control packets one peer may have in flight.
 // It has to hold a whole periodic dump, which is one packet per thirty-eight
 // plain prefixes or thirty-one source-specific ones, or the dump is truncated

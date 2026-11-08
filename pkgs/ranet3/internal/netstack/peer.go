@@ -41,6 +41,8 @@ type Peer struct {
 	// delay is the control that decides those drops, which only the sender touches
 	delayDropped atomic.Uint64
 	delay        codel
+	// releases, headWaits and seals are written by the sender alone, as SendStats says of each
+	releases, headWaits, seals histogram
 	// events records the peer's changes of state, nil recording nothing
 	events func(kind, peer string, attrs ...slog.Attr)
 	// sendFailed counts packets that were sealed, handed to the transport and
@@ -258,8 +260,8 @@ type peerBatch struct {
 	control bool
 	// probe says the place holds a probe of the path, set through Place
 	probe bool
-	// admitted is when the batch was reserved, as time since the peer started
-	admitted time.Duration
+	// admitted is when the batch was reserved and sealedAt when its filler sealed it, as time since the peer started
+	admitted, sealedAt time.Duration
 	// shed is how many sealed packets the delay control dropped from the head of the batch
 	shed int
 }
@@ -345,6 +347,24 @@ func (p *Peer) DelayDropped() uint64 { return p.delayDropped.Load() }
 // wire. See Peer.sendFailed.
 func (p *Peer) SendFailed() uint64 { return p.sendFailed.Load() }
 
+// SendStats is a peer's two budgets, used and limit, and its sender's histograms
+// Releases counts in packets what the sender handed the transport between two of its waits, on its queue or on the batch at its head
+// HeadWaits counts in WaitUnit how long it waited for the batch at its head to be sealed
+// Seals counts in WaitUnit how long a data batch took from its reservation to its seal
+type SendStats struct {
+	DataHeld, DataLimit, ControlHeld, ControlLimit int64
+	Releases, HeadWaits, Seals                     Histogram
+}
+
+// SendStats reads the peer's budgets and its sender's histograms
+func (p *Peer) SendStats() SendStats {
+	return SendStats{
+		DataHeld: p.dataBudget.used.Load(), DataLimit: p.dataBudget.limit,
+		ControlHeld: p.controlBudget.used.Load(), ControlLimit: p.controlBudget.limit,
+		Releases: p.releases.read(), HeadWaits: p.headWaits.read(), Seals: p.seals.read(),
+	}
+}
+
 // reservePlace takes the peer's next place in its queue and its sequence range for count packets
 // for a batch of size, which holds size of the data budget or count places of the control one, taken by the caller
 // a closed peer gives that back and counts the packets dropped
@@ -408,6 +428,7 @@ func (b *peerBatch) encrypt() {
 func (b *peerBatch) finish() error {
 	p := b.peer
 	b.encrypt()
+	b.sealedAt = time.Since(b.peer.started)
 	if !b.state.CompareAndSwap(batchFilling, batchSealed) {
 		err := b.abandon()
 		b.recycle()
@@ -570,11 +591,20 @@ func (p *Peer) senderLoop() {
 	var head *peerBatch
 	ready := make([]*peerBatch, 0, transmitBatchSize)
 	packets := make([][]byte, 0, transmitBatchSize)
+	// released is the packets handed to the transport since the sender last waited
+	released := uint64(0)
+	endRelease := func() {
+		if released != 0 {
+			p.releases.observe(released)
+			released = 0
+		}
+	}
 	for {
 		if head == nil {
 			head = p.takeQueue()
 		}
 		if head == nil {
+			endRelease()
 			// with nothing of the data budget held no data packet waits between its reservation and its transmit
 			// so the queue the delay control measures is empty
 			if p.dataBudget.used.Load() == 0 && p.delay.empty() {
@@ -589,8 +619,11 @@ func (p *Peer) senderLoop() {
 			}
 		}
 		if !head.sealedNow() {
+			endRelease()
+			waited := time.Now()
 			select {
 			case <-head.done:
+				p.headWaits.observeWait(time.Since(waited))
 			case <-p.stop:
 				p.stopSending(head)
 				return
@@ -607,6 +640,9 @@ func (p *Peer) senderLoop() {
 				now = time.Since(p.started)
 			}
 			ready = append(ready, b)
+			if !b.control {
+				p.seals.observeWait(b.sealedAt - b.admitted)
+			}
 			p.shedHead(b, now)
 			packets = append(packets, b.sealed[b.shed:]...)
 			data = data || (!b.control && len(b.sealed) > b.shed)
@@ -627,6 +663,7 @@ func (p *Peer) senderLoop() {
 			if sendErr = p.transmitBatchFn(packets); sendErr != nil {
 				report, _ = sendErr.(*transport.PathMTUError)
 			}
+			released += uint64(len(packets))
 		}
 		if data && !p.sent.Load() {
 			p.sent.Store(true)
