@@ -80,8 +80,8 @@ func TestDebugTracePrintsUntilItsBound(t *testing.T) {
 	}
 }
 
-// --pcap writes the records to its file, made readable by its owner alone, and the stream's notes to stderr
-// under - the same bytes to stdout, and to a file of the caller's that no one else may read the same bytes and nothing after
+// --pcap writes the records to its file, made at mode 0600, and the stream's notes to stderr
+// under - the same bytes to stdout, and to a file of the caller's of mode 0600 the same bytes and nothing after
 func TestDebugTracePcapWritesItsFileOrStdout(t *testing.T) {
 	socket, _ := serveTrace(t)
 	path := filepath.Join(t.TempDir(), "trace.pcapng")

@@ -106,7 +106,7 @@ func TestShutdownWithdrawsTheBorderLast(t *testing.T) {
 }
 
 // The mesh's failure cancels for kernel.ErrMeshFailed, which the reconciler
-// reads to leave the kill switch's table, and fails the exit status. A stop
+// reads to leave the kill switch, and fails the exit status. A stop
 // that ends ctx with the mesh still up, a signal's, returns with neither.
 func TestMeshFailureCancelsForItsCause(t *testing.T) {
 	for name, failure := range map[string]bool{"the failure": true, "a signal": false} {

@@ -43,8 +43,8 @@ and ESP on the underlay, never appears. A peer is named by its path, by
 org/name:serial, by org/name or by name. --pcap writes the records to a
 pcapng file instead, or to stdout for -, each packet's bytes as --payload
 asks, which --pcap needs, with the rest of its line as the packet's
-comment. The file is readable by its owner alone, and the stream's notes
-go to stderr.`,
+comment. The file is created anew at mode 0600, replacing a regular file
+of the caller's, and the stream's notes go to stderr.`,
 		Args:              noArguments,
 		ValidArgsFunction: cobra.NoFileCompletions,
 		RunE: func(cmd *cobra.Command, _ []string) (err error) {

@@ -118,7 +118,7 @@ antispoof filter writes its table, but nothing dials, and nothing but the
 wait answers on the socket, before the build ends. A refusal, or
 SIGINT or SIGTERM before the build ends, undoes what was built and starts
 nothing: the antispoof filter's table goes where the start made it, and
-stays where an earlier instance left it, as the kill switch's does. The
+stays where an earlier instance left it, as the kill switch does. The
 egress translator's stay in the families the file translates, since
 building the exit removes one in a family the file no longer translates.
 SIGHUP, SIGINT, SIGTERM and SIGUSR1 are taken from the start on, a second
