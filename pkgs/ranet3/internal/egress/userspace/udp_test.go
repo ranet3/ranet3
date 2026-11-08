@@ -62,7 +62,7 @@ func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relay
 	h.x = x
 	x.answers = h.mesh.OpenLane()
 	h.lane = h.mesh.OpenLane()
-	x.udp.now = h.now
+	x.udp.now, x.echo.now = h.now, h.now
 	t.Cleanup(func() { closeWithin(t, x) })
 	return h
 }
@@ -85,7 +85,7 @@ func (h *relayHarness) advance(d time.Duration) {
 	h.clock = h.clock.Add(d)
 	now := h.clock
 	h.mu.Unlock()
-	h.x.udp.expire(now)
+	h.x.expire(now)
 }
 
 func (h *relayHarness) preparedSoFar() []netip.AddrPort {
@@ -134,6 +134,11 @@ func (h *relayHarness) waitLaid(t fataler, what string, match func(raw []byte) b
 	}
 	t.Fatalf("no %s toward a leaf within %s", what, exitWait)
 	return nil
+}
+
+// nextLaid is the next packet the exit sends toward a leaf within exitWait
+func (h *relayHarness) nextLaid(t fataler, what string) []byte {
+	return h.waitLaid(t, what, func([]byte) bool { return true })
 }
 
 // mappingOf is the external port of leaf's mapping, false where it has none
@@ -215,6 +220,27 @@ func isDatagram(raw []byte, from, to netip.AddrPort, payload []byte) bool {
 	}
 	message := raw[header:]
 	return bytes.Equal(message[8:], payload) && fold(sum(pseudo(from.Addr(), to.Addr(), protoUDP, len(message)), message)) == 0
+}
+
+// hostHopLimit stands in for a host's default hop limit other than the
+// relayedTTL the exit starts at, and other than hostTTL, so a packet of one
+// family carrying the other's shows
+const hostHopLimit = 202
+
+// hopsOf is raw's TTL, or its hop limit where it is an IPv6 packet
+func hopsOf(raw []byte) uint8 {
+	if raw[0]>>4 == 6 {
+		return raw[7]
+	}
+	return raw[8]
+}
+
+// hostHops is hostTTL, or hostHopLimit where to is an IPv6 address
+func hostHops(to netip.Addr) uint8 {
+	if to.Is6() {
+		return hostHopLimit
+	}
+	return hostTTL
 }
 
 // A UDP datagram's checksum is checked on both of the relay's paths, the
@@ -529,8 +555,9 @@ func freeUDPPortOn(t *testing.T, addresses ...netip.Addr) uint16 {
 }
 
 // Each server's reply comes back to the leaf from that server, as a datagram
-// the exit built with its checksum, and an IPv6 reply larger than the leaf's
-// session comes back cut as its source cuts it
+// the exit built with its checksum at the host's TTL or hop limit, and an
+// IPv6 reply larger than the leaf's session comes back cut as its source cuts
+// it
 func TestRepliesComeBackFromTheirServer(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -548,6 +575,7 @@ func TestRepliesComeBackFromTheirServer(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			h := newRelayHarness(t, nil)
 			h.mesh.mtu = c.mtu
+			h.x.SetHopLimits(hostTTL, hostHopLimit)
 			server := loopbackServer(t, netip.MustParseAddr(c.loop))
 			leaf := netip.AddrPortFrom(c.leaf, freeUDPPort(t, c.leaf))
 			h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("request")), false)
@@ -558,7 +586,10 @@ func TestRepliesComeBackFromTheirServer(t *testing.T) {
 			}
 			var laid [][]byte
 			for range c.pieces {
-				laid = append(laid, h.waitLaid(t, "reply", func(raw []byte) bool { return true }))
+				laid = append(laid, h.nextLaid(t, "reply"))
+				if got := hopsOf(laid[len(laid)-1]); got != hostHops(c.leaf) {
+					t.Errorf("laid a reply at %d, want the host's %d", got, hostHops(c.leaf))
+				}
 			}
 			whole := laid[0]
 			if c.pieces > 1 {
@@ -582,13 +613,14 @@ func TestRepliesComeBackFromTheirServer(t *testing.T) {
 
 // A leaf's datagram to the host's own address at a port a mapping holds
 // reaches that mapping's leaf from the sender's own mapping on that address
-// (RFC 4787 REQ-9), and one to a port no mapping holds is refused as toward
-// the host itself, opening nothing
+// (RFC 4787 REQ-9), at the host's TTL, and one to a port no mapping holds is
+// refused as toward the host itself, opening nothing
 func TestHairpinReachesAnotherMappingFromTheSendersOwn(t *testing.T) {
 	host := netip.MustParseAddr("198.51.100.9")
 	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
 		rt.Platform.Held = func(address netip.Addr) bool { return address == host }
 	})
+	h.x.SetHopLimits(hostTTL, hostHopLimit)
 	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
 	listener := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	h.x.udp.take(udpDatagram(listener, serverAt(server), []byte("opens a mapping")), false)
@@ -604,9 +636,12 @@ func TestHairpinReachesAnotherMappingFromTheSendersOwn(t *testing.T) {
 	if !ok {
 		t.Fatal("the sender holds no mapping after its hairpinned datagram")
 	}
-	h.waitLaid(t, "hairpinned datagram", func(raw []byte) bool {
+	hairpinned := h.waitLaid(t, "hairpinned datagram", func(raw []byte) bool {
 		return isDatagram(raw, netip.AddrPortFrom(host, senderPort), listener, []byte("hairpinned"))
 	})
+	if got := hopsOf(hairpinned); got != hostTTL {
+		t.Errorf("hairpinned at the TTL %d, want the host's %d", got, hostTTL)
+	}
 	unheld := netip.AddrPortFrom(leaf6, freeUDPPort(t, leaf6))
 	h.x.handle(h.lane, udpDatagram(unheld, netip.AddrPortFrom(netip.MustParseAddr("2001:db8::9"), port), []byte("to the host")))
 	if h.count(true, reasonDestination) != 0 {

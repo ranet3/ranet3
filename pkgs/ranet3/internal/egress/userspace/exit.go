@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
@@ -83,15 +84,19 @@ type Exit struct {
 	cfg egress.Egress
 	rt  Runtime
 
-	link     *link
-	stack    *stack.Stack
-	seed     maphash.Seed
-	workers  []*worker
-	pump     *pump
-	counts   counts
-	tcp      *tcpRelay
-	udp      *udpRelay
-	flows    *flows
+	link    *link
+	stack   *stack.Stack
+	seed    maphash.Seed
+	workers []*worker
+	pump    *pump
+	counts  counts
+	tcp     *tcpRelay
+	udp     *udpRelay
+	echo    *echoRelay
+	flows   *flows
+	// ident numbers the packets the exit builds toward a leaf, an IPv4
+	// identification or an IPv6 fragment's
+	ident    atomic.Uint32
 	timeWait *timeWait
 	// answers is the pump's lane, which answers a new flow past a limit, set
 	// at Run's start before any packet is taken
@@ -212,6 +217,7 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	x.flows = newFlows(cfg.SourceLimit(), rt.Limits.Flows)
 	x.tcp = newTCPRelay(x)
 	x.udp = newUDPRelay(x)
+	x.echo = newEchoRelay(x)
 	x.timeWait = newTimeWait(rt.Limits.TimeWait)
 	for range min(max(1, runtime.GOMAXPROCS(0)), maxWorkers) {
 		x.workers = append(x.workers, &worker{queue: make(chan *[]byte, workerQueuePackets)})
@@ -221,10 +227,21 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	return x, nil
 }
 
-// takeICMP drops each ICMP message the stack hands its ICMP transport,
-// counted as a protocol the exit does not carry
-func (x *Exit) takeICMP(stack.TransportEndpointID, *stack.PacketBuffer) {
-	x.counts.refuse(reasonProtocol)
+// takeICMP hands the echo relay each ICMP or ICMPv6 message the stack hands
+// its ICMP transport as one packet with no fragment or extension header, an
+// echo request it reassembled or parsed among them, and the relay drops and
+// counts the rest
+func (x *Exit) takeICMP(_ stack.TransportEndpointID, pkt *stack.PacketBuffer) {
+	protocol := byte(1)
+	if pkt.NetworkProtocolNumber == header.IPv6ProtocolNumber {
+		protocol = 58
+	}
+	raw, ok := reassembled(pkt, protocol)
+	if !ok {
+		x.counts.drop(reasonMalformed)
+		return
+	}
+	x.echo.take(raw)
 }
 
 // sourceFor is the address a flow from leaf leaves under: the address its
@@ -315,6 +332,7 @@ func (x *Exit) Run(ctx context.Context) error {
 				x.withdrawn = false
 				x.tcp.resume()
 				x.udp.resume()
+				x.echo.resume()
 				slog.Info("egress userspace exit started again")
 			}
 			x.taking.Store(true)
@@ -348,6 +366,7 @@ func (x *Exit) withdraw(why string) {
 	x.stats.Store(&passStats{At: time.Now(), Unready: x.unready})
 	x.tcp.withdraw()
 	x.udp.withdraw()
+	x.echo.withdraw()
 }
 
 // sweep ends the mappings past their time until the exit stops
@@ -357,11 +376,17 @@ func (x *Exit) sweep() {
 	for {
 		select {
 		case now := <-ticker.C:
-			x.udp.expire(now)
+			x.expire(now)
 		case <-x.stop:
 			return
 		}
 	}
+}
+
+// expire ends each UDP and echo mapping past its time at now
+func (x *Exit) expire(now time.Time) {
+	x.udp.expire(now)
+	x.echo.expire(now)
 }
 
 // Close closes the link, the stack, once each request the forwarder handed
@@ -374,8 +399,10 @@ func (x *Exit) Close() error {
 		x.stack.Close()
 		x.tcp.withdraw()
 		x.udp.withdraw()
+		x.echo.withdraw()
 		x.tcp.running.Wait()
 		x.udp.readers.Wait()
+		x.echo.readers.Wait()
 		x.stack.Wait()
 		if x.rt.Platform.Raw != nil {
 			err = x.rt.Platform.Raw.Close()

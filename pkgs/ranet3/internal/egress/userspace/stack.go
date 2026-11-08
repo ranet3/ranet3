@@ -4,6 +4,7 @@
 package userspace
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net/netip"
 
@@ -14,6 +15,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/icmp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
+
+	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
 // stackHandlers is where the stack hands the exit what reaches no endpoint of
@@ -89,6 +92,35 @@ func taking(handle func(stack.TransportEndpointID, *stack.PacketBuffer)) func(st
 		handle(id, pkt)
 		return true
 	}
+}
+
+// reassembled is pkt, a packet the stack hands a default handler, one the lane
+// passed in fragments or behind an IPv6 extension header and the stack
+// reassembled or parsed, written again as one packet of protocol with no
+// fragment or extension header, false where its network header is of neither
+// family
+func reassembled(pkt *stack.PacketBuffer, protocol byte) ([]byte, bool) {
+	network := pkt.NetworkHeader().Slice()
+	transport := pkt.TransportHeader().Slice()
+	data := pkt.Data().AsRange().ToSlice()
+	var raw []byte
+	switch {
+	case len(network) >= 20 && network[0]>>4 == 4:
+		header := int(network[0]&0x0f) * 4
+		raw = append(append([]byte(nil), network[:header]...), transport...)
+		binary.BigEndian.PutUint16(raw[2:4], uint16(len(raw)+len(data)))
+		raw[6] &= 0x40
+		raw[7] = 0
+		binary.BigEndian.PutUint16(raw[10:12], 0)
+		binary.BigEndian.PutUint16(raw[10:12], ^uint16(packet.Sum(0, raw[:header])))
+	case len(network) >= 40 && network[0]>>4 == 6:
+		raw = append(append([]byte(nil), network[:40]...), transport...)
+		raw[6] = protocol
+		binary.BigEndian.PutUint16(raw[4:6], uint16(len(transport)+len(data)))
+	default:
+		return nil, false
+	}
+	return append(raw, data...), true
 }
 
 // addrOf is a stack's address as the rest of the node writes it

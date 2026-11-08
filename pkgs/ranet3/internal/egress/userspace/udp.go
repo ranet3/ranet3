@@ -54,9 +54,6 @@ type udpRelay struct {
 
 	// readers counts the goroutines reading the mappings' sockets
 	readers sync.WaitGroup
-	// ident numbers the packets the exit builds toward a leaf, an IPv4
-	// identification or an IPv6 fragment's
-	ident atomic.Uint32
 }
 
 // externalPort is a mapping's address and port on the host: its class's
@@ -213,32 +210,16 @@ func fastUDP(raw []byte) (dontFragment, ok bool) {
 	return false, false
 }
 
-// takeUDP takes each UDP datagram the stack hands its default handler, one
-// the lane passed in fragments or behind an IPv6 extension header and the
-// stack reassembled or parsed, as one packet with no fragment or extension
-// header, which any socket may fragment, since its source did
+// takeUDP takes each UDP datagram the stack hands its default handler as one
+// packet with no fragment or extension header, which any socket may fragment,
+// since its source did
 func (x *Exit) takeUDP(_ stack.TransportEndpointID, pkt *stack.PacketBuffer) {
-	network := pkt.NetworkHeader().Slice()
-	transport := pkt.TransportHeader().Slice()
-	data := pkt.Data().AsRange().ToSlice()
-	var raw []byte
-	switch {
-	case len(network) >= 20 && network[0]>>4 == 4:
-		raw = append(append([]byte(nil), network[:int(network[0]&0x0f)*4]...), transport...)
-		binary.BigEndian.PutUint16(raw[2:4], uint16(len(raw)+len(data)))
-		raw[6] &= 0x40
-		raw[7] = 0
-		binary.BigEndian.PutUint16(raw[10:12], 0)
-		binary.BigEndian.PutUint16(raw[10:12], ^uint16(packet.Sum(0, raw[:int(raw[0]&0x0f)*4])))
-	case len(network) >= 40 && network[0]>>4 == 6:
-		raw = append(append([]byte(nil), network[:40]...), transport...)
-		raw[6] = 17
-		binary.BigEndian.PutUint16(raw[4:6], uint16(len(transport)+len(data)))
-	default:
+	raw, ok := reassembled(pkt, 17)
+	if !ok {
 		x.counts.drop(reasonMalformed)
 		return
 	}
-	x.udp.take(append(raw, data...), false)
+	x.udp.take(raw, false)
 }
 
 // take relays raw, one UDP datagram a leaf sent, whole in one packet with no
@@ -644,8 +625,8 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, connected bool) {
 		case !connected && !m.admits(from):
 			u.x.counts.drop(reasonFiltered)
 		default:
-			ident := u.ident.Add(1)
-			u.x.toLeaf(udpPacket((*buf)[:headroom+n], headroom, from, m.leaf, uint16(ident)), ident)
+			ident := u.x.ident.Add(1)
+			u.x.toLeaf(udpPacket((*buf)[:headroom+n], headroom, from, m.leaf, uint16(ident), u.x.hops(m.leaf.Addr().Is6())), ident)
 		}
 		buffers[1].Put(buf)
 	}
@@ -702,9 +683,9 @@ func udpHeadroom(address netip.Addr) int {
 
 // udpPacket writes the IP and UDP headers of a datagram from from to to in
 // the headroom of buf, whose payload follows them, and returns the packet:
-// with no DF, so the lane's session may cut an IPv4 one, and its checksum
-// computed
-func udpPacket(buf []byte, headroom int, from, to netip.AddrPort, ident uint16) []byte {
+// with no DF, so the lane's session may cut an IPv4 one, hops its TTL or hop
+// limit, and its checksum computed
+func udpPacket(buf []byte, headroom int, from, to netip.AddrPort, ident uint16, hops uint8) []byte {
 	pkt := buf
 	udp := pkt[headroom-8:]
 	binary.BigEndian.PutUint16(udp[0:2], from.Port())
@@ -716,26 +697,35 @@ func udpPacket(buf []byte, headroom int, from, to netip.AddrPort, ident uint16) 
 		checksum = 0xffff
 	}
 	binary.BigEndian.PutUint16(udp[6:8], checksum)
-	if from.Addr().Is4() {
+	leafHeader(pkt, from.Addr(), to.Addr(), 17, 0, hops, ident)
+	return pkt
+}
+
+// leafHeader writes the IPv4 or IPv6 header of pkt, a packet the exit builds
+// toward a leaf whose payload follows the header, from from to to: protocol
+// its protocol or next header, ds its DS field, hops its TTL or hop limit,
+// and an IPv4 one's identification ident, with no DF and its checksum
+// computed
+func leafHeader(pkt []byte, from, to netip.Addr, protocol, ds, hops byte, ident uint16) {
+	if from.Is4() {
 		h := pkt[:20]
 		clear(h)
-		h[0] = 4<<4 | 5
+		h[0], h[1] = 4<<4|5, ds
 		binary.BigEndian.PutUint16(h[2:4], uint16(len(pkt)))
 		binary.BigEndian.PutUint16(h[4:6], ident)
-		h[8], h[9] = relayedTTL, 17
-		copy(h[12:16], from.Addr().AsSlice())
-		copy(h[16:20], to.Addr().AsSlice())
+		h[8], h[9] = hops, protocol
+		copy(h[12:16], from.AsSlice())
+		copy(h[16:20], to.AsSlice())
 		binary.BigEndian.PutUint16(h[10:12], ^uint16(packet.Sum(0, h)))
-		return pkt
+		return
 	}
 	h := pkt[:40]
 	clear(h)
-	h[0] = 6 << 4
-	binary.BigEndian.PutUint16(h[4:6], uint16(len(udp)))
-	h[6], h[7] = 17, relayedTTL
-	copy(h[8:24], from.Addr().AsSlice())
-	copy(h[24:40], to.Addr().AsSlice())
-	return pkt
+	h[0], h[1] = 6<<4|ds>>4, ds<<4
+	binary.BigEndian.PutUint16(h[4:6], uint16(len(pkt)-40))
+	h[6], h[7] = protocol, hops
+	copy(h[8:24], from.AsSlice())
+	copy(h[24:40], to.AsSlice())
 }
 
 // toLeaf sends pkt, a packet the exit built toward a leaf, through the pump's
@@ -798,8 +788,8 @@ func (u *udpRelay) hairpin(raw []byte, d datagram) {
 	buf := buffers[1].Get().(*[]byte)
 	defer buffers[1].Put(buf)
 	n := copy((*buf)[headroom:cap(*buf)], d.payload())
-	ident := u.ident.Add(1)
-	u.x.toLeaf(udpPacket((*buf)[:headroom+n], headroom, from, target.leaf, uint16(ident)), ident)
+	ident := u.x.ident.Add(1)
+	u.x.toLeaf(udpPacket((*buf)[:headroom+n], headroom, from, target.leaf, uint16(ident), u.x.hops(target.leaf.Addr().Is6())), ident)
 }
 
 // hairpinFrom is leaf's mapping for a datagram it hairpins, opened where it

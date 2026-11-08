@@ -138,14 +138,19 @@ func (x *Exit) work(w *worker, lane Lane) {
 	}
 }
 
-// handle judges raw and acts on the judgment, handing a UDP datagram that
-// needs no reassembly to the relay without the stack
+// handle judges raw and acts on the judgment, handing a UDP datagram or an
+// ICMP message other than an error that needs no reassembly to its relay
+// without the stack
 func (x *Exit) handle(lane Lane, raw []byte) {
 	j := judge(raw, x.heldDestination)
 	switch j.act {
 	case deliver:
 		if dontFragment, ok := fastUDP(raw); ok {
 			x.udp.take(raw, dontFragment)
+			return
+		}
+		if fastQuery(raw) {
+			x.echo.take(raw)
 			return
 		}
 		if x.timeWait.see(x.stack, raw) {
