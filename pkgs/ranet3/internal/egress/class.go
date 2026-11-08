@@ -158,10 +158,8 @@ func (e Egress) checkTranslated(family uint8) error {
 }
 
 // untranslated reports whether every source of prefix a router forwards a
-// packet from takes a class of none among classes, which are in the order
-// Classes gives. A prefix inside a block sourceless names counts as none
-// whatever class it takes. Any other prefix holding a longer From splits in
-// two, and one holding none takes its longest covering class.
+// packet from takes a class of none among classes, which come longest first,
+// as Classes gives them, so the first that covers a prefix is its class.
 func untranslated(classes []Class, prefix netip.Prefix) bool {
 	if sourceless(prefix) {
 		return true

@@ -145,8 +145,6 @@ func (n *natTables) Rules(desired []Rule) (map[uint8]chainReadback, error) {
 	return n.read(n.conn, desired, true)
 }
 
-// Read dumps through a socket of its own, so the run goroutine's stays with
-// its one user
 func (n *natTables) Read(desired []Rule) (map[uint8]chainReadback, error) {
 	conn, err := nftables.Dial()
 	if err != nil {

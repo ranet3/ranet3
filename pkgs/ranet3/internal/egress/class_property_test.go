@@ -134,9 +134,6 @@ func TestValidateRefusesExactlyAFamilyLeftWhollyUnderNone(t *testing.T) {
 	})
 }
 
-// drawnFrom is a prefix of family of a length drawn up to 3 or up to the
-// family's, its first three bits drawn and the rest of its length all zero or
-// all one
 func drawnFrom(ht *hegel.T, family uint8) schema.Prefix {
 	first := everySource(family).Addr()
 	most := first.BitLen()
@@ -159,9 +156,6 @@ func drawnFrom(ht *hegel.T, family uint8) schema.Prefix {
 	return schema.PrefixFrom(netip.PrefixFrom(address, bits))
 }
 
-// everyBoundaryNone is whether ClassOf takes a class of none at every boundary
-// of family's classes and of martians that packet.InvalidSource does not hold
-// at
 func everyBoundaryNone(cfg Egress, family uint8) bool {
 	boundaries := []netip.Addr{everySource(family).Addr()}
 	for _, class := range cfg.Classes(family) {
