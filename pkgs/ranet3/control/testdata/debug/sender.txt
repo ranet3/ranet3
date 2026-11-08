@@ -1,0 +1,15 @@
+Session         example/bravo:2@alpha
+Peer            example/bravo
+Data budget     420000 of 5734400 B held
+Control budget  2 of 256 places held
+Releases        50 releases: the median at most 1 packet, the 99th percentile at most 512 packets, the largest at most 512 packets
+Head waits      10 waits: the median at most 16 microseconds, the 99th percentile past 32.768 milliseconds, the largest past 32.768 milliseconds
+Seals           100 seals: the median at most 8 microseconds, the 99th percentile at most 8 microseconds, the largest at most 32 microseconds
+
+Session         example/charlie:3@alpha
+Peer            example/charlie
+Data budget     0 of 5734400 B held
+Control budget  0 of 256 places held
+Releases        none
+Head waits      none
+Seals           none

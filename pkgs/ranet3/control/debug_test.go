@@ -99,6 +99,7 @@ func TestEveryDebugPathAnswersACallerOtherThanRoot(t *testing.T) {
 		PathDebugRules:    {src: &rulesSource{}},
 		PathDebugRuntime:  {src: plainRuntime{}},
 		PathDebugSegments: {src: segmentsSource{}},
+		PathDebugSender:   {src: senderSource{asked: make(chan string, 1)}, query: "peer=example%2Fbravo"},
 		PathDebugTrace:    {src: newTraceSource()},
 		PathDebugUpDown:   {src: upDownSource{}},
 	}
