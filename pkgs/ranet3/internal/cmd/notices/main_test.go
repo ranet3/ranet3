@@ -33,6 +33,41 @@ func TestDirectoryReplacementShipsUnderThePathItReplaces(t *testing.T) {
 	}
 }
 
+// A module go.mod replaces with a fork ships under its own path as well, its
+// license read from the fork in the module cache and its notice naming it
+// modified and the fork that replaces it.
+func TestForkShipsUnderThePathItReplacesAsModified(t *testing.T) {
+	listed := "/tmp/ranet3-notices-subject: go1.26.8\n" +
+		"\tpath\tranet3.com/pkgs/ranet3/cmd/ranet3\n" +
+		"\tdep\tgvisor.dev/gvisor\tv0.0.0-20261008000517-3b87f090dbda\th1:AAAA\n" +
+		"\t=>\tgithub.com/stepbrobd/gvisor\tv0.0.0-20261108000000-0123456789ab\th1:BBBB\n" +
+		"\tbuild\t-buildmode=exe\n"
+	modules, err := modulesOf(listed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork := module{path: "gvisor.dev/gvisor", version: "v0.0.0-20261008000517-3b87f090dbda", fork: "github.com/stepbrobd/gvisor", forkVersion: "v0.0.0-20261108000000-0123456789ab"}
+	if !slices.Equal(modules, []module{fork}) {
+		t.Fatalf("modules %+v, want %+v", modules, []module{fork})
+	}
+	cache := t.TempDir()
+	dir := filepath.Join(cache, "github.com", "stepbrobd", "gvisor@"+fork.forkVersion)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "LICENSE"), []byte("Apache License\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	text, from, err := license(cache, fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "gvisor.dev/gvisor v0.0.0-20261008000517-3b87f090dbda, modified: the fork github.com/stepbrobd/gvisor v0.0.0-20261108000000-0123456789ab replaces it, from `LICENSE`"
+	if text != "Apache License\n" || from != want {
+		t.Errorf("text %q from %q, want the fork's license from %q", text, from, want)
+	}
+}
+
 // The notice covers both daemons, so it lists a module either one links, a
 // module both link once, in the order of the paths
 func TestUnionListsEveryModuleEitherBinaryLinksOnce(t *testing.T) {

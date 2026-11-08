@@ -77,7 +77,9 @@ This file is generated. Run the formatter rather than editing it.
 
 // module is one linked dependency. dir is the directory go.mod replaces it
 // with, relative to this module's root, and empty for a module of the cache.
-type module struct{ path, version, dir string }
+// fork and forkVersion are the module go.mod replaces it with, a modified
+// copy, empty where none does.
+type module struct{ path, version, dir, fork, forkVersion string }
 
 // target is one binary the notice covers, built for an operating system and
 // an architecture
@@ -158,6 +160,13 @@ func modulesOf(listed string) ([]module, error) {
 			seen[last] = true
 			continue
 		}
+		// A module that replaces one ships under that path too.
+		if fields[0] == "=>" {
+			delete(seen, last)
+			last.fork, last.forkVersion = fields[1], fields[2]
+			seen[last] = true
+			continue
+		}
 		last = module{path: fields[1], version: fields[2]}
 		seen[last] = true
 	}
@@ -186,18 +195,23 @@ func isDir(replacement string) bool {
 }
 
 // license reads one module's license out of the module cache, or out of the
-// directory that replaces it, and says where it came from. A module whose
+// directory that replaces it, and says where it came from. A module a fork
+// replaces is named modified, its license read from the fork. A module whose
 // license this cannot find is an error rather than an omission, because the
 // point of the file is that nothing is missing from it.
 func license(cache string, m module) (text, from string, err error) {
 	if m.dir != "" {
 		return copied(m)
 	}
-	dir := filepath.Join(cache, escape(m.path)+"@"+m.version)
+	dir, shipped := filepath.Join(cache, escape(m.path)+"@"+m.version), m.path+" "+m.version
+	if m.fork != "" {
+		dir = filepath.Join(cache, escape(m.fork)+"@"+m.forkVersion)
+		shipped = fmt.Sprintf("%s, modified: the fork %s %s replaces it", shipped, m.fork, m.forkVersion)
+	}
 	for _, candidate := range []string{"LICENSE", "LICENSE.txt", "LICENSE.md", "COPYING", "COPYING.txt"} {
 		body, err := os.ReadFile(filepath.Join(dir, candidate))
 		if err == nil {
-			return string(body), fmt.Sprintf("%s %s, from `%s`", m.path, m.version, candidate), nil
+			return string(body), fmt.Sprintf("%s, from `%s`", shipped, candidate), nil
 		}
 	}
 	return "", "", fmt.Errorf("no license file in %s", dir)
