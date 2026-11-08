@@ -119,8 +119,9 @@ func serve(t *testing.T, src control.Source) string {
 	return path
 }
 
-// socketPath names a socket short enough to bind. See the same helper in
-// control/server_test.go for what t.TempDir() costs on darwin.
+// socketPath names a socket of at most control.MaxSocketPath bytes, a guard
+// that leaves out the bind directory control.Listen adds. See the same helper
+// in control/server_test.go for what t.TempDir() costs on darwin.
 func socketPath(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "rl")

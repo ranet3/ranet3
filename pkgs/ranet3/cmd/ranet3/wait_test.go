@@ -86,8 +86,8 @@ func offering() bool {
 	})
 }
 
-// shortDir is a directory of the test's own directly under the temporary directory, whose path leaves a socket in it within
-// the 103 bytes a unix socket's path holds, which t.TempDir's, named after the test, can pass
+// shortDir is a directory of the test's own directly under the temporary directory, whose path leaves a socket in it short
+// enough for control.Listen, which t.TempDir's, named after the test, can pass
 func shortDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "ranet3-")

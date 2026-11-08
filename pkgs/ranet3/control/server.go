@@ -76,10 +76,10 @@ func Listen(path string) (net.Listener, error) {
 	return &ownedListener{Listener: socket, path: path, lock: lock}, nil
 }
 
-// bind makes the socket in a directory only the daemon can enter, sets its
-// group and mode there and renames it onto path. A bind at path leaves the
-// socket at the mode the process umask gives it until the chmod, and the
-// umask belongs to whoever started the process, on linux and darwin alike.
+// bind keeps the socket where only the daemon can reach it until its group
+// and mode are set, since a socket bound at path sits there at the mode the
+// umask of whoever started the process gives it until the chmod, on linux and
+// darwin alike.
 func bind(path string) (*net.UnixListener, error) {
 	dir, err := os.MkdirTemp(filepath.Dir(path), bindPattern)
 	if err != nil {
@@ -104,9 +104,8 @@ func bind(path string) (*net.UnixListener, error) {
 	return socket, nil
 }
 
-// place settles the socket at private and moves it to path
+// place gives the socket at private the daemon's group before the mode that lets a group in
 // BSD hands a new socket the group of its directory rather than the process's
-// the daemon's group comes before the mode that lets a group in
 func place(private, path string) error {
 	if err := os.Lchown(private, -1, os.Getegid()); err != nil {
 		return err
