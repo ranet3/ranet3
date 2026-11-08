@@ -303,23 +303,24 @@ connection tracking keeps the flow, and
 [what it evicts from a full table](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1663)
 is the kernel's.
 
-Each table holds a connection tracking timeout object for each protocol,
-`translated-udp`, `translated-tcp` and `translated-icmp` or `translated-icmpv6`.
-They are made once and never changed in place: a pass that rewrites a chain
-leaves them, and one that reads back other values deletes the family's table and
-makes it again, which leaves the flows that held them on the host's timeouts. A
-stop withdraws the tables with their objects, and the flows it leaves keep their
-translation under the host's timeouts.
+Each family has a connection tracking timeout object for each protocol, named
+with the family's digit: `translated-udp4`, `translated-tcp4` and
+`translated-icmp4` in IPv4, and `translated-udp6`, `translated-tcp6` and
+`translated-icmpv66` in IPv6. They are made once and never changed in place: a
+pass that rewrites a chain leaves them, and one that reads back other values in
+one deletes that object and makes it again, which leaves the flows that held it
+on the host's timeouts. A stop withdraws the objects with the chains, and the
+flows it leaves keep their translation under the host's timeouts.
 
 ## Each source's share of the flows
 
-Each table also holds a filter chain at the forward hook that holds each mesh
-source address under a class that translates to a share of the flows through
-this node. Past `cap.egress.flows_per_source` open flows in a family, 4096 when
-left out, such a source's next new flow is refused. The share is per source
-address and family, every protocol's flows together, so a dual-stack leaf holds
-one in each family, and each address of a prefix a subnet router routes into the
-mesh holds its own.
+The translator also writes a filter chain at the forward hook that holds each
+mesh source address under a class that translates to a share of the flows
+through this node. Past `cap.egress.flows_per_source` open flows in a family,
+4096 when left out, such a source's next new flow is refused. The share is per
+source address and family, every protocol's flows together, so a dual-stack leaf
+holds one in each family, and each address of a prefix a subnet router routes
+into the mesh holds its own.
 
 - **What it judges.** The packet that creates a connection's entry, and nothing
   after it, so a flow admitted before its source reached the share carries on
@@ -337,9 +338,9 @@ mesh holds its own.
   [its refusal](#classes) ahead of the share, so it draws code 13 over IPv4,
   never the share's code 1.
 - **What it leaves out.** A source under a class of `none` holds no share: the
-  chain sends its packets past the limit, as
-  [the limit chain](#the-nftables-tables) lays out, so none of its flows is
-  counted or refused, and the operator sizes the host's table for them, as
+  chain sends its packets past the limit, as [the chains](#the-nftables-chains)
+  lay out, so none of its flows is counted or refused, and the operator sizes
+  the host's table for them, as
   [connection tracking makes them](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_conntrack_core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n1897).
   A source no class takes leaves under `auto` and holds a share.
 - **What it does not count.** A TCP connection in TIME_WAIT or closed. The share
@@ -427,11 +428,11 @@ so a file that loads never runs the mode on one.
 A host using an exit can ask with `cap.exit.fallback = "none"` for the kill
 switch, which holds while no exit is live and the switch reads back as written.
 [The kill switch](routing.md#the-kill-switch-on-linux) lists the lines that let
-the host's traffic leave by its own uplink, and gives the rules and the table,
+the host's traffic leave by its own uplink, and gives the rules and the chains,
 the switch's reach, what each stop leaves of it, and what counts as the LAN, and
 [the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives the same
 for a Mac's rejects. An exit installs no default for its own traffic and refuses
-`cap.exit`, so no exit's egress meets the table.
+`cap.exit`, so no exit's egress meets the switch's chains.
 
 Application DNS is not yet kept on the exit, on Linux or macOS, as
 [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) gives.
@@ -487,32 +488,37 @@ attract traffic and drop it without telling the sender.
 
 The capability publishes the advertisement per family on every pass. A prefix is
 announced only while its family is ready, as [readiness](#readiness) describes
-for each platform: on Linux while its family's table reads back exactly as the
-node wrote it, its chains with every rule in order, each by its comment and by
-what it does, and no other writer's among them, each at its hook, priority and
-policy, the set and the timeout objects, in a table with no flags, the host
-forwards that family, the host holds every address its classes name and, where
-its lookups run, the kernel routes a translated packet of it and its reply. A
-pass reads the table's chains, its set and its timeout objects, and the elements
-of each set a screen of a class of `none`'s chain takes its sources from. Every
+for each platform: on Linux while the translator's chains read back exactly as
+the node wrote them, `forward6` for IPv6 alone and every other one for both
+families, since `forward` holds IPv6's goto ahead of IPv4's lines, with every
+rule in order, each by its comment and by what it does, and no other writer's
+among them, each at its hook, priority and policy, the family's set and timeout
+objects read back as written, in a table with no flags, the host forwards that
+family, the host holds every address its classes name and, where its lookups
+run, the kernel routes a translated packet of it and its reply. A pass reads the
+translator's chains, the family's set and timeout objects, and the elements of
+each set a screen of a class of `none`'s chain takes its sources from. Every
 chain whose name starts `none_` is the exit's: one no class writes is read as a
-fault and deleted. Another chain in the table is neither read nor removed until
-the table is made again, and a nat chain at the source translation hook at
-priority 99 or below is named as a [conflict](#watching-it). Each pass first
-rewrites a chain that reads back otherwise, such as one missing a rule, holding
-another writer's, a rule edited under the comment it was written with or in a
-dormant table, writes a class of `none`'s chain that is missing and deletes a
-`none_` chain no class writes. Where a rule of another writer's chain goes to
-that chain, by a goto, a jump or its vmap, or an element of a named map does,
-nf_tables will not delete it, so the pass empties it and writes the rest, and
-the family stays not ready with that chain or map named until the rule or the
-element goes. nf_tables clears no table flag in place but dormant, and changes
-no chain's type, hook or priority, no set's key, flags or comment and no timeout
-object's values, so when one of those differs the pass deletes the family's
-table, and any chain another writer put in it, then makes it again in the same
-transaction. When the table still does not read back as written, the host stops
-forwarding the family or a lookup fails, that pass retracts the prefix. A pass
-runs at least every `sweep` (30 seconds by default).
+fault and deleted. So is `forward4`, the chain an earlier version held IPv4's
+lines in. Another chain in the table is neither read nor removed, and a nat
+chain at the source translation hook at priority 99 or below is named as a
+[conflict](#watching-it). Each pass first rewrites a chain that reads back
+otherwise, such as one missing a rule, holding another writer's, a rule edited
+under the comment it was written with or in a dormant table, writes a class of
+`none`'s chain that is missing and deletes a `none_` chain no class writes and a
+`forward4`. Where a rule of another writer's chain goes to that chain, by a
+goto, a jump or its vmap, or an element of a named map does, nf_tables will not
+delete it, so the pass empties it and writes the rest, and both families stay
+not ready with that chain or map named until the rule or the element goes.
+nf_tables clears no table flag in place but dormant, and changes no chain's
+type, hook or priority, no set's key, flags or comment and no timeout object's
+values, so when a chain, set or object of the translator's differs in one of
+those the pass deletes that one and makes it again in the same transaction,
+leaving everything else in the table as it is. Another table flag holds both
+families not ready, the reason naming `nft delete table inet ranet3`, which
+alone clears it. When the chains still do not read back as written, the host
+stops forwarding the family or a lookup fails, that pass retracts the prefix. A
+pass runs at least every `sweep` (30 seconds by default).
 
 On Linux the node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on.
@@ -594,9 +600,9 @@ destination: its middle address, the base with the bit after the length set,
 then its base plus 1, then its last address less 1. The middle alone would not
 do, since `192.0.0.0/2`'s is `224.0.0.0`, a group. IPv4 refuses the limited
 broadcast, `0.0.0.0`, the loopback addresses and the multicast addresses, and
-IPv6 the unspecified, loopback, multicast and link-local addresses. Linux 4.20
-to 5.2 also refuse `0.0.0.0/8` as a destination, where a lookup of a prefix
-inside it fails and holds its family not ready.
+IPv6 the unspecified, loopback, multicast and link-local addresses. Linux 5.2
+also refuses `0.0.0.0/8` as a destination, where a lookup of a prefix inside it
+fails and holds its family not ready.
 
 **The skip.** The forward and reply lookups of a family are skipped, and the
 family judged by its table, its forwarding and its classes' addresses alone,
@@ -628,17 +634,26 @@ reason reads the settings rather than the errno. The daemon reads them and
 changes none. An IPv6 lookup with forwarding off answers its route, and the
 host's forwarding check stands for it.
 
-Another writer adding, changing or deleting part of the `ranet3` tables, such as
-a `nftables.service` reload that flushes the ruleset, a rule put in a `ranet3`
-chain or a table set dormant, holds both families not ready until the pass it
-wakes restores them, rather than until the next sweep. A chain another writer
-adds to a `ranet3` table is not read unless its name starts `none_`. That pass
-reads the family ready with the chain still in place. The daemon's own writes
-wake nothing. Notifications the daemon lost, which another table's large
+Another writer deleting the table `inet ranet3` or setting a flag on it, or
+adding, changing or deleting one of the translator's chains, rules, sets or set
+elements in it, such as a `nftables.service` reload that flushes the ruleset, a
+rule put in one of the translator's chains or a table set dormant, holds both
+families not ready until the pass it wakes restores them, rather than until the
+next sweep. A chain another writer adds to the table is not read unless its name
+starts `none_`. That pass reads the family ready with the chain still in place.
+The translator's own writes wake no pass of its own, and the antispoof filter's
+and the kill switch's writes of their chains, rules and sets in the same table
+wake none either. A flush of the ruleset deletes the table and another program
+setting it dormant sets a flag on it, so each wakes every writer once. The first
+writer's pass after it makes the table again or clears the flag, which wakes no
+other: the table it makes holds none of their chains, and with the flag cleared
+it bypasses none. Notifications the daemon lost, which another table's large
 transaction can overflow its socket with, wake a pass too and leave readiness as
 it was, since that pass reads the rules back. A pass that reads another writer's
-change back and cannot undo it holds that family not ready, with the change
-named, and its prefixes withheld until a later pass does.
+change back and cannot undo it holds the family the change is in not ready, IPv6
+alone for a change to `forward6`, and both families for a change to another
+chain, `forward` among them, since it holds IPv6's goto ahead of IPv4's lines,
+with the change named, and withholds its prefixes until a later pass does.
 
 ## The exit on macOS
 
@@ -747,21 +762,35 @@ flows the exit holds are bounded by the host's memory and descriptors, as
 listed in [gaps on macOS](platforms.md#gaps-on-macos), with each deviation in
 [exit translation](design/protocol-deviations.md#exit-translation).
 
-## The nftables tables
+## The nftables chains
 
-The translator owns 1 table named `ranet3` in each family it translates, `ip`
-and `ip6`: each advertised family, and both beside an egress segment, whatever
-`advertise` holds, since an egress segment carries both families. Each table
-holds 2 base chains, a regular chain for each class of `none`, a set and 3
-timeout objects:
+The translator writes its chains in the nftables table `inet ranet3`, which
+[the antispoof filter](antispoof.md#where-it-runs) and
+[the kill switch](routing.md#the-kill-switch-on-linux) write theirs in, for each
+family it translates: each advertised family, and both beside an egress segment,
+whatever `advertise` holds, since an egress segment carries both families. It
+writes 2 base chains, which see both families, the regular chain `forward6`
+whether it translates IPv6 or not, a regular chain for each class of `none`, and
+for each family a set and 3 timeout objects. nf_tables
+[hooks an inet chain at the IPv4 and IPv6 hooks alone](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/core.c?id=940de590b839f71d6dc846160534bf202401b8b7#n554),
+so `forward` meets those two families and no other. Its first line,
+`meta nfproto ipv6 goto forward6`, sends IPv6's packets on to `forward6`, which
+holds IPv6's lines, and IPv4's lines follow that line in `forward` itself, so a
+packet meets none of the other family's lines at the forward hook and an IPv4
+packet takes no goto to reach its own. A family's line at the forward hook tests
+its family only just before it keys a set by the packet's source, which only a
+packet that passes every other compare of the line reaches. Each rule of
+`postrouting`, which a flow's first packet of either family meets, tests its
+family first:
 
-| Property | Translation        | Limit        | Class of `none`                                       |
-| -------- | ------------------ | ------------ | ----------------------------------------------------- |
-| Name     | `postrouting`      | `forward`    | `none_192_0_2_0_24` for `192.0.2.0/24`                |
-| Type     | `nat`              | `filter`     | no type                                               |
-| Hook     | `postrouting`      | `forward`    | no hook, entered by its class's rule in a chain above |
-| Priority | 99, below `srcnat` | 0 (`filter`) | no priority                                           |
-| Policy   | `accept`           | `accept`     | no policy, the limit chain's at its end               |
+| Property | Translation        | Forward                        | IPv6                                       | Class of `none`                                       |
+| -------- | ------------------ | ------------------------------ | ------------------------------------------ | ----------------------------------------------------- |
+| Name     | `postrouting`      | `forward`                      | `forward6`                                 | `none_192_0_2_0_24` for `192.0.2.0/24`                |
+| Type     | `nat`              | `filter`                       | no type                                    | no type                                               |
+| Hook     | `postrouting`      | `forward`                      | no hook, entered by `forward`'s first line | no hook, entered by its class's rule in a chain above |
+| Priority | 99, below `srcnat` | 0 (`filter`)                   | no priority                                | no priority                                           |
+| Policy   | `accept`           | `accept`                       | no policy, `forward`'s at its end          | no policy, `forward`'s at its end                     |
+| Lines    | both families'     | the goto to `forward6`, IPv4's | IPv6's                                     | its family's                                          |
 
 The translation chain holds each class's rules together, the longest `from`
 first, since the first rule that translates a connection ends the chain: for a
@@ -769,20 +798,21 @@ class that translates, a rule for each protocol attaching its timeouts, then its
 translation, and for a class of `none` its binding alone. Where no class covers
 every source, the rules of `auto` for the rest follow. The in rules come next,
 for each advertised prefix a rule for each protocol attaching its timeouts, then
-its translation, and then the local rules of this node's mesh addresses. The
-limit chain holds in IPv4 the 4 ICMP drops first, which take Source Quench and
-then Information Request and Reply, out of the mesh and then into it, from any
-source. The screens follow: a rule that drops a packet no flow is tracked for,
-the refusals of DCCP and of UDP-Lite, which take a packet in its flow's original
-direction, and out of the mesh the limit's rule. Each class of `none` has 1 rule
-that sends every packet from it on to its own chain, in the limit chain or, for
-one inside another class of `none`, in the nearest such class's chain, the
-longest `from` first. The class's chain holds those rules of the classes of
-`none` inside it first, then where a class that translates has that class of
-`none` as its nearest shorter class covering it, the 4 screens once, each taking
-the sources of every such class as 1 set, and a packet that reaches its end goes
-on by the limit chain's policy. The limit chain's screens for every source
-follow its classes of `none`'s rules, then under `return` those for each
+its translation, and then the local rules of this node's mesh addresses. A
+family's lines at the forward hook, IPv4's past `forward`'s first line and
+IPv6's in `forward6`, hold in IPv4 the 4 ICMP drops first, which take Source
+Quench and then Information Request and Reply, out of the mesh and then into it,
+from any source. The screens follow: a rule that drops a packet no flow is
+tracked for, the refusals of DCCP and of UDP-Lite, which take a packet in its
+flow's original direction, and out of the mesh the limit's rule. Each class of
+`none` has 1 rule that sends every packet from it on to its own chain, among its
+family's lines or, for one inside another class of `none`, in the nearest such
+class's chain, the longest `from` first. The class's chain holds those rules of
+the classes of `none` inside it first, then where a class that translates has
+that class of `none` as its nearest shorter class covering it, the 4 screens
+once, each taking the sources of every such class as 1 set, and a packet that
+reaches its end goes on by `forward`'s policy. The family's screens for every
+source follow its classes of `none`'s rules, then under `return` those for each
 advertised prefix of the family into the mesh, with no limit. A packet:
 
 - under a class that translates meets 1 limit.
@@ -796,10 +826,12 @@ advertised prefix of the family into the mesh, with no limit. A packet:
 The set the limit counts each source's flows in, `flows4` or `flows6`, carries
 the share as its comment, `limit 4096`. Each count keeps the share in force when
 it began. A set read back under another share, as an instance stopped without
-withdrawing under another one leaves it, makes the pass delete the table and
-make it again.
+withdrawing under another one leaves it, makes the pass delete that set and make
+it again in the transaction that rewrites the chains, leaving every timeout
+object as it is. The share is one setting of both families, so where that
+instance translated both, the pass makes both sets again.
 
-A pass replaces the chains' rules in 1 transaction and leaves the set, its
+A pass replaces the chains' rules in 1 transaction and leaves the sets, their
 counts and the objects as they are. Each rule carries a comment that names it,
 which `nft list ruleset` shows, and a pass reads each rule back by its comment
 and by what it does:
@@ -821,6 +853,24 @@ and by what it does:
 - `in via ranet3 ipv4 from 198.51.100.0/24 source 203.0.113.10`
 - `local via ranet3 ipv4 from 192.0.2.1/32 masquerade`
 
+`forward`'s first line carries the comment `ipv6 to forward6`. nf_tables
+[refuses to delete a chain a goto still names](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_tables_api.c?id=940de590b839f71d6dc846160534bf202401b8b7#n3367),
+so `forward6` goes missing only with that line, and the pass and the stop empty
+`forward` in the transaction that deletes `forward6`. An earlier version held
+IPv4's lines in a regular chain `forward4`, which `forward`'s one line sent IPv4
+on to by a map. A pass that finds `forward4` reads it as a fault of both
+families and, in its transaction, empties `forward` before it deletes
+`forward4`, since
+[the gotos of a line's map go with the line](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nf_tables_api.c?id=940de590b839f71d6dc846160534bf202401b8b7#n6016).
+A line at the forward hook tests no family ahead of its prefix, so
+`nft list ruleset` prints the prefix as the bytes the line reads, such as
+`@nh,96,32 & 0xffffff00 == 0xc0000200` for `192.0.2.0/24`, and its comment names
+it. A refusal reads `reject with icmpx admin-prohibited`, which the kernel
+[sends](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/netfilter/nft_reject.c?id=940de590b839f71d6dc846160534bf202401b8b7#n96)
+as code 13 in IPv4 and code 1 in IPv6. The limit's rule reads
+`reject with icmpx host-unreachable` in IPv4, sent as code 1, and
+`reject with icmpx admin-prohibited` in IPv6, sent as code 1 too.
+
 A rule carries `from` unless its prefix covers every address, and a screen of a
 class of `none`'s chain names that class, its set listed beside it in
 `nft list ruleset` and read back with it. A nat chain is consulted once per
@@ -830,7 +880,7 @@ refused, a dropping rule's the packets it dropped, a refusing rule's the packets
 it refused, and a class of `none`'s pass carries none. The ICMP drops' and the
 refusals' counts reach no field of `ranet3 status`, and `ranet3 debug egress`
 and `nft list ruleset` show them. [Sharing a host](coexistence.md) describes how
-the tables live beside other writers.
+the table lives beside other writers.
 
 ## Egress segments
 
@@ -924,12 +974,12 @@ segment to another SID or editing its `allow` list applies in place, and the
 originated `/128` moves with the SID. [Reloading](reloading.md) lists what else
 a reload applies.
 
-On Linux `ranet3 down` retracts the advertisement and removes the tables, with
-their set and timeout objects. The flows they leave keep their translation under
-the host's timeouts. `ranet3 up` installs the tables again on the next pass, and
-the advertisement follows. On macOS `ranet3 down` retracts the advertisement,
-ends each dial, resets each connection and ends each mapping, and `ranet3 up`
-takes flows again from the next pass, which announces what is ready.
+On Linux `ranet3 down` retracts the advertisement and removes the translator's
+chains, sets and timeout objects from the table. The flows they leave keep their
+translation under the host's timeouts. `ranet3 up` installs them again on the
+next pass, and the advertisement follows. On macOS `ranet3 down` retracts the
+advertisement, ends each dial, resets each connection and ends each mapping, and
+`ranet3 up` takes flows again from the next pass, which announces what is ready.
 
 ## Watching it
 
@@ -941,7 +991,7 @@ table holds against its maximum, what it announces, what it withholds "until its
 family is ready", the families it is ready for and the reason the others are
 not, what the lookups skipped, any chain it shares the hook with, the time since
 the last pass and the last error, such as
-`nftables table ip and ip6 ranet3 chains forward and postrouting and a none_ chain for each class of none, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, conntrack holding 9000 of 262144 entries, ...`.
+`nftables table inet ranet3 chains forward, forward6 and postrouting and a none_ chain for each class of none, 20 rules, 4100 flows, 12 ipv4 and 3 ipv6 packets refused past 4096 a source, conntrack holding 9000 of 262144 entries, ...`.
 A family not ready is named with the reason the last pass found, and a family
 the node does not translate with none. Before the first pass the line names no
 family. The refused counts are the limit rules' counters, of packets, each retry
@@ -973,20 +1023,20 @@ kernel exit's on Linux:
 | `egress userspace exit opened no ICMP socket, so it refuses echo in this family and relays no router's error about its sockets` | warn  | an ICMP socket of a family would not open, with `ipv6` and `err`, at startup                                                        |
 | `egress: the userspace exit opened no raw socket, so a leaf's own ICMP error about a datagram reaches no server`                | warn  | the daemon could not open a raw socket, as one not running as root cannot, with `err`, at startup                                   |
 
-| Log line                                                            | Level | When                                                                                                                           |
-| ------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's tables and left empty by the userspace exit                     |
-| `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                   |
-| `egress ready`                                                      | info  | a family went ready, with `family`                                                                                             |
-| `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                                         |
-| `stopped reading nf_tables notifications`                           | warn  | a read of the notification socket failed, with `table` and `err`, after which another writer's change waits for the next sweep |
-| `egress rules installed`                                            | info  | a pass wrote the chains                                                                                                        |
-| `egress advertisement changed`                                      | warn  | the announced prefixes changed after the first pass                                                                            |
-| `egress is sharing the source translation hook with another writer` | warn  | a new chain appears at the same hook, once each                                                                                |
-| `egress pass failed, retrying`                                      | warn  | a pass failed, retried with backoff                                                                                            |
-| `egress translator withdrawn`                                       | info  | the tables are removed, at shutdown or at `ranet3 down`                                                                        |
-| `egress could not withdraw its tables, retrying`                    | warn  | `ranet3 down` could not remove the tables                                                                                      |
-| `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                               |
+| Log line                                                            | Level | When                                                                                                                                     |
+| ------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's tables and left empty by the userspace exit                               |
+| `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                             |
+| `egress ready`                                                      | info  | a family went ready, with `family`                                                                                                       |
+| `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                                                   |
+| `stopped reading nf_tables notifications`                           | warn  | a read of the notification socket failed, with `table`, `chains` and `err`, after which another writer's change waits for the next sweep |
+| `egress rules installed`                                            | info  | a pass wrote the chains                                                                                                                  |
+| `egress advertisement changed`                                      | warn  | the announced prefixes changed after the first pass                                                                                      |
+| `egress is sharing the source translation hook with another writer` | warn  | a new chain appears at the same hook, once each                                                                                          |
+| `egress pass failed, retrying`                                      | warn  | a pass failed, retried with backoff                                                                                                      |
+| `egress translator withdrawn`                                       | info  | its chains, sets and objects are removed, at shutdown or at `ranet3 down`                                                                |
+| `egress could not withdraw its chains, retrying`                    | warn  | `ranet3 down` could not remove them                                                                                                      |
+| `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                                         |
 
 On Linux a pass that writes the chains, changes the announced prefixes or fails
 records an `egress.pass` event, and so does `ranet3 down`, with `trigger`,
@@ -1017,7 +1067,7 @@ since the last record as `refused`, so a source retrying does not flood the log.
 | `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them |
 | `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                              |
 | `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                                     |
-| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and others in the exit's own table among them                |
+| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and another writer's in `inet ranet3` among them             |
 | `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                                    |
 | `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                        |
 | `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                         |

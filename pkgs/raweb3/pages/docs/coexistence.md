@@ -337,9 +337,9 @@ rest, keep the chain's IPv4 check off that traffic.
 
 Under `cap.exit.fallback = "none"`
 [the kill switch](routing.md#the-kill-switch-on-linux) adds 5445 and 5450 to the
-second block and writes the table `inet ranet3_fallback`, whose chains filter at
-`output` and at `postrouting` at priority 2147483646, over the reach that page
-gives.
+second block and writes the chains `fallback` and `output` in the table
+`inet ranet3`, which filter at `postrouting` and at `output` at priority
+2147483646, over the reach that page gives.
 
 - **A firewall's author.** A chain at 2147483647 at postrouting sees only what
   the switch passed and can drop or count, since a filter chain
@@ -566,37 +566,40 @@ tunnel is using.
 ## The packet filter
 
 `cap.egress` writes into the packet filter, where the same 3 rules hold. It
-creates 1 nftables table named after this tool for each address family it
-translates, the advertised ones and both beside an egress segment, `ip ranet3`
-and `ip6 ranet3`. Each holds a nat chain at postrouting, a filter chain at
-forward with
-[a chain for each class of `none`](exit-nodes.md#the-nftables-tables) beside it,
-the set that chain counts flows in for
-[each source's share](exit-nodes.md#each-sources-share-of-the-flows), the
-anonymous sets the screens of a class of `none`'s chain take their sources from,
-and the timeout objects of the flows it translates. That name is the whole of
-its ownership claim, as `rt_proto` is the reconciler's. It writes only inside
-those tables and reads them back as
-[refusing to advertise](exit-nodes.md#refusing-to-advertise) lists, so a rule
-another writer puts in one of its chains or edits there, or a table it sets
-dormant, which changes what the chain does to a packet, is undone by the next
-pass. It does not read back the set's counts, so a count another writer changes
-or removes stays as that writer left it. Every chain in its table whose name
-starts `none_` is its own, as
+writes its chains in the nftables table `inet ranet3`, which the antispoof
+filter and the kill switch share, [below](#the-nftables-table): a nat chain at
+postrouting, a filter chain at forward, `forward`, with
+[IPv6's chain and a chain for each class of `none`](exit-nodes.md#the-nftables-chains)
+beside it, and for each family it translates, the advertised ones and both
+beside an egress segment, the set it counts each source's flows in for
+[each source's share](exit-nodes.md#each-sources-share-of-the-flows) and the
+timeout objects of the flows it translates, beside the anonymous sets the
+screens of a class of `none`'s chain take their sources from. Every limit line
+of a family counts in that family's set: the family's own line, IPv4's in
+`forward` and IPv6's in `forward6`, the regular chain `forward`'s first line
+goes to, and, in the chain of each class of `none` that directly holds a class
+that translates, the line that counts the flows of those classes' sources. The
+table's name and its chains', sets' and objects' names are the whole of its
+ownership claim, as `rt_proto` is the reconciler's. It writes only those and
+reads them back as [refusing to advertise](exit-nodes.md#refusing-to-advertise)
+lists, so a rule another writer puts in one of its chains or edits there, or a
+table it sets dormant, which changes what the chain does to a packet, is undone
+by the next pass. It does not read back the sets' counts, so a count another
+writer changes or removes stays as that writer left it. Every chain in the table
+whose name starts `none_` is its own, as
 [refusing to advertise](exit-nodes.md#refusing-to-advertise) describes. Another
-chain in its table is neither read nor removed until the table is made again. It
-reads other writers' tables, chains and rules to find its own and to report
-conflicts, and writes, replaces or deletes nothing outside its own tables. It
-replaces the chains' rules in 1 transaction, so no packet is ever evaluated
-against half a ruleset, and deletes and makes a table again in that transaction
-where nf_tables will not change it in place, any chain another writer put in the
-table with it.
+chain in the table is neither read nor removed. It reads other writers' tables,
+chains and rules to find its own and to report conflicts, and writes, replaces
+or deletes nothing but its own. It replaces the chains' rules in 1 transaction,
+so no packet is ever evaluated against half a ruleset, and deletes and makes
+again in that transaction a chain, set or timeout object of its own that
+nf_tables will not change in place, and nothing else.
 
-It removes its tables at shutdown and at `ranet3 down`, with any chain another
-writer put in them. A table left behind by an earlier instance carries the same
-name and is adopted, then brought to what the configuration now asks for, and
-one in a family the configuration no longer covers is removed at startup rather
-than left translating under rules nothing is maintaining.
+It removes its chains, sets and timeout objects at shutdown and at
+`ranet3 down`, and the table with them where nothing of another writer's is left
+in it. What an earlier instance left carries the same names and is adopted, then
+brought to what the configuration now asks for, and a rule of a family the
+configuration no longer covers goes with the first pass's rewrite of the chains.
 
 Nothing here writes iptables. The 2 are separate registries in the kernel, an
 `iptables-nft` rule is visible here as an ordinary nftables table, and the
@@ -625,9 +628,9 @@ device in both directions.
 The scrape counts the other chains as `ranet3_egress_conflicts`. The report
 covers nat postrouting chains at priority 99 or below, which can run ahead of
 the translator's, in `ip` and `ip6` tables of the families it translates and in
-`inet` tables, whose chains hook both families, another writer's chain in the
-translator's own table among them. It leaves out chains past 99, which run after
-it.
+`inet` tables, whose chains hook both families, another writer's nat chain in
+the table `inet ranet3` among them. It leaves out chains past 99, which run
+after it.
 
 A class of `none` binds its flows to the source they carry in the translator's
 chain, at priority 99, so a host's masquerade at `srcnat` or after leaves them
@@ -660,23 +663,23 @@ lookup failed.
 While the exit runs, `nft list ruleset` lists its ICMP timeout objects in a form
 nft 1.1.7 does not load back, so a full listing saved then fails to load whole.
 Save the ruleset table by table with `nft list table <family> <name>`, leaving
-out the tables named `ranet3`, which the translator makes again on the pass a
+out the table `inet ranet3`, whose writers make their chains again on the pass a
 load wakes.
 
-[The antispoof filter](antispoof.md) adds a third table under the same name,
+[The antispoof filter](antispoof.md) writes its chains in the same table,
 `inet ranet3`, on every Linux node: filter chain `mesh_entry` at postrouting,
 priority `srcnat` + 10 (110), and with `overlay` filter chain `antispoof` at
-prerouting, priority `raw` (-300). The same rules hold: it writes only inside
-its table and replaces its chains and sets in 1 transaction.
-[Its lifetime](antispoof.md#where-it-runs) says when the table is taken over,
+prerouting, priority `raw` (-300). The same rules hold: it writes only its own
+chains and sets and replaces them in 1 transaction.
+[Its lifetime](antispoof.md#where-it-runs) says when its chains are taken over,
 kept and removed. The conflict report above leaves its chains out, since they
 are filter chains and translate nothing. Another base chain at the same hook,
 such as a firewall's own raw chain, runs beside it: both see every packet, and
 only a drop in either ends the hook. A firewall reload that flushes the whole
-ruleset deletes the table, and the filter puts it back on the pass the deletion
-wakes. A table or chain another writer changed in a way nf_tables will not undo
-in place is deleted and made again in 1 transaction, any chain another writer
-put in the table with it.
+ruleset deletes the table with every writer's chains, and each puts its own back
+on the pass the deletion wakes. A chain or set of the filter's that another
+writer changed in a way nf_tables will not undo in place is deleted and made
+again in 1 transaction, and nothing else in the table goes with it.
 
 For a firewall's author, `mesh_entry` reads the source a packet leaves by the
 tun with, after every source translation: each NAT chain at postrouting runs
@@ -694,6 +697,50 @@ after it at postrouting,
 arriving on its own interface. Tailscale's sources forwarded from `tailscale0`
 into the tun are dropped by `mesh_entry` unless a masquerade gives them the
 tun's address, since this node owns none of them.
+
+### The nftables table
+
+On Linux every nftables chain, set and object ranet3 writes is in the one table
+`inet ranet3`, which 3 writers share, each owning its own by name:
+
+| Writer                                                                                     | Chains                                                                                                                                                                                                                      | Sets and objects                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [the antispoof filter](antispoof.md#where-it-runs), on every node                          | `mesh_entry`, filter at postrouting, priority 110, and with `overlay` `antispoof`, filter at prerouting, priority -300                                                                                                      | the interval sets `carved4`, `carved6`, `owned4`, `owned6`, `none4` and `none6`                                                                                                                                                  |
+| [the kill switch](routing.md#the-kill-switch-on-linux), under `cap.exit.fallback = "none"` | `fallback`, filter at postrouting, and `output`, filter at output, both at priority 2147483646                                                                                                                              | the sets `forwarded`, `lan4`, `lan6`, `own4`, `own6`, `tcp_ports` and `udp_ports`                                                                                                                                                |
+| [the translator](exit-nodes.md#the-nftables-chains), under `cap.egress`                    | `postrouting`, nat at postrouting, priority 99, `forward`, filter at forward, priority 0, the regular chain `forward6`, which `forward`'s first line sends IPv6 on to, and a regular chain `none_` for each class of `none` | for each family it translates the set `flows4` or `flows6` and 3 timeout objects, `translated-udp4`, `translated-tcp4` and `translated-icmp4` in IPv4, and `translated-udp6`, `translated-tcp6` and `translated-icmpv66` in IPv6 |
+
+Each writer reads back, rewrites and deletes only what its names give. Another
+writer's change to one of a writer's chains, a rule in one or one of its sets
+wakes that writer alone. No monitor reads the timeout objects, and the
+translator's next read finds a change to one. A table message wakes every writer
+but its sender unless it makes the table with no flags or clears them. A flush
+of the whole ruleset deletes the table and another program setting it dormant
+sets a flag on it, so each wakes every writer once, and the first writer's pass
+after it makes the table again or clears the flag, which wakes no other: the
+table it makes holds none of their chains, and with the flag cleared it bypasses
+none. No writer's writes wake another. Each makes the table where it is missing,
+and the last to withdraw deletes it, so a clean stop leaves no table, while a
+stop that leaves anything of another writer's in it leaves the table holding
+that. A table another writer gave a flag other than dormant, such as `persist`,
+refuses every writer's pass until `nft delete table inet ranet3` clears it. The
+translator names that command in the reason it is not ready, while the antispoof
+filter and the kill switch report the write's refusal,
+`operation not supported`, and the filter's ends a start at its first pass. The
+translator's nat chain needs Linux 5.2 or later, as [Linux](platforms.md#linux)
+gives. An `inet` nat chain hooks NAT in both families, so on an exit that
+translates one family a flow of the other that no chain translates gets the
+kernel's null binding, which changes no address, and its port only where 2 flows
+would share a tuple, as on any host with a NAT chain in that family.
+
+An older ranet3 wrote the translator's chains in the tables `ip ranet3` and
+`ip6 ranet3`, and the kill switch's in `inet ranet3_fallback`. Its clean stop
+withdraws them, so they outlive an upgrade only where the older daemon was
+killed or crashed, and the kill switch's also where it stopped for the mesh's
+failure. No later instance reads or removes them: the old nat chain at priority
+99 shows as a conflict in `status`, while the old forward chain and kill switch
+go on refusing and dropping by the configuration they were written for. Delete
+them with `nft delete table ip ranet3`, `nft delete table ip6 ranet3` and
+`nft delete table inet ranet3_fallback`, or reboot.
 
 ### pf on macOS
 

@@ -557,9 +557,9 @@ packet too (net/ipv6/netfilter/nft_fib_ipv6.c:212-213 and 33-35).
 macOS's switch is routes, as
 [the kill switch on macOS](#the-kill-switch-on-macos) gives. With
 `cap.exit.fallback = "none"` the host's traffic leaves by a link outside the
-mesh only where a line of the chains below passes it while the table reads back
-as written, whether an exit is live or not, and after each stop its lifetime
-below says leaves the table. The switch covers the host's own traffic and that
+mesh only where a line of the chains below passes it while they read back as
+written, whether an exit is live or not, and after each stop their lifetime
+below says leaves the chains. The switch covers the host's own traffic and that
 of the links `forward` names. The chain's forwarded line below passes a
 forwarded packet from a link outside `forwarded`, such as a container's or a
 VM's, whose destination `fib daddr type` does not read as local, a type the
@@ -588,9 +588,9 @@ chains below.
 
 The routing side leaves open a socket bound to the uplink's address, which 5405
 sends by main, one bound to the uplink's device, and a mark another program's
-rule sends to main. The table `inet ranet3_fallback` holds them to its lines,
-with two filter chains at priority 2147483646: `fallback` at `postrouting`,
-which judges the link a packet leaves by
+rule sends to main. The kill switch's two filter chains in the table
+`inet ranet3`, at priority 2147483646, hold them to their lines: `fallback` at
+`postrouting`, which judges the link a packet leaves by
 ([IPv4](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv4/ip_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n437),
 [IPv6](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/net/ipv6/ip6_output.c?id=940de590b839f71d6dc846160534bf202401b8b7#n248)),
 and `output` at `output`, which sees the packets the host sends by the link of
@@ -689,68 +689,75 @@ counter drop
   `tcp_ports` and `udp_ports` the ranges `inbound` lists. The rules and the sets
   come from one derivation each pass.
 
-The table carries no owner flag, so the kernel does not delete it with the
-process that wrote it:
+The table carries no owner flag, so the kernel does not delete the chains with
+the process that wrote them:
 
-- It is written by the reconciler's first pass, which the start waits up to 10 s
-  for before it dials a session, and again by each pass whose inputs moved, in
-  one transaction with its sets. A first pass that fails, such as one that
+- They are written by the reconciler's first pass, which the start waits up to
+  10 s for before it dials a session, and again by each pass whose inputs moved,
+  in one transaction with their sets. A first pass that fails, such as one that
   cannot list the tun's addresses, is logged as
-  `kernel reconcile failed, retrying` and the start dials without the table
-  until a retry writes it. A table left by an earlier instance is taken over: a
-  pass that reads it back as written keeps it, with its drop's count, and one
-  that does not rewrites it.
+  `kernel reconcile failed, retrying` and the start dials without the chains
+  until a retry writes them. Chains left by an earlier instance are taken over:
+  a pass that reads them back as written keeps them, with their drop's count,
+  and one that does not rewrites them.
 - A clean stop, `ranet3 down`, `ranet3 disable reconciler` and a reload to
-  `"uplink"` or without `cap.exit` withdraw it with the rules. A start or a
-  reload whose file asks for no switch deletes one an earlier instance left.
+  `"uplink"` or without `cap.exit` withdraw its chains and sets with the rules,
+  and the table with them where nothing else is left in it. A start or a reload
+  whose file asks for no switch deletes those an earlier instance left.
 - A start that a refusal or `SIGINT` or `SIGTERM` ends before its build
-  completes runs no pass, so it writes no table and leaves one an earlier
+  completes runs no pass, so it writes no chain and leaves those an earlier
   instance left, with the rules and routes of its protocol.
 - The stop a failed tun causes withdraws the rules, routes and addresses, 5445
-  and mode 3's steered defaults among them. The filter's table `inet ranet3`
-  follows [the antispoof filter's lifetime](antispoof.md#where-it-runs). Where
-  `fallback = "none"` is in force, as it is in mode 3 unless `"uplink"` is
-  written, it deletes no `ranet3_fallback`: a table that is there it leaves as
-  found, with no rule behind it, whatever the last pass read or wrote, and
-  before any pass an earlier instance's. The chains alone then judge what
-  leaves, by main's routes and the sets the last pass wrote: what 5445 sent to a
-  carve-out or this node's own prefix leaves by the LAN's line or the own
-  prefixes' line, what the mesh's default or the steered defaults carried meets
-  the drop unless another line passes it, and a connect they refuse waits out
-  its retransmissions rather than meeting 5450's `ENETUNREACH`. Where no table
-  is there the host's traffic leaves by its routes. It
-  [logs a warning](#watching-it) that says whether a listing found the table,
-  found none, or failed, but where the table was deleted or found absent since
-  the last pass that asked for it, as after `ranet3 down`,
-  `ranet3 disable reconciler` or a pass under `"uplink"`, the stop lists nothing
-  and logs nothing. Where the file in force asks for no switch it deletes the
-  table as the stops above do. The daemon exits 1 for
+  and mode 3's steered defaults among them. The antispoof filter's chains follow
+  [its lifetime](antispoof.md#where-it-runs). Where `fallback = "none"` is in
+  force, as it is in mode 3 unless `"uplink"` is written, it deletes no chain of
+  the kill switch: chains that are there it leaves as found, with no rule behind
+  them, whatever the last pass read or wrote, and before any pass an earlier
+  instance's. The chains alone then judge what leaves, by main's routes and the
+  sets the last pass wrote: what 5445 sent to a carve-out or this node's own
+  prefix leaves by the LAN's line or the own prefixes' line, what the mesh's
+  default or the steered defaults carried meets the drop unless another line
+  passes it, and a connect they refuse waits out its retransmissions rather than
+  meeting 5450's `ENETUNREACH`. Where no chain is there the host's traffic
+  leaves by its routes. It [logs a warning](#watching-it) that says whether a
+  listing found the chains, found none, or failed, but where the chains were
+  deleted or found absent since the last pass that asked for them, as after
+  `ranet3 down`, `ranet3 disable reconciler` or a pass under `"uplink"`, the
+  stop lists nothing and logs nothing. Where the file in force asks for no
+  switch it deletes the chains as the stops above do. The daemon exits 1 for
   [the supervisor's restart](service.md#restarts-and-the-network). While ranet3
-  stays down, the operator removes a table left with
-  `nft delete table inet ranet3_fallback`.
-- After `SIGKILL`, or another stop that withdraws nothing, the table and the
+  stays down, the operator removes the chains left with
+  `nft delete chain inet ranet3 fallback` and
+  `nft delete chain inet ranet3 output`.
+- After `SIGKILL`, or another stop that withdraws nothing, the chains and the
   rules stay and the tun goes with the process. A start followed by
   `ranet3 down` withdraws them. With ranet3 stopped, the operator removes the
-  switch by deleting the table and the rules of `cap.table.proto` in both
-  families: `nft delete table inet ranet3_fallback`,
-  `ip rule flush protocol 155` and `ip -6 rule flush protocol 155` at the
-  default protocol.
+  switch by deleting the chains and the rules of `cap.table.proto` in both
+  families: `nft delete chain inet ranet3 fallback` and
+  `nft delete chain inet ranet3 output`, `ip rule flush protocol 155` and
+  `ip -6 rule flush protocol 155` at the default protocol.
 - Nothing outlives a reboot, so the switch holds from ranet3's start, not from
   boot.
 
-Each pass reads the table back, its hook, priority, lines and set elements.
-While it does not read back as written, or cannot be written, such as on a
-kernel without `nf_tables`, the reconciler leaves 5405 and 5435 out and keeps
-5445 and 5450, so an unmarked lookup from the uplink's address meets 5440, 5445
-or 5450 rather than main, but for a route of main longer than /0, which still
-wins at 5410 as in mode 2, the cost
+Each pass reads its chains back, their hooks, priorities, lines and set
+elements. While they do not read back as written, or cannot be written, such as
+on a kernel without `nf_tables`, the reconciler leaves 5405 and 5435 out and
+keeps 5445 and 5450, so an unmarked lookup from the uplink's address meets 5440,
+5445 or 5450 rather than main, but for a route of main longer than /0, which
+still wins at 5410 as in mode 2, the cost
 [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) names. While
-the table holds, the chains' drop takes that route's traffic beyond the LAN
-unless another line passes it. Status names the switch `not holding` with the
-reason, and the services on the uplink's address answer only where 5410 or 5445
-routes the reply, or the mark 0x72 sends it past them to main, until the table
-reads back. The reconciler watches the table's notifications, so another
-writer's flush or deleted line starts a pass at once.
+the chains hold, their drop takes that route's traffic beyond the LAN unless
+another line passes it. Status names the switch `not holding` with the reason,
+and the services on the uplink's address answer only where 5410 or 5445 routes
+the reply, or the mark 0x72 sends it past them to main, until the chains read
+back. The reconciler watches the notifications of the table and of its chains
+and sets, so another writer's flush or deleted line starts a pass at once, and
+the antispoof filter's and the translator's writes of their chains, rules and
+sets start none. A flush of the ruleset deletes the table and another program
+setting it dormant sets a flag on it, so each starts a pass in every writer
+once. The first writer's pass after it makes the table again or clears the flag,
+which starts none in another writer: the table it makes holds none of their
+chains, and with the flag cleared it bypasses none.
 
 #### Mode 3 on Linux
 
@@ -910,7 +917,7 @@ In a family it holds none of, the rows above hold alone.
 - Under [the kill switch](#the-kill-switch-on-linux), E3's lookup goes on to
   5445 rather than main: to one of this node's own prefixes or a carve-out it
   ends by main's route there, and any other ends refused at 5450. E1 and E2
-  still end by main, and meet the table's chains.
+  still end by main, and meet the switch's chains.
 
 A lookup bound to a device, such as by a socket bound with `SO_BINDTODEVICE`,
 ends by the rows above with these changes. An address of the host's own ends at
@@ -972,8 +979,9 @@ fails no pass.
   later. Changes in that window join the same pass. On Linux the notifications
   are a route of the mesh's table coming or going, a rule of the reconciler's
   protocol going, and an address of the tun coming or going, another writer's
-  among them, and another writer's change to the table `ranet3_fallback` while
-  the reconciler writes it. On macOS they are a route of the utun, or of `lo0`,
+  among them, and another writer deleting the table `inet ranet3` or setting a
+  flag on it, or changing the kill switch's chains and sets in it, while the
+  reconciler writes them. On macOS they are a route of the utun, or of `lo0`,
   where the holds and the kill switch's rejects are, coming, going or changing,
   another writer's among them.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
@@ -1082,8 +1090,9 @@ shows its route, and `ranet3 whois` names the peer an address inside it takes.
 The reconciler reads back, deletes and withdraws only what it owns. On Linux it
 owns the routes in its own table that carry its protocol and leave by its tun,
 and its holds and throws there. It also owns the rules that carry its protocol
-and the addresses it added, and the nftables table `inet ranet3_fallback` by its
-name, whoever wrote it, which it writes, reads back and deletes as
+and the addresses it added, and the chains `fallback` and `output` and their
+sets in the nftables table `inet ranet3` by their names, whoever wrote them,
+which it writes, reads back and deletes as
 [the kill switch](#the-kill-switch-on-linux) gives. On macOS it is the routes of
 its own shape out of its own utun, and on `lo0` the reject routes of the
 switch's shape at the switch's keys and the overlay's, whoever wrote them, as
@@ -1552,8 +1561,8 @@ The switch's lifetime:
   [the dump of the routing table they read](design/limits.md#dataplane-and-sockets)
   fails, `ranet3 down`, `ranet3 disable reconciler` and the reload try again
   later, and a stop leaves the rejects and the holds as `SIGKILL` does below.
-- The stop a failed tun causes leaves the rejects, as Linux's leaves
-  `ranet3_fallback`, and the daemon exits 1 for
+- The stop a failed tun causes leaves the rejects, as Linux's leaves its chains,
+  and the daemon exits 1 for
   [the supervisor's restart](service.md#restarts-and-the-network).
 - After `SIGKILL`, or another stop that withdraws nothing, the rejects and the
   holds stay, a hold beneath a route of the mesh's at a `/32` or `/128` prefix
@@ -1608,7 +1617,7 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   `not holding` with the reason the switch does not read back, and on Linux what
   the last lines of both chains have dropped, summed, as
   `fallback none holding, 12 packets, 720 B dropped`, or `drops not read yet` in
-  place of the counts until a read of the table by this process succeeds. On
+  place of the counts until a read of the chains by this process succeeds. On
   macOS it names no drops, since ranet3 reads no count of the rejects. It names
   a connected network left out of the LAN as
   `198.0.0.0/7 left out of the LAN as it captures the machine`, and one the
@@ -1629,9 +1638,9 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   not, with the source and interface of an underlay lookup and its answer, as
   [debugging](development/debug.md#commands) gives, under `cap.exit.via` the
   steered defaults with the path's state, and under `fallback = "none"` the kill
-  switch as the kernel holds it now, on Linux the table `ranet3_fallback` with
-  each line's drop count and each set's elements, and on macOS each reject with
-  no count.
+  switch as the kernel holds it now, on Linux its chains and sets with each
+  line's drop count and each set's elements, and on macOS each reject with no
+  count.
 - Under `fallback = "none"` a scrape carries the switch, and on Linux its drops,
   as [metrics](metrics.md#series) lists.
 
@@ -1660,7 +1669,7 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 | `kernel no longer leaves a family out of the exit mode`                                                                                                        | info  | the tun holds one again, `cap.exit` was removed or the reconciler withdrew                                                                                                                      |
 | `kernel is withdrawing the steered defaults`                                                                                                                   | warn  | under `cap.exit.via`, a pass found a segment of the path unresolved, with `segment` and `verdict`, once until that changes                                                                      |
 | `kernel holds the steered defaults while every segment of cap.exit via resolves to a peer through its own /128, or for a segment after the first to this node` | info  | under `cap.exit.via`, a pass found every segment resolved, with `installed`, the families whose steered default, or on macOS its zero-free cover, it left in the table, once until that changes |
-| `kernel's kill switch holds the host's traffic while no exit is live`                                                                                          | info  | the switch began holding, or holds again once it reads back, with `where`, the table or the rejects on `lo0`                                                                                    |
+| `kernel's kill switch holds the host's traffic while no exit is live`                                                                                          | info  | the switch began holding, or holds again once it reads back, with `where`, the chains or the rejects on `lo0`                                                                                   |
 | `kernel's kill switch passes the host's traffic to the exit live through the tun`                                                                              | info  | an exit became live under the switch, with `where`                                                                                                                                              |
 | `kernel's kill switch is no longer asked for`                                                                                                                  | info  | a reload or a withdrawal ended the switch, with `where`                                                                                                                                         |
 | `kernel is leaving its kill switch after the mesh failed`                                                                                                      | warn  | under `fallback = "none"` a failed tun's stop left the switch it found, with `where` and the last pass's `state`, empty before one                                                              |
@@ -1670,7 +1679,7 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 | `kernel could not delete a kill switch an earlier instance may have left, which keeps the host's traffic off the uplink until it is deleted`                   | warn  | a start or reload asking for no switch, or a start with no `cap.table`, failed to delete the switch, on macOS or the holds at its configuration's prefixes, with `where`, `err` and `fix`       |
 | `kernel's first pass has not ended, so sessions are dialed before the kill switch is written`                                                                  | warn  | under `fallback = "none"` the start waited `waited` for the reconciler's first pass and dials without it                                                                                        |
 | `kernel could not read the DNS servers systemd-resolved queries through each link`                                                                             | warn  | status could not name the resolvers beyond the LAN, once until it can                                                                                                                           |
-| `stopped reading nf_tables notifications`                                                                                                                      | warn  | a read of a table's notification socket failed, with `table` and `err`, after which another writer's change waits for the next periodic pass                                                    |
+| `stopped reading nf_tables notifications`                                                                                                                      | warn  | a read of the switch's notification socket failed, with `table`, `chains` and `err`, after which another writer's change waits for the next periodic pass                                       |
 
 The 2 route lines share 1 limit of 1 line per second. Each carries
 `changes_since_last`, the number of changes since the last line. A lookup's

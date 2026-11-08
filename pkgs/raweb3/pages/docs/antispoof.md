@@ -8,10 +8,10 @@ updated: 2026-11-09
 order: 55
 ---
 
-The antispoof filter owns the nftables table `inet ranet3` and its 2 chains on
-Linux, and the pf anchor `com.apple/ranet3` on macOS. Chain `antispoof` runs
-wherever the top-level `overlay` is written, and drops a packet that arrives on
-an interface outside the mesh with a source in the mesh's own address space, but
+The antispoof filter owns 2 chains of the nftables table `inet ranet3` on Linux,
+and the pf anchor `com.apple/ranet3` on macOS. Chain `antispoof` runs wherever
+the top-level `overlay` is written, and drops a packet that arrives on an
+interface outside the mesh with a source in the mesh's own address space, but
 where the interface's own network lies inside that space or an exemption passes
 it. Chain `mesh_entry` runs on every Linux node with no key, and lets a packet
 the host sends into the tun pass only from a source this node owns, as a reply,
@@ -421,8 +421,10 @@ interface outside the mesh with a mesh source and the filter would drop them.
 
 ## Where it runs
 
-The filter owns its own nftables table, `inet ranet3`, with these chains and the
-6 interval sets `carved4`, `carved6`, `owned4`, `owned6`, `none4` and `none6`:
+The filter writes these chains and the 6 interval sets `carved4`, `carved6`,
+`owned4`, `owned6`, `none4` and `none6` in the nftables table `inet ranet3`,
+where [the translator](exit-nodes.md#the-nftables-chains) and
+[the kill switch](routing.md#the-kill-switch-on-linux) write their own:
 
 | Chain        | Type     | Hook          | Priority          | Policy   | When                       |
 | ------------ | -------- | ------------- | ----------------- | -------- | -------------------------- |
@@ -446,58 +448,69 @@ reverse path check in loose mode passes it wherever it finds a route back to
 that source through the tun, as for a live node's address. The chain drops that
 packet too, so it runs wherever `overlay` is written.
 
-A pass reads the table back whole: every rule of both chains in order, whoever
-wrote it, every chain the table holds, the table's flags, each chain's type,
-hook, priority and policy, and each set's elements as ranges. When anything
-differs from what the configuration asks for, a rule another writer added, a
-chain the filter does not write, a flushed set, a dormant table or a policy of
-drop among it, the pass deletes the table, with every chain in it, and makes it
-again with its chains and sets in 1 transaction, then reads them back again. A
-change of the mesh's table or the host's interfaces that moves only a set
-deletes each range that set no longer holds and adds each new one, a range's
+A pass reads its chains and sets back: every rule of both chains in order,
+whoever wrote it, the table's flags, each chain's type, hook, priority and
+policy, and each set's elements as ranges. When anything differs from what the
+configuration asks for, a rule another writer added, a flushed set, a dormant
+table or a policy of drop among it, the pass rewrites both chains and every set
+in 1 transaction, deleting first a chain or set nf_tables will not change in
+place, and leaves the table's other chains as they are, then reads them back
+again. A change of the mesh's table or the host's interfaces that moves only a
+set deletes each range that set no longer holds and adds each new one, a range's
 start and end together, in 1 transaction, the chains left alone, so a lookup
 meets the set before the change or after it. One LAN coming or going sends every
 nf_tables listener a notification for each element of the ranges that differ: 2
 to 6 for a LAN enclosing no other, and more for one that does, since the ranges
 of the LANs inside it go or come with it. A pass runs every 30 seconds, and a
 failed one is retried after 1 second, doubling up to the 30. Another writer
-adding, changing or deleting the table, one of its chains, a rule or a set's
-element wakes a pass at once, and the filter reads not ready until that pass
-puts the table back in 1 transaction. Between the change and that transaction
-forged packets may pass. The filter's own writes wake nothing. Notifications the
-daemon lost, which another table's large transaction can overflow its socket
-with, wake a pass too and leave readiness as it was, since that pass reads the
-table back.
+deleting the table or setting a flag on it, or adding, changing or deleting one
+of the filter's chains, a rule in one or an element of one of its sets, wakes a
+pass at once, and the filter reads not ready until that pass puts them back in 1
+transaction. Between the change and that transaction forged packets may pass.
+The filter's own writes wake nothing, nor do the translator's and the kill
+switch's writes of their chains, rules and sets. A flush of the ruleset deletes
+the table and another program setting it dormant sets a flag on it, so each
+wakes every writer once. The first writer's pass after it makes the table again
+or clears the flag, which wakes no other: the table it makes holds none of their
+chains, and with the flag cleared it bypasses none. Notifications the daemon
+lost, which another table's large transaction can overflow its socket with, wake
+a pass too and leave readiness as it was, since that pass reads the chains back.
 
-The table's lifetime:
+The lifetime of its chains and sets:
 
-- The start writes it with the filter's first pass, before the reconciler routes
-  anything into the tun. A table an earlier instance left is taken over: a first
-  pass that reads it back as it would write it keeps it, with its counters, and
-  one that does not rewrites it in 1 transaction, so `antispoof` drops forged
-  sources throughout.
-- `ranet3 down` leaves it: the kernel still forwards and the host's services
+- The start writes them with the filter's first pass, before the reconciler
+  routes anything into the tun. Chains and sets an earlier instance left are
+  taken over: a first pass that reads them back as it would write them keeps
+  them, with their counters, and one that does not rewrites them in 1
+  transaction, so `antispoof` drops forged sources throughout.
+- `ranet3 down` leaves them: the kernel still forwards and the host's services
   still trust mesh sources.
-- A stop on `SIGINT` or `SIGTERM` withdraws it last, after the reconciler
+- A stop on `SIGINT` or `SIGTERM` withdraws its chains and sets last, and the
+  table with them where nothing else is left in it, after the reconciler
   withdrew the routes into the tun and the mesh closed its sessions, so nothing
-  forwards into the mesh by the time it is gone.
+  forwards into the mesh by the time they are gone.
 - A start that a refusal or either signal ends before its build completes, after
-  the filter's first pass, withdraws the table where that pass made it, and
-  leaves one the pass found, taken over or rewritten, logging
-  `antispoof filter is leaving the table it found`. A first pass that fails ends
-  the start the same way, and one whose read of the table fails leaves whatever
-  is there and logs nothing beyond the start's refusal.
-- The stop a failed tun causes leaves it, as
+  the filter's first pass, withdraws its chains and sets where that pass made
+  them, and leaves those the pass found, taken over or rewritten, logging
+  `antispoof filter is leaving the chains it found`. A first pass that fails
+  ends the start the same way, and one whose read fails leaves whatever is there
+  and logs nothing beyond the start's refusal.
+- The stop a failed tun causes leaves them, as
   [the kill switch's](routing.md#the-kill-switch-on-linux) stop leaves its
-  table, and logs `antispoof filter is leaving its table after the mesh failed`.
-  `antispoof` keeps dropping forged sources while the supervisor starts the
-  daemon again, `mesh_entry` passes every packet at its first line with the tun
-  gone, and the next start takes the table over as above. While ranet3 stays
-  down, the operator removes it with `nft delete table inet ranet3`.
-- After `SIGKILL` it stays, since the table carries no owner flag: the tun goes
+  chains, and logs
+  `antispoof filter is leaving its chains after the mesh failed`. `antispoof`
+  keeps dropping forged sources while the supervisor starts the daemon again,
+  `mesh_entry` passes every packet at its first line with the tun gone, and the
+  next start takes them over as above. While ranet3 stays down, the operator
+  removes the chains, and with them their drops, by
+  `nft delete chain inet ranet3 antispoof` and
+  `nft delete chain inet ranet3 mesh_entry`, which leave the 6 sets for the next
+  start to take over, or everything of the filter's, the kill switch's and the
+  translator's by `nft delete table inet ranet3`.
+- After `SIGKILL` they stay, since the table carries no owner flag: the tun goes
   with the process, `mesh_entry` passes every packet at its first line, and
   `antispoof` keeps dropping forged sources until ranet3 starts again and takes
-  the table over.
+  them over.
 
 ### The pf anchor on macOS
 
@@ -535,11 +548,11 @@ The anchor's and the reference's lifetime:
 - The start takes a new reference, records it, then gives back the one an
   earlier run recorded, where pf still lists it under that run's pid, so pf
   stays enabled throughout where that reference kept it so. Its first pass takes
-  the anchor over as Linux's takes the table.
+  the anchor over as Linux's takes its chains.
 - A start refused after it took its reference, its first pass not ready or a
   later step of the start failing, gives that reference back and empties the
   record, and empties the anchor where its own pass wrote it, as a refused Linux
-  start removes the table it made. Where the start found an anchor an earlier
+  start removes the chains it made. Where the start found an anchor an earlier
   run left, that anchor stays, and so does the new reference where it took the
   place of an earlier run's that pf still listed, so pf runs as the start found
   it.
@@ -554,7 +567,7 @@ The anchor's and the reference's lifetime:
   back and empties the record, which stops pf where no other program holds a
   reference.
 - The stop a failed tun causes leaves the anchor, the reference and its record,
-  and logs `antispoof filter is leaving its table after the mesh failed`. pf
+  and logs `antispoof filter is leaving its chains after the mesh failed`. pf
   keeps the anchor's rules while the supervisor starts the daemon again, and the
   next start takes both over, or gives both back where it has no `overlay`.
 - After a crash the anchor and the reference stay, and keep dropping forged
@@ -578,9 +591,9 @@ The anchor's and the reference's lifetime:
 
 The filter is ready while both its chains and every set read back as the
 configuration asks, holding nothing else, at their hooks, priorities and
-policies, in a table with no other chain and no flags. Readiness holds nothing
-back: an [egress segment](exit-nodes.md#readiness) follows the translator alone.
-While the filter is not ready the pass retries, the log warns,
+policies, in a table with no flags. Readiness holds nothing back: an
+[egress segment](exit-nodes.md#readiness) follows the translator alone. While
+the filter is not ready the pass retries, the log warns,
 `ranet3_antispoof_ready` reads 0, and `status` and `ranet3 debug rules` say why.
 
 At startup the daemon refuses to start on Linux when the first pass cannot
@@ -725,11 +738,11 @@ chains, the interfaces inside, the overlay prefixes, each carve-out as
 the last pass, the overlay's, the carved prefixes' and those entering the mesh.
 A node with no `overlay` prints the table, chain `mesh_entry` and its drops
 alone, and a Mac prints no drops entering the mesh, since its anchor holds no
-entry chain. A filter whose table is not read back reads `not installed`, with
-the reason, also where it is there and holds another writer's rule or chain or
-sits in a dormant table.
+entry chain. A filter whose chains are not read back reads `not installed`, with
+the reason, also where they are there and hold another writer's rule or sit in a
+dormant table.
 
-`ranet3 debug rules` reads the table's rules now, through a socket of its own,
+`ranet3 debug rules` reads its chains' rules now, through a socket of its own,
 so an operator who sends a test packet reads the counters of that moment rather
 than of the last pass. It lists both chains with the hooks and priorities they
 are written at and the rules read now, the exemptions' accepts among them, and
@@ -773,10 +786,10 @@ anchor, its spelling past 63 bytes.
 | Log line                                                                                                                                                                                                                                                                      | Level | When                                                                                                                                                                                                      |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `antispoof filter in <where>, inside <interfaces>`                                                                                                                                                                                                                            | info  | the daemon starts the filter                                                                                                                                                                              |
-| `antispoof filter installed`                                                                                                                                                                                                                                                  | info  | a pass rewrote the table, with `rules`, `replaced` and `where`                                                                                                                                            |
+| `antispoof filter installed`                                                                                                                                                                                                                                                  | info  | a pass rewrote its chains, with `rules`, `replaced` and `where`                                                                                                                                           |
 | `antispoof filter pass failed, retrying`                                                                                                                                                                                                                                      | warn  | a pass failed, with `err` and `retry_in`                                                                                                                                                                  |
-| `antispoof filter not ready`                                                                                                                                                                                                                                                  | warn  | the table stopped reading back, with the reason as `detail`                                                                                                                                               |
-| `antispoof filter ready`                                                                                                                                                                                                                                                      | info  | the table reads back again                                                                                                                                                                                |
+| `antispoof filter not ready`                                                                                                                                                                                                                                                  | warn  | its chains stopped reading back, with the reason as `detail`                                                                                                                                              |
+| `antispoof filter ready`                                                                                                                                                                                                                                                      | info  | its chains read back again                                                                                                                                                                                |
 | `antispoof carves the overlay for a link that holds part of it`                                                                                                                                                                                                               | warn  | a carve-out came, with `link` and `prefix`                                                                                                                                                                |
 | `antispoof no longer carves the overlay for a link`                                                                                                                                                                                                                           | info  | a carve-out went, with `link` and `prefix`                                                                                                                                                                |
 | `antispoof drops part of an exemption, since another node's prefix holds it`                                                                                                                                                                                                  | warn  | another node's prefix came to hold part of an exemption, with `exemption`, `interface`, `prefix`, `carved`, `routed_via` and `router_id`                                                                  |
@@ -784,10 +797,10 @@ anchor, its spelling past 63 bytes.
 | `antispoof admits this node's range though another router announces it too`                                                                                                                                                                                                   | warn  | another router came to announce an own range an exemption overlaps, with `exemption`, `interface`, `prefix` and `router_id`                                                                               |
 | `antispoof no longer sees another router announce this node's range`                                                                                                                                                                                                          | info  | that conflict went, with `exemption`, `interface` and `prefix`                                                                                                                                            |
 | `antispoof leaves out an exemption naming a device inside the mesh, where it drops nothing`                                                                                                                                                                                   | warn  | the start or a reload brought in an exemption under the exact name of the mesh tun or the loopback link, which writes no rule, with `interface` and `prefix`                                              |
-| `antispoof filter withdrawn`                                                                                                                                                                                                                                                  | info  | the table is removed at shutdown, or by a start that ended in its build after making it                                                                                                                   |
-| `antispoof filter is leaving its table after the mesh failed`                                                                                                                                                                                                                 | warn  | the stop a failed tun causes left the table, with `where`                                                                                                                                                 |
-| `antispoof filter is leaving the table it found`                                                                                                                                                                                                                              | info  | a start that ended before its build completed left the table its first pass's read found, with `where`. A read that failed logs only the start's refusal                                                  |
-| `stopped reading nf_tables notifications`                                                                                                                                                                                                                                     | warn  | a read of the filter's notification socket failed, with `table` and `err`, after which another writer's change waits for the next sweep                                                                   |
+| `antispoof filter withdrawn`                                                                                                                                                                                                                                                  | info  | its chains and sets are removed at shutdown, or by a start that ended in its build after making them                                                                                                      |
+| `antispoof filter is leaving its chains after the mesh failed`                                                                                                                                                                                                                | warn  | the stop a failed tun causes left its chains, with `where`                                                                                                                                                |
+| `antispoof filter is leaving the chains it found`                                                                                                                                                                                                                             | info  | a start that ended before its build completed left the chains its first pass's read found, with `where`. A read that failed logs only the start's refusal                                                 |
+| `stopped reading nf_tables notifications`                                                                                                                                                                                                                                     | warn  | a read of the filter's notification socket failed, with `table`, `chains` and `err`, after which another writer's change waits for the next sweep                                                         |
 | `this daemon took its reference on pf again, since pf no longer listed it, which pfctl -d or another program's pfctl -X ends: pf was off, and this daemon turned it back on, so the host's protection was off until now, and removing overlay turns the antispoof filter off` | warn  | on macOS, a pass took a new reference where pf no longer listed the daemon's and pf was off, which the new one turned back on, with `token`, `pid` and `pf_off`                                           |
 | `this daemon took its reference on pf again, since pf no longer listed it, which pfctl -d or another program's pfctl -X ends: pf was not off, as another holder kept it running, and removing overlay turns the antispoof filter off`                                         | warn  | on macOS, a pass took a new reference where pf no longer listed the daemon's and another holder kept pf running, with `token`, `pid` and `pf_off`                                                         |
 | `this daemon took its reference on pf again, since pf no longer listed it, which pfctl -d or another program's pfctl -X ends: whether pf was off could not be read, and removing overlay turns the antispoof filter off`                                                      | warn  | on macOS, a pass took a new reference where pf no longer listed the daemon's and `pfctl -s info` failed, with `token`, `pid` and `err`                                                                    |
@@ -795,7 +808,7 @@ anchor, its spelling past 63 bytes.
 | `pf dropped the record of a reference it no longer lists under its pid, which a reboot or another program stopping pf ends`                                                                                                                                                   | info  | on macOS, a start found the record naming a reference pf no longer lists under its pid, or a pass's renewal dropped the daemon's own ended reference beside the renewal's warning, with `token` and `pid` |
 | `antispoof filter gave back the pf anchor and reference an earlier run left, since overlay is not written`                                                                                                                                                                    | info  | on macOS, a start without `overlay` found the record naming a reference pf still listed under its pid, emptied the anchor and gave it back, with `where`. One pfctl refused fails the start, naming it    |
 
-A pass that rewrote the table or a set, or failed, records an `antispoof.pass`
+A pass that rewrote its chains or a set, or failed, records an `antispoof.pass`
 event with `trigger`, `took`, `installed`, `wrote` and, on failure, `err`. A
 change of readiness records `antispoof.ready` with `ready`. A pass that read a
 counter move records `antispoof.dropped` with the packets since the pass before
@@ -809,7 +822,7 @@ read.
 
 | Metric                                                  | Meaning                                      |
 | ------------------------------------------------------- | -------------------------------------------- |
-| `ranet3_antispoof_ready`                                | whether the table reads back, 1 or 0         |
+| `ranet3_antispoof_ready`                                | whether its chains read back, 1 or 0         |
 | `ranet3_antispoof_dropped_packets_total{reason,family}` | packets dropped by kind, as of the last pass |
 
 The reasons are `overlay_source`, `carved_source` and `mesh_entry`, each in the
@@ -817,6 +830,6 @@ families a rule of the last pass drops it in, and a drop no rule writes has no
 series: `carved_source` in a family no carve-out and no exemption is of, as
 [what it drops](#what-it-drops) gives, and `mesh_entry` on macOS, since the
 anchor holds no entry chain. `mesh_entry` counts what the entry chain kept out
-of the mesh. A rewrite of the table starts the counters from 0, which a scrape
+of the mesh. A rewrite of its chains starts the counters from 0, which a scrape
 reads as a counter reset. On macOS a load of the tables alone keeps the
 counters.

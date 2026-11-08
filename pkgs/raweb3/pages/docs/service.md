@@ -248,11 +248,11 @@ The mesh tun going away under a running node, such as one an operator deleted,
 is a failure the daemon cannot repair. It logs `netstack tun failed` with the
 interface and the error, records a `netstack.tun.failed` event, and stops as it
 does on SIGTERM: it closes every session with its grace period and withdraws its
-routes and rules and its translation rules. Its antispoof filter's table follows
+routes and rules and its translation rules. Its antispoof filter's chains follow
 [the filter's lifetime](antispoof.md#where-it-runs). Where
 `cap.exit.fallback = "none"`, or mode 3 with `fallback` unwritten, asks for
 [the kill switch](routing.md#the-kill-switch-on-linux), it leaves the switch's
-table, or on macOS [its rejects](routing.md#the-kill-switch-on-macos), as the
+chains, or on macOS [its rejects](routing.md#the-kill-switch-on-macos), as the
 switch's lifetime gives. It then exits 1, and the unit starts it again 5 seconds
 later, which opens the tun anew. On macOS launchd starts it again through
 `KeepAlive`. A single frame the tun hands over that cannot be read as packets

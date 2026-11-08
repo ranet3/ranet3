@@ -277,7 +277,7 @@ value is left out, such as `down` on a node that is up or `err` after a pass
 that succeeded. `endpoints`, `originate` and `mesh_addresses` are always present
 and read `[]` when empty, and every counter is always present but
 `kernel.exit.fallback.dropped`, which is absent until a read of the kill
-switch's table by this process has succeeded, and on macOS always. Other lists,
+switch's chains by this process has succeeded, and on macOS always. Other lists,
 such as `segments`, `disabled`, `taken`, `acted` and `missed`, are left out when
 empty.
 
@@ -394,7 +394,7 @@ Each verb acts as follows:
   installed, as `birdc disable` does to a kernel protocol, instead of freezing a
   table nobody maintains. Under
   [the kill switch](routing.md#the-kill-switch-on-linux) that takes 5450 and the
-  table `inet ranet3_fallback` too, or on macOS
+  kill switch's chains in `inet ranet3` too, or on macOS
   [the rejects](routing.md#the-kill-switch-on-macos), so the host's traffic
   leaves by the uplink until `enable reconciler`. A withdrawal the kernel
   refuses in part is retried on the backoff of a failed pass until it completes.
@@ -443,9 +443,9 @@ dialer stops and no new one starts, the responder stops answering IKE where
 `link.listen` is on, every session is closed with an IKE Delete, and the Babel
 speaker stops. Where `cap.table` is set, the reconciler withdraws the routes,
 rules and tun addresses it installed and
-[the kill switch's](routing.md#the-kill-switch-on-linux) table, or on macOS
+[the kill switch's](routing.md#the-kill-switch-on-linux) chains, or on macOS
 [its rejects](routing.md#the-kill-switch-on-macos). On an exit node the exit
-withdraws its advertisement, and on Linux its tables, while on macOS it ends
+withdraws its advertisement, and on Linux its chains, while on macOS it ends
 each dial, resets each connection and ends each mapping. The daemon, the tun,
 the control socket, the metrics and the debug views stay, and the node still
 answers every read. A ranet3 peer drops its routes through the node when the
@@ -465,10 +465,10 @@ leaves the flag as it was or as asked.
 `ranet3 up` removes the flag before it acts. It then starts every dialer, the
 responder and the speaker at once, and answers without waiting for what it hands
 back: the addresses, rules and routes, and
-[the kill switch's](routing.md#the-kill-switch-on-linux) table, or on macOS
+[the kill switch's](routing.md#the-kill-switch-on-linux) chains, or on macOS
 [its rejects](routing.md#the-kill-switch-on-macos), where `fallback = "none"`
 asks for it, come back on the reconciler's next pass, and on an exit node the
-tables and advertisement on the translator's, each of which `up` wakes. Unlike a
+chains and advertisement on the translator's, each of which `up` wakes. Unlike a
 start, which waits for the reconciler's first pass before it dials, `up` can
 dial before the switch is back. A subsystem somebody disabled stays disabled. A
 `down` on a node that is down and an `up` on one that is up succeed and say so.

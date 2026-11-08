@@ -176,16 +176,17 @@ These commands take flags of their own:
   process name, as [the antispoof filter](../antispoof.md#watching-it) shows.
   Another platform with `overlay` written prints
   `Antispoof filter, not enforced on freebsd` there, naming itself. Then, under
-  `cap.exit.fallback = "none"`, the table `ranet3_fallback` as `Fallback table`
-  with its two chains, their hooks and priority and the switch's state, each
-  line of each chain with the packets and bytes the drop counted, and each named
-  set with its elements, or `not held` where the kernel holds no table. On macOS
-  it is `Fallback, rejects on lo0, holding`, or another state of the switch, and
-  each of [the rejects](../routing.md#the-kill-switch-on-macos) `lo0` holds,
-  with no count. The dump and the chains are each read now through a socket of
-  their own, so an operator who sends a test packet reads the counters of that
-  moment, and neither the reconciler's socket nor the filter's serves a reader.
-  A platform with no policy rules says so. A rule carrying a selector the view
+  `cap.exit.fallback = "none"`, the kill switch's chains and sets in
+  `inet ranet3` as `Fallback` with its two chains, their hooks and priority and
+  the switch's state, each line of each chain with the packets and bytes the
+  drop counted, and each named set with its elements, or `not held` where the
+  kernel holds none of its chains. On macOS it is
+  `Fallback, rejects on lo0, holding`, or another state of the switch, and each
+  of [the rejects](../routing.md#the-kill-switch-on-macos) `lo0` holds, with no
+  count. The dump and the chains are each read now through a socket of their
+  own, so an operator who sends a test packet reads the counters of that moment,
+  and neither the reconciler's socket nor the filter's serves a reader. A
+  platform with no policy rules says so. A rule carrying a selector the view
   keeps no value of, `uidrange`, `ipproto`, `sport`, `dport`, `dscp`,
   `flowlabel` or `tun_id`, or carrying `suppress_ifgroup`, shows that name among
   its selectors.
@@ -606,8 +607,8 @@ connections to the reads.
 | `egress.pass`                         | an exit's pass that moved its prefixes, and on Linux also one that rewrote its rules or failed, or a `ranet3 down`                 |
 | `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                                                                        |
 | `egress.refused`                      | a pass read a family's count of packets refused past a source's share move, or the userspace exit refused a flow, 30 seconds apart |
-| `antispoof.pass`                      | an antispoof filter pass that rewrote its table or a set, or failed                                                                |
-| `antispoof.ready`                     | the antispoof filter's table went ready or not ready, with `ready`                                                                 |
+| `antispoof.pass`                      | an antispoof filter pass that rewrote its chains or a set, or failed                                                               |
+| `antispoof.ready`                     | the antispoof filter's chains went ready or not ready, with `ready`                                                                |
 | `antispoof.dropped`                   | a pass read a drop counter that moved, at most once per pass                                                                       |
 | `antispoof.carve`                     | a carve-out of the overlay for a link came or went                                                                                 |
 | `antispoof.conflict`                  | another node's prefix or a copy of an own range came to overlap an exemption                                                       |
@@ -748,14 +749,15 @@ session the verb missed it is the reason the answer gives. The `trigger` of a
 macOS when the selection found the host's routes changed or the addresses the
 underlay sends to changed, as [when a pass runs](../routing.md#when-a-pass-runs)
 lists, `mesh` or `kernel`. The `trigger` of an `egress.pass` is `start`,
-`sweep`, `retry`, `disable`, `enable`, `changed` when another writer added,
-changed or deleted part of its tables, or `missed` when the daemon lost
-nf_tables notifications to an overflow or could not read one, whoever's tables
-they were about, and `retry`, `changed` and `missed` come from the kernel exit
-alone. The `trigger` of an `antispoof.pass` is `start`, `sweep`, `retry`,
-`reload`, `routes` when the mesh's table changed, `network` when the host's
-links did, `changed` when another writer added, changed or deleted part of its
-table, or `missed` as for an `egress.pass`.
+`sweep`, `retry`, `disable`, `enable`, `changed` when another writer deleted the
+table, set a flag on it, or added, changed or deleted part of its chains and
+sets, or `missed` when the daemon lost nf_tables notifications to an overflow or
+could not read one, whoever's tables they were about, and `retry`, `changed` and
+`missed` come from the kernel exit alone. The `trigger` of an `antispoof.pass`
+is `start`, `sweep`, `retry`, `reload`, `routes` when the mesh's table changed,
+`network` when the host's links did, `changed` when another writer deleted the
+table, set a flag on it, or added, changed or deleted part of its chains and
+sets, or `missed` as for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an
