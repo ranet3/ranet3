@@ -29,9 +29,13 @@ lib.mkPackageCheck {
   # it imports stays linked by its init, so testing's symbols mark it too
   # each list is read whole first and must hold what it always holds, so a
   # failed or empty read fails the check rather than passing it
+  # the userspace exit and the preparer build for android and ios with cgo
+  # off, as a phone's app links them, though ios builds no binary that way
   command = ''
     go vet ./... && GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet ./... && staticcheck ./... \
       && GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null ./cmd/ranet3 \
+      && GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build ./internal/egress/userspace/... ./internal/underlay/... \
+      && GOOS=ios GOARCH=arm64 CGO_ENABLED=0 go build ./internal/egress/userspace/... ./internal/underlay/... \
       && go build -o "$TMPDIR/ranet3" ./cmd/ranet3 && go tool nm "$TMPDIR/ranet3" > "$TMPDIR/symbols" \
       && grep -q ' main\.main$' "$TMPDIR/symbols" && ! grep -E 'transport\.(\(\*)?[Mm]emory|internal/bubble\.| testing\.' "$TMPDIR/symbols" \
       && grep -rl --include='*.go' --exclude='*_test.go' NewMemoryNetwork . > "$TMPDIR/naming" \
