@@ -58,6 +58,8 @@ type Client struct {
 	underlayRoutes underlayRoutes
 	// selection is the same selection as the route reconciler reads it, nil where the transport selects none
 	selection kernel.UnderlaySelection
+	// underlaySelection is the same selection as the transport reads it, which scopes the userspace exit's sockets, nil where the transport selects none
+	underlaySelection transport.Selection
 	// prepare readies every underlay socket of the node, the hub's and the resolver's
 	prepare underlay.Prepare
 	// host is the machine the underlay and the route reconciler read and
@@ -326,7 +328,7 @@ func newClient(cfg *config.Config, privateKey ed25519.PrivateKey, x *registry.In
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		Mesh: mesh, privateKey: privateKey,
-		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, underlayRoutes: routes, selection: selection, prepare: hubRuntime.Prepare,
+		speaker: speaker, hub: hub, closeUnderlay: closeUnderlay, underlayRoutes: routes, selection: selection, underlaySelection: hubRuntime.Selection, prepare: hubRuntime.Prepare,
 		host:     host,
 		sessions: sessions,
 		workers:  max(1, runtime.GOMAXPROCS(0)),

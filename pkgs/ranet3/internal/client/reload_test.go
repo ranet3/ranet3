@@ -303,7 +303,7 @@ func TestReloadLogsAnAdvertisementThatCountsAsADefault(t *testing.T) {
 	}
 }
 
-// a cap.route announcement that counts as a default is refused where no entry rule runs, naming the prefix and the platform, and passes where one runs
+// a cap.route announcement that counts as a default is refused where no entry rule runs, naming the prefix, the platform and what the build carries, and passes where one runs
 // a default, a prefix counting by its width and one over the unspecified address count, and a prefix at the floor and one inside the overlay do not
 func TestCountedAnnouncementIsRefusedOnlyWhereNoEntryRuleRuns(t *testing.T) {
 	overlay := []schema.Prefix{schema.MustPrefix("203.0.113.0/24"), schema.MustPrefix("3ff0::/12")}
@@ -311,22 +311,32 @@ func TestCountedAnnouncementIsRefusedOnlyWhereNoEntryRuleRuns(t *testing.T) {
 		"::/0": true, "0.0.0.0/0": true, "fd00::/8": true, "192.0.0.0/7": true, "0.0.0.0/24": true,
 		"198.0.0.0/8": false, "2001::/16": false, "3ff0::/12": false,
 	} {
-		cfg := &config.Config{Overlay: overlay}
-		cfg.Cap.Route = &babel.Routes{Announce: announce(prefix)}
-		if err := refuseExitUnentered(cfg, true); err != nil {
-			t.Errorf("where the entry rule runs, announcing %s was refused: %v", prefix, err)
-		}
-		err := refuseExitUnentered(cfg, false)
-		if refused := err != nil; refused != counts {
-			t.Errorf("where no entry rule runs, announcing %s was refused %v, want %v: %v", prefix, refused, counts, err)
-			continue
-		}
-		for _, want := range []string{"cap.route announces " + prefix, runtime.GOOS, "carries no exit"} {
-			if err != nil && !strings.Contains(err.Error(), want) {
-				t.Errorf("the refusal of %s, %q, does not name %q", prefix, err, want)
+		for _, carries := range []bool{false, true} {
+			cfg := &config.Config{Overlay: overlay}
+			cfg.Cap.Route = &babel.Routes{Announce: announce(prefix)}
+			if err := refuseExitUnentered(cfg, true, carries); err != nil {
+				t.Errorf("where the entry rule runs, announcing %s was refused: %v", prefix, err)
+			}
+			err := refuseExitUnentered(cfg, false, carries)
+			if refused := err != nil; refused != counts {
+				t.Errorf("where no entry rule runs, announcing %s was refused %v, want %v: %v", prefix, refused, counts, err)
+				continue
+			}
+			for _, want := range []string{"cap.route announces " + prefix, runtime.GOOS, carriedText(carries)} {
+				if err != nil && !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal of %s, %q, does not name %q", prefix, err, want)
+				}
 			}
 		}
 	}
+}
+
+// carriedText is the refusal's words for a build that carries cap.egress alone, or no exit
+func carriedText(carries bool) string {
+	if carries {
+		return "carries that traffic only through cap.egress"
+	}
+	return "carries no exit"
 }
 
 // the reconciler a node starts is handed the overlay, which decides what counts as a default

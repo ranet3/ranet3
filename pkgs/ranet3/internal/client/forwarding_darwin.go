@@ -29,5 +29,5 @@ func sysctlIsOne(name string) *bool {
 }
 
 // Sysctl reads no setting, since the paths the kernel exit names are linux's
-// and this build carries no exit
+// and this build carries no kernel exit
 func Sysctl(string) string { return "" }

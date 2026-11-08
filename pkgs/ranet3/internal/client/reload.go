@@ -114,7 +114,7 @@ func (c *Client) ReloadFrom(path string) (err error) {
 	if err := refuseExitModeHere(cfg); err != nil {
 		return err
 	}
-	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns); err != nil {
+	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns, carriesEgress); err != nil {
 		return err
 	}
 	if err := refuseBorderHere(cfg, c.borderRefusal); err != nil {

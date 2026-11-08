@@ -28,12 +28,10 @@ var testOnly = []string{
 
 // unlinked is the direct requirements that only packages no binary links yet
 // import, so the notice has no section for them yet. Unlike testOnly's, a
-// package outside the tests may import one. gVisor is one: the userspace exit
-// imports it, and no daemon links the exit until the darwin daemon selects it,
-// after which the formatter writes its section and it leaves this list.
-var unlinked = []string{
-	"gvisor.dev/gvisor",
-}
+// package outside the tests may import one. None is now: gVisor was, until the
+// darwin daemon selected the userspace exit and the formatter wrote its
+// section.
+var unlinked []string
 
 // The notice is generated, so the thing worth holding is not its text but that
 // nobody added a dependency and shipped without regenerating it. A direct

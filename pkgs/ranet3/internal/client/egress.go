@@ -12,6 +12,7 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/sadr"
 	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // RouteLookups answers the egress translator's route lookups through the
@@ -51,6 +52,24 @@ func lookupRoute(route kernel.MatchedRoute) kernelexit.Route {
 // of the mesh's table and the overlay in force at each call
 func (c *Client) EgressMembers() []netip.Prefix {
 	return memberPrefixes(c.Mesh.Routes.Snapshot(), c.config().Overlay)
+}
+
+// UnderlaySelection is the selection the transport scopes each underlay
+// socket by, which the userspace exit scopes its own sockets by too, nil where
+// the transport selects none
+func (c *Client) UnderlaySelection() transport.Selection {
+	return c.underlaySelection
+}
+
+// HeldAddress reports an address the host holds on a link outside the mesh,
+// as the network watch read them last, false where no watch runs
+func (c *Client) HeldAddress(address netip.Addr) bool {
+	state := c.networkState()
+	held := state.IPv4.Addresses
+	if address.Is6() {
+		held = state.IPv6.Addresses
+	}
+	return slices.Contains(held, address)
 }
 
 // memberPrefixes is each destination routes sends by the tun to another node:

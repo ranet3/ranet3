@@ -8,10 +8,38 @@ import (
 	"slices"
 	"testing"
 
+	"ranet3.com/pkgs/ranet3/internal/kernel"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/sadr"
 	"ranet3.com/pkgs/ranet3/schema"
 )
+
+// The userspace exit's Held reads the addresses the network watch read last,
+// each family's own, so an address of either family the host holds on a link
+// outside the mesh is held, and one it does not hold or holds no more is not.
+// With no watch, nothing is held.
+func TestHeldAddressIsWhatTheWatchReadLast(t *testing.T) {
+	v4, v6 := netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("2001:db8::9")
+	other4, other6 := netip.MustParseAddr("198.51.100.10"), netip.MustParseAddr("2001:db8::10")
+	c := &Client{}
+	if c.HeldAddress(v4) || c.HeldAddress(v6) {
+		t.Fatal("an address is held with no watch")
+	}
+	network := &fakeNetwork{changes: make(chan kernel.NetworkChange), current: kernel.NetworkState{
+		IPv4: kernel.NetworkFamily{Addresses: []netip.Addr{v4}},
+		IPv6: kernel.NetworkFamily{Addresses: []netip.Addr{v6}},
+	}}
+	c.network = network
+	for address, held := range map[netip.Addr]bool{v4: true, v6: true, other4: false, other6: false} {
+		if got := c.HeldAddress(address); got != held {
+			t.Errorf("%s held %t, want %t", address, got, held)
+		}
+	}
+	network.current = kernel.NetworkState{IPv6: kernel.NetworkFamily{Addresses: []netip.Addr{v6}}}
+	if c.HeldAddress(v4) || !c.HeldAddress(v6) {
+		t.Errorf("held %s %t and %s %t once the host gave the first up, want only the second", v4, c.HeldAddress(v4), v6, c.HeldAddress(v6))
+	}
+}
 
 // The members the egress translator reads from are the prefixes the mesh routes
 // by the tun to another node, with no source prefix, each inside an entry of

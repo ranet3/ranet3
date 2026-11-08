@@ -17,11 +17,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"runtime/pprof"
 	"strings"
 	"sync"
@@ -745,6 +747,51 @@ func TestDaemonPartFailureSurvivesALogAtWarn(t *testing.T) {
 	}
 	if want := `level=ERROR msg="daemon part failed, so the exit status is 1" part=egress`; !strings.Contains(logged.String(), want) {
 		t.Errorf("a log at warn kept %q, want it to carry %q", logged.String(), want)
+	}
+	leftNothing(t, f, was)
+}
+
+// budgetedExit is an exit sized within a memory budget, as darwin's userspace exit is, holding Go's limit at limit beside any
+// node heap
+type budgetedExit struct {
+	egress.Exit
+	limit int64
+}
+
+func (e budgetedExit) MemoryLimit(node int64) int64 { return e.limit + node }
+
+// a node that set Go's memory limit for a budgeted exit puts it back to none once the exit's Run has returned in the stop, so
+// the process outlives the exit with no limit sized for it
+func TestDaemonStopPutsTheLimitForItsExitBack(t *testing.T) {
+	claimNamespace(t)
+	given := debug.SetMemoryLimit(-1)
+	if given != math.MaxInt64 {
+		t.Skipf("this process was given Go's memory limit %d, beside which the node sets none", given)
+	}
+	t.Cleanup(func() { debug.SetMemoryLimit(given) })
+	f := writeDaemon(t, exitCaps)
+	was := before(t)
+	var bus atomic.Pointer[events.Bus]
+	s := watched(&bus)
+	const limit = 3 << 30
+	s.exit = func(cfg *config.Config, node *client.Client, b *events.Bus) (egress.Exit, error) {
+		exit, err := newExit(cfg, node, b)
+		if err != nil {
+			return nil, err
+		}
+		return budgetedExit{exit, limit}, nil
+	}
+	code := runAsync(f, s)
+	waitTill(t, "the start", func() bool { return recorded(&bus, "daemon.started") != 0 })
+	if set := debug.SetMemoryLimit(-1); set < limit || set == math.MaxInt64 {
+		t.Errorf("the running node holds Go's memory limit at %d, want its exit's %d and its own heap", set, int64(limit))
+	}
+	signalSelf(t, syscall.SIGTERM)
+	if got := exited(t, code); got != 0 {
+		t.Errorf("the daemon exited %d after SIGTERM", got)
+	}
+	if set := debug.SetMemoryLimit(-1); set != math.MaxInt64 {
+		t.Errorf("Go's memory limit is %d once the daemon stopped, want none", set)
 	}
 	leftNothing(t, f, was)
 }

@@ -43,16 +43,20 @@ func refuseExitModeHere(cfg *config.Config) error {
 	return kernel.RefuseExitMode(*cfg.Cap.Exit)
 }
 
-// refuseExitUnentered refuses, where entryRuns is false, a cap.route announcement that counts as a default, which makes this node an exit
-// the tun read there drops every source this node does not own, the replies an exit's traffic draws among them, which the entry rule passes where it runs
-// cap.egress is refused there at the start and needs a restart to change, and an egress segment needs cap.egress, so this is the one way left to be an exit
-func refuseExitUnentered(cfg *config.Config, entryRuns bool) error {
+// refuseExitUnentered refuses, where entryRuns is false, a cap.route announcement that counts as a default, which makes this node an exit whose kernel forwards what it carries
+// the tun read there drops every source this node does not own, the replies of that traffic among them, which the entry rule passes where it runs
+// carriesEgress is whether the build carries other nodes' traffic through cap.egress all the same, as darwin's userspace exit does from sockets of its own, whose replies never cross the tun
+// where it carries none, cap.egress is refused at the start and needs a restart to change, and an egress segment needs cap.egress, so this is the one way left to be an exit
+func refuseExitUnentered(cfg *config.Config, entryRuns, carriesEgress bool) error {
 	if entryRuns {
 		return nil
 	}
 	announced := cfg.ExitReason(cfg.Overlay).Announced
 	if !announced.IsValid() {
 		return nil
+	}
+	if carriesEgress {
+		return fmt.Errorf("config: cap.route announces %s, which counts as a default and asks this node to carry other nodes' traffic out of the mesh, and this build for %s carries that traffic only through cap.egress, since it runs no entry chain to pass the replies of what its kernel forwards into the mesh", announced, runtime.GOOS)
 	}
 	return fmt.Errorf("config: cap.route announces %s, which counts as a default and asks this node to carry other nodes' traffic out of the mesh, and this build for %s carries no exit, since it runs no entry chain to pass that traffic's replies into the mesh", announced, runtime.GOOS)
 }
@@ -80,7 +84,7 @@ func validateRuntimeConfig(cfg *config.Config, privateKey ed25519.PrivateKey, x 
 	if err := refuseExitModeHere(cfg); err != nil {
 		return err
 	}
-	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns); err != nil {
+	if err := refuseExitUnentered(cfg, kernelexit.EntryRuns, carriesEgress); err != nil {
 		return err
 	}
 	if err := refuseBorderHere(cfg, nil); err != nil {
@@ -422,9 +426,10 @@ func forwardedFamilies(v4, v6 *bool) []string {
 // warnCountedAdvertisements names each advertisement in cap.route or
 // cap.egress that schema.CapturesTheMachine counts and that is not a default,
 // which makes this node an exit for its family as a default does. The file
-// loads all the same, and where no entry rule runs the start refuses either
-// block, the cap.route one by refuseExitUnentered and cap.egress by the build
-// that carries no exit.
+// loads all the same. Where no entry rule runs the start refuses the cap.route
+// one by refuseExitUnentered, and the cap.egress one only on a build that
+// carries no exit: darwin's userspace exit carries it (carriesEgress), and
+// Android, iOS and the BSDs carry none.
 func warnCountedAdvertisements(cfg *config.Config) {
 	warn := func(key, verb string, prefix netip.Prefix) {
 		if prefix.Bits() > 0 && schema.CapturesTheMachine(prefix, cfg.Overlay) {
