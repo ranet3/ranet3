@@ -39,4 +39,12 @@ const (
 	mappedHigh      = 29999
 	mappedCheckPort = 9850
 	terminatorPort  = 9900
+	// threadNamespace is the calling thread's network namespace, which is the
+	// process's on any thread no goroutine is locked to, since a locked
+	// goroutine may hold the first thread in a namespace of its own, and
+	// loopbackIndex the index Linux gives every namespace's loopback
+	threadNamespace = "/proc/thread-self/ns/net"
+	loopbackIndex   = 1
+	// answerTTL is the TTL the exit's ICMPv4 answers carry, Linux's default
+	answerTTL = 64
 )

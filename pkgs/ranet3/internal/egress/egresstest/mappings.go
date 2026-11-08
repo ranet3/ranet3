@@ -54,11 +54,14 @@ func (r *rows) filtering(t *testing.T) {
 // hairpinning is RFC 4787 REQ-9. The leaf's own address opens a mapping toward
 // the server, and the spare address sends to that mapping's external address
 // and port, which a NAT that hairpins carries to the leaf's own address from
-// the spare's mapping, the class's address, as REQ-9a has it. Where the arm
-// declares NoHairpinning, the exit takes the datagram as its own and its stack
-// refuses it, port unreachable from the mapping's address, the leaf's own
-// address never reading it. Taken so, the datagram is no flow through the
-// exit, so row 6 still finds the spare address holding none.
+// the spare's mapping, the class's address, as REQ-9a has it. A hairpinned
+// datagram meets the leaf's mapping's filter as one from outside would, so
+// the spare first opens its own mapping toward the server and the leaf sends
+// to it, as two leaves punching through a NAT that filters by address do.
+// Where the arm declares NoHairpinning, the exit takes the datagram as its
+// own and its stack refuses it, port unreachable from the mapping's address,
+// the leaf's own address never reading it. Taken so, the datagram is no flow
+// through the exit, so row 6 still finds the spare address holding none.
 func (r *rows) hairpinning(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, hairpinPort)
 	server := r.listenUDP(t, to)
@@ -66,11 +69,16 @@ func (r *rows) hairpinning(t *testing.T) {
 	opened := []byte("opens the mapping over " + r.family.Name)
 	mapping := receiveFrom(t, udpReader(server), opened, func() { _, _ = leaf.WriteToUDPAddrPort(opened, to) })
 	data := []byte("from the spare address to the leaf's mapping over " + r.family.Name)
-	sent := datagram(netip.AddrPortFrom(r.family.Spare, spareHairpinPort), mapping, leafTTL, data)
+	spare := netip.AddrPortFrom(r.family.Spare, spareHairpinPort)
+	sent := datagram(spare, mapping, leafTTL, data)
 	declared, limited := r.limits[NoHairpinning]
 	if !limited {
-		if from := receiveFrom(t, udpReader(leaf), data, func() { r.exit.hand([][]byte{sent}) }); from.Addr() != r.seen() {
-			t.Errorf("the leaf read the hairpinned datagram from %s, want the spare's mapping on %s", from, r.seen())
+		spareOpened := []byte("opens the spare's mapping over " + r.family.Name)
+		spareMapping := receiveFrom(t, udpReader(server), spareOpened, func() { r.exit.hand([][]byte{datagram(spare, to, leafTTL, spareOpened)}) })
+		punched := datagram(netip.AddrPortFrom(r.family.Leaf, leafHairpinPort), spareMapping, leafTTL, []byte("lets the exit's address in"))
+		r.exit.hand([][]byte{punched})
+		if from := receiveFrom(t, udpReader(leaf), data, func() { r.exit.hand([][]byte{sent}) }); from != spareMapping {
+			t.Errorf("the leaf read the hairpinned datagram from %s, want the spare's mapping %s", from, spareMapping)
 		}
 		r.verdict()
 		return
@@ -89,7 +97,8 @@ func (r *rows) hairpinning(t *testing.T) {
 // address dependent filtering both carry to the leaf's listener. Where the arm
 // declares PortDependentFiltering, that connection and one from another
 // address of the server's side are reset by the exit, and the leaf accepts
-// neither.
+// neither. Where it declares NoInboundTCP, each meets the host's own TCP, which
+// resets a port no listener holds, and the leaf accepts neither.
 func (r *rows) tcpFiltering(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, filteringTCPPort)
 	local := netip.AddrPortFrom(r.family.Leaf, leafFilteringTCPPort)
@@ -98,6 +107,9 @@ func (r *rows) tcpFiltering(t *testing.T) {
 	mapping := addrPort(opened.RemoteAddr())
 	otherPort := netip.AddrPortFrom(r.family.Server, filteringOtherTCPPort)
 	declared, limited := r.limits[PortDependentFiltering]
+	if !limited {
+		declared, limited = r.limits[NoInboundTCP]
+	}
 	if !limited {
 		conn, err := tryDial(r.network.Server, otherPort, mapping, stepBudget)
 		if err != nil {
@@ -130,7 +142,11 @@ func (r *rows) tcpFiltering(t *testing.T) {
 // the leaf's listener from the spare's mapping. Where the arm declares
 // NoHairpinning, the exit takes the connection as its own and resets it from
 // the mapping's address at once, the leaf accepting nothing. Taken so, it is
-// no flow through the exit, so row 6 still finds the spare holding none.
+// no flow through the exit, so row 6 still finds the spare holding none. Where
+// it declares NoInboundTCP, the exit refuses the connection as one to an
+// address its host holds, administratively prohibited from the exit, which
+// the spare's stack reads as unreachable in IPv4 and as denied in IPv6, and
+// the leaf accepts nothing.
 func (r *rows) tcpHairpinning(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, hairpinTCPPort)
 	local := netip.AddrPortFrom(r.family.Leaf, leafHairpinTCPPort)
@@ -143,6 +159,28 @@ func (r *rows) tcpHairpinning(t *testing.T) {
 	conn, err := tryDial(r.network.Leaf, spare, mapping, stepBudget)
 	if conn != nil {
 		t.Cleanup(func() { _ = conn.Close() })
+	}
+	if inbound, terminated := r.limits[NoInboundTCP]; terminated && !limited {
+		t.Logf("declared in %s: %s", inbound.Row, inbound.Reason)
+		// the errors Linux's icmp_err_convert and icmpv6_err_convert give a
+		// socket in SYN-SENT for code 13 and for code 1
+		want := syscall.EHOSTUNREACH
+		if r.v6() {
+			want = syscall.EACCES
+		}
+		if !errors.Is(err, want) {
+			t.Errorf("the spare's connection to the leaf's mapping %s got %v, want %v", mapping, err, want)
+		}
+		if !slices.ContainsFunc(r.network.Back()[back:], func(packet []byte) bool {
+			a, ok := readAnswer(packet)
+			q, inner := quoted(a.quote)
+			return ok && inner && a.is(r.v6(), prohibited) && r.fromExit(a.from) && q.protocol == syscall.IPPROTO_TCP && q.src == spare.Addr() && q.dst == mapping.Addr()
+		}) {
+			t.Errorf("no administratively prohibited from the exit quoting the spare's SYN to %s came back, only %s", mapping, answersIn(r.network.Back()[back:]))
+		}
+		acceptsNothing(t, listener)
+		r.verdict()
+		return
 	}
 	if !limited {
 		if err != nil {

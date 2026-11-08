@@ -69,6 +69,10 @@ type timer struct {
 	phase    Phase
 	floor    time.Duration
 	held     bool
+	// byLeaf matches a flow by its leaf's end alone, an echo of a backend that
+	// terminates, which sends to every server from one socket a leaf's address
+	// and identifier own
+	byLeaf bool
 }
 
 // timers holds each flow a step leaves idle, read rather than waited out, to
@@ -77,7 +81,9 @@ type timer struct {
 // it under return whatever the class, and below that floor where it does not
 // and for a datagram to a resolver, as REQ-5a lets it. Under a class that
 // translates it also holds an answered UDP flow out of the mesh to
-// answeredFloor.
+// answeredFloor. A backend that terminates carries nothing into the mesh and
+// none of the host's own traffic, so it runs neither those flows nor the
+// exit's own address.
 func (r *rows) timers(t *testing.T) {
 	t.Run("udp with no answer", func(t *testing.T) { r.timerOut(t, unansweredPort, r.class != None) })
 	t.Run("udp to a resolver", func(t *testing.T) { r.timerOut(t, resolverPort, false) })
@@ -89,6 +95,10 @@ func (r *rows) timers(t *testing.T) {
 	t.Run("tcp half closed", r.timerHalfClosed)
 	t.Run("tcp closing", r.timerClosing)
 	t.Run("echo", r.timerEcho)
+	if r.terminates {
+		r.verdict()
+		return
+	}
 	t.Run("udp from the exit's own mesh address", r.timerOwnAddress)
 	t.Run("udp into the mesh with no answer", func(t *testing.T) { r.timerInto(t, intoPort, true) })
 	t.Run("udp into the mesh to a resolver", func(t *testing.T) { r.timerInto(t, resolverPort, false) })
@@ -103,7 +113,7 @@ func (r *rows) timerOut(t *testing.T, port uint16, held bool) {
 	to := netip.AddrPortFrom(r.family.Server, port)
 	began := time.Now()
 	r.sendUnanswered(t, r.network.Leaf, netip.Addr{}, to)
-	r.keeps(t, began, timer{syscall.IPPROTO_UDP, r.family.Leaf, to, NoPhase, udpFloor, held})
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_UDP, from: r.family.Leaf, to: to, floor: udpFloor, held: held})
 }
 
 // timerAnswered has the server answer the leaf's datagram, and the leaf send
@@ -119,11 +129,13 @@ func (r *rows) timerAnswered(t *testing.T) {
 	began := time.Now()
 	again := []byte("sent again over " + r.family.Name)
 	receiveFrom(t, udpReader(server), again, func() { _, _ = leaf.Write(again) })
-	r.keeps(t, began, timer{syscall.IPPROTO_UDP, r.family.Leaf, to, NoPhase, answeredFloor, true})
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_UDP, from: r.family.Leaf, to: to, floor: answeredFloor, held: true})
 }
 
 // timerOpening connects to an address nothing holds, whose SYN the router
-// answers host unreachable, so the flow stays as its SYN left it
+// answers host unreachable, so the flow stays as its SYN left it. A backend
+// that terminates ends the leaf's connection with its own failed dial, so it
+// holds no flow for it.
 func (r *rows) timerOpening(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.NoHost, openingPort)
 	began := time.Now()
@@ -131,7 +143,11 @@ func (r *rows) timerOpening(t *testing.T) {
 		_ = conn.Close()
 		t.Fatalf("the leaf connected to %s, which nothing holds", to)
 	}
-	r.keeps(t, began, timer{syscall.IPPROTO_TCP, r.family.Leaf, to, Opening, transitoryFloor, r.class != None})
+	if r.terminates {
+		r.keepsNone(t, syscall.IPPROTO_TCP, r.family.Leaf, to)
+		return
+	}
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_TCP, from: r.family.Leaf, to: to, phase: Opening, floor: transitoryFloor, held: r.class != None})
 }
 
 // timerUnacked has the server send data whose acknowledgment the leaf's path
@@ -144,7 +160,7 @@ func (r *rows) timerUnacked(t *testing.T) {
 	data := []byte("never acknowledged over " + r.family.Name)
 	write(t, server, data)
 	readFull(t, leaf, data)
-	r.keeps(t, began, timer{syscall.IPPROTO_TCP, r.family.Leaf, to, Established, establishedFloor, r.class != None})
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_TCP, from: r.family.Leaf, to: to, phase: Established, floor: establishedFloor, held: r.class != None})
 }
 
 // timerHalfClosed has the server close its sending side, after which data can
@@ -157,12 +173,13 @@ func (r *rows) timerHalfClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	readToEnd(t, leaf, nil)
-	r.keeps(t, began, timer{syscall.IPPROTO_TCP, r.family.Leaf, to, Established, establishedFloor, r.class != None})
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_TCP, from: r.family.Leaf, to: to, phase: Established, floor: establishedFloor, held: r.class != None})
 }
 
 // timerClosing has the leaf close its sending side, then the server, and the
 // leaf's path lose its acknowledgment of the server's FIN, which the
-// connection then waits for
+// connection then waits for. A backend that terminates has ended its own
+// connection with the server's FIN, so it holds no flow for it.
 func (r *rows) timerClosing(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, closingPort)
 	leaf, server := r.connect(t, listen(t, r.network.Server, to), to, netip.AddrPort{})
@@ -176,7 +193,11 @@ func (r *rows) timerClosing(t *testing.T) {
 		t.Fatal(err)
 	}
 	readToEnd(t, leaf, nil)
-	r.keeps(t, began, timer{syscall.IPPROTO_TCP, r.family.Leaf, to, Closing, transitoryFloor, r.class != None})
+	if r.terminates {
+		r.keepsNone(t, syscall.IPPROTO_TCP, r.family.Leaf, to)
+		return
+	}
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_TCP, from: r.family.Leaf, to: to, phase: Closing, floor: transitoryFloor, held: r.class != None})
 }
 
 func (r *rows) timerEcho(t *testing.T) {
@@ -186,7 +207,7 @@ func (r *rows) timerEcho(t *testing.T) {
 	}
 	began := time.Now()
 	r.echoTo(t, r.family.Server, timersEchoID)
-	r.keeps(t, began, timer{protocol, r.family.Leaf, netip.AddrPortFrom(r.family.Server, timersEchoID), NoPhase, queryFloor, r.class != None})
+	r.keeps(t, began, timer{protocol: protocol, from: r.family.Leaf, to: netip.AddrPortFrom(r.family.Server, timersEchoID), floor: queryFloor, held: r.class != None, byLeaf: r.terminates})
 }
 
 // timerOwnAddress sends from the exit's own mesh address of the family, which
@@ -201,7 +222,7 @@ func (r *rows) timerOwnAddress(t *testing.T) {
 	if from := r.sendUnanswered(t, r.exit.host.Do, own, to); from.Addr() != want {
 		t.Errorf("the server read the exit's own datagram from %s, want %s", from, want)
 	}
-	r.keeps(t, began, timer{syscall.IPPROTO_UDP, own, to, NoPhase, udpFloor, r.class != None})
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_UDP, from: own, to: to, floor: udpFloor, held: r.class != None})
 }
 
 // ownMesh is the exit's own mesh address of the family
@@ -238,7 +259,7 @@ func (r *rows) timerInto(t *testing.T, port uint16, held bool) {
 	if from := receiveFrom(t, udpReader(leaf), sent, func() { _, _ = server.Write(sent) }); from.Addr() != r.returned(t) {
 		t.Errorf("the leaf read the server's datagram from %s, want %s", from, r.returned(t))
 	}
-	r.keeps(t, began, timer{syscall.IPPROTO_UDP, r.family.Server, to, NoPhase, udpFloor, held})
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_UDP, from: r.family.Server, to: to, floor: udpFloor, held: held})
 }
 
 // timerIntoOpening has the server connect to the leaf, whose answer the leaf's
@@ -257,7 +278,7 @@ func (r *rows) timerIntoOpening(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r.keeps(t, began, timer{syscall.IPPROTO_TCP, r.family.Server, to, Opening, transitoryFloor, true})
+	r.keeps(t, began, timer{protocol: syscall.IPPROTO_TCP, from: r.family.Server, to: to, phase: Opening, floor: transitoryFloor, held: true})
 }
 
 // timerIntoEcho has the server send the leaf an echo, which the leaf answers
@@ -289,7 +310,7 @@ func (r *rows) timerIntoEcho(t *testing.T) {
 	}) {
 		t.Fatalf("the server read no echo reply from %s within %s", r.family.Leaf, stepBudget)
 	}
-	r.keeps(t, began, timer{protocol, r.family.Server, netip.AddrPortFrom(r.family.Leaf, intoEchoID), NoPhase, queryFloor, true})
+	r.keeps(t, began, timer{protocol: protocol, from: r.family.Server, to: netip.AddrPortFrom(r.family.Leaf, intoEchoID), floor: queryFloor, held: true})
 }
 
 // sendUnanswered sends a datagram to to from a socket opened in, bound to from
@@ -336,7 +357,12 @@ func (r *rows) keeps(t *testing.T, began time.Time, want timer) {
 	}
 	// what the timer was set to is below what it lists plus this
 	bound := time.Since(began) + leftRounding
-	i := slices.IndexFunc(flows, func(f Flow) bool { return f.Protocol == want.protocol && f.From.Addr() == want.from && f.To == want.to })
+	i := slices.IndexFunc(flows, func(f Flow) bool {
+		if want.byLeaf {
+			return f.Protocol == want.protocol && f.From == netip.AddrPortFrom(want.from, want.to.Port())
+		}
+		return f.Protocol == want.protocol && f.From.Addr() == want.from && f.To == want.to
+	})
 	if i < 0 {
 		t.Fatalf("the backend tracks no flow of protocol %d from %s to %s among its %d", want.protocol, want.from, want.to, len(flows))
 	}
@@ -351,4 +377,24 @@ func (r *rows) keeps(t *testing.T, began time.Time, want timer) {
 		t.Errorf("the backend keeps the flow idle %s more, which may reach the %s floor it keeps such a flow below", got.Left, want.floor)
 	}
 	t.Logf("%s left, %s", got.Left, got.Phase)
+}
+
+// keepsNone reads the flows the backend tracks until none is of protocol from
+// from to to, within stepBudget, since the backend gives a flow back just
+// after its last packet toward the leaf
+func (r *rows) keepsNone(t *testing.T, protocol byte, from netip.Addr, to netip.AddrPort) {
+	t.Helper()
+	for deadline := time.Now().Add(stepBudget); ; time.Sleep(pollInterval) {
+		flows, err := r.flows(r.exit.host)
+		if err != nil {
+			t.Fatalf("read the flows the backend tracks: %v", err)
+		}
+		i := slices.IndexFunc(flows, func(f Flow) bool { return f.Protocol == protocol && f.From.Addr() == from && f.To == to })
+		if i < 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the backend still holds the flow of protocol %d from %s to %s, %s, after its own connection ended", protocol, flows[i].From, to, flows[i].Phase)
+		}
+	}
 }

@@ -21,7 +21,10 @@ import (
 // untracked holds that a packet out of the mesh no flow is tracked for, an
 // extended echo request of RFC 8335 or a segment past a live connection's
 // window, is dropped and counted under a class that translates and leaves
-// from the leaf's own address under none.
+// from the leaf's own address under none. A backend that terminates ends the
+// leaf's connection in a stack of its own, whose answer to the segment is the
+// stack's as a server's would be, so it counts the extended echo request
+// alone and carries the segment to no server either.
 func (r *rows) untracked(t *testing.T) {
 	translated := r.class != None
 	began := time.Now()
@@ -64,7 +67,10 @@ func (r *rows) untracked(t *testing.T) {
 	readFull(t, server, after)
 
 	want := before
-	if translated {
+	switch {
+	case translated && r.terminates:
+		want++
+	case translated:
 		want += 2
 	}
 	r.awaitDropped(t, before, want)

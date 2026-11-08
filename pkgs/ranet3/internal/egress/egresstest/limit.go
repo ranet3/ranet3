@@ -45,7 +45,8 @@ func (r *rows) sourceLimit(t *testing.T) {
 	before, mark := r.refused(status), r.exit.handedCount()
 	to, refusedTo := netip.AddrPortFrom(r.family.Server, limitPort), netip.AddrPortFrom(r.family.Server, limitRefusedPort)
 	server, refusedServer := r.listenUDP(t, to), r.listenUDP(t, refusedTo)
-	if !t.Run("flows up to the limit", func(t *testing.T) { r.fill(t, server, to, limit) }) {
+	held := r.spareHeld(status)
+	if !t.Run("flows up to the limit", func(t *testing.T) { r.fill(t, server, to, limit-held) }) {
 		return
 	}
 	if r.class.spareUnderNone() {
@@ -76,6 +77,21 @@ func (r *rows) sourceLimit(t *testing.T) {
 	})
 	t.Run("the refusals counted", func(t *testing.T) { r.counted(t, before, mark) })
 	r.verdict()
+}
+
+// spareHeld is the flows the spare address holds where Status names a
+// source's flows, those of the rows before this one counting toward its
+// share, as the mapping a hairpinned datagram opened does
+func (r *rows) spareHeld(status egress.Status) int {
+	if status.Flows == nil {
+		return 0
+	}
+	for _, s := range status.Flows.Sources {
+		if s.Source == r.family.Spare {
+			return s.Flows
+		}
+	}
+	return 0
 }
 
 // fill opens the spare address's first count flows to the server at to, a

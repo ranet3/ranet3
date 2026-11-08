@@ -261,7 +261,8 @@ func (r *rows) unreachable(t *testing.T, what string, to netip.Addr, want messag
 
 // leafError opens a flow from the leaf and closes the leaf's socket, so the
 // leaf's stack answers the server's next datagram with a port unreachable,
-// which RFC 5508 REQ-5 has the exit carry out translated
+// which RFC 5508 REQ-5 has the exit carry out translated. Where the arm
+// declares UnrelayedLeafErrors, the server reads no such error.
 func (r *rows) leafError(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, leafErrorPort)
 	server := r.listenUDP(t, to)
@@ -280,6 +281,25 @@ func (r *rows) leafError(t *testing.T) {
 	// the datagram as the server's stack sends it, for the fields quotes compares
 	sent := datagram(to, outside, leafTTL, data)
 	buf := make([]byte, readSize)
+	if declared, limited := r.limits[UnrelayedLeafErrors]; limited {
+		t.Logf("declared in %s: %s", declared.Row, declared.Reason)
+		if _, err := server.WriteToUDPAddrPort(data, outside); err != nil {
+			t.Fatal(err)
+		}
+		if err := raw.SetReadDeadline(time.Now().Add(quietPeriod)); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			n, address, err := raw.ReadFromIP(buf)
+			if err != nil {
+				return
+			}
+			if n >= 8 && (answer{kind: buf[0], code: buf[1]}).is(r.v6(), portUnreachable) && quotes(buf[8:n], sent) {
+				t.Errorf("the server read the leaf's port unreachable from %s, which the arm declares the exit drops", addrOf(address))
+				return
+			}
+		}
+	}
 	var from netip.Addr
 	if !until(func() { _, _ = server.WriteToUDPAddrPort(data, outside) }, func(by time.Time) bool {
 		if err := raw.SetReadDeadline(by); err != nil {
@@ -305,11 +325,29 @@ func (r *rows) leafError(t *testing.T) {
 
 // otherProtocol sends a packet of protocol 253, which RFC 3692 keeps for
 // experiments and no rule of an exit names, and the server reads it from the
-// class's address with nothing answering it
+// class's address with nothing answering it. Where the arm declares
+// RefusesOtherProtocols, the exit answers it administratively prohibited and
+// the server reads nothing.
 func (r *rows) otherProtocol(t *testing.T) {
 	raw := r.serverIP(t, 253, r.family.Server)
 	data := []byte("protocol 253 over " + r.family.Name)
 	sent := ipPacket(r.family.Leaf, r.family.Server, 253, leafTTL, data)
+	if declared, limited := r.limits[RefusesOtherProtocols]; limited {
+		t.Logf("declared in %s: %s", declared.Row, declared.Reason)
+		r.answered(t, "administratively prohibited from the exit", sent, prohibited, r.fromExit, 0)
+		read, buf := ipReader(raw), make([]byte, readSize)
+		for by := time.Now().Add(quietPeriod); ; {
+			n, from, err := read(buf, by)
+			if err != nil {
+				break
+			}
+			if bytes.Equal(buf[:n], data) {
+				t.Errorf("the server read the packet of protocol 253 from %s, which the arm declares the exit refuses", from.Addr())
+				break
+			}
+		}
+		return
+	}
 	back := len(r.network.Back())
 	if from := receiveFrom(t, ipReader(raw), data, func() { r.exit.hand([][]byte{sent}) }); from.Addr() != r.seen() {
 		t.Errorf("the server read the packet of protocol 253 from %s, want %s", from.Addr(), r.seen())

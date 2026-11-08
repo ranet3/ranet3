@@ -5,9 +5,12 @@ package egresstest
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
@@ -75,6 +78,50 @@ func TestHandCarriesWhatIsReadyAndAnnounced(t *testing.T) {
 			t.Errorf("after %s with Ready last holding %v %v and Announce answering %v the hand gave the backend IP versions %v, want %v",
 				hook, r.ready4, r.ready6, step.announce, exit.taken, step.want)
 		}
+	}
+}
+
+// failures records what a class's end failed
+type failures struct {
+	mu     sync.Mutex
+	failed []string
+}
+
+func (f *failures) Errorf(format string, args ...any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failed = append(f.failed, fmt.Sprintf(format, args...))
+}
+
+// a backend whose Run never returns once its context ends fails its class
+// within the budget, and the class's end returns, so the suite goes on
+func TestRunNeverReturningFailsItsClassAndTheSuiteGoesOn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &running{cancel: cancel, done: make(chan struct{})}
+	never := make(chan struct{})
+	go func() {
+		defer close(r.done)
+		<-ctx.Done()
+		<-never
+	}()
+	// Run returns once the test ends, so a class's end that waits for good
+	// returns then
+	defer close(never)
+	f := &failures{}
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		r.end(f, pollInterval)
+	}()
+	select {
+	case <-ended:
+	case <-time.After(stepBudget):
+		t.Fatalf("the class's end waited %s on a Run that never returns, past its budget of %s", stepBudget, pollInterval)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.failed) != 1 {
+		t.Errorf("the class's end failed %q, want one failure naming Run", f.failed)
 	}
 }
 

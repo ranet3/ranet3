@@ -90,6 +90,10 @@ type namespaces struct {
 
 	mu   sync.Mutex
 	back [][]byte
+
+	// owned is whether the exit is the namespace the process runs in, its mesh
+	// carrying only what its own nodes own
+	owned bool
 }
 
 // Namespaces builds the Linux network in four network namespaces, each new and
@@ -97,12 +101,38 @@ type namespaces struct {
 // to a peer whose session writes what it carries into the leaf's tun.
 func Namespaces(t testing.TB) Network {
 	t.Helper()
+	return build(t, false)
+}
+
+// Owned is Namespaces with the exit in the network namespace the whole process
+// runs in, for a backend that opens sockets from whatever goroutine it runs
+// on, and its mesh opened ownedOnly, as every platform that ships such a
+// backend opens it. The caller has claimed that namespace, as
+// netnstest.ClaimProcess does. Each Owned network takes its links and the
+// class addresses back out of it when it closes.
+func Owned(t testing.TB) Network {
+	t.Helper()
+	return build(t, true)
+}
+
+func build(t testing.TB, owned bool) Network {
+	t.Helper()
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
 	}
 	n := &namespaces{
-		leaf: netnstest.StartThread(t), exit: netnstest.StartThread(t), router: netnstest.StartThread(t), server: netnstest.StartThread(t),
-		read: make(chan []byte, carryQueue), closed: make(chan struct{}),
+		leaf: netnstest.StartThread(t), router: netnstest.StartThread(t), server: netnstest.StartThread(t),
+		read: make(chan []byte, carryQueue), closed: make(chan struct{}), owned: owned,
+	}
+	if owned {
+		process, err := os.Open(threadNamespace)
+		if err != nil {
+			t.Fatalf("open the process's network namespace: %v", err)
+		}
+		n.exit = netnstest.JoinThread(t, fmt.Sprintf("/proc/self/fd/%d", process.Fd()))
+		_ = process.Close()
+	} else {
+		n.exit = netnstest.StartThread(t)
 	}
 	t.Cleanup(n.close)
 	for _, step := range []struct {
@@ -157,6 +187,7 @@ func (n *namespaces) Exit() Host {
 		Do: n.exit.Do, TUN: n.mesh.Name, Write: n.mesh.WriteHost,
 		Mesh:    []netip.Addr{plans[0].mesh.Addr(), plans[1].mesh.Addr()},
 		Members: leafHosts,
+		Lanes:   n.mesh,
 	}
 }
 
@@ -253,6 +284,20 @@ func (n *namespaces) close() {
 	if n.peer != nil {
 		n.peer.Close()
 	}
+	if n.owned {
+		// the namespace outlives the network, and the next one makes the same links
+		_ = n.exit.Do(func() error {
+			netlink, err := netnstest.OpenNetlink()
+			if err != nil {
+				return err
+			}
+			defer netlink.Close()
+			for _, p := range plans {
+				_ = netlink.DelAddress(loopbackIndex, p.class)
+			}
+			return netnstest.DelLink(exitUplink)
+		})
+	}
 }
 
 func (n *namespaces) makeExit(netlink netnstest.Netlink) error {
@@ -262,11 +307,19 @@ func (n *namespaces) makeExit(netlink netnstest.Netlink) error {
 	if err := netlink.AddVeth(exitUplink, routerUplink, uplinkMTU, n.router.Path); err != nil {
 		return fmt.Errorf("make %s: %w", exitUplink, err)
 	}
-	mesh, err := netstack.NewNamed(netstack.DefaultMTU, meshLink, false, nil)
+	mesh, err := netstack.NewNamed(netstack.DefaultMTU, meshLink, n.owned, nil)
 	if err != nil {
 		return err
 	}
 	n.mesh = mesh
+	if n.owned {
+		// the exit's answers leave from its router-id, as a node's do, which is
+		// its mesh address of each family here, and an ICMPv4 one carries the
+		// host's default TTL as a client hands its mesh, without which the mesh
+		// builds none, as RFC 1812 section 4.2.2.9 has no router send a TTL of 0
+		mesh.SetAnswerSources(netstack.AnswerSources{Router4: plans[0].mesh.Addr(), Router6: plans[1].mesh.Addr()})
+		mesh.SetAnswerTTL(answerTTL)
+	}
 	return nil
 }
 

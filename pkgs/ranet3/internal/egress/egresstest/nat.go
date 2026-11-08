@@ -4,6 +4,7 @@
 package egresstest
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -50,11 +51,16 @@ func (r *rows) unsolicitedSYN(t *testing.T) {
 // read from two endpoints, since REQ-3 rules out port overloading, from ports
 // below 1024 where they left from port 500, and from ports of 1024 or above
 // where they left from port 40000. The other address is one no node holds, so
-// row 6's spare holds nothing more.
+// row 6's spare holds nothing more. Where the arm declares NoLowPorts, every
+// datagram is read from a port of 1024 or above.
 func (r *rows) portRanges(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, rangesPort)
 	server := r.listenUDP(t, to)
 	other := r.unheld()
+	declared, high := r.limits[NoLowPorts]
+	if high {
+		t.Logf("declared in %s: %s", declared.Row, declared.Reason)
+	}
 	for _, port := range []uint16{lowRangePort, highRangePort} {
 		var first netip.AddrPort
 		for _, source := range []netip.Addr{r.family.Leaf, other} {
@@ -62,7 +68,7 @@ func (r *rows) portRanges(t *testing.T) {
 			data := []byte(fmt.Sprintf("from %s over %s", from, r.family.Name))
 			sent := datagram(from, to, leafTTL, data)
 			read := receiveFrom(t, udpReader(server), data, func() { r.exit.hand([][]byte{sent}) })
-			if read.Addr() != r.seen() || (read.Port() < 1024) != (port < 1024) {
+			if read.Addr() != r.seen() || (read.Port() < 1024) != (port < 1024 && !high) {
 				t.Errorf("the server read the datagram from %s from %s, want a port of its range on %s", from, read, r.seen())
 			}
 			if read == first {
@@ -189,20 +195,30 @@ func (r *rows) errorKeepsUDP(t *testing.T) {
 // server's side sends the connection's mapping a time exceeded quoting the
 // leaf's next segment as it leaves the exit. The error reaches the leaf, whose
 // stack takes it as a soft error, and the connection then carries data each
-// way.
+// way. A backend that terminates carries its own connection to the server,
+// whose next sequence number the server's side reads off the wire, and the
+// error quoting it reaches the host's connection and never the leaf, so the
+// row holds that connection and the leaf's to carrying data each way after it.
 func (r *rows) errorKeepsTCP(t *testing.T) {
 	to := netip.AddrPortFrom(r.family.Server, keepsTCPPort)
 	local := netip.AddrPortFrom(r.family.Leaf, leafKeepsTCPPort)
 	mark := r.exit.handedCount()
 	leaf, server := r.connect(t, listen(t, r.network.Server, to), to, local)
+	var wire *net.IPConn
+	if r.terminates {
+		wire = r.serverIP(t, syscall.IPPROTO_TCP, r.family.Server)
+	}
 	opened := []byte("opens the connection over " + r.family.Name)
 	write(t, leaf, opened)
 	readFull(t, server, opened)
-	seq, ack, ok := nextSequence(r.exit.handedSince(mark), local, to)
-	if !ok {
-		t.Fatalf("the leaf handed no segment from %s to %s", local, to)
-	}
 	mapping := addrPort(server.RemoteAddr())
+	seq, ack, ok := nextSequence(r.exit.handedSince(mark), local, to)
+	if r.terminates {
+		seq, ack, ok = wireSequence(ipReader(wire), mapping, to, opened)
+	}
+	if !ok {
+		t.Fatalf("no segment from %s to %s carried the data the connection opened with", local, to)
+	}
 	protocol := syscall.IPPROTO_ICMP
 	if r.v6() {
 		protocol = syscall.IPPROTO_ICMPV6
@@ -210,6 +226,16 @@ func (r *rows) errorKeepsTCP(t *testing.T) {
 	icmp := r.serverIP(t, protocol, r.family.Server)
 	// ACK, the flag a segment of an established connection carries
 	exceeded := icmpError(r.family.Server, mapping.Addr(), hopExceeded, segment(mapping, to, seq, ack, 0x10, nil))
+	if r.terminates {
+		if _, err := icmp.WriteToIP(exceeded[headerLength(exceeded):], &net.IPAddr{IP: mapping.Addr().AsSlice()}); err != nil {
+			t.Fatalf("send the time exceeded to %s: %v", mapping.Addr(), err)
+		}
+		// within which the host's stack has taken the error and an exit
+		// watching its connection's errors would have reset the leaf
+		time.Sleep(quietPeriod)
+		r.carriesBothWays(t, leaf, server)
+		return
+	}
 	if !r.await(func() {
 		_, _ = icmp.WriteToIP(exceeded[headerLength(exceeded):], &net.IPAddr{IP: mapping.Addr().AsSlice()})
 	}, func(packet []byte) bool {
@@ -220,9 +246,38 @@ func (r *rows) errorKeepsTCP(t *testing.T) {
 	}) {
 		t.Fatalf("no time exceeded quoting the connection from %s to %s reached the leaf within %s", local, to, stepBudget)
 	}
+	r.carriesBothWays(t, leaf, server)
+}
+
+// carriesBothWays holds a connection to carrying data each way after the time
+// exceeded
+func (r *rows) carriesBothWays(t *testing.T, leaf, server *net.TCPConn) {
+	t.Helper()
 	after := []byte("after the time exceeded over " + r.family.Name)
 	write(t, server, after)
 	readFull(t, leaf, after)
 	write(t, leaf, after)
 	readFull(t, server, after)
+}
+
+// wireSequence is the sequence number the next segment from from to to takes
+// and the acknowledgment it carries, read off the wire from the segment that
+// carried data
+func wireSequence(read reader, from, to netip.AddrPort, data []byte) (seq, ack uint32, ok bool) {
+	buf := make([]byte, readSize)
+	for by := time.Now().Add(stepBudget); ; {
+		n, source, err := read(buf, by)
+		if err != nil {
+			return 0, 0, false
+		}
+		segment := buf[:n]
+		if source.Addr() != from.Addr() || n < 20 || binary.BigEndian.Uint16(segment) != from.Port() || binary.BigEndian.Uint16(segment[2:]) != to.Port() {
+			continue
+		}
+		offset := transportLength(parsed{protocol: syscall.IPPROTO_TCP, payload: segment})
+		if offset > n || !bytes.Equal(segment[offset:], data) {
+			continue
+		}
+		return binary.BigEndian.Uint32(segment[4:]) + uint32(len(data)), binary.BigEndian.Uint32(segment[8:]), true
+	}
 }

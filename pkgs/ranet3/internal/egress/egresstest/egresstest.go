@@ -134,6 +134,9 @@ type Host struct {
 	// mesh routes to other nodes, the leaf's
 	Mesh    []netip.Addr
 	Members func() []netip.Prefix
+	// Lanes is the exit's mesh, whose lanes carry a backend's own packets
+	// toward the leaf into the mesh's outbound path
+	Lanes *netstack.Mesh
 }
 
 // Network is a leaf, an exit's host and a server beyond the exit's uplink,
@@ -184,6 +187,23 @@ const (
 	// that no mapping holds with a reset at once, where RFC 5382 REQ-4 has a
 	// NAT answer none for at least 6 seconds
 	ResetsUnsolicitedSYN
+	// NoInboundTCP ends each connection the leaf opens at the exit and opens
+	// its own toward the server, so no connection from outside reaches the
+	// leaf, where RFC 5382 REQ-3 and REQ-8 have the exit carry one to a
+	// mapping. A simultaneous open still opens, since the exit's own socket in
+	// SYN-SENT meets the server's SYN, so REQ-2a holds.
+	NoInboundTCP
+	// RefusesOtherProtocols carries TCP, UDP and ICMP alone and answers a
+	// packet of any other protocol with code 13 over IPv4 and code 1 over
+	// IPv6, where RFC 5508 REQ-8 and RFC 6888 REQ-1 have an exit carry a
+	// protocol it need not translate as it is
+	RefusesOtherProtocols
+	// UnrelayedLeafErrors drops the leaf's own ICMP error about a flow, where
+	// RFC 5508 REQ-5 has the exit carry it to the server from the mapping
+	UnrelayedLeafErrors
+	// NoLowPorts gives a leaf's port below 1024 a port of 1024 or above, where
+	// RFC 4787 REQ-3 recommends one below 1024
+	NoLowPorts
 )
 
 func (l Limit) String() string {
@@ -198,6 +218,14 @@ func (l Limit) String() string {
 		return "unanswered udp-lite"
 	case ResetsUnsolicitedSYN:
 		return "resets an unsolicited syn"
+	case NoInboundTCP:
+		return "no inbound tcp"
+	case RefusesOtherProtocols:
+		return "refuses other protocols"
+	case UnrelayedLeafErrors:
+		return "unrelayed leaf errors"
+	case NoLowPorts:
+		return "no low ports"
 	}
 	return fmt.Sprintf("limit %d", int(l))
 }
@@ -318,9 +346,9 @@ func Run(t *testing.T, build func(t testing.TB) Network, arm Arm) {
 				under.run(r.family.Name, func(t *testing.T) {
 					family := &level{t: t}
 					r.steps(func(name string, step func(*testing.T)) { family.run(name, r.judged(step)) })
-					// a family runs the steps of every class, the quench in IPv4 alone, the idle timers for an arm that reads its flows,
-					// and the steps of a class that translates
-					family.holds(10 + ones(!v6, arm.Flows != nil) + 9*ones(class != None))
+					// a family runs the steps of every class, the packets into the mesh for an arm that returns them, the quench in
+					// IPv4 alone, the idle timers for an arm that reads its flows, and the steps of a class that translates
+					family.holds(9 + ones(!arm.Terminates, !v6, arm.Flows != nil) + 9*ones(class != None))
 				})
 			}
 			under.run("disabled and enabled", func(t *testing.T) { exit.disable(t, network, class) })
@@ -377,7 +405,10 @@ func (r *rows) steps(step func(name string, run func(*testing.T))) {
 	step("port reuse", r.portReuse)
 	step("egress from several sessions at once", r.sessions)
 	step("packets no flow is tracked for", r.untracked)
-	step("packets into the mesh no flow is tracked for", r.untrackedInto)
+	// a backend that terminates refuses return, so nothing goes into the mesh
+	if !r.terminates {
+		step("packets into the mesh no flow is tracked for", r.untrackedInto)
+	}
 	if !r.v6() {
 		step("icmp a nat does not carry", r.icmpNotCarried)
 	}
@@ -458,8 +489,9 @@ func start(t *testing.T, network Network, arm Arm, class Class, flows uint32) *r
 		cfg.Advertise = append(cfg.Advertise, schema.PrefixFrom(prefix))
 	}
 	// the server's flows toward the leaf are then translated into the mesh, as a
-	// subnet router's LAN's are, which the idle timers read
-	cfg.Return = true
+	// subnet router's LAN's are, which the idle timers read. A backend that
+	// terminates opens no flow toward the leaf, so it refuses return.
+	cfg.Return = !arm.Terminates
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("the capability is refused: %v", err)
 	}
@@ -471,13 +503,22 @@ func start(t *testing.T, network Network, arm Arm, class Class, flows uint32) *r
 		defer close(r.done)
 		r.err = r.Run(ctx)
 	}()
-	t.Cleanup(func() {
-		cancel()
-		<-r.done
-	})
+	t.Cleanup(func() { r.end(t, stopBudget) })
 	network.Carry(r.hand)
 	r.awaitReady(t)
 	return r
+}
+
+// end ends Run and waits budget for it to return, failing t where it has not,
+// so a backend whose Run never returns fails its class and the suite goes on
+// to the next with that Run left running
+func (r *running) end(t interface{ Errorf(string, ...any) }, budget time.Duration) {
+	r.cancel()
+	select {
+	case <-r.done:
+	case <-time.After(budget):
+		t.Errorf("Run had not returned %s after its context ended, and is left running", budget)
+	}
 }
 
 func (r *running) awaitReady(t *testing.T) {
