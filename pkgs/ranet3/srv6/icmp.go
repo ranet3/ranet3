@@ -97,6 +97,14 @@ func Unreachable(offending []byte, source netip.Addr, code uint8, allow func() b
 	return icmpError(offending, source, icmpUnreachable, code, 0, allow)
 }
 
+// Relayed is an ICMPv6 error of kind and code from source quoting quote, rest being the four octets after its checksum
+// quote is a packet's header and the part of what followed it the error carries, whose payload length may claim more than quote holds
+// as RFC 4443 section 2.4 (c)'s quote of a long packet does: an exit relaying a server's or a router's error about a leaf's packet quotes it so
+// it returns nil where icmpError would, the error held within the minimum MTU as icmpError holds it
+func Relayed(quote []byte, source netip.Addr, kind, code uint8, rest uint32) []byte {
+	return icmpError(quote, source, kind, code, rest, func() bool { return true })
+}
+
 // BeyondScope answers a packet whose destination lies past the scope of its source, RFC 4443 section 3.1 code 2, from source, and allow is icmpError's
 // a link-local source with a wider destination, which no router forwards off its link
 func BeyondScope(offending []byte, source netip.Addr, allow func() bool) []byte {

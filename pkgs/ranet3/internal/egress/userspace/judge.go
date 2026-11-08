@@ -46,7 +46,9 @@ const (
 // with administratively prohibited, and the rest delivered. held reports an
 // address the host holds. A UDP datagram toward one is delivered, since the
 // relay carries it to the mapping holding its port there and refuses it
-// otherwise, which only the port shows, past reassembly.
+// otherwise, which only the port shows, past reassembly. So is an ICMP error
+// whole in one packet about a UDP datagram, which the relay carries back to
+// the mapping that hairpinned the datagram and drops otherwise.
 //
 // The protocol is judged on every fragment, since the stack answers a
 // protocol it does not register with a protocol unreachable as the
@@ -79,7 +81,7 @@ func judge(raw []byte, held func(netip.Addr) bool) judgment {
 		return judgment{act: answer, kind: netstack.ExitExpired, reason: reasonExpired}
 	case !carried(protocol, destination.Is4()):
 		return judgment{act: answer, kind: netstack.ExitProhibited, reason: reasonProtocol}
-	case unservable(destination) || protocol != 17 && held(destination):
+	case unservable(destination) || protocol != 17 && held(destination) && !fastLeafError(raw):
 		return judgment{act: answer, kind: netstack.ExitProhibited, reason: reasonDestination}
 	}
 	return judgment{act: deliver}

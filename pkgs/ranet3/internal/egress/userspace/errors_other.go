@@ -12,3 +12,9 @@ type errorQueue struct{}
 func (*errorQueue) open(int, bool) error    { return nil }
 func (*errorQueue) read() (icmpError, bool) { return icmpError{}, false }
 func (*errorQueue) close()                  {}
+
+// watchErrors queues nothing where the kernel keeps no error queue
+func watchErrors(int, bool) error { return nil }
+
+// drainErrors finds no error where the kernel keeps no error queue
+func drainErrors(int, []byte, func(icmpError, []byte)) {}

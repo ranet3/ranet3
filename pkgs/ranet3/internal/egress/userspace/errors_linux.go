@@ -4,6 +4,7 @@
 package userspace
 
 import (
+	"encoding/binary"
 	"net/netip"
 
 	"golang.org/x/sys/unix"
@@ -21,11 +22,7 @@ type errorQueue struct {
 // open turns the queue on for fd, a socket of family ipv6 or IPv4, and holds
 // a descriptor of it
 func (q *errorQueue) open(fd int, ipv6 bool) error {
-	level, option := unix.IPPROTO_IP, unix.IP_RECVERR
-	if ipv6 {
-		level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVERR
-	}
-	if err := unix.SetsockoptInt(fd, level, option, 1); err != nil {
+	if err := watchErrors(fd, ipv6); err != nil {
 		return err
 	}
 	held, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
@@ -41,21 +38,12 @@ func (q *errorQueue) read() (icmpError, bool) {
 	if !q.held {
 		return icmpError{}, false
 	}
-	oob := make([]byte, unix.CmsgSpace(sockExtendedErr+unix.SizeofSockaddrInet6))
+	oob := make([]byte, errorSpace())
 	_, oobn, _, _, err := unix.Recvmsg(q.fd, nil, oob, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
 	if err != nil {
 		return icmpError{}, false
 	}
-	messages, err := unix.ParseSocketControlMessage(oob[:oobn])
-	if err != nil {
-		return icmpError{}, false
-	}
-	for _, m := range messages {
-		if (m.Header.Level == unix.IPPROTO_IP && m.Header.Type == unix.IP_RECVERR) || (m.Header.Level == unix.IPPROTO_IPV6 && m.Header.Type == unix.IPV6_RECVERR) {
-			return extendedError(m.Data)
-		}
-	}
-	return icmpError{}, false
+	return queuedError(oob[:oobn])
 }
 
 // close turns the queue off and gives its descriptor back. A connection the
@@ -74,9 +62,57 @@ func (q *errorQueue) close() {
 	}
 }
 
+// watchErrors has the kernel queue each ICMP error about fd's datagrams, fd
+// a socket of family ipv6 or IPv4, and hand it to a read as its errno
+func watchErrors(fd int, ipv6 bool) error {
+	level, option := unix.IPPROTO_IP, unix.IP_RECVERR
+	if ipv6 {
+		level, option = unix.IPPROTO_IPV6, unix.IPV6_RECVERR
+	}
+	return unix.SetsockoptInt(fd, level, option, 1)
+}
+
+// drainErrors empties fd's error queue, handing each an ICMP error with the
+// part of the offending datagram's payload the error quoted, read into buf.
+// It skips the errors the kernel raised itself, such as a datagram refused
+// for its size. Emptying the queue gives back the receive buffer its errors
+// held and clears the socket's pending errno.
+func drainErrors(fd int, buf []byte, each func(e icmpError, prefix []byte)) {
+	oob := make([]byte, errorSpace())
+	for {
+		n, oobn, _, _, err := unix.Recvmsg(fd, buf, oob, unix.MSG_ERRQUEUE|unix.MSG_DONTWAIT)
+		if err != nil {
+			return
+		}
+		if e, ok := queuedError(oob[:oobn]); ok {
+			each(e, buf[:n])
+		}
+	}
+}
+
+// errorSpace is the control buffer one queued error takes
+func errorSpace() int {
+	return unix.CmsgSpace(sockExtendedErr + unix.SizeofSockaddrInet6)
+}
+
+// queuedError is the ICMP error the control messages of one read of an error
+// queue name, false where they name none
+func queuedError(oob []byte) (icmpError, bool) {
+	messages, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return icmpError{}, false
+	}
+	for _, m := range messages {
+		if (m.Header.Level == unix.IPPROTO_IP && m.Header.Type == unix.IP_RECVERR) || (m.Header.Level == unix.IPPROTO_IPV6 && m.Header.Type == unix.IPV6_RECVERR) {
+			return extendedError(m.Data)
+		}
+	}
+	return icmpError{}, false
+}
+
 // extendedError is the ICMP error a sock_extended_err and the offender's
 // address after it name, false for one the kernel raised itself rather than
-// read from an ICMP message
+// read from an ICMP message. ee_info is in the host's byte order.
 func extendedError(data []byte) (icmpError, bool) {
 	if len(data) < sockExtendedErr {
 		return icmpError{}, false
@@ -85,7 +121,7 @@ func extendedError(data []byte) (icmpError, bool) {
 	if origin != unix.SO_EE_ORIGIN_ICMP && origin != unix.SO_EE_ORIGIN_ICMP6 {
 		return icmpError{}, false
 	}
-	e := icmpError{kind: data[5], code: data[6]}
+	e := icmpError{kind: data[5], code: data[6], info: binary.NativeEndian.Uint32(data[8:12])}
 	offender := data[sockExtendedErr:]
 	switch {
 	case origin == unix.SO_EE_ORIGIN_ICMP && len(offender) >= unix.SizeofSockaddrInet4:

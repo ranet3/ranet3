@@ -88,6 +88,27 @@ func icmpError(offending []byte, source netip.Addr, ttl, kind, code byte, rest u
 	if ttl == 0 || Version(offending) != 4 || !HeaderValid(offending) || !SingleHost(source) || !answerable(offending) || !allow() {
 		return nil
 	}
+	return errorQuoting(offending, source, ttl, kind, code, rest)
+}
+
+// Relayed is an ICMP error of kind and code from source with ttl, rest being the second word of its header, quoting quote
+// quote is a datagram's header and the part of what followed it the error carries, whose total length may claim more than quote holds
+// as a router's quote of a long datagram does: an exit relaying a server's or a router's error about a leaf's datagram quotes it so
+// the error's own lengths claim what it holds, quote cut where the error would pass 576 bytes, RFC 1812 section 4.3.2.3
+// it returns nil where icmpError would, but that the quote's total length is not read, and for a quote whose header it does not hold whole
+func Relayed(quote []byte, source netip.Addr, ttl, kind, code byte, rest uint32) []byte {
+	if ttl == 0 || len(quote) < ipv4HeaderLen || quote[0]>>4 != 4 || !SingleHost(source) {
+		return nil
+	}
+	headerLen := int(quote[0]&0x0f) * 4
+	if headerLen < ipv4HeaderLen || headerLen > len(quote) || Sum(0, quote[:headerLen]) != 0xffff || !answerable(quote) {
+		return nil
+	}
+	return errorQuoting(quote, source, ttl, kind, code, rest)
+}
+
+// errorQuoting is icmpError's message once offending is one an error may answer
+func errorQuoting(offending []byte, source netip.Addr, ttl, kind, code byte, rest uint32) []byte {
 	quoted := min(len(offending), maxErrorDatagram-ipv4HeaderLen-icmpHeaderLen)
 	out := make([]byte, ipv4HeaderLen+icmpHeaderLen+quoted)
 	out[0] = 4<<4 | ipv4HeaderLen/4

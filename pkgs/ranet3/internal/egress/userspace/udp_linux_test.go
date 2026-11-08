@@ -297,3 +297,131 @@ func readNext(t *testing.T, conn *net.UDPConn) ([]byte, netip.AddrPort) {
 	}
 	return buf[:n], netip.AddrPortFrom(from.Addr().Unmap(), from.Port())
 }
+
+// Under auto, with the host holding two addresses of one family, two mappings
+// that pair apart hairpin to each other from each one's own address and port
+// (RFC 4787 REQ-9 (a)), and each passes the other's filter once both have
+// sent to the address the other leaves from: the first datagram of the punch
+// is filtered, and every later one each way reaches its leaf from the other
+// mapping's paired address, as from outside. A leaf's error about one reaches
+// the sender from the address the sender sent to, the target's paired one
+// (RFC 5508 REQ-7 (a)), and one quoting the sender's port at the target's
+// address, which the sender never leaves from, is dropped.
+func TestHairpinUnderAutoComesFromTheSendersPairedAddress(t *testing.T) {
+	h, paired := twoAddressesHeld(t)
+	listener := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
+	toListener, toSender := openFrom(t, h, listener, paired[0]), openFrom(t, h, sender, paired[1])
+	h.x.handle(h.lane, udpDatagram(sender, toListener, []byte("punches")))
+	if got := h.count(false, reasonFiltered); got != 1 {
+		t.Fatalf("filtered %d hairpinned datagrams, want the first of the punch", got)
+	}
+	h.x.handle(h.lane, udpDatagram(listener, toSender, []byte("answers")))
+	h.waitLaid(t, "the listener's datagram, from its own paired address", func(raw []byte) bool {
+		return isDatagram(raw, toListener, sender, []byte("answers"))
+	})
+	h.x.handle(h.lane, udpDatagram(sender, toListener, []byte("goes through")))
+	laid := h.waitLaid(t, "the sender's datagram, from its own paired address", func(raw []byte) bool {
+		return isDatagram(raw, toSender, listener, []byte("goes through"))
+	})
+	h.x.handle(h.lane, leafRefusal(listener.Addr(), toSender.Addr(), 3, 3, laid))
+	out := h.waitLaid(t, "the listener's error to the sender", func(raw []byte) bool {
+		p, ok := parse(raw)
+		return ok && p.protocol == protoICMP && p.dst == sender.Addr()
+	})
+	checkServerError(t, out, toListener, sender, 3, 3, []byte("goes through"))
+	forger := netip.AddrPortFrom(leaf4.Next(), freeUDPPort(t, leaf4))
+	openFrom(t, h, forger, paired[0])
+	before := h.count(false, reasonLeafErrorUnmapped)
+	quoted := udpDatagram(netip.AddrPortFrom(toListener.Addr(), toSender.Port()), forger, []byte("never sent"))
+	h.x.handle(h.lane, leafRefusal(forger.Addr(), toListener.Addr(), 3, 3, quoted))
+	if got := h.count(false, reasonLeafErrorUnmapped) - before; got != 1 {
+		t.Errorf("dropped %d errors as about no datagram a mapping delivered, want the one quoting the sender's port at %s, which it never leaves from", got, toListener.Addr())
+	}
+}
+
+// Two classes on two addresses of one family hairpin to each other each from
+// the sending class's own address and its mapping's port (RFC 4787 REQ-9
+// (a)), and each passes the other's filter once both have sent to the address
+// the other leaves from: the first datagram of the punch is filtered, and
+// every later one each way reaches its leaf from the other class's address, as
+// from outside. A leaf's error about one reaches the sender from the address
+// the sender sent to, the target class's (RFC 5508 REQ-7 (a)).
+func TestHairpinBetweenTwoClassesComesFromTheSendersClassAddress(t *testing.T) {
+	h, classes := twoAddressesHeld(t)
+	listener := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
+	// one class from each leaf's address, named without the egress package,
+	// which this file imports only from a later commit
+	translate := append(classed(classes[0].Addr()).Translate, classed(classes[1].Addr()).Translate...)
+	translate[0].From.Prefix, translate[1].From.Prefix = netip.PrefixFrom(listener.Addr(), 32), netip.PrefixFrom(sender.Addr(), 32)
+	h.x.cfg.Translate = translate
+	toListener, toSender := openFrom(t, h, listener, classes[0]), openFrom(t, h, sender, classes[1])
+	h.x.handle(h.lane, udpDatagram(sender, toListener, []byte("punches")))
+	if got := h.count(false, reasonFiltered); got != 1 {
+		t.Fatalf("filtered %d hairpinned datagrams, want the first of the punch", got)
+	}
+	h.x.handle(h.lane, udpDatagram(listener, toSender, []byte("answers")))
+	h.waitLaid(t, "the listener's datagram, from its class's address", func(raw []byte) bool {
+		return isDatagram(raw, toListener, sender, []byte("answers"))
+	})
+	h.x.handle(h.lane, udpDatagram(sender, toListener, []byte("goes through")))
+	laid := h.waitLaid(t, "the sender's datagram, from its class's address", func(raw []byte) bool {
+		return isDatagram(raw, toSender, listener, []byte("goes through"))
+	})
+	h.x.handle(h.lane, leafRefusal(listener.Addr(), toSender.Addr(), 3, 3, laid))
+	out := h.waitLaid(t, "the listener's error to the sender", func(raw []byte) bool {
+		p, ok := parse(raw)
+		return ok && p.protocol == protoICMP && p.dst == sender.Addr()
+	})
+	checkServerError(t, out, toListener, sender, 3, 3, []byte("goes through"))
+}
+
+// twoAddressesHeld is a relay harness in this namespace, which holds the two
+// prefixes it returns on loopback and readies every socket. Loopback takes
+// each prefix as local, so a socket toward a server inside one leaves from
+// that prefix's address.
+func twoAddressesHeld(t *testing.T) (*relayHarness, [2]netip.Prefix) {
+	t.Helper()
+	claim(t)
+	prefixes := [2]netip.Prefix{netip.MustParsePrefix("198.51.100.1/25"), netip.MustParsePrefix("198.51.100.129/25")}
+	if err := netnstest.BringUp("lo"); err != nil {
+		t.Fatal(err)
+	}
+	netlink, err := netnstest.OpenNetlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer netlink.Close()
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range prefixes {
+		if err := netlink.AddAddress(lo.Index, prefix); err != nil && err != unix.EEXIST {
+			t.Fatal(err)
+		}
+	}
+	// New starts no goroutine, so nothing reads the platform while it changes
+	h := newRelayHarness(t, nil)
+	holdOnly(&h.x.rt, prefixes[0].Addr(), prefixes[1].Addr())
+	h.x.rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+	return h, prefixes
+}
+
+// openFrom opens leaf's mapping toward a server inside prefix and is the
+// address and port it left from, failing t where that is not prefix's address
+func openFrom(t *testing.T, h *relayHarness, leaf netip.AddrPort, prefix netip.Prefix) netip.AddrPort {
+	t.Helper()
+	server, err := net.ListenUDP("udp4", net.UDPAddrFromAddrPort(netip.AddrPortFrom(prefix.Addr().Next().Next(), 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("opens a mapping")), false)
+	outside := readDatagramFrom(t, server, []byte("opens a mapping"))
+	if outside.Addr() != prefix.Addr() {
+		t.Fatalf("the mapping of %s left from %s, want %s", leaf, outside, prefix.Addr())
+	}
+	return outside
+}

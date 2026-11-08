@@ -20,6 +20,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
+	"ranet3.com/pkgs/ranet3/srv6"
 )
 
 // The reasons a UDP datagram is dropped or its flow refused
@@ -30,6 +31,12 @@ const (
 	reasonDescriptors = "descriptors"
 	reasonSocket      = "socket"
 	reasonWithdrawn   = "withdrawn"
+	// a leaf's ICMP error about no datagram a live mapping delivered, and one
+	// the platform has no raw socket to send or whose send failed
+	reasonLeafErrorUnmapped = "leaf error unmapped"
+	reasonLeafErrorUnsent   = "leaf error unsent"
+	// a leaf's ICMP error whose quoted IPv4 header's checksum fails
+	reasonQuotedChecksum = "quoted checksum"
 )
 
 // udpRelay carries the leaves' UDP outside gVisor's endpoints, as RFC 4787
@@ -87,8 +94,7 @@ func (u *udpRelay) holding(address netip.Addr, port uint16) *mapping {
 // only receives, and a socket per destination on the same port connected to
 // it. source is the address the leaf's class names, which every socket of the
 // mapping binds, and the zero Addr under auto, where the receiving socket
-// binds the wildcard address and each destination's the address the route to
-// it picks.
+// binds the wildcard address and each destination's paired.
 type mapping struct {
 	leaf     netip.AddrPort
 	source   netip.Addr
@@ -108,6 +114,10 @@ type mapping struct {
 	// hairpinnedTo is each of the host's addresses the mapping's hairpinned
 	// datagrams went to, which its filter lets in as a destination's
 	hairpinnedTo []netip.Addr
+	// paired is the address every socket toward a destination binds under
+	// auto, the one the route to the first destination picked, so the
+	// mapping leaves from one address (RFC 4787 REQ-2)
+	paired netip.Addr
 }
 
 // destination is a mapping's socket connected to one server
@@ -117,9 +127,15 @@ type destination struct {
 	deadline atomic.Int64
 
 	// mu orders a send against a change of the socket's fragmenting, which
-	// dontFragment records once fragmentSet
+	// dontFragment records once fragmentSet, and against a read of the
+	// socket's errors, which quote kept
 	mu                        sync.Mutex
 	dontFragment, fragmentSet bool
+	// kept is the IP and UDP header of the leaf's last datagram to the
+	// server, its first keptLen bytes, which an error about the server's
+	// datagrams quotes
+	kept    [60 + 8]byte
+	keptLen int
 }
 
 func newUDPRelay(x *Exit) *udpRelay {
@@ -292,8 +308,11 @@ func (u *udpRelay) open(leaf, to netip.AddrPort) (*mapping, *destination, string
 			u.x.flows.release(leaf.Addr())
 			return nil, nil, reason
 		}
-		dst, closed, opened, reason := u.destination(m, to)
-		if closed {
+		dst, closed, opened, gone, reason := u.destination(m, to)
+		if gone {
+			u.end(m)
+		}
+		if closed || gone {
 			continue
 		}
 		if !opened {
@@ -349,7 +368,7 @@ func (u *udpRelay) mapping(leaf netip.AddrPort) (*mapping, bool, string) {
 	u.mappings[leaf] = m
 	u.ports[m.external()] = m
 	u.readers.Add(1)
-	go u.read(m, wildcard, false)
+	go u.read(m, wildcard, nil)
 	return m, true, ""
 }
 
@@ -371,22 +390,46 @@ func (u *udpRelay) drop(m *mapping) {
 
 // destination is m's socket toward to, opened where it has none, whether this
 // call opened it, and why it refused. closed reports m ended before it could
-// take the destination. The caller has admitted the flow a new one is.
-func (u *udpRelay) destination(m *mapping, to netip.AddrPort) (dst *destination, closed, opened bool, reason string) {
+// take the destination, and gone that the host no longer holds the address m
+// leaves from under auto, which ends m rather than let it leave from another.
+// The caller has admitted the flow a new one is.
+func (u *udpRelay) destination(m *mapping, to netip.AddrPort) (dst *destination, closed, opened, gone bool, reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if dst := m.destinations[to]; dst != nil || m.closed {
-		return dst, m.closed, false, ""
+		return dst, m.closed, false, false, ""
 	}
-	conn, err := u.connect(m.port, m.source, to)
+	source := m.source
+	if !source.IsValid() {
+		source = m.paired
+	}
+	conn, err := u.connect(m.port, source, to)
 	if err != nil {
-		return nil, false, false, socketReason(err)
+		if m.paired.IsValid() && errors.Is(err, syscall.EADDRNOTAVAIL) {
+			return nil, false, false, true, ""
+		}
+		return nil, false, false, false, socketReason(err)
+	}
+	if !m.source.IsValid() && !m.paired.IsValid() {
+		m.paired = conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap()
 	}
 	dst = &destination{to: to, conn: conn}
 	m.destinations[to] = dst
 	u.readers.Add(1)
-	go u.read(m, conn, true)
-	return dst, false, true, ""
+	go u.read(m, conn, dst)
+	return dst, false, true, false, ""
+}
+
+// end ends m where it is still its leaf's mapping
+func (u *udpRelay) end(m *mapping) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.mappings[m.leaf] != m {
+		return
+	}
+	delete(u.mappings, m.leaf)
+	delete(u.ports, m.external())
+	u.close(m)
 }
 
 // socketReason is why a socket's failure refused a flow: the descriptors where
@@ -469,7 +512,8 @@ func mappingPorts(leaf uint16) []uint16 {
 // connect opens a mapping's socket toward to, on source, or the address the
 // route to to picks where source is the zero Addr, and the mapping's port,
 // connected, as the transport binds its pairs: beside the receiving socket,
-// the kernel hands it to's datagrams alone
+// the kernel hands it to's datagrams alone, and the ICMP errors about them,
+// which it queues
 func (u *udpRelay) connect(port uint16, source netip.Addr, to netip.AddrPort) (*net.UDPConn, error) {
 	network := udpNetwork(to.Addr())
 	prepare := func(reuse bool) func(string, string, syscall.RawConn) error {
@@ -478,7 +522,11 @@ func (u *udpRelay) connect(port uint16, source netip.Addr, to netip.AddrPort) (*
 				return err
 			}
 			var set error
-			if err := raw.Control(func(fd uintptr) { set = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1) }); err != nil {
+			if err := raw.Control(func(fd uintptr) {
+				if set = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); set == nil {
+					set = watchErrors(int(fd), to.Addr().Is6())
+				}
+			}); err != nil {
 				return err
 			}
 			return set
@@ -531,8 +579,11 @@ func onSocket(conn *net.UDPConn, set func(fd int) error) error {
 // send sends d's payload toward its server, fragmenting it on the way out
 // only where dontFragment is false, and answers a datagram the path cannot
 // carry whole with a too big from the exit at the path's MTU (RFC 4787
-// REQ-13). A send that meets an ICMP error the socket was told of earlier is
-// sent again, since the error belongs to an earlier datagram.
+// REQ-13). A send that meets an ICMP error the socket was told of earlier
+// relays the errors the socket queued and is sent again, since the error
+// belongs to an earlier datagram, and a send that fails empties the queue of
+// what its failure queued. The datagram's IP and UDP header is kept for the
+// errors about it.
 func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment bool) {
 	dst.mu.Lock()
 	defer dst.mu.Unlock()
@@ -544,13 +595,22 @@ func (u *udpRelay) send(raw []byte, d datagram, dst *destination, dontFragment b
 	}
 	_, err := dst.conn.Write(d.payload())
 	if err != nil && !errors.Is(err, syscall.EMSGSIZE) && icmpErrno(err) {
+		u.relayErrors(dst)
 		_, err = dst.conn.Write(d.payload())
+	}
+	if err != nil {
+		u.relayErrors(dst)
 	}
 	if errors.Is(err, syscall.EMSGSIZE) && dontFragment {
 		if mtu := u.pathMTU(dst); mtu > 0 {
 			u.x.answers.Answer(raw, netstack.ExitTooBig, mtu)
 		}
 	}
+	header := 40
+	if raw[0]>>4 == 4 {
+		header = int(raw[0]&0x0f) * 4
+	}
+	dst.keptLen = copy(dst.kept[:], raw[:header+8])
 }
 
 // pathMTU is the MTU of the path dst's socket sends by, as the kernel learned
@@ -577,12 +637,13 @@ func icmpErrno(err error) bool {
 }
 
 // read hands m's leaf each datagram conn receives, conn being m's wildcard
-// socket or, where connected, one of its destination sockets, until conn
-// closes. The wildcard socket lets in only a datagram from an address m has a
-// destination at, any port, and drops the rest. A pooled buffer is held only
-// while a datagram moves, so a mapping at rest holds none, and an ICMP error
-// the socket was told of ends no mapping (RFC 4787 REQ-12).
-func (u *udpRelay) read(m *mapping, conn *net.UDPConn, connected bool) {
+// socket, dst nil, or dst's socket, until conn closes. The wildcard socket
+// lets in only a datagram from an address m has a destination at, any port,
+// and drops the rest. A pooled buffer is held only while a datagram moves, so
+// a mapping at rest holds none. An ICMP error dst's socket was told of is
+// relayed to the leaf with the rest its socket queued, and ends no mapping
+// (RFC 4787 REQ-12).
+func (u *udpRelay) read(m *mapping, conn *net.UDPConn, dst *destination) {
 	defer u.readers.Done()
 	raw, err := conn.SyscallConn()
 	if err != nil {
@@ -622,7 +683,12 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, connected bool) {
 				buffers[1].Put(buf)
 				return
 			}
-		case !connected && !m.admits(from):
+			if dst != nil && icmpErrno(readErr) {
+				dst.mu.Lock()
+				u.relayErrors(dst)
+				dst.mu.Unlock()
+			}
+		case dst == nil && !m.admits(from):
 			u.x.counts.drop(reasonFiltered)
 		default:
 			ident := u.x.ident.Add(1)
@@ -633,6 +699,54 @@ func (u *udpRelay) read(m *mapping, conn *net.UDPConn, connected bool) {
 }
 
 var errTruncated = errors.New("userspace: datagram past the buffer")
+
+// relayErrors hands dst's leaf each ICMP error dst's socket queued, and
+// empties the queue. dst.mu is held.
+func (u *udpRelay) relayErrors(dst *destination) {
+	buf := buffers[1].Get().(*[]byte)
+	defer buffers[1].Put(buf)
+	_ = onSocket(dst.conn, func(fd int) error {
+		drainErrors(fd, (*buf)[:cap(*buf)], func(e icmpError, prefix []byte) {
+			if dst.keptLen == 0 {
+				return
+			}
+			if relayed := relayedError(dst.kept[:dst.keptLen], e, prefix, u.x.hops(false)); relayed != nil {
+				u.x.link.send(relayed)
+			}
+		})
+		return nil
+	})
+}
+
+// relayedError is e answered to the leaf whose datagram's IP and UDP header
+// kept holds, from e's offender with its type and code (RFC 5508 REQ-4, RFC
+// 4787 REQ-12): quoting kept, whose lengths stay the leaf's, then as much of
+// prefix, the payload the error quoted, as the kept datagram's payload holds,
+// the error's own lengths claiming what it holds, within 576 bytes in IPv4
+// (RFC 1812 section 4.3.2.3) and 1280 in IPv6 (RFC 4443 section 2.4 (c)). A
+// too big carries e's MTU and a parameter problem its pointer, and an IPv4
+// error the TTL ttl. nil for an error of any other type, or from the other
+// family.
+func relayedError(kept []byte, e icmpError, prefix []byte, ttl uint8) []byte {
+	payload := int(binary.BigEndian.Uint16(kept[len(kept)-4:len(kept)-2])) - 8
+	quote := append(append(make([]byte, 0, len(kept)+len(prefix)), kept...), prefix[:max(min(len(prefix), payload), 0)]...)
+	switch {
+	case kept[0]>>4 == 4 && e.offender.Is4():
+		var rest uint32
+		switch {
+		case e.kind == 3 && e.code == 4:
+			rest = uint32(uint16(e.info))
+		case e.kind == 12:
+			rest = e.info << 24
+		case e.kind != 3 && e.kind != 11:
+			return nil
+		}
+		return packet.Relayed(quote, e.offender, ttl, e.kind, e.code, rest)
+	case kept[0]>>4 == 6 && e.offender.Is6() && e.kind >= 1 && e.kind <= 4:
+		return srv6.Relayed(quote, e.offender, e.kind, e.code, e.info)
+	}
+	return nil
+}
 
 // admits is whether m lets in a datagram from from: from an address it holds
 // a destination at, or one of the host's its hairpinned datagrams went to,
@@ -749,10 +863,26 @@ func (x *Exit) toLeaf(pkt []byte, ident uint32) {
 	x.link.send(pkt)
 }
 
+// outsideOr is the address m's datagrams leave the host from: its class's, or
+// under auto paired, the one its first destination's route picked. Under auto
+// before its first destination it is address, the host's address its datagram
+// went to.
+func (m *mapping) outsideOr(address netip.Addr) netip.Addr {
+	if m.source.IsValid() {
+		return m.source
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.paired.IsValid() {
+		return m.paired
+	}
+	return address
+}
+
 // hairpin carries d, a datagram toward an address the host holds, to the
-// mapping holding its port there, from the sender's own mapping's port on
-// that address (RFC 4787 REQ-9), where that mapping's filter lets the address
-// in, as it would a datagram from outside, and drops and counts it otherwise.
+// mapping holding its port there, from the sender's own mapping's address and
+// port (RFC 4787 REQ-9 (a)), where that mapping's filter lets the address in,
+// as it would a datagram from outside, and drops and counts it otherwise.
 // The sender's filter lets the address in from then on. It refuses d as toward
 // the host itself where no mapping holds the port, so no leaf reaches the
 // host's own services.
@@ -776,10 +906,7 @@ func (u *udpRelay) hairpin(raw []byte, d datagram) {
 		return
 	}
 	sender.refresh(u.now(), d.to)
-	from := netip.AddrPortFrom(d.to.Addr(), sender.port)
-	if sender.source.IsValid() {
-		from = netip.AddrPortFrom(sender.source, sender.port)
-	}
+	from := netip.AddrPortFrom(sender.outsideOr(d.to.Addr()), sender.port)
 	sender.hairpinTo(d.to.Addr())
 	if !target.admits(from) {
 		u.x.counts.drop(reasonFiltered)
@@ -825,6 +952,227 @@ func (u *udpRelay) hairpinFrom(leaf netip.AddrPort) (*mapping, string) {
 		}
 		return m, ""
 	}
+}
+
+// fastLeafError is whether raw, a packet the lane's judgment delivers, is an
+// ICMP error whole in one packet with no IPv6 extension header, quoting a UDP
+// datagram, as a leaf's error about a datagram a mapping delivered is
+func fastLeafError(raw []byte) bool {
+	switch raw[0] >> 4 {
+	case 4:
+		header := int(raw[0]&0x0f) * 4
+		if raw[9] != 1 || binary.BigEndian.Uint16(raw[6:8])&0x3fff != 0 || len(raw) < header+8+20 {
+			return false
+		}
+		quote := raw[header+8:]
+		return (raw[header] == 3 || raw[header] == 11 || raw[header] == 12) && quote[0]>>4 == 4 && quote[9] == 17
+	case 6:
+		return raw[6] == 58 && len(raw) >= 40+8+40 && raw[40] >= 1 && raw[40] <= 4 && raw[48]>>4 == 6 && raw[48+6] == 17
+	}
+	return false
+}
+
+// leafError carries raw, an ICMP error a leaf sent about a datagram one of
+// its mappings delivered, to that datagram's server from the address the
+// mapping's socket toward the server sends from, quoting the server's
+// datagram as the mapping received it: the quoted destination that address
+// at the mapping's port, the UDP checksum moved with them (RFC 5508 REQ-5).
+// It goes through the platform's raw socket and ends no mapping. An error
+// whose ICMP checksum or quoted IPv4 header's checksum fails is dropped and
+// counted before any checksum is written anew (RFC 5508 REQ-3 (a) and (b)),
+// as is one about no live mapping, or one the platform has no raw socket to
+// send.
+func (u *udpRelay) leafError(raw []byte) {
+	raw, version := packet.Payload(raw)
+	header, quotedHeader := 40, 40
+	if version == 4 {
+		header = int(raw[0]&0x0f) * 4
+	}
+	if version == 0 || len(raw) < header+8+20 {
+		u.x.counts.drop(reasonMalformed)
+		return
+	}
+	message := raw[header:]
+	if version == 4 {
+		quotedHeader = int(message[8]&0x0f) * 4
+	}
+	if quotedHeader < 20 || len(message) < 8+quotedHeader+8 {
+		u.x.counts.drop(reasonMalformed)
+		return
+	}
+	leafAddress, serverAddress := packetAddresses(raw)
+	if version == 4 && packet.Sum(0, message) != 0xffff || version == 6 && transportSum(leafAddress, serverAddress, 58, message) != 0xffff {
+		u.x.counts.drop(reasonICMPChecksum)
+		return
+	}
+	if version == 4 && packet.Sum(0, message[8:8+quotedHeader]) != 0xffff {
+		u.x.counts.drop(reasonQuotedChecksum)
+		return
+	}
+	quote := message[8:]
+	quotedFrom, quotedTo := packetAddresses(quote)
+	udp := quote[quotedHeader:]
+	server := netip.AddrPortFrom(quotedFrom, binary.BigEndian.Uint16(udp[0:2]))
+	leaf := netip.AddrPortFrom(quotedTo, binary.BigEndian.Uint16(udp[2:4]))
+	held := u.x.heldDestination(quotedFrom)
+	u.mu.RLock()
+	m := u.mappings[leaf]
+	var sender *mapping
+	if held {
+		sender = u.holding(quotedFrom, server.Port())
+	}
+	u.mu.RUnlock()
+	var source netip.Addr
+	ok := m != nil && quotedTo == leafAddress && quotedFrom == serverAddress
+	if ok && sender.hairpinnedFrom(quotedFrom) && sender.sentToward(m, quotedFrom) {
+		u.hairpinError(message, quotedHeader, m, sender, quotedFrom, diffserv(raw), u.x.hops(version == 6))
+		return
+	}
+	if ok {
+		source, ok = m.sourceToward(server.Addr())
+	}
+	switch {
+	case !ok:
+		u.x.counts.drop(reasonLeafErrorUnmapped)
+	case u.x.rt.Platform.Raw == nil:
+		u.x.counts.drop(reasonLeafErrorUnsent)
+	default:
+		if err := u.x.rt.Platform.Raw.Send(serverError(message, quotedHeader, server.Addr(), netip.AddrPortFrom(source, m.port), diffserv(raw), u.x.hops(version == 6))); err != nil {
+			u.x.counts.drop(reasonLeafErrorUnsent)
+		}
+	}
+}
+
+// hairpinError carries message, a leaf's ICMP error about a datagram that
+// sender's mapping hairpinned to target's leaf from the host's address from,
+// back to sender's leaf through the pump's lane, as RFC 5508 REQ-7 has a NAT
+// carry a hairpinned error: the quote translated to the datagram the sender
+// sent, from its leaf address and port to target's port on the address it
+// sent to, and the error from that address to the sender's leaf, the quote's
+// source after the translation (REQ-7 (a)). The address the sender sent to is
+// target's own, its class's or the one it paired with, else from, the one the
+// hairpinned datagram left from, which target's own hairpinned datagrams went
+// to. It carries ds and hops as serverError does.
+func (u *udpRelay) hairpinError(message []byte, quotedHeader int, target, sender *mapping, from netip.Addr, ds, hops byte) {
+	outside := target.outsideOr(from)
+	ident := u.x.ident.Add(1)
+	u.x.toLeaf(rebuiltError(message, quotedHeader, sender.leaf, netip.AddrPortFrom(outside, target.port), outside, sender.leaf.Addr(), ds, hops, uint16(ident)), ident)
+}
+
+// sentToward is whether m, a mapping that hairpins, sent to the host's address
+// a datagram of m's reached target at, from being the address it came from,
+// as m's filter holds it: target's own address, as hairpinError names it
+func (m *mapping) sentToward(target *mapping, from netip.Addr) bool {
+	return m.admits(netip.AddrPortFrom(target.outsideOr(from), 0))
+}
+
+// hairpinnedFrom is whether m, where not nil, hairpins its datagrams and
+// sends them from address, as hairpin picks it
+func (m *mapping) hairpinnedFrom(address netip.Addr) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	held := m.hairpinned
+	m.mu.RUnlock()
+	return held && m.outsideOr(address) == address
+}
+
+// packetAddresses is the source and destination of raw, an IPv4 or IPv6
+// header at least
+func packetAddresses(raw []byte) (from, to netip.Addr) {
+	if raw[0]>>4 == 4 {
+		return netip.AddrFrom4([4]byte(raw[12:16])), netip.AddrFrom4([4]byte(raw[16:20]))
+	}
+	return netip.AddrFrom16([16]byte(raw[8:24])), netip.AddrFrom16([16]byte(raw[24:40]))
+}
+
+// sourceToward is the address m's socket toward address sends from, false
+// where m holds none toward it
+func (m *mapping) sourceToward(address netip.Addr) (netip.Addr, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for to, dst := range m.destinations {
+		if to.Addr() == address {
+			return dst.conn.LocalAddr().(*net.UDPAddr).AddrPort().Addr().Unmap(), true
+		}
+	}
+	return netip.Addr{}, false
+}
+
+// diffserv is the diffserv class of raw, an IPv4 or IPv6 packet: the DS
+// field's upper six bits, in the place they hold in the field, its ECN bits
+// clear
+func diffserv(raw []byte) byte {
+	if raw[0]>>4 == 4 {
+		return raw[1] &^ 0x03
+	}
+	return (raw[0]<<4 | raw[1]>>4) &^ 0x03
+}
+
+// serverError is message, a leaf's ICMP error whose quoted datagram's IP
+// header is quotedHeader long, rebuilt from outside's address to server, the
+// quoted destination outside. It carries ds, the diffserv class of the leaf's
+// error it answers, as RFC 5508 section 7.7 has a NAT do: "When generating an
+// ICMP message, a NAT device SHOULD copy the diffserv class of the message
+// that causes the sending of the ICMP error message." Its TTL or hop limit
+// is hops.
+func serverError(message []byte, quotedHeader int, server netip.Addr, outside netip.AddrPort, ds, hops byte) []byte {
+	quote := message[8:]
+	quotedFrom, _ := packetAddresses(quote)
+	return rebuiltError(message, quotedHeader, netip.AddrPortFrom(quotedFrom, binary.BigEndian.Uint16(quote[quotedHeader:])), outside, outside.Addr(), server, ds, hops, 0)
+}
+
+// rebuiltError is message, an ICMP error whose quoted UDP datagram's IP header
+// is quotedHeader long, rebuilt from from to to with the DS field ds and the
+// TTL or hop limit hops: the quoted datagram's source quotedFrom and its
+// destination quotedTo, the quoted IPv4 header's checksum computed again, the
+// UDP checksum moved with the addresses and the ports as RFC 1624 moves one,
+// and the error's own checksum computed again. An IPv4 one's identification
+// is ident.
+func rebuiltError(message []byte, quotedHeader int, quotedFrom, quotedTo netip.AddrPort, from, to netip.Addr, ds, hops byte, ident uint16) []byte {
+	header, source := 40, 8
+	if to.Is4() {
+		header, source = 20, 12
+	}
+	size := len(to.AsSlice())
+	out := make([]byte, header+len(message))
+	icmp := out[header:]
+	copy(icmp, message)
+	quote := icmp[8:]
+	udp := quote[quotedHeader:]
+	addresses := quote[source : source+2*size]
+	translated := append(quotedFrom.Addr().AsSlice(), quotedTo.Addr().AsSlice()...)
+	if checksum := binary.BigEndian.Uint16(udp[6:8]); checksum != 0 || to.Is6() {
+		checksum = moved(checksum, addresses, translated)
+		checksum = packet.AdjustChecksum(checksum, binary.BigEndian.Uint16(udp[0:2]), quotedFrom.Port(), false)
+		if checksum = packet.AdjustChecksum(checksum, binary.BigEndian.Uint16(udp[2:4]), quotedTo.Port(), false); checksum == 0 {
+			checksum = 0xffff
+		}
+		binary.BigEndian.PutUint16(udp[6:8], checksum)
+	}
+	copy(addresses, translated)
+	binary.BigEndian.PutUint16(udp[0:2], quotedFrom.Port())
+	binary.BigEndian.PutUint16(udp[2:4], quotedTo.Port())
+	binary.BigEndian.PutUint16(icmp[2:4], 0)
+	if to.Is4() {
+		binary.BigEndian.PutUint16(quote[10:12], 0)
+		binary.BigEndian.PutUint16(quote[10:12], ^uint16(packet.Sum(0, quote[:quotedHeader])))
+		binary.BigEndian.PutUint16(icmp[2:4], ^uint16(packet.Sum(0, icmp)))
+		leafHeader(out, from, to, 1, ds, hops, ident)
+		return out
+	}
+	binary.BigEndian.PutUint16(icmp[2:4], ^uint16(transportSum(from, to, 58, icmp)))
+	leafHeader(out, from, to, 58, ds, hops, ident)
+	return out
+}
+
+// moved is checksum once the 16 bit words of from it covers became to's
+func moved(checksum uint16, from, to []byte) uint16 {
+	for i := 0; i+1 < len(from); i += 2 {
+		checksum = packet.AdjustChecksum(checksum, binary.BigEndian.Uint16(from[i:]), binary.BigEndian.Uint16(to[i:]), false)
+	}
+	return checksum
 }
 
 // expire ends each destination and each mapping past its time at now

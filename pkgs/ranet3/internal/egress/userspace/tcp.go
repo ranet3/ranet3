@@ -474,8 +474,11 @@ func (c *copies) put(buf *[]byte) {
 }
 
 // icmpError is an ICMP error the host's socket was told of: its type and
-// code, and the router or host that raised it
+// code, the router or host that raised it, and the word its message carries
+// after the checksum as the kernel reads it, a too big's MTU or a parameter
+// problem's pointer
 type icmpError struct {
 	offender   netip.Addr
 	kind, code uint8
+	info       uint32
 }

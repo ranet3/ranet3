@@ -302,7 +302,8 @@ func TestUDPChecksumIsCheckedOnBothPaths(t *testing.T) {
 // A leaf's mapping keeps the leaf's port where the host holds it free, toward
 // every server, and takes another the host gives where a socket holds it or
 // the process may not bind it. Every socket passes Prepare, the one that only
-// receives with no destination, each destination's toward its server.
+// receives with no destination, each destination's toward its server, and the
+// probe of the route to the first destination toward it.
 func TestMappingKeepsTheLeafsPortWhereFree(t *testing.T) {
 	servers := []*net.UDPConn{loopbackServer(t, netip.MustParseAddr("127.0.0.1")), loopbackServer(t, netip.MustParseAddr("127.0.0.1"))}
 	holder, err := net.ListenUDP("udp4", nil)
@@ -345,8 +346,10 @@ func TestMappingKeepsTheLeafsPortWhereFree(t *testing.T) {
 			if !c.kept {
 				want = append(want, netip.AddrPort{})
 			}
+			// the first destination's route is probed for the mapping's address
+			want = append(want, serverAt(servers[0]))
 			for _, server := range servers {
-				want = append(want, serverAt(server), serverAt(server))
+				want = append(want, serverAt(server))
 			}
 			if !slices.Equal(prepared, want) {
 				t.Errorf("Prepare readied sockets toward %v, want %v", prepared, want)
@@ -417,6 +420,72 @@ func TestMappingLeavesFromTheAddressOfTheLeafsClass(t *testing.T) {
 				t.Errorf("the mapping receives on %s, want %s", got, listening)
 			}
 		})
+	}
+}
+
+// pairedOf sets leaf's mapping's paired address to paired where it is valid,
+// and reports the mapping and the address it held before
+func (h *relayHarness) pairedOf(t *testing.T, leaf netip.AddrPort, paired netip.Addr) (*mapping, netip.Addr) {
+	t.Helper()
+	h.x.udp.mu.RLock()
+	m := h.x.udp.mappings[leaf]
+	h.x.udp.mu.RUnlock()
+	if m == nil {
+		t.Fatalf("%s holds no mapping", leaf)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	was := m.paired
+	if paired.IsValid() {
+		m.paired = paired
+	}
+	return m, was
+}
+
+// Under auto a mapping sends to every later destination from the address the
+// route to its first picked, whatever the route to the later one picks, so one
+// leaf's mapping leaves from one address (RFC 4787 REQ-2)
+func TestMappingUnderAutoLeavesFromItsFirstDestinationsAddress(t *testing.T) {
+	first := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	later := loopbackServer(t, netip.MustParseAddr("127.0.0.2"))
+	h := newRelayHarness(t, nil)
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	h.x.udp.take(udpDatagram(leaf, serverAt(first), []byte("first")), false)
+	from := readDatagramFrom(t, first, []byte("first"))
+	// the address the route to the first destination picked, which on loopback
+	// is the one every route picks, so it stands in for another
+	paired := netip.MustParseAddr("127.0.0.3")
+	if _, was := h.pairedOf(t, leaf, paired); was != from.Addr() {
+		t.Fatalf("the mapping pairs %s, want %s, the address its first datagram left from", was, from.Addr())
+	}
+	h.x.udp.take(udpDatagram(leaf, serverAt(later), []byte("later")), false)
+	if got := readDatagramFrom(t, later, []byte("later")); got != netip.AddrPortFrom(paired, from.Port()) {
+		t.Errorf("the later destination read the datagram from %s, want %s, the mapping's address and port", got, netip.AddrPortFrom(paired, from.Port()))
+	}
+}
+
+// A mapping under auto whose address the host no longer holds ends at its next
+// destination rather than leave from another address, and the datagram opens
+// a new mapping from the address the route picks
+func TestMappingWhoseAddressIsGoneEnds(t *testing.T) {
+	first := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	later := loopbackServer(t, netip.MustParseAddr("127.0.0.2"))
+	h := newRelayHarness(t, nil)
+	leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	h.x.udp.take(udpDatagram(leaf, serverAt(first), []byte("first")), false)
+	from := readDatagramFrom(t, first, []byte("first"))
+	// a documentation address no host holds
+	gone, _ := h.pairedOf(t, leaf, netip.MustParseAddr("192.0.2.77"))
+	h.x.udp.take(udpDatagram(leaf, serverAt(later), []byte("later")), false)
+	if got := readDatagramFrom(t, later, []byte("later")); got.Addr() != from.Addr() {
+		t.Errorf("the later destination read the datagram from %s, want an address of %s, the route's", got, from.Addr())
+	}
+	m, paired := h.pairedOf(t, leaf, netip.Addr{})
+	gone.mu.RLock()
+	closed := gone.closed
+	gone.mu.RUnlock()
+	if m == gone || !closed || paired != from.Addr() {
+		t.Errorf("the mapping is the old one %t, the old one closed %t, pairing %s, want a new mapping pairing %s", m == gone, closed, paired, from.Addr())
 	}
 }
 
@@ -492,6 +561,33 @@ func TestHairpinToAnotherHeldAddressMeetsNoClassMapping(t *testing.T) {
 	}
 }
 
+// anchor is the port of a mapping that sent to a server on loopback alone,
+// which unpaired hairpins through
+func (h *relayHarness) anchor(t *testing.T) uint16 {
+	t.Helper()
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	leaf := netip.AddrPortFrom(leaf4.Next().Next(), freeUDPPort(t, leaf4))
+	h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("anchors")), false)
+	readDatagramFrom(t, server, []byte("anchors"))
+	port, _ := h.mappingOf(leaf)
+	return port
+}
+
+// unpaired is the port of leaf's mapping opened with no destination, so under
+// auto it pairs with no address and hairpins from the host's address its
+// datagram went to, as a mapping whose host's address a test holds would: leaf
+// hairpins a datagram to anchor's port at spare, a held address the anchor
+// never sent to, which filters it. leaf's filter lets spare in from then on.
+func (h *relayHarness) unpaired(t *testing.T, leaf netip.AddrPort, spare netip.Addr, anchor uint16) uint16 {
+	t.Helper()
+	h.x.handle(h.lane, udpDatagram(leaf, netip.AddrPortFrom(spare, anchor), []byte("opens a mapping")))
+	port, ok := h.mappingOf(leaf)
+	if !ok {
+		t.Fatalf("%s holds no mapping after its hairpinned datagram", leaf)
+	}
+	return port
+}
+
 // A hairpinned datagram meets the target mapping's filter as one from outside
 // would (RFC 4787 REQ-8): to a mapping that never sent to the host's address
 // it is dropped and counted as filtered, laying nothing, while the sender's
@@ -499,22 +595,17 @@ func TestHairpinToAnotherHeldAddressMeetsNoClassMapping(t *testing.T) {
 // host's address so reaches the sender, and the sender's next datagram the
 // target, as two leaves punching through a filter by address do.
 func TestHairpinMeetsTheTargetsFilter(t *testing.T) {
-	host := netip.MustParseAddr("198.51.100.9")
+	host, spare := netip.MustParseAddr("198.51.100.9"), netip.MustParseAddr("198.51.100.11")
 	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
-		holdOnly(rt, host)
+		holdOnly(rt, host, spare)
 	})
-	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
-	open := func(leaf netip.AddrPort) uint16 {
-		h.x.udp.take(udpDatagram(leaf, serverAt(server), []byte("opens a mapping")), false)
-		readDatagramFrom(t, server, []byte("opens a mapping"))
-		port, _ := h.mappingOf(leaf)
-		return port
-	}
+	anchor := h.anchor(t)
 	target := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
 	sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
-	port, senderPort := open(target), open(sender)
+	port, senderPort := h.unpaired(t, target, spare, anchor), h.unpaired(t, sender, spare, anchor)
+	filtered := h.count(false, reasonFiltered)
 	h.x.handle(h.lane, udpDatagram(sender, netip.AddrPortFrom(host, port), []byte("unasked")))
-	if got := h.count(false, reasonFiltered); got != 1 {
+	if got := h.count(false, reasonFiltered) - filtered; got != 1 {
 		t.Errorf("filtered %d hairpinned datagrams, want the one to a mapping that never sent to %s", got, host)
 	}
 	h.x.handle(h.lane, udpDatagram(target, netip.AddrPortFrom(host, senderPort), []byte("answers")))
@@ -621,15 +712,11 @@ func TestHairpinReachesAnotherMappingFromTheSendersOwn(t *testing.T) {
 		rt.Platform.Held = func(address netip.Addr) bool { return address == host }
 	})
 	h.x.SetHopLimits(hostTTL, hostHopLimit)
-	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	anchor := h.anchor(t)
 	listener := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
-	h.x.udp.take(udpDatagram(listener, serverAt(server), []byte("opens a mapping")), false)
-	readDatagramFrom(t, server, []byte("opens a mapping"))
-	port, _ := h.mappingOf(listener)
+	port := h.unpaired(t, listener, host, anchor)
 	sender := netip.AddrPortFrom(other4, freeUDPPort(t, other4))
-	h.x.udp.take(udpDatagram(sender, serverAt(server), []byte("opens the sender's")), false)
-	readDatagramFrom(t, server, []byte("opens the sender's"))
-	opened, _ := h.mappingOf(sender)
+	opened := h.unpaired(t, sender, host, anchor)
 	h.x.handle(h.lane, udpDatagram(listener, netip.AddrPortFrom(host, opened), []byte("lets the host's address in")))
 	h.x.handle(h.lane, udpDatagram(sender, netip.AddrPortFrom(host, port), []byte("hairpinned")))
 	senderPort, ok := h.mappingOf(sender)

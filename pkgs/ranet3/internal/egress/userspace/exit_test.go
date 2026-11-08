@@ -569,7 +569,7 @@ func TestWithdrawnExitTakesNothing(t *testing.T) {
 // called, and hands back Raw's error from the first
 func TestCloseClosesRawOnce(t *testing.T) {
 	p := &fakePlatform{routes4: true, routes6: true}
-	raw := &fakeRaw{}
+	raw := &fakeRaw{closeErr: errRawClosed}
 	rt := Runtime{Mesh: newFakeMesh(), Platform: p.platform(), Limits: testLimits()}
 	rt.Platform.Raw = raw
 	x, err := New(exitConfig(), rt)
@@ -586,10 +586,31 @@ func TestCloseClosesRawOnce(t *testing.T) {
 
 var errRawClosed = errors.New("raw closed")
 
-type fakeRaw struct{ closed int }
+// fakeRaw records each packet sent through it, and closes with closeErr
+type fakeRaw struct {
+	closeErr error
 
-func (*fakeRaw) Send([]byte) error { return nil }
+	mu     sync.Mutex
+	sent   [][]byte
+	closed int
+}
+
+func (r *fakeRaw) Send(packet []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sent = append(r.sent, bytes.Clone(packet))
+	return nil
+}
+
+func (r *fakeRaw) sentSoFar() [][]byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]byte(nil), r.sent...)
+}
+
 func (r *fakeRaw) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.closed++
-	return errRawClosed
+	return r.closeErr
 }
