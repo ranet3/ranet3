@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-07
+updated: 2026-11-08
 order: 20
 ---
 
@@ -279,8 +279,10 @@ translator and the antispoof filter read with, nor the netlink header, sequence
 numbers, batch markers and acknowledgment flag that sending adds.
 `go test ./internal/egress/kernel -update` rewrites it on Linux.
 
-`nix fmt` rewrites the tree in place. It runs `deno fmt` on the Markdown, the
-example JSON and the site, then `nixfmt-tree`, then `go fmt`, `go vet`,
+`nix fmt` rewrites the tree in place from any shell, since it puts the Go
+toolchain it runs first on PATH, where `staticcheck` and `templ fmt` find it. It
+runs `deno fmt` on the Markdown except `internal/notices/third_party.md`, then
+on the example JSON and the site, then `nixfmt-tree`, then `go fmt`, `go vet`,
 `staticcheck`, `gomod2nix` and `go run ./internal/cmd/notices` in `pkgs/ranet3`,
 then `gomod2nix` in `pkgs/wireguard`, then `templ fmt`, `go fmt` and `gomod2nix`
 in `pkgs/raweb3`, then `taplo format` on every TOML file. The notices command

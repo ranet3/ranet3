@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-07
+updated: 2026-11-08
 order: 10
 ---
 
@@ -46,9 +46,10 @@ A packet this node does not forward is answered as a router answers it: Time
 Exceeded at a hop limit or TTL of 1, Packet Too Big or Fragmentation Needed past
 the next session's size, and Destination Unreachable with no route or inside a
 held prefix. A packet from a source only this node's own default reaches draws
-no answer, so an exit answers none from a host beyond the mesh.
-[Routing](../routing.md#transit) lists the answers, their codes and the address
-each comes from.
+no answer, but for the beyond scope answer to an IPv6 link-local source, which
+goes back on the session it came by, so an exit answers none from a host beyond
+the mesh. [Routing](../routing.md#transit) lists the answers, their codes and
+the address each comes from.
 
 [`cap.egress`](../exit-nodes.md) still reads the host's forwarding, for what an
 exit sends out of its uplink. A prefix an exit node offers to carry is

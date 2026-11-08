@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-07
+updated: 2026-11-08
 order: 35
 ---
 
@@ -722,18 +722,23 @@ needs.
   written twice is refused at load, and so is a class that names no `to`, an
   address of the other family, one with a zone, one written as IPv4-mapped IPv6,
   or one no reply can be sent to, global unicast and private addresses being the
-  ones it can. A class of `none` from `0.0.0.0/0` or `::/0` is refused, since it
-  would relay every mesh source onto the upstream untranslated.
+  ones it can, and a class that translates whose `from` lies inside `0.0.0.0/8`,
+  `127.0.0.0/8`, `169.254.0.0/16`, `224.0.0.0/3`, `::/128`, `::1/128`,
+  `fe80::/10` or `ff00::/8`, which hold only sources no router forwards a packet
+  from. Classes that leave every other source of a family under `none` are
+  refused, however they split it, since they would relay every mesh source onto
+  the upstream untranslated.
 - For traffic entering the mesh, under `return`, the source is the address of
   the family's class from `0.0.0.0/0` or `::/0` where that class names one, and
-  this node's mesh address where it is `auto` or absent. The daemon picks that
-  address once at startup, from the host prefixes `cap.route` announces and
-  `cap.table` assigns.
+  this node's mesh address where it is `auto`, `none` or absent. The daemon
+  picks that address once at startup, from the host prefixes `cap.route`
+  announces and `cap.table` assigns.
 - A subnet router needs `return` when the mesh has no route back to its LAN.
   With `return`, each advertised family whose class from `0.0.0.0/0` or `::/0`
-  is `auto` or absent needs exactly 1 global unicast or private mesh address of
-  that family. The daemon refuses to start with none or with more than 1, and
-  asks for the address as that class's `to`.
+  is `auto`, `none` or absent needs exactly 1 global unicast or private mesh
+  address of that family. The daemon refuses to start with none or with more
+  than 1, and asks for the address as that class's `to`, or, where that class is
+  `none`, for exactly 1 such mesh address through `cap.route` and `cap.table`.
 - `flows_per_source` is
   [each source's share of the flows](exit-nodes.md#each-sources-share-of-the-flows)
   through this node, in each family, every protocol's together, past which its

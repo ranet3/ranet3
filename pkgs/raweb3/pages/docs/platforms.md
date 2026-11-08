@@ -4,7 +4,7 @@
 title: "Platforms"
 description: "What differs between Linux, macOS and other platforms: the tun, the route reconciler, the underlay socket, the sockets connected to 1 peer, moving hosts and path MTU."
 created: 2026-09-21
-updated: 2026-11-07
+updated: 2026-11-08
 order: 100
 ---
 
@@ -73,11 +73,11 @@ source under a class that translates. Every other build carries none and refuses
 `cap.egress` at startup with
 `egress: cap.egress asks this node to carry other nodes' traffic out of the mesh, and this build for darwin carries no exit`,
 naming its own platform where this one names `darwin`. The loader is the same on
-every build, so a block it refuses, such as one with a class of `none` from
-`0.0.0.0/0`, is refused for the same reason everywhere, before a build without
-an exit refuses the block whole. A node that accepted the block and carried
-nothing would advertise an exit and drop every flow that took it. A node on any
-platform still uses an exit.
+every build, so a block it refuses, such as one whose classes leave under `none`
+every IPv4 source a router forwards a packet from, is refused for the same
+reason everywhere, before a build without an exit refuses the block whole. A
+node that accepted the block and carried nothing would advertise an exit and
+drop every flow that took it. A node on any platform still uses an exit.
 
 ## The tun device
 
@@ -91,9 +91,13 @@ its read batch.
 On macOS the tun is a utun with 1 queue. `link.tun` takes `utun` for the next
 free unit or `utunN` for unit N, because the utun control creates nothing else.
 The daemon refuses any other name at startup. The reconciler works on the name
-the device got, such as `utun6`, rather than the one configured. A packet the
-Mac sends to an address of its own on the utun crosses the utun twice, once into
-the mesh and once [written back](routing.md#transit).
+the device got, such as `utun6`, rather than the one configured. Where
+`link.tun` is `utun`, as by default, the daemon writes that name to the file the
+environment variable `WG_TUN_NAME_FILE` names, as wireguard-go does, so an
+environment that sets it for another program's tunnel finds this node's utun
+there instead. A packet the Mac sends to an address of its own on the utun
+crosses the utun twice, once into the mesh and once
+[written back](routing.md#transit).
 
 ## Linux
 
@@ -135,17 +139,17 @@ and UDP where the kernel takes UDP segmentation offload on a tun, from Linux
   [`e269d79c7d35`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=e269d79c7d35aa3808b1f3c1737d63dab504ddc8)
   without its fix,
   [`89add40066f9`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=89add40066f9ed9abe5f7f886fe5789ff7e0c50e).
-  The tun refuses some coalesced writes with EINVAL, and the packets each holds
-  are lost. `ranet3_tun_writes_failed_total` climbs, the
+  The tun refuses some coalesced writes with `EINVAL`, and the packets each
+  holds are lost. `ranet3_tun_writes_failed_total` climbs, the
   [`netstack tun refused a write`](metrics.md#tun-reads) warning carries
   `invalid argument`, and TCP into the host through the mesh slows. The fix is
   5.15.167, 6.1.107, 6.6.46, 6.10.5 or a later release of the same series.
 - Linux 6.2 to 6.8.4 lacks
   [`3d010c8031e3`](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=3d010c8031e39f5fa1e8b13ada77e0321091011f),
-  but for 6.6.26 and every later 6.6. A coalesced UDP write bound for a vxlan or
-  geneve interface on the host is lost after the tun takes it, and no counter of
-  the daemon's sees the loss. The fix is 6.8.5 or later, or 6.6.26 or later on
-  6.6.
+  except 6.6.26 and every later 6.6, which carry it. A coalesced UDP write bound
+  for a vxlan or geneve interface on the host is lost after the tun takes it,
+  and no counter of the daemon's sees the loss. The fix is 6.8.5 or later, or
+  6.6.26 or later on 6.6.
 
 ## macOS
 

@@ -5,15 +5,15 @@
 title: "ranet3"
 description: "What ranet3 is, and where each part of it is documented."
 created: 2026-08-17
-updated: 2026-11-07
+updated: 2026-11-08
 order: 10
 ---
 
-Every mesh node runs as a single Go binary. Nodes authenticate each other with
-IKEv2 and carry packets in ESP, both in userspace. An embedded Babel speaker
-chooses the route to every prefix. Local applications reach the mesh through the
-tun, a TUN device on Linux or a utun on macOS, over the kernel's own TCP/IP
-stack.
+The daemon is a mesh node in a single Go binary. Nodes authenticate each other
+with IKEv2 and carry packets in ESP, both in userspace. An embedded Babel
+speaker chooses the route to every prefix. Local applications reach the mesh
+through the tun, a TUN device on Linux or a utun on macOS, over the kernel's own
+TCP/IP stack.
 
 A node dials the peers `dial.to` names. With `dial.all` it also dials every
 other node in the trust document. With `link.listen` it also answers peers that

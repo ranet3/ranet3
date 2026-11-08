@@ -4,7 +4,7 @@
 title: "Repository layout"
 description: "Where everything lives in the repository."
 created: 2026-10-03
-updated: 2026-11-07
+updated: 2026-11-08
 order: 10
 ---
 
@@ -111,7 +111,7 @@ YAML frontmatter, rendered into templ components and styled with Tailwind.
 | `cmd/raweb3`     | the `raweb3` binary: `raweb3 build` writes the site to a directory, `raweb3 serve` renders each page as it is asked for                                                     |
 | `internal/site`  | loads `site.yaml` and the pages, checks them, and renders, highlights and minifies every page                                                                               |
 | `internal/pages` | the layouts: the frame every page shares, with its header, theme switch and notice, and the docs, page, bare, news, post and 404 layouts                                    |
-| `ui/`            | what every page of the site shares: the head, the logo mark drawn in SVG and in text, and `style.css`, the colors and components                                            |
+| `ui/`            | what the site's pages take: the head, `style.css` with the colors and components, and the logo mark, drawn in SVG on every page and in text where a page places it          |
 | `default.nix`    | the generator's build, and the site's, which runs `raweb3 build` with Tailwind                                                                                              |
 | `shell.nix`      | the `raweb3` dev shell                                                                                                                                                      |
 | `.envrc`         | direnv's entry to that shell                                                                                                                                                |

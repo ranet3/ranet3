@@ -4,7 +4,7 @@
 title: "Path MTU"
 description: "How each session finds the largest packet its path carries, and what happens to a packet that does not fit."
 created: 2026-10-16
-updated: 2026-11-07
+updated: 2026-11-08
 order: 65
 ---
 
@@ -194,6 +194,8 @@ families and whatever router-id the node holds, as a tun read's does. The
 its next session from the router-id of its family as well. Where the node holds
 none, an IPv6 answer comes from the answer SID below and, with no SID either,
 from the address the packet was going to, and an IPv4 answer from that address.
+A source only this node's own default reaches gets none, as
+[transit](routing.md#transit) gives.
 [Protocol deviations](design/protocol-deviations.md#icmp-answers) gives the
 reasons.
 

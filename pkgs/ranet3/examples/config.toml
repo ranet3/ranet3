@@ -310,10 +310,10 @@ update = "16s"
 # that is the address of the link the packet goes out by, and entering it, this
 # node's own mesh address. An address written out is used unchanged, in both
 # directions for a class from 0.0.0.0/0 or ::/0. none leaves a source as it
-# is, for a block the upstream routes back to the mesh on its own, and is
-# refused from 0.0.0.0/0 or ::/0, which would relay every mesh source onto the
-# upstream. An egress segment's packets, and this node's own from its mesh
-# addresses, take the same classes.
+# is, for a block the upstream routes back to the mesh on its own. Classes that
+# leave every source of a family under none are refused, since they would relay
+# every mesh source onto the upstream. An egress segment's packets, and this
+# node's own from its mesh addresses, take the same classes.
 # translate = [
 #   { from = "3fff:a::/32", to = "none" },
 #   { from = "0.0.0.0/0", to = "auto" },
@@ -325,7 +325,8 @@ update = "16s"
 # where the mesh holds no route back to the LAN. An exit node does not: nothing
 # sits behind it to start a flow. A node carrying more than one mesh address of
 # a family is refused rather than picked from, so name the one to use above, as
-# the to of the class from 0.0.0.0/0 or ::/0.
+# the to of the class from 0.0.0.0/0 or ::/0, or, where that class is none,
+# carry exactly one.
 # return = true
 
 # The most flows one mesh source address under a class that translates holds

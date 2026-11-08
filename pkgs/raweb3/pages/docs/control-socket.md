@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-07
+updated: 2026-11-08
 order: 80
 ---
 
@@ -58,7 +58,12 @@ The socket and each directory the daemon makes on the way to it take the
 daemon's group before their mode lets that group in, whichever group the system
 gives a new file ([Linux](https://man7.org/linux/man-pages/man2/open.2.html),
 [macOS](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/open.2.html)).
-A directory the daemon makes is mode 0750.
+A directory the daemon makes is mode 0750. The daemon binds the socket first in
+a directory of its own beside the path, mode 0700 and named `.control-` and a
+number, sets the socket's group and mode there and renames it onto the path, so
+only the daemon's user can reach it before its mode is set. That directory is
+removed once the socket is in place, and its name adds up to 20 bytes to the
+path the socket is first bound at, which [limits](#limits) counts.
 
 A directory that already exists keeps its group and mode. On macOS, a directory
 in the group `daemon` keeps the socket out of reach of the daemon's group. Stop
@@ -306,25 +311,25 @@ switch's table by this process has succeeded. Other lists, such as `segments`,
 
 ### Limits
 
-| Limit                                                     | Value                                                   |
-| --------------------------------------------------------- | ------------------------------------------------------- |
-| Connections open at once                                  | 32, and the daemon closes the next one as it accepts it |
-| Idle connection between requests                          | closed after 30 seconds                                 |
-| Request headers                                           | 5 seconds                                               |
-| Writing an answer, a stream excepted                      | 30 seconds                                              |
-| Verb body the daemon reads                                | 64 KiB                                                  |
-| Streams open at once, of events and traces together       | 4                                                       |
-| Source and destination prefixes in 1 trace query          | 16 of each                                              |
-| 1 stream write waiting on its reader                      | 5 seconds, then the stream ends                         |
-| Heartbeat on a quiet stream                               | every 15 seconds                                        |
-| Kinds in 1 events query                                   | 16                                                      |
-| Attributes in 1 events query                              | 16                                                      |
-| Socket path                                               | 103 bytes                                               |
-| 1 exchange of `ranet3` with the daemon, a stream excepted | 10 seconds                                              |
-| Wait of `rekey` for the rekeys it asked for               | 5 seconds                                               |
-| Answer `ranet3` reads                                     | 64 MiB                                                  |
-| 1 stream line `ranet3` reads                              | 1 MiB                                                   |
-| Events in 1 stream write                                  | 64                                                      |
+| Limit                                                     | Value                                                                                     |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Connections open at once                                  | 32, and the daemon closes the next one as it accepts it                                   |
+| Idle connection between requests                          | closed after 30 seconds                                                                   |
+| Request headers                                           | 5 seconds                                                                                 |
+| Writing an answer, a stream excepted                      | 30 seconds                                                                                |
+| Verb body the daemon reads                                | 64 KiB                                                                                    |
+| Streams open at once, of events and traces together       | 4                                                                                         |
+| Source and destination prefixes in 1 trace query          | 16 of each                                                                                |
+| 1 stream write waiting on its reader                      | 5 seconds, then the stream ends                                                           |
+| Heartbeat on a quiet stream                               | every 15 seconds                                                                          |
+| Kinds in 1 events query                                   | 16                                                                                        |
+| Attributes in 1 events query                              | 16                                                                                        |
+| Socket path                                               | 83 bytes, the 103 a unix socket holds less the 20 the directory it is first bound in adds |
+| 1 exchange of `ranet3` with the daemon, a stream excepted | 10 seconds                                                                                |
+| Wait of `rekey` for the rekeys it asked for               | 5 seconds                                                                                 |
+| Answer `ranet3` reads                                     | 64 MiB                                                                                    |
+| 1 stream line `ranet3` reads                              | 1 MiB                                                                                     |
+| Events in 1 stream write                                  | 64                                                                                        |
 
 The table holds once the daemon serves the node. While the start waits for the
 key or the trust document, as

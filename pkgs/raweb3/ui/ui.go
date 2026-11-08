@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-// Package ui holds the components and the stylesheet shared by every page
-// raweb3 renders.
+// Package ui holds what raweb3's pages take: the head, the stylesheet and the
+// logo mark in SVG on every page, the logo mark in text where a page places it,
+// and the Open Graph image drawn for each markdown page whose frontmatter names
+// no image of its own.
 package ui
 
 import "time"

@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-07
+updated: 2026-11-08
 order: 20
 ---
 
@@ -430,7 +430,7 @@ floor and 1 or 2 falls of the path MTU, the last at most 40 seconds after the
 answer before it where its schedule's own sends see the falls and at most 52
 where probes see them, and finds the state kept. A chain of falls can carry its
 last send past them, 4 falls that probes see or 13 that the schedule's sends
-see. A node's own rekey then fails as late and is retried, with no SA lost. The
+see. Such a peer's rekey then fails as late and is retried, with no SA lost. The
 wait and what follows it are in [limits](limits.md#ike).
 
 ## Lifetimes
@@ -657,7 +657,7 @@ Authentication is an Ed25519 signature
 shared key or EAP.
 [RFC 7296 section 4](https://www.rfc-editor.org/rfc/rfc7296.html#section-4)
 requires that every implementation can be configured to accept PKIX certificates
-signed by RSA keys and shared key authentication. Neither is supported.
+signed by RSA keys and shared key authentication. A node supports neither.
 
 The minimal profile of [RFC 7815](https://www.rfc-editor.org/rfc/rfc7815.html)
 does not cover this. It describes an initiator only (section 1), and it carries
@@ -729,11 +729,11 @@ by the time the report would go, nor while a request of its own is outstanding
 or while its IKE SA's rekey holds every other request, and the next look that
 finds it after the request ends sends one. Section 1.5 also allows "an
 informational message without cryptographic protection to the source IP address"
-where no IKE SA to it exists. None is sent, since that would let anyone make the
-node send to any address. A peer's `INVALID_SPI` changes no SA here: the request
-is answered empty, and the session logs the SPI it names at debug level, as
-section 2.21.4 has the recipient do: "The recipient MUST NOT change the state of
-any SAs as a result".
+where no IKE SA to it exists. A node sends none, since that would let anyone
+make it send to any address. A peer's `INVALID_SPI` changes no SA here: the
+request is answered empty, and the session logs the SPI it names at debug level,
+as section 2.21.4 has the recipient do: "The recipient MUST NOT change the state
+of any SAs as a result".
 
 The same section says "A node receiving a suspicious message from an IP address
 (and port, if NAT traversal is used) with which it has an IKE SA SHOULD send an

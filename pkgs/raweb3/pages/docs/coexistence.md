@@ -4,13 +4,13 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-07
+updated: 2026-11-08
 order: 110
 ---
 
-A node is built to run next to Tailscale, NetBird, ZeroTier, an SD-WAN agent, or
-anything else that owns interfaces and routes on the same host, and the
-reconciler's ownership rules make that true rather than a hope. `cap.egress`
+The daemon is built to run next to Tailscale, NetBird, ZeroTier, an SD-WAN
+agent, or anything else that owns interfaces and routes on the same host, and
+the reconciler's ownership rules make that true rather than a hope. `cap.egress`
 follows the same rules in the host's packet filter, see below.
 [Routing](routing.md) describes what the reconciler installs.
 

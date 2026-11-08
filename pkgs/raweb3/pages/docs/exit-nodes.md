@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-07
+updated: 2026-11-08
 order: 50
 ---
 
@@ -146,12 +146,12 @@ gives the reasons and the packets the refusal leaves unanswered.
 
 The in rule translates to the address of its family's class from `0.0.0.0/0` or
 `::/0` where that class names one, and to this node's own mesh address where it
-is `auto` or absent. The translator picks that address once at startup, among
-the host prefixes (`/32`, `/128`) that `cap.route` announces and `cap.table`
-assigns, keeping global unicast and private addresses only. A deployment with
-its own address block writes the address out to pin the address return traffic
-comes back to. Writing out the address is the only way to make a reply land on a
-chosen node.
+is `auto`, `none` or absent. The translator picks that address once at startup,
+among the host prefixes (`/32`, `/128`) that `cap.route` announces and
+`cap.table` assigns, keeping global unicast and private addresses only. A
+deployment with its own address block writes the address out to pin the address
+return traffic comes back to. Writing out the address is the only way to make a
+reply land on a chosen node.
 
 This node's own traffic from one of those mesh addresses, leaving by another
 link, takes that address's class's translation through a local rule, as a leaf's
@@ -169,12 +169,14 @@ needs where the mesh holds no route back to the network behind it. An exit node
 does not, since nothing sits behind it to start a flow. An egress segment's
 packet arrives on the tun, so the in rule never matches it.
 
-With `return` set and the family's class from `0.0.0.0/0` or `::/0` `auto` or
-absent, each advertised family needs exactly 1 candidate mesh address. A family
-with none or with several is refused at startup, and the error asks for the
-address as the `to` of the class from `0.0.0.0/0` or `::/0` in
-`cap.egress translate`. A pick among several would set the source of every flow
-out of the LAN. A guess could change after an unrelated edit.
+With `return` set and the family's class from `0.0.0.0/0` or `::/0` `auto`,
+`none` or absent, each advertised family needs exactly 1 candidate mesh address.
+A family with none or with several is refused at startup. Where that class is
+`auto` or absent, the error asks for the address as the `to` of the class from
+`0.0.0.0/0` or `::/0` in `cap.egress translate`, and where it is `none`, which
+such a `to` would undo, it asks for exactly 1 mesh address through `cap.route`
+and `cap.table`. A pick among several would set the source of every flow out of
+the LAN. A guess could change after an unrelated edit.
 
 ### `none`
 
@@ -198,9 +200,14 @@ works only where all 3 of these hold:
    device. Anyone can open a connection to that address through an exit
    announcing it, which leaves the leaf's own firewall as its only filter.
 
-A class of `none` from `0.0.0.0/0` or `::/0` is refused at load: an exit that
+Classes that leave under `none` every source of a family that a router forwards
+a packet from are refused at load, however they split it: an exit that
 translates nothing for anyone is an open relay for the overlay's sources onto
-its upstream.
+its upstream. A class that translates only sources no router forwards a packet
+from, a `from` inside `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16`,
+`224.0.0.0/3`, `::/128`, `::1/128`, `fe80::/10` or `ff00::/8`, is refused as
+well, since the mesh drops those sources before the exit and the class
+translates nothing.
 
 A flow under `none` is bound to the source it carries in this node's chain, at
 priority 99, ahead of every chain at `srcnat`, so a host's own masquerade there

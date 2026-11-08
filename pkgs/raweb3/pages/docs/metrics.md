@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-11-07
+updated: 2026-11-08
 order: 90
 ---
 
@@ -120,7 +120,7 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_segments_ecn_unused_total`             | counter | none                 | Packets an End.DT46 behavior decapsulated whose inner and outer ECN fields were a combination RFC 6040 section 4.2 lists as currently unused, the dropped ones among them                                                                                                                                                                                                                                                                                                                                                                                                                                   | always                                                                                                 |
 | `ranet3_steered_total`                         | counter | none                 | This node's own packets a steering policy encapsulated                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | always                                                                                                 |
 | `ranet3_steer_dropped_total`                   | counter | `reason`             | Packets a steering policy claimed and this node did not send, `too_large` or `no_route`, which `ranet3_transit_packets_total` counts as dropped `too_big` or `no_route` as well                                                                                                                                                                                                                                                                                                                                                                                                                             | always                                                                                                 |
-| `ranet3_transit_packets_total`                 | counter | `decision`, `reason` | Packets the forwarding decision took and reads off the tun it dropped, by what became of them, and the ICMP errors it sent, found no address for or due and could not send, as [transit counters](#transit-counters) lists                                                                                                                                                                                                                                                                                                                                                                                  | always                                                                                                 |
+| `ranet3_transit_packets_total`                 | counter | `decision`, `reason` | Packets the forwarding decision took and reads off the tun it dropped, by what became of them, and the ICMP errors it sent, found no address for, or found due and could not send, as [transit counters](#transit-counters) lists                                                                                                                                                                                                                                                                                                                                                                           | always                                                                                                 |
 | `ranet3_kernel_routes_installed`               | gauge   | none                 | Routes the kernel holds for the reconciler as of its last pass                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | with `cap.table`                                                                                       |
 | `ranet3_kernel_routes_skipped`                 | gauge   | none                 | Routes the platform refused in the last pass, cover members left out with their family, and zero routes a cover installs as nothing                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | with `cap.table`                                                                                       |
 | `ranet3_kernel_pass_timestamp_seconds`         | gauge   | none                 | Unix time the last pass finished, 0 before the first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | with `cap.table`                                                                                       |
@@ -188,18 +188,18 @@ counts one that peer's budget refuses.
 | `dropped`    | `looped`          | reads off the tun the table answers as this node's own whose destination the tun does not hold, which the mesh could only hand back to the host                                                                                                                                                                                                                                |
 | `answered`   |                   | ICMP errors sent about dropped packets and reads                                                                                                                                                                                                                                                                                                                               |
 | `unanswered` |                   | dropped packets the decision would answer that find no address of their family to come from                                                                                                                                                                                                                                                                                    |
-| `unsent`     |                   | answers due to dropped packets that no way back carries: to a source only an entry of this node counting as a default reaches, back through a peer no route takes or whose session's budget has no room, or beyond the scope of a link-local source of no session                                                                                                              |
+| `unsent`     |                   | answers due about dropped packets where no way back carries the answer: to a source only an entry of this node counting as a default reaches, back through a peer no route takes or whose session's budget has no room, or beyond the scope of a link-local source of no session                                                                                               |
 
 `unanswered` counts a drop before the rules that keep an error from answering a
 packet, such as one about an ICMP error or to a group, and before the rate
 limits, so it counts a drop that would have drawn no answer with an address too.
 A drop whose answer is due and has no way back counts under its reason and
 `unsent`. An answer to a source only this node's own default reaches, or beyond
-the scope of a link-local source of no session, is judged due against no limit
-and never built, and one back through a peer is built and then not sent. A drop
-no ICMP error may answer, such as one of an ICMP error, counts under no
-`unsent`, whatever way back its source has. An ICMP error a rate limit held back
-counts in none of `answered`, `unanswered` and `unsent`, and
+the scope of a link-local source of no session, is found due without drawing on
+a rate limit and is never built, and one back through a peer is built and then
+not sent. A drop no ICMP error may answer, such as one of an ICMP error, counts
+under no `unsent`, whatever way back its source has. An ICMP error a rate limit
+held back counts in none of `answered`, `unanswered` and `unsent`, and
 `ranet3_icmp_withheld_total` counts it, as [path MTU](#path-mtu) says. Every
 series is written from startup, at 0 on a node that forwarded nothing.
 `ranet3 status` shows the same counts on its `Transit` line.
@@ -229,9 +229,10 @@ gone, and the node then stops as
 
 `ranet3_tun_writes_failed_total` counts writes to the tun that returned an
 error, each of up to 128 packets, some or all of which the device did not take.
-A `netstack tun refused a write` warning carries the interface, the queue and
-the writes refused since the previous warning, at most once every 30 seconds,
-and none once the mesh is closing or the tun is gone.
+A `netstack tun refused a write` warning carries the interface, the queue, the
+writes refused since the previous warning and the error of the write that raised
+it, at most once every 30 seconds, and none once the mesh is closing or the tun
+is gone.
 
 ## Refused datagrams
 

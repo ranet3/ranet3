@@ -4,7 +4,7 @@
 title: "Reloading"
 description: "What a reload applies without dropping a session, and what needs a restart."
 created: 2026-09-12
-updated: 2026-11-04
+updated: 2026-11-08
 order: 70
 ---
 
@@ -374,10 +374,11 @@ class. A reload that moves one is refused with
 With `cap.egress.return` set, a reload that leaves none or more than 1 to pick
 from, in a family whose class from `0.0.0.0/0` or `::/0` names no address, is
 refused as a startup would be, and the refusal asks for the address as the `to`
-of that class in `cap.egress translate`. A reload that moves only other
-addresses is applied: one of a family the node does not translate, a link-local
-one, or one assigned under a prefix shorter than a host prefix, `203.0.113.7/24`
-for instance.
+of that class in `cap.egress translate`, or, where that class is `none`, for
+exactly 1 mesh address through `cap.route` and `cap.table`. A reload that moves
+only other addresses is applied: one of a family the node does not translate, a
+link-local one, or one assigned under a prefix shorter than a host prefix,
+`203.0.113.7/24` for instance.
 
 The rekey and replay settings are captured by a session when it is created.
 Applying them to new sessions alone would run 2 policies at once, so a change to
