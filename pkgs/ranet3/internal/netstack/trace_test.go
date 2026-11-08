@@ -265,6 +265,10 @@ func TestTraceRecordReadsThePacketsFields(t *testing.T) {
 	icmp6[40], icmp6[41] = 128, 0
 	later4 := bytes.Clone(udp4)
 	binary.BigEndian.PutUint16(later4[6:], 0x2000|3)
+	// a later fragment's data, of a packet whose fragmentable part began with destination options, holding a TCP header
+	// whose first two bytes would read as such a header of 8 bytes naming TCP
+	data6 := withProtocol(udp6, 60)
+	copy(data6[40:], []byte{6, 0, 1, 187, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, synFlag})
 	for _, c := range []struct {
 		name string
 		raw  []byte
@@ -278,6 +282,7 @@ func TestTraceRecordReadsThePacketsFields(t *testing.T) {
 		{"IPv4 Record Route and Router Alert", withOptions(udp4, []byte{7, 7, 4, 0, 0, 0, 0, 1, 148, 4, 0, 0}), TraceRecord{Protocol: 17, Headers: []string{"record-route", "router-alert"}, Transport: true, SourcePort: 4000, DestinationPort: 5000, HopLimit: 64, Length: 112}},
 		{"IPv6 behind hop-by-hop and a first fragment", ipv6With(udp6, []byte{0, 44}, 0), TraceRecord{Protocol: 17, Headers: []string{"hop-by-hop", "fragment"}, Transport: true, SourcePort: 4000, DestinationPort: 5000, HopLimit: 64, Length: 136}},
 		{"IPv6 behind a later fragment", ipv6With(udp6, []byte{44}, 10), TraceRecord{Protocol: 17, Headers: []string{"fragment"}, HopLimit: 64, Length: 128}},
+		{"IPv6 behind a later fragment whose data reads as headers", ipv6With(data6, []byte{44}, 10), TraceRecord{Protocol: 60, Headers: []string{"fragment"}, HopLimit: 64, Length: 128}},
 		{"IPv6 behind destination options cut short", ipv6With(udp6, []byte{60}, 0)[:44], TraceRecord{Protocol: 60, HopLimit: 64, Length: 44}},
 		{"IPv6 behind destination options cut before their length", ipv6With(udp6, []byte{60}, 0)[:41], TraceRecord{Protocol: 60, HopLimit: 64, Length: 41}},
 		{"IPv6 behind a fragment header cut short", ipv6With(udp6, []byte{44}, 0)[:44], TraceRecord{Protocol: 44, HopLimit: 64, Length: 44}},

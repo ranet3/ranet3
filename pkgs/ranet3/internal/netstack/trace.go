@@ -1059,7 +1059,8 @@ func (f *traceFields) walkOptions(options []byte) {
 
 // walkExtensions walks the extension headers of raw, an IPv6 packet, RFC 8200 section 4, and reports where the transport header starts
 // each header's length is srv6.StepExtension's, the one the segments and the edge walk by
-// first is false behind a fragment header whose offset is not 0, and ok false where a header runs past raw or the walk past traceHeaders
+// first is false behind a fragment header whose offset is not 0, where the walk stops, since RFC 8200 section 4.5 puts the fragment's data and no header after it
+// and ok false where a header runs past raw or the walk past traceHeaders
 // the protocol is the header the walk stopped at
 func (f *traceFields) walkExtensions(raw []byte) (offset int, first, ok bool) {
 	next, offset, first := raw[6], 40, true
@@ -1081,5 +1082,9 @@ func (f *traceFields) walkExtensions(raw []byte) (offset int, first, ok bool) {
 		f.headers[f.headerCount] = tracedHeader(next)
 		f.headerCount++
 		next, offset = following, end
+		if !first {
+			f.protocol = next
+			return offset, false, true
+		}
 	}
 }
