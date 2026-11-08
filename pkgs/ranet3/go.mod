@@ -28,3 +28,5 @@ require (
 )
 
 replace ranet3.com/pkgs/wireguard => ../wireguard
+
+replace gvisor.dev/gvisor => github.com/stepbrobd/gvisor v0.0.0-20261108114011-5377a6d30d74

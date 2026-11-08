@@ -13,6 +13,8 @@ github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiT
 github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
 github.com/spf13/pflag v1.0.10 h1:4EBh2KAYBwaONj6b2Ye1GiHfwjqyROoF4RwYO+vPwFk=
 github.com/spf13/pflag v1.0.10/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
+github.com/stepbrobd/gvisor v0.0.0-20261108114011-5377a6d30d74 h1:ROsf7g4sZoaAYBBI4b8R6LELv/aWuXtoURtR/3HCVtU=
+github.com/stepbrobd/gvisor v0.0.0-20261108114011-5377a6d30d74/go.mod h1:8EvmWpn201Ba5N80rb+0662hAULFFrp9ZZFGcgBJ+oY=
 go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
@@ -27,7 +29,5 @@ golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 golang.org/x/time v0.16.0 h1:vMb6ptszcQMkcwiRTAuNNU50gom6++Q/6gY2hDM6VDE=
 golang.org/x/time v0.16.0/go.mod h1:rVKOqvZeKvrDKTQiAHJ7wmwP0RzleSphoEA9RcdLA0s=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
-gvisor.dev/gvisor v0.0.0-20261008000517-3b87f090dbda h1:HX4bzbYkQJtURY0fu9LZugDrQTKX2xLOIVRIV7yUdi8=
-gvisor.dev/gvisor v0.0.0-20261008000517-3b87f090dbda/go.mod h1:8EvmWpn201Ba5N80rb+0662hAULFFrp9ZZFGcgBJ+oY=
 hegel.dev/go/hegel v0.9.29 h1:Tgxp7n0SIJn6BWlJcBo6KBKsvM98DBQwgpJUfF1tpLA=
 hegel.dev/go/hegel v0.9.29/go.mod h1:32oDGA+F4vXA9fLQ/IoyZGIKir8JWjop3fcb6LNs2t4=
