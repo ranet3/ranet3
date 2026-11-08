@@ -257,8 +257,9 @@ type Arm struct {
 	New func(t testing.TB, host Host, cfg egress.Egress, hooks egress.Hooks) egress.Exit
 	// Holds names what the backend holds on host, nothing once it has withdrawn
 	Holds func(host Host) ([]string, error)
-	// Remove takes what carries the backend's translation off host as another
-	// writer would, nil for a backend nothing else on the host can change
+	// Remove takes what carries the backend's translation of both families off
+	// host in one transaction, as another writer would, nil for a backend
+	// nothing else on the host can change
 	Remove func(host Host) error
 	// Masquerade has another writer masquerade every packet leaving host, made
 	// after the backend's translation, where the host's own source translation
@@ -737,12 +738,14 @@ func (r *running) awaitStatus(t *testing.T, what string, ok func(egress.Status) 
 	}
 }
 
-// overwritten has another writer take the backend's translation away. The
-// backend says the families it lost are not ready, the leaf's datagram of each
-// sent before Ready returns reaches the server not at all, and once the
-// backend has its translation back the same flow reaches the server from the
-// class's address. A datagram egressed in that window would leave untranslated
-// and pin its flow untranslated after the translation came back.
+// overwritten has another writer take the backend's translation away in one
+// transaction. The backend says each family is not ready once, the leaf's
+// datagram of each sent before Ready returns reaches the server not at all,
+// and once the backend has its translation back the same flow reaches the
+// server from the class's address. A datagram egressed in that window would
+// leave untranslated and pin its flow untranslated after the translation came
+// back. A second not-ready for the one change would drop every frame of the
+// family for a pass and withdraw its prefixes for nothing.
 func (r *running) overwritten(t *testing.T, network Network, class Class, remove func(Host) error) {
 	type flow struct {
 		family   *rows
@@ -758,7 +761,7 @@ func (r *running) overwritten(t *testing.T, network Network, class Class, remove
 		flows[i] = flow{family, datagram(netip.AddrPortFrom(family.family.Leaf, leafWindowPort), to, leafTTL, data), data, family.listenUDP(t, to)}
 	}
 	var mu sync.Mutex
-	var windows int
+	var drops [2]int
 	var leaked []string
 	r.mu.Lock()
 	r.dropped = func(v4, v6 bool) {
@@ -766,6 +769,14 @@ func (r *running) overwritten(t *testing.T, network Network, class Class, remove
 		var looking sync.WaitGroup
 		for i, went := range []bool{v4, v6} {
 			if !went {
+				continue
+			}
+			mu.Lock()
+			drops[i]++
+			again := drops[i] > 1
+			mu.Unlock()
+			// a second drop opens no window, so no two readers take the server's socket
+			if again {
 				continue
 			}
 			r.hand([][]byte{flows[i].datagram})
@@ -778,9 +789,6 @@ func (r *running) overwritten(t *testing.T, network Network, class Class, remove
 			})
 		}
 		looking.Wait()
-		mu.Lock()
-		windows++
-		mu.Unlock()
 	}
 	r.mu.Unlock()
 	t.Cleanup(func() {
@@ -788,18 +796,21 @@ func (r *running) overwritten(t *testing.T, network Network, class Class, remove
 		r.dropped = nil
 		r.mu.Unlock()
 	})
+	counted := func() [2]int {
+		mu.Lock()
+		defer mu.Unlock()
+		return drops
+	}
 	if err := remove(r.host); err != nil {
 		t.Fatalf("take the backend's translation away as another writer: %v", err)
 	}
 	for deadline := time.Now().Add(stepBudget); ; time.Sleep(pollInterval) {
-		mu.Lock()
-		opened := windows
-		mu.Unlock()
-		if opened != 0 {
+		if n := counted(); n[0] != 0 && n[1] != 0 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("within %s of another writer taking its translation the backend told Ready of no family it lost", stepBudget)
+			n := counted()
+			t.Fatalf("within %s of another writer taking its translation the backend told Ready of %d losses of %s and %d of %s, want one each", stepBudget, n[0], flows[0].family.family.Name, n[1], flows[1].family.family.Name)
 		}
 	}
 	r.awaitReady(t)
@@ -812,6 +823,17 @@ func (r *running) overwritten(t *testing.T, network Network, class Class, remove
 		from := receiveFrom(t, udpReader(f.server), f.data, func() { r.hand([][]byte{f.datagram}) })
 		if from.Addr() != f.family.seen() {
 			t.Errorf("once the backend had its translation back the server read the window's flow from %s, want %s", from, f.family.seen())
+		}
+	}
+	// a second loss for the one change is waited for as an answer that must not come
+	for deadline := time.Now().Add(quietPeriod); time.Now().Before(deadline); time.Sleep(pollInterval) {
+		if n := counted(); n[0] > 1 || n[1] > 1 {
+			break
+		}
+	}
+	for i, n := range counted() {
+		if n > 1 {
+			t.Errorf("the backend told Ready of %d losses of %s for another writer's one change, want one", n, flows[i].family.family.Name)
 		}
 	}
 }
