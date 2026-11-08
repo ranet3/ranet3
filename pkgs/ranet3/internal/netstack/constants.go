@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/control"
+	"ranet3.com/pkgs/ranet3/internal/codel"
 	"ranet3.com/pkgs/wireguard/conn"
 )
 
@@ -60,11 +61,11 @@ const peerDataBudget = 4096 * 1400
 const leastPacketBytes = 1400
 
 // codelTarget is the delay a peer's sender holds its queue to, and codelInterval how long the delay may stay above it before the sender starts dropping
-// both are the defaults RFC 8289 gives and the kernel's CoDel uses
+// both are the delay control's own, the defaults RFC 8289 gives and the kernel's CoDel uses
 // the interval is long enough that one late batch, which delays every batch behind it at once, drops nothing
 const (
-	codelTarget   = 5 * time.Millisecond
-	codelInterval = 100 * time.Millisecond
+	codelTarget   = codel.Target
+	codelInterval = codel.Interval
 )
 
 // transmitBatchSize is the most packets a peer's sender merges into one transmit

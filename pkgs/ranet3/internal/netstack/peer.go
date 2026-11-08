@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/internal/codel"
 	"ranet3.com/pkgs/ranet3/transport"
 	"ranet3.com/pkgs/wireguard/conn"
 )
@@ -40,7 +41,7 @@ type Peer struct {
 	// delayDropped is the part of dropped the sender dropped for the delay through the queue
 	// delay is the control that decides those drops, which only the sender touches
 	delayDropped atomic.Uint64
-	delay        codel
+	delay        codel.Controller
 	// releases, headWaits and seals are written by the sender alone, as SendStats says of each
 	releases, headWaits, seals histogram
 	// events records the peer's changes of state, nil recording nothing
@@ -607,7 +608,7 @@ func (p *Peer) senderLoop() {
 			endRelease()
 			// with nothing of the data budget held no data packet waits between its reservation and its transmit
 			// so the queue the delay control measures is empty
-			if p.dataBudget.used.Load() == 0 && p.delay.empty() {
+			if p.dataBudget.used.Load() == 0 && p.delay.Empty() {
 				p.recordDelayState(0)
 			}
 			select {
@@ -729,15 +730,15 @@ func (p *Peer) shedHead(b *peerBatch, now time.Duration) {
 		return
 	}
 	sojourn := now - b.admitted
-	dropping := p.delay.dropping
-	if p.delay.drop(now, sojourn) {
+	dropping := p.delay.Dropping()
+	if p.delay.Drop(now, sojourn) {
 		b.shed = 1
 		// the total goes up first
 		// so a reader that loads the delay drops before the total never sees more of them than of it
 		p.dropped.Add(1)
 		p.delayDropped.Add(1)
 	}
-	if p.delay.dropping != dropping {
+	if p.delay.Dropping() != dropping {
 		p.recordDelayState(sojourn)
 	}
 }
@@ -749,7 +750,7 @@ func (p *Peer) recordDelayState(sojourn time.Duration) {
 		return
 	}
 	kind := "netstack.codel.drained"
-	if p.delay.dropping {
+	if p.delay.Dropping() {
 		kind = "netstack.codel.dropping"
 	}
 	p.events(kind, p.ID, slog.Duration("sojourn", sojourn), slog.Duration("target", codelTarget))
