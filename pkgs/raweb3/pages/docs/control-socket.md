@@ -230,6 +230,7 @@ POST.
 | `/v0/up`             | POST      | empty body                                                         | a result                            |
 | `/v0/debug/events`   | GET, HEAD | query `kind`, `peer`, `attr`, `since`, `follow`                    | events, 1 JSON object per line      |
 | `/v0/debug/pmtu`     | GET, HEAD | query `peer`                                                       | path MTU view, a JSON object        |
+| `/v0/debug/sender`   | GET, HEAD | query `peer`                                                       | sender view, a JSON object          |
 | `/v0/debug/runtime`  | GET, HEAD | none                                                               | process view, a JSON object         |
 | `/v0/debug/updown`   | GET, HEAD | none                                                               | up and down view, a JSON object     |
 | `/v0/debug/netmon`   | GET, HEAD | none                                                               | network watch view, a JSON object   |

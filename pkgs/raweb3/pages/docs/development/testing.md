@@ -40,10 +40,14 @@ what a mux reads over Linux's
 [loopback](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/drivers/net/loopback.c#L202)
 once IPv4's is
 [capped](https://github.com/torvalds/linux/blob/940de590b839f71d6dc846160534bf202401b8b7/include/net/ip.h#L500),
-and no send is refused for its size. A property test in `transport` runs drawn
-scripts on the network and on loopback and compares what each hub and socket
-received. GRO and GSO, ICMP errors, the path MTU of a real route, the source an
-endpoint is pinned to, the socket mark and connected sockets stay with
+and no send is refused for its size. A hub on it reads into buffers of its pool,
+consecutive datagrams of one source sharing one while they fit, refuses a
+datagram past 64 KiB as truncated, and overwrites each buffer that goes back to
+the pool, so a packet read past its batch's release reads changed bytes once its
+buffer goes back or is read into again. A property test in `transport` runs
+drawn scripts on the network and on loopback and compares what each hub and
+socket received. GRO and GSO, ICMP errors, the path MTU of a real route, the
+source an endpoint is pinned to, the socket mark and connected sockets stay with
 `transport`'s tests over real sockets, the root tests below and the VM tests. A
 test joins every goroutine it starts at cleanup. A test stays on the real clock
 where a goroutine of its session waits for a lock another holds across a timer,

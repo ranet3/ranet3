@@ -1547,7 +1547,10 @@ The switch's lifetime:
   warning.
 - A clean stop, `ranet3 down`, `ranet3 disable reconciler` and a reload to
   `"uplink"` or without `cap.exit` delete the rejects, and every stop deletes
-  the holds.
+  the holds. Where
+  [the dump of the routing table they read](design/limits.md#dataplane-and-sockets)
+  fails, `ranet3 down`, `ranet3 disable reconciler` and the reload try again
+  later, and a stop leaves the rejects and the holds as `SIGKILL` does below.
 - The stop a failed tun causes leaves the rejects, as Linux's leaves
   `ranet3_fallback`, and the daemon exits 1 for
   [the supervisor's restart](service.md#restarts-and-the-network).
