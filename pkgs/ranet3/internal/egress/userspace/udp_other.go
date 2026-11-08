@@ -16,3 +16,12 @@ func setDontFragment(int, bool, bool) error { return errors.ErrUnsupported }
 // socketPathMTU reads nothing, since no build for this platform carries the
 // exit
 func socketPathMTU(*net.UDPConn, bool) (int, error) { return 0, errors.ErrUnsupported }
+
+// bindsRouteSource leaves a dial's address to its connect
+const bindsRouteSource = false
+
+// shareDialPort, shareMappingPort and shareDestinationPort refuse, since no
+// build for this platform carries the exit
+func shareDialPort(int) error          { return errors.ErrUnsupported }
+func shareMappingPort(int, bool) error { return errors.ErrUnsupported }
+func shareDestinationPort(int) error   { return errors.ErrUnsupported }

@@ -5,6 +5,7 @@ package userspace
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -59,6 +60,10 @@ func newRelayHarness(t *testing.T, change func(*Runtime, *egress.Egress)) *relay
 	if err != nil {
 		t.Fatal(err)
 	}
+	// darwin's New readies its ICMP sockets, which no datagram asked for
+	h.mu.Lock()
+	h.prepared = nil
+	h.mu.Unlock()
 	h.x = x
 	x.answers = h.mesh.OpenLane()
 	h.lane = h.mesh.OpenLane()
@@ -318,8 +323,20 @@ func TestMappingKeepsTheLeafsPortWhereFree(t *testing.T) {
 		kept bool
 	}{{"free", 0, true}, {"held by another socket", held, false}, {"refused to the process", 80, false}} {
 		t.Run(c.name, func(t *testing.T) {
-			if c.port == 0 {
+			switch c.port {
+			case 0:
 				c.port = freeUDPPort(t, leaf4)
+			case 80:
+				// macOS lets any user bind a low port, and a sandbox refuses
+				// one with EPERM, which is no port the process may not bind
+				probe, err := net.ListenUDP("udp4", &net.UDPAddr{Port: int(c.port)})
+				if err == nil {
+					_ = probe.Close()
+					t.Skipf("this process binds port %d itself", c.port)
+				}
+				if !errors.Is(err, syscall.EACCES) {
+					t.Skipf("port %d is refused to this process with %v, not EACCES", c.port, err)
+				}
 			}
 			h := newRelayHarness(t, nil)
 			leaf := netip.AddrPortFrom(leaf4, c.port)
@@ -440,6 +457,7 @@ func TestMappingLeavesFromTheAddressOfTheLeafsClass(t *testing.T) {
 		{"an address", classed(netip.MustParseAddr("127.0.0.2")), netip.MustParseAddr("127.0.0.2")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			_ = loopbackServer(t, c.want)
 			h := newRelayHarness(t, nil)
 			h.x.cfg.Translate = c.cfg.Translate
 			leaf := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))

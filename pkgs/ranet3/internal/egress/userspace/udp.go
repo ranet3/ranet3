@@ -458,11 +458,12 @@ func (u *udpRelay) refuse(raw []byte, reason string) {
 // free, else on one the host gives. A port the process may not bind ends the
 // search at one the host gives, since every other low port is refused alike.
 // No other socket holds the port taken, since the socket binds without
-// SO_REUSEPORT and takes it only once bound, so the mapping's destination
-// sockets may bind the port too.
+// sharing it and shares it only once bound (shareMappingPort), so the
+// mapping's destination sockets may bind the port too.
 func (u *udpRelay) listen(leaf netip.AddrPort, source netip.Addr) (*net.UDPConn, error) {
 	network := udpNetwork(leaf.Addr())
-	if !source.IsValid() {
+	specific := source.IsValid()
+	if !specific {
 		source = unspecified(leaf.Addr())
 	}
 	var conn *net.UDPConn
@@ -488,7 +489,7 @@ func (u *udpRelay) listen(leaf netip.AddrPort, source netip.Addr) (*net.UDPConn,
 	if err != nil {
 		return nil, err
 	}
-	if err := onSocket(conn, func(fd int) error { return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1) }); err != nil {
+	if err := onSocket(conn, func(fd int) error { return shareMappingPort(fd, specific) }); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -515,38 +516,46 @@ func mappingPorts(leaf uint16) []uint16 {
 // the kernel hands it to's datagrams alone, and the ICMP errors about them,
 // which it queues
 func (u *udpRelay) connect(port uint16, source netip.Addr, to netip.AddrPort) (*net.UDPConn, error) {
-	network := udpNetwork(to.Addr())
-	prepare := func(reuse bool) func(string, string, syscall.RawConn) error {
-		return func(network, _ string, raw syscall.RawConn) error {
-			if err := u.x.rt.Platform.Prepare(network, to, raw); err != nil || !reuse {
-				return err
-			}
-			var set error
-			if err := raw.Control(func(fd uintptr) {
-				if set = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1); set == nil {
-					set = watchErrors(int(fd), to.Addr().Is6())
-				}
-			}); err != nil {
-				return err
-			}
-			return set
+	prepare := func(network, _ string, raw syscall.RawConn) error {
+		if err := u.x.rt.Platform.Prepare(network, to, raw); err != nil {
+			return err
 		}
+		var set error
+		if err := raw.Control(func(fd uintptr) {
+			if set = shareDestinationPort(int(fd)); set == nil {
+				set = watchErrors(int(fd), to.Addr().Is6())
+			}
+		}); err != nil {
+			return err
+		}
+		return set
 	}
 	if !source.IsValid() {
-		route := net.Dialer{Control: prepare(false)}
-		probe, err := route.Dial(network, to.String())
-		if err != nil {
+		var err error
+		if source, err = u.x.routeSource(to); err != nil {
 			return nil, err
 		}
-		source = probe.LocalAddr().(*net.UDPAddr).AddrPort().Addr()
-		_ = probe.Close()
 	}
-	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(source, port)), Control: prepare(true)}
-	conn, err := dialer.Dial(network, to.String())
+	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(source, port)), Control: prepare}
+	conn, err := dialer.Dial(udpNetwork(to.Addr()), to.String())
 	if err != nil {
 		return nil, err
 	}
 	return conn.(*net.UDPConn), nil
+}
+
+// routeSource is the address the host's route to to picks, read from a UDP
+// socket connected to it through the platform's Prepare, which sends nothing
+func (x *Exit) routeSource(to netip.AddrPort) (netip.Addr, error) {
+	route := net.Dialer{Control: func(network, _ string, raw syscall.RawConn) error {
+		return x.rt.Platform.Prepare(network, to, raw)
+	}}
+	probe, err := route.Dial(udpNetwork(to.Addr()), to.String())
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	defer probe.Close()
+	return probe.LocalAddr().(*net.UDPAddr).AddrPort().Addr(), nil
 }
 
 func udpNetwork(address netip.Addr) string {
@@ -710,7 +719,7 @@ func (u *udpRelay) relayErrors(dst *destination) {
 			if dst.keptLen == 0 {
 				return
 			}
-			if relayed := relayedError(dst.kept[:dst.keptLen], e, prefix, u.x.hops(false)); relayed != nil {
+			if relayed := relayedError(dst.kept[:dst.keptLen], e, prefix, u.x.hops(dst.to.Addr().Is6())); relayed != nil {
 				u.x.link.send(relayed)
 			}
 		})
@@ -724,10 +733,10 @@ func (u *udpRelay) relayErrors(dst *destination) {
 // prefix, the payload the error quoted, as the kept datagram's payload holds,
 // the error's own lengths claiming what it holds, within 576 bytes in IPv4
 // (RFC 1812 section 4.3.2.3) and 1280 in IPv6 (RFC 4443 section 2.4 (c)). A
-// too big carries e's MTU and a parameter problem its pointer, and an IPv4
-// error the TTL ttl. nil for an error of any other type, or from the other
-// family.
-func relayedError(kept []byte, e icmpError, prefix []byte, ttl uint8) []byte {
+// too big carries e's MTU and a parameter problem its pointer, and the error
+// the TTL or hop limit hops. nil for an error of any other type, or from the
+// other family.
+func relayedError(kept []byte, e icmpError, prefix []byte, hops uint8) []byte {
 	payload := int(binary.BigEndian.Uint16(kept[len(kept)-4:len(kept)-2])) - 8
 	quote := append(append(make([]byte, 0, len(kept)+len(prefix)), kept...), prefix[:max(min(len(prefix), payload), 0)]...)
 	switch {
@@ -741,9 +750,9 @@ func relayedError(kept []byte, e icmpError, prefix []byte, ttl uint8) []byte {
 		case e.kind != 3 && e.kind != 11:
 			return nil
 		}
-		return packet.Relayed(quote, e.offender, ttl, e.kind, e.code, rest)
+		return packet.Relayed(quote, e.offender, hops, e.kind, e.code, rest)
 	case kept[0]>>4 == 6 && e.offender.Is6() && e.kind >= 1 && e.kind <= 4:
-		return srv6.Relayed(quote, e.offender, e.kind, e.code, e.info)
+		return srv6.Relayed(quote, e.offender, hops, e.kind, e.code, e.info)
 	}
 	return nil
 }

@@ -44,8 +44,9 @@ var rigFamilies = []rigFamily{
 // own where free (RFC 4787 REQ-1, REQ-3). Each server's reply reaches the
 // leaf's socket from that server, as does a datagram from another port of an
 // address the leaf sent to, and none from an address it never sent to
-// (REQ-8). Every socket the relay opened passed Prepare, the one that only
-// receives with no destination.
+// (REQ-8). Every socket the relay opened passed Prepare: the one that only
+// receives with no destination, the route probe toward the first server alone,
+// and each server's own.
 func TestLeafDatagramsAreRelayedThroughPrepare(t *testing.T) {
 	r := newLeafRig(t, func(rt Runtime) (*Exit, error) { return New(exitConfig(), rt) })
 	for _, family := range rigFamilies {
@@ -96,7 +97,7 @@ func TestLeafDatagramsAreRelayedThroughPrepare(t *testing.T) {
 			r.mu.Lock()
 			prepared := slices.Clone(r.prepared)
 			r.mu.Unlock()
-			if want := []netip.AddrPort{{}, serverAt(a), serverAt(a), serverAt(b), serverAt(b)}; !slices.Equal(prepared, want) {
+			if want := []netip.AddrPort{{}, serverAt(a), serverAt(a), serverAt(b)}; !slices.Equal(prepared, want) {
 				t.Errorf("Prepare readied sockets toward %v, want %v", prepared, want)
 			}
 		})

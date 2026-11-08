@@ -10,6 +10,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 )
 
 // echoSocket is one echo mapping's ICMP datagram socket. Linux writes the
@@ -23,6 +25,24 @@ type echoSocket struct {
 
 // errEchoClosed is a read of an echo socket that closed
 var errEchoClosed = errors.New("userspace: echo socket closed")
+
+// icmpSockets opens a socket of its own for each echo mapping on Linux, and
+// reads no error, which each socket's error queue holds
+type icmpSockets struct {
+	prepare underlay.Prepare
+}
+
+func openICMP(x *Exit) *icmpSockets { return &icmpSockets{prepare: x.rt.Platform.Prepare} }
+
+// openEcho opens an echo mapping's socket as openEcho does, readied toward
+// to, the first destination
+func (s *icmpSockets) openEcho(ipv6 bool, source netip.Addr, id uint16, to netip.Addr) (*echoSocket, error) {
+	return openEcho(ipv6, source, id, func(network string, raw syscall.RawConn) error {
+		return s.prepare(network, netip.AddrPortFrom(to, 0), raw)
+	})
+}
+
+func (*icmpSockets) close() {}
 
 // openEcho opens an ICMP datagram socket of ipv6's family, readied by prepare
 // before it binds, bound to source, the wildcard address where source is the

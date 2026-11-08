@@ -14,13 +14,26 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/egress"
 )
 
+// destinationLive is whether leaf's mapping holds its socket toward to
+func destinationLive(x *Exit, leaf, to netip.AddrPort) bool {
+	x.udp.mu.RLock()
+	m := x.udp.mappings[leaf]
+	x.udp.mu.RUnlock()
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.destinations[to] != nil
+}
+
 // An error about a leaf's datagram is answered to the leaf from its offender
 // with its type and code, quoting the leaf's IP and UDP header as kept, then
 // as much of the payload the error quoted as the leaf's datagram held: the
 // quoted header keeps the leaf's lengths, and the error's own lengths claim
 // exactly what it holds, within 576 bytes over IPv4 and 1280 over IPv6. A too
-// big carries the MTU and a parameter problem its pointer, an IPv4 error the
-// TTL it is given, and each error's checksums hold. A type the relay does not
+// big carries the MTU and a parameter problem its pointer, each error the TTL
+// or hop limit it is given, and each error's checksums hold. A type the relay does not
 // carry is answered with nothing.
 func TestRelayedErrorQuotesNoMoreThanTheLeafsDatagram(t *testing.T) {
 	router4, router6 := netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("2001:db8:2::1")
@@ -61,13 +74,13 @@ func TestRelayedErrorQuotesNoMoreThanTheLeafsDatagram(t *testing.T) {
 			}
 			kept := datagram[:header+8]
 			prefix := append(bytes.Clone(payload[:min(c.prefix, c.payload)]), bytes.Repeat([]byte{0xee}, max(c.prefix-c.payload, 0))...)
-			out := relayedError(kept, icmpError{offender: c.router, kind: c.kind, code: c.code, info: c.info}, prefix, hostTTL)
+			out := relayedError(kept, icmpError{offender: c.router, kind: c.kind, code: c.code, info: c.info}, prefix, hostHops(c.leaf))
 			p, ok := parse(out)
 			if !ok || p.protocol != protocol || p.src != c.router || p.dst != c.leaf || p.kind != c.kind || p.code != c.code {
 				t.Fatalf("relayed %s, want type %d code %d from %s to %s", p, c.kind, c.code, c.router, c.leaf)
 			}
-			if c.leaf.Is4() && out[8] != hostTTL {
-				t.Errorf("relayed at the TTL %d, want the %d given", out[8], hostTTL)
+			if got := hopsOf(out); got != hostHops(c.leaf) {
+				t.Errorf("relayed at %d, want the %d given", got, hostHops(c.leaf))
 			}
 			message := out[header:]
 			claimed := int(binary.BigEndian.Uint16(out[2:4]))

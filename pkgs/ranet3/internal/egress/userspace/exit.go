@@ -93,7 +93,10 @@ type Exit struct {
 	tcp     *tcpRelay
 	udp     *udpRelay
 	echo    *echoRelay
-	flows   *flows
+	// icmp is the ICMP sockets the platform shares among the echo mappings
+	// and reads the errors about the exit's sockets through, none on Linux
+	icmp  *icmpSockets
+	flows *flows
 	// ident numbers the packets the exit builds toward a leaf, an IPv4
 	// identification or an IPv6 fragment's
 	ident    atomic.Uint32
@@ -234,6 +237,7 @@ func New(cfg egress.Egress, rt Runtime) (*Exit, error) {
 	x.tcp = newTCPRelay(x)
 	x.udp = newUDPRelay(x)
 	x.echo = newEchoRelay(x)
+	x.icmp = openICMP(x)
 	x.timeWait = newTimeWait(rt.Limits.TimeWait)
 	for range min(max(1, runtime.GOMAXPROCS(0)), maxWorkers) {
 		x.workers = append(x.workers, &worker{queue: make(chan *[]byte, workerQueuePackets)})
@@ -410,8 +414,9 @@ func (x *Exit) expire(now time.Time) {
 }
 
 // Close closes the link, the stack, once each request the forwarder handed
-// over has ended and each mapping's readers have, and Raw, once. Run's end
-// calls it last, and it closes an exit whose Run never ran.
+// over has ended and each mapping's readers have, the platform's ICMP
+// sockets, and Raw, once. Run's end calls it last, and it closes an exit
+// whose Run never ran.
 func (x *Exit) Close() error {
 	var err error
 	x.closeOnce.Do(func() {
@@ -423,6 +428,7 @@ func (x *Exit) Close() error {
 		x.tcp.running.Wait()
 		x.udp.readers.Wait()
 		x.echo.readers.Wait()
+		x.icmp.close()
 		x.stack.Wait()
 		if x.rt.Platform.Raw != nil {
 			err = x.rt.Platform.Raw.Close()

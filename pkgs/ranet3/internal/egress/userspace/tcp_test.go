@@ -45,7 +45,7 @@ const hostTTL = 101
 
 // A failed dial is answered with the destination unreachable a server or
 // router raised about it, from that offender with its code and quoting the
-// leaf's SYN, an IPv4 one at the host's TTL, and with the stack's reset
+// leaf's SYN, at the host's TTL or hop limit, and with the stack's reset
 // otherwise
 func TestFailedDialIsAnsweredFromItsOffender(t *testing.T) {
 	router4, router6 := netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("2001:db8:2::1")
@@ -71,7 +71,7 @@ func TestFailedDialIsAnsweredFromItsOffender(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			x := &Exit{link: newLink(1 << 20)}
 			defer x.link.Close()
-			x.SetHopLimits(hostTTL, relayedTTL)
+			x.SetHopLimits(hostTTL, hostHopLimit)
 			req := &fakeRequest{}
 			x.answerDialFailure(req, c.syn, c.failure)
 			if !req.completed || req.reset != c.reset {
@@ -98,8 +98,9 @@ func TestFailedDialIsAnsweredFromItsOffender(t *testing.T) {
 			header := 20
 			if c.from.Is6() {
 				header = 40
-			} else if raw[8] != hostTTL {
-				t.Errorf("relayed at the TTL %d, want the host's %d", raw[8], hostTTL)
+			}
+			if got := hopsOf(raw); got != hostHops(c.leaf) {
+				t.Errorf("relayed at %d, want the host's %d", got, hostHops(c.leaf))
 			}
 			if quote := raw[header+8:]; !bytes.Equal(quote, c.syn) {
 				t.Errorf("quoted %x, want the leaf's SYN %x", quote, c.syn)
@@ -130,7 +131,12 @@ func TestDialsConnectionsAndSharesComeBackAfterFailures(t *testing.T) {
 			p := &fakePlatform{routes4: true, routes6: true}
 			rt := Runtime{Mesh: mesh, Platform: p.platform(), Limits: testLimits()}
 			rt.Limits.Dials, rt.Limits.Connections = c.dials, c.conns
-			rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error {
+			rt.Platform.Prepare = func(_ string, to netip.AddrPort, _ syscall.RawConn) error {
+				if !to.IsValid() {
+					// a socket that only receives, as darwin's ICMP
+					// sockets New opens
+					return nil
+				}
 				<-release
 				return syscall.ENETUNREACH
 			}
@@ -265,6 +271,24 @@ func TestServersResetReachesTheLeafAsAReset(t *testing.T) {
 	}
 }
 
+// dialingExit is an exit holding no more than a dial reads, dialing through
+// prepare. Its ICMP sockets stay shut, as on a host that gives the process
+// none, so no error of another program's reaches the relays it lacks.
+func dialingExit(t *testing.T, cfg egress.Egress, prepare func(string, netip.AddrPort, syscall.RawConn) error) *Exit {
+	t.Helper()
+	p := &fakePlatform{}
+	x := &Exit{cfg: cfg, rt: Runtime{Platform: p.platform()}}
+	x.rt.Platform.Prepare = func(network string, to netip.AddrPort, raw syscall.RawConn) error {
+		if !to.IsValid() {
+			return syscall.EPERM
+		}
+		return prepare(network, to, raw)
+	}
+	x.icmp = openICMP(x)
+	t.Cleanup(x.icmp.close)
+	return x
+}
+
 // classed is a capability whose class from the default of to's family leaves
 // under to
 func classed(to netip.Addr) egress.Egress {
@@ -302,9 +326,8 @@ func TestDialLeavesFromTheAddressOfTheLeafsClass(t *testing.T) {
 		{"an address", classed(netip.MustParseAddr("127.0.0.2")), netip.MustParseAddr("127.0.0.2")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			p := &fakePlatform{}
-			x := &Exit{cfg: c.cfg, rt: Runtime{Platform: p.platform()}}
-			x.rt.Platform.Prepare = func(string, netip.AddrPort, syscall.RawConn) error { return nil }
+			_ = loopbackServer(t, c.want)
+			x := dialingExit(t, c.cfg, func(string, netip.AddrPort, syscall.RawConn) error { return nil })
 			conn, failure := (&tcpRelay{x: x}).dial(context.Background(), netip.AddrPortFrom(leaf4, 0), server)
 			if conn == nil {
 				t.Fatalf("dial %s: %v", server, failure.err)
@@ -340,7 +363,9 @@ func TestDialKeepsTheLeafsPortWhereFree(t *testing.T) {
 		}()
 		servers = append(servers, server.Addr().(*net.TCPAddr).AddrPort())
 	}
-	holder, err := net.Listen("tcp4", ":0")
+	// on the address the dial binds, which XNU lets a socket holding
+	// SO_REUSEPORT share with a listener on the wildcard address
+	holder, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,12 +397,10 @@ func TestDialKeepsTheLeafsPortWhereFree(t *testing.T) {
 				c.port = freePort()
 			}
 			var prepared []netip.AddrPort
-			p := &fakePlatform{}
-			x := &Exit{rt: Runtime{Platform: p.platform()}}
-			x.rt.Platform.Prepare = func(_ string, to netip.AddrPort, _ syscall.RawConn) error {
+			x := dialingExit(t, egress.Egress{}, func(_ string, to netip.AddrPort, _ syscall.RawConn) error {
 				prepared = append(prepared, to)
 				return nil
-			}
+			})
 			r := &tcpRelay{x: x}
 			for _, to := range c.to {
 				prepared = prepared[:0]
@@ -396,6 +419,10 @@ func TestDialKeepsTheLeafsPortWhereFree(t *testing.T) {
 				wantPrepared := 1
 				if !c.kept {
 					wantPrepared = 2
+				}
+				if bindsRouteSource {
+					// the socket reading the route's source first
+					wantPrepared++
 				}
 				if len(prepared) != wantPrepared {
 					t.Errorf("Prepare readied %d sockets toward %s, want %d", len(prepared), to, wantPrepared)

@@ -470,37 +470,3 @@ func echoRefused(ipv6 bool) bool {
 	_ = s.close()
 	return false
 }
-
-// boundIdentifier is the identifier s is bound to, failing t where it reads
-// none
-func boundIdentifier(t fataler, s *echoSocket) uint16 {
-	id, err := s.identifier()
-	if err != nil {
-		t.Fatalf("the echo socket's identifier: %v", err)
-	}
-	return id
-}
-
-// isEchoReply is whether raw is an echo reply from from to to with id, seq
-// and payload, whose checksum holds
-func isEchoReply(raw []byte, from, to netip.Addr, id, seq uint16, payload []byte) bool {
-	p, ok := parse(raw)
-	reply := byte(0)
-	if from.Is6() {
-		reply = 129
-	}
-	if !ok || p.protocol != icmpProtocol(from) || p.src != from || p.dst != to || p.kind != reply || p.code != 0 {
-		return false
-	}
-	var message []byte
-	var running uint32
-	if from.Is4() {
-		message = raw[20:]
-		running = sum(0, message)
-	} else {
-		message = raw[40:]
-		running = sum(pseudo(from, to, protoICMPv6, len(message)), message)
-	}
-	return binary.BigEndian.Uint16(message[4:6]) == id && binary.BigEndian.Uint16(message[6:8]) == seq &&
-		bytes.Equal(message[8:], payload) && fold(running) == 0
-}

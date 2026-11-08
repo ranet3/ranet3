@@ -339,10 +339,10 @@ var errorBuilders = []errorBuilder{
 	{"communication administratively prohibited", 1, 1, Prohibited},
 	{"beyond scope of source address", 1, 2, BeyondScope},
 	{"port unreachable relayed", 1, 4, func(raw []byte, source netip.Addr, allow func() bool) []byte {
-		return Unreachable(raw, source, 4, allow)
+		return Unreachable(raw, source, DefaultHopLimit, 4, allow)
 	}},
 	{"address unreachable relayed", 1, 3, func(raw []byte, source netip.Addr, allow func() bool) []byte {
-		return Unreachable(raw, source, 3, allow)
+		return Unreachable(raw, source, DefaultHopLimit, 3, allow)
 	}},
 }
 

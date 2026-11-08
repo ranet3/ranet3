@@ -92,7 +92,7 @@ func TestServersErrorReachesTheLeafAndEndsNoMapping(t *testing.T) {
 // A server's port unreachable about a leaf's datagram reaches the leaf's own
 // socket, whose kernel matches the quote to the datagram it sent and tells it
 // of the error from the server with the payload it sent, in both families,
-// an IPv4 one at the host's TTL. The mapping and its socket toward the server
+// at the host's TTL or hop limit. The mapping and its socket toward the server
 // live on.
 func TestServersErrorReachesTheLeafsSocket(t *testing.T) {
 	r := newLeafRig(t, func(rt Runtime) (*Exit, error) { return New(exitConfig(), rt) })
@@ -126,8 +126,8 @@ func TestServersErrorReachesTheLeafsSocket(t *testing.T) {
 			}
 			select {
 			case got := <-laid:
-				if family.leaf.Is4() && got != hostTTL {
-					t.Errorf("laid the error at the TTL %d, want the host's %d", got, hostTTL)
+				if got != hostHops(family.leaf) {
+					t.Errorf("laid the error at %d, want the host's %d", got, hostHops(family.leaf))
 				}
 			default:
 				t.Error("laid no error toward the leaf")
@@ -137,19 +137,6 @@ func TestServersErrorReachesTheLeafsSocket(t *testing.T) {
 			}
 		})
 	}
-}
-
-// destinationLive is whether leaf's mapping holds its socket toward to
-func destinationLive(x *Exit, leaf, to netip.AddrPort) bool {
-	x.udp.mu.RLock()
-	m := x.udp.mappings[leaf]
-	x.udp.mu.RUnlock()
-	if m == nil {
-		return false
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.destinations[to] != nil
 }
 
 // waitTold is the first ICMP error conn's error queue holds within exitWait,

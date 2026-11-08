@@ -91,18 +91,26 @@ func Prohibited(offending []byte, source netip.Addr, allow func() bool) []byte {
 	return icmpError(offending, source, icmpUnreachable, icmpProhibited, 0, allow)
 }
 
-// Unreachable answers a packet with destination unreachable of code, any of RFC 4443 section 3.1's, from source
+// Unreachable answers a packet with destination unreachable of code, any of RFC 4443 section 3.1's, from source at the hop limit hops
 // an exit relaying a server's or a router's error to the leaf it is about sends it from that offender with the offender's code, and allow is icmpError's
-func Unreachable(offending []byte, source netip.Addr, code uint8, allow func() bool) []byte {
-	return icmpError(offending, source, icmpUnreachable, code, 0, allow)
+func Unreachable(offending []byte, source netip.Addr, hops, code uint8, allow func() bool) []byte {
+	return withHopLimit(icmpError(offending, source, icmpUnreachable, code, 0, allow), hops)
 }
 
-// Relayed is an ICMPv6 error of kind and code from source quoting quote, rest being the four octets after its checksum
+// Relayed is an ICMPv6 error of kind and code from source at the hop limit hops quoting quote, rest being the four octets after its checksum
 // quote is a packet's header and the part of what followed it the error carries, whose payload length may claim more than quote holds
 // as RFC 4443 section 2.4 (c)'s quote of a long packet does: an exit relaying a server's or a router's error about a leaf's packet quotes it so
 // it returns nil where icmpError would, the error held within the minimum MTU as icmpError holds it
-func Relayed(quote []byte, source netip.Addr, kind, code uint8, rest uint32) []byte {
-	return icmpError(quote, source, kind, code, rest, func() bool { return true })
+func Relayed(quote []byte, source netip.Addr, hops, kind, code uint8, rest uint32) []byte {
+	return withHopLimit(icmpError(quote, source, kind, code, rest, func() bool { return true }), hops)
+}
+
+// withHopLimit sets out's hop limit to hops where out is a packet, which no checksum covers
+func withHopLimit(out []byte, hops uint8) []byte {
+	if out != nil {
+		out[7] = hops
+	}
+	return out
 }
 
 // BeyondScope answers a packet whose destination lies past the scope of its source, RFC 4443 section 3.1 code 2, from source, and allow is icmpError's

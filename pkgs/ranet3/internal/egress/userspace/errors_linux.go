@@ -19,9 +19,13 @@ type errorQueue struct {
 	held, ipv6 bool
 }
 
-// open turns the queue on for fd, a socket of family ipv6 or IPv4, and holds
-// a descriptor of it
-func (q *errorQueue) open(fd int, ipv6 bool) error {
+// queue is a dial's error queue, which the dial's socket keeps on Linux
+func (*icmpSockets) queue() errorQueue { return errorQueue{} }
+
+// open turns the queue on for fd, a socket toward server, and holds a
+// descriptor of it
+func (q *errorQueue) open(fd int, server netip.AddrPort) error {
+	ipv6 := server.Addr().Is6()
 	if err := watchErrors(fd, ipv6); err != nil {
 		return err
 	}
@@ -33,8 +37,9 @@ func (q *errorQueue) open(fd int, ipv6 bool) error {
 	return nil
 }
 
-// read is the first ICMP error the queue holds, false where it holds none
-func (q *errorQueue) read() (icmpError, bool) {
+// read is the first ICMP error the queue holds, false where it holds none.
+// Linux queues an error before the dial it ended returns, whatever failed it.
+func (q *errorQueue) read(error) (icmpError, bool) {
 	if !q.held {
 		return icmpError{}, false
 	}

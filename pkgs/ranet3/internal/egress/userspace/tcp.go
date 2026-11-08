@@ -175,8 +175,10 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 
 // dial opens the host's connection from the address the leaf's class names
 // and the leaf's port where the host holds it free, as a translator keeps a
-// leaf's port, else from one the host gives. The socket passes the platform's
-// Prepare before it binds.
+// leaf's port, else from one the host gives. Under auto it binds the address
+// the route to the server picks where the platform's sockets bind it
+// (bindsRouteSource), and leaves it to the connect elsewhere. The socket
+// passes the platform's Prepare before it binds.
 func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.TCPConn, dialFailure) {
 	network := "tcp4"
 	if server.Addr().Is6() {
@@ -185,13 +187,19 @@ func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.
 	var source net.IP
 	if address := r.x.sourceFor(leaf.Addr()); address.IsValid() {
 		source = address.AsSlice()
+	} else if bindsRouteSource {
+		address, err := r.x.routeSource(server)
+		if err != nil {
+			return nil, dialFailure{err: err}
+		}
+		source = address.AsSlice()
 	}
 	var failure dialFailure
 	for _, port := range []uint16{leaf.Port(), 0} {
-		var queue errorQueue
+		queue := r.x.icmp.queue()
 		dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: source, Port: int(port)}, Control: r.control(server, port != 0, &queue)}
 		conn, err := dialer.DialContext(ctx, network, server.String())
-		cause, caused := queue.read()
+		cause, caused := queue.read(err)
 		queue.close()
 		if err == nil {
 			return conn.(*net.TCPConn), dialFailure{}
@@ -204,9 +212,9 @@ func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.
 	return nil, failure
 }
 
-// control readies a dial's socket: the platform's Prepare toward server,
-// SO_REUSEADDR where it binds the leaf's port, so one leaf port toward two
-// servers keeps one outside port, and the error queue opened
+// control readies a dial's socket: the platform's Prepare toward server, the
+// port shared where it binds the leaf's (shareDialPort), so one leaf port
+// toward two servers keeps one outside port, and the error queue opened
 func (r *tcpRelay) control(server netip.AddrPort, reuse bool, queue *errorQueue) func(string, string, syscall.RawConn) error {
 	return func(network, _ string, raw syscall.RawConn) error {
 		if err := r.x.rt.Platform.Prepare(network, server, raw); err != nil {
@@ -215,10 +223,10 @@ func (r *tcpRelay) control(server netip.AddrPort, reuse bool, queue *errorQueue)
 		var set error
 		if err := raw.Control(func(fd uintptr) {
 			if reuse {
-				set = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+				set = shareDialPort(int(fd))
 			}
 			if set == nil {
-				set = queue.open(int(fd), server.Addr().Is6())
+				set = queue.open(int(fd), server)
 			}
 		}); err != nil {
 			return err
@@ -251,7 +259,7 @@ type completer interface{ Complete(sendReset bool) }
 // the stack sends otherwise, as for a refused connection
 func (x *Exit) answerDialFailure(req completer, syn []byte, failure dialFailure) {
 	if failure.caused {
-		if relayed := unreachableFrom(syn, failure.cause, x.hops(false)); relayed != nil && x.link.send(relayed) {
+		if relayed := unreachableFrom(syn, failure.cause, x.hops(syn[0]>>4 == 6)); relayed != nil && x.link.send(relayed) {
 			req.Complete(false)
 			return
 		}
@@ -261,15 +269,15 @@ func (x *Exit) answerDialFailure(req completer, syn []byte, failure dialFailure)
 
 // unreachableFrom is the destination unreachable cause raised about the
 // exit's own packet, answered about the leaf's offending packet from the
-// same offender with the same code, an IPv4 one at ttl, nil for any other
-// error
-func unreachableFrom(offending []byte, cause icmpError, ttl uint8) []byte {
+// same offender with the same code, at the TTL or hop limit hops, nil for
+// any other error
+func unreachableFrom(offending []byte, cause icmpError, hops uint8) []byte {
 	always := func() bool { return true }
 	switch {
 	case cause.offender.Is4() && cause.kind == 3:
-		return packet.Unreachable(offending, cause.offender, ttl, cause.code, always)
+		return packet.Unreachable(offending, cause.offender, hops, cause.code, always)
 	case cause.offender.Is6() && cause.kind == 1:
-		return srv6.Unreachable(offending, cause.offender, cause.code, always)
+		return srv6.Unreachable(offending, cause.offender, hops, cause.code, always)
 	}
 	return nil
 }

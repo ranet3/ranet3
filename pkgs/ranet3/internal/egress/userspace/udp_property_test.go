@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"syscall"
 	"testing"
 	"time"
 
@@ -68,11 +69,18 @@ func (e relayEnd) String() string {
 }
 
 // relayEndOf hands packets to a fresh exit's lane whose Prepare refuses every
-// socket, so none is opened, and reports what became of them
+// socket from New on, so none is opened, and reports what became of them. On
+// darwin New's ICMP sockets are refused too, since each would read every ICMP
+// message the host receives and count another program's in the exit's drops.
 func relayEndOf(t *testing.T, packets [][]byte) relayEnd {
-	h := newRelayHarness(t, nil)
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) {
+		record := rt.Platform.Prepare
+		rt.Platform.Prepare = func(network string, to netip.AddrPort, raw syscall.RawConn) error {
+			_ = record(network, to, raw)
+			return syscall.ENETUNREACH
+		}
+	})
 	defer closeWithin(t, h.x)
-	h.refuseAll = true
 	for _, raw := range packets {
 		h.x.handle(h.lane, raw)
 	}

@@ -195,9 +195,7 @@ func (e *echoRelay) mapping(request echoQuery) (*echoMapping, string) {
 	if e.held[echoOutside{key.leaf.Is6(), want}] {
 		want = 0
 	}
-	socket, err := openEcho(key.leaf.Is6(), e.x.sourceFor(key.leaf), want, func(network string, raw syscall.RawConn) error {
-		return e.x.rt.Platform.Prepare(network, netip.AddrPortFrom(request.to, 0), raw)
-	})
+	socket, err := e.x.icmp.openEcho(key.leaf.Is6(), e.x.sourceFor(key.leaf), want, request.to)
 	var id uint16
 	if err == nil {
 		if id, err = socket.identifier(); err != nil {
