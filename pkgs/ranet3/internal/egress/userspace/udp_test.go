@@ -387,6 +387,45 @@ func TestShareCountsEachDestinationOneFlow(t *testing.T) {
 	}
 }
 
+// The exit's total bounds every source's flows together: with each source
+// within its share, the flow past Limits.Flows is refused for the total,
+// answered past the limit and opens no mapping, and a flow given back makes
+// room for the next
+func TestFlowPastTheTotalIsRefusedForTheTotal(t *testing.T) {
+	const total = 2
+	server := loopbackServer(t, netip.MustParseAddr("127.0.0.1"))
+	h := newRelayHarness(t, func(rt *Runtime, _ *egress.Egress) { rt.Limits.Flows = total })
+	for i, source := range []netip.Addr{leaf4, other4} {
+		leaf := netip.AddrPortFrom(source, freeUDPPort(t, leaf4))
+		payload := []byte(fmt.Sprintf("flow %d of the total", i))
+		h.x.udp.take(udpDatagram(leaf, serverAt(server), payload), false)
+		readDatagramFrom(t, server, payload)
+	}
+	past := netip.AddrPortFrom(leaf4, freeUDPPort(t, leaf4))
+	raw := udpDatagram(past, serverAt(server), []byte("past the total"))
+	h.x.udp.take(raw, false)
+	answers := h.mesh.answered()
+	if len(answers) != 1 || answers[0].kind != netstack.ExitPastLimit || !bytes.Equal(answers[0].offending, raw) {
+		t.Errorf("answered %v past the total, want one past the limit quoting the datagram", answers)
+	}
+	if got := h.count(true, reasonTotal); got != 1 {
+		t.Errorf("counted %d refused for the total, want 1", got)
+	}
+	if got := h.count(true, reasonShare); got != 0 {
+		t.Errorf("counted %d refused for a share, want none within the shares", got)
+	}
+	if _, ok := h.mappingOf(past); ok {
+		t.Error("the datagram past the total opened a mapping")
+	}
+	h.advance(mappingTimeout + mappingSweep)
+	payload := []byte("after the flows ended")
+	h.x.udp.take(udpDatagram(past, serverAt(server), payload), false)
+	readDatagramFrom(t, server, payload)
+	if _, ok := h.mappingOf(past); !ok {
+		t.Error("the flows given back made no room for the next")
+	}
+}
+
 // A mapping under a class naming an address sends from that address, its
 // socket that only receives bound to it as well, and under auto from the
 // address the route to the server picks
