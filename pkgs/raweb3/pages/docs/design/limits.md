@@ -756,19 +756,24 @@ larger GSO frame before a read would cut it. 1 read lays its packets out in 1
 buffer of 131070 bytes, which holds the largest GSO frame the tun hands over and
 a packet of 65535 bytes, whatever `link.mtu` is.
 
-Tun readers hand bounded batches to shared encryption workers, and sequence
-reservation and queue submission preserve packet order across workers. Each peer
-admits a read's packets against a budget of its own, 5,734,400 bytes with each
-packet counted as at least 1400 bytes, without waiting. The packets of a read
-bound for a peer whose budget lacks room are dropped and counted, so a peer
-whose transport stalls costs the others nothing. The budget lasts about 5
-milliseconds at 10 Gbit/s and 15 milliseconds at 3 Gbit/s, and holds at most
-4096 packets. A read larger than the whole budget is taken only when the peer
-holds nothing else, and above a `link.mtu` of about 45 KB such a read, cut into
-fragments for a narrow session, can carry more than 4096. Its sender bounds the
-delay through that queue with CoDel, dropping 1 packet at the head once the
-delay has stayed above 5 milliseconds for 100 milliseconds. The readers wait
-only for the read batches every peer shares.
+Tun readers hand bounded batches to shared encryption workers. For each of its
+peers, a read takes that peer's sequence range and a place in its queue in one
+step, so each peer's batches leave in the order of their sequence numbers,
+whichever worker seals them first. Each peer's sender sends from the head of its
+queue once that batch is sealed, adding the sealed batches behind it to the call
+while it holds fewer than 128 packets. Each peer admits a read's packets against
+a budget of its own, 5,734,400 bytes with each packet counted as at least 1400
+bytes, without waiting. The packets of a read bound for a peer whose budget
+lacks room are dropped and counted, so a peer whose transport stalls costs the
+others nothing. The budget lasts about 5 milliseconds at 10 Gbit/s and 15
+milliseconds at 3 Gbit/s, and holds at most 4096 packets. A read larger than the
+whole budget is taken only when the peer holds nothing else, and above a
+`link.mtu` of about 45 KB such a read, cut into fragments for a narrow session,
+can carry more than 4096. Its sender bounds the delay through that queue with
+CoDel, dropping 1 packet at the head once the delay has stayed above 5
+milliseconds for 100 milliseconds. The readers wait only for the read batches
+every peer shares, and for room in the queue of batches the workers take, which
+the sessions' forwarded packets share with them.
 
 Packet lookups read an immutable SADR trie snapshot without locking. Route
 changes copy the affected path and publish it atomically. Diagnostics iterate

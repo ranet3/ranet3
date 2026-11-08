@@ -33,7 +33,7 @@ A debug path takes the callers every other path takes, as
 [who may use it](../control-socket.md#who-may-use-it) says. The snapshots carry
 no key material.
 
-The daemon serves 11 debug paths:
+The daemon serves 12 debug paths:
 
 | Path                 | Commands                     |
 | -------------------- | ---------------------------- |
@@ -46,6 +46,7 @@ The daemon serves 11 debug paths:
 | `/v0/debug/rules`    | `debug rules`                |
 | `/v0/debug/runtime`  | `debug runtime`              |
 | `/v0/debug/segments` | `debug segments`             |
+| `/v0/debug/sender`   | `debug sender`               |
 | `/v0/debug/trace`    | `debug trace`                |
 | `/v0/debug/updown`   | `debug updown`               |
 
@@ -344,6 +345,15 @@ These commands take flags of their own:
   no series for probes sent. The peer is named as `rekey` names one, and
   completes to the nodes of the sessions the daemon holds. The command fails for
   a peer the node holds no session with.
+- `debug sender [peer]` is the sender of every session, or of one peer's: for
+  each session its path and peer node, the bytes of the data budget and the
+  places of the control budget its batches hold of their limits, then 3
+  histograms as [metrics](../metrics.md#how-a-peer-sends) counts them, each as
+  its count and the bucket bounds of its median, its 99th percentile and its
+  largest: the packets the sender handed the transport between two of its waits,
+  how long it waited for the batch at the head of its queue to be sealed, and
+  how long a data batch took from its reservation to its seal. The peer is named
+  and completes as for `debug pmtu`, and the command fails the same way.
 - `debug probe <peer>` and `debug probe --all` ask the sessions of one peer, or
   every session, to send a liveness check now and to probe their path MTU
   budget, as each does after a move of the host's default or one of its

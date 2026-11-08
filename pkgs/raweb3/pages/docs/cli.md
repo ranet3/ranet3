@@ -203,6 +203,7 @@ it. [Debugging](development/debug.md) describes each command and the events.
 | `debug wait <kind>`                    | Wait for a node event                                                  | `--attr key=value`, `--past` (0), `--timeout` (10 seconds), `--peer`                                                  |
 | `debug netmon`                         | Show the host network the node watches                                 | none                                                                                                                  |
 | `debug pmtu [peer]`                    | Show each session's path MTU                                           | none                                                                                                                  |
+| `debug sender [peer]`                  | Show each session's sender                                             | none                                                                                                                  |
 | `debug probe [peer]`                   | Probe sessions now                                                     | `--all`                                                                                                               |
 | `debug rules`                          | Show the host's policy rules, the antispoof filter and the kill switch | none                                                                                                                  |
 | `debug route <src> <dst>`              | Show where a packet goes                                               | `--iif`, `--peer`                                                                                                     |
@@ -225,6 +226,8 @@ it. [Debugging](development/debug.md) describes each command and the events.
   it came. `--attr` may be repeated, and every attribute must match. `--past`
   takes a duration and also matches an event recorded within it.
 - `debug pmtu` shows every session, or the sessions of 1 peer.
+- `debug sender` shows the sender of every session, or of the sessions of 1
+  peer.
 - `debug route` follows this host's own packet from `src` to `dst`, with `--iif`
   one arriving on that link, or with `--peer` one arriving through a session
   from that node, named as `redial` names a peer. An unspecified `src` such as
@@ -293,7 +296,7 @@ socket:
 - the peer of `redial`, `rekey` and `debug probe`, and `--peer` of `debug route`
   and `debug trace`, from the peers the daemon dials and the nodes it holds a
   session with
-- the peer of `debug pmtu`, from the nodes of its sessions
+- the peer of `debug pmtu` and `debug sender`, from the nodes of its sessions
 - the kind of `debug wait`, and `--kind` of `debug events`, from the kinds of
   the recorded events
 - `--peer` of `debug events` and `debug wait`, from the peers the recorded

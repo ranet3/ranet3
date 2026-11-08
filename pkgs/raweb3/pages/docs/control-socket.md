@@ -166,11 +166,11 @@ describes. `status` shows this node's own name in that form.
 `peers` shows a peer by the endpoint `dial.to` pins, or by its node. The session
 of a dialer with no endpoint pinned is named by the endpoint that answered.
 
-- `rekey`, `debug probe` and `debug pmtu` take a session by its name, its peer's
-  endpoint, that endpoint's node, or the node's name alone. The name alone takes
-  that name in every organization. A dialer's name matches only a session of
-  exactly that name. To take the sessions of a dialer with no endpoint pinned,
-  name their node.
+- `rekey`, `debug probe`, `debug pmtu` and `debug sender` take a session by its
+  name, its peer's endpoint, that endpoint's node, or the node's name alone. The
+  name alone takes that name in every organization. A dialer's name matches only
+  a session of exactly that name. To take the sessions of a dialer with no
+  endpoint pinned, name their node.
 - `redial` takes the same names and a dialer by its name. The name of an
   endpoint or a session also wakes the dialer of that node with no endpoint
   pinned.
@@ -180,9 +180,9 @@ of a dialer with no endpoint pinned is named by the endpoint that answered.
 A name matches whole. `example/gateway` takes no session of `example/gateway2`.
 A name with a serial and no organization, such as `gateway:1`, names nothing.
 For `redial`, `rekey` and `debug probe`, completion offers the peers the daemon
-dials and the nodes it holds a session with. For `debug pmtu`, it offers the
-nodes of its sessions. For `debug events --peer`, it offers the names the
-recorded events carry.
+dials and the nodes it holds a session with. For `debug pmtu` and
+`debug sender`, it offers the nodes of its sessions. For `debug events --peer`,
+it offers the names the recorded events carry.
 
 ### Questions
 
