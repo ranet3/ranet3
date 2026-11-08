@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
-//go:build linux && !android
+//go:build (linux && !android) || (darwin && !ios)
 
 package userspace
 
@@ -15,12 +15,15 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
+	"strconv"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 
@@ -52,16 +55,24 @@ const (
 	// its fill, as a mesh's outbound batch is sized
 	carriedSlab  = 2 * 65535
 	carriedReads = 128
-	// rigProbe is the datagram the suite's host sends through the carrier
-	// before any row, which the exit's host sends back, its first nibble
-	// neither IP version, and probeWait how long the suite's host waits for
-	// it, sending it again each probeSpacing
-	rigProbe     = "ranet3 rig probe"
-	probeWait    = 5 * time.Second
-	probeSpacing = 500 * time.Millisecond
 	// rigMTU is the exit host's uplink's, the suite's uplink MTU, which with
 	// the carrier's IPv4 and UDP headers fits a 1500 byte LAN
 	rigMTU = 1340
+)
+
+// The rig's variables on the exit's host, which the rig's runner passes. Real
+// addresses pass here at run time alone.
+const (
+	// rigEthernet names the exit host's link to the suite's host, rigPeer
+	// that host's IPv4 address, and rigPort and rigControlPort the carrier's
+	// and the wire's ports on the exit's host
+	rigEthernet    = "RANET3_RIG_ETHERNET"
+	rigPeer        = "RANET3_RIG_PEER"
+	rigPort        = "RANET3_RIG_PORT"
+	rigControlPort = "RANET3_RIG_CONTROL_PORT"
+	// rigWait bounds the wait for the suite's host's first datagram and
+	// connection
+	rigWait = 5 * time.Minute
 )
 
 var (
@@ -80,12 +91,6 @@ var (
 		{netip.MustParsePrefix("2001:db8::/32"), netip.MustParseAddr("2001:db8:1::2")},
 	}
 )
-
-// rigRoute is Platform.Route naming the exit host's uplink for every address,
-// as the rig's selection does
-func rigRoute(uplink string) func(netip.Addr) (Link, bool, error) {
-	return func(netip.Addr) (Link, bool, error) { return Link{Name: uplink, MTU: rigMTU}, true, nil }
-}
 
 // what each message on the wire is
 const (
@@ -587,31 +592,89 @@ func (u *carriedUplink) stop() {
 	u.carried.Wait()
 }
 
-// probeCarrier sends the probe through carrier until the exit's host sends
-// it back, and fails the test where it has not within probeWait
-func probeCarrier(t testing.TB, carrier *net.UDPConn) {
+// connectUDP connects conn to to, an IPv4 address and port, so it reads from
+// to alone and writes there
+func connectUDP(conn *net.UDPConn, to netip.AddrPort) error {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var connectErr error
+	if err := raw.Control(func(fd uintptr) {
+		connectErr = unix.Connect(int(fd), &unix.SockaddrInet4{Port: int(to.Port()), Addr: to.Addr().As4()})
+	}); err != nil {
+		return err
+	}
+	return connectErr
+}
+
+// rigVariables reads the rig's variables on the exit's host, skipping the
+// test where any is unset or the process is not root
+func rigVariables(t *testing.T) (link string, peer netip.Addr, port, controlPort uint16) {
 	t.Helper()
-	start := time.Now()
-	defer func() { _ = carrier.SetReadDeadline(time.Time{}) }()
-	buf := make([]byte, len(rigProbe)+1)
-	for time.Since(start) < probeWait {
-		_, _ = carrier.Write([]byte(rigProbe))
-		_ = carrier.SetReadDeadline(time.Now().Add(min(probeSpacing, probeWait-time.Since(start))))
-		for {
-			size, err := carrier.Read(buf)
-			if errors.Is(err, syscall.ECONNREFUSED) {
-				continue
-			}
-			if err != nil {
-				break
-			}
-			if string(buf[:size]) == rigProbe {
-				t.Logf("rig: carrier echo after %s", time.Since(start).Round(time.Millisecond))
-				return
-			}
+	values := map[string]string{}
+	for _, name := range []string{rigEthernet, rigPeer, rigPort, rigControlPort} {
+		if values[name] = os.Getenv(name); values[name] == "" {
+			t.Skipf("%s is unset, so no rig runs this host", name)
 		}
 	}
-	t.Fatal("rig: no echo through the carrier, check the application firewall")
+	if os.Geteuid() != 0 {
+		t.Skip("the exit's host makes its uplink and raw sockets, which only root may")
+	}
+	peer, err := netip.ParseAddr(values[rigPeer])
+	if err != nil || !peer.Is4() {
+		t.Fatalf("%s is no IPv4 address", rigPeer)
+	}
+	ports := make([]uint16, 2)
+	for i, name := range []string{rigPort, rigControlPort} {
+		n, err := strconv.ParseUint(values[name], 10, 16)
+		if err != nil || n == 0 {
+			t.Fatalf("%s is no port", name)
+		}
+		ports[i] = uint16(n)
+	}
+	return values[rigEthernet], peer, ports[0], ports[1]
+}
+
+// awaitPeer connects carrier to where peer's first datagram came from, which
+// it sends back, so it takes peer's alone
+func awaitPeer(t *testing.T, carrier *net.UDPConn, peer netip.Addr) {
+	t.Helper()
+	buf := make([]byte, 1<<16)
+	_ = carrier.SetReadDeadline(time.Now().Add(rigWait))
+	defer func() { _ = carrier.SetReadDeadline(time.Time{}) }()
+	for {
+		n, from, err := carrier.ReadFromUDPAddrPort(buf)
+		if err != nil {
+			t.Fatalf("rig: no datagram from the peer: %v", err)
+		}
+		if from.Addr().Unmap() != peer {
+			continue
+		}
+		if err := connectUDP(carrier, netip.AddrPortFrom(peer, from.Port())); err != nil {
+			t.Fatalf("connect the carrier to the peer: %v", err)
+		}
+		_, _ = carrier.Write(buf[:n])
+		return
+	}
+}
+
+// acceptFrom is the first connection listener takes from peer, any other
+// closed
+func acceptFrom(t *testing.T, listener net.Listener, peer netip.Addr) net.Conn {
+	t.Helper()
+	_ = listener.(*net.TCPListener).SetDeadline(time.Now().Add(rigWait))
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Fatalf("rig: no wire from the peer: %v", err)
+		}
+		if conn.RemoteAddr().(*net.TCPAddr).AddrPort().Addr().Unmap() == peer {
+			t.Cleanup(func() { _ = conn.Close() })
+			return conn
+		}
+		_ = conn.Close()
+	}
 }
 
 // holdsOf names what x holds: its lanes while they take packets, each TCP

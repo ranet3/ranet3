@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -43,7 +44,47 @@ const (
 	// that the proxy's goroutines have not taken yet
 	hookQueue = 4
 	fillQueue = 64
+	// rigProbe is the datagram the suite's host sends through the carrier
+	// before any row, which the exit's host sends back, its first nibble
+	// neither IP version, and probeWait how long the suite's host waits for
+	// it, sending it again each probeSpacing
+	rigProbe     = "ranet3 rig probe"
+	probeWait    = 5 * time.Second
+	probeSpacing = 500 * time.Millisecond
 )
+
+// rigRoute is Platform.Route naming the exit host's uplink for every address,
+// as the rig's selection does
+func rigRoute(uplink string) func(netip.Addr) (Link, bool, error) {
+	return func(netip.Addr) (Link, bool, error) { return Link{Name: uplink, MTU: rigMTU}, true, nil }
+}
+
+// probeCarrier sends the probe through carrier until the exit's host sends
+// it back, and fails the test where it has not within probeWait
+func probeCarrier(t testing.TB, carrier *net.UDPConn) {
+	t.Helper()
+	start := time.Now()
+	defer func() { _ = carrier.SetReadDeadline(time.Time{}) }()
+	buf := make([]byte, len(rigProbe)+1)
+	for time.Since(start) < probeWait {
+		_, _ = carrier.Write([]byte(rigProbe))
+		_ = carrier.SetReadDeadline(time.Now().Add(min(probeSpacing, probeWait-time.Since(start))))
+		for {
+			size, err := carrier.Read(buf)
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				continue
+			}
+			if err != nil {
+				break
+			}
+			if string(buf[:size]) == rigProbe {
+				t.Logf("rig: carrier echo after %s", time.Since(start).Round(time.Millisecond))
+				return
+			}
+		}
+	}
+	t.Fatal("rig: no echo through the carrier, check the application firewall")
+}
 
 // the userspace exit meets the exit behavior suite in both families under
 // auto and the address class with the suite on the rig's Linux host and the
@@ -75,6 +116,76 @@ func TestUserspaceExitPassesTheSuiteOverALoopbackCarrier(t *testing.T) {
 	suiteControl, hostControl := tcpPair(t)
 	serveLinuxExitHost(t, hostCarrier, hostControl)
 	runOverCarrier(t, suiteCarrier, suiteControl)
+}
+
+// the userspace exit's host on a Linux host, the twin of the Mac's, so the
+// rig's two runners run on one host: the carrier and the wire on the rig's
+// ports held to the rig's link, and the exit the suite at the far end asks
+// for served in this process's namespace, which it claims
+func TestUserspaceExitHostOverTheCarrier(t *testing.T) {
+	name, peer, port, controlPort := rigVariables(t)
+	claim(t)
+	link, err := net.InterfaceByName(name)
+	if err != nil {
+		t.Fatalf("rig: carrier not on %s: %v", name, err)
+	}
+	carrier := rigCarrier(t, link, port)
+	listener := rigListener(t, link, controlPort)
+	awaitPeer(t, carrier, peer)
+	control := acceptFrom(t, listener, peer)
+	_ = listener.Close()
+	// cleanups run last first, so this line comes after the exit host's
+	t.Cleanup(func() { t.Log("rig: uplink and routes removed") })
+	<-serveLinuxExitHost(t, carrier, control)
+}
+
+// rigCarrier is the carrier's datagram socket on port, held to link with
+// SO_BINDTODEVICE, read back
+func rigCarrier(t *testing.T, link *net.Interface, port uint16) *net.UDPConn {
+	t.Helper()
+	conn, err := heldTo(link).ListenPacket(context.Background(), "udp4", fmt.Sprintf(":%d", port))
+	if err != nil {
+		t.Fatalf("open the carrier: %v", err)
+	}
+	carrier := conn.(*net.UDPConn)
+	t.Cleanup(func() { _ = carrier.Close() })
+	raw, err := carrier.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var device string
+	if controlErr := raw.Control(func(fd uintptr) {
+		device, err = unix.GetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE)
+	}); controlErr != nil || err != nil {
+		t.Fatalf("read the carrier's link back: %v %v", controlErr, err)
+	}
+	if device != link.Name {
+		t.Fatalf("rig: carrier not on %s: held to %q", link.Name, device)
+	}
+	t.Logf("rig: carrier bound to %s index %d", link.Name, link.Index)
+	return carrier
+}
+
+// rigListener is the wire's listener on port, held to link
+func rigListener(t *testing.T, link *net.Interface, port uint16) net.Listener {
+	t.Helper()
+	listener, err := heldTo(link).Listen(context.Background(), "tcp4", fmt.Sprintf(":%d", port))
+	if err != nil {
+		t.Fatalf("listen for the wire: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
+}
+
+// heldTo is a listen whose socket SO_BINDTODEVICE holds to link
+func heldTo(link *net.Interface) *net.ListenConfig {
+	return &net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
+		var err error
+		if controlErr := raw.Control(func(fd uintptr) { err = unix.BindToDevice(int(fd), link.Name) }); controlErr != nil {
+			return controlErr
+		}
+		return err
+	}}
 }
 
 // runOverCarrier probes carrier, then runs the suite with each network's
@@ -368,8 +479,8 @@ func (p *proxyExit) answer(kind byte, id uint32, payload []byte) {
 // serveLinuxExitHost runs the exit's end of a carrier in this process's
 // namespace, which the caller claimed, with an uplink of its own, until
 // control ends. Every socket the exit opens passes a Prepare that records it
-// and a watch that fails the test on any other, the carrier's own on the
-// loopback aside. The returned channel is closed once control ended.
+// and a watch that fails the test on any other, the carrier and control
+// aside. The returned channel is closed once control ended.
 func serveLinuxExitHost(t *testing.T, carrier *net.UDPConn, control net.Conn) <-chan struct{} {
 	t.Helper()
 	// a new namespace lets no group open an ICMP datagram socket, and the
@@ -392,6 +503,13 @@ func serveLinuxExitHost(t *testing.T, carrier *net.UDPConn, control net.Conn) <-
 		t.Fatalf("give the loopback the class addresses: %v", err)
 	}
 	w := &socketWatch{prepared: map[uint64]bool{}, loopback: true}
+	for _, rig := range []any{carrier, control} {
+		if conn, ok := rig.(syscall.Conn); ok {
+			if raw, err := conn.SyscallConn(); err == nil {
+				_ = w.prepare("", netip.AddrPort{}, raw)
+			}
+		}
+	}
 	w.run(t)
 	uplink := &carriedUplink{carrier: carrier, open: openRigUplink}
 	uplink.start()
@@ -533,19 +651,4 @@ func tcpPair(t *testing.T) (net.Conn, net.Conn) {
 	}
 	t.Cleanup(func() { _ = far.Close() })
 	return near, far
-}
-
-// connectUDP connects conn to to, so it reads from to alone and writes there
-func connectUDP(conn *net.UDPConn, to netip.AddrPort) error {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-	var connectErr error
-	if err := raw.Control(func(fd uintptr) {
-		connectErr = unix.Connect(int(fd), &unix.SockaddrInet4{Port: int(to.Port()), Addr: to.Addr().As4()})
-	}); err != nil {
-		return err
-	}
-	return connectErr
 }
