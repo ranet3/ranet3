@@ -136,7 +136,7 @@ type Client struct {
 	// sysctl reads a setting by its path under /proc/sys, the empty string
 	// where it cannot, and nil means Sysctl
 	sysctl func(path string) string
-	// fallbackRead reads the table ranet3_fallback, and nil means kernel.ReadFallback
+	// fallbackRead reads the kill switch, and nil means kernel.ReadFallback
 	fallbackRead func() (kernel.FallbackDebug, error)
 	// unresolved is each endpoint name whose last lookup failed
 	unresolved names

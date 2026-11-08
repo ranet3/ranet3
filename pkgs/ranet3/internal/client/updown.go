@@ -77,7 +77,7 @@ func (c *Client) Down(ctx context.Context) (result control.Result, err error) {
 }
 
 // Up removes the flag and puts the node back on the mesh, a subsystem somebody disabled staying disabled
-// it dials at once, and the kill switch's table follows on the reconciler's next pass, which up wakes
+// it dials at once, and the kill switch follows on the reconciler's next pass, which up wakes
 func (c *Client) Up(ctx context.Context) (result control.Result, err error) {
 	defer func() { c.noteVerb(ctx, "up", "", control.Result{}, err) }()
 	if c.stateDir == "" {

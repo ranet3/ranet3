@@ -140,7 +140,7 @@ go to stderr.`,
 	return cmd
 }
 
-// openPcap opens the file --pcap names, or stdout for -, and what closes it, so that the packets reach no one but the caller
+// openPcap opens the file --pcap names at mode 0600, or stdout for -, and what closes it
 // the file it writes is always one it created
 func openPcap(name string, stdout io.Writer) (io.Writer, func() error, error) {
 	if name == "-" {

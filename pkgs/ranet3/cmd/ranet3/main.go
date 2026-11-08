@@ -355,7 +355,7 @@ func (d *daemon) build(s stages, asked <-chan struct{}) (err error) {
 // close undoes what build built, with none of it run: the reconciler, the
 // exit and the antispoof filter close without a withdrawal, but for an
 // antispoof table the first pass made, and then the node closes its tun and
-// the listeners close. The antispoof filter's and the kill switch's tables an
+// the listeners close. The antispoof filter's table and the kill switch an
 // earlier instance left stay, and the translator's stay in the families the
 // file translates, since building the exit removed one in any other. No close
 // reads another part, so the order sets nothing. It reports whether a close
