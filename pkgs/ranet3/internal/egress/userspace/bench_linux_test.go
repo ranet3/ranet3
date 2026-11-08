@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/bits"
 	"net"
 	"net/netip"
 	"os"
@@ -484,8 +485,18 @@ func benchFullRate(t *testing.T, port uint16, dialFirst bool) {
 		half[i] = moved[i].Load()
 	}
 	linkHalf, dropsHalf := r.exit.link.dropped.Load(), flowDrops(r.exit)
+	sojourns := new(sojournLog)
+	observe := sojourns.observe
+	r.exit.link.observe.Store(&observe)
 	time.Sleep(benchSpan / 2)
 	linkEnd, dropsEnd := r.exit.link.dropped.Load(), flowDrops(r.exit)
+	r.exit.link.observe.Store(nil)
+	var movedHalf int64
+	for i := range moved {
+		movedHalf += moved[i].Load() - half[i]
+	}
+	t.Logf("bench: full rate %.1f MB/s from the leaves over the last %s", float64(movedHalf)/1e6/(benchSpan/2).Seconds(), benchSpan/2)
+	sojourns.log(t, conns)
 	cpu := readCPU().since(cpuBefore)
 	during, peak := residentBytes(t, "VmRSS"), residentBytes(t, "VmHWM")
 	t.Logf("bench: resident %d bytes against Go's limit of %d; the collector took %.1f%% of the CPU time the process used over %s, %.1f%% of all CPUs'", during, debug.SetMemoryLimit(-1), 100*cpu.gc/max(cpu.used, 1e-9), benchSpan, 100*cpu.gc/max(cpu.total, 1e-9))
@@ -650,6 +661,85 @@ func benchSpread(t *testing.T, conns []*net.TCPConn, still []bool, linkFull uint
 		linkFull, benchSpan/2, counted, hit, len(conns), per[len(per)/2], per[len(per)*9/10], per[len(per)-1], tenth, top)
 	t.Logf("bench: of the %d connections that moved no byte over the last %s, %d took drops, %d in all",
 		stillCount, benchSpan/2, stillHit, onStill)
+}
+
+// sojournLog records each packet the link's consumer takes over a span: its
+// sojourn, in buckets an eighth of a power of two wide, and for a packet the
+// delay dropped, the leaf port it went to. Only the consumer writes it.
+type sojournLog struct {
+	buckets [64 * 8]atomic.Uint64
+	dropped [1 << 16]atomic.Uint64
+}
+
+// observe records one packet the consumer took
+func (s *sojournLog) observe(pkt *stack.PacketBuffer, sojourn time.Duration, dropped bool) {
+	s.buckets[sojournBucket(sojourn)].Add(1)
+	if dropped {
+		if h := pkt.TransportHeader().Slice(); len(h) >= 4 {
+			s.dropped[binary.BigEndian.Uint16(h[2:4])].Add(1)
+		}
+	}
+}
+
+// sojournBucket is the bucket of d: below 16 ns its own, else 8 to a power of
+// two
+func sojournBucket(d time.Duration) int {
+	n := uint64(max(d, 0))
+	if n < 16 {
+		return int(n)
+	}
+	b := bits.Len64(n)
+	return min(b*8+int(n>>(b-4)&7), 64*8-1)
+}
+
+// sojournOfBucket is the least sojourn bucket i holds
+func sojournOfBucket(i int) time.Duration {
+	if i < 16 {
+		return time.Duration(i)
+	}
+	b, sub := i/8, i%8
+	return time.Duration(uint64(8+sub) << (b - 4))
+}
+
+// log logs the median and 99th percentile sojourn, and how the delay's drops
+// spread over conns
+func (s *sojournLog) log(t *testing.T, conns []*net.TCPConn) {
+	t.Helper()
+	var total uint64
+	for i := range s.buckets {
+		total += s.buckets[i].Load()
+	}
+	at := func(q float64) time.Duration {
+		want, seen := uint64(q*float64(total)), uint64(0)
+		for i := range s.buckets {
+			if seen += s.buckets[i].Load(); seen > want {
+				return sojournOfBucket(i)
+			}
+		}
+		return 0
+	}
+	per := make([]uint64, len(conns))
+	var counted uint64
+	hit := 0
+	for i, conn := range conns {
+		per[i] = s.dropped[conn.LocalAddr().(*net.TCPAddr).Port].Load()
+		counted += per[i]
+		if per[i] > 0 {
+			hit++
+		}
+	}
+	t.Logf("bench: link sojourn over the last %s: median %s, 99th percentile %s, of %d packets taken", benchSpan/2, at(0.5), at(0.99), total)
+	if len(per) == 0 {
+		return
+	}
+	slices.Sort(per)
+	tenth := max(len(per)/10, 1)
+	var top uint64
+	for _, n := range per[len(per)-tenth:] {
+		top += n
+	}
+	t.Logf("bench: link codel %d over the last %s at %d of %d connections; drops a connection: median %d, 90th percentile %d, most %d; the %d with the most took %d",
+		counted, benchSpan/2, hit, len(conns), per[len(per)/2], per[len(per)*9/10], per[len(per)-1], tenth, top)
 }
 
 // cpuSeconds is the runtime's CPU time: the collector's, what the process
