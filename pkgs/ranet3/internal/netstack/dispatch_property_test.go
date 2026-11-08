@@ -121,12 +121,12 @@ func shareBytes(ht *hegel.T, count int) int {
 
 // several readers dispatch reads for the same peers, each parking at a gate of its own at a drawn point among a read's reservations
 // and the scheduler runs one reader at a time from one gate to the next, in a drawn order
-// so the readers interleave between any two reservations of a read, holding tickets of some peers
-// while the others fill those peers' budgets behind the tickets they hold, by shares of every size the charge tells apart, and take control places
+// so the readers interleave between any two reservations of a read, holding places of some peers
+// while the others fill those peers' budgets behind the places they hold, by shares of every size the charge tells apart, and take control places
 // the transport takes nothing until every reader is done, so each step is held to a model of the budgets
 // every reader runs from one gate to the next without waiting
 // a reservation is admitted exactly when the model has room for its charge, and a refusal counts its packets
-// then the transport opens and either every reserved ticket drains or the peers close with tickets on their way
+// then the transport opens and either every reserved place drains or the peers close with places on their way
 // each peer's transport carries its packets in the order of the sequence numbers their reservations took
 // every packet offered is counted once, and both budgets are back to empty
 func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
@@ -176,7 +176,7 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 		go m.outboundWorker()
 		var readersDone sync.WaitGroup
 		// a case that fails lets every reader and every transport go before the mesh closes
-		// readers waiting for room behind tickets each other holds never return, and are left behind with the mesh
+		// readers waiting for room behind places each other holds never return, and are left behind with the mesh
 		defer func() {
 			v.set(true, false)
 			for _, ch := range resume {

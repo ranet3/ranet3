@@ -55,7 +55,7 @@ const reportInterval = 30 * time.Second
 const peerDataBudget = 4096 * 1400
 
 // leastPacketBytes is the least a data packet holds of its peer's budget, however few bytes it carries
-// so the budget holds at most peerDataBudget / leastPacketBytes batches, which the sender's queue is sized for
+// so the budget holds at most peerDataBudget / leastPacketBytes batches
 // and as many packets, but for one share charged the whole budget and admitted alone, whose fragments can number more
 const leastPacketBytes = 1400
 

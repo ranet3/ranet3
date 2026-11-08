@@ -288,7 +288,7 @@ func TestSenderNeverDropsAControlPacketForTheDelay(t *testing.T) {
 
 // RFC 8289 section 5.5 ends the dropping state and starts the interval over once the queue is empty
 // so the sender records the end of the state, with a sojourn of zero, as soon as its queue empties
-// and a late ticket after the idle queue, which delays every batch behind it at once, drops nothing
+// and a late batch after the idle queue, which delays every batch behind it at once, drops nothing
 func TestSenderForgetsTheDelayOnceItsQueueEmpties(t *testing.T) {
 	h := newHoldingTransport(false)
 	bus := events.New()

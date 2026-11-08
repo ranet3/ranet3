@@ -76,7 +76,7 @@ func TestOnFailureReportsWhatAClosedPeerDropped(t *testing.T) {
 	lost := make(chan error, 1)
 	place.OnFailure(func(err error) { lost <- err })
 	// Closed with the place taken and not yet sent, which is the teardown
-	// window: the batch holds a ticket the sender is waiting on, and nothing
+	// window: the batch holds a place the sender is waiting on, and nothing
 	// will transmit it.
 	peer.Close()
 	if err := place.Send(); err == nil {
@@ -117,15 +117,15 @@ func TestBatchesForAClosedPeerWarnAsItsSendErrorsDo(t *testing.T) {
 }
 
 // A reader that has handed its batch to the workers has also handed them every
-// ticket it reserved, and a ticket the sender never sees stalls that peer for
-// good. Close therefore has to drain the queue rather than abandon it, and has
+// place it reserved, and a place whose batch is never sealed stalls that peer
+// for good. Close therefore has to drain the queue rather than abandon it, and has
 // to return while a peer is still open and still behind.
 func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
 	peer := NewPeer("peer", func(int) (BatchSealer, error) {
 		return func(raw [][]byte, _ []byte, _ [][]byte) ([][]byte, error) { return [][]byte{bytes.Clone(raw[0])}, nil }, nil
 	}, func([][]byte) error { return nil }, nil)
 	defer peer.Close()
-	// Keep the sender waiting on its first ticket, with the whole budget
+	// Keep the sender waiting on its first place, with the whole budget
 	// spoken for, so the dispatch below reserves nothing and Close still has a
 	// peer that will never finish.
 	peer.reserveBatch(1, peerDataBudget)

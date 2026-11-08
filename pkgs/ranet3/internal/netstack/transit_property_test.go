@@ -64,7 +64,7 @@ func orderedPacket(session, seq, peer, size int) []byte {
 }
 
 // sessions delivering forwarded packets at once keep each session's order toward every outbound peer
-// whatever order the workers finish sealing in, since a session reserves its peers' tickets in the order it delivered
+// whatever order the workers finish sealing in, since a session reserves its peers' places in the order it delivered
 // a packet the peer's budget refused is counted dropped, and every other one is transmitted
 func TestForwardingKeepsEachSessionsOrderPerPeer(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {

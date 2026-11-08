@@ -375,7 +375,7 @@ func TestPacketThatCannotBeSteeredIsDropped(t *testing.T) {
 }
 
 // A whole inbound batch of waypointed packets reserves once for each peer, as
-// a tun read does: one ticket, one sequence range and one seal for the share,
+// a tun read does: one place, one sequence range and one seal for the share,
 // rather than one of each per packet.
 func TestWaypointBatchTakesOnePlacePerPeer(t *testing.T) {
 	waypoint := segAddr("3fff:b:0:106::2")
