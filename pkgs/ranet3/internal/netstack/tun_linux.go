@@ -55,7 +55,6 @@ func bringTUNUp(name string) error {
 func tunQueues(wanted int) int { return min(wanted, maxTUNQueues) }
 
 // createTUNQueues opens the lanes of name as the queues of one device, whose MTU it sets to mtu
-// and sets the device's gso_max_segs to the read batch
 // nothing reads the device's events, so it watches nothing
 func createTUNQueues(name string, mtu, queueCount int) (tun.Device, string, error) {
 	queueCount = tunQueues(queueCount)

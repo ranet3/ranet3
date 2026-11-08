@@ -139,7 +139,7 @@ type SegmentCounters struct {
 	// route of its own. Both failures drop the packet rather than send it by
 	// the route the policy exists to override, and both are this node's own
 	// steering rather than anything a peer did, so neither is counted in
-	// Dropped. Steered and Unrouted take a read off the tun once it is
+	// Dropped. Steered and Unrouted are added once a read off the tun is
 	// classified.
 	Steered   uint64
 	Unsteered uint64

@@ -404,9 +404,8 @@ func (t *Table[V]) LookupBits(src, dst netip.Addr) (V, int, bool) {
 	for n != nil && n.matches(hi, lo) {
 		// One masked map lookup per distinct source prefix length, longest
 		// first, so the first that answers is the longest match and the rest
-		// cannot beat it. See trieNode.byLen for what walking every entry
-		// instead cost, and indexSrcs for when the walk is the cheaper of the
-		// two and there is no index to use. A deeper node still overwrites
+		// cannot beat it. See indexSrcs for when the walk is the cheaper of
+		// the two and there is no index to use. A deeper node still overwrites
 		// this, which is destination specificity beating source specificity.
 		// A zoned source takes the scan: PrefixFrom drops its zone, where
 		// Contains matches it against no prefix at all.
