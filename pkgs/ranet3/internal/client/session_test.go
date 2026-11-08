@@ -13,7 +13,6 @@ import (
 	"ranet3.com/pkgs/ranet3/ike"
 )
 
-// adoptedPeer is the peer of every session adoptPreferred adopts, verified under adoptedKey
 var adoptedPeer, adoptedKey = identity.MustParse("example/adopted:0"), seeded(9)
 
 // adoptPreferred is adopt with the rule already applied, for a test that drives the resolution without two identities to derive it from
@@ -27,7 +26,6 @@ func (s *sessionSet) adoptPreferred(path string, sess *ike.Session, preferred bo
 	return s.adoptFor(path, sess, preferred, false, time.Time{}, identity.Identity{}, adoptedPeer, adoptedKey, nil, attach)
 }
 
-// adoptedTrust admits adoptedPeer's node under adoptedKey and asks held about every other node
 type adoptedTrust struct{ held ike.Trust }
 
 func (t adoptedTrust) Key(id identity.Identity) (ed25519.PublicKey, ike.Family, error) {

@@ -106,7 +106,7 @@ type drawnSession struct {
 
 const noPeer = -1
 
-// refusal is the error the trust after a reload gives s, or "" where it admits s
+// refusal is the error refuses gives s under the trust after a reload, or "" where it admits s
 func (s drawnSession) refusal(after []trustedNode) string {
 	if s.node == noPeer {
 		return "the session names no peer"

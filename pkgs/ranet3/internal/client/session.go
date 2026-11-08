@@ -245,7 +245,7 @@ type sessionSet struct {
 	// handshakes holds the peer's node of each handshake past its IKE_AUTH decision that adopt has not taken, under mu
 	handshakes map[*ike.Session]identity.Identity
 
-	// events records each resolution between two sessions for one path, and each session the trust refuses
+	// events records each resolution between two sessions for one path, and each session refuses turns away
 	events *events.Bus
 
 	// trust is the trust in force, which adopt and revoke ask under mu, so a session adopted after a reload's sweep answers to the document that reload stored
@@ -537,7 +537,7 @@ func (s *sessionSet) liveCount() int {
 	return count
 }
 
-// refuses is why the trust in force no longer admits remote's node under key, the key that verified it, asked under mu
+// refuses is why a session with remote is not admitted, asked under mu: remote names no peer, or the trust in force no longer admits remote's node under key, the key that verified it
 // it asks about the node alone, since a serial selects which endpoint a dial uses and renumbering one is a registry edit rather than a revocation
 func (s *sessionSet) refuses(remote identity.Identity, key ed25519.PublicKey) error {
 	if remote.IsZero() {
@@ -553,7 +553,7 @@ func (s *sessionSet) refuses(remote identity.Identity, key ed25519.PublicKey) er
 	return nil
 }
 
-// revoke closes every live session whose peer's node the trust in force no longer admits under the key that verified it
+// revoke closes every live session refuses turns away, one naming no peer or whose peer's node the trust in force no longer admits under the key that verified it
 // a reload is the only moment this node learns a node left the mesh or took another key, and the handshake check alone refuses only the next session
 func (s *sessionSet) revoke() {
 	if s == nil {
