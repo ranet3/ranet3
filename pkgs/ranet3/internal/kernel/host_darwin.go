@@ -35,7 +35,22 @@ func hostOr(h Host) Host {
 func (runningKernel) RouteSocket() (RouteWriter, error) { return dialRouteSocket() }
 
 func (runningKernel) Dump() ([]byte, error) {
-	return route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0)
+	return refetched(func() ([]byte, error) { return route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeRoute, 0) })
+}
+
+// refetched is fetch's dump, fetched again on ENOMEM up to dumpAttempts times in all
+// a table that grows between FetchRIB's sizing sysctl and its read fails with ENOMEM once FetchRIB's own tries run out
+func refetched(fetch func() ([]byte, error)) ([]byte, error) {
+	var (
+		rib []byte
+		err error
+	)
+	for range dumpAttempts {
+		if rib, err = fetch(); !errors.Is(err, unix.ENOMEM) {
+			break
+		}
+	}
+	return rib, err
 }
 
 func (runningKernel) Addresses(index int) ([]netip.Prefix, error) {

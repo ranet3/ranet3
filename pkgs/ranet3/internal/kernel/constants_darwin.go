@@ -24,4 +24,8 @@ const (
 	// selectionSettle is how long the underlay's selection waits after a wake of its watcher before it reads the table again
 	// a link coming up is several messages, and a read after the first would be redone after the last
 	selectionSettle = 250 * time.Millisecond
+	// dumpAttempts bounds the fetches of one Dump before it returns ENOMEM, each fetch x/net's FetchRIB with its own 3 tries
+	// an exhausted dump fails the reconciler's pass, which its backoff retries, and leaves the underlay's Selection on its last routes
+	// 4 caps a dump at 12 pairs of sizing and reading sysctls with no wait, so only a table that grows during every pair fails it
+	dumpAttempts = 4
 )
