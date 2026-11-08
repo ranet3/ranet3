@@ -21,8 +21,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-	"gvisor.dev/gvisor/pkg/tcpip/stack"
-	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 
 	"ranet3.com/pkgs/ranet3/internal/client"
 	"ranet3.com/pkgs/ranet3/internal/egress"
@@ -39,9 +37,6 @@ const (
 	// socketWatch spaces the reads of the namespace's sockets that find one
 	// opened past Prepare
 	watchInterval = 50 * time.Millisecond
-	// untimed is Flow.Left for a flow the exit keeps with no idle timer,
-	// until an end closes or resets it
-	untimed = time.Duration(1 << 62)
 )
 
 // linuxLimits holds the limits the userspace exit declares on Linux and on
@@ -166,9 +161,10 @@ func namespaceHolds(address netip.Addr) bool {
 
 // socketWatch records the inode of each socket Prepare readies, and reads the
 // namespace's sockets for any other, the suite's own from the exit's mesh
-// addresses aside
+// addresses aside, and a carrier's own on the loopback where loopback is set
 type socketWatch struct {
-	mesh []netip.Addr
+	mesh     []netip.Addr
+	loopback bool
 
 	mu         sync.Mutex
 	prepared   map[uint64]bool
@@ -243,7 +239,7 @@ func (w *socketWatch) read() {
 				continue
 			}
 			local, ok := procAddress(fields[1])
-			if !ok || slices.Contains(w.mesh, local) {
+			if !ok || slices.Contains(w.mesh, local) || w.loopback && local.IsLoopback() {
 				continue
 			}
 			w.mu.Lock()
@@ -275,22 +271,13 @@ func procAddress(field string) (netip.Addr, bool) {
 	return address, ok
 }
 
-// armHolds names what the exit holds: its lanes while they take packets, each
-// TCP connection, each UDP destination and each echo mapping
+// armHolds names what the exit built on host holds
 func armHolds(host egresstest.Host) ([]string, error) {
 	x, ok := armExit(host)
 	if !ok {
 		return nil, errors.New("no exit was built on the host")
 	}
-	var held []string
-	if x.taking.Load() {
-		held = append(held, "lanes taking packets")
-	}
-	for _, f := range tableOf(x) {
-		held = append(held, fmt.Sprintf("protocol %d from %s to %s", f.Protocol, f.From, f.To))
-	}
-	slices.Sort(held)
-	return held, nil
+	return holdsOf(x), nil
 }
 
 func armExit(host egresstest.Host) (*Exit, bool) {
@@ -308,67 +295,4 @@ func armFlows(host egresstest.Host) ([]egresstest.Flow, error) {
 		return nil, errors.New("no exit was built on the host")
 	}
 	return tableOf(x), nil
-}
-
-// tableOf is each connection being dialed and relayed, each UDP
-// destination with its time left, and each echo mapping with its time left,
-// an echo's identifier in place of both ports
-func tableOf(x *Exit) []egresstest.Flow {
-	now := time.Now()
-	var flows []egresstest.Flow
-	x.tcp.mu.Lock()
-	for id := range x.tcp.dialing {
-		flows = append(flows, egresstest.Flow{Protocol: syscall.IPPROTO_TCP, From: leafEnd(id), To: serverEnd(id), Phase: egresstest.Opening, Left: untimed})
-	}
-	for f := range x.tcp.flows {
-		info, ok := f.ep.Info().(*stack.TransportEndpointInfo)
-		if !ok {
-			continue
-		}
-		phase, left := tcpPhase(tcp.EndpointState(f.ep.State()))
-		flows = append(flows, egresstest.Flow{Protocol: syscall.IPPROTO_TCP, From: leafEnd(info.ID), To: serverEnd(info.ID), Phase: phase, Left: left})
-	}
-	x.tcp.mu.Unlock()
-	x.udp.mu.RLock()
-	for _, m := range x.udp.mappings {
-		m.mu.RLock()
-		for to, dst := range m.destinations {
-			flows = append(flows, egresstest.Flow{Protocol: syscall.IPPROTO_UDP, From: m.leaf, To: to, Left: time.Unix(0, dst.deadline.Load()).Sub(now).Truncate(time.Second)})
-		}
-		m.mu.RUnlock()
-	}
-	x.udp.mu.RUnlock()
-	x.echo.mu.Lock()
-	for key, m := range x.echo.mappings {
-		protocol := byte(syscall.IPPROTO_ICMP)
-		if key.leaf.Is6() {
-			protocol = syscall.IPPROTO_ICMPV6
-		}
-		left := time.Unix(0, m.last.Load()).Add(echoIdle).Sub(now).Truncate(time.Second)
-		flows = append(flows, egresstest.Flow{Protocol: protocol, From: netip.AddrPortFrom(key.leaf, key.id), Left: left})
-	}
-	x.echo.mu.Unlock()
-	return flows
-}
-
-func leafEnd(id stack.TransportEndpointID) netip.AddrPort {
-	return netip.AddrPortFrom(addrOf(id.RemoteAddress), id.RemotePort)
-}
-
-func serverEnd(id stack.TransportEndpointID) netip.AddrPort {
-	return netip.AddrPortFrom(addrOf(id.LocalAddress), id.LocalPort)
-}
-
-// tcpPhase is RFC 5382 section 5's phase of a leaf's endpoint, which the
-// exit keeps with no idle timer until an end closes or resets it
-func tcpPhase(state tcp.EndpointState) (egresstest.Phase, time.Duration) {
-	switch state {
-	case tcp.StateSynRecv:
-		return egresstest.Opening, untimed
-	case tcp.StateEstablished, tcp.StateCloseWait, tcp.StateFinWait1, tcp.StateFinWait2:
-		return egresstest.Established, untimed
-	case tcp.StateLastAck, tcp.StateClosing:
-		return egresstest.Closing, untimed
-	}
-	return egresstest.NoPhase, 0
 }

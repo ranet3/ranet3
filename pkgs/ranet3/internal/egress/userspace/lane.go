@@ -4,6 +4,7 @@
 package userspace
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/maphash"
@@ -14,6 +15,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/packet"
 	"ranet3.com/pkgs/wireguard/tun"
 )
 
@@ -36,6 +38,9 @@ type Lane interface {
 	// MTU is the largest packet the session from source to destination
 	// carries, zero where the mesh routes it to no peer
 	MTU(source, destination netip.Addr) int
+	// SameSession is whether the mesh sends from source to a and to b through
+	// one peer's session, a packet a steer entry claims by its first segment's
+	SameSession(source, a, b netip.Addr) bool
 	// Done is closed once the mesh closes, and Close gives the lane back
 	Done() <-chan struct{}
 	Close()
@@ -157,6 +162,10 @@ func (x *Exit) handle(lane Lane, raw []byte) {
 			x.udp.leafError(raw)
 			return
 		}
+		if reason := leafTCPError(lane, raw); reason != "" {
+			x.counts.drop(reason)
+			return
+		}
 		if x.timeWait.see(x.stack, raw) {
 			x.counts.reused.Add(1)
 		}
@@ -166,6 +175,135 @@ func (x *Exit) handle(lane Lane, raw []byte) {
 		lane.Answer(raw, j.kind, 0)
 	case drop:
 		x.counts.drop(j.reason)
+	}
+}
+
+// The reasons a leaf's ICMP error about a TCP segment is kept from the stack,
+// which takes any quoted source as its own and applies the error to the
+// endpoint the quote names
+const (
+	// an error other than a too big whose quoted destination, the leaf end,
+	// sits behind another session than its source
+	reasonLeafErrorElsewhere = "leaf error elsewhere"
+	// a too big below leastMTU4 over IPv4 or 1280 over IPv6 (RFC 8201
+	// section 4)
+	reasonLeafErrorMTU = "leaf error mtu"
+	// the first fragment of an error, whose quote the exit reads only whole
+	reasonLeafErrorFragment = "leaf error fragment"
+	// an error whose quote the exit cannot read down to a TCP header, which
+	// the stack might still read
+	reasonLeafErrorQuote = "leaf error quote"
+)
+
+// leastMTU4 is the least MTU a leaf's Fragmentation Needed may carry to the
+// stack: Linux's default min_pmtu, in place of RFC 1191 section 3's 68, at
+// which gVisor would cut its segments below its own least of 48 bytes
+const leastMTU4 = 552
+
+// leafTCPError is why raw, a packet the lane's judgment delivers to the stack,
+// is kept from it as a leaf's ICMP error: one whose quote reads to no TCP
+// header, a too big about a TCP segment below the family's least MTU, another
+// error about a TCP segment whose quoted destination sits behind another
+// session than its source, or an error in fragments. "" for any other packet.
+// A too big at or above the least MTU passes from any session, since one from
+// a waypoint or a later hop has a source the mesh may reach by another first
+// hop than the leaf, and dropping it would leave the connection sending
+// segments that path drops (RFC 1191 section 3, RFC 8201 section 4).
+func leafTCPError(lane Lane, raw []byte) string {
+	var (
+		message    []byte
+		ipv6       bool
+		source     netip.Addr
+		fragment   bool
+		tooBig     bool
+		mtu, least uint32
+	)
+	switch packet.Version(raw) {
+	case 4:
+		header := int(raw[0]&0x0f) * 4
+		flags := binary.BigEndian.Uint16(raw[6:8])
+		if raw[9] != 1 || flags&0x1fff != 0 || len(raw) < header+8 {
+			return ""
+		}
+		message, source, fragment = raw[header:], netip.AddrFrom4([4]byte(raw[12:16])), flags&0x2000 != 0
+		if message[0] != 3 && message[0] != 11 && message[0] != 12 {
+			return ""
+		}
+		tooBig, mtu, least = message[0] == 3 && message[1] == 4, uint32(binary.BigEndian.Uint16(message[6:8])), leastMTU4
+	case 6:
+		at, next, first, ok := icmp6At(raw)
+		if !ok || next != 58 || len(raw) < at+8 {
+			return ""
+		}
+		message, ipv6, source, fragment = raw[at:], true, netip.AddrFrom16([16]byte(raw[8:24])), first
+		if message[0] < 1 || message[0] > 4 {
+			return ""
+		}
+		tooBig, mtu, least = message[0] == 2, binary.BigEndian.Uint32(message[4:8]), 1280
+	default:
+		return ""
+	}
+	if fragment {
+		return reasonLeafErrorFragment
+	}
+	from, to, ok := quotedTCP(message[8:], ipv6)
+	switch {
+	case !ok:
+		return reasonLeafErrorQuote
+	case tooBig && mtu < least:
+		return reasonLeafErrorMTU
+	case !tooBig && !lane.SameSession(from, source, to):
+		return reasonLeafErrorElsewhere
+	}
+	return ""
+}
+
+// quotedTCP is the source and destination quote names, the packet an ICMP
+// error quotes, where it reads whole down to the first 8 bytes of a TCP
+// header: an IPv4 header of version 4 at fragment offset 0, or an IPv6 header
+// past every extension header icmp6At walks, a fragment header at offset 0
+// among them, as gVisor steps over one to find the endpoint. false for any
+// other quote, which the stack is never handed.
+func quotedTCP(quote []byte, ipv6 bool) (from, to netip.Addr, ok bool) {
+	if !ipv6 {
+		if len(quote) < 20 || quote[0]>>4 != 4 {
+			return netip.Addr{}, netip.Addr{}, false
+		}
+		header := int(quote[0]&0x0f) * 4
+		if header < 20 || len(quote) < header+8 || binary.BigEndian.Uint16(quote[6:8])&0x1fff != 0 || quote[9] != 6 {
+			return netip.Addr{}, netip.Addr{}, false
+		}
+		return netip.AddrFrom4([4]byte(quote[12:16])), netip.AddrFrom4([4]byte(quote[16:20])), true
+	}
+	if len(quote) < 40 || quote[0]>>4 != 6 {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	if at, next, _, walked := icmp6At(quote); !walked || next != 6 || len(quote) < at+8 {
+		return netip.Addr{}, netip.Addr{}, false
+	}
+	return netip.AddrFrom16([16]byte(quote[8:24])), netip.AddrFrom16([16]byte(quote[24:40])), true
+}
+
+// icmp6At is where raw's upper layer header starts past its extension
+// headers, the protocol it names, and whether raw is the first of several
+// fragments, false where a header runs past raw or raw is a later fragment
+func icmp6At(raw []byte) (at int, next byte, first, ok bool) {
+	next, at = raw[6], 40
+	for {
+		switch next {
+		case 0, 43, 60:
+			if at+8 > len(raw) {
+				return 0, 0, false, false
+			}
+			next, at = raw[at], at+(int(raw[at+1])+1)*8
+		case 44:
+			if at+8 > len(raw) || binary.BigEndian.Uint16(raw[at+2:at+4])&0xfff8 != 0 {
+				return 0, 0, false, false
+			}
+			next, first, at = raw[at], raw[at+3]&1 != 0, at+8
+		default:
+			return at, next, first, at <= len(raw)
+		}
 	}
 }
 

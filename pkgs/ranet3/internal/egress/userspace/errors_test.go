@@ -371,3 +371,249 @@ func checkServerError(t *testing.T, out []byte, outside, server netip.AddrPort, 
 		t.Errorf("quoted %s, want the server's datagram of %d bytes to %s with its checksum", q, len(payload), outside)
 	}
 }
+
+// tooBigFrom is a too big of kind and code from from to server carrying mtu
+// and quoting offending
+func tooBigFrom(from, server netip.Addr, kind, code byte, mtu uint32, offending []byte) []byte {
+	message := append([]byte{kind, code, 0, 0, 0, 0, 0, 0}, offending...)
+	binary.BigEndian.PutUint32(message[4:8], mtu)
+	running := sum(0, message)
+	if from.Is6() {
+		running += pseudo(from, server, protoICMPv6, len(message))
+	}
+	binary.BigEndian.PutUint16(message[2:4], fold(running))
+	return ipPacket(from, server, icmpProtocol(from), message)
+}
+
+// withOption4 is segment, an IPv4 packet, with four no-operation option bytes
+// in its header, its lengths and checksum following
+func withOption4(segment []byte) []byte {
+	b := append(append(append([]byte(nil), segment[:20]...), 1, 1, 1, 1), segment[20:]...)
+	b[0] = 4<<4 | 6
+	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
+	binary.BigEndian.PutUint16(b[10:12], 0)
+	binary.BigEndian.PutUint16(b[10:12], fold(sum(0, b[:24])))
+	return b
+}
+
+// sessionsApart has h's lanes reach forger through another session than every
+// other address
+func sessionsApart(h *relayHarness, forger netip.Addr) {
+	h.mesh.session = func(address netip.Addr) int {
+		if address == forger {
+			return 2
+		}
+		return 1
+	}
+}
+
+// checkReached fails t where the stack read other than one of what received
+// counts with reason "", or read one or counted none as reason
+func checkReached(t *testing.T, h *relayHarness, reached uint64, reason string) {
+	t.Helper()
+	if reason == "" {
+		if reached != 1 {
+			t.Errorf("the stack read %d errors, want the one", reached)
+		}
+		return
+	}
+	if reached != 0 || h.count(false, reason) != 1 {
+		t.Errorf("the stack read %d errors and %d were counted as %q, want none read and one counted", reached, h.count(false, reason), reason)
+	}
+}
+
+// A leaf's too big about a TCP segment toward a leaf reaches the stack from
+// any session where it carries at least the family's least MTU, 552 bytes over
+// IPv4 and 1280 over IPv6: from the leaf's own session, from a node the mesh
+// reaches by another first hop than the leaf, as a waypoint or a later hop
+// is, and quoting an IPv4 header with options. One carrying a smaller MTU,
+// 100 bytes among them, is dropped and counted from any session, and the
+// stack never reads it, so the endpoint it names keeps its segment size.
+func TestLeafTooBigAboutTCPReachesTheStackFromAnySessionAtTheLeastMTU(t *testing.T) {
+	for _, family := range []struct {
+		name                 string
+		leaf, server, forger netip.Addr
+		kind, code           byte
+		least                uint32
+		received             func(*Exit) uint64
+	}{
+		{"ipv4", leaf4, server4, other4, 3, 4, 552, func(x *Exit) uint64 { return x.stack.Stats().ICMP.V4.PacketsReceived.DstUnreachable.Value() }},
+		{"ipv6", leaf6, server6, other6, 2, 0, 1280, func(x *Exit) uint64 { return x.stack.Stats().ICMP.V6.PacketsReceived.PacketTooBig.Value() }},
+	} {
+		segment := tcpSegment(netip.AddrPortFrom(family.server, 443), netip.AddrPortFrom(family.leaf, 40000), 7000, 1000, tcpACK, make([]byte, 1000))
+		type tooBig struct {
+			name   string
+			from   netip.Addr
+			mtu    uint32
+			quote  []byte
+			reason string
+		}
+		cases := []tooBig{
+			{"from the leaf's session", family.leaf, family.least, segment, ""},
+			{"from behind another first hop", family.forger, family.least, segment, ""},
+			{"below the least MTU from the leaf's session", family.leaf, family.least - 1, segment, reasonLeafErrorMTU},
+			{"below the least MTU from behind another first hop", family.forger, family.least - 1, segment, reasonLeafErrorMTU},
+			{"at 100 bytes", family.leaf, 100, segment, reasonLeafErrorMTU},
+		}
+		if family.leaf.Is4() {
+			cases = append(cases, tooBig{"quoting a header with options", family.leaf, family.least, withOption4(segment), ""})
+		}
+		for _, c := range cases {
+			t.Run(family.name+" "+c.name, func(t *testing.T) {
+				h := newRelayHarness(t, nil)
+				sessionsApart(h, family.forger)
+				before := family.received(h.x)
+				h.x.handle(h.lane, tooBigFrom(c.from, family.server, family.kind, family.code, c.mtu, c.quote))
+				checkReached(t, h, family.received(h.x)-before, c.reason)
+			})
+		}
+	}
+}
+
+// A leaf's ICMP error about a TCP segment toward a leaf other than a too big,
+// a port unreachable or a time exceeded, reaches the stack only where it comes
+// from the session the segment went to, and its unused bytes are never read as
+// an MTU. One from another session, one leaf's forged error about another
+// leaf's connection, is dropped and counted, and the stack never reads it.
+func TestLeafErrorAboutTCPOtherThanTooBigReachesTheStackOnlyFromItsSession(t *testing.T) {
+	for _, family := range []struct {
+		name                 string
+		leaf, server, forger netip.Addr
+		unreachable, expired [2]byte
+		reachedUnreachable   func(*Exit) uint64
+		reachedExpired       func(*Exit) uint64
+	}{
+		{
+			"ipv4", leaf4, server4, other4, [2]byte{3, 3}, [2]byte{11, 0},
+			func(x *Exit) uint64 { return x.stack.Stats().ICMP.V4.PacketsReceived.DstUnreachable.Value() },
+			func(x *Exit) uint64 { return x.stack.Stats().ICMP.V4.PacketsReceived.TimeExceeded.Value() },
+		},
+		{
+			"ipv6", leaf6, server6, other6, [2]byte{1, 4}, [2]byte{3, 0},
+			func(x *Exit) uint64 { return x.stack.Stats().ICMP.V6.PacketsReceived.DstUnreachable.Value() },
+			func(x *Exit) uint64 { return x.stack.Stats().ICMP.V6.PacketsReceived.TimeExceeded.Value() },
+		},
+	} {
+		segment := tcpSegment(netip.AddrPortFrom(family.server, 443), netip.AddrPortFrom(family.leaf, 40000), 7000, 1000, tcpACK, make([]byte, 1000))
+		for _, c := range []struct {
+			name     string
+			from     netip.Addr
+			kind     [2]byte
+			received func(*Exit) uint64
+			reason   string
+		}{
+			{"port unreachable from the leaf's session", family.leaf, family.unreachable, family.reachedUnreachable, ""},
+			{"port unreachable from another session", family.forger, family.unreachable, family.reachedUnreachable, reasonLeafErrorElsewhere},
+			{"time exceeded from the leaf's session", family.leaf, family.expired, family.reachedExpired, ""},
+			{"time exceeded from another session", family.forger, family.expired, family.reachedExpired, reasonLeafErrorElsewhere},
+		} {
+			t.Run(family.name+" "+c.name, func(t *testing.T) {
+				h := newRelayHarness(t, nil)
+				sessionsApart(h, family.forger)
+				before := c.received(h.x)
+				h.x.handle(h.lane, leafRefusal(c.from, family.server, c.kind[0], c.kind[1], segment))
+				checkReached(t, h, c.received(h.x)-before, c.reason)
+			})
+		}
+	}
+}
+
+// A leaf's error reaches the stack only where its quote reads whole down to a
+// TCP header, an IPv6 one past a fragment header at offset 0 among them, as
+// gVisor steps over one to find the endpoint, so the session and MTU checks
+// hold for every quote the stack acts on. A quote of IPv4 version 5, one
+// behind an extension header the exit does not walk, one at a later fragment
+// and one cut short of its TCP header are dropped and counted whatever their
+// source, and the stack never reads them.
+func TestLeafErrorReachesTheStackOnlyWithAQuoteReadToItsTCPHeader(t *testing.T) {
+	tcp4 := tcpSegment(netip.AddrPortFrom(server4, 443), netip.AddrPortFrom(leaf4, 40000), 7000, 1000, tcpACK, make([]byte, 1000))
+	tcp6 := tcpSegment(netip.AddrPortFrom(server6, 443), netip.AddrPortFrom(leaf6, 40000), 7000, 1000, tcpACK, make([]byte, 1000))
+	behind := func(extension []byte) []byte {
+		return ip6(server6, leaf6, extension[8], 64, append(append([]byte(nil), extension[:8]...), tcp6[40:]...))
+	}
+	// each extension header's 9th byte is the next header the IPv6 header
+	// names, cut off before the header is laid
+	firstFragment := behind([]byte{protoTCP, 0, 0, 0, 0, 0, 0, 9, ipv6Fragment})
+	laterFragment := behind([]byte{protoTCP, 0, 0, 8, 0, 0, 0, 9, ipv6Fragment})
+	authentication := behind([]byte{protoTCP, 0, 0, 0, 0, 0, 1, 0, 51})
+	version5 := append([]byte(nil), tcp4...)
+	version5[0] = 5<<4 | 5
+	stack4 := func(x *Exit) uint64 { return x.stack.Stats().ICMP.V4.PacketsReceived.DstUnreachable.Value() }
+	stack6 := func(x *Exit) uint64 { return x.stack.Stats().ICMP.V6.PacketsReceived.PacketTooBig.Value() }
+	unreachable6 := func(x *Exit) uint64 { return x.stack.Stats().ICMP.V6.PacketsReceived.DstUnreachable.Value() }
+	for _, c := range []struct {
+		name     string
+		from     netip.Addr
+		mtu      uint32
+		quote    []byte
+		received func(*Exit) uint64
+		reason   string
+	}{
+		{"ipv6 first fragment from the leaf's session", leaf6, 1280, firstFragment, stack6, ""},
+		{"ipv6 first fragment from behind another first hop", other6, 1280, firstFragment, stack6, ""},
+		// an mtu of 0 stands for a port unreachable, which meets the session check
+		{"ipv6 first fragment port unreachable from another leaf's session", other6, 0, firstFragment, unreachable6, reasonLeafErrorElsewhere},
+		{"ipv6 first fragment below the least MTU", leaf6, 1279, firstFragment, stack6, reasonLeafErrorMTU},
+		{"ipv6 later fragment", other6, 1279, laterFragment, stack6, reasonLeafErrorQuote},
+		{"ipv6 behind an authentication header", other6, 1279, authentication, stack6, reasonLeafErrorQuote},
+		{"ipv6 cut inside the TCP header", other6, 1279, firstFragment[:40+8+4], stack6, reasonLeafErrorQuote},
+		{"ipv4 version 5", other4, 67, version5, stack4, reasonLeafErrorQuote},
+		{"ipv4 later fragment", other4, 67, ip4(server4, leaf4, protoTCP, 1, 1, 64, tcp4[20:]), stack4, reasonLeafErrorQuote},
+		{"ipv4 cut inside the TCP header", other4, 67, tcp4[:20+4], stack4, reasonLeafErrorQuote},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newRelayHarness(t, nil)
+			h.mesh.session = func(address netip.Addr) int {
+				if address == other4 || address == other6 {
+					return 2
+				}
+				return 1
+			}
+			kind, code, server := byte(2), byte(0), server6
+			switch {
+			case c.from.Is4():
+				kind, code, server = 3, 4, server4
+			case c.mtu == 0:
+				kind, code = 1, 4
+			}
+			before := c.received(h.x)
+			h.x.handle(h.lane, tooBigFrom(c.from, server, kind, code, c.mtu, c.quote))
+			reached := c.received(h.x) - before
+			if c.reason == "" {
+				if reached != 1 {
+					t.Errorf("the stack read %d too bigs, want the one", reached)
+				}
+				return
+			}
+			if reached != 0 || h.count(false, c.reason) != 1 {
+				t.Errorf("the stack read %d too bigs and %d were counted as %q, want none read and one counted", reached, h.count(false, c.reason), c.reason)
+			}
+		})
+	}
+}
+
+// The first fragment of a leaf's ICMP error is dropped and counted, since the
+// quote its source and its MTU stand in is read only whole, so the stack
+// never reassembles the error
+func TestLeafErrorInFragmentsIsKeptFromTheStack(t *testing.T) {
+	for _, family := range []struct {
+		name         string
+		leaf, server netip.Addr
+		kind, code   byte
+		mtu          uint32
+		header       int
+	}{
+		{"ipv4", leaf4, server4, 3, 4, 576, 20},
+		{"ipv6", leaf6, server6, 2, 0, 1280, 40},
+	} {
+		t.Run(family.name, func(t *testing.T) {
+			segment := tcpSegment(netip.AddrPortFrom(family.server, 443), netip.AddrPortFrom(family.leaf, 40000), 7000, 1000, tcpACK, make([]byte, 1000))
+			whole := tooBigFrom(family.leaf, family.server, family.kind, family.code, family.mtu, segment)
+			h := newRelayHarness(t, nil)
+			h.x.handle(h.lane, fragments(family.leaf, family.server, icmpProtocol(family.leaf), 9, whole[family.header:], 512)[0])
+			if got := h.count(false, reasonLeafErrorFragment); got != 1 {
+				t.Errorf("counted %d first fragments of an error as %q, want 1", got, reasonLeafErrorFragment)
+			}
+		})
+	}
+}

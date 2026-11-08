@@ -38,6 +38,9 @@ type fakeMesh struct {
 	fillGate   bool
 	// laidTo, where set, takes each packet a lane laid as it is laid
 	laidTo func(raw []byte)
+	// session, where set, names the session each address sits behind, and
+	// every address sits behind one otherwise
+	session func(netip.Addr) int
 	// mtu, where set, is the MTU each lane reports, and a session's otherwise
 	mtu int
 
@@ -137,6 +140,11 @@ func (l *fakeLane) MTU(netip.Addr, netip.Addr) int {
 	}
 	return 1420
 }
+
+func (l *fakeLane) SameSession(_, a, b netip.Addr) bool {
+	return l.m.session == nil || l.m.session(a) == l.m.session(b)
+}
+
 func (l *fakeLane) Done() <-chan struct{} { return l.m.done }
 
 func (l *fakeLane) Close() {

@@ -227,6 +227,15 @@ func (l *Lane) MTU(source, destination netip.Addr) int {
 	return peer.MTU()
 }
 
+// SameSession is whether the mesh sends a packet from source to a and one
+// from source to b through one peer's session, each by the session classify
+// sends it by, a steered one by its first segment's
+func (l *Lane) SameSession(source, a, b netip.Addr) bool {
+	steering := l.m.steerTable.Load()
+	first := l.m.sessionToward(steering, source, a)
+	return first != nil && first == l.m.sessionToward(steering, source, b)
+}
+
 // Done is closed once the mesh closes
 func (l *Lane) Done() <-chan struct{} { return l.m.closed }
 

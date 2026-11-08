@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"ranet3.com/pkgs/ranet3/schema"
+	"ranet3.com/pkgs/ranet3/srv6"
 	"ranet3.com/pkgs/wireguard/tun"
 )
 
@@ -169,5 +171,101 @@ func TestLaneMTUIsTheSessionsTowardTheLeaf(t *testing.T) {
 		if got := lane.MTU(transitNowhere[family], transitUnrouted[family]); got != 0 {
 			t.Errorf("IPv%d: the MTU toward an unrouted address is %d, want 0", family, got)
 		}
+	}
+}
+
+// SameSession holds where the mesh sends toward both addresses through one
+// peer, and fails where they sit behind two peers or either is no peer's
+func TestLaneSameSessionIsOnePeerTowardBoth(t *testing.T) {
+	n := newLaneNode(t)
+	lane := n.m.OpenLane()
+	defer lane.Close()
+	for _, family := range []int{4, 6} {
+		for _, c := range []struct {
+			a, b netip.Addr
+			want bool
+		}{
+			{transitSender[family], transitSender[family], true},
+			{transitSender[family], transitFar[family], false},
+			{transitFar[family], transitSender[family], false},
+			{transitOwn[family], transitOwn[family], false},
+			{transitUnrouted[family], transitUnrouted[family], false},
+		} {
+			if got := lane.SameSession(transitNowhere[family], c.a, c.b); got != c.want {
+				t.Errorf("IPv%d: SameSession toward %s and %s is %t, want %t", family, c.a, c.b, got, c.want)
+			}
+		}
+	}
+}
+
+// A steer entry sends a lane's packets toward the leaf by its first segment's
+// session, not by the plain route's, and SameSession judges the leaf by that
+// session: an address behind the waypoint's peer shares it, and one behind the
+// plain route's peer, the leaf's neighbor there, does not. Without the entry
+// the plain route's peer holds.
+func TestLaneSameSessionIsTheSessionASteeredPacketLeavesBy(t *testing.T) {
+	waypoint := segAddr("3fff:7::1")
+	neighbor := map[int]netip.Addr{4: segAddr("192.0.2.6"), 6: segAddr("3fff::6")}
+	for _, family := range []int{4, 6} {
+		t.Run(fmt.Sprintf("IPv%d", family), func(t *testing.T) {
+			n := newLaneNode(t)
+			n.m.Routes.Set(netip.Prefix{}, hostPrefix(waypoint), n.outPeer)
+			n.m.Routes.Set(netip.Prefix{}, hostPrefix(neighbor[family]), n.fromPeer)
+			lane := n.m.OpenLane()
+			defer lane.Close()
+			leaf := transitSender[family]
+			if !lane.SameSession(transitNowhere[family], neighbor[family], leaf) || lane.SameSession(transitNowhere[family], transitFar[family], leaf) {
+				t.Fatal("unsteered, the leaf's session is not the plain route's peer's")
+			}
+			steering, err := srv6.NewSteerTable([]srv6.Steer{{To: schema.PrefixFrom(hostPrefix(leaf)), Via: []schema.Addr{schema.AddrFrom(waypoint)}}}, schema.MustAddr("3fff:b:0:100::1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			n.m.SetSteering(steering)
+			if !lane.Fill(laid(udpPacket(transitNowhere[family], leaf, 100, false))) {
+				t.Fatal("an open lane of an open mesh filled nothing")
+			}
+			if sent := n.out.packets(t); len(sent) != 1 {
+				t.Fatalf("the waypoint's session was sent %d packets, want the steered one", len(sent))
+			}
+			if sent := n.from.packets(t); len(sent) != 0 {
+				t.Fatalf("the plain route's session was sent %d packets, want none", len(sent))
+			}
+			if !lane.SameSession(transitNowhere[family], transitFar[family], leaf) {
+				t.Errorf("an address behind the waypoint's peer does not share the steered leaf's session")
+			}
+			if lane.SameSession(transitNowhere[family], neighbor[family], leaf) {
+				t.Errorf("an address behind the plain route's peer shares the steered leaf's session")
+			}
+		})
+	}
+}
+
+// cap.exit via's path reaches its first segment only through the segment's
+// own /128, so where only a covering route leads there classify sends the
+// path's reads nowhere, and SameSession holds for no address the path takes.
+// Through the /128 the waypoint's peer holds.
+func TestLaneSameSessionIsNoneWhereThePathsFirstSegmentIsUnrouted(t *testing.T) {
+	waypoint := segAddr("3fff:7::1")
+	for _, family := range []int{4, 6} {
+		t.Run(fmt.Sprintf("IPv%d", family), func(t *testing.T) {
+			n := newLaneNode(t)
+			n.m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(waypoint, 64).Masked(), n.outPeer)
+			steering, err := (*srv6.SteerTable)(nil).WithDefault(segAddr("3fff:b:0:100::1"), []netip.Addr{waypoint})
+			if err != nil {
+				t.Fatal(err)
+			}
+			n.m.SetSteering(steering)
+			lane := n.m.OpenLane()
+			defer lane.Close()
+			away := transitNowhere[family]
+			if lane.SameSession(transitSender[family], away, away) {
+				t.Errorf("an address the path takes shares a session though its first segment has only a covering route")
+			}
+			n.m.Routes.Set(netip.Prefix{}, hostPrefix(waypoint), n.outPeer)
+			if !lane.SameSession(transitSender[family], away, away) {
+				t.Errorf("an address the path takes shares no session once its first segment has its own /128")
+			}
+		})
 	}
 }

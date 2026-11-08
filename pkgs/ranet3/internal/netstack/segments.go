@@ -69,6 +69,30 @@ func (m *Mesh) steerPolicy(table *srv6.SteerTable, source, destination netip.Add
 	return nil, false
 }
 
+// sessionToward is the peer whose session classify sends a read off the tun from source to destination by under table, a steered read's first segment's, nil where it routes the read to no peer
+// it is classify's choice of route alone, every drop classify makes before that choice left out, its multicast and limited broadcast drop and edgeCheck's drops among them,
+// and it names a peer for a read classify drops there
+// Lane.SameSession asks it toward an ICMP error's source as well as toward the leaf, and on the source's side that shows, among other cases,
+// toward a source the exit reaches through an entry counting as a default or along cap.exit via's path, where it names that entry's peer or the path's first segment's and classify drops a read from a source this node does not own as leaving the mesh,
+// and toward a multicast or limited broadcast source that an entry covering it routes to a peer, where it names that peer
+// it takes classify's steps in classify's order through the functions classify calls, so classify's hot path stays its own, and TestLaneSendsByTheSessionSameSessionNames holds the two to one answer:
+// classify's nil test before takesPath only spares the call, since takesPath gives the same for a table with no path,
+// and classify resolves the first segment from the outer header it parsed, which writeOuter builds from the policy's source and first segment
+func (m *Mesh) sessionToward(table *srv6.SteerTable, source, destination netip.Addr) *Peer {
+	peer, verdict, match := m.Routes.Resolve(source, destination)
+	alongPath, _ := m.takesPath(table, verdict, match, destination)
+	if policy, path := m.steerPolicy(table, source, destination, alongPath); policy != nil {
+		var firstMatch Match
+		if peer, verdict, firstMatch = m.Routes.Resolve(policy.Source, policy.Path[0]); firstUnrouted(path, verdict, firstMatch) {
+			return nil
+		}
+	}
+	if verdict != RoutePeer {
+		return nil
+	}
+	return peer
+}
+
 // takesPath is whether cap.exit via's path of table takes a read off the tun toward destination that resolves to verdict through match, and whether the read leaves the mesh
 // the path takes a read that resolves through an entry counting as a default or through none, toward a destination outside the overlay, since an exit refuses one inside as an inner destination
 // and a read the path takes leaves the mesh through its exit as one through an entry counting as a default does
