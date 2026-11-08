@@ -44,7 +44,6 @@ func newDelivery() *delivery {
 
 func (d *delivery) Retain() { d.refs.Add(1) }
 
-// Release releases every batch with the last reference
 // a count below zero is a delivery released twice, whose batches another delivery may hold by then
 func (d *delivery) Release() {
 	switch refs := d.refs.Add(-1); {

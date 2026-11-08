@@ -287,15 +287,14 @@ type packetBind interface {
 	Close() error
 }
 
-// A receiver reads into blocks of pool, the hub's. Before each read it keeps
-// a block nothing else holds and takes a fresh one in place of each a batch
-// still retains. A view stays valid until its next call unless a batch retains its block.
 // receiveFunc fills the vectors and reports how many datagrams it produced.
 // It adds those it read and could not use to refused, and returns an error
 // before it adds any, so an operator can tell a receive path that is
 // discarding from one that is idle.
 // It fills a record for every datagram and an endpoint for every IKE datagram, which the memory and portable binds fill for every datagram.
-// The datagrams of one block are consecutive in what one call hands out.
+// It reads into blocks of pool, the hub's, and a view stays valid until its
+// next call unless a batch retains its block. The datagrams of one block are
+// consecutive in what one call hands out.
 type receiveFunc func(pool *blockPool, bufs [][]byte, sizes []int, endpoints []Endpoint, records []receiveRecord, refused *refusals) (n int, err error)
 
 // receiveRecord holds what a receiver read about one datagram beside its bytes, as values and the block's pointer, so filling one allocates nothing

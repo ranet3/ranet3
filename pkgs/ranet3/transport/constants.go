@@ -24,7 +24,7 @@ const (
 	// espHeldBytes is the receive storage one mux's batches hold from dispatch to release, queued or on their way to the tun, each receive buffer and copy counted whole
 	// without it a mux would hold espChanSize batches of whole buffers
 	// the queue fills before anything is authenticated, from an SPI anyone who saw one packet can aim at it
-	// its size is set by a 20 Gbit/s flow, whose GRO reads fill 43 percent of a buffer
+	// the bound is sized for 2 milliseconds of a 20 Gbit/s flow from read to tun write, with GRO reads filling 43 percent of a buffer
 	espHeldBytes = 16 << 20
 	// ikeQueueSize is the IKE datagrams one mux queues for its session
 	// IKE keeps one request in flight each way, so a few hold a burst of retransmissions and answers

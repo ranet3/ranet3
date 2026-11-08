@@ -23,8 +23,8 @@ const (
 // on the SPI of the hub's one mux, with every outer ECN field Not-ECT, ECT(0) or CE, and on an SPI no mux holds, as a flood is
 // the receive function takes the batch of the vector before and releases it only once it has refilled the blocks for the next
 // each vector lies in blocks of the hub's pool as a reader leaves them, espSendBatch datagrams in GRO messages of benchGROSegments, espSendBatch in a block each as a shared socket without GRO reads them, or one a call as darwin reads
-// in the GRO arms the batch holds the blocks its datagrams share, so each refill finds them held and takes fresh ones from the pool, as a reader does whose last batch is still on its way to the tun
-// in the arms of a datagram a block each datagram is alone in its block and the batch takes a copy of it from the pool instead, so each refill keeps every block
+// in the GRO arms of a mux's SPI the batch holds the blocks its datagrams share, so each refill finds them held and takes fresh ones from the pool, as a reader does whose last batch is still on its way to the tun
+// in the arms of a datagram a block each datagram is alone in its block and the batch takes a copy of it from the pool instead, and the arm of an unknown SPI makes no batch, so each refill of these keeps every block
 // a block is laid out only when the pool makes it, since the kernel's write into it is no cost of the loop's, and goes back to the pool unpoisoned, as a hub on a socket puts it back
 func BenchmarkHubReceivesESP(b *testing.B) {
 	for _, bench := range []struct {

@@ -241,7 +241,6 @@ type blockLayout struct {
 	source       netip.AddrPort
 }
 
-// start begins a call, refilling each block a batch still retains
 func (l *blockLayout) start(pool *blockPool) {
 	for i := range l.blocks {
 		pool.refill(&l.blocks[i])
@@ -249,7 +248,6 @@ func (l *blockLayout) start(pool *blockPool) {
 	l.used, l.offset = 0, 0
 }
 
-// lay copies data into a block and returns its view there and the block, and reports false for data past a block's size
 func (l *blockLayout) lay(pool *blockPool, data []byte, source netip.AddrPort) ([]byte, *rxBlock, bool) {
 	if len(data) > readBufferSize {
 		return nil, nil, false
