@@ -912,8 +912,8 @@ func (h interpreted) withoutCountedHolds() *netstack.RouteTable {
 // fallback, the last two with the tun holding an overlay address of each family
 // and holding none of either in turn, mode 3's mirror holding no route that
 // counts but the two steered defaults while its path is up. 5430 holds no
-// selector another of its selectors holds, and still takes a lookup from every
-// source some own prefix holds, nested own prefixes among them.
+// selector a different one of its selectors holds, and still takes a lookup
+// from every source some own prefix holds, nested own prefixes among them.
 func TestRuleWalkSendsEveryPacketWhereTheRulesSay(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		build := drawInterpreted(t, ht)
