@@ -7,13 +7,16 @@ package egresstest
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"slices"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -94,6 +97,11 @@ type namespaces struct {
 	// owned is whether the exit is the namespace the process runs in, its mesh
 	// carrying only what its own nodes own
 	owned bool
+	// carrier is the datagram socket to the exit's host for a network whose
+	// exit sits beyond it, nil for one whose exit has a namespace here, and
+	// uplink the router's tun it carries
+	carrier *net.UDPConn
+	uplink  *os.File
 }
 
 // Namespaces builds the Linux network in four network namespaces, each new and
@@ -101,7 +109,7 @@ type namespaces struct {
 // to a peer whose session writes what it carries into the leaf's tun.
 func Namespaces(t testing.TB) Network {
 	t.Helper()
-	return build(t, false)
+	return build(t, false, nil)
 }
 
 // Owned is Namespaces with the exit in the network namespace the whole process
@@ -112,17 +120,30 @@ func Namespaces(t testing.TB) Network {
 // class addresses back out of it when it closes.
 func Owned(t testing.TB) Network {
 	t.Helper()
-	return build(t, true)
+	return build(t, true, nil)
 }
 
-func build(t testing.TB, owned bool) Network {
+// Carried is Namespaces with the exit on another host beyond carrier, a
+// datagram socket connected to that host, which carries each packet of the
+// exit's uplink whole in a datagram of its own. The exit's namespace keeps the
+// mesh alone, opened as Owned opens it, and its veth gives way to a tun in the
+// router's namespace named as the router's end, with the router's addresses
+// on that link and the uplink's MTU, which the network pumps to and from
+// carrier until it closes. The caller keeps carrier open across the networks
+// it builds.
+func Carried(t testing.TB, carrier *net.UDPConn) Network {
+	t.Helper()
+	return build(t, false, carrier)
+}
+
+func build(t testing.TB, owned bool, carrier *net.UDPConn) Network {
 	t.Helper()
 	if os.Getuid() != 0 {
 		t.Skip("creating a tun needs root on linux")
 	}
 	n := &namespaces{
 		leaf: netnstest.StartThread(t), router: netnstest.StartThread(t), server: netnstest.StartThread(t),
-		read: make(chan []byte, carryQueue), closed: make(chan struct{}), owned: owned,
+		read: make(chan []byte, carryQueue), closed: make(chan struct{}), owned: owned, carrier: carrier,
 	}
 	if owned {
 		process, err := os.Open(threadNamespace)
@@ -172,7 +193,45 @@ func build(t testing.TB, owned bool) Network {
 		n.mesh.Routes.Set(netip.Prefix{}, prefix, n.peer)
 	}
 	n.running.Go(n.readLeaf)
+	if n.carrier != nil {
+		n.running.Go(n.readUplink)
+		n.running.Go(n.readCarrier)
+	}
 	return n
+}
+
+// readUplink carries each packet the router sends toward the exit to the
+// exit's host
+func (n *namespaces) readUplink() {
+	buf := make([]byte, readSize)
+	for {
+		size, err := n.uplink.Read(buf)
+		if err != nil {
+			return
+		}
+		// a datagram the far end refuses is a packet its uplink lost
+		_, _ = n.carrier.Write(buf[:size])
+	}
+}
+
+// readCarrier hands the router each IP packet the exit's host sends, until
+// close moves the carrier's deadline to now. A refusal the last write drew
+// from a far end not listening yet ends nothing.
+func (n *namespaces) readCarrier() {
+	buf := make([]byte, readSize)
+	for {
+		size, err := n.carrier.Read(buf)
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			continue
+		}
+		if err != nil {
+			return
+		}
+		if version := buf[0] >> 4; size == 0 || version != 4 && version != 6 {
+			continue
+		}
+		_, _ = n.uplink.Write(buf[:size])
+	}
 }
 
 func (n *namespaces) Family(v6 bool) Family {
@@ -277,7 +336,17 @@ func (n *namespaces) close() {
 	if n.tun != nil {
 		_ = n.tun.Close()
 	}
+	if n.uplink != nil {
+		_ = n.uplink.Close()
+	}
+	if n.carrier != nil {
+		_ = n.carrier.SetReadDeadline(time.Now())
+	}
 	n.running.Wait()
+	if n.carrier != nil {
+		// the next network the caller builds reads it again
+		_ = n.carrier.SetReadDeadline(time.Time{})
+	}
 	if n.mesh != nil {
 		n.mesh.Close()
 	}
@@ -304,15 +373,18 @@ func (n *namespaces) makeExit(netlink netnstest.Netlink) error {
 	if err := forward(); err != nil {
 		return err
 	}
-	if err := netlink.AddVeth(exitUplink, routerUplink, uplinkMTU, n.router.Path); err != nil {
-		return fmt.Errorf("make %s: %w", exitUplink, err)
+	if n.carrier == nil {
+		if err := netlink.AddVeth(exitUplink, routerUplink, uplinkMTU, n.router.Path); err != nil {
+			return fmt.Errorf("make %s: %w", exitUplink, err)
+		}
 	}
-	mesh, err := netstack.NewNamed(netstack.DefaultMTU, meshLink, n.owned, nil)
+	ownedOnly := n.owned || n.carrier != nil
+	mesh, err := netstack.NewNamed(netstack.DefaultMTU, meshLink, ownedOnly, nil)
 	if err != nil {
 		return err
 	}
 	n.mesh = mesh
-	if n.owned {
+	if ownedOnly {
 		// the exit's answers leave from its router-id, as a node's do, which is
 		// its mesh address of each family here, and an ICMPv4 one carries the
 		// host's default TTL as a client hands its mesh, without which the mesh
@@ -333,35 +405,62 @@ func (n *namespaces) makeRouter(netlink netnstest.Netlink) error {
 	if err := netlink.AddVeth(routerNarrow, serverNarrow, narrowMTU, n.server.Path); err != nil {
 		return fmt.Errorf("make %s: %w", routerNarrow, err)
 	}
+	if n.carrier != nil {
+		uplink, err := openTUN(routerUplink, uplinkMTU)
+		if err != nil {
+			return err
+		}
+		n.uplink = uplink
+	}
 	return nil
 }
 
-// makeLeaf makes the leaf's tun, which hands its reader each packet whole
+// makeLeaf makes the leaf's tun
 func (n *namespaces) makeLeaf(netnstest.Netlink) error {
-	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	tun, err := openTUN(leafLink, netstack.DefaultMTU)
 	if err != nil {
 		return err
 	}
-	ifr, err := unix.NewIfreq(leafLink)
+	n.tun = tun
+	return nil
+}
+
+// openTUN makes the tun name of mtu in the calling thread's namespace, which
+// hands its reader each packet whole
+func openTUN(name string, mtu int) (*os.File, error) {
+	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	ifr, err := unix.NewIfreq(name)
 	if err == nil {
 		ifr.SetUint16(unix.IFF_TUN | unix.IFF_NO_PI)
 		err = unix.IoctlIfreq(fd, unix.TUNSETIFF, ifr)
 	}
 	if err != nil {
 		_ = unix.Close(fd)
-		return fmt.Errorf("make %s: %w", leafLink, err)
+		return nil, fmt.Errorf("make %s: %w", name, err)
 	}
-	n.tun = os.NewFile(uintptr(fd), leafLink)
-	link, err := net.InterfaceByName(leafLink)
+	tun := os.NewFile(uintptr(fd), name)
+	link, err := net.InterfaceByName(name)
+	if err == nil {
+		err = netnstest.SetLinkMTU(link.Index, mtu)
+	}
 	if err != nil {
-		return err
+		_ = tun.Close()
+		return nil, err
 	}
-	return netnstest.SetLinkMTU(link.Index, netstack.DefaultMTU)
+	return tun, nil
 }
 
 func (n *namespaces) addressExit(netlink netnstest.Netlink) error {
 	for _, p := range plans {
-		for link, prefix := range map[string]netip.Prefix{n.mesh.Name: p.mesh, exitUplink: p.uplink, "lo": p.class} {
+		links := map[string]netip.Prefix{n.mesh.Name: p.mesh, exitUplink: p.uplink, "lo": p.class}
+		if n.carrier != nil {
+			// the uplink and the class address are the exit host's
+			links = map[string]netip.Prefix{n.mesh.Name: p.mesh}
+		}
+		for link, prefix := range links {
 			if err := netlink.AddAddresses(link, prefix); err != nil {
 				return err
 			}
@@ -429,8 +528,12 @@ func (n *namespaces) addressLeaf(netlink netnstest.Netlink) error {
 	return nil
 }
 
-// routeExit routes everything out of the uplink, as an exit does
+// routeExit routes everything out of the uplink, as an exit does, where the
+// exit is here
 func (n *namespaces) routeExit(netlink netnstest.Netlink) error {
+	if n.carrier != nil {
+		return nil
+	}
 	for _, p := range plans {
 		if err := via(netlink, exitUplink, every(p.uplink), p.up.Addr()); err != nil {
 			return err
