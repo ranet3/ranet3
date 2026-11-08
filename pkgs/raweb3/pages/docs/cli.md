@@ -106,10 +106,11 @@ exits 1. Each table's own page gives what a refusal leaves of it:
   above 0, and the ICMP errors answered, unanswered, or due and not sent
   (`unsent`) about them, each above 0. `--json` carries them under `transit`.
 - `status` names on its `ESP` line the ESP packets in, those their sessions
-  dropped and the datagrams refused, and, each above 0, the datagrams a full
-  receive queue dropped, the packets marked CE and those of an unused ECN
-  combination. `--json` carries them under `esp`, as
-  [metrics](metrics.md#series) counts them.
+  dropped and the datagrams refused, and, each above 0, the datagrams dropped
+  because their session's receive queue was full or held all its receive
+  buffers, the packets marked CE and those of an unused ECN combination.
+  `--json` carries them under `esp`, as [metrics](metrics.md#series) counts
+  them.
 - `status` on a node with `cap.egress` names, on its `nftables` line, the
   families the exit is [ready](exit-nodes.md#readiness) for and, for a family
   that is not, the reason, such as
