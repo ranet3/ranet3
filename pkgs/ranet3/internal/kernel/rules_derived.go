@@ -77,7 +77,7 @@ func derivedRules(id schema.TableID, overlay []schema.Prefix, own []netip.Prefix
 			Rule{Family: family, Priority: priorityMain, Table: schema.TableMain, suppress: SuppressUpTo(0)},
 			Rule{Family: family, Priority: priorityMesh, Table: id, suppress: SuppressUpTo(floor - 1)},
 		)
-		for _, prefix := range familyPrefixes(family, own) {
+		for _, prefix := range outermost(familyPrefixes(family, own)) {
 			out = append(out, Rule{Family: family, Priority: priorityOwn, From: schema.PrefixFrom(prefix), Table: id})
 		}
 		if !exit.on {
@@ -222,6 +222,14 @@ func familyPrefixes(family Family, prefixes []netip.Prefix) []netip.Prefix {
 	}
 	slices.SortFunc(out, comparePrefixes)
 	return slices.Compact(out)
+}
+
+// outermost is distinct prefixes less each one another of them holds, in order
+// 5430's rules share a priority and a table, so a held prefix's rule selects no source its holder's does not
+func outermost(prefixes []netip.Prefix) []netip.Prefix {
+	return slices.DeleteFunc(slices.Clone(prefixes), func(inner netip.Prefix) bool {
+		return slices.ContainsFunc(prefixes, func(outer netip.Prefix) bool { return outer != inner && encloses(outer, inner) })
+	})
 }
 
 // ownPrefixes is this node's own prefixes as the snapshot holds them, the

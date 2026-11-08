@@ -50,7 +50,11 @@ func modeOff(id schema.TableID, overlay, own []netip.Prefix) map[Rule]bool {
 			}
 		}
 		for _, prefix := range own {
-			if prefix.Addr().Is4() == v4 && prefix.Bits() > 0 {
+			// 5430 selects each own prefix no other own prefix holds
+			held := slices.ContainsFunc(own, func(o netip.Prefix) bool {
+				return o.Bits() > 0 && o.Masked() != prefix.Masked() && holds(o.Masked(), prefix.Masked())
+			})
+			if prefix.Addr().Is4() == v4 && prefix.Bits() > 0 && !held {
 				out[Rule{Family: family, Priority: 5430, From: schema.PrefixFrom(prefix.Masked()), Table: id}] = true
 			}
 		}
@@ -523,6 +527,24 @@ func TestDerivedRulesAreModeOffAndEachNopPrecedesItsGoto(t *testing.T) {
 			}
 		}
 	})
+}
+
+// 5430 selects an own prefix that another own prefix holds through the holder
+// alone, so an address cap.table assigns inside a LAN this node announces adds no
+// rule of its own in either family, a LAN written twice adds one rule, and an
+// IPv6 prefix beside the nested ones keeps its rule
+func TestOwnRuleSelectsOnlyTheOutermostOwnPrefixes(t *testing.T) {
+	p := netip.MustParsePrefix
+	own := []netip.Prefix{p("2001:db8:70::1/128"), p("2001:db8:70::/60"), p("2001:db8:7f::/64"), p("192.0.2.0/24"), p("192.0.2.7/32"), p("2001:db8:70::/60")}
+	var got []netip.Prefix
+	for _, rule := range derivedRules(DefaultTable, nil, own, exitView{}) {
+		if rule.Priority == priorityOwn {
+			got = append(got, rule.From.Prefix)
+		}
+	}
+	if want := []netip.Prefix{p("192.0.2.0/24"), p("2001:db8:70::/60"), p("2001:db8:7f::/64")}; !slices.Equal(got, want) {
+		t.Errorf("5430 selects %v, want %v", got, want)
+	}
 }
 
 // This node's own prefixes hold every address cap.table assigns and every

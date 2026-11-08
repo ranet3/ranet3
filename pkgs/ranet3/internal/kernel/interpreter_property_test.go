@@ -354,6 +354,13 @@ func drawInterpretedIn(t *testing.T, ht *hegel.T, mode func(*hegel.T, []schema.P
 			advertised[prefix("198.51.100.128/25")] = true
 		}
 	}
+	// half the time own prefixes that nest, an address cap.table assigns inside a prefix this node announces in each family
+	if hegel.Draw(ht, hegel.Booleans()) {
+		entries = append(entries,
+			mirrorEntry{destination: prefix("198.51.100.0/26"), value: netstack.Local}, mirrorEntry{destination: prefix("198.51.100.9/32"), value: netstack.Assigned},
+			mirrorEntry{destination: prefix("2001:db8:70::/60"), value: netstack.Local}, mirrorEntry{destination: prefix("2001:db8:70::1/128"), value: netstack.Assigned},
+		)
+	}
 	egressSegment := false
 	// a node that is no exit half the time, the one node whose 5430 sends a counted route's packets to the mesh
 	input := exitInputs[0]
@@ -904,13 +911,25 @@ func (h interpreted) withoutCountedHolds() *netstack.RouteTable {
 // a node that is none, in mode off, in mode 2 and in mode 3 under each
 // fallback, the last two with the tun holding an overlay address of each family
 // and holding none of either in turn, mode 3's mirror holding no route that
-// counts but the two steered defaults while its path is up
+// counts but the two steered defaults while its path is up. 5430 holds no
+// selector another of its selectors holds, and still takes a lookup from every
+// source some own prefix holds, nested own prefixes among them.
 func TestRuleWalkSendsEveryPacketWhereTheRulesSay(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		build := drawInterpreted(t, ht)
 		packets := build(nil).packets(ht)
 		for _, unaddressed := range [][]Family{nil, {FamilyIPv4}, {FamilyIPv6}} {
 			h := build(unaddressed)
+			for _, rule := range h.kernel.rules {
+				if rule.Priority != priorityOwn {
+					continue
+				}
+				if slices.ContainsFunc(h.kernel.rules, func(o Rule) bool {
+					return o.Priority == priorityOwn && o != rule && o.Family == rule.Family && holds(o.From.Prefix, rule.From.Prefix)
+				}) {
+					ht.Fatalf("5430 selects %s, which another of its selectors holds, from own prefixes %v", rule.From, h.own)
+				}
+			}
 			if h.via {
 				for _, route := range h.desired {
 					steered := h.pathUp && route.Destination.Bits() == 0 && !route.Source.IsValid() && !route.Throw && !route.Unreachable
