@@ -8,13 +8,13 @@
       formatter = pkgs.writeShellScriptBin "formatter" ''
         set -eoux pipefail
         shopt -s globstar
-        # staticcheck, the notices command and templ fmt run the go on PATH
+        # staticcheck and templ fmt run the go on PATH
         export PATH="${lib.makeBinPath [ pkgs.go_latest ]}:$PATH"
 
         root="$(${lib.getExe pkgs.git} rev-parse --show-toplevel)"
         pushd "$root" > /dev/null
 
-        # the notices command generates third_party.md. deno takes --ignore for a glob it expands, not beside paths
+        # the notices command generates third_party.md, and deno drops --ignore when the glob shares its call with a file or directory
         ${lib.getExe pkgs.deno} fmt --ignore=pkgs/ranet3/internal/notices/third_party.md '**/*.md'
         ${lib.getExe pkgs.deno} fmt pkgs/ranet3/examples/*.json pkgs/raweb3
         ${lib.getExe pkgs.nixfmt-tree} .
