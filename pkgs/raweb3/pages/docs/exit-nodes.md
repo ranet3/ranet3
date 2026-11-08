@@ -418,7 +418,7 @@ loader, a reload and the reconciler read one rule for what makes a node an exit,
 so a file that loads never runs the mode on one.
 
 A host using an exit can ask with `cap.exit.fallback = "none"` for the kill
-switch, which holds while no exit is live and its table reads back as written.
+switch, which holds while no exit is live and the switch reads back as written.
 [The kill switch](routing.md#the-kill-switch-on-linux) lists the lines that let
 the host's traffic leave by its own uplink, and gives the rules and the table,
 the switch's reach, what each stop leaves of it, and what counts as the LAN, and

@@ -961,17 +961,21 @@ route, while a destination of the first kind meets the checks
 ### When a pass runs
 
 A pass applies, in order, the addresses, the routes and the rules. It removes
-what the mesh no longer wants before it installs. On Linux a pass that applied
-all 3 without error then asks the lookups
-[sharing a host](coexistence.md#another-programs-rules) describes. A pass that
-failed asks none, and it and a pass whose lookups failed keep the last answers.
+what the mesh no longer wants before it installs. A pass that applied all 3, and
+the kill switch where it asks for one, without error then asks the lookups
+[sharing a host](coexistence.md#another-programs-rules) describes, on macOS the
+overlay's alone. A pass that failed asks none, and it and a pass whose lookups
+failed keep the last answers. A failed delete of the switch is warned of and
+fails no pass.
 
 - A change in the mesh, or a kernel notification, starts a pass 250 milliseconds
   later. Changes in that window join the same pass. On Linux the notifications
   are a route of the mesh's table coming or going, a rule of the reconciler's
   protocol going, and an address of the tun coming or going, another writer's
   among them, and another writer's change to the table `ranet3_fallback` while
-  the reconciler writes it.
+  the reconciler writes it. On macOS they are a route of the utun, or of `lo0`,
+  where the holds and the kill switch's rejects are, coming, going or changing,
+  another writer's among them.
 - A periodic pass runs every `cap.table.reconcile` (30 seconds by default) and
   corrects drift.
 - A failed pass is retried after 1 second, doubling up to the periodic interval.
@@ -993,10 +997,11 @@ failed asks none, and it and a pass whose lookups failed keep the last answers.
   endpoint.
 
 `ranet3 disable reconciler` withdraws every route, address and rule the
-reconciler installed, 5450 among them, and deletes
-[the kill switch's](#the-kill-switch-on-linux) table, so the host's traffic
-leaves by the uplink until it is enabled again. `ranet3 enable reconciler` puts
-them back. Both are refused on a node with no `cap.table`.
+reconciler installed, 5450 among them on Linux, and deletes the kill switch,
+[the table](#the-kill-switch-on-linux) on Linux and
+[the rejects](#the-kill-switch-on-macos) on macOS, so the host's traffic leaves
+by the uplink until it is enabled again. `ranet3 enable reconciler` puts them
+back. Both are refused on a node with no `cap.table`.
 
 ### Routes that count as a default
 
@@ -1124,13 +1129,13 @@ table every program shares. A socket bound to no interface and no address of the
 utun takes the longest match among the table's unscoped routes, the host's and
 the reconciler's alike. A route scoped to an interface answers a socket bound to
 that interface, and one scoped to the utun also answers a socket bound to an
-address of the utun, which the source-specific row below relies on. A route that
-counts as a default goes in only once a session has been live, and never on an
-exit or in mode 3, but for mode 3's steered defaults, as
-[what it installs](#what-it-installs) says. Under `cap.exit` a family the tun
-holds an overlay address of takes the second column, and a family it holds none
-of is left out of the mode and takes the first. A family the utun holds no
-address of at all goes in in neither, as
+address of the utun, which the source-specific row below relies on, but for the
+IPv4 TCP connect row D6 gives. A route that counts as a default goes in only
+once a session has been live, and never on an exit or in mode 3, but for mode
+3's steered defaults, as [what it installs](#what-it-installs) says. Under
+`cap.exit` a family the tun holds an overlay address of takes the second column,
+and a family it holds none of is left out of the mode and takes the first. A
+family the utun holds no address of at all goes in in neither, as
 [the zero-free cover](#the-zero-free-cover-on-macos) gives. The first row that
 matches gives how an entry of the mesh's table goes in:
 
@@ -1178,9 +1183,9 @@ reason is never cut. Where a lookup ends:
 
 | Row | Lookup                                                                                                                                                                    | Where it ends                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | a socket bound to no interface and no address of the utun                                                                                                                 | the longest unscoped match, so a route of the mesh installed unscoped takes it into the utun wherever no longer route of the host's covers the destination                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| D1  | a socket bound to no interface and no address of the utun                                                                                                                 | the longest unscoped match, so a route of the mesh installed unscoped takes it into the utun wherever no longer route covers the destination, the host's or a hold or reject of ranet3's on `lo0`, as rows D7 and D8 give                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | D2  | a socket bound to no interface and no address of the utun, for a destination under a scoped route of the mesh, a scoped hold among them, or inside this node's own prefix | the scoped route is passed over, or there is none, and D1 gives the end: a wider unscoped route of the mesh takes it into the utun ahead of a shorter route of the host's, but one shorter than an overlay prefix holding the destination, where row D7 gives the end                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| D3  | a socket bound to the utun                                                                                                                                                | the routes scoped to the utun answer it, so a scoped hold refuses it. An overlay prefix's hold on `lo0` is passed over, as the kill switch's rejects are by a socket scoped to the uplink, which [the kill switch on macOS](#the-kill-switch-on-macos) lists, so for a destination whose unbound send that hold refuses, as row D7 gives, the longest route scoped to the utun that holds the destination answers it, such as the mesh's default in mode off, and with none the kernel has no route for it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| D3  | a socket bound to the utun                                                                                                                                                | the longest route scoped to the utun that holds the destination answers it, and a scoped hold that answers refuses it. Where the longest unscoped match leaves by the utun, that unscoped route answers instead where it is a host route and the scoped answer is not, where the scoped answer's destination address is all zeros and its own is not, or where no route scoped to the utun holds the destination. An overlay prefix's hold on `lo0` is passed over, as a socket scoped to the uplink passes the kill switch's rejects over ([the kill switch on macOS](#the-kill-switch-on-macos)). So for a destination whose unbound send that hold refuses, as row D7 gives, the longest route scoped to the utun that holds it answers, which in mode off may be the mesh's default, and with none the kernel has no route for it                                                                                                                                                                                              |
 | D4  | ranet3's underlay datagram that names no source, in mode off and under `cap.exit` alike                                                                                   | names the interface [the selection](#the-underlays-interface-on-macos) answers, never the utun, and the kernel's lookup scoped to it gives where it ends                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | D5  | ranet3's underlay datagram answering from the address a peer reached, in mode off and under `cap.exit` alike                                                              | names that address as its source, and an IPv6 one also the interface holding it, or for a link-local one its arrival interface. An IPv6 one leaves by the kernel's lookup scoped to that interface ([selectroute](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet6/in6_src.c#L1021)), an IPv4 one by the interface the kernel takes ([ip_output](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/netinet/ip_output.c#L707)), and either as D4 once the kernel refuses the address or the interface                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | D6  | a socket bound to an address of the utun and to no interface                                                                                                              | a route scoped to the utun answers it, a source-specific route whose source prefix holds that address among them, past an overlay prefix's hold on `lo0` but over IPv4 TCP, as [the kill switch on macOS](#the-kill-switch-on-macos) gives with where such a send goes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -1322,11 +1327,12 @@ send no route. No member holds it, so a member holding an address the underlay
 sends to goes in whole wherever the host's own route to that address is the one
 holding the zero address, and nothing is written outside the utun.
 
-A route holding its zero address inside the hole, such as a `::/16`, contains no
-member. The reconciler installs nothing of it, counts it as desired and skipped,
-and logs `kernel is not installing a route its cover holds nothing of` once
-while the mesh announces it. A route inside `0.0.0.0/8`, such as `0.0.0.0/24`,
-and `::/128` never reach the cover: each lies wholly in a range `overlay`
+An IPv6 route holding `::` but neither NAT64 prefix, such as a `::/16`, contains
+no member, and but for `::/128` the reconciler installs nothing of it, counts it
+as desired and skipped, and logs
+`kernel is not installing a route its cover holds nothing of` once while the
+mesh announces it. `::/128` and a route inside `0.0.0.0/8`, such as
+`0.0.0.0/24`, never reach the cover: each lies wholly in a range `overlay`
 refuses, so the reconciler never installs it and logs
 `kernel is not installing a prefix the mesh cannot carry` instead.
 
@@ -1480,45 +1486,56 @@ next periodic pass.
 The hold of each prefix of `overlay` is a reject route of the same shape on
 `lo0`, unscoped, in every mode, so an unbound send to an overlay address no
 route covers is refused while ranet3 runs and after a crash, as Linux's
-`unreachable` route outlives one. A send bound to the uplink's address leaves by
-the uplink but over IPv4 TCP, as for the rejects. A send bound to an address of
-the utun passes the hold over too, as a scoped send passes the rejects, and the
-longest route scoped to the utun that holds the destination answers it, as row
-D6 of [where a lookup ends](#where-a-lookup-ends-on-macos) gives, but over IPv4
-TCP. A hold among them refuses it, and so does the kernel where none holds it.
-Any other takes it into the utun: the mesh's default or a route that counts as
-one, in mode off or in a family the mode leaves out, or a source-specific IPv6
-route, which goes in scoped where its source prefix holds an address of the
-utun. Where the route that takes it counts as a default, the exit announcing
-that route answers an overlay address it reaches through that route as
-unreachable where its own `overlay` holds the address, as [transit](#transit)
-gives, and sends it out of its uplink as any destination outside the mesh where
-it writes no `overlay` or one that does not hold the address, as
-[what an exit carries out](exit-nodes.md#what-an-exit-carries-out) gives. Where
-the route that takes it is a source-specific one that does not count, the node
-announcing that route hands it to its host, as
-[what a node announces](#what-a-node-announces) gives. That host refuses it at a
-hold where it has one, which takes that node's `cap.table` and its own `overlay`
-holding the address, as [the route reconciler](#the-route-reconciler) gives, and
-routes it by its own routes where it has none, such as onto its LAN or out of
-its uplink. Linux's hold refuses that send, as row L4 of
-[where a lookup ends](#where-a-lookup-ends-on-linux) gives. An IPv4 TCP connect
-bound to an address of the utun and to no interface is refused by the hold with
-`ENETUNREACH`, as one bound to the uplink's address is. That was measured where
-no route scoped to the utun held the destination, and is inferred where one does
-from the connect bound to the uplink's address, which the hold refused though a
-route scoped to the uplink held the destination. A route of the mesh's at a
-hold's key goes in as its two halves, a half at a reject's key as its own two
-halves in turn, and wins by length, and so does a connected network inside the
-prefix. At a `/32` or `/128` prefix, which has no halves, the route of the
-mesh's goes in as a host route beside the hold, which the kernel keys apart from
-the hold and matches first, so the hold stays beneath it and refuses again once
-the route is gone, after a crash too, as Linux's hold stays beneath the route. A
-link whose network holds an overlay prefix whole is a
-[carve-out](antispoof.md#carve-outs), and that prefix takes no hold. A route of
-that shape on `lo0` is the reconciler's at a prefix of the overlay in force, or
-at one this process held a hold at, and another program's at any other key,
-since `route add -reject` writes the same shape.
+`unreachable` route outlives one. A route of the mesh's at a hold's key goes in
+as its two halves, a half at a reject's key as its own two halves in turn, and
+wins by length, and so does a connected network inside the prefix. At a `/32` or
+`/128` prefix, which has no halves, the route of the mesh's goes in as a host
+route beside the hold, which the kernel keys apart from the hold and matches
+first, so the hold stays beneath it and refuses again once the route is gone,
+after a crash too, as Linux's hold stays beneath the route. A link whose network
+holds an overlay prefix whole is a [carve-out](antispoof.md#carve-outs), and
+that prefix takes no hold. A route of that shape on `lo0` is the reconciler's at
+a prefix of the overlay in force, or at one this process held a hold at, and
+another program's at any other key, since `route add -reject` writes the same
+shape.
+
+A send the hold refuses unbound leaves by the uplink where it is bound to the
+uplink's address, as for the rejects. Bound to an address of the utun, it passes
+the hold over too, as a scoped send passes the rejects, and the longest route
+scoped to the utun that holds the destination answers it, as row D6 of
+[where a lookup ends](#where-a-lookup-ends-on-macos) gives. An IPv4 TCP connect
+bound to the uplink's address, or to an address of the utun and to no interface,
+is refused by the hold with `ENETUNREACH` instead. The utun's case was measured
+where no route scoped to the utun held the destination, and is inferred where
+one does from the connect bound to the uplink's address, which the hold refused
+though a route scoped to the uplink held the destination. Where the longest
+route scoped to the utun that holds the destination is a hold, it refuses the
+send, and the kernel refuses it where no route scoped to the utun holds the
+destination. Any other route takes it into the utun: the mesh's default or a
+route that counts as one, in mode off or in a family the mode leaves out, or a
+source-specific IPv6 route, which goes in scoped where its source prefix holds
+an address of the utun. Where the route that takes it counts as a default, the
+exit announcing that route answers an overlay address it reaches through that
+route as unreachable where its own `overlay` holds the address, as
+[transit](#transit) gives, and sends it out of its uplink as any destination
+outside the mesh where it writes no `overlay` or one that does not hold the
+address, as [what an exit carries out](exit-nodes.md#what-an-exit-carries-out)
+gives. Where it is a source-specific route that does not count, the mesh routes
+the send by the address it is bound to: to the node announcing the route where
+the route's source prefix holds that address, which hands it to its host, as
+[what a node announces](#what-a-node-announces) gives, and otherwise as the
+mesh's table routes a send from that address, through an exit's default as above
+or with the Mac's own answer of unreachable where that table holds no route for
+it. The announcing node's host refuses the send where its lookup ends at a hold,
+which takes that node's `cap.table` and its own `overlay` holding the address,
+as [the route reconciler](#the-route-reconciler) gives. Where the lookup ends
+elsewhere, at a link whose network lies inside the prefix or with no hold there
+at all, the host's own routes carry the send, such as onto its LAN or out of its
+uplink. On Linux the hold refuses such a send where the route that takes it on a
+Mac is shorter than the overlay prefix, as row L4 of
+[where a lookup ends](#where-a-lookup-ends-on-linux) gives, and a
+source-specific route inside the prefix takes a send from its own source into
+the tun, as row L3 gives.
 
 The switch's lifetime:
 
@@ -1564,11 +1581,12 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   then the shorter ones, each with the neighbor that is its next hop, or this
   node for one of its own.
 - The Kernel line of `ranet3 status` shows where the reconciler writes, the
-  routes installed and skipped, and the last pass. On Linux it then names each
-  lookup the reconciler last found taken, an overlay prefix as
+  routes installed and skipped, and the last pass. It then names each lookup the
+  reconciler last found taken, an overlay prefix on Linux as
   `overlay 192.0.2.0/24 taken by table 51820 dev wg0`, or
-  `a refusal (permission denied)` in place of the table, and each live session's
-  send whose lookup under the mark is taken as
+  `a refusal (permission denied)` in place of the table, and on macOS by the
+  route it ends at, as `overlay 192.0.2.0/24 taken by 192.0.2.0/25 on utun7`,
+  and on Linux each live session's send whose lookup under the mark is taken as
   `the underlay's mark taken by table 200 dev ranet0 toward 203.0.113.70`, with
   the source and interface the send carries after it where it carries them, as
   `from 198.51.100.10 dev eth0`. With `cap.exit` it names the links the last
@@ -1582,13 +1600,15 @@ These commands show the routes. [Command line](cli.md) lists their flags.
   lists what wakes the pass that reads the tun again. On macOS under `cap.exit`
   it names the families whose cover is in as `zero-free cover for ipv4`, and a
   family left out of the mode as on Linux. Under `fallback = "none"` it names
-  the switch's state and what the last lines of both chains have dropped,
-  summed, as `fallback none holding, 12 packets, 720 B dropped`, `passing` while
-  an exit is live, or `not holding` with the reason the table does not read
-  back, and `drops not read yet` in place of the counts until a read of the
-  table by this process succeeds. It names a connected network left out of the
-  LAN as `198.0.0.0/7 left out of the LAN as it captures the machine`, and one
-  the private and link-local ranges and `cap.exit.lan` leave out in whole or in
+  the switch's state, `holding`, `passing` while an exit is live, or
+  `not holding` with the reason the switch does not read back, and on Linux what
+  the last lines of both chains have dropped, summed, as
+  `fallback none holding, 12 packets, 720 B dropped`, or `drops not read yet` in
+  place of the counts until a read of the table by this process succeeds. On
+  macOS it names no drops, since ranet3 reads no count of the rejects. It names
+  a connected network left out of the LAN as
+  `198.0.0.0/7 left out of the LAN as it captures the machine`, and one the
+  private and link-local ranges and `cap.exit.lan` leave out in whole or in
   part, or of one sharing an address with the overlay each such prefix of its
   part outside the overlay, as
   `203.0.113.0/24 left out of the LAN as public, outside the private and link-local ranges and cap.exit lan`,
@@ -1604,11 +1624,12 @@ These commands show the routes. [Command line](cli.md) lists their flags.
 - `ranet3 debug rules` lists every lookup the reconciler last asked, taken or
   not, with the source and interface of an underlay lookup and its answer, as
   [debugging](development/debug.md#commands) gives, under `cap.exit.via` the
-  steered defaults with the path's state, and under `fallback = "none"` the
-  table `ranet3_fallback` as the kernel holds it now, each line with the drop's
-  count and each set's elements.
-- Under `fallback = "none"` a scrape carries the switch and its drops, as
-  [metrics](metrics.md#series) lists.
+  steered defaults with the path's state, and under `fallback = "none"` the kill
+  switch as the kernel holds it now, on Linux the table `ranet3_fallback` with
+  each line's drop count and each set's elements, and on macOS each reject with
+  no count.
+- Under `fallback = "none"` a scrape carries the switch, and on Linux its drops,
+  as [metrics](metrics.md#series) lists.
 
 `SIGUSR1` writes the mesh's routes to the log, this node's own entries as
 `via this node` and the holds as `via unreachable`.

@@ -25,7 +25,8 @@ It also reports 3 subsystems that run inside the daemon. The route reconciler is
 reported as routes installed and skipped, when its last pass finished, whether
 that pass failed, the overlay prefixes another program takes, on Linux the
 endpoints its rule takes too and, under `cap.exit.fallback = "none"`, whether
-the [kill switch](routing.md#the-kill-switch-on-linux) held, on Linux with the
+the [kill switch](routing.md#the-kill-switch-on-linux), or on macOS
+[its rejects](routing.md#the-kill-switch-on-macos), held, on Linux with the
 packets it dropped. Segment routing is reported as what this node did for peers
 (forwarded, delivered, dropped, answered, refused, the packets an `End.DT46`
 took out of an unused ECN combination, and for an egress segment egressed and

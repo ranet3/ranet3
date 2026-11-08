@@ -163,11 +163,12 @@ Its hold of each overlay prefix, and the kill switch under
 [the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives.
 
 A route belongs to the reconciler when it leaves the utun with the shape ranet3
-installs, a prefix route whose gateway is the interface itself. The reconciler
-adopts and withdraws such a route even when another process installed it, so
-give ranet3 a utun no other program writes. On `lo0` it owns the reject routes
-of the switch's shape at the switch's keys and the overlay's alone. macOS cannot
-replace a route. A route another program holds under the same key stays, and the
+installs, a prefix route whose gateway is the interface itself, or at full
+length a host route whose gateway is the interface. The reconciler adopts and
+withdraws such a route even when another process installed it, so give ranet3 a
+utun no other program writes. On `lo0` it owns the reject routes of the switch's
+shape at the switch's keys and the overlay's alone. macOS cannot replace a
+route. A route another program holds under the same key stays, and the
 reconciler warns about it once.
 
 macOS has no rule to select a mark, so its underlay sockets carry none. In mode
@@ -211,9 +212,10 @@ routes, as
 either mode a route of the mesh holding an address the underlay sends to goes in
 as the pieces of it around the address in the cases
 [where a lookup ends on macOS](routing.md#where-a-lookup-ends-on-macos) gives.
-In either mode the daemon writes nothing outside the tun but the reject routes
-on `lo0` of [the kill switch on macOS](routing.md#the-kill-switch-on-macos), and
-a reload moves the routes between the two forms with no restart.
+In either mode the daemon writes no route outside the tun but the reject routes
+on `lo0`, the overlay's holds and the kill switch's, as
+[the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives, and a
+reload moves the routes between the two forms with no restart.
 
 A source-specific route and a retracted one stay scoped in either mode.
 Interface scope is the only way macOS expresses a source. An unscoped reject

@@ -369,14 +369,18 @@ as ranet3's own paired IPv4 socket, goes by main's route, as rows L2 and B1
 give. None of it enters the mesh.
 
 On macOS an overlay prefix's hold on `lo0` does not refuse a send bound to an
-address of the utun where a route of the mesh's scoped to the utun, not a hold,
-holds the destination, such as the mesh's default in mode off, but an IPv4 TCP
-connect, which it refuses, as
+address of the utun where the longest route scoped to the utun that holds the
+destination is a route of the mesh's and no hold, such as the mesh's default in
+mode off, but an IPv4 TCP connect bound to that address and to no interface,
+which it refuses, as
 [the kill switch on macOS](../routing.md#the-kill-switch-on-macos) gives with
-where such a send goes. Linux's hold refuses it, as row L4 of
-[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) gives. Where
-such a send reaches an exit through a route that counts as a default, it leaves
-by that exit's uplink unless the exit's own `overlay` holds the address, as
+where such a send goes. Linux's hold refuses it where that route is shorter than
+the overlay prefix, as row L4 of
+[where a lookup ends](../routing.md#where-a-lookup-ends-on-linux) gives, and a
+source-specific route inside the prefix takes only a send from its own source
+into the tun, as row L3 gives. Where such a send reaches an exit through a route
+that counts as a default, it leaves by that exit's uplink unless the exit's own
+`overlay` holds the address, as
 [what an exit carries out](../exit-nodes.md#what-an-exit-carries-out) gives.
 
 Wherever the mesh's table holds no default, traffic toward a default under
@@ -450,9 +454,10 @@ naming each family it forwards, and records an `exit.forwarding` event for each,
 as [debugging](../development/debug.md#events) lists. Forwarding switched on
 later is read at the next reload.
 
-[The kill switch](../routing.md#the-kill-switch-on-linux), `fallback = "none"`,
-whose section lists the lines that let that traffic leave by the uplink, has
-these costs over the reach that page gives.
+[The kill switch on Linux](../routing.md#the-kill-switch-on-linux),
+`fallback = "none"`, whose section lists the lines that let that traffic leave
+by the uplink, has these costs over the reach that page gives. The one on macOS
+has [its own](#the-kill-switch-on-macos).
 
 - Outside the overlay, the LAN is only the part of a connected network inside
   the private and link-local ranges, as

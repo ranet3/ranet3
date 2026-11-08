@@ -94,8 +94,9 @@ nest the same names. A key not listed here is refused when the file loads.
   [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) give. A link's
   network inside a prefix is thrown, in place of the hold where the two are
   equal, unless the mesh's table holds that network itself for every source, as
-  [carve-outs](antispoof.md#carve-outs) describe. macOS installs neither, as
-  [platforms](antispoof.md#platforms) says.
+  [carve-outs](antispoof.md#carve-outs) describe. macOS installs no rule and no
+  throw, and holds each prefix no carve-out equals with a reject route on `lo0`,
+  as [the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives.
 - A file with a local segment and no `overlay` is refused, and so is one whose
   `overlay` holds no IPv6 prefix, since every local SID acts only on an outer
   source in those prefixes. An egress segment's `allow` list the `overlay`
@@ -830,7 +831,9 @@ programs' rules do beside them.
   list's ranges leave out, such as
   `lan = ["198.51.100.0/24", "2001:db8:a::/64"]`. An entry takes the part of a
   connected network it holds and adds no destination no link is connected to.
-  The order does not matter.
+  The order does not matter. On macOS `lan` loads and widens nothing, since
+  [the kill switch on macOS](routing.md#the-kill-switch-on-macos) passes every
+  connected network by its own route.
 - Each `inbound` entry is `"<port>/<protocol>"` or
   `"<first>-<last>/<protocol>"`, such as `"22/tcp"` or `"60000-61000/udp"`, with
   the protocol `tcp` or `udp`. ICMP echo cannot be listed, so the reply lines
