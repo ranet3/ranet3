@@ -43,6 +43,10 @@ type fakeMesh struct {
 	session func(netip.Addr) int
 	// mtu, where set, is the MTU each lane reports, and a session's otherwise
 	mtu int
+	// unrecorded, where set, keeps no packet a lane laid and lays each batch
+	// into the lane's one slab, so a measurement's memory and time are the
+	// exit's and not the record's
+	unrecorded bool
 
 	mu      sync.Mutex
 	lanes   []*fakeLane
@@ -97,6 +101,9 @@ func (m *fakeMesh) openLanes() int {
 type fakeLane struct {
 	m      *fakeMesh
 	closed bool
+	// slab and reads are the batch an unrecorded mesh's lane lays into
+	slab  []byte
+	reads []tun.ReadPacket
 }
 
 func (l *fakeLane) Fill(fill func(slab []byte, reads []tun.ReadPacket) int) bool {
@@ -105,13 +112,21 @@ func (l *fakeLane) Fill(fill func(slab []byte, reads []tun.ReadPacket) int) bool
 		return false
 	default:
 	}
-	slab, reads := make([]byte, 2*65535), make([]tun.ReadPacket, l.m.reads)
-	n := fill(slab, reads)
-	l.m.mu.Lock()
-	for _, r := range reads[:n] {
-		l.m.laid = append(l.m.laid, bytes.Clone(slab[r.Offset:r.Offset+r.Size]))
+	slab, reads := l.slab, l.reads
+	if !l.m.unrecorded || slab == nil {
+		slab, reads = make([]byte, 2*65535), make([]tun.ReadPacket, l.m.reads)
 	}
-	l.m.mu.Unlock()
+	if l.m.unrecorded {
+		l.slab, l.reads = slab, reads
+	}
+	n := fill(slab, reads)
+	if !l.m.unrecorded {
+		l.m.mu.Lock()
+		for _, r := range reads[:n] {
+			l.m.laid = append(l.m.laid, bytes.Clone(slab[r.Offset:r.Offset+r.Size]))
+		}
+		l.m.mu.Unlock()
+	}
 	if l.m.laidTo != nil {
 		for _, r := range reads[:n] {
 			l.m.laidTo(slab[r.Offset : r.Offset+r.Size])
