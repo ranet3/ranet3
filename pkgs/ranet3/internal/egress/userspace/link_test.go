@@ -4,11 +4,16 @@
 package userspace
 
 import (
+	"encoding/binary"
+	"slices"
 	"testing"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+
+	"ranet3.com/pkgs/ranet3/internal/codel"
 )
 
 // The link holds no more bytes than its bound: a packet past it is dropped,
@@ -39,5 +44,145 @@ func TestLinkDropsWhatItsBoundHasNoRoomFor(t *testing.T) {
 	l.release(l.poll())
 	if n, err := write(); n != 1 || err != nil {
 		t.Errorf("a write once a packet was released took %d: %v", n, err)
+	}
+}
+
+// fakeClock sets l's clock to one the test moves, at zero to begin with
+func fakeClock(l *link) *time.Duration {
+	now := new(time.Duration)
+	l.clock = func() time.Duration { return *now }
+	return now
+}
+
+// writeTagged queues a packet of 100 bytes whose payload begins with tag
+func writeTagged(t *testing.T, l *link, tag uint32) {
+	t.Helper()
+	payload := make([]byte, 100)
+	binary.BigEndian.PutUint32(payload, tag)
+	var list stack.PacketBufferList
+	list.PushBack(stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(payload)}))
+	defer list.DecRef()
+	if n, err := l.WritePackets(list); n != 1 || err != nil {
+		t.Fatalf("queue packet %d: took %d: %v", tag, n, err)
+	}
+}
+
+// tagOf is the tag writeTagged gave pkt, which it releases
+func tagOf(l *link, pkt *stack.PacketBuffer) uint32 {
+	b := pkt.ToBuffer()
+	defer b.Release()
+	l.release(pkt)
+	return binary.BigEndian.Uint32(b.Flatten())
+}
+
+// A pump that falls 300 ms behind a queue fed as fast as it drains leaves a
+// standing queue of 300 ms with no delay control, and none past the bound.
+// The controlled delay drops at the head until the delay is back under the
+// target, with no packet dropped at the tail.
+func TestLinkHoldsItsDelayToTheTargetUnderASlowPump(t *testing.T) {
+	l := newLink(1 << 30)
+	defer l.Close()
+	now := fakeClock(l)
+	var most time.Duration
+	for ms := range 8000 {
+		*now = time.Duration(ms) * time.Millisecond
+		writeTagged(t, l, uint32(ms))
+		if ms < 300 {
+			continue
+		}
+		pkt := l.poll()
+		if pkt == nil {
+			t.Fatalf("the queue was empty at %d ms", ms)
+		}
+		// each packet was queued at the millisecond its tag names
+		sojourn := *now - time.Duration(tagOf(l, pkt))*time.Millisecond
+		if ms >= 7500 {
+			most = max(most, sojourn)
+		}
+	}
+	if most > 2*codel.Target {
+		t.Errorf("the packets taken in the last 500 ms waited up to %s, want no more than twice the target %s", most, codel.Target)
+	}
+	if l.delayed.Load() == 0 || l.dropped.Load() != 0 {
+		t.Errorf("dropped %d at the head for the delay and %d at the tail, want some at the head and none at the tail", l.delayed.Load(), l.dropped.Load())
+	}
+}
+
+// Once the delay has stayed above the target for an interval, the pump drops
+// the packet at the head of the queue, the oldest, and takes the one behind
+// it, and every packet queued after them is still there
+func TestLinkDropsAtTheHeadNotTheTail(t *testing.T) {
+	l := newLink(1 << 30)
+	defer l.Close()
+	now := fakeClock(l)
+	for tag := range uint32(10) {
+		writeTagged(t, l, tag)
+	}
+	*now = 200 * time.Millisecond
+	if got := tagOf(l, l.poll()); got != 0 {
+		t.Fatalf("took packet %d first, want 0, which starts the interval", got)
+	}
+	*now = 301 * time.Millisecond
+	if got := tagOf(l, l.poll()); got != 2 {
+		t.Errorf("took packet %d an interval later, want 2, the head 1 dropped", got)
+	}
+	var rest []uint32
+	for pkt := l.poll(); pkt != nil; pkt = l.poll() {
+		rest = append(rest, tagOf(l, pkt))
+	}
+	if want := []uint32{3, 4, 5, 6, 7, 8, 9}; !slices.Equal(rest, want) {
+		t.Errorf("took %v after it, want the tail %v whole", rest, want)
+	}
+	if got := l.delayed.Load(); got != 1 {
+		t.Errorf("counted %d dropped for the delay, want 1", got)
+	}
+}
+
+// The dropping state ends once the pump finds the queue empty, so a packet
+// queued after it waits a whole interval above the target before the next
+// drop
+func TestLinkLeavesTheDroppingStateOnceItsQueueEmpties(t *testing.T) {
+	l := newLink(1 << 30)
+	defer l.Close()
+	now := fakeClock(l)
+	for tag := range uint32(3) {
+		writeTagged(t, l, tag)
+	}
+	*now = 200 * time.Millisecond
+	tagOf(l, l.poll())
+	*now = 301 * time.Millisecond
+	tagOf(l, l.poll())
+	if !l.delay.Dropping() {
+		t.Fatal("the delay is not dropping an interval above the target")
+	}
+	if pkt := l.poll(); pkt != nil {
+		t.Fatalf("took packet %d, want the queue empty", tagOf(l, pkt))
+	}
+	if l.delay.Dropping() {
+		t.Error("the delay is still dropping with the queue empty")
+	}
+	writeTagged(t, l, 3)
+	*now = 400 * time.Millisecond
+	if got := tagOf(l, l.poll()); got != 3 {
+		t.Errorf("took packet %d, want 3, kept while a new interval starts", got)
+	}
+}
+
+// The packets dropped for the delay are counted apart from those past the
+// bound, and the status reports them as their own reason, as it does the
+// stack's ICMP and other packets but TCP
+func TestLinkCountsItsDelayDropsApartFromItsBound(t *testing.T) {
+	h := newRelayHarness(t, nil)
+	defer closeWithin(t, h.x)
+	h.x.link.delayed.Add(3)
+	h.x.link.dropped.Add(2)
+	h.x.link.icmp.Add(5)
+	h.x.link.other.Add(7)
+	dropped := h.x.Status().Flows.Dropped
+	if dropped[reasonLinkCodel] != 3 || dropped[reasonLinkFull] != 2 {
+		t.Errorf("the status counts %d as %q and %d as %q, want 3 and 2", dropped[reasonLinkCodel], reasonLinkCodel, dropped[reasonLinkFull], reasonLinkFull)
+	}
+	if dropped[reasonStackICMP] != 5 || dropped[reasonStackOther] != 7 {
+		t.Errorf("the status counts %d as %q and %d as %q, want 5 and 7", dropped[reasonStackICMP], reasonStackICMP, dropped[reasonStackOther], reasonStackOther)
 	}
 }

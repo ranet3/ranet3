@@ -18,12 +18,17 @@ import (
 )
 
 // The reasons the status counts a packet dropped by the queues: a lane full
-// past Limits.Lanes, the link's queue full past Limits.Link, and a packet the
-// pump could lay into no batch
+// past Limits.Lanes, the link's queue full past Limits.Link, a packet the
+// link's controlled delay dropped at the queue's head, and a packet the pump
+// could lay into no batch. The stack's ICMP and its other packets but TCP are
+// dropped before the link's queue.
 const (
-	reasonLaneFull = "lane full"
-	reasonLinkFull = "link full"
-	reasonUnlaid   = "unlaid"
+	reasonLaneFull   = "lane full"
+	reasonLinkFull   = "link full"
+	reasonLinkCodel  = "link codel"
+	reasonUnlaid     = "unlaid"
+	reasonStackICMP  = "stack icmp"
+	reasonStackOther = "stack other"
 )
 
 // flowsStatus is the exit's detail as Status reports it: the flows open by
@@ -70,7 +75,10 @@ func (x *Exit) flowsStatus() *egress.Flows {
 	x.counts.mu.Lock()
 	f.Refused, f.Dropped = maps.Clone(x.counts.refused), maps.Clone(x.counts.dropped)
 	x.counts.mu.Unlock()
-	for reason, n := range map[string]uint64{reasonLaneFull: x.counts.laneDropped.Load(), reasonLinkFull: x.link.dropped.Load(), reasonUnlaid: x.counts.unlaid.Load()} {
+	for reason, n := range map[string]uint64{
+		reasonLaneFull: x.counts.laneDropped.Load(), reasonLinkFull: x.link.dropped.Load(), reasonLinkCodel: x.link.delayed.Load(), reasonUnlaid: x.counts.unlaid.Load(),
+		reasonStackICMP: x.link.icmp.Load(), reasonStackOther: x.link.other.Load(),
+	} {
 		if n != 0 {
 			if f.Dropped == nil {
 				f.Dropped = map[string]uint64{}

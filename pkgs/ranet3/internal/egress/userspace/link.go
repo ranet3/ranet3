@@ -6,16 +6,24 @@ package userspace
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
+
+	"ranet3.com/pkgs/ranet3/internal/codel"
 )
 
 // link is the stack's one NIC. A packet the exit delivers enters the stack as
 // a packet off a wire, and every packet the stack sends waits in one queue,
 // bounded in bytes, for the pump that lays it into a lane.
+//
+// The queue's delay is held to codel.Target as RFC 8289 holds it: the pump,
+// its one consumer, runs the controlled delay on each packet it takes, from
+// when the packet was queued, and drops the packet at the head where the
+// delay calls for a drop. The bound in bytes still drops at the tail.
 //
 // It claims no receive checksum offload, so gVisor checks each TCP segment's
 // checksum itself. It offers segmentation offload, so a TCP flow's segments
@@ -31,12 +39,29 @@ type link struct {
 	// holds now, from a packet's write until the pump releases it
 	limit int64
 	held  atomic.Int64
-	queue chan *stack.PacketBuffer
+	queue chan queuedPacket
+	// clock is the time since the link was made, off the monotonic clock,
+	// which the queue's times count from
+	clock func() time.Duration
+	// delay is the controlled delay over the queue, which only its consumer
+	// touches
+	delay codel.Controller
 	// closing is closed by Close, after which the link takes and holds nothing
 	closing   chan struct{}
 	closeOnce sync.Once
-	// dropped counts the packets the stack wrote past the queue's bound
-	dropped atomic.Uint64
+	// dropped counts the packets the stack wrote past the queue's bound, and
+	// delayed those the consumer dropped at the head for the queue's delay
+	dropped, delayed atomic.Uint64
+	// observe, where set, is handed each packet the consumer takes, its
+	// sojourn and whether the delay dropped it, for a measurement
+	observe atomic.Pointer[func(pkt *stack.PacketBuffer, sojourn time.Duration, dropped bool)]
+}
+
+// queuedPacket is a packet in the link's queue and when it was queued, since
+// the link was made
+type queuedPacket struct {
+	pkt *stack.PacketBuffer
+	at  time.Duration
 }
 
 var (
@@ -46,8 +71,14 @@ var (
 
 // newLink is a link whose queue holds limit bytes
 func newLink(limit int64) *link {
-	return &link{limit: limit, queue: make(chan *stack.PacketBuffer, linkQueuePackets), closing: make(chan struct{})}
+	start := time.Now()
+	return &link{
+		limit: limit, queue: make(chan queuedPacket, linkQueuePackets), closing: make(chan struct{}),
+		clock: func() time.Duration { return time.Since(start) },
+	}
 }
+
+func (l *link) now() time.Duration { return l.clock() }
 
 // deliver hands raw, one IP packet, to the stack as a packet off the wire,
 // copying it, and reports false where the link is not attached or raw is no
@@ -95,7 +126,7 @@ func (l *link) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
 			continue
 		}
 		select {
-		case l.queue <- pkt.IncRef():
+		case l.queue <- queuedPacket{pkt: pkt.IncRef(), at: l.now()}:
 			n++
 		default:
 			pkt.DecRef()
@@ -121,29 +152,62 @@ func (l *link) send(raw []byte) bool {
 	return n == 1
 }
 
-// next is the next packet the stack sent, waiting for one until stop or done
-// closes or the link does, and nil then
+// next is the next packet the stack sent that the delay keeps, waiting for one
+// until stop or done closes or the link does, and nil then. Only the queue's
+// one consumer calls it, or poll.
 func (l *link) next(stop, done <-chan struct{}) *stack.PacketBuffer {
-	select {
-	case pkt := <-l.queue:
-		return pkt
-	case <-stop:
-		return nil
-	case <-done:
-		return nil
-	case <-l.closing:
-		return nil
+	for {
+		if pkt := l.poll(); pkt != nil {
+			return pkt
+		}
+		select {
+		case q := <-l.queue:
+			if pkt := l.take(q); pkt != nil {
+				return pkt
+			}
+		case <-stop:
+			return nil
+		case <-done:
+			return nil
+		case <-l.closing:
+			return nil
+		}
 	}
 }
 
-// poll is the next packet the stack sent where one is queued, nil otherwise
+// poll is the next packet the stack sent that the delay keeps where one is
+// queued, nil once the queue is empty, which ends the delay's dropping state
+// as RFC 8289 section 5.5 does
 func (l *link) poll() *stack.PacketBuffer {
-	select {
-	case pkt := <-l.queue:
-		return pkt
-	default:
-		return nil
+	for {
+		select {
+		case q := <-l.queue:
+			if pkt := l.take(q); pkt != nil {
+				return pkt
+			}
+		default:
+			l.delay.Empty()
+			return nil
+		}
 	}
+}
+
+// take runs the delay on q, the packet at the queue's head as the consumer
+// takes it: q's packet where the delay keeps it, else nil, the packet dropped
+// and counted
+func (l *link) take(q queuedPacket) *stack.PacketBuffer {
+	now := l.now()
+	sojourn := now - q.at
+	dropped := l.delay.Drop(now, sojourn)
+	if observe := l.observe.Load(); observe != nil {
+		(*observe)(q.pkt, sojourn, dropped)
+	}
+	if !dropped {
+		return q.pkt
+	}
+	l.delayed.Add(1)
+	l.release(q.pkt)
+	return nil
 }
 
 // release gives back a packet next or poll returned, and its bytes to the
@@ -162,8 +226,8 @@ func (l *link) Close() {
 		l.mu.Unlock()
 		for {
 			select {
-			case pkt := <-l.queue:
-				l.release(pkt)
+			case q := <-l.queue:
+				l.release(q.pkt)
 			default:
 				return
 			}
