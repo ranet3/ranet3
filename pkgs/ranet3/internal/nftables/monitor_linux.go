@@ -41,10 +41,10 @@ func (s Scope) set(name string) bool { return slices.Contains(s.Sets, name) }
 // scope. A NixOS firewall reload flushes the whole ruleset, which takes every
 // chain an owner wrote with it until its next pass, and a rule another writer
 // adds, or a table it sets dormant, bypasses the chain as surely. A table
-// message reaches every owner unless it is a NEWTABLE with no flags: a table
-// made with none holds no owner's chain, and one cleared to none bypasses no
-// chain, so the owner that makes the table again first after a flush wakes no
-// other, and a reload wakes each owner once.
+// message reaches every owner unless it is a NEWTABLE whose flags are 0: a
+// table so made holds no owner's chain, and one so cleared bypasses no chain,
+// so the owner that makes the table again first after a flush wakes no other,
+// and a reload wakes each owner once.
 //
 // nf_tables sends a transaction's notifications as one run of datagrams that
 // no other transaction's interleaves and ends the run with NFT_MSG_NEWGEN.

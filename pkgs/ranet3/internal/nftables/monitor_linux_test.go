@@ -338,11 +338,11 @@ func readAsSent(reads []monitorRead) []monitorRead {
 	return kept
 }
 
-// One transaction of another writer's that changes the owner's tables wakes
-// Changed once, at the NFT_MSG_NEWGEN that ends it, however many datagrams its
-// notifications fill and however often the monitor finds the queue empty
-// between them, and the owner's own transactions, another table's and a
-// NEWTABLE of flags 0, which makes the table or clears its flags, wake
+// One transaction of another writer's that changes the table or the owner's
+// scope wakes Changed once, at the NFT_MSG_NEWGEN that ends it, however many
+// datagrams its notifications fill and however often the monitor finds the
+// queue empty between them, and the owner's own transactions, another table's
+// and a NEWTABLE of flags 0, which makes the table or clears its flags, wake
 // nothing. A wake for each datagram, or for another owner's remake of the
 // table after a reload, would take the owner's readiness again after the pass
 // that put its rules back.
