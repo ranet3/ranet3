@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-11-09
+updated: 2026-11-10
 order: 90
 ---
 
@@ -55,19 +55,19 @@ source's share, read at each scrape. The flows it holds and its buffers are in
 limits and what it refused or dropped by reason are in
 [`ranet3 debug egress`](development/debug.md).
 
-[The antispoof filter](antispoof.md) is reported as whether its table reads
-back, both chains and every set, and the packets each of its drops counted, by
-`reason` and `family`: `overlay_source` and `carved_source` from chain
-`antispoof`, and `mesh_entry`, what the entry chain kept out of the tun. A drop
-has a series in each family a rule of the last pass drops it in, and none
-otherwise, as [watching it](antispoof.md#watching-it) lists. The counts are read
-from the table at each pass, so they lag by up to 1 pass, and a rewrite of the
-table starts them from 0, which a scrape reads as a counter reset. On macOS,
-where `overlay` is written, the same series read the pf anchor
-`com.apple/ranet3`, whose readiness takes pf's reference, the main ruleset's
-call and no interface outside the mesh that pf skips too, as
-[readiness](antispoof.md#readiness) gives, and `mesh_entry` has no series, since
-the anchor holds no entry chain.
+[The antispoof filter](antispoof.md) is reported as whether its chains, chain
+`antispoof` where `overlay` is written and chain `mesh_entry`, and every set
+read back, and the packets each of its drops counted, by `reason` and `family`:
+`overlay_source` and `carved_source` from chain `antispoof`, and `mesh_entry`,
+what the entry chain kept out of the tun. A drop has a series in each family a
+rule of the last pass drops it in, and none otherwise, as
+[watching it](antispoof.md#watching-it) lists. The counts are read from its
+chains at each pass, so they lag by up to 1 pass, and a rewrite of the chains
+starts them from 0, which a scrape reads as a counter reset. On macOS, where
+`overlay` is written, the same series read the pf anchor `com.apple/ranet3`,
+whose readiness takes pf's reference, the main ruleset's call and no interface
+outside the mesh that pf skips too, as [readiness](antispoof.md#readiness)
+gives, and `mesh_entry` has no series, since the anchor holds no entry chain.
 
 A node without `cap.table` writes none of the reconciler's series, a node
 without `cap.egress` writes none of the egress series, a node with the userspace
@@ -142,7 +142,7 @@ The `peer` label is the path of the peer's session, such as
 | `ranet3_kernel_routes_skipped`                 | gauge     | none                 | Routes the platform refused in the last pass, cover members left out with their family, and zero routes a cover installs as nothing                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | with `cap.table`                                                                                                                                                                 |
 | `ranet3_kernel_pass_timestamp_seconds`         | gauge     | none                 | Unix time the last pass finished, 0 before the first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | with `cap.table`                                                                                                                                                                 |
 | `ranet3_kernel_pass_failed`                    | gauge     | none                 | 1 when the last pass reported an error                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | with `cap.table`                                                                                                                                                                 |
-| `ranet3_kernel_fallback_holding`               | gauge     | none                 | 1 while the last pass read the [kill switch's](routing.md#the-kill-switch-on-linux) table, or on macOS [its rejects](routing.md#the-kill-switch-on-macos), back as written, holding the host's traffic while no exit is live or passing it to a live one, 0 while it does not hold                                                                                                                                                                                                                                                                                                                          | with `cap.table` under `cap.exit.fallback = "none"`                                                                                                                              |
+| `ranet3_kernel_fallback_holding`               | gauge     | none                 | 1 while the last pass read the [kill switch's](routing.md#the-kill-switch-on-linux) chains, or on macOS [its rejects](routing.md#the-kill-switch-on-macos), back as written, holding the host's traffic while no exit is live or passing it to a live one, 0 while it does not hold                                                                                                                                                                                                                                                                                                                         | with `cap.table` under `cap.exit.fallback = "none"`                                                                                                                              |
 | `ranet3_kernel_fallback_dropped_packets_total` | counter   | none                 | Packets the last lines of the kill switch's chains dropped, summed, as the last read of its chains that succeeded found them. A read that fails keeps them, and a rewrite of the chains, or a withdrawal that deletes them, starts them from 0, which a scrape reads as a counter reset                                                                                                                                                                                                                                                                                                                     | on Linux with `cap.table` under `cap.exit.fallback = "none"`, once a read of its chains by this process succeeds, and never on macOS, where ranet3 reads no count of the rejects |
 | `ranet3_kernel_overlay_taken`                  | gauge     | `family`             | Overlay prefixes the reconciler's last answered lookups found taken, as [sharing a host](coexistence.md#another-programs-rules) describes                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | on Linux and macOS, per family those lookups asked an overlay prefix in                                                                                                          |
 | `ranet3_kernel_underlay_taken`                 | gauge     | `family`             | Sends of live sessions whose lookup under the underlay's mark the reconciler's last answered lookups found answered through the tun. Each lookup carries the source and interface its send carries                                                                                                                                                                                                                                                                                                                                                                                                          | on Linux, per family those lookups asked an endpoint in                                                                                                                          |

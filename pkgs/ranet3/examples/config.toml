@@ -341,7 +341,7 @@ update = "16s"
 # which ranet3 never writes, so size the two together. Omitted it is 4096.
 # flows_per_source = 4096
 
-# The periodic pass, which reinstalls a table somebody removed and re-reads the
+# The periodic pass, which reinstalls chains somebody removed and re-reads the
 # forwarding sysctls. Omitted it is 30s.
 # sweep = "30s"
 

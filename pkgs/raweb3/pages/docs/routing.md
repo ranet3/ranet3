@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-09
+updated: 2026-11-10
 order: 45
 ---
 
@@ -1006,7 +1006,7 @@ fails no pass.
 
 `ranet3 disable reconciler` withdraws every route, address and rule the
 reconciler installed, 5450 among them on Linux, and deletes the kill switch,
-[the table](#the-kill-switch-on-linux) on Linux and
+[its chains and sets](#the-kill-switch-on-linux) on Linux and
 [the rejects](#the-kill-switch-on-macos) on macOS, so the host's traffic leaves
 by the uplink until it is enabled again. `ranet3 enable reconciler` puts them
 back. Both are refused on a node with no `cap.table`.

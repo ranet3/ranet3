@@ -700,7 +700,7 @@ needs.
 - On Linux the lookups of a translated packet and its reply read from the
   address of a mesh member inside `overlay`. A node with no `overlay`, or whose
   mesh routes no other node's prefix of a family inside the overlay, skips that
-  family's forward and reply lookups and judges it by its table, its forwarding
+  family's forward and reply lookups and judges it by its chains, its forwarding
   and its classes' addresses alone, and `status` says so.
 - A node with an egress segment translates both families, whatever `advertise`
   holds.
@@ -756,7 +756,7 @@ needs.
 - On macOS a source meets the smaller of its share and what the userspace exit's
   memory and descriptors hold, its totals of connections and flows, as
   [the userspace exit's limits](design/limits.md#the-userspace-exit) give.
-- The periodic pass reinstalls a removed table and reads the forwarding sysctls
+- The periodic pass reinstalls removed chains and reads the forwarding sysctls
   again. `sweep` also caps the delay between retries of a failed pass. A
   negative `sweep` is refused.
 - With `overlay` written, an `advertise` entry longer than 0 bits that overlaps
@@ -830,7 +830,7 @@ programs' rules do beside them.
   mesh's table holds none. `"none"` writes
   [the kill switch](routing.md#the-kill-switch-on-linux), whether an exit is
   live or not. Its section lists the lines that let the host's traffic leave by
-  a link outside the mesh, and gives the rules, the table it writes, how the
+  a link outside the mesh, and gives the rules, the chains it writes, how the
   kernel takes what each line reads, the switch's reach, and what each stop
   leaves of it. On macOS the switch is reject routes on `lo0`, as
   [the kill switch on macOS](routing.md#the-kill-switch-on-macos) gives with its

@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-09
+updated: 2026-11-10
 order: 55
 ---
 
@@ -589,7 +589,7 @@ The anchor's and the reference's lifetime:
 
 ## Readiness
 
-The filter is ready while both its chains and every set read back as the
+The filter is ready while its chains and every set read back as the
 configuration asks, holding nothing else, at their hooks, priorities and
 policies, in a table with no flags. Readiness holds nothing back: an
 [egress segment](exit-nodes.md#readiness) follows the translator alone. While
@@ -597,9 +597,9 @@ the filter is not ready the pass retries, the log warns,
 `ranet3_antispoof_ready` reads 0, and `status` and `ranet3 debug rules` say why.
 
 At startup the daemon refuses to start on Linux when the first pass cannot
-install the table and read it back, which on a host means a kernel without
-nf_tables or conntrack or a daemon without `CAP_NET_ADMIN`. A node does not run
-without its entry chain.
+install its chains and sets and read them back, which on a host means a kernel
+without nf_tables or conntrack or a daemon without `CAP_NET_ADMIN`. A node does
+not run without its entry chain.
 
 On macOS the pass runs every 5 seconds, since pf tells no program of another's
 change, so another program's change to the anchor goes unnoticed for up to 5
@@ -671,8 +671,8 @@ the warning.
 
 ## Platforms
 
-The table is Linux's alone. On macOS `overlay` turns pf on and the filter writes
-chain `antispoof` into [its anchor](#the-pf-anchor-on-macos), as
+Its nftables chains are Linux's alone. On macOS `overlay` turns pf on and the
+filter writes chain `antispoof` into [its anchor](#the-pf-anchor-on-macos), as
 [the chain on macOS](#on-macos) gives, with every carve-out and exemption.
 `status` reads
 `pf anchor com.apple/ranet3, inside utun7 lo0, 2 overlay prefixes, carving 192.0.2.128/25 on en0, dropped 11 overlay sources and 1 carved sources`

@@ -2531,7 +2531,7 @@ the host's TCP the server.
 
 A flow past its source's share or past the exit's totals, which the host's
 memory and descriptors size, is answered with Host Unreachable over IPv4 and
-administratively prohibited over IPv6, counted and recorded in an
+administratively prohibited over IPv6, counted, and recorded in an
 `egress.refused` event at most once every 30 seconds, and no open flow is closed
 to make room (RFC 6888 section 3 REQ-11), but the oldest endpoint in TIME_WAIT
 past the cap.

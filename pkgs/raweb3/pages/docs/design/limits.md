@@ -805,18 +805,20 @@ it has been released, as a copy does. A session merges the batches that have
 finished decrypting, consecutive from the next in receive order, into 1 delivery
 in that order, or makes 1 delivery of each batch where receive runs inline, and
 releases a delivery's batches together once every packet of that delivery has
-been written to the tun, sealed toward another peer or dropped. The userspace
-exit on macOS copies each packet the mesh hands it into a buffer of its own. It
-sends a UDP datagram it takes straight from the mesh to the host's socket from
-that buffer, copies an echo request once more to write its mapping's identifier
-into it, and copies a datagram it hairpins to another mapping into a new packet
-toward the mesh. Each packet it hands its stack, each TCP segment among them, is
-copied again into a buffer of gVisor's, and a UDP datagram or an ICMP message
-the stack hands back is written once more as 1 packet for its relay. The TCP
-relay copies what the stack received into a buffer of its own and writes it to
-the host's socket from there. Replay checks and nonce storage are amortized
-across ESP batches, and already-completed send/receive batches are combined
-without waiting for additional traffic. Encryption workers reuse packed
+been written to the tun, sealed toward another peer, dropped or, on macOS,
+handed to the exit, which copies it and keeps nothing of the delivery. The
+userspace exit on macOS copies each packet the mesh hands it into a buffer of
+its own. It sends a UDP datagram it takes straight from the mesh through the
+host's socket from that buffer, copies an echo request once more to write its
+mapping's identifier into it, and copies a datagram it hairpins to another
+mapping into a new packet toward the mesh. Each packet it hands its stack, each
+TCP segment among them, is copied again into a buffer of gVisor's. A UDP
+datagram or an ICMP message the stack hands back is copied twice more, gathered
+out of the stack's buffers and then written after its headers as 1 packet. For a
+TCP connection the exit copies what the stack received into a buffer of its own
+and writes it to the host's socket from there. Replay checks and nonce storage
+are amortized across ESP batches, and already-completed send/receive batches are
+combined without waiting for additional traffic. Encryption workers reuse packed
 ciphertext buffers only after the ordered sender finishes its UDP call,
 retaining separate storage for work in flight. Replaced inbound SAs remain
 usable for 5 seconds after their Delete acknowledgment, or until their lifetime

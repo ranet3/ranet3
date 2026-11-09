@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-09
+updated: 2026-11-10
 order: 30
 ---
 
@@ -161,10 +161,10 @@ These commands take flags of their own:
   segment that does not resolve and the mesh's answer, and each family's steered
   default `installed`, on macOS in a family the mode covers as its zero-free
   cover, or `not installed`. Then, on Linux, the
-  [antispoof filter's](../antispoof.md) table: when its last pass read it and
-  whether it is ready, then each chain, `antispoof` with `overlay` and
+  [antispoof filter's](../antispoof.md) chains and sets: when its last pass read
+  them and whether it is ready, then each chain, `antispoof` with `overlay` and
   `mesh_entry`, with the hook and priority it is written at and each rule read
-  now with the packets and bytes each drop counted, any rule the table does not
+  now with the packets and bytes each drop counted, any rule the chain does not
   hold yet, any rule it holds that the filter did not write, by its comment or
   as `a rule with no comment`, and each set with the elements the last pass
   asked for. On macOS with `overlay` written it prints the pf anchor's instead,
@@ -752,12 +752,14 @@ lists, `mesh` or `kernel`. The `trigger` of an `egress.pass` is `start`,
 `sweep`, `retry`, `disable`, `enable`, `changed` when another writer deleted the
 table, set a flag on it, or added, changed or deleted part of its chains and
 sets, or `missed` when the daemon lost nf_tables notifications to an overflow or
-could not read one, whoever's tables they were about, and `retry`, `changed` and
-`missed` come from the kernel exit alone. The `trigger` of an `antispoof.pass`
-is `start`, `sweep`, `retry`, `reload`, `routes` when the mesh's table changed,
-`network` when the host's links did, `changed` when another writer deleted the
-table, set a flag on it, or added, changed or deleted part of its chains and
-sets, or `missed` as for an `egress.pass`.
+could not read one, whoever's tables they were about, and `retry`, `disable`,
+`changed` and `missed` come from the kernel exit alone, since the userspace exit
+has no retry timer or nf_tables monitor and runs no pass while it is disabled.
+The `trigger` of an `antispoof.pass` is `start`, `sweep`, `retry`, `reload`,
+`routes` when the mesh's table changed, `network` when the host's links did,
+`changed` when another writer deleted the table, set a flag on it, or added,
+changed or deleted part of its chains and sets, or `missed` as for an
+`egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an

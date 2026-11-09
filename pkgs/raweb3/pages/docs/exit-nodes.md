@@ -605,7 +605,7 @@ also refuses `0.0.0.0/8` as a destination, where a lookup of a prefix inside it
 fails and holds its family not ready.
 
 **The skip.** The forward and reply lookups of a family are skipped, and the
-family judged by its table, its forwarding and its classes' addresses alone,
+family judged by its chains, its forwarding and its classes' addresses alone,
 where the mesh routes no member of it, as before any member is learned, in a
 mesh of 1, or with no `overlay` prefix of the family. A prefix holding no
 address the kernel takes, such as `127.0.0.0/8` or `fe80::/10`, has its lookup
@@ -1025,7 +1025,7 @@ kernel exit's on Linux:
 
 | Log line                                                            | Level | When                                                                                                                                     |
 | ------------------------------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's tables and left empty by the userspace exit                               |
+| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's table and chains and left empty by the userspace exit                     |
 | `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                             |
 | `egress ready`                                                      | info  | a family went ready, with `family`                                                                                                       |
 | `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                                                   |
@@ -1072,7 +1072,7 @@ since the last record as `refused`, so a source retrying does not flood the log.
 | `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                        |
 | `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                         |
 
-The userspace exit writes the prefix counts, the refused counts, the 2 series of
-the pass and readiness alone, and none of the rules', the translation's, the
+The userspace exit writes the prefix counts, the refused counts, the pass's 2
+series and readiness alone, and none of the rules', the translation's, the
 dropped counts', connection tracking's or the conflicts' series.
 [Metrics](metrics.md) describes the scrape.
