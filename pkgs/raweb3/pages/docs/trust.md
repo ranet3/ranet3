@@ -4,7 +4,7 @@
 title: "Trust document and keys"
 description: "The document naming who may join the mesh, and the key files nodes authenticate with."
 created: 2026-10-16
-updated: 2026-11-06
+updated: 2026-11-10
 order: 38
 ---
 
@@ -79,10 +79,19 @@ The node's full name is `organization/common_name`, written as
 
 - A literal address of another family is never dialed.
 - A hostname is resolved on every dial, filtered to the endpoint's family. On
-  Linux ranet3 resolves it with Go's own resolver, from `/etc/hosts` and the
-  nameservers `/etc/resolv.conf` lists, and asks no NSS module, so a name only
-  such a module answers, a `.local` name through nss-mdns among them, does not
-  resolve. Its query to a nameserver outside `overlay`, one in a subnet another
+  Linux and macOS Go's own resolver answers it. On macOS it reads `/etc/hosts`
+  and then asks the nameservers `/etc/resolv.conf` lists, and on Linux the hosts
+  line of `/etc/nsswitch.conf` sets
+  [which of the two it reads and in what order](https://github.com/golang/go/blob/go1.27.3/src/net/conf.go#L351).
+  It asks neither an NSS module on Linux nor mDNSResponder or a domain's own
+  resolver on macOS, so a name only they answer, a `.local` name among them,
+  does not resolve. Its queries are plain DNS on port 53 to the nameservers
+  `/etc/resolv.conf` lists
+  ([exchange](https://github.com/golang/go/blob/go1.27.3/src/net/dnsclient_unix.go#L169)),
+  so an encrypted DNS profile does not apply to them. On macOS its query to a
+  nameserver outside `overlay` leaves as
+  [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic) gives. On
+  Linux its query to a nameserver outside `overlay`, one in a subnet another
   node announces included, carries the underlay's mark where the process may set
   it, so where `cap.table` is written it ends at row L1 or L2 of
   [where a lookup ends](routing.md#where-a-lookup-ends-on-linux) and never waits

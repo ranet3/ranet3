@@ -107,11 +107,11 @@ These commands take flags of their own:
   version, GOMAXPROCS and the CPUs, goroutines, the OS threads the runtime has
   started, open descriptors against `RLIMIT_NOFILE`, the heap and the collector,
   uptime, and the resolver an endpoint's hostname goes through, the daemon's one
-  lookup. `go` there means Go's own resolver answers it, which on Linux it
-  always does, and `cgo` that the lookup may go to the C library, which holds an
-  OS thread for as long as it takes. The view is read without stopping the
-  daemon's goroutines, so polling it leaves the data path running. It also shows
-  the memory taken from the system, the total pause of the collector, and
+  lookup. `go` there means Go's own resolver answers it, which on Linux and
+  macOS it always does, and `cgo` that the lookup may go to the C library, which
+  holds an OS thread for as long as it takes. The view is read without stopping
+  the daemon's goroutines, so polling it leaves the data path running. It also
+  shows the memory taken from the system, the total pause of the collector, and
   whether the build's tree had uncommitted changes.
 - `debug buildinfo` prints this binary's own Go build information.
 - `debug netmon` is the host's network as the node's watch last read it: for

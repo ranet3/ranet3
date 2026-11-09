@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-09
+updated: 2026-11-10
 order: 10
 ---
 
@@ -623,13 +623,20 @@ off the mesh's routes. An endpoint name resolves only where its query keeps off
 them too, as [the underlay socket](#the-underlay-socket) gives for Linux and the
 next paragraph for macOS.
 
-On macOS ranet3 resolves an endpoint name through the host's resolver, whose
-queries leave by no interface ranet3 names, so under `cap.exit` they follow the
-cover with the rest of the host's traffic. A Mac whose exit carries sessions but
-no traffic cannot resolve a peer's endpoint name until the hold's grace has run
-after its last live session, by when every other program on the Mac has lost its
-traffic too. There the daemon sends no query of its own bound to the selection's
-interface, as it marks its own on Linux.
+On macOS ranet3 resolves an endpoint name with Go's own resolver, as on Linux,
+and its query to a nameserver outside `overlay` names the interface
+[the selection](../routing.md#the-underlays-interface-on-macos) answers for that
+nameserver, with `IP_BOUND_IF` or `IPV6_BOUND_IF`. A lookup scoped to that
+interface passes the zero-free cover and the kill switch's rejects over
+([rt_lookup_common](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/net/route.c#L3316)),
+so the query leaves by that interface whether or not an exit is live. Where the
+selection holds no route for the nameserver, the query is refused. A query to a
+nameserver inside the overlay names no interface. A nameserver on the host
+itself takes the query on `lo0`, and its own query upstream names no interface,
+so under `cap.exit` it follows the cover, as a stub's does on Linux. A query to
+a nameserver only another program's tun routes names that tun, as the host's own
+route to it does, so it leaves through that program's tunnel. On iOS and Android
+ranet3 prepares no query socket for its endpoint lookups.
 
 Application DNS is not yet kept on the exit, on Linux or macOS. Under `cap.exit`
 the host's DNS settings stay as the host has them, and ranet3 runs no DNS server
@@ -672,9 +679,6 @@ prefixes, it has these costs:
   where Linux's filter drops it from the next packet on.
 - This node's own prefixes outside the overlay pass only where a route of the
   host's reaches them, where Linux passes them by 5445.
-- Under `cap.exit` a resolver beyond the LAN is refused while no exit is live,
-  so a Mac whose endpoints are all names and whose resolver lies beyond its LAN
-  brings up no session under the switch.
 - A hold a crashed instance left at a prefix the next configuration no longer
   holds stays on `lo0` until the Mac restarts or the operator deletes it, where
   Linux's next start deletes its holds by their protocol.

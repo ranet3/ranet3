@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-09
+updated: 2026-11-10
 order: 20
 ---
 
@@ -15,6 +15,10 @@ everything else from the root of the repository.
 ```sh
 go test ./... -race
 ```
+
+macOS has no mount namespace to bind a resolv.conf of a test's own in, so the
+resolver tests of `internal/registry` and `internal/client` there stop at a
+query's socket rather than a whole lookup, and need no root.
 
 ## Tests on a fake clock
 
@@ -201,8 +205,14 @@ connected networks is refused, which is why a run starts detached from the
 session that started it. One test kills a helper, the test binary run again as
 `TestDarwinSwitchCrashHelper`, with `SIGKILL`, and reads what the crash left.
 The helper skips unless `RANET3_DARWIN_SWITCH_HELPER=1` is set, as the test sets
-it. Each test ends by deleting any reject an arm left at the switch's or the
-overlay's keys, and checks that the host's table and defaults are as they were.
+it. `TestDarwinBoundNameserverSocketLeavesByTheSelectedInterface` dials a socket
+with the daemon's prepare toward a nameserver beyond the LAN, while the switch
+passes, while it holds and after the crash, and toward one only a second utun
+routes. That the resolver's own dial hands each query's socket toward a
+nameserver outside the overlay that prepare is checked by `internal/registry`'s
+unit tests. Each test ends by deleting any reject an arm left at the switch's or
+the overlay's keys, and checks that the host's table and defaults are as they
+were.
 
 ## Property tests
 
