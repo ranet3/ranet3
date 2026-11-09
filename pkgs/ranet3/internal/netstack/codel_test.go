@@ -278,7 +278,7 @@ func TestSenderForgetsTheDelayOnceItsQueueEmpties(t *testing.T) {
 	queue(t, late)
 	waitForBudget(t, peer)
 	if got := peer.DelayDropped(); got != 1 {
-		t.Errorf("the late ticket and the 20 batches behind it lost %d packets to the delay control, want none", got-1)
+		t.Errorf("the late batch and the 20 batches behind it lost %d packets to the delay control, want none", got-1)
 	}
 	if got := len(h.transmitted()); got != 22 {
 		t.Errorf("the transport was handed %d packets, want the first and the 21 that came after the idle queue", got)

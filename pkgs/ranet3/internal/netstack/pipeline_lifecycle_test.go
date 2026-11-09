@@ -120,7 +120,7 @@ func TestBatchesForAClosedPeerWarnAsItsSendErrorsDo(t *testing.T) {
 // place it reserved, and a place whose batch is never sealed stalls that peer
 // for good. Close therefore has to drain the queue rather than abandon it, and has
 // to return while a peer is still open and still behind.
-func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
+func TestMeshCloseDrainsQueuedBatches(t *testing.T) {
 	peer := NewPeer("peer", func(int) (BatchSealer, error) {
 		return func(raw [][]byte, _ []byte, _ [][]byte) ([][]byte, error) { return [][]byte{bytes.Clone(raw[0])}, nil }, nil
 	}, func([][]byte) error { return nil }, nil)
@@ -148,7 +148,7 @@ func TestMeshCloseDrainsQueuedTickets(t *testing.T) {
 		t.Fatal("Mesh.Close did not return while a peer was still behind")
 	}
 	if len(m.outboundJobs) != 0 {
-		t.Fatal("Mesh.Close abandoned queued transmission tickets")
+		t.Fatal("Mesh.Close abandoned queued batches holding their peers' places")
 	}
 }
 

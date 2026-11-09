@@ -296,7 +296,7 @@ func TestReadersInterleavedAtAnyReservationAllDrain(t *testing.T) {
 					break
 				}
 				if time.Now().After(deadline) {
-					ht.Fatalf("peer %d carried %d and delay dropped %d of the %d packets it reserved, holding %d bytes and %d control places, so a ticket never drained",
+					ht.Fatalf("peer %d carried %d and delay dropped %d of the %d packets it reserved, holding %d bytes and %d control places, so a place never drained",
 						i, sent, peer.DelayDropped(), peer.next, peer.dataBudget.used.Load(), peer.controlBudget.used.Load())
 				}
 			}
