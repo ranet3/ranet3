@@ -470,16 +470,16 @@ type KernelExit struct {
 }
 
 // KernelFallback is the kill switch as the reconciler's last pass read it
-// back, Linux's chains in the table ranet3 or macOS's rejects on lo0
+// back, Linux's chains in the table inet ranet3 or macOS's rejects on lo0
 type KernelFallback struct {
 	// State is holding while no exit is live and the switch reads back as
 	// written, passing while an exit is live, and not holding while it does
 	// not read back as written, for the Reason given. routing.md's "The kill
-	// switch on Linux" lists the table's lines, and "The kill switch on macOS"
+	// switch on Linux" lists the chains' lines, and "The kill switch on macOS"
 	// the rejects.
 	State  string `json:"state"`
 	Reason string `json:"reason,omitempty"`
-	// Dropped holds the packets and bytes the last lines of both chains have dropped, summed, as the last read of the table that succeeded found them, left out until a read of the table by this process has succeeded
+	// Dropped holds the packets and bytes the last lines of both chains have dropped, summed, as the last read of the chains that succeeded found them, left out until a read of the chains by this process has succeeded
 	Dropped *FallbackDrops `json:"dropped,omitempty"`
 	// Uncounted is a switch that counts nothing it refuses, macOS's, whose
 	// Dropped stays absent
@@ -571,7 +571,7 @@ type KernelTaken struct {
 // selected.
 type EgressStatus struct {
 	Enabled bool `json:"enabled"`
-	// Where names the tables this node owns, as the backend spells them.
+	// Where names the table and the translator's chains, as the backend spells them.
 	Where string `json:"where,omitempty"`
 	// Ready is the families the last pass judged ready, ipv4 and ipv6, by the
 	// route lookups where they ran, and Unready why a family it translates is
@@ -721,7 +721,7 @@ type BorderStatus struct {
 	Overlay []netip.Prefix `json:"overlay"`
 	// Carved is each carve-out the antispoof chain accepts from its own link
 	Carved []BorderCarveOut `json:"carved,omitempty"`
-	// Ready is whether the last pass read the table back as written, and
+	// Ready is whether the last pass read the filter back as written, and
 	// Unready why it did not
 	Ready   bool   `json:"ready"`
 	Unready string `json:"unready,omitempty"`
@@ -754,13 +754,13 @@ type BorderCarveOut struct {
 	Prefix netip.Prefix `json:"prefix"`
 }
 
-// BorderDrops is the packets each drop of the table has counted, as the last
+// BorderDrops is the packets each drop of the filter has counted, as the last
 // pass read them, by the drop's reason and family joined with an underscore:
 // overlay_source and carved_source from outside the mesh, and mesh_entry for
 // a packet into the tun that none of the entry chain's lines BorderStatus
 // lists passes, each in ipv4 and ipv6. A drop is present where a rule of the
-// last pass writes it, and absent otherwise. A rewrite of the table starts
-// them from zero.
+// last pass writes it, and absent otherwise. A rewrite of the filter's rules
+// starts them from zero.
 type BorderDrops map[string]uint64
 
 // Reason is the packets a drop counted in both families, and whether the

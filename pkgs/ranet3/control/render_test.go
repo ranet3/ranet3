@@ -391,7 +391,7 @@ func TestStatusPlacesTheUserspaceRowsUnderEgress(t *testing.T) {
 	}
 }
 
-// the antispoof row follows the egress row, naming where the table is, what it
+// the antispoof row follows the egress row, naming where the filter is, what it
 // accepts, what it carves and what its drops counted, the entry chain's drops
 // alone on a node with no overlay, that it is not installed and why, on a
 // platform running no filter, that the overlay it loaded is not enforced

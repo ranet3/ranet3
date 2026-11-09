@@ -50,16 +50,16 @@ type RulesInfo struct {
 }
 
 // FallbackTable is the kill switch as a debug read finds it now, beside the
-// state the reconciler's last pass gave it: its chains in the table ranet3 with
-// their hook and priority on Linux, and the rejects on lo0 on macOS, which
-// have neither
+// state the reconciler's last pass gave it: its chains in the table inet
+// ranet3 with their hook and priority on Linux, and the rejects on lo0 on
+// macOS, which have neither
 type FallbackTable struct {
 	Where    string `json:"where"`
 	Hook     string `json:"hook,omitempty"`
 	Priority int    `json:"priority,omitempty"`
 	State    string `json:"state"`
 	Reason   string `json:"reason,omitempty"`
-	// Held is whether the kernel holds the table, or any reject, at all
+	// Held is whether the kernel holds either of its chains, or any reject, at all
 	Held  bool                `json:"held"`
 	Rules []FallbackTableRule `json:"rules"`
 	Sets  []FallbackTableSet  `json:"sets"`
@@ -75,7 +75,7 @@ type FallbackTableRule struct {
 	Bytes   uint64 `json:"bytes"`
 }
 
-// FallbackTableSet is one named set of the table with its elements, a range
+// FallbackTableSet is one named set of the switch with its elements, a range
 // that is no prefix written as its first and last address
 type FallbackTableSet struct {
 	Name     string   `json:"name"`
@@ -180,9 +180,10 @@ type BorderEnabler struct {
 	Name string `json:"name"`
 }
 
-// BorderChain is one chain of the table, its hook, its priority where the
+// BorderChain is one chain of the filter, its hook, its priority where the
 // backend orders chains by one, and its rules. One with no name holds the
-// rules the table holds that the filter does not ask for.
+// rules the filter's own chains, or its pf anchor, hold that it does not ask
+// for.
 type BorderChain struct {
 	Name     string            `json:"name,omitempty"`
 	Hook     string            `json:"hook,omitempty"`
@@ -190,7 +191,7 @@ type BorderChain struct {
 	Rules    []BorderChainRule `json:"rules"`
 }
 
-// BorderSet is one set of the table, by the word its backend calls a set by,
+// BorderSet is one set of the filter, by the word its backend calls a set by,
 // set for nftables and table for pf, and its elements as the last pass asked
 // for them, each written as nft prints it, one address bare, a prefix or a
 // first and last address

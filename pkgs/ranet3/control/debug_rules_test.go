@@ -168,7 +168,7 @@ func TestRulesRenderAsTheGoldenFiles(t *testing.T) {
 	}
 }
 
-// a set is headed by the word its reading carries, whatever else the table
+// a set is headed by the word its reading carries, whatever else the filter
 // holds, so the renderer learns no backend from the pf block
 func TestBorderSetIsHeadedByTheWordItsBackendCallsItBy(t *testing.T) {
 	for _, c := range []struct {
@@ -183,7 +183,7 @@ func TestBorderSetIsHeadedByTheWordItsBackendCallsItBy(t *testing.T) {
 	}
 }
 
-// fallbackFixture is a table of one chain, holding, its drop having counted
+// fallbackFixture is a switch of one chain, holding, its drop having counted
 // twelve packets, nothing forwarded and no own prefix of IPv6
 func fallbackFixture() *FallbackTable {
 	return &FallbackTable{
