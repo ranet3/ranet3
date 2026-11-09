@@ -264,7 +264,7 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segme
 				version = 4
 			}
 			source, destination := addressesOf(result.Inner, version)
-			// the host forwards what the uplink takes, so the martians the decision drops are dropped here too
+			// the kernel exit's host forwards what the uplink takes, so the martians the decision drops are dropped here too
 			if martian(source, destination) {
 				if m.refuseEgress() {
 					slog.Warn("an egress segment refused an inner packet no router forwards", "interface", m.Name, "source", source, "destination", destination)
@@ -297,7 +297,7 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segme
 				}
 				continue
 			}
-			// a packet written while its family's translation is missing leaves the uplink untranslated
+			// a packet the kernel exit writes while its family's translation is missing leaves the uplink untranslated
 			if !m.readyFor(&check, result.Family, false) {
 				m.segmentsNotReady.Add(1)
 				if records != nil {
