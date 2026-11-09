@@ -219,10 +219,11 @@ func (o Organization) publicKey() (ed25519.PublicKey, error) {
 // unreachable otherwise holds the dialer for the resolver's own timeout, and
 // the client waits for every dialer before it returns.
 //
-// overlay is the overlay as the dial reads it, which a reload moves. On linux,
-// where Go's resolver opens its own sockets, prepare readies each query's
-// socket toward a nameserver outside the overlay, and one inside it goes as it
-// is. Elsewhere the platform's resolver opens them. A nil prepare is refused.
+// overlay is the overlay as the dial reads it, which a reload moves. On linux
+// and darwin, where Go's resolver opens its own sockets, prepare readies each
+// query's socket toward a nameserver outside the overlay, and one inside it
+// goes as it is. Elsewhere prepare reaches no query socket. A nil prepare is
+// refused.
 func (e Endpoint) ResolveRemote(ctx context.Context, overlay []schema.Prefix, prepare underlay.Prepare) (net.IP, error) {
 	if prepare == nil {
 		return nil, errUnprepared

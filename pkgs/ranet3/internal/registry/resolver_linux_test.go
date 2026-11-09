@@ -8,9 +8,7 @@ package registry
 import (
 	"context"
 	"net"
-	"net/netip"
 	"os"
-	"slices"
 	"syscall"
 	"testing"
 
@@ -73,88 +71,13 @@ func TestResolverSocketsCarryTheUnderlayMark(t *testing.T) {
 	}
 }
 
-// The Prepare the resolver is handed sees each socket of a query to a
-// nameserver outside the overlay, by its network and the nameserver, a query's
-// datagram and its fallback over TCP alike, and none to a nameserver inside it
-func TestResolverPreparesOnlyQueriesOutsideTheOverlay(t *testing.T) {
+// loopbackReady brings lo up where the process may, since the root tests'
+// namespace holds it down
+func loopbackReady(t *testing.T) {
+	t.Helper()
 	if mayMark(t) {
-		// the root tests' namespace holds lo down
 		loopbackUp(t)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	nameserver := netip.MustParseAddrPort(listener.Addr().String())
-	for _, overlay := range []struct {
-		name     string
-		prefixes []schema.Prefix
-		want     []string
-	}{
-		{"outside the overlay", overlayOf("192.0.2.0/24"), []string{"udp4", "tcp4"}},
-		{"inside the overlay", overlayOf("127.0.0.0/8"), nil},
-	} {
-		var seen []string
-		prepare := func(network string, to netip.AddrPort, _ syscall.RawConn) error {
-			if to != nameserver {
-				t.Errorf("a query to a nameserver %s readied a socket toward %s, want %s", overlay.name, to, nameserver)
-			}
-			seen = append(seen, network)
-			return nil
-		}
-		for _, network := range []string{"udp", "tcp"} {
-			conn, err := resolverFor(overlay.prefixes, prepare).Dial(context.Background(), network, nameserver.String())
-			if err != nil {
-				t.Fatalf("dial %s: %v", network, err)
-			}
-			_ = conn.Close()
-		}
-		if !slices.Equal(seen, overlay.want) {
-			t.Errorf("the queries to a nameserver %s readied %v, want %v", overlay.name, seen, overlay.want)
-		}
-	}
-}
-
-// A query to a nameserver lying in some prefix of the overlay is unmarked, in
-// either family, in IPv4's mapped form and with a zone, which resolv.conf may
-// write after any IPv6 address, and every other one is marked, a link-local one
-// among them
-func TestResolverMarksAQueryOnlyOutsideTheOverlay(t *testing.T) {
-	overlay := overlayOf("192.0.2.0/24", "3fff::/20")
-	for _, test := range []struct {
-		nameserver string
-		want       bool
-	}{
-		{"192.0.2.53", false},
-		{"::ffff:192.0.2.53", false},
-		{"::ffff:192.0.2.53%eth0", false},
-		{"3fff:0:1::53", false},
-		{"3fff:0:1::53%eth0", false},
-		{"3fff:0:1::53%1", false},
-		{"198.51.100.53", true},
-		{"::ffff:198.51.100.53", true},
-		{"::ffff:198.51.100.53%eth0", true},
-		{"2001:db8::53", true},
-		{"2001:db8::53%eth0", true},
-		{"fe80::53%eth0", true},
-		{"127.0.0.53", true},
-	} {
-		if got := marksQueryTo(netip.MustParseAddr(test.nameserver), overlay); got != test.want {
-			t.Errorf("a query to %s is marked %v, want %v", test.nameserver, got, test.want)
-		}
-	}
-	if !marksQueryTo(netip.MustParseAddr("192.0.2.53"), nil) {
-		t.Error("a query with no overlay is left unmarked")
-	}
-}
-
-func overlayOf(prefixes ...string) []schema.Prefix {
-	var out []schema.Prefix
-	for _, prefix := range prefixes {
-		out = append(out, schema.PrefixFrom(netip.MustParsePrefix(prefix)))
-	}
-	return out
 }
 
 // mayMark is whether this process may set a socket's mark

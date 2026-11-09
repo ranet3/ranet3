@@ -4,7 +4,9 @@
 // Package underlay holds the one way each platform keeps a socket out of the
 // mesh. The transport, the resolver and the exit take a [Prepare] from their
 // caller, so a platform whose way only an app can supply hands the same one to
-// all three.
+// each. The transport calls it on linux, android, darwin and ios, the resolver
+// on linux and darwin alone, and the exit on darwin alone, the one build whose
+// daemon runs the userspace exit.
 package underlay
 
 import (
