@@ -18,8 +18,9 @@ import (
 // its four-tuple, which the stack reflects to no forwarder. A lane records
 // each leaf flow's FIN as it passes, and on a bare SYN aborts the endpoint
 // where it waits in TIME_WAIT and the SYN's sequence number comes after the
-// FIN's, before the SYN is delivered. Every packet of one four-tuple passes one lane, so the FIN is
-// recorded before the SYN that reuses its ports is judged.
+// FIN's plus one, as reuses judges it, before the SYN is delivered. Every
+// packet of one four-tuple passes one lane, so the FIN is recorded before the
+// SYN that reuses its ports is judged.
 type timeWait struct {
 	mu sync.Mutex
 	// fins holds each flow's FIN sequence number, the oldest dropped past

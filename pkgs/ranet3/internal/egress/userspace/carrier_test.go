@@ -60,8 +60,8 @@ const (
 	rigMTU = 1340
 )
 
-// The rig's variables on the exit's host, which the rig's runner passes. Real
-// addresses pass here at run time alone.
+// The rig's variables on the exit's host, which whatever starts the test
+// passes. Real addresses pass here at run time alone.
 const (
 	// rigEthernet names the exit host's link to the suite's host, rigPeer
 	// that host's IPv4 address, and rigPort and rigControlPort the carrier's

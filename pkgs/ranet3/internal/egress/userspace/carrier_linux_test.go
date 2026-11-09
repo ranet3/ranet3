@@ -33,7 +33,7 @@ import (
 
 const (
 	// rigCarried names, on the rig's Linux host, that descriptors 3 and 4 are
-	// the carrier and the wire the rig's runner opened
+	// the carrier and the wire whatever starts the test opened
 	rigCarried = "RANET3_RIG_CARRIED"
 	// rigUplink is the Linux exit host's uplink, a tun in the namespace the
 	// exit opens its sockets in, and loopbackIndex the index Linux gives every
