@@ -476,11 +476,9 @@ func (m *Mesh) classify(b *outboundBatch) {
 			if path {
 				steers.pathSteered++
 			}
-			sent = b.steered[i]
-			var outer, first netip.Addr
-			if outer, first, nh, ok = addrsOf(sent); !ok {
-				continue
-			}
+			// steer's encapsulation is a whole IPv6 packet
+			sent, nh = b.steered[i], esp.NextHeaderIPv6
+			outer, first := addressesOf(sent, 6)
 			var firstMatch Match
 			if peer, verdict, firstMatch = m.Routes.Resolve(outer, first); firstUnrouted(path, verdict, firstMatch) {
 				steers.unrouted++
