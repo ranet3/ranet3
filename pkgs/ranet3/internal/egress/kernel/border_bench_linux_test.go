@@ -27,7 +27,7 @@ import (
 )
 
 // The benchmarks are arms A to E. A to C time a packet's path through the
-// table as root, D a pass moving a set by one LAN as root, and E a pass that
+// filter as root, D a pass moving a set by one LAN as root, and E a pass that
 // moves nothing, which needs no kernel.
 
 // the benchmarks' devices and addresses: the mesh's tun, an uplink's tun with
@@ -397,7 +397,7 @@ func BenchmarkEntryChainSendIntoTheTun(b *testing.B) {
 // Arm C: the underlay's own send, a datagram from the uplink's address to the
 // far host out of the uplink, which the benchmark drains, b.N times in each
 // family, as one datagram and as 8 segments of 1,200 bytes by UDP_SEGMENT:
-// with no table, with conntrack on beforehand, and with the table, whose
+// with no filter, with conntrack on beforehand, and with the filter, whose
 // mesh_entry returns it at its first line
 func BenchmarkUplinkSend(b *testing.B) {
 	for _, family := range benchFamilies {
@@ -461,7 +461,7 @@ func benchLANs(family string, n int) []egress.Range {
 // Arm D: one whole pass that moves a none set by one LAN, as a route change
 // wakes it, at 1,000 and 10,000 LANs in each family: each iteration takes one
 // LAN out and puts it back, two passes, each deriving the sets, reading the
-// table back, sending the delta and reading it back again. It reports the
+// filter back, sending the delta and reading it back again. It reports the
 // element notifications every nf_tables listener received per iteration.
 func BenchmarkNoneSetMovesByOneLAN(b *testing.B) {
 	for _, family := range benchFamilies {

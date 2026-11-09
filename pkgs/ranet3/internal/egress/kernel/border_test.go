@@ -35,7 +35,7 @@ type fakeBorder struct {
 	failRules bool
 	// failApply makes a host that will not take the chain
 	failApply bool
-	// failWithdraw makes a host that will not let the table go
+	// failWithdraw makes a host that will not let the filter's chains go
 	failWithdraw bool
 	// garble makes a host that holds the last rule written under a comment cut short
 	garble bool
@@ -50,7 +50,7 @@ type fakeBorder struct {
 	failFill bool
 	// counts is each rule's packet counter by spec, as a readback finds it
 	counts map[string]uint64
-	// changed stands for another writer's changes to the table, nil for none
+	// changed stands for another writer's changes to what the filter writes, nil for none
 	changed chan struct{}
 	// missed stands for notifications the backend lost, nil for none
 	missed chan struct{}
@@ -74,14 +74,14 @@ func (f *fakeBorder) entries() []string {
 	return slices.Clone(f.log)
 }
 
-// readback is the table as a read finds it, its rules read by comment against
+// readback is the filter as a read finds it, its rules read by comment against
 // rules and each set against sets where each is not nil
 func (f *fakeBorder) readback(rules []BorderRule, sets borderSets) chainReadback {
 	out := slices.Clone(f.held)
 	for i := range out {
 		out[i].Packets = f.counts[out[i].Spec]
 	}
-	// a table read back with no rule and no fault is one nobody wrote
+	// a filter read back with no rule and no fault is one nobody wrote
 	read := chainReadback{rules: out, fault: f.fault, unready: f.unready, held: len(f.held) != 0 || f.fault != ""}
 	if name := slices.Sorted(maps.Keys(sets.changed(f.sets))); sets != nil && read.fault == "" && len(name) > 0 {
 		read.fault = "its set " + name[0] + " holds other elements"
@@ -153,7 +153,7 @@ func (f *fakeBorder) Apply(rules []BorderRule, sets borderSets) error {
 	return nil
 }
 
-// Withdraw reports a table removed where a read would find one
+// Withdraw reports the filter removed where a read would find it
 func (f *fakeBorder) Withdraw() (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -330,8 +330,8 @@ func TestBorderChainAcceptsTheInsideBeforeAnyDrop(t *testing.T) {
 // The entry chain lets a packet leave by the tun only as a reply, toward a
 // link-local or multicast IPv6 destination, from a source this node owns or
 // toward a none class's destination, family by family, and drops the rest,
-// counted. A node with no overlay holds the entry chain alone, and the table
-// is made again whole on every rewrite with or without one.
+// counted. A node with no overlay holds the entry chain alone, and its chains and sets are
+// made again whole on every rewrite with or without one.
 func TestEntryChainRunsWithAndWithoutTheBorder(t *testing.T) {
 	want := []string{
 		"return via other than ranet0",
@@ -370,9 +370,9 @@ func TestEntryChainRunsWithAndWithoutTheBorder(t *testing.T) {
 }
 
 // The sets follow what the runtime derives: a pass that finds them moved
-// moves the moved ones alone, from what the table holds, and rewrites no
+// moves the moved ones alone, from what the filter holds, and rewrites no
 // chain, a pass woken by the mesh's table that finds nothing moved reads
-// nothing, and another writer's change to a set's elements has the whole table
+// nothing, and another writer's change to a set's elements has the whole filter
 // rewritten
 func TestBorderRefillsTheSetsThatMovedAlone(t *testing.T) {
 	derived := egress.BorderSets{Owned: ranges("192.0.2.1/32")}
@@ -854,7 +854,7 @@ func TestNewBorderRefusesAChainItCannotReadBack(t *testing.T) {
 	}
 }
 
-// A filter closed before it ran reports itself not ready, withdraws the table
+// A filter closed before it ran reports itself not ready, withdraws its chains and sets
 // its first pass made, and leaves one the pass found, whether it took that
 // over as it was or rewrote it
 func TestBorderClosedBeforeItRanLeavesOnlyTheTableItFound(t *testing.T) {
@@ -1012,7 +1012,7 @@ func TestAnotherWritersChangeTakesTheBorderDownUntilThePassRestoresIt(t *testing
 // it sits, the chain's rules in another order, and a table or a chain whose
 // settings read back other than written each make the pass rewrite them,
 // after which the filter reads ready. A chain nf_tables will not change in
-// place is rewritten by deleting the table first. A setting the rewrite cannot
+// place is rewritten by deleting the chain first. A setting the rewrite cannot
 // put back leaves the filter not ready, naming it.
 func TestBorderRewritesWhatReadsBackOtherThanWritten(t *testing.T) {
 	be := &fakeBorder{}
@@ -1126,7 +1126,7 @@ func TestBorderSweepsAsItsBackendAsks(t *testing.T) {
 	}
 }
 
-// A filter that stops reports the border not ready and withdraws its table,
+// A filter that stops reports the border not ready and withdraws its chains and sets,
 // and Run returns the withdrawal's error
 func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {
 	for _, failing := range []bool{false, true} {
@@ -1154,7 +1154,7 @@ func TestBorderStopsNotReadyAndWithdraws(t *testing.T) {
 }
 
 // A filter stopped for the mesh's failure reports itself not ready and leaves
-// its table, and one stopped for any other cause withdraws it
+// its chains and sets, and one stopped for any other cause withdraws it
 func TestBorderLeavesItsTableOnlyWhenStoppedForTheMeshsFailure(t *testing.T) {
 	for _, cause := range []error{meshkernel.ErrMeshFailed, fmt.Errorf("stop: %w", meshkernel.ErrMeshFailed), nil, errors.New("another cause")} {
 		bus := events.New()
@@ -1177,7 +1177,7 @@ func TestBorderLeavesItsTableOnlyWhenStoppedForTheMeshsFailure(t *testing.T) {
 	}
 }
 
-// A debug read lays the table held now beside the one the configuration asks
+// A debug read lays the filter held now beside the one the configuration asks
 // for: each chain with its hook and priority, each desired rule with its
 // counters or as not held yet, then any rule held that the configuration does
 // not ask for, and the sets as the last pass asked for them
@@ -1321,7 +1321,7 @@ func exemptRules(rules []BorderRule) []string {
 // for a name matching no link, none on the mesh's tun or lo under a name
 // matching them, and one where an exact name and a wildcard name the same link
 // and prefix. A link that comes changes the rules on the pass it wakes, which
-// rewrites the table. A backend that matches the wildcard itself writes the
+// rewrites the filter. A backend that matches the wildcard itself writes the
 // name as given.
 func TestWildcardExemptionIsOneRulePerLinkWhereNamesAreExact(t *testing.T) {
 	cfg := overlay(t)

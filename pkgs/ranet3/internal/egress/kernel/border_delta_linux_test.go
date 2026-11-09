@@ -33,7 +33,7 @@ func openElementListener(t testing.TB) elementListener {
 	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: 1 << (unix.NFNLGRP_NFTABLES - 1)}); err != nil {
 		t.Fatal(err)
 	}
-	// room for a whole table at 10,000 LANs where the host allows it: SO_RCVBUFFORCE
+	// room for a whole filter at 10,000 LANs where the host allows it: SO_RCVBUFFORCE
 	// needs CAP_NET_ADMIN in the first user namespace, and SO_RCVBUF stops at net.core.rmem_max
 	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, 64<<20); err != nil {
 		if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, 64<<20); err != nil {
@@ -86,7 +86,7 @@ func deltaLAN(i int) netip.Prefix {
 // every nf_tables listener at most 6 element messages: 2 where the LAN stands
 // apart from the others, 4 where it touches the end of one, and 6 where it
 // joins two or leaves them apart again, the intervals that go and come each
-// whole. Each pass leaves the table read back as written.
+// whole. Each pass leaves the filter read back as written.
 func TestBorderPassSendsAOneLANChangeAsItsDelta(t *testing.T) {
 	if os.Getuid() != 0 {
 		t.Skip("the real nftables path needs root on linux")

@@ -21,7 +21,7 @@ import (
 	meshkernel "ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
-// BorderClass names the packets one rule of the table matches
+// BorderClass names the packets one rule of the filter matches
 type BorderClass uint8
 
 const (
@@ -45,7 +45,7 @@ const (
 // chain lets into the tun from any source
 var entryLinkLocal = []netip.Prefix{netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("ff00::/8")}
 
-// BorderRule is one rule of the table. The backend writes String as the rule's
+// BorderRule is one rule of the filter. The backend writes String as the rule's
 // comment, which names the line in a readback.
 type BorderRule struct {
 	Class BorderClass
@@ -178,7 +178,7 @@ func addDrops(d *egress.BorderDrops, rule BorderRule, packets uint64) {
 }
 
 // dropsSince is the drops in d after was, a counter below its earlier reading
-// being a table rewritten in between
+// being the filter's rules rewritten in between
 func dropsSince(d, was egress.BorderDrops) egress.BorderDrops {
 	for i := range d {
 		if d[i] >= was[i] {
@@ -249,8 +249,12 @@ type borderBackend interface {
 	// any, what is already gone being success. nftables removes the filter's
 	// chains and sets, and the table with them where nothing else is in it.
 	Withdraw() (removed bool, err error)
-	// Changed carries one coalesced wake-up per batch of another writer's
-	// changes to what the filter writes
+	// Changed carries another writer's changes to what the filter writes. On
+	// nftables it carries one coalesced wake-up per transaction in which
+	// another writer deleted the table, set a flag on it, or changed one of
+	// the filter's chains, rules or sets, and may carry more than one for a
+	// transaction read in the span after a loss that nftables.Monitor's doc
+	// gives. On pf it never fires, and the sweep reads the anchor back.
 	Changed() <-chan struct{}
 	// Missed carries one coalesced wake-up per batch of notifications the
 	// backend lost or could not read, any of which may have been a change
@@ -277,7 +281,7 @@ type borderBackend interface {
 	// family. desired leaves out a set it does not, so moving one writes
 	// nothing.
 	holds(set string) bool
-	// sweep is the period of the pass that reads the table back unwoken, zero
+	// sweep is the period of the pass that reads the filter back unwoken, zero
 	// for egress.DefaultSweep
 	sweep() time.Duration
 	// wildcards reports whether the backend matches an interface by a name
@@ -327,7 +331,7 @@ type BorderFilter struct {
 
 // NewBorderFilter validates the configuration, nil where overlay is not
 // written, opens the backend and runs the first pass, and refuses the start
-// when that pass cannot install the table and read it back: a node does not
+// when that pass cannot install the filter and read it back: a node does not
 // run without it. Run keeps it from then on. A platform with no backend
 // returns no filter, and so does one the filter runs on only where overlay is
 // written, where it is not, once it gives back what an earlier run left.
@@ -351,7 +355,7 @@ func NewBorderFilter(cfg *egress.Border, rt egress.BorderRuntime) (*BorderFilter
 }
 
 // startBorderFilter runs the first pass over a backend that is open, and
-// closes it as Close does when the pass does not leave the table read back
+// closes it as Close does when the pass does not leave the filter read back
 func startBorderFilter(cfg *egress.Border, rt egress.BorderRuntime, be borderBackend) (*BorderFilter, error) {
 	f := newBorderFilter(cfg, rt, be)
 	f.reportInside(nil, cfg)
@@ -469,7 +473,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 		case <-f.rt.Network:
 			f.trigger = "network"
 		case <-f.be.Changed():
-			// the table may be gone or bypassed already, so it reads not ready until the pass puts it back
+			// the filter's chains may be gone or bypassed already, so it reads not ready until the pass puts them back
 			f.trigger = "changed"
 			f.setReady(false, "another writer changed its table")
 		case <-f.be.Missed():
@@ -484,7 +488,7 @@ func (f *BorderFilter) Run(ctx context.Context) error {
 	}
 }
 
-// desired is the table the configuration and the sets ask for: the rules the
+// desired is the filter the configuration and the sets ask for: the rules the
 // backend writes as rules of their own in the order a packet meets them, the
 // antispoof chain's ahead of the entry chain's, the sets, and the carve-outs
 // the antispoof chain accepts with the exemptions' conflicts, neither where
@@ -598,7 +602,7 @@ func (f *BorderFilter) reportInside(was, cfg *egress.Border) {
 	}
 }
 
-// reconcile makes the table what the pass asks for, each rule by its comment
+// reconcile makes the filter what the pass asks for, each rule by its comment
 // and by what it does, sending the sets' changed ranges alone where only they
 // moved, and reports ready only when the readback equals it. A pass woken
 // by the mesh's table or the host's links that asks for what the last good
@@ -619,7 +623,7 @@ func (f *BorderFilter) reconcile() error {
 	wrote := ""
 	read, err := f.be.Rules(rules, want)
 	if f.trigger == "start" {
-		// a failed read tells nothing of the table, which is then left
+		// a failed read tells nothing of the filter, which is then left
 		f.made, f.found = err == nil && !read.held, err == nil && read.held
 	}
 	changed := sets.changed(want)
@@ -636,7 +640,7 @@ func (f *BorderFilter) reconcile() error {
 			slog.Info("antispoof filter installed", "rules", len(rules), "replaced", len(read.rules), "where", f.Where())
 		}
 	case changed != nil:
-		// the readback found the table holding want, so the fill sends what differs from it
+		// the readback found the filter holding want, so the fill sends what differs from it
 		if fillErr := f.be.Fill(rules, want, changed); fillErr != nil {
 			f.held = nil
 			err = fmt.Errorf("fill sets: %w", fillErr)
@@ -745,7 +749,7 @@ func (f *BorderFilter) reportConflicts(now []egress.ExemptConflict) {
 	f.conflicts = now
 }
 
-// countDrops reads the counters of the drops the table holds and, at most
+// countDrops reads the counters of the drops the filter holds and, at most
 // once per pass, records the packets each drop took since the last pass when
 // one moved
 func (f *BorderFilter) countDrops(held []Installed, desired []BorderRule) egress.BorderDrops {
@@ -786,9 +790,9 @@ func (f *BorderFilter) setReady(ok bool, detail string) {
 	f.rt.Events.Emit("antispoof.ready", "", slog.Bool("ready", ok))
 }
 
-// Debug reads the table now through a socket of its own, so an operator
-// injecting a packet reads counters of now rather than of the last sweep, and
-// lays it beside the table the configuration asks for
+// Debug reads the filter's rules now through a socket of its own, so an
+// operator injecting a packet reads counters of now rather than of the last
+// sweep, and lays them beside the rules the configuration asks for
 func (f *BorderFilter) Debug() egress.BorderDebug {
 	stats := f.Stats()
 	out := egress.BorderDebug{Where: f.Where(), PassAt: stats.At, Ready: stats.Ready, Unready: stats.Unready, Sets: stats.Sets}

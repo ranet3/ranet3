@@ -87,8 +87,8 @@ func TestNftablesRoundTripInNetworkNamespace(t *testing.T) {
 	// kept the rules in the order they were written, and handed back the
 	// spelling this package wrote into each one's comment and the expressions
 	// it encoded, as a dump spells them. A mismatch here is a ruleset the
-	// reconcile loop would rewrite on every pass forever. Each table, its two
-	// chains, its set and its objects read back as written.
+	// reconcile loop would rewrite on every pass forever. Each family's
+	// chains, set and timeout objects read back as written.
 	read, err := be.Rules(desired)
 	if err != nil {
 		t.Fatalf("read the rules back: %v", err)

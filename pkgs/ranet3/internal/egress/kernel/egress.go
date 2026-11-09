@@ -72,15 +72,16 @@
 // It is a second owner beside Translator, with its own run goroutine, socket
 // and change monitor, and neither writes, replaces or deletes the other's
 // chains or sets, nor wakes the other's monitor by writing them. A table
-// message wakes every owner unless it makes the table with no flags or clears
-// them, so a flush of the ruleset or another program setting the dormant flag wakes
-// each owner once, and the owner whose pass then makes the table again or
-// clears the flag wakes no other. The filter keeps its chains through
-// `ranet3 down`, since it guards the host's links rather than the mesh,
-// withdraws them last at a stop the operator asks for, after nothing routes
-// into the tun, and leaves them at the stop for the mesh's failure
-// (antispoof.md, "Where it runs"). Its readiness is a report, in status and
-// the metrics, and holds back nothing the translator or a segment carries.
+// message wakes every owner unless it is a NEWTABLE whose flags are 0, which
+// makes the table or clears its flags, so a flush of the ruleset or another
+// program setting the dormant flag wakes each owner once, and the owner whose
+// pass then makes the table again or clears the flag wakes no other. The
+// filter keeps its chains through `ranet3 down`, since it guards the host's
+// links rather than the mesh, withdraws them last at a stop the operator asks
+// for, after nothing routes into the tun, and leaves them at the stop for the
+// mesh's failure (antispoof.md, "Where it runs"). Its readiness is a report,
+// in status and the metrics, and holds back nothing the translator or a
+// segment carries.
 package kernel
 
 import (
@@ -541,9 +542,11 @@ type backend interface {
 	// table with them where it holds nothing else. What is already gone is
 	// success.
 	Withdraw() error
-	// Changed carries one coalesced wake-up per batch of changes another
-	// writer made to the table or to the translator's own chains and sets, a
-	// deletion or an addition.
+	// Changed carries one coalesced wake-up per transaction in which another
+	// writer deleted the table, set a flag on it, or added, changed or deleted
+	// one of the translator's own chains, rules or sets or a set's elements,
+	// and may carry more than one for a transaction read in the span after a
+	// loss that nftables.Monitor's doc gives.
 	Changed() <-chan struct{}
 	// Missed carries one coalesced wake-up per batch of notifications the
 	// backend lost or could not read, any of which may have been a change.
@@ -768,7 +771,7 @@ func (t *Translator) Run(ctx context.Context) error {
 		}
 	}
 	// Readiness and the advertisement go before the rules do. A peer that
-	// keeps selecting this node while its table is being taken down is a peer
+	// keeps selecting this node while its chains are being taken down is a peer
 	// whose traffic leaves untranslated, and babel's own retraction is the
 	// only thing that can tell it otherwise.
 	t.SetUnready("the translator is stopping")

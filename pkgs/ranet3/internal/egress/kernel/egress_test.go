@@ -655,7 +655,7 @@ func TestSteeredExitKeysOneRulePerFamilyOnTheTun(t *testing.T) {
 	}
 }
 
-// Each family is a table of its own, written and read back one at a time, so
+// Each family's rules are read back apart from the other's, so
 // the rules a pass asks for have to be grouped by family. A list ordered any
 // other way never compares equal to its own readback, and the ruleset is
 // rewritten on every pass for the life of the node.
@@ -903,7 +903,7 @@ func TestTranslatorRewritesAnObjectReadingBackOtherThanWritten(t *testing.T) {
 }
 
 // A translator that stops retracts before it withdraws. A peer still selecting
-// this node while the table comes down is a peer whose traffic leaves
+// this node while its chains come down is a peer whose traffic leaves
 // untranslated, and the retraction is the only thing that tells it otherwise.
 func TestShutdownRetractsBeforeItWithdraws(t *testing.T) {
 	cfg := egress.Egress{Advertise: prefixes(t, "0.0.0.0/0")}
@@ -1001,7 +1001,7 @@ func TestStoppingReportsTheEgressSegmentsNotReadyFirst(t *testing.T) {
 	}
 }
 
-// Another writer changing the translator's table, a firewall reload flushing
+// Another writer changing the translator's chains, a firewall reload flushing
 // the ruleset for one, wakes the translator, which reports the egress segments
 // not ready before the pass that puts the rules back and ready again after
 // it, with no sweep due

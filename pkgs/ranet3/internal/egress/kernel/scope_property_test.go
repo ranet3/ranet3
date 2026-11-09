@@ -53,9 +53,9 @@ func setOwner(name string) int {
 // rest and the names of the three owners, IPv6's chain, the chain an earlier
 // translator held IPv4's lines in, a class of none's chain, an anonymous set
 // and map and a stranger's, each in every family, the table's name and
-// others, from either port and with a table message's flags absent, none,
-// dormant, owner and persist. A table made with no flags, or cleared of them,
-// takes no owner's chain.
+// others, from either port and with a table message's flags absent, 0,
+// dormant, owner and persist. A NEWTABLE whose flags are 0 makes the table or
+// clears its flags, and takes no owner's chain.
 func TestEachOwnersMonitorWakesForItsOwnNamesAlone(t *testing.T) {
 	kinds := []struct {
 		command     int
@@ -77,8 +77,8 @@ func TestEachOwnersMonitorWakesForItsOwnNamesAlone(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		kind := kinds[hegel.Draw(ht, pbt.Spanning(0, len(kinds)-1))]
 		name := hegel.Draw(ht, hegel.SampledFrom(names))
-		// the family, the table, the port and the flags each message is checked under are swept, since their
-		// boundaries meet only in one of the 120 they make
+		// the family, the table and the port each message is checked under are swept, since a message wakes
+		// in one of each alone, and the flags beside them
 		for _, family := range []uint8{unix.NFPROTO_INET, unix.NFPROTO_IPV4, unix.NFPROTO_IPV6, unix.NFPROTO_BRIDGE} {
 			for _, table := range []string{nftables.Table, "nat", nftables.Table + "x"} {
 				for _, pid := range []uint32{own, other} {

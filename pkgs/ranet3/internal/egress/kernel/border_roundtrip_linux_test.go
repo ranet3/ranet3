@@ -364,10 +364,10 @@ func TestBorderRoundTripPutsBackWhatAnotherWriterChanged(t *testing.T) {
 }
 
 // borderCrashNamespace names, in the crash helper's environment, the network
-// namespace it writes the table in
+// namespace it writes the filter in
 const borderCrashNamespace = "RANET3_BORDER_CRASH_NAMESPACE"
 
-// entrySets is sets of each kind in both families, for a table whose sets a
+// entrySets is sets of each kind in both families, for a filter whose sets a
 // readback can find flushed
 func entrySets(*egress.Border) egress.BorderSets {
 	return egress.BorderSets{
@@ -590,7 +590,7 @@ func TestBorderRoundTripLeavesAnotherWritersChainInTheTable(t *testing.T) {
 }
 
 // the crash helper of TestBorderRoundTripOutlivesAKilledOwner, which writes the
-// table in the namespace its environment names and waits to be killed
+// filter in the namespace its environment names and waits to be killed
 func TestBorderCrashHelper(t *testing.T) {
 	path := os.Getenv(borderCrashNamespace)
 	if path == "" {
