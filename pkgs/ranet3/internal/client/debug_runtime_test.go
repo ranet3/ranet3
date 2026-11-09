@@ -23,29 +23,26 @@ func TestResolverFollowsTheNetPackage(t *testing.T) {
 	plain := []debug.BuildSetting{{Key: "CGO_ENABLED", Value: "0"}}
 	for name, test := range map[string]struct {
 		prefersGo bool
-		goos      string
 		settings  []debug.BuildSetting
 		godebug   string
 		want      string
 	}{
-		"linux preferring go with cgo": {prefersGo: true, goos: "linux", settings: cgo, godebug: "netdns=cgo", want: "go"},
-		"linux without cgo":            {goos: "linux", settings: plain, want: "go"},
-		"linux with cgo":               {goos: "linux", settings: cgo, want: "cgo"},
-		"linux with netgo":             {goos: "linux", settings: append(cgo, debug.BuildSetting{Key: "-tags", Value: "osusergo,netgo"}), want: "go"},
-		"darwin without cgo":           {goos: "darwin", settings: plain, want: "cgo"},
-		"darwin with netgo":            {goos: "darwin", settings: append(plain, debug.BuildSetting{Key: "-tags", Value: "netgo"}), want: "go"},
-		"netdns go":                    {goos: "linux", settings: cgo, godebug: "netdns=go", want: "go"},
-		"a debug level before go":      {goos: "linux", settings: cgo, godebug: "netdns=1+go", want: "go"},
-		"a debug level after go":       {goos: "linux", settings: cgo, godebug: "netdns=go+1", want: "go"},
-		"a level and more after go":    {goos: "linux", settings: cgo, godebug: "netdns=go+1+cgo", want: "go"},
-		"the last setting wins":        {goos: "linux", settings: cgo, godebug: "netdns=go,netdns=cgo", want: "cgo"},
-		"a debug level alone last":     {goos: "linux", settings: cgo, godebug: "netdns=go,netdns=2", want: "cgo"},
-		"another setting named":        {goos: "linux", settings: cgo, godebug: "http2client=0,netdnsx=go", want: "cgo"},
-		"the build's default":          {goos: "linux", settings: append(cgo, debug.BuildSetting{Key: "DefaultGODEBUG", Value: "netdns=go"}), want: "go"},
-		"the environment overrides":    {goos: "linux", settings: append(cgo, debug.BuildSetting{Key: "DefaultGODEBUG", Value: "netdns=go"}), godebug: "netdns=cgo", want: "cgo"},
+		"preferring go with cgo":    {prefersGo: true, settings: cgo, godebug: "netdns=cgo", want: "go"},
+		"without cgo":               {settings: plain, want: "go"},
+		"with cgo":                  {settings: cgo, want: "cgo"},
+		"with netgo":                {settings: append(cgo, debug.BuildSetting{Key: "-tags", Value: "osusergo,netgo"}), want: "go"},
+		"netdns go":                 {settings: cgo, godebug: "netdns=go", want: "go"},
+		"a debug level before go":   {settings: cgo, godebug: "netdns=1+go", want: "go"},
+		"a debug level after go":    {settings: cgo, godebug: "netdns=go+1", want: "go"},
+		"a level and more after go": {settings: cgo, godebug: "netdns=go+1+cgo", want: "go"},
+		"the last setting wins":     {settings: cgo, godebug: "netdns=go,netdns=cgo", want: "cgo"},
+		"a debug level alone last":  {settings: cgo, godebug: "netdns=go,netdns=2", want: "cgo"},
+		"another setting named":     {settings: cgo, godebug: "http2client=0,netdnsx=go", want: "cgo"},
+		"the build's default":       {settings: append(cgo, debug.BuildSetting{Key: "DefaultGODEBUG", Value: "netdns=go"}), want: "go"},
+		"the environment overrides": {settings: append(cgo, debug.BuildSetting{Key: "DefaultGODEBUG", Value: "netdns=go"}), godebug: "netdns=cgo", want: "cgo"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := resolver(test.prefersGo, test.goos, test.settings, test.godebug); got != test.want {
+			if got := resolver(test.prefersGo, test.settings, test.godebug); got != test.want {
 				t.Errorf("the resolver reads %s, want %s", got, test.want)
 			}
 		})

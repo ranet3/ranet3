@@ -165,7 +165,8 @@ func (f *repeatedFailure) alreadySaid(err error) bool {
 
 // resolveEndpoint returns the address it resolved with the endpoint, since
 // resolving a name again costs a resolver round trip, and notes in failed
-// whether each name it looked up failed. prepare readies the resolver's sockets.
+// whether each name it looked up failed. On linux and darwin prepare readies
+// the resolver's sockets toward a nameserver outside the overlay.
 func resolveEndpoint(ctx context.Context, x *registry.Index, overlay []schema.Prefix, prepare underlay.Prepare, peer identity.Identity, family string, failed *names) (registry.Target, net.IP, error) {
 	resolve := func(target registry.Target) (net.IP, error) {
 		address, err := target.ResolveRemote(ctx, overlay, prepare)

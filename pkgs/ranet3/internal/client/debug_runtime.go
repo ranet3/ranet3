@@ -60,23 +60,23 @@ func (c *Client) DebugRuntime() control.RuntimeInfo {
 	if build, ok := debug.ReadBuildInfo(); ok {
 		settings = build.Settings
 	}
-	info.Resolver = resolver(registry.PrefersGo, runtime.GOOS, settings, os.Getenv("GODEBUG"))
+	info.Resolver = resolver(registry.PrefersGo, settings, os.Getenv("GODEBUG"))
 	return info
 }
 
 // resolver names what the endpoint resolver, the daemon's one lookup, can reach
 // go where it runs go's own resolver alone, cgo where it may go to the C library
 // one that prefers go runs it whatever the build, and the rest follow the rules the net package applies at startup
-// darwin reaches the system resolver through libSystem with or without cgo
-func resolver(prefersGo bool, goos string, settings []debug.BuildSetting, godebug string) string {
+func resolver(prefersGo bool, settings []debug.BuildSetting, godebug string) string {
 	if prefersGo {
 		return "go"
 	}
-	library, netgo, defaults := goos == "darwin", false, ""
+	var library, netgo bool
+	var defaults string
 	for _, setting := range settings {
 		switch setting.Key {
 		case "CGO_ENABLED":
-			library = library || setting.Value == "1"
+			library = setting.Value == "1"
 		case "-tags":
 			netgo = slices.Contains(strings.Split(setting.Value, ","), "netgo")
 		case "DefaultGODEBUG":

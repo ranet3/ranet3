@@ -60,7 +60,7 @@ type Client struct {
 	selection kernel.UnderlaySelection
 	// underlaySelection is the same selection as the transport reads it, which scopes the userspace exit's sockets, nil where the transport selects none
 	underlaySelection transport.Selection
-	// prepare readies every underlay socket of the node, the hub's and the resolver's
+	// prepare is handed to the node's endpoint lookups, and on linux and darwin readies the socket of each query toward a nameserver outside the overlay
 	prepare underlay.Prepare
 	// host is the machine the underlay and the route reconciler read and
 	// write, nil for the one this process is running on. It is kept so the
