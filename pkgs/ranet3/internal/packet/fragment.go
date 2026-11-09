@@ -33,7 +33,6 @@ const (
 // the first carries the packet's own header and every later one the options whose copied flag is set, with NOPs where the others stood
 // every header is then as long as the packet's, every fragment at most mtu bytes, and the data of all but the last a multiple of 8 bytes
 // the last keeps the packet's more fragments flag, which lets a fragment cut again reassemble where it came from
-// a packet that fits comes back as itself
 // it reports false for anything but one whole IPv4 packet whose header HeaderValid passes, as RFC 1812 section 5.2.2 has a router discard any other
 // for DF, for an option list that does not describe itself, for data past the largest datagram, and for an mtu with no room for 8 bytes of data past the header
 // fault is the octet an option list that does not describe itself goes wrong at, counted from the header's first, and 0 for every other refusal

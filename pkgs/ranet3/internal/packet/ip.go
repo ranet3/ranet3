@@ -2,12 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: MIT AND FSL-1.1-ALv2
 
-// Package packet validates the IP envelope shared by TUN intake and ESP
-// decapsulation. Transport checksums and extension headers remain the kernel's
-// responsibility, and neither path accepts a packet shorter than its own
-// header claims. They differ on what may follow one: a TUN frame is exactly
-// one packet, while an ESP payload may carry Traffic Flow Confidentiality
-// padding after it.
+// Package packet checks and edits the IP packets the dataplane forwards: it
+// checks the IP envelope and an IPv4 header, takes down a TTL and processes
+// IPv4 options as a router does, reads, sets and decapsulates ECN fields, cuts
+// IPv4 and IPv6 packets into fragments, builds ICMPv4 errors, and names the
+// addresses no router forwards.
 package packet
 
 import (
