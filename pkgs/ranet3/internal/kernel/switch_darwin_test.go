@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/netstack"
+	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -87,6 +89,13 @@ var (
 	// helper's overlay holds beside killOverlay and its mesh announces
 	killFull        = []netip.Prefix{prefix("198.18.0.77/32"), prefix("2001:db8:ee::77/128")}
 	killFullOverlay = slices.Concat(killOverlay, prefixes(killFull...))
+	// killNameservers lie under a member of each family's cover and under the
+	// NAT64 member, and inside no prefix of the overlay
+	killNameservers = []netip.Addr{netip.MustParseAddr("203.0.113.53"), netip.MustParseAddr("2001:db8:ff::53"), netip.MustParseAddr("64:ff9b::cb00:7135")}
+	// killOtherNameservers are host routes out of a second test utun alone, as
+	// a nameserver another program's tun reaches, each under a member of its
+	// family's cover
+	killOtherNameservers = []netip.Prefix{prefix("192.0.2.53/32"), prefix("2001:db8:de::53/128")}
 )
 
 // killHelperPlain and killHelperFull are killHelperEnv's values for the helper
@@ -108,6 +117,9 @@ type killRig struct {
 	reconcile *Reconciler
 	live      atomic.Int64
 	clock     atomic.Int64
+	// selection is the underlay's selection the reconciler is handed, nil
+	// where killRigOptions.selection is false
+	selection *Selection
 	// stopped says the test stopped or closed the reconciler itself, or
 	// handed it to Run, which does both
 	stopped bool
@@ -141,7 +153,8 @@ func newKillRig(t *testing.T, options killRigOptions) *killRig {
 		Network:   options.network,
 	}
 	if options.selection {
-		runtime.Selection = openTestSelection(t, nil, name)
+		rig.selection = openTestSelection(t, nil, name)
+		runtime.Selection = rig.selection
 	}
 	table := Table{
 		ID: DefaultTable, Proto: DefaultProtocol, Addresses: killAddresses,
@@ -738,6 +751,162 @@ func TestDarwinSwitchWithholdsAHalfBeneathAHostRoute(t *testing.T) {
 		}
 	}
 	rig.stop(t)
+}
+
+// A socket toward a nameserver's port 53, dialed with underlay.Bound over the
+// real selection as its Control, the daemon's prepare for an endpoint query
+// outside the overlay, leaves by U, the interface the host's own default of the
+// family leaves by, to a nameserver under each family's cover and under the
+// NAT64 member: while the switch passes, while it holds, and after SIGKILL of
+// the helper holding it. Each datagram is sent and no TCP connect is refused
+// with ENETUNREACH, the socket's option names U, and RTM_GET scoped to U
+// answers U. An unbound send to the same nameserver ends at M while the switch
+// passes, and is refused with ENETUNREACH while it holds and after the kill. A
+// nameserver only a second test utun routes, as another program's tun routes
+// its own resolver, takes that utun in each state.
+func TestDarwinBoundNameserverSocketLeavesByTheSelectedInterface(t *testing.T) {
+	requireNetTest(t)
+	killLeavesTheHost(t)
+	u4, _, err := lookupDefault(runningKernel{}, 0, netip.IPv4Unspecified())
+	if err != nil {
+		t.Skipf("this host has no IPv4 default to fall back on: %v", err)
+	}
+	u6 := hostDefault6(t, 0)
+	other, destroy := destroyableUTUN(t)
+	t.Cleanup(func() { _ = destroy() })
+	setInterfaceUp(t, other)
+	otherIndex := interfaceIndex(t, other)
+	for _, address := range killOther {
+		if err := (runningKernel{}).Assign(true, other, address); err != nil {
+			t.Fatalf("assign %s to %s: %v", address, other, err)
+		}
+	}
+	waitHoleDAD(t, other)
+	sock := killSocket(t)
+	for _, nameserver := range killOtherNameservers {
+		if err := killOut(sock, unix.RTM_ADD, otherIndex, nameserver); err != nil {
+			t.Fatalf("add %s out of %s: %v", nameserver, other, err)
+		}
+	}
+	// bound checks each query of the state leaves by the interface the selection answers, and reports nothing about unbound sends
+	bound := func(t *testing.T, selection *Selection) {
+		t.Helper()
+		if err := selection.read(); err != nil {
+			t.Fatal(err)
+		}
+		prepare := underlay.Bound(selection.Interface)
+		want := map[netip.Addr]int{}
+		for _, nameserver := range killNameservers {
+			want[nameserver] = u6
+			if nameserver.Is4() {
+				want[nameserver] = u4
+			}
+		}
+		for _, nameserver := range killOtherNameservers {
+			want[nameserver.Addr()] = otherIndex
+		}
+		for nameserver, index := range want {
+			if got := askRoute(t, nameserver, index); got != index {
+				t.Errorf("RTM_GET for %s scoped to %d answers interface %d", nameserver, index, got)
+			}
+			for _, kind := range []string{"udp", "tcp"} {
+				scope, err := killQuery(t, kind, nameserver, prepare)
+				if scope != index {
+					t.Errorf("the %s query to %s is scoped to %d, want %d", kind, nameserver, scope, index)
+				}
+				if (kind == "udp" && err != nil) || errors.Is(err, unix.ENETUNREACH) {
+					t.Errorf("the %s query to %s scoped to %d answers %v, want it to leave", kind, nameserver, index, err)
+				}
+			}
+		}
+	}
+	refused := func(t *testing.T) {
+		t.Helper()
+		for _, nameserver := range killNameservers {
+			for _, kind := range []string{"UDP", "TCP"} {
+				if err := killSend(t, kind, nameserver, killBinding{}); !errors.Is(err, unix.ENETUNREACH) {
+					t.Errorf("an unbound %s send to %s answers %v, want ENETUNREACH", kind, nameserver, err)
+				}
+			}
+		}
+	}
+
+	rig := newKillRig(t, killRigOptions{fallback: FallbackNone, live: 1, selection: true})
+	rig.pass(t, "the first pass")
+	waitHoleDAD(t, rig.name)
+	t.Run("passing", func(t *testing.T) {
+		if got := switchReads(rig.reconcile); got != string(FallbackPassing) {
+			t.Fatalf("the switch is %s, want passing", got)
+		}
+		bound(t, rig.selection)
+		for _, nameserver := range killNameservers {
+			if got := askRoute(t, nameserver, 0); got != rig.index {
+				t.Errorf("an unbound RTM_GET for %s answers interface %d, want M's %d", nameserver, got, rig.index)
+			}
+			if !arrivesUnbound(t, rig.fd, nameserver) {
+				t.Errorf("an unbound datagram to %s did not come out of M", nameserver)
+			}
+		}
+	})
+	t.Run("holding", func(t *testing.T) {
+		rig.live.Store(0)
+		rig.pass(t, "the pass that finds the session gone")
+		rig.later(2 * MinCaptureGrace)
+		rig.pass(t, "the pass after the grace")
+		if got := switchReads(rig.reconcile); got != string(FallbackHolding) {
+			t.Fatalf("the switch is %s, want holding", got)
+		}
+		bound(t, rig.selection)
+		refused(t)
+	})
+	rig.stop(t)
+
+	t.Run("after the crash", func(t *testing.T) {
+		holder, name, index := killStartHelper(t, killHelperPlain)
+		killHelper(t, holder, name, index)
+		killLoopsHold(t, killLoops(t, interfaceIndex(t, Loopback)), rejectKeys, true, "reject")
+		bound(t, openTestSelection(t, nil, ""))
+		refused(t)
+	})
+}
+
+// killQuery dials one query of kind, udp or tcp, to nameserver's port 53 as
+// the resolver dials a query to a nameserver outside the overlay, with prepare
+// in the dialer's Control, and sends one datagram where kind is udp. It is the
+// interface the socket's IP_BOUND_IF or IPV6_BOUND_IF names once prepare ran,
+// and the error the dial or the send met, nil where a TCP connect had no
+// answer within killConnectWait.
+func killQuery(t *testing.T, kind string, nameserver netip.Addr, prepare underlay.Prepare) (int, error) {
+	t.Helper()
+	to := netip.AddrPortFrom(nameserver, 53)
+	level, option := unix.IPPROTO_IP, unix.IP_BOUND_IF
+	if nameserver.Is6() {
+		level, option = unix.IPPROTO_IPV6, unix.IPV6_BOUND_IF
+	}
+	scope := 0
+	dialer := net.Dialer{Timeout: killConnectWait, Control: func(network, _ string, raw syscall.RawConn) error {
+		if err := prepare(network, to, raw); err != nil {
+			return err
+		}
+		var readErr error
+		if err := raw.Control(func(fd uintptr) { scope, readErr = unix.GetsockoptInt(int(fd), level, option) }); err != nil {
+			return err
+		}
+		return readErr
+	}}
+	conn, err := dialer.Dial(kind, to.String())
+	var timeout net.Error
+	if kind == "tcp" && errors.As(err, &timeout) && timeout.Timeout() {
+		return scope, nil
+	}
+	if err != nil {
+		return scope, err
+	}
+	defer conn.Close()
+	if kind == "udp" {
+		_, err = conn.Write([]byte("query"))
+	}
+	return scope, err
 }
 
 // killLeavesTheHost reads the host's table and defaults, and once every later
