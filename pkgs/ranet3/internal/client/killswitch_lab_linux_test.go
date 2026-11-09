@@ -147,7 +147,7 @@ func switchSocketProbes(state switchState) []switchProbe {
 
 // switchUnaddressedProbes is switchSocketProbes with the tun holding no IPv4 overlay address, so IPv4 runs mode off's rules with
 // 5445 and 5450: 5450 refuses the internet to an unbound socket and one bound to the uplink's address in every state but after the
-// mesh failed, whose stop takes 5450 and leaves both to the table's drop, the mesh's subnet enters the tun from both while the tun
+// mesh failed, whose stop takes 5450 and leaves both to the switch's drop, the mesh's subnet enters the tun from both while the tun
 // lives with no 5405 to send the second by main, the LAN and the own prefix leave by the uplink, and IPv6 goes as
 // switchSocketProbes says
 func switchUnaddressedProbes(state switchState) []switchProbe {
@@ -319,7 +319,7 @@ type switchLab struct {
 }
 
 // entry starts the leaf's antispoof filter as the command builds it, its entry chain guarding the tun, and runs it until the lab's
-// node stops, since the command withdraws the table only once the reconciler and the mesh have stopped
+// node stops, since the command withdraws the filter's chains only once the reconciler and the mesh have stopped
 func (lab *switchLab) entry(t *testing.T) {
 	t.Helper()
 	node := lab.d.node
@@ -547,7 +547,7 @@ func (lab *switchLab) crash(t *testing.T, arm switchArm) {
 	}
 }
 
-// fail starts the lab's own node again, whose first pass in mode off removes what an earlier arm or helper left, so the table the
+// fail starts the lab's own node again, whose first pass in mode off removes what an earlier arm or helper left, so the switch the
 // arm reads is the one the failed node's stop left
 func (lab *switchLab) fail(t *testing.T, arm switchArm) {
 	t.Helper()
@@ -947,7 +947,7 @@ func switchReplies(listed, underlay bool) []exitReply {
 // own prefix beyond the gateway and the underlay's mark leave by the uplink, what mode 2 sends into the tun going there while
 // the defaults are present. Neighbor and router solicitation, DHCP, multicast and link-local pass, a forwarded link forward leaves
 // out keeps its routes and one it names follows the switch, a listed service answers and an unlisted one does not, a clean stop
-// leaves no table or rule, the table a node killed with SIGKILL leaves holds as it did, and so does the table a node stopped for its
+// leaves no table or rule, the switch a node killed with SIGKILL leaves holds as it did, and so does the switch a node stopped for its
 // mesh's failure leaves. With the tun holding no IPv4 overlay
 // address 5450 refuses the internet host to the unbound and the uplink-bound unmarked sockets in IPv4, where 5445 sends the own
 // prefix beyond the gateway out of the uplink, and while another writer holds the table it still refuses what the switch would
@@ -977,7 +977,7 @@ func TestTUNKillSwitchKeepsEachSocketOffTheUplink(t *testing.T) {
 		t.Run(string(state)+", the tun holding no IPv4 overlay address, forward naming the bridge", func(t *testing.T) {
 			flows := switchForwardedFlows(state, true)
 			// the bridge's IPv4 ping is held in every state: 5450 refuses it, since IPv4 holds no 5440 for it to follow, and after the
-			// mesh failed, 5450 gone with the rest, the table drops it
+			// mesh failed, 5450 gone with the rest, the switch drops it
 			flows[0] = switchFlow{"container", exitLabHost[4].internet.Addr(), switchHeld, 0}
 			lab.run(t, switchArm{
 				state: state, forward: []string{exitBridge}, unaddressed: 4, probes: switchUnaddressedProbes(state),
@@ -1046,7 +1046,7 @@ func (lab *switchLab) cleanStop(t *testing.T) {
 // failedBorder starts the leaf's node and antispoof filter with no route of the mesh's, fails the mesh and stops both for it,
 // checks that the stop left the filter's chains, has the far host send the leaf a datagram forged from an overlay source in each
 // family while no node runs, starts the node and filter again, which adopt the chains without a write, their drops holding the
-// forged datagrams, and stops them as asked, which withdraws them. A start whose sets differ from the table's rewrites them in 1
+// forged datagrams, and stops them as asked, which withdraws them. A start whose sets differ from the filter's rewrites them in 1
 // transaction.
 func (lab *switchLab) failedBorder(t *testing.T) {
 	lab.restart(t)
@@ -1468,7 +1468,7 @@ func switchEntryHeld(probes []switchProbe) []switchProbe {
 // is mode 2 family by family with the defaults the path steers, so every socket's probe goes where it goes in mode 2 under
 // fallback = "none" beside the table inet ranet3, a link forward names follows the switch, a listed service answers, and a route
 // chain marking unmarked packets at mangle - 5 with its rule sending the mark to main (M2) lets no unmarked packet reach the
-// internet host by the uplink. With fallback = "uplink" written the reconciler holds no table, a node killed with SIGKILL or
+// internet host by the uplink. With fallback = "uplink" written the reconciler holds no chain, a node killed with SIGKILL or
 // stopped for the mesh's failure leaves none, and the internet host leaves by the uplink, by main, once the path is down or the
 // tun is gone. The leaf's border runs as
 // the command runs it while the leaf's node does, and mesh_entry drops what a socket bound to the uplink's address sends to a

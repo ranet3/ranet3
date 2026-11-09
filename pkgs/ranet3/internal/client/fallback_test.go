@@ -20,7 +20,7 @@ import (
 
 // Where the reconciler's last pass ran fallback = "none", the status names
 // each endpoint name whose last lookup failed beside the switch's state, and
-// debug rules carries the table as a read finds it with that state. Under
+// debug rules carries the switch as a read finds it with that state. Under
 // "uplink" neither names the switch, and a read that fails is reported.
 func TestStatusAndDebugRulesCarryTheSwitch(t *testing.T) {
 	c, _, _, _ := reloadOf(t, func(*config.Config) {})

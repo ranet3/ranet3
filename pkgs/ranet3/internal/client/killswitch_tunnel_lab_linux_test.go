@@ -39,7 +39,7 @@ const (
 )
 
 var (
-	// the tunnels' networks are private, so the table passes the inner packet as the LAN and only the outer one is at stake
+	// the tunnels' networks are private, so the switch passes the inner packet as the LAN and only the outer one is at stake
 	switchGREPrefix       = netip.MustParsePrefix("10.0.1.1/30")
 	switchWireGuardPrefix = netip.MustParsePrefix("10.0.2.1/24")
 	switchBoundGREPrefix  = netip.MustParsePrefix("10.0.4.1/30")
