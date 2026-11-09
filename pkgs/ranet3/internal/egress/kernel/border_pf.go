@@ -86,8 +86,9 @@ func (b *borderPF) where(*egress.Border) string { return "pf anchor " + b.anchor
 // inside rule, which each drop folds in as on ! <tun>, since pf filters every
 // packet in at the one point and a drop that names every interface but the
 // tun leaves the tun's packets to whatever follows, as the accept does on
-// Linux. It writes no rule of the entry chain: darwin runs no exit, and the
-// tun read drops a packet from a source this node does not own.
+// Linux. It writes no rule of the entry chain: darwin's exit sends no reply
+// through the tun, and the tun read drops a packet from a source this node
+// does not own.
 func (b *borderPF) writes(rule BorderRule) bool {
 	return rule.Chain() == BorderChain && (rule.Class != BorderInside || rule.Device != b.tun)
 }

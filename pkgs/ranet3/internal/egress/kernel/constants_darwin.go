@@ -8,9 +8,10 @@ package kernel
 import "time"
 
 // EntryRuns is whether this platform writes the entry chain. The anchor holds
-// no entry rule: darwin runs no exit, so no reply needs a flow table to tell it
-// from a forged packet, and the tun read's drop of a source this node does not
-// own covers every packet the rule would drop.
+// no entry rule: darwin's exit hands its replies to the mesh through its own
+// lanes and never through the tun, so no reply read off the tun needs a flow
+// table to tell it from a forged packet, and the tun read's drop of a source
+// this node does not own covers every packet the rule would drop.
 const EntryRuns = false
 
 const (
