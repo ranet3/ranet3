@@ -15,7 +15,7 @@ const (
 	// waitTimeout is how long debug wait waits by default, as long as a session takes to come up on a slow link
 	waitTimeout = 10 * time.Second
 	// firstPassWait bounds how long a start under fallback = "none" waits for the reconciler's first pass before it dials, long
-	// past a pass that writes the kill switch beside the routes, on linux the table once beside the rules and on darwin up to
+	// past a pass that writes the kill switch beside the routes, on linux its chains once beside the rules and on darwin up to
 	// 18 rejects, a route message each, so only a stalled pass dials first
 	firstPassWait = 10 * time.Second
 	// authPoll is how often the start looks again for a key or trust document it waits for
