@@ -5,12 +5,14 @@ package userspace
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"slices"
 	"testing"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"ranet3.com/pkgs/ranet3/internal/codel"
@@ -138,6 +140,72 @@ func TestLinkDropsAtTheHeadNotTheTail(t *testing.T) {
 	}
 }
 
+// writeToLeaf queues a packet of 100 bytes from server4 to leaf4, an IPv4
+// header and a payload that begins with tag
+func writeToLeaf(t *testing.T, l *link, tag uint32) {
+	t.Helper()
+	payload := make([]byte, 100-header.IPv4MinimumSize)
+	binary.BigEndian.PutUint32(payload, tag)
+	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{ReserveHeaderBytes: header.IPv4MinimumSize, Payload: buffer.MakeWithData(payload)})
+	header.IPv4(pkt.NetworkHeader().Push(header.IPv4MinimumSize)).Encode(&header.IPv4Fields{
+		TotalLength: 100, TTL: 64, Protocol: uint8(header.TCPProtocolNumber),
+		SrcAddr: tcpip.AddrFrom4(server4.As4()), DstAddr: tcpip.AddrFrom4(leaf4.As4()),
+	})
+	var list stack.PacketBufferList
+	list.PushBack(pkt)
+	defer list.DecRef()
+	if n, err := l.WritePackets(list); n != 1 || err != nil {
+		t.Fatalf("queue packet %d: took %d: %v", tag, n, err)
+	}
+}
+
+// toLeafTag is the tag writeToLeaf gave pkt, which it releases
+func toLeafTag(l *link, pkt *stack.PacketBuffer) uint32 {
+	b := pkt.ToBuffer()
+	defer b.Release()
+	l.release(pkt)
+	return binary.BigEndian.Uint32(b.Flatten()[header.IPv4MinimumSize:])
+}
+
+// A packet whose delay has stayed above the target for an interval is kept
+// while less than its leaf session's MTU stays queued behind it, by RFC 8289
+// section 4.1, and dropped at the head once at least that does
+func TestLinkKeepsAPacketWithLessThanItsSessionsMTUBehindIt(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		mtu  int
+		want uint32
+	}{
+		{"a session MTU past the bytes behind", 1400, 1},
+		{"a session MTU below the bytes behind", 50, 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			l := newLink(1 << 30)
+			defer l.Close()
+			now := fakeClock(l)
+			var asked []netip.Addr
+			l.mtu = func(source, destination netip.Addr) int {
+				asked = append(asked, source, destination)
+				return c.mtu
+			}
+			for tag := range uint32(3) {
+				writeToLeaf(t, l, tag)
+			}
+			*now = 200 * time.Millisecond
+			if got := toLeafTag(l, l.poll()); got != 0 {
+				t.Fatalf("took packet %d first, want 0, which starts the interval", got)
+			}
+			*now = 301 * time.Millisecond
+			if got := toLeafTag(l, l.poll()); got != c.want {
+				t.Errorf("took packet %d an interval later with 100 bytes behind it, want %d", got, c.want)
+			}
+			if want := []netip.Addr{server4, leaf4}; len(asked) < 2 || !slices.Equal(asked[:2], want) {
+				t.Errorf("asked the MTU of the sessions %v, want %v first", asked, want)
+			}
+		})
+	}
+}
+
 // The dropping state ends once the pump finds the queue empty, so a packet
 // queued after it waits a whole interval above the target before the next
 // drop
@@ -184,5 +252,20 @@ func TestLinkCountsItsDelayDropsApartFromItsBound(t *testing.T) {
 	}
 	if dropped[reasonStackICMP] != 5 || dropped[reasonStackOther] != 7 {
 		t.Errorf("the status counts %d as %q and %d as %q, want 5 and 7", dropped[reasonStackICMP], reasonStackICMP, dropped[reasonStackOther], reasonStackOther)
+	}
+}
+
+// Run gives the link the session MTUs of the pump's lane, which the
+// controlled delay keeps queued behind a packet it drops
+func TestRunGivesTheLinkItsLanesSessionMTU(t *testing.T) {
+	mesh := newFakeMesh()
+	mesh.mtu = 1300
+	h := newExitHarness(t, mesh, &fakePlatform{routes4: true, routes6: true})
+	h.run(t)
+	if h.exit.link.mtu == nil {
+		t.Fatal("the link has no session MTU once Run started")
+	}
+	if got := h.exit.link.mtu(server4, leaf4); got != mesh.mtu {
+		t.Errorf("the link reads a session MTU of %d, want the lane's %d", got, mesh.mtu)
 	}
 }

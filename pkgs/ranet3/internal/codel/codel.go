@@ -41,9 +41,11 @@ type Controller struct {
 func (c *Controller) Dropping() bool { return c.dropping }
 
 // okToDrop says whether the delay has stayed above the target for a whole
-// interval, this item's sojourn included
-func (c *Controller) okToDrop(now, sojourn time.Duration) bool {
-	if sojourn < Target {
+// interval, this item's sojourn included, with at least mtu bytes left queued
+// behind it. With less, a drop could leave the link idle, so RFC 8289 section
+// 4.1 counts the delay as below the target, which ends a dropping state.
+func (c *Controller) okToDrop(now, sojourn time.Duration, left, mtu int) bool {
+	if sojourn < Target || left < mtu {
 		c.firstAbove = 0
 		return false
 	}
@@ -55,10 +57,11 @@ func (c *Controller) okToDrop(now, sojourn time.Duration) bool {
 }
 
 // Drop says whether the item the consumer takes at now, sojourn after it was
-// queued, loses its head packet. It follows the dequeue of RFC 8289 section
-// 5.5, one call for each item taken.
-func (c *Controller) Drop(now, sojourn time.Duration) bool {
-	ok := c.okToDrop(now, sojourn)
+// queued, loses its head packet, where left is the bytes the queue holds
+// behind the item and mtu the largest packet the queue's link sends. It
+// follows the dequeue of RFC 8289 section 5.5, one call for each item taken.
+func (c *Controller) Drop(now, sojourn time.Duration, left, mtu int) bool {
+	ok := c.okToDrop(now, sojourn, left, mtu)
 	if c.dropping {
 		if !ok {
 			c.dropping = false

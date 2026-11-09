@@ -9,7 +9,15 @@ import (
 	"time"
 )
 
+const (
+	// testMTU is the largest packet of the tests' link, and backlog the bytes a
+	// queue holds behind each item where a test leaves more than one MTU queued
+	testMTU = 1500
+	backlog = 10 * testMTU
+)
+
 // the delay control on a fake clock, one item a millisecond unless a phase spaces them out
+// each item has more than an MTU queued behind it
 // every item of a phase reads the same sojourn, and in some phases the queue empties after each item
 // each drop falls on the first item at or after the time the RFC 8289 control law gives, the interval over the square root of the count
 // the count starts at one on a fresh entry, and at the last state's drops past its first on an entry within 16 intervals of that state's schedule
@@ -66,7 +74,7 @@ func codelPhases(t *testing.T, age time.Duration) {
 	} {
 		var drops []int
 		for at := phase.from; at <= phase.to; at += max(phase.gap, 1) {
-			if c.Drop(age+time.Duration(at)*time.Millisecond, time.Duration(phase.sojourn)*time.Millisecond) {
+			if c.Drop(age+time.Duration(at)*time.Millisecond, time.Duration(phase.sojourn)*time.Millisecond, backlog, testMTU) {
 				drops = append(drops, at)
 			}
 			if phase.empty {
@@ -79,5 +87,34 @@ func codelPhases(t *testing.T, age time.Duration) {
 		if c.Dropping() != phase.dropping {
 			t.Errorf("%s: ended in the dropping state %v, want %v", phase.name, c.Dropping(), phase.dropping)
 		}
+	}
+}
+
+// One packet queued past the target for longer than an interval, with less
+// than an MTU behind it, is never dropped, by RFC 8289 section 4.1. A queue
+// that is dropping leaves the dropping state once what stays behind an item
+// falls below an MTU, and starts a whole interval over once it holds an MTU
+// again.
+func TestCodelDropsNoPacketWithLessThanAnMTUBehindIt(t *testing.T) {
+	var c Controller
+	for ms := 1; ms <= 500; ms++ {
+		if c.Drop(time.Duration(ms)*time.Millisecond, 20*time.Millisecond, testMTU-1, testMTU) {
+			t.Fatalf("dropped the packet at %d ms with less than an MTU behind it", ms)
+		}
+	}
+	var drops []int
+	for ms := 501; ms <= 700; ms++ {
+		if c.Drop(time.Duration(ms)*time.Millisecond, 20*time.Millisecond, testMTU, testMTU) {
+			drops = append(drops, ms)
+		}
+	}
+	if len(drops) == 0 || drops[0] != 601 {
+		t.Fatalf("dropped at %v ms with an MTU behind from 501 ms, want the first at 601, an interval on", drops)
+	}
+	if !c.Dropping() {
+		t.Fatal("not dropping with a backlog past the target")
+	}
+	if dropped := c.Drop(701*time.Millisecond, 20*time.Millisecond, 0, testMTU); dropped || c.Dropping() {
+		t.Errorf("dropped %t, dropping %t, with nothing behind the packet, want neither", dropped, c.Dropping())
 	}
 }

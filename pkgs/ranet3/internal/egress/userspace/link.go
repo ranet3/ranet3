@@ -4,6 +4,7 @@
 package userspace
 
 import (
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,7 +24,8 @@ import (
 // The queue's delay is held to codel.Target as RFC 8289 holds it: the pump,
 // its one consumer, runs the controlled delay on each packet it takes, from
 // when the packet was queued, and drops the packet at the head where the
-// delay calls for a drop. The bound in bytes still drops at the tail.
+// delay calls for a drop and at least the MTU of the head's leaf session
+// stays queued behind it. The bound in bytes still drops at the tail.
 //
 // It claims no receive checksum offload, so gVisor checks each TCP segment's
 // checksum itself. It offers segmentation offload, so a TCP flow's segments
@@ -46,6 +48,9 @@ type link struct {
 	// delay is the controlled delay over the queue, which only its consumer
 	// touches
 	delay codel.Controller
+	// mtu is the largest packet the leaf session from source to destination
+	// carries, zero where none does, set before the consumer starts
+	mtu func(source, destination netip.Addr) int
 	// closing is closed by Close, after which the link takes and holds nothing
 	closing   chan struct{}
 	closeOnce sync.Once
@@ -198,7 +203,13 @@ func (l *link) poll() *stack.PacketBuffer {
 func (l *link) take(q queuedPacket) *stack.PacketBuffer {
 	now := l.now()
 	sojourn := now - q.at
-	dropped := l.delay.Drop(now, sojourn)
+	mtu := 0
+	if sojourn >= codel.Target {
+		// below the target the delay drops nothing, so the session is looked up
+		// only where it may
+		mtu = l.sessionMTU(q.pkt)
+	}
+	dropped := l.delay.Drop(now, sojourn, int(l.held.Load())-q.pkt.Size(), mtu)
 	if observe := l.observe.Load(); observe != nil {
 		(*observe)(q.pkt, sojourn, dropped)
 	}
@@ -215,6 +226,23 @@ func (l *link) take(q queuedPacket) *stack.PacketBuffer {
 func (l *link) release(pkt *stack.PacketBuffer) {
 	l.held.Add(-int64(pkt.Size()))
 	pkt.DecRef()
+}
+
+// sessionMTU is the MTU of the leaf session pkt, a packet the stack sent, goes
+// out by, zero where l has no lookup or pkt has no network header of either
+// family
+func (l *link) sessionMTU(pkt *stack.PacketBuffer) int {
+	network := pkt.NetworkHeader().Slice()
+	if l.mtu == nil {
+		return 0
+	}
+	switch {
+	case len(network) >= header.IPv4MinimumSize && header.IPVersion(network) == header.IPv4Version:
+		return l.mtu(netip.AddrFrom4([4]byte(network[12:16])), netip.AddrFrom4([4]byte(network[16:20])))
+	case len(network) >= header.IPv6MinimumSize && header.IPVersion(network) == header.IPv6Version:
+		return l.mtu(netip.AddrFrom16([16]byte(network[8:24])), netip.AddrFrom16([16]byte(network[24:40])))
+	}
+	return 0
 }
 
 // Close detaches the stack and drops what the queue holds

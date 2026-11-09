@@ -114,6 +114,38 @@ func sojournOf(t *testing.T, event control.Event) time.Duration {
 	return sojourn
 }
 
+// floorless sets p's MTU to zero, so the delay control drops a head with
+// nothing queued behind it, which the tests of its other rules count on
+func floorless(p *Peer) *Peer {
+	p.SetMTU(0)
+	return p
+}
+
+// a batch whose delay has stood above the target for an interval keeps its head while less than the peer's MTU of the data budget is held behind it, by RFC 8289 section 4.1
+// the first batch, held in the transport for an interval, and the one batch behind it each have nothing queued behind them
+// so neither starts the interval nor loses its head, where without the check the second would lose it
+func TestSenderKeepsALoneBatchPastTheTarget(t *testing.T) {
+	h := newHoldingTransport(false)
+	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
+	defer peer.Close()
+	defer h.letGo()
+
+	stand(t, h, func() {
+		queue(t, aged(t, peer, time.Second, "first"))
+	}, func() {
+		queue(t, aged(t, peer, time.Second, "head", "tail"))
+	})
+	waitForBudget(t, peer)
+
+	want := [][]byte{[]byte("first"), []byte("head"), []byte("tail")}
+	if got := h.transmitted(); !slices.EqualFunc(got, want, bytes.Equal) {
+		t.Errorf("the transport was handed %q, want %q", got, want)
+	}
+	if peer.DelayDropped() != 0 {
+		t.Errorf("the peer dropped %d packets for the delay with less than an MTU queued behind each, want none", peer.DelayDropped())
+	}
+}
+
 // once the delay through a peer's queue has stood above the target for an interval
 // the sender drops the first packet of the batch whose turn it is and sends the rest
 // counts the drop among the packets the peer did not send on purpose and under the delay's own reason
@@ -124,7 +156,7 @@ func TestSenderDropsTheHeadOfAStandingQueue(t *testing.T) {
 		t.Run(map[bool]string{false: "the transport takes the rest", true: "the transport loses the rest"}[transportFails], func(t *testing.T) {
 			h := newHoldingTransport(transportFails)
 			bus := events.New()
-			peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
+			peer := floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit))
 			defer peer.Close()
 			defer h.letGo()
 
@@ -180,7 +212,7 @@ func TestSenderDropsTheHeadOfAStandingQueue(t *testing.T) {
 // so the delay control never drops one, however long the data queue they wait in has stood
 func TestSenderNeverDropsAControlPacketForTheDelay(t *testing.T) {
 	h := newHoldingTransport(false)
-	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
+	peer := floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil))
 	defer peer.Close()
 	defer h.letGo()
 	// control queues one control packet a second old
@@ -219,7 +251,7 @@ func TestSenderNeverDropsAControlPacketForTheDelay(t *testing.T) {
 func TestSenderForgetsTheDelayOnceItsQueueEmpties(t *testing.T) {
 	h := newHoldingTransport(false)
 	bus := events.New()
-	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
+	peer := floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit))
 	defer peer.Close()
 	defer h.letGo()
 
@@ -258,7 +290,7 @@ func TestSenderForgetsTheDelayOnceItsQueueEmpties(t *testing.T) {
 // and drops the head of the batch once it arrives, since the next drop of the state has come due
 func TestSenderKeepsTheDelayWhileADataBatchIsStillReserved(t *testing.T) {
 	h := newHoldingTransport(false)
-	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil)
+	peer := floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, nil))
 	defer peer.Close()
 	defer h.letGo()
 
@@ -289,11 +321,12 @@ func TestSenderKeepsTheDelayWhileADataBatchIsStillReserved(t *testing.T) {
 // a batch alone in the queue that reads above the target leaves the queue empty behind it
 // so the next one, an interval or more later, starts the interval over rather than finding it run out
 // and a sparse flow whose every packet waits a little too long, as on a loaded node, loses none of them
+// the peer is floorless, so the empty queue alone keeps them and not the MTU left behind each
 func TestLoneLateBatchesLoseNothing(t *testing.T) {
 	h := newHoldingTransport(false)
 	h.letGo()
 	bus := events.New()
-	peer := NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit)
+	peer := floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, bus.Emit))
 	defer peer.Close()
 	const lone = 3
 	for i := range lone {
@@ -314,7 +347,7 @@ func TestDelayControlLeavesABatchThatSealedNothing(t *testing.T) {
 	// failure is the error the next reservation meets, nil for none
 	var failure error
 	h := newHoldingTransport(false)
-	peer := NewPeer("peer", func(int) (BatchSealer, error) {
+	peer := floorless(NewPeer("peer", func(int) (BatchSealer, error) {
 		switch failure {
 		case refused:
 			return nil, refused
@@ -322,7 +355,7 @@ func TestDelayControlLeavesABatchThatSealedNothing(t *testing.T) {
 			return func([][]byte, []byte, [][]byte) ([][]byte, error) { return nil, unsealed }, nil
 		}
 		return passThrough, nil
-	}, h.transmit, nil)
+	}, h.transmit, nil))
 	defer peer.Close()
 	defer h.letGo()
 
@@ -393,7 +426,7 @@ func TestBatchReservedDuringAMergeNeverWaitsANegativeTime(t *testing.T) {
 			}
 		})
 	}
-	peer = NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, emit)
+	peer = floorless(NewPeer("peer", func(int) (BatchSealer, error) { return passThrough, nil }, h.transmit, emit))
 	defer peer.Close()
 	defer h.letGo()
 

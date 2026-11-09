@@ -633,6 +633,8 @@ func (p *Peer) senderLoop() {
 		// small packets such as TCP ACKs arrive one TUN read each, so the sender takes every batch already sealed behind the head before it transmits
 		now := time.Since(p.started)
 		data := false
+		// taken counts the data budget the batches taken since the last transmit hold
+		taken := 0
 		for b := head; b != nil; {
 			head = b.next
 			// a batch reserved after now was read, as one the merge takes from the queue may be, is measured against a clock read after its reservation
@@ -644,7 +646,10 @@ func (p *Peer) senderLoop() {
 			if !b.control {
 				p.seals.observeWait(b.sealedAt - b.admitted)
 			}
-			p.shedHead(b, now)
+			if !b.control {
+				taken += b.held
+			}
+			p.shedHead(b, now, int(p.dataBudget.used.Load())-taken)
 			packets = append(packets, b.sealed[b.shed:]...)
 			data = data || (!b.control && len(b.sealed) > b.shed)
 			b = nil
@@ -722,16 +727,17 @@ func (b *peerBatch) past(largest int) int {
 
 // shedHead runs the delay control on a batch the sender has just taken in reservation order
 // and drops the batch's head packet when the control calls for a drop
+// with at least the peer's MTU of the data budget left held behind the batch
 // a control batch carries babel and the completion its caller waits for
 // so it neither feeds the control nor loses a packet to it
 // a batch whose reservation or seal failed sealed nothing and has no packet to lose
-func (p *Peer) shedHead(b *peerBatch, now time.Duration) {
+func (p *Peer) shedHead(b *peerBatch, now time.Duration, left int) {
 	if b.control || len(b.sealed) == 0 {
 		return
 	}
 	sojourn := now - b.admitted
 	dropping := p.delay.Dropping()
-	if p.delay.Drop(now, sojourn) {
+	if p.delay.Drop(now, sojourn, left, p.MTU()) {
 		b.shed = 1
 		// the total goes up first
 		// so a reader that loads the delay drops before the total never sees more of them than of it

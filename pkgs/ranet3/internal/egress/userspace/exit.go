@@ -303,6 +303,7 @@ func (x *Exit) Run(ctx context.Context) error {
 		}(w, x.rt.Mesh.OpenLane())
 	}
 	x.answers = x.rt.Mesh.OpenLane()
+	x.link.mtu = x.answers.MTU
 	x.running.Add(2)
 	go func() {
 		defer x.running.Done()
