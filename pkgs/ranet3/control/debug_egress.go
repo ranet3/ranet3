@@ -12,9 +12,10 @@ import (
 	"strings"
 )
 
-// PathDebugEgress is cap.egress: each rule of the exit with its counter read
-// now, and each family's readiness condition by condition as the last pass
-// judged it
+// PathDebugEgress is cap.egress: the exit's status, Go's memory limit beside
+// an exit sized within a budget, and, where its backend holds rules in the
+// host's packet filter, each rule with its counter read now and each family's
+// readiness condition by condition as the last pass judged it
 const PathDebugEgress = PathDebug + "egress"
 
 func init() {
@@ -112,7 +113,7 @@ type EgressRoute struct {
 	NextHops []RouteNextHop `json:"nexthops,omitempty"`
 }
 
-// Egress reads cap.egress with its rules and readiness
+// Egress reads cap.egress with its state and readiness
 func (c *Client) Egress() (EgressInfo, error) { return read[EgressInfo](c, PathDebugEgress) }
 
 // RenderEgress writes the exit's status line, for an exit carrying its flows
