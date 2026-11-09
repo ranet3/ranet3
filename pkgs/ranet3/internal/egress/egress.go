@@ -62,7 +62,7 @@ type Egress struct {
 	// one, and an exit serving a leaf that translates a LAN behind its one mesh
 	// address a larger.
 	FlowsPerSource uint32 `yaml:"flows_per_source,omitempty" json:"flows_per_source,omitempty" toml:"flows_per_source,omitempty"`
-	// Sweep is the periodic pass. It reinstalls a table somebody removed and
+	// Sweep is the periodic pass. It reinstalls chains somebody removed and
 	// reads the forwarding sysctls and the route lookups again, the parts of
 	// readiness that change under a running node. Zero uses DefaultSweep.
 	Sweep schema.Duration `yaml:"sweep,omitempty" json:"sweep,omitempty" toml:"sweep,omitempty"`

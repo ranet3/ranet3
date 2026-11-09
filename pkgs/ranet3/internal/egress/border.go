@@ -190,14 +190,14 @@ type BorderRuntime struct {
 	// Inside names the devices whose traffic the antispoof chain takes whatever
 	// it carries: the mesh tun and the loopback link
 	Inside []string
-	// Sets derives what the table's sets hold, on each pass, from the
+	// Sets derives what the filter's sets hold, on each pass, from the
 	// configuration the pass runs, nil where overlay is not written. Nil holds
 	// them empty.
 	Sets func(cfg *Border) BorderSets
 	// Routes and Network wake a pass on a change of the mesh's table and of
 	// the host's links, nil for neither
 	Routes, Network <-chan struct{}
-	// Events records the passes that rewrote the table or failed, readiness
+	// Events records the passes that rewrote the filter or failed, readiness
 	// moving and the drops each pass read, nil records nothing
 	Events *events.Bus
 	// StateDir is the directory for state that outlives the process, where a
@@ -233,7 +233,7 @@ type ExemptConflict struct {
 	Own       bool
 }
 
-// BorderSets holds the carve-outs and the ranges of the table's sets, each of
+// BorderSets holds the carve-outs and the ranges of the filter's sets, each of
 // either family
 type BorderSets struct {
 	// CarveOuts is each carve-out of the overlay, whose sources the antispoof
@@ -263,13 +263,13 @@ type BorderSets struct {
 	Links []string
 }
 
-// BorderDrop is one drop of the table in one family, as the metric labels it
+// BorderDrop is one drop of the filter in one family, as the metric labels it
 type BorderDrop struct{ Reason, Family string }
 
 // Name is the drop as the status and the log spell it
 func (d BorderDrop) Name() string { return d.Reason + "_" + d.Family }
 
-// BorderDropKinds is each drop the table counts, in the order every report
+// BorderDropKinds is each drop the filter counts, in the order every report
 // lists them: a source in the overlay or in a carve-out's mesh prefixes from
 // outside the mesh, and a packet into the tun that none of the entry chain's
 // lines BorderRuntime.Tun lists passes
@@ -280,7 +280,7 @@ var BorderDropKinds = [...]BorderDrop{
 }
 
 // BorderDrops counts the packets each drop of BorderDropKinds took, at its
-// index, as the chains' counters read on a pass. A rewrite of the table
+// index, as the chains' counters read on a pass. A rewrite of the chains
 // starts them from zero.
 type BorderDrops [len(BorderDropKinds)]uint64
 
@@ -288,7 +288,7 @@ type BorderDrops [len(BorderDropKinds)]uint64
 type BorderStats struct {
 	At    time.Time
 	Ready bool
-	// Unready says why the table is not ready, empty while it is
+	// Unready says why the filter is not ready, empty while it is
 	Unready   string
 	Installed int
 	// Dropped is the counters as the last pass read them, kept from the pass
@@ -334,26 +334,27 @@ type BorderReading struct {
 	Packets, Bytes uint64
 }
 
-// BorderChainReading is one chain of the table as a debug read finds it: its
+// BorderChainReading is one chain of the filter as a debug read finds it: its
 // hook, its priority where its backend orders chains by one, and its rules in
-// order. A chain with no name holds the rules the table holds that the filter
-// does not ask for.
+// order. A chain with no name holds the rules the filter's own chains, or its
+// pf anchor, hold that it does not ask for.
 type BorderChainReading struct {
 	Name, Hook string
 	Priority   *int
 	Rules      []BorderReading
 }
 
-// BorderSetReading is one set of the table and its ranges, Kind the word its
+// BorderSetReading is one set of the filter and its ranges, Kind the word its
 // backend calls a set by: nftables a set, pf a table
 type BorderSetReading struct {
 	Kind, Name string
 	Elements   []Range
 }
 
-// BorderDebug is the table as a debug read finds it: each chain's rules the
+// BorderDebug is the filter as a debug read finds it: each chain's rules the
 // configuration asks for in order, each with the counters read now through a
-// socket of its own, then any the table holds that it does not ask for, and
+// socket of its own, then any its own chains, or its pf anchor, hold that it
+// does not ask for, and
 // the sets as the last pass asked for them
 type BorderDebug struct {
 	Where string
