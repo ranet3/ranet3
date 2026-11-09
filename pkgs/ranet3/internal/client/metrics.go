@@ -335,7 +335,7 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprint(w, "# HELP ranet3_segments_egressed_total Packets an egress segment handed to the exit to leave the mesh.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_egressed_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_egressed_total %d\n", segments.Egressed)
-	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, which are among the dropped ones and never answered.\n")
+	fmt.Fprint(w, "# HELP ranet3_segments_refused_total Packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, or an inner packet to a destination other than a multicast destination or the limited broadcast, but a Not-ECT one that arrived under an outer CE, that no router forwards, that the mesh routes no reply to or whose destination the mesh routes itself or overlay holds, which are among the dropped ones and never answered.\n")
 	fmt.Fprint(w, "# TYPE ranet3_segments_refused_total counter\n")
 	fmt.Fprintf(w, "ranet3_segments_refused_total %d\n", segments.Refused)
 	fmt.Fprint(w, "# HELP ranet3_segments_not_ready_total Packets an egress segment let through and dropped because their family was not ready.\n")
@@ -353,14 +353,14 @@ func (c *Client) renderSegmentCounters(w io.Writer) {
 	fmt.Fprintf(w, "ranet3_steer_dropped_total{reason=\"no_route\"} %d\n", segments.Unrouted)
 }
 
-// renderTransitCounters writes the forwarding decision's counters as one series, decision saying what became of a packet and reason why one was dropped
+// renderTransitCounters writes the counters of the forwarding decision, of the checks of a read off the tun and of an egress segment's drop of an inner packet to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE, as one series, decision saying what became of a packet and reason why one was dropped
 // reason is empty for the decisions that are no drop
 func (c *Client) renderTransitCounters(w io.Writer) {
 	writeTransitCounters(w, control.TransitCounters(c.Mesh.TransitCounters()))
 }
 
 func writeTransitCounters(w io.Writer, transit control.TransitCounters) {
-	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision took and reads off the tun it dropped, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or due and not sent.\n")
+	fmt.Fprint(w, "# HELP ranet3_transit_packets_total Packets the forwarding decision took, reads off the tun it dropped and an egress segment's inner packets to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or due and not sent.\n")
 	fmt.Fprint(w, "# TYPE ranet3_transit_packets_total counter\n")
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"forwarded\",reason=\"\"} %d\n", transit.Forwarded)
 	fmt.Fprintf(w, "ranet3_transit_packets_total{decision=\"delivered\",reason=\"\"} %d\n", transit.Delivered)

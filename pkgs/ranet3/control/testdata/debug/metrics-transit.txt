@@ -1,4 +1,4 @@
-# HELP ranet3_transit_packets_total Packets the forwarding decision took and reads off the tun it dropped, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or due and not sent.
+# HELP ranet3_transit_packets_total Packets the forwarding decision took, reads off the tun it dropped and an egress segment's inner packets to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE, by what became of them, forwarded, delivered or dropped by reason, and the ICMP errors sent about them, found no source for, or due and not sent.
 # TYPE ranet3_transit_packets_total counter
 ranet3_transit_packets_total{decision="forwarded",reason=""} 1200
 ranet3_transit_packets_total{decision="delivered",reason=""} 340
@@ -12,6 +12,7 @@ ranet3_transit_packets_total{decision="dropped",reason="source_route"} 7
 ranet3_transit_packets_total{decision="dropped",reason="unrouted_source"} 12
 ranet3_transit_packets_total{decision="dropped",reason="not_ready"} 13
 ranet3_transit_packets_total{decision="dropped",reason="too_big"} 8
+ranet3_transit_packets_total{decision="dropped",reason="session_multicast"} 21
 ranet3_transit_packets_total{decision="dropped",reason="multicast"} 9
 ranet3_transit_packets_total{decision="dropped",reason="forged"} 14
 ranet3_transit_packets_total{decision="dropped",reason="routing_header"} 15

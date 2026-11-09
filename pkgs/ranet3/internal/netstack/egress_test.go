@@ -588,6 +588,40 @@ func TestEgressRefusedSourceIsCountedAndNeverAnswered(t *testing.T) {
 	}
 }
 
+// an egress segment drops an inner packet to a group or the limited broadcast in either family, from a source the mesh routes a reply to and from one it routes none to
+// counted session_multicast and dropped, never refused, on a mesh whose exit writes to the tun as the kernel exit does, so none reaches the tun, and none is answered
+// an inner packet to a mapped group is refused as the martian the decision counts it
+func TestEgressSegmentDropsAGroupOrTheLimitedBroadcast(t *testing.T) {
+	m, meshTUN := egressMesh(t)
+	back := &recordingPeer{}
+	m.Routes.Set(netip.Prefix{}, netip.PrefixFrom(headend, 128), back.peer(t, "headend"))
+	unrouted := map[int]netip.Addr{4: segAddr("10.9.9.9"), 6: segAddr("3fff:a::99")}
+	destinations := map[int][]netip.Addr{4: {segAddr("255.255.255.255"), segAddr("224.0.0.251"), segAddr("239.1.1.1")}, 6: {segAddr("ff02::fb"), segAddr("ff0e::1")}}
+	var frames [][]byte
+	for _, family := range []int{4, 6} {
+		for _, source := range []netip.Addr{tooBigSource[family], unrouted[family]} {
+			for _, destination := range destinations[family] {
+				frames = append(frames, steered(t, udpPacket(source, destination, 64, false), headend, egressExit))
+			}
+		}
+	}
+	groups := uint64(len(frames))
+	frames = append(frames, steered(t, udpPacket(tooBigSource[6], segAddr("::ffff:224.0.0.251"), 64, false), headend, egressExit))
+	m.DeliverInboundBatch(framed(frames...), DefaultMTU, nil, nil)
+	if writes := tunWrites(meshTUN); len(writes) != 0 {
+		t.Errorf("an egress segment wrote %q to the tun", writes)
+	}
+	if sent := back.packets(t); len(sent) != 0 {
+		t.Errorf("a packet to a group was answered with %q", sent)
+	}
+	if counters := m.SegmentCounters(); counters != (SegmentCounters{Dropped: groups + 1, Refused: 1}) {
+		t.Errorf("%d packets to a group and one to a mapped group counted %+v, want all dropped and the mapped one alone refused", groups, counters)
+	}
+	if counters := m.TransitCounters(); counters != (TransitCounters{SessionMulticast: groups}) {
+		t.Errorf("%d packets to a group had the transit counters count %+v, want each session_multicast", groups, counters)
+	}
+}
+
 // past the allow list an egress segment egresses an inner packet only where the mesh routes a reply to it
 // from a peer's source, from one inside a hold, from this node's own network, or from a leaf network announced from a source prefix covering the packet's destination
 // one the mesh routes no reply to is counted refused and dropped

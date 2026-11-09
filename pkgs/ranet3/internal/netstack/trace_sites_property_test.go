@@ -35,7 +35,10 @@ var decideKinds = []siteKind{
 	{"cut", v4, func(f int) []byte { return udpPacket(transitSender[f], transitFar[f], tracedMTU+100, false) }, TraceForward, "", true, false},
 	{"budget", both, func(f int) []byte { return udpPacket(transitSender[f], transitClosed[f], 100, false) }, TraceForward, "", true, true},
 	{"deliver", both, func(f int) []byte { return udpPacket(transitSender[f], transitOwn[f], 100, false) }, TraceDeliver, "", false, false},
-	{"link scope", v6, func(f int) []byte { return udpPacket(transitSender[f], segAddr("ff02::1"), 100, false) }, TraceDeliver, "", false, false},
+	{"link scope", v6, func(f int) []byte { return udpPacket(transitSender[f], segAddr("fe80::1"), 100, false) }, TraceDeliver, "", false, false},
+	{"group", both, func(f int) []byte {
+		return udpPacket(transitSender[f], map[int]netip.Addr{4: segAddr("224.0.0.251"), 6: segAddr("ff02::fb")}[f], 100, false)
+	}, TraceDrop, "session_multicast", false, false},
 	{"egress", v4, func(f int) []byte { return udpPacket(transitSender[f], transitNowhere[f], 100, false) }, TraceEgress, "", false, false},
 	{"not ready", v6, func(f int) []byte { return udpPacket(transitSender[f], transitNowhere[f], 100, false) }, TraceDrop, "not_ready", false, false},
 	{"unrouted source", v4, func(f int) []byte { return udpPacket(transitStranger[f], transitNowhere[f], 100, false) }, TraceDrop, "unrouted_source", false, false},
@@ -99,7 +102,8 @@ func counted(records []TraceRecord) (counters TransitCounters, budget int) {
 		"expired": &counters.Expired, "no_route": &counters.NoRoute, "held": &counters.Held, "refused": &counters.Refused,
 		"invalid": &counters.Invalid, "martian": &counters.Martian, "source_route": &counters.SourceRoute,
 		"unrouted_source": &counters.UnroutedSource, "not_ready": &counters.NotReady, "too_big": &counters.TooBig,
-		"multicast": &counters.Multicast, "forged": &counters.Forged, "routing_header": &counters.RoutingHeader, "sid": &counters.SID,
+		"session_multicast": &counters.SessionMulticast,
+		"multicast":         &counters.Multicast, "forged": &counters.Forged, "routing_header": &counters.RoutingHeader, "sid": &counters.SID,
 		"unowned_source": &counters.UnownedSource, "nested": &counters.Nested, "looped": &counters.Looped,
 	}
 	for _, r := range records {

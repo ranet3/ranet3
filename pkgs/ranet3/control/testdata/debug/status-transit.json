@@ -11,6 +11,7 @@
   "unrouted_source": 12,
   "not_ready": 13,
   "too_big": 8,
+  "session_multicast": 21,
   "multicast": 9,
   "forged": 14,
   "routing_header": 15,

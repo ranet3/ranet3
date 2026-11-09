@@ -32,8 +32,13 @@ const (
 	// kindCounted is a packet the decision takes to an entry of this node's counting as a default, and kindSubnet one to an entry counting as none
 	kindCounted
 	kindSubnet
+	// kindGroup is an egress packet with both sources in the allow list to a group or the limited broadcast
+	kindGroup
 	kindCount
 )
+
+// groupClasses are the classes of scopeClasses a session's packet to which is dropped as session multicast
+var groupClasses = slices.DeleteFunc(slices.Clone(scopeClasses), func(class scopeClass) bool { return class.fate != fateGroup })
 
 // segmentPlace is where a frame ends, a destination that receives it or a counter alone
 type segmentPlace int
@@ -61,14 +66,14 @@ func tagged(raw []byte, frames int) (int, bool) {
 }
 
 // a drawn batch mixes passed packets, packets for an End.DT46 to the mesh, a waypoint and an egress segment
-// egress packets with both sources in the allow list, with the outer or the inner one outside it, of either inner family
+// egress packets with both sources in the allow list, with the outer or the inner one outside it, of either inner family, and allowed ones to a group or the limited broadcast
 // headers the waypoint refuses, and packets the decision takes to an entry of this node's counting as a default or to a subnet's counting as none
 // over a drawn table, each family's counted entry a default, a pair of halves or four quarters, it and the subnet each advertised by cap.egress or announced by cap.route
 // with each family ready or not by the egress segments' word and by the advertised prefixes' word
 // every frame ends in exactly one place, the tun as a delivery, the exit, the forward path or a counter alone
 // the place is the one its kind names, so the exit takes exactly the egress segments' allowed packets and the decision's counted cap.egress verdicts of a ready family
 // and an allowed packet of a family not ready is counted not ready by its own mode's word
-// so no packet with a source outside the allow list, of a subnet or of a cap.route announcement reaches the exit, and none of the exit's reaches the tun
+// so no packet with a source outside the allow list, to a group or the limited broadcast, of a subnet or of a cap.route announcement reaches the exit, and none of the exit's reaches the tun
 // each place takes its frames in batch order, the exit mode 3's in one batch and then mode 2's in another
 // an answer quotes only a refused header, never a refused source
 // and each counter counts exactly the frames of the kinds it names
@@ -105,6 +110,10 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				destination = transitNowhere[family]
 			case kindSubnet:
 				destination = decidedSubnets[family].Addr().Next()
+			case kindGroup:
+				class := groupClasses[hegel.Draw(ht, pbt.Spanning(0, len(groupClasses)-1))]
+				family, destination = class.family, class.build(ht)
+				families[i], source = family, map[int]netip.Addr{4: segAddr("10.1.0.1"), 6: segAddr("3fff:a::1")}[family]
 			}
 			inner := plainV6(source, destination, string(frameTag(i)))
 			if family == 4 {
@@ -118,7 +127,7 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 				frames[i] = steered(ht, inner, headend, meshExit)
 			case kindForward:
 				frames[i] = steered(ht, inner, headend, egressWaypoint, egressNext)
-			case kindEgress, kindInnerOutside:
+			case kindEgress, kindInnerOutside, kindGroup:
 				frames[i] = steered(ht, inner, headend, egressExit)
 			case kindOuterOutside:
 				frames[i] = steered(ht, inner, stranger[6], egressExit)
@@ -236,6 +245,9 @@ func TestEveryFrameOfABatchEndsInOnePlace(t *testing.T) {
 			case kindSubnet:
 				place = placeTUN
 				wantDecided.Delivered++
+			case kindGroup:
+				want.Dropped++
+				wantDecided.SessionMulticast++
 			}
 			var wantReached []segmentPlace
 			if place != placeCounter {

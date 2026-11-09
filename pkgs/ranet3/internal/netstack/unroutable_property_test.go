@@ -33,8 +33,8 @@ var unroutableAnchors = []netip.Prefix{
 
 // The loader's classes are the data path's: schema.Unroutable names a class
 // for an address's host prefix exactly where the forwarding decision drops a
-// packet from it as a martian source, or to it as a martian destination, or
-// hands it to the tun unrouted as link-scoped. Every edge of each
+// packet from it as a martian source, or to it as a martian destination or a
+// group, or hands it to the tun as IPv6 link-local. Every edge of each
 // special-purpose block and the address on either side of it are swept
 // first, then any address of either family is drawn.
 func TestUnroutableIsWhereTheDataPathForwardsNoUnicast(t *testing.T) {

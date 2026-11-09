@@ -135,6 +135,7 @@ func TestDebugRouteFollowsASessionsPacketThroughTheMesh(t *testing.T) {
 		"an egress":          {src: "192.0.2.1", dst: "203.0.113.200", decision: netstack.TraceEgress, matched: "0.0.0.0/0", counted: true},
 		"an unrouted source": {src: "203.0.113.66", dst: "203.0.113.200", decision: netstack.TraceDrop, matched: "0.0.0.0/0", counted: true},
 		"no route":           {src: "3fff::1", dst: "2001:db8::5", decision: netstack.TraceAnswer},
+		"a group":            {src: "3fff::1", dst: "ff02::fb", decision: netstack.TraceDrop},
 		"transit off":        {src: "192.0.2.1", dst: "192.0.2.3", transitOff: true, decision: netstack.TraceAnswer, matched: "192.0.2.3/32"},
 	} {
 		t.Run(name, func(t *testing.T) {

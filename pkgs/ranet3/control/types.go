@@ -335,7 +335,7 @@ type SegmentCounters struct {
 	Answered uint64 `json:"answered"`
 	// Egressed counts the inner packets an egress segment handed to the exit
 	Egressed uint64 `json:"egressed"`
-	// Refused counts the packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, or an inner packet to a destination other than a multicast destination or the limited broadcast, but a Not-ECT one that arrived under an outer CE, that no router forwards, that the mesh routes no reply to or whose destination the mesh routes itself or overlay holds, a part of Dropped never answered
 	Refused uint64 `json:"refused"`
 	// NotReady counts the egress results dropped as not ready for their family, which is not in Dropped
 	NotReady uint64 `json:"not_ready"`
@@ -343,36 +343,37 @@ type SegmentCounters struct {
 	ECNUnused uint64 `json:"ecn_unused"`
 }
 
-// TransitCounters counts the forwarding decision's outcomes since startup, and those of the checks of a read off the tun
+// TransitCounters counts the forwarding decision's outcomes since startup, those of the checks of a read off the tun, and an egress segment's drops of an inner packet to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE
 // Forwarded counts the packets the decision handed to the next peer's send, and Delivered the ones written to the tun or handed to the exit,
 // and the reads off the tun written back into it to an address the tun holds
-// the fields from Expired to TooBig count the packets a session delivered that were dropped, by reason, and Multicast to Looped the reads off the tun, which NoRoute, Held, Invalid and TooBig count as well
+// the fields from Expired to SessionMulticast count the packets a session delivered that were dropped, by reason, and Multicast to Looped the reads off the tun, which NoRoute, Held, Invalid and TooBig count as well
 // Answered counts the ICMP errors sent about dropped packets, and Unanswered the dropped packets the decision would answer that find no address of their family to come from
 // counted before the rules that keep an error from answering a packet and before the rate limits
 // Unsent counts the answers due that no way back carries
 type TransitCounters struct {
-	Forwarded      uint64 `json:"forwarded"`
-	Delivered      uint64 `json:"delivered"`
-	Expired        uint64 `json:"expired"`
-	NoRoute        uint64 `json:"no_route"`
-	Held           uint64 `json:"held"`
-	Refused        uint64 `json:"refused"`
-	Invalid        uint64 `json:"invalid"`
-	Martian        uint64 `json:"martian"`
-	SourceRoute    uint64 `json:"source_route"`
-	UnroutedSource uint64 `json:"unrouted_source"`
-	NotReady       uint64 `json:"not_ready"`
-	TooBig         uint64 `json:"too_big"`
-	Multicast      uint64 `json:"multicast"`
-	Forged         uint64 `json:"forged"`
-	RoutingHeader  uint64 `json:"routing_header"`
-	SID            uint64 `json:"sid"`
-	UnownedSource  uint64 `json:"unowned_source"`
-	Nested         uint64 `json:"nested"`
-	Looped         uint64 `json:"looped"`
-	Answered       uint64 `json:"answered"`
-	Unanswered     uint64 `json:"unanswered"`
-	Unsent         uint64 `json:"unsent"`
+	Forwarded        uint64 `json:"forwarded"`
+	Delivered        uint64 `json:"delivered"`
+	Expired          uint64 `json:"expired"`
+	NoRoute          uint64 `json:"no_route"`
+	Held             uint64 `json:"held"`
+	Refused          uint64 `json:"refused"`
+	Invalid          uint64 `json:"invalid"`
+	Martian          uint64 `json:"martian"`
+	SourceRoute      uint64 `json:"source_route"`
+	UnroutedSource   uint64 `json:"unrouted_source"`
+	NotReady         uint64 `json:"not_ready"`
+	TooBig           uint64 `json:"too_big"`
+	SessionMulticast uint64 `json:"session_multicast"`
+	Multicast        uint64 `json:"multicast"`
+	Forged           uint64 `json:"forged"`
+	RoutingHeader    uint64 `json:"routing_header"`
+	SID              uint64 `json:"sid"`
+	UnownedSource    uint64 `json:"unowned_source"`
+	Nested           uint64 `json:"nested"`
+	Looped           uint64 `json:"looped"`
+	Answered         uint64 `json:"answered"`
+	Unanswered       uint64 `json:"unanswered"`
+	Unsent           uint64 `json:"unsent"`
 }
 
 // TransitDropReason is one reason a packet is dropped, as the metrics and a trace record label it and as status words it
@@ -393,6 +394,7 @@ var TransitDropReasons = [...]TransitDropReason{
 	{"unrouted_source", "unrouted source", func(c TransitCounters) uint64 { return c.UnroutedSource }},
 	{"not_ready", "not ready", func(c TransitCounters) uint64 { return c.NotReady }},
 	{"too_big", "too big", func(c TransitCounters) uint64 { return c.TooBig }},
+	{"session_multicast", "session multicast", func(c TransitCounters) uint64 { return c.SessionMulticast }},
 	{"multicast", "multicast", func(c TransitCounters) uint64 { return c.Multicast }},
 	{"forged", "forged", func(c TransitCounters) uint64 { return c.Forged }},
 	{"routing_header", "routing header", func(c TransitCounters) uint64 { return c.RoutingHeader }},

@@ -388,30 +388,46 @@ func TestPayloadLengthAnswersDrawOnTheBucketOfTheirSource(t *testing.T) {
 	}
 }
 
-// a destination of IPv6 link scope, multicast or the limited broadcast goes to the tun whatever the table holds, RFC 4291 section 2.5.6
-// and the mesh never forwards it
-func TestDecisionWritesLinkScopeToTheTun(t *testing.T) {
+// a destination of IPv6 link-local unicast goes to the tun whatever the table holds, RFC 4291 section 2.5.6
+// and one of a group or the limited broadcast is dropped and counted session_multicast whatever the table or the packet's source
+// so a neighbor's mDNS query, link-local multicast name resolution query or DHCP Discover reaches no responder of the host through the mesh
+// for the limited broadcast that departs from RFC 1812 section 5.3.5.1, as protocol deviations lists
+// the mesh forwards and answers none of them
+func TestDecisionWritesIPv6LinkLocalToTheTunAndDropsGroups(t *testing.T) {
 	n := newTransitNode(t, DefaultMTU)
 	n.m.Routes.Set(netip.Prefix{}, segPrefix("::/0"), n.outPeer)
 	n.m.Routes.Set(netip.Prefix{}, segPrefix("0.0.0.0/0"), n.outPeer)
-	var packets [][]byte
-	for _, to := range []string{"fe80::1", "ff02::1", "ff0e::1", "224.0.0.5", "239.1.1.1", "255.255.255.255"} {
-		destination := segAddr(to)
-		packets = append(packets, udpPacket(transitSender[familyOf(destination)], destination, 100, false))
+	groups := map[string][]byte{
+		"an mDNS query over IPv6":     udpPacket(transitSender[6], segAddr("ff02::fb"), 100, false),
+		"an mDNS query over IPv4":     udpPacket(transitSender[4], segAddr("224.0.0.251"), 100, false),
+		"a name query to ff02::1:3":   udpPacket(transitSender[6], segAddr("ff02::1:3"), 100, false),
+		"a name query to 224.0.0.252": udpPacket(transitSender[4], segAddr("224.0.0.252"), 100, false),
+		"a DHCP Discover":             udpPacket(segAddr("0.0.0.0"), segAddr("255.255.255.255"), 100, false),
+		"a global group":              udpPacket(transitSender[6], segAddr("ff0e::1"), 100, false),
+		"an IPv4 group":               udpPacket(transitSender[4], segAddr("239.1.1.1"), 100, false),
 	}
-	tun, out, back := n.deliver(t, packets...)
-	if !slices.EqualFunc(tun, packets, bytes.Equal) {
-		t.Errorf("the tun took %x, want every packet in its order", tun)
+	var dropped uint64
+	for name, raw := range groups {
+		tun, out, back := n.deliver(t, raw)
+		dropped++
+		if len(tun)+len(out)+len(back) != 0 {
+			t.Errorf("%s reached the tun %x, the next hop %x or the sender %x", name, tun, out, back)
+		}
+		if got := n.m.TransitCounters(); got != (TransitCounters{SessionMulticast: dropped}) {
+			t.Errorf("%s counted %+v, want session_multicast at %d", name, got, dropped)
+		}
 	}
-	if len(out)+len(back) != 0 {
-		t.Errorf("a packet of link scope went to the next hop %x or the sender %x", out, back)
+	linkLocal := udpPacket(transitSender[6], segAddr("fe80::1"), 100, false)
+	tun, out, back := n.deliver(t, linkLocal)
+	if len(tun) != 1 || !bytes.Equal(tun[0], linkLocal) || len(out)+len(back) != 0 {
+		t.Errorf("a packet to fe80::1 went to the tun %x, the next hop %x and the sender %x, want the tun alone", tun, out, back)
 	}
-	if got := n.m.TransitCounters(); got != (TransitCounters{Delivered: uint64(len(packets))}) {
-		t.Errorf("%d packets of link scope counted %+v", len(packets), got)
+	if got := n.m.TransitCounters(); got != (TransitCounters{SessionMulticast: dropped, Delivered: 1}) {
+		t.Errorf("the packet to fe80::1 counted %+v", got)
 	}
 }
 
-// a source or destination no router forwards is dropped and counted martian, past the destinations linkScoped takes to the tun, RFC 1812 section 5.3.7, RFC 3927 section 7 and RFC 4291 sections 2.5.2, 2.5.3 and 2.5.6
+// a source or destination no router forwards is dropped and counted martian, past the destinations linkScoped takes, RFC 1812 section 5.3.7, RFC 3927 section 7 and RFC 4291 sections 2.5.2, 2.5.3 and 2.5.6
 // an IPv4 link-local destination among them, which never reaches the tun, as a cloud's metadata address would from a host forwarding it
 // and an IPv4-mapped destination, which RFC 6890 has no router forward, whatever its IPv4 form
 // an IPv6 link-local source to a wider unicast destination a router forwards is answered beyond the scope of the source, RFC 4443 section 3.1 code 2, on the session it came through
@@ -1351,6 +1367,7 @@ func TestDecisionRecordsADropAsTheGoldenFile(t *testing.T) {
 		udpPacket(transitSender[6], transitNowhere[6], 100, false),
 		udpPacket(segAddr("127.0.0.1"), transitFar[4], 100, false),
 		withTTL(udpPacket(transitSender[4], transitFar[4], 100, false), 1),
+		udpPacket(transitSender[6], segAddr("ff02::fb"), 100, false),
 	} {
 		n := newRecordingTransitNode(t, DefaultMTU, bus.Emit)
 		n.deliver(t, raw)

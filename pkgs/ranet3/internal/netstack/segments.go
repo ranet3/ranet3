@@ -173,7 +173,7 @@ type SegmentCounters struct {
 	Answered uint64
 	// Egressed counts the inner packets an egress segment handed to the exit
 	Egressed uint64
-	// Refused counts the packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, an inner packet no router forwards, one the mesh routes no reply to or one for an inner destination the mesh routes itself or overlay holds, a part of Dropped never answered
+	// Refused counts the packets a local SID refused, for an outer source outside overlay at any SID or, at an egress segment, for an outer source outside its allow list's entries inside overlay or an inner source outside the list, or an inner packet to a destination other than a multicast destination or the limited broadcast, but a Not-ECT one that arrived under an outer CE, that no router forwards, that the mesh routes no reply to or whose destination the mesh routes itself or overlay holds, a part of Dropped never answered
 	Refused uint64
 	// NotReady counts the egress results dropped as not ready for their family
 	// it is this node's own state, so it is not in Dropped
@@ -264,6 +264,16 @@ func (m *Mesh) actOnSegments(frames [][]byte, mtu int, hold Hold, records *segme
 				version = 4
 			}
 			source, destination := addressesOf(result.Inner, version)
+			// a group or the limited broadcast reaches no exit, whatever its source, as the decision's reaches no tun
+			if linkScoped(destination) && group(destination) {
+				m.segmentsDropped.Add(1)
+				m.transitCounts[transitSessionMulticast].Add(1)
+				m.reportTransitDrop(transitSessionMulticast, source, destination)
+				if records != nil {
+					records.acted(TraceDrop, transitSessionMulticast, packet, result.Inner)
+				}
+				continue
+			}
 			// the kernel exit's host forwards what the uplink takes, so the martians the decision drops are dropped here too
 			if martian(source, destination) {
 				if m.refuseEgress() {

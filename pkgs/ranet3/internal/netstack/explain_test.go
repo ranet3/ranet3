@@ -131,7 +131,10 @@ var sessionCases = func() []explainCase {
 	badChecksum[10] ^= 0xff
 	return []explainCase{
 		{"not one IP packet", explainNode, udpPacket(transitSender[4], transitFar[4], 100, false)[:60], explainedDrop("invalid", Match{})},
-		{"link scope", explainNode, udpPacket(transitSender[6], segAddr("ff02::1"), 100, false), Explanation{Decision: TraceDeliver}},
+		{"an IPv6 group", explainNode, udpPacket(transitSender[6], segAddr("ff02::fb"), 100, false), explainedDrop("session_multicast", Match{})},
+		{"an IPv4 group", explainNode, udpPacket(transitSender[4], segAddr("224.0.0.251"), 100, false), explainedDrop("session_multicast", Match{})},
+		{"the limited broadcast", explainNode, udpPacket(segAddr("0.0.0.0"), segAddr("255.255.255.255"), 100, false), explainedDrop("session_multicast", Match{})},
+		{"IPv6 link-local", explainNode, udpPacket(transitSender[6], segAddr("fe80::1"), 100, false), Explanation{Decision: TraceDeliver}},
 		{"a martian destination", explainNode, udpPacket(transitSender[4], segAddr("127.0.0.1"), 100, false), explainedDrop("martian", Match{})},
 		{"a martian source", explainNode, udpPacket(segAddr("::1"), transitFar[6], 100, false), explainedDrop("martian", Match{})},
 		{"an IPv4 link-local source", explainNode, udpPacket(segAddr("169.254.0.9"), transitFar[4], 100, false), explainedDrop("martian", Match{})},

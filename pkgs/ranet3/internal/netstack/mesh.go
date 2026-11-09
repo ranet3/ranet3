@@ -440,7 +440,7 @@ func (m *Mesh) classify(b *outboundBatch) {
 		}
 		// the mesh routes no group and forwards no limited broadcast, RFC 1812 section 5.3.5.1
 		// and a covering unicast route, a default among them, would carry either to one peer
-		if dst.IsMulticast() || dst == packet.LimitedBroadcast {
+		if group(dst) {
 			tally.add(transitMulticast)
 			if trace != nil {
 				trace.read(TraceDrop, transitMulticast, netip.Addr{}, raw)

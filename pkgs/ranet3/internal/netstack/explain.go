@@ -60,6 +60,9 @@ func (m *Mesh) Explain(raw []byte) Explanation {
 	}
 	src, dst := addressesOf(raw, version)
 	if linkScoped(dst) {
+		if group(dst) {
+			return e.decided(sessionSite(nil, TraceDrop, transitSessionMulticast))
+		}
 		return e.decided(sessionSite(nil, TraceDeliver, transitDelivered))
 	}
 	if invalid := martianDestination(dst); packet.InvalidSource(src) || invalid {
@@ -120,7 +123,7 @@ func (m *Mesh) ExplainRead(raw []byte) Explanation {
 	if !ok {
 		return e.decided(readSite(TraceDrop, transitInvalid))
 	}
-	if dst.IsMulticast() || dst == packet.LimitedBroadcast {
+	if group(dst) {
 		return e.decided(readSite(TraceDrop, transitMulticast))
 	}
 	peer, verdict, match := m.Routes.Resolve(src, dst)

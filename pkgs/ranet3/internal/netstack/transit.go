@@ -25,7 +25,7 @@ type transitReason uint8
 const (
 	// transitForwarded counts packets handed to the next peer's send, one cut into fragments once
 	transitForwarded transitReason = iota
-	// transitDelivered counts packets written to the tun, for this node's own destinations and the ones linkScoped takes, and those handed to the exit through a prefix cap.egress advertises that counts as a default
+	// transitDelivered counts packets written to the tun, for this node's own destinations and IPv6 link-local ones, and those handed to the exit through a prefix cap.egress advertises that counts as a default
 	// and the reads off the tun written back into it to an address the tun holds
 	transitDelivered
 	transitExpired
@@ -37,7 +37,7 @@ const (
 	// transitInvalid counts a frame holding no whole IP packet, a read off the tun that is not exactly one, an IPv4 header failing RFC 1812 section 5.2.2's checks, IPv4 options RFC 791 cannot read
 	// and a read off the tun whose extension headers srv6.WalkEdge cannot finish, or the header of whose carried packet cannot be read
 	transitInvalid
-	// transitMartian counts packets from or to an address no router forwards, but for those to a destination linkScoped takes to the tun
+	// transitMartian counts packets from or to an address no router forwards, but for those to a destination linkScoped takes
 	transitMartian
 	// transitSourceRoute counts IPv4 packets carrying a loose or strict source route
 	transitSourceRoute
@@ -47,6 +47,8 @@ const (
 	transitNotReady
 	// transitTooBig counts packets larger than the session to their next hop, answered or past cutting
 	transitTooBig
+	// transitSessionMulticast counts packets to a multicast destination or the limited broadcast, an egress segment's inner packets among them, which the mesh routes none of and hands neither to the tun nor to the exit
+	transitSessionMulticast
 	// transitMulticast counts reads off the tun to a multicast destination or the limited broadcast, which the mesh routes none of
 	transitMulticast
 	// transitForged counts reads off the tun from a source the mesh routes to another node or holds through an entry that does not count as a default, or one inside the overlay this node does not own
@@ -151,14 +153,15 @@ func (m *Mesh) inOverlay(address netip.Addr) bool {
 	return false
 }
 
-// TransitCounters counts the forwarding decision's outcomes since startup, and those of the checks of a read off the tun
+// TransitCounters counts the forwarding decision's outcomes since startup, those of the checks of a read off the tun, and an egress segment's drops of an inner packet to a multicast destination or the limited broadcast that its allow list let through, but a Not-ECT one that arrived under an outer CE
 type TransitCounters struct {
 	// Forwarded counts the packets the decision handed to the next peer's send, one cut into fragments once
 	// Delivered the ones written to the tun or handed to the exit, and the reads off the tun written back into it to an address the tun holds
 	Forwarded, Delivered uint64
-	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady and TooBig count the packets a session delivered that were dropped, by reason
+	// Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig and SessionMulticast count the packets a session delivered that were dropped, by reason
+	// SessionMulticast those to a multicast destination or the limited broadcast, an egress segment's inner packets among them
 	// NoRoute, Held, Invalid and TooBig count the reads off the tun dropped for them as well
-	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig uint64
+	Expired, NoRoute, Held, Refused, Invalid, Martian, SourceRoute, UnroutedSource, NotReady, TooBig, SessionMulticast uint64
 	// Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested and Looped count the reads off the tun that were dropped, by reason, Multicast those to a multicast destination or the limited broadcast
 	// and Looped those to a destination of this node's own that the tun does not hold
 	Multicast, Forged, RoutingHeader, SID, UnownedSource, Nested, Looped uint64
@@ -172,28 +175,29 @@ type TransitCounters struct {
 func (m *Mesh) TransitCounters() TransitCounters {
 	count := func(reason transitReason) uint64 { return m.transitCounts[reason].Load() }
 	return TransitCounters{
-		Forwarded:      count(transitForwarded),
-		Delivered:      count(transitDelivered),
-		Expired:        count(transitExpired),
-		NoRoute:        count(transitNoRoute),
-		Held:           count(transitHeld),
-		Refused:        count(transitRefused),
-		Invalid:        count(transitInvalid),
-		Martian:        count(transitMartian),
-		SourceRoute:    count(transitSourceRoute),
-		UnroutedSource: count(transitUnroutedSource),
-		NotReady:       count(transitNotReady),
-		TooBig:         count(transitTooBig),
-		Multicast:      count(transitMulticast),
-		Forged:         count(transitForged),
-		RoutingHeader:  count(transitRoutingHeader),
-		SID:            count(transitOwnSID),
-		UnownedSource:  count(transitUnownedSource),
-		Nested:         count(transitNested),
-		Looped:         count(transitLooped),
-		Answered:       count(transitAnswered),
-		Unanswered:     m.unanswered.Load(),
-		Unsent:         count(transitUnsent),
+		Forwarded:        count(transitForwarded),
+		Delivered:        count(transitDelivered),
+		Expired:          count(transitExpired),
+		NoRoute:          count(transitNoRoute),
+		Held:             count(transitHeld),
+		Refused:          count(transitRefused),
+		Invalid:          count(transitInvalid),
+		Martian:          count(transitMartian),
+		SourceRoute:      count(transitSourceRoute),
+		UnroutedSource:   count(transitUnroutedSource),
+		NotReady:         count(transitNotReady),
+		TooBig:           count(transitTooBig),
+		SessionMulticast: count(transitSessionMulticast),
+		Multicast:        count(transitMulticast),
+		Forged:           count(transitForged),
+		RoutingHeader:    count(transitRoutingHeader),
+		SID:              count(transitOwnSID),
+		UnownedSource:    count(transitUnownedSource),
+		Nested:           count(transitNested),
+		Looped:           count(transitLooped),
+		Answered:         count(transitAnswered),
+		Unanswered:       m.unanswered.Load(),
+		Unsent:           count(transitUnsent),
 	}
 }
 
@@ -241,8 +245,13 @@ func (m *Mesh) reportTransitDrop(reason transitReason, src, dst netip.Addr) {
 	}
 }
 
-// linkScoped is a destination a session's packet goes to the tun for whatever the table holds
-// multicast, IPv6 link-local and the limited broadcast, none of which the mesh routes, RFC 4291 section 2.5.6
+// group is a multicast destination or the limited broadcast, none of which the mesh routes, RFC 4291 section 2.7 and RFC 1812 section 5.3.5.1
+// a session's packet to one reaches no tun, since the mesh links a host to every node of every organization, and the host's responders would take it from any of them
+func group(destination netip.Addr) bool {
+	return destination.IsMulticast() || destination == packet.LimitedBroadcast
+}
+
+// linkScoped is a destination the decision acts on whatever the table holds, a group or IPv6 link-local, RFC 4291 section 2.5.6
 // an IPv4 link-local destination is a martian instead, since RFC 3927 section 7 has a router forward none
 // and the host forwards 169.254/16 as any unicast destination, out of an exit's uplink, where it forwards no fe80::/10
 // an IPv4-mapped destination is no IPv6 link scope either, whatever its IPv4 form, and the decision counts it a martian
@@ -250,7 +259,7 @@ func linkScoped(destination netip.Addr) bool {
 	if destination.Is4In6() {
 		return false
 	}
-	return destination.IsMulticast() || destination.Is6() && destination.IsLinkLocalUnicast() || destination == packet.LimitedBroadcast
+	return group(destination) || destination.Is6() && destination.IsLinkLocalUnicast()
 }
 
 // martianDestination is a destination no router forwards, as packet.InvalidDestination has it, and an IPv4-mapped one, which RFC 6890 has no router forward
@@ -293,7 +302,8 @@ func hasOptions(raw []byte) bool { return raw[0]&0x0f > 5 }
 // granted marks the inner packets, which go on whatever cap.transit says, nil where there are none
 // from is the peer of the session they came through, nil for frames of no session, and hold covers their storage as DeliverInboundBatch's does
 // it returns the frames for the tun in the order they came, filtered in place, and hands egress the ones through a prefix cap.egress advertises that counts as a default
-// the checks run in RFC 1812's order for IPv6 as for IPv4, each before any answer, so a malformed packet draws none but the Payload Length answer of the first
+// the frame, link-scoped and martian checks run first, then the table, RFC 1812 section 5.2.2's header check and the checks past it, for IPv6 as for IPv4
+// each check comes before any answer, so a malformed packet draws none but the Payload Length answer of the first
 func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) [][]byte {
 	trace := m.tracer.Load()
 	transit := m.transitOn.Load()
@@ -331,6 +341,13 @@ func (m *Mesh) decide(frames [][]byte, granted []bool, from *Peer, hold Hold) []
 		frame = frame[:TUNHeadroom+len(raw)]
 		src, dst := addressesOf(raw, version)
 		if linkScoped(dst) {
+			if group(dst) {
+				m.dropTransit(&tally, transitSessionMulticast, src, dst)
+				if trace != nil {
+					trace.session(from, TraceDrop, transitSessionMulticast, raw)
+				}
+				continue
+			}
 			if trace != nil {
 				trace.session(from, TraceDeliver, transitDelivered, raw)
 			}
