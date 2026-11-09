@@ -11,11 +11,12 @@ order: 50
 The `cap.egress` block makes this node carry other nodes' traffic out of the
 mesh. 1 action covers both features a customer asks for: an exit node advertises
 `0.0.0.0/0` and `::/0`, a subnet router advertises the prefixes behind it, and
-each ends at the same operation. A packet arrives on the tun, its source is
-translated to an address the far side can answer, or left as it is, by the class
-of its source, and the host forwards it by its ordinary routes. An
-[egress segment](#egress-segments) ends at the same operation, its inner packets
-arriving on the same tun.
+each ends at the same operation. On Linux a packet arrives on the tun, its
+source is translated to an address the far side can answer, or left as it is, by
+the class of its source, and the host forwards it by its ordinary routes. An
+[egress segment](#egress-segments) ends at the same operation: on Linux its
+inner packets arrive on the same tun, and on macOS the userspace exit takes them
+as it takes a packet through an advertised prefix.
 
 `cap.egress` works on Linux and macOS. A Linux build carries the kernel exit
 most of this page describes, which translates in the host's kernel. A macOS
@@ -236,8 +237,9 @@ must not be announced by several nodes. Either of these does:
 - an address of this exit's uplink, which `auto` picks
 - an address of space the mesh announces that the mesh routes to this exit
   alone, such as its own `/32` or `/128`: a reply enters the mesh through any
-  node announcing the covering prefix and reaches this exit through it, where
-  conntrack reverses the translation as it arrives on the tun
+  node announcing the covering prefix and reaches this exit through it, where on
+  Linux conntrack reverses the translation as it arrives on the tun, and on
+  macOS, for an IPv6 address alone, the exit's socket takes it
 
 The daemon cannot check the second. A family whose classes name an address is
 [ready](#readiness) only while the host holds the address: on Linux on any link
@@ -439,9 +441,10 @@ Application DNS is not yet kept on the exit, on Linux or macOS, as
 A packet a session delivers for a destination this node holds through a route
 that [counts as a default](routing.md#routes-that-count-as-a-default), such as
 the `0.0.0.0/0` and `::/0` it advertises, is egress. The
-[forwarding decision](routing.md#transit) hands it to the exit, which writes it
-into the tun, where the host translates it and forwards it out of its uplink,
-only where 3 checks pass:
+[forwarding decision](routing.md#transit) hands it to the exit only where 3
+checks pass. On Linux the exit writes it into the tun, where the host translates
+it and forwards it out of its uplink, and on macOS it carries it as
+[the exit on macOS](#the-exit-on-macos) gives. The checks:
 
 - A destination inside `overlay` belongs to the mesh. One that no node announces
   is answered as a destination no route holds, IPv6 code 0 and IPv4 Host
@@ -483,57 +486,57 @@ advertisement is all a peer learns. An exit whose rule will not install would
 attract traffic and drop it without telling the sender.
 
 The capability publishes the advertisement per family on every pass. A prefix is
-announced only while its family's table reads back exactly as the node wrote it,
-its chains with every rule in order, each by its comment and by what it does,
-and no other writer's among them, each at its hook, priority and policy, the set
-and the timeout objects, in a table with no flags, the host forwards that
-family, the host holds every address its classes name and, where its lookups
-run, the kernel routes a translated packet of it and its reply, as
-[readiness](#readiness) describes. A pass reads the table's chains, its set and
-its timeout objects, and the elements of each set a screen of a class of
-`none`'s chain takes its sources from. Every chain whose name starts `none_` is
-the exit's: one no class writes is read as a fault and deleted. Another chain in
-the table is neither read nor removed until the table is made again, and a nat
-chain at the source translation hook at priority 99 or below is named as a
-[conflict](#watching-it). Each pass first rewrites a chain that reads back
-otherwise, such as one missing a rule, holding another writer's, a rule edited
-under the comment it was written with or in a dormant table, writes a class of
-`none`'s chain that is missing and deletes a `none_` chain no class writes.
-Where a rule of another writer's chain goes to that chain, by a goto, a jump or
-its vmap, or an element of a named map does, nf_tables will not delete it, so
-the pass empties it and writes the rest, and the family stays not ready with
-that chain or map named until the rule or the element goes. nf_tables clears no
-table flag in place but dormant, and changes no chain's type, hook or priority,
-no set's key, flags or comment and no timeout object's values, so when one of
-those differs the pass deletes the family's table, and any chain another writer
-put in it, then makes it again in the same transaction. When the table still
-does not read back as written, the host stops forwarding the family or a lookup
-fails, that pass retracts the prefix. A pass runs at least every `sweep` (30
-seconds by default).
+announced only while its family is ready, as [readiness](#readiness) describes
+for each platform: on Linux while its family's table reads back exactly as the
+node wrote it, its chains with every rule in order, each by its comment and by
+what it does, and no other writer's among them, each at its hook, priority and
+policy, the set and the timeout objects, in a table with no flags, the host
+forwards that family, the host holds every address its classes name and, where
+its lookups run, the kernel routes a translated packet of it and its reply. A
+pass reads the table's chains, its set and its timeout objects, and the elements
+of each set a screen of a class of `none`'s chain takes its sources from. Every
+chain whose name starts `none_` is the exit's: one no class writes is read as a
+fault and deleted. Another chain in the table is neither read nor removed until
+the table is made again, and a nat chain at the source translation hook at
+priority 99 or below is named as a [conflict](#watching-it). Each pass first
+rewrites a chain that reads back otherwise, such as one missing a rule, holding
+another writer's, a rule edited under the comment it was written with or in a
+dormant table, writes a class of `none`'s chain that is missing and deletes a
+`none_` chain no class writes. Where a rule of another writer's chain goes to
+that chain, by a goto, a jump or its vmap, or an element of a named map does,
+nf_tables will not delete it, so the pass empties it and writes the rest, and
+the family stays not ready with that chain or map named until the rule or the
+element goes. nf_tables clears no table flag in place but dormant, and changes
+no chain's type, hook or priority, no set's key, flags or comment and no timeout
+object's values, so when one of those differs the pass deletes the family's
+table, and any chain another writer put in it, then makes it again in the same
+transaction. When the table still does not read back as written, the host stops
+forwarding the family or a lookup fails, that pass retracts the prefix. A pass
+runs at least every `sweep` (30 seconds by default).
 
-The node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
+On Linux the node reads forwarding from `/proc/sys/net/ipv4/ip_forward` and
 `/proc/sys/net/ipv6/conf/all/forwarding`. Any value other than `0` counts as on.
 The exit counts a file the node cannot read as on too, and `status` shows it as
-`unknown`. An exit acts on them by withholding its advertisement, because no
-other node can tell whether it forwards. Transit between sessions needs neither
-setting, since the mesh forwards it itself.
+`unknown`. The kernel exit acts on them by withholding its advertisement,
+because no other node can tell whether it forwards. Transit between sessions
+needs neither setting, since the mesh forwards it itself.
 
 `status` names the prefixes it announces and the ones it withholds. The scrape
 carries the advertised and the announced counts as `ranet3_egress_prefixes`.
 
 ## Readiness
 
-A family is ready while its chains, its set and its timeout objects read back as
-written, the host forwards it, the host holds every address its classes name,
-and, where its lookups run, the kernel routes a translated packet of the family
-and its reply the way the translation needs. Every node with `cap.egress` judges
-each family it translates on every pass, and both modes wait for the judgment: a
-packet through an advertised prefix waits for the families ready that the node
-announces, and an egress segment's packet for the families ready, as
-[what an exit carries out](#what-an-exit-carries-out) and
+On Linux a family is ready while its chains, its set and its timeout objects
+read back as written, the host forwards it, the host holds every address its
+classes name, and, where its lookups run, the kernel routes a translated packet
+of the family and its reply the way the translation needs. Every node with
+`cap.egress` judges each family it translates on every pass, and both modes wait
+for the judgment: a packet through an advertised prefix waits for the families
+ready that the node announces, and an egress segment's packet for the families
+ready, as [what an exit carries out](#what-an-exit-carries-out) and
 [egress segments](#egress-segments) describe. A family this node does not
-translate is not ready. `ranet3 debug egress` shows each family's judgment
-condition by condition with the lookups the last pass read, as
+translate is not ready. On Linux `ranet3 debug egress` shows each family's
+judgment condition by condition with the lookups the last pass read, as
 [debugging](development/debug.md) describes.
 
 On macOS a family is ready while the exit's stack runs, the host has a link to
@@ -640,10 +643,12 @@ named, and its prefixes withheld until a later pass does.
 ## The exit on macOS
 
 A macOS build carries the userspace exit. It installs no rule and reads no
-forwarding setting. Each packet the mesh hands it, through an advertised prefix
-or an egress segment, enters a TCP/IP stack of the exit's own, which holds no
-address and answers nothing for itself, and leaves the host from the host's own
-sockets:
+forwarding setting. What the mesh hands it, through an advertised prefix or an
+egress segment, leaves the host from the host's own sockets. TCP ends in a
+TCP/IP stack of the exit's own, which holds no address and answers nothing for
+itself. UDP and echo reach their mappings, straight from the mesh where a packet
+comes whole with no IPv6 extension header, and otherwise through the stack,
+which reassembles or parses it first:
 
 - **TCP** ends in that stack. The exit dials the server from a socket of the
   host's, keeping the leaf's port toward every server while the host holds it
@@ -731,8 +736,9 @@ Per flow, it answers another protocol than TCP, UDP and ICMP with code 13 over
 IPv4 and code 1 over IPv6, on every fragment that names it, and a destination
 the host holds the same way, but a UDP datagram it hairpins. A flow past its
 source's share or past the exit's totals is answered with Host Unreachable over
-IPv4 and administratively prohibited over IPv6, counted, and recorded as an
-`egress.refused` event. No open flow is closed to make room for it.
+IPv4 and administratively prohibited over IPv6, counted, and recorded in an
+`egress.refused` event at most once every 30 seconds, as
+[watching it](#watching-it) gives. No open flow is closed to make room for it.
 
 A family is ready as [readiness](#readiness) gives for macOS. The bytes and the
 flows the exit holds are bounded by the host's memory and descriptors, as
@@ -849,12 +855,15 @@ below, and [limits](design/limits.md#routes-that-carry-the-hosts-own-traffic)
 declare what that costs a leaf in mode 3.
 
 The mesh hands each inner packet to the exit, as it hands a packet the
-forwarding decision egresses, and the exit writes it into the tun. The kernel
-forwards it by its own routes, translated by the out rules keyed on the tun
-under its source's class. A node with an egress segment translates both
-families, whatever `advertise` holds. An inner packet whose destination lies
-inside `overlay`, or that the mesh routes itself, to another node, into a hold
-or to this node, is refused rather than handed to the exit, as
+forwarding decision egresses. On Linux the exit writes it into the tun, and the
+kernel forwards it by its own routes, translated by the out rules keyed on the
+tun under its source's class. On macOS the userspace exit carries it as it
+carries any packet the mesh hands it, ending TCP in a stack of its own and
+relaying UDP and echo through the host's sockets, as
+[the exit on macOS](#the-exit-on-macos) gives. A node with an egress segment
+translates both families, whatever `advertise` holds. An inner packet whose
+destination lies inside `overlay`, or that the mesh routes itself, to another
+node, into a hold or to this node, is refused rather than handed to the exit, as
 [segment routing](segment-routing.md#egress-segments) describes.
 
 An exit that serves only egress segments writes `cap.egress` with an empty
@@ -882,20 +891,22 @@ passes only through an entry inside the overlay, which a host on an interface of
 a forwarding node cannot forge past the filter unless that node exempts it, and
 an entry outside it admits inner sources alone.
 
-An egress segment needs no `cap.table`, though its replies need a route back
+An egress segment needs no `cap.table`. On Linux its replies need a route back
 into the tun, such as the one `cap.table` gives by the rules of
 [the return path](#the-return-path), and the reply lookup reads it. Its packets
 wait for their family's [readiness](#readiness), and the mesh counts one of a
 family not ready as not ready.
 
 The node originates each egress SID as a `/128` while at least 1 family is ready
-and every family the host forwards is. A leaf reads the `/128` as the exit's
-liveness. An exit forwarding a single family still serves that family, and an
-exit whose translation broke in a family it forwards withdraws the SID. Each
-pass reads forwarding again, so a family the host starts or stops forwarding
-moves the `/128` on the next pass even where readiness stays as it was.
-`cap.route` may not announce the SID's `/128`, since it would hold the route up
-whatever readiness says.
+and every family the host carries out is: on Linux each family the host
+forwards, and on macOS each family the host routes out of the mesh, as its
+[readiness](#readiness) pass reads the routes. A leaf reads the `/128` as the
+exit's liveness. An exit carrying out a single family still serves that family,
+and an exit whose translation broke in a family it carries out withdraws the
+SID. Each pass reads forwarding again on Linux, and those routes on macOS, so a
+family the host starts or stops carrying out moves the `/128` on the next pass
+even where readiness stays as it was. `cap.route` may not announce the SID's
+`/128`, since it would hold the route up whatever readiness says.
 
 ## Reloads, down and up
 
@@ -913,10 +924,12 @@ segment to another SID or editing its `allow` list applies in place, and the
 originated `/128` moves with the SID. [Reloading](reloading.md) lists what else
 a reload applies.
 
-`ranet3 down` retracts the advertisement and removes the tables, with their set
-and timeout objects. The flows they leave keep their translation under the
-host's timeouts. `ranet3 up` installs the tables again on the next pass, and the
-advertisement follows.
+On Linux `ranet3 down` retracts the advertisement and removes the tables, with
+their set and timeout objects. The flows they leave keep their translation under
+the host's timeouts. `ranet3 up` installs the tables again on the next pass, and
+the advertisement follows. On macOS `ranet3 down` retracts the advertisement,
+ends each dial, resets each connection and ends each mapping, and `ranet3 up`
+takes flows again from the next pass, which announces what is ready.
 
 ## Watching it
 
@@ -937,7 +950,8 @@ drop a packet no flow is tracked for. All of them start from zero when a pass
 rewrites the chains.
 
 On macOS the line names the userspace exit and its flows in place of where it
-writes and its rules, with the refused counts, what it announces and withholds,
+writes and its rules, with the refused counts, the leaves' packets it dropped
+with no flow to take them where there were any, what it announces and withholds,
 and the families it is ready for, and 2 lines under it give its flows against
 its limits and its buffers against its budget, such as:
 
@@ -947,9 +961,10 @@ Flows    14 TCP of 985, 6 UDP, 1 echo of 10240, 3 dialing, 210 in TIME_WAIT
 Buffers  3.1 MiB of 4.0 GiB, a sixteenth of the host's memory
 ```
 
-The lines that name the translator, its tables, its rules, nf_tables or the hook
-are Linux's. The userspace exit writes its own beside the lines of readiness and
-of the advertisement both exits share:
+The userspace exit writes the lines of the first table. Of the second, both
+exits write `egress translating for N prefixes in <where>`, `egress ready`,
+`egress not ready` and `egress advertisement changed`, and the rest are the
+kernel exit's on Linux:
 
 | Log line                                                                                                                        | Level | When                                                                                                                                |
 | ------------------------------------------------------------------------------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -960,7 +975,7 @@ of the advertisement both exits share:
 
 | Log line                                                            | Level | When                                                                                                                           |
 | ------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the translator                                                                                               |
+| `egress translating for N prefixes in <where>`                      | info  | the daemon starts the exit, `<where>` naming the kernel exit's tables and left empty by the userspace exit                     |
 | `egress translator started`                                         | info  | the translator starts, with the tun as `interface` and whether the node holds an egress segment as `steered`                   |
 | `egress ready`                                                      | info  | a family went ready, with `family`                                                                                             |
 | `egress not ready`                                                  | warn  | a family stopped being ready, with `family` and the reason as `detail`                                                         |
@@ -973,36 +988,41 @@ of the advertisement both exits share:
 | `egress could not withdraw its tables, retrying`                    | warn  | `ranet3 down` could not remove the tables                                                                                      |
 | `egress translator started again`                                   | info  | the first pass after `ranet3 up`                                                                                               |
 
-A pass that writes the chains, changes the announced prefixes or fails records
-an `egress.pass` event. So does `ranet3 down`. The event carries `trigger`,
-`took`, `installed`, `announced` and, on failure, `err`. A change of a family's
+On Linux a pass that writes the chains, changes the announced prefixes or fails
+records an `egress.pass` event, and so does `ranet3 down`, with `trigger`,
+`took`, `installed`, `announced` and, on failure, `err`. The userspace exit
+records `egress.pass` only for a pass that changes the announced prefixes, with
+`trigger` and `announced`, and none at `ranet3 down`. A change of a family's
 readiness, of whether the egress SIDs are served or of what the lookups skipped
 records `egress.ready` with `ipv4`, `ipv6`, `sid`, the reason as `reason` and
 the skip as `skipped`. A reason that changes while nothing else moves reaches
-`status` and not the event. A pass whose count of a family's refused packets
-moved records `egress.refused` with `family` and the packets refused since the
-pass before as `refused`, counted from zero after a pass that wrote the chains.
-A pass that cannot read the counters back keeps the last pass's counts, the
-dropped ones among them, unless it rewrote the chains, whose counters start from
-zero whether or not it read them back. The userspace exit records
-`egress.refused` itself when it refuses a flow, past a share, a total or the
-descriptors among the reasons, at most once every 30 seconds, with the `source`
-and the `reason` of the refusal that falls due and every flow refused since the
-last record as `refused`, so a source retrying does not flood the log.
+`status` and not the event. On Linux a pass whose count of a family's refused
+packets moved records `egress.refused` with `family` and the packets refused
+since the pass before as `refused`, counted from zero after a pass that wrote
+the chains. A pass that cannot read the counters back keeps the last pass's
+counts, the dropped ones among them, unless it rewrote the chains, whose
+counters start from zero whether or not it read them back. The userspace exit
+records `egress.refused` itself when it refuses a flow, past a share, a total or
+the descriptors among the reasons, at most once every 30 seconds, with the
+`source` and the `reason` of the refusal that falls due and every flow refused
+since the last record as `refused`, so a source retrying does not flood the log.
 
-| Metric                                   | Meaning                                                                                                                  |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as of its last pass                                                           |
-| `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                               |
-| `ranet3_egress_flows_total`              | connections the rules have translated                                                                                    |
-| `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                           |
-| `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                          |
-| `ranet3_egress_dropped_total{family}`    | packets out of the mesh a class that translates, and into it under `return`, dropped because no flow is tracked for them |
-| `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                        |
-| `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                               |
-| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and others in the exit's own table among them          |
-| `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                              |
-| `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                  |
-| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the translator's judgment                                             |
+| Metric                                   | Meaning                                                                                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `ranet3_egress_rules_installed`          | rules the host holds in this node's chains as of its last pass                                                                 |
+| `ranet3_egress_prefixes{state}`          | `advertised` and `announced` prefix counts                                                                                     |
+| `ranet3_egress_flows_total`              | connections the rules have translated                                                                                          |
+| `ranet3_egress_untranslated_flows_total` | connections a class of `none` left under the source they carry                                                                 |
+| `ranet3_egress_refused_total{family}`    | packets refused past their source's share, each retry of a refused flow counted                                                |
+| `ranet3_egress_dropped_total{family}`    | packets out of the mesh under a class that translates, and into it under `return`, dropped because no flow is tracked for them |
+| `ranet3_egress_conntrack_entries`        | entries the host's connection table holds, where the pass read it                                                              |
+| `ranet3_egress_conntrack_max`            | the most entries the host's connection table takes, where the pass read it                                                     |
+| `ranet3_egress_conflicts`                | other nat postrouting chains at priority 99 or below, `inet` ones and others in the exit's own table among them                |
+| `ranet3_egress_pass_timestamp_seconds`   | when the last pass finished                                                                                                    |
+| `ranet3_egress_pass_failed`              | whether the last pass reported an error                                                                                        |
+| `ranet3_egress_ready{family}`            | whether the family is [ready](#readiness), 1 or 0, the exit's judgment                                                         |
 
+The userspace exit writes the prefix counts, the refused counts, the 2 series of
+the pass and readiness alone, and none of the rules', the translation's, the
+dropped counts', connection tracking's or the conflicts' series.
 [Metrics](metrics.md) describes the scrape.

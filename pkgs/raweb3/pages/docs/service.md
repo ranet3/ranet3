@@ -4,7 +4,7 @@
 title: "Running it as a service"
 description: "Running ranet3 from the NixOS and nix-darwin modules."
 created: 2026-09-22
-updated: 2026-11-06
+updated: 2026-11-09
 order: 40
 ---
 
@@ -257,13 +257,20 @@ switch's lifetime gives. It then exits 1, and the unit starts it again 5 seconds
 later, which opens the tun anew. On macOS launchd starts it again through
 `KeepAlive`. A single frame the tun hands over that cannot be read as packets
 costs that frame alone, as [metrics](metrics.md#tun-reads) describes. An exit's
-egress segments write to the same tun, so they have no device of their own to
-lose. An uplink going away does not stop the daemon either. Where the lookups of
-[readiness](exit-nodes.md#readiness) run, on an exit with `overlay` and a member
-of the family, they then fail, so the exit holds each family the uplink carried
-not ready, and withdraws its egress SIDs, until the kernel routes the family out
-again. A family whose lookups are skipped is judged by its chain and its
-forwarding alone, and stays ready.
+egress segments have no device of their own to lose: on Linux they write to the
+same tun, and on macOS the userspace exit ends their TCP in a stack of its own
+and relays their UDP and echo through the host's sockets. An uplink going away
+does not stop the daemon either. On Linux the lookups of
+[readiness](exit-nodes.md#readiness) run on an exit with `overlay` and a member
+of the family, and they then fail, so the exit holds each family the uplink
+carried not ready, and withdraws its egress SIDs, until the kernel routes the
+family out again. A family whose lookups are skipped is judged by its chain, its
+forwarding and the addresses its classes name, and stays ready unless one of
+those addresses went with the uplink. On macOS a family is ready only while a
+link outside the mesh reaches each prefix it advertises, or its default where it
+advertises none, as [readiness](exit-nodes.md#readiness) gives, so the exit
+holds each family the uplink alone carried not ready until a link reaches it
+again.
 
 dhcpcd and NetworkManager are told to leave the tun alone. The module adds
 `ranet*` to `networking.dhcpcd.denyInterfaces`, and as an `interface-name:`

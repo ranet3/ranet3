@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-11-08
+updated: 2026-11-09
 order: 75
 ---
 
@@ -111,13 +111,15 @@ exits 1. Each table's own page gives what a refusal leaves of it:
   buffers, the packets marked CE and those of an unused ECN combination.
   `--json` carries them under `esp`, as [metrics](metrics.md#series) counts
   them.
-- `status` on a node with `cap.egress` names, on its `nftables` line, the
-  families the exit is [ready](exit-nodes.md#readiness) for and, for a family
-  that is not, the reason, such as
+- `status` on a node with `cap.egress` names, on its `Egress` line, the families
+  the exit is [ready](exit-nodes.md#readiness) for and, for a family that is
+  not, the reason, such as on Linux
   `the lookup of 198.51.100.128 for 198.51.100.0/24 from 192.0.2.1 arriving on ranet3 failed: no route to host, with net.ipv4.conf.ranet3.forwarding at 0`.
-  A lookup the exit had no address to make says so, as
+  On Linux a lookup the exit had no address to make says so, as
   `lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay`.
-  `--json` carries them under `egress`, in `ready`, `unready` and `skipped`.
+  `--json` carries them under `egress`, in `ready`, `unready` and `skipped`. On
+  macOS that line names the userspace exit, with its flows and buffers on the 2
+  lines under it, as [exit nodes](exit-nodes.md#watching-it) shows.
 - `status` on a node with `cap.exit` names, on its `Kernel` line, the links the
   last pass forwarded, each link a `forward` entry matched and the pass left out
   with the reason, and a family the tun holds no overlay address of, as
@@ -208,7 +210,7 @@ it. [Debugging](development/debug.md) describes each command and the events.
 | `debug probe [peer]`                   | Probe sessions now                                                     | `--all`                                                                                                               |
 | `debug rules`                          | Show the host's policy rules, the antispoof filter and the kill switch | none                                                                                                                  |
 | `debug route <src> <dst>`              | Show where a packet goes                                               | `--iif`, `--peer`                                                                                                     |
-| `debug egress`                         | Show the exit's rules and readiness                                    | none                                                                                                                  |
+| `debug egress`                         | Show the exit's state and readiness                                    | none                                                                                                                  |
 | `debug segments`                       | Show local segments and steering                                       | none                                                                                                                  |
 | `debug runtime`                        | Show daemon runtime state                                              | none                                                                                                                  |
 | `debug updown`                         | Show whether the node is on the mesh                                   | none                                                                                                                  |

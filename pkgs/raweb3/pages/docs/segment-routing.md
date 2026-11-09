@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-07
+updated: 2026-11-09
 order: 60
 ---
 
@@ -69,10 +69,9 @@ also warned at load. A steering node's `source` has to lie inside the overlay
 too, or every SID it steers through refuses its packets. The loader refuses a
 local segment without `overlay`, and one beside an overlay holding no IPv6
 prefix, which would refuse every packet. Every platform loads `overlay`, so a
-node on macOS holds `End` and `End.DT46` segments that deliver to the mesh,
-checked by the outer source as on Linux, though no filter drops a forged overlay
-source there before the check. A reload that changes the overlay rebuilds the
-table of SIDs in place.
+node on macOS holds `End` and `End.DT46` segments, checked by the outer source
+as on Linux, though no filter drops a forged overlay source there before the
+check. A reload that changes the overlay rebuilds the table of SIDs in place.
 
 A node parses a packet only when its destination is one of its SIDs. It accepts
 a reduced header, which leaves out the segment the destination address already
@@ -156,12 +155,15 @@ or SYN-ACK that `End.DT46` delivers has its MSS clamped, as
 
 Past the checks of [local segments](#local-segments) and those below, an
 `End.DT46` with `deliver = "egress"` hands its inner packet to the exit rather
-than to the forwarding decision. The exit writes it into the mesh tun for the
-host to carry out of the mesh, and the host forwards it out of the uplink under
-the source the exit's class for its source gives. A leaf steering to the SID
-picks this exit by its segment list. `deliver = "mesh"`, the default, is the
-forwarding decision. [Exit nodes](exit-nodes.md#egress-segments) describes the
-translation and when the exit is ready.
+than to the forwarding decision, and the exit carries it out of the mesh. On
+Linux the exit writes it into the mesh tun, and the host forwards it out of the
+uplink under the source the exit's class for its source gives. On macOS the
+userspace exit ends TCP in a stack of its own and relays UDP and echo through
+the host's sockets, as [the exit on macOS](exit-nodes.md#the-exit-on-macos)
+gives. A leaf steering to the SID picks this exit by its segment list.
+`deliver = "mesh"`, the default, is the forwarding decision.
+[Exit nodes](exit-nodes.md#egress-segments) describes the translation and when
+the exit is ready.
 
 ```toml
 [[cap.segment.local]]
@@ -216,13 +218,14 @@ outer one, as
 [the configuration reference](configuration-reference.md#capsegmentlocal) says.
 The order of the list does not matter, and a reload reordering it changes
 nothing. `deliver = "egress"` belongs to `End.DT46` alone, and an egress segment
-needs `cap.egress` and `overlay`. It needs no `cap.table`, though the replies
+needs `cap.egress` and `overlay`. It needs no `cap.table`. On Linux the replies
 still take the `to` rules [the return path](exit-nodes.md#the-return-path)
 describes, and the exit is not [ready](exit-nodes.md#readiness) while a reply
-would leave by another link. The node originates the SID's `/128` itself while
-the exit is ready, so `cap.route` does not announce it. The Segments line of
-`status` prints an egress segment as its SID, its behavior, `deliver egress` and
-its list.
+would leave by another link. On macOS the replies come back to the exit's own
+sockets and reach the leaf through the mesh. The node originates the SID's
+`/128` itself while the exit is ready, so `cap.route` does not announce it. The
+Segments line of `status` prints an egress segment as its SID, its behavior,
+`deliver egress` and its list.
 
 ## At the border of the mesh
 

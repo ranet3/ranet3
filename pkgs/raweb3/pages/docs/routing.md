@@ -4,7 +4,7 @@
 title: "Routing"
 description: "How Babel picks a route, and how the reconciler puts it into the kernel."
 created: 2026-10-16
-updated: 2026-11-08
+updated: 2026-11-09
 order: 45
 ---
 
@@ -266,8 +266,8 @@ This node decides each packet a session delivers in its own table, after its
 host takes part: its forwarding settings, its firewall's forward chain and its
 kernel tables do not. The tun carries what the mesh delivers to this host and
 the networks behind it, what the host sends or its kernel forwards into it from
-its other links, which the checks at the mesh's edge below meet, and, on an
-exit, the egress it hands the host to carry out, as
+its other links, which the checks at the mesh's edge below meet, and, on an exit
+on Linux, the egress it hands the host to carry out, as
 [exit nodes](exit-nodes.md#what-an-exit-carries-out) describe. The checks run in
 RFC 1812's order for both families, each before any answer, so a malformed
 packet draws none but the first check's:
@@ -1062,11 +1062,12 @@ ranet3 answers or drops it the same way.
 A node whose `cap.route` announces, or whose `cap.egress` advertises, a prefix
 that counts and is not a default makes itself an exit for that family, as if it
 announced a default: every other node's reconciler treats a route to the prefix
-as above. On Linux the file still loads, and the daemon logs a warning at
-startup and on each reload it applies, such as
+as above. On Linux, and on macOS for a `cap.egress` advertisement, the file
+still loads, and the daemon logs a warning at startup and on each reload it
+applies, such as
 `config: cap.route announces fd00::/8, outside the overlay and shorter than /8 for IPv4 or /16 for IPv6 or holding the unspecified address, which counts as a default and makes this node an exit for its family, as routing.md says`.
-On every other platform such a `cap.route` announcement, a default among them,
-is refused at startup and on a reload, as
+On every platform but Linux such a `cap.route` announcement, a default among
+them, is refused at startup and on a reload, as
 [gaps on macOS](platforms.md#gaps-on-macos) gives. A gateway to a network
 numbered from `fd00::/8` that should stay a subnet router announces the prefixes
 it carries, each `/16` or longer, instead.

@@ -4,7 +4,7 @@
 title: "Debugging a running node"
 description: "The debug tree: its paths, what it promises, its commands and how a view is added."
 created: 2026-10-04
-updated: 2026-11-08
+updated: 2026-11-09
 order: 30
 ---
 
@@ -296,25 +296,25 @@ These commands take flags of their own:
   A setting it cannot read is shown unread. macOS looks up this host's own
   packets only, with no policy rules and without the source, which its lookup
   does not take, so its `ENETUNREACH` is no route alone. The BSDs look up none.
-- `debug egress` is the exit: its status line as `ranet3 status` gives it, each
-  rule of its chains with its counter read now through a socket of its own, a
-  rule of the translation's chain counting flows and the bytes of their first
-  packets, one of the forward hook's chain counting packets, and one that keeps
-  no counter shown uncounted, any rule it asks for and the chains do not hold,
-  any they hold that it did not write, counted by the chain it was read from,
-  then each family as the last pass judged it: ready or why not, its chains read
-  back, the host's forwarding as the exit reads it, a setting the node cannot
-  read counted as on, and each route lookup the pass read with its answer, the
-  reply's lookup included, as [exit nodes](../exit-nodes.md) describes the
-  readiness. Then IPv4's `rp_filter` of `all` and of each link a route of those
-  lookups leaves by, read now. The lookups are the last pass's and are not asked
-  again. A node with no `cap.egress` says so. On macOS it is the userspace exit:
-  its status line and the 2 lines under it, its TCP connections, UDP mappings
-  and echo mappings in each family, its limits, the TIME_WAIT endpoints a new
-  SYN reused and those closed early past the limit, a `Memory` row with Go's
-  memory limit, whether the daemon was given it, the node's own heap and what
-  the budget leaves it, then each refusal and drop by its reason and the sources
-  holding the most flows.
+- `debug egress` is the exit: on Linux its status line as `ranet3 status` gives
+  it, each rule of its chains with its counter read now through a socket of its
+  own, a rule of the translation's chain counting flows and the bytes of their
+  first packets, one of the forward hook's chain counting packets, and one that
+  keeps no counter shown uncounted, any rule it asks for and the chains do not
+  hold, any they hold that it did not write, counted by the chain it was read
+  from, then each family as the last pass judged it: ready or why not, its
+  chains read back, the host's forwarding as the exit reads it, a setting the
+  node cannot read counted as on, and each route lookup the pass read with its
+  answer, the reply's lookup included, as [exit nodes](../exit-nodes.md)
+  describes the readiness. Then IPv4's `rp_filter` of `all` and of each link a
+  route of those lookups leaves by, read now. The lookups are the last pass's
+  and are not asked again. A node with no `cap.egress` says so. On macOS it is
+  the userspace exit: its status line and the 2 lines under it, its TCP
+  connections, UDP mappings and echo mappings in each family, its limits, the
+  TIME_WAIT endpoints a new SYN reused and those closed early past the limit, a
+  `Memory` row with Go's memory limit, whether the daemon was given it, the
+  node's own heap and what the budget leaves it, then each refusal and drop by
+  its reason and the sources holding the most flows.
 - `debug segments` is each segment the node answers for, an egress segment with
   whether its SID is announced and the families the mesh hands to the exit
   through it, then the steering policies, on or stopped, with the overhead the
@@ -559,7 +559,7 @@ connections to the reads.
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `daemon.started`, `daemon.stopping`   | the node is up, and its shutdown has begun                                                                                         |
 | `daemon.reload`                       | the file and trust document were read again, with what applied or the error                                                        |
-| `daemon.ttl`                          | a reload could not read the host's default TTL, which ICMPv4 answers carry, or its hop limit                                       |
+| `daemon.ttl`                          | a reload could not read the host's default TTL, or the exit could not read its hop limit at its start or a reload                  |
 | `daemon.memory`                       | a reload weighed the node's heap past what a given Go memory limit leaves the userspace exit                                       |
 | `node.down`, `node.up`                | the node went off the mesh or came back, by a request or from its flag                                                             |
 | `responder.changed`                   | a reload turned `link.listen` on or off, with the answered sessions closed                                                         |
@@ -603,7 +603,7 @@ connections to the reads.
 | `kernel.fallback`                     | the kill switch, on macOS its rejects, began holding, passing or not holding, or ended                                             |
 | `kernel.path`                         | under `cap.exit.via`, the path went up or down, or the steered defaults installed changed                                          |
 | `exit.forwarding`                     | under `cap.exit` on macOS, the start or a reload read the host forwarding a family                                                 |
-| `egress.pass`                         | a translator pass that rewrote its rules, moved its prefixes or failed                                                             |
+| `egress.pass`                         | an exit's pass that moved its prefixes, and on Linux also one that rewrote its rules or failed, or a `ranet3 down`                 |
 | `egress.ready`                        | the exit's readiness, its SIDs or its skipped lookups moved                                                                        |
 | `egress.refused`                      | a pass read a family's count of packets refused past a source's share move, or the userspace exit refused a flow, 30 seconds apart |
 | `antispoof.pass`                      | an antispoof filter pass that rewrote its table or a set, or failed                                                                |
@@ -624,7 +624,7 @@ connections to the reads.
 | `pmtu.steering`                       | a session fell under what a steered 1280-byte packet needs, or rose back                                                           |
 | `esp.ecn.unused`                      | a session's packets came in ECN pairs no tunnel sends, at most every 10 seconds                                                    |
 | `netstack.codel.dropping`             | a peer's sender began dropping for a queue delay above its target                                                                  |
-| `netstack.codel.drained`              | that peer's queue emptied, or its delay fell back below the target                                                                 |
+| `netstack.codel.drained`              | that peer's queue emptied, its delay fell back below the target, or less than its MTU stayed queued behind a batch                 |
 | `netstack.tun.refused`                | the tun handed over a frame that could not be read as packets                                                                      |
 | `netstack.tun.failed`                 | the tun went away under the running node, which then stops                                                                         |
 | `netstack.transit.dropped`            | a drop the transit counters count, but the reads they count alone, with why                                                        |
@@ -633,15 +633,15 @@ connections to the reads.
 | `netstack.answer.source`              | a router-id or the answer SID `debug pmtu` shows moved                                                                             |
 
 `egress.pass`, `egress.ready` and `egress.refused` are recorded on Linux by the
-kernel exit and on macOS by the userspace exit, whose `egress.refused` names a
-refused flow's `source` and `reason`, an interval apart. The `antispoof` kinds
-are recorded on Linux and, where `overlay` is written, on macOS, but
-`antispoof.pf`, which is macOS's alone. `transport.endpoint.unsegmented` is
-recorded on Linux and Android, which build the Linux sockets.
-`transport.underlay.selected` is recorded on macOS alone, because only macOS
-names each underlay datagram's interface, as
-[routing](../routing.md#the-underlays-interface-on-macos) describes.
-`exit.forwarding` is recorded on macOS alone, beside the warning
+kernel exit and on macOS by the userspace exit, whose `egress.pass` carries
+`trigger` and `announced` alone and whose `egress.refused` names a refused
+flow's `source` and `reason`, an interval apart. The `antispoof` kinds are
+recorded on Linux and, where `overlay` is written, on macOS, but `antispoof.pf`,
+which is macOS's alone. `transport.endpoint.unsegmented` is recorded on Linux
+and Android, which build the Linux sockets. `transport.underlay.selected` is
+recorded on macOS alone, because only macOS names each underlay datagram's
+interface, as [routing](../routing.md#the-underlays-interface-on-macos)
+describes. `exit.forwarding` is recorded on macOS alone, beside the warning
 [the limits](../design/limits.md#routes-that-carry-the-hosts-own-traffic) give,
 since on Linux a link `cap.exit.forward` leaves out keeps the routes it had.
 `transport.endpoint.unpinned` and the 3 `transport.pair` kinds are recorded on
@@ -712,7 +712,7 @@ Each kind carries these attributes:
 | `kernel.fallback`                             | `state` and `was`, each `holding`, `passing`, `not holding` or `off`                                                                                                                                                                                               |
 | `kernel.path`                                 | `state` (`up` or `down`), with `segment` and `verdict` where it is down, and `installed`, the families whose steered default, or on macOS its zero-free cover, the pass left in the table                                                                          |
 | `exit.forwarding`                             | `family`, one event for each family the host forwards                                                                                                                                                                                                              |
-| `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`                                                                                                                                                                                                                 |
+| `egress.pass`                                 | `trigger`, `took`, `installed`, `announced`, `err`, or from the userspace exit `trigger` and `announced`                                                                                                                                                           |
 | `egress.ready`                                | `ipv4`, `ipv6`, `sid`, `reason` (why a family is not ready), `skipped` (the lookups left out and why)                                                                                                                                                              |
 | `egress.refused`                              | `family`, `refused` (the packets refused since the pass before, from zero after a pass that rewrote the chains), or from the userspace exit `source`, `reason` (such as `share`, `total` or `descriptors`) and `refused` (the flows refused since the last record) |
 | `antispoof.pass`                              | `trigger`, `took`, `installed`, `wrote` (`table` or `sets`, where the pass wrote), `err`                                                                                                                                                                           |
@@ -751,10 +751,11 @@ lists, `mesh` or `kernel`. The `trigger` of an `egress.pass` is `start`,
 `sweep`, `retry`, `disable`, `enable`, `changed` when another writer added,
 changed or deleted part of its tables, or `missed` when the daemon lost
 nf_tables notifications to an overflow or could not read one, whoever's tables
-they were about. The `trigger` of an `antispoof.pass` is `start`, `sweep`,
-`retry`, `reload`, `routes` when the mesh's table changed, `network` when the
-host's links did, `changed` when another writer added, changed or deleted part
-of its table, or `missed` as for an `egress.pass`.
+they were about, and `retry`, `changed` and `missed` come from the kernel exit
+alone. The `trigger` of an `antispoof.pass` is `start`, `sweep`, `retry`,
+`reload`, `routes` when the mesh's table changed, `network` when the host's
+links did, `changed` when another writer added, changed or deleted part of its
+table, or `missed` as for an `egress.pass`.
 
 An `ike.sa.expired` is recorded for the current Child SA and for a replaced one
 still waiting for its Delete, with both SPIs in hexadecimal. The `reason` of an
@@ -931,7 +932,11 @@ A `daemon.ttl` is recorded when a reload cannot read the host's default TTL,
 `net.ipv4.ip_default_ttl` on Linux or `net.inet.ip.ttl` on macOS. Its `ttl` is
 the TTL the node's ICMPv4 answers keep, and its `err` names the setting and why
 the read failed. The reload applies the rest of the file, as
-[path MTU](../path-mtu.md#packets-that-do-not-fit) describes.
+[path MTU](../path-mtu.md#packets-that-do-not-fit) describes. The userspace exit
+on macOS also takes the host's default hop limit, `net.inet6.ip6.hlim`, when it
+starts and at each reload, and a read that fails records a `daemon.ttl` whose
+`hop_limit` is the hop limit the exit's IPv6 packets keep, 64 until a read
+succeeds.
 
 A `node.down` carries its `cause`, `request` for `ranet3 down` and `flag` for a
 daemon that found the flag when it started, and in `since` the moment the flag

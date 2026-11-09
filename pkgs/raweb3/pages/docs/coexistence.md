@@ -4,7 +4,7 @@
 title: "Sharing a host"
 description: "Sharing a host with other routing daemons, firewalls and VPNs."
 created: 2026-09-12
-updated: 2026-11-08
+updated: 2026-11-09
 order: 110
 ---
 
@@ -74,13 +74,12 @@ refuses a link-local prefix, so its query carries the mark where the process may
 set it. An IPv6 one ends by main's route out of the link its zone names, and an
 IPv4 one at row L2 by main's route for it. The mark is a constant, with no key
 to set it. Setting it takes `CAP_NET_ADMIN` or `CAP_NET_RAW`. A process that
-holds neither logs `transport leaves the underlay sockets unmarked` once, at
-info, and sends its underlay datagrams and its resolver queries unmarked, which
-end as an unmarked lookup does in
-[where a lookup ends](routing.md#where-a-lookup-ends-on-linux). Without
-`CAP_NET_ADMIN` no rule reads the mark either: a node with `cap.table` refuses
-to start, since the reconciler cannot set `promote_secondaries` on the tun, and
-a node without it writes no rule at all.
+holds neither logs `underlay sockets stay unmarked` once, at info, and sends its
+underlay datagrams and its resolver queries unmarked, which end as an unmarked
+lookup does in [where a lookup ends](routing.md#where-a-lookup-ends-on-linux).
+Without `CAP_NET_ADMIN` no rule reads the mark either: a node with `cap.table`
+refuses to start, since the reconciler cannot set `promote_secondaries` on the
+tun, and a node without it writes no rule at all.
 
 Other programs mark packets too, and their rules select a value of the mark read
 under a mask. Under each mask these programs read at their defaults, 0x72 reads

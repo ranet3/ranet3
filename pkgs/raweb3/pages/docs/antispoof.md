@@ -4,7 +4,7 @@
 title: "The antispoof filter"
 description: "Dropping a mesh source that arrives from outside the mesh, carving an interface's own network out of the overlay, exempting what the operator names, and letting into the mesh only what this node owns."
 created: 2026-10-19
-updated: 2026-11-07
+updated: 2026-11-09
 order: 55
 ---
 
@@ -406,6 +406,7 @@ Chain `antispoof` accepts whatever arrives on an interface inside the mesh,
 before any drop. The list is derived and has no setting:
 
 1. the mesh tun, through which an egress segment's inner packets arrive as well
+   on Linux
 2. the loopback link, `lo` on Linux and `lo0` on macOS, through which a packet
    this host sends to its own address arrives
 

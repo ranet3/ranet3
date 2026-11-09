@@ -4,7 +4,7 @@
 title: "Control socket"
 description: "Asking a running node questions, and the verbs that act on one."
 created: 2026-09-21
-updated: 2026-11-08
+updated: 2026-11-09
 order: 80
 ---
 
@@ -444,11 +444,12 @@ dialer stops and no new one starts, the responder stops answering IKE where
 speaker stops. Where `cap.table` is set, the reconciler withdraws the routes,
 rules and tun addresses it installed and
 [the kill switch's](routing.md#the-kill-switch-on-linux) table, or on macOS
-[its rejects](routing.md#the-kill-switch-on-macos), and on an exit node the
-translator withdraws its tables and its advertisement. The daemon, the tun, the
-control socket, the metrics and the debug views stay, and the node still answers
-every read. A ranet3 peer drops its routes through the node when the Delete
-arrives, rather than when the Babel neighbor would have timed out.
+[its rejects](routing.md#the-kill-switch-on-macos). On an exit node the exit
+withdraws its advertisement, and on Linux its tables, while on macOS it ends
+each dial, resets each connection and ends each mapping. The daemon, the tun,
+the control socket, the metrics and the debug views stay, and the node still
+answers every read. A ranet3 peer drops its routes through the node when the
+Delete arrives, rather than when the Babel neighbor would have timed out.
 
 `down` writes the flag `down` in the daemon's state directory before it acts,
 holding the moment the node went down, and a daemon that starts with the flag

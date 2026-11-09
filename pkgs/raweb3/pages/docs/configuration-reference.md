@@ -79,7 +79,7 @@ nest the same names. A key not listed here is refused when the file loads.
   `169.254.0.0/16`. The order does not matter.
 - Every node of the mesh writes the same `overlay`, which covers every exit's
   `allow` entry that admits an outer source.
-- On an exit, `overlay` enables the kernel lookups of its
+- On an exit on Linux, `overlay` enables the kernel lookups of its
   [readiness](exit-nodes.md#readiness), which read from a member's address
   inside it. A family with no prefix in it skips them.
 - On an exit, `overlay` also keeps an address inside it off the uplink, as
@@ -430,12 +430,14 @@ The segments this node answers for.
 - `End` sends the packet to its next segment. `End.DT46` removes the outer
   header and delivers the inner packet, to the mesh's
   [forwarding decision](routing.md#transit) or, with `deliver = "egress"`, to
-  the exit, which writes it into the mesh tun for the host to carry out of the
-  mesh, refusing an inner destination inside `overlay` or that the mesh routes
-  itself. The decision writes it to the tun, hands it to the exit, forwards it,
-  answers it or drops it, as it does a session's packet and as
-  [routing](routing.md#transit) lists. An inner packet an End.DT46 delivers to
-  the mesh takes that path whatever `cap.transit` says.
+  the exit, which carries it out of the mesh as
+  [egress segments](exit-nodes.md#egress-segments) and
+  [the exit on macOS](exit-nodes.md#the-exit-on-macos) give, refusing an inner
+  destination inside `overlay` or that the mesh routes itself. The decision
+  writes it to the tun, hands it to the exit, forwards it, answers it or drops
+  it, as it does a session's packet and as [routing](routing.md#transit) lists.
+  An inner packet an End.DT46 delivers to the mesh takes that path whatever
+  `cap.transit` says.
 - `behavior` is read in any case.
 - A SID written twice is refused.
 - `deliver = "egress"` is refused on `End`, and `allow` on anything but an

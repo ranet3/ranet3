@@ -5,7 +5,7 @@
 title: "ranet3"
 description: "What ranet3 is, and where each part of it is documented."
 created: 2026-08-17
-updated: 2026-11-08
+updated: 2026-11-09
 order: 10
 ---
 
@@ -58,7 +58,7 @@ exempts.
 | `cap.babel`     | Sets the Babel timers, the link quality estimator, the link costs and the switching margin                           |
 | `cap.table`     | Runs the route reconciler, which installs routes, addresses and, on Linux, the policy rules it derives in the kernel |
 | `cap.segment`   | Steers traffic by source and destination prefix through SRv6 waypoints, and lists the segments this node answers for |
-| `cap.egress`    | Translates source addresses for exit nodes and subnet routers, on Linux                                              |
+| `cap.egress`    | Translates sources for exit nodes and subnet routers on Linux, and carries an exit's flows on macOS                  |
 | `cap.antispoof` | Exempts sources from [the antispoof filter](antispoof.md), which `overlay` turns on and which runs on Linux          |
 | `cap.crypto`    | Chooses and orders the ciphers, PRFs and key exchanges, and sets the rekey intervals and the ESP replay window       |
 

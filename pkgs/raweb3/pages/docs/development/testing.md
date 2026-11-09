@@ -5,7 +5,7 @@
 title: "Testing"
 description: "The unit and property tests, the root-only tests, the Nix checks and CI, the VM tests and the benchmarks."
 created: 2026-08-17
-updated: 2026-11-08
+updated: 2026-11-09
 order: 20
 ---
 
@@ -141,22 +141,48 @@ unshare -rn go test ./internal/egress/kernel -run '^TestKernelExitPassesTheExitB
 unshare -rn go test ./internal/egress/egresstest
 ```
 
+The userspace exit, the one macOS carries, runs the suite on Linux as well, with
+the exit in the namespace the whole test process runs in, its mesh carrying only
+what its nodes own, and every socket it opens checked against the `Prepare` it
+was handed. A second process, whose bounding set holds no `CAP_NET_BIND_SERVICE`
+and which opens no raw socket, runs it under Android's profile with the 2 limits
+that profile declares beside Linux's. A carrier on loopback runs it against an
+exit host in the same process, each packet of the exit's uplink carried whole in
+a datagram of its own, as it runs against an exit on another host. `unshare` and
+`setpriv` have to be on the path:
+
+```sh
+unshare -rn go test ./internal/egress/userspace -run '^TestUserspaceExit'
+```
+
+Against an exit on another host, whatever starts the two tests opens on each
+host what the test there takes. On the suite's Linux host,
+`TestUserspaceExitPassesTheSuiteOverTheCarrier` runs as root where
+`RANET3_RIG_CARRIED` is set, and takes the carrier's datagram socket on
+descriptor 3 and the wire's stream on descriptor 4. On the exit's host,
+`TestUserspaceExitHostOverTheCarrier` runs as root where `RANET3_RIG_ETHERNET`
+names the link to the suite's host, `RANET3_RIG_PEER` that host's IPv4 address,
+and `RANET3_RIG_PORT` and `RANET3_RIG_CONTROL_PORT` the carrier's and the wire's
+ports. On Linux it refuses a network namespace with a link up, an address or a
+route at its start, as the runs above do, and on a Mac it runs only with
+`RANET3_DARWIN_NETTEST` set too.
+
 ## Root tests on macOS
 
 On macOS the root tests of `internal/kernel`, `internal/netstack`,
-`internal/client`, `transport`, `control`, `internal/pf` and
-`internal/egress/kernel` run as root, and only with `RANET3_DARWIN_NETTEST=1`
-set. They run against the real routing socket, utuns, feth pairs, directories
-given a group only root may give, and pf, and the Mac that runs them may be on a
-live mesh. The pf tests write only `com.apple/ranet3` and children of
-`com.apple` named `ranet3-` and a suffix, skip where `com.apple/ranet3` holds
-anything already or the main ruleset calls no child of `com.apple`, leave pf
-running as they found it, and fail one that leaves the anchor holding anything
-or a reference of its own held. They send datagrams up utuns of their own, from
-overlay and outside sources of the documentation ranges to each utun's own
-address, and count each on the anchor's rule that took it: a forged overlay
-source up an outside utun, an overlay source up the mesh utun and through `lo0`,
-a carve-out and the gateway example of
+`internal/client`, `transport`, `control`, `internal/pf`,
+`internal/egress/kernel` and `internal/egress/userspace/raw` run as root, and
+only with `RANET3_DARWIN_NETTEST=1` set. They run against the real routing
+socket, utuns, feth pairs, directories given a group only root may give, raw
+sockets and pf, and the Mac that runs them may be on a live mesh. The pf tests
+write only `com.apple/ranet3` and children of `com.apple` named `ranet3-` and a
+suffix, skip where `com.apple/ranet3` holds anything already or the main ruleset
+calls no child of `com.apple`, leave pf running as they found it, and fail one
+that leaves the anchor holding anything or a reference of its own held. They
+send datagrams up utuns of their own, from overlay and outside sources of the
+documentation ranges to each utun's own address, and count each on the anchor's
+rule that took it: a forged overlay source up an outside utun, an overlay source
+up the mesh utun and through `lo0`, a carve-out and the gateway example of
 [exemptions](../antispoof.md#a-gateways-site) through the daemon's own sets, a
 pass of a later anchor, a reply to a flow from the outside utun's own address
 that a later anchor's stateful `pass out` on the mesh utun lets in ahead of the
@@ -232,7 +258,7 @@ have commands of their own.
 | Check           | Systems | CI runs it on                    | What it runs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | --------------- | ------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `go-test`       | all 3   | all 3                            | `go test -race ./...` on the vendored libhegel, then a check that no test wrote Hegel's cache                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, `staticcheck ./...`, a build of `cmd/ranet3` for Android with cgo off, and a build of `cmd/ranet3` that keeps its symbols, which fails where the daemon links `transport`'s network in memory, `internal/bubble` or `testing`, or a non-test file, outside the network's own files, that names `NewMemoryNetwork`                                                                                                                                                                                                                                                                                     |
+| `go-lint`       | all 3   | `x86_64-linux`, `aarch64-darwin` | `go vet ./...`, the same vet with `GOOS=freebsd`, `staticcheck ./...`, a build of `cmd/ranet3` for Android with cgo off, builds of `internal/egress/userspace` and `internal/underlay` for Android and iOS with cgo off, and a build of `cmd/ranet3` that keeps its symbols, which fails where the daemon links `transport`'s network in memory, `internal/bubble` or `testing`, or a non-test file, outside the network's own files, that names `NewMemoryNetwork`                                                                                                                                                                                     |
 | `tree`          | all 3   | `x86_64-linux`                   | `gofmt -l`, `deno fmt --check`, `templ fmt -fail`, `nixfmt --check` on every Nix file, `taplo format --check`, a comparison of the module versions the 3 `go.mod` files require, a check of the `aarch64-linux` exclusions in `atelier.toml`, a check of the VM tests' absent and counted log lines, and `reuse lint`                                                                                                                                                                                                                                                                                                                                   |
 | `wireguard`     | all 3   | all 3                            | `go vet ./...` and `go test -race ./...` in `pkgs/wireguard`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `raweb3`        | all 3   | all 3                            | a check of the kernel exit's rows of protocol deviations, as [the exit behavior suite](#the-exit-behavior-suite) says, then `go vet ./...` and `go test ./...` in `pkgs/raweb3`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -496,3 +522,16 @@ command.
 | `internal/netstack` | `BenchmarkResolve`, `BenchmarkDecide`, `BenchmarkDecideWithheld`, `BenchmarkOptionStage`                                                                                                         | the route lookup with its matched length, the forwarding decision per packet, the decision with every answer withheld, and the IPv4 option stage |
 | `internal/packet`   | `BenchmarkMartianChecks`                                                                                                                                                                         | the checks of a source and a destination no router forwards                                                                                      |
 | `transport`         | `BenchmarkUDPReceiveVector`                                                                                                                                                                      | batched UDP receive through the real syscalls, on Linux                                                                                          |
+
+The userspace exit's bench, which
+[the deviations](../design/protocol-deviations.md#the-userspace-exit) and
+[limits](../design/limits.md#the-userspace-exit) cite, is the `TestBench` tests
+of `internal/egress/userspace`, on Linux. Each sizes the exit from the host's
+memory and descriptors, as the daemon does, and skips unless `RANET3_EXIT_BENCH`
+is set. The 2 at full rate write their heap profiles and goroutine dumps into
+the directory `RANET3_EXIT_BENCH_PROFILE` names, where set. They run in a
+network namespace of their own:
+
+```sh
+RANET3_EXIT_BENCH=1 unshare -rn go test ./internal/egress/userspace -run '^TestBench' -timeout 0
+```
