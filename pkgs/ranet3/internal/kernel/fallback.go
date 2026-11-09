@@ -16,7 +16,7 @@ import (
 )
 
 // FallbackState is the switch fallback = "none" asks for, as a pass leaves it.
-// On Linux the switch is two chains of the nf_tables inet table ranet3, which
+// On Linux the switch is two chains of the table inet ranet3, which
 // let a packet leave by a link outside the mesh only where one of their lines
 // passes it, and drop the rest. The table carries no owner flag, so they
 // outlive the process that wrote them. routing.md's "The kill switch on Linux"
@@ -59,7 +59,7 @@ type FallbackStatus struct {
 	// lan lists
 	Public []netip.Prefix
 	// tun and passed are the mesh's device and the LAN's and this node's own
-	// prefixes the table's lines pass, which FallbackResolvers reads
+	// prefixes the switch's lines pass, which FallbackResolvers reads
 	tun    string
 	passed []netip.Prefix
 }
@@ -134,7 +134,7 @@ var lanRanges = []netip.Prefix{
 	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("fe80::/10"), netip.MustParsePrefix("fc00::/7"),
 }
 
-// fallbackSetsOf derives the table's sets. carveOuts is each prefix inside the
+// fallbackSetsOf derives the switch's sets. carveOuts is each prefix inside the
 // overlay the LAN holds.
 func (v exitView) fallbackSetsOf(tun string, overlay []schema.Prefix, inbound []Service, carveOuts []netip.Prefix) fallbackSets {
 	out := fallbackSets{tun: tun, forwarded: slices.Clone(v.forwarded)}
@@ -256,7 +256,7 @@ func (r *Reconciler) applyFallback(sets fallbackSets, asked bool) (*FallbackStat
 			return nil, nil
 		}
 		// a kernel without nf_tables holds no table, so that refusal is not
-		// tried again until a pass asks for the table, and any other is
+		// tried again until a pass asks for the switch, and any other is
 		err := sw.deleteFallback()
 		r.fallbackClear = err == nil || withoutNFTables(err)
 		if r.fallbackClear {
@@ -268,7 +268,7 @@ func (r *Reconciler) applyFallback(sets fallbackSets, asked bool) (*FallbackStat
 		return nil, nil
 	}
 	r.fallbackClear = false
-	// a read that fails on a table no write touched keeps the drops the last read found, and a rewrite starts them from zero
+	// a read that fails on a switch no write touched keeps the drops the last read found, and a rewrite starts them from zero
 	read, err := sw.readFallback(sets)
 	r.fallbackDropsRead = r.fallbackDropsRead || err == nil && !form.uncounted
 	switch {
@@ -306,7 +306,7 @@ func warnFallbackLeft(form fallbackForm, err error) {
 
 // FallbackResolvers is each DNS server systemd-resolved queries now through a
 // link outside the mesh at an address outside the LAN, this node's own
-// prefixes, loopback and link-local, nil where no pass asked for the table. A
+// prefixes, loopback and link-local, nil where no pass asked for the switch. A
 // status read asks resolved, never a pass, so a resolved slow to answer delays
 // no withdrawal of 5405 and 5435.
 // A read that fails is logged once, until one succeeds.
@@ -381,7 +381,7 @@ func (r *Reconciler) switchForm() fallbackForm {
 }
 
 // switcher is the optional half of a platform that writes the kill switch,
-// its chains in the table ranet3 on linux and the rejects on lo0 on darwin. A
+// its chains in the table inet ranet3 on linux and the rejects on lo0 on darwin. A
 // platform without one runs no fallback = "none", which its start refuses.
 type switcher interface {
 	// writeFallback writes the switch whole, on linux in one transaction with

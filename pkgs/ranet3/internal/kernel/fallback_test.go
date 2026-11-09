@@ -46,7 +46,7 @@ func uplinkSources(fake *fakeKernel) bool {
 	return false
 }
 
-// Under fallback = "none" a pass writes the table from the pass's derivation,
+// Under fallback = "none" a pass writes the switch from the pass's derivation,
 // a pass over the same inputs writes nothing, and a reload to "uplink" deletes
 // it once, with 5405 kept throughout
 func TestFallbackTableFollowsTheMode(t *testing.T) {
@@ -91,7 +91,7 @@ func TestFallbackTableFollowsTheMode(t *testing.T) {
 	}
 }
 
-// While the table does not read back as written, or cannot be written, the
+// While the switch does not read back as written, or cannot be written, the
 // pass leaves 5405 and 5435 out and keeps 5440 and 5450, and puts them back
 // once it reads back
 func TestFallbackTableThatDoesNotReadBackLeavesTheUplinkSourcesOut(t *testing.T) {
@@ -123,8 +123,8 @@ func TestFallbackTableThatDoesNotReadBackLeavesTheUplinkSourcesOut(t *testing.T)
 	}
 }
 
-// A start whose mode does not ask for the table deletes one an earlier
-// instance left, once, and the withdrawal deletes the table it wrote
+// A start whose mode does not ask for the switch deletes one an earlier
+// instance left, once, and the withdrawal deletes the switch it wrote
 func TestFallbackTableLeftByAnEarlierInstanceGoesAtAStartNotAskingForIt(t *testing.T) {
 	reconciler, fake := fallbackHarness(t, &ExitMode{})
 	fake.fallback = &fallbackSets{tun: "ranet3"}
@@ -149,7 +149,7 @@ func TestFallbackTableLeftByAnEarlierInstanceGoesAtAStartNotAskingForIt(t *testi
 	}
 }
 
-// A left table whose delete fails is deleted by the withdrawal after it, where
+// A left switch whose delete fails is deleted by the withdrawal after it, where
 // a kernel without nf_tables is not asked again
 func TestFallbackTableWhoseDeleteFailedGoesAtTheWithdrawal(t *testing.T) {
 	for name, c := range map[string]struct {
@@ -222,8 +222,8 @@ func logged(t *testing.T) *strings.Builder {
 }
 
 // A Run the mesh's failure stops withdraws every route, address and rule of
-// its own and leaves the table, warning once with the switch's state, and the
-// next Run reads the table back as written and keeps it while it puts the
+// its own and leaves the switch, warning once with the switch's state, and the
+// next Run reads the switch back as written and keeps it while it puts the
 // rules back. A Run stopped plainly deletes it with no warning.
 func TestFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	network := &hostNetwork{state: exitPassHost("docker0")}
@@ -266,13 +266,13 @@ func TestFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	}
 }
 
-// A failed mesh's stop deletes no table wherever the capability in force asks
+// A failed mesh's stop deletes no chain of the switch wherever the capability in force asks
 // for the switch, whatever the last pass read or wrote or its own listing
 // finds: it leaves an earlier instance's before any pass, and one a pass whose
 // readback or rewrite failed left as found. It warns once with the last pass's
-// state, worded by the listing: the table left, none there, or the listing
+// state, worded by the listing: the chains left, none there, or the listing
 // failed. Under a reload to "uplink" taken before the stop it deletes the
-// table with no warning.
+// switch with no warning.
 func TestFailedMeshsStopLeavesATableWhereTheSwitchIsAskedFor(t *testing.T) {
 	failed := errors.New("no buffer space available")
 	for name, c := range map[string]struct {
@@ -345,7 +345,7 @@ func TestFailedMeshsStopLeavesATableWhereTheSwitchIsAskedFor(t *testing.T) {
 }
 
 // In mode 3 with fallback unwritten, which is "none" there, a failed mesh's
-// stop leaves the table as it does under fallback = "none"
+// stop leaves the switch as it does under fallback = "none"
 func TestFailedMeshsStopInModeThreeLeavesTheTable(t *testing.T) {
 	reconciler, fake := fallbackHarness(t, &ExitMode{Via: []schema.Addr{schema.MustAddr("3fff:0:0:e::46")}})
 	fake.fallback = &fallbackSets{tun: "ranet3"}
@@ -497,7 +497,7 @@ func TestFallbackLANIsThePrivateAndLinkLocalPartsOfEachConnectedNetwork(t *testi
 }
 
 // With lan unwritten the status names exitPassHost's public networks, which the
-// table's LAN leaves out, and once lan lists them it names none
+// switch's LAN leaves out, and once lan lists them it names none
 func TestFallbackStatusNamesEachPublicNetwork(t *testing.T) {
 	for _, c := range []struct {
 		lan    []schema.Prefix
@@ -517,7 +517,7 @@ func TestFallbackStatusNamesEachPublicNetwork(t *testing.T) {
 	}
 }
 
-// heldWrite is a fake whose table write reports that it has begun and then
+// heldWrite is a fake whose switch write reports that it has begun and then
 // waits to be released, so a test holds the first pass inside the write
 type heldWrite struct {
 	*fakeKernel
@@ -532,8 +532,8 @@ func (h *heldWrite) writeFallback(s fallbackSets, remake bool) error {
 	return h.fakeKernel.writeFallback(s, remake)
 }
 
-// FirstPass stays open while Run's first pass is inside the table's write and
-// closes only once the table is written, which the start waits on under
+// FirstPass stays open while Run's first pass is inside the switch's write and
+// closes only once the switch is written, which the start waits on under
 // "none" before it dials a session
 func TestFallbackFirstPassEndsWithTheTableWritten(t *testing.T) {
 	network := &hostNetwork{state: exitPassHost("docker0")}
@@ -626,7 +626,7 @@ func parsedPrefixes(texts []string) []netip.Prefix {
 
 // The status names the switch holding while no exit is live, passing while the
 // mesh's defaults are installed, and not holding with the fault while the
-// table does not read back, each with what the drop counted. A pass leaves
+// switch does not read back, each with what the drop counted. A pass leaves
 // systemd-resolved unasked, and a read of the status asks it for the DNS
 // servers it queries through a link beyond the LAN and this node's own
 // prefixes. Each change of state is one event, and a reload to "uplink" ends
@@ -701,8 +701,8 @@ func TestFallbackStatusNamesEachStateOnce(t *testing.T) {
 	}
 }
 
-// droppedHarness is a reconciler under fallback none on exitPassHost with docker0, whose fake reads 5 packets of 60 bytes dropped by the table's last lines
-// and restart a second reconciler on the same fake and routes, as a process started on the table a killed one left builds
+// droppedHarness is a reconciler under fallback none on exitPassHost with docker0, whose fake reads 5 packets of 60 bytes dropped by the switch's last lines
+// and restart a second reconciler on the same fake and routes, as a process started on the switch a killed one left builds
 func droppedHarness(t *testing.T) (reconciler *Reconciler, fake *fakeKernel, restart func() *Reconciler) {
 	t.Helper()
 	network := &hostNetwork{state: exitPassHost("docker0")}
@@ -739,8 +739,8 @@ func setFallback(t *testing.T, reconciler *Reconciler, mode *ExitMode, failing b
 	}
 }
 
-// a pass whose read of the table fails, and so rewrites nothing, reports the drops the last read found, which the next read that succeeds goes on from
-// and none once a withdrawal deleted the table they were read from
+// a pass whose read of the switch fails, and so rewrites nothing, reports the drops the last read found, which the next read that succeeds goes on from
+// and none once a withdrawal deleted the switch they were read from
 func TestFallbackDropsOutlastAReadThatFails(t *testing.T) {
 	reconciler, fake, _ := droppedHarness(t)
 	var got []string
@@ -756,7 +756,7 @@ func TestFallbackDropsOutlastAReadThatFails(t *testing.T) {
 		t.Errorf("the passes reported %q, want %q", got, want)
 	}
 
-	// a withdrawal deletes the table, so a read that fails after the switch comes back has no drops to keep
+	// a withdrawal deletes the switch, so a read that fails after the switch comes back has no drops to keep
 	setFallback(t, reconciler, &ExitMode{Fallback: FallbackUplink}, false)
 	fake.failFallback = errors.New("netlink: dump interrupted")
 	setFallback(t, reconciler, &ExitMode{Fallback: FallbackNone, LAN: exitPassLAN}, true)
@@ -765,7 +765,7 @@ func TestFallbackDropsOutlastAReadThatFails(t *testing.T) {
 	}
 }
 
-// a withdrawal that cannot delete the table leaves its drops in it, so a read that fails once the switch comes back keeps them
+// a withdrawal that cannot delete the switch leaves its drops in it, so a read that fails once the switch comes back keeps them
 func TestFallbackDropsOutlastAWithdrawalThatCannotDelete(t *testing.T) {
 	reconciler, fake, _ := droppedHarness(t)
 	if err := reconciler.reconcile(); err != nil {
@@ -788,7 +788,7 @@ func TestFallbackDropsOutlastAWithdrawalThatCannotDelete(t *testing.T) {
 	}
 }
 
-// a stop that cannot delete the table leaves its drops in it, so a read that fails once the reconciler runs again keeps them
+// a stop that cannot delete the switch leaves its drops in it, so a read that fails once the reconciler runs again keeps them
 func TestFallbackDropsOutlastAStopThatCannotDelete(t *testing.T) {
 	reconciler, fake, _ := droppedHarness(t)
 	if err := reconciler.reconcile(); err != nil {
@@ -815,7 +815,7 @@ func TestFallbackDropsOutlastAStopThatCannotDelete(t *testing.T) {
 	}
 }
 
-// a stop deletes the table, so a read that fails once the reconciler runs again has no drops to keep
+// a stop deletes the switch, so a read that fails once the reconciler runs again has no drops to keep
 func TestFallbackDropsAreNoneOnceAStopDeletedTheTable(t *testing.T) {
 	reconciler, fake, _ := droppedHarness(t)
 	if err := reconciler.reconcile(); err != nil {
@@ -836,8 +836,8 @@ func TestFallbackDropsAreNoneOnceAStopDeletedTheTable(t *testing.T) {
 	}
 }
 
-// a process started on the table a killed one left, whose first read of it fails, reports no drops until a read of its own succeeds
-// so the series never reads 0 between the 5 the table held before the restart and the 5 it holds after, and nothing rewrites the table
+// a process started on the switch a killed one left, whose first read of it fails, reports no drops until a read of its own succeeds
+// so the series never reads 0 between the 5 the switch held before the restart and the 5 it holds after, and nothing rewrites the switch
 func TestFallbackDropsAreUnreadUntilAReadOfThisProcess(t *testing.T) {
 	first, fake, restart := droppedHarness(t)
 	if err := first.reconcile(); err != nil {

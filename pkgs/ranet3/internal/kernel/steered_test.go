@@ -325,9 +325,9 @@ func TestReloadBetweenModesTwoAndThreeTakesOnePass(t *testing.T) {
 }
 
 // Mode 3 with fallback unwritten holds the switch, mode 2 with it unwritten
-// does not: its table written and 5450 refusing the host's own lookups, holding
+// does not: its chains written and 5450 refusing the host's own lookups, holding
 // while the path is down and passing while the steered defaults stand. Under
-// fallback = "uplink" written, mode 3 writes neither and deletes the table.
+// fallback = "uplink" written, mode 3 writes neither and deletes the switch.
 func TestModeThreeRefusesUnlessFallbackSaysUplink(t *testing.T) {
 	refused := func(fake *fakeKernel) bool {
 		return slices.ContainsFunc(slices.Collect(maps.Keys(fake.heldRules())), func(rule Rule) bool { return rule.Priority == priorityRefused })

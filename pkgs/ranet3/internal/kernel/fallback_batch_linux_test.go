@@ -54,7 +54,7 @@ func TestFallbackBatchKeepsItsBytes(t *testing.T) {
 	}
 }
 
-// A table listing a hundred services of each protocol is written in one
+// A switch listing a hundred services of each protocol is written in one
 // transaction, each line's text within the 128 bytes of the comment the
 // readback knows it by
 func TestFallbackBatchTakesAnyNumberOfServices(t *testing.T) {

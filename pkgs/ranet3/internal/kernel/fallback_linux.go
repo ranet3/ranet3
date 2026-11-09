@@ -299,7 +299,8 @@ func fallbackBatch(s fallbackSets, stale nftables.Contents) ([]nftables.Request,
 func chainFirstSet(i int) uint32 { return uint32(fallbackSetIDs * (i + 1)) }
 
 // fallbackScope is the switch's chains and sets, whose change by another
-// writer wakes the reconciler, as a change to the table does
+// writer wakes the reconciler, as the table's deletion or a flag set on it
+// does
 var fallbackScope = fallbackContents.Scope()
 
 // fallbackWatch is the socket the switch is written through and the monitor

@@ -39,7 +39,7 @@ var (
 )
 
 // benchSwitch is a throwaway namespace holding the mesh's tun, the uplink's tun with main's defaults through it, and a forwarded link's
-// tun, each held open by the benchmark, with the platform that writes the table
+// tun, each held open by the benchmark, with the platform that writes the switch
 type benchSwitch struct {
 	plat *netlinkPlatform
 	fds  map[string]int
@@ -107,7 +107,7 @@ func benchTUN(b *testing.B, name string) int {
 	return fd
 }
 
-// write writes the table for sets, its tun the mesh's
+// write writes the switch for sets, its tun the mesh's
 func (s *benchSwitch) write(b *testing.B, sets fallbackSets) {
 	b.Helper()
 	sets.tun = benchMesh
@@ -146,7 +146,7 @@ func benchSockaddr(address netip.Addr, port int) unix.Sockaddr {
 	return &unix.SockaddrInet6{Port: port, Addr: address.As16()}
 }
 
-// benchSend sends b.N datagrams on fd, each meeting want: nil, EPERM for the table's drop, or ENETUNREACH for 5450.
+// benchSend sends b.N datagrams on fd, each meeting want: nil, EPERM for the switch's drop, or ENETUNREACH for 5450.
 // A tun nobody reads drops what its queue cannot hold, which ENOBUFS reports.
 func benchSend(b *testing.B, fd int, to netip.Addr, want error) {
 	b.Helper()
@@ -164,7 +164,7 @@ func benchSend(b *testing.B, fd int, to netip.Addr, want error) {
 	}
 }
 
-// The host's own UDP into the tun with the exit live, against the same send with no table: the first line's accept on the common path
+// The host's own UDP into the tun with the exit live, against the same send with no switch: the first line's accept on the common path
 func BenchmarkFallbackSendIntoTheTun(b *testing.B) {
 	for _, table := range []bool{false, true} {
 		b.Run(fmt.Sprintf("table %v", table), func(b *testing.B) {
@@ -177,7 +177,7 @@ func BenchmarkFallbackSendIntoTheTun(b *testing.B) {
 	}
 }
 
-// The host's own UDP from the uplink's address to a LAN host, with 2, 50 and 500 networks in the LAN's set, against no table: the
+// The host's own UDP from the uplink's address to a LAN host, with 2, 50 and 500 networks in the LAN's set, against no switch: the
 // forwarded line's input device and the interval lookup. The networks are IPv6, as 500 apart from one another fit no IPv4 documentation range.
 func BenchmarkFallbackSendToTheLAN(b *testing.B) {
 	for _, networks := range []int{0, 2, 50, 500} {
@@ -196,8 +196,8 @@ func BenchmarkFallbackSendToTheLAN(b *testing.B) {
 	}
 }
 
-// The host's own UDP beyond the LAN with the mesh's defaults retracted: through main and out of the uplink with no table, against
-// 5450's ENETUNREACH (layout A) and the table's drop (layout B)
+// The host's own UDP beyond the LAN with the mesh's defaults retracted: through main and out of the uplink with no switch, against
+// 5450's ENETUNREACH (layout A) and the switch's drop (layout B)
 func BenchmarkFallbackSendRetracted(b *testing.B) {
 	for _, layout := range []string{"no table", "A, 5450", "B, the drop"} {
 		b.Run(layout, func(b *testing.B) {
@@ -234,7 +234,7 @@ func benchDatagram(size int, source netip.Addr, sourcePort int, destination neti
 }
 
 // A host's datagram the namespace forwards from a link forward leaves out and from one it names, of 64 and 1400 bytes, against no
-// table: the forwarded line's cost per packet on a subnet router. One forward names meets every line and the drop.
+// switch: the forwarded line's cost per packet on a subnet router. One forward names meets every line and the drop.
 func BenchmarkFallbackForward(b *testing.B) {
 	for _, size := range []int{64, 1400} {
 		for _, arm := range []string{"no table", "left out", "named"} {
@@ -260,7 +260,7 @@ func BenchmarkFallbackForward(b *testing.B) {
 	}
 }
 
-// A listed service's replies to a flow the far side opened, with 1 and 20 ports listed and the service's last, against no table:
+// A listed service's replies to a flow the far side opened, with 1 and 20 ports listed and the service's last, against no switch:
 // the connection lines
 func BenchmarkFallbackInboundReplies(b *testing.B) {
 	for _, listed := range []int{0, 1, 20} {

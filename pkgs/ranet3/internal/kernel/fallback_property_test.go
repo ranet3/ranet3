@@ -59,15 +59,15 @@ func (p switchPacket) String() string {
 // switchConfig is one drawn host: its links outside the mesh with their
 // connected networks, the links forward expands to and its own prefixes the
 // mesh's table throws, inbound's services as the pass hands them to the
-// table, and inbound's entries as written
+// switch, and inbound's entries as written
 type switchConfig struct {
 	view     exitView
 	services []Service
 	entries  []Service
 }
 
-// switchModel is the chain at hook item 4's table writes, as a function of
-// what the chain reads, written from the table's lines rather than from the
+// switchModel is the chain at hook item 4's switch writes, as a function of
+// what the chain reads, written from the switch's lines rather than from the
 // encoder: the tun and lo, the underlay's mark, a packet forwarded from a link
 // forward leaves out but lo toward a destination the fib does not type
 // local, the LAN, link-local, multicast and the limited broadcast, neighbor
@@ -521,9 +521,9 @@ func (c switchConfig) ports() []uint16 {
 // neighbors, one sharing its bits, and Tailscale's bypass mark
 var switchMarks = []uint32{0, schema.UnderlayMark, schema.UnderlayMark - 1, schema.UnderlayMark + 1, schema.UnderlayMark | 0x100, 0x80000}
 
-// The chain the table writes, run as nf_tables runs its encoded expressions
+// The chain the switch writes, run as nf_tables runs its encoded expressions
 // over the sets the pass fills, gives every drawn packet the verdict the
-// table's lines give it, on drawn hosts: a packet into the tun or lo, carrying
+// switch's lines give it, on drawn hosts: a packet into the tun or lo, carrying
 // the underlay's mark or a neighbor of it, forwarded from a link forward
 // leaves out or names or sent by the host, to each boundary of a connected
 // network, the private and link-local ranges, the prefixes lan lists, the own
@@ -649,7 +649,7 @@ var walkListed = []netip.Prefix{
 }
 
 // Linux's rule walk over the derived rules under fallback = "none", in mode 2
-// and in mode 3, composed with the chain the table writes run as nf_tables runs
+// and in mode 3, composed with the chain the switch writes run as nf_tables runs
 // it, lets out by a link
 // outside the mesh only what carvedOut names, of every drawn packet of the
 // host's own, its destination typed local or not, and forwarded from
@@ -668,7 +668,7 @@ func TestFallbackWalkAndChainLetOutOnlyTheCarveOuts(t *testing.T) {
 		})
 		h := build(nil)
 		s := h.mode.fallbackSetsOf(tunDevice, h.rt.Overlay, nil, nil)
-		// the lines of the table's chain at hook, none where it writes no chain there
+		// the lines of the switch's chain at hook, none where it writes no chain there
 		at := func(hook uint32) []fallbackRule {
 			i := slices.IndexFunc(fallbackChains, func(chain nftables.Chain) bool { return chain.Hook == hook })
 			if i < 0 {

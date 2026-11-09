@@ -460,9 +460,10 @@ type platform interface {
 	DelAddr(netip.Prefix) error
 	// Notify carries one coalesced wake-up per batch of kernel notifications
 	// touching what the reconciler holds: on linux a route in its table, an
-	// address of its tun, a deleted rule of its protocol or another writer's
-	// change to the kill switch's chains, on darwin a route of its interface
-	// or of lo0, where its kill switch and overlay holds are.
+	// address of its tun, a deleted rule of its protocol, or another writer's
+	// deletion of the table inet ranet3, a flag set on it or a change to the
+	// kill switch's chains and sets, on darwin a route of its interface or of
+	// lo0, where its kill switch and overlay holds are.
 	Notify() <-chan struct{}
 	// retable takes the capability a reload installed, on the id and proto the platform was opened with
 	retable(Table)
@@ -765,7 +766,7 @@ type Reconciler struct {
 	fallbackFault string
 	fallbackClear bool
 	switchAsked   bool
-	// fallbackDropped and fallbackBytes are the table's drops as the last read that succeeded found them, zero once a pass deletes or rewrites the table,
+	// fallbackDropped and fallbackBytes are the switch's drops as the last read that succeeded found them, zero once a pass deletes or rewrites its chains,
 	// and fallbackDropsRead says a read of this process has succeeded, the pass's goroutine's
 	fallbackDropped, fallbackBytes uint64
 	fallbackDropsRead              bool

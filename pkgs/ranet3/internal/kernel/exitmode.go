@@ -38,7 +38,7 @@ type ExitMode struct {
 	// 3, whose path names the one exit the host's traffic may leave by
 	Fallback Fallback `yaml:"fallback,omitempty" json:"fallback,omitempty" toml:"fallback,omitempty"`
 	// Inbound is the services on the uplink's addresses whose replies the
-	// table's reply lines pass while fallback is "none", on flows conntrack saw
+	// switch's reply lines pass while fallback is "none", on flows conntrack saw
 	// the far side open, as routing.md's "The kill switch on Linux" lists, each
 	// written "<port>/<protocol>" or "<first>-<last>/<protocol>" with the
 	// protocol tcp or udp. darwin refuses it, whose switch has no reply lines
@@ -65,7 +65,7 @@ const (
 	// while no exit is live
 	FallbackUplink Fallback = "uplink"
 	// FallbackNone writes the kill switch whether an exit is live or not: on
-	// linux two chains of the table ranet3, whose lines and lifetime routing.md's
+	// linux two chains of the table inet ranet3, whose lines and lifetime routing.md's
 	// "The kill switch on Linux" lists, and while it reads back as written the
 	// host's traffic leaves by a link outside the mesh only where one of its
 	// lines passes it. On macOS it is reject routes on lo0, which "The kill

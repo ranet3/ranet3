@@ -27,13 +27,13 @@ import (
 
 const (
 	// fallbackRestoreBudget is how soon a pass answers another writer's change
-	// to the table, the settle window and one pass, where the periodic pass the
+	// to the switch, the settle window and one pass, where the periodic pass the
 	// test sets takes an hour
 	fallbackRestoreBudget = time.Second
 )
 
 // fallbackLines is the lines of the chain at postrouting in fallbackSample's
-// table as nft spells them, and output's with fib daddr type local accept
+// switch as nft spells them, and output's with fib daddr type local accept
 // ahead of the drop
 const fallbackLines = `		oifname { "lo", "ranetsw0" } accept
 		meta mark 0x00000072 accept
@@ -52,7 +52,7 @@ const fallbackLines = `		oifname { "lo", "ranetsw0" } accept
 		counter drop
 `
 
-// fallbackText is fallbackSample's table as nft spells it, each line under the
+// fallbackText is fallbackSample's switch as nft spells it, each line under the
 // comment the platform writes for it
 func fallbackText(t *testing.T) string {
 	t.Helper()
@@ -170,7 +170,7 @@ add ct timeout inet %[1]s translated-udp4 { protocol udp; l3proto ip; policy = {
 	}
 }
 
-// fallbackSample is a table of every line, on the tun ranetsw0, each port set
+// fallbackSample is a switch of every line, on the tun ranetsw0, each port set
 // holding a port beside another port or a range
 var fallbackSample = fallbackSets{
 	tun: "ranetsw0", forwarded: []string{"ranetfw0"},
@@ -400,7 +400,7 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 		t.Errorf("a delete with no table failed: %v", err)
 	}
 
-	// a start with no reconciler deletes the table an earlier instance left
+	// a start with no reconciler deletes the switch an earlier instance left
 	if err := plat.writeFallback(fallbackSample, false); err != nil {
 		t.Fatal(err)
 	}
@@ -410,14 +410,14 @@ func TestNetlinkFallbackTableListsAsNftsOwnAndOutlivesItsWriter(t *testing.T) {
 	}
 }
 
-// A notification the watch may have missed wakes a pass, which finds the table
+// A notification the watch may have missed wakes a pass, which finds the switch
 // not reading back and takes 5405 and 5435 out within it, where the periodic
 // pass is the default's 30 seconds away
 func TestFallbackMissedNotificationWakesAPass(t *testing.T) {
 	network := &hostNetwork{state: exitPassHost("docker0")}
 	tbl := Table{Addresses: prefixes(prefix("192.0.2.1/32"), prefix("3fff::1/128"))}.WithMode(&ExitMode{Fallback: FallbackNone, LAN: exitPassLAN})
 	reconciler, routes, fake := harness(t, tbl, Runtime{Interface: "ranet3", Overlay: exitPassOverlay, Network: network.read})
-	// the reconciler's reader of the table starts with Run, so this change wakes nothing after the first pass
+	// the reconciler's reader of the switch starts with Run, so this change wakes nothing after the first pass
 	routes.Set(netip.Prefix{}, prefix("203.0.113.0/24"), netstack.Local)
 	held := func() bool {
 		fake.mu.Lock()
@@ -466,7 +466,7 @@ func TestFallbackMissedNotificationWakesAPass(t *testing.T) {
 // away, the last by a table deleted and made again. A table another
 // writer holds under its own socket, which the reconciler cannot write, takes
 // 5405 and 5435 out within a pass, and once that socket closes the
-// reconciler's next try writes the table back and puts them in again.
+// reconciler's next try writes the switch back and puts them in again.
 func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T) {
 	const device, uplink = "ranetsw0", "ranetup0"
 	plat := rootRulePlatform(t, device)
@@ -544,7 +544,7 @@ func TestNetlinkFallbackTableAnswersAnotherWritersChangeWithinAPass(t *testing.T
 	}
 	// one address and one network of each family
 	const sources = 4
-	// settle waits for the table to read back as written, or not, and for
+	// settle waits for the switch to read back as written, or not, and for
 	// held of 5405 and 5435, naming what it last read when it gives up
 	settle := func(written bool, held int) {
 		t.Helper()
@@ -669,7 +669,7 @@ func TestNetlinkFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 		listed                   bool
 		rules, routes, addresses int
 	}
-	// held reads the table back and lists it through the test's own platform, and counts the reconciler's rules, routes and
+	// held reads the switch back and lists it through the test's own platform, and counts the reconciler's rules, routes and
 	// addresses
 	held := func() (out leftover) {
 		read, err := plat.readFallback(sets)
