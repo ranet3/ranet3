@@ -292,7 +292,7 @@ func TestDaemonPackagesAvoidTheStandardLogger(t *testing.T) {
 	}
 }
 
-// a message tells no one to add cap.egress, cap.exit or cap.table, each of which a platform other than linux refuses, and
+// a message tells no one to add cap.egress, cap.exit or cap.table, each of which some platform refuses, and
 // builds no instruction to add a block from parts
 func TestNoMessageSaysToAddABlockAPlatformRefuses(t *testing.T) {
 	files, parsed := daemonSources(t, 0)
