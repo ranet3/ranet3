@@ -427,6 +427,30 @@ func TestDecisionWritesIPv6LinkLocalToTheTunAndDropsGroups(t *testing.T) {
 	}
 }
 
+// buildAnswer builds the ICMP error each kind names in either family, RFC 792, RFC 1812 section 5.2.7.1, RFC 1191 section 4 and RFC 4443 sections 3.1 to 3.4
+// and nothing for a kind it does not build, beyond scope and none among them, rather than another kind's error
+func TestBuildAnswerBuildsOnlyTheKindsItNames(t *testing.T) {
+	type icmp struct{ kind, code byte }
+	built := map[int]map[answerKind]icmp{
+		4: {answerNoRoute: {3, 0}, answerHostUnreachable: {3, 1}, answerProhibited: {3, 13}, answerExpired: {11, 0}, answerParameter: {12, 0}, answerTooBig: {3, 4}},
+		6: {answerNoRoute: {1, 0}, answerHostUnreachable: {1, 0}, answerProhibited: {1, 1}, answerExpired: {3, 0}, answerParameter: {4, 0}, answerTooBig: {2, 0}},
+	}
+	allow := func() bool { return true }
+	for family, header := range map[int]int{4: 20, 6: 40} {
+		raw := udpPacket(transitSender[family], transitFar[family], 100, false)
+		for kind := range answerNone + 1 {
+			out := buildAnswer(raw, byte(family), kind, 4, transitOwn[family], 64, allow)
+			want, named := built[family][kind]
+			switch {
+			case !named && out != nil:
+				t.Errorf("IPv%d kind %d built %x, want nothing", family, kind, out)
+			case named && (len(out) <= header+1 || out[header] != want.kind || out[header+1] != want.code):
+				t.Errorf("IPv%d kind %d built %x, want type %d code %d", family, kind, out, want.kind, want.code)
+			}
+		}
+	}
+}
+
 // a source or destination no router forwards is dropped and counted martian, past the destinations linkScoped takes, RFC 1812 section 5.3.7, RFC 3927 section 7 and RFC 4291 sections 2.5.2, 2.5.3 and 2.5.6
 // an IPv4 link-local destination among them, which never reaches the tun, as a cloud's metadata address would from a host forwarding it
 // and an IPv4-mapped destination, which RFC 6890 has no router forward, whatever its IPv4 form

@@ -752,8 +752,10 @@ func buildAnswer(raw []byte, version byte, kind answerKind, value int, source ne
 		return packet.TimeExceeded(raw, source, ttl, allow)
 	case answerParameter:
 		return packet.ParameterProblem(raw, source, ttl, value, allow)
+	case answerTooBig:
+		return packet.FragmentationNeeded(raw, source, ttl, value, allow)
 	}
-	return packet.FragmentationNeeded(raw, source, ttl, value, allow)
+	return nil
 }
 
 // takeAnswer is an answer's draw on the ICMP limits for a packet from sender, false where they withhold it, as takeICMPToken draws
