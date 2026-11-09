@@ -722,8 +722,8 @@ func onOffUnread(on *bool) string {
 	return strconv.FormatBool(*on)
 }
 
-// the antispoof filter accepts the mesh tun and the loopback link, and an exit's egress leaves through
-// the mesh tun, so it adds nothing
+// the antispoof filter accepts the mesh tun and the loopback link, and an exit adds nothing: the kernel
+// exit's egress enters through the mesh tun, and the userspace exit's leaves from the host's sockets
 func TestBorderInsideIsEveryDeviceTheMeshArrivesOn(t *testing.T) {
 	for name, node := range map[string]struct {
 		exit bool
