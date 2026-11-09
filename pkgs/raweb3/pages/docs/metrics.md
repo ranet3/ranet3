@@ -4,7 +4,7 @@
 title: "Metrics"
 description: "The Prometheus series a node exports."
 created: 2026-09-12
-updated: 2026-11-08
+updated: 2026-11-09
 order: 90
 ---
 
@@ -282,13 +282,14 @@ that was closing, of reservations its outbound SA refused and of batches that
 failed to seal, and the packets the delay control drops.
 `ranet3_peer_send_delay_dropped_total` is that last part on its own. Each peer's
 sender measures how long every data batch has waited since it was reserved, and
-once that delay has stayed above 5 milliseconds for 100 milliseconds it drops 1
-packet at the head of the queue on the schedule CoDel (RFC 8289) sets, until a
-batch comes through below 5 milliseconds again or the queue empties. Babel's own
-packets wait in the same queue, but the delay control neither measures nor drops
-them. The sender records each start and end of that state as an event,
-`netstack.codel.dropping` and `netstack.codel.drained`, which
-[the debug tree](development/debug.md) shows.
+once that delay has stayed above 5 milliseconds for 100 milliseconds, with at
+least the session's MTU queued behind the batch, it drops 1 packet at the head
+of the queue on the schedule CoDel (RFC 8289) sets, until a batch comes through
+below 5 milliseconds again or the queue empties. Babel's own packets wait in the
+same queue, but the delay control neither measures nor drops them. The sender
+records each start and end of that state as an event, `netstack.codel.dropping`
+and `netstack.codel.drained`, which [the debug tree](development/debug.md)
+shows.
 
 Delay drops say the queue toward that peer stands. This node cannot seal and
 send for that peer as fast as traffic for it arrives, because its CPU, its

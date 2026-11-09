@@ -5,7 +5,7 @@
 title: "What it deliberately doesn't do"
 description: "What ranet3 deliberately does not do, and why."
 created: 2026-08-17
-updated: 2026-11-08
+updated: 2026-11-09
 order: 10
 ---
 
@@ -772,9 +772,10 @@ whole budget is taken only when the peer holds nothing else, and above a
 `link.mtu` of about 45 KB such a read, cut into fragments for a narrow session,
 can carry more than 4096. Its sender bounds the delay through that queue with
 CoDel, dropping 1 packet at the head once the delay has stayed above 5
-milliseconds for 100 milliseconds. The readers wait only for the read batches
-every peer shares, and for room in the queue of batches the workers take, which
-the sessions' forwarded packets share with them.
+milliseconds for 100 milliseconds and at least the session's MTU stays queued
+behind it. The readers wait only for the read batches every peer shares, and for
+room in the queue of batches the workers take, which the sessions' forwarded
+packets share with them.
 
 Packet lookups read an immutable SADR trie snapshot without locking. Route
 changes copy the affected path and publish it atomically. Diagnostics iterate
@@ -1196,7 +1197,7 @@ holds from 1 budget B of bytes when it starts, and no key sets any of it.
 | Endpoints in TIME_WAIT               | `TimeWait`, 1 a connection                                                                                                                                                                                                    | The oldest is closed, and counted                                                                                                                                                                                |
 | A TCP flow's window                  | `Window`, T over 2,048, within 64 KiB and 6 MiB, the most memory gVisor's buffer holds each way                                                                                                                               | The leaf or the server is held to the window                                                                                                                                                                     |
 | The lanes' and the link's bytes      | a thirty-second of B each, within 256 KiB and 32 MiB, and 4,096 packets in the link's queue                                                                                                                                   | Each packet past them is dropped at the tail, and counted as `lane full` or `link full`                                                                                                                          |
-| The delay through the link's queue   | 5 ms below the queue's 4,096 packets, held by RFC 8289's controlled delay with an interval of 100 ms, as a peer's sender runs it                                                                                              | Once the delay has stayed above 5 ms for 100 ms, the pump drops the packet at the queue's head on the schedule RFC 8289 gives, counted as `link codel`, until the delay is back under 5 ms or the queue is empty |
+| The delay through the link's queue   | 5 ms below the queue's 4,096 packets, held by RFC 8289's controlled delay with an interval of 100 ms, as a peer's sender runs it                                                                                              | Past 5 ms for 100 ms with at least its leaf session's MTU queued up behind it, the pump drops the head by RFC 8289's schedule, counted as `link codel`, until the delay is back under 5 ms or the queue is empty |
 | Reassembly                           | 4 MiB a family, fixed                                                                                                                                                                                                         | gVisor drops the oldest fragments                                                                                                                                                                                |
 | Idle UDP mappings                    | 5 minutes, 30 seconds toward port 53                                                                                                                                                                                          | The mapping ends                                                                                                                                                                                                 |
 | Idle echo mappings                   | 60 seconds                                                                                                                                                                                                                    | The mapping ends                                                                                                                                                                                                 |
