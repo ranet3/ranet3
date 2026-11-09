@@ -4,7 +4,7 @@
 title: "Exit nodes and subnet routers"
 description: "Translating traffic at an exit node, and routing a subnet behind one."
 created: 2026-09-22
-updated: 2026-11-09
+updated: 2026-11-10
 order: 50
 ---
 
@@ -474,10 +474,12 @@ it and forwards it out of its uplink, and on macOS it carries it as
 A packet through a prefix counting as a default that `cap.route` announces meets
 the first 2 checks, and past them goes to the tun with no readiness to wait on,
 since no translation of this node stands behind it. An
-[egress segment](#egress-segments)'s inner packet meets the second check after
-its `allow` list, and is then refused where its destination lies inside
-`overlay`, announced or not, or the mesh routes it, as
-[segment routing](segment-routing.md#egress-segments) describes.
+[egress segment](#egress-segments)'s inner packet to a destination other than a
+multicast destination or the limited broadcast, but a Not-ECT one that arrived
+under an outer CE, meets the second check after its `allow` list, and is then
+refused where its destination lies inside `overlay`, announced or not, or the
+mesh routes it, as [segment routing](segment-routing.md#egress-segments)
+describes.
 
 ## Refusing to advertise
 

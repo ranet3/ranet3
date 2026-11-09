@@ -269,8 +269,8 @@ the networks behind it, what the host sends or its kernel forwards into it from
 its other links, which the checks at the mesh's edge below meet, and, on an exit
 on Linux, the egress it hands the host to carry out, as
 [exit nodes](exit-nodes.md#what-an-exit-carries-out) describe. The checks run in
-RFC 1812's order for both families, each before any answer, so a malformed
-packet draws none but the first check's:
+this order for both families, each before any answer, so a malformed packet
+draws none but the first check's:
 
 1. A frame that holds no whole IP packet is dropped with no answer, but for an
    End.DT46's inner IPv6 packet whose Payload Length runs past its octets, or is
@@ -278,8 +278,11 @@ packet draws none but the first check's:
    code 0, pointing at that field, unless its source or destination is one the
    next 2 checks drop or send to the tun. A session's own packet that holds no
    whole IP packet is dropped before its segments or this decision read it.
-2. A multicast, limited broadcast or IPv6 link-local destination goes to the
-   tun, whatever the table holds. An IPv4 link-local destination does not, since
+2. An IPv6 link-local destination goes to the tun, whatever the table holds. A
+   multicast or limited broadcast destination is dropped with no answer and
+   counted [`session_multicast`](metrics.md#transit-counters), whatever the
+   table holds or the packet's source. An IPv4 link-local destination does not
+   go to the tun, since
    [RFC 3927 section 7](https://www.rfc-editor.org/rfc/rfc3927.html#section-7)
    says "A router MUST NOT forward a packet with an IPv4 Link-Local source or
    destination address", and the next check drops it.

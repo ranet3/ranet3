@@ -5,7 +5,7 @@
 title: "Deliberate protocol deviations"
 description: "Where ranet3 departs from the IKEv2, ESP, Babel, IPv6, ICMP and NAT specifications on purpose."
 created: 2026-08-23
-updated: 2026-11-09
+updated: 2026-11-10
 order: 20
 ---
 
@@ -58,7 +58,7 @@ sections below give the details.
 | RFC 4443 section 2.2, RFC 1812 sections 4.2.2.11 and 4.3.2.4                              | Answer from an address of the node's own                                                                                                                                                                                  | `End`'s answer to a segment larger than its next session, to a source an entry of this node's own that counts as no default reaches, goes into the tun from the destination of the packet it answers, whatever router-id the node holds                                                                                                                                                                                                                                                                                                                                              | Only this host or a network behind it receives it, and only the destination passes every check, see ICMP answers                                                                                                                                                                                                                                                           |
 | RFC 1812 section 4.3.2.6                                                                  | Reverse a source route the packet carries into the error, unless a policy known to the router would keep the error from its sender                                                                                        | No ICMPv4 answer carries a source route                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | A Linux or macOS host drops a source-routed packet at its defaults, see ICMP answers                                                                                                                                                                                                                                                                                       |
 | RFC 4443 section 3.2                                                                      | Send Packet Too Big for a packet larger than the next link, one to a multicast group included                                                                                                                             | `End` sends none for a segment carrying a packet to a multicast group                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | The mesh routes no multicast, and a ranet3 headend steers no packet to a group                                                                                                                                                                                                                                                                                             |
-| RFC 1812 section 5.3.5.1                                                                  | Limited broadcasts MUST NOT be discarded                                                                                                                                                                                  | A read off the tun to 255.255.255.255 is dropped and counted with the multicast reads                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | No service of ranet3 takes a broadcast, and the same section forbids forwarding it                                                                                                                                                                                                                                                                                         |
+| RFC 1812 section 5.3.5.1                                                                  | Limited broadcasts MUST NOT be discarded                                                                                                                                                                                  | A read off the tun to 255.255.255.255 is dropped and counted with the multicast reads. A packet a session delivers to it is dropped and counted `session_multicast` before either exit takes it, by the forwarding decision, and by an egress segment for an inner packet that its allow list let through, but a Not-ECT one that arrived under an outer CE, which an earlier drop takes. An inner packet the list refuses is refused. The userspace exit also refuses one it is handed, as a destination none of its sockets sends to                                               | No service of ranet3 takes a broadcast, and the same section forbids forwarding it. Written to the tun, a session's broadcast would reach the host's services that listen on the link, DHCP among them, from a peer of another organization through the mesh                                                                                                               |
 | RFC 4443 section 2.4 (e.1)                                                                | Originate no ICMPv6 error in answer to an ICMPv6 error                                                                                                                                                                    | One behind 9 extension headers or more is answered where any other packet would be, but for a code 8 refusal                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Refusing at the bound would withhold the errors sections 3.2 and 3.3 require from a packet not shown to be an error                                                                                                                                                                                                                                                        |
 | RFC 8883 section 2.5                                                                      | Answer a packet discarded for a chain past a limit on its extension headers with Parameter Problem, code 8 (SHOULD)                                                                                                       | `End` and `End.DT46` drop with no answer such a packet whose search for an ICMPv6 error ends unfinished past 16 extension headers                                                                                                                                                                                                                                                                                                                                                                                                                                                    | RFC 4443 section 2.4 (e.1) lets no error answer an ICMPv6 error, which such a packet may be, see ICMP answers                                                                                                                                                                                                                                                              |
 | RFC 4443 section 2.4 (f)                                                                  | Make the rate limit's parameters configurable, since "the best defaults depend on where the implementation is expected to be deployed"                                                                                    | Fixed in code, the Linux kernel's defaults but for the bound on sources kept                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Buckets per source scale the node's budget with the senders it answers, and the cap bounds a flood's cost on the smallest node                                                                                                                                                                                                                                             |
@@ -1253,11 +1253,11 @@ with an IPv6 multicast destination address, or with a link-layer multicast or
 link-layer broadcast address." The mesh routes no multicast: no kernel route it
 installs names a group, since a group is delivered on a link rather than through
 a tunnel. A read off the tun to a group is dropped before its route is looked up
-or the packet steered, and the forwarding decision hands one a session delivers
-to the tun, as [routing](../routing.md#transit) says. So the one packet to a
-group that can meet a session too small for it is one a segment carries, which a
-ranet3 headend never steers. `End` drops such a segment with no Packet Too Big,
-since no ICMPv6 error ranet3 builds answers a packet to a group.
+or the packet steered, and the forwarding decision drops one a session delivers,
+as [routing](../routing.md#transit) says. So the one packet to a group that can
+meet a session too small for it is one a segment carries, which a ranet3 headend
+never steers. `End` drops such a segment with no Packet Too Big, since no ICMPv6
+error ranet3 builds answers a packet to a group.
 
 An ICMPv6 error behind 9 extension headers or more is answered, but for the code
 8 refusal above.
@@ -2638,8 +2638,10 @@ drops:
   cannot tell such a packet from a mesh node's, so an answer could reach the
   mesh node the source names rather than the host that sent the packet.
 - For code 5, an egress segment past its allow list also refuses an inner source
-  the mesh routes no reply to, as the exit's check below does. No route would
-  carry an answer back to that source either.
+  the mesh routes no reply to, of a packet to a destination other than a
+  multicast destination or the limited broadcast, but a Not-ECT one that arrived
+  under an outer CE, as the exit's check below does. No route would carry an
+  answer back to that source either.
 - For code 1, an egress segment past its reply check refuses an inner packet
   whose destination the mesh routes itself, by a route that does not
   [count as a default](../routing.md#routes-that-count-as-a-default), to another
@@ -2752,19 +2754,20 @@ hold, which [routing](../routing.md#transit) describes.
 truncated packet and a source route among them, and
 [routing](../routing.md#transit) lists the rest, a malformed header and a source
 or destination no router forwards. An egress segment drops with no answer every
-inner packet whose source no router forwards, and every one whose destination no
-router forwards but the limited broadcast and multicast, and the decision treats
-some of them otherwise. The decision writes a packet to a multicast, limited
-broadcast or IPv6 link-local destination to the tun whatever its source, and
-answers an IPv6 link-local source to a wider unicast destination a router
-forwards with code 2 on the session it came from. Past its allow list, the
-segment sends a packet from a source a router forwards to the limited broadcast
-or a multicast destination on to its reply check.
-[The antispoof filter](../antispoof.md#watching-it) counts each drop,
-[segment routing](../segment-routing.md#watching-it) counts each refusal, and
-`ranet3 status` counts an exit's 2 as `unrouted source` and `not ready`, and a
-tun read's as `invalid`, `forged`, `routing header`, `SID`, `unowned source`,
-`nested` and `looped`, on its `Transit` line.
+inner packet whose source or destination no router forwards, and the decision
+treats some of them otherwise. Both drop a packet to a multicast or limited
+broadcast destination whatever its source. The decision writes a packet to an
+IPv6 link-local destination to the tun whatever its source, and answers an IPv6
+link-local source to a wider unicast destination a router forwards with code 2
+on the session it came from. [The antispoof filter](../antispoof.md#watching-it)
+counts each drop, [segment routing](../segment-routing.md#watching-it) counts
+each refusal, and `ranet3 status` counts the decision's drops to a multicast or
+limited broadcast destination, and an egress segment's of an inner packet to
+such a destination that its allow list let through, but a Not-ECT one that
+arrived under an outer CE, as `session multicast`, an exit's 2 as
+`unrouted source` and `not ready`, and a tun read's as `invalid`, `forged`,
+`routing header`, `SID`, `unowned source`, `nested` and `looped`, on its
+`Transit` line.
 
 [RFC 1812 section 5.3.9](https://www.rfc-editor.org/rfc/rfc1812.html#section-5.3.9)
 also says "The router SHOULD count and SHOULD allow selective logging of packets

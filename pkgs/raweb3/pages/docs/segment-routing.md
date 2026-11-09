@@ -4,7 +4,7 @@
 title: "Segment routing"
 description: "Segment routing and steering, done in this process rather than in the kernel."
 created: 2026-09-21
-updated: 2026-11-09
+updated: 2026-11-10
 order: 60
 ---
 
@@ -179,11 +179,17 @@ long as its fixed header, of the family the header in front of it names, its
 outer source falls inside an entry of the list that lies inside the overlay
 every SID admits, its inner source inside any entry of the list, its inner
 source is one a router forwards, its inner destination one a router forwards,
-the limited broadcast or multicast, and the mesh routes a reply to its inner
-packet, as an exit's
+and the mesh routes a reply to its inner packet, as an exit's
 [egress through a default](exit-nodes.md#what-an-exit-carries-out) checks. A
-packet failing any of these checks counts as refused and is never answered. The
-list is required since an exit carrying any source would be an open proxy.
+packet failing any of these checks but the first is never answered. One the list
+refuses counts as refused. Past the list, the drop of an inner Not-ECT packet
+that arrived under an outer CE counts such a packet as dropped. Past that drop,
+an inner packet to a multicast destination or the limited broadcast that the
+list let through, but a Not-ECT one that arrived under an outer CE, counts as
+dropped and as `session_multicast`, as the
+[forwarding decision](routing.md#transit) counts it, and one failing a later
+check counts as refused. The list is required since an exit carrying any source
+would be an open proxy.
 
 Egress carries nothing for the mesh. Past those checks, an inner packet whose
 destination lies inside `overlay`, or that the mesh routes itself, counts as
@@ -449,14 +455,19 @@ segment admits the source of a packet arriving through a session, and
 [debugging](development/debug.md) describes. A packet a segment answers shows
 there as an `answer` record, with its ICMP error and what became of it.
 
-An egress segment's packets are counted 3 ways. Egressed is a packet handed to
-the exit. Refused is a packet whose outer source is outside every entry of the
-segment's allow list inside the overlay, whose inner source is outside the list,
-whose inner source no router forwards, whose inner destination no router
-forwards but the limited broadcast and multicast, an IPv4 link-local one among
-them, whose inner packet the mesh routes no reply to, or whose inner destination
-lies inside the overlay or the mesh routes itself. Not ready is a packet the
-allow list and the other checks above let through whose family was not ready, as
+An egress segment's packets are counted these ways besides the dropped count.
+Egressed is a packet handed to the exit. Session multicast, on the `Transit`
+line and among the dropped, is an inner packet to a multicast destination or the
+limited broadcast that the allow list let through, but a Not-ECT one that
+arrived under an outer CE. Refused is a packet whose outer source is outside
+every entry of the segment's allow list inside the overlay or whose inner source
+is outside the list, and an inner packet to a destination other than a multicast
+destination or the limited broadcast, but a Not-ECT one that arrived under an
+outer CE, whose inner source no router forwards, whose inner destination no
+router forwards, an IPv4 link-local one among them, whose inner packet the mesh
+routes no reply to, or whose inner destination lies inside the overlay or the
+mesh routes itself. Not ready is a packet the allow list and the other checks
+above let through whose family was not ready, as
 [exit nodes](exit-nodes.md#readiness) describes. It is this node's own state and
 is not counted among the dropped.
 

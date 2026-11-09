@@ -4,7 +4,7 @@
 title: "Command line"
 description: "Every ranet3 command and flag, the signals the daemon takes and the exit status of each command."
 created: 2026-10-16
-updated: 2026-11-09
+updated: 2026-11-10
 order: 75
 ---
 
@@ -102,9 +102,12 @@ exits 1. The page of each writer gives what a refusal leaves of it:
   [the status answer](control-socket.md#requests-and-answers).
 - `status` shows the counters of the [forwarding decision](routing.md#transit)
   on its `Transit` line: the packets sessions delivered that went on to a peer
-  or to the tun, those and the reads off the tun it dropped with each reason
-  above 0, and the ICMP errors answered, unanswered, or due and not sent
-  (`unsent`) about them, each above 0. `--json` carries them under `transit`.
+  or to the tun, those and the reads off the tun it dropped, and an egress
+  segment's inner packets to a multicast destination or the limited broadcast
+  that its allow list let through, but a Not-ECT one that arrived under an outer
+  CE, with each reason above 0, and the ICMP errors answered, unanswered, or due
+  and not sent (`unsent`) about them, each above 0. `--json` carries them under
+  `transit`.
 - `status` names on its `ESP` line the ESP packets in, those their sessions
   dropped and the datagrams refused, and, each above 0, the datagrams dropped
   because their session's receive queue was full or held all its receive
