@@ -549,12 +549,9 @@ judgment condition by condition with the lookups the last pass read, as
 
 On macOS a family is ready while the exit's stack runs, a link outside the mesh
 reaches each prefix the family advertises, or its default where it advertises
-none, and the host holds every address its classes name, as
-[the exit on macOS](#the-exit-on-macos) gives. A prefix such as `224.0.0.0/3`,
-none of whose candidate read addresses a router forwards a packet from, holds
-its family not ready there, with
-`cap.egress advertises 224.0.0.0/3, which holds no unicast address to look its route up for`.
-The lookups below are the kernel exit's.
+none, at the prefix's read address below, and the host holds every address its
+classes name, as [the exit on macOS](#the-exit-on-macos) gives. The lookups
+below are the kernel exit's.
 
 The kernel's routes are read from its own route lookups, all of a pass in 1
 batch through 1 netlink socket:
@@ -601,26 +598,19 @@ reply takes. Where `cap.table` is written, rows L4 and L5 of
 lookup to an overlay address no route of the mesh covers.
 
 **The read address** of a prefix is its own address for a host route, and
-otherwise the first of these that the kernel's input path takes as a unicast
-destination: its middle address, the base with the bit after the length set,
-then its base plus 1, then its last address less 1. The middle alone would not
-do, since `192.0.0.0/2`'s is `224.0.0.0`, a group. IPv4 refuses the limited
-broadcast, `0.0.0.0`, the loopback addresses and the multicast addresses, and
-IPv6 the unspecified, loopback, multicast and link-local addresses. Linux 5.2
-also refuses `0.0.0.0/8` as a destination, where a lookup of a prefix inside it
-fails and holds its family not ready.
+otherwise the first of these that the mesh forwards a unicast packet to, one in
+no block the [`overlay`](configuration-reference.md#top-level) entry lists: its
+middle address, the base with the bit after the length set, then its base plus
+1, then its last address less 1. The middle alone would not do, since
+`192.0.0.0/2`'s is `224.0.0.0`, a group. An `advertise` prefix holding no such
+address is [refused at load](configuration-reference.md#capegress).
 
 **The skip.** The forward and reply lookups of a family are skipped, and the
 family judged by its chains, its forwarding and its classes' addresses alone,
 where the mesh routes no member of it, as before any member is learned, in a
-mesh of 1, or with no `overlay` prefix of the family. A prefix holding no
-address the kernel takes, such as `127.0.0.0/8` or `fe80::/10`, has its lookup
-skipped as well, since the kernel forwards nothing to it either way. A family
-whose every prefix is skipped is judged as one with no member. `status` and the
-`egress.ready` event say what was skipped:
-
-- `lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay`
-- `lookup skipped for fe80::/10, which holds no address the kernel takes as a unicast destination`
+mesh of 1, or with no `overlay` prefix of the family. `status` and the
+`egress.ready` event say what was skipped, such as
+`lookup skipped, the mesh routes no other node's ipv6 prefix inside overlay`.
 
 **The reason** a family is not ready names the lookup, the prefix, the read
 address, the source and the device the packet arrived on, and what the kernel

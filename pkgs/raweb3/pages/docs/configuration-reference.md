@@ -4,7 +4,7 @@
 title: "Configuration reference"
 description: "Every key the configuration file takes, its default and what it refuses."
 created: 2026-10-16
-updated: 2026-11-09
+updated: 2026-11-10
 order: 35
 ---
 
@@ -705,7 +705,9 @@ needs.
 - A node with an egress segment translates both families, whatever `advertise`
   holds.
 - An `advertise` prefix with bits set below its length, written as IPv4-mapped
-  IPv6, or written twice is refused at load.
+  IPv6, or written twice is refused at load, and so is one holding no address
+  the mesh forwards a unicast packet to, each of its addresses in a block the
+  [`overlay`](#top-level) entry lists, such as `224.0.0.0/3`.
 - At startup and on every reload, an `advertise` prefix that `cap.route` also
   announces is refused. That announcement would go out whether or not the rule
   is installed.
