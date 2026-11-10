@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/underlay"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -31,10 +32,8 @@ func TestResolverSocketsCarryTheUnderlayMark(t *testing.T) {
 			t.Fatal("root could not set the underlay's mark")
 		}
 		outside = 0
-	} else {
-		// the root tests' namespace holds lo down
-		loopbackUp(t)
 	}
+	loopbackReady(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +75,9 @@ func TestResolverSocketsCarryTheUnderlayMark(t *testing.T) {
 func loopbackReady(t *testing.T) {
 	t.Helper()
 	if mayMark(t) {
-		loopbackUp(t)
+		if err := netnstest.BringUp("lo"); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -89,25 +90,4 @@ func mayMark(t *testing.T) bool {
 	}
 	defer unix.Close(fd)
 	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, 1) == nil
-}
-
-// loopbackUp brings lo up, which a namespace unshare made holds down
-func loopbackUp(t *testing.T) {
-	t.Helper()
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Close(fd)
-	ifr, err := unix.NewIfreq("lo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
-		t.Fatal(err)
-	}
-	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
-	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
-		t.Fatal(err)
-	}
 }
