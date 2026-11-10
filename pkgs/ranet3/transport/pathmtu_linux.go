@@ -5,6 +5,7 @@ package transport
 
 import (
 	"net"
+	"net/netip"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -13,7 +14,7 @@ import (
 )
 
 // routeMTU reads the path MTU of the route linux takes for a send to ep from a socket prepare readied
-// that socket, with the source and interface of ep's pin while sends carry it, connects to ep
+// that socket, bound and held to an interface as a socket connected to one peer from ep's pin is while sends carry it, connects to ep
 // connecting looks the route up as the send did and sends nothing
 // IP_MTU and IPV6_MTU then read the route's MTU, a path MTU linux learned for it included
 func routeMTU(ep *udpEndpoint, prepare underlay.Prepare) (int, error) {
@@ -21,24 +22,18 @@ func routeMTU(ep *udpEndpoint, prepare underlay.Prepare) (int, error) {
 	if ep.addr.IP.To4() == nil {
 		network, level, option = "udp6", unix.IPPROTO_IPV6, unix.IPV6_MTU
 	}
-	pinned := ep.pin() != nil
-	dialer := net.Dialer{Control: func(network, _ string, raw syscall.RawConn) error {
-		if err := prepare(network, ep.addr.AddrPort(), raw); err != nil {
+	var dialer net.Dialer
+	leave := false
+	if source, ok := netip.AddrFromSlice(ep.source); ok && ep.pin() != nil {
+		var local netip.Addr
+		local, leave = pinBinding(source.Unmap(), ep.index)
+		dialer.LocalAddr = net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, 0))
+	}
+	dialer.Control = func(network, _ string, raw syscall.RawConn) error {
+		if err := prepare(network, ep.addr.AddrPort(), raw); err != nil || !leave {
 			return err
 		}
-		if !pinned || ep.index == 0 {
-			return nil
-		}
-		var err error
-		if controlErr := raw.Control(func(fd uintptr) {
-			err = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_BINDTOIFINDEX, ep.index)
-		}); controlErr != nil {
-			return controlErr
-		}
-		return err
-	}}
-	if pinned {
-		dialer.LocalAddr = &net.UDPAddr{IP: ep.source}
+		return leaveBy(raw, network == "udp6", ep.index)
 	}
 	conn, err := dialer.Dial(network, ep.addr.String())
 	if err != nil {

@@ -296,16 +296,13 @@ func (b *udpBind) connectPair(k pairKey) (pairSocket, receiveFunc, error) {
 			return nil, nil, err
 		}
 	}
-	zoned := k.index != 0 && local.Is6() && local.IsLinkLocalUnicast()
-	if zoned {
-		local = local.WithZone(strconv.Itoa(k.index))
-	}
+	local, leave := pinBinding(local, k.index)
 	control := socketControl(network == "udp6", b.prepare, k.remote, pairBuffer, true)
 	dialer := net.Dialer{LocalAddr: net.UDPAddrFromAddrPort(netip.AddrPortFrom(local, b.port)), Control: func(network, address string, raw syscall.RawConn) error {
 		if err := sameNamespace(b.cookie, raw, listener.raw); err != nil {
 			return err
 		}
-		if err := control(network, address, raw); err != nil || k.index == 0 || zoned {
+		if err := control(network, address, raw); err != nil || !leave {
 			return err
 		}
 		return leaveBy(raw, network == "udp6", k.index)
@@ -361,6 +358,15 @@ func namespaceCookie(raw syscall.RawConn) (uint64, error) {
 		return 0, err
 	}
 	return cookie, getErr
+}
+
+// pinBinding is the address a socket that sends as a pin from source by interface index binds, and whether leaveBy then holds it to index
+// a link-local source binds zoned to index, which holds the socket to it, and linux refuses to bind one without a zone or a bound interface
+func pinBinding(source netip.Addr, index int) (netip.Addr, bool) {
+	if index != 0 && source.Is6() && source.IsLinkLocalUnicast() {
+		return source.WithZone(strconv.Itoa(index)), false
+	}
+	return source, index != 0
 }
 
 // leaveBy holds a socket's sends to interface index as a pin's control message holds the shared socket's replies
