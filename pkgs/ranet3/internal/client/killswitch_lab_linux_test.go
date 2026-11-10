@@ -26,6 +26,7 @@ import (
 
 	kernelexit "ranet3.com/pkgs/ranet3/internal/egress/kernel"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
@@ -1266,7 +1267,7 @@ func otherChain(kind string, hook uint32, priority int32) nftables.Chain {
 // setMark loads value into register 1 and sets the packet's mark from it
 func setMark(value uint32) [][]byte {
 	load := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_1)
-	load = nftables.PutAttr(load, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, nftables.PutAttr(nil, unix.NFTA_DATA_VALUE, binary.NativeEndian.AppendUint32(nil, value)))
+	load = netlink.PutAttr(load, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, binary.NativeEndian.AppendUint32(nil, value)))
 	return [][]byte{nftables.Expression("immediate", load), markFromRegister()}
 }
 
@@ -1289,12 +1290,12 @@ func destinationTranslation(from, to netip.Addr) [][]byte {
 		proto = unix.NFPROTO_IPV4
 	}
 	load := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_1)
-	load = nftables.PutAttr(load, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, nftables.PutAttr(nil, unix.NFTA_DATA_VALUE, nftables.AddressBytes(to)))
+	load = netlink.PutAttr(load, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, netlink.AddressBytes(to)))
 	nat := nftables.PutAttrBE32(nil, unix.NFTA_NAT_TYPE, unix.NFT_NAT_DNAT)
 	nat = nftables.PutAttrBE32(nat, unix.NFTA_NAT_FAMILY, uint32(proto))
 	nat = nftables.PutAttrBE32(nat, unix.NFTA_NAT_REG_ADDR_MIN, unix.NFT_REG_1)
 	return slices.Concat(nftables.NFProto(proto),
-		[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(from)))},
+		[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, netlink.AddressBytes(from)))},
 		[][]byte{nftables.Expression("immediate", load), nftables.Expression("nat", nat)})
 }
 
@@ -1306,7 +1307,7 @@ func redirection(from netip.Addr) [][]byte {
 		proto = unix.NFPROTO_IPV4
 	}
 	return slices.Concat(nftables.NFProto(proto),
-		[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(from)))},
+		[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, netlink.AddressBytes(from)))},
 		[][]byte{nftables.Expression("redir", nil)})
 }
 
@@ -1564,7 +1565,7 @@ func TestTUNKillSwitchHoldsWhenADestinationChangesAfterTheTun(t *testing.T) {
 		}
 		marks = append(marks, slices.Concat(
 			nftables.MetaCompare(unix.NFT_META_OIFNAME, unix.NFT_CMP_EQ, rulesTUN), nftables.NFProto(proto),
-			[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, nftables.AddressBytes(at.peer)))},
+			[][]byte{nftables.DestinationLoad(proto), nftables.Expression("cmp", nftables.Compare(unix.NFT_CMP_EQ, netlink.AddressBytes(at.peer)))},
 			setMark(switchOtherMark)))
 		for _, socket := range []rulesSocket{rulesUnbound, rulesFromOverlay, rulesFromUplink, rulesOnUplink} {
 			probes = append(probes, switchFrom(at.peer, socket, 0, switchKept, "udp", "tcp"))

@@ -7,6 +7,8 @@ package nftables
 
 import (
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // Update moves s, which holds the intervals held, to want in one transaction:
@@ -87,7 +89,7 @@ func (s Set) lists(proto uint8, kind int, flags uint16, elements []element) []Re
 	var list []byte
 	send := func() {
 		body := PutAttrBE32(s.elementList(proto), unix.NFTA_SET_ELEM_LIST_SET_ID, s.ID)
-		body = PutAttr(body, unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, list)
+		body = netlink.PutAttr(body, unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, list)
 		requests = append(requests, Request{Kind: Command(kind), Flags: flags, Body: body})
 		list = nil
 	}

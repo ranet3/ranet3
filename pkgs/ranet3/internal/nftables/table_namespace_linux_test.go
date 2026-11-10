@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
@@ -152,7 +153,7 @@ func TestNftablesPersistentTableIsNeverDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	made := Request{Kind: Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE,
-		Body: PutAttrBE32(PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, Table), unix.NFTA_TABLE_FLAGS, owner|persist)}
+		Body: PutAttrBE32(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, Table), unix.NFTA_TABLE_FLAGS, owner|persist)}
 	if err := setter.Batch([]Request{made}); err != nil {
 		_ = setter.Close()
 		if errors.Is(err, unix.EOPNOTSUPP) || errors.Is(err, unix.EINVAL) {

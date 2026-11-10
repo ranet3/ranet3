@@ -5,6 +5,8 @@
 
 package nftables
 
+import "time"
+
 const (
 	// Table is the inet table every owner writes in, the exit's translation, the
 	// antispoof filter and the kill switch, each owning its chains, sets and
@@ -23,9 +25,6 @@ const (
 	Return = 0xfffffffb
 	// gotoCode is NFT_GOTO, the same way
 	gotoCode = 0xfffffffc
-	// nlaTypeMask is NLA_TYPE_MASK, which masks NLA_F_NESTED off on the way
-	// in. libnftnl sets that flag, so it is set on the way out.
-	nlaTypeMask = 0x3fff
 	// udataComment and udataSetComment are NFTNL_UDATA_RULE_COMMENT and
 	// NFTNL_UDATA_SET_COMMENT, the userdata types `nft` prints as a rule's
 	// comment and a set's
@@ -90,17 +89,13 @@ const (
 	TypeInetService = 13
 	TypeICMPv6Type  = 29
 	TypeIfname      = 41
-	// replyTimeout bounds a wait on the kernel, in seconds. A batch is
-	// acknowledged message by message and a dump ends at NLMSG_DONE, so a
-	// reply that never comes is a kernel that did not understand the request.
-	replyTimeout = 10
+	// replyTimeout bounds a wait on the kernel. A batch is acknowledged
+	// message by message and a dump ends at NLMSG_DONE, so a reply that never
+	// comes is a kernel that did not understand the request.
+	replyTimeout = 10 * time.Second
 	// receiveBuffer holds a whole transaction's acknowledgments while the
 	// sender is still sending. See Dial.
 	receiveBuffer = 1 << 20
-	// replyReadSize is the first reply buffer of a Conn, above the 32 KiB the
-	// kernel caps a dump datagram at, so a dump reads into it without the
-	// buffer growing
-	replyReadSize = 64 << 10
 	// notificationReadSize is the read buffer of the notification socket,
 	// above NLMSG_GOODSIZE, the most the kernel puts in one notification
 	// datagram

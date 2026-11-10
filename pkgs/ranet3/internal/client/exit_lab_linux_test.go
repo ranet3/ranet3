@@ -24,6 +24,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
@@ -903,9 +904,9 @@ const labDrop = 0
 
 // labVerdict ends a lab chain for a packet with code, nftables.Accept or labDrop
 func labVerdict(code uint32) []byte {
-	data := nftables.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
+	data := netlink.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
 	immediate := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
-	immediate = nftables.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
+	immediate = netlink.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
 	return nftables.Expression("immediate", immediate)
 }
 

@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -848,7 +849,7 @@ func translate(rule Rule) [][]byte {
 		return [][]byte{nftables.Expression("masq", nil)}
 	}
 	immediate := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_1)
-	immediate = nftables.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED,
-		nftables.PutAttr(nil, unix.NFTA_DATA_VALUE, nftables.AddressBytes(rule.Source)))
+	immediate = netlink.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED,
+		netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, netlink.AddressBytes(rule.Source)))
 	return [][]byte{nftables.Expression("immediate", immediate), nftables.SourceNAT(proto)}
 }

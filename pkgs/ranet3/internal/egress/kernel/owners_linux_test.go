@@ -85,7 +85,7 @@ func tableHandlesByName(t *testing.T, conn *nftables.Conn) map[string]uint64 {
 		for _, reply := range replies {
 			var table, name string
 			var handle uint64
-			for kind, value := range reply.Attributes() {
+			for kind, value := range reply.Attributes(nftables.SizeofNfgenmsg) {
 				switch {
 				case kind == dump.table:
 					table = unix.ByteSliceToString(value)

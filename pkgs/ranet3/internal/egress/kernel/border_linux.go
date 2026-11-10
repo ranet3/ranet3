@@ -14,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -201,7 +202,7 @@ func (s borderSets) elements() map[string][]nftables.Interval {
 func intervals(ranges []egress.Range) []nftables.Interval {
 	out := make([]nftables.Interval, 0, len(ranges))
 	for _, r := range ranges {
-		out = append(out, nftables.Interval{First: nftables.AddressBytes(r.First), Last: nftables.AddressBytes(r.Last)})
+		out = append(out, nftables.Interval{First: netlink.AddressBytes(r.First), Last: netlink.AddressBytes(r.Last)})
 	}
 	return out
 }

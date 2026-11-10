@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
@@ -221,7 +222,7 @@ func (f *fakeExit) translation(proto, family uint8) [][]byte {
 		nat = nftables.PutAttrBE32(nat, unix.NFTA_NAT_REG_PROTO_MIN, unix.NFT_REG_2)
 		nat = nftables.PutAttrBE32(nat, unix.NFTA_NAT_REG_PROTO_MAX, unix.NFT_REG_3)
 	}
-	return append(expressions, immediate(unix.NFT_REG_1, nftables.AddressBytes(source)), nftables.Expression("nat", nat))
+	return append(expressions, immediate(unix.NFT_REG_1, netlink.AddressBytes(source)), nftables.Expression("nat", nat))
 }
 
 // source is the address the fake translates every source of family to, that
@@ -247,7 +248,7 @@ func (f *fakeExit) termination() [][]byte {
 
 func immediate(register uint32, value []byte) []byte {
 	data := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, register)
-	data = nftables.PutAttr(data, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, nftables.PutAttr(nil, unix.NFTA_DATA_VALUE, value))
+	data = netlink.PutAttr(data, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, value))
 	return nftables.Expression("immediate", data)
 }
 

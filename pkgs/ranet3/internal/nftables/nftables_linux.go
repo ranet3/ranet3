@@ -3,10 +3,9 @@
 
 //go:build linux && !android
 
-// Package nftables speaks nf_tables over NETLINK_NETFILTER directly, the way
-// internal/kernel speaks rtnetlink: no `nft` to shell out to, no library to
-// add, and the same request and reply discipline on one socket used by one
-// goroutine.
+// Package nftables speaks nf_tables over a NETLINK_NETFILTER socket of
+// internal/netlink: no `nft` to shell out to, no library to add, and a request
+// and reply discipline on one socket used by one goroutine.
 //
 // Two things about nf_tables differ from rtnetlink. Every integer in an NFTA_
 // attribute is big endian, header fields included, while the netlink header
@@ -20,13 +19,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"iter"
 	"net"
 	"net/netip"
 	"slices"
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // Tables is the flags of each table named name, keyed by its nf_tables
@@ -43,7 +43,7 @@ func Tables(conn *Conn, name string) (map[uint8]uint32, error) {
 		}
 		var table string
 		var flags uint32
-		for kind, value := range reply.Attributes() {
+		for kind, value := range reply.Attributes(SizeofNfgenmsg) {
 			switch {
 			case kind == unix.NFTA_TABLE_NAME:
 				table = unix.ByteSliceToString(value)
@@ -79,7 +79,7 @@ func TableChains(conn *Conn, proto uint8, table string) ([]string, error) {
 // nf_tables family proto, which the kernel filters by the table the request
 // names
 func TableRules(conn *Conn, proto uint8, table string) ([]Installed, error) {
-	replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, table))
+	replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), netlink.PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, table))
 	if err != nil {
 		return nil, fmt.Errorf("nftables: dump rules: %w", err)
 	}
@@ -93,9 +93,9 @@ func TableRules(conn *Conn, proto uint8, table string) ([]Installed, error) {
 }
 
 // decodeInstalled reads a rule out of a dump, with the table it lives in
-func decodeInstalled(reply Message) (table string, rule Installed) {
+func decodeInstalled(reply netlink.Message) (table string, rule Installed) {
 	table, rule.Chain, rule.Spec, rule.Packets, rule.Bytes, rule.Counted = DecodeRule(reply)
-	for kind, value := range reply.Attributes() {
+	for kind, value := range reply.Attributes(SizeofNfgenmsg) {
 		if kind == unix.NFTA_RULE_EXPRESSIONS {
 			rule.Expressions = value
 		}
@@ -120,7 +120,7 @@ func DeleteTable(proto uint8, name string) Request {
 
 func tableRequest(command int, flags uint16, proto uint8, name string) Request {
 	body := PutNfgenmsg(nil, proto)
-	body = PutAttrString(body, unix.NFTA_TABLE_NAME, name)
+	body = netlink.PutAttrString(body, unix.NFTA_TABLE_NAME, name)
 	return Request{Kind: Command(command), Flags: flags, Body: body}
 }
 
@@ -142,14 +142,14 @@ const NoHook = ^uint32(0)
 // Create writes c's policy over whatever another writer set
 func (c Chain) Create(proto uint8) Request {
 	body := PutNfgenmsg(nil, proto)
-	body = PutAttrString(body, unix.NFTA_CHAIN_TABLE, c.Table)
-	body = PutAttrString(body, unix.NFTA_CHAIN_NAME, c.Name)
+	body = netlink.PutAttrString(body, unix.NFTA_CHAIN_TABLE, c.Table)
+	body = netlink.PutAttrString(body, unix.NFTA_CHAIN_NAME, c.Name)
 	if c.Hook != NoHook {
 		hooked := PutAttrBE32(nil, unix.NFTA_HOOK_HOOKNUM, c.Hook)
 		hooked = PutAttrBE32(hooked, unix.NFTA_HOOK_PRIORITY, uint32(c.Priority))
-		body = PutAttr(body, unix.NFTA_CHAIN_HOOK|unix.NLA_F_NESTED, hooked)
+		body = netlink.PutAttr(body, unix.NFTA_CHAIN_HOOK|unix.NLA_F_NESTED, hooked)
 		body = PutAttrBE32(body, unix.NFTA_CHAIN_POLICY, Accept)
-		body = PutAttrString(body, unix.NFTA_CHAIN_TYPE, c.Type)
+		body = netlink.PutAttrString(body, unix.NFTA_CHAIN_TYPE, c.Type)
 	}
 	return Request{Kind: Command(unix.NFT_MSG_NEWCHAIN), Flags: unix.NLM_F_CREATE, Body: body}
 }
@@ -158,16 +158,16 @@ func (c Chain) Create(proto uint8) Request {
 // chain holds sends packets to it
 func (c Chain) Delete(proto uint8) Request {
 	body := PutNfgenmsg(nil, proto)
-	body = PutAttrString(body, unix.NFTA_CHAIN_TABLE, c.Table)
-	body = PutAttrString(body, unix.NFTA_CHAIN_NAME, c.Name)
+	body = netlink.PutAttrString(body, unix.NFTA_CHAIN_TABLE, c.Table)
+	body = netlink.PutAttrString(body, unix.NFTA_CHAIN_NAME, c.Name)
 	return Request{Kind: Command(unix.NFT_MSG_DELCHAIN), Body: body}
 }
 
 // Flush names no handle, which nf_tables reads as every rule in the chain
 func (c Chain) Flush(proto uint8) Request {
 	body := PutNfgenmsg(nil, proto)
-	body = PutAttrString(body, unix.NFTA_RULE_TABLE, c.Table)
-	body = PutAttrString(body, unix.NFTA_RULE_CHAIN, c.Name)
+	body = netlink.PutAttrString(body, unix.NFTA_RULE_TABLE, c.Table)
+	body = netlink.PutAttrString(body, unix.NFTA_RULE_CHAIN, c.Name)
 	return Request{Kind: Command(unix.NFT_MSG_DELRULE), Body: body}
 }
 
@@ -179,10 +179,10 @@ func (c Chain) Rule(proto uint8, spec string, expressions [][]byte) (Request, er
 		return Request{}, fmt.Errorf("nftables: rule %s does not fit in a %d byte comment", spec, udataCommentMax)
 	}
 	body := PutNfgenmsg(nil, proto)
-	body = PutAttrString(body, unix.NFTA_RULE_TABLE, c.Table)
-	body = PutAttrString(body, unix.NFTA_RULE_CHAIN, c.Name)
-	body = PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, slices.Concat(expressions...))
-	body = PutAttr(body, unix.NFTA_RULE_USERDATA, userdata(udataComment, spec))
+	body = netlink.PutAttrString(body, unix.NFTA_RULE_TABLE, c.Table)
+	body = netlink.PutAttrString(body, unix.NFTA_RULE_CHAIN, c.Name)
+	body = netlink.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, slices.Concat(expressions...))
+	body = netlink.PutAttr(body, unix.NFTA_RULE_USERDATA, userdata(udataComment, spec))
 	return Request{Kind: Command(unix.NFT_MSG_NEWRULE), Flags: unix.NLM_F_CREATE | unix.NLM_F_APPEND, Body: body}, nil
 }
 
@@ -191,14 +191,14 @@ func (c Chain) Rule(proto uint8, spec string, expressions [][]byte) (Request, er
 // differs in what nf_tables will not change in place: its type, hook or
 // priority, or a hook at all, since a regular chain cannot become a base
 // chain.
-func (c Chain) Fault(message Message) (fault string, remake bool) {
+func (c Chain) Fault(message netlink.Message) (fault string, remake bool) {
 	table, chain, kind, hook, priority := DecodeChain(message)
 	if table != c.Table || chain != c.Name {
 		return "", false
 	}
 	// a regular chain carries no policy, which reads as none
 	policy, written := ^uint32(0), ^uint32(0)
-	for attribute, value := range message.Attributes() {
+	for attribute, value := range message.Attributes(SizeofNfgenmsg) {
 		if attribute == unix.NFTA_CHAIN_POLICY && len(value) == 4 {
 			policy = binary.BigEndian.Uint32(value)
 		}
@@ -292,7 +292,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 	// the kernel dumps the sets, objects and rules of the table and chain a
 	// request names alone, but the chains of every table of the family
 	if len(c.Chains) > 0 {
-		chains, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_CHAIN_TABLE, c.Chains[0].Table))
+		chains, err := conn.Dump(Command(unix.NFT_MSG_GETCHAIN), netlink.PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_CHAIN_TABLE, c.Chains[0].Table))
 		if err != nil {
 			return Readback{}, fmt.Errorf("dump chains: %w", err)
 		}
@@ -316,12 +316,12 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 		}
 	}
 	if len(c.Sets) > 0 {
-		sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_SET_TABLE, c.Sets[0].Table))
+		sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), netlink.PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_SET_TABLE, c.Sets[0].Table))
 		if err != nil {
 			return Readback{}, fmt.Errorf("dump sets: %w", err)
 		}
 		for _, set := range c.Sets {
-			found := slices.IndexFunc(sets, func(reply Message) bool {
+			found := slices.IndexFunc(sets, func(reply netlink.Message) bool {
 				held := DecodeSet(reply)
 				return held.Table == set.Table && held.Name == set.Name
 			})
@@ -350,7 +350,7 @@ func (c Contents) Read(conn *Conn, tables map[uint8]uint32, proto uint8) (Readba
 		}
 	}
 	if len(c.Timeouts) > 0 {
-		objects, err := conn.Dump(Command(unix.NFT_MSG_GETOBJ), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_OBJ_TABLE, c.Timeouts[0].Table))
+		objects, err := conn.Dump(Command(unix.NFT_MSG_GETOBJ), netlink.PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_OBJ_TABLE, c.Timeouts[0].Table))
 		if err != nil {
 			return Readback{}, fmt.Errorf("dump objects: %w", err)
 		}
@@ -483,7 +483,7 @@ func list(conn *Conn, flags uint32) (listing, error) {
 	if l.chains, err = TableChains(conn, unix.NFPROTO_INET, Table); err != nil {
 		return listing{}, err
 	}
-	sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, Table))
+	sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_TABLE, Table))
 	if err != nil {
 		return listing{}, fmt.Errorf("nftables: dump sets: %w", err)
 	}
@@ -492,14 +492,14 @@ func list(conn *Conn, flags uint32) (listing, error) {
 			l.sets = append(l.sets, set.Name)
 		}
 	}
-	objects, err := conn.Dump(Command(unix.NFT_MSG_GETOBJ), PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_OBJ_TABLE, Table))
+	objects, err := conn.Dump(Command(unix.NFT_MSG_GETOBJ), netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_OBJ_TABLE, Table))
 	if err != nil {
 		return listing{}, fmt.Errorf("nftables: dump objects: %w", err)
 	}
 	for _, reply := range objects {
 		var table string
 		var o object
-		for kind, value := range reply.Attributes() {
+		for kind, value := range reply.Attributes(SizeofNfgenmsg) {
 			switch {
 			case kind == unix.NFTA_OBJ_TABLE:
 				table = unix.ByteSliceToString(value)
@@ -584,7 +584,7 @@ func Holder(chain string, rules []Installed, maps []VerdictMap, flushed func(cha
 func (c Contents) rules(conn *Conn, proto uint8) ([]Installed, error) {
 	var out []Installed
 	for _, chain := range c.Chains {
-		replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), PutAttrString(PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, chain.Table), unix.NFTA_RULE_CHAIN, chain.Name))
+		replies, err := conn.Dump(Command(unix.NFT_MSG_GETRULE), netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, chain.Table), unix.NFTA_RULE_CHAIN, chain.Name))
 		if err != nil {
 			return nil, err
 		}
@@ -659,7 +659,7 @@ func LookupSets(held []byte) []string {
 			continue
 		}
 		for _, field := range Nested(data) {
-			if field.Kind&nlaTypeMask == unix.NFTA_LOOKUP_SET {
+			if field.Kind == unix.NFTA_LOOKUP_SET {
 				out = append(out, unix.ByteSliceToString(field.Value))
 			}
 		}
@@ -677,15 +677,15 @@ func VerdictChains(held []byte) []string {
 			continue
 		}
 		for _, field := range Nested(data) {
-			if field.Kind&nlaTypeMask != unix.NFTA_IMMEDIATE_DATA {
+			if field.Kind != unix.NFTA_IMMEDIATE_DATA {
 				continue
 			}
 			for _, inner := range Nested(field.Value) {
-				if inner.Kind&nlaTypeMask != unix.NFTA_DATA_VERDICT {
+				if inner.Kind != unix.NFTA_DATA_VERDICT {
 					continue
 				}
 				for _, verdict := range Nested(inner.Value) {
-					if verdict.Kind&nlaTypeMask == unix.NFTA_VERDICT_CHAIN {
+					if verdict.Kind == unix.NFTA_VERDICT_CHAIN {
 						out = append(out, unix.ByteSliceToString(verdict.Value))
 					}
 				}
@@ -697,7 +697,7 @@ func VerdictChains(held []byte) []string {
 
 func expressionParts(element []byte) (name string, data []byte) {
 	for _, field := range Nested(element) {
-		switch field.Kind & nlaTypeMask {
+		switch field.Kind {
 		case unix.NFTA_EXPR_NAME:
 			name = unix.ByteSliceToString(field.Value)
 		case unix.NFTA_EXPR_DATA:
@@ -739,7 +739,7 @@ func canonicalAttributes(name string, data []byte) []string {
 		}
 	}
 	for _, field := range fields {
-		kind := field.Kind & nlaTypeMask
+		kind := field.Kind
 		value := field.Value
 		switch {
 		case name == "lookup" && kind == unix.NFTA_LOOKUP_SET_ID:
@@ -794,9 +794,9 @@ func nested(name string, kind uint16) string {
 // DecodeChain reads where a chain lives and how it is hooked. A chain with no
 // hook is a regular chain, reached by a jump rather than by the packet path,
 // so the absent hook reads as NoHook.
-func DecodeChain(message Message) (table, chain, kind string, hook uint32, priority int32) {
+func DecodeChain(message netlink.Message) (table, chain, kind string, hook uint32, priority int32) {
 	hook = NoHook
-	for attribute, value := range message.Attributes() {
+	for attribute, value := range message.Attributes(SizeofNfgenmsg) {
 		switch attribute {
 		case unix.NFTA_CHAIN_TABLE:
 			table = unix.ByteSliceToString(value)
@@ -823,8 +823,8 @@ func DecodeChain(message Message) (table, chain, kind string, hook uint32, prior
 
 // DecodeRule reads where a rule lives, the comment its owner wrote, and the
 // counter, counted where the rule keeps one
-func DecodeRule(message Message) (table, chain, spec string, packets, bytes uint64, counted bool) {
-	for kind, value := range message.Attributes() {
+func DecodeRule(message netlink.Message) (table, chain, spec string, packets, bytes uint64, counted bool) {
+	for kind, value := range message.Attributes(SizeofNfgenmsg) {
 		switch kind {
 		case unix.NFTA_RULE_TABLE:
 			table = unix.ByteSliceToString(value)
@@ -955,7 +955,7 @@ func addressPrefix(load func(proto uint8) []byte, prefix netip.Prefix) [][]byte 
 	if mask := prefixMask(prefix); prefix.Bits() < len(mask)*8 {
 		out = append(out, Bitwise(mask))
 	}
-	return append(out, Expression("cmp", Compare(unix.NFT_CMP_EQ, AddressBytes(prefix.Masked().Addr()))))
+	return append(out, Expression("cmp", Compare(unix.NFT_CMP_EQ, netlink.AddressBytes(prefix.Masked().Addr()))))
 }
 
 // SourceLoad loads a packet's source address into register 1, of the
@@ -1007,8 +1007,8 @@ func Bitwise(mask []byte) []byte {
 	bitwise := PutAttrBE32(nil, unix.NFTA_BITWISE_SREG, unix.NFT_REG_1)
 	bitwise = PutAttrBE32(bitwise, unix.NFTA_BITWISE_DREG, unix.NFT_REG_1)
 	bitwise = PutAttrBE32(bitwise, unix.NFTA_BITWISE_LEN, uint32(len(mask)))
-	bitwise = PutAttr(bitwise, unix.NFTA_BITWISE_MASK|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VALUE, mask))
-	bitwise = PutAttr(bitwise, unix.NFTA_BITWISE_XOR|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VALUE, make([]byte, len(mask))))
+	bitwise = netlink.PutAttr(bitwise, unix.NFTA_BITWISE_MASK|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, mask))
+	bitwise = netlink.PutAttr(bitwise, unix.NFTA_BITWISE_XOR|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, make([]byte, len(mask))))
 	return Expression("bitwise", bitwise)
 }
 
@@ -1046,7 +1046,7 @@ func CTReplyMatch() [][]byte {
 func CTLoadDirection(key uint32, direction uint8) []byte {
 	ct := PutAttrBE32(nil, unix.NFTA_CT_DREG, unix.NFT_REG_1)
 	ct = PutAttrBE32(ct, unix.NFTA_CT_KEY, key)
-	ct = PutAttr(ct, unix.NFTA_CT_DIRECTION, []byte{direction})
+	ct = netlink.PutAttr(ct, unix.NFTA_CT_DIRECTION, []byte{direction})
 	return Expression("ct", ct)
 }
 
@@ -1054,7 +1054,7 @@ func CTLoadDirection(key uint32, direction uint8) []byte {
 // invert only while it does not. It names the set by name and ID, so it
 // finds one made earlier in its own transaction, an anonymous one among them.
 func Lookup(set Set, invert bool) []byte {
-	lookup := PutAttrString(nil, unix.NFTA_LOOKUP_SET, set.Name)
+	lookup := netlink.PutAttrString(nil, unix.NFTA_LOOKUP_SET, set.Name)
 	lookup = PutAttrBE32(lookup, unix.NFTA_LOOKUP_SREG, unix.NFT_REG_1)
 	lookup = PutAttrBE32(lookup, unix.NFTA_LOOKUP_SET_ID, set.ID)
 	if invert {
@@ -1065,9 +1065,9 @@ func Lookup(set Set, invert bool) []byte {
 
 // Verdict ends the chain for a packet with code, Accept, Drop or Return
 func Verdict(code uint32) []byte {
-	data := PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
+	data := netlink.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
 	immediate := PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
-	immediate = PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
+	immediate = netlink.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
 	return Expression("immediate", immediate)
 }
 
@@ -1075,9 +1075,9 @@ func Verdict(code uint32) []byte {
 // base chain's policy decides it, as at the base chain's own end
 func Goto(chain string) []byte {
 	verdict := PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, gotoCode)
-	verdict = PutAttrString(verdict, unix.NFTA_VERDICT_CHAIN, chain)
+	verdict = netlink.PutAttrString(verdict, unix.NFTA_VERDICT_CHAIN, chain)
 	immediate := PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
-	immediate = PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, verdict))
+	immediate = netlink.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, verdict))
 	return Expression("immediate", immediate)
 }
 
@@ -1096,7 +1096,7 @@ func CountedDrop() [][]byte {
 // ObjectReference applies the object of objType named name to the packet
 func ObjectReference(objType uint32, name string) []byte {
 	objref := PutAttrBE32(nil, unix.NFTA_OBJREF_IMM_TYPE, objType)
-	objref = PutAttrString(objref, unix.NFTA_OBJREF_IMM_NAME, name)
+	objref = netlink.PutAttrString(objref, unix.NFTA_OBJREF_IMM_NAME, name)
 	return Expression("objref", objref)
 }
 
@@ -1109,8 +1109,8 @@ func ConnectionsOver(set string, limit uint32) []byte {
 	connlimit = PutAttrBE32(connlimit, connlimitFlags, connlimitInvert)
 	dynset := PutAttrBE32(nil, unix.NFTA_DYNSET_SREG_KEY, unix.NFT_REG_1)
 	dynset = PutAttrBE32(dynset, unix.NFTA_DYNSET_OP, unix.NFT_DYNSET_OP_ADD)
-	dynset = PutAttrString(dynset, unix.NFTA_DYNSET_SET_NAME, set)
-	dynset = PutAttr(dynset, unix.NFTA_DYNSET_EXPR|unix.NLA_F_NESTED, expressionBody("connlimit", connlimit))
+	dynset = netlink.PutAttrString(dynset, unix.NFTA_DYNSET_SET_NAME, set)
+	dynset = netlink.PutAttr(dynset, unix.NFTA_DYNSET_EXPR|unix.NLA_F_NESTED, expressionBody("connlimit", connlimit))
 	return Expression("dynset", dynset)
 }
 
@@ -1121,7 +1121,7 @@ func ConnectionsOver(set string, limit uint32) []byte {
 // it with no family named, as it can a rule that tests none.
 func RejectICMPX(code uint8) []byte {
 	reject := PutAttrBE32(nil, unix.NFTA_REJECT_TYPE, unix.NFT_REJECT_ICMPX_UNREACH)
-	reject = PutAttr(reject, unix.NFTA_REJECT_ICMP_CODE, []byte{code})
+	reject = netlink.PutAttr(reject, unix.NFTA_REJECT_ICMP_CODE, []byte{code})
 	return Expression("reject", reject)
 }
 
@@ -1157,32 +1157,20 @@ func prefixMask(prefix netip.Prefix) []byte {
 func Compare(op int, value []byte) []byte {
 	body := PutAttrBE32(nil, unix.NFTA_CMP_SREG, unix.NFT_REG_1)
 	body = PutAttrBE32(body, unix.NFTA_CMP_OP, uint32(op))
-	return PutAttr(body, unix.NFTA_CMP_DATA|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VALUE, value))
+	return netlink.PutAttr(body, unix.NFTA_CMP_DATA|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, value))
 }
 
 // Expression emits the data attribute even when empty, as libnftnl does, so
 // an expression carrying no parameters still reads as one
 func Expression(name string, data []byte) []byte {
-	return PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, expressionBody(name, data))
+	return netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, expressionBody(name, data))
 }
 
 // expressionBody is an expression without the list element a rule wraps it
 // in, as dynset takes the one it attaches to each key
 func expressionBody(name string, data []byte) []byte {
-	body := PutAttrString(nil, unix.NFTA_EXPR_NAME, name)
-	return PutAttr(body, unix.NFTA_EXPR_DATA|unix.NLA_F_NESTED, data)
-}
-
-// AddressBytes is the wire form of an address, four bytes or sixteen, never
-// the 4-in-6 form: a table or a test is of one family by the time an address
-// is encoded.
-func AddressBytes(address netip.Addr) []byte {
-	if address.Is4() {
-		raw := address.As4()
-		return raw[:]
-	}
-	raw := address.As16()
-	return raw[:]
+	body := netlink.PutAttrString(nil, unix.NFTA_EXPR_NAME, name)
+	return netlink.PutAttr(body, unix.NFTA_EXPR_DATA|unix.NLA_F_NESTED, data)
 }
 
 // Conn is one NETLINK_NETFILTER socket used for synchronous request and reply.
@@ -1190,46 +1178,23 @@ func AddressBytes(address netip.Addr) []byte {
 // nothing subscribes to a notification group, so an unsolicited message can
 // never arrive on it.
 type Conn struct {
-	fd  int
-	pid uint32
-	seq uint32
-	buf []byte
+	link *netlink.Conn
 }
 
+// Dial opens a socket whose waits end at replyTimeout. Every message in a
+// transaction is acknowledged, and the kernel queues all of those acks while
+// this process is still inside its one send, with nothing draining them. The
+// default receive buffer holds a few hundred, which a few hundred rules would
+// exceed, and the overflow arrives as an ENOBUFS that explains nothing.
 func Dial() (*Conn, error) {
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_NETFILTER)
+	link, err := netlink.Dial(unix.NETLINK_NETFILTER, netlink.Options{Timeout: replyTimeout, ReceiveBuffer: receiveBuffer})
 	if err != nil {
-		return nil, fmt.Errorf("nftables: open netfilter netlink socket: %w", err)
+		return nil, err
 	}
-	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("nftables: bind netfilter netlink socket: %w", err)
-	}
-	name, err := unix.Getsockname(fd)
-	if err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("nftables: read netfilter netlink socket name: %w", err)
-	}
-	local, ok := name.(*unix.SockaddrNetlink)
-	if !ok {
-		_ = unix.Close(fd)
-		return nil, errors.New("nftables: netfilter socket is not a netlink socket")
-	}
-	timeout := unix.Timeval{Sec: replyTimeout}
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("nftables: set netfilter netlink receive timeout: %w", err)
-	}
-	// Every message in a transaction is acknowledged, and the kernel queues
-	// all of those acks while this process is still inside its one send, with
-	// nothing draining them. The default receive buffer holds a few hundred,
-	// which a few hundred rules would exceed, and the overflow arrives as an
-	// ENOBUFS that explains nothing.
-	growReceiveBuffer(fd)
-	return &Conn{fd: fd, pid: local.Pid, buf: make([]byte, replyReadSize)}, nil
+	return &Conn{link: link}, nil
 }
 
-func (c *Conn) Close() error { return unix.Close(c.fd) }
+func (c *Conn) Close() error { return c.link.Close() }
 
 // Request is one message inside a transaction
 type Request struct {
@@ -1242,29 +1207,20 @@ func Command(command int) uint16 {
 	return uint16(unix.NFNL_SUBSYS_NFTABLES)<<8 | uint16(command)
 }
 
-// Message is one parsed reply: the header fields read here plus the body,
-// which holds a struct nfgenmsg and the attributes after it
-type Message struct {
-	Kind uint16
-	Seq  uint32
-	Pid  uint32
-	Data []byte
-}
-
 // fitSendBuffer grows the socket's send buffer to hold a batch of size bytes,
 // since netlink refuses a message longer than the buffer whole (EMSGSIZE), as
 // a set of thousands of elements is. SO_SNDBUFFORCE passes net.core.wmem_max
 // where the process holds CAP_NET_ADMIN, as nft's own socket does.
 func (c *Conn) fitSendBuffer(size int) error {
 	// the kernel reports the buffer doubled, its own overhead included
-	held, err := unix.GetsockoptInt(c.fd, unix.SOL_SOCKET, unix.SO_SNDBUF)
+	held, err := unix.GetsockoptInt(c.link.Fd(), unix.SOL_SOCKET, unix.SO_SNDBUF)
 	if err != nil || held/2 >= size {
 		return err
 	}
-	if err := unix.SetsockoptInt(c.fd, unix.SOL_SOCKET, unix.SO_SNDBUFFORCE, size); err == nil {
+	if err := unix.SetsockoptInt(c.link.Fd(), unix.SOL_SOCKET, unix.SO_SNDBUFFORCE, size); err == nil {
 		return nil
 	}
-	return unix.SetsockoptInt(c.fd, unix.SOL_SOCKET, unix.SO_SNDBUF, size)
+	return unix.SetsockoptInt(c.link.Fd(), unix.SOL_SOCKET, unix.SO_SNDBUF, size)
 }
 
 // Batch sends one transaction and waits for the kernel to acknowledge every
@@ -1281,35 +1237,36 @@ func (c *Conn) Batch(requests []Request) error {
 		return nil
 	}
 	marker := putNfgenmsgSubsys(nil, unix.NFPROTO_UNSPEC)
-	begin := c.next()
+	pid := c.link.Pid()
+	begin := c.link.Next()
 	var buf []byte
-	buf = c.appendMessage(buf, unix.NFNL_MSG_BATCH_BEGIN, 0, begin, marker)
+	buf = netlink.AppendMessage(buf, unix.NFNL_MSG_BATCH_BEGIN, unix.NLM_F_REQUEST, begin, pid, marker)
 	expected := make(map[uint32]bool, len(requests))
 	first, last := begin, begin
 	for _, request := range requests {
-		seq := c.next()
+		seq := c.link.Next()
 		expected[seq] = true
 		last = seq
-		buf = c.appendMessage(buf, request.Kind, request.Flags|unix.NLM_F_ACK, seq, request.Body)
+		buf = netlink.AppendMessage(buf, request.Kind, request.Flags|unix.NLM_F_REQUEST|unix.NLM_F_ACK, seq, pid, request.Body)
 	}
-	end := c.next()
+	end := c.link.Next()
 	last = end
-	buf = c.appendMessage(buf, unix.NFNL_MSG_BATCH_END, 0, end, marker)
+	buf = netlink.AppendMessage(buf, unix.NFNL_MSG_BATCH_END, unix.NLM_F_REQUEST, end, pid, marker)
 	if err := c.fitSendBuffer(len(buf)); err != nil {
 		return err
 	}
-	if err := unix.Sendto(c.fd, buf, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+	if err := c.link.Send(buf); err != nil {
 		return err
 	}
 	for len(expected) > 0 {
-		messages, err := c.receive()
+		messages, err := c.link.Receive()
 		if err != nil {
 			return err
 		}
 		for _, message := range messages {
 			// subtracted rather than compared, so a sequence number that wraps
 			// inside one transaction narrows the window rather than inverting it
-			if message.Pid != c.pid || message.Seq-first > last-first {
+			if message.Pid != pid || message.Seq-first > last-first {
 				continue
 			}
 			if message.Kind != unix.NLMSG_ERROR {
@@ -1327,158 +1284,24 @@ func (c *Conn) Batch(requests []Request) error {
 	return nil
 }
 
-func (c *Conn) Dump(kind uint16, body []byte) ([]Message, error) {
-	seq := c.next()
-	buf := c.appendMessage(nil, kind, unix.NLM_F_DUMP, seq, body)
-	if err := unix.Sendto(c.fd, buf, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		return nil, err
-	}
-	var replies []Message
-	for {
-		messages, err := c.receive()
-		if err != nil {
-			return nil, err
-		}
-		for _, message := range messages {
-			if message.Seq != seq || message.Pid != c.pid {
-				continue
-			}
-			switch message.Kind {
-			case unix.NLMSG_NOOP:
-			case unix.NLMSG_DONE:
-				return replies, nil
-			case unix.NLMSG_ERROR:
-				if len(message.Data) < 4 {
-					return nil, errors.New("nftables: truncated netlink error")
-				}
-				if code := int32(binary.NativeEndian.Uint32(message.Data)); code != 0 {
-					return nil, unix.Errno(-code)
-				}
-				return replies, nil
-			default:
-				replies = append(replies, message)
-			}
-		}
-	}
+// Dump reads every object of kind body names. A dump the kernel flags
+// interrupted is not returned: it is asked again, and once the leaf's bounded
+// asks are spent it fails with netlink.ErrDumpInterrupted.
+func (c *Conn) Dump(kind uint16, body []byte) ([]netlink.Message, error) {
+	return c.link.Execute(kind, unix.NLM_F_DUMP, body)
 }
 
-func (c *Conn) next() uint32 {
-	c.seq++
-	return c.seq
-}
-
-// appendMessage writes one netlink message, header and body, padded as the
-// kernel expects. The header fields are native endian, but everything inside an
-// NFTA attribute is not.
-func (c *Conn) appendMessage(buf []byte, kind, flags uint16, seq uint32, body []byte) []byte {
-	length := unix.SizeofNlMsghdr + len(body)
-	start := len(buf)
-	buf = append(buf, make([]byte, nlmsgAlign(length))...)
-	binary.NativeEndian.PutUint32(buf[start:], uint32(length))
-	binary.NativeEndian.PutUint16(buf[start+4:], kind)
-	binary.NativeEndian.PutUint16(buf[start+6:], flags|unix.NLM_F_REQUEST)
-	binary.NativeEndian.PutUint32(buf[start+8:], seq)
-	binary.NativeEndian.PutUint32(buf[start+12:], c.pid)
-	copy(buf[start+unix.SizeofNlMsghdr:], body)
-	return buf
-}
-
-// receive reads one datagram whole, growing the buffer when the kernel has
-// more to say than it currently holds, exactly as internal/kernel does
-func (c *Conn) receive() ([]Message, error) {
-	for {
-		n, _, err := unix.Recvfrom(c.fd, c.buf, unix.MSG_PEEK|unix.MSG_TRUNC)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		if errors.Is(err, unix.EAGAIN) {
-			return nil, errors.New("nftables: the kernel did not answer a netfilter netlink request")
-		}
-		if err != nil {
-			return nil, err
-		}
-		if n <= len(c.buf) {
-			break
-		}
-		c.buf = make([]byte, n)
-	}
-	for {
-		n, from, err := unix.Recvfrom(c.fd, c.buf, 0)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if sender, ok := from.(*unix.SockaddrNetlink); !ok || sender.Pid != 0 {
-			return nil, errors.New("nftables: netfilter reply did not come from the kernel")
-		}
-		return parseMessages(slices.Clone(c.buf[:n]))
-	}
-}
-
-// parseMessages splits one datagram into messages. A length running past the
-// buffer is an error rather than a short read, so a truncated dump can never
-// look like a complete one.
-func parseMessages(buf []byte) ([]Message, error) {
-	var out []Message
-	for len(buf) >= unix.SizeofNlMsghdr {
-		length := int(binary.NativeEndian.Uint32(buf[0:]))
-		if length < unix.SizeofNlMsghdr || length > len(buf) {
-			return nil, errors.New("nftables: malformed netlink message length")
-		}
-		out = append(out, Message{
-			Kind: binary.NativeEndian.Uint16(buf[4:]),
-			Seq:  binary.NativeEndian.Uint32(buf[8:]),
-			Pid:  binary.NativeEndian.Uint32(buf[12:]),
-			Data: buf[unix.SizeofNlMsghdr:length],
-		})
-		next := nlmsgAlign(length)
-		if next >= len(buf) {
-			break
-		}
-		buf = buf[next:]
-	}
-	return out, nil
-}
-
-// Attributes iterates the attributes that follow the message's struct
-// nfgenmsg. A malformed attribute ends the iteration: the kernel emits none,
-// and a half-decoded message fails the name checks that follow rather than
-// being acted on.
-func (m Message) Attributes() iter.Seq2[uint16, []byte] {
-	return func(yield func(uint16, []byte) bool) {
-		if len(m.Data) < SizeofNfgenmsg {
-			return
-		}
-		for _, field := range Nested(m.Data[SizeofNfgenmsg:]) {
-			if !yield(field.Kind, field.Value) {
-				return
-			}
-		}
-	}
-}
-
-// Attribute's Kind has NLA_F_NESTED masked off
+// Attribute's Kind has NLA_F_NESTED and NLA_F_NET_BYTEORDER masked off
 type Attribute struct {
 	Kind  uint16
 	Value []byte
 }
 
+// Nested is the attributes in buf, in order
 func Nested(buf []byte) []Attribute {
 	var out []Attribute
-	for len(buf) >= unix.SizeofRtAttr {
-		length := int(binary.NativeEndian.Uint16(buf[0:]))
-		kind := binary.NativeEndian.Uint16(buf[2:]) & nlaTypeMask
-		if length < unix.SizeofRtAttr || length > len(buf) {
-			return out
-		}
-		out = append(out, Attribute{Kind: kind, Value: buf[unix.SizeofRtAttr:length]})
-		next := rtaAlign(length)
-		if next >= len(buf) {
-			return out
-		}
-		buf = buf[next:]
+	for kind, value := range netlink.Attributes(buf) {
+		out = append(out, Attribute{Kind: kind, Value: value})
 	}
 	return out
 }
@@ -1496,28 +1319,10 @@ func putNfgenmsgSubsys(buf []byte, family uint8) []byte {
 	return buf
 }
 
-func PutAttr(buf []byte, kind uint16, value []byte) []byte {
-	length := unix.SizeofRtAttr + len(value)
-	start := len(buf)
-	buf = append(buf, make([]byte, rtaAlign(length))...)
-	binary.NativeEndian.PutUint16(buf[start:], uint16(length))
-	binary.NativeEndian.PutUint16(buf[start+2:], kind)
-	copy(buf[start+unix.SizeofRtAttr:], value)
-	return buf
-}
-
 // PutAttrBE32 writes a 32-bit attribute in network byte order, which is how
 // nf_tables carries every number in an NFTA attribute
 func PutAttrBE32(buf []byte, kind uint16, value uint32) []byte {
 	var raw [4]byte
 	binary.BigEndian.PutUint32(raw[:], value)
-	return PutAttr(buf, kind, raw[:])
+	return netlink.PutAttr(buf, kind, raw[:])
 }
-
-func PutAttrString(buf []byte, kind uint16, value string) []byte {
-	return PutAttr(buf, kind, append([]byte(value), 0))
-}
-
-func nlmsgAlign(n int) int { return (n + unix.NLMSG_ALIGNTO - 1) &^ (unix.NLMSG_ALIGNTO - 1) }
-
-func rtaAlign(n int) int { return (n + unix.RTA_ALIGNTO - 1) &^ (unix.RTA_ALIGNTO - 1) }

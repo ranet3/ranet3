@@ -29,6 +29,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -334,8 +335,8 @@ func anotherWritersAccept(proto uint8, chain string) nftables.Request {
 // anotherWritersRule is another writer's rule with no comment of expressions,
 // at the head of chain in this tool's table of the family proto
 func anotherWritersRule(proto uint8, chain string, expressions ...[]byte) nftables.Request {
-	body := nftables.PutAttrString(nftables.PutAttrString(nftables.PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, nftables.Table), unix.NFTA_RULE_CHAIN, chain)
-	body = nftables.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, slices.Concat(expressions...))
+	body := netlink.PutAttrString(netlink.PutAttrString(nftables.PutNfgenmsg(nil, proto), unix.NFTA_RULE_TABLE, nftables.Table), unix.NFTA_RULE_CHAIN, chain)
+	body = netlink.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, slices.Concat(expressions...))
 	// with no NLM_F_APPEND the kernel inserts the rule at the head of the chain
 	return nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWRULE), Flags: unix.NLM_F_CREATE, Body: body}
 }
@@ -343,7 +344,7 @@ func anotherWritersRule(proto uint8, chain string, expressions ...[]byte) nftabl
 // dormantTable is another writer's update setting this tool's table of the
 // family proto dormant
 func dormantTable(proto uint8) nftables.Request {
-	body := nftables.PutAttrString(nftables.PutNfgenmsg(nil, proto), unix.NFTA_TABLE_NAME, nftables.Table)
+	body := netlink.PutAttrString(nftables.PutNfgenmsg(nil, proto), unix.NFTA_TABLE_NAME, nftables.Table)
 	body = nftables.PutAttrBE32(body, unix.NFTA_TABLE_FLAGS, unix.NFT_TABLE_F_DORMANT)
 	return nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE, Body: body}
 }
@@ -866,7 +867,7 @@ func TestNftablesReadsTheChainsOfClassesOfNoneBack(t *testing.T) {
 			t.Fatal(err)
 		}
 		replaced.Flags = unix.NLM_F_REPLACE
-		replaced.Body = nftables.PutAttr(replaced.Body, unix.NFTA_RULE_HANDLE, binary.BigEndian.AppendUint64(nil, number))
+		replaced.Body = netlink.PutAttr(replaced.Body, unix.NFTA_RULE_HANDLE, binary.BigEndian.AppendUint64(nil, number))
 		if err := conn.Batch(append(requests, replaced)); err != nil {
 			t.Fatalf("write %s again over %v: %v", rule, members, err)
 		}
@@ -1391,7 +1392,7 @@ func objectHandles(t *testing.T, conn *nftables.Conn) map[string]uint64 {
 		for _, reply := range replies {
 			var table, name string
 			var handle uint64
-			for kind, value := range reply.Attributes() {
+			for kind, value := range reply.Attributes(nftables.SizeofNfgenmsg) {
 				switch {
 				case kind == dump.table:
 					table = unix.ByteSliceToString(value)
@@ -1421,7 +1422,7 @@ func tableHandles(t *testing.T, conn *nftables.Conn) map[uint8]uint64 {
 	for _, reply := range replies {
 		var name string
 		var handle uint64
-		for kind, value := range reply.Attributes() {
+		for kind, value := range reply.Attributes(nftables.SizeofNfgenmsg) {
 			switch {
 			case kind == unix.NFTA_TABLE_NAME:
 				name = unix.ByteSliceToString(value)
@@ -1558,17 +1559,17 @@ func TestNftablesPutsBackAnotherWritersChangeToItsTable(t *testing.T) {
 func foreignTransaction(table string, count int) []nftables.Request {
 	const chain = "input"
 	requests := []nftables.Request{
-		{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE, Body: nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, table)},
-		{Kind: nftables.Command(unix.NFT_MSG_NEWCHAIN), Flags: unix.NLM_F_CREATE, Body: nftables.PutAttrString(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_CHAIN_TABLE, table), unix.NFTA_CHAIN_NAME, chain)},
+		{Kind: nftables.Command(unix.NFT_MSG_NEWTABLE), Flags: unix.NLM_F_CREATE, Body: netlink.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_TABLE_NAME, table)},
+		{Kind: nftables.Command(unix.NFT_MSG_NEWCHAIN), Flags: unix.NLM_F_CREATE, Body: netlink.PutAttrString(netlink.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_CHAIN_TABLE, table), unix.NFTA_CHAIN_NAME, chain)},
 	}
 	for i := range count {
 		var expressions []byte
 		for _, e := range append(nftables.MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, fmt.Sprintf("eth%d", i%100)), nftables.Expression("counter", nil)) {
 			expressions = append(expressions, e...)
 		}
-		body := nftables.PutAttrString(nftables.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_RULE_TABLE, table), unix.NFTA_RULE_CHAIN, chain)
+		body := netlink.PutAttrString(netlink.PutAttrString(nftables.PutNfgenmsg(nil, unix.NFPROTO_IPV4), unix.NFTA_RULE_TABLE, table), unix.NFTA_RULE_CHAIN, chain)
 		requests = append(requests, nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWRULE), Flags: unix.NLM_F_CREATE | unix.NLM_F_APPEND,
-			Body: nftables.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, expressions)})
+			Body: netlink.PutAttr(body, unix.NFTA_RULE_EXPRESSIONS|unix.NLA_F_NESTED, expressions)})
 	}
 	return requests
 }

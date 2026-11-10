@@ -17,6 +17,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // Scope names the objects one owner writes in Table: its chains, those whose
@@ -91,17 +93,10 @@ func OpenMonitor(owner *Conn, scope Scope) (*Monitor, error) {
 // openMonitor is OpenMonitor's monitor with its socket open and its read
 // installed, before its reads start
 func openMonitor(owner *Conn, scope Scope) (*Monitor, error) {
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK, unix.NETLINK_NETFILTER)
+	file, err := netlink.Subscribe("nftables-monitor", unix.NETLINK_NETFILTER, 1<<(unix.NFNLGRP_NFTABLES-1), receiveBuffer)
 	if err != nil {
-		return nil, fmt.Errorf("nftables: open netfilter notification socket: %w", err)
+		return nil, err
 	}
-	if err := unix.Bind(fd, &unix.SockaddrNetlink{Family: unix.AF_NETLINK, Groups: 1 << (unix.NFNLGRP_NFTABLES - 1)}); err != nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("nftables: join the nf_tables notification group: %w", err)
-	}
-	growReceiveBuffer(fd)
-	// nonblocking, so os.NewFile registers it with the runtime poller and Close unblocks the reader
-	file := os.NewFile(uintptr(fd), "nftables-monitor")
 	raw, err := file.SyscallConn()
 	if err != nil {
 		_ = file.Close()
@@ -109,7 +104,7 @@ func openMonitor(owner *Conn, scope Scope) (*Monitor, error) {
 	}
 	m := &Monitor{
 		file:    file,
-		pid:     owner.pid,
+		pid:     owner.link.Pid(),
 		scope:   scope,
 		changed: make(chan struct{}, 1),
 		missed:  make(chan struct{}, 1),
@@ -120,8 +115,8 @@ func openMonitor(owner *Conn, scope Scope) (*Monitor, error) {
 }
 
 // drainingRead reads one datagram from raw at each call. The first time it
-// finds the queue empty after a datagram or an error it returns unix.EAGAIN,
-// and the call after that waits for the next datagram.
+// finds the queue empty, and the first time after each datagram or error, it
+// returns unix.EAGAIN, and the call after that waits for the next datagram.
 func (m *Monitor) drainingRead(raw syscall.RawConn) func([]byte) (int, error) {
 	told := false
 	return func(buf []byte) (n int, err error) {
@@ -178,7 +173,7 @@ func (m *Monitor) run() {
 			slog.Warn("stopped reading nf_tables notifications", "table", Table, "chains", m.scope.Chains, "err", err)
 			return
 		}
-		messages, err := parseMessages(buf[:n])
+		messages, err := netlink.ParseMessages(buf[:n])
 		if err != nil {
 			loss()
 			continue
@@ -194,16 +189,6 @@ func (m *Monitor) run() {
 				}
 			}
 		}
-	}
-}
-
-// growReceiveBuffer asks for receiveBuffer bytes of receive buffer on fd, past
-// rmem_max where it can. Best effort: the forced form needs the capability
-// this process already holds to write a rule at all, and a kernel that refuses
-// both leaves the smaller buffer rather than a failure to start.
-func growReceiveBuffer(fd int) {
-	if unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, receiveBuffer) != nil {
-		_ = unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, receiveBuffer)
 	}
 }
 
@@ -234,7 +219,7 @@ func (m *Monitor) Close() error {
 // only from a transaction, never from a set's garbage collection or a
 // packet's dynset, and notifies nothing for an owner's NewTable over the
 // table as it stands (nf_tables_updtable).
-func (s Scope) ChangedByAnother(message Message, pid uint32) bool {
+func (s Scope) ChangedByAnother(message netlink.Message, pid uint32) bool {
 	if message.Pid == pid || message.Kind>>8 != unix.NFNL_SUBSYS_NFTABLES || len(message.Data) < SizeofNfgenmsg || message.Data[0] != unix.NFPROTO_INET {
 		return false
 	}
@@ -255,7 +240,7 @@ func (s Scope) ChangedByAnother(message Message, pid uint32) bool {
 		return false
 	}
 	inTable, named, unflagged := false, own == nil, false
-	for kind, value := range message.Attributes() {
+	for kind, value := range message.Attributes(SizeofNfgenmsg) {
 		switch {
 		case kind == table:
 			inTable = unix.ByteSliceToString(value) == Table

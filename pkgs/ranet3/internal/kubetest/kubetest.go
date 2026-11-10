@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
@@ -56,8 +57,8 @@ func KubeProxyMasquerade() ([]nftables.Request, error) {
 	masked := nftables.PutAttrBE32(nil, unix.NFTA_BITWISE_SREG, unix.NFT_REG_1)
 	masked = nftables.PutAttrBE32(masked, unix.NFTA_BITWISE_DREG, unix.NFT_REG_1)
 	masked = nftables.PutAttrBE32(masked, unix.NFTA_BITWISE_LEN, uint32(len(bit)))
-	masked = nftables.PutAttr(masked, unix.NFTA_BITWISE_MASK|unix.NLA_F_NESTED, nftables.PutAttr(nil, unix.NFTA_DATA_VALUE, bit))
-	masked = nftables.PutAttr(masked, unix.NFTA_BITWISE_XOR|unix.NLA_F_NESTED, nftables.PutAttr(nil, unix.NFTA_DATA_VALUE, make([]byte, len(bit))))
+	masked = netlink.PutAttr(masked, unix.NFTA_BITWISE_MASK|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, bit))
+	masked = netlink.PutAttr(masked, unix.NFTA_BITWISE_XOR|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, make([]byte, len(bit))))
 	random := nftables.PutAttrBE32(nil, unix.NFTA_MASQ_FLAGS, unix.NF_NAT_RANGE_PROTO_RANDOM_FULLY)
 	rule, err := KubeProxyNAT.Rule(unix.NFPROTO_INET, "meta mark & 0x4000 != 0 masquerade fully-random", [][]byte{
 		nftables.Expression("meta", mark),

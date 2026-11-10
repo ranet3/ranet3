@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/schema"
 )
@@ -27,7 +28,7 @@ import (
 func expressionNames(t *testing.T, body []byte) []string {
 	t.Helper()
 	var out []string
-	for kind, value := range (nftables.Message{Data: body}).Attributes() {
+	for kind, value := range (netlink.Message{Data: body}).Attributes(nftables.SizeofNfgenmsg) {
 		if kind != unix.NFTA_RULE_EXPRESSIONS {
 			continue
 		}
@@ -175,11 +176,11 @@ func TestRuleEncodesTheExpressionsItsCommentDescribes(t *testing.T) {
 			// the chain the rule names and the counter its kind says, which
 			// Debug names the counter's unit by
 			kind := one.rule.kind()
-			table, chain, spec, _, _, counted := nftables.DecodeRule(nftables.Message{Data: request.Body})
+			table, chain, spec, _, _, counted := nftables.DecodeRule(netlink.Message{Data: request.Body})
 			if table != nftables.Table || chain != one.rule.chain() || counted != kind.counted() || request.Body[0] != unix.NFPROTO_INET {
 				t.Errorf("wrote into %d %s/%s counted %v, want inet %s/%s counted %v", request.Body[0], table, chain, counted, nftables.Table, one.rule.chain(), kind.counted())
 			}
-			for attr, value := range (nftables.Message{Data: request.Body}).Attributes() {
+			for attr, value := range (netlink.Message{Data: request.Body}).Attributes(nftables.SizeofNfgenmsg) {
 				if attr == unix.NFTA_RULE_EXPRESSIONS && bytes.HasPrefix(value, slices.Concat(nftables.NFProto(nftFamily(one.rule.Family))...)) != translation {
 					t.Errorf("the rule in the chain %s tests for %s first: %v, want %v", one.rule.chain(), egress.FamilyName(one.rule.Family), !translation, translation)
 				}
@@ -200,7 +201,7 @@ func TestInterfaceComparisonCoversTheWholePaddedName(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := 0
-	for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
+	for kind, value := range (netlink.Message{Data: request.Body}).Attributes(nftables.SizeofNfgenmsg) {
 		if kind != unix.NFTA_RULE_EXPRESSIONS {
 			continue
 		}
@@ -263,7 +264,7 @@ func TestDirectionInvertsBothInterfaceTests(t *testing.T) {
 				t.Fatal(err)
 			}
 			var got []uint32
-			for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
+			for kind, value := range (netlink.Message{Data: request.Body}).Attributes(nftables.SizeofNfgenmsg) {
 				if kind != unix.NFTA_RULE_EXPRESSIONS {
 					continue
 				}
@@ -366,7 +367,7 @@ func TestChainsHookWhereTheirRulesAct(t *testing.T) {
 			continue
 		}
 		request := chains[index].Create(unix.NFPROTO_INET)
-		table, chain, kind, hook, priority := nftables.DecodeChain(nftables.Message{Data: request.Body})
+		table, chain, kind, hook, priority := nftables.DecodeChain(netlink.Message{Data: request.Body})
 		if table != nftables.Table || chain != want.chain || kind != want.kind || hook != want.hook || priority != want.priority {
 			t.Errorf("created %s/%s, a %s chain at hook %d, priority %d, want %s/%s, a %s chain at hook %d, priority %d",
 				table, chain, kind, hook, priority, nftables.Table, want.chain, want.kind, want.hook, want.priority)
@@ -468,7 +469,7 @@ func TestFlushNamesOnlyThisToolsOwnChain(t *testing.T) {
 		request := written.Flush(unix.NFPROTO_INET)
 		var table, chain string
 		handles := 0
-		for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
+		for kind, value := range (netlink.Message{Data: request.Body}).Attributes(nftables.SizeofNfgenmsg) {
 			switch kind {
 			case unix.NFTA_RULE_TABLE:
 				table = unix.ByteSliceToString(value)
@@ -521,7 +522,7 @@ func TestInboundRuleExcludesThisNodesOwnTraffic(t *testing.T) {
 func metaKeys(t *testing.T, body []byte) []uint32 {
 	t.Helper()
 	var out []uint32
-	for kind, value := range (nftables.Message{Data: body}).Attributes() {
+	for kind, value := range (netlink.Message{Data: body}).Attributes(nftables.SizeofNfgenmsg) {
 		if kind != unix.NFTA_RULE_EXPRESSIONS {
 			continue
 		}

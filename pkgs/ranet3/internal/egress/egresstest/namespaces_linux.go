@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
@@ -612,8 +613,8 @@ func dropBareSYN(netnstest.Netlink) error {
 	defer conn.Close()
 	input := nftables.Chain{Table: "suite", Name: "input", Type: "filter", Hook: unix.NF_INET_LOCAL_IN}
 	drop := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
-	drop = nftables.PutAttr(drop, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED,
-		nftables.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, nfDrop)))
+	drop = netlink.PutAttr(drop, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED,
+		netlink.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, nftables.PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, nfDrop)))
 	rule, err := input.Rule(unix.NFPROTO_INET, "a bare syn to the simultaneous open's port dropped", slices.Concat(
 		nftables.MetaCompareValue(unix.NFT_META_L4PROTO, unix.NFT_CMP_EQ, []byte{unix.IPPROTO_TCP}),
 		[][]byte{

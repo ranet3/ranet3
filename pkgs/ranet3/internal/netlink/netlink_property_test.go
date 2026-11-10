@@ -303,12 +303,12 @@ func TestEndCarryingAnErrnoYieldsItAndNoReplies(t *testing.T) {
 			datagram = appendMessage(datagram, message)
 		}
 		datagrams = append(datagrams, datagram)
-		// a read may fail at any datagram up to the one that ends the request, which is the last, as a socket whose queue
-		// overflowed or that another socket wrote to fails
+		// a read may fail at any datagram up to the one that ends the request, which is the last, as a socket whose timeout ran
+		// out, whose queue overflowed or that another socket wrote to fails
 		failing, failAt, failure := hegel.Draw(ht, hegel.WeightedBooleans(1.0/4)), -1, error(nil)
 		if failing {
 			failAt = hegel.Draw(ht, hegel.Integers(0, len(datagrams)-1))
-			failure = hegel.Draw(ht, hegel.SampledFrom([]error{unix.ENOBUFS, errNotFromKernel}))
+			failure = hegel.Draw(ht, hegel.SampledFrom([]error{errNoAnswer, unix.ENOBUFS, errNotFromKernel}))
 		}
 		read := 0
 		receive := func() ([]Message, error) {

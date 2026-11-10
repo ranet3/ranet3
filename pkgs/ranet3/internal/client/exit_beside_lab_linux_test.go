@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"ranet3.com/pkgs/ranet3/internal/kubetest"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
@@ -427,10 +428,10 @@ const nftJump = 0xfffffffd
 // labJump jumps to chain
 func labJump(chain string) []byte {
 	verdict := nftables.PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, nftJump)
-	verdict = nftables.PutAttrString(verdict, unix.NFTA_VERDICT_CHAIN, chain)
-	data := nftables.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, verdict)
+	verdict = netlink.PutAttrString(verdict, unix.NFTA_VERDICT_CHAIN, chain)
+	data := netlink.PutAttr(nil, unix.NFTA_DATA_VERDICT|unix.NLA_F_NESTED, verdict)
 	immediate := nftables.PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT)
-	immediate = nftables.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
+	immediate = netlink.PutAttr(immediate, unix.NFTA_IMMEDIATE_DATA|unix.NLA_F_NESTED, data)
 	return nftables.Expression("immediate", immediate)
 }
 
@@ -520,14 +521,14 @@ func writeDocker(ipv4 uint32) func(t *testing.T, lab *exitLab) {
 						chains = append(chains, nftables.NewTable(proto, chain.table))
 					}
 					body := nftables.PutNfgenmsg(nil, proto)
-					body = nftables.PutAttrString(body, unix.NFTA_CHAIN_TABLE, chain.table)
-					body = nftables.PutAttrString(body, unix.NFTA_CHAIN_NAME, chain.name)
+					body = netlink.PutAttrString(body, unix.NFTA_CHAIN_TABLE, chain.table)
+					body = netlink.PutAttrString(body, unix.NFTA_CHAIN_NAME, chain.name)
 					if chain.kind != "" {
 						hooked := nftables.PutAttrBE32(nil, unix.NFTA_HOOK_HOOKNUM, chain.hook)
 						hooked = nftables.PutAttrBE32(hooked, unix.NFTA_HOOK_PRIORITY, uint32(chain.priority))
-						body = nftables.PutAttr(body, unix.NFTA_CHAIN_HOOK|unix.NLA_F_NESTED, hooked)
+						body = netlink.PutAttr(body, unix.NFTA_CHAIN_HOOK|unix.NLA_F_NESTED, hooked)
 						body = nftables.PutAttrBE32(body, unix.NFTA_CHAIN_POLICY, chain.policy)
-						body = nftables.PutAttrString(body, unix.NFTA_CHAIN_TYPE, chain.kind)
+						body = netlink.PutAttrString(body, unix.NFTA_CHAIN_TYPE, chain.kind)
 					}
 					chains = append(chains, nftables.Request{Kind: nftables.Command(unix.NFT_MSG_NEWCHAIN), Flags: unix.NLM_F_CREATE, Body: body})
 					for i, spec := range chain.specs {

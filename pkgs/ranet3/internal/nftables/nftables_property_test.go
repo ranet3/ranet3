@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -88,7 +89,7 @@ func TestSourcePrefixTakesExactlyTheSourcesItsPrefixHolds(t *testing.T) {
 		if err != nil {
 			ht.Fatal(err)
 		}
-		raw := AddressBytes(prefix.Addr())
+		raw := netlink.AddressBytes(prefix.Addr())
 		switch hegel.Draw(ht, hegel.Integers(0, 2)) {
 		case 0:
 			raw = hegel.Draw(ht, hegel.Binary(size, size))
@@ -139,15 +140,15 @@ func TestRequestsReadBackAsWritten(t *testing.T) {
 		proto := hegel.Draw(ht, hegel.SampledFrom([]uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6, unix.NFPROTO_INET}))
 		table, name := hegel.Draw(ht, names()), hegel.Draw(ht, names())
 		c := hegel.Draw(ht, chains(table, name))
-		conn := &Conn{pid: hegel.Draw(ht, hegel.Integers[uint32](0, math.MaxUint32))}
+		pid := hegel.Draw(ht, hegel.Integers[uint32](0, math.MaxUint32))
 		seq := hegel.Draw(ht, hegel.Integers[uint32](0, math.MaxUint32))
-		framed := func(request Request) Message {
-			messages, err := parseMessages(conn.appendMessage(nil, request.Kind, request.Flags, seq, request.Body))
+		framed := func(request Request) netlink.Message {
+			messages, err := netlink.ParseMessages(netlink.AppendMessage(nil, request.Kind, request.Flags|unix.NLM_F_REQUEST, seq, pid, request.Body))
 			if err != nil || len(messages) != 1 {
 				ht.Fatalf("a request framed reads back as %d messages: %v", len(messages), err)
 			}
 			got := messages[0]
-			if got.Kind != request.Kind || got.Seq != seq || got.Pid != conn.pid || !bytes.Equal(got.Data, request.Body) || got.Data[0] != proto {
+			if got.Kind != request.Kind || got.Seq != seq || got.Pid != pid || !bytes.Equal(got.Data, request.Body) || got.Data[0] != proto {
 				ht.Fatalf("a request of kind %#x reads back as %+v", request.Kind, got)
 			}
 			return got
@@ -170,7 +171,7 @@ func TestRequestsReadBackAsWritten(t *testing.T) {
 		}
 
 		flushed := map[uint16]string{}
-		for kind, field := range framed(c.Flush(proto)).Attributes() {
+		for kind, field := range framed(c.Flush(proto)).Attributes(SizeofNfgenmsg) {
 			flushed[kind] = unix.ByteSliceToString(field)
 		}
 		if len(flushed) != 2 || flushed[unix.NFTA_RULE_TABLE] != table || flushed[unix.NFTA_RULE_CHAIN] != name {
@@ -179,8 +180,8 @@ func TestRequestsReadBackAsWritten(t *testing.T) {
 
 		spec := hegel.Draw(ht, hegel.Text().Alphabet("ipv46 outvia-ranet3.:/0123456789").MaxSize(udataCommentMax))
 		packets, octets := hegel.Draw(ht, hegel.Integers[uint64](0, math.MaxUint64)), hegel.Draw(ht, hegel.Integers[uint64](0, math.MaxUint64))
-		counter := PutAttr(nil, unix.NFTA_COUNTER_BYTES, binary.BigEndian.AppendUint64(nil, octets))
-		counter = PutAttr(counter, unix.NFTA_COUNTER_PACKETS, binary.BigEndian.AppendUint64(nil, packets))
+		counter := netlink.PutAttr(nil, unix.NFTA_COUNTER_BYTES, binary.BigEndian.AppendUint64(nil, octets))
+		counter = netlink.PutAttr(counter, unix.NFTA_COUNTER_PACKETS, binary.BigEndian.AppendUint64(nil, packets))
 		expressions := MetaCompare(unix.NFT_META_IIFNAME, unix.NFT_CMP_EQ, name)
 		counted := hegel.Draw(ht, hegel.Booleans())
 		if counted {
@@ -237,16 +238,16 @@ func TestSetsAndTimeoutsReadBackAsWritten(t *testing.T) {
 	pbt.Check(t, func(ht *hegel.T) {
 		proto := hegel.Draw(ht, hegel.SampledFrom([]uint8{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6}))
 		table, name := hegel.Draw(ht, names), hegel.Draw(ht, names)
-		conn := &Conn{pid: hegel.Draw(ht, hegel.Integers[uint32](0, math.MaxUint32))}
-		framed := func(request Request) Message {
-			messages, err := parseMessages(conn.appendMessage(nil, request.Kind, request.Flags, 1, request.Body))
+		pid := hegel.Draw(ht, hegel.Integers[uint32](0, math.MaxUint32))
+		framed := func(request Request) netlink.Message {
+			messages, err := netlink.ParseMessages(netlink.AppendMessage(nil, request.Kind, request.Flags|unix.NLM_F_REQUEST, 1, pid, request.Body))
 			if err != nil || len(messages) != 1 || !bytes.Equal(messages[0].Data, request.Body) || messages[0].Data[0] != proto {
 				ht.Fatalf("a request of kind %#x reads back as %d messages: %v", request.Kind, len(messages), err)
 			}
 			return messages[0]
 		}
 
-		madeSet := func(s Set) Message {
+		madeSet := func(s Set) netlink.Message {
 			request, err := s.Create(proto)
 			if err != nil {
 				ht.Fatalf("%+v was refused: %v", s, err)
@@ -291,7 +292,7 @@ func TestSetsAndTimeoutsReadBackAsWritten(t *testing.T) {
 			ht.Fatalf("%+v reads back against %+v with the fault %q, remade %v", differ, o, fault, remake)
 		}
 		counter := made
-		counter.Data = PutAttrString(PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_OBJ_TABLE, table), unix.NFTA_OBJ_NAME, name)
+		counter.Data = netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_OBJ_TABLE, table), unix.NFTA_OBJ_NAME, name)
 		counter.Data = PutAttrBE32(counter.Data, unix.NFTA_OBJ_TYPE, unix.NFT_OBJECT_COUNTER)
 		if _, ok := DecodeTimeout(counter); ok {
 			ht.Fatal("a counter of its name decodes as a ct timeout")

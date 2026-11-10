@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
@@ -83,14 +84,14 @@ func TestEachOwnersMonitorWakesForItsOwnNamesAlone(t *testing.T) {
 			for _, table := range []string{nftables.Table, "nat", nftables.Table + "x"} {
 				for _, pid := range []uint32{own, other} {
 					for _, flag := range flags {
-						body := nftables.PutAttrString(nftables.PutNfgenmsg(nil, family), kind.table, table)
+						body := netlink.PutAttrString(nftables.PutNfgenmsg(nil, family), kind.table, table)
 						if kind.name != 0 {
-							body = nftables.PutAttrString(body, kind.name, name)
+							body = netlink.PutAttrString(body, kind.name, name)
 						}
 						if kind.name == 0 && flag >= 0 {
 							body = nftables.PutAttrBE32(body, unix.NFTA_TABLE_FLAGS, uint32(flag))
 						}
-						message := nftables.Message{Kind: nftables.Command(kind.command), Pid: pid, Data: body}
+						message := netlink.Message{Kind: nftables.Command(kind.command), Pid: pid, Data: body}
 						for owner, scope := range scopes {
 							var named bool
 							switch kind.command {

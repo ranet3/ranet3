@@ -17,6 +17,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // translatorNames is a scope of the shape the translator watches, two chains,
@@ -81,7 +83,7 @@ func TestRuleTakesOnlyASpecItsCommentHolds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a spec of %d bytes was refused: %v", len(spec), err)
 	}
-	if _, _, got, _, _, _ := DecodeRule(Message{Data: request.Body}); got != spec {
+	if _, _, got, _, _, _ := DecodeRule(netlink.Message{Data: request.Body}); got != spec {
 		t.Errorf("a spec of %d bytes reads back as %d bytes", len(spec), len(got))
 	}
 }
@@ -98,7 +100,7 @@ func TestSetTakesOnlyACommentNftLoadsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a comment of %d bytes was refused: %v", len(s.Comment), err)
 	}
-	if got := DecodeSet(Message{Data: request.Body}).Comment; got != s.Comment {
+	if got := DecodeSet(netlink.Message{Data: request.Body}).Comment; got != s.Comment {
 		t.Errorf("a comment of %d bytes reads back as %d bytes", len(s.Comment), len(got))
 	}
 }
@@ -108,8 +110,8 @@ func TestSetTakesOnlyACommentNftLoadsBack(t *testing.T) {
 // once per connection and never again.
 func TestCountersComeOutOfTheExpressionList(t *testing.T) {
 	var counter []byte
-	counter = PutAttr(counter, unix.NFTA_COUNTER_BYTES, beBytes(4242))
-	counter = PutAttr(counter, unix.NFTA_COUNTER_PACKETS, beBytes(17))
+	counter = netlink.PutAttr(counter, unix.NFTA_COUNTER_BYTES, beBytes(4242))
+	counter = netlink.PutAttr(counter, unix.NFTA_COUNTER_PACKETS, beBytes(17))
 	expressions := slices.Concat(Expression("meta", nil), Expression("counter", counter))
 	packets, bytes, counted := counters(expressions)
 	if packets != 17 || bytes != 4242 || !counted {
@@ -196,13 +198,13 @@ func renderedAttributes(data []byte) string {
 		value := data[unix.SizeofRtAttr:length]
 		switch {
 		case kind&unix.NLA_F_NESTED != 0:
-			out = append(out, fmt.Sprintf("%d{%s}", kind&nlaTypeMask, renderedAttributes(value)))
+			out = append(out, fmt.Sprintf("%d{%s}", kind&^unix.NLA_F_NESTED, renderedAttributes(value)))
 		case len(value) > 1 && value[len(value)-1] == 0 && strings.Trim(string(value[:len(value)-1]), "abcdefghijklmnopqrstuvwxyz0123456789-") == "":
 			out = append(out, fmt.Sprintf("%d=%q", kind, value[:len(value)-1]))
 		default:
 			out = append(out, fmt.Sprintf("%d=%x", kind, value))
 		}
-		data = data[rtaAlign(length):]
+		data = data[netlink.AttrAlign(length):]
 	}
 	slices.SortFunc(out, func(a, b string) int {
 		return cmp.Compare(leadingNumber(a), leadingNumber(b))
@@ -221,17 +223,6 @@ func leadingNumber(text string) int {
 	return n
 }
 
-// A datagram whose message claims to run past its end is an error rather than
-// a short read, so a truncated dump can never look like a complete one and a
-// diff built on it can never withdraw a rule that is still there.
-func TestMalformedMessageLengthIsRefused(t *testing.T) {
-	buf := make([]byte, unix.SizeofNlMsghdr)
-	binary.NativeEndian.PutUint32(buf, uint32(len(buf)+64))
-	if _, err := parseMessages(buf); err == nil {
-		t.Fatal("a message running past its datagram was accepted")
-	}
-}
-
 // Only another writer's deletion of the table, a NEWTABLE of it that sets a
 // flag or carries none, or a change to one of the owner's chains, a rule in
 // one, one of its sets or a set's element wakes the owner. A NEWTABLE of flags
@@ -241,31 +232,31 @@ func TestMalformedMessageLengthIsRefused(t *testing.T) {
 // none of its business.
 func TestOnlyAnotherWritersChangeToItsNamesWakes(t *testing.T) {
 	const own, other = 7, 9
-	tableOnly := func(command int, family uint8, table string, pid uint32) Message {
-		return Message{Kind: Command(command), Pid: pid, Data: PutAttrString(PutNfgenmsg(nil, family), unix.NFTA_TABLE_NAME, table)}
+	tableOnly := func(command int, family uint8, table string, pid uint32) netlink.Message {
+		return netlink.Message{Kind: Command(command), Pid: pid, Data: netlink.PutAttrString(PutNfgenmsg(nil, family), unix.NFTA_TABLE_NAME, table)}
 	}
-	flagged := func(flags uint32) Message {
+	flagged := func(flags uint32) netlink.Message {
 		m := tableOnly(unix.NFT_MSG_NEWTABLE, unix.NFPROTO_INET, Table, other)
 		m.Data = PutAttrBE32(m.Data, unix.NFTA_TABLE_FLAGS, flags)
 		return m
 	}
-	named := func(command int, tableKind, nameKind uint16, table, name string, pid uint32) Message {
-		return Message{Kind: Command(command), Pid: pid, Data: PutAttrString(PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), tableKind, table), nameKind, name)}
+	named := func(command int, tableKind, nameKind uint16, table, name string, pid uint32) netlink.Message {
+		return netlink.Message{Kind: Command(command), Pid: pid, Data: netlink.PutAttrString(netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), tableKind, table), nameKind, name)}
 	}
-	chain := func(command int, name string, pid uint32) Message {
+	chain := func(command int, name string, pid uint32) netlink.Message {
 		return named(command, unix.NFTA_CHAIN_TABLE, unix.NFTA_CHAIN_NAME, Table, name, pid)
 	}
-	rule := func(command int, table, name string, pid uint32) Message {
+	rule := func(command int, table, name string, pid uint32) netlink.Message {
 		return named(command, unix.NFTA_RULE_TABLE, unix.NFTA_RULE_CHAIN, table, name, pid)
 	}
-	set := func(command int, name string, pid uint32) Message {
+	set := func(command int, name string, pid uint32) netlink.Message {
 		return named(command, unix.NFTA_SET_TABLE, unix.NFTA_SET_NAME, Table, name, pid)
 	}
-	element := func(command int, table, name string, pid uint32) Message {
+	element := func(command int, table, name string, pid uint32) netlink.Message {
 		return named(command, unix.NFTA_SET_ELEM_LIST_TABLE, unix.NFTA_SET_ELEM_LIST_SET, table, name, pid)
 	}
 	for label, c := range map[string]struct {
-		message Message
+		message netlink.Message
 		wakes   bool
 	}{
 		"the table deleted":                     {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, Table, other), true},
@@ -300,7 +291,7 @@ func TestOnlyAnotherWritersChangeToItsNamesWakes(t *testing.T) {
 		"a name it starts":                      {tableOnly(unix.NFT_MSG_DELTABLE, unix.NFPROTO_INET, Table+"x", other), false},
 		"an object of its table":                {named(unix.NFT_MSG_NEWOBJ, unix.NFTA_OBJ_TABLE, unix.NFTA_OBJ_NAME, Table, "translated-udp4", other), false},
 		"another subsystem": {
-			Message{Kind: uint16(unix.NFNL_SUBSYS_CTNETLINK)<<8 | unix.NFT_MSG_DELTABLE, Pid: other, Data: PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, Table)},
+			netlink.Message{Kind: uint16(unix.NFNL_SUBSYS_CTNETLINK)<<8 | unix.NFT_MSG_DELTABLE, Pid: other, Data: netlink.PutAttrString(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_TABLE_NAME, Table)},
 			false,
 		},
 	} {
@@ -376,29 +367,29 @@ func TestFilterExpressionsCarryTheAttributesNftWrites(t *testing.T) {
 // dumped is an expression as a rule dump lists it, its list element and data
 // with no NLA_F_NESTED
 func dumped(name string, data []byte) []byte {
-	return PutAttr(nil, unix.NFTA_LIST_ELEM, PutAttr(PutAttrString(nil, unix.NFTA_EXPR_NAME, name), unix.NFTA_EXPR_DATA, data))
+	return netlink.PutAttr(nil, unix.NFTA_LIST_ELEM, netlink.PutAttr(netlink.PutAttrString(nil, unix.NFTA_EXPR_NAME, name), unix.NFTA_EXPR_DATA, data))
 }
 
 // dumpedLookup is a lookup of set as a dump lists it, by name alone with its flags written out
 func dumpedLookup(set string, flags uint32) []byte {
-	return dumped("lookup", PutAttrBE32(PutAttrBE32(PutAttrString(nil, unix.NFTA_LOOKUP_SET, set), unix.NFTA_LOOKUP_SREG, unix.NFT_REG_1), unix.NFTA_LOOKUP_FLAGS, flags))
+	return dumped("lookup", PutAttrBE32(PutAttrBE32(netlink.PutAttrString(nil, unix.NFTA_LOOKUP_SET, set), unix.NFTA_LOOKUP_SREG, unix.NFT_REG_1), unix.NFTA_LOOKUP_FLAGS, flags))
 }
 
 // dumpedCompare is an equality test against value as a dump lists it
 func dumpedCompare(value []byte) []byte {
-	return dumped("cmp", PutAttr(PutAttrBE32(PutAttrBE32(nil, unix.NFTA_CMP_SREG, unix.NFT_REG_1), unix.NFTA_CMP_OP, unix.NFT_CMP_EQ), unix.NFTA_CMP_DATA, PutAttr(nil, unix.NFTA_DATA_VALUE, value)))
+	return dumped("cmp", netlink.PutAttr(PutAttrBE32(PutAttrBE32(nil, unix.NFTA_CMP_SREG, unix.NFT_REG_1), unix.NFTA_CMP_OP, unix.NFT_CMP_EQ), unix.NFTA_CMP_DATA, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, value)))
 }
 
 // dumpedVerdict is a verdict as a dump lists it
 func dumpedVerdict(code uint32) []byte {
-	data := PutAttr(nil, unix.NFTA_DATA_VERDICT, PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
-	return dumped("immediate", PutAttr(PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT), unix.NFTA_IMMEDIATE_DATA, data))
+	data := netlink.PutAttr(nil, unix.NFTA_DATA_VERDICT, PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, code))
+	return dumped("immediate", netlink.PutAttr(PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT), unix.NFTA_IMMEDIATE_DATA, data))
 }
 
 // dumpedGoto is a goto to chain as a dump lists it
 func dumpedGoto(chain string) []byte {
-	data := PutAttr(nil, unix.NFTA_DATA_VERDICT, PutAttrString(PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, gotoCode), unix.NFTA_VERDICT_CHAIN, chain))
-	return dumped("immediate", PutAttr(PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT), unix.NFTA_IMMEDIATE_DATA, data))
+	data := netlink.PutAttr(nil, unix.NFTA_DATA_VERDICT, netlink.PutAttrString(PutAttrBE32(nil, unix.NFTA_VERDICT_CODE, gotoCode), unix.NFTA_VERDICT_CHAIN, chain))
+	return dumped("immediate", netlink.PutAttr(PutAttrBE32(nil, unix.NFTA_IMMEDIATE_DREG, unix.NFT_REG_VERDICT), unix.NFTA_IMMEDIATE_DATA, data))
 }
 
 // A rule's expressions as a dump lists them read as written where the dump
@@ -413,7 +404,7 @@ func TestExpressionFaultTellsAnEditFromADumpsSpelling(t *testing.T) {
 	notForwarded := [][]byte{MetaLoad(unix.NFT_META_IIFNAME), Lookup(forwarded, true), Verdict(Accept)}
 	toTheLAN := [][]byte{DestinationLoad(unix.NFPROTO_IPV4), Lookup(lan4, false), Verdict(Accept)}
 	marked := slices.Concat(MetaCompareValue(unix.NFT_META_MARK, unix.NFT_CMP_EQ, mark), [][]byte{Verdict(Accept)})
-	counted := PutAttr(PutAttr(nil, unix.NFTA_COUNTER_BYTES, beBytes(180)), unix.NFTA_COUNTER_PACKETS, beBytes(3))
+	counted := netlink.PutAttr(netlink.PutAttr(nil, unix.NFTA_COUNTER_BYTES, beBytes(180)), unix.NFTA_COUNTER_PACKETS, beBytes(3))
 	for _, c := range []struct {
 		name    string
 		written [][]byte
@@ -521,7 +512,7 @@ func TestIntervalElementsAreThoseNftWrites(t *testing.T) {
 // a start with no end after it runs to the last key
 func TestElementsReadBackAsALookupFindsThem(t *testing.T) {
 	s := Set{Name: "lan4", KeyType: TypeIPv4Addr, KeyLen: 4, Flags: unix.NFT_SET_INTERVAL}
-	key := func(address string) []byte { return AddressBytes(netip.MustParseAddr(address)) }
+	key := func(address string) []byte { return netlink.AddressBytes(netip.MustParseAddr(address)) }
 	var list []byte
 	for _, e := range []element{
 		{key: key("203.0.113.0")},
@@ -533,8 +524,8 @@ func TestElementsReadBackAsALookupFindsThem(t *testing.T) {
 	} {
 		list = append(list, e.encode()...)
 	}
-	dump := Message{Data: PutAttr(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, list)}
-	got := s.decodeElements([]Message{dump})
+	dump := netlink.Message{Data: netlink.PutAttr(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, list)}
+	got := s.decodeElements([]netlink.Message{dump})
 	want := []Interval{
 		{First: key("192.0.2.0"), Last: key("198.51.100.255")},
 		{First: key("203.0.113.0"), Last: key("255.255.255.255")},
@@ -583,14 +574,14 @@ func TestFillSplitsWhatOneAttributeCannotSay(t *testing.T) {
 	if len(requests) < 2 {
 		t.Fatalf("6001 elements went in %d message", len(requests))
 	}
-	var dump []Message
+	var dump []netlink.Message
 	for _, request := range requests {
-		for kind, value := range (Message{Data: request.Body}).Attributes() {
+		for kind, value := range (netlink.Message{Data: request.Body}).Attributes(SizeofNfgenmsg) {
 			if kind == unix.NFTA_SET_ELEM_LIST_ELEMENTS && unix.SizeofRtAttr+len(value) > math.MaxUint16 {
 				t.Errorf("an elements attribute of %d bytes", unix.SizeofRtAttr+len(value))
 			}
 		}
-		dump = append(dump, Message{Data: request.Body})
+		dump = append(dump, netlink.Message{Data: request.Body})
 	}
 	if fault := s.elementFault(intervals, s.decodeElements(dump)); fault != "" {
 		t.Error(fault)

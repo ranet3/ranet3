@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // A prefix's mask reads back with the boolean operation a dump writes for a
@@ -56,8 +58,8 @@ func TestExpressionFaultReadsANatAndADynsetAsTheKernelDumpsThem(t *testing.T) {
 	limitDumped := func(timeout uint64, flags, count uint32) []byte {
 		connlimit := PutAttrBE32(PutAttrBE32(nil, connlimitCount, count), connlimitFlags, connlimitInvert)
 		data := PutAttrBE32(PutAttrBE32(nil, unix.NFTA_DYNSET_SREG_KEY, unix.NFT_REG_1), unix.NFTA_DYNSET_OP, unix.NFT_DYNSET_OP_ADD)
-		data = PutAttr(PutAttrString(data, unix.NFTA_DYNSET_SET_NAME, "flows4"), unix.NFTA_DYNSET_TIMEOUT, binary.BigEndian.AppendUint64(nil, timeout))
-		data = PutAttr(data, unix.NFTA_DYNSET_EXPR, PutAttr(PutAttrString(nil, unix.NFTA_EXPR_NAME, "connlimit"), unix.NFTA_EXPR_DATA, connlimit))
+		data = netlink.PutAttr(netlink.PutAttrString(data, unix.NFTA_DYNSET_SET_NAME, "flows4"), unix.NFTA_DYNSET_TIMEOUT, binary.BigEndian.AppendUint64(nil, timeout))
+		data = netlink.PutAttr(data, unix.NFTA_DYNSET_EXPR, netlink.PutAttr(netlink.PutAttrString(nil, unix.NFTA_EXPR_NAME, "connlimit"), unix.NFTA_EXPR_DATA, connlimit))
 		return slices.Concat(SourceLoad(unix.NFPROTO_IPV4), dumped("dynset", PutAttrBE32(data, unix.NFTA_DYNSET_FLAGS, flags)))
 	}
 	for _, c := range []struct {

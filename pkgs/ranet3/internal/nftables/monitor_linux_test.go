@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // monitorWait bounds a wait on the monitor's goroutine
@@ -151,27 +153,26 @@ func transaction(port uint32, generation uint16, datagrams ...[]notifications) [
 	stamped := func(family uint8) []byte {
 		return binary.BigEndian.AppendUint16([]byte{family, nfnetlinkV0}, generation)
 	}
-	conn := &Conn{pid: port}
 	var reads []monitorRead
 	for _, datagram := range datagrams {
 		var buf []byte
 		for _, n := range datagram {
-			attributes := PutAttrString(stamped(n.family), naming[n.kind], n.table)
+			attributes := netlink.PutAttrString(stamped(n.family), naming[n.kind], n.table)
 			if attribute, ok := named[n.kind]; ok && n.name != "" {
-				attributes = PutAttrString(attributes, attribute, n.name)
+				attributes = netlink.PutAttrString(attributes, attribute, n.name)
 			}
 			// the kernel puts the table's flags in every NEWTABLE and in no DELTABLE (nf_tables_fill_table_info)
 			if n.kind == unix.NFT_MSG_NEWTABLE {
 				attributes = PutAttrBE32(attributes, unix.NFTA_TABLE_FLAGS, n.flags)
 			}
 			for range n.count {
-				buf = conn.appendMessage(buf, Command(n.kind), 0, 0, attributes)
+				buf = netlink.AppendMessage(buf, Command(n.kind), unix.NLM_F_REQUEST, 0, port, attributes)
 			}
 		}
 		reads = append(reads, monitorRead{datagram: buf})
 	}
-	end := PutAttr(stamped(unix.NFPROTO_UNSPEC), unix.NFTA_GEN_ID, binary.BigEndian.AppendUint32(nil, uint32(generation)))
-	return append(reads, monitorRead{datagram: conn.appendMessage(nil, Command(unix.NFT_MSG_NEWGEN), 0, 0, end)})
+	end := netlink.PutAttr(stamped(unix.NFPROTO_UNSPEC), unix.NFTA_GEN_ID, binary.BigEndian.AppendUint32(nil, uint32(generation)))
+	return append(reads, monitorRead{datagram: netlink.AppendMessage(nil, Command(unix.NFT_MSG_NEWGEN), unix.NLM_F_REQUEST, 0, port, end)})
 }
 
 // The datagrams linux 7.3.1 sent to the kernel exit's monitor under auto for

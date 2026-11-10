@@ -100,7 +100,9 @@ func TestMonitorWakesOnceForATransactionAfterAnOverflowDrains(t *testing.T) {
 	}
 	woke(monitor.Missed())
 	socket("grow the monitor's receive buffer back", func(fd int) error {
-		growReceiveBuffer(fd)
+		if unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUFFORCE, receiveBuffer) != nil {
+			return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_RCVBUF, receiveBuffer)
+		}
 		return nil
 	})
 

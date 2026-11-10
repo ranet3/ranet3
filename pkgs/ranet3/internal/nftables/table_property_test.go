@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -54,7 +55,7 @@ func requestName(r Request) string {
 		unix.NFT_MSG_DELRULE: unix.NFTA_RULE_CHAIN,
 		unix.NFT_MSG_DELSET:  unix.NFTA_SET_NAME, unix.NFT_MSG_DELOBJ: unix.NFTA_OBJ_NAME,
 	}
-	for kind, value := range (Message{Data: r.Body}).Attributes() {
+	for kind, value := range (netlink.Message{Data: r.Body}).Attributes(SizeofNfgenmsg) {
 		if kind == attrs[r.Kind&0xff] {
 			return unix.ByteSliceToString(value)
 		}

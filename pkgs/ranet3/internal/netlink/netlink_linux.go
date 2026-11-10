@@ -14,6 +14,7 @@ import (
 	"iter"
 	"net/netip"
 	"slices"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -33,6 +34,10 @@ type Conn struct {
 type Options struct {
 	// Strict has the kernel check each request whole and honor the filters a dump carries
 	Strict bool
+	// Timeout bounds each wait for a datagram, and zero waits for good
+	Timeout time.Duration
+	// ReceiveBuffer is the receive buffer asked for, past rmem_max where the process may, and zero keeps the kernel's
+	ReceiveBuffer int
 }
 
 func Dial(protocol int, options Options) (*Conn, error) {
@@ -59,6 +64,15 @@ func bind(fd int, options Options) (*Conn, error) {
 			return nil, fmt.Errorf("ask for strict checking, which needs linux 4.20 or later: %w", err)
 		}
 	}
+	if options.Timeout > 0 {
+		timeout := unix.NsecToTimeval(options.Timeout.Nanoseconds())
+		if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != nil {
+			return nil, fmt.Errorf("set the receive timeout: %w", err)
+		}
+	}
+	if options.ReceiveBuffer > 0 {
+		growReceiveBuffer(fd, options.ReceiveBuffer)
+	}
 	name, err := unix.Getsockname(fd)
 	if err != nil {
 		return nil, fmt.Errorf("read the socket's name: %w", err)
@@ -71,6 +85,9 @@ func bind(fd int, options Options) (*Conn, error) {
 }
 
 func (c *Conn) Close() error { return unix.Close(c.fd) }
+
+// Fd is the socket's descriptor, for an option of its owner's
+func (c *Conn) Fd() int { return c.fd }
 
 // Pid is the port the kernel gave the socket, which it stamps on every reply
 // and on every notification of a change made through it
@@ -89,8 +106,9 @@ func (c *Conn) Send(datagram []byte) error {
 
 // Execute sends a request and collects every reply the kernel sends for it.
 // A dump ends at NLMSG_DONE and a modify request at its NLMSG_ERROR ack, so
-// every modify request must carry NLM_F_ACK, or this waits for good. A dump
-// the kernel flags as interrupted is asked again, dumpAttempts asks in all.
+// every modify request must carry NLM_F_ACK, or this waits until the socket's
+// Options.Timeout, and for good on a socket without one. A dump the kernel
+// flags as interrupted is asked again, dumpAttempts asks in all.
 func (c *Conn) Execute(kind, flags uint16, body []byte) ([]Message, error) {
 	return execute(c, kind, flags, body)
 }
@@ -130,6 +148,9 @@ var ErrDumpInterrupted = errors.New("netlink: dump interrupted by a change")
 
 // errNotFromKernel is a datagram another socket sent
 var errNotFromKernel = errors.New("netlink: a reply did not come from the kernel")
+
+// errNoAnswer is a wait for a datagram that outlasted the socket's timeout
+var errNoAnswer = errors.New("netlink: the kernel did not answer in time")
 
 // collect reads datagrams until the message ending request seq of port pid, and returns the replies before it
 // NLMSG_DONE carries an errno as an ack does, and a dump the kernel cut short still ends at DONE
@@ -182,6 +203,10 @@ func (c *Conn) Receive() ([]Message, error) {
 		n, _, err := unix.Recvfrom(c.fd, c.buf, unix.MSG_PEEK|unix.MSG_TRUNC)
 		if errors.Is(err, unix.EINTR) {
 			continue
+		}
+		// a read returns EAGAIN on this blocking socket only where its timeout ran out
+		if errors.Is(err, unix.EAGAIN) {
+			return nil, errNoAnswer
 		}
 		if err != nil {
 			return nil, err

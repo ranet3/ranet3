@@ -19,6 +19,7 @@ import (
 
 	"ranet3.com/pkgs/ranet3/internal/egress"
 	meshkernel "ranet3.com/pkgs/ranet3/internal/kernel"
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 	"ranet3.com/pkgs/ranet3/schema"
@@ -62,7 +63,7 @@ func encodedSets(t testing.TB, requests []nftables.Request) map[string][]nftable
 		if request.Kind == nftables.Command(unix.NFT_MSG_NEWSET) {
 			var name string
 			var id []byte
-			for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
+			for kind, value := range (netlink.Message{Data: request.Body}).Attributes(nftables.SizeofNfgenmsg) {
 				switch kind {
 				case unix.NFTA_SET_NAME:
 					name = unix.ByteSliceToString(value)
@@ -79,7 +80,7 @@ func encodedSets(t testing.TB, requests []nftables.Request) map[string][]nftable
 		var name string
 		var id []byte
 		var elements []element
-		for kind, value := range (nftables.Message{Data: request.Body}).Attributes() {
+		for kind, value := range (netlink.Message{Data: request.Body}).Attributes(nftables.SizeofNfgenmsg) {
 			switch kind {
 			case unix.NFTA_SET_ELEM_LIST_SET:
 				name = unix.ByteSliceToString(value)
@@ -190,7 +191,7 @@ const nftGoto = 0xfffffffc
 func runChain(t testing.TB, rules []nftables.Request, packet chainPacket) chainRun {
 	t.Helper()
 	chainOf := func(rule nftables.Request) string {
-		_, chain, _, _, _, _ := nftables.DecodeRule(nftables.Message{Data: rule.Body})
+		_, chain, _, _, _, _ := nftables.DecodeRule(netlink.Message{Data: rule.Body})
 		return chain
 	}
 	var timeouts, chain string
@@ -235,7 +236,7 @@ func runRule(t testing.TB, body []byte, packet chainPacket) (run ruleRun, decide
 	// what a rule ending undecided leaves is the timeout object it attached
 	undecided := func() (ruleRun, bool) { return ruleRun{timeouts: run.timeouts}, false }
 	var register []byte
-	for kind, value := range (nftables.Message{Data: body}).Attributes() {
+	for kind, value := range (netlink.Message{Data: body}).Attributes(nftables.SizeofNfgenmsg) {
 		if kind != unix.NFTA_RULE_EXPRESSIONS {
 			continue
 		}

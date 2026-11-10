@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 	"hegel.dev/go/hegel"
 
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 	"ranet3.com/pkgs/ranet3/internal/pbt"
 )
 
@@ -51,7 +52,7 @@ func TestPrefixesFillAndReadBackAsTheirUnion(t *testing.T) {
 		if len(prefixes) > 0 && hegel.Draw(ht, pbt.Spanning(0, 1)) == 1 {
 			prefix := prefixes[hegel.Draw(ht, pbt.Spanning(0, len(prefixes)-1))]
 			if bits := prefix.Bits(); bits > 0 {
-				raw := AddressBytes(prefix.Masked().Addr())
+				raw := netlink.AddressBytes(prefix.Masked().Addr())
 				raw[(bits-1)/8] ^= 0x80 >> ((bits - 1) % 8)
 				prefixes = append(prefixes, netip.PrefixFrom(addressOf(raw), bits))
 			}
@@ -68,14 +69,14 @@ func TestPrefixesFillAndReadBackAsTheirUnion(t *testing.T) {
 		}
 		for _, prefix := range prefixes {
 			first := prefix.Masked().Addr()
-			last := AddressBytes(first)
+			last := netlink.AddressBytes(first)
 			for i, mask := range prefixMask(prefix) {
 				last[i] |= ^mask
 			}
 			probes := []netip.Addr{first, first.Prev(), addressOf(last), addressOf(last).Next()}
 			for _, address := range probes {
-				if address.IsValid() && held(address) != within(AddressBytes(address)) {
-					ht.Fatalf("%v written as %s: %s held %v, want %v", prefixes, describeIntervals(intervals), address, within(AddressBytes(address)), held(address))
+				if address.IsValid() && held(address) != within(netlink.AddressBytes(address)) {
+					ht.Fatalf("%v written as %s: %s held %v, want %v", prefixes, describeIntervals(intervals), address, within(netlink.AddressBytes(address)), held(address))
 				}
 			}
 		}
@@ -95,10 +96,10 @@ func TestPrefixesFillAndReadBackAsTheirUnion(t *testing.T) {
 			if request.Kind != Command(unix.NFT_MSG_NEWSETELEM) {
 				ht.Fatalf("Fill sent a message of kind %#x", request.Kind)
 			}
-			for kind, value := range (Message{Data: request.Body}).Attributes() {
+			for kind, value := range (netlink.Message{Data: request.Body}).Attributes(SizeofNfgenmsg) {
 				if kind == unix.NFTA_SET_ELEM_LIST_ELEMENTS {
 					for _, item := range Nested(value) {
-						elements = append(elements, PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, item.Value))
+						elements = append(elements, netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, item.Value))
 					}
 				}
 			}
@@ -108,8 +109,8 @@ func TestPrefixesFillAndReadBackAsTheirUnion(t *testing.T) {
 			j := hegel.Draw(ht, hegel.Integers(0, i))
 			elements[i], elements[j] = elements[j], elements[i]
 		}
-		dump := Message{Data: PutAttr(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, slices.Concat(elements...))}
-		if got := s.decodeElements([]Message{dump}); s.elementFault(intervals, got) != "" {
+		dump := netlink.Message{Data: netlink.PutAttr(PutNfgenmsg(nil, unix.NFPROTO_INET), unix.NFTA_SET_ELEM_LIST_ELEMENTS|unix.NLA_F_NESTED, slices.Concat(elements...))}
+		if got := s.decodeElements([]netlink.Message{dump}); s.elementFault(intervals, got) != "" {
 			ht.Fatalf("%v written as %s reads back as %s", prefixes, describeIntervals(intervals), describeIntervals(got))
 		}
 	})
@@ -129,9 +130,9 @@ func TestNamesFillAndReadBackOnce(t *testing.T) {
 		if err != nil {
 			ht.Fatal(err)
 		}
-		var dump []Message
+		var dump []netlink.Message
 		for _, request := range requests {
-			dump = append(dump, Message{Data: request.Body})
+			dump = append(dump, netlink.Message{Data: request.Body})
 		}
 		got := s.decodeElements(dump)
 		want := slices.Clone(names)
@@ -172,7 +173,7 @@ func drawnPrefixes(ht *hegel.T, size, count int) []netip.Prefix {
 func sent(requests []Request) (kinds []uint16, lists [][]element) {
 	for _, request := range requests {
 		var list []element
-		for kind, value := range (Message{Data: request.Body}).Attributes() {
+		for kind, value := range (netlink.Message{Data: request.Body}).Attributes(SizeofNfgenmsg) {
 			if kind != unix.NFTA_SET_ELEM_LIST_ELEMENTS {
 				continue
 			}
@@ -395,7 +396,7 @@ func edgeToggled(ht *hegel.T, held []Interval) []Interval {
 	if !key.IsValid() {
 		return held
 	}
-	at := AddressBytes(key)
+	at := netlink.AddressBytes(key)
 	in := func(i Interval) bool { return bytes.Compare(i.First, at) <= 0 && bytes.Compare(at, i.Last) <= 0 }
 	if !slices.ContainsFunc(held, in) {
 		return union(append(slices.Clone(held), Key(at)))
@@ -407,10 +408,10 @@ func edgeToggled(ht *hegel.T, held []Interval) []Interval {
 			continue
 		}
 		if addressOf(i.First) != key {
-			out = append(out, Interval{First: i.First, Last: AddressBytes(key.Prev())})
+			out = append(out, Interval{First: i.First, Last: netlink.AddressBytes(key.Prev())})
 		}
 		if addressOf(i.Last) != key {
-			out = append(out, Interval{First: AddressBytes(key.Next()), Last: i.Last})
+			out = append(out, Interval{First: netlink.AddressBytes(key.Next()), Last: i.Last})
 		}
 	}
 	return out

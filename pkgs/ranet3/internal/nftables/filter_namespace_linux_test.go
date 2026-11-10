@@ -305,7 +305,7 @@ func TestNftablesBatchFillsASetOfTenThousandIntervals(t *testing.T) {
 		size += unix.NLMSG_HDRLEN + (len(request.Body)+unix.NLMSG_ALIGNTO-1)&^(unix.NLMSG_ALIGNTO-1)
 	}
 	// a quarter of the batch, which the kernel doubles, whatever net.core.wmem_default holds
-	if err := unix.SetsockoptInt(conn.fd, unix.SOL_SOCKET, unix.SO_SNDBUF, size/4); err != nil {
+	if err := unix.SetsockoptInt(conn.link.Fd(), unix.SOL_SOCKET, unix.SO_SNDBUF, size/4); err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.Batch(requests); err != nil {
@@ -318,12 +318,12 @@ func TestNftablesBatchFillsASetOfTenThousandIntervals(t *testing.T) {
 	if !slices.EqualFunc(held, intervals, func(a, b Interval) bool { return bytes.Equal(a.First, b.First) && bytes.Equal(a.Last, b.Last) }) {
 		t.Errorf("the set reads back %d intervals, not the %d written", len(held), len(intervals))
 	}
-	grown, err := unix.GetsockoptInt(conn.fd, unix.SOL_SOCKET, unix.SO_SNDBUF)
+	grown, err := unix.GetsockoptInt(conn.link.Fd(), unix.SOL_SOCKET, unix.SO_SNDBUF)
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := "SO_SNDBUFFORCE"
-	if err := unix.SetsockoptInt(conn.fd, unix.SOL_SOCKET, unix.SO_SNDBUFFORCE, grown/2); err != nil {
+	if err := unix.SetsockoptInt(conn.link.Fd(), unix.SOL_SOCKET, unix.SO_SNDBUFFORCE, grown/2); err != nil {
 		path = "SO_SNDBUF, SO_SNDBUFFORCE refused with " + err.Error()
 	}
 	most, err := os.ReadFile("/proc/sys/net/core/wmem_max")

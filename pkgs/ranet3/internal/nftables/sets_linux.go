@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netlink"
 )
 
 // Set is a named set one owner writes in its table
@@ -43,13 +45,13 @@ func (s Set) Create(proto uint8) (Request, error) {
 		return Request{}, fmt.Errorf("nftables: set %s's comment %s does not fit in the %d bytes nft takes", s.Name, s.Comment, udataCommentMax)
 	}
 	body := PutNfgenmsg(nil, proto)
-	body = PutAttrString(body, unix.NFTA_SET_TABLE, s.Table)
-	body = PutAttrString(body, unix.NFTA_SET_NAME, s.Name)
+	body = netlink.PutAttrString(body, unix.NFTA_SET_TABLE, s.Table)
+	body = netlink.PutAttrString(body, unix.NFTA_SET_NAME, s.Name)
 	body = PutAttrBE32(body, unix.NFTA_SET_FLAGS, s.Flags)
 	body = PutAttrBE32(body, unix.NFTA_SET_KEY_TYPE, s.KeyType)
 	body = PutAttrBE32(body, unix.NFTA_SET_KEY_LEN, s.KeyLen)
 	body = PutAttrBE32(body, unix.NFTA_SET_ID, s.ID)
-	body = PutAttr(body, unix.NFTA_SET_DESC|unix.NLA_F_NESTED, PutAttrBE32(nil, unix.NFTA_SET_DESC_SIZE, s.Size))
+	body = netlink.PutAttr(body, unix.NFTA_SET_DESC|unix.NLA_F_NESTED, PutAttrBE32(nil, unix.NFTA_SET_DESC_SIZE, s.Size))
 	var udata []byte
 	if s.KeyType == TypeIfname {
 		udata = binary.NativeEndian.AppendUint32([]byte{udataSetKeyByteOrder, 4}, byteOrderHost)
@@ -58,7 +60,7 @@ func (s Set) Create(proto uint8) (Request, error) {
 		udata = append(udata, userdata(udataSetComment, s.Comment)...)
 	}
 	if udata != nil {
-		body = PutAttr(body, unix.NFTA_SET_USERDATA, udata)
+		body = netlink.PutAttr(body, unix.NFTA_SET_USERDATA, udata)
 	}
 	return Request{Kind: Command(unix.NFT_MSG_NEWSET), Flags: unix.NLM_F_CREATE, Body: body}, nil
 }
@@ -66,15 +68,15 @@ func (s Set) Create(proto uint8) (Request, error) {
 // Delete fails while a rule uses the set
 func (s Set) Delete(proto uint8) Request {
 	body := PutNfgenmsg(nil, proto)
-	body = PutAttrString(body, unix.NFTA_SET_TABLE, s.Table)
-	body = PutAttrString(body, unix.NFTA_SET_NAME, s.Name)
+	body = netlink.PutAttrString(body, unix.NFTA_SET_TABLE, s.Table)
+	body = netlink.PutAttrString(body, unix.NFTA_SET_NAME, s.Name)
 	return Request{Kind: Command(unix.NFT_MSG_DELSET), Body: body}
 }
 
 // DecodeSet reads a set out of a dump, with no ID
-func DecodeSet(message Message) Set {
+func DecodeSet(message netlink.Message) Set {
 	var s Set
-	for kind, value := range message.Attributes() {
+	for kind, value := range message.Attributes(SizeofNfgenmsg) {
 		switch {
 		case kind == unix.NFTA_SET_TABLE:
 			s.Table = unix.ByteSliceToString(value)
@@ -103,7 +105,7 @@ func DecodeSet(message Message) Set {
 // empty for s as written and for any other set. remake holds where its key,
 // flags or comment differ, which nf_tables will not change in place, and a
 // size alone the next Create sets.
-func (s Set) Fault(message Message) (fault string, remake bool) {
+func (s Set) Fault(message netlink.Message) (fault string, remake bool) {
 	held := DecodeSet(message)
 	if held.Table != s.Table || held.Name != s.Name {
 		return "", false
@@ -136,7 +138,7 @@ func Key(key []byte) Interval { return Interval{First: key, Last: key} }
 func Prefixes(prefixes []netip.Prefix) []Interval {
 	intervals := make([]Interval, 0, len(prefixes))
 	for _, prefix := range prefixes {
-		first := AddressBytes(prefix.Masked().Addr())
+		first := netlink.AddressBytes(prefix.Masked().Addr())
 		last := slices.Clone(first)
 		for i, mask := range prefixMask(prefix) {
 			last[i] |= ^mask
@@ -198,14 +200,14 @@ type element struct {
 }
 
 func (e element) encode() []byte {
-	body := PutAttr(nil, unix.NFTA_SET_ELEM_KEY|unix.NLA_F_NESTED, PutAttr(nil, unix.NFTA_DATA_VALUE, e.key))
+	body := netlink.PutAttr(nil, unix.NFTA_SET_ELEM_KEY|unix.NLA_F_NESTED, netlink.PutAttr(nil, unix.NFTA_DATA_VALUE, e.key))
 	if e.flags != 0 {
 		body = PutAttrBE32(body, unix.NFTA_SET_ELEM_FLAGS, e.flags)
 	}
 	if e.userdata != nil {
-		body = PutAttr(body, unix.NFTA_SET_ELEM_USERDATA, e.userdata)
+		body = netlink.PutAttr(body, unix.NFTA_SET_ELEM_USERDATA, e.userdata)
 	}
-	return PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, body)
+	return netlink.PutAttr(nil, unix.NFTA_LIST_ELEM|unix.NLA_F_NESTED, body)
 }
 
 // normal is intervals as s holds them: the union for an interval set, each
@@ -284,8 +286,8 @@ func (s Set) Replace(proto uint8, intervals []Interval) ([]Request, error) {
 
 func (s Set) elementList(proto uint8) []byte {
 	body := PutNfgenmsg(nil, proto)
-	body = PutAttrString(body, unix.NFTA_SET_ELEM_LIST_TABLE, s.Table)
-	return PutAttrString(body, unix.NFTA_SET_ELEM_LIST_SET, s.Name)
+	body = netlink.PutAttrString(body, unix.NFTA_SET_ELEM_LIST_TABLE, s.Table)
+	return netlink.PutAttrString(body, unix.NFTA_SET_ELEM_LIST_SET, s.Name)
 }
 
 // Elements reads the keys the named set s holds through conn, as normal has
@@ -302,10 +304,10 @@ func (s Set) Elements(conn *Conn, proto uint8) ([]Interval, error) {
 // decodeElements reads the elements dumps hold, in whatever order, as the
 // keys a lookup finds: one is held while the greatest element at or below it
 // is not an end, a start sorting after an end at one key
-func (s Set) decodeElements(replies []Message) []Interval {
+func (s Set) decodeElements(replies []netlink.Message) []Interval {
 	var held []element
 	for _, reply := range replies {
-		for kind, value := range reply.Attributes() {
+		for kind, value := range reply.Attributes(SizeofNfgenmsg) {
 			if kind != unix.NFTA_SET_ELEM_LIST_ELEMENTS {
 				continue
 			}
@@ -382,7 +384,7 @@ type VerdictMap struct {
 
 // VerdictMaps reads every verdict map of table through conn, with its elements
 func VerdictMaps(conn *Conn, proto uint8, table string) ([]VerdictMap, error) {
-	sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_SET_TABLE, table))
+	sets, err := conn.Dump(Command(unix.NFT_MSG_GETSET), netlink.PutAttrString(PutNfgenmsg(nil, proto), unix.NFTA_SET_TABLE, table))
 	if err != nil {
 		return nil, fmt.Errorf("nftables: dump the sets of table %s: %w", table, err)
 	}
@@ -403,8 +405,8 @@ func VerdictMaps(conn *Conn, proto uint8, table string) ([]VerdictMap, error) {
 
 // dataType is the type of the data a dumped set maps its keys to, 0 for a set
 // that maps none
-func dataType(message Message) uint32 {
-	for kind, value := range message.Attributes() {
+func dataType(message netlink.Message) uint32 {
+	for kind, value := range message.Attributes(SizeofNfgenmsg) {
 		if kind == unix.NFTA_SET_DATA_TYPE && len(value) == 4 {
 			return binary.BigEndian.Uint32(value)
 		}
@@ -414,10 +416,10 @@ func dataType(message Message) uint32 {
 
 // elementChains is the chain each verdict of the elements dumps hold sends a
 // packet on to, in the order dumped
-func elementChains(replies []Message) []string {
+func elementChains(replies []netlink.Message) []string {
 	var out []string
 	for _, reply := range replies {
-		for kind, value := range reply.Attributes() {
+		for kind, value := range reply.Attributes(SizeofNfgenmsg) {
 			if kind != unix.NFTA_SET_ELEM_LIST_ELEMENTS {
 				continue
 			}

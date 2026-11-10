@@ -6,14 +6,19 @@
 package netlink
 
 import (
+	"encoding/binary"
 	"errors"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
 // sizeofFibRuleHdr is struct fib_rule_hdr of linux/fib_rules.h, which x/sys does not carry
 const sizeofFibRuleHdr = 12
+
+// unansweredTimeout is the receive timeout of a socket nothing answers
+const unansweredTimeout = 20 * time.Millisecond
 
 // a dump whose reply or end carries NLM_F_DUMP_INTR comes back as ErrDumpInterrupted with none of its replies, and one that carries it
 // nowhere comes back whole
@@ -201,5 +206,29 @@ func TestReceiveRefusesADatagramNotFromTheKernel(t *testing.T) {
 	}
 	if messages, err := conn.Receive(); !errors.Is(err, errNotFromKernel) || messages != nil {
 		t.Errorf("a datagram from port %d read as %d messages and %v, want none and %v", conn.Pid(), len(messages), err, errNotFromKernel)
+	}
+}
+
+// A datagram whose message claims to run past its end is an error rather than
+// a short read, so a truncated dump can never look like a complete one and a
+// diff built on it can never withdraw a rule that is still there.
+func TestMalformedMessageLengthIsRefused(t *testing.T) {
+	buf := make([]byte, unix.SizeofNlMsghdr)
+	binary.NativeEndian.PutUint32(buf, uint32(len(buf)+64))
+	if _, err := ParseMessages(buf); err == nil {
+		t.Fatal("a message running past its datagram was accepted")
+	}
+}
+
+// a socket with a receive timeout that nothing answers ends its wait as a kernel that did not answer, not as the EAGAIN of a socket
+// that never blocks
+func TestReceiveEndsAnUnansweredWaitAtTheTimeout(t *testing.T) {
+	conn, err := Dial(unix.NETLINK_USERSOCK, Options{Timeout: unansweredTimeout})
+	if err != nil {
+		t.Fatalf("dial a user netlink socket: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if messages, err := conn.Receive(); !errors.Is(err, errNoAnswer) || messages != nil {
+		t.Errorf("a wait nothing answered read as %d messages and %v, want none and %v", len(messages), err, errNoAnswer)
 	}
 }
