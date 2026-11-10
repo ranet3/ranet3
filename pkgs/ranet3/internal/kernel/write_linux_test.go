@@ -48,9 +48,8 @@ func writePlatform(t *testing.T) (*netlinkPlatform, *fakeNetlink) {
 	conn := &fakeNetlink{}
 	return &netlinkPlatform{
 		table: Table{ID: 200, Proto: DefaultProtocol}, rt: Runtime{Interface: "ranet0"},
-		index:    7,
-		conn:     conn,
-		occupied: map[Route]bool{}, refused: map[Route]bool{},
+		index: 7,
+		conn:  conn,
 	}, conn
 }
 
@@ -127,28 +126,47 @@ func TestLinuxWritesAndReadsAThrowRoute(t *testing.T) {
 // A prefix another writer already holds is reported as skipped rather than as
 // a failure. Reported as a failure it would put the whole pass into backoff
 // over a key no retry can free, once per pass, for the life of the process.
+// Each route's warning comes once while its key stays held, two routes held in
+// one pass among them, and again once the key was free for a pass and is taken
+// anew.
 func TestLinuxReportsOccupiedRouteAsSkipped(t *testing.T) {
+	logs := captureKernelLogs(t)
 	plat, conn := writePlatform(t)
-	conn.err = unix.EEXIST
-	route := Route{Destination: netip.MustParsePrefix("2001:db8:2::/48")}
-	for attempt := range 2 {
-		if err := plat.AddRoute(route); !errors.Is(err, errRouteSkipped) {
-			t.Errorf("attempt %d reported %v, want the route reported as not installed", attempt, err)
+	routes := []Route{
+		{Destination: netip.MustParsePrefix("2001:db8:2::/48")},
+		{Destination: netip.MustParsePrefix("2001:db8:3::/48")},
+	}
+	for pass, c := range []struct {
+		held   bool
+		warned int
+	}{{true, 1}, {true, 1}, {false, 1}, {true, 2}} {
+		conn.err = nil
+		if _, err := plat.Routes(); err != nil {
+			t.Fatalf("pass %d: dump: %v", pass, err)
 		}
-	}
-	// And it is not mistaken for an install: the next pass has to try again.
-	if !plat.occupied[route] {
-		t.Error("the refusal was not recorded, so the warning repeats once a pass")
-	}
-
-	// Once the key frees up the record goes with it, or a later refusal is
-	// silent.
-	conn.err = nil
-	if err := plat.AddRoute(route); err != nil {
-		t.Fatalf("install after the key freed: %v", err)
-	}
-	if plat.occupied[route] {
-		t.Error("the route installed and is still recorded as held by somebody else")
+		if c.held {
+			conn.err = unix.EEXIST
+		}
+		for _, route := range routes {
+			err := plat.AddRoute(route)
+			if c.held && !errors.Is(err, errRouteSkipped) {
+				t.Errorf("pass %d reported %v for %s, want the route reported as not installed", pass, err, route)
+			}
+			if !c.held && err != nil {
+				t.Fatalf("pass %d: install of %s after the key freed: %v", pass, route, err)
+			}
+		}
+		for _, route := range routes {
+			got := 0
+			for line := range strings.Lines(logs.String()) {
+				if strings.Contains(line, "another writer holds") && strings.Contains(line, route.Destination.String()) {
+					got++
+				}
+			}
+			if got != c.warned {
+				t.Errorf("after pass %d %s was reported %d times, want %d", pass, route, got, c.warned)
+			}
+		}
 	}
 }
 
@@ -353,30 +371,30 @@ func TestLinuxOwnsATable(t *testing.T) {
 	}
 }
 
-// The warn-once record is rebuilt by the passes that refuse, so it may only
-// rotate for a pass that goes on to install. A dump that fails returns before
-// any AddRoute refills it, and two such passes would empty it, so the warning
-// a foreign route draws would repeat once a pass for as long as the dump is
-// broken, which is exactly when an operator has least use for it.
+// a pass whose dump fails reaches no AddRoute, so it ends no window, and the
+// pass after it meets the same foreign key without a second warning
 func TestLinuxKeepsTheRefusalRecordThroughAFailedDump(t *testing.T) {
+	logs := captureKernelLogs(t)
 	plat, conn := writePlatform(t)
 	held := Route{Destination: netip.MustParsePrefix("2001:db8:2::/48")}
-	conn.err = unix.EEXIST
-	if err := plat.AddRoute(held); !errors.Is(err, errRouteSkipped) {
-		t.Fatalf("the refused install reported %v", err)
-	}
-	if !plat.occupied[held] {
-		t.Fatal("the refusal was not recorded, so this proves nothing")
-	}
-
-	conn.err = errors.New("netlink says no")
-	for pass := range 2 {
-		if _, err := plat.Routes(); err == nil {
-			t.Fatalf("pass %d: a failed dump reported success", pass)
+	refuse := func(pass int) {
+		conn.err = nil
+		if _, err := plat.Routes(); err != nil {
+			t.Fatalf("pass %d: dump: %v", pass, err)
+		}
+		conn.err = unix.EEXIST
+		if err := plat.AddRoute(held); !errors.Is(err, errRouteSkipped) {
+			t.Fatalf("pass %d: the refused install reported %v", pass, err)
 		}
 	}
-	if !plat.occupied[held] {
-		t.Error("two passes that never dumped emptied the record, so the warning repeats once a pass")
+	refuse(0)
+	conn.err = errors.New("netlink says no")
+	if _, err := plat.Routes(); err == nil {
+		t.Fatal("a failed dump reported success")
+	}
+	refuse(2)
+	if got := bytes.Count(logs.Bytes(), []byte("another writer holds")); got != 1 {
+		t.Errorf("the route was reported %d times across a failed dump, want once", got)
 	}
 }
 

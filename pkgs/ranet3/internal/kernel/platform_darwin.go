@@ -110,11 +110,9 @@ type routePlatform struct {
 	// only successful installs, pruned by every dump.
 	covering map[routeKey]bool
 
-	// warned holds the source-specific routes already reported and pending
-	// the ones reported under the current dump. Routes starts every reconcile
-	// pass and rotates the two, so a route the mesh keeps announcing costs one
-	// log line rather than one per pass and neither map outgrows a snapshot.
-	warned map[Route]bool
+	// skipped is the routes reported as left uninstalled, a window ending
+	// with each dump that parsed
+	skipped warnOnce[Route]
 
 	// occupied remembers the keys another program already holds, so a
 	// route that can never install is reported once rather than every pass.
@@ -140,8 +138,6 @@ type routePlatform struct {
 	// scoped install at all, because sourceIsOurs would ask the host about an
 	// interface index that names nothing.
 	addrs func() ([]netip.Prefix, error)
-
-	pending map[Route]bool
 
 	// overlay and covered hold the overlay in force and the families whose
 	// zero routes go in as the cover, as cover handed them to the current
@@ -202,11 +198,9 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		rt: rt, index: index, loopback: loopback, host: host,
 		scoped:   make(map[netip.Prefix]netip.Prefix),
 		covering: make(map[routeKey]bool),
-		warned:   make(map[Route]bool),
 		occupied: make(map[routeKey]bool),
 		refused:  make(map[routeKey]bool),
 		ours:     make(map[ownKey]bool),
-		pending:  make(map[Route]bool),
 		holds:    make(map[netip.Prefix]bool),
 		// the overlay of the start until a pass hands its own, so a stop
 		// before the first pass deletes the holds a crash left
@@ -265,25 +259,13 @@ func (p *routePlatform) Close() error {
 	return errors.Join(errs...)
 }
 
-// rotateWarnings ends one deduplication window and starts the next. A window
-// is one reconcile pass, which starts with a dump, so ownedRoutes is the only
-// caller on the live path: it is the one place that knows the dump both
-// arrived and parsed, and every record rotated here is refilled by the
-// AddRoute calls a dump is followed by. A second call inside one pass, or a
-// call from a path that will not go on to install, empties them.
+// rotateWarnings ends one window of skipped and of occupied, which only a dump
+// that parsed may do: the AddRoute calls that refill both follow such a dump
+// alone, and an emptied occupied would also drop the exception decodeRoute
+// reads, so a foreign key could reach a delete list. occupied is rebuilt by the
+// passes that refuse, so a key the mesh stopped asking for is not carried.
 func (p *routePlatform) rotateWarnings() {
-	p.warned, p.pending = p.pending, make(map[Route]bool, len(p.pending))
-	// occupied is rebuilt by the passes that refuse, the same way warned is,
-	// so a destination the mesh has stopped asking for stops being carried.
-	// Without this a node that meets a hundred foreign keys over its life
-	// holds a hundred records forever, and a stale one hides a route from the
-	// dump.
-	//
-	// Rotated only for a pass that will go on to install: a dump that fails,
-	// in the kernel or in the parser, returns before any AddRoute refills the
-	// record, and two such passes would empty it. On this platform that also
-	// clears the exception decodeRoute reads, so a foreign key could be
-	// adopted and reach a delete list.
+	p.skipped.end()
 	p.occupied, p.refused = p.refused, make(map[routeKey]bool, len(p.refused))
 }
 
@@ -302,14 +284,8 @@ func (p *routePlatform) ownedRoutes(rib []byte) ([]Route, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kernel: parse the route dump: %w", err)
 	}
-	// A pass starts once its dump has parsed, so this is where the answers
-	// held for one pass are dropped: the same point rotateWarnings uses, and
-	// for the same reason.
+	// only after the parse, see rotateWarnings
 	p.assigned, p.assignedAt = nil, false
-	// After the parse, not before it: a dump the kernel returns and this
-	// library cannot read is a pass that will not reach any AddRoute either,
-	// and rotating for it would empty the record two passes later. See
-	// rotateWarnings.
 	p.rotateWarnings()
 	var out []Route
 	stillScoped := make(map[netip.Prefix]bool, len(p.scoped))
@@ -857,12 +833,10 @@ func (p *routePlatform) DelRoute(r Route) error {
 // is deliberate: the reconciler would otherwise retry with backoff forever
 // over something no retry can fix, and the mesh's own table still forwards it.
 func (p *routePlatform) skipRoute(r Route, why string) error {
-	key := Route{Destination: r.Destination, Source: r.Source}
-	if !p.warned[key] {
+	if p.skipped.mark(Route{Destination: r.Destination, Source: r.Source}) {
 		slog.Warn("kernel is leaving a route uninstalled: "+why,
 			"destination", r.Destination, "source", r.Source)
 	}
-	p.pending[key] = true
 	return errRouteSkipped
 }
 

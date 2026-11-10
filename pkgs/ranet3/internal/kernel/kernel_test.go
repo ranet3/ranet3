@@ -1195,6 +1195,37 @@ func TestPrefixesTheMeshCannotCarryAreNotInstalled(t *testing.T) {
 	}
 }
 
+// a source-specific IPv4 route is warned of once for each source while the
+// mesh keeps it, a second source the mesh adds at the same destination later
+// among them
+func TestSourceSpecificIPv4RouteIsWarnedOfOncePerSource(t *testing.T) {
+	said := logged(t)
+	r, table, kernel := harness(t, Table{})
+	peer := &netstack.Peer{ID: "example/peer"}
+	destination := prefix("203.0.113.0/24")
+	sources := []netip.Prefix{prefix("198.51.100.0/24"), prefix("192.0.2.0/24")}
+	for pass := range 3 {
+		// the first source from the first pass, the second from the second
+		if pass < len(sources) {
+			table.Set(sources[pass], destination, peer)
+		}
+		if err := r.applyRoutes(r.desired(r.src.Snapshot(), r.readNetwork()), nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if routes := kernel.snapshot(); len(routes) != 0 {
+		t.Errorf("the reconciler installed %v, want nothing", routes)
+	}
+	if n := strings.Count(said.String(), `msg="kernel cannot install source-specific IPv4 route"`); n != len(sources) {
+		t.Errorf("three passes warned %d times, want once for each of %d sources:\n%s", n, len(sources), said)
+	}
+	for _, source := range sources {
+		if n := strings.Count(said.String(), "source="+source.String()); n != 1 {
+			t.Errorf("%s was warned of %d times, want once:\n%s", source, n, said)
+		}
+	}
+}
+
 // "Only an address this reconciler added itself, in this process lifetime, is
 // ever removed again." Both platforms assign by upsert, so the same address
 // under a different prefix length rewrites an entry somebody else put there

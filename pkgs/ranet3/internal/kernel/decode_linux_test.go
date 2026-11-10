@@ -23,8 +23,7 @@ func TestLinuxDumpKeepsOnlyRoutesItOwns(t *testing.T) {
 	const ourIndex, ourTable, ourProtocol = 7, 200, DefaultProtocol
 	plat := &netlinkPlatform{
 		table: Table{ID: ourTable, Proto: ourProtocol}, rt: Runtime{Interface: "ranet0"},
-		index:    ourIndex,
-		occupied: map[Route]bool{}, refused: map[Route]bool{},
+		index: ourIndex,
 	}
 	ours := netip.MustParsePrefix("10.99.0.0/24")
 

@@ -290,8 +290,7 @@ func writeOtherRule(t *testing.T, conn *nlConn, kind uint16, other otherRule) {
 // foreignTable is a platform writing another program's routes into table id out
 // of the device of index
 func foreignTable(conn *nlConn, id schema.TableID, index uint32) *netlinkPlatform {
-	return &netlinkPlatform{table: Table{ID: id, Proto: unix.RTPROT_BOOT}, index: index, conn: conn,
-		occupied: map[Route]bool{}, refused: map[Route]bool{}}
+	return &netlinkPlatform{table: Table{ID: id, Proto: unix.RTPROT_BOOT}, index: index, conn: conn}
 }
 
 // A pass finds taken exactly what another program's rules ahead of the mesh's

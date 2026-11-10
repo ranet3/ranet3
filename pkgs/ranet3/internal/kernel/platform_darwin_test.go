@@ -78,8 +78,6 @@ func testPlatform(t *testing.T, tbl Table, rt Runtime) (*routePlatform, *fakeRou
 	return &routePlatform{
 		rt: rt, index: testIndex, sock: sock,
 		host:     runningKernel{},
-		warned:   make(map[Route]bool),
-		pending:  make(map[Route]bool),
 		scoped:   make(map[netip.Prefix]netip.Prefix),
 		covering: make(map[routeKey]bool),
 		occupied: make(map[routeKey]bool),
@@ -391,7 +389,7 @@ func TestDarwinSkipsSourceSpecificRoutes(t *testing.T) {
 	}
 
 	key := Route{Destination: specific.Destination, Source: specific.Source}
-	if !plat.pending[key] {
+	if !plat.skipped.seen[key] {
 		t.Fatal("the skipped route was not recorded, so it would be reported again next pass")
 	}
 	// the report is deduplicated across passes, and Routes starts every pass.
@@ -399,11 +397,39 @@ func TestDarwinSkipsSourceSpecificRoutes(t *testing.T) {
 	if err := plat.AddRoute(specific); !errors.Is(err, errRouteSkipped) {
 		t.Fatalf("adding the same route again reported %v", err)
 	}
-	if !plat.warned[key] {
+	if !plat.skipped.last[key] {
 		t.Fatal("the second pass did not see the route as already reported")
 	}
-	if len(plat.pending) != 1 || len(plat.warned) != 1 {
-		t.Fatalf("the warning sets grew to %d and %d, want one entry each", len(plat.pending), len(plat.warned))
+	if len(plat.skipped.seen) != 1 || len(plat.skipped.last) != 1 {
+		t.Fatalf("the warning sets grew to %d and %d, want one entry each", len(plat.skipped.seen), len(plat.skipped.last))
+	}
+}
+
+// a pass whose dump fails reaches no AddRoute, so it ends no window, and the
+// pass after it skips the same route without a second warning
+func TestDarwinKeepsTheSkipRecordThroughAFailedDump(t *testing.T) {
+	logs := captureKernelLogs(t)
+	plat, _ := testPlatform(t, Table{}, Runtime{})
+	host := newSelectionHost(t)
+	plat.host = host
+	specific := Route{Destination: prefix("::/0"), Source: prefix("2001:db8::/48"), Metric: defaultIPv6Metric}
+	skip := func(pass int) {
+		host.set(nil)
+		if _, err := plat.Routes(); err != nil {
+			t.Fatalf("pass %d: dump: %v", pass, err)
+		}
+		if err := plat.AddRoute(specific); !errors.Is(err, errRouteSkipped) {
+			t.Fatalf("pass %d: the source-specific route reported %v", pass, err)
+		}
+	}
+	skip(0)
+	host.set(errors.New("the dump failed"))
+	if _, err := plat.Routes(); err == nil {
+		t.Fatal("a failed dump reported success")
+	}
+	skip(2)
+	if got := strings.Count(logs.String(), "kernel is leaving a route uninstalled"); got != 1 {
+		t.Errorf("the route was reported %d times across a failed dump, want once", got)
 	}
 }
 
@@ -1384,17 +1410,40 @@ func TestDarwinKeepsTheMoreSpecificSourceAtOneDestination(t *testing.T) {
 // announcing a default from a prefix this node has no address in reaches the
 // first case, which on a real mesh is most of them.
 func TestDarwinNamesTheTwoSourceRefusalsApart(t *testing.T) {
+	const noAddress, oneSource = "no address of ours falls inside the source prefix", "the darwin FIB holds one source per destination"
+	logs := captureKernelLogs(t)
 	plat, _ := testPlatform(t, Table{}, Runtime{})
 	held := prefix("3fff:a::203:0:113:10/128")
 	plat.addrs = func() ([]netip.Prefix, error) { return []netip.Prefix{held}, nil }
 
 	foreign := Route{Destination: prefix("::/0"), Source: prefix("3fff:a:a::/48")}
-	foreign.Metric = routeMetric(foreign.Destination, foreign.Unreachable)
+	narrow := Route{Destination: prefix("::/0"), Source: prefix("3fff:a::/48")}
+	wide := Route{Destination: prefix("::/0"), Source: prefix("3fff:a::/36")}
+	for _, r := range []*Route{&foreign, &narrow, &wide} {
+		r.Metric = routeMetric(r.Destination, false)
+	}
 	if err := plat.AddRoute(foreign); !errors.Is(err, errRouteSkipped) {
 		t.Fatalf("a source holding none of our addresses reported %v", err)
 	}
-	if _, warned := plat.warned[Route{Destination: foreign.Destination, Source: foreign.Source}]; warned {
-		t.Fatal("the refusal was not recorded, so this proves nothing")
+	if err := plat.AddRoute(narrow); err != nil {
+		t.Fatalf("the first source of ours at the destination: %v", err)
+	}
+	if err := plat.AddRoute(wide); !errors.Is(err, errRouteSkipped) {
+		t.Fatalf("a second source competing for the destination reported %v", err)
+	}
+	for _, c := range []struct {
+		source       netip.Prefix
+		named, other string
+	}{{foreign.Source, noAddress, oneSource}, {wide.Source, oneSource, noAddress}} {
+		var lines []string
+		for line := range strings.Lines(logs.String()) {
+			if strings.Contains(line, "kernel is leaving a route uninstalled") && strings.Contains(line, c.source.String()) {
+				lines = append(lines, line)
+			}
+		}
+		if len(lines) != 1 || !strings.Contains(lines[0], c.named) || strings.Contains(lines[0], c.other) {
+			t.Errorf("the refusal of %s was logged as %q, want one line naming %q", c.source, lines, c.named)
+		}
 	}
 }
 

@@ -134,8 +134,7 @@ func TestNetlinkPlatformInNetworkNamespace(t *testing.T) {
 	// the other protocol's route reaches only the census
 	// the other table's route reaches neither dump
 	recorder := &replyRecorder{netlinkConn: plat.conn}
-	filtered := &netlinkPlatform{table: plat.table, rt: plat.rt, index: plat.index, conn: recorder,
-		occupied: map[Route]bool{}, refused: map[Route]bool{}}
+	filtered := &netlinkPlatform{table: plat.table, rt: plat.rt, index: plat.index, conn: recorder}
 	if got, err := filtered.Routes(); err != nil || !slices.Equal(got, want) {
 		t.Fatalf("the filtered dump read %v (err %v), want %v", got, err, want)
 	}
@@ -894,9 +893,8 @@ func TestNetlinkHoldsRetractedPrefix(t *testing.T) {
 	setLinkFlags(t, conn, tun.index, unix.IFF_UP)
 	plat := &netlinkPlatform{
 		table: Table{ID: DefaultTable, Proto: DefaultProtocol}, rt: Runtime{Interface: device},
-		index:    tun.index,
-		conn:     conn,
-		occupied: map[Route]bool{}, refused: map[Route]bool{},
+		index: tun.index,
+		conn:  conn,
 	}
 
 	// An explicit metric, the way the reconciler always sets one: a zero

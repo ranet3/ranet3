@@ -656,18 +656,17 @@ type Reconciler struct {
 	// and left behind is not in here, so it stays: losing an address that
 	// turns out to be somebody else's is worse than leaking one.
 	owned map[netip.Prefix]bool
-	// warnedAddrs is the addresses reported as held by somebody else under the
-	// current pass, rotated the way warned is so a report costs one log line
-	// rather than one per pass.
-	warnedAddrs map[netip.Prefix]bool
+	// warnedAddrs is the addresses reported as held by another writer, a
+	// window ending with each listing of the tun's addresses
+	warnedAddrs warnOnce[netip.Prefix]
 	// bare is each family the tun held no address of at the last listing,
 	// which a covering platform skips the routes of, and unlisted says the
 	// listings since have failed where no other step asked for one
 	bare     []Family
 	unlisted bool
-	// warned holds the routes already reported as unrepresentable. It is
-	// rebuilt from each pass, so it stays bounded by the snapshot.
-	warned map[Route]bool
+	// warned is the routes reported as unrepresentable, a window ending with
+	// each snapshot
+	warned warnOnce[Route]
 	// capturing says whether this pass left a capture installed, the only
 	// state whose grace needs a wake-up of its own.
 	capturing bool
@@ -680,10 +679,9 @@ type Reconciler struct {
 	// beneath is the routes the last pass scoped beneath a route of the
 	// host's, as row L6, so a change is reported once
 	beneath []netip.Prefix
-	// memberless holds the zero routes a cover installs as nothing that the
-	// last pass reported, rebuilt each pass, so a route the mesh keeps
-	// announcing costs one log line
-	memberless map[Route]bool
+	// memberless is the zero routes reported as a cover installing nothing of
+	// them, a window ending with each covering pass whose dump parsed
+	memberless warnOnce[Route]
 	// pathDown is the SID of cap.exit via the pass under way found unresolved,
 	// invalid while the path stands, and pathVerdict how the table answered it.
 	// pathReported is the path as the last pass reported it, so a change is
@@ -748,9 +746,10 @@ type Reconciler struct {
 	routePass Stats
 	// trigger names what woke the reconcile goroutine for the pass it runs, and belongs to that goroutine
 	trigger string
-	// refused is the routes the last route pass wanted and the platform refused, and belongs to the same goroutine
+	// refused is the routes the platform refused, a window ending with each
+	// route pass that reached its adds, and belongs to the same goroutine
 	// a refused route is tried and refused on every pass, so refusedAnew marks the pass that refused one first
-	refused     map[Route]bool
+	refused     warnOnce[Route]
 	refusedAnew bool
 	// changed says the pass under way wrote a rule or an address, which the route counts do not show
 	// it belongs to the same goroutine, and the withdrawal never sets it
@@ -958,17 +957,15 @@ func (t Table) Unreloadable(next Table) string {
 func newReconciler(t Table, rt Runtime, addresses []netip.Prefix, src RouteSource, plat platform) *Reconciler {
 	r := &Reconciler{
 		table: t, rt: rt, addresses: addresses,
-		src:         src,
-		owned:       make(map[netip.Prefix]bool),
-		warnedAddrs: make(map[netip.Prefix]bool),
-		warned:      make(map[Route]bool),
-		gate:        captureGate{grace: t.CaptureGrace.Duration()},
-		now:         time.Now,
-		wake:        make(chan struct{}, 1),
-		reload:      make(chan struct{}, 1),
-		network:     make(chan struct{}, 1),
-		gained:      make(chan struct{}, 1),
-		firstPass:   make(chan struct{}),
+		src:       src,
+		owned:     make(map[netip.Prefix]bool),
+		gate:      captureGate{grace: t.CaptureGrace.Duration()},
+		now:       time.Now,
+		wake:      make(chan struct{}, 1),
+		reload:    make(chan struct{}, 1),
+		network:   make(chan struct{}, 1),
+		gained:    make(chan struct{}, 1),
+		firstPass: make(chan struct{}),
 	}
 	r.enabled.Store(true)
 	r.inForce.Store(&t)
@@ -1512,7 +1509,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		return slices.ContainsFunc(actual, func(member Route) bool { return member.Cover && member.Destination == destination })
 	}
 	unheld := map[Route]bool{}
-	for route := range r.refused {
+	for route := range r.refused.last {
 		if !memberAt(route.Destination) {
 			unheld[route] = true
 		}
@@ -1562,7 +1559,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 	// than installed and withdrawn again every pass.
 	slices.SortStableFunc(add, func(a, b Route) int {
 		return cmp.Or(
-			cmp.Compare(boolOrder(!r.refused[a]), boolOrder(!r.refused[b])),
+			cmp.Compare(boolOrder(!r.refused.last[a]), boolOrder(!r.refused.last[b])),
 			comparePrefixes(a.Destination, b.Destination),
 			cmp.Compare(boolOrder(a.Cover), boolOrder(b.Cover)),
 		)
@@ -1589,7 +1586,6 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 		}
 	}
 	heldRoutes := func() []Route { return slices.Collect(maps.Keys(held)) }
-	var refused map[Route]bool
 	for i := 0; i < len(add); i++ {
 		route := add[i]
 		if route.Cover && withheld(route.Destination, heldRoutes(), apart) {
@@ -1606,11 +1602,9 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 			held[route] = true
 		} else if errors.Is(err, errRouteSkipped) {
 			skipped++
-			if refused == nil {
-				refused = make(map[Route]bool)
+			if r.refused.mark(route) {
+				r.refusedAnew = true
 			}
-			refused[route] = true
-			r.refusedAnew = r.refusedAnew || !r.refused[route]
 		} else {
 			errs = append(errs, fmt.Errorf("add route %s: %w", route, err))
 		}
@@ -1633,7 +1627,7 @@ func (r *Reconciler) applyRoutes(desired []Route, families, addressless []Family
 			add = slices.Insert(add, i+1, handed...)
 		}
 	}
-	r.refused = refused
+	r.refused.end()
 	// A cover goes in whole or not at all: part of one would split its
 	// family's traffic between the mesh and whatever holds the rest.
 	ordinary := heldRoutes()
@@ -1765,21 +1759,19 @@ func (r *Reconciler) reportCover(now []Family) {
 // 0.0.0.0/8, a class schema.Unroutable names.
 func (r *Reconciler) reportMemberless(desired []Route, families []Family) []Route {
 	var out []Route
-	reported := make(map[Route]bool, len(r.memberless))
 	for _, route := range desired {
 		if !memberless(route) || !slices.Contains(families, familyOf(route.Destination.Addr())) {
 			continue
 		}
 		out = append(out, route)
-		if !r.memberless[route] {
+		if r.memberless.mark(route) {
 			slog.Warn("kernel is not installing a route its cover holds nothing of",
 				"destination", route.Destination,
 				"detail", "the cover leaves ::/8 but NAT64's prefixes to the host, and every address of the route lies there")
 			r.refusedAnew = true
 		}
-		reported[route] = true
 	}
-	r.memberless = reported
+	r.memberless.end()
 	return out
 }
 
@@ -1789,7 +1781,6 @@ func (r *Reconciler) reportMemberless(desired []Route, families []Family) []Rout
 // packet.
 func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network passNetwork) []Route {
 	out := make([]Route, 0, len(snapshot)+len(r.rt.Overlay))
-	warned := make(map[Route]bool, len(r.warned))
 	// the throw rows stand with the policy rules that read them, which linux
 	// alone has, and the overlay holds with them or with a platform writing
 	// the holds apart from the tun, which darwin's on lo0 is
@@ -1808,12 +1799,10 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 			continue
 		}
 		if reason, whole := schema.Unroutable(destination); whole {
-			key := Route{Destination: destination}
-			if !r.warned[key] {
+			if r.warned.mark(Route{Destination: destination}) {
 				slog.Warn("kernel is not installing a prefix the mesh cannot carry",
 					"destination", destination, "detail", reason)
 			}
-			warned[key] = true
 			continue
 		}
 		// Local inside the overlay is installed exactly as the hold is, so the
@@ -1858,19 +1847,17 @@ func (r *Reconciler) desired(snapshot []sadr.Route[*netstack.Peer], network pass
 				// such a route as an ordinary one would steal traffic from
 				// every other source. Report it and leave it to the mesh's
 				// own table, where forwarding still honors it.
-				key := Route{Destination: destination, Source: entry.Source}
-				if !r.warned[key] {
+				if r.warned.mark(Route{Destination: destination, Source: entry.Source}) {
 					slog.Warn("kernel cannot install source-specific IPv4 route",
 						"destination", destination, "source", entry.Source)
 				}
-				warned[key] = true
 				continue
 			}
 			route.Source = source
 		}
 		out = append(out, route)
 	}
-	r.warned = warned
+	r.warned.end()
 	if policy || apart {
 		out = r.overlayHolds(out, network.carved)
 	}
@@ -2106,7 +2093,6 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 		have[prefix] = true
 		held[prefix.Addr()] = prefix
 	}
-	warned := make(map[netip.Prefix]bool, len(r.warnedAddrs))
 	var added []netip.Prefix
 	for _, prefix := range r.addresses {
 		if have[prefix] {
@@ -2121,11 +2107,10 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 		// itself is ever removed. ranet3 attaches to a tun it did not
 		// necessarily create, so this is reachable without anything unusual.
 		if existing, taken := held[prefix.Addr()]; taken {
-			if !r.warnedAddrs[prefix] {
+			if r.warnedAddrs.mark(prefix) {
 				slog.Warn("kernel is leaving an address another writer holds",
 					"interface", r.rt.Interface, "address", prefix, "held_as", existing)
 			}
-			warned[prefix] = true
 			continue
 		}
 		if err := r.plat.AddAddr(prefix); err != nil {
@@ -2144,7 +2129,7 @@ func (r *Reconciler) applyAddresses() (tun []netip.Prefix, listed bool, err erro
 		slog.Info("kernel address removed", "interface", r.rt.Interface, "address", prefix)
 		r.changed = true
 	}
-	r.warnedAddrs = warned
+	r.warnedAddrs.end()
 	tun = slices.DeleteFunc(slices.Clone(actual), func(prefix netip.Prefix) bool {
 		return slices.Contains(removed, prefix) || slices.Contains(gone, prefix)
 	})

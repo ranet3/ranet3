@@ -43,18 +43,10 @@ type netlinkPlatform struct {
 	conn    netlinkConn
 	monitor *routeMonitor
 
-	// occupied remembers routes already reported as held by another writer.
-	// A foreign route on our key does not go away by itself, so every pass
-	// would otherwise repeat the same warning. Only the reconcile loop touches
-	// this, and it runs one pass at a time.
-	//
-	// refused holds the keys the current pass watched the kernel refuse, and
-	// Routes swaps it into occupied once the next one has dumped. A foreign route is filtered
-	// out of the dump by protocol, so it never reaches a delete list and
-	// DelRoute is never called for it: when the mesh stops announcing that
-	// prefix the record would have no exit at all.
-	occupied map[Route]bool
-	refused  map[Route]bool
+	// occupied is the routes reported as held by another writer, a window
+	// ending with each dump of the table that parsed. Only the reconcile loop
+	// touches it.
+	occupied warnOnce[Route]
 
 	// fallback writes the kill switch's chains and wakes Notify on another
 	// writer's change to them, open while they are written: from the
@@ -110,8 +102,7 @@ func newPlatform(t Table, rt Runtime) (platform, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	p := &netlinkPlatform{table: t, rt: rt, index: tun.index, conn: conn, monitor: monitor,
-		occupied: make(map[Route]bool), refused: make(map[Route]bool)}
+	p := &netlinkPlatform{table: t, rt: rt, index: tun.index, conn: conn, monitor: monitor}
 	// opened on this thread, so the table goes in the namespace the rules go
 	// in, and a kernel refusing it is answered at the first pass that asks
 	// for the table, which opens it again and reports the error
@@ -142,12 +133,8 @@ func (p *netlinkPlatform) Routes() ([]Route, error) {
 			}
 		}
 	}
-	// Rotated here rather than first, so a failed dump leaves the record
-	// alone: it returns above without any AddRoute refilling it, and two such
-	// passes would empty it and repeat every warning it exists to silence.
-	// Routes starts every reconcile pass, the same way the darwin backend
-	// rotates its own.
-	p.occupied, p.refused = p.refused, make(map[Route]bool, len(p.refused))
+	// after the dump, since a failed one is followed by no AddRoute
+	p.occupied.end()
 	return out, nil
 }
 
@@ -317,23 +304,13 @@ func (p *netlinkPlatform) AddRoute(route Route) error {
 	flags := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL | unix.NLM_F_ACK)
 	_, err := p.conn.execute(unix.RTM_NEWROUTE, flags, p.routeMessage(route, false))
 	if errors.Is(err, unix.EEXIST) {
-		// Keyed by the route rather than by its printed form, which omits the
-		// scope: two routes differing only there would otherwise share one
-		// record.
-		p.refused[route] = true
-		if !p.occupied[route] {
-			p.occupied[route] = true
+		if p.occupied.mark(route) {
 			slog.Warn("kernel is leaving a route that another writer holds",
 				"route", route, "table", uint32(p.table.ID),
 				"detail", "something else holds this prefix at this metric in this table, so it was not installed")
 		}
-		// Not a failure and not an install. Reported as an error it would put
-		// the whole pass into backoff over a key no retry can free, once per
-		// pass, forever.
+		// skipped rather than failed, since no retry frees a key another writer holds
 		return errRouteSkipped
-	}
-	if err == nil {
-		delete(p.occupied, route)
 	}
 	return err
 }
@@ -342,11 +319,6 @@ func (p *netlinkPlatform) DelRoute(route Route) error {
 	_, err := p.conn.execute(unix.RTM_DELROUTE, unix.NLM_F_ACK, p.routeMessage(route, true))
 	if gone(err) {
 		err = nil
-	}
-	if err == nil {
-		// A route that left the desired set takes its warn-once record with
-		// it, or the map keeps an entry for a key nothing asks about again.
-		delete(p.occupied, route)
 	}
 	return err
 }
