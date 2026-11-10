@@ -82,15 +82,16 @@ func (r *rows) portRanges(t *testing.T) {
 	r.verdict()
 }
 
-// portClash is one port of two inside endpoints, in UDP and in TCP: the leaf's
-// flow from the port to the server, then another inside endpoint's from the
-// same port to the second server, then the leaf's from the port to the second
-// server, each flow's mapping held while the next is made. The first two are
-// read from two endpoints, since port overloading is ruled out, and the third
-// from the first's endpoint, since a mapping that changes is. Where the arm
-// declares the protocol's overloading, the first two are read from one
-// endpoint, and where it declares its remap, the third from another than the
-// first's.
+// portClash is one port of two inside endpoints, in UDP and in TCP, each
+// flow's mapping held while the next is made: the leaf's flow from the port to
+// the server, another inside endpoint's from the same port to the second
+// server, and the leaf's to the second server last, so that where the other
+// endpoint's flow took the leaf's external endpoint the leaf's last flow meets
+// it taken toward that server. The first two are read from two endpoints, since
+// port overloading is ruled out, and the third from the first's endpoint, since
+// a mapping that changes is. Where the arm declares the protocol's overloading,
+// the first two are read from one endpoint, and where it declares its remap,
+// the third from another than the first's.
 func (r *rows) portClash(t *testing.T) {
 	t.Run("udp", r.udpClash)
 	t.Run("tcp", r.tcpClash)
