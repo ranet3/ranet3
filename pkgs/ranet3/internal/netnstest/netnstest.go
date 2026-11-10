@@ -29,24 +29,45 @@ import (
 const VethPeer = 1
 
 // EnterEmpty moves the test's thread into a network namespace of its own and brings its loopback up
-// and refuses to go on unless that namespace is new and held no route before
+// and refuses to go on unless that namespace is new and held no route before its loopback came up
 // the tun, the sockets and the capture a test opens on its own goroutine live there
 // the thread stays locked
 // and the runtime retires it with the test rather than run another goroutine in the namespace
 func EnterEmpty(t testing.TB) {
 	t.Helper()
+	enterEmpty(t, EnterEmptyNetwork)
+}
+
+// EnterEmptyLoopbackDown is EnterEmpty with the loopback down, as unshare leaves it
+// for a test that compares a list of the namespace's up links whole, which an up loopback would join
+func EnterEmptyLoopbackDown(t testing.TB) {
+	t.Helper()
+	enterEmpty(t, enterNew)
+}
+
+func enterEmpty(t testing.TB, enter func() error) {
+	t.Helper()
 	if os.Getuid() != 0 {
-		t.Skip("creating a tun needs root on linux")
+		t.Skip("a network namespace of its own needs root on linux")
 	}
 	runtime.LockOSThread()
-	if err := EnterEmptyNetwork(); err != nil {
+	if err := enter(); err != nil {
 		t.Fatal(err)
 	}
 }
 
 // EnterEmptyNetwork moves the calling thread, which its caller locked, into a new network namespace and brings its loopback up
-// and refuses to go on unless the namespace changed and holds no route
+// and refuses to go on unless the namespace changed and held no route before its loopback came up
 func EnterEmptyNetwork() error {
+	if err := enterNew(); err != nil {
+		return err
+	}
+	return BringUp("lo")
+}
+
+// enterNew is EnterEmptyNetwork with the loopback left down
+// its route check runs before any loopback is up, since an up loopback holds local routes
+func enterNew() error {
 	var before, after unix.Stat_t
 	if err := unix.Stat("/proc/thread-self/ns/net", &before); err != nil {
 		return fmt.Errorf("stat this thread's network namespace: %w", err)
@@ -60,10 +81,7 @@ func EnterEmptyNetwork() error {
 	if after.Ino == before.Ino {
 		return errors.New("refusing to continue: the network namespace did not change")
 	}
-	if err := holdsNoRoute(); err != nil {
-		return err
-	}
-	return BringUp("lo")
+	return holdsNoRoute()
 }
 
 // ClaimProcess takes the network namespace the whole process runs in for a test whose goroutines open sockets, tuns and netlink
