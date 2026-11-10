@@ -1900,6 +1900,10 @@ says:
 > translation (Section 4) or the Filtering (Section 5) Behavior at any point in
 > time, or under any particular conditions.
 
+The exit behavior suite checks the changed mapping for UDP and declares it as
+the kernel exit's limit, with the "RFC 4787 sections 4.1 and 8, RFC 5382 section
+4.1" row.
+
 An echo identifier is mapped as a port is, so the same clash departs from
 [RFC 5508 section 3.1](https://www.rfc-editor.org/rfc/rfc5508.html#section-3.1),
 which says "NAT mapping of ICMP Query Identifiers SHOULD be external-host
@@ -1917,7 +1921,9 @@ and
 [RFC 5382 section 7.1](https://www.rfc-editor.org/rfc/rfc5382.html#section-7.1)
 asks the same for TCP as its REQ-7. No nf_tables statement keeps an external
 port for 1 inside endpoint, so an external endpoint names a leaf only together
-with the destination it talks to.
+with the destination it talks to. The exit behavior suite checks the overloading
+for UDP and declares it as the kernel exit's limit, with the "RFC 4787 section
+4.2.1 (REQ-3), RFC 5382 section 7.1 (REQ-7)" row.
 
 No external host whose address lies inside `overlay` is reachable through the
 exit: a destination a node holds reaches that node, and
