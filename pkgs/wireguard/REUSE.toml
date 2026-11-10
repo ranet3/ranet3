@@ -6,7 +6,7 @@ version = 1
 
 # files that upstream has, without a header there either
 [[annotations]]
-path = ["LICENSE", "conn/bind_std_test.go", "go.mod", "go.sum", "tun/errors.go"]
+path = ["LICENSE", "go.mod", "go.sum", "tun/errors.go"]
 SPDX-FileCopyrightText = "2017-2025 WireGuard LLC"
 SPDX-License-Identifier = "MIT"
 
