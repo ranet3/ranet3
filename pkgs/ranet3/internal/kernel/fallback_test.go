@@ -266,13 +266,13 @@ func TestFallbackTableOutlivesTheStopOfAFailedMesh(t *testing.T) {
 	}
 }
 
-// A failed mesh's stop deletes no chain of the switch wherever the capability in force asks
-// for the switch, whatever the last pass read or wrote or its own listing
-// finds: it leaves an earlier instance's before any pass, and one a pass whose
-// readback or rewrite failed left as found. It warns once with the last pass's
-// state, worded by the listing: the chains left, none there, or the listing
-// failed. Under a reload to "uplink" taken before the stop it deletes the
-// switch with no warning.
+// A failed mesh's stop deletes no chain of the switch wherever the capability
+// in force asks for the switch, whatever the last pass read or wrote or its own
+// listing finds: it leaves an earlier instance's before any pass, and one a
+// pass whose readback or rewrite failed left as found. It warns once with the
+// last pass's state, worded by the listing: the chains left, none there, or the
+// listing failed. Under a reload to "uplink" taken before the stop it deletes
+// the switch with no warning.
 func TestFailedMeshsStopLeavesATableWhereTheSwitchIsAskedFor(t *testing.T) {
 	failed := errors.New("no buffer space available")
 	for name, c := range map[string]struct {

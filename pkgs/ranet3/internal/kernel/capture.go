@@ -39,9 +39,10 @@ const MinCaptureGrace = time.Second
 // laptop the mesh goes for ordinary reasons: wifi to ethernet, a dock, sleep
 // and wake, a VPN started underneath. With literal endpoints the sessions
 // still redial over the uplink, since the underlay keeps off the mesh's
-// routes. A lookup of an endpoint name that the resolver does not mark, every
-// one on macOS, goes into the tun with the rest of the host's traffic, so
-// a node whose endpoints are names cannot resolve them.
+// routes. A lookup of an endpoint name whose query leaves without the
+// underlay's Prepare, such as a stub's own query upstream from the host, goes
+// into the tun with the rest of the host's traffic, so a node whose endpoints
+// are names cannot resolve them.
 //
 // So the gate holds three rules, which together turn that failure into a
 // fallback that keeps the host's traffic on its uplink while the mesh is down:
