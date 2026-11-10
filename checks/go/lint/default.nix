@@ -15,10 +15,12 @@ lib.mkPackageCheck {
     go-tools
     writableTmpDirAsHomeHook
   ];
-  # freebsd matches none of the configured systems, so its vet is the only
-  # compile of platform_unsupported.go, tun_name_other.go and their test
-  # files, and the one that fails when a property test leaves out the linux
-  # and darwin constraint internal/pbt asks for
+  # freebsd and openbsd match none of the configured systems, so their vets are
+  # the only compile of tun_name_other.go and of the test files whose constraint
+  # leaves out both linux and darwin, such as exit_other_test.go, the only vet
+  # of platform_unsupported.go, which the android build compiles too, and the
+  # ones that fail when a property test leaves out the linux and darwin
+  # constraint internal/pbt asks for
   # hegel, which the property tests import, needs cgo on android, so the check
   # builds the daemon alone there
   # the network in memory and internal/bubble are for tests, and the package
@@ -32,7 +34,8 @@ lib.mkPackageCheck {
   # the userspace exit and the preparer build for android and ios with cgo
   # off, as a phone's app links them, though ios builds no binary that way
   command = ''
-    go vet ./... && GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet ./... && staticcheck ./... \
+    go vet ./... && GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go vet ./... \
+      && GOOS=openbsd GOARCH=amd64 CGO_ENABLED=0 go vet ./... && staticcheck ./... \
       && GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build -o /dev/null ./cmd/ranet3 \
       && GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build ./internal/egress/userspace/... ./internal/underlay/... \
       && GOOS=ios GOARCH=arm64 CGO_ENABLED=0 go build ./internal/egress/userspace/... ./internal/underlay/... \
