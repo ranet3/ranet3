@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Yifei Sun
 // SPDX-License-Identifier: FSL-1.1-ALv2
 
+//go:build linux && !android
+
 package dnstest
 
 import (
@@ -21,6 +23,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 )
 
 // initialNamespace is the link of each initial namespace, whose inode Linux
@@ -68,8 +72,8 @@ func Start(t testing.TB, nameservers ...string) *Nameserver {
 		t.Skip("binding a resolv.conf and a nameserver on lo needs root, as unshare -rmn gives in namespaces of the process's own")
 	}
 	requireOwnNamespaces(t)
-	if err := loopbackUp(); err != nil {
-		t.Fatalf("bring lo up: %v", err)
+	if err := netnstest.BringUp("lo"); err != nil {
+		t.Fatal(err)
 	}
 	n := &Nameserver{}
 	var addresses []netip.Addr
@@ -117,24 +121,6 @@ func requireOwnNamespaces(t testing.TB) {
 			t.Fatalf("refusing to start: this process shares init's %s namespace, %s, and the nameserver changes it, so run it under unshare -rmn", kind, own)
 		}
 	}
-}
-
-// loopbackUp brings lo up, which a network namespace unshare made holds down
-func loopbackUp() error {
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(fd)
-	ifr, err := unix.NewIfreq("lo")
-	if err != nil {
-		return err
-	}
-	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
-		return err
-	}
-	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
-	return unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr)
 }
 
 // listen reads queries on port 53 of address with SO_RCVMARK set, so each
