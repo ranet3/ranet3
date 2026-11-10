@@ -11,9 +11,9 @@
 // # What a caller uses
 //
 // [NewHub] binds the port and owns its sockets, one per family that every peer
-// shares and, on linux and darwin, one connected to each busy peer. Each peer
-// then gets a [Mux] from [Hub.NewMux] or [Hub.NewMuxTo], which is that peer's
-// logical channel:
+// shares and, on linux, android, darwin and ios, one connected to each busy
+// peer. Each peer then gets a [Mux] from [Hub.NewMux] or [Hub.NewMuxTo], which
+// is that peer's logical channel:
 // the caller registers the inbound SPIs it has negotiated with
 // [Mux.RegisterIKE] and [Mux.RegisterESP], and from then on [Mux.SendIKE]
 // sends control messages, which arrive on [Mux.IKE] or through
@@ -30,14 +30,20 @@
 // # Keeping the sockets out of their own tunnel
 //
 // No setting keeps these sockets off the routes a mesh running over it
-// installs. Every socket passes [Runtime]'s Prepare before it binds or
-// connects, which a caller always supplies. A linux daemon's sets
-// schema.UnderlayMark where the process may set it, which the reconciler's
-// derived rules read to keep them off, as routing.md's "Where a lookup ends on
-// Linux" gives with its scope. A darwin daemon's scopes each socket connected
-// to a peer to the interface its [Selection] names for the peer, and each
-// datagram of the shared socket names that interface, the host's own routes
-// with ranet3's interface left out. [Runtime] carries what the caller has to resolve at startup.
+// installs. [Runtime]'s Prepare, which a caller always supplies, readies each
+// socket that carries a datagram before it binds or connects, on linux,
+// android, darwin and ios, the builds with a hook for it. Two darwin and ios
+// sockets that only look a route up pass none: the one reading a pair's source
+// is scoped to the pair's interface, and the one reading the interface a send
+// takes runs only with no [Selection], where Prepare leaves a socket as it is.
+// Elsewhere wireguard's StdNetBind offers no hook and no socket passes it.
+// A linux daemon's Prepare sets schema.UnderlayMark where the process may set
+// it, which the reconciler's derived rules read to keep them off, as
+// routing.md's "Where a lookup ends on Linux" gives with its scope. A darwin
+// daemon's scopes each socket connected to a peer to the interface its
+// [Selection] names for the peer, and each datagram of the shared socket names
+// that interface, the host's own routes with ranet3's interface left out.
+// [Runtime] carries what the caller has to resolve at startup.
 //
 // # What it does not do
 //

@@ -264,7 +264,7 @@ type darwinBind struct {
 	readHeld func() (map[netip.Addr]int, error)
 	// port is the listener's, which a socket connected to one peer binds too
 	port uint16
-	// prepare readies every socket the bind opens
+	// prepare readies the listeners and each pair, and boundSource and routedInterface go without it, as the package doc gives
 	prepare underlay.Prepare
 	// connecting holds one connect at a time
 	// XNU refuses to bind an address and port while another socket holds it unconnected

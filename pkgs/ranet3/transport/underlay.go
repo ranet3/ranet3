@@ -13,10 +13,12 @@ import (
 // Runtime carries what the caller resolves at startup rather than writes in a
 // file.
 type Runtime struct {
-	// Prepare readies every socket the hub opens to stay out of the mesh, and
-	// NewHub refuses a nil one
+	// Prepare readies the hub's sockets to stay out of the mesh, the ones the
+	// package doc names on each build, and NewHub refuses a nil one
 	Prepare underlay.Prepare
 	// Selection names the interface of every underlay datagram on darwin, and nil names none
+	// a darwin or ios caller passing none passes a Prepare that leaves each socket as it is,
+	// so the hub's lookup of the interface a send takes reads the route that send takes
 	Selection Selection
 	// Events records each fallback a send to a peer took, each socket
 	// connected to one peer that opens or closes, and on darwin each interface
