@@ -12,6 +12,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -510,7 +511,9 @@ func (d *daemon) run(asked <-chan struct{}, signals daemonSignals) int {
 			// the limit a node sets for its exit goes once the exit has stopped
 			d.node.ExitStopped()
 		})
-		slog.Info(fmt.Sprintf("egress translating for %d prefixes in %s", len(d.cfg.Egress().Advertise), exit.Status().Where))
+		status := exit.Status()
+		// the userspace exit owns no space on the host, and its backend's name says where it translates
+		slog.Info(fmt.Sprintf("egress translating for %d prefixes in %s", len(d.cfg.Egress().Advertise), cmp.Or(status.Where, status.Backend)))
 	}
 
 	// The reconciler has to finish withdrawing while the TUN still exists,
