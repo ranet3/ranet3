@@ -437,7 +437,7 @@ func TestLaneAnswersWhatItsJudgmentRefuses(t *testing.T) {
 // A family is ready while a link outside the mesh routes its prefixes and the
 // host holds its classes' addresses where a socket scoped to that link sends
 // from them, and the egress SIDs are served while every family so routed is
-// ready
+// ready. Where both fail, why it is not ready names the route
 func TestReadinessFollowsTheRoutesAndTheHeldAddresses(t *testing.T) {
 	class := netip.MustParseAddr("198.51.100.9")
 	for _, c := range []struct {
@@ -452,6 +452,7 @@ func TestReadinessFollowsTheRoutesAndTheHeldAddresses(t *testing.T) {
 			"this host does not hold 198.51.100.9, an address cap.egress translate names"},
 		{"the class address held on another link", fakePlatform{routes4: true, routes6: true, beside: []netip.Addr{class}}, readyCall{false, true, false},
 			"this host does not hold 198.51.100.9, an address cap.egress translate names, on uplink0, the link this host reaches 0.0.0.0/0 by"},
+		{"ipv4 not routed and the class address not held", fakePlatform{routes6: true}, readyCall{false, true, true}, "no link outside the mesh reaches 128.0.0.0 for 0.0.0.0/0"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			mesh := newFakeMesh()
@@ -496,29 +497,44 @@ func TestReadinessFollowsTheRoutesAndTheHeldAddresses(t *testing.T) {
 	}
 }
 
-// A family is carried out by a route outside the mesh where any prefix it
-// reads is so routed, judged over every prefix whichever fails first, so a
-// family routed in part withdraws the egress SIDs while it is not ready in
-// either order of its prefixes. Why it is not ready names the first prefix
-// that fails, and a pass looks each prefix up once at most
+// A family counts as carried out where a route outside the mesh reaches any
+// prefix it reads or the lookup of any of them failed, judged over every
+// prefix whichever fails first, so a family routed in part, or whose route is
+// unknown, withdraws the egress SIDs while it is not ready in either order of
+// its prefixes. A prefix with no unicast address to look up carries nothing.
+// Why it is not ready names the first prefix that fails, and a pass looks each
+// prefix up once at most
 func TestReadinessJudgesEveryPrefixForItsRouteWhicheverFailsFirst(t *testing.T) {
 	low, high := schema.MustPrefix("0.0.0.0/1"), schema.MustPrefix("128.0.0.0/1")
+	// multicast and class E alone, which New takes as a default
+	unicastless := schema.MustPrefix("224.0.0.0/3")
 	// the addresses readAddress reads for low and high
 	lowRead, highRead := netip.MustParseAddr("64.0.0.0"), netip.MustParseAddr("192.0.0.0")
 	lowUnrouted := "no link outside the mesh reaches 64.0.0.0 for 0.0.0.0/1"
 	highUnrouted := "no link outside the mesh reaches 192.0.0.0 for 128.0.0.0/1"
+	lookupFailure := errors.New("no such network interface")
+	lowFailed := "the route lookup of 64.0.0.0 for 0.0.0.0/1 failed: no such network interface"
+	noUnicast := "cap.egress advertises 224.0.0.0/3, which holds no unicast address to look its route up for"
 	for _, c := range []struct {
 		name    string
 		order   []schema.Prefix
 		reaches []netip.Addr
+		fails   []netip.Addr
 		carried bool
 		why     string
 	}{
-		{"the unrouted prefix first", []schema.Prefix{low, high}, []netip.Addr{highRead}, true, lowUnrouted},
-		{"the routed prefix first", []schema.Prefix{high, low}, []netip.Addr{highRead}, true, lowUnrouted},
-		{"the other prefix routed", []schema.Prefix{high, low}, []netip.Addr{lowRead}, true, highUnrouted},
-		{"neither routed", []schema.Prefix{low, high}, nil, false, lowUnrouted},
-		{"neither routed, the other order", []schema.Prefix{high, low}, nil, false, highUnrouted},
+		{"the unrouted prefix first", []schema.Prefix{low, high}, []netip.Addr{highRead}, nil, true, lowUnrouted},
+		{"the routed prefix first", []schema.Prefix{high, low}, []netip.Addr{highRead}, nil, true, lowUnrouted},
+		{"the other prefix routed", []schema.Prefix{high, low}, []netip.Addr{lowRead}, nil, true, highUnrouted},
+		{"neither routed", []schema.Prefix{low, high}, nil, nil, false, lowUnrouted},
+		{"neither routed, the other order", []schema.Prefix{high, low}, nil, nil, false, highUnrouted},
+		{"the failed lookup first, the other routed", []schema.Prefix{low, high}, []netip.Addr{highRead}, []netip.Addr{lowRead}, true, lowFailed},
+		{"the routed prefix first, the other's lookup failed", []schema.Prefix{high, low}, []netip.Addr{highRead}, []netip.Addr{lowRead}, true, lowFailed},
+		{"the failed lookup first, the other unrouted", []schema.Prefix{low, high}, nil, []netip.Addr{lowRead}, true, lowFailed},
+		{"the unrouted prefix first, the other's lookup failed", []schema.Prefix{high, low}, nil, []netip.Addr{lowRead}, true, highUnrouted},
+		{"no unicast address first, the other routed", []schema.Prefix{unicastless, low}, []netip.Addr{lowRead}, nil, true, noUnicast},
+		{"the routed prefix first, the other with no unicast address", []schema.Prefix{low, unicastless}, []netip.Addr{lowRead}, nil, true, noUnicast},
+		{"no unicast address first, the other unrouted", []schema.Prefix{unicastless, low}, nil, nil, false, noUnicast},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := fakePlatform{routes6: true, reaches: c.reaches}
@@ -528,6 +544,9 @@ func TestReadinessJudgesEveryPrefixForItsRouteWhicheverFailsFirst(t *testing.T) 
 			platform.Route = func(address netip.Addr) (Link, bool, error) {
 				if address.Is4() {
 					lookups.Add(1)
+				}
+				if slices.Contains(c.fails, address) {
+					return Link{}, false, lookupFailure
 				}
 				return route(address)
 			}

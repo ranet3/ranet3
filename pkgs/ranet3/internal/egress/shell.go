@@ -36,7 +36,9 @@ type Readiness struct {
 	// Why4 and Why6 say why a family is not ready
 	Why4, Why6 string
 	// Carries4 and Carries6 are whether the host carries a family out at
-	// all, by its forwarding or by a route outside the mesh
+	// all, by its forwarding under the kernel exit, and under the userspace
+	// exit by a route outside the mesh or where the lookup of that route
+	// failed, since an unknown route is not a known absence
 	Carries4, Carries6 bool
 	// Skipped names the lookups left out and why
 	Skipped string

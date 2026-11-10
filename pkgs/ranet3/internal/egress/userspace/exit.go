@@ -434,13 +434,16 @@ func (x *Exit) pass() {
 	}
 }
 
-// readiness is whether family is ready, whether a link outside the mesh
-// reaches any prefix the family reads, judged over all of them whichever
+// readiness is whether family is ready, routed, whether the host carries it
+// out, which holds where a link outside the mesh reaches any prefix the family
+// reads or the lookup of any of them failed, judged over all of them whichever
 // fails first, and why it is not ready, the first failure in the prefixes'
 // order and then the classes': the host must route each prefix the family
 // advertises, or its default where it advertises none, over a link outside the
 // mesh, and hold each address its classes name where a socket scoped to each
-// such link sends from it
+// such link sends from it. A failed lookup counts as carried, since an unknown
+// route is not a known absence, so the family withdraws the egress SIDs while
+// it is not ready.
 func (x *Exit) readiness(family uint8) (ready, routed bool, why string) {
 	type read struct {
 		prefix netip.Prefix
@@ -452,6 +455,7 @@ func (x *Exit) readiness(family uint8) (ready, routed bool, why string) {
 		if address, ok := readAddress(prefix); !ok {
 			failed = "cap.egress advertises " + prefix.String() + ", which holds no unicast address to look its route up for"
 		} else if link, found, err := x.rt.Platform.Route(address); err != nil {
+			routed = true
 			failed = "the route lookup of " + address.String() + " for " + prefix.String() + " failed: " + err.Error()
 		} else if !found {
 			failed = "no link outside the mesh reaches " + address.String() + " for " + prefix.String()
