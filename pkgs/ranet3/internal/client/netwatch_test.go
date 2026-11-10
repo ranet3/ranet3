@@ -6,7 +6,6 @@ package client
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net"
 	"net/netip"
 	"slices"
@@ -31,19 +30,6 @@ const (
 	busyDatagrams = 1000
 	busyDatagram  = 1200
 )
-
-// recordingHub is a hub on loopback whose events go to bus
-func recordingHub(t *testing.T, bus *events.Bus) *transport.Hub {
-	t.Helper()
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare(), Events: func(kind string, attrs ...slog.Attr) {
-		bus.Emit(kind, "", attrs...)
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = hub.Close() })
-	return hub
-}
 
 // busyPeer is a mux of hub to a peer of its own on loopback, sent enough that the hub connects a socket to the peer
 // it waits until bus records that socket
@@ -112,8 +98,6 @@ func (f *fakeNetwork) Close() error { return nil }
 // the change is recorded with what moved and how many it reached
 func TestNetworkChangeProbesEverySessionAndWakesEveryDialer(t *testing.T) {
 	c := writable(t)
-	c.events = events.New()
-	c.hub = recordingHub(t, c.events)
 	var probedMu sync.Mutex
 	var probed []*ike.Session
 	c.sessions.probe = func(sess *ike.Session) {
@@ -185,7 +169,6 @@ func TestNetworkChangeProbesEverySessionAndWakesEveryDialer(t *testing.T) {
 // wakes while they fail, and turning back once more, with neither
 func TestFollowNetworkRecordsAFailingRead(t *testing.T) {
 	c := writable(t)
-	c.events = events.New()
 	// unbuffered, so a wake sent has been taken and the one before it acted on
 	network := &fakeNetwork{changes: make(chan kernel.NetworkChange), healthChanged: make(chan struct{})}
 	c.network = network
@@ -229,8 +212,6 @@ func TestFollowNetworkRecordsAFailingRead(t *testing.T) {
 // a change of the path that follows it wakes the reconciler again and probes every session
 func TestLinkAloneWakesTheReconcilerAndProbesNoSession(t *testing.T) {
 	c := writable(t)
-	c.events = events.New()
-	c.hub = recordingHub(t, c.events)
 	busyPeer(t, c.hub, c.events)
 	var probedMu sync.Mutex
 	probed := 0
@@ -350,8 +331,6 @@ func sameLink(a, b kernel.Link) bool {
 // or one the route no longer picks
 func TestNetworkChangeClosesEverySocketConnectedToOnePeer(t *testing.T) {
 	c := writable(t)
-	c.events = events.New()
-	c.hub = recordingHub(t, c.events)
 	busyPeer(t, c.hub, c.events)
 	network := &fakeNetwork{changes: make(chan kernel.NetworkChange, 1)}
 	c.network = network

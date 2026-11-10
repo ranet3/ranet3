@@ -15,7 +15,6 @@ import (
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/internal/config"
 	"ranet3.com/pkgs/ranet3/internal/dnstest"
-	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/schema"
 )
 
@@ -41,11 +40,9 @@ func TestEndpointQueryFollowsTheOverlayInForceAcrossReloads(t *testing.T) {
 		schema.PrefixFrom(netip.MustParsePrefix("127.0.0.0/8")),
 		schema.PrefixFrom(netip.MustParsePrefix("::1/128")),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), handoverDials)
+	c := testClientOf(t, &inside, privateKey, reg)
+	ctx, cancel := context.WithTimeout(c.ctx, handoverDials)
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, sessions: newSessionSet(), events: events.New()}
-	c.cfg.Store(&inside)
-	c.storeIndex(trust(t, reg))
 	// the endpoint and its node, which resolveEndpoint resolves on two paths
 	for _, peer := range []identity.Identity{inside.Dial.To[0], inside.Dial.To[0].Node()} {
 		d := dialTo(t, &inside, peer)

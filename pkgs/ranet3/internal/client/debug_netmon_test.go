@@ -13,7 +13,6 @@ import (
 
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/ike"
-	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/kernel"
 )
 
@@ -90,7 +89,6 @@ func TestNetmonViewReportsTheWatchAndItsLastChange(t *testing.T) {
 // a peer and every session at once, or neither, is refused
 func TestProbeAsksTheSessionsItNames(t *testing.T) {
 	c := writable(t)
-	c.events = events.New()
 	var probed []*ike.Session
 	c.sessions.probe = func(sess *ike.Session) { probed = append(probed, sess) }
 	gateway, inbound := &ike.Session{}, &ike.Session{}

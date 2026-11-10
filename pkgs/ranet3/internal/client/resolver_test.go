@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"ranet3.com/pkgs/ranet3/identity"
-	"ranet3.com/pkgs/ranet3/internal/events"
 )
 
 // refusedDials bounds the test's two dials, each refused before any query leaves
@@ -36,7 +35,8 @@ func TestEndpointQueryTakesTheNodesPrepare(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	name := "gateway.example.org."
 	reg[0].Nodes[1].Endpoints[0].Address = &name
-	ctx, cancel := context.WithTimeout(context.Background(), refusedDials)
+	c := testClientOf(t, cfg, privateKey, reg)
+	ctx, cancel := context.WithTimeout(c.ctx, refusedDials)
 	defer cancel()
 	// Go's resolver dials one query at a time, so the prepare runs on one goroutine at a time
 	var readied []netip.AddrPort
@@ -47,10 +47,9 @@ func TestEndpointQueryTakesTheNodesPrepare(t *testing.T) {
 		readied = append(readied, to)
 		return errRefusedByTheTest
 	}
-	bus := events.New()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: prepare, privateKey: privateKey, sessions: newSessionSet(), events: bus}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
+	// the prepare under test, standing for the node's own
+	c.prepare = prepare
+	bus := c.events
 	for _, peer := range []identity.Identity{cfg.Dial.To[0], cfg.Dial.To[0].Node()} {
 		before := len(readied)
 		if err := c.connectPeer(ctx, dialTo(t, cfg, peer), slog.LevelInfo); err == nil {

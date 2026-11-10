@@ -127,7 +127,6 @@ func TestVerbIsTakenByEveryNameOfWhatItActedOn(t *testing.T) {
 	}
 	for _, ask := range asks {
 		c := writable(t)
-		c.events = events.New()
 		c.sessions.close = func(*ike.Session) {}
 		c.sessions.active = func(*ike.Session) bool { return true }
 		c.sessions.rekey = func(*ike.Session) error { return nil }

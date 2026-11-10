@@ -69,15 +69,12 @@ func (s *switchRecord) calls() (on, flagged []bool) {
 
 func flagOf(c *Client) string { return filepath.Join(c.stateDir, downFlag) }
 
-// downable is writable with a context, a bus and the state directory dir, so down and up act on it
+// downable is writable with the state directory dir, so down and up act on it
 // it dials nothing and answers nothing, which leaves the speaker, the sessions and the two switches to show what moves
 func downable(t *testing.T, dir string) (*Client, *switchRecord, *switchRecord) {
 	t.Helper()
 	c := writable(t)
 	c.cfg.Store(&config.Config{Node: identity.MustParse("example/node")})
-	ctx, cancel := context.WithCancel(context.Background())
-	c.ctx, c.cancel, c.events = ctx, cancel, events.New()
-	t.Cleanup(func() { cancel(); c.peers.Wait() })
 	if err := c.SetStateDir(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +351,6 @@ func TestDownThatCannotWriteItsFlagChangesNothing(t *testing.T) {
 // a node nobody gave a state directory refuses both verbs rather than take a down that would not outlive it
 func TestClientWithoutAStateDirectoryRefusesDownAndUp(t *testing.T) {
 	c := writable(t)
-	c.events = events.New()
 	for name, verb := range map[string]func(context.Context) (control.Result, error){"down": c.Down, "up": c.Up} {
 		if _, err := verb(context.Background()); err == nil || !strings.Contains(err.Error(), "no state directory") {
 			t.Errorf("%s without a state directory answered %v", name, err)

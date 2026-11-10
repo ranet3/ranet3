@@ -23,7 +23,6 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/logtest"
 	"ranet3.com/pkgs/ranet3/internal/registry"
-	"ranet3.com/pkgs/ranet3/transport"
 )
 
 // redialAfter is the reconnect delay of a test that waits for a node to dial again
@@ -195,17 +194,10 @@ func TestCanceledDialIsNoFailure(t *testing.T) {
 	loopback := "127.0.0.1"
 	reg[0].Nodes[1].Endpoints[0].Address = &loopback
 	reg[0].Nodes[1].Endpoints[0].Port = uint16(silent.LocalAddr().(*net.UDPAddr).Port)
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hub.Close()
-	ctx, cancel := context.WithCancel(context.Background())
+	c := testClientOf(t, cfg, privateKey, reg)
+	bus := c.events
+	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
-	bus := events.New()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: bus}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
 
 	done := make(chan error, 1)
 	d := dialTo(t, cfg, cfg.Dial.To[0])
@@ -283,22 +275,18 @@ func TestDialerRecordsFailuresAndWakes(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
 	unresolvable := "gateway.invalid"
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	bus := events.New()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		dialers: make(map[string]*dialer), dialRetry: time.Hour, events: bus}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
+	c := testClientOf(t, cfg, privateKey, reg)
+	c.dialRetry = time.Hour
+	bus := c.events
 
 	wake := make(chan struct{}, 1)
 	done := make(chan struct{})
 	d := dialTo(t, cfg, cfg.Dial.To[0])
-	go func() { c.runPeer(ctx, d, wake); close(done) }()
+	go func() { c.runPeer(c.ctx, d, wake); close(done) }()
 	waitFor(t, convergeBudget, "the first dial to fail", func() bool { return len(recorded(bus, "dial.failed")) == 1 })
 	wake <- struct{}{}
 	waitFor(t, convergeBudget, "the woken dialer to fail again", func() bool { return len(recorded(bus, "dial.failed")) == 2 })
-	cancel()
+	c.cancel()
 	<-done
 
 	path := d.path
@@ -448,17 +436,10 @@ func TestDialLineBracketsAnIPv6Endpoint(t *testing.T) {
 	reg[0].Nodes[1].Endpoints[0].Address = &loopback
 	reg[0].Nodes[1].Endpoints[0].Port = uint16(silent.LocalAddr().(*net.UDPAddr).Port)
 	cfg.Link.Endpoints[0].Family = "ip6"
-	hub, err := transport.NewHub(0, transport.Runtime{Prepare: testPrepare()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer hub.Close()
-	ctx, cancel := context.WithCancel(context.Background())
+	c := testClientOf(t, cfg, privateKey, reg)
+	bus := c.events
+	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
-	bus := events.New()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey, hub: hub, sessions: newSessionSet(), events: bus}
-	c.cfg.Store(cfg)
-	c.storeIndex(trust(t, reg))
 	done := make(chan error, 1)
 	go func() { done <- c.connectPeer(ctx, dialTo(t, cfg, cfg.Dial.To[0]), slog.LevelInfo) }()
 	waitFor(t, convergeBudget, "the handshake to start", func() bool { return len(recorded(bus, "dial.attempt")) == 1 })
@@ -472,7 +453,7 @@ func TestDialLineBracketsAnIPv6Endpoint(t *testing.T) {
 
 // a dial the host has no route for waits 10 seconds, then twice the wait before it up to a minute, and any other end of a dial starts that over
 func TestUnroutedDialsBackOffToAMinute(t *testing.T) {
-	c := &Client{}
+	c := testClient(t)
 	unrouted := fmt.Errorf("handshake: %w", &net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("sendto", syscall.ENETUNREACH)})
 	var waits []time.Duration
 	wait := time.Duration(0)
@@ -515,8 +496,9 @@ func servedSocket(t *testing.T, src control.Source) string {
 // a verb asked over the socket is recorded with the uid the socket reported and what it came to
 // a refused verb, which acted on nothing, is recorded once without a peer and with the peer as it was asked for
 func TestVerbIsRecordedWithItsCaller(t *testing.T) {
-	bus := events.New()
-	socket := servedSocket(t, &Client{events: bus, dialers: make(map[string]*dialer)})
+	c := testClient(t)
+	bus := c.events
+	socket := servedSocket(t, c)
 
 	if _, err := control.Dial(socket).Redial("nobody", false); err == nil {
 		t.Fatal("a redial of a peer this node does not know succeeded")
@@ -554,9 +536,10 @@ func TestVerbIsRecordedWithItsCaller(t *testing.T) {
 
 // a reload that fails is recorded with its file and what failed
 func TestFailedReloadIsRecordedWithItsError(t *testing.T) {
-	bus := events.New()
+	c := testClient(t)
+	bus := c.events
 	missing := filepath.Join(t.TempDir(), "missing.toml")
-	if err := (&Client{events: bus}).ReloadFrom(missing); err == nil {
+	if err := c.ReloadFrom(missing); err == nil {
 		t.Fatal("a reload of a missing file succeeded")
 	}
 	if reloads := recorded(bus, "daemon.reload"); len(reloads) != 1 || reloads[0].Attrs["path"] != missing || reloads[0].Attrs["err"] == "" {

@@ -23,7 +23,8 @@ const sweepHeld = 200 * time.Millisecond
 func TestSweepWaitsForEveryDialerItStops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), sessions: newSessionSet(), dialers: make(map[string]*dialer)}
+	c := testClient(t)
+	c.ctx, c.cancel, c.prepare = ctx, cancel, testPrepare()
 	c.cfg.Store(&config.Config{})
 	c.storeIndex(trust(t, registry.Registry{}))
 	release := make(chan struct{})
@@ -67,7 +68,8 @@ func TestSweepWaitsForEveryDialerItStops(t *testing.T) {
 func TestSweptSessionIsNotToldAgain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), sessions: newSessionSet()}
+	c := testClient(t)
+	c.ctx, c.cancel, c.prepare = ctx, cancel, testPrepare()
 	var mu sync.Mutex
 	var told []*ike.Session
 	c.sessions.close = func(sess *ike.Session) {

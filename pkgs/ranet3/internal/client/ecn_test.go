@@ -18,23 +18,30 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/esp"
 	"ranet3.com/pkgs/ranet3/internal/bubble"
-	"ranet3.com/pkgs/ranet3/internal/events"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/packet"
 )
 
-// ecnSession is one session's emit on a node built by hand, with the SA its peer seals with
+// ecnSession is one session's emit on an ecnNode, with the SA its peer seals with
 type ecnSession struct {
 	emit   func([]inboundDecrypted, []inboundECN, netstack.Hold)
 	tunnel *tunnel
 	remote *esp.OutboundSA
 }
 
-// ecnNode is a node built by hand with an event bus, which a status reads whole
+// ecnNode is a writable node with its hub and underlay closed and no network watch, which a status reads whole
+// a bubble's clock moves only while every goroutine in it waits on the bubble, which the readers of the hub's sockets, of darwin's
+// routing and kernel event sockets under the underlay's selection, and of the watch's never do
 func ecnNode(t *testing.T) *Client {
 	t.Helper()
 	c := writable(t)
-	c.events = events.New()
+	_ = c.hub.Close()
+	// the watch first, as Close does, so darwin's shared watcher closes with no reader left on it
+	if c.network != nil {
+		_ = c.network.Close()
+		c.network = nil
+	}
+	c.closeUnderlay()
 	return c
 }
 

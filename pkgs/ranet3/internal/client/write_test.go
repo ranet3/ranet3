@@ -21,10 +21,7 @@ import (
 	"ranet3.com/pkgs/ranet3/control"
 	"ranet3.com/pkgs/ranet3/identity"
 	"ranet3.com/pkgs/ranet3/ike"
-	"ranet3.com/pkgs/ranet3/internal/babel"
 	"ranet3.com/pkgs/ranet3/internal/config"
-	"ranet3.com/pkgs/ranet3/internal/events"
-	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/registry"
 	"ranet3.com/pkgs/ranet3/schema"
 	"ranet3.com/pkgs/ranet3/srv6"
@@ -42,24 +39,9 @@ func writable(t *testing.T) *Client {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mesh := &netstack.Mesh{Routes: netstack.NewRouteTable()}
-	mesh.SetSteering(steering)
-	// A speaker and a registry, because a test below reads the whole status
-	// rather than the stopped set alone: a subsystem stopped and not reported
-	// is a node running less than its file says with nothing saying so.
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{}, mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := &Client{
-		Mesh:     mesh,
-		speaker:  speaker,
-		sessions: newSessionSet(),
-		dialers:  make(map[string]*dialer),
-		running:  startedSubsystems(),
-	}
+	c := testClient(t)
+	c.Mesh.SetSteering(steering)
 	c.cfg.Store(&config.Config{Node: identity.MustParse("example/node"), Link: config.Link{Listen: true}})
-	c.storeIndex(trust(t, registry.Registry{}))
 	c.SetReconciler(Reconciler{Enable: func(bool) {}})
 	return c
 }
@@ -127,7 +109,7 @@ func TestSubsystemRefusesWhatThisNodeDoesNotRun(t *testing.T) {
 		t.Errorf("the refusal reads %q, want it to name the set", err)
 	}
 
-	bare := &Client{Mesh: &netstack.Mesh{}, running: startedSubsystems()}
+	bare := testClient(t)
 	bare.cfg.Store(&config.Config{})
 	for name, want := range map[control.Subsystem]string{
 		control.SubsystemReconciler: "cap.table",
@@ -153,7 +135,7 @@ func TestSteeringStopLeavesCapExitViaPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bare := &Client{Mesh: &netstack.Mesh{}, running: startedSubsystems()}
+	bare := testClient(t)
 	bare.cfg.Store(&config.Config{})
 	bare.Mesh.SetSteering(pathOnly)
 	if _, err := bare.SetSubsystem(context.Background(), control.SubsystemSteering, false); err == nil {
@@ -381,23 +363,18 @@ func TestRedialAllDropsEverySessionAndWakesEveryDialer(t *testing.T) {
 // success and changes nothing.
 func TestDialerWakesBeforeItsReconnectDelay(t *testing.T) {
 	cfg, privateKey, reg := runtimeFixture(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c := &Client{ctx: ctx, cancel: cancel, prepare: testPrepare(), privateKey: privateKey,
-		dialers: make(map[string]*dialer), dialRetry: time.Hour}
-	c.cfg.Store(cfg)
-
 	// A name the dialer takes and the resolver refuses, so each pass is one
 	// attempt and then the wait this test is about. RFC 6761 reserves
 	// .invalid for it.
 	unresolvable := "gateway.invalid"
 	reg[0].Nodes[1].Endpoints[0].Address = &unresolvable
-	c.storeIndex(trust(t, reg))
+	c := testClientOf(t, cfg, privateKey, reg)
+	c.dialRetry = time.Hour
 	wake := make(chan struct{}, 1)
 	done := make(chan struct{})
 	d := dialTo(t, cfg, cfg.Dial.To[0])
 	go func() {
-		c.runPeer(ctx, d, wake)
+		c.runPeer(c.ctx, d, wake)
 		close(done)
 	}()
 
@@ -510,7 +487,6 @@ func rekeyAll(t *testing.T, c *Client) control.Result {
 // the answer renders as the golden files, and one where every session rekeyed lists them all
 func TestRekeyAnswersWhichSessionsRekeyed(t *testing.T) {
 	c := writable(t)
-	c.events = events.New()
 	written := capturedLog(t)
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }
@@ -575,7 +551,6 @@ func TestRekeyAnswersWhichSessionsRekeyed(t *testing.T) {
 // a rekey that every session missed is recorded as control.verb under each with its reason, and not again without a peer
 func TestRekeyEverySessionMissedIsRecordedUnderEachAlone(t *testing.T) {
 	c := writable(t)
-	c.events = events.New()
 	capturedLog(t)
 	c.sessions.close = func(*ike.Session) {}
 	c.sessions.active = func(*ike.Session) bool { return true }

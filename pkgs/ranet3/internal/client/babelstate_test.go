@@ -16,25 +16,16 @@ import (
 	"ranet3.com/pkgs/ranet3/internal/events"
 )
 
-// stateNode is writable with a context, its speaker recording on a bus of its own, as the node example/name started on dir
+// stateNode is writable as the node example/name started on dir, with the bus its speaker records on
 // it dials nothing and answers nothing, which leaves the speaker to show what a start, a down and an up do to the Babel state
 func stateNode(t *testing.T, name, dir string) (*Client, *events.Bus) {
 	t.Helper()
-	bus := events.New()
 	c := writable(t)
-	speaker, err := babel.New(babel.Config{}, babel.Routes{}, babel.Runtime{Events: bus}, c.Mesh)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.speaker, c.events = speaker, bus
 	c.cfg.Store(&config.Config{Node: identity.MustParse("example/" + name)})
-	ctx, cancel := context.WithCancel(context.Background())
-	c.ctx, c.cancel = ctx, cancel
-	t.Cleanup(func() { cancel(); c.peers.Wait() })
 	if err := c.SetStateDir(dir); err != nil {
 		t.Fatal(err)
 	}
-	return c, bus
+	return c, c.events
 }
 
 // startRaise reads the attributes the raise of a node's start recorded
