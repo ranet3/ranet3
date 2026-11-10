@@ -28,24 +28,21 @@ func setDontFragment(fd int, ipv6, on bool) error {
 // out, and the link's MTU stands for it
 func socketPathMTU(*net.UDPConn, bool) (int, error) { return 0, errors.ErrUnsupported }
 
-// bindsRouteSource is whether a dial under auto binds the address its route
-// picks rather than the wildcard address, which XNU's SO_REUSEPORT asks: in
-// in_pcbbind (bsd/netinet/in_pcb.c, xnu f6217f8) a later bind of the wildcard
-// address beside a socket holding SO_REUSEPORT skips the check that both
-// belong to one user, so a socket holding it on the wildcard address would
-// let a process of any user share the exit's port
-const bindsRouteSource = true
-
-// shareDialPort lets fd, a dial's socket bound to its route's source, bind
-// the leaf's port while another dial holds it toward another server, which
-// XNU allows two TCP sockets that both hold SO_REUSEPORT
+// shareDialPort lets fd, a dial's socket, bind its mapping's address and port
+// while another dial of the mapping holds it toward another server, which XNU
+// allows two TCP sockets that both hold SO_REUSEPORT. The dial binds one
+// address, never the wildcard one: in in_pcbbind (bsd/netinet/in_pcb.c, xnu
+// f6217f8) a later bind of the wildcard address beside a socket holding
+// SO_REUSEPORT skips the check that both belong to one user, so a socket
+// holding it on the wildcard address would let a process of any user share
+// the exit's port
 func shareDialPort(fd int) error {
 	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
 }
 
 // shareMappingPort lets the sockets of a mapping toward each server bind the
 // port fd, its receiving socket, holds: by SO_REUSEPORT where fd is bound to
-// one address, which another user cannot share (see bindsRouteSource), and by
+// one address, which another user cannot share (see shareDialPort), and by
 // nothing on the wildcard address, which XNU lets a socket bound to one
 // address with SO_REUSEADDR sit beside, as the transport's listener does
 func shareMappingPort(fd int, specific bool) error {

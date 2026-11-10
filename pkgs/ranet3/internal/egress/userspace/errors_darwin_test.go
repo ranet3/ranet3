@@ -264,7 +264,7 @@ func TestRefusedDialFailsWhileTheICMPSocketWaits(t *testing.T) {
 			waitOnUnbound(t, h, c.loopback.Is6())
 			failed := make(chan dialFailure, 1)
 			go func() {
-				conn, failure := h.x.tcp.dial(context.Background(), netip.AddrPortFrom(c.leaf, 0), closed)
+				conn, _, failure := h.x.tcp.dial(context.Background(), netip.AddrPortFrom(c.leaf, 0), closed)
 				if conn != nil {
 					_ = conn.Close()
 				}

@@ -62,7 +62,7 @@ func TestDialsShareTheLeafsPortFromTheRoutesAddress(t *testing.T) {
 			r := &tcpRelay{x: x}
 			for _, server := range servers {
 				seen = seen[:0]
-				conn, failure := r.dial(context.Background(), netip.AddrPortFrom(family.leaf, port), server)
+				conn, _, failure := r.dial(context.Background(), netip.AddrPortFrom(family.leaf, port), server)
 				if conn == nil {
 					t.Fatalf("dial from port %d toward %s: %v", port, server, failure.err)
 				}
@@ -127,15 +127,4 @@ func socketOption(t *testing.T, conn syscall.Conn, level, option int) int {
 		t.Fatal(err)
 	}
 	return value
-}
-
-// freeTCPPort is a port no TCP socket on address holds now
-func freeTCPPort(t *testing.T, address netip.Addr) uint16 {
-	t.Helper()
-	listener, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.AddrPortFrom(address, 0)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).AddrPort().Port()
 }

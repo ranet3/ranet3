@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -50,9 +51,10 @@ type tcpRelay struct {
 	flows  map[*tcpFlow]struct{}
 	// running counts the requests the forwarder handed over, which Close
 	// waits for
-	running sync.WaitGroup
-	copies  copies
-	closed  closedEndpoints
+	running  sync.WaitGroup
+	copies   copies
+	closed   closedEndpoints
+	mappings tcpMappings
 }
 
 func newTCPRelay(x *Exit) *tcpRelay {
@@ -132,7 +134,8 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 	r.mu.Lock()
 	syn, ctx := r.dialing[id], r.ctx
 	r.mu.Unlock()
-	conn, failure := r.dial(ctx, leaf, server)
+	conn, mapping, failure := r.dial(ctx, leaf, server)
+	defer r.mappings.release(mapping)
 	if conn == nil {
 		r.x.answerDialFailure(req, syn, failure)
 		r.end(id, leaf.Addr(), true)
@@ -173,59 +176,77 @@ func (r *tcpRelay) accept(req *tcp.ForwarderRequest) {
 	}
 }
 
-// dial opens the host's connection from the address the leaf's class names
-// and the leaf's port where the host holds it free, as a translator keeps a
-// leaf's port, else from one the host gives. Under auto it binds the address
-// the route to the server picks where the platform's sockets bind it
-// (bindsRouteSource), and leaves it to the connect elsewhere. The socket
-// passes the platform's Prepare before it binds.
-func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.TCPConn, dialFailure) {
+// dial opens the host's connection from the outside endpoint of the leaf's
+// mapping on the address the connection leaves from (tcpMappings), and returns
+// the mapping, which the caller releases once the connection ends. The address
+// is the one the leaf's class names, or under auto the one the route to this
+// server picks, read through the platform's Prepare as the dial's socket
+// carries it, so on every platform a socket binds the address its connection
+// leaves from before its connect. Under auto a later server whose route picks
+// another address, by another interface or as a source of its own, gets the
+// leaf's mapping on that address, on Linux and on darwin alike, and no
+// connection leaves under another route's source. A connection the mapping's
+// endpoint cannot carry, its four-tuple held by the host or its port taken by
+// a listener of the host's, leaves from a port the host gives on that address
+// that no mapping holds, for that connection alone. The socket passes the
+// platform's Prepare before it binds.
+func (r *tcpRelay) dial(ctx context.Context, leaf, server netip.AddrPort) (*net.TCPConn, *tcpMapping, dialFailure) {
 	network := "tcp4"
 	if server.Addr().Is6() {
 		network = "tcp6"
 	}
-	var source net.IP
-	if address := r.x.sourceFor(leaf.Addr()); address.IsValid() {
-		source = address.AsSlice()
-	} else if bindsRouteSource {
-		address, err := r.x.routeSource(server)
-		if err != nil {
-			return nil, dialFailure{err: err}
+	address := r.x.sourceFor(leaf.Addr())
+	if !address.IsValid() {
+		var err error
+		if address, err = r.x.routeSource(server); err != nil {
+			return nil, nil, dialFailure{err: err}
 		}
-		source = address.AsSlice()
+		address = address.Unmap()
 	}
+	inside := tcpInside{leaf, address}
 	var failure dialFailure
-	for _, port := range []uint16{leaf.Port(), 0} {
+	for _, mapped := range []bool{true, false} {
+		var mapping *tcpMapping
+		bind := func(fd int) (err error) {
+			// Go dials again with a new socket, through Control again, where
+			// it takes a connect's EADDRNOTAVAIL for spurious or the socket
+			// reached itself, and the earlier socket's mapping is then given
+			// back
+			r.mappings.release(mapping)
+			mapping = nil
+			if !mapped {
+				return unix.Bind(fd, sockaddrOf(netip.AddrPortFrom(address, 0)))
+			}
+			mapping, err = r.mappings.bind(fd, inside)
+			return err
+		}
 		queue := r.x.icmp.queue()
-		dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: source, Port: int(port)}, Control: r.control(server, port != 0, &queue)}
+		dialer := net.Dialer{Control: r.control(server, bind, &queue)}
 		conn, err := dialer.DialContext(ctx, network, server.String())
 		cause, caused := queue.read(err)
 		queue.close()
 		if err == nil {
-			return conn.(*net.TCPConn), dialFailure{}
+			return conn.(*net.TCPConn), mapping, dialFailure{}
 		}
+		r.mappings.release(mapping)
 		failure = dialFailure{err: err, cause: cause, caused: caused}
 		if !portTaken(err) {
 			break
 		}
 	}
-	return nil, failure
+	return nil, nil, failure
 }
 
-// control readies a dial's socket: the platform's Prepare toward server, the
-// port shared where it binds the leaf's (shareDialPort), so one leaf port
-// toward two servers keeps one outside port, and the error queue opened
-func (r *tcpRelay) control(server netip.AddrPort, reuse bool, queue *errorQueue) func(string, string, syscall.RawConn) error {
+// control readies a dial's socket: the platform's Prepare toward server,
+// bind, and the error queue opened
+func (r *tcpRelay) control(server netip.AddrPort, bind func(fd int) error, queue *errorQueue) func(string, string, syscall.RawConn) error {
 	return func(network, _ string, raw syscall.RawConn) error {
 		if err := r.x.rt.Platform.Prepare(network, server, raw); err != nil {
 			return err
 		}
 		var set error
 		if err := raw.Control(func(fd uintptr) {
-			if reuse {
-				set = shareDialPort(int(fd))
-			}
-			if set == nil {
+			if set = bind(int(fd)); set == nil {
 				set = queue.open(int(fd), server)
 			}
 		}); err != nil {
@@ -233,6 +254,120 @@ func (r *tcpRelay) control(server netip.AddrPort, reuse bool, queue *errorQueue)
 		}
 		return set
 	}
+}
+
+// tcpMappings keeps the outside endpoint of each inside endpoint, a leaf's
+// address and port, on each address its connections leave from, while a
+// socket of its connections is bound there, so its connections from one
+// address leave from one address and port toward every server (RFC 5382
+// REQ-1), and the inside endpoint of each outside endpoint, so no two share
+// one (REQ-7). Every outside endpoint is the address and port its sockets
+// bind, which their connections leave from, so the table and the host's
+// sockets name one endpoint alike. A source address belongs to its uplink,
+// whose network or tunnel peer may drop another uplink's (RFC 2827), so under
+// auto an inside endpoint whose servers' routes pick two addresses keeps a
+// mapping on each rather than send one route's source by another. A mapping
+// ends with its last socket and never before it: RFC 5382 section 4.1 gives a
+// mapping to the connections it serves, and sections 5 and 7.1 ask nothing of
+// it past them.
+type tcpMappings struct {
+	mu        sync.Mutex
+	byInside  map[tcpInside]*tcpMapping
+	byOutside map[netip.AddrPort]*tcpMapping
+}
+
+// tcpInside is an inside endpoint and the address its connections leave
+// from: the one its class names, or under auto the one the route picks
+type tcpInside struct {
+	leaf    netip.AddrPort
+	address netip.Addr
+}
+
+// tcpMapping is an inside endpoint's outside endpoint, and how many sockets
+// bound on it for its connections are not yet released
+type tcpMapping struct {
+	inside  tcpInside
+	outside netip.AddrPort
+	sockets int
+}
+
+// errPortHeld is a port the host gave a new mapping that another mapping
+// holds on the same address
+var errPortHeld = errors.New("userspace: the host gave a tcp mapping a port another mapping holds")
+
+// bind binds fd, a dial's socket for inside, shared (shareDialPort): on its
+// mapping's outside endpoint, else on inside's address at the leaf's port
+// where no other mapping holds that endpoint and the host binds it, else at a
+// port the host gives, which becomes the new mapping's. The host gives no port
+// a socket holds on that address unless it shares ports among sockets that
+// allow it, as Linux does under net.ipv4.ip_autobind_reuse=1, or a mapping's
+// sockets have closed before its release: a port a mapping holds fails the
+// bind with errPortHeld, and the table holds nothing of it. It returns the
+// mapping, holding fd's socket.
+func (t *tcpMappings) bind(fd int, inside tcpInside) (*tcpMapping, error) {
+	if err := shareDialPort(fd); err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if m := t.byInside[inside]; m != nil {
+		if err := unix.Bind(fd, sockaddrOf(m.outside)); err != nil {
+			return nil, err
+		}
+		m.sockets++
+		return m, nil
+	}
+	outside := netip.AddrPortFrom(inside.address, inside.leaf.Port())
+	// a leaf port of 0, which no leaf's connection carries, is the host's to give
+	taken := outside.Port() == 0 || t.byOutside[outside] != nil
+	if !taken {
+		err := unix.Bind(fd, sockaddrOf(outside))
+		if err != nil && !portTaken(err) {
+			return nil, err
+		}
+		taken = err != nil
+	}
+	if taken {
+		if err := unix.Bind(fd, sockaddrOf(netip.AddrPortFrom(inside.address, 0))); err != nil {
+			return nil, err
+		}
+		bound, err := unix.Getsockname(fd)
+		if err != nil {
+			return nil, err
+		}
+		if outside = netip.AddrPortFrom(inside.address, sockaddrPort(bound).Port()); t.byOutside[outside] != nil {
+			return nil, errPortHeld
+		}
+	}
+	m := &tcpMapping{inside: inside, outside: outside, sockets: 1}
+	if t.byInside == nil {
+		t.byInside, t.byOutside = map[tcpInside]*tcpMapping{}, map[netip.AddrPort]*tcpMapping{}
+	}
+	t.byInside[inside] = m
+	t.byOutside[outside] = m
+	return m, nil
+}
+
+// release gives back one socket of m, ending m at its last. A nil m holds
+// nothing.
+func (t *tcpMappings) release(m *tcpMapping) {
+	if m == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if m.sockets--; m.sockets == 0 {
+		delete(t.byInside, m.inside)
+		delete(t.byOutside, m.outside)
+	}
+}
+
+// sockaddrOf is at as a socket address of its family
+func sockaddrOf(at netip.AddrPort) unix.Sockaddr {
+	if at.Addr().Is4() {
+		return &unix.SockaddrInet4{Port: int(at.Port()), Addr: at.Addr().As4()}
+	}
+	return &unix.SockaddrInet6{Port: int(at.Port()), Addr: at.Addr().As16()}
 }
 
 // portTaken is a dial's or a mapping's failure that another port may not

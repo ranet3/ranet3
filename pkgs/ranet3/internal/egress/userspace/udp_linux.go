@@ -43,13 +43,9 @@ func socketPathMTU(conn *net.UDPConn, ipv6 bool) (int, error) {
 	return mtu, err
 }
 
-// bindsRouteSource is whether a dial under auto binds the address its route
-// picks, which Linux leaves to the connect
-const bindsRouteSource = false
-
-// shareDialPort lets fd, a dial's socket, bind the leaf's port while another
-// dial holds it toward another server, as SO_REUSEADDR lets a connecting TCP
-// socket on Linux
+// shareDialPort lets fd, a dial's socket, bind its mapping's address and port
+// while another dial of the mapping holds it toward another server, as
+// SO_REUSEADDR lets a connecting TCP socket on Linux
 func shareDialPort(fd int) error {
 	return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 }

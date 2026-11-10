@@ -300,7 +300,8 @@ func classed(to netip.Addr) egress.Egress {
 }
 
 // A dial leaves from the address the leaf's class names, and from the one
-// the host's route picks under auto
+// the host's route picks under auto, which its socket binds before the
+// connect, so its mapping names the endpoint it leaves from
 func TestDialLeavesFromTheAddressOfTheLeafsClass(t *testing.T) {
 	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -328,13 +329,18 @@ func TestDialLeavesFromTheAddressOfTheLeafsClass(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			_ = loopbackServer(t, c.want)
 			x := dialingExit(t, c.cfg, func(string, netip.AddrPort, syscall.RawConn) error { return nil })
-			conn, failure := (&tcpRelay{x: x}).dial(context.Background(), netip.AddrPortFrom(leaf4, 0), server)
+			conn, mapping, failure := (&tcpRelay{x: x}).dial(context.Background(), netip.AddrPortFrom(leaf4, 0), server)
 			if conn == nil {
 				t.Fatalf("dial %s: %v", server, failure.err)
 			}
 			defer conn.Close()
-			if got := conn.LocalAddr().(*net.TCPAddr).AddrPort().Addr().Unmap(); got != c.want {
-				t.Errorf("the dial left from %s, want %s", got, c.want)
+			local := conn.LocalAddr().(*net.TCPAddr).AddrPort()
+			local = netip.AddrPortFrom(local.Addr().Unmap(), local.Port())
+			if local.Addr() != c.want {
+				t.Errorf("the dial left from %s, want %s", local.Addr(), c.want)
+			}
+			if mapping == nil || mapping.outside != local {
+				t.Errorf("the dial's mapping is %+v, want one on %s, the endpoint it left from", mapping, local)
 			}
 		})
 	}
@@ -342,27 +348,10 @@ func TestDialLeavesFromTheAddressOfTheLeafsClass(t *testing.T) {
 
 // A dial binds the leaf's port where the host holds it free, toward a second
 // server as well, and another the host gives where a socket holds the leaf's
-// port or the process may not bind it, each socket passing Prepare toward the
-// server first
+// port or the process may not bind it, from one socket that passes Prepare
+// toward the server first
 func TestDialKeepsTheLeafsPortWhereFree(t *testing.T) {
-	var servers []netip.AddrPort
-	for range 2 {
-		server, err := net.Listen("tcp4", "127.0.0.1:0")
-		if err != nil {
-			t.Skipf("no loopback to dial: %v", err)
-		}
-		defer server.Close()
-		go func() {
-			for {
-				conn, err := server.Accept()
-				if err != nil {
-					return
-				}
-				_ = conn.Close()
-			}
-		}()
-		servers = append(servers, server.Addr().(*net.TCPAddr).AddrPort())
-	}
+	servers := acceptingServers(t, 2)
 	// on the address the dial binds, which XNU lets a socket holding
 	// SO_REUSEPORT share with a listener on the wildcard address
 	holder, err := net.Listen("tcp4", "127.0.0.1:0")
@@ -404,7 +393,7 @@ func TestDialKeepsTheLeafsPortWhereFree(t *testing.T) {
 			r := &tcpRelay{x: x}
 			for _, to := range c.to {
 				prepared = prepared[:0]
-				conn, failure := r.dial(context.Background(), netip.AddrPortFrom(leaf4, c.port), to)
+				conn, _, failure := r.dial(context.Background(), netip.AddrPortFrom(leaf4, c.port), to)
 				if conn == nil {
 					t.Fatalf("dial from port %d toward %s failed: %v", c.port, to, failure.err)
 				}
@@ -416,14 +405,8 @@ func TestDialKeepsTheLeafsPortWhereFree(t *testing.T) {
 				if kept := local == c.port; kept != c.kept {
 					t.Errorf("dialed %s from port %d for the leaf's %d, kept %t, want %t", to, local, c.port, kept, c.kept)
 				}
-				wantPrepared := 1
-				if !c.kept {
-					wantPrepared = 2
-				}
-				if bindsRouteSource {
-					// the socket reading the route's source first
-					wantPrepared++
-				}
+				// the socket reading the route's source, then the dial's
+				wantPrepared := 2
 				if len(prepared) != wantPrepared {
 					t.Errorf("Prepare readied %d sockets toward %s, want %d", len(prepared), to, wantPrepared)
 				}
@@ -435,4 +418,132 @@ func TestDialKeepsTheLeafsPortWhereFree(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Two inside endpoints on one port never leave from one outside port, and each
+// leaves from one port toward every server: the first keeps the leaf's port,
+// and the second takes one the host gives toward both servers, RFC 5382 REQ-7
+// and REQ-1
+func TestDialsGiveEachInsideEndpointAPortOfItsOwn(t *testing.T) {
+	servers := acceptingServers(t, 2)
+	x := dialingExit(t, egress.Egress{}, func(string, netip.AddrPort, syscall.RawConn) error { return nil })
+	r := &tcpRelay{x: x}
+	port := freeTCPPort(t, servers[0].Addr())
+	first, second := netip.AddrPortFrom(leaf4, port), netip.AddrPortFrom(other4, port)
+	from := func(leaf, to netip.AddrPort) uint16 {
+		conn, _, failure := r.dial(context.Background(), leaf, to)
+		if conn == nil {
+			t.Fatalf("dial from %s toward %s: %v", leaf, to, failure.err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		return conn.LocalAddr().(*net.TCPAddr).AddrPort().Port()
+	}
+	opened, shared := from(first, servers[0]), from(second, servers[1])
+	moved, again := from(first, servers[1]), from(second, servers[0])
+	if opened != port || moved != port {
+		t.Errorf("%s left from ports %d and %d toward the two servers, want its own %d toward both", first, opened, moved, port)
+	}
+	if shared == port || again != shared {
+		t.Errorf("%s left from ports %d and %d toward the two servers, want one port other than %d toward both", second, shared, again, port)
+	}
+}
+
+// A mapping ends with the last connection on it, so another inside endpoint
+// then takes its port
+func TestMappingEndsWithItsLastConnection(t *testing.T) {
+	servers := acceptingServers(t, 2)
+	x := dialingExit(t, egress.Egress{}, func(string, netip.AddrPort, syscall.RawConn) error { return nil })
+	r := &tcpRelay{x: x}
+	port := freeTCPPort(t, servers[0].Addr())
+	conn, mapping, failure := r.dial(context.Background(), netip.AddrPortFrom(leaf4, port), servers[0])
+	if conn == nil {
+		t.Fatalf("dial toward %s: %v", servers[0], failure.err)
+	}
+	_ = conn.Close()
+	r.mappings.release(mapping)
+	second := netip.AddrPortFrom(other4, port)
+	conn, _, failure = r.dial(context.Background(), second, servers[1])
+	if conn == nil {
+		t.Fatalf("dial from %s toward %s: %v", second, servers[1], failure.err)
+	}
+	defer conn.Close()
+	if local := conn.LocalAddr().(*net.TCPAddr).AddrPort().Port(); local != port {
+		t.Errorf("%s left from port %d once the mapping on its port had ended, want %d", second, local, port)
+	}
+}
+
+// A connection whose four-tuple the host still holds, as it does while the
+// exit's earlier connection on it is open, leaves from another port the host
+// gives rather than failing, and the leaf's mapping keeps its port
+func TestConnectionWhoseFourTupleTheHostHoldsLeavesFromAnotherPort(t *testing.T) {
+	// the kernel completes each handshake into the backlog, which nothing
+	// accepts from, so each connection stays open
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("no loopback to dial: %v", err)
+	}
+	defer listener.Close()
+	server := listener.Addr().(*net.TCPAddr).AddrPort()
+	x := dialingExit(t, egress.Egress{}, func(string, netip.AddrPort, syscall.RawConn) error { return nil })
+	r := &tcpRelay{x: x}
+	leaf := netip.AddrPortFrom(leaf4, freeTCPPort(t, server.Addr()))
+	conn, mapping, failure := r.dial(context.Background(), leaf, server)
+	if conn == nil {
+		t.Fatalf("dial from %s toward %s: %v", leaf, server, failure.err)
+	}
+	if local := conn.LocalAddr().(*net.TCPAddr).AddrPort().Port(); local != leaf.Port() {
+		t.Fatalf("dialed %s from port %d, want the leaf's %d", server, local, leaf.Port())
+	}
+	defer conn.Close()
+	defer r.mappings.release(mapping)
+	again, held, failure := r.dial(context.Background(), leaf, server)
+	if again == nil {
+		t.Fatalf("dial from %s toward %s again while the host holds its four-tuple: %v", leaf, server, failure.err)
+	}
+	defer again.Close()
+	r.mappings.release(held)
+	if local := again.LocalAddr().(*net.TCPAddr).AddrPort().Port(); local == leaf.Port() {
+		t.Errorf("dialed %s again from the leaf's port %d while the host held that four-tuple", server, local)
+	}
+	r.mappings.mu.Lock()
+	defer r.mappings.mu.Unlock()
+	if m := r.mappings.byInside[mapping.inside]; m != mapping || m.outside.Port() != leaf.Port() || m.sockets != 1 {
+		t.Errorf("once the host held the four-tuple %s's mapping is %+v, want its first on port %d with its 1 socket", leaf, m, leaf.Port())
+	}
+}
+
+// acceptingServers is count servers on the loopback, each closing every
+// connection it accepts
+func acceptingServers(t *testing.T, count int) []netip.AddrPort {
+	t.Helper()
+	var servers []netip.AddrPort
+	for range count {
+		server, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Skipf("no loopback to dial: %v", err)
+		}
+		t.Cleanup(func() { _ = server.Close() })
+		go func() {
+			for {
+				conn, err := server.Accept()
+				if err != nil {
+					return
+				}
+				_ = conn.Close()
+			}
+		}()
+		servers = append(servers, server.Addr().(*net.TCPAddr).AddrPort())
+	}
+	return servers
+}
+
+// freeTCPPort is a port no TCP socket on address holds now
+func freeTCPPort(t *testing.T, address netip.Addr) uint16 {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp", net.TCPAddrFromAddrPort(netip.AddrPortFrom(address, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).AddrPort().Port()
 }
