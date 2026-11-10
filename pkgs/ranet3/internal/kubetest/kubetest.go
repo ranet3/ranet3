@@ -3,7 +3,9 @@
 
 //go:build linux && !android
 
-package netnstest
+// Package kubetest holds the rules, routes and chain a Kubernetes node's networking writes, which a root test puts beside
+// the daemon's own: Cilium's rule and table, and kube-proxy's masquerade. Test files import it, and nothing the binary links does.
+package kubetest
 
 import (
 	"encoding/binary"
@@ -11,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
@@ -32,15 +35,15 @@ var KubeProxyNAT = nftables.Chain{Table: "kube-proxy", Name: "nat-postrouting", 
 // CiliumRule is the body of an RTM_NEWRULE adding Cilium's rule in family
 func CiliumRule(family byte) []byte {
 	return slices.Concat([]byte{family, 0, 0, 0, 0, 0, 0, unix.FR_ACT_TO_TBL, 0, 0, 0, 0},
-		Attr(unix.FRA_PRIORITY, U32(CiliumPriority)), Attr(unix.FRA_TABLE, U32(CiliumTable)),
-		Attr(unix.FRA_FWMARK, U32(CiliumMark)), Attr(unix.FRA_FWMASK, U32(CiliumMask)))
+		netnstest.Attr(unix.FRA_PRIORITY, netnstest.U32(CiliumPriority)), netnstest.Attr(unix.FRA_TABLE, netnstest.U32(CiliumTable)),
+		netnstest.Attr(unix.FRA_FWMARK, netnstest.U32(CiliumMark)), netnstest.Attr(unix.FRA_FWMASK, netnstest.U32(CiliumMask)))
 }
 
 // CiliumLocal is the body of an RTM_NEWROUTE adding CiliumTable's local default in family, which leaves by the loopback, link 1 in every
 // network namespace
 func CiliumLocal(family byte) []byte {
 	return slices.Concat([]byte{family, 0, 0, 0, unix.RT_TABLE_UNSPEC, unix.RTPROT_BOOT, unix.RT_SCOPE_HOST, unix.RTN_LOCAL, 0, 0, 0, 0},
-		Attr(unix.RTA_TABLE, U32(CiliumTable)), Attr(unix.RTA_OIF, U32(1)))
+		netnstest.Attr(unix.RTA_TABLE, netnstest.U32(CiliumTable)), netnstest.Attr(unix.RTA_OIF, netnstest.U32(1)))
 }
 
 // KubeProxyMasquerade is the requests writing kube-proxy's masquerade of a packet whose mark has KubeProxyBit set, fully random, behind a

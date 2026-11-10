@@ -13,14 +13,14 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"ranet3.com/pkgs/ranet3/internal/netnstest"
+	"ranet3.com/pkgs/ranet3/internal/kubetest"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
 )
 
 // the underlay's IKE and ESP datagrams leave by the uplink with the source address and port they were sent from,
 // from the shared socket and from a pair's socket, in both families,
 // beside Cilium's rule and kube-proxy's masquerade, which read bits of a mark under a mask
-// so no bit of the underlay's mark lies in netnstest.CiliumMask or netnstest.KubeProxyBit,
+// so no bit of the underlay's mark lies in kubetest.CiliumMask or kubetest.KubeProxyBit,
 // and the masquerade's counter, ahead of it in its rule, counts no packet
 func TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark(t *testing.T) {
 	far, _, netlink := vethPair(t, 1, nearAddresses)
@@ -29,11 +29,11 @@ func TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark(t *testing.
 		t.Fatalf("bring the loopback up: %v", err)
 	}
 	for _, family := range []byte{unix.AF_INET, unix.AF_INET6} {
-		if err := netlink.request(unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, netnstest.CiliumRule(family)); err != nil {
-			t.Fatalf("add Cilium's rule at %d: %v", netnstest.CiliumPriority, err)
+		if err := netlink.request(unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, kubetest.CiliumRule(family)); err != nil {
+			t.Fatalf("add Cilium's rule at %d: %v", kubetest.CiliumPriority, err)
 		}
-		if err := netlink.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, netnstest.CiliumLocal(family)); err != nil {
-			t.Fatalf("add the local default in table %d: %v", netnstest.CiliumTable, err)
+		if err := netlink.request(unix.RTM_NEWROUTE, unix.NLM_F_CREATE|unix.NLM_F_EXCL, kubetest.CiliumLocal(family)); err != nil {
+			t.Fatalf("add the local default in table %d: %v", kubetest.CiliumTable, err)
 		}
 	}
 	conn := masquerade(t)
@@ -72,7 +72,7 @@ func TestUnderlayLeavesByTheUplinkPastRulesReadingOtherBitsOfItsMark(t *testing.
 		}
 		sent("the pair's socket")
 	}
-	read, err := nftables.Contents{Chains: []nftables.Chain{netnstest.KubeProxyNAT}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
+	read, err := nftables.Contents{Chains: []nftables.Chain{kubetest.KubeProxyNAT}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func masquerade(t *testing.T) *nftables.Conn {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	requests, err := netnstest.KubeProxyMasquerade()
+	requests, err := kubetest.KubeProxyMasquerade()
 	if err != nil {
 		t.Fatal(err)
 	}

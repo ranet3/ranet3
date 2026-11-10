@@ -6,8 +6,8 @@
 // Package netnstest holds what a root test needs to build a network of its own
 // in network namespaces: a thread in a new and empty namespace, and the route
 // netlink requests that make links, addresses and routes there. Test files and
-// the test-support packages internal/egress/egresstest and internal/dnstest
-// import it, and nothing the binary links does.
+// the test-support packages internal/egress/egresstest, internal/dnstest and
+// internal/kubetest import it, and nothing the binary links does.
 package netnstest
 
 import (

@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"ranet3.com/pkgs/ranet3/internal/kubetest"
 	"ranet3.com/pkgs/ranet3/internal/netnstest"
 	"ranet3.com/pkgs/ranet3/internal/netstack"
 	"ranet3.com/pkgs/ranet3/internal/nftables"
@@ -368,10 +369,10 @@ func writeKubernetes(t *testing.T, lab *exitLab) {
 		defer netlink.Close()
 		create := uint16(unix.NLM_F_CREATE | unix.NLM_F_EXCL)
 		for _, family := range []byte{unix.AF_INET, unix.AF_INET6} {
-			if err := netlink.Request(unix.RTM_NEWRULE, create, netnstest.CiliumRule(family)); err != nil {
+			if err := netlink.Request(unix.RTM_NEWRULE, create, kubetest.CiliumRule(family)); err != nil {
 				return fmt.Errorf("Cilium's rule: %w", err)
 			}
-			if err := netlink.Request(unix.RTM_NEWROUTE, create, netnstest.CiliumLocal(family)); err != nil {
+			if err := netlink.Request(unix.RTM_NEWROUTE, create, kubetest.CiliumLocal(family)); err != nil {
 				return fmt.Errorf("Cilium's local default: %w", err)
 			}
 		}
@@ -380,7 +381,7 @@ func writeKubernetes(t *testing.T, lab *exitLab) {
 			return err
 		}
 		defer conn.Close()
-		requests, err := netnstest.KubeProxyMasquerade()
+		requests, err := kubetest.KubeProxyMasquerade()
 		if err != nil {
 			return err
 		}
@@ -408,7 +409,7 @@ func TestTUNExitModeBesideKubeProxyAndCilium(t *testing.T) {
 					return err
 				}
 				defer conn.Close()
-				read, err = nftables.Contents{Chains: []nftables.Chain{netnstest.KubeProxyNAT}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
+				read, err = nftables.Contents{Chains: []nftables.Chain{kubetest.KubeProxyNAT}}.Read(conn, map[uint8]uint32{unix.NFPROTO_INET: 0}, unix.NFPROTO_INET)
 				return err
 			}); err != nil {
 				t.Fatalf("read kube-proxy's masquerade: %v", err)
